@@ -1,3 +1,5 @@
+amd-fixtures/
+
 # Python
 __pycache__/
 *.py[cod]

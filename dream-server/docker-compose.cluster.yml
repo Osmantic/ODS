@@ -1,0 +1,54 @@
+# Dream Server — LAN Cluster Overlay (NVIDIA / CPU)
+# Replaces upstream llama-server image with RPC-enabled build.
+# Adds --rpc and --tensor-split flags for multi-node inference.
+# The supervisor wrapper handles pre-flight checks and auto-restart
+# on worker disconnection (llama.cpp RPC has zero fault tolerance).
+#
+# Use with:
+#   docker compose -f docker-compose.base.yml -f docker-compose.nvidia.yml \
+#                  -f docker-compose.cluster.yml up -d
+#
+# Requires: CLUSTER_WORKERS, CLUSTER_TENSOR_SPLIT in .env
+
+services:
+  llama-server:
+    build:
+      context: ./images/llama-rpc
+      dockerfile: Dockerfile.cuda
+      args:
+        LLAMA_CPP_TAG: "${LLAMA_CPP_TAG:-b8672}"
+    image: dream-llama-rpc:cuda
+    # Supervisor owns restart logic — don't let Docker's restart policy interfere
+    restart: "no"
+    entrypoint: ["python3", "/usr/local/bin/dream-cluster-supervisor.py"]
+    command:
+      - --model
+      - /models/${GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --n-gpu-layers
+      - "999"
+      - --ctx-size
+      - "${CTX_SIZE:-16384}"
+      - --batch-size
+      - "${LLAMA_BATCH_SIZE:-2048}"
+      - --threads
+      - "${LLAMA_THREADS:-4}"
+      - --parallel
+      - "${LLAMA_PARALLEL:-1}"
+      - --metrics
+      - --rpc
+      - "${CLUSTER_WORKERS}"
+      - --tensor-split
+      - "${CLUSTER_TENSOR_SPLIT}"
+      - --no-warmup
+    environment:
+      CLUSTER_WORKERS: "${CLUSTER_WORKERS}"
+      CLUSTER_RESTART_POLICY: "${CLUSTER_RESTART_POLICY:-always}"
+    volumes:
+      - cluster-events:/tmp/cluster-events
+
+volumes:
+  cluster-events:
