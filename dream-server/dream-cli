@@ -3233,6 +3233,29 @@ print(json.dumps(state, indent=2))
     # Regenerate compose flags to pick up cluster overlay
     _regenerate_compose_flags
 
+    # Build the RPC-enabled controller image
+    local dockerfile="Dockerfile.cuda"
+    local image_tag="dream-llama-rpc:cuda"
+    if [[ "$gpu_backend" == "amd" ]]; then
+        dockerfile="Dockerfile.rocm"
+        image_tag="dream-llama-rpc:rocm"
+    fi
+
+    echo ""
+    log "Building cluster controller image ($image_tag)..."
+    log "This compiles llama.cpp with RPC support. First build takes a while."
+    echo ""
+    if docker build -f "$INSTALL_DIR/images/llama-rpc/$dockerfile" \
+        -t "$image_tag" \
+        "$INSTALL_DIR/images/llama-rpc/"; then
+        success "Controller image built: $image_tag"
+    else
+        log_error "Image build failed. You can retry manually:"
+        echo "  docker build -f $INSTALL_DIR/images/llama-rpc/$dockerfile -t $image_tag $INSTALL_DIR/images/llama-rpc/"
+        echo ""
+        warn "Cluster config was saved, but the image needs to be built before restarting."
+    fi
+
     echo ""
     echo -e "${GREEN}━━━ LAN Cluster Enabled ━━━${NC}"
     echo ""
@@ -3247,11 +3270,14 @@ print(json.dumps(state, indent=2))
     echo "  For untrusted networks, use WireGuard or Tailscale tunnel IPs."
     echo ""
     echo -e "${CYAN}Next steps:${NC}"
-    echo "  1. On each worker machine, add it to the cluster:"
-    echo "       dream cluster add <WORKER_IP>"
+    echo "  On each worker machine (with DreamServer installed), run:"
+    echo "    dream cluster join ${controller_ip}"
     echo ""
-    echo "  2. Restart llama-server to apply:"
-    echo "       dream restart llama-server"
+    echo "  Then on this machine, add each worker:"
+    echo "    dream cluster add <WORKER_IP>"
+    echo ""
+    echo "  Finally, restart to apply:"
+    echo "    dream restart llama-server"
     echo ""
 }
 
@@ -3280,6 +3306,114 @@ with open('$cfg', 'w') as f:
 
     success "Cluster mode disabled."
     warn "Run 'dream restart llama-server' to apply."
+}
+
+_cluster_join() {
+    check_install
+    load_env
+
+    local controller_ip="${1:-}"
+    if [[ -z "$controller_ip" ]]; then
+        error "Usage: dream cluster join <CONTROLLER_IP> [--port PORT]"
+    fi
+    local rpc_port=50052
+    shift
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --port) rpc_port="${2:-50052}"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local gpu_backend="${GPU_BACKEND:-nvidia}"
+
+    # Build the rpc-server image
+    local dockerfile="Dockerfile.rpc-cuda"
+    local image_tag="dream-rpc-server:cuda"
+    if [[ "$gpu_backend" == "amd" ]]; then
+        dockerfile="Dockerfile.rpc-rocm"
+        image_tag="dream-rpc-server:rocm"
+    fi
+
+    log "Building RPC worker image ($image_tag)..."
+    log "This compiles llama.cpp rpc-server with RPC support. First build takes a while."
+    echo ""
+    if ! docker build -f "$INSTALL_DIR/images/llama-rpc/$dockerfile" \
+        -t "$image_tag" \
+        "$INSTALL_DIR/images/llama-rpc/"; then
+        error "Image build failed. Check Docker is running and try again."
+    fi
+    success "Worker image built: $image_tag"
+
+    # Stop existing rpc-server container if running
+    if docker ps -q -f name=dream-rpc-server 2>/dev/null | grep -q .; then
+        log "Stopping existing rpc-server container..."
+        docker stop dream-rpc-server >/dev/null 2>&1 || true
+        docker rm dream-rpc-server >/dev/null 2>&1 || true
+    fi
+
+    # Start the rpc-server container
+    log "Starting rpc-server on port ${rpc_port}..."
+    local docker_gpu_flags=""
+    if [[ "$gpu_backend" == "nvidia" ]]; then
+        docker_gpu_flags="--gpus all"
+    elif [[ "$gpu_backend" == "amd" ]]; then
+        docker_gpu_flags="--device /dev/dri --device /dev/kfd --group-add ${VIDEO_GID:-44} --group-add ${RENDER_GID:-992}"
+    fi
+
+    # shellcheck disable=SC2086
+    docker run -d \
+        --name dream-rpc-server \
+        --restart unless-stopped \
+        -p "${rpc_port}:50052" \
+        $docker_gpu_flags \
+        "$image_tag" \
+        -p 50052 -c --host 0.0.0.0 \
+        || error "Failed to start rpc-server container."
+
+    success "rpc-server running on port ${rpc_port}"
+
+    # Detect this machine's IP
+    local my_ip
+    my_ip=$(hostname -I 2>/dev/null | awk '{print $1}') || my_ip="<this-machine-ip>"
+
+    echo ""
+    echo -e "${GREEN}━━━ Worker Ready ━━━${NC}"
+    echo ""
+    echo "  This machine is now serving RPC on port ${rpc_port}."
+    echo "  Controller: ${controller_ip}"
+    echo ""
+    echo -e "${CYAN}Next step:${NC}"
+    echo "  On the controller machine (${controller_ip}), run:"
+    echo "    dream cluster add ${my_ip}"
+    if [[ "$rpc_port" != "50052" ]]; then
+        echo "    dream cluster add ${my_ip} --port ${rpc_port}"
+    fi
+    echo ""
+    echo "  Then restart llama-server on the controller:"
+    echo "    dream restart llama-server"
+    echo ""
+}
+
+_cluster_leave() {
+    check_install
+
+    log "Stopping rpc-server container..."
+    if docker ps -q -f name=dream-rpc-server 2>/dev/null | grep -q .; then
+        docker stop dream-rpc-server >/dev/null 2>&1
+        docker rm dream-rpc-server >/dev/null 2>&1
+        success "rpc-server stopped and removed."
+    else
+        warn "No rpc-server container found."
+    fi
+
+    echo ""
+    warn "Remember to remove this worker on the controller:"
+    local my_ip
+    my_ip=$(hostname -I 2>/dev/null | awk '{print $1}') || my_ip="<this-machine-ip>"
+    echo "  dream cluster remove ${my_ip}"
+    echo "  dream restart llama-server"
+    echo ""
 }
 
 _cluster_add() {
@@ -3578,29 +3712,39 @@ ${BLUE}dream cluster${NC} -- LAN cluster management
 ${CYAN}Usage:${NC}
   dream cluster [subcommand]
 
-${CYAN}Subcommands:${NC}
-  enable              Enable cluster mode, generate auth token
+${CYAN}Controller commands:${NC}
+  enable              Enable cluster mode and build controller image
   disable             Disable cluster mode, clear worker config
   status              Show cluster nodes, connectivity, and VRAM pool
-  add <IP> [--port N] Add a worker node (default RPC port: 50052)
-  remove <IP>         Remove a worker node
+  add <IP> [--port N] Register a worker (default RPC port: 50052)
+  remove <IP>         Unregister a worker
   test                TCP ping test to all workers (10 samples each)
-  help                Show this help
 
-${CYAN}Examples:${NC}
-  dream cluster enable                  # Initialize cluster on this machine
-  dream cluster add 192.168.1.101       # Add a worker
-  dream cluster add 192.168.1.102 --port 50053
-  dream cluster status                  # See all nodes + connectivity
-  dream cluster test                    # Latency test to all workers
-  dream cluster remove 192.168.1.101    # Remove a worker
-  dream cluster disable                 # Turn off cluster mode
+${CYAN}Worker commands:${NC}
+  join <IP> [--port N]  Build rpc-server image, start it, and prepare to join
+  leave                 Stop rpc-server and leave the cluster
 
 ${CYAN}Workflow:${NC}
-  1. dream cluster enable           (on controller)
-  2. Start rpc-server on worker     (Docker or manual)
-  3. dream cluster add <WORKER_IP>  (on controller)
-  4. dream restart llama-server     (applies the cluster config)
+  Controller (machine 1):
+    dream cluster enable
+
+  Each worker (machines 2, 3, ...):
+    dream cluster join <CONTROLLER_IP>
+
+  Back on controller:
+    dream cluster add <WORKER_2_IP>
+    dream cluster add <WORKER_3_IP>
+    dream restart llama-server
+
+${CYAN}Examples:${NC}
+  dream cluster enable                  # Set up this machine as controller
+  dream cluster join 192.168.1.100      # Join from a worker machine
+  dream cluster add 192.168.1.101       # Register worker on controller
+  dream cluster status                  # See all nodes + connectivity
+  dream cluster test                    # Latency test to all workers
+  dream cluster leave                   # Stop rpc-server on worker
+  dream cluster remove 192.168.1.101    # Remove worker on controller
+  dream cluster disable                 # Turn off cluster mode entirely
 EOF
 }
 
@@ -3610,11 +3754,13 @@ cmd_cluster() {
 
     case "$subcommand" in
         status|s)           _cluster_status "$@" ;;
+        enable)             _cluster_enable "$@" ;;
+        disable)            _cluster_disable "$@" ;;
+        join|j)             _cluster_join "$@" ;;
+        leave)              _cluster_leave "$@" ;;
         add|a)              _cluster_add "$@" ;;
         remove|rm)          _cluster_remove "$@" ;;
         test|t)             _cluster_test "$@" ;;
-        enable)             _cluster_enable "$@" ;;
-        disable)            _cluster_disable "$@" ;;
         help|--help|-h)     _cluster_help ;;
         *)  error "Unknown cluster subcommand: '${subcommand}'. Run 'dream cluster help'" ;;
     esac
@@ -4785,7 +4931,7 @@ ${BLUE}Dream Server CLI v${VERSION}${NC}
 Usage: dream <command> [options]
 
 ${CYAN}Commands:${NC}
-  cluster [enable|disable|status|add|remove|test]
+  cluster [enable|join|add|status|test|leave|remove|disable]
                       LAN cluster management (multi-node inference)
   gpu [status|topology|assignment|validate|reassign]
                       Inspect and manage multi-GPU configuration
