@@ -3187,7 +3187,7 @@ _cluster_enable() {
     token="dream_$(openssl rand -hex 16)"
 
     # Detect controller GPU info
-    local gpu_name="Unknown" vram_mb=0 gpu_backend="${GPU_BACKEND:-nvidia}"
+    local gpu_name="CPU only" vram_mb=0 gpu_backend="${GPU_BACKEND:-nvidia}"
     if [[ "$gpu_backend" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
         gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | xargs)
         vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | xargs)
@@ -3233,25 +3233,25 @@ print(json.dumps(state, indent=2))
     # Regenerate compose flags to pick up cluster overlay
     _regenerate_compose_flags
 
-    # Build the RPC-enabled controller image
-    local dockerfile="Dockerfile.cuda"
+    # Check that the controller image was built at install time
     local image_tag="dream-llama-rpc:cuda"
     if [[ "$gpu_backend" == "amd" ]]; then
-        dockerfile="Dockerfile.rocm"
         image_tag="dream-llama-rpc:rocm"
+    elif [[ "$gpu_backend" == "cpu" ]]; then
+        image_tag="dream-llama-rpc:cpu"
     fi
 
-    echo ""
-    log "Building cluster controller image ($image_tag)..."
-    log "This compiles llama.cpp with RPC support. First build takes a while."
-    echo ""
-    if docker build -f "$INSTALL_DIR/images/llama-rpc/$dockerfile" \
-        -t "$image_tag" \
-        "$INSTALL_DIR/images/llama-rpc/"; then
-        success "Controller image built: $image_tag"
-    else
-        log_error "Image build failed. You can retry manually:"
-        echo "  docker build -f $INSTALL_DIR/images/llama-rpc/$dockerfile -t $image_tag $INSTALL_DIR/images/llama-rpc/"
+    local _ctrl_dockerfile="Dockerfile.cuda"
+    case "$gpu_backend" in
+        amd) _ctrl_dockerfile="Dockerfile.rocm" ;;
+        cpu) _ctrl_dockerfile="Dockerfile.cpu" ;;
+    esac
+
+    if ! docker image inspect "$image_tag" &>/dev/null; then
+        warn "Cluster controller image ($image_tag) not found."
+        echo "  This image is built during installation when LAN cluster mode is enabled."
+        echo "  Re-run the installer with cluster mode enabled, or build manually:"
+        echo "    docker build -f $INSTALL_DIR/images/llama-rpc/$_ctrl_dockerfile -t $image_tag $INSTALL_DIR/images/llama-rpc/"
         echo ""
         warn "Cluster config was saved, but the image needs to be built before restarting."
     fi
@@ -3260,7 +3260,11 @@ print(json.dumps(state, indent=2))
     echo -e "${GREEN}━━━ LAN Cluster Enabled ━━━${NC}"
     echo ""
     echo -e "  Controller: ${BLUE}${controller_ip}${NC}"
-    echo -e "  GPU:        ${gpu_name} (${vram_mb} MB)"
+    if [[ "$vram_mb" -gt 0 ]]; then
+        echo -e "  GPU:        ${gpu_name} (${vram_mb} MB)"
+    else
+        echo -e "  GPU:        ${gpu_name}"
+    fi
     echo -e "  Token:      ${token}"
     echo ""
     echo -e "${YELLOW}⚠ Security Warning${NC}"
@@ -3327,23 +3331,20 @@ _cluster_join() {
 
     local gpu_backend="${GPU_BACKEND:-nvidia}"
 
-    # Build the rpc-server image
-    local dockerfile="Dockerfile.rpc-cuda"
+    # Check that the worker image was built at install time
     local image_tag="dream-rpc-server:cuda"
+    local _worker_dockerfile="Dockerfile.rpc-cuda"
     if [[ "$gpu_backend" == "amd" ]]; then
-        dockerfile="Dockerfile.rpc-rocm"
         image_tag="dream-rpc-server:rocm"
+        _worker_dockerfile="Dockerfile.rpc-rocm"
+    elif [[ "$gpu_backend" == "cpu" ]]; then
+        image_tag="dream-rpc-server:cpu"
+        _worker_dockerfile="Dockerfile.rpc-cpu"
     fi
 
-    log "Building RPC worker image ($image_tag)..."
-    log "This compiles llama.cpp rpc-server with RPC support. First build takes a while."
-    echo ""
-    if ! docker build -f "$INSTALL_DIR/images/llama-rpc/$dockerfile" \
-        -t "$image_tag" \
-        "$INSTALL_DIR/images/llama-rpc/"; then
-        error "Image build failed. Check Docker is running and try again."
+    if ! docker image inspect "$image_tag" &>/dev/null; then
+        error "Worker image ($image_tag) not found. This image is built during installation when LAN cluster mode is enabled. Re-run the installer with cluster mode enabled, or build manually: docker build -f $INSTALL_DIR/images/llama-rpc/$_worker_dockerfile -t $image_tag $INSTALL_DIR/images/llama-rpc/"
     fi
-    success "Worker image built: $image_tag"
 
     # Stop existing rpc-server container if running
     if docker ps -q -f name=dream-rpc-server 2>/dev/null | grep -q .; then
@@ -3355,11 +3356,11 @@ _cluster_join() {
     # Start the rpc-server container
     log "Starting rpc-server on port ${rpc_port}..."
     local docker_gpu_flags=""
-    if [[ "$gpu_backend" == "nvidia" ]]; then
-        docker_gpu_flags="--gpus all"
-    elif [[ "$gpu_backend" == "amd" ]]; then
-        docker_gpu_flags="--device /dev/dri --device /dev/kfd --group-add ${VIDEO_GID:-44} --group-add ${RENDER_GID:-992}"
-    fi
+    case "$gpu_backend" in
+        nvidia) docker_gpu_flags="--gpus all" ;;
+        amd)    docker_gpu_flags="--device /dev/dri --device /dev/kfd --group-add ${VIDEO_GID:-44} --group-add ${RENDER_GID:-992}" ;;
+        cpu)    docker_gpu_flags="" ;;
+    esac
 
     # shellcheck disable=SC2086
     docker run -d \

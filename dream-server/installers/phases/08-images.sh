@@ -7,7 +7,7 @@
 #
 # Expects: DRY_RUN, GPU_BACKEND, ENABLE_VOICE, ENABLE_WORKFLOWS,
 #           ENABLE_RAG, ENABLE_EMBEDDINGS, ENABLE_HERMES, ENABLE_OPENCLAW,
-#           DOCKER_CMD, LOG_FILE, BGRN, AMB, NC,
+#           ENABLE_CLUSTER, DOCKER_CMD, LOG_FILE, BGRN, AMB, NC, SCRIPT_DIR,
 #           show_phase(), bootline(), signal(), ai(), ai_ok(), ai_warn(),
 #           pull_with_progress()
 # Provides: (Docker images pulled locally)
@@ -138,5 +138,51 @@ else
         ai_ok "All $pull_total modules downloaded"
     else
         ai_warn "$pull_failed of $pull_total modules failed — services may not start fully"
+    fi
+
+    # Build cluster images if LAN cluster mode was selected
+    if [[ "${ENABLE_CLUSTER:-}" == "true" ]]; then
+        dream_progress 65 "images" "Building LAN cluster images"
+        echo ""
+        bootline
+        echo -e "${BGRN}CLUSTER IMAGE BUILD${NC}"
+        echo -e "${AMB}Compiling llama.cpp with RPC support — this takes a while on first build.${NC}"
+        bootline
+        echo ""
+
+        local _rpc_dir="$SCRIPT_DIR/images/llama-rpc"
+        local _ctrl_dockerfile _ctrl_tag _worker_dockerfile _worker_tag
+        if [[ "$GPU_BACKEND" == "amd" ]]; then
+            _ctrl_dockerfile="Dockerfile.rocm"
+            _ctrl_tag="dream-llama-rpc:rocm"
+            _worker_dockerfile="Dockerfile.rpc-rocm"
+            _worker_tag="dream-rpc-server:rocm"
+        elif [[ "$GPU_BACKEND" == "nvidia" ]]; then
+            _ctrl_dockerfile="Dockerfile.cuda"
+            _ctrl_tag="dream-llama-rpc:cuda"
+            _worker_dockerfile="Dockerfile.rpc-cuda"
+            _worker_tag="dream-rpc-server:cuda"
+        else
+            _ctrl_dockerfile="Dockerfile.cpu"
+            _ctrl_tag="dream-llama-rpc:cpu"
+            _worker_dockerfile="Dockerfile.rpc-cpu"
+            _worker_tag="dream-rpc-server:cpu"
+        fi
+
+        ai "Building controller image ($_ctrl_tag)..."
+        if docker build -f "$_rpc_dir/$_ctrl_dockerfile" -t "$_ctrl_tag" "$_rpc_dir" >> "$LOG_FILE" 2>&1; then
+            ai_ok "Controller image built: $_ctrl_tag"
+        else
+            ai_warn "Controller image build failed — check $LOG_FILE for details"
+            ai "  You can retry later with: docker build -f $_rpc_dir/$_ctrl_dockerfile -t $_ctrl_tag $_rpc_dir"
+        fi
+
+        ai "Building worker image ($_worker_tag)..."
+        if docker build -f "$_rpc_dir/$_worker_dockerfile" -t "$_worker_tag" "$_rpc_dir" >> "$LOG_FILE" 2>&1; then
+            ai_ok "Worker image built: $_worker_tag"
+        else
+            ai_warn "Worker image build failed — check $LOG_FILE for details"
+            ai "  You can retry later with: docker build -f $_rpc_dir/$_worker_dockerfile -t $_worker_tag $_rpc_dir"
+        fi
     fi
 fi
