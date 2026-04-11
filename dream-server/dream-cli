@@ -1078,10 +1078,14 @@ cmd_restart() {
         _dream_cli_refresh_soul || true
     fi
 
+    # --force-recreate so cluster-mode image-tag swaps (dream-llama-rpc:<backend>
+    # vs the standard llama-server image) are picked up. Otherwise compose sees
+    # the existing container as "config-equivalent" and skips recreation,
+    # leaving the cluster overlay's image override silently unapplied.
     if [[ -z "$resolved_service" ]]; then
-        _compose_run_with_summary "Restarting all services" "${flags[@]}" up -d
+        _compose_run_with_summary "Restarting all services" "${flags[@]}" up -d --force-recreate
     else
-        _compose_run_with_summary "Restarting $resolved_service" "${flags[@]}" up -d "$resolved_service"
+        _compose_run_with_summary "Restarting $resolved_service" "${flags[@]}" up -d --force-recreate "$resolved_service"
     fi
 
     # Refresh SOUL.md after compose has ensured Hermes is running, so the
@@ -3226,22 +3230,23 @@ print(json.dumps(state, indent=2))
 ")
     _cluster_save_state "$state"
 
-    # Write env vars
-    _env_set "CLUSTER_ENABLED" "true"
-    _env_set "CLUSTER_TOKEN" "$token"
-    _env_set "CLUSTER_WORKERS" ""
-    _env_set "CLUSTER_TENSOR_SPLIT" ""
-
-    # Regenerate compose flags to pick up cluster overlay
-    _regenerate_compose_flags
-
-    # Check that the controller image was built at install time
+    # Determine controller image tag based on GPU backend
     local image_tag="dream-llama-rpc:cuda"
     if [[ "$gpu_backend" == "amd" ]]; then
         image_tag="dream-llama-rpc:rocm"
     elif [[ "$gpu_backend" == "cpu" ]]; then
         image_tag="dream-llama-rpc:cpu"
     fi
+
+    # Write env vars
+    _env_set "CLUSTER_ENABLED" "true"
+    _env_set "CLUSTER_TOKEN" "$token"
+    _env_set "CLUSTER_WORKERS" ""
+    _env_set "CLUSTER_TENSOR_SPLIT" ""
+    _env_set "CLUSTER_CONTROLLER_IMAGE" "$image_tag"
+
+    # Regenerate compose flags to pick up cluster overlay
+    _regenerate_compose_flags
 
     local _ctrl_dockerfile="Dockerfile.cuda"
     case "$gpu_backend" in

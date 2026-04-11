@@ -12,12 +12,7 @@
 
 services:
   llama-server:
-    build:
-      context: ./images/llama-rpc
-      dockerfile: Dockerfile.cuda
-      args:
-        LLAMA_CPP_TAG: "${LLAMA_CPP_TAG:-b8672}"
-    image: dream-llama-rpc:cuda
+    image: ${CLUSTER_CONTROLLER_IMAGE:-dream-llama-rpc:cuda}
     # Supervisor owns restart logic — don't let Docker's restart policy interfere
     restart: "no"
     entrypoint: ["python3", "/usr/local/bin/dream-cluster-supervisor.py"]
