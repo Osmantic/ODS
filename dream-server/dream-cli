@@ -3671,12 +3671,19 @@ _cluster_status() {
     local cfg
     cfg=$(_cluster_config_file)
 
+    # Worker mode: no cluster.json, but rpc-server container may be running
     if [[ ! -f "$cfg" ]] || [[ "${CLUSTER_ENABLED:-false}" != "true" ]]; then
-        echo -e "${BLUE}━━━ LAN Cluster Status ━━━${NC}"
-        echo ""
-        echo "  Cluster mode is not enabled."
-        echo "  Run 'dream cluster enable' to get started."
-        echo ""
+        # Check if this is a worker node
+        if docker ps -q -f name=dream-rpc-server 2>/dev/null | grep -q .; then
+            _cluster_status_worker
+        else
+            echo -e "${BLUE}━━━ LAN Cluster Status ━━━${NC}"
+            echo ""
+            echo "  Cluster mode is not enabled."
+            echo "  Run 'dream cluster enable' to set up as controller,"
+            echo "  or 'dream cluster join <IP> --token <TOKEN>' to join as worker."
+            echo ""
+        fi
         return 0
     fi
 
@@ -3687,10 +3694,14 @@ _cluster_status() {
 
     # Gather controller info
     local ctrl_gpu ctrl_vram_mb
-    ctrl_gpu=$(echo "$state" | python3 -c "import json,sys; c=json.load(sys.stdin).get('controller',{}); gpus=c.get('gpus',[]); print(gpus[0]['name'] if gpus else 'Unknown')")
+    ctrl_gpu=$(echo "$state" | python3 -c "import json,sys; c=json.load(sys.stdin).get('controller',{}); gpus=c.get('gpus',[]); print(gpus[0]['name'] if gpus else 'CPU only')")
     ctrl_vram_mb=$(echo "$state" | python3 -c "import json,sys; c=json.load(sys.stdin).get('controller',{}); gpus=c.get('gpus',[]); print(gpus[0].get('vram_mb',0) if gpus else 0)")
-    local ctrl_vram_gb
-    ctrl_vram_gb=$(python3 -c "print(round($ctrl_vram_mb / 1024, 1))")
+    local ctrl_vram_display
+    if [[ "$ctrl_vram_mb" -gt 0 ]]; then
+        ctrl_vram_display="$(python3 -c "print(round($ctrl_vram_mb / 1024, 1))") GB"
+    else
+        ctrl_vram_display="---"
+    fi
 
     # Gather node info
     local node_count
@@ -3706,7 +3717,7 @@ _cluster_status() {
     # Controller row
     printf "  %-18s %-20s %-10s %-8s %s\n" "Node" "GPU" "VRAM" "Status" "Ping"
     printf "  %-18s %-20s %-10s %-8s %s\n" "──────────────────" "────────────────────" "──────────" "────────" "────"
-    printf "  %-18s %-20s %-10s ${GREEN}%-8s${NC} %s\n" "controller" "$ctrl_gpu" "${ctrl_vram_gb} GB" "online" "---"
+    printf "  %-18s %-20s %-10s ${GREEN}%-8s${NC} %s\n" "controller" "$ctrl_gpu" "$ctrl_vram_display" "online" "---"
 
     # Worker rows
     echo "$state" | python3 -c "
@@ -3716,12 +3727,15 @@ state = json.load(sys.stdin)
 for node in state.get('nodes', []):
     ip = node['ip']
     port = node.get('rpc_port', 50052)
-    gpu_name = 'Unknown'
-    vram_gb = '?'
+    gpu_backend = node.get('gpu_backend', 'unknown')
+    gpu_name = 'CPU only' if gpu_backend == 'cpu' else 'Unknown'
+    vram_display = '---'
     gpus = node.get('gpus', [])
     if gpus:
-        gpu_name = gpus[0].get('name', 'Unknown')
-        vram_gb = f\"{round(gpus[0].get('vram_mb', 0) / 1024, 1)}\"
+        gpu_name = gpus[0].get('name', gpu_name)
+        vram_mb = gpus[0].get('vram_mb', 0)
+        if vram_mb > 0:
+            vram_display = f'{round(vram_mb / 1024, 1)} GB'
 
     # TCP ping
     status = 'offline'
@@ -3739,7 +3753,7 @@ for node in state.get('nodes', []):
     color = '\033[0;32m' if status == 'online' else '\033[0;31m'
     nc = '\033[0m'
     host = f'{ip}:{port}'
-    print(f'  {host:<18s} {gpu_name:<20s} {vram_gb + \" GB\":<10s} {color}{status:<8s}{nc} {ping_ms}')
+    print(f'  {host:<18s} {gpu_name:<20s} {vram_display:<10s} {color}{status:<8s}{nc} {ping_ms}')
 "
 
     echo ""
@@ -3751,6 +3765,58 @@ for node in state.get('nodes', []):
     else
         echo "  No workers configured. Run 'dream cluster setup' to add workers."
     fi
+    echo ""
+}
+
+_cluster_status_worker() {
+    local gpu_backend="${GPU_BACKEND:-nvidia}"
+
+    # Get rpc-server container info
+    local container_status rpc_port
+    container_status=$(docker inspect dream-rpc-server --format '{{.State.Status}}' 2>/dev/null || echo "not found")
+    rpc_port=$(docker inspect dream-rpc-server --format '{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "50052/tcp"}}{{(index $conf 0).HostPort}}{{end}}{{end}}' 2>/dev/null || echo "?")
+
+    # Detect local GPU
+    local gpu_name="CPU only" vram_mb=0
+    if [[ "$gpu_backend" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
+        gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | xargs)
+        vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | xargs)
+    elif [[ "$gpu_backend" == "amd" ]]; then
+        for card_dir in /sys/class/drm/card*/device; do
+            [[ -f "$card_dir/vendor" ]] || continue
+            [[ "$(cat "$card_dir/vendor" 2>/dev/null)" == "0x1002" ]] || continue
+            gpu_name=$(cat "$card_dir/product_name" 2>/dev/null || echo "AMD Radeon")
+            local vram_bytes
+            vram_bytes=$(cat "$card_dir/mem_info_vram_total" 2>/dev/null || echo "0")
+            vram_mb=$((vram_bytes / 1048576))
+            break
+        done
+    fi
+
+    local vram_display="---"
+    if [[ "$vram_mb" -gt 0 ]]; then
+        vram_display="$(python3 -c "print(round($vram_mb / 1024, 1))") GB"
+    fi
+
+    local my_ip
+    my_ip=$(hostname -I 2>/dev/null | awk '{print $1}') || my_ip="unknown"
+
+    local status_color="${GREEN}" status_text="running"
+    if [[ "$container_status" != "running" ]]; then
+        status_color="${RED}"
+        status_text="$container_status"
+    fi
+
+    echo ""
+    echo -e "${BLUE}━━━ LAN Cluster Status (Worker) ━━━${NC}"
+    echo ""
+    echo -e "  Role:     worker"
+    echo -e "  IP:       ${my_ip}"
+    echo -e "  RPC port: ${rpc_port}"
+    echo -e "  Backend:  ${gpu_backend}"
+    echo -e "  GPU:      ${gpu_name}"
+    echo -e "  VRAM:     ${vram_display}"
+    echo -e "  Status:   ${status_color}${status_text}${NC}"
     echo ""
 }
 
