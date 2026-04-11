@@ -3209,8 +3209,42 @@ _cluster_enable() {
         done
     fi
 
-    local controller_ip
-    controller_ip=$(hostname -I 2>/dev/null | awk '{print $1}') || controller_ip="<your-ip>"
+    # Network interface selection
+    local controller_ip=""
+    local all_ips
+    all_ips=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^$' | grep -v ':') || true
+
+    # Check for --interface flag
+    local iface_flag=""
+    for arg in "$@"; do
+        case "$arg" in
+            --interface=*) iface_flag="${arg#--interface=}" ;;
+        esac
+    done
+
+    if [[ -n "$iface_flag" ]]; then
+        controller_ip="$iface_flag"
+    elif [[ $(echo "$all_ips" | wc -l) -gt 1 ]]; then
+        echo ""
+        echo -e "  ${CYAN}Multiple network interfaces detected:${NC}"
+        echo ""
+        local i=1
+        while IFS= read -r ip; do
+            echo "    ${i}) ${ip}"
+            i=$((i + 1))
+        done <<< "$all_ips"
+        echo ""
+        local count=$((i - 1))
+        read -p "  Which interface should the cluster use? [1-${count}]: " -r < /dev/tty
+        local choice="${REPLY:-1}"
+        controller_ip=$(echo "$all_ips" | sed -n "${choice}p")
+        if [[ -z "$controller_ip" ]]; then
+            controller_ip=$(echo "$all_ips" | head -1)
+        fi
+    else
+        controller_ip=$(echo "$all_ips" | head -1)
+    fi
+    [[ -z "$controller_ip" ]] && controller_ip="<your-ip>"
 
     # Write cluster state
     local state
@@ -3244,6 +3278,7 @@ print(json.dumps(state, indent=2))
     _env_set "CLUSTER_WORKERS" ""
     _env_set "CLUSTER_TENSOR_SPLIT" ""
     _env_set "CLUSTER_CONTROLLER_IMAGE" "$image_tag"
+    _env_set "CLUSTER_INTERFACE" "$controller_ip"
 
     # Regenerate compose flags to pick up cluster overlay
     _regenerate_compose_flags
@@ -3378,13 +3413,14 @@ _cluster_join() {
     check_install
     load_env
 
-    local controller_ip="" token="" setup_port=50051 rpc_port=50052 discover=false
+    local controller_ip="" token="" setup_port=50051 rpc_port=50052 discover=false interface=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --token) token="${2:-}"; shift 2 ;;
             --port) setup_port="${2:-50051}"; shift 2 ;;
             --rpc-port) rpc_port="${2:-50052}"; shift 2 ;;
             --discover) discover=true; shift ;;
+            --interface) interface="${2:-}"; shift 2 ;;
             -*) shift ;;
             *) [[ -z "$controller_ip" ]] && controller_ip="$1"; shift ;;
         esac
@@ -3397,7 +3433,7 @@ _cluster_join() {
     if [[ "$discover" == "true" ]] && [[ -z "$controller_ip" ]]; then
         log "Searching for controller on the LAN..."
         local discover_result
-        discover_result=$(python3 "$INSTALL_DIR/scripts/cluster_discovery.py" discover 30 2>&1)
+        discover_result=$(python3 "$INSTALL_DIR/scripts/cluster_discovery.py" discover 30 ${interface:+"$interface"} 2>&1)
         if [[ $? -ne 0 ]]; then
             error "Auto-discovery failed: ${discover_result}. Specify the controller IP manually."
         fi
@@ -3904,15 +3940,19 @@ _cluster_agent() {
     local agent_script="$INSTALL_DIR/scripts/cluster_worker_agent.py"
     local status_port=50054
 
-    # Parse --token on first start
-    local token=""
+    # Parse --token and --interface on first start
+    local token="" interface=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --token) token="${2:-}"; shift 2 ;;
             --port) status_port="${2:-50054}"; shift 2 ;;
+            --interface) interface="${2:-}"; shift 2 ;;
             *) shift ;;
         esac
     done
+
+    # Use CLUSTER_INTERFACE from env if --interface not specified
+    [[ -z "$interface" ]] && interface="${CLUSTER_INTERFACE:-}"
 
     case "$action" in
         start)
@@ -3933,7 +3973,7 @@ else: print('cpu')
                 python3 -c "
 import json
 cfg = {'token': '$token', 'controller_ip': '', 'setup_port': 50051,
-       'rpc_port': 50052, 'gpu_backend': '$gpu_backend', 'status': 'idle'}
+       'rpc_port': 50052, 'gpu_backend': '$gpu_backend', 'interface': '$interface', 'status': 'idle'}
 with open('$config_file', 'w') as f: json.dump(cfg, f, indent=2)
 "
                 log "Agent config initialized (backend: ${gpu_backend})"
@@ -3977,6 +4017,7 @@ with open('$config_file', 'w') as f: json.dump(cfg, f, indent=2)
                         --config "$config_file" \
                         --status-port "$status_port" \
                         --pid-file "$pid_file" \
+                        ${interface:+--interface "$interface"} \
                         >> "$log_file" 2>&1 &disown
                     success "Cluster agent started (background, PID $!)"
                     ;;
@@ -4026,7 +4067,7 @@ with open('$config_file', 'w') as f: json.dump(cfg, f, indent=2)
             ;;
 
         *)
-            log "Usage: dream cluster agent [start|stop|status|logs] [--token TOKEN]"
+            log "Usage: dream cluster agent [start|stop|status|logs] [--token TOKEN] [--interface IP]"
             ;;
     esac
 }
@@ -4064,6 +4105,7 @@ ${CYAN}Workflow:${NC}
   Each worker (in another terminal or machine):
     dream cluster join <CONTROLLER_IP> --token <TOKEN>
     dream cluster join --discover --token <TOKEN>              # auto-find controller
+    dream cluster join --discover --token <TOKEN> --interface 192.168.1.50  # specific NIC
 
   Controller confirms each worker, then Ctrl+C to finish.
   Setup will offer to restart llama-server automatically.
@@ -4076,6 +4118,7 @@ ${CYAN}Examples:${NC}
   dream cluster status                                        # See all nodes
   dream cluster test                                          # Latency test
   dream cluster agent start --token dream_abc123               # Start worker agent
+  dream cluster agent start --token dream_abc123 --interface 192.168.1.50  # Specific NIC
   dream cluster agent status                                   # Check agent state
   dream cluster leave                                         # Worker leaves
   dream cluster remove 192.168.1.101                          # Remove worker

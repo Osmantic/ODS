@@ -295,6 +295,7 @@ def main():
     parser.add_argument("--config", required=True, help="Path to cluster-agent.json")
     parser.add_argument("--status-port", type=int, default=50054, help="HTTP status port")
     parser.add_argument("--pid-file", help="Write PID to file")
+    parser.add_argument("--interface", default="", help="Bind discovery to this network interface IP")
     args = parser.parse_args()
 
     if args.pid_file:
@@ -321,6 +322,7 @@ def main():
 
     gpu_backend = state.get("gpu_backend") or detect_gpu_backend()
     rpc_port = state.get("rpc_port", 50052)
+    bind_ip = args.interface or state.get("interface", "") or ""
     state.update(gpu_backend=gpu_backend, rpc_port=rpc_port)
 
     # Main loop: discover → join → run → monitor
@@ -332,7 +334,7 @@ def main():
             state.update(status="discovering")
             print("[AGENT] Searching for controller on LAN...")
             try:
-                controller_ip, setup_port = discover_controller(DISCOVERY_TIMEOUT)
+                controller_ip, setup_port = discover_controller(DISCOVERY_TIMEOUT, bind_ip=bind_ip or None)
                 state.update(controller_ip=controller_ip, setup_port=setup_port)
                 print(f"[AGENT] Found controller at {controller_ip}:{setup_port}")
             except TimeoutError:

@@ -5,6 +5,9 @@ Provides two primitives:
   - ClusterBeacon: broadcasts controller presence on the LAN every 5s
   - discover_controller(): listens for a beacon and returns the controller address
 
+Both support an optional bind_ip parameter to restrict to a specific
+network interface (e.g. "192.168.1.10" to use only the LAN interface).
+
 Protocol: UDP broadcast to port 50053
   Payload: b"DREAM1" + JSON {"service":"dream-cluster","version":1,
                               "controller_ip":"...","setup_port":50051}
@@ -18,11 +21,14 @@ Usage from other scripts:
 
   # Worker side — wait for a beacon
   ip, port = discover_controller(timeout=30)
+
+  # Restrict to specific interface
+  beacon = ClusterBeacon(controller_ip="192.168.1.10", bind_ip="192.168.1.10")
+  ip, port = discover_controller(timeout=30, bind_ip="192.168.1.50")
 """
 
 import json
 import socket
-import struct
 import sys
 import threading
 import time
@@ -32,13 +38,51 @@ BEACON_INTERVAL = 5.0
 MAGIC = b"DREAM1"
 
 
-class ClusterBeacon(threading.Thread):
-    """Broadcasts controller presence via UDP every BEACON_INTERVAL seconds."""
+def get_interface_ips():
+    """Return list of (ip, name_hint) for all non-loopback IPv4 addresses."""
+    results = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127."):
+                results.append(ip)
+    except socket.gaierror:
+        pass
+    # Fallback: parse /proc/net/if_inet6 alternative or use netifaces-like approach
+    # Simpler: just try all common interface patterns
+    if not results:
+        try:
+            import subprocess
+            out = subprocess.check_output(["hostname", "-I"], text=True).strip()
+            results = [ip for ip in out.split() if ":" not in ip and not ip.startswith("127.")]
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    return sorted(set(results))
 
-    def __init__(self, controller_ip, setup_port=50051):
+
+def _compute_broadcast(ip):
+    """Compute /24 broadcast address from an IP. Falls back to 255.255.255.255."""
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return f"{parts[0]}.{parts[1]}.{parts[2]}.255"
+    return "255.255.255.255"
+
+
+class ClusterBeacon(threading.Thread):
+    """Broadcasts controller presence via UDP every BEACON_INTERVAL seconds.
+
+    Args:
+        controller_ip: IP address to advertise in the beacon payload.
+        setup_port: TCP port for the setup listener.
+        bind_ip: If set, bind the socket to this IP and broadcast on its /24.
+                 If empty/None, broadcast to 255.255.255.255 on all interfaces.
+    """
+
+    def __init__(self, controller_ip, setup_port=50051, bind_ip=None):
         super().__init__(daemon=True)
         self._controller_ip = controller_ip
         self._setup_port = setup_port
+        self._bind_ip = bind_ip or ""
         self._stop_event = threading.Event()
 
     def run(self):
@@ -53,9 +97,15 @@ class ClusterBeacon(threading.Thread):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.settimeout(1.0)
 
+        if self._bind_ip:
+            sock.bind((self._bind_ip, 0))
+            broadcast_addr = _compute_broadcast(self._bind_ip)
+        else:
+            broadcast_addr = "<broadcast>"
+
         while not self._stop_event.is_set():
             try:
-                sock.sendto(payload, ("<broadcast>", DISCOVERY_PORT))
+                sock.sendto(payload, (broadcast_addr, DISCOVERY_PORT))
             except OSError:
                 pass  # transient network issue, retry next interval
             self._stop_event.wait(BEACON_INTERVAL)
@@ -66,18 +116,24 @@ class ClusterBeacon(threading.Thread):
         self._stop_event.set()
 
 
-def discover_controller(timeout=30):
-    """Listen for a controller beacon. Returns (controller_ip, setup_port) or raises TimeoutError."""
+def discover_controller(timeout=30, bind_ip=None):
+    """Listen for a controller beacon.
+
+    Args:
+        timeout: seconds to wait.
+        bind_ip: if set, only listen on this interface.
+
+    Returns (controller_ip, setup_port) or raises TimeoutError.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-    # Allow receiving broadcast on some systems
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     except OSError:
         pass
 
-    sock.bind(("", DISCOVERY_PORT))
+    sock.bind((bind_ip or "", DISCOVERY_PORT))
     sock.settimeout(min(timeout, 5.0))
 
     deadline = time.monotonic() + timeout
@@ -116,14 +172,16 @@ def discover_controller(timeout=30):
 def main():
     """CLI entry point for testing: discover or beacon mode."""
     if len(sys.argv) < 2 or sys.argv[1] not in ("beacon", "discover"):
-        print(f"Usage: {sys.argv[0]} beacon <IP> [PORT] | discover [TIMEOUT]")
+        print(f"Usage: {sys.argv[0]} beacon <IP> [PORT] [BIND_IP] | discover [TIMEOUT] [BIND_IP]")
         sys.exit(1)
 
     if sys.argv[1] == "beacon":
         ip = sys.argv[2] if len(sys.argv) > 2 else "0.0.0.0"
         port = int(sys.argv[3]) if len(sys.argv) > 3 else 50051
-        print(f"Broadcasting beacon: {ip}:{port} every {BEACON_INTERVAL}s on UDP {DISCOVERY_PORT}")
-        b = ClusterBeacon(ip, port)
+        bind = sys.argv[4] if len(sys.argv) > 4 else None
+        print(f"Broadcasting beacon: {ip}:{port} every {BEACON_INTERVAL}s on UDP {DISCOVERY_PORT}" +
+              (f" (bound to {bind})" if bind else ""))
+        b = ClusterBeacon(ip, port, bind_ip=bind)
         b.start()
         try:
             while True:
@@ -132,9 +190,11 @@ def main():
             b.stop()
     else:
         timeout = int(sys.argv[2]) if len(sys.argv) > 2 else 30
-        print(f"Listening for controller beacon (timeout {timeout}s)...")
+        bind = sys.argv[3] if len(sys.argv) > 3 else None
+        print(f"Listening for controller beacon (timeout {timeout}s)" +
+              (f" on {bind}" if bind else "") + "...")
         try:
-            ip, port = discover_controller(timeout)
+            ip, port = discover_controller(timeout, bind_ip=bind)
             print(f"Found controller: {ip}:{port}")
         except TimeoutError as e:
             print(str(e))
