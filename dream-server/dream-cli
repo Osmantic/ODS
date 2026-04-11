@@ -3319,10 +3319,15 @@ print(json.dumps(state, indent=2))
     echo "  1. Start the setup listener on this machine:"
     echo "       dream cluster setup"
     echo ""
-    echo "  2. On each worker machine (with DreamServer installed), run:"
+    echo "  2. On each worker machine (with DreamServer installed), run one of:"
+    echo ""
+    echo "     Agent flow (recommended — auto-restarts rpc-server if it crashes):"
+    echo "       dream cluster agent start --token ${token} --controller ${controller_ip}"
+    echo ""
+    echo "     Manual join (one-shot, no monitoring):"
     echo "       dream cluster join ${controller_ip} --token ${token}"
     echo ""
-    echo "  3. Confirm each worker on this machine, then Ctrl+C to finish."
+    echo "  3. Accept each worker on this terminal, then Ctrl+C to finish."
     echo ""
 }
 
@@ -3371,17 +3376,25 @@ _cluster_setup() {
 
     local setup_port=50051
 
+    local controller_ip="${CLUSTER_INTERFACE:-}"
+    [[ -z "$controller_ip" ]] && controller_ip=$(python3 -c "import json; print(json.load(open('$cfg')).get('controller',{}).get('ip',''))" 2>/dev/null)
+    [[ -z "$controller_ip" ]] && controller_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+
     echo ""
     echo -e "${BLUE}━━━ Cluster Setup ━━━${NC}"
     echo ""
-    echo "  Token: ${token}"
+    echo "  Controller: ${controller_ip}"
+    echo "  Token:      ${token}"
     echo ""
-    echo "  On each worker machine, run:"
-    echo "    dream cluster join $(hostname -I 2>/dev/null | awk '{print $1}') --token ${token}"
-    echo "  or auto-discover:"
-    echo "    dream cluster join --discover --token ${token}"
+    echo "  On each worker machine, run one of:"
     echo ""
-    echo "  I will wait here for workers to connect."
+    echo "    ${GREEN}Agent flow (recommended):${NC}"
+    echo "      dream cluster agent start --token ${token} --controller ${controller_ip}"
+    echo ""
+    echo "    ${CYAN}Manual join:${NC}"
+    echo "      dream cluster join ${controller_ip} --token ${token}"
+    echo ""
+    echo "  Waiting for workers to connect..."
     echo "  Press Ctrl+C when all workers have joined."
     echo ""
 
@@ -4005,8 +4018,25 @@ with open('$config_file', 'w') as f: json.dump(cfg, f, indent=2)
                             "$INSTALL_DIR/scripts/systemd/dream-cluster-agent.service" > "$unit_file"
                         systemctl --user daemon-reload
                     fi
-                    systemctl --user start dream-cluster-agent.service 2>/dev/null && \
-                        success "Cluster agent started (systemd)" || warn "Agent start failed"
+                    if systemctl --user start dream-cluster-agent.service 2>/dev/null; then
+                        echo ""
+                        success "Cluster agent started (systemd)"
+                        echo ""
+                        if [[ -n "$controller" ]]; then
+                            echo "  Controller: ${controller}:50051"
+                        else
+                            echo "  Controller: auto-discover (UDP broadcast)"
+                        fi
+                        echo "  Backend:    ${gpu_backend}"
+                        echo "  RPC port:   50052"
+                        echo ""
+                        echo "  The agent will connect, join, and start rpc-server."
+                        echo "  Make sure 'dream cluster setup' is running on the controller."
+                        echo "  Check progress: journalctl --user -u dream-cluster-agent -f"
+                        echo ""
+                    else
+                        warn "Agent start failed"
+                    fi
                     ;;
                 *)
                     # Fallback: nohup
@@ -4021,7 +4051,23 @@ with open('$config_file', 'w') as f: json.dump(cfg, f, indent=2)
                         ${interface:+--interface "$interface"} \
                         ${controller:+--controller "$controller"} \
                         >> "$log_file" 2>&1 &disown
-                    success "Cluster agent started (background, PID $!)"
+                    local _pid=$!
+                    echo ""
+                    success "Cluster agent started (PID ${_pid})"
+                    echo ""
+                    if [[ -n "$controller" ]]; then
+                        echo "  Controller: ${controller}:50051"
+                    else
+                        echo "  Controller: auto-discover (UDP broadcast)"
+                    fi
+                    echo "  Backend:    ${gpu_backend}"
+                    echo "  RPC port:   50052"
+                    echo "  Logs:       ${log_file}"
+                    echo ""
+                    echo "  The agent will connect, join, and start rpc-server."
+                    echo "  Make sure 'dream cluster setup' is running on the controller."
+                    echo "  Check progress: dream cluster agent logs"
+                    echo ""
                     ;;
             esac
             ;;
@@ -4076,12 +4122,12 @@ with open('$config_file', 'w') as f: json.dump(cfg, f, indent=2)
 
 _cluster_help() {
     cat << EOF
-${BLUE}dream cluster${NC} -- LAN cluster management
+${BLUE}dream cluster${NC} -- Pool GPUs across machines for distributed inference
 
 ${CYAN}Usage:${NC}
   dream cluster [subcommand]
 
-${CYAN}Controller commands:${NC}
+${CYAN}Controller commands (run on the machine that hosts llama-server):${NC}
   enable              Enable cluster mode, detect GPU, generate token
   setup               Wait for workers to connect (interactive)
   disable             Disable cluster mode, clear worker config
@@ -4090,42 +4136,63 @@ ${CYAN}Controller commands:${NC}
   remove <IP>         Unregister a worker
   test                TCP ping test to all workers (10 samples each)
 
-${CYAN}Worker commands:${NC}
-  join <IP> --token T   Connect to controller, start rpc-server on accept
-  join --discover       Auto-discover controller on LAN, then join
-  leave                 Stop rpc-server and leave the cluster
-  agent start --token T Start the worker agent (auto-discover + monitor)
-  agent stop            Stop the worker agent
-  agent status          Show agent state
-  agent logs            Tail agent log
+${CYAN}Worker commands (run on each GPU machine joining the cluster):${NC}
+  agent start         Start the worker agent (recommended — monitors + auto-restarts)
+    --token T         Cluster token from controller (required on first start)
+    --controller IP   Controller IP (required if UDP discovery unavailable)
+    --interface IP    Bind discovery to a specific network interface
+  agent stop          Stop the worker agent
+  agent status        Show agent state
+  agent logs          Tail agent log
+  join <IP> --token T One-shot join: connect to controller, start rpc-server
+    --discover        Auto-discover controller via UDP broadcast instead of IP
+    --interface IP    Bind discovery to a specific network interface
+  leave               Stop rpc-server and leave the cluster
 
-${CYAN}Workflow:${NC}
+${CYAN}Agent flow (recommended):${NC}
+  The agent is a long-lived process that discovers the controller, joins the
+  cluster, starts rpc-server, and monitors it. If rpc-server crashes, the
+  agent restarts it automatically. Use this for production setups.
+
+  Controller:
+    dream cluster enable                                        # generates token
+    dream cluster setup                                         # waits for workers
+
+  Each worker:
+    dream cluster agent start --token <TOKEN> --controller <IP> # connects directly
+    dream cluster agent start --token <TOKEN>                   # or auto-discover
+
+  Accept each worker on the controller, then Ctrl+C to finish.
+
+${CYAN}Manual flow (one-shot, no monitoring):${NC}
   Controller:
     dream cluster enable
-    dream cluster setup                              # waits for workers
+    dream cluster setup
 
-  Each worker (in another terminal or machine):
+  Each worker:
     dream cluster join <CONTROLLER_IP> --token <TOKEN>
-    dream cluster join --discover --token <TOKEN>              # auto-find controller
-    dream cluster join --discover --token <TOKEN> --interface 192.168.1.50  # specific NIC
 
-  Controller confirms each worker, then Ctrl+C to finish.
-  Setup will offer to restart llama-server automatically.
+  Accept each worker, Ctrl+C to finish. rpc-server runs but is not monitored.
+
+${CYAN}Auto-discovery:${NC}
+  Uses UDP broadcast on port 50053. Works on most home LANs but NOT on
+  networks that block broadcast (cloud VPCs, WiFi with AP isolation,
+  cross-subnet). Use --controller IP to connect directly when discovery
+  fails.
 
 ${CYAN}Examples:${NC}
-  dream cluster enable                                        # Controller setup
-  dream cluster setup                                         # Wait for workers
-  dream cluster join 192.168.1.100 --token dream_abc123       # Worker joins
-  dream cluster join --discover --token dream_abc123           # Auto-discover + join
-  dream cluster status                                        # See all nodes
-  dream cluster test                                          # Latency test
-  dream cluster agent start --token dream_abc123               # Start worker agent (auto-discover)
-  dream cluster agent start --token dream_abc123 --controller 192.168.1.100  # Skip discovery
-  dream cluster agent start --token dream_abc123 --interface 192.168.1.50  # Specific NIC
-  dream cluster agent status                                   # Check agent state
-  dream cluster leave                                         # Worker leaves
-  dream cluster remove 192.168.1.101                          # Remove worker
-  dream cluster disable                                       # Turn off cluster
+  dream cluster enable                                                        # Enable on controller
+  dream cluster setup                                                         # Wait for workers
+  dream cluster agent start --token dream_abc123 --controller 192.168.1.100   # Worker agent (direct)
+  dream cluster agent start --token dream_abc123                              # Worker agent (discover)
+  dream cluster agent status                                                  # Check agent state
+  dream cluster agent stop                                                    # Stop agent
+  dream cluster join 192.168.1.100 --token dream_abc123                       # Manual join
+  dream cluster status                                                        # See all nodes
+  dream cluster test                                                          # Latency test
+  dream cluster leave                                                         # Worker leaves cluster
+  dream cluster remove 192.168.1.101                                          # Remove worker
+  dream cluster disable                                                       # Turn off cluster
 EOF
 }
 
