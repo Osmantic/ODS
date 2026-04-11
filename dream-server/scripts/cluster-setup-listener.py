@@ -22,6 +22,10 @@ import socket
 import sys
 import time
 
+# Auto-discovery beacon (same directory)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cluster_discovery import ClusterBeacon
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Cluster setup listener")
@@ -101,8 +105,22 @@ def main():
 
     workers_added = 0
 
+    # Start auto-discovery beacon so workers can find us
+    controller_ip = socket.gethostbyname(socket.gethostname())
+    try:
+        # Prefer the first non-loopback IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("255.255.255.255", 1))
+        controller_ip = s.getsockname()[0]
+        s.close()
+    except OSError:
+        pass
+    beacon = ClusterBeacon(controller_ip=controller_ip, setup_port=args.port)
+    beacon.start()
+
     print(f"\n\033[0;34m--- Cluster Setup ---\033[0m\n")
     print(f"  Listening on port {args.port}")
+    print(f"  Broadcasting discovery beacon on UDP {beacon._setup_port}")
     print(f"  Waiting for workers to connect...")
     print(f"  Press Ctrl+C when all workers have joined.\n")
 
@@ -182,6 +200,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        beacon.stop()
         srv.close()
 
     print(f"\n  Setup complete. {workers_added} worker(s) added.")

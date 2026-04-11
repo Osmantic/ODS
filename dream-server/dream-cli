@@ -3343,6 +3343,8 @@ _cluster_setup() {
     echo ""
     echo "  On each worker machine, run:"
     echo "    dream cluster join $(hostname -I 2>/dev/null | awk '{print $1}') --token ${token}"
+    echo "  or auto-discover:"
+    echo "    dream cluster join --discover --token ${token}"
     echo ""
     echo "  I will wait here for workers to connect."
     echo "  Press Ctrl+C when all workers have joined."
@@ -3376,23 +3378,37 @@ _cluster_join() {
     check_install
     load_env
 
-    local controller_ip="${1:-}"
-    if [[ -z "$controller_ip" ]]; then
-        error "Usage: dream cluster join <CONTROLLER_IP> --token TOKEN [--port PORT] [--rpc-port PORT]"
-    fi
-    local token="" setup_port=50051 rpc_port=50052
-    shift
+    local controller_ip="" token="" setup_port=50051 rpc_port=50052 discover=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --token) token="${2:-}"; shift 2 ;;
             --port) setup_port="${2:-50051}"; shift 2 ;;
             --rpc-port) rpc_port="${2:-50052}"; shift 2 ;;
-            *) shift ;;
+            --discover) discover=true; shift ;;
+            -*) shift ;;
+            *) [[ -z "$controller_ip" ]] && controller_ip="$1"; shift ;;
         esac
     done
 
     if [[ -z "$token" ]]; then
-        error "Token is required. Usage: dream cluster join <CONTROLLER_IP> --token TOKEN"
+        error "Token is required. Usage: dream cluster join [<CONTROLLER_IP> | --discover] --token TOKEN"
+    fi
+
+    if [[ "$discover" == "true" ]] && [[ -z "$controller_ip" ]]; then
+        log "Searching for controller on the LAN..."
+        local discover_result
+        discover_result=$(python3 "$INSTALL_DIR/scripts/cluster_discovery.py" discover 30 2>&1)
+        if [[ $? -ne 0 ]]; then
+            error "Auto-discovery failed: ${discover_result}. Specify the controller IP manually."
+        fi
+        # Output: "Found controller: IP:PORT"
+        controller_ip=$(echo "$discover_result" | grep "Found controller" | sed 's/.*: \(.*\):\(.*\)/\1/')
+        setup_port=$(echo "$discover_result" | grep "Found controller" | sed 's/.*: \(.*\):\(.*\)/\2/')
+        success "Found controller at ${controller_ip}:${setup_port}"
+    fi
+
+    if [[ -z "$controller_ip" ]]; then
+        error "Usage: dream cluster join <CONTROLLER_IP> --token TOKEN [--discover]"
     fi
 
     local gpu_backend="${GPU_BACKEND:-nvidia}"
@@ -3902,6 +3918,7 @@ ${CYAN}Workflow:${NC}
 
   Each worker (in another terminal or machine):
     dream cluster join <CONTROLLER_IP> --token <TOKEN>
+    dream cluster join --discover --token <TOKEN>              # auto-find controller
 
   Controller confirms each worker, then Ctrl+C to finish.
   Setup will offer to restart llama-server automatically.
@@ -3910,6 +3927,7 @@ ${CYAN}Examples:${NC}
   dream cluster enable                                        # Controller setup
   dream cluster setup                                         # Wait for workers
   dream cluster join 192.168.1.100 --token dream_abc123       # Worker joins
+  dream cluster join --discover --token dream_abc123           # Auto-discover + join
   dream cluster status                                        # See all nodes
   dream cluster test                                          # Latency test
   dream cluster leave                                         # Worker leaves
