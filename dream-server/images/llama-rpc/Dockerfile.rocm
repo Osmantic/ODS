@@ -16,12 +16,14 @@ RUN cmake -B build \
       -DGGML_RPC=ON \
       -DGGML_HIP=ON \
       -DAMDGPU_TARGETS="${AMDGPU_TARGETS}" \
-    && cmake --build build -j"$(nproc)" --target llama-server --target rpc-server
+      -DCMAKE_INSTALL_PREFIX=/opt/llama \
+    && cmake --build build -j"$(nproc)" \
+    && cmake --install build
 
 FROM rocm/runtime-ubuntu-24.04:7.0
 RUN apt-get update && apt-get install -y --no-install-recommends curl python3 \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /llama.cpp/build/bin/llama-server /usr/local/bin/
-COPY --from=build /llama.cpp/build/bin/rpc-server /usr/local/bin/
+COPY --from=build /opt/llama /usr/local
+RUN ldconfig
 COPY dream-cluster-supervisor.py /usr/local/bin/dream-cluster-supervisor.py
 ENTRYPOINT ["llama-server"]

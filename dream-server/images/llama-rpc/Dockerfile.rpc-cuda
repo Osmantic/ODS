@@ -9,11 +9,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends cmake git ca-ce
     && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 -b "${LLAMA_CPP_TAG}" https://github.com/ggerganov/llama.cpp /llama.cpp
 WORKDIR /llama.cpp
-RUN cmake -B build -DGGML_RPC=ON -DGGML_CUDA=ON \
-    && cmake --build build -j"$(nproc)" --target rpc-server
+RUN cmake -B build -DGGML_RPC=ON -DGGML_CUDA=ON -DCMAKE_INSTALL_PREFIX=/opt/llama \
+    && cmake --build build -j"$(nproc)" \
+    && cmake --install build
 
 FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
-COPY --from=build /llama.cpp/build/bin/rpc-server /usr/local/bin/
+COPY --from=build /opt/llama /usr/local
+RUN ldconfig
 ENTRYPOINT ["rpc-server"]
 # -c enables tensor caching at ~/.cache/llama.cpp/rpc (first load over network, then local)
 # --host 0.0.0.0 required for cross-machine access (RPC has no auth — use trusted networks)

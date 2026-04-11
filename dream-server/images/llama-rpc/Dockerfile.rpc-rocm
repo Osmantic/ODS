@@ -15,10 +15,13 @@ RUN cmake -B build \
       -DGGML_RPC=ON \
       -DGGML_HIP=ON \
       -DAMDGPU_TARGETS="${AMDGPU_TARGETS}" \
-    && cmake --build build -j"$(nproc)" --target rpc-server
+      -DCMAKE_INSTALL_PREFIX=/opt/llama \
+    && cmake --build build -j"$(nproc)" \
+    && cmake --install build
 
 FROM rocm/runtime-ubuntu-24.04:7.0
-COPY --from=build /llama.cpp/build/bin/rpc-server /usr/local/bin/
+COPY --from=build /opt/llama /usr/local
+RUN ldconfig
 ENTRYPOINT ["rpc-server"]
 # -c enables tensor caching at ~/.cache/llama.cpp/rpc (first load over network, then local)
 # --host 0.0.0.0 required for cross-machine access (RPC has no auth — use trusted networks)

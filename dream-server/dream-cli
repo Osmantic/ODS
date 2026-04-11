@@ -3274,14 +3274,13 @@ print(json.dumps(state, indent=2))
     echo "  For untrusted networks, use WireGuard or Tailscale tunnel IPs."
     echo ""
     echo -e "${CYAN}Next steps:${NC}"
-    echo "  On each worker machine (with DreamServer installed), run:"
-    echo "    dream cluster join ${controller_ip}"
+    echo "  1. Start the setup listener on this machine:"
+    echo "       dream cluster setup"
     echo ""
-    echo "  Then on this machine, add each worker:"
-    echo "    dream cluster add <WORKER_IP>"
+    echo "  2. On each worker machine (with DreamServer installed), run:"
+    echo "       dream cluster join ${controller_ip} --token ${token}"
     echo ""
-    echo "  Finally, restart to apply:"
-    echo "    dream restart llama-server"
+    echo "  3. Confirm each worker on this machine, then Ctrl+C to finish."
     echo ""
 }
 
@@ -3312,39 +3311,152 @@ with open('$cfg', 'w') as f:
     warn "Run 'dream restart llama-server' to apply."
 }
 
+_cluster_setup() {
+    check_install
+    load_env
+
+    local cfg
+    cfg=$(_cluster_config_file)
+    if [[ ! -f "$cfg" ]] || [[ "${CLUSTER_ENABLED:-false}" != "true" ]]; then
+        error "Cluster mode is not enabled. Run 'dream cluster enable' first."
+    fi
+
+    local token
+    token=$(python3 -c "import json; print(json.load(open('$cfg')).get('token',''))")
+    if [[ -z "$token" ]]; then
+        error "No cluster token found. Run 'dream cluster enable' to generate one."
+    fi
+
+    local setup_port=50051
+
+    echo ""
+    echo -e "${BLUE}━━━ Cluster Setup ━━━${NC}"
+    echo ""
+    echo "  Token: ${token}"
+    echo ""
+    echo "  On each worker machine, run:"
+    echo "    dream cluster join $(hostname -I 2>/dev/null | awk '{print $1}') --token ${token}"
+    echo ""
+    echo "  I will wait here for workers to connect."
+    echo "  Press Ctrl+C when all workers have joined."
+    echo ""
+
+    # Run the setup listener
+    python3 "$INSTALL_DIR/scripts/cluster-setup-listener.py" \
+        --port "$setup_port" \
+        --token "$token" \
+        --config "$cfg"
+    local exit_code=$?
+
+    if [[ $exit_code -eq 0 ]]; then
+        # Workers were added, rebuild env
+        _cluster_rebuild_env
+
+        echo ""
+        read -p "  Restart llama-server now to apply? [Y/n] " -r < /dev/tty
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            cmd_restart "llama-server"
+        else
+            warn "Run 'dream restart llama-server' when ready."
+        fi
+    else
+        log "No workers were added."
+    fi
+}
+
 _cluster_join() {
     check_install
     load_env
 
     local controller_ip="${1:-}"
     if [[ -z "$controller_ip" ]]; then
-        error "Usage: dream cluster join <CONTROLLER_IP> [--port PORT]"
+        error "Usage: dream cluster join <CONTROLLER_IP> --token TOKEN [--port PORT] [--rpc-port PORT]"
     fi
-    local rpc_port=50052
+    local token="" setup_port=50051 rpc_port=50052
     shift
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --port) rpc_port="${2:-50052}"; shift 2 ;;
+            --token) token="${2:-}"; shift 2 ;;
+            --port) setup_port="${2:-50051}"; shift 2 ;;
+            --rpc-port) rpc_port="${2:-50052}"; shift 2 ;;
             *) shift ;;
         esac
     done
+
+    if [[ -z "$token" ]]; then
+        error "Token is required. Usage: dream cluster join <CONTROLLER_IP> --token TOKEN"
+    fi
 
     local gpu_backend="${GPU_BACKEND:-nvidia}"
 
     # Check that the worker image was built at install time
     local image_tag="dream-rpc-server:cuda"
     local _worker_dockerfile="Dockerfile.rpc-cuda"
-    if [[ "$gpu_backend" == "amd" ]]; then
-        image_tag="dream-rpc-server:rocm"
-        _worker_dockerfile="Dockerfile.rpc-rocm"
-    elif [[ "$gpu_backend" == "cpu" ]]; then
-        image_tag="dream-rpc-server:cpu"
-        _worker_dockerfile="Dockerfile.rpc-cpu"
-    fi
+    case "$gpu_backend" in
+        amd) image_tag="dream-rpc-server:rocm"; _worker_dockerfile="Dockerfile.rpc-rocm" ;;
+        cpu) image_tag="dream-rpc-server:cpu"; _worker_dockerfile="Dockerfile.rpc-cpu" ;;
+    esac
 
     if ! docker image inspect "$image_tag" &>/dev/null; then
-        error "Worker image ($image_tag) not found. This image is built during installation when LAN cluster mode is enabled. Re-run the installer with cluster mode enabled, or build manually: docker build -f $INSTALL_DIR/images/llama-rpc/$_worker_dockerfile -t $image_tag $INSTALL_DIR/images/llama-rpc/"
+        error "Worker image ($image_tag) not found. Re-run the installer with cluster mode enabled, or build manually: docker build -f $INSTALL_DIR/images/llama-rpc/$_worker_dockerfile -t $image_tag $INSTALL_DIR/images/llama-rpc/"
     fi
+
+    # Detect GPU info for the controller to display
+    local gpu_json="[]"
+    if [[ "$gpu_backend" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
+        gpu_json=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>/dev/null \
+            | python3 -c "
+import sys, json
+gpus = []
+for line in sys.stdin:
+    parts = [p.strip() for p in line.strip().split(',')]
+    if len(parts) >= 2:
+        gpus.append({'name': parts[0], 'vram_mb': int(parts[1])})
+print(json.dumps(gpus))
+" 2>/dev/null) || gpu_json="[]"
+    elif [[ "$gpu_backend" == "amd" ]]; then
+        gpu_json=$(python3 -c "
+import os, json
+gpus = []
+for card in sorted(os.listdir('/sys/class/drm/')):
+    dev = f'/sys/class/drm/{card}/device'
+    vendor_f = f'{dev}/vendor'
+    if not os.path.isfile(vendor_f):
+        continue
+    with open(vendor_f) as f:
+        if f.read().strip() != '0x1002':
+            continue
+    name = 'AMD Radeon'
+    name_f = f'{dev}/product_name'
+    if os.path.isfile(name_f):
+        with open(name_f) as f:
+            name = f.read().strip()
+    vram = 0
+    vram_f = f'{dev}/mem_info_vram_total'
+    if os.path.isfile(vram_f):
+        with open(vram_f) as f:
+            vram = int(f.read().strip()) // 1048576
+    gpus.append({'name': name, 'vram_mb': vram})
+print(json.dumps(gpus))
+" 2>/dev/null) || gpu_json="[]"
+    fi
+
+    echo ""
+    log "Connecting to controller at ${controller_ip}:${setup_port}..."
+
+    # Connect to the setup listener and request to join
+    if ! python3 "$INSTALL_DIR/scripts/cluster-join-client.py" \
+        --controller-ip "$controller_ip" \
+        --port "$setup_port" \
+        --token "$token" \
+        --gpu-backend "$gpu_backend" \
+        --rpc-port "$rpc_port" \
+        --gpu-json "$gpu_json"; then
+        error "Join request was rejected or failed. Check the token and try again."
+    fi
+
+    success "Controller accepted this worker."
 
     # Stop existing rpc-server container if running
     if docker ps -q -f name=dream-rpc-server 2>/dev/null | grep -q .; then
@@ -3372,27 +3484,11 @@ _cluster_join() {
         -p 50052 -c --host 0.0.0.0 \
         || error "Failed to start rpc-server container."
 
-    success "rpc-server running on port ${rpc_port}"
-
-    # Detect this machine's IP
-    local my_ip
-    my_ip=$(hostname -I 2>/dev/null | awk '{print $1}') || my_ip="<this-machine-ip>"
-
     echo ""
-    echo -e "${GREEN}━━━ Worker Ready ━━━${NC}"
+    echo -e "${GREEN}━━━ Worker Active ━━━${NC}"
     echo ""
-    echo "  This machine is now serving RPC on port ${rpc_port}."
-    echo "  Controller: ${controller_ip}"
-    echo ""
-    echo -e "${CYAN}Next step:${NC}"
-    echo "  On the controller machine (${controller_ip}), run:"
-    echo "    dream cluster add ${my_ip}"
-    if [[ "$rpc_port" != "50052" ]]; then
-        echo "    dream cluster add ${my_ip} --port ${rpc_port}"
-    fi
-    echo ""
-    echo "  Then restart llama-server on the controller:"
-    echo "    dream restart llama-server"
+    echo "  rpc-server is running on port ${rpc_port}."
+    echo "  This machine is now part of the cluster."
     echo ""
 }
 
@@ -3646,7 +3742,7 @@ for node in state.get('nodes', []):
         echo "  Workers:      ${workers}"
         echo "  Tensor Split: ${split:-auto}"
     else
-        echo "  No workers configured. Run 'dream cluster add <WORKER_IP>' to add one."
+        echo "  No workers configured. Run 'dream cluster setup' to add workers."
     fi
     echo ""
 }
@@ -3714,38 +3810,38 @@ ${CYAN}Usage:${NC}
   dream cluster [subcommand]
 
 ${CYAN}Controller commands:${NC}
-  enable              Enable cluster mode and build controller image
+  enable              Enable cluster mode, detect GPU, generate token
+  setup               Wait for workers to connect (interactive)
   disable             Disable cluster mode, clear worker config
   status              Show cluster nodes, connectivity, and VRAM pool
-  add <IP> [--port N] Register a worker (default RPC port: 50052)
+  add <IP> [--port N] Manually register a worker (default RPC port: 50052)
   remove <IP>         Unregister a worker
   test                TCP ping test to all workers (10 samples each)
 
 ${CYAN}Worker commands:${NC}
-  join <IP> [--port N]  Build rpc-server image, start it, and prepare to join
+  join <IP> --token T   Connect to controller, start rpc-server on accept
   leave                 Stop rpc-server and leave the cluster
 
 ${CYAN}Workflow:${NC}
-  Controller (machine 1):
+  Controller:
     dream cluster enable
+    dream cluster setup                              # waits for workers
 
-  Each worker (machines 2, 3, ...):
-    dream cluster join <CONTROLLER_IP>
+  Each worker (in another terminal or machine):
+    dream cluster join <CONTROLLER_IP> --token <TOKEN>
 
-  Back on controller:
-    dream cluster add <WORKER_2_IP>
-    dream cluster add <WORKER_3_IP>
-    dream restart llama-server
+  Controller confirms each worker, then Ctrl+C to finish.
+  Setup will offer to restart llama-server automatically.
 
 ${CYAN}Examples:${NC}
-  dream cluster enable                  # Set up this machine as controller
-  dream cluster join 192.168.1.100      # Join from a worker machine
-  dream cluster add 192.168.1.101       # Register worker on controller
-  dream cluster status                  # See all nodes + connectivity
-  dream cluster test                    # Latency test to all workers
-  dream cluster leave                   # Stop rpc-server on worker
-  dream cluster remove 192.168.1.101    # Remove worker on controller
-  dream cluster disable                 # Turn off cluster mode entirely
+  dream cluster enable                                        # Controller setup
+  dream cluster setup                                         # Wait for workers
+  dream cluster join 192.168.1.100 --token dream_abc123       # Worker joins
+  dream cluster status                                        # See all nodes
+  dream cluster test                                          # Latency test
+  dream cluster leave                                         # Worker leaves
+  dream cluster remove 192.168.1.101                          # Remove worker
+  dream cluster disable                                       # Turn off cluster
 EOF
 }
 
@@ -3756,6 +3852,7 @@ cmd_cluster() {
     case "$subcommand" in
         status|s)           _cluster_status "$@" ;;
         enable)             _cluster_enable "$@" ;;
+        setup)              _cluster_setup "$@" ;;
         disable)            _cluster_disable "$@" ;;
         join|j)             _cluster_join "$@" ;;
         leave)              _cluster_leave "$@" ;;

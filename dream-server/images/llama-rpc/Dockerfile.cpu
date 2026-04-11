@@ -9,13 +9,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends cmake make git 
     && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 -b "${LLAMA_CPP_TAG}" https://github.com/ggerganov/llama.cpp /llama.cpp
 WORKDIR /llama.cpp
-RUN cmake -B build -DGGML_RPC=ON \
-    && cmake --build build -j"$(nproc)" --target llama-server --target rpc-server
+RUN cmake -B build -DGGML_RPC=ON -DCMAKE_INSTALL_PREFIX=/opt/llama \
+    && cmake --build build -j"$(nproc)" \
+    && cmake --install build
 
 FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y --no-install-recommends curl python3 \
+RUN apt-get update && apt-get install -y --no-install-recommends curl python3 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /llama.cpp/build/bin/llama-server /usr/local/bin/
-COPY --from=build /llama.cpp/build/bin/rpc-server /usr/local/bin/
+COPY --from=build /opt/llama /usr/local
+RUN ldconfig
 COPY dream-cluster-supervisor.py /usr/local/bin/dream-cluster-supervisor.py
 ENTRYPOINT ["llama-server"]
