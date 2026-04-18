@@ -1,0 +1,36 @@
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      iproute2 iputils-ping netcat-openbsd curl procps \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir pytest pytest-timeout requests
+
+WORKDIR /app
+
+COPY scripts/cluster_discovery.py          /app/scripts/
+COPY scripts/cluster-setup-listener.py     /app/scripts/
+COPY scripts/cluster-join-client.py        /app/scripts/
+COPY scripts/cluster_worker_agent.py       /app/scripts/
+COPY images/llama-rpc/dream-cluster-supervisor.py /app/scripts/
+
+COPY tests/cluster-e2e/entrypoint-controller.sh /app/entrypoint-controller.sh
+COPY tests/cluster-e2e/entrypoint-worker.sh     /app/entrypoint-worker.sh
+COPY tests/cluster-e2e/run-tests.sh             /app/run-tests.sh
+COPY tests/cluster-e2e/fake-llama-server.py     /app/fake-llama-server.py
+COPY tests/cluster-e2e/docker-stub.sh           /app/docker-stub.sh
+COPY tests/cluster-e2e/conftest.py              /app/tests/conftest.py
+COPY tests/cluster-e2e/test_discovery.py        /app/tests/
+COPY tests/cluster-e2e/test_handshake.py        /app/tests/
+COPY tests/cluster-e2e/test_setup_listener.py   /app/tests/
+COPY tests/cluster-e2e/test_worker_agent.py     /app/tests/
+COPY tests/cluster-e2e/test_supervisor.py       /app/tests/
+COPY tests/cluster-e2e/test_multi_worker.py     /app/tests/
+
+RUN chmod +x /app/entrypoint-controller.sh /app/entrypoint-worker.sh /app/run-tests.sh /app/fake-llama-server.py /app/docker-stub.sh \
+    && cp /app/fake-llama-server.py /usr/local/bin/llama-server \
+    && chmod +x /usr/local/bin/llama-server \
+    && cp /app/docker-stub.sh /usr/local/bin/docker \
+    && chmod +x /usr/local/bin/docker
+
+ENV PYTHONPATH=/app/scripts

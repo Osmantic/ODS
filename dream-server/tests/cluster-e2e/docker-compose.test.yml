@@ -1,0 +1,108 @@
+name: dream-cluster-e2e
+
+networks:
+  cluster-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
+
+services:
+  controller:
+    build:
+      context: ../..
+      dockerfile: tests/cluster-e2e/Dockerfile.test
+    image: dream-cluster-test:latest
+    container_name: dream-cluster-controller
+    hostname: controller
+    networks:
+      cluster-net:
+        ipv4_address: 172.30.10.10
+    environment:
+      CLUSTER_INTERFACE: "172.30.10.10"
+      CLUSTER_TOKEN: "test-token-abc123"
+    command: /app/entrypoint-controller.sh
+    stop_grace_period: 2s
+    healthcheck:
+      test: ["CMD", "bash", "-c", "ss -tlnp | grep -q :50051"]
+      interval: 1s
+      timeout: 2s
+      retries: 20
+      start_period: 2s
+
+  worker1:
+    image: dream-cluster-test:latest
+    container_name: dream-cluster-worker1
+    hostname: worker1
+    networks:
+      cluster-net:
+        ipv4_address: 172.30.10.21
+    environment:
+      CLUSTER_TOKEN: "test-token-abc123"
+      RPC_PORT: "50052"
+      STATUS_PORT: "50054"
+      GPU_BACKEND: "cpu"
+      PYTHONUNBUFFERED: "1"
+    command: /app/entrypoint-worker.sh
+    stop_grace_period: 2s
+    depends_on:
+      controller:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "curl -fs http://127.0.0.1:50054/health | grep -q '\"status\": \"running\"'"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 3s
+
+  worker2:
+    image: dream-cluster-test:latest
+    container_name: dream-cluster-worker2
+    hostname: worker2
+    networks:
+      cluster-net:
+        ipv4_address: 172.30.10.22
+    environment:
+      CLUSTER_TOKEN: "test-token-abc123"
+      RPC_PORT: "50052"
+      STATUS_PORT: "50054"
+      GPU_BACKEND: "cpu"
+      PYTHONUNBUFFERED: "1"
+    command: /app/entrypoint-worker.sh
+    stop_grace_period: 2s
+    depends_on:
+      controller:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "curl -fs http://127.0.0.1:50054/health | grep -q '\"status\": \"running\"'"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 3s
+
+  test-runner:
+    image: dream-cluster-test:latest
+    container_name: dream-cluster-test-runner
+    hostname: test-runner
+    networks:
+      cluster-net:
+        ipv4_address: 172.30.10.100
+    depends_on:
+      controller:
+        condition: service_healthy
+      worker1:
+        condition: service_healthy
+      worker2:
+        condition: service_healthy
+    environment:
+      CONTROLLER_IP: "172.30.10.10"
+      OWN_IP: "172.30.10.100"
+      TOKEN: "test-token-abc123"
+      BROADCAST_ADDR: "172.30.10.255"
+      WORKER1_IP: "172.30.10.21"
+      WORKER2_IP: "172.30.10.22"
+      WORKER_RPC_PORT: "50052"
+      WORKER_STATUS_PORT: "50054"
+      PYTHONUNBUFFERED: "1"
+    working_dir: /app/tests
+    command: /app/run-tests.sh
