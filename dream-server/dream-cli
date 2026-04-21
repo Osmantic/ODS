@@ -3160,16 +3160,6 @@ cmd_agent() {
 
 _cluster_config_file() { echo "$INSTALL_DIR/config/cluster.json"; }
 
-_cluster_load_state() {
-    local cfg
-    cfg=$(_cluster_config_file)
-    if [[ -f "$cfg" ]]; then
-        cat "$cfg"
-    else
-        echo '{"enabled":false,"token":"","controller":{},"nodes":[]}'
-    fi
-}
-
 _cluster_save_state() {
     local cfg
     cfg=$(_cluster_config_file)
@@ -3180,6 +3170,21 @@ _cluster_save_state() {
 _cluster_enable() {
     check_install
     load_env
+
+    # LAN cluster requires llama.cpp's RPC backend, which is only built into
+    # the Linux (CPU/CUDA/ROCm) images in images/llama-rpc/. There is no
+    # docker-compose.cluster-apple.yml and no Apple-targeted RPC image —
+    # on macOS the llama.cpp backend is MPS/Metal via a native binary, not
+    # a container. Reject early with a clear message so operators don't burn
+    # time on a setup that will fail at `dream cluster setup`.
+    if [[ "$(uname -s)" == "Darwin" ]] || [[ "${GPU_BACKEND:-}" == "apple" ]]; then
+        error "LAN cluster mode is not supported on Apple Silicon."
+        echo "  The cluster overlay requires the Linux rpc-server container" >&2
+        echo "  image, which is not built for macOS. Run the controller on a" >&2
+        echo "  Linux host (NVIDIA or AMD) and join Apple workers via" >&2
+        echo "  llama.cpp's native RPC build if you need heterogeneous setups." >&2
+        return 1
+    fi
 
     local cfg
     cfg=$(_cluster_config_file)
@@ -3361,10 +3366,13 @@ PY
     echo "  2. On each worker machine (with DreamServer installed), run one of:"
     echo ""
     echo "     Agent flow (recommended — auto-restarts rpc-server if it crashes):"
-    echo "       dream cluster agent start --token ${token} --controller ${controller_ip}"
+    echo "       CLUSTER_TOKEN='${token}' dream cluster agent start --controller ${controller_ip}"
     echo ""
     echo "     Manual join (one-shot, no monitoring):"
-    echo "       dream cluster join ${controller_ip} --token ${token}"
+    echo "       CLUSTER_TOKEN='${token}' dream cluster join ${controller_ip}"
+    echo ""
+    echo "     (The CLUSTER_TOKEN env var is preferred over --token because"
+    echo "      --token is visible to other local users via 'ps aux'.)"
     echo ""
     echo "  3. Accept each worker on this terminal, then Ctrl+C to finish."
     echo ""
@@ -3486,8 +3494,15 @@ _cluster_join() {
         esac
     done
 
+    # CLUSTER_TOKEN env is the documented, less-leaky path ('Next steps' in
+    # `cluster enable` points operators at it). CLI --token still works but
+    # is visible via `ps aux` to other local users.
+    if [[ -z "$token" ]] && [[ -n "${CLUSTER_TOKEN:-}" ]]; then
+        token="$CLUSTER_TOKEN"
+    fi
+
     if [[ -z "$token" ]]; then
-        error "Token is required. Usage: dream cluster join [<CONTROLLER_IP> | --discover] --token TOKEN"
+        error "Token is required. Usage: dream cluster join [<CONTROLLER_IP> | --discover] --token TOKEN (or export CLUSTER_TOKEN)"
     fi
 
     if [[ "$discover" == "true" ]] && [[ -z "$controller_ip" ]]; then
@@ -4049,6 +4064,12 @@ _cluster_agent() {
             *) shift ;;
         esac
     done
+
+    # CLUSTER_TOKEN env is the documented path ('dream cluster enable' hints
+    # at it in 'Next steps'). CLI --token still works but leaks via `ps aux`.
+    if [[ -z "$token" ]] && [[ -n "${CLUSTER_TOKEN:-}" ]]; then
+        token="$CLUSTER_TOKEN"
+    fi
 
     # Use CLUSTER_INTERFACE from env if --interface not specified
     [[ -z "$interface" ]] && interface="${CLUSTER_INTERFACE:-}"

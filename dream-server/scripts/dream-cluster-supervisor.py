@@ -45,10 +45,22 @@ HEALTH_CHECK_TIMEOUT = 5    # seconds for llama-server /health check
 LLAMA_HEALTH_URL = "http://127.0.0.1:8080/health"
 EVENTS_FILE = "/tmp/cluster-events/events.json"
 
+# Circuit breaker: if llama-server crashes more than MAX_CRASHES_PER_WINDOW
+# times in CRASH_WINDOW_SECONDS, stop restarting and exit non-zero so systemd's
+# StartLimitBurst can stop thrashing. Only counts real crashes, not
+# watchdog-initiated restarts (which are expected during worker recovery).
+CRASH_WINDOW_SECONDS = 120
+MAX_CRASHES_PER_WINDOW = 5
+
 # Module-level ref so the SIGTERM handler and watchdog can reach the child.
 _child_proc = None
 _child_lock = threading.Lock()
 _term_requested = threading.Event()
+
+# Serializes log_event's read-modify-write on EVENTS_FILE. Without this the
+# watchdog thread and main thread race — both read the same list, both append,
+# and whichever os.replace lands second overwrites the earlier event.
+_events_lock = threading.Lock()
 
 
 def _handle_term(signum, frame):
@@ -137,22 +149,29 @@ def partition_workers(workers):
 
 
 def log_event(event_type, detail=""):
-    """Append event to JSON file for dashboard consumption."""
-    os.makedirs(os.path.dirname(EVENTS_FILE), exist_ok=True)
-    events = []
-    if os.path.exists(EVENTS_FILE):
-        with open(EVENTS_FILE) as f:
-            events = json.load(f)
-    events.append({
-        "type": event_type,
-        "detail": detail,
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    })
-    events = events[-100:]
-    tmp = EVENTS_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(events, f)
-    os.replace(tmp, EVENTS_FILE)
+    """Append event to JSON file for dashboard consumption.
+
+    The watchdog thread and the main thread both call this. os.replace is
+    atomic but the read → append → write sequence isn't — without the lock,
+    two concurrent writers read the same events list, each appends one
+    entry, and the second os.replace clobbers the first one's event.
+    """
+    with _events_lock:
+        os.makedirs(os.path.dirname(EVENTS_FILE), exist_ok=True)
+        events = []
+        if os.path.exists(EVENTS_FILE):
+            with open(EVENTS_FILE) as f:
+                events = json.load(f)
+        events.append({
+            "type": event_type,
+            "detail": detail,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
+        events = events[-100:]
+        tmp = EVENTS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(events, f)
+        os.replace(tmp, EVENTS_FILE)
 
 
 def run_server(cmd):
@@ -279,6 +298,12 @@ def main():
 
     degraded = False  # True when running with fewer workers than configured
 
+    # Circuit breaker: track recent crash timestamps (monotonic seconds).
+    # Only real crashes (exit_code != 0 with no watchdog restart_reason) are
+    # counted — watchdog-initiated restarts for worker recovery or hang
+    # detection are expected and don't signal a broken config.
+    crash_times = []
+
     while not _term_requested.is_set():
         # Check which workers are alive
         live, dead = partition_workers(all_workers)
@@ -394,6 +419,30 @@ def main():
             log_event("manual_intervention_required", detail)
             print("[SUPERVISOR] Restart policy is 'manual'. Exiting.")
             break
+
+        # Circuit breaker: a deterministic failure (bad model path, malformed
+        # --rpc, mismatched llama.cpp builds) will crash on every restart. If
+        # we've crashed MAX_CRASHES_PER_WINDOW times in CRASH_WINDOW_SECONDS,
+        # stop restarting and exit non-zero so systemd's StartLimitBurst can
+        # stop thrashing the service. Watchdog-initiated restarts are not
+        # counted (they represent expected operational events).
+        if not restart_reason:
+            now = time.monotonic()
+            crash_times.append(now)
+            crash_times = [t for t in crash_times if now - t <= CRASH_WINDOW_SECONDS]
+            if len(crash_times) >= MAX_CRASHES_PER_WINDOW:
+                log_event(
+                    "manual_intervention_required",
+                    f"{len(crash_times)} crashes in {CRASH_WINDOW_SECONDS}s "
+                    f"(last: {detail}). Exiting.",
+                )
+                print(
+                    f"[SUPERVISOR] {len(crash_times)} crashes in "
+                    f"{CRASH_WINDOW_SECONDS}s — stopping restart loop. "
+                    f"Check llama-server config (model path, --rpc, image version).",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
         _interruptible_sleep(RESTART_DELAY)
 

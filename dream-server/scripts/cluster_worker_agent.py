@@ -45,6 +45,12 @@ DISCOVERY_RETRY_INTERVAL = 15  # seconds between discovery attempts
 HANDSHAKE_MAX_BYTES = 1_048_576  # bound controller response to 1 MiB (H3 mirror)
 HANDSHAKE_RECV_POLL = 2.0      # granularity of handshake recv — lets _handle_term cancel it
 HANDSHAKE_TOTAL_TIMEOUT = 300  # total seconds to wait for operator confirmation
+# Caps for external CLIs (docker, nvidia-smi). dockerd has well-known hang
+# modes (sick overlay2 filesystem, dead containerd socket) and without a
+# timeout here the agent blocks forever — SIGTERM can't interrupt a blocking
+# subprocess.run, so the systemd stop path also hangs.
+DOCKER_CLI_TIMEOUT = 30        # seconds for any docker subcommand
+GPU_PROBE_TIMEOUT = 10         # seconds for nvidia-smi probes
 VALID_GPU_BACKENDS = frozenset({"cpu", "nvidia", "amd"})
 
 _running = True
@@ -88,8 +94,21 @@ class AgentState:
     def _save(self):
         os.makedirs(os.path.dirname(self._path), exist_ok=True)
         tmp = self._path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(self._state, f, indent=2)
+        # Create with mode 0o600 before write. The state file holds the
+        # cluster token and must not be world-readable. os.open(O_CREAT|O_EXCL)
+        # applies the mode atomically; os.replace then swaps it into place,
+        # preserving the restricted perms (unlike a plain open() which uses
+        # the process umask, typically 0o022 → mode 0o644).
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(self._state, f, indent=2)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
         os.replace(tmp, self._path)
 
     def snapshot(self):
@@ -102,9 +121,16 @@ def detect_gpu_backend():
     backend = os.environ.get("GPU_BACKEND", "")
     if backend:
         return backend
-    # nvidia-smi present → nvidia
-    if subprocess.run(["nvidia-smi"], capture_output=True).returncode == 0:
-        return "nvidia"
+    # nvidia-smi present → nvidia. Bounded timeout so a wedged GPU driver
+    # doesn't block the agent forever on startup.
+    try:
+        rc = subprocess.run(
+            ["nvidia-smi"], capture_output=True, timeout=GPU_PROBE_TIMEOUT
+        ).returncode
+        if rc == 0:
+            return "nvidia"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
     # /dev/kfd present → amd
     if os.path.exists("/dev/kfd"):
         return "amd"
@@ -120,12 +146,14 @@ def detect_gpus(backend):
                 ["nvidia-smi", "--query-gpu=name,memory.total",
                  "--format=csv,noheader,nounits"],
                 text=True,
+                timeout=GPU_PROBE_TIMEOUT,
             )
             for line in out.strip().splitlines():
                 parts = [p.strip() for p in line.split(",")]
                 if len(parts) >= 2:
                     gpus.append({"name": parts[0], "vram_mb": int(parts[1])})
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, FileNotFoundError,
+                subprocess.TimeoutExpired):
             pass
     elif backend == "amd":
         for card in sorted(os.listdir("/sys/class/drm/")):
@@ -237,19 +265,36 @@ def get_worker_image(gpu_backend):
     return "dream-rpc-server:cuda"
 
 
+def _docker_run(argv, timeout=DOCKER_CLI_TIMEOUT):
+    """subprocess.run wrapper that always passes a timeout.
+
+    A wedged dockerd blocks every CLI call indefinitely; without the timeout
+    the agent hangs and SIGTERM can't wake it. On timeout we return a
+    synthetic CompletedProcess with returncode 124 (conventional timeout
+    exit) so callers can treat it like any other failure.
+    """
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        stderr = f"docker command timed out after {timeout}s: {' '.join(argv)}"
+        return subprocess.CompletedProcess(
+            argv, returncode=124, stdout=(e.stdout or b"").decode(errors="replace"),
+            stderr=stderr,
+        )
+
+
 def start_rpc_server(gpu_backend, rpc_port):
     """Start the rpc-server Docker container. Returns True on success."""
     image = get_worker_image(gpu_backend)
 
     # Check image exists
-    if subprocess.run(["docker", "image", "inspect", image],
-                      capture_output=True).returncode != 0:
+    if _docker_run(["docker", "image", "inspect", image]).returncode != 0:
         print(f"[AGENT] Worker image {image} not found")
         return False
 
     # Stop existing container
-    subprocess.run(["docker", "stop", "dream-rpc-server"], capture_output=True)
-    subprocess.run(["docker", "rm", "dream-rpc-server"], capture_output=True)
+    _docker_run(["docker", "stop", "dream-rpc-server"])
+    _docker_run(["docker", "rm", "dream-rpc-server"])
 
     cmd = [
         "docker", "run", "-d",
@@ -272,7 +317,7 @@ def start_rpc_server(gpu_backend, rpc_port):
 
     cmd.extend([image, "-p", "50052", "-c", "--host", "0.0.0.0"])
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = _docker_run(cmd)
     if result.returncode != 0:
         print(f"[AGENT] Failed to start rpc-server: {result.stderr.strip()}")
         return False
@@ -283,9 +328,8 @@ def start_rpc_server(gpu_backend, rpc_port):
 
 def is_rpc_server_running():
     """Check if dream-rpc-server container is running."""
-    result = subprocess.run(
-        ["docker", "inspect", "-f", "{{.State.Running}}", "dream-rpc-server"],
-        capture_output=True, text=True,
+    result = _docker_run(
+        ["docker", "inspect", "-f", "{{.State.Running}}", "dream-rpc-server"]
     )
     return result.returncode == 0 and result.stdout.strip() == "true"
 
@@ -300,9 +344,19 @@ class StatusHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
+            # Strip secrets before returning. The snapshot is reachable by any
+            # LAN peer that can reach the status port (default bind is
+            # 127.0.0.1 but operators can widen it via --status-bind), so the
+            # shared cluster token must never leave the process.
+            agent = {}
+            if self.agent_state:
+                agent = {
+                    k: v for k, v in self.agent_state.snapshot().items()
+                    if k != "token"
+                }
             body = json.dumps({
                 "status": "ok",
-                "agent": self.agent_state.snapshot() if self.agent_state else {},
+                "agent": agent,
                 "rpc_server_running": is_rpc_server_running(),
             })
             self.wfile.write(body.encode())

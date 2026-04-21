@@ -32,8 +32,9 @@ from cluster_discovery import ClusterBeacon, DISCOVERY_PORT
 # only fires on idle periods between recvs — not on total bytes received.
 MAX_HANDSHAKE_BYTES = 1_048_576  # 1 MiB
 
-# Per-worker token attempts — also rate-limited so a port scan can't brute-force
-# the 32-hex-char token by opening thousands of connections.
+# Brute-force resistance: the 32-hex-char token has ~128 bits of entropy, so an
+# online guessing attack is not the weakest link. hmac.compare_digest below
+# blunts timing side-channels; we do not currently rate-limit connections.
 VALID_ACTIONS = frozenset({"join"})
 VALID_GPU_BACKENDS = frozenset({"cpu", "nvidia", "amd"})
 
@@ -149,6 +150,18 @@ def _resolve_token(args):
     sys.exit(2)
 
 
+def _sanitize_display_text(raw, max_len=128):
+    """Strip control chars from untrusted text before printing to a terminal.
+
+    Removes C0/C1 controls (including ESC) so a hostile worker can't inject
+    ANSI sequences to repaint the screen and spoof the Y/n prompt that
+    follows. Keeps printable ASCII + space + common latin-1 characters.
+    """
+    s = str(raw)[:max_len]
+    # Drop: 0x00-0x1F (C0 incl. ESC), 0x7F (DEL), 0x80-0x9F (C1 controls)
+    return "".join(c for c in s if 0x20 <= ord(c) < 0x7F or 0xA0 <= ord(c))
+
+
 def _validate_join_payload(msg):
     """Return (ok, reason, parsed) for a join payload.
 
@@ -175,7 +188,10 @@ def _validate_join_payload(msg):
     for g in gpus:
         if not isinstance(g, dict):
             continue
-        name = str(g.get("name", "Unknown"))[:128]
+        # Strip control chars — this name is printed to the operator's
+        # terminal before a Y/n prompt. Without sanitization a hostile worker
+        # could send ANSI escapes to spoof the prompt.
+        name = _sanitize_display_text(g.get("name", "Unknown"), max_len=128) or "Unknown"
         try:
             vram_mb = int(g.get("vram_mb", 0))
         except (TypeError, ValueError):

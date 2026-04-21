@@ -17,6 +17,11 @@ import os
 import socket
 import sys
 
+# Mirror of HANDSHAKE_MAX_BYTES in cluster_worker_agent.py. Bounds a hostile or
+# buggy controller from streaming bytes until this process OOMs — the socket
+# timeout only fires on idle periods between recvs, not on total bytes.
+HANDSHAKE_MAX_BYTES = 1_048_576  # 1 MiB
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Cluster join client")
@@ -91,6 +96,13 @@ def main():
             if not chunk:
                 break
             buf += chunk
+            if len(buf) > HANDSHAKE_MAX_BYTES:
+                print(
+                    f"Controller response exceeded {HANDSHAKE_MAX_BYTES} bytes — aborting.",
+                    file=sys.stderr,
+                )
+                sock.close()
+                sys.exit(1)
     except socket.timeout:
         print("Timed out waiting for controller response.", file=sys.stderr)
         sock.close()

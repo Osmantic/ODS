@@ -100,9 +100,24 @@ async def poll_cluster_health() -> None:
             continue
 
         if config.get("enabled"):
+            # Build the set of keys the current config actually references,
+            # then prune any stale entries (workers that were removed from
+            # cluster.json). Without this, _worker_health grows unbounded
+            # across config rewrites.
+            current_keys = {
+                f"{n['ip']}:{n.get('rpc_port', 50052)}"
+                for n in config.get("nodes", [])
+            }
+            for stale in set(_worker_health) - current_keys:
+                _worker_health.pop(stale, None)
+
             for node in config.get("nodes", []):
                 ip = node["ip"]
                 port = node.get("rpc_port", 50052)
                 online, ping_ms = await asyncio.to_thread(_check_worker, ip, port)
                 _worker_health[f"{ip}:{port}"] = {"online": online, "ping_ms": ping_ms}
+        else:
+            # Cluster was disabled — clear anything we'd been tracking so that
+            # re-enabling starts from a clean slate.
+            _worker_health.clear()
         await asyncio.sleep(_HEALTH_POLL_INTERVAL)

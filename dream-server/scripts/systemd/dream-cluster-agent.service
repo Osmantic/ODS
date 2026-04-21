@@ -1,6 +1,12 @@
 [Unit]
 Description=DreamServer Cluster Worker Agent
 After=docker.service
+# Circuit breaker at the unit level. Pairs with the agent's own retry logic
+# and the supervisor's crash fuse — systemd gives up after 10 restarts in
+# 5 minutes so a permanently-broken config (missing image, wrong token,
+# unreachable controller) stops thrashing instead of looping forever.
+StartLimitBurst=10
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
