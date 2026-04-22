@@ -293,11 +293,12 @@ for var in CLUSTER_ENABLED CLUSTER_WORKERS CLUSTER_TENSOR_SPLIT CLUSTER_RESTART_
     fi
 done
 
-# Schema should NOT have CLUSTER_TOKEN (removed — Phase 2 concern)
+# Schema must declare CLUSTER_TOKEN — the shared secret used by the
+# TCP handshake listener to gate worker joins (Phase 2 landed).
 if grep -q "CLUSTER_TOKEN" "$ROOT_DIR/.env.schema.json"; then
-    fail ".env.schema.json has CLUSTER_TOKEN (should be deferred to Phase 2)"
+    pass ".env.schema.json has CLUSTER_TOKEN"
 else
-    pass ".env.schema.json does not have premature CLUSTER_TOKEN"
+    fail ".env.schema.json missing CLUSTER_TOKEN"
 fi
 
 # .env.example should have cluster section
@@ -352,11 +353,15 @@ else
     fail "Supervisor missing atomic os.replace() in log_event"
 fi
 
-# wait_for_workers should use still_failed (not stale failed)
-if grep -q 'still_failed = failed' "$SUP"; then
-    pass "Supervisor initializes still_failed before recovery loop"
+# Recovery loop must re-partition workers rather than reuse the initial
+# snapshot — otherwise a worker that came back online would stay marked
+# dead. Structural check: partition_workers(all_workers) should appear
+# at least twice (top-of-loop + inside the wait-for-recovery deadline).
+partition_calls=$(grep -c 'partition_workers(all_workers)' "$SUP")
+if [[ "$partition_calls" -ge 2 ]]; then
+    pass "Supervisor re-partitions workers inside recovery loop (no stale snapshot)"
 else
-    fail "Supervisor may use stale 'failed' list in recovery log"
+    fail "Supervisor may reuse stale worker partition in recovery (found $partition_calls partition_workers calls, need >=2)"
 fi
 
 echo ""
