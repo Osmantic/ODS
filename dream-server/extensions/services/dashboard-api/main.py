@@ -1219,10 +1219,13 @@ async def status(api_key: str = Depends(verify_api_key)):
 async def api_status(api_key: str = Depends(verify_api_key)):
     """Dashboard-compatible status endpoint.
 
-    Catches transient I/O failures from sub-calls (GPU, health checks,
-    llama metrics …) and returns a safe fallback. Programming errors
-    (AttributeError, KeyError, TypeError) propagate so they surface in
-    tests instead of being masked.
+    The fallback response covers transient runtime failures in sub-calls
+    (GPU probe, service health checks, llama metrics) so the dashboard
+    doesn't flash "0/17" on a brief driver stall. The catch is narrowed
+    to the I/O families those sub-calls raise — programming errors
+    (TypeError, AttributeError, KeyError on internal dicts, …)
+    intentionally propagate so CLAUDE.md's Let-It-Crash rule still
+    catches real bugs.
     """
     try:
         return await _build_api_status()

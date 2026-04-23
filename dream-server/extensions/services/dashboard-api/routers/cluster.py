@@ -8,7 +8,8 @@ import socket
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 
 from config import INSTALL_DIR
 from models import ClusterController, ClusterGPU, ClusterNode, ClusterStatus
@@ -47,32 +48,61 @@ def _check_worker(host: str, port: int) -> tuple[bool, float | None]:
 
 @router.get("/api/cluster/status", response_model=ClusterStatus, dependencies=[Depends(verify_api_key)])
 async def cluster_status():
-    """Current cluster configuration and live health from background poller."""
-    config = await asyncio.to_thread(_load_cluster_config)
+    """Current cluster configuration and live health from background poller.
+
+    Mirrors `poll_cluster_health()`'s error handling: a malformed or
+    unreadable cluster.json returns 503 with a clear detail instead of
+    leaking a raw 500 to the dashboard. Individual nodes that fail
+    validation are skipped with a warning so one bad row doesn't hide
+    the rest of the cluster.
+    """
+    try:
+        config = await asyncio.to_thread(_load_cluster_config)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.exception("cluster_status: failed to read %s", CLUSTER_CONFIG)
+        raise HTTPException(
+            status_code=503,
+            detail="cluster config unavailable or malformed",
+        ) from exc
 
     if not config.get("enabled"):
         return ClusterStatus(enabled=False)
 
-    ctrl_raw = config.get("controller", {})
-    controller = ClusterController(
-        ip=ctrl_raw.get("ip", ""),
-        gpu_backend=ctrl_raw.get("gpu_backend", ""),
-        gpus=[ClusterGPU(**g) for g in ctrl_raw.get("gpus", [])],
-    ) if ctrl_raw.get("ip") else None
+    ctrl_raw = config.get("controller", {}) if isinstance(config.get("controller"), dict) else {}
+    controller = None
+    if ctrl_raw.get("ip"):
+        try:
+            controller = ClusterController(
+                ip=ctrl_raw.get("ip", ""),
+                gpu_backend=ctrl_raw.get("gpu_backend", ""),
+                gpus=[ClusterGPU(**g) for g in ctrl_raw.get("gpus", []) if isinstance(g, dict)],
+            )
+        except (ValidationError, TypeError) as exc:
+            logger.warning("cluster_status: skipping malformed controller entry: %s", exc)
 
     nodes = []
-    for n in config.get("nodes", []):
-        key = f"{n['ip']}:{n.get('rpc_port', 50052)}"
-        health = _worker_health.get(key, {})
-        nodes.append(ClusterNode(
-            ip=n["ip"],
-            rpc_port=n.get("rpc_port", 50052),
-            gpu_backend=n.get("gpu_backend", ""),
-            gpus=[ClusterGPU(**g) for g in n.get("gpus", [])],
-            status="online" if health.get("online") else "offline",
-            ping_ms=health.get("ping_ms"),
-            added_at=n.get("added_at"),
-        ))
+    raw_nodes = config.get("nodes", [])
+    if not isinstance(raw_nodes, list):
+        raw_nodes = []
+    for n in raw_nodes:
+        if not isinstance(n, dict) or "ip" not in n:
+            logger.warning("cluster_status: skipping malformed node entry: %r", n)
+            continue
+        try:
+            key = f"{n['ip']}:{n.get('rpc_port', 50052)}"
+            health = _worker_health.get(key, {})
+            nodes.append(ClusterNode(
+                ip=n["ip"],
+                rpc_port=n.get("rpc_port", 50052),
+                gpu_backend=n.get("gpu_backend", ""),
+                gpus=[ClusterGPU(**g) for g in n.get("gpus", []) if isinstance(g, dict)],
+                status="online" if health.get("online") else "offline",
+                ping_ms=health.get("ping_ms"),
+                added_at=n.get("added_at"),
+            ))
+        except (ValidationError, TypeError) as exc:
+            logger.warning("cluster_status: skipping malformed node %r: %s", n.get("ip"), exc)
+            continue
 
     return ClusterStatus(
         enabled=True,

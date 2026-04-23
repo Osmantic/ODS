@@ -521,7 +521,15 @@ def main():
             state.update(status="discovering")
             print("[AGENT] Searching for controller on LAN...")
             try:
-                controller_ip, setup_port = discover_controller(DISCOVERY_TIMEOUT, bind_ip=bind_ip or None)
+                # Require a signed beacon so a LAN attacker can't redirect
+                # us at a fake setup listener (H1). We already have the
+                # shared cluster token at this point — discover_controller
+                # rejects any beacon whose HMAC doesn't verify.
+                controller_ip, setup_port = discover_controller(
+                    DISCOVERY_TIMEOUT,
+                    bind_ip=bind_ip or None,
+                    expected_token=token,
+                )
                 state.update(controller_ip=controller_ip, setup_port=setup_port)
                 print(f"[AGENT] Found controller at {controller_ip}:{setup_port}")
             except TimeoutError:

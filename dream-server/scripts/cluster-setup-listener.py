@@ -101,8 +101,20 @@ def add_worker_to_config(config_path, ip, rpc_port, gpu_backend, gpus):
     })
 
     tmp = config_path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(state, f, indent=2)
+    # Mirror AgentState._save() — O_EXCL|0o600 so the on-disk topology
+    # (IPs, GPU inventory, join timestamps) isn't world-readable on shared
+    # controllers. No secrets live here today, but the 0600 rollout in
+    # 371eaa8 was meant to be consistent.
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(state, f, indent=2)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
     os.replace(tmp, config_path)
     return True, "ok"
 
@@ -267,12 +279,20 @@ def main():
             file=sys.stderr,
         )
         sys.exit(2)
-    beacon = ClusterBeacon(controller_ip=controller_ip, setup_port=args.port, bind_ip=controller_ip)
+    # Sign the beacon with the shared token so only workers that already
+    # hold the same token will trust it. Prevents a LAN attacker from
+    # redirecting workers at a fake setup port via forged beacons (H1).
+    beacon = ClusterBeacon(
+        controller_ip=controller_ip,
+        setup_port=args.port,
+        bind_ip=controller_ip,
+        token=token,
+    )
     beacon.start()
 
     print(f"\n\033[0;34m--- Cluster Setup ---\033[0m\n")
     print(f"  Listening on {bind_ip}:{args.port}")
-    print(f"  Broadcasting discovery beacon on {controller_ip} (UDP {DISCOVERY_PORT})")
+    print(f"  Broadcasting signed discovery beacon on {controller_ip} (UDP {DISCOVERY_PORT})")
     print(f"  Waiting for workers to connect...")
     print(f"  Press Ctrl+C when all workers have joined.\n")
 

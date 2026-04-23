@@ -155,9 +155,18 @@ def log_event(event_type, detail=""):
     atomic but the read → append → write sequence isn't — without the lock,
     two concurrent writers read the same events list, each appends one
     entry, and the second os.replace clobbers the first one's event.
+
+    Writes go through O_EXCL|0o600 so the events log (which contains cluster
+    topology and timing) is not world-readable on shared hosts.
     """
     with _events_lock:
-        os.makedirs(os.path.dirname(EVENTS_FILE), exist_ok=True)
+        events_dir = os.path.dirname(EVENTS_FILE)
+        os.makedirs(events_dir, mode=0o700, exist_ok=True)
+        # Tighten mode if the directory already existed with a looser perm.
+        try:
+            os.chmod(events_dir, 0o700)
+        except OSError:
+            pass
         events = []
         if os.path.exists(EVENTS_FILE):
             with open(EVENTS_FILE) as f:
@@ -169,8 +178,16 @@ def log_event(event_type, detail=""):
         })
         events = events[-100:]
         tmp = EVENTS_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(events, f)
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(events, f)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
         os.replace(tmp, EVENTS_FILE)
 
 
