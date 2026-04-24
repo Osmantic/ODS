@@ -196,20 +196,27 @@ else
             fi
         }
 
+        # Stream build output to BOTH terminal and log file. Image builds
+        # can take 15+ minutes (llama.cpp + CUDA/ROCm stages); silent
+        # redirect hides real-time progress and makes the installer look
+        # hung. --progress=plain keeps the output scrollback-friendly
+        # instead of BuildKit's TTY-compact renderer. `set -o pipefail`
+        # is already on (install-core.sh), so the pipeline's exit status
+        # reflects docker build's, not tee's.
         ai "Building controller image ($_ctrl_tag)..."
-        if docker build -f "$_rpc_dir/$_ctrl_dockerfile" -t "$_ctrl_tag" "$_rpc_dir" >> "$LOG_FILE" 2>&1; then
+        if docker build --progress=plain -f "$_rpc_dir/$_ctrl_dockerfile" -t "$_ctrl_tag" "$_rpc_dir" 2>&1 | tee -a "$LOG_FILE"; then
             ai_ok "Controller image built: $_ctrl_tag"
         else
             _dump_build_tail "Controller image build failed — last 30 lines of build log:"
-            ai "  Retry manually: docker build -f $_rpc_dir/$_ctrl_dockerfile -t $_ctrl_tag $_rpc_dir"
+            ai "  Retry manually: docker build --progress=plain -f $_rpc_dir/$_ctrl_dockerfile -t $_ctrl_tag $_rpc_dir"
         fi
 
         ai "Building worker image ($_worker_tag)..."
-        if docker build -f "$_rpc_dir/$_worker_dockerfile" -t "$_worker_tag" "$_rpc_dir" >> "$LOG_FILE" 2>&1; then
+        if docker build --progress=plain -f "$_rpc_dir/$_worker_dockerfile" -t "$_worker_tag" "$_rpc_dir" 2>&1 | tee -a "$LOG_FILE"; then
             ai_ok "Worker image built: $_worker_tag"
         else
             _dump_build_tail "Worker image build failed — last 30 lines of build log:"
-            ai "  Retry manually: docker build -f $_rpc_dir/$_worker_dockerfile -t $_worker_tag $_rpc_dir"
+            ai "  Retry manually: docker build --progress=plain -f $_rpc_dir/$_worker_dockerfile -t $_worker_tag $_rpc_dir"
         fi
 
         unset -f _dump_build_tail
