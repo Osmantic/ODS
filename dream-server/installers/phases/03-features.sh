@@ -72,7 +72,7 @@ if $INTERACTIVE && ! $DRY_RUN; then
 
         read -p "  Enable LAN cluster mode (pool GPUs across machines)? [y/N] " -r < /dev/tty
         echo
-        [[ $REPLY =~ ^[Yy]$ ]] && ENABLE_CLUSTER=true
+        if [[ $REPLY =~ ^[Yy]$ ]]; then ENABLE_CLUSTER=true; else ENABLE_CLUSTER=false; fi
 
         # Warn if ComfyUI enabled on low-tier hardware
         if [[ "$ENABLE_COMFYUI" == "true" ]]; then
