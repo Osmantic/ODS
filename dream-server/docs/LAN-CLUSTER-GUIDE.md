@@ -36,7 +36,7 @@ The controller runs llama-server with `--rpc` flags pointing to each worker. Wor
 | 50051 | TCP      | Controller | Setup listener (join)      |
 | 50052 | TCP      | Workers    | rpc-server (GPU sharing)   |
 | 50053 | UDP      | Both       | Auto-discovery beacon      |
-| 50054 | TCP      | Workers    | Agent status endpoint      |
+| 50054 | TCP      | Workers    | Agent status endpoint (binds 127.0.0.1 by default — see "Manually Add a Worker" for cross-host access) |
 
 ## Quick Start
 
@@ -184,6 +184,14 @@ When `dream cluster setup` runs, it broadcasts a UDP beacon every 5 seconds on p
 
 **If discovery fails**, use `--controller IP` to connect directly. This always works as long as TCP connectivity exists.
 
+**Stand-alone discovery (debugging only):** the bundled `cluster_discovery.py` CLI lets you watch for beacons. Production beacons are HMAC-signed, so the worker side must hold the same shared token before it will trust them — pass it via `CLUSTER_TOKEN`:
+
+```bash
+CLUSTER_TOKEN=<token-from-controller> python3 scripts/cluster_discovery.py discover 30
+```
+
+Without `CLUSTER_TOKEN`, the discover side falls back to legacy unsigned beacons and refuses any signed one — useful only for local debugging.
+
 ---
 
 ## Network Interface Selection
@@ -229,7 +237,11 @@ The watchdog never kills a responsive llama-server — only one that's actually 
 
 ### All Workers Dead
 
-If every worker is unreachable, the supervisor waits 15 seconds, then starts llama-server with the controller's GPU only (no `--rpc`). When workers come back, they're re-added automatically.
+Behavior depends on `CLUSTER_RESTART_POLICY`:
+
+- `always` (default) — supervisor waits 15 seconds, then starts llama-server with the controller's GPU only (no `--rpc`). When workers come back, they're re-added automatically.
+- `on-worker-recovery` — supervisor waits 15 seconds, exits non-zero if no worker recovered. systemd / your runner is expected to restart it. Useful when controller-only inference would be unacceptably slow.
+- `manual` — supervisor exits immediately on the first crash; you restart it by hand. Useful for diagnostic sessions where you want each crash to surface.
 
 ### Tensor Caching
 
@@ -260,7 +272,11 @@ If an rpc-server is already running on a machine (started outside the normal joi
 dream cluster add <WORKER_IP> [--port 50052]
 ```
 
-The controller TCP-pings the RPC port to confirm reachability, then probes the worker's agent status endpoint (TCP 50054) to pull its GPU backend and GPU inventory — so the saved cluster config matches what the worker actually reports. If the worker agent isn't running, the worker is stored with `backend=unknown` and the dashboard shows partial info until the agent comes up.
+The controller TCP-pings the RPC port to confirm reachability, then probes the worker's agent status endpoint (TCP 50054) to pull its GPU backend and GPU inventory — so the saved cluster config matches what the worker actually reports.
+
+The agent's `/health` binds `127.0.0.1` by default — only `dream cluster agent status` (running on the same host) consumes it, and the dashboard's health poller goes through the rpc port (50052), not :50054. To make `dream cluster add` auto-fill GPU info, restart the worker agent with `--status-bind 0.0.0.0` (or set `CLUSTER_INTERFACE=<lan-ip>` in the worker's `.env` so the bind is narrowed to just the LAN interface). With the default localhost bind, `dream cluster add` still works — it just stores `backend=unknown` and the dashboard shows partial info until the agent rejoins via the discovery handshake.
+
+Prefer the discovery+handshake flow (`dream cluster join` from the worker side) when possible: it carries GPU info as part of the join payload and never needs `/health` exposed off the worker.
 
 ### Remove a Worker
 ```bash
@@ -293,10 +309,12 @@ dream restart llama-server
 
 ## Agent Persistence
 
-The agent does not auto-start on reboot. To enable that:
+The agent does not auto-start on reboot. The user-scoped systemd unit is installed on first `dream cluster agent start` (rendered into `~/.config/systemd/user/dream-cluster-agent.service`); enable it for boot only after that first start has completed:
 
 ```bash
-systemctl --user enable dream-cluster-agent.service
+dream cluster agent start --token <TOKEN> --controller <IP>   # one-time: installs the unit
+systemctl --user enable dream-cluster-agent.service           # persist across reboots
+loginctl enable-linger $USER                                  # so the unit runs without an active login session
 ```
 
 View agent logs:
@@ -338,7 +356,11 @@ Priority when multiple are supplied: `--token-file` > `CLUSTER_TOKEN` env > `--t
 **Auto-discovery not working:**
 - Test manually: `python3 scripts/cluster_discovery.py discover 10`
 - If no response, broadcast is blocked. Use `--controller IP` instead.
-- Check UDP 50053 is open: `sudo firewall-cmd --add-port=50053/udp`
+- Check UDP 50053 is open. On firewalld add it persistently and reload so the rule survives a reboot:
+  ```bash
+  sudo firewall-cmd --add-port=50053/udp --permanent
+  sudo firewall-cmd --reload
+  ```
 
 **rpc-server starts but llama-server can't connect:**
 - Check TCP 50052 is open on worker: `nc -zv <WORKER_IP> 50052`

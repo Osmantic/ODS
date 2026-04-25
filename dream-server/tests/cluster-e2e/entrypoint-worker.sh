@@ -16,6 +16,10 @@ cat > "$CFG" <<EOF
 }
 EOF
 
+# --status-bind 0.0.0.0 because the test-runner container probes /health
+# from another container on the e2e docker network. Production default is
+# 127.0.0.1; only the test fixture opts into cross-container exposure.
 exec python3 /app/scripts/cluster_worker_agent.py \
     --config "$CFG" \
-    --status-port "${STATUS_PORT:-50054}"
+    --status-port "${STATUS_PORT:-50054}" \
+    --status-bind 0.0.0.0

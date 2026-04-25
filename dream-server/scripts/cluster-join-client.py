@@ -41,6 +41,23 @@ def _resolve_token(args):
     """Priority: --token-file > CLUSTER_TOKEN env > --token CLI (deprecated)."""
     if args.token_file:
         path = os.path.expanduser(args.token_file)
+        # --token-file is the recommended path because the secret doesn't leak
+        # via `ps`; if the file itself is group/world-readable, that defense
+        # is undone. Warn loudly so the operator can chmod it back to 600.
+        try:
+            mode = os.stat(path).st_mode & 0o777
+        except OSError as e:
+            # Don't silently swallow — the open() below will fail with the
+            # same problem, but logging here gives the operator a clearer
+            # diagnostic than a raw IOError stack from json.load.
+            print(f"warning: cannot stat --token-file {path!r}: {e}", file=sys.stderr)
+            mode = 0
+        if mode & 0o077:
+            print(
+                f"warning: --token-file {path!r} has mode {mode:04o} "
+                f"(group/world readable); chmod 600 to restrict.",
+                file=sys.stderr,
+            )
         try:
             with open(path) as f:
                 token = f.read().strip()

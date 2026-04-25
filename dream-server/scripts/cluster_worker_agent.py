@@ -61,12 +61,20 @@ VALID_GPU_BACKENDS = frozenset({"cpu", "nvidia", "amd"})
 RPC_CRASH_WINDOW_SECONDS = 120
 MAX_RPC_CRASHES_PER_WINDOW = 5
 
-_running = True
+# Termination flag. threading.Event (not a plain bool) so the monitor loop's
+# `_stop.wait(HEALTH_CHECK_INTERVAL)` returns immediately on SIGTERM instead
+# of waiting up to HEALTH_CHECK_INTERVAL seconds — without this, systemd's
+# stop sequence could escalate to SIGKILL while leaving the rpc-server
+# container orphaned.
+_stop = threading.Event()
+
+
+def _is_running():
+    return not _stop.is_set()
 
 
 def _handle_term(signum, frame):
-    global _running
-    _running = False
+    _stop.set()
 
 
 class AgentState:
@@ -192,7 +200,7 @@ def join_cluster(controller_ip, setup_port, token, gpu_backend, gpus, rpc_port):
     """TCP handshake with the controller's setup listener. Returns True if accepted.
 
     Handshake recv is polled in short chunks (HANDSHAKE_RECV_POLL) rather
-    than one big blocking call — so SIGTERM (which flips _running) can
+    than one big blocking call — so SIGTERM (which sets _stop) can
     cancel the wait without waiting the full HANDSHAKE_TOTAL_TIMEOUT.
     Controller response is capped at HANDSHAKE_MAX_BYTES to prevent a
     hostile controller from OOMing the worker.
@@ -224,7 +232,7 @@ def join_cluster(controller_ip, setup_port, token, gpu_backend, gpus, rpc_port):
         buf = b""
         deadline = time.monotonic() + HANDSHAKE_TOTAL_TIMEOUT
         while b"\n" not in buf:
-            if not _running:
+            if _stop.is_set():
                 print("[AGENT] Shutdown requested — aborting handshake")
                 return False
             if time.monotonic() >= deadline:
@@ -233,7 +241,7 @@ def join_cluster(controller_ip, setup_port, token, gpu_backend, gpus, rpc_port):
             try:
                 chunk = sock.recv(4096)
             except socket.timeout:
-                continue  # poll _running again
+                continue  # poll _stop again
             if not chunk:
                 break
             buf += chunk
@@ -291,8 +299,15 @@ def _docker_run(argv, timeout=DOCKER_CLI_TIMEOUT):
         )
 
 
-def start_rpc_server(gpu_backend, rpc_port):
-    """Start the rpc-server Docker container. Returns True on success."""
+def start_rpc_server(gpu_backend, rpc_port, bind_ip=""):
+    """Start the rpc-server Docker container. Returns True on success.
+
+    bind_ip narrows the host-side publish to a specific interface IP. When
+    set, the rpc-server listens only on that interface (e.g. the operator's
+    LAN address) instead of every network the host is attached to —
+    important on multi-homed hosts (Tailscale, virbr0, Docker bridges)
+    because llama.cpp RPC has no auth or encryption.
+    """
     image = get_worker_image(gpu_backend)
 
     # Check image exists
@@ -304,11 +319,12 @@ def start_rpc_server(gpu_backend, rpc_port):
     _docker_run(["docker", "stop", "dream-rpc-server"])
     _docker_run(["docker", "rm", "dream-rpc-server"])
 
+    publish = f"{bind_ip}:{rpc_port}:50052" if bind_ip else f"{rpc_port}:50052"
     cmd = [
         "docker", "run", "-d",
         "--name", "dream-rpc-server",
         "--restart", "no",  # agent manages restarts, not Docker
-        "-p", f"{rpc_port}:50052",
+        "-p", publish,
     ]
 
     if gpu_backend == "nvidia":
@@ -352,20 +368,28 @@ class StatusHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            # Strip secrets before returning. The snapshot is reachable by any
-            # LAN peer that can reach the status port (default bind is
-            # 127.0.0.1 but operators can widen it via --status-bind), so the
-            # shared cluster token must never leave the process.
+            # Strip secrets before returning. The default bind is 127.0.0.1
+            # — only `dream cluster agent status` (running on the same host)
+            # consumes this; the dashboard's poll_cluster_health probes the
+            # rpc port (50052) directly, not /health. To expose /health to
+            # another host (so the controller's `dream cluster add <ip>` can
+            # auto-fill GPU info), pass --status-bind <ip>, --interface <ip>,
+            # or CLUSTER_INTERFACE=<ip> at agent start. Even with the token
+            # stripped here, GPU model + topology fingerprint should not
+            # leave the host by default.
             agent = {}
             if self.agent_state:
-                agent = {
-                    k: v for k, v in self.agent_state.snapshot().items()
-                    if k != "token"
-                }
+                snap = self.agent_state.snapshot()
+                agent = {k: v for k, v in snap.items() if k != "token"}
+            # Use the cached rpc_running flag (refreshed by the main loop on
+            # every health-check tick) so a wedged dockerd can't head-of-line
+            # block this single-threaded HTTPServer for DOCKER_CLI_TIMEOUT
+            # seconds per request — `docker inspect` is shelled out elsewhere.
+            rpc_running = bool(agent.pop("rpc_running", False))
             body = json.dumps({
                 "status": "ok",
                 "agent": agent,
-                "rpc_server_running": is_rpc_server_running(),
+                "rpc_server_running": rpc_running,
             })
             self.wfile.write(body.encode())
         else:
@@ -387,10 +411,13 @@ def run_status_server(bind_ip, port, state):
       - set to args.interface or CLUSTER_INTERFACE → bind to that IP only,
         so the diagnostic endpoint isn't broadcast on every network the
         host is attached to (H9).
-      - empty → bind 0.0.0.0 to keep cross-host dashboards/e2e working.
+      - empty → bind 127.0.0.1. /health exposes the GPU-fingerprint and
+        cluster topology, so the default keeps it host-local. Operators who
+        need cross-host /health (e.g. `dream cluster add <ip>` from another
+        machine) opt in explicitly via --status-bind / --interface.
     """
     StatusHandler.agent_state = state
-    server = HTTPServer((bind_ip or "0.0.0.0", port), StatusHandler)
+    server = HTTPServer((bind_ip or "127.0.0.1", port), StatusHandler)
     shutdown_thread = threading.Thread(
         target=_wait_then_shutdown, args=(server,), daemon=True
     )
@@ -402,9 +429,8 @@ def run_status_server(bind_ip, port, state):
 
 
 def _wait_then_shutdown(server):
-    """Block until _running flips, then shutdown the HTTP server."""
-    while _running:
-        time.sleep(0.25)
+    """Block until _stop is set, then shutdown the HTTP server."""
+    _stop.wait()
     server.shutdown()
 
 
@@ -421,6 +447,25 @@ def _resolve_token(args, state):
         if not tf.is_file():
             print(f"[AGENT] --token-file {args.token_file!r} not found", file=sys.stderr)
             return ""
+        # Operators are pointed at --token-file precisely because it doesn't
+        # leak via `ps`; warn loudly if it's group/world-readable so they
+        # know the file itself is the new leak channel.
+        try:
+            mode = tf.stat().st_mode & 0o777
+        except OSError as e:
+            # is_file() returned True a moment ago, so a stat() failure
+            # here is unusual — surface it instead of silently treating
+            # the file as 0o000. The read_text() below will likely also
+            # fail and propagate, which is the right outcome.
+            print(f"[AGENT] warning: cannot stat --token-file {args.token_file!r}: {e}",
+                  file=sys.stderr)
+            mode = 0
+        if mode & 0o077:
+            print(
+                f"[AGENT] warning: --token-file {args.token_file!r} has mode "
+                f"{mode:04o} (group/world readable); chmod 600 to restrict.",
+                file=sys.stderr,
+            )
         token = tf.read_text().strip()
         if token:
             return token
@@ -513,12 +558,12 @@ def main():
             sys.exit(1)
 
     # Main loop: discover → join → run → monitor
-    while _running:
+    while not _stop.is_set():
         controller_ip = state.get("controller_ip", "")
 
         # Phase 1: discover controller if not known
         if not controller_ip:
-            state.update(status="discovering")
+            state.update(status="discovering", error="")
             print("[AGENT] Searching for controller on LAN...")
             try:
                 # Require a signed beacon so a LAN attacker can't redirect
@@ -534,10 +579,8 @@ def main():
                 print(f"[AGENT] Found controller at {controller_ip}:{setup_port}")
             except TimeoutError:
                 print(f"[AGENT] No controller found. Retrying in {DISCOVERY_RETRY_INTERVAL}s...")
-                for _ in range(DISCOVERY_RETRY_INTERVAL):
-                    if not _running:
-                        return
-                    time.sleep(1)
+                if _stop.wait(DISCOVERY_RETRY_INTERVAL):
+                    break
                 continue
 
         # Phase 2: join cluster if not already joined
@@ -550,50 +593,69 @@ def main():
             state.update(gpus=gpus)
 
             if join_cluster(controller_ip, setup_port, token, gpu_backend, gpus, rpc_port):
-                state.update(status="joined")
+                # Clear any prior error message — operators reading /health
+                # otherwise see status=joined alongside a stale failure
+                # string from a previous discovery/join cycle.
+                state.update(status="joined", error="")
             else:
                 print(f"[AGENT] Join failed. Retrying in {DISCOVERY_RETRY_INTERVAL}s...")
                 # Clear controller_ip to re-discover in case it changed
                 state.update(controller_ip="", status="idle")
-                for _ in range(DISCOVERY_RETRY_INTERVAL):
-                    if not _running:
-                        return
-                    time.sleep(1)
+                if _stop.wait(DISCOVERY_RETRY_INTERVAL):
+                    break
                 continue
 
         # Phase 3: start rpc-server if not running
-        if not is_rpc_server_running():
+        rpc_running = is_rpc_server_running()
+        state.update(rpc_running=rpc_running)
+        if not rpc_running:
             print("[AGENT] Starting rpc-server...")
-            if start_rpc_server(gpu_backend, rpc_port):
-                state.update(status="running")
+            if start_rpc_server(gpu_backend, rpc_port, bind_ip=bind_ip):
+                state.update(status="running", rpc_running=True, error="")
             else:
-                state.update(status="error")
+                state.update(status="error", rpc_running=False)
                 record_rpc_crash("start_rpc_server returned False")
                 print(f"[AGENT] Failed to start rpc-server. Retrying in {DISCOVERY_RETRY_INTERVAL}s...")
-                for _ in range(DISCOVERY_RETRY_INTERVAL):
-                    if not _running:
-                        return
-                    time.sleep(1)
+                if _stop.wait(DISCOVERY_RETRY_INTERVAL):
+                    break
                 continue
 
-        # Phase 4: monitor rpc-server
-        state.update(status="running")
-        while _running and is_rpc_server_running():
-            time.sleep(HEALTH_CHECK_INTERVAL)
+        # Phase 4: monitor rpc-server. _stop.wait() returns True if SIGTERM
+        # arrived during the wait, so the agent exits within
+        # HEALTH_CHECK_INTERVAL granularity instead of waiting for a plain
+        # time.sleep to elapse.
+        state.update(status="running", error="")
+        while not _stop.is_set():
+            if _stop.wait(HEALTH_CHECK_INTERVAL):
+                break
+            rpc_running = is_rpc_server_running()
+            state.update(rpc_running=rpc_running)
+            if not rpc_running:
+                break
 
-        if not _running:
+        if _stop.is_set():
             break
 
         # rpc-server died — restart it. Count this against the circuit
         # breaker; a container that exits shortly after start is almost
         # always deterministic (bad image, missing device, OOM).
         print("[AGENT] rpc-server container stopped. Restarting...")
-        state.update(status="joined")
+        state.update(status="joined", rpc_running=False)
         record_rpc_crash("rpc-server container exited")
-        time.sleep(2)
+        if _stop.wait(2):
+            break
 
-    # Cleanup
+    # Cleanup. Stop the rpc-server container so the next agent invocation
+    # gets a clean slate — leaving it running across an agent restart can
+    # leave a stale model loaded that the controller still believes it's
+    # talking to. Best-effort: if dockerd is wedged we still want to exit.
     print("[AGENT] Shutting down")
+    stop_result = _docker_run(["docker", "stop", "dream-rpc-server"])
+    if stop_result.returncode == 0:
+        _docker_run(["docker", "rm", "dream-rpc-server"])
+    elif stop_result.returncode == 124:
+        print(f"[AGENT] docker stop timed out — container may persist", file=sys.stderr)
+    state.update(rpc_running=False)
     if args.pid_file and os.path.isfile(args.pid_file):
         os.unlink(args.pid_file)
 

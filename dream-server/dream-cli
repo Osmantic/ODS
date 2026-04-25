@@ -3160,15 +3160,66 @@ cmd_agent() {
 
 _cluster_config_file() { echo "$INSTALL_DIR/config/cluster.json"; }
 
+# Detect the local AMD GPU's display name + VRAM in MiB by reading sysfs.
+# Sets globals: _detected_gpu_name, _detected_vram_mb (both empty if no AMD
+# GPU found; first matching card wins).
+#
+# Why a helper: this exact loop appeared 3× across _cluster_enable,
+# _cluster_add, _cluster_status_worker — extraction at 3+ uses per
+# CLAUDE.md. The earlier inlined copies used `cat ... 2>/dev/null || echo
+# "0"`, which silently turned a sysfs read failure into vram_mb=0; the
+# `[[ -f ... ]]` gate above the read makes that impossible in practice
+# but the silent-catch pattern itself violates CLAUDE.md §Error Handling.
+_cluster_detect_local_amd_gpu() {
+    _detected_gpu_name=""
+    _detected_vram_mb=""
+    local card_dir vendor product_name vram_bytes
+    for card_dir in /sys/class/drm/card*/device; do
+        [[ -f "$card_dir/vendor" ]] || continue
+        vendor=$(< "$card_dir/vendor")
+        [[ "$vendor" == "0x1002" ]] || continue
+        if [[ -f "$card_dir/product_name" ]]; then
+            product_name=$(< "$card_dir/product_name")
+        else
+            product_name="AMD Radeon"
+        fi
+        if [[ -f "$card_dir/mem_info_vram_total" ]]; then
+            vram_bytes=$(< "$card_dir/mem_info_vram_total")
+        else
+            vram_bytes=0
+        fi
+        # Validate before arithmetic — sysfs is normally trustworthy but a
+        # non-integer here would crash the shell under set -e and surface
+        # a real driver bug instead of silently storing 0.
+        if [[ "$vram_bytes" =~ ^[0-9]+$ ]]; then
+            _detected_vram_mb=$((vram_bytes / 1048576))
+        else
+            _detected_vram_mb=0
+        fi
+        _detected_gpu_name="$product_name"
+        return 0
+    done
+    return 1
+}
+
 _cluster_save_state() {
-    local cfg
+    # Atomic write to mirror the Python helpers' os.open(O_EXCL|0o600) →
+    # os.replace pattern. mktemp creates the temp file 0600 by default in
+    # the same directory, then mv is atomic (rename(2)) so concurrent
+    # readers see either the prior contents or the new contents — never a
+    # half-written file. Critical because cluster.json holds the shared
+    # cluster token.
+    local cfg cfg_dir tmp
     cfg=$(_cluster_config_file)
-    mkdir -p "$(dirname "$cfg")"
-    # cluster.json holds the shared cluster token. Restrict mode BEFORE the
-    # first write (install -m then cat > keeps the inode under chmod) so no
-    # observer window exists between creation and the agent's later rewrite.
-    install -m 0600 /dev/null "$cfg"
-    printf '%s' "$1" > "$cfg"
+    cfg_dir=$(dirname "$cfg")
+    mkdir -p "$cfg_dir"
+    tmp=$(mktemp "${cfg_dir}/cluster.json.XXXXXX")
+    chmod 0600 "$tmp"
+    if ! printf '%s' "$1" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mv -f "$tmp" "$cfg"
 }
 
 _cluster_enable() {
@@ -3242,15 +3293,10 @@ PY
         gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | xargs)
         vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | xargs)
     elif [[ "$gpu_backend" == "amd" ]]; then
-        for card_dir in /sys/class/drm/card*/device; do
-            [[ -f "$card_dir/vendor" ]] || continue
-            [[ "$(cat "$card_dir/vendor" 2>/dev/null)" == "0x1002" ]] || continue
-            gpu_name=$(cat "$card_dir/product_name" 2>/dev/null || echo "AMD Radeon")
-            local vram_bytes
-            vram_bytes=$(cat "$card_dir/mem_info_vram_total" 2>/dev/null || echo "0")
-            vram_mb=$((vram_bytes / 1048576))
-            break
-        done
+        if _cluster_detect_local_amd_gpu; then
+            gpu_name="$_detected_gpu_name"
+            vram_mb="$_detected_vram_mb"
+        fi
     fi
 
     # Network interface selection
@@ -3398,14 +3444,27 @@ _cluster_disable() {
     local cfg
     cfg=$(_cluster_config_file)
     if [[ -f "$cfg" ]]; then
+        # Atomic 0600 write — mirror AgentState._save() in cluster_worker_agent.py.
+        # cluster.json holds the shared cluster token, so a half-written
+        # version is both a security leak risk and a corruption risk.
         python3 - "$cfg" <<'PY'
-import json, sys
+import json, os, sys
 cfg = sys.argv[1]
 with open(cfg) as f:
     state = json.load(f)
 state["enabled"] = False
-with open(cfg, "w") as f:
-    json.dump(state, f, indent=2)
+tmp = cfg + ".tmp"
+if os.path.exists(tmp):
+    os.unlink(tmp)
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f, indent=2)
+except BaseException:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    raise
+os.replace(tmp, cfg)
 PY
     fi
 
@@ -3641,10 +3700,19 @@ _cluster_leave() {
     check_install
 
     log "Stopping rpc-server container..."
-    if docker ps -q -f name=dream-rpc-server 2>/dev/null | grep -q .; then
-        docker stop dream-rpc-server >/dev/null 2>&1
-        docker rm dream-rpc-server >/dev/null 2>&1
-        success "rpc-server stopped and removed."
+    if docker ps -q -f name=dream-rpc-server | grep -q .; then
+        # Mirror _cluster_join's pattern (line ~2950): stop/rm failures are
+        # unexpected (wedged dockerd, runtime bug) — surface them with
+        # warn() rather than swallowing stderr and printing a misleading
+        # "stopped and removed" success line.
+        local stop_ok=true rm_ok=true
+        docker stop dream-rpc-server >/dev/null || { warn "docker stop failed on dream-rpc-server"; stop_ok=false; }
+        docker rm dream-rpc-server >/dev/null || { warn "docker rm failed on dream-rpc-server"; rm_ok=false; }
+        if [[ "$stop_ok" == "true" && "$rm_ok" == "true" ]]; then
+            success "rpc-server stopped and removed."
+        else
+            warn "rpc-server may not have been fully cleaned up; check 'docker ps -a | grep dream-rpc-server'."
+        fi
     else
         warn "No rpc-server container found."
     fi
@@ -3689,14 +3757,9 @@ _cluster_add() {
     if [[ "$gpu_backend" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
         controller_vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | xargs)
     elif [[ "$gpu_backend" == "amd" ]]; then
-        for card_dir in /sys/class/drm/card*/device; do
-            [[ -f "$card_dir/vendor" ]] || continue
-            [[ "$(cat "$card_dir/vendor" 2>/dev/null)" == "0x1002" ]] || continue
-            local vram_bytes
-            vram_bytes=$(cat "$card_dir/mem_info_vram_total" 2>/dev/null || echo "0")
-            controller_vram_mb=$((vram_bytes / 1048576))
-            break
-        done
+        if _cluster_detect_local_amd_gpu; then
+            controller_vram_mb="$_detected_vram_mb"
+        fi
     fi
 
     # Probe the worker's agent status endpoint to learn its GPU inventory.
@@ -3708,23 +3771,51 @@ _cluster_add() {
     local agent_response curl_rc=0
     agent_response=$(curl -sf --max-time 5 "http://${worker_ip}:${agent_port}/health") || curl_rc=$?
     if [[ $curl_rc -eq 0 && -n "$agent_response" ]]; then
-        # Let the parser crash on malformed JSON — that's a worker bug the
-        # operator needs to see, not a reason to silently store "unknown".
+        # Treat the /health response as untrusted input — even though the
+        # operator picked this IP, an attacker on :50054 (or a future
+        # agent bug) could send arbitrary fields. Mirror the listener's
+        # _validate_join_payload allowlist: backend ∈ {cpu,nvidia,amd},
+        # gpus is a list of {name,vram_mb} with control chars stripped
+        # from name. Single python3 invocation (the prior code spawned
+        # three) so we don't fan out subprocesses just to extract two
+        # fields. Crash on malformed JSON — that's a real worker bug the
+        # operator needs to see.
         local parsed
         parsed=$(python3 - "$agent_response" <<'PY'
 import json, sys
+
+VALID = {"cpu", "nvidia", "amd"}
 payload = json.loads(sys.argv[1])
 agent = payload.get("agent", {}) or {}
 backend = agent.get("gpu_backend") or "unknown"
-gpus = agent.get("gpus", []) or []
-print(json.dumps({"backend": backend, "gpus": gpus}))
+if backend not in VALID:
+    backend = "unknown"
+raw_gpus = agent.get("gpus", []) or []
+clean = []
+if isinstance(raw_gpus, list):
+    for g in raw_gpus:
+        if not isinstance(g, dict):
+            continue
+        name = str(g.get("name", "Unknown"))[:128]
+        # Strip C0/C1 controls so a hostile agent can't smuggle ANSI
+        # escapes into the dashboard's GPU column.
+        name = "".join(c for c in name if 0x20 <= ord(c) < 0x7F or 0xA0 <= ord(c)) or "Unknown"
+        try:
+            vram = int(g.get("vram_mb", 0))
+        except (TypeError, ValueError):
+            vram = 0
+        clean.append({"name": name, "vram_mb": max(0, vram)})
+print(f"{backend}\t{json.dumps(clean)}")
 PY
 )
-        worker_gpu_backend=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['backend'])" "$parsed")
-        worker_gpus_json=$(python3 -c "import json,sys; print(json.dumps(json.loads(sys.argv[1])['gpus']))" "$parsed")
-        success "Worker agent reports backend=${worker_gpu_backend}, $(echo "$worker_gpus_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))') GPU(s)"
+        worker_gpu_backend="${parsed%%$'\t'*}"
+        worker_gpus_json="${parsed#*$'\t'}"
+        local _gpu_count
+        _gpu_count=$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$worker_gpus_json")
+        success "Worker agent reports backend=${worker_gpu_backend}, ${_gpu_count} GPU(s)"
     else
-        warn "Worker agent not reachable at ${worker_ip}:${agent_port} (curl exit=${curl_rc}) — storing backend=unknown (dashboard will show partial info until the agent is running)"
+        warn "Worker agent not reachable at ${worker_ip}:${agent_port} (curl exit=${curl_rc}) — storing backend=unknown."
+        warn "  The agent's /health binds 127.0.0.1 by default. To auto-fill GPU info via 'dream cluster add', restart the worker agent with --status-bind 0.0.0.0 (or set CLUSTER_INTERFACE on the worker), then re-run this command. Or run 'dream cluster join' from the worker side — the join handshake carries GPU info without exposing /health to the LAN."
     fi
 
     # Update cluster state
@@ -3736,7 +3827,7 @@ PY
     fi
 
     python3 - "$cfg" "$worker_ip" "$rpc_port" "$agent_port" "$worker_gpu_backend" "$worker_gpus_json" <<'PY'
-import json, sys, time
+import json, os, sys, time
 
 cfg, worker_ip, rpc_port_s, agent_port_s, gpu_backend, gpus_json = sys.argv[1:7]
 rpc_port = int(rpc_port_s)
@@ -3761,8 +3852,19 @@ state["nodes"].append({
     "status": "online",
 })
 
-with open(cfg, "w") as f:
-    json.dump(state, f, indent=2)
+# Atomic 0600 write — mirror AgentState._save() in cluster_worker_agent.py.
+tmp = cfg + ".tmp"
+if os.path.exists(tmp):
+    os.unlink(tmp)
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f, indent=2)
+except BaseException:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    raise
+os.replace(tmp, cfg)
 PY
 
     # Rebuild CLUSTER_WORKERS and CLUSTER_TENSOR_SPLIT from state
@@ -3788,7 +3890,7 @@ _cluster_remove() {
     [[ -f "$cfg" ]] || error "No cluster config found. Run 'dream cluster enable' first."
 
     python3 - "$cfg" "$worker_ip" <<'PY' || { warn "Worker $worker_ip not found in cluster."; return 1; }
-import json, sys
+import json, os, sys
 cfg, worker_ip = sys.argv[1], sys.argv[2]
 with open(cfg) as f:
     state = json.load(f)
@@ -3797,8 +3899,19 @@ state["nodes"] = [n for n in state["nodes"] if n["ip"] != worker_ip]
 if before == len(state["nodes"]):
     print(f"Worker {worker_ip} not found in cluster.")
     sys.exit(1)
-with open(cfg, "w") as f:
-    json.dump(state, f, indent=2)
+# Atomic 0600 write — mirror AgentState._save() in cluster_worker_agent.py.
+tmp = cfg + ".tmp"
+if os.path.exists(tmp):
+    os.unlink(tmp)
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f, indent=2)
+except BaseException:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    raise
+os.replace(tmp, cfg)
 PY
 
     _cluster_rebuild_env
@@ -3953,15 +4066,10 @@ _cluster_status_worker() {
         gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | xargs)
         vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | xargs)
     elif [[ "$gpu_backend" == "amd" ]]; then
-        for card_dir in /sys/class/drm/card*/device; do
-            [[ -f "$card_dir/vendor" ]] || continue
-            [[ "$(cat "$card_dir/vendor" 2>/dev/null)" == "0x1002" ]] || continue
-            gpu_name=$(cat "$card_dir/product_name" 2>/dev/null || echo "AMD Radeon")
-            local vram_bytes
-            vram_bytes=$(cat "$card_dir/mem_info_vram_total" 2>/dev/null || echo "0")
-            vram_mb=$((vram_bytes / 1048576))
-            break
-        done
+        if _cluster_detect_local_amd_gpu; then
+            gpu_name="$_detected_gpu_name"
+            vram_mb="$_detected_vram_mb"
+        fi
     fi
 
     local vram_display="---"
@@ -4163,7 +4271,12 @@ PY
                             "$INSTALL_DIR/scripts/systemd/dream-cluster-agent.service" > "$unit_file"
                         systemctl --user daemon-reload
                     fi
-                    if systemctl --user start dream-cluster-agent.service 2>/dev/null; then
+                    # Mirror the stop branch — let systemd's stderr surface
+                        # so a failed unit (bad ExecStart, denied namespace,
+                        # failed daemon-reload) doesn't get hidden behind a
+                        # generic "Agent start failed" line. Operators need
+                        # the underlying error to debug.
+                    if systemctl --user start dream-cluster-agent.service; then
                         echo ""
                         success "Cluster agent started (systemd)"
                         echo ""
@@ -4180,13 +4293,22 @@ PY
                         echo "  Check progress: journalctl --user -u dream-cluster-agent -f"
                         echo ""
                     else
-                        warn "Agent start failed"
+                        warn "Agent start failed — see systemctl --user status dream-cluster-agent.service for details"
                     fi
                     ;;
                 *)
                     # Fallback: nohup
                     if [[ -f "$pid_file" ]]; then
-                        kill "$(cat "$pid_file")" 2>/dev/null || true
+                        # Best-effort cleanup of a prior agent. kill -0
+                        # tests the PID without signaling so we only emit
+                        # the warn() when an actually-live process refuses
+                        # SIGTERM — a stale PID file is the common case
+                        # and shouldn't print noise.
+                        local _stale_pid
+                        _stale_pid=$(< "$pid_file")
+                        if [[ -n "$_stale_pid" ]] && kill -0 "$_stale_pid" 2>/dev/null; then
+                            kill "$_stale_pid" || warn "could not signal prior agent PID $_stale_pid"
+                        fi
                         rm -f "$pid_file"
                     fi
                     nohup python3 "$agent_script" \
@@ -4225,13 +4347,25 @@ PY
 
             case "$daemon_type" in
                 systemd)
-                    systemctl --user stop dream-cluster-agent.service 2>/dev/null && \
-                        success "Cluster agent stopped" || warn "Agent not running"
+                    if systemctl --user stop dream-cluster-agent.service; then
+                        success "Cluster agent stopped"
+                    else
+                        warn "Agent not running"
+                    fi
                     ;;
                 *)
                     if [[ -f "$pid_file" ]]; then
-                        kill "$(cat "$pid_file")" 2>/dev/null && \
-                            success "Cluster agent stopped" || warn "Agent process not found"
+                        local _agent_pid
+                        _agent_pid=$(< "$pid_file")
+                        if [[ -n "$_agent_pid" ]] && kill -0 "$_agent_pid" 2>/dev/null; then
+                            if kill "$_agent_pid"; then
+                                success "Cluster agent stopped"
+                            else
+                                warn "Could not signal agent PID $_agent_pid"
+                            fi
+                        else
+                            warn "Agent process not found (stale PID file)"
+                        fi
                         rm -f "$pid_file"
                     else
                         warn "Agent not running (no PID file)"
