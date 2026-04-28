@@ -25,9 +25,12 @@ services:
       rpc-net:
         ipv4_address: 172.30.20.21
     stop_grace_period: 2s
-    # Rpc-server has no HTTP endpoint — use nc to check TCP liveness.
+    # Rpc-server has no HTTP endpoint — probe TCP liveness via bash's
+    # /dev/tcp. Must invoke bash explicitly: CMD-SHELL goes through
+    # /bin/sh, which on Ubuntu 24.04 is dash, and dash does not support
+    # /dev/tcp (errors with "Directory nonexistent").
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/50052 && exit 0 || exit 1"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/50052"]
       interval: 2s
       timeout: 2s
       retries: 15
@@ -45,7 +48,7 @@ services:
         ipv4_address: 172.30.20.22
     stop_grace_period: 2s
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/50052 && exit 0 || exit 1"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/50052"]
       interval: 2s
       timeout: 2s
       retries: 15
@@ -66,14 +69,19 @@ services:
         condition: service_healthy
       rpc2:
         condition: service_healthy
-    # -hfr/-hff: llama-server downloads the GGUF from HuggingFace on start.
+    # Model is fetched onto the host by run.sh and bind-mounted at /models.
+    # We can't use -hfr/-hff here because the prod cluster image is built
+    # without OpenSSL (see images/llama-rpc/Dockerfile.cpu), matching how
+    # real installs run — models are mounted, never downloaded in-container.
     # -ngl 99: force all layers onto RPC devices — if RPC is broken, load fails.
     # -c 512: small context — this is a protocol test, not a benchmark.
+    volumes:
+      # :z relabels the host dir so SELinux-enforcing hosts (Fedora, RHEL)
+      # let the container read it. No-op on Debian/Ubuntu hosts.
+      - ./.model-cache:/models:ro,z
     command:
-      - "-hfr"
-      - "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
-      - "-hff"
-      - "qwen2.5-0.5b-instruct-q2_k.gguf"
+      - "--model"
+      - "/models/qwen2.5-0.5b-instruct-q2_k.gguf"
       - "--rpc"
       - "rpc1:50052,rpc2:50052"
       - "--host"
@@ -108,9 +116,6 @@ services:
         condition: service_healthy
     environment:
       LLAMA_URL: "http://llama:8080"
-      RPC1_HOST: "rpc1"
-      RPC2_HOST: "rpc2"
-      RPC_PORT: "50052"
       PYTHONUNBUFFERED: "1"
     working_dir: /app/tests
     command: /app/run-tests.sh

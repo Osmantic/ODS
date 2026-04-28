@@ -16,7 +16,6 @@ which forces *all* model layers onto the RPC devices. A successful
 Model: Qwen2.5-0.5B-Instruct-Q2_K (~280MB, downloaded from HF on first
 launch). Small enough for CPU inference in CI.
 """
-import socket
 import time
 
 import pytest
@@ -25,17 +24,13 @@ import requests
 
 def test_llama_health_reports_ok(llama_url):
     """Baseline: /health returns {"status":"ok"} once the model is loaded
-    and bound to both RPC workers."""
+    and bound to both RPC workers. A healthy llama with -ngl 99 already
+    proves both rpc-servers were reachable AND completed the handshake;
+    we cannot TCP-probe them separately because rpc-server only accepts
+    one client and llama owns it."""
     r = requests.get(f"{llama_url}/health", timeout=5)
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
-
-
-def test_both_rpc_workers_reachable(rpc_hosts):
-    """Both worker containers must answer TCP on the RPC port."""
-    for host, port in rpc_hosts:
-        s = socket.create_connection((host, port), timeout=3)
-        s.close()
 
 
 def test_model_props_advertises_context(llama_url):
