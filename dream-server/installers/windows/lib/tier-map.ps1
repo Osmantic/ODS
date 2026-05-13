@@ -363,11 +363,11 @@ function Get-CatalogModelSelectorMemory {
 function Test-CatalogModelFamilyAllowed {
     param(
         [object]$Model,
-        [string]$Profile
+        [string]$ModelProfileName
     )
 
     $family = "$($Model.family)".ToLowerInvariant()
-    if ($Profile -eq "gemma4") {
+    if ($ModelProfileName -eq "gemma4") {
         return ($family -eq "gemma4" -or $Model.id -eq "qwen3.5-2b-q4")
     }
     return ($family -ne "gemma4")
@@ -427,7 +427,7 @@ function Get-CatalogModelScore {
     param(
         [object]$Model,
         [double]$CapacityGB,
-        [string]$Profile
+        [string]$ModelProfileName
     )
 
     $specialtyWeights = @{
@@ -443,8 +443,8 @@ function Get-CatalogModelScore {
     $specialtyWeight = if ($specialtyWeights.ContainsKey($specialty)) { [double]$specialtyWeights[$specialty] } else { 2.5 }
     $family = "$($Model.family)".ToLowerInvariant()
     $familyBonus = 0.0
-    if ($Profile -eq "gemma4" -and $family -eq "gemma4") { $familyBonus += 0.35 }
-    if (($Profile -eq "qwen" -or $Profile -eq "auto") -and $family -eq "qwen") { $familyBonus += 0.25 }
+    if ($ModelProfileName -eq "gemma4" -and $family -eq "gemma4") { $familyBonus += 0.35 }
+    if (($ModelProfileName -eq "qwen" -or $ModelProfileName -eq "auto") -and $family -eq "qwen") { $familyBonus += 0.25 }
     $sizeMb = [Math]::Max([double]$Model.size_mb, 1.0)
     $context = [Math]::Max([int]$Model.context_length, 8192)
     $required = Get-CatalogModelSelectorRequiredGB -Model $Model
@@ -481,21 +481,21 @@ function Resolve-CatalogModelRecommendation {
         return $TierConfig
     }
 
-    $profile = Normalize-ModelProfile -ModelProfile $TierConfig.ModelProfileEffective
-    if ($profile -eq "auto") {
-        $profile = Resolve-EffectiveModelProfile -Tier $Tier -RequestedProfile $profile
+    $modelProfileName = Normalize-ModelProfile -ModelProfile $TierConfig.ModelProfileEffective
+    if ($modelProfileName -eq "auto") {
+        $modelProfileName = Resolve-EffectiveModelProfile -Tier $Tier -RequestedProfile $modelProfileName
     }
     $memory = Get-CatalogModelSelectorMemory -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB
     $capacityGb = [double]$memory.CapacityGB
     $candidates = @()
     foreach ($model in $catalog.models) {
         if (-not $model.gguf_url) { continue }
-        if (-not (Test-CatalogModelFamilyAllowed -Model $model -Profile $profile)) { continue }
+        if (-not (Test-CatalogModelFamilyAllowed -Model $model -ModelProfileName $modelProfileName)) { continue }
         $requiredGb = Get-CatalogModelSelectorRequiredGB -Model $model
         if ($requiredGb -gt ($capacityGb + 0.25)) { continue }
         $candidates += [pscustomobject]@{
             Model = $model
-            Score = Get-CatalogModelScore -Model $model -CapacityGB $capacityGb -Profile $profile
+            Score = Get-CatalogModelScore -Model $model -CapacityGB $capacityGb -ModelProfileName $modelProfileName
             RequiredGB = $requiredGb
         }
     }

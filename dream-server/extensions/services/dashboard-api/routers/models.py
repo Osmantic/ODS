@@ -23,7 +23,7 @@ from helpers import (
     get_loaded_model,
     record_model_performance,
 )
-from models import ModelLibraryEntry, ModelLibraryGpu, ModelLibraryResponse
+from models import ModelLibraryGpu, ModelLibraryResponse
 from performance_oracle import (
     build_models_payload,
     build_sample_signature,
