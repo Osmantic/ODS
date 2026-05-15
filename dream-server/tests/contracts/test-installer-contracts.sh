@@ -97,6 +97,36 @@ for svc in qdrant embeddings; do
     || { echo "[FAIL] ENABLE_RAG opt-out missing sync for '$svc' in $features_phase"; exit 1; }
 done
 
+echo "[contract] optional extension compose files are installer-gated"
+# Bundled optional/recommended services that ship compose.yaml must not enter
+# a Core Only install just because their compose file exists in the source tree.
+for spec in \
+  'ENABLE_RECOMMENDED:litellm' \
+  'ENABLE_RECOMMENDED:searxng' \
+  'ENABLE_RECOMMENDED:token-spy' \
+  'ENABLE_HERMES:hermes' \
+  'ENABLE_HERMES:hermes-proxy' \
+  'ENABLE_OPENCLAW:openclaw' \
+  'ENABLE_APE:ape' \
+  'ENABLE_PERPLEXICA:perplexica' \
+  'ENABLE_PRIVACY_SHIELD:privacy-shield' \
+  'ENABLE_DREAM_PROXY:dream-proxy' \
+  'ENABLE_TAILSCALE:tailscale' \
+  'ENABLE_BRAVE_SEARCH:brave-search'
+do
+  flag="${spec%%:*}"
+  svc="${spec##*:}"
+  grep -qE "_sync_extension_compose +\"\\\$\\{${flag}:-[^}]*\\}\" +$svc\\b|_sync_extension_compose +\"\\\$\\{${flag}:-\\}\" +$svc\\b" "$features_phase" \
+    || { echo "[FAIL] $svc compose is not gated by $flag in $features_phase"; exit 1; }
+done
+
+windows_plan="installers/windows/lib/service-plan.ps1"
+test -f "$windows_plan" || { echo "[FAIL] missing $windows_plan"; exit 1; }
+for svc in litellm searxng token-spy hermes hermes-proxy openclaw ape perplexica privacy-shield dream-proxy tailscale brave-search; do
+  grep -q "\"$svc\"" "$windows_plan" \
+    || { echo "[FAIL] Windows service plan missing '$svc'"; exit 1; }
+done
+
 echo "[contract] Token Spy dashboard ships offline chart assets"
 test -f extensions/services/token-spy/dashboard_charts.js || { echo "[FAIL] missing extensions/services/token-spy/dashboard_charts.js"; exit 1; }
 grep -q '/dashboard-assets/charts.js' extensions/services/token-spy/main.py || \

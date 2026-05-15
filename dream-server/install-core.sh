@@ -102,6 +102,7 @@ TIER=""
 ENABLE_VOICE=true
 ENABLE_WORKFLOWS=true
 ENABLE_RAG=true
+ENABLE_RECOMMENDED=true
 # Default agent flipped to Hermes Agent (Nous Research) on 2026-05-12.
 # OpenClaw is deprecated and will be removed in the next release; new
 # installs no longer enable it by default. Users who explicitly pass
@@ -111,6 +112,12 @@ ENABLE_HERMES=true
 ENABLE_OPENCLAW=false
 OPENCLAW_EXPLICIT=false
 ENABLE_COMFYUI=true
+ENABLE_APE=true
+ENABLE_PERPLEXICA=true
+ENABLE_PRIVACY_SHIELD=true
+ENABLE_DREAM_PROXY=false
+ENABLE_TAILSCALE=false
+ENABLE_BRAVE_SEARCH=false
 # Langfuse (LLM observability) defaults OFF on all tiers because its
 # clickhouse + postgres + minio stack adds ~500MB baseline memory that is
 # nontrivial even on Tier 3+ systems. Users opt in via --langfuse, --all,
@@ -141,6 +148,8 @@ Options:
     --no-workflows    Disable n8n workflow automation
     --rag             Enable RAG with Qdrant vector database
     --no-rag          Disable RAG / Qdrant
+    --recommended     Enable LiteLLM + SearXNG + Token Spy support services
+    --no-recommended  Disable recommended support services
     --hermes          Enable Hermes Agent (default; new default agent as of 2026-05-12)
     --no-hermes       Disable Hermes Agent
     --openclaw        Enable OpenClaw (DEPRECATED — see docs/MIGRATION-OPENCLAW-TO-HERMES.md)
@@ -194,6 +203,8 @@ while [[ $# -gt 0 ]]; do
         --no-workflows) ENABLE_WORKFLOWS=false; shift ;;
         --rag) ENABLE_RAG=true; shift ;;
         --no-rag) ENABLE_RAG=false; shift ;;
+        --recommended) ENABLE_RECOMMENDED=true; shift ;;
+        --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
         --hermes) ENABLE_HERMES=true; shift ;;
         --no-hermes) ENABLE_HERMES=false; shift ;;
         --openclaw) ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
@@ -209,7 +220,7 @@ while [[ $# -gt 0 ]]; do
         # --all enables Hermes (the new default agent) but NOT OpenClaw —
         # the deprecated agent is opt-in via --openclaw for the deprecation
         # release. Will be dropped entirely in the removal release.
-        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_COMFYUI=true; ENABLE_LANGFUSE=true; shift ;;
+        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; shift ;;
         --non-interactive) INTERACTIVE=false; shift ;;
         --offline) OFFLINE_MODE=true; shift ;;
         --lan) BIND_ADDRESS="0.0.0.0"; shift ;;

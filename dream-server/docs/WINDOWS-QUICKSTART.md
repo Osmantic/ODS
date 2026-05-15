@@ -65,10 +65,12 @@ The installer automatically uses bootstrap mode when applicable — a small mode
 | `-Voice` | Enable Whisper + TTS |
 | `-Workflows` | Enable n8n automation |
 | `-Rag` | Enable Qdrant vector DB |
-| `-OpenClaw` | Enable OpenClaw agent framework |
+| `-Recommended` | Enable LiteLLM + SearXNG + Token Spy support services |
+| `-Hermes` / `-NoHermes` | Enable or disable Hermes Agent |
+| `-OpenClaw` | Enable deprecated OpenClaw legacy agent framework |
 | `-Comfyui` | Enable ComfyUI image generation |
 | `-Langfuse` | Enable Langfuse LLM observability |
-| `-All` | Everything enabled |
+| `-All` | Full stack enabled, except deprecated OpenClaw unless `-OpenClaw` is also passed |
 | `-Cloud` | Use cloud LLM provider instead of local |
 | `-DryRun` | Simulate install without making changes |
 

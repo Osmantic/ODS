@@ -72,6 +72,9 @@ jobs:
       - name: Windows Install Readiness Summary Tests
         run: bash tests/test-windows-readiness-summary.sh
 
+      - name: Windows Service Plan Tests
+        run: bash tests/test-windows-service-plan.sh
+
       - name: Validate Env Tests
         run: bash tests/test-validate-env.sh
 

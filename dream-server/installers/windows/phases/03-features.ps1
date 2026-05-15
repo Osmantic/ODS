@@ -6,7 +6,8 @@
 #          non-interactive / headless installs.
 #
 # Reads:
-#   $voiceFlag, $workflowsFlag, $ragFlag, $openClawFlag, $allFlag
+#   $voiceFlag, $workflowsFlag, $ragFlag, $recommendedFlag, $hermesFlag,
+#   $openClawFlag, $allFlag
 #   $comfyuiFlag, $noComfyuiFlag
 #   $nonInteractive  -- suppress menus (use flag defaults)
 #   $dryRun          -- skip prompts, log only
@@ -16,7 +17,9 @@
 #   $enableVoice      -- bool: enable Whisper + Kokoro TTS
 #   $enableWorkflows  -- bool: enable n8n workflow automation
 #   $enableRag        -- bool: enable Qdrant + embeddings (RAG)
-#   $enableOpenClaw   -- bool: enable OpenClaw agent framework
+#   $enableRecommended -- bool: enable recommended web/API support services
+#   $enableHermes     -- bool: enable Hermes agent framework
+#   $enableOpenClaw   -- bool: enable deprecated OpenClaw agent framework
 #   $enableComfyui    -- bool: enable ComfyUI image generation
 #   $openClawConfig   -- string: tier-appropriate OpenClaw config filename
 #
@@ -29,11 +32,18 @@
 Write-Phase -Phase 3 -Total 13 -Name "FEATURE SELECTION" -Estimate "interactive"
 
 # ── Defaults from CLI flags ────────────────────────────────────────────────────
-$enableVoice      = $voiceFlag -or $allFlag
-$enableWorkflows  = $workflowsFlag -or $allFlag
-$enableRag        = $ragFlag -or $allFlag
-$enableOpenClaw   = $openClawFlag -or $allFlag
-$enableComfyui    = -not $noComfyuiFlag
+$enableVoice        = $voiceFlag -or $allFlag
+$enableWorkflows    = $workflowsFlag -or $allFlag
+$enableRag          = $ragFlag -or $allFlag
+$enableRecommended  = ($recommendedFlag -or $allFlag) -and (-not $noRecommendedFlag)
+$enableHermes       = ($hermesFlag -or $allFlag) -and (-not $noHermesFlag)
+$enableOpenClaw     = $openClawFlag
+$enableComfyui      = -not $noComfyuiFlag
+$enableDeepResearch = $allFlag
+$enablePrivacyShield = $allFlag
+$enableBraveSearch  = $false
+$enableDreamProxy   = $false
+$enableRemoteAccess = $false
 # Langfuse defaults OFF on all tiers because its clickhouse + postgres + minio
 # stack adds ~500MB baseline memory. Opt in via -Langfuse, -All, the Custom
 # menu, or post-install `dream enable langfuse`. -NoLangfuse is honored as an
@@ -45,7 +55,7 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
     Write-Host ""
     Write-Host "  Choose your Dream Server configuration:" -ForegroundColor White
     Write-Host ""
-    Write-Host "  [1] Full Stack   -- Voice + Workflows + RAG + Agents (everything)" -ForegroundColor Green
+    Write-Host "  [1] Full Stack   -- Voice + Workflows + RAG + Hermes + research tools" -ForegroundColor Green
     Write-Host "  [2] Core Only    -- Chat + LLM inference (lean, fastest startup)" -ForegroundColor White
     Write-Host "  [3] Custom       -- Choose each feature individually" -ForegroundColor White
     Write-Host ""
@@ -56,8 +66,12 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
             $enableVoice     = $false
             $enableWorkflows = $false
             $enableRag       = $false
+            $enableRecommended = $false
+            $enableHermes    = $false
             $enableOpenClaw  = $false
             $enableComfyui   = $false
+            $enableDeepResearch = $false
+            $enablePrivacyShield = $false
             $enableLangfuse  = $false
         }
         "3" {
@@ -65,8 +79,12 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
             $enableVoice     = (Read-Host "  Enable Voice (Whisper STT + Kokoro TTS)?  [y/N]") -match "^[yY]"
             $enableWorkflows = (Read-Host "  Enable Workflows (n8n, 400+ integrations)? [y/N]") -match "^[yY]"
             $enableRag       = (Read-Host "  Enable RAG (Qdrant vector DB + embeddings)? [y/N]") -match "^[yY]"
-            $enableOpenClaw  = (Read-Host "  Enable OpenClaw (autonomous AI agents)?    [y/N]") -match "^[yY]"
+            $enableRecommended = (Read-Host "  Enable recommended web/API support (LiteLLM + SearXNG + Token Spy)? [Y/n]") -notmatch "^[nN]"
+            $enableHermes    = (Read-Host "  Enable Hermes Agent (default AI agent)? [Y/n]") -notmatch "^[nN]"
+            $enableOpenClaw  = (Read-Host "  Enable OpenClaw (DEPRECATED legacy agent)? [y/N]") -match "^[yY]"
             $enableComfyui   = (Read-Host "  Enable image generation (ComfyUI + SDXL Lightning, ~6.5GB)? [y/N]") -match "^[yY]"
+            $enableDeepResearch = (Read-Host "  Enable Perplexica deep research? [Y/n]") -notmatch "^[nN]"
+            $enablePrivacyShield = (Read-Host "  Enable Privacy Shield PII protection? [Y/n]") -notmatch "^[nN]"
             $enableLangfuse  = (Read-Host "  Enable Langfuse (LLM observability, ~500MB)? [y/N]") -match "^[yY]"
 
             # Warn on low-tier
@@ -80,8 +98,12 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
             $enableVoice     = $true
             $enableWorkflows = $true
             $enableRag       = $true
-            $enableOpenClaw  = $true
+            $enableRecommended = $true
+            $enableHermes    = $true
+            $enableOpenClaw  = $false
             $enableComfyui   = $true
+            $enableDeepResearch = $true
+            $enablePrivacyShield = $true
             $enableLangfuse  = $true
 
             # Disable image generation on low-tier systems (insufficient RAM/VRAM)
@@ -113,8 +135,12 @@ Write-AI "Feature configuration:"
 Write-InfoBox "  Voice (Whisper + Kokoro):" $(if ($enableVoice)     { "enabled" } else { "disabled" })
 Write-InfoBox "  Workflows (n8n):"          $(if ($enableWorkflows) { "enabled" } else { "disabled" })
 Write-InfoBox "  RAG (Qdrant + embeddings):" $(if ($enableRag)      { "enabled" } else { "disabled" })
-Write-InfoBox "  Agents (OpenClaw):"         $(if ($enableOpenClaw) { "enabled" } else { "disabled" })
+Write-InfoBox "  Recommended web/API:"       $(if ($enableRecommended) { "enabled" } else { "disabled" })
+Write-InfoBox "  Agents (Hermes):"           $(if ($enableHermes)   { "enabled" } else { "disabled" })
+Write-InfoBox "  Legacy OpenClaw:"           $(if ($enableOpenClaw) { "enabled (DEPRECATED)" } else { "disabled" })
 Write-InfoBox "  Image gen (ComfyUI):"        $(if ($enableComfyui)  { "enabled" } else { "disabled" })
+Write-InfoBox "  Deep research:"              $(if ($enableDeepResearch) { "enabled" } else { "disabled" })
+Write-InfoBox "  Privacy Shield:"             $(if ($enablePrivacyShield) { "enabled" } else { "disabled" })
 Write-InfoBox "  Langfuse (observability):"   $(if ($enableLangfuse) { "enabled" } else { "disabled" })
 
 # ── Tier-appropriate OpenClaw config selection ────────────────────────────────

@@ -75,11 +75,17 @@ TIER_OVERRIDE=""
 ENABLE_VOICE=false
 ENABLE_WORKFLOWS=false
 ENABLE_RAG=false
+ENABLE_RECOMMENDED=true
 # Hermes Agent is the new default agent as of 2026-05-12. OpenClaw is
 # deprecated and gates behind --openclaw for the deprecation release.
 ENABLE_HERMES=true
 ENABLE_OPENCLAW=false
 ENABLE_BRAVE_SEARCH=false
+ENABLE_APE=true
+ENABLE_PERPLEXICA=false
+ENABLE_PRIVACY_SHIELD=false
+ENABLE_DREAM_PROXY=false
+ENABLE_TAILSCALE=false
 # Langfuse defaults OFF because its clickhouse + postgres + minio stack adds
 # ~500MB baseline memory. Enable via --langfuse, --all, or post-install
 # `dream enable langfuse`. --no-langfuse honored as explicit override so a
@@ -99,6 +105,8 @@ while [[ $# -gt 0 ]]; do
         --voice)         ENABLE_VOICE=true; shift ;;
         --workflows)     ENABLE_WORKFLOWS=true; shift ;;
         --rag)           ENABLE_RAG=true; shift ;;
+        --recommended)   ENABLE_RECOMMENDED=true; shift ;;
+        --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
         --hermes)        ENABLE_HERMES=true; shift ;;
         --no-hermes)     ENABLE_HERMES=false; shift ;;
         --openclaw)      ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
@@ -115,11 +123,15 @@ if $ALL_FEATURES; then
     ENABLE_VOICE=true
     ENABLE_WORKFLOWS=true
     ENABLE_RAG=true
+    ENABLE_RECOMMENDED=true
     # --all enables the new default Hermes Agent. OpenClaw stays opt-in via
     # --openclaw during the deprecation release; will be removed entirely
     # in the next release.
     ENABLE_HERMES=true
     $OPENCLAW_EXPLICIT || ENABLE_OPENCLAW=false
+    ENABLE_APE=true
+    ENABLE_PERPLEXICA=true
+    ENABLE_PRIVACY_SHIELD=true
     # --all enables Langfuse unless the user explicitly passed --no-langfuse.
     $NO_LANGFUSE_EXPLICIT || ENABLE_LANGFUSE=true
 fi
@@ -526,13 +538,21 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
         1)
             ENABLE_VOICE=true; ENABLE_WORKFLOWS=true
             ENABLE_RAG=true; ENABLE_HERMES=true
+            ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
+            ENABLE_APE=true
+            ENABLE_PERPLEXICA=true
+            ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
             ;;
         2)
             ENABLE_VOICE=false; ENABLE_WORKFLOWS=false
-            ENABLE_RAG=false; ENABLE_HERMES=false
+            ENABLE_RAG=false; ENABLE_RECOMMENDED=false
+            ENABLE_HERMES=false
             ENABLE_OPENCLAW=false
+            ENABLE_APE=false
+            ENABLE_PERPLEXICA=false
+            ENABLE_PRIVACY_SHIELD=false
             ENABLE_LANGFUSE=false
             ;;
         3)
@@ -542,17 +562,27 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             [[ "$yn" =~ ^[yY] ]] && ENABLE_WORKFLOWS=true
             read -r -p "  Enable RAG (Qdrant + embeddings)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_RAG=true
+            read -r -p "  Enable recommended support (LiteLLM + SearXNG + Token Spy)? [Y/n] " yn < /dev/tty
+            [[ "$yn" =~ ^[nN] ]] && ENABLE_RECOMMENDED=false || ENABLE_RECOMMENDED=true
             read -r -p "  Enable Hermes Agent (default AI agent)? [Y/n] " yn < /dev/tty
             [[ "$yn" =~ ^[nN] ]] && ENABLE_HERMES=false || ENABLE_HERMES=true
             read -r -p "  Enable OpenClaw (DEPRECATED — Hermes replaces it)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_OPENCLAW=true
+            read -r -p "  Enable Perplexica deep research? [y/N] " yn < /dev/tty
+            [[ "$yn" =~ ^[yY] ]] && ENABLE_PERPLEXICA=true
+            read -r -p "  Enable Privacy Shield? [y/N] " yn < /dev/tty
+            [[ "$yn" =~ ^[yY] ]] && ENABLE_PRIVACY_SHIELD=true
             read -r -p "  Enable Langfuse (LLM observability, ~500MB)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_LANGFUSE=true
             ;;
         *)
             ENABLE_VOICE=true; ENABLE_WORKFLOWS=true
             ENABLE_RAG=true; ENABLE_HERMES=true
+            ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
+            ENABLE_APE=true
+            ENABLE_PERPLEXICA=true
+            ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
             ;;
     esac
@@ -562,8 +592,11 @@ ai "Features:"
 info_box "  Voice:" "$(if $ENABLE_VOICE; then echo enabled; else echo disabled; fi)"
 info_box "  Workflows:" "$(if $ENABLE_WORKFLOWS; then echo enabled; else echo disabled; fi)"
 info_box "  RAG:" "$(if $ENABLE_RAG; then echo enabled; else echo disabled; fi)"
+info_box "  Recommended:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
 info_box "  Hermes:" "$(if $ENABLE_HERMES; then echo enabled; else echo disabled; fi)"
 info_box "  OpenClaw:" "$(if $ENABLE_OPENCLAW; then echo "enabled (DEPRECATED)"; else echo disabled; fi)"
+info_box "  Perplexica:" "$(if $ENABLE_PERPLEXICA; then echo enabled; else echo disabled; fi)"
+info_box "  Privacy Shield:" "$(if $ENABLE_PRIVACY_SHIELD; then echo enabled; else echo disabled; fi)"
 info_box "  Langfuse:" "$(if $ENABLE_LANGFUSE; then echo enabled; else echo disabled; fi)"
 # The macOS installer doesn't currently ship a ComfyUI container — none of
 # the published ComfyUI images target Apple Silicon Metal, and the upstream
@@ -1035,6 +1068,9 @@ else
     EXT_DIR="${INSTALL_DIR}/extensions/services"
     CURRENT_BACKEND="apple"
     $CLOUD_MODE && CURRENT_BACKEND="none"
+    if ! $ENABLE_HERMES && ! $ENABLE_OPENCLAW; then
+        ENABLE_APE=false
+    fi
 
     # Sync Langfuse compose state with ENABLE_LANGFUSE before manifest discovery.
     # Langfuse ships as compose.yaml.disabled; enable it here when the user opted
@@ -1118,11 +1154,17 @@ else
             # Check feature flags
             SKIP=false
             case "$SVC_NAME" in
+                litellm|searxng|token-spy) $ENABLE_RECOMMENDED || SKIP=true ;;
                 whisper|tts)   $ENABLE_VOICE || SKIP=true ;;
                 n8n)           $ENABLE_WORKFLOWS || SKIP=true ;;
                 qdrant|embeddings) $ENABLE_RAG || SKIP=true ;;
                 hermes|hermes-proxy) $ENABLE_HERMES || SKIP=true ;;
                 openclaw)      $ENABLE_OPENCLAW || SKIP=true ;;
+                ape)           $ENABLE_APE || SKIP=true ;;
+                perplexica)    $ENABLE_PERPLEXICA || SKIP=true ;;
+                privacy-shield) $ENABLE_PRIVACY_SHIELD || SKIP=true ;;
+                dream-proxy)   $ENABLE_DREAM_PROXY || SKIP=true ;;
+                tailscale)     $ENABLE_TAILSCALE || SKIP=true ;;
                 langfuse)      $ENABLE_LANGFUSE || SKIP=true ;;
                 brave-search)  [[ "${ENABLE_BRAVE_SEARCH:-false}" == "true" ]] || SKIP=true ;;
             esac
