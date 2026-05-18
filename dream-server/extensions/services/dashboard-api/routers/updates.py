@@ -3,19 +3,18 @@
 import asyncio
 import json
 import logging
-import os
 import re
-import shutil
-import subprocess
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
-from config import INSTALL_DIR
+from config import AGENT_URL, DREAM_AGENT_KEY, INSTALL_DIR
 from models import VersionInfo, UpdateAction
 from security import verify_api_key
 
@@ -29,7 +28,6 @@ _GITHUB_HEADERS = {"Accept": "application/vnd.github.v3+json"}
 _VERSION_CACHE_TTL = 300.0
 _version_cache: dict[str, object] = {"expires_at": 0.0, "payload": None}
 _version_refresh_task: Optional[asyncio.Task] = None
-_usable_bash: Optional[str] | bool = None
 
 
 def _read_utf8(path: Path) -> str:
@@ -83,68 +81,59 @@ def _read_current_version() -> str:
     return "0.0.0"
 
 
-def _find_usable_bash() -> Optional[str]:
-    """Return a Bash executable that can actually run scripts on this host."""
-    global _usable_bash
-    if isinstance(_usable_bash, str):
-        return _usable_bash
-    if _usable_bash is False:
-        return None
-
-    bash = shutil.which("bash")
-    if not bash:
-        _usable_bash = False
-        return None
+def _call_update_agent(endpoint_action: str, payload: dict, timeout: int) -> dict:
+    """Call the host agent for update execution."""
+    url = f"{AGENT_URL}/v1/update/{endpoint_action}"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {DREAM_AGENT_KEY}",
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8") or "{}")
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            body = {}
+        detail = body.get("error") or body.get("detail") or exc.reason
+        raise HTTPException(status_code=exc.code, detail=detail)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        detail = str(getattr(exc, "reason", exc))
+        raise HTTPException(status_code=503, detail=f"Host agent unreachable: {detail}")
 
     try:
-        result = subprocess.run(
-            [bash, "-lc", "printf ok"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        _usable_bash = False
-        return None
-
-    if result.returncode == 0 and result.stdout == "ok":
-        _usable_bash = bash
-        return bash
-    _usable_bash = False
-    return None
+        parsed = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        parsed = {"success": False, "output": raw}
+    return parsed if isinstance(parsed, dict) else {"success": False, "output": raw}
 
 
-def _to_bash_path(path: Path) -> str:
-    """Convert a Windows path into a form Git Bash can execute."""
-    path_str = str(path)
-    if os.name != "nt":
-        return path_str
+def _get_update_agent_status(timeout: int = 5) -> dict:
+    url = f"{AGENT_URL}/v1/update/status"
+    headers = {"Authorization": f"Bearer {DREAM_AGENT_KEY}"}
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8") or "{}")
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            body = {}
+        detail = body.get("error") or body.get("detail") or exc.reason
+        raise HTTPException(status_code=exc.code, detail=detail)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        detail = str(getattr(exc, "reason", exc))
+        raise HTTPException(status_code=503, detail=f"Host agent unreachable: {detail}")
 
-    match = re.match(r"^([A-Za-z]):[\\/](.*)$", path_str)
-    if match:
-        drive = match.group(1).lower()
-        rest = match.group(2).replace("\\", "/")
-        return f"/{drive}/{rest}"
-    return path_str.replace("\\", "/")
-
-
-def _update_command(script_path: Path, *args: str) -> list[str]:
-    """Build a platform-aware command for dream-update.sh."""
-    if os.name != "nt":
-        return [str(script_path), *args]
-
-    bash = _find_usable_bash()
-    if bash:
-        return [bash, _to_bash_path(script_path), *args]
-
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Update actions require a usable Bash runtime on Windows. "
-            "Run this action inside the Dream Server Linux container/WSL path "
-            "or install Git Bash and retry."
-        ),
-    )
+    try:
+        parsed = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        parsed = {"status": "unknown", "output": raw}
+    return parsed if isinstance(parsed, dict) else {"status": "unknown", "output": raw}
 
 
 def _get_cached_release_payload(allow_stale: bool = False) -> Optional[dict]:
@@ -355,59 +344,22 @@ async def get_update_dry_run():
     }
 
 
+@router.get("/api/update/status", dependencies=[Depends(verify_api_key)])
+async def get_update_status():
+    """Return host-agent managed update status."""
+    return await asyncio.to_thread(_get_update_agent_status)
+
+
 @router.post("/api/update")
-async def trigger_update(action: UpdateAction, background_tasks: BackgroundTasks, api_key: str = Depends(verify_api_key)):
+async def trigger_update(action: UpdateAction, api_key: str = Depends(verify_api_key)):
     """Trigger update actions via dashboard."""
     if action.action not in _VALID_ACTIONS:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action.action}")
 
-    script_path = Path(INSTALL_DIR) / "dream-update.sh"
-    if not script_path.exists():
-        script_path = Path(INSTALL_DIR).parent / "scripts" / "dream-update.sh"
-    if not script_path.exists():
-        script_path = Path(INSTALL_DIR) / "scripts" / "dream-update.sh"
-
-    if not script_path.exists():
-        logger.error("dream-update.sh not found at %s", script_path)
-        raise HTTPException(status_code=501, detail="Update system not installed.")
-
     if action.action == "check":
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *_update_command(script_path, "check"),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-            return {"success": True, "update_available": proc.returncode == 2, "output": stdout.decode() + stderr.decode()}
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="Update check timed out")
-        except OSError:
-            logger.exception("Update check failed")
-            raise HTTPException(status_code=500, detail="Check failed")
-    elif action.action == "backup":
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *_update_command(script_path, "backup", f"dashboard-{datetime.now().strftime('%Y%m%d-%H%M%S')}"),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-            return {"success": proc.returncode == 0, "output": stdout.decode() + stderr.decode()}
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="Backup timed out")
-        except OSError:
-            logger.exception("Backup failed")
-            raise HTTPException(status_code=500, detail="Backup failed")
-    elif action.action == "update":
-        command = _update_command(script_path, "update")
+        return await asyncio.to_thread(_call_update_agent, "check", {}, 35)
+    if action.action == "backup":
+        payload = {"backup_id": f"dashboard-{datetime.now().strftime('%Y%m%d-%H%M%S')}"}
+        return await asyncio.to_thread(_call_update_agent, "backup", payload, 65)
 
-        async def run_update():
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *command,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                )
-                await proc.communicate()
-            except OSError:
-                logger.exception("update task failed")
-        background_tasks.add_task(run_update)
-        return {"success": True, "message": "Update started in background. Check logs for progress."}
+    return await asyncio.to_thread(_call_update_agent, "start", {}, 10)

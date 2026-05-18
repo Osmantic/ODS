@@ -1,11 +1,8 @@
 """Tests for updates router endpoints."""
 
 import json
-import sys
-from pathlib import PureWindowsPath
 from unittest.mock import patch, MagicMock, AsyncMock
 
-import pytest
 import httpx
 from fastapi import HTTPException
 
@@ -118,50 +115,22 @@ def test_trigger_update_requires_auth(test_client):
     assert resp.status_code == 401
 
 
-def test_trigger_update_no_script(test_client):
-    """POST /api/update when update script is missing → 501."""
+def test_trigger_update_host_agent_unreachable(test_client, monkeypatch):
+    """POST /api/update surfaces host-agent reachability failures."""
+    import routers.updates as updates_mod
+
+    def fail(action, payload, timeout):
+        raise HTTPException(status_code=503, detail="Host agent unreachable: timed out")
+
+    monkeypatch.setattr(updates_mod, "_call_update_agent", fail)
+
     resp = test_client.post(
         "/api/update",
         json={"action": "check"},
-        headers=test_client.auth_headers
+        headers=test_client.auth_headers,
     )
-    assert resp.status_code == 501
-
-
-def test_update_command_windows_requires_usable_bash(monkeypatch, tmp_path):
-    """Windows update actions fail clearly when no usable Bash runtime exists."""
-    import routers.updates as updates_mod
-
-    script = tmp_path / "dream-update.sh"
-    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-
-    monkeypatch.setattr(updates_mod.os, "name", "nt")
-    monkeypatch.setattr(updates_mod, "_find_usable_bash", lambda: None)
-
-    with pytest.raises(HTTPException) as exc:
-        updates_mod._update_command(script, "check")
-
-    assert exc.value.status_code == 501
-    assert "usable Bash runtime" in exc.value.detail
-
-
-def test_update_command_windows_uses_bash_path(monkeypatch):
-    """Windows update actions pass Git Bash a POSIX-style script path."""
-    import routers.updates as updates_mod
-
-    monkeypatch.setattr(updates_mod.os, "name", "nt")
-    monkeypatch.setattr(updates_mod, "_find_usable_bash", lambda: "C:\\Program Files\\Git\\bin\\bash.exe")
-
-    command = updates_mod._update_command(
-        PureWindowsPath("C:/DreamServer/dream-server/scripts/dream-update.sh"),
-        "check",
-    )
-
-    assert command == [
-        "C:\\Program Files\\Git\\bin\\bash.exe",
-        "/c/DreamServer/dream-server/scripts/dream-update.sh",
-        "check",
-    ]
+    assert resp.status_code == 503
+    assert "Host agent unreachable" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -395,29 +364,29 @@ def test_update_dry_run_no_files(test_client, tmp_path, monkeypatch):
     assert data["images"] == []
 
 
+def test_get_update_status_proxies_host_agent(test_client, monkeypatch):
+    """GET /api/update/status returns host-agent update status."""
+    import routers.updates as updates_mod
+
+    monkeypatch.setattr(
+        updates_mod,
+        "_get_update_agent_status",
+        lambda: {"status": "succeeded", "returncode": 0},
+    )
+
+    resp = test_client.get("/api/update/status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "succeeded", "returncode": 0}
+
+
 # ---------------------------------------------------------------------------
 # POST /api/update — invalid action
 # ---------------------------------------------------------------------------
 
 
-def test_trigger_update_invalid_action(test_client, tmp_path, monkeypatch):
+def test_trigger_update_invalid_action(test_client):
     """POST /api/update with unknown action → 400."""
-    import routers.updates as updates_mod
-
-    # Create a fake script so we get past the 501 check
-    install_dir = tmp_path / "dream-server"
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    script = scripts_dir / "dream-update.sh"
-    script.write_text("import sys\nsys.exit(0)\n")
-    script.chmod(0o755)
-    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))
-    monkeypatch.setattr(
-        updates_mod,
-        "_update_command",
-        lambda script_path, *args: [sys.executable, str(script_path), *args],
-    )
-
     resp = test_client.post(
         "/api/update",
         json={"action": "destroy"},
@@ -432,23 +401,17 @@ def test_trigger_update_invalid_action(test_client, tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_trigger_update_action_update(test_client, tmp_path, monkeypatch):
+def test_trigger_update_action_update(test_client, monkeypatch):
     """POST /api/update with action=update → 200, starts background task."""
     import routers.updates as updates_mod
 
-    install_dir = tmp_path / "dream-server"
-    install_dir.mkdir()
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    script = scripts_dir / "dream-update.sh"
-    script.write_text("import sys\nsys.exit(0)\n")
-    script.chmod(0o755)
-    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))
-    monkeypatch.setattr(
-        updates_mod,
-        "_update_command",
-        lambda script_path, *args: [sys.executable, str(script_path), *args],
-    )
+    calls = []
+
+    def fake_call(action, payload, timeout):
+        calls.append((action, payload, timeout))
+        return {"success": True, "message": "Update started in background."}
+
+    monkeypatch.setattr(updates_mod, "_call_update_agent", fake_call)
 
     resp = test_client.post(
         "/api/update",
@@ -459,6 +422,7 @@ def test_trigger_update_action_update(test_client, tmp_path, monkeypatch):
     data = resp.json()
     assert data["success"] is True
     assert "background" in data["message"].lower()
+    assert calls == [("start", {}, 10)]
 
 
 # ---------------------------------------------------------------------------
@@ -466,23 +430,17 @@ def test_trigger_update_action_update(test_client, tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_trigger_update_action_check(test_client, tmp_path, monkeypatch):
+def test_trigger_update_action_check(test_client, monkeypatch):
     """POST /api/update with action=check → 200, runs script and returns output."""
     import routers.updates as updates_mod
 
-    install_dir = tmp_path / "dream-server"
-    install_dir.mkdir()
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    script = scripts_dir / "dream-update.sh"
-    script.write_text("import sys\nprint('no updates')\nsys.exit(0)\n")
-    script.chmod(0o755)
-    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))
-    monkeypatch.setattr(
-        updates_mod,
-        "_update_command",
-        lambda script_path, *args: [sys.executable, str(script_path), *args],
-    )
+    calls = []
+
+    def fake_call(action, payload, timeout):
+        calls.append((action, payload, timeout))
+        return {"success": True, "update_available": False, "output": "no updates"}
+
+    monkeypatch.setattr(updates_mod, "_call_update_agent", fake_call)
 
     resp = test_client.post(
         "/api/update",
@@ -494,6 +452,7 @@ def test_trigger_update_action_check(test_client, tmp_path, monkeypatch):
     assert data["success"] is True
     assert data["update_available"] is False
     assert "no updates" in data["output"]
+    assert calls == [("check", {}, 35)]
 
 
 # ---------------------------------------------------------------------------
@@ -501,23 +460,17 @@ def test_trigger_update_action_check(test_client, tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_trigger_update_action_backup(test_client, tmp_path, monkeypatch):
+def test_trigger_update_action_backup(test_client, monkeypatch):
     """POST /api/update with action=backup → 200, runs backup script."""
     import routers.updates as updates_mod
 
-    install_dir = tmp_path / "dream-server"
-    install_dir.mkdir()
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    script = scripts_dir / "dream-update.sh"
-    script.write_text("import sys\nprint('backup complete')\nsys.exit(0)\n")
-    script.chmod(0o755)
-    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))
-    monkeypatch.setattr(
-        updates_mod,
-        "_update_command",
-        lambda script_path, *args: [sys.executable, str(script_path), *args],
-    )
+    calls = []
+
+    def fake_call(action, payload, timeout):
+        calls.append((action, payload, timeout))
+        return {"success": True, "output": "backup complete"}
+
+    monkeypatch.setattr(updates_mod, "_call_update_agent", fake_call)
 
     resp = test_client.post(
         "/api/update",
@@ -528,3 +481,6 @@ def test_trigger_update_action_backup(test_client, tmp_path, monkeypatch):
     data = resp.json()
     assert data["success"] is True
     assert "backup" in data["output"].lower()
+    assert calls[0][0] == "backup"
+    assert calls[0][1]["backup_id"].startswith("dashboard-")
+    assert calls[0][2] == 65

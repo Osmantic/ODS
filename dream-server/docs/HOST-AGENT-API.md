@@ -56,6 +56,41 @@ Health check. No authentication required.
 }
 ```
 
+### `GET /v1/update/status`
+
+Return the last host-agent managed update run status.
+
+**Authentication:** Required
+
+**Response (200):**
+```json
+{
+  "status": "succeeded",
+  "action": "update",
+  "returncode": 0,
+  "updated_at": "2026-05-18T18:00:00Z"
+}
+```
+
+If no update has run, the response is `{ "status": "idle" }`.
+
+### `POST /v1/update/check`, `POST /v1/update/backup`, `POST /v1/update/start`
+
+Run `dream-update.sh` from the host-agent boundary. `check` and `backup` run synchronously and return script output. `start` launches the update in a background thread and writes `data/update-status.json` for polling.
+
+**Authentication:** Required
+
+**Request body:** optional JSON object. `backup` accepts an optional `backup_id`; otherwise the host agent generates one.
+
+**Error responses:**
+| Code | Condition |
+|------|-----------|
+| 401 | Missing Authorization header |
+| 403 | Invalid API key |
+| 409 | Update already running |
+| 501 | Update system or usable Bash runtime not available |
+| 504 | Update check/backup timed out |
+
 ### `POST /v1/extension/start`
 
 Start an extension container. Runs `docker compose up -d <service_id>` using the full compose stack (resolved via `scripts/resolve-compose-stack.sh`). Before starting, the agent pre-creates any `./data/` volume directories declared in the extension's `compose.yaml`, with correct ownership based on the `user:` field.

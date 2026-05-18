@@ -96,6 +96,11 @@ _model_download_proc: subprocess.Popen | None = None
 _model_download_cancel = threading.Event()
 # Model activation lock — prevent concurrent .env writes and Docker restarts
 _model_activate_lock = threading.Lock()
+# Update lock/state: only one background dream-update run at a time.
+_update_lock = threading.Lock()
+_update_status_lock = threading.Lock()
+_update_thread: threading.Thread | None = None
+_update_usable_bash: str | bool | None = None
 
 
 def load_env(env_path: Path) -> dict:
@@ -769,6 +774,25 @@ def read_json_body(handler) -> dict | None:
         return None
 
 
+def read_optional_json_body(handler) -> dict | None:
+    try:
+        length = int(handler.headers.get("Content-Length", 0))
+    except (ValueError, TypeError):
+        json_response(handler, 400, {"error": "Invalid Content-Length"})
+        return None
+    if length <= 0:
+        return {}
+    try:
+        data = json.loads(handler.rfile.read(min(length, MAX_BODY)))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        json_response(handler, 400, {"error": "Invalid JSON"})
+        return None
+    if not isinstance(data, dict):
+        json_response(handler, 400, {"error": "JSON body must be an object"})
+        return None
+    return data
+
+
 def validate_service_id(handler, body: dict) -> str | None:
     sid = body.get("service_id", "")
     if not isinstance(sid, str) or not SERVICE_ID_RE.match(sid):
@@ -992,6 +1016,99 @@ def _narrowed_compose_set_resolves(narrowed_flags: list, service_id: str,
     return service_id in result.stdout.split()
 
 
+def _update_status_path() -> Path:
+    return INSTALL_DIR / "data" / "update-status.json"
+
+
+def _write_update_status(status: str, action: str, **fields) -> None:
+    with _update_status_lock:
+        path = _update_status_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "status": status,
+            "action": action,
+            "updated_at": _iso_now(),
+            **fields,
+        }
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(path)
+
+
+def _read_update_status() -> dict:
+    with _update_status_lock:
+        path = _update_status_path()
+        if not path.exists():
+            return {"status": "idle"}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"status": "unknown", "error": "could not read update status"}
+    return data if isinstance(data, dict) else {"status": "unknown"}
+
+
+def _find_update_script() -> Path | None:
+    for candidate in (
+        INSTALL_DIR / "dream-update.sh",
+        INSTALL_DIR / "scripts" / "dream-update.sh",
+        INSTALL_DIR.parent / "scripts" / "dream-update.sh",
+    ):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _find_update_bash() -> str | None:
+    global _update_usable_bash
+    if isinstance(_update_usable_bash, str):
+        return _update_usable_bash
+    if _update_usable_bash is False:
+        return None
+
+    bash = shutil.which("bash")
+    if not bash:
+        _update_usable_bash = False
+        return None
+    try:
+        result = subprocess.run(
+            [bash, "-lc", "printf ok"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        _update_usable_bash = False
+        return None
+    if result.returncode == 0 and result.stdout == "ok":
+        _update_usable_bash = bash
+        return bash
+    _update_usable_bash = False
+    return None
+
+
+def _update_command(script_path: Path, *args: str) -> list[str]:
+    if platform.system() != "Windows":
+        return [str(script_path), *args]
+    bash = _find_update_bash()
+    if not bash:
+        raise RuntimeError(
+            "Update actions require a usable Bash runtime on Windows. "
+            "Install Git Bash or run Dream Server through WSL/Linux."
+        )
+    return [bash, _to_bash_path(script_path), *args]
+
+
+def _run_update_script(action: str, *args: str, timeout: int | None) -> subprocess.CompletedProcess:
+    script = _find_update_script()
+    if script is None:
+        raise FileNotFoundError("dream-update.sh not found")
+    return subprocess.run(
+        _update_command(script, action, *args),
+        cwd=str(INSTALL_DIR),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
 class AgentHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         logger.info(fmt, *args)
@@ -1013,6 +1130,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_tailscale_status()
         elif self.path == "/v1/ap-mode/status":
             self._handle_ap_mode_status()
+        elif self.path == "/v1/update/status":
+            self._handle_update_status()
         else:
             json_response(self, 404, {"error": "Not found"})
 
@@ -1230,6 +1349,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_invalidate_compose_cache()
         elif self.path == "/v1/env/update":
             self._handle_env_update()
+        elif self.path in ("/v1/update/check", "/v1/update/backup", "/v1/update/start"):
+            self._handle_update_action()
         elif self.path == "/v1/network/wifi-connect":
             self._handle_network_wifi_connect()
         elif self.path == "/v1/network/wifi-forget":
@@ -1244,6 +1365,137 @@ class AgentHandler(BaseHTTPRequestHandler):
         invalidate_compose_cache()
         logger.info("compose-flags cache invalidated")
         json_response(self, 200, {"status": "ok"})
+
+    def _handle_update_status(self):
+        """Return the last host-agent managed update run status."""
+        if not check_auth(self):
+            return
+        data = _read_update_status()
+        with _update_lock:
+            running = _update_thread is not None and _update_thread.is_alive()
+        if running:
+            data = {**data, "status": "running"}
+        json_response(self, 200, data)
+
+    def _handle_update_action(self):
+        """Run dream-update.sh from the host-agent trust boundary."""
+        if not check_auth(self):
+            return
+        body = read_optional_json_body(self)
+        if body is None:
+            return
+
+        endpoint_action = self.path.rsplit("/", 1)[-1]
+        if endpoint_action == "check":
+            self._handle_update_check()
+        elif endpoint_action == "backup":
+            backup_id = body.get("backup_id")
+            if not isinstance(backup_id, str) or not backup_id.strip():
+                backup_id = f"dashboard-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            self._handle_update_backup(backup_id.strip())
+        elif endpoint_action == "start":
+            self._handle_update_start()
+        else:
+            json_response(self, 404, {"error": "Not found"})
+
+    def _handle_update_check(self):
+        try:
+            result = _run_update_script("check", timeout=30)
+        except FileNotFoundError:
+            json_response(self, 501, {"error": "Update system not installed."})
+            return
+        except RuntimeError as exc:
+            json_response(self, 501, {"error": str(exc)})
+            return
+        except subprocess.TimeoutExpired:
+            json_response(self, 504, {"error": "Update check timed out"})
+            return
+        except OSError as exc:
+            json_response(self, 500, {"error": f"Update check failed: {exc}"})
+            return
+
+        output = (result.stdout or "") + (result.stderr or "")
+        json_response(self, 200, {
+            "success": result.returncode in (0, 2),
+            "update_available": result.returncode == 2,
+            "returncode": result.returncode,
+            "output": output,
+        })
+
+    def _handle_update_backup(self, backup_id: str):
+        try:
+            result = _run_update_script("backup", backup_id, timeout=60)
+        except FileNotFoundError:
+            json_response(self, 501, {"error": "Update system not installed."})
+            return
+        except RuntimeError as exc:
+            json_response(self, 501, {"error": str(exc)})
+            return
+        except subprocess.TimeoutExpired:
+            json_response(self, 504, {"error": "Backup timed out"})
+            return
+        except OSError as exc:
+            json_response(self, 500, {"error": f"Backup failed: {exc}"})
+            return
+
+        output = (result.stdout or "") + (result.stderr or "")
+        json_response(self, 200, {
+            "success": result.returncode == 0,
+            "returncode": result.returncode,
+            "output": output,
+        })
+
+    def _handle_update_start(self):
+        global _update_thread
+
+        with _update_lock:
+            if _update_thread is not None and _update_thread.is_alive():
+                json_response(self, 409, {
+                    "success": False,
+                    "status": "running",
+                    "message": "Update already running",
+                })
+                return
+
+            _write_update_status("queued", "update", started_at=_iso_now())
+
+            def _run_background_update():
+                try:
+                    _write_update_status("running", "update", started_at=_iso_now())
+                    result = _run_update_script("update", timeout=3600)
+                    output = ((result.stdout or "") + (result.stderr or ""))[-8000:]
+                    _write_update_status(
+                        "succeeded" if result.returncode == 0 else "failed",
+                        "update",
+                        returncode=result.returncode,
+                        output_tail=output,
+                        finished_at=_iso_now(),
+                    )
+                except FileNotFoundError:
+                    _write_update_status(
+                        "failed", "update",
+                        error="Update system not installed.",
+                        finished_at=_iso_now(),
+                    )
+                except RuntimeError as exc:
+                    _write_update_status("failed", "update", error=str(exc), finished_at=_iso_now())
+                except subprocess.TimeoutExpired:
+                    _write_update_status("failed", "update", error="Update timed out", finished_at=_iso_now())
+                except OSError as exc:
+                    _write_update_status(
+                        "failed", "update",
+                        error=f"Update failed: {exc}",
+                        finished_at=_iso_now(),
+                    )
+
+            _update_thread = threading.Thread(target=_run_background_update, daemon=True)
+            _update_thread.start()
+
+        json_response(self, 202, {
+            "success": True,
+            "status": "started",
+            "message": "Update started in background. Check update status for progress.",
+        })
 
     # ------------------------------------------------------------------
     # Wi-Fi / network management (Linux + NetworkManager only)

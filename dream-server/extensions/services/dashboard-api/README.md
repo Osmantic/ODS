@@ -121,7 +121,8 @@ Environment variables (set in `.env`):
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/api/version` | Yes | Current version + GitHub update check |
-| `GET` | `/api/releases/manifest` | No | Recent release history from GitHub |
+| `GET` | `/api/releases/manifest` | Yes | Recent release history from GitHub |
+| `GET` | `/api/update/status` | Yes | Host-agent managed update status |
 | `POST` | `/api/update` | Yes | Trigger update actions (`check`, `backup`, `update`) |
 
 ### Extensions
