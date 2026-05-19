@@ -279,9 +279,115 @@ class TestWebSocketLane:
         monkeypatch.setattr(proxy, "TARGET_API_BASE",
                             f"http://127.0.0.1:{box['port']}")
         try:
-            with client.websocket_connect("/v1/realtime") as ws:
+            with client.websocket_connect("/v1/realtime", headers=AUTH) as ws:
                 ws.send_text("hello")
                 assert ws.receive_text() == "echo:hello"
+        finally:
+            loop = box.get("loop")
+            stop = box.get("stop")
+            if loop and stop:
+                loop.call_soon_threadsafe(stop.set)
+            t.join(timeout=5)
+
+
+# ── 5. WebSocket auth gate (#1268 critic blocker) ──────────────────────────
+#
+# The ws passthrough lane attaches TARGET_API_KEY to the upstream model. It
+# MUST authenticate the handshake the same way the HTTP lane does
+# (Depends(verify_api_key) -> SHIELD_API_KEY) before accept() and before any
+# upstream socket is opened. Pre-fix the handler called client_ws.accept()
+# unconditionally — an unauthenticated proxy straight to the backend model.
+
+class TestWebSocketAuth:
+    def _block_upstream(self, monkeypatch):
+        """Fail loudly if the handler tries to open an upstream WS while
+        unauthenticated — proves auth runs *before* the upstream connection."""
+        import websockets
+
+        async def _boom(*a, **k):  # pragma: no cover - must never be reached
+            raise AssertionError(
+                "upstream websockets.connect() called for an unauthenticated "
+                "client — auth gate ran too late or not at all"
+            )
+
+        monkeypatch.setattr(websockets, "connect", _boom)
+
+    def test_websocket_no_token_rejected_no_upstream(self, client, monkeypatch):
+        try:
+            import websockets  # noqa: F401
+        except ModuleNotFoundError:
+            pytest.skip("websockets lib unavailable")
+        self._block_upstream(monkeypatch)
+
+        from starlette.websockets import WebSocketDisconnect
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect("/v1/realtime"):
+                pass  # pragma: no cover - connect must be rejected
+        # 1008 = policy violation (unauthenticated handshake).
+        assert exc.value.code == 1008
+
+    def test_websocket_invalid_token_rejected_no_upstream(self, client, monkeypatch):
+        try:
+            import websockets  # noqa: F401
+        except ModuleNotFoundError:
+            pytest.skip("websockets lib unavailable")
+        self._block_upstream(monkeypatch)
+
+        from starlette.websockets import WebSocketDisconnect
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(
+                "/v1/realtime", headers={"Authorization": "Bearer wrong-key"}
+            ):
+                pass  # pragma: no cover - connect must be rejected
+        assert exc.value.code == 1008
+
+    def test_websocket_valid_token_query_param_round_trips(self, client, monkeypatch):
+        """A valid ``?token=`` connects and a frame round-trips end-to-end
+        (browser WS clients can't set an Authorization header)."""
+        try:
+            import websockets
+        except ModuleNotFoundError:
+            pytest.skip("websockets lib unavailable")
+
+        ready = threading.Event()
+        box = {}
+
+        def run_server():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            stop = asyncio.Event()
+            box["loop"] = loop
+            box["stop"] = stop
+
+            async def echo(ws):
+                async for msg in ws:
+                    await ws.send(f"echo:{msg}")
+
+            async def main():
+                srv = await websockets.serve(echo, "127.0.0.1", 0)
+                box["port"] = srv.sockets[0].getsockname()[1]
+                ready.set()
+                await stop.wait()
+                srv.close()
+                await srv.wait_closed()
+
+            loop.run_until_complete(main())
+            loop.close()
+
+        t = threading.Thread(target=run_server, daemon=True)
+        t.start()
+        assert ready.wait(timeout=5), "ws echo server didn't start"
+
+        monkeypatch.setattr(proxy, "TARGET_API_BASE",
+                            f"http://127.0.0.1:{box['port']}")
+        try:
+            with client.websocket_connect(
+                f"/v1/realtime?token={TEST_KEY}"
+            ) as ws:
+                ws.send_text("hi")
+                assert ws.receive_text() == "echo:hi"
         finally:
             loop = box.get("loop")
             stop = box.get("stop")

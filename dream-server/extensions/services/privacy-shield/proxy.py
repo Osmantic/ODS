@@ -152,10 +152,53 @@ def get_session(request: Request) -> CachedPrivacyShield:
     return sessions[session_key]
 
 
+def _token_valid(token: str | None) -> bool:
+    """Constant-time compare a presented token against SHIELD_API_KEY.
+
+    Same secret + ``secrets.compare_digest`` used by ``verify_api_key`` /
+    ``_is_authenticated`` so the WS lane cannot drift from the HTTP lane.
+    """
+    return bool(token) and secrets.compare_digest(token, SHIELD_API_KEY)
+
+
 def _is_authenticated(request: Request) -> bool:
     """Check Bearer token from request headers directly (avoids FastAPI Security() version issues)."""
     auth = request.headers.get("authorization", "")
-    return auth.startswith("Bearer ") and secrets.compare_digest(auth[7:], SHIELD_API_KEY)
+    return auth.startswith("Bearer ") and _token_valid(auth[7:])
+
+
+def _extract_ws_token(client_ws: WebSocket) -> tuple[str | None, str | None]:
+    """Pull a bearer token off the WS handshake.
+
+    Browser / Control-UI WebSocket clients cannot set an ``Authorization``
+    header, so three carriers are accepted (first match wins):
+
+      1. ``Authorization: Bearer <t>`` request header.
+      2. ``?token=<t>`` query parameter.
+      3. A ``Sec-WebSocket-Protocol`` subprotocol value, either the raw
+         token or ``bearer.<token>`` / ``bearer,<token>`` paired form.
+
+    Returns ``(token, selected_subprotocol)`` where the second element is the
+    subprotocol the server must echo back on ``accept()`` when the token
+    arrived via the subprotocol carrier (required for the browser handshake
+    to complete), else ``None``.
+    """
+    auth = client_ws.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[7:], None
+
+    token = client_ws.query_params.get("token")
+    if token:
+        return token, None
+
+    raw = client_ws.headers.get("sec-websocket-protocol", "")
+    offered = [p.strip() for p in raw.split(",") if p.strip()]
+    for i, proto in enumerate(offered):
+        if proto in ("bearer", "Bearer") and i + 1 < len(offered):
+            return offered[i + 1], proto
+        if proto.startswith(("bearer.", "Bearer.")):
+            return proto.split(".", 1)[1], proto
+    return None, None
 
 
 @app.get("/health")
@@ -368,8 +411,25 @@ async def proxy_websocket(client_ws: WebSocket, path: str):
     built for, and tampering with frames would corrupt the protocol. The
     upstream WS client (``websockets``) is imported lazily so the HTTP path
     is unaffected when it is absent.
+
+    The handshake is authenticated *before* ``accept()`` and before any
+    upstream socket is opened: an unauthenticated client must never reach the
+    backend model (which carries ``TARGET_API_KEY``). This mirrors the HTTP
+    lane's ``Depends(verify_api_key)`` using the same SHIELD_API_KEY secret.
     """
-    await client_ws.accept()
+    token, selected_subprotocol = _extract_ws_token(client_ws)
+    if not _token_valid(token):
+        # 1008 = policy violation. Closed pre-accept so no upstream socket is
+        # opened and TARGET_API_KEY is never attached for an unauthed client.
+        await client_ws.close(code=1008)
+        return
+
+    if selected_subprotocol is not None:
+        # Token arrived via Sec-WebSocket-Protocol; the server must echo a
+        # selected subprotocol or the browser handshake fails.
+        await client_ws.accept(subprotocol=selected_subprotocol)
+    else:
+        await client_ws.accept()
     try:
         import websockets
     except ModuleNotFoundError:
