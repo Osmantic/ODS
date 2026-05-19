@@ -135,6 +135,8 @@ fi
 STT_MODEL_CACHED="unknown"
 STT_MODEL_NAME=""
 STT_RECOVERY_HINT=""
+TTS_HTTP="unknown"
+TTS_PORT=""
 if [[ "${ENABLE_VOICE:-false}" == "true" ]] && command -v curl >/dev/null 2>&1; then
     STT_MODEL_NAME="${AUDIO_STT_MODEL:-Systran/faster-whisper-base}"
     _stt_whisper_port="${SERVICE_PORTS[whisper]:-9000}"
@@ -151,6 +153,16 @@ if [[ "${ENABLE_VOICE:-false}" == "true" ]] && command -v curl >/dev/null 2>&1; 
             STT_MODEL_CACHED="service_down"
         fi
     fi
+
+    TTS_PORT="${SERVICE_PORTS[tts]:-8880}"
+    if curl -sf --max-time 5 "http://127.0.0.1:${TTS_PORT}/health" >/dev/null 2>&1; then
+        TTS_HTTP="true"
+    else
+        TTS_HTTP="false"
+    fi
+elif [[ "${ENABLE_VOICE:-false}" != "true" ]]; then
+    STT_MODEL_CACHED="disabled"
+    TTS_HTTP="disabled"
 fi
 
 # DGX Spark / GB10 CUDA arch check. Generic llama.cpp CUDA images can run on
@@ -298,13 +310,13 @@ elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
 
-"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" <<'PY'
+"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" <<'PY'
 import json
 import pathlib
 import sys
 from datetime import datetime, timezone
 
-cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message = sys.argv[1:]
+cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message = sys.argv[1:]
 
 cap = json.load(open(cap_file, "r", encoding="utf-8"))
 pre = json.load(open(preflight_file, "r", encoding="utf-8"))
@@ -324,6 +336,8 @@ report = {
         "webui_http": webui_http == "true",
         "stt_model_cached": stt_cached,
         "stt_model_name": stt_model_name,
+        "tts_http": tts_http,
+        "tts_port": tts_port,
         "dgx_spark_gpu": dgx_spark_gpu == "true",
         "dgx_spark_gpu_name": dgx_spark_gpu_name,
         "dgx_spark_compute_cap": dgx_spark_compute_cap,
@@ -337,7 +351,11 @@ report = {
     "summary": {
         "preflight_blockers": pre.get("summary", {}).get("blockers", 0),
         "preflight_warnings": pre.get("summary", {}).get("warnings", 0),
-        "runtime_warnings": 1 if dgx_spark_arch_status == "warn" else 0,
+        "runtime_warnings": (
+            (1 if dgx_spark_arch_status == "warn" else 0)
+            + (1 if stt_cached in {"false", "service_down"} else 0)
+            + (1 if tts_http == "false" else 0)
+        ),
         "runtime_ready": (docker_daemon == "true" and compose_cli == "true"),
         "extensions_total": len(ext_diagnostics),
         "extensions_healthy": sum(1 for e in ext_diagnostics if e.get("health_status") == "healthy"),
@@ -370,6 +388,11 @@ if stt_cached == "false" and stt_recovery:
         f"Whisper STT model '{stt_model_name}' not cached — transcription will 404. "
         f"Run: {stt_recovery}"
     )
+elif stt_cached == "service_down":
+    fix_hints.append("Whisper STT is not responding. Run: dream repair voice")
+
+if tts_http == "false":
+    fix_hints.append("Kokoro TTS is not responding. Run: dream repair voice")
 
 if dgx_spark_arch_status == "warn":
     fix_hints.append(

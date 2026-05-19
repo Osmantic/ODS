@@ -1668,6 +1668,36 @@ elif dgx_status == 'warn':
 
 print()
 
+# Voice checks
+stt_cached = runtime.get('stt_model_cached', 'unknown')
+stt_model = runtime.get('stt_model_name') or '<not configured>'
+tts_http = runtime.get('tts_http', 'unknown')
+if stt_cached != 'unknown' or tts_http != 'unknown':
+    print(f"{CYAN}Voice Readiness:{NC}")
+    if stt_cached == 'true':
+        print(f"  {GREEN}✓{NC} Whisper STT model cached: {stt_model}")
+    elif stt_cached == 'false':
+        print(f"  {YELLOW}⚠{NC} Whisper STT model missing: {stt_model}")
+        has_failures = True
+    elif stt_cached == 'service_down':
+        print(f"  {RED}✗{NC} Whisper STT service not responding")
+        has_failures = True
+    elif stt_cached == 'disabled':
+        print(f"  {YELLOW}?{NC} Whisper STT disabled")
+    else:
+        print(f"  {YELLOW}?{NC} Whisper STT model cache unknown")
+
+    if tts_http == 'true':
+        print(f"  {GREEN}✓{NC} Kokoro TTS responding")
+    elif tts_http == 'false':
+        print(f"  {RED}✗{NC} Kokoro TTS not responding")
+        has_failures = True
+    elif tts_http == 'disabled':
+        print(f"  {YELLOW}?{NC} Kokoro TTS disabled")
+    else:
+        print(f"  {YELLOW}?{NC} Kokoro TTS status unknown")
+    print()
+
 # Preflight checks
 preflight = report.get('preflight', {})
 pf_checks = preflight.get('checks', [])
@@ -3543,8 +3573,78 @@ cmd_gpu() {
 }
 
 cmd_repair() {
-    warn "The 'repair' command is not yet implemented."
-    log "Run 'dream doctor' to diagnose issues, then check the output for suggested fixes."
+    check_install
+    cd "$INSTALL_DIR"
+    load_env
+    sr_load
+
+    local target="${1:-voice}"
+    case "$target" in
+        voice|stt|tts)
+            local flags_str
+            flags_str=$(get_compose_flags)
+            local -a flags
+            read -ra flags <<< "$flags_str"
+
+            local services
+            services=$(docker compose "${flags[@]}" config --services 2>/dev/null || true)
+            local missing=()
+            grep -qx "whisper" <<< "$services" || missing+=("whisper")
+            grep -qx "tts" <<< "$services" || missing+=("tts")
+            if (( ${#missing[@]} > 0 )); then
+                log_error "Voice services are not in this compose stack: ${missing[*]}"
+                echo "  Enable voice, or add the whisper/tts extension compose files, then retry."
+                return 1
+            fi
+
+            _compose_run_with_summary "Starting voice services" "${flags[@]}" up -d whisper tts
+
+            local model port url tts_port tts_url
+            model=$(_env_get_raw AUDIO_STT_MODEL)
+            [[ -z "$model" ]] && model="Systran/faster-whisper-base"
+            port=$(_env_get_raw WHISPER_PORT)
+            [[ -z "$port" ]] && port="9000"
+            url="http://127.0.0.1:${port}"
+            tts_port=$(_env_get_raw TTS_PORT)
+            [[ -z "$tts_port" ]] && tts_port="8880"
+            tts_url="http://127.0.0.1:${tts_port}"
+
+            local ready=false
+            for _i in $(seq 1 45); do
+                if curl -sf --max-time 2 "${url}/health" >/dev/null 2>&1; then
+                    ready=true
+                    break
+                fi
+                sleep 2
+            done
+            if ! $ready; then
+                log_error "Whisper STT is still not responding. Check: dream logs whisper"
+                return 1
+            fi
+
+            cmd_stt download "$model"
+
+            local tts_ready=false
+            for _i in $(seq 1 45); do
+                if curl -sf --max-time 2 "${tts_url}/health" >/dev/null 2>&1; then
+                    tts_ready=true
+                    break
+                fi
+                sleep 2
+            done
+            if ! $tts_ready; then
+                log_error "Kokoro TTS is still not responding. Check: dream logs tts"
+                return 1
+            fi
+
+            success "Voice repair complete"
+            ;;
+        *)
+            log "Usage: dream repair voice"
+            log_error "Unknown repair target: $target"
+            return 1
+            ;;
+    esac
 }
 
 #=============================================================================
@@ -3777,7 +3877,7 @@ ${CYAN}Commands:${NC}
   chat "<message>"    Quick chat with the LLM
   benchmark           Run a quick performance test
   doctor [report|--json]   Run diagnostics (--json writes JSON to stdout)
-  repair|fix          Run basic repairs (currently redirects to doctor)
+  repair|fix [voice]  Repair voice services and cache the STT model
   template [action]   Apply pre-built service templates (list|preview|apply)
   audit [extensions]  Audit extension manifests and compose contracts
   agent [action]      Manage dream host agent (status|start|stop|restart|logs)
@@ -3862,6 +3962,7 @@ ${CYAN}Examples:${NC}
   dream audit --json whisper      # Audit one service as JSON
   dream agent status              # Check host agent health
   dream agent restart             # Restart host agent
+  dream repair voice              # Start voice services and cache STT model
 
 ${CYAN}Environment:${NC}
   DREAM_HOME          Installation directory (default: ~/dream-server)
