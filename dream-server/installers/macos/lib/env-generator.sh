@@ -82,6 +82,34 @@ detect_host_lan_ip() {
     printf '%s\n' "$ip"
 }
 
+sanitize_device_name() {
+    local raw="${1:-}"
+    local name
+    name="$(printf '%s' "$raw" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//' \
+        | cut -c1-32 \
+        | sed -E 's/-+$//')"
+    if [[ -n "$name" && "$name" =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]]; then
+        printf '%s\n' "$name"
+    else
+        printf 'dream\n'
+    fi
+}
+
+detect_device_name() {
+    local raw=""
+    # macOS users often set LocalHostName for Bonjour sharing; prefer it
+    # because it already represents the host's LAN identity.
+    if command -v scutil >/dev/null 2>&1; then
+        raw="$(scutil --get LocalHostName 2>/dev/null || true)"
+    fi
+    if [[ -z "$raw" ]] && command -v hostname >/dev/null 2>&1; then
+        raw="$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)"
+    fi
+    sanitize_device_name "$raw"
+}
+
 # Detect system timezone (macOS-specific)
 detect_timezone() {
     local tz=""
@@ -154,6 +182,12 @@ generate_dream_env() {
         # gate effectively breaks). Rotating invalidates every issued cookie.
         if [[ -z "$(read_env_value "$env_path" "DREAM_SESSION_SECRET")" ]]; then
             upsert_env_value "$env_path" "DREAM_SESSION_SECRET" "$(new_secure_hex 32)"
+        fi
+        # DREAM_DEVICE_NAME backfill: older macOS installs omitted this key,
+        # so magic links defaulted to auth.dream.local/chat.dream.local and
+        # collided with every other default install on the LAN.
+        if [[ -z "$(read_env_value "$env_path" "DREAM_DEVICE_NAME")" ]]; then
+            upsert_env_value "$env_path" "DREAM_DEVICE_NAME" "$(detect_device_name)"
         fi
 
         # HOST_LAN_IP backfill: the fresh-install heredoc below populates
@@ -241,6 +275,8 @@ generate_dream_env() {
     if [[ "${BIND_ADDRESS:-127.0.0.1}" == "0.0.0.0" ]]; then
         host_lan_ip=$(detect_host_lan_ip)
     fi
+    local device_name
+    device_name=$(detect_device_name)
 
     local tz
     tz=$(detect_timezone)
@@ -257,6 +293,10 @@ generate_dream_env() {
 # macOS has no --lan flag; operators opt in by setting BIND_ADDRESS=0.0.0.0
 # manually. HOST_LAN_IP is only populated when that pre-existed at install time.
 HOST_LAN_IP=${host_lan_ip}
+# Device name used by dream-mdns/dream-proxy hostnames and magic-link URLs.
+# Derived from the macOS LocalHostName/hostname so multiple installs on one LAN
+# do not all collide on auth.dream.local/chat.dream.local.
+DREAM_DEVICE_NAME=${device_name}
 # Docker Desktop containers reach loopback-only host services through this name.
 DREAM_AGENT_HOST=${DREAM_AGENT_HOST:-host.docker.internal}
 

@@ -33,7 +33,7 @@ service:
   gpu_backends: [all]
   compose_file: compose.yaml
   category: recommended
-  depends_on: [llama-server]
+  depends_on: [llama-server, searxng]
   description: >
     Hermes Agent (Nous Research) — a self-improving generalist agent with
     persistent memory, autonomous skill creation, and 70+ built-in tools.
@@ -57,6 +57,9 @@ service:
       description: |
         Dummy API key — llama-server doesn't validate it but the OpenAI SDK
         Hermes uses internally requires the field to be non-empty.
+    - key: SEARXNG_URL
+      default: "http://searxng:8080"
+      description: Hermes web-search backend. Defaults to Dream's bundled SearXNG service.
     # Note: there is intentionally no HERMES_MODEL_NAME here. The model
     # name lives in /opt/data/config.yaml after first start; an earlier
     # draft exposed an env var, but the upstream image doesn't read it
