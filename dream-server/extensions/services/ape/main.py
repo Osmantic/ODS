@@ -493,7 +493,6 @@ def circuit_breaker_blocked(policy: dict, now: float) -> tuple[bool, str]:
     cb = policy.get("circuit_breaker", {})
     if not isinstance(cb, dict) or not cb.get("enabled", False):
         return (False, "")
-    cooldown = float(cb.get("cooldown_seconds", 120))
     with _STATE_LOCK:
         tripped_until = _state["breaker"].get("tripped_until", 0.0)
         if tripped_until and now < tripped_until:
@@ -844,7 +843,6 @@ async def approve(req: ApproveRequest, request: Request,
     normal windowed-limit evaluation again (the grant does not permanently
     lift the cap, it authorises one escalated attempt).
     """
-    now = time.time()
     with _STATE_LOCK:
         rec = _state["approvals"].pop(req.approval_token, None)
     if rec is None:

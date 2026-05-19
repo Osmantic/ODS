@@ -8,8 +8,6 @@ and STRICT_MODE semantics are preserved.
 import concurrent.futures
 import json
 
-import pytest
-
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 

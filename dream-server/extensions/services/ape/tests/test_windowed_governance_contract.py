@@ -21,8 +21,6 @@ re-implementing the harness, per the repo's shared-factory convention.
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # A read tool is always policy-allowed, so windowed limits are what gate it —
