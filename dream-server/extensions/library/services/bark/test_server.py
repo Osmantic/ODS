@@ -2,12 +2,10 @@
 
 import pytest
 import base64
-import io
 import threading
 import numpy as np
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch
 from fastapi.testclient import TestClient
-from fastapi import HTTPException
 
 # Import the module under test
 import server

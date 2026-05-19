@@ -4,7 +4,6 @@ Wraps suno-ai/bark with a minimal FastAPI HTTP interface.
 Compatible with the Dream Server extensions ecosystem.
 """
 
-import os
 import io
 import base64
 import logging
@@ -12,10 +11,9 @@ import threading
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
-import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response, JSONResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 
 logging.basicConfig(level=logging.INFO)
