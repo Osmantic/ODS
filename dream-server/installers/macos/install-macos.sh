@@ -505,6 +505,10 @@ if [[ "${DREAM_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_T
             . "${SOURCE_ROOT}/lib/python-cmd.sh"
             _selector_python="$(ds_detect_python_cmd || true)"
         fi
+        if [[ -f "${SOURCE_ROOT}/lib/safe-env.sh" ]]; then
+            # shellcheck source=/dev/null
+            . "${SOURCE_ROOT}/lib/safe-env.sh"
+        fi
         if [[ -z "$_selector_python" ]]; then
             if command -v python3 >/dev/null 2>&1; then
                 _selector_python="python3"
@@ -525,7 +529,12 @@ if [[ "${DREAM_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_T
                 --installable-only \
                 --env 2>>"$LOG_FILE" || true)"
             if [[ -n "$_selector_env" ]]; then
-                eval "$_selector_env"
+                # #1271: parse the selector output WITHOUT eval. Its values
+                # derive from a device string + JSON catalog and must never
+                # reach a shell. Process substitution (not a pipe) keeps the
+                # parser in this shell so the exported model vars persist.
+                load_selector_env < <(printf '%s\n' "$_selector_env") \
+                    || ai "Model selector env parse skipped (invalid output)"
                 ai "Model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"
             else
                 ai "Model selector unavailable; using tier-map model ${LLM_MODEL}"
