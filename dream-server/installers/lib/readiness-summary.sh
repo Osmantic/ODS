@@ -57,6 +57,10 @@ dream_readiness_summary() {
     local ready_lines=()
     local attention_lines=()
     local total=0
+    local launch_record="${DREAM_COMPOSE_LAUNCH_RECORD:-}"
+    if [[ -z "$launch_record" && -n "${INSTALL_DIR:-}" && -f "$INSTALL_DIR/logs/compose-launch.txt" ]]; then
+        launch_record="$INSTALL_DIR/logs/compose-launch.txt"
+    fi
 
     while IFS='|' read -r name health_url container open_url; do
         [[ -n "$name" ]] || continue
@@ -112,5 +116,13 @@ dream_readiness_summary() {
     echo "  - Open dashboard: $dashboard_url"
     echo "  - Check status: $status_cmd"
     [[ -n "$log_file" ]] && echo "  - Logs: $log_file"
+    if [[ -n "$launch_record" ]]; then
+        echo "  - Compose launch: $launch_record"
+        if [[ -f "$launch_record" ]]; then
+            local compose_logs_cmd
+            compose_logs_cmd="$(sed -n 's/^compose_logs_command=//p' "$launch_record" 2>/dev/null | head -n 1 || true)"
+            [[ -n "$compose_logs_cmd" ]] && echo "  - Compose logs: $compose_logs_cmd"
+        fi
+    fi
     echo ""
 }

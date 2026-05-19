@@ -156,6 +156,7 @@ source "${LIB_DIR}/env-generator.sh"
 if [[ -f "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh" ]]; then
     source "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh"
 fi
+source "${SOURCE_ROOT}/lib/safe-env.sh"
 source "${SOURCE_ROOT}/installers/lib/readiness-summary.sh"
 
 # ── File-local helpers ──
@@ -526,7 +527,7 @@ if [[ "${DREAM_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_T
                 --installable-only \
                 --env 2>>"$LOG_FILE" || true)"
             if [[ -n "$_selector_env" ]]; then
-                eval "$_selector_env"
+                load_model_selector_env_from_output <<< "$_selector_env"
                 ai "Model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"
             else
                 ai "Model selector unavailable; using tier-map model ${LLM_MODEL}"
@@ -1329,9 +1330,29 @@ else
     done
     ai_ok "Local images rebuilt"
 
-    ai "Running: docker compose ${COMPOSE_FLAGS[*]} up -d --remove-orphans --no-build"
     _compose_up_log="${INSTALL_DIR}/logs/compose-up.log"
     mkdir -p "${INSTALL_DIR}/logs"
+    _compose_launch_record="${INSTALL_DIR}/logs/compose-launch.txt"
+    {
+        printf 'timestamp=%s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+        printf 'cwd=%s\n' "$INSTALL_DIR"
+        printf 'compose_command=docker compose %s up -d --remove-orphans --no-build\n' "${COMPOSE_FLAGS[*]}"
+        printf 'compose_flags=%s\n' "${COMPOSE_FLAGS[*]}"
+        printf 'compose_flags_file=%s\n' "$INSTALL_DIR/.compose-flags"
+        printf "compose_ps_command=cd '%s' && docker compose %s ps -a\n" "$INSTALL_DIR" "${COMPOSE_FLAGS[*]}"
+        printf "compose_logs_command=cd '%s' && docker compose %s logs --tail 200\n" "$INSTALL_DIR" "${COMPOSE_FLAGS[*]}"
+        printf 'compose_files=\n'
+        _expect_file=false
+        for _arg in "${COMPOSE_FLAGS[@]}"; do
+            if $_expect_file; then
+                printf '  - %s\n' "$_arg"
+                _expect_file=false
+            elif [[ "$_arg" == "-f" ]]; then
+                _expect_file=true
+            fi
+        done
+    } > "$_compose_launch_record"
+    ai "Running: docker compose ${COMPOSE_FLAGS[*]} up -d --remove-orphans --no-build"
     : > "$_compose_up_log"
     set +o pipefail  # pipefail would abort on compose exit before PIPESTATUS is read; capture it first
     docker compose "${COMPOSE_FLAGS[@]}" up -d --remove-orphans --no-build 2>&1 | tee -a "$_compose_up_log" | while IFS= read -r line; do
@@ -1353,6 +1374,25 @@ else
             [[ -n "${_compose_report_path:-}" ]] && ai_warn "Compose failure report saved: $_compose_report_path"
         fi
         ai_err "docker compose up failed"
+        exit 1
+    fi
+    _compose_container_ids="$(docker compose "${COMPOSE_FLAGS[@]}" ps -q 2>>"$DS_LOG_FILE" || true)"
+    _compose_container_count="$(printf '%s\n' "$_compose_container_ids" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')"
+    if [[ "${_compose_container_count:-0}" -eq 0 ]]; then
+        if command -v write_compose_failure_report >/dev/null 2>&1; then
+            _compose_report_path="$(COMPOSE_FLAGS_REPORT="${COMPOSE_FLAGS[*]}" write_compose_failure_report \
+                "$INSTALL_DIR" \
+                "install-macos zero managed containers" \
+                "docker compose ${COMPOSE_FLAGS[*]} up -d --remove-orphans --no-build" \
+                "$_compose_up_log" \
+                "apple" \
+                "No Dream Server containers were created. Run the saved ps/logs commands from logs/compose-launch.txt, fix the compose/runtime failure, then re-run ./installers/macos.sh." |
+                tail -n 1)" || true
+            [[ -n "${_compose_report_path:-}" ]] && ai_warn "Compose failure report saved: $_compose_report_path"
+        fi
+        ai_err "docker compose up completed but created no managed containers"
+        ai "Launch record: $_compose_launch_record"
+        ai "Inspect with: cd '$INSTALL_DIR' && docker compose ${COMPOSE_FLAGS[*]} ps -a"
         exit 1
     fi
     ai_ok "Docker services started"

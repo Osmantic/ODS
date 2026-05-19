@@ -71,5 +71,35 @@ load_env_from_output < <(echo 'FROM_STDIN="hello from stdin"')
 [[ "${FROM_STDIN:-}" == "hello from stdin" ]] || fail "FROM_STDIN not set (got: ${FROM_STDIN:-})"
 pass "load_env_from_output exports from stdin"
 
+echo "Test 6: load_env_from_output tolerates CRLF script output"
+unset FROM_CRLF 2>/dev/null || true
+load_env_from_output < <(printf 'FROM_CRLF="windows python"\r\n')
+[[ "${FROM_CRLF:-}" == "windows python" ]] || fail "FROM_CRLF not set from CRLF output"
+pass "load_env_from_output strips trailing CR"
+
+echo "Test 7: load_env_from_output parses escaped characters without eval"
+unset ESCAPED DANGEROUS 2>/dev/null || true
+load_env_from_output < <(printf '%s\n' 'ESCAPED="a \"quote\" and C:\\tmp and \$HOME and \`uname\`"')
+[[ "${ESCAPED:-}" == 'a "quote" and C:\tmp and $HOME and `uname`' ]] || fail "ESCAPED not decoded safely (got: ${ESCAPED:-})"
+_owned="$tmpdir/owned"
+load_env_from_output < <(printf 'DANGEROUS="$(touch %s)"\n' "$_owned")
+[[ "${DANGEROUS:-}" == "\$(touch $_owned)" ]] || fail "DANGEROUS value changed unexpectedly"
+[[ ! -e "$_owned" ]] || fail "load_env_from_output executed command substitution"
+pass "load_env_from_output does not evaluate values"
+
+echo "Test 8: load_env_from_output_allowlist ignores unapproved keys"
+unset ALLOWED NOT_ALLOWED 2>/dev/null || true
+load_env_from_output_allowlist ALLOWED < <(printf '%s\n' 'ALLOWED="yes"' 'NOT_ALLOWED="no"')
+[[ "${ALLOWED:-}" == "yes" ]] || fail "ALLOWED was not loaded"
+[[ -z "${NOT_ALLOWED:-}" ]] || fail "NOT_ALLOWED should not be loaded"
+pass "allowlist loader ignores unapproved keys"
+
+echo "Test 9: model selector loader only accepts approved selector keys"
+unset LLM_MODEL EVIL_SELECTOR_KEY 2>/dev/null || true
+load_model_selector_env_from_output < <(printf '%s\n' 'LLM_MODEL="qwen-test"' 'EVIL_SELECTOR_KEY="nope"')
+[[ "${LLM_MODEL:-}" == "qwen-test" ]] || fail "LLM_MODEL was not loaded"
+[[ -z "${EVIL_SELECTOR_KEY:-}" ]] || fail "EVIL_SELECTOR_KEY should not be loaded"
+pass "model selector loader is allowlisted"
+
 echo ""
 echo "All safe-env tests passed."

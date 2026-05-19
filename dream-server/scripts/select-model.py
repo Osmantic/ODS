@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -293,7 +292,14 @@ def is_spark_aarch64_excluded_model(model: dict[str, Any]) -> bool:
 
 
 def shell_value(value: Any) -> str:
-    return shlex.quote(str(value or ""))
+    text = str(value or "")
+    text = (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("$", "\\$")
+        .replace("`", "\\`")
+    )
+    return f'"{text}"'
 
 
 def recommendation_reason(model: dict[str, Any], capacity_gb: float, memory_label: str,

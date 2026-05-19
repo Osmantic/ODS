@@ -39,17 +39,83 @@ load_env_file() {
     done < "$path"
 }
 
+_safe_env_unescape_double_quoted() {
+    local value="$1"
+    # Decode the small shell-compatible escape set emitted by repository
+    # helper scripts. This is parsing, not eval: no command substitution,
+    # expansion, globbing, or word splitting is performed.
+    value="${value//\\\"/\"}"
+    value="${value//\\\$/\$}"
+    value="${value//\\\`/\`}"
+    value="${value//\\\\/\\}"
+    printf '%s' "$value"
+}
+
+_safe_env_key_allowed() {
+    local key="$1"
+    shift || true
+    local allowed
+    for allowed in "$@"; do
+        [[ "$key" == "$allowed" ]] && return 0
+    done
+    return 1
+}
+
 load_env_from_output() {
     local line key value
     while IFS= read -r line; do
+        line="${line%$'\r'}"
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
         if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=\"(.*)\"$ ]]; then
             key="${BASH_REMATCH[1]}"
-            value="${BASH_REMATCH[2]}"
-            # Unescape: \\ -> \, \" -> "
-            value="${value//\\\\/\\}"
-            value="${value//\\\"/\"}"
+            value="$(_safe_env_unescape_double_quoted "${BASH_REMATCH[2]}")"
             export "$key=$value"
         fi
     done
+}
+
+load_env_from_output_allowlist() {
+    local line key value
+    [[ "$#" -gt 0 ]] || return 0
+    while IFS= read -r line; do
+        line="${line%$'\r'}"
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=\"(.*)\"$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            _safe_env_key_allowed "$key" "$@" || continue
+            value="$(_safe_env_unescape_double_quoted "${BASH_REMATCH[2]}")"
+            export "$key=$value"
+        fi
+    done
+}
+
+load_model_selector_env_from_output() {
+    load_env_from_output_allowlist \
+        LLM_MODEL \
+        GGUF_FILE \
+        GGUF_URL \
+        GGUF_SHA256 \
+        MAX_CONTEXT \
+        LLM_MODEL_SIZE_MB \
+        MODEL_RECOMMENDATION_SOURCE \
+        MODEL_RECOMMENDATION_POLICY \
+        MODEL_RECOMMENDATION_CONFIDENCE \
+        MODEL_RECOMMENDATION_REASON \
+        MODEL_RECOMMENDED_ALTERNATIVES \
+        MODEL_RUNTIME_PROFILE \
+        MODEL_RUNTIME_PROFILE_LABEL \
+        MODEL_RUNTIME_PROFILE_SOURCE \
+        LLAMA_SERVER_IMAGE \
+        LLAMA_CPP_RELEASE_TAG_OVERRIDE \
+        LLAMA_CPP_SERVER_BINARY \
+        LLAMA_ARG_FLASH_ATTN \
+        LLAMA_ARG_CACHE_TYPE_K \
+        LLAMA_ARG_CACHE_TYPE_V \
+        LLAMA_ARG_N_CPU_MOE \
+        LLAMA_ARG_NO_CACHE_PROMPT \
+        LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS \
+        LLAMA_ARG_SPEC_TYPE \
+        LLAMA_ARG_SPEC_DRAFT_N_MAX \
+        LLAMA_ARG_SPLIT_MODE \
+        LLAMA_ARG_TENSOR_SPLIT
 }

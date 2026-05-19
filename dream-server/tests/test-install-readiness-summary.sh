@@ -84,6 +84,8 @@ chmod +x "$TMP_DIR/bin/sudo"
 export PATH="$TMP_DIR/bin:$PATH"
 export DOCKER_CMD="sudo docker"
 export SUDO_MARKER="$TMP_DIR/sudo-marker"
+export DREAM_COMPOSE_LAUNCH_RECORD="$TMP_DIR/compose-launch.txt"
+printf "compose_logs_command=cd '%s' && docker compose logs --tail 200\n" "$TMP_DIR" > "$DREAM_COMPOSE_LAUNCH_RECORD"
 
 source "$SUMMARY_LIB"
 
@@ -111,6 +113,8 @@ assert_contains "$OUTPUT" "HTTP 000" "summary includes failed HTTP code"
 assert_contains "$OUTPUT" "Open dashboard: http://localhost:3001" "summary shows dashboard next step"
 assert_contains "$OUTPUT" "Check status: dream status" "summary shows status command"
 assert_contains "$OUTPUT" "Logs: /tmp/dream-install.log" "summary shows log path"
+assert_contains "$OUTPUT" "Compose launch: $DREAM_COMPOSE_LAUNCH_RECORD" "summary shows compose launch record"
+assert_contains "$OUTPUT" "Compose logs: cd '$TMP_DIR' && docker compose logs --tail 200" "summary shows compose logs command"
 
 echo ""
 echo "Result: $PASS passed, $FAIL failed"

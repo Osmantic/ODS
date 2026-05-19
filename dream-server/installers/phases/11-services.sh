@@ -160,6 +160,67 @@ else
     echo "$COMPOSE_FLAGS" > "$INSTALL_DIR/.compose-flags" || warn "Could not cache compose flags (non-fatal)"
     log "Saved compose flags to $INSTALL_DIR/.compose-flags"
 
+    _phase11_compose_command_text() {
+        printf '%s' "$DOCKER_COMPOSE_CMD"
+        printf ' %s' "${COMPOSE_FLAGS_ARR[@]}"
+    }
+
+    _phase11_write_compose_launch_record() {
+        local path="$INSTALL_DIR/logs/compose-launch.txt"
+        local command_text
+        command_text="$(_phase11_compose_command_text)"
+        {
+            printf 'timestamp=%s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            printf 'cwd=%s\n' "$INSTALL_DIR"
+            printf 'compose_command=%s up -d --remove-orphans --no-build\n' "$command_text"
+            printf 'compose_flags=%s\n' "${COMPOSE_FLAGS_ARR[*]}"
+            printf 'compose_flags_file=%s\n' "$INSTALL_DIR/.compose-flags"
+            printf "compose_ps_command=cd '%s' && %s ps -a\n" "$INSTALL_DIR" "$command_text"
+            printf "compose_logs_command=cd '%s' && %s logs --tail 200\n" "$INSTALL_DIR" "$command_text"
+            printf 'compose_files=\n'
+            local _expect_file=false _arg
+            for _arg in "${COMPOSE_FLAGS_ARR[@]}"; do
+                if $_expect_file; then
+                    printf '  - %s\n' "$_arg"
+                    _expect_file=false
+                elif [[ "$_arg" == "-f" ]]; then
+                    _expect_file=true
+                fi
+            done
+        } > "$path"
+        log "Saved compose launch record to $path"
+    }
+
+    _phase11_assert_managed_containers() {
+        local write_report="${1:-true}"
+        local command_text ids count report_path
+        command_text="$(_phase11_compose_command_text)"
+        ids="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" ps -q 2>>"$LOG_FILE" || true)"
+        count=$(printf '%s\n' "$ids" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
+        if [[ "${count:-0}" -gt 0 ]]; then
+            log "Compose managed container count after launch: $count"
+            return 0
+        fi
+
+        ai_bad "Docker Compose did not create any managed containers."
+        ai "Launch record: $INSTALL_DIR/logs/compose-launch.txt"
+        ai "Inspect with:"
+        ai "  cd '$INSTALL_DIR' && $command_text ps -a"
+        ai "  cd '$INSTALL_DIR' && $command_text logs --tail 200"
+        if [[ "$write_report" != "false" ]] && command -v write_compose_failure_report >/dev/null 2>&1; then
+            report_path="$(COMPOSE_FLAGS_REPORT="${COMPOSE_FLAGS_ARR[*]}" write_compose_failure_report \
+                "$INSTALL_DIR" \
+                "install-core phase 11 zero managed containers" \
+                "$command_text up -d --remove-orphans --no-build" \
+                "$LOG_FILE" \
+                "${GPU_BACKEND:-unknown}" \
+                "No Dream Server containers were created. Run the saved ps/logs commands from the launch record, fix the compose/runtime failure, then re-run ./install.sh." |
+                tail -n 1)" || true
+            [[ -n "${report_path:-}" ]] && ai_warn "Compose failure report saved: $report_path"
+        fi
+        return 1
+    }
+
     # Cloud mode: skip model downloads, auto-enable litellm
     if [[ "${DREAM_MODE:-local}" == "cloud" ]]; then
         ai "Cloud mode — skipping model download"
@@ -625,6 +686,7 @@ except Exception:
     # on each retry. Up to 3 attempts with increasing wait
     # between retries — on AMD/Lemonade, the first boot builds a cached
     # llama-server binary which can take 3-5 min.
+    _phase11_write_compose_launch_record
     for _attempt in 1 2 3; do
         $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build >> "$LOG_FILE" 2>&1 &
         compose_pid=$!
@@ -671,6 +733,9 @@ except Exception:
     _phase11_allow_host_agent_firewall dream-network
 
     if $compose_ok; then
+        if ! _phase11_assert_managed_containers false; then
+            exit 1
+        fi
         printf "\r  ${BGRN}✓${NC} %-60s\n" "All containers launched"
         echo ""
         ai_ok "Services started (llama-server)"
@@ -690,6 +755,10 @@ except Exception:
                 tail -n 1)" || true
             [[ -n "${_compose_report_path:-}" ]] && ai_warn "Compose failure report saved: $_compose_report_path"
         fi
+        if ! _phase11_assert_managed_containers; then
+            exit 1
+        fi
+        exit 1
     fi
 
     # ── Bootstrap: launch background full-model download + auto hot-swap ──

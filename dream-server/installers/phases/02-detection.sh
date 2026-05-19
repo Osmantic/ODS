@@ -24,6 +24,8 @@
 #   Change tier auto-detection thresholds or add new hardware classes here.
 # ============================================================================
 
+[[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "$SCRIPT_DIR/lib/safe-env.sh"
+
 dream_progress 12 "detection" "Detecting GPU hardware"
 chapter "SYSTEM DETECTION"
 
@@ -529,8 +531,12 @@ if [[ "${DREAM_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" 
                 --installable-only \
                 --env 2>>"$LOG_FILE" || true)"
             if [[ -n "$_selector_env" ]]; then
-                eval "$_selector_env"
-                log "Catalog model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"
+                if command -v load_model_selector_env_from_output >/dev/null 2>&1; then
+                    load_model_selector_env_from_output <<< "$_selector_env"
+                    log "Catalog model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"
+                else
+                    log "Catalog model selector output ignored; safe env loader unavailable"
+                fi
             else
                 log "Catalog model selector unavailable; using tier-map model ${LLM_MODEL}"
             fi

@@ -19,6 +19,11 @@ error() { echo "ERROR: $*" >&2; return 1; }
 
 # Source the module under test
 source "$SCRIPT_DIR/installers/lib/tier-map.sh"
+source "$SCRIPT_DIR/lib/safe-env.sh"
+
+load_selector_env() {
+    load_model_selector_env_from_output <<< "$1"
+}
 
 assert_eq() {
     local label="$1" expected="$2" actual="$3"
@@ -247,7 +252,7 @@ _selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
     --installable-only \
     --env)"
 LLM_MODEL="" GGUF_FILE="" MODEL_RECOMMENDATION_POLICY=""
-eval "$_selector_env"
+load_selector_env "$_selector_env"
 assert_eq "SELECTOR_LLM_MODEL" "qwen3-coder-next" "$LLM_MODEL"
 assert_eq "SELECTOR_GGUF_FILE" "qwen3-coder-next-Q4_K_M.gguf" "$GGUF_FILE"
 assert_eq "SELECTOR_POLICY" "context-aware-largest-capable-general-v1" "$MODEL_RECOMMENDATION_POLICY"
@@ -266,7 +271,7 @@ _selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
     --installable-only \
     --env)"
 LLM_MODEL="" GGUF_FILE="" MODEL_RECOMMENDATION_POLICY=""
-eval "$_selector_env"
+load_selector_env "$_selector_env"
 assert_eq "SELECTOR_LLM_MODEL" "qwen3.6-35b-a3b" "$LLM_MODEL"
 assert_eq "SELECTOR_GGUF_FILE" "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" "$GGUF_FILE"
 assert_eq "SELECTOR_POLICY" "context-aware-largest-capable-general-v1+spark-aarch64-nv-ultra-a3b-v1" "$MODEL_RECOMMENDATION_POLICY"
@@ -285,7 +290,7 @@ _selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
     --installable-only \
     --env)"
 LLM_MODEL="" GGUF_FILE="" MAX_CONTEXT="" MODEL_RUNTIME_PROFILE="" LLAMA_ARG_N_CPU_MOE="" LLAMA_ARG_CACHE_TYPE_V="" LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=""
-eval "$_selector_env"
+load_selector_env "$_selector_env"
 assert_eq "SELECTOR_LLM_MODEL" "qwen3.5-9b" "$LLM_MODEL"
 assert_eq "SELECTOR_GGUF_FILE" "Qwen3.5-9B-Q4_K_M.gguf" "$GGUF_FILE"
 assert_eq "SELECTOR_CONTEXT" "32768" "$MAX_CONTEXT"
@@ -308,7 +313,7 @@ _selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
     --installable-only \
     --env)"
 LLM_MODEL="" GGUF_FILE="" MAX_CONTEXT="" MODEL_RUNTIME_PROFILE="" LLAMA_ARG_N_CPU_MOE="" LLAMA_ARG_CACHE_TYPE_V=""
-eval "$_selector_env"
+load_selector_env "$_selector_env"
 assert_eq "SELECTOR_LLM_MODEL" "gemma-4-e4b-it" "$LLM_MODEL"
 assert_eq "SELECTOR_GGUF_FILE" "gemma-4-E4B-it-Q4_K_M.gguf" "$GGUF_FILE"
 assert_eq "SELECTOR_CONTEXT" "32768" "$MAX_CONTEXT"
