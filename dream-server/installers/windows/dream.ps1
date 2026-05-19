@@ -14,6 +14,8 @@
 #   .\dream.ps1 config edit         # Open .env in notepad
 #   .\dream.ps1 chat "message"      # Quick chat via API
 #   .\dream.ps1 update              # Pull latest images and restart
+#   .\dream.ps1 doctor              # Diagnose runtime readiness
+#   .\dream.ps1 repair voice        # Repair voice/STT/TTS readiness
 #   .\dream.ps1 report              # Generate Windows diagnostics bundle
 #   .\dream.ps1 version             # Show version
 #   .\dream.ps1 help                # Show help
@@ -126,6 +128,126 @@ function Read-DreamEnv {
         Safely load .env file into a hashtable (no eval, no injection).
     #>
     return Get-WindowsDreamEnvMap -InstallDir $InstallDir
+}
+
+function Get-DreamEnvValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string]$Default = ""
+    )
+    try {
+        $envMap = Read-DreamEnv
+        if ($envMap.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace($envMap[$Name])) {
+            return $envMap[$Name]
+        }
+    } catch { }
+    return $Default
+}
+
+function Get-DreamVoiceDiagnosis {
+    $whisperPort = Get-DreamEnvValue -Name "WHISPER_PORT" -Default "9000"
+    $whisperUrl = "http://localhost:$whisperPort"
+    $sttModel = Get-DreamEnvValue -Name "AUDIO_STT_MODEL" -Default "Systran/faster-whisper-base"
+    $sttModelEncoded = $sttModel -replace "/", "%2F"
+    $modelUrl = "$whisperUrl/v1/models/$sttModelEncoded"
+    $ttsPort = Get-DreamEnvValue -Name "TTS_PORT" -Default "8880"
+    $ttsUrl = "http://localhost:$ttsPort"
+
+    $result = [ordered]@{
+        WhisperPort      = $whisperPort
+        WhisperUrl       = $whisperUrl
+        WhisperHealthy   = $false
+        ModelsApiReady   = $false
+        SttModel         = $sttModel
+        SttModelCached   = $false
+        SttModelUrl      = $modelUrl
+        RecoveryCommand  = "Invoke-WebRequest -Method POST -Uri '$modelUrl' -TimeoutSec 3600"
+        TtsPort          = $ttsPort
+        TtsUrl           = $ttsUrl
+        TtsHealthy       = $false
+    }
+
+    try {
+        Invoke-WebRequest -Uri "$whisperUrl/health" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop | Out-Null
+        $result.WhisperHealthy = $true
+    } catch { }
+
+    try {
+        $resp = Invoke-WebRequest -Uri "$whisperUrl/v1/models" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+        if ($resp.StatusCode -eq 200) {
+            $result.ModelsApiReady = $true
+        }
+    } catch { }
+
+    try {
+        $resp = Invoke-WebRequest -Uri $modelUrl -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+        if ($resp.StatusCode -eq 200) {
+            $result.SttModelCached = $true
+        }
+    } catch { }
+
+    try {
+        Invoke-WebRequest -Uri "$ttsUrl/health" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop | Out-Null
+        $result.TtsHealthy = $true
+    } catch { }
+
+    return $result
+}
+
+function Test-DreamSttModelCache {
+    try {
+        $flags = Get-ComposeFlags
+        if (-not (Test-DreamComposeServiceAvailable -ComposeFlags $flags -Service "whisper")) {
+            return
+        }
+    } catch { }
+
+    $diag = Get-DreamVoiceDiagnosis
+    if (-not $diag.WhisperHealthy) {
+        Write-AIWarn "Whisper STT: not responding (port $($diag.WhisperPort))"
+        return
+    }
+    if ($diag.SttModelCached) {
+        Write-AISuccess "Whisper STT model: cached ($($diag.SttModel))"
+        return
+    }
+
+    $apiState = if ($diag.ModelsApiReady) { "models API ready" } else { "models API not ready" }
+    Write-AIWarn "Whisper STT model missing ($($diag.SttModel)) -- transcription will 404 ($apiState)"
+    Write-Host "  Run: $($diag.RecoveryCommand)" -ForegroundColor DarkGray
+}
+
+function Wait-DreamHttpOk {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [int]$TimeoutSeconds = 60
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $resp = Invoke-WebRequest -Uri $Url -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+            if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 400) {
+                return $true
+            }
+        } catch { }
+        Start-Sleep -Seconds 2
+    }
+    return $false
+}
+
+function Test-DreamComposeServiceAvailable {
+    param(
+        [string[]]$ComposeFlags,
+        [Parameter(Mandatory = $true)][string]$Service
+    )
+
+    try {
+        $services = & docker compose @ComposeFlags config --services 2>$null
+        return ($services -contains $Service)
+    } catch {
+        return $false
+    }
 }
 
 function Set-DreamEnvValue {
@@ -360,6 +482,11 @@ function Start-NativeInferenceServer {
         if ($envVars["LLAMA_ARG_CACHE_TYPE_K"]) { $llamaArgs += @("--cache-type-k", $envVars["LLAMA_ARG_CACHE_TYPE_K"]) }
         if ($envVars["LLAMA_ARG_CACHE_TYPE_V"]) { $llamaArgs += @("--cache-type-v", $envVars["LLAMA_ARG_CACHE_TYPE_V"]) }
         if ($envVars["LLAMA_ARG_N_CPU_MOE"]) { $llamaArgs += @("--n-cpu-moe", $envVars["LLAMA_ARG_N_CPU_MOE"]) }
+        if ($envVars["LLAMA_PARALLEL"]) { $llamaArgs += @("--parallel", $envVars["LLAMA_PARALLEL"]) }
+        if ($envVars["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) { $llamaArgs += @("--checkpoint-every-n-tokens", $envVars["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) }
+        if ($envVars["LLAMA_ARG_NO_CACHE_PROMPT"] -and $envVars["LLAMA_ARG_NO_CACHE_PROMPT"] -notin @("0", "false", "off", "no")) { $llamaArgs += @("--no-cache-prompt") }
+        if ($envVars["LLAMA_ARG_SPEC_TYPE"]) { $llamaArgs += @("--spec-type", $envVars["LLAMA_ARG_SPEC_TYPE"]) }
+        if ($envVars["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) { $llamaArgs += @("--spec-draft-n-max", $envVars["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) }
 
         $pidDir = Split-Path $script:INFERENCE_PID_FILE
         New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
@@ -480,6 +607,7 @@ function Invoke-Status {
                 Write-AIWarn "$($ep.Name): not responding"
             }
         }
+        Test-DreamSttModelCache
 
         # GPU status
         Write-Host ""
@@ -752,6 +880,162 @@ function Invoke-Report {
     }
 }
 
+function Invoke-Doctor {
+    Test-Install
+    Push-Location $InstallDir
+    try {
+        $flags = Get-ComposeFlags
+        $voiceInStack = (
+            (Test-DreamComposeServiceAvailable -ComposeFlags $flags -Service "whisper") -and
+            (Test-DreamComposeServiceAvailable -ComposeFlags $flags -Service "tts")
+        )
+
+        Write-Host ""
+        Write-Host "  Dream Doctor" -ForegroundColor Cyan
+        Write-Host ("  " + ("-" * 40)) -ForegroundColor DarkGray
+
+        $hasIssue = $false
+
+        Write-Host ""
+        Write-Host "  Voice Readiness" -ForegroundColor Cyan
+        if (-not $voiceInStack) {
+            Write-AI "Voice services: not enabled in this compose stack"
+            Write-Host ""
+            Write-AISuccess "Doctor found no voice readiness issues."
+            return
+        }
+
+        $voice = Get-DreamVoiceDiagnosis
+        if ($voice.WhisperHealthy) {
+            Write-AISuccess "Whisper STT: healthy ($($voice.WhisperUrl))"
+        } else {
+            Write-AIWarn "Whisper STT: not responding ($($voice.WhisperUrl))"
+            $hasIssue = $true
+        }
+
+        if ($voice.SttModelCached) {
+            Write-AISuccess "Whisper STT model: cached ($($voice.SttModel))"
+        } elseif ($voice.WhisperHealthy) {
+            Write-AIWarn "Whisper STT model: missing ($($voice.SttModel))"
+            Write-Host "  Repair: .\dream.ps1 repair voice" -ForegroundColor DarkGray
+            Write-Host "  Manual: $($voice.RecoveryCommand)" -ForegroundColor DarkGray
+            $hasIssue = $true
+        }
+
+        if ($voice.TtsHealthy) {
+            Write-AISuccess "Kokoro TTS: healthy ($($voice.TtsUrl))"
+        } else {
+            Write-AIWarn "Kokoro TTS: not responding ($($voice.TtsUrl))"
+            Write-Host "  Repair: .\dream.ps1 repair voice" -ForegroundColor DarkGray
+            $hasIssue = $true
+        }
+
+        Write-Host ""
+        if ($hasIssue) {
+            Write-AIWarn "Doctor found repairable voice issues."
+            exit 1
+        }
+        Write-AISuccess "Doctor found no voice readiness issues."
+    } finally {
+        Pop-Location
+    }
+}
+
+function Invoke-RepairVoice {
+    Test-Install
+    Push-Location $InstallDir
+    try {
+        $flags = Get-ComposeFlags
+
+        Write-Host ""
+        Write-Host "  Repair Voice" -ForegroundColor Cyan
+        Write-Host ("  " + ("-" * 40)) -ForegroundColor DarkGray
+
+        $missingServices = @()
+        foreach ($svc in @("whisper", "tts")) {
+            if (-not (Test-DreamComposeServiceAvailable -ComposeFlags $flags -Service $svc)) {
+                $missingServices += $svc
+            }
+        }
+        if ($missingServices.Count -gt 0) {
+            Write-AIError "Voice services are not in this compose stack: $($missingServices -join ', ')"
+            Write-AI "Enable voice in the installer or add the whisper/tts extension compose files, then retry."
+            exit 1
+        }
+
+        Write-AI "Starting Whisper and Kokoro TTS..."
+        $composeExit = Invoke-DreamDockerCompose -InstallDir $InstallDir -ComposeFlags $flags `
+            -ComposeArgs @("up", "-d", "whisper", "tts")
+        if ($composeExit -ne 0) {
+            Write-AIError "docker compose up failed (exit code: $composeExit)"
+            Write-DreamComposeDiagnostics -InstallDir $InstallDir -ComposeFlags $flags -Phase "dream.ps1 repair voice"
+            exit 1
+        }
+
+        $voice = Get-DreamVoiceDiagnosis
+        if (-not $voice.WhisperHealthy) {
+            Write-AI "Waiting for Whisper STT..."
+            Wait-DreamHttpOk -Url "$($voice.WhisperUrl)/health" -TimeoutSeconds 90 | Out-Null
+        }
+        if (-not $voice.TtsHealthy) {
+            Write-AI "Waiting for Kokoro TTS..."
+            Wait-DreamHttpOk -Url "$($voice.TtsUrl)/health" -TimeoutSeconds 90 | Out-Null
+        }
+
+        $voice = Get-DreamVoiceDiagnosis
+        if (-not $voice.WhisperHealthy) {
+            Write-AIError "Whisper STT is still not responding. Check: .\dream.ps1 logs whisper 100"
+            exit 1
+        }
+        if (-not $voice.SttModelCached) {
+            Write-AI "Downloading STT model ($($voice.SttModel))..."
+            try {
+                Invoke-WebRequest -Method POST -Uri $voice.SttModelUrl -TimeoutSec 3600 -UseBasicParsing -ErrorAction Stop | Out-Null
+            } catch {
+                Write-AIWarn "STT model download request failed; verifying cache before failing."
+            }
+        }
+
+        $voice = Get-DreamVoiceDiagnosis
+        if ($voice.SttModelCached) {
+            Write-AISuccess "Whisper STT model cached ($($voice.SttModel))"
+        } else {
+            Write-AIError "STT model is still missing. Run manually: $($voice.RecoveryCommand)"
+            exit 1
+        }
+
+        if ($voice.TtsHealthy) {
+            Write-AISuccess "Kokoro TTS healthy"
+        } else {
+            Write-AIError "Kokoro TTS is still not responding. Check: .\dream.ps1 logs tts 100"
+            exit 1
+        }
+
+        Write-AISuccess "Voice repair complete."
+    } finally {
+        Pop-Location
+    }
+}
+
+function Invoke-Repair {
+    param([string]$Target)
+
+    if ([string]::IsNullOrWhiteSpace($Target)) {
+        $Target = "voice"
+    }
+
+    switch ($Target.ToLower()) {
+        "voice" { Invoke-RepairVoice }
+        "stt"   { Invoke-RepairVoice }
+        "tts"   { Invoke-RepairVoice }
+        default {
+            Write-AI "Usage: .\dream.ps1 repair voice"
+            Write-AIWarn "Unknown repair target: $Target"
+            exit 1
+        }
+    }
+}
+
 function Invoke-Agent {
     param([string]$Action = "status")
 
@@ -909,6 +1193,10 @@ function Show-Help {
     Write-Host "Quick chat via API" -ForegroundColor DarkGray
     Write-Host "    update              " -ForegroundColor Cyan -NoNewline
     Write-Host "Pull latest images and restart" -ForegroundColor DarkGray
+    Write-Host "    doctor              " -ForegroundColor Cyan -NoNewline
+    Write-Host "Diagnose runtime readiness" -ForegroundColor DarkGray
+    Write-Host "    repair voice        " -ForegroundColor Cyan -NoNewline
+    Write-Host "Start voice services and cache STT model" -ForegroundColor DarkGray
     Write-Host "    agent [action]      " -ForegroundColor Cyan -NoNewline
     Write-Host "Host agent: status|start|stop|restart|logs" -ForegroundColor DarkGray
     Write-Host "    report              " -ForegroundColor Cyan -NoNewline
@@ -922,6 +1210,7 @@ function Show-Help {
     Write-Host "    .\dream.ps1 status" -ForegroundColor DarkGray
     Write-Host "    .\dream.ps1 logs llama-server 50" -ForegroundColor DarkGray
     Write-Host "    .\dream.ps1 restart open-webui" -ForegroundColor DarkGray
+    Write-Host "    .\dream.ps1 repair voice" -ForegroundColor DarkGray
     Write-Host "    .\dream.ps1 chat `"What is quantum computing?`"" -ForegroundColor DarkGray
     Write-Host ""
 }
@@ -951,6 +1240,8 @@ switch ($Command.ToLower()) {
     }
     "chat"    { Invoke-Chat -Message ($Arguments -join " ") }
     "update"  { Invoke-Update }
+    "doctor"  { Invoke-Doctor }
+    "repair"  { Invoke-Repair -Target ($Arguments | Select-Object -First 1) }
     "report"  { Invoke-Report }
     "agent"   {
         $action = ($Arguments | Select-Object -First 1)

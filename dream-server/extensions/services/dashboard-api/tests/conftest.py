@@ -53,6 +53,7 @@ def data_dir(tmp_path, monkeypatch):
     d.mkdir()
     monkeypatch.setattr("helpers.DATA_DIR", str(d))
     monkeypatch.setattr("helpers._TOKEN_FILE", d / "token_counter.json")
+    monkeypatch.setattr("helpers._PERF_FILE", d / "model_performance.json")
     return d
 
 

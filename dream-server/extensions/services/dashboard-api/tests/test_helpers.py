@@ -355,6 +355,60 @@ class TestCheckServiceHealth:
         result = await check_service_health("test-svc", self._CONFIG)
         assert result.status == "down"
 
+    @pytest.mark.asyncio
+    async def test_host_network_portless_service_is_not_deployed(self):
+        config = {
+            "name": "Portless",
+            "port": 0,
+            "external_port": 0,
+            "health": "/health",
+            "host": "localhost",
+            "host_network": True,
+        }
+
+        result = await check_service_health("portless", config)
+        assert result.status == "not_deployed"
+
+    @pytest.mark.asyncio
+    async def test_tailscale_not_running_is_not_deployed(self, monkeypatch):
+        config = {
+            "name": "Tailscale",
+            "port": 0,
+            "external_port": 0,
+            "health": "/health",
+            "host": "localhost",
+            "host_network": True,
+        }
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"running": False}
+        client = MagicMock()
+        client.get = AsyncMock(return_value=response)
+        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=client))
+
+        result = await check_service_health("tailscale", config)
+        assert result.status == "not_deployed"
+
+    @pytest.mark.asyncio
+    async def test_tailscale_authenticated_is_healthy(self, monkeypatch):
+        config = {
+            "name": "Tailscale",
+            "port": 0,
+            "external_port": 0,
+            "health": "/health",
+            "host": "localhost",
+            "host_network": True,
+        }
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"running": True, "authenticated": True}
+        client = MagicMock()
+        client.get = AsyncMock(return_value=response)
+        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=client))
+
+        result = await check_service_health("tailscale", config)
+        assert result.status == "healthy"
+
 
 # --- get_all_services ---
 

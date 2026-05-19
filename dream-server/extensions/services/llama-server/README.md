@@ -32,6 +32,8 @@ Environment variables (set in `.env`):
 | `LLAMA_ARG_CACHE_TYPE_K` | `f16` | KV cache key precision. Use `q8_0` to reduce long-context memory pressure |
 | `LLAMA_ARG_CACHE_TYPE_V` | `f16` | KV cache value precision. Use `q8_0` to reduce long-context memory pressure |
 | `LLAMA_ARG_N_CPU_MOE` | unset | Optional MoE-only CPU expert offload (`--n-cpu-moe`). Leave unset for dense models |
+| `LLAMA_ARG_SPEC_TYPE` | unset | Optional speculative decoding mode (`--spec-type`). Use only with supported GGUF/runtime combinations |
+| `LLAMA_ARG_SPEC_DRAFT_N_MAX` | unset | Optional speculative draft token cap (`--spec-draft-n-max`) |
 | `LLAMA_SERVER_MEMORY_LIMIT` | `64G` | Docker memory limit for the container |
 
 ### Long-context profile
@@ -56,6 +58,19 @@ LLAMA_ARG_N_CPU_MOE=25
 ```
 
 Tune this value per machine. Lower values keep more work on GPU and can be faster if enough VRAM is available; higher values reduce VRAM pressure. Leave this unset for dense models.
+
+### MTP speculative decoding
+
+Newer llama.cpp builds support MTP speculative decoding for GGUFs that include compatible MTP data. Dream Server exposes the flags but does not enable them automatically, because normal GGUFs and older llama.cpp builds will reject or ignore these settings.
+
+```env
+LLAMA_ARG_SPEC_TYPE=draft-mtp
+LLAMA_ARG_SPEC_DRAFT_N_MAX=3
+```
+
+Use this only with a llama.cpp image or native binary built after MTP support landed, and with a model family that explicitly publishes MTP-capable GGUFs. Normal GGUFs without MTP layers should leave these variables unset.
+
+In router or multi-model setups, do not put MTP settings in a shared default section when any routed model lacks MTP layers. Apply `spec-type = draft-mtp` and `spec-draft-n-max = 3` only to the MTP-capable model section so non-MTP models keep loading normally.
 
 ### AMD-specific variables
 

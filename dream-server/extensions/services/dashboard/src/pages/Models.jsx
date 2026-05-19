@@ -41,11 +41,14 @@ export default function Models() {
     models,
     gpu,
     currentModel,
+    configuredModel,
+    recommendationAlternatives,
     loading,
     error,
     actionLoading,
     downloadModel,
     loadModel,
+    benchmarkModel,
     deleteModel,
     refresh,
   } = useModels()
@@ -200,6 +203,22 @@ export default function Models() {
         gpu={gpu}
       />
 
+      {!currentModel && configuredModel && (
+        <section className="mb-4 rounded-xl border border-amber-400/25 bg-amber-500/10 p-4">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm text-amber-200">
+              <AlertCircle size={14} className="mr-2 inline" />
+              Selected during install: <strong>{configuredModel}</strong>. Run a benchmark after first launch for local tok/s.
+            </div>
+            {recommendationAlternatives.length > 0 && (
+              <div className="text-xs text-amber-100/70">
+                Top catalog fit: {recommendationAlternatives.slice(0, 3).map(item => item.name).join(' / ')}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
       <div className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
         <ModelsFilterPanel
           query={query}
@@ -258,6 +277,7 @@ export default function Models() {
                       onToggleMenu={() => setOpenMenuId(current => current === rowId ? null : rowId)}
                       onDownload={() => handleDownload(model.id)}
                       onLoad={() => loadModel(model.id)}
+                      onBenchmark={() => benchmarkModel(model.id)}
                       onDelete={() => deleteModel(model.id)}
                     />
                   )
@@ -504,6 +524,7 @@ function ModelTableRow({
   onToggleMenu,
   onDownload,
   onLoad,
+  onBenchmark,
   onDelete,
 }) {
   const isLoaded = model.status === 'loaded'
@@ -513,6 +534,7 @@ function ModelTableRow({
   const speed = getSpeedDisplay(model)
   const tags = getModelTags(model)
   const iconTone = getIconTone(model, compatibility)
+  const performanceBadge = getPerformanceBadge(model)
 
   return (
     <div className="grid grid-cols-[minmax(280px,1.7fr)_90px_130px_150px_110px_150px_130px_36px] gap-5 px-5 py-3.5 transition-colors hover:bg-white/[0.025]">
@@ -529,6 +551,9 @@ function ModelTableRow({
             <p className="mt-1 truncate text-[11px] text-theme-text-muted/75">{model.description}</p>
             <div className="mt-2 flex flex-wrap gap-1.5">
               {tags.map(tag => <Badge key={tag} subdued>{tag}</Badge>)}
+              {performanceBadge && <Badge tone={performanceBadge.tone}>{performanceBadge.label}</Badge>}
+              {model.recommended && !isLoaded && <Badge tone="amber">Selected install</Badge>}
+              {isLoaded && <Badge tone="green">Active</Badge>}
             </div>
           </div>
         </div>
@@ -569,10 +594,11 @@ function ModelTableRow({
           isLoading={isLoading}
           loadBusy={loadBusy}
           downloadBusy={downloadBusy}
-          downloadStarting={downloadStarting}
-          onDownload={onDownload}
-          onLoad={onLoad}
-        />
+            downloadStarting={downloadStarting}
+            onDownload={onDownload}
+            onLoad={onLoad}
+            onBenchmark={onBenchmark}
+          />
       </div>
 
       <div className="relative flex items-center justify-end self-center" data-model-menu>
@@ -586,6 +612,9 @@ function ModelTableRow({
         </button>
         {menuOpen && (
           <div className="absolute right-0 top-9 z-30 w-44 overflow-hidden rounded-lg border border-white/[0.08] bg-[#101018] py-1 shadow-2xl">
+            {isLoaded && (
+              <MenuButton onClick={onBenchmark} icon={RefreshCw}>Benchmark</MenuButton>
+            )}
             {isDownloaded && !isLoaded && (
               <MenuButton onClick={onLoad} icon={Play} disabled={!model.fitsVram || loadBusy}>Run model</MenuButton>
             )}
@@ -615,6 +644,7 @@ function PrimaryAction({
   downloadStarting,
   onDownload,
   onLoad,
+  onBenchmark,
 }) {
   if (isLoading) {
     return (
@@ -627,9 +657,15 @@ function PrimaryAction({
 
   if (isLoaded) {
     return (
-      <span className="inline-flex h-8 min-w-24 items-center justify-center rounded-md border border-emerald-400/20 bg-emerald-500/10 px-3 text-xs font-semibold text-emerald-300">
-        Active
-      </span>
+      <button
+        type="button"
+        onClick={onBenchmark}
+        className="inline-flex h-8 min-w-24 items-center justify-center gap-2 rounded-md bg-theme-accent px-3 text-xs font-semibold text-white shadow-[0_0_18px_rgba(168,85,247,0.26)] transition-colors hover:bg-theme-accent-hover"
+        title="Run a local benchmark for this loaded model"
+      >
+        <RefreshCw size={13} />
+        Benchmark
+      </button>
     )
   }
 
@@ -962,11 +998,12 @@ function getMemoryMeta(model, gpu) {
   const estimated = Number(model?.estimatedRequired || 0)
   const catalog = Number(model?.vramRequired || 0)
   const required = estimated > catalog + 0.1 ? estimated : catalog
+  const includesKv = estimated > catalog + 0.1
   const total = Number(gpu?.vramTotal || 0)
   const percent = total > 0 && required > 0 ? Math.round((required / total) * 100) : 0
   const barPercent = total > 0 && required > 0 ? Math.min(100, Math.max(3, percent)) : 0
   return {
-    value: required > 0 ? `${formatNumber(required)} GB` : '--',
+    value: required > 0 ? `${includesKv ? '~' : ''}${formatNumber(required)} GB${includesKv ? ' incl. KV' : ''}` : '--',
     label: required > 0 ? `${formatNumber(required)} / ${formatNumber(total || 0)} GB` : '--',
     percent,
     percentLabel: total > 0 && required > 0 ? `${percent}%` : '--',
@@ -998,12 +1035,28 @@ function getCompatibilityMeta(model, memory) {
 }
 
 function getSpeedDisplay(model) {
-  const value = toNumber(model?.tokensPerSec)
+  const value = toNumber(model?.tokensPerSec) || extractTokensPerSecond(model?.performanceLabel)
   return {
     value,
-    label: value ? `${formatNumber(value)} tok/s` : '--',
+    label: model?.performanceLabel || (value ? `${formatNumber(value)} tok/s` : '--'),
     tone: model?.fitsVram === false ? 'orange' : 'purple',
   }
+}
+
+function getPerformanceBadge(model) {
+  const badges = {
+    measured_local: { tone: 'green', label: 'Measured locally' },
+    published_exact: { tone: 'purple', label: 'Published exact' },
+    predicted_calibrated: { tone: 'purple', label: 'Calibrated estimate' },
+    benchmark_required: { tone: 'amber', label: 'Benchmark required' },
+    incompatible: { tone: 'red', label: 'Incompatible' },
+  }
+  return badges[model?.performance?.source] || null
+}
+
+function extractTokensPerSecond(label) {
+  const match = String(label || '').match(/(\d+(?:\.\d+)?)\s*tok\/s/i)
+  return match ? toNumber(match[1]) : null
 }
 
 function buildSpeedProfilePoints(model, speed) {

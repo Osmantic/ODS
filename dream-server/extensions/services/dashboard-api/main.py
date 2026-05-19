@@ -29,13 +29,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import httpx
 from fastapi import FastAPI, Depends, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 
 # --- Local modules ---
 from config import (
     SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS,
-    AGENT_URL, DREAM_AGENT_KEY,
+    AGENT_HOST, AGENT_PORT, AGENT_URL, DREAM_AGENT_KEY,
+    _detect_container_default_gateway, _running_inside_container,
+    _read_env_from_file,
 )
 from models import (
     GPUInfo, ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus,
@@ -48,6 +51,7 @@ from helpers import (
     get_disk_usage, dir_size_gb, get_model_info, get_bootstrap_status,
     get_uptime, get_cpu_metrics, get_ram_metrics,
     get_llama_metrics, get_loaded_model, get_llama_context_size,
+    _get_httpx_client,
 )
 from agent_monitor import collect_metrics
 from routers import (
@@ -70,20 +74,23 @@ from settings import (
 # TTL Cache — avoids redundant subprocess/IO calls every poll cycle
 # ================================================================
 
+_CACHE_MISS = object()
+
+
 class TTLCache:
     """Simple in-memory cache with per-key TTL (seconds)."""
 
     def __init__(self):
         self._store: dict[str, tuple[float, object]] = {}
 
-    def get(self, key: str) -> object | None:
+    def get(self, key: str, default: object | None = None) -> object | None:
         entry = self._store.get(key)
         if entry is None:
-            return None
+            return default
         expires_at, value = entry
         if time.monotonic() > expires_at:
             del self._store[key]
-            return None
+            return default
         return value
 
     def set(self, key: str, value: object, ttl: float):
@@ -100,6 +107,10 @@ _SETTINGS_SUMMARY_CACHE_TTL = 5.0
 _SETTINGS_CONFIG_CACHE_TTL = 15.0
 _SETTINGS_ENV_CACHE_TTL = 5.0
 _SERVICE_POLL_INTERVAL = 10.0  # background health check interval
+_host_agent_probe_state: dict[str, Optional[str]] = {
+    "last_success_at": None,
+    "last_error": None,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -127,8 +138,12 @@ def _read_installed_version() -> str:
         try:
             raw = version_file.read_text().strip()
             if raw:
+                if raw.startswith("{"):
+                    data = json.loads(raw)
+                    if isinstance(data, dict) and data.get("version"):
+                        return str(data["version"])
                 return raw
-        except OSError:
+        except (OSError, json.JSONDecodeError, ValueError):
             pass
 
     manifest_file = install_root / "manifest.json"
@@ -148,11 +163,253 @@ def _read_installed_version() -> str:
     return app.version
 
 
+def _probe_host_agent_health() -> dict[str, Any]:
+    """Probe the host-agent health endpoint and update diagnostic state."""
+    started = time.monotonic()
+    url = f"{AGENT_URL}/health"
+    headers = {}
+    if DREAM_AGENT_KEY:
+        headers["Authorization"] = f"Bearer {DREAM_AGENT_KEY}"
+    request = urllib.request.Request(url, headers=headers)
+
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            status_code = int(getattr(response, "status", response.getcode()))
+            raw = response.read(2048).decode("utf-8", errors="replace")
+            try:
+                body: Any = json.loads(raw) if raw else None
+            except json.JSONDecodeError:
+                body = raw[:500]
+
+        latency_ms = round((time.monotonic() - started) * 1000)
+        success_at = datetime.now(timezone.utc).isoformat()
+        _host_agent_probe_state["last_success_at"] = success_at
+        _host_agent_probe_state["last_error"] = None
+        return {
+            "available": status_code == 200,
+            "status_code": status_code,
+            "latency_ms": latency_ms,
+            "response": body,
+            "error": None,
+        }
+    except urllib.error.HTTPError as exc:
+        latency_ms = round((time.monotonic() - started) * 1000)
+        status_code = exc.code
+        detail = f"HTTP {exc.code}: {exc.reason}"
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        latency_ms = round((time.monotonic() - started) * 1000)
+        status_code = None
+        detail = str(getattr(exc, "reason", exc))
+
+    _host_agent_probe_state["last_error"] = detail
+    return {
+        "available": False,
+        "status_code": status_code,
+        "latency_ms": latency_ms,
+        "response": None,
+        "error": detail,
+    }
+
+
 def _normalize_timestamp_precision(timestamp: str) -> str:
     match = re.match(r"^(.*?\.\d{6})\d+(.*)$", timestamp)
     if match:
         return f"{match.group(1)}{match.group(2)}"
     return timestamp
+
+
+def _service_by_id(statuses: list[ServiceStatus], service_id: str) -> Optional[ServiceStatus]:
+    for service in statuses:
+        if service.id == service_id:
+            return service
+    return None
+
+
+def _service_is_healthy(statuses: list[ServiceStatus], service_id: str) -> bool:
+    service = _service_by_id(statuses, service_id)
+    return bool(service and service.status == "healthy")
+
+
+def _readiness_check(
+    *,
+    check_id: str,
+    name: str,
+    required: bool,
+    ready: bool,
+    status: str,
+    detail: str,
+    repair: Optional[str] = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "id": check_id,
+        "name": name,
+        "required": required,
+        "ready": ready,
+        "status": status,
+        "detail": detail,
+    }
+    if repair:
+        payload["repair"] = repair
+    return payload
+
+
+def _build_readiness_payload(
+    *,
+    service_statuses: list[ServiceStatus],
+    loaded_model: Optional[str],
+    context_size: Optional[int],
+    bootstrap_info: BootstrapStatus,
+    host_agent: dict[str, Any],
+    stt_model_cached: Optional[bool],
+    stt_model_name: str,
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+
+    llama_healthy = _service_is_healthy(service_statuses, "llama-server")
+    chat_ready = bool(llama_healthy and loaded_model and context_size)
+    if chat_ready:
+        chat_detail = f"{loaded_model} loaded with {context_size} context"
+    elif bootstrap_info.active:
+        chat_detail = "Full model is still downloading; bootstrap mode may be limited"
+    elif not llama_healthy:
+        chat_detail = "llama-server is not healthy"
+    elif not loaded_model:
+        chat_detail = "No loaded model reported by the inference server"
+    else:
+        chat_detail = "Inference context size is unavailable"
+    checks.append(_readiness_check(
+        check_id="chat",
+        name="Chat",
+        required=True,
+        ready=chat_ready,
+        status="ready" if chat_ready else "blocked",
+        detail=chat_detail,
+        repair="dream restart llama-server" if not chat_ready and not bootstrap_info.active else None,
+    ))
+
+    webui_ready = _service_is_healthy(service_statuses, "open-webui")
+    checks.append(_readiness_check(
+        check_id="open-webui",
+        name="Open WebUI",
+        required=True,
+        ready=webui_ready,
+        status="ready" if webui_ready else "blocked",
+        detail="Open WebUI is reachable" if webui_ready else "Open WebUI is not healthy",
+        repair="dream restart open-webui" if not webui_ready else None,
+    ))
+
+    checks.append(_readiness_check(
+        check_id="dashboard-api",
+        name="Dashboard API",
+        required=True,
+        ready=True,
+        status="ready",
+        detail="Dashboard API is serving this readiness response",
+    ))
+
+    host_agent_ready = bool(host_agent.get("available"))
+    checks.append(_readiness_check(
+        check_id="host-agent",
+        name="Host Agent",
+        required=False,
+        ready=host_agent_ready,
+        status="ready" if host_agent_ready else "needs_repair",
+        detail="Host agent is reachable" if host_agent_ready else "Host agent is not reachable",
+        repair="dream agent restart" if not host_agent_ready else None,
+    ))
+
+    hermes_service = _service_by_id(service_statuses, "hermes")
+    if hermes_service is None or hermes_service.status == "not_deployed":
+        checks.append(_readiness_check(
+            check_id="hermes",
+            name="Hermes",
+            required=False,
+            ready=False,
+            status="disabled",
+            detail="Hermes is not enabled in this stack",
+        ))
+    else:
+        hermes_ready = hermes_service.status == "healthy"
+        checks.append(_readiness_check(
+            check_id="hermes",
+            name="Hermes",
+            required=False,
+            ready=hermes_ready,
+            status="ready" if hermes_ready else "needs_repair",
+            detail="Hermes is reachable" if hermes_ready else f"Hermes status is {hermes_service.status}",
+            repair="dream restart hermes" if not hermes_ready else None,
+        ))
+
+    whisper = _service_by_id(service_statuses, "whisper")
+    tts = _service_by_id(service_statuses, "tts")
+    voice_enabled = bool(whisper or tts)
+    if not voice_enabled:
+        checks.append(_readiness_check(
+            check_id="voice",
+            name="Voice",
+            required=False,
+            ready=False,
+            status="disabled",
+            detail="Voice services are not enabled in this stack",
+        ))
+        can_use_voice = False
+    else:
+        whisper_ready = bool(whisper and whisper.status == "healthy")
+        tts_ready = bool(tts and tts.status == "healthy")
+        model_ready = stt_model_cached is True
+        can_use_voice = whisper_ready and tts_ready and model_ready
+        if can_use_voice:
+            voice_detail = f"Whisper model {stt_model_name} cached and TTS is healthy"
+        elif not whisper_ready:
+            voice_detail = "Whisper STT is not healthy"
+        elif not model_ready:
+            voice_detail = f"Whisper STT model {stt_model_name} is not cached"
+        else:
+            voice_detail = "Kokoro TTS is not healthy"
+        checks.append(_readiness_check(
+            check_id="voice",
+            name="Voice",
+            required=False,
+            ready=can_use_voice,
+            status="ready" if can_use_voice else "needs_repair",
+            detail=voice_detail,
+            repair="dream repair voice" if not can_use_voice else None,
+        ))
+
+    required_ready = all(check["ready"] for check in checks if check["required"])
+    optional_issues = [
+        check for check in checks
+        if not check["required"] and check["status"] not in {"ready", "disabled"}
+    ]
+    status = "ready" if required_ready and not optional_issues else ("degraded" if required_ready else "blocked")
+    repair_hints = [check["repair"] for check in checks if check.get("repair")]
+
+    return {
+        "ready": required_ready,
+        "status": status,
+        "canChat": chat_ready,
+        "canUseVoice": can_use_voice,
+        "checks": checks,
+        "issues": [check for check in checks if not check["ready"] and check["status"] != "disabled"],
+        "repairHints": repair_hints,
+    }
+
+
+async def _check_stt_model_cached() -> tuple[Optional[bool], str]:
+    model_name = os.environ.get("AUDIO_STT_MODEL") or _read_env_from_file("AUDIO_STT_MODEL") or "Systran/faster-whisper-base"
+    whisper_cfg = SERVICES.get("whisper")
+    if not whisper_cfg:
+        return None, model_name
+
+    host = whisper_cfg.get("host", "localhost")
+    port = whisper_cfg.get("port", 8000)
+    encoded = model_name.replace("/", "%2F")
+    try:
+        client = await _get_httpx_client()
+        resp = await client.get(f"http://{host}:{port}/v1/models/{encoded}")
+        return resp.status_code == 200, model_name
+    except (httpx.HTTPError, httpx.TimeoutException, OSError):
+        return False, model_name
 
 
 def _read_install_date() -> Optional[str]:
@@ -249,17 +506,125 @@ def _serialize_model(model_info) -> Optional[dict]:
     }
 
 
+HERMES_MIN_CONTEXT = 65536
+HERMES_TARGET_CONTEXT = 131072
+
+
+def _build_model_readiness_payload(
+    *,
+    model_info: Optional[ModelInfo],
+    bootstrap_info: BootstrapStatus,
+    loaded_model: Optional[str],
+    runtime_context: Optional[int],
+) -> dict[str, Any]:
+    configured_context = model_info.context_length if model_info else None
+    effective_context = runtime_context or configured_context
+    meets_hermes_minimum = bool(effective_context and effective_context >= HERMES_MIN_CONTEXT)
+    meets_hermes_target = bool(effective_context and effective_context >= HERMES_TARGET_CONTEXT)
+    has_loaded_model = bool(loaded_model)
+    ready = has_loaded_model and meets_hermes_minimum
+
+    issues: list[str] = []
+    if not has_loaded_model:
+        issues.append("No model is currently reported as loaded.")
+    if not meets_hermes_minimum:
+        issues.append(f"Context is below Hermes minimum ({HERMES_MIN_CONTEXT}).")
+    if bootstrap_info.active:
+        issues.append("Full model is still downloading; bootstrap model is serving first-run traffic.")
+
+    if ready and bootstrap_info.active:
+        status = "bootstrap"
+    elif ready:
+        status = "ready"
+    else:
+        status = "blocked"
+
+    return {
+        "ready": ready,
+        "status": status,
+        "activeModel": loaded_model,
+        "configuredModel": {
+            "name": model_info.name,
+            "contextLength": configured_context,
+            "quantization": model_info.quantization,
+            "sizeGb": model_info.size_gb,
+        } if model_info else None,
+        "bootstrap": {
+            "active": bootstrap_info.active,
+            "model": bootstrap_info.model_name,
+            "percent": bootstrap_info.percent,
+            "downloadedGb": bootstrap_info.downloaded_gb,
+            "totalGb": bootstrap_info.total_gb,
+            "etaSeconds": bootstrap_info.eta_seconds,
+        },
+        "context": {
+            "configured": configured_context,
+            "runtime": runtime_context,
+            "effective": effective_context,
+            "hermesMinimum": HERMES_MIN_CONTEXT,
+            "hermesTarget": HERMES_TARGET_CONTEXT,
+            "meetsHermesMinimum": meets_hermes_minimum,
+            "meetsHermesTarget": meets_hermes_target,
+        },
+        "hermes": {
+            "compatible": meets_hermes_minimum,
+            "targetReady": meets_hermes_target,
+            "minimumContext": HERMES_MIN_CONTEXT,
+            "targetContext": HERMES_TARGET_CONTEXT,
+        },
+        "issues": issues,
+    }
+
+
+def _service_semantics(service_id: str, status: str) -> dict:
+    config = SERVICES.get(service_id, {})
+    category = config.get("category", "optional")
+    required = category == "core"
+
+    if status == "healthy":
+        state = "ready"
+        severity = "ok"
+        counts_as_issue = False
+    elif status == "not_deployed":
+        state = "disabled"
+        severity = "disabled"
+        counts_as_issue = False
+    elif status == "unknown" and not required:
+        state = "unknown"
+        severity = "unknown"
+        counts_as_issue = False
+    elif required:
+        state = "blocked"
+        severity = "critical"
+        counts_as_issue = True
+    else:
+        state = "attention"
+        severity = "warning"
+        counts_as_issue = True
+
+    return {
+        "category": category,
+        "required": required,
+        "impact": "core" if required else "optional",
+        "state": state,
+        "severity": severity,
+        "countsAsIssue": counts_as_issue,
+    }
+
+
 def _serialize_services(service_statuses: list[ServiceStatus], uptime: int) -> list[dict]:
-    return [
-        {
+    serialized = []
+    for service in service_statuses:
+        item = {
             "id": service.id,
             "name": service.name,
             "status": service.status,
             "port": service.external_port,
             "uptime": uptime if service.status == "healthy" else None,
         }
-        for service in service_statuses
-    ]
+        item.update(_service_semantics(service.id, service.status))
+        serialized.append(item)
+    return serialized
 
 
 def _fallback_services() -> list[dict]:
@@ -268,13 +633,15 @@ def _fallback_services() -> list[dict]:
         external_port = config.get("external_port", config.get("port", 0))
         if not external_port:
             continue
-        links.append({
+        item = {
             "id": service_id,
             "name": config.get("name", service_id),
             "status": "unknown",
             "port": external_port,
             "uptime": None,
-        })
+        }
+        item.update(_service_semantics(service_id, "unknown"))
+        links.append(item)
     return links
 
 
@@ -569,7 +936,7 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Dream Server Dashboard API",
-    version="2.0.0",
+    version="2.4.0",
     description="System status API for Dream Server Dashboard",
     lifespan=_lifespan,
 )
@@ -630,6 +997,33 @@ app.include_router(tailscale.router)
 async def health():
     """API health check."""
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/host-agent/diagnostics", dependencies=[Depends(verify_api_key)])
+async def host_agent_diagnostics():
+    """Report how dashboard-api resolves and reaches the host agent."""
+    inside_container = await asyncio.to_thread(_running_inside_container)
+    default_gateway = None
+    if inside_container:
+        default_gateway = await asyncio.to_thread(_detect_container_default_gateway)
+    probe = await asyncio.to_thread(_probe_host_agent_health)
+    probe["last_success_at"] = _host_agent_probe_state["last_success_at"]
+    probe["last_error"] = _host_agent_probe_state["last_error"]
+
+    return {
+        "configured": {
+            "url": AGENT_URL,
+            "host": AGENT_HOST,
+            "port": AGENT_PORT,
+            "dream_agent_key_configured": bool(DREAM_AGENT_KEY),
+            "dream_agent_host_explicit": bool(os.environ.get("DREAM_AGENT_HOST", "").strip()),
+        },
+        "container": {
+            "inside_container": inside_container,
+            "default_gateway": default_gateway or None,
+        },
+        "probe": probe,
+    }
 
 
 # --- Preflight ---
@@ -730,8 +1124,8 @@ async def preflight_disk():
 @app.get("/gpu", response_model=Optional[GPUInfo])
 async def gpu(api_key: str = Depends(verify_api_key)):
     """Get GPU metrics (cached for a few seconds to avoid nvidia-smi spam)."""
-    cached = _cache.get("gpu_info")
-    if cached is not None:
+    cached = _cache.get("gpu_info", _CACHE_MISS)
+    if cached is not _CACHE_MISS:
         if not cached:
             raise HTTPException(status_code=503, detail="GPU not available")
         return cached
@@ -764,6 +1158,23 @@ async def model(api_key: str = Depends(verify_api_key)):
 @app.get("/bootstrap", response_model=BootstrapStatus)
 async def bootstrap(api_key: str = Depends(verify_api_key)):
     return await asyncio.to_thread(get_bootstrap_status)
+
+
+@app.get("/api/model-readiness")
+async def api_model_readiness(api_key: str = Depends(verify_api_key)):
+    """Return first-run model/context readiness for Hermes and chat."""
+    model_info, bootstrap_info, loaded_model = await asyncio.gather(
+        asyncio.to_thread(get_model_info),
+        asyncio.to_thread(get_bootstrap_status),
+        get_loaded_model(),
+    )
+    runtime_context = await get_llama_context_size(model_hint=loaded_model)
+    return _build_model_readiness_payload(
+        model_info=model_info,
+        bootstrap_info=bootstrap_info,
+        loaded_model=loaded_model,
+        runtime_context=runtime_context,
+    )
 
 
 @app.get("/status", response_model=FullStatus)
@@ -810,6 +1221,36 @@ async def api_status(api_key: str = Depends(verify_api_key)):
                           "loadedModel": None, "contextSize": None},
             "manifest_errors": MANIFEST_ERRORS,
         }
+
+
+@app.get("/api/readiness")
+async def api_readiness(api_key: str = Depends(verify_api_key)):
+    """Return user-workflow readiness, not just container health."""
+    (
+        service_statuses,
+        loaded_model,
+        context_size,
+        bootstrap_info,
+        host_agent,
+        stt_result,
+    ) = await asyncio.gather(
+        _get_services(),
+        get_loaded_model(),
+        get_llama_context_size(),
+        asyncio.to_thread(get_bootstrap_status),
+        asyncio.to_thread(_probe_host_agent_health),
+        _check_stt_model_cached(),
+    )
+    stt_model_cached, stt_model_name = stt_result
+    return _build_readiness_payload(
+        service_statuses=service_statuses,
+        loaded_model=loaded_model,
+        context_size=context_size,
+        bootstrap_info=bootstrap_info,
+        host_agent=host_agent,
+        stt_model_cached=stt_model_cached,
+        stt_model_name=stt_model_name,
+    )
 
 
 async def _build_api_status() -> dict:

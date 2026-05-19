@@ -74,10 +74,24 @@ const MOCK_CURRENT_MODEL = 'Qwen/Qwen2.5-32B-Instruct-AWQ'
 // Named export for dev-only mocking (explicit opt-in via VITE_USE_MOCK_DATA)
 export { getMockModels }
 
+async function errorMessageFromResponse(response, fallback) {
+  try {
+    const data = await response.json()
+    if (typeof data?.detail === 'string' && data.detail.trim()) return data.detail
+    if (typeof data?.message === 'string' && data.message.trim()) return data.message
+    if (typeof data?.error === 'string' && data.error.trim()) return data.error
+  } catch {
+    // Keep the stable fallback when the server returns non-JSON error content.
+  }
+  return fallback
+}
+
 export function useModels() {
   const [models, setModels] = useState(USE_MOCK_DATA ? getMockModels() : [])
   const [gpu, setGpu] = useState(USE_MOCK_DATA ? MOCK_GPU : null)
   const [currentModel, setCurrentModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [configuredModel, setConfiguredModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [recommendationAlternatives, setRecommendationAlternatives] = useState([])
   const [loading, setLoading] = useState(USE_MOCK_DATA ? false : true)
   const [error, setError] = useState(null)
   const [actionLoading, setActionLoading] = useState(null)
@@ -97,6 +111,8 @@ export function useModels() {
       setModels(data.models)
       setGpu(data.gpu)
       setCurrentModel(data.currentModel)
+      setConfiguredModel(data.configuredModel ?? null)
+      setRecommendationAlternatives(data.recommendationAlternatives ?? [])
       setError(null)
     } catch (err) {
       setError(err.message)
@@ -195,15 +211,35 @@ export function useModels() {
     }
   }
 
+  const benchmarkModel = async (modelId) => {
+    setActionLoading(modelId)
+    try {
+      const response = await fetch(`/api/models/${encodeURIComponent(modelId)}/benchmark`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_tokens: 128 })
+      })
+      if (!response.ok) throw new Error(await errorMessageFromResponse(response, 'Failed to benchmark model'))
+      await fetchModels()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
   return {
     models,
     gpu,
     currentModel,
+    configuredModel,
+    recommendationAlternatives,
     loading,
     error,
     actionLoading,
     downloadModel,
     loadModel,
+    benchmarkModel,
     deleteModel,
     refresh: fetchModels
   }

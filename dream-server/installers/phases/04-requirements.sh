@@ -136,6 +136,17 @@ else
     fi
 fi
 
+if [[ "${LLM_MODEL_SIZE_MB:-0}" =~ ^[0-9]+$ && "${LLM_MODEL_SIZE_MB:-0}" -gt 0 && "${TIER:-}" != "CLOUD" ]]; then
+    _model_disk_gb=$(( (LLM_MODEL_SIZE_MB + 1023) / 1024 ))
+    _model_needed_gb=$(( _model_disk_gb + 15 ))
+    if [[ "${DISK_AVAIL:-0}" -lt "$_model_needed_gb" ]]; then
+        warn "Disk: ${DISK_AVAIL}GB available, ${_model_needed_gb}GB required for selected model (${_model_disk_gb}GB model + Docker images)"
+        REQUIREMENTS_MET=false
+    else
+        ai_ok "Disk: ${DISK_AVAIL}GB available (selected model needs ~${_model_needed_gb}GB)"
+    fi
+fi
+
 # Port conflict detection with process details
 # Warn-once guard for missing port-check tools
 _port_check_warned=false

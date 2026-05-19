@@ -28,7 +28,7 @@ _SENSITIVE_ENV_KEY_RE = re.compile(
 
 _SETTINGS_APPLY_ALLOWED_SERVICES = frozenset({
     "llama-server", "open-webui", "litellm", "langfuse", "n8n",
-    "openclaw", "opencode", "perplexica", "searxng", "qdrant",
+    "hermes", "hermes-proxy", "openclaw", "opencode", "perplexica", "searxng", "qdrant",
     "tts", "whisper", "embeddings", "token-spy", "comfyui",
     "ape", "privacy-shield",
 })
@@ -266,6 +266,10 @@ def _match_apply_service(key: str) -> Optional[str]:
         return "langfuse"
     if key.startswith("N8N_"):
         return "n8n"
+    if key == "DREAM_AUTH_UPSTREAM" or key.startswith("HERMES_PROXY_"):
+        return "hermes-proxy"
+    if key.startswith("HERMES_"):
+        return "hermes"
     if key.startswith("COMFYUI_"):
         return "comfyui"
     if key.startswith("WHISPER_"):

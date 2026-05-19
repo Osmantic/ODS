@@ -11,18 +11,16 @@ bc47367431025198fcbea19a54abcde8c30847fd:dream-server/extensions/services/privac
 
 # Documentation examples (placeholder API keys in curl commands)
 4ba4a3779264f44b247af06fbad391c1f4d38269:dream-server/extensions/services/litellm/README.md:curl-auth-header:89
-9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/workflows/comfyui/README.md:curl-auth-header:32
-9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/workflows/comfyui/README.md:curl-auth-header:64
-9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/workflows/langflow/README.md:curl-auth-header:30
-9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/workflows/flowise/README.md:curl-auth-header:30
-1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/workflows/flowise/README.md:curl-auth-header:30
-1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/workflows/comfyui/README.md:curl-auth-header:32
-1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/workflows/comfyui/README.md:curl-auth-header:64
-1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/workflows/langflow/README.md:curl-auth-header:30
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:dream-server/extensions/library/workflows/comfyui/README.md:curl-auth-header:32
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:dream-server/extensions/library/workflows/comfyui/README.md:curl-auth-header:64
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:dream-server/extensions/library/workflows/langflow/README.md:curl-auth-header:30
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:dream-server/extensions/library/workflows/flowise/README.md:curl-auth-header:30
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:dream-server/extensions/library/workflows/flowise/README.md:curl-auth-header:30
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:dream-server/extensions/library/workflows/comfyui/README.md:curl-auth-header:32
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:dream-server/extensions/library/workflows/comfyui/README.md:curl-auth-header:64
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:dream-server/extensions/library/workflows/langflow/README.md:curl-auth-header:30
 
 # Example code in privacy shield implementation (test patterns)
-9a1e87ce94083fb9696ec1df6c926ec77397b38e:resources/dev/extensions-library/services/privacy_shield/pii_scrubber.py:generic-api-key:149
-1f9e6dae1a91ff274dac2f580996ae9f8d60f414:resources/dev/extensions-library/services/privacy_shield/pii_scrubber.py:generic-api-key:149
 6a5047fd3f7cc0369416d14289740b8c3f02dd06:dream-server/privacy-shield-offline/pii_scrubber.py:generic-api-key:146
 6a5047fd3f7cc0369416d14289740b8c3f02dd06:dream-server/privacy-shield/pii_scrubber.py:generic-api-key:149
 

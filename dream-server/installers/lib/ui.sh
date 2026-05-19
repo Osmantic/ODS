@@ -378,8 +378,16 @@ show_tier_recommendation() {
     echo -e "${GRN}|${NC}  ${BGRN}CLASSIFICATION: TIER ${tier}${NC}                                      ${GRN}|${NC}"
     echo -e "${GRN}+-------------------------------------------------------------+${NC}"
     printf "${GRN}|${NC}  Model:   %-49s ${GRN}|${NC}\n" "$model"
-    printf "${GRN}|${NC}  Speed:   %-49s ${GRN}|${NC}\n" "~${speed} tokens/second"
-    printf "${GRN}|${NC}  Users:   %-49s ${GRN}|${NC}\n" "${users} concurrent comfortably"
+    if [[ "$speed" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        printf "${GRN}|${NC}  Speed:   %-49s ${GRN}|${NC}\n" "~${speed} tokens/second"
+    else
+        printf "${GRN}|${NC}  Speed:   %-49s ${GRN}|${NC}\n" "$speed"
+    fi
+    if [[ "$users" =~ ^[0-9]+(-[0-9]+)?$ ]]; then
+        printf "${GRN}|${NC}  Users:   %-49s ${GRN}|${NC}\n" "${users} concurrent comfortably"
+    else
+        printf "${GRN}|${NC}  Users:   %-49s ${GRN}|${NC}\n" "$users"
+    fi
     echo -e "${GRN}+-------------------------------------------------------------+${NC}"
 }
 

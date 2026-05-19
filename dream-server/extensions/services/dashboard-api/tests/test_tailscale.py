@@ -4,9 +4,8 @@ Tailscale status endpoint.
 Mocked surfaces:
   * urllib.request.urlopen — stand-in for the host-agent HTTP call.
 
-The actual `docker exec tailscale status --json` behavior is covered at
-the host-agent layer and not reproducible without a running Tailscale
-container.
+The actual container/native `tailscale status --json` behavior lives at the
+host-agent layer and is not reproducible here.
 """
 
 import json

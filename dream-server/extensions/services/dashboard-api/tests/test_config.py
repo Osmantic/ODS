@@ -129,6 +129,22 @@ class TestLoadExtensionManifests:
         assert services["internal-service"]["port"] == 9119
         assert services["internal-service"]["external_port"] == 0
 
+    def test_preserves_host_network_flag(self, tmp_path):
+        svc_dir = tmp_path / "host-network-service"
+        svc_dir.mkdir()
+        (svc_dir / "manifest.yaml").write_text(
+            "schema_version: dream.services.v1\n"
+            "service:\n"
+            "  id: host-network-service\n"
+            "  name: Host Network Service\n"
+            "  host_network: true\n"
+            "  port: 0\n"
+        )
+
+        services, _, _ = load_extension_manifests(tmp_path, "nvidia")
+
+        assert services["host-network-service"]["host_network"] is True
+
     def test_skips_wrong_schema_version(self, tmp_path):
         svc_dir = tmp_path / "old-service"
         svc_dir.mkdir()

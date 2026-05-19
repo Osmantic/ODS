@@ -81,10 +81,19 @@ function New-DreamInstallReport {
     if (Get-Command Get-NativeInferenceBackend -ErrorAction SilentlyContinue) {
         $nativeBackend = Get-NativeInferenceBackend
     }
+    $envMap = Get-WindowsDreamEnvMap -InstallDir $InstallDir
     $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $InstallDir -GpuBackend $gpu.Backend -NativeBackend $nativeBackend
 
     $composeConfigArgs = @("compose") + $ComposeFlags + @("config")
     $composePsArgs = @("compose") + $ComposeFlags + @("ps", "-a")
+
+    $whisperPort = if ($envMap.ContainsKey("WHISPER_PORT") -and $envMap["WHISPER_PORT"]) { $envMap["WHISPER_PORT"] } else { "9000" }
+    $sttModel = if ($envMap.ContainsKey("AUDIO_STT_MODEL") -and $envMap["AUDIO_STT_MODEL"]) { $envMap["AUDIO_STT_MODEL"] } else { "Systran/faster-whisper-base" }
+    $sttModelEncoded = $sttModel -replace "/", "%2F"
+    $sttModelUrl = "http://localhost:$whisperPort/v1/models/$sttModelEncoded"
+    $whisperStatus = Test-HttpEndpoint -Url "http://localhost:$whisperPort/health"
+    $sttModelStatus = Test-HttpEndpoint -Url $sttModelUrl -TimeoutSec 5
+    $sttModelCached = if ($whisperStatus.ok) { $sttModelStatus.ok } else { $null }
 
     $report = [ordered]@{
         generated_at = (Get-Date).ToString("o")
@@ -114,6 +123,14 @@ function New-DreamInstallReport {
             open_webui = Test-HttpEndpoint -Url "http://localhost:3000"
             dashboard = Test-HttpEndpoint -Url "http://localhost:3001"
             dashboard_api = Test-HttpEndpoint -Url "http://localhost:3002/health"
+            whisper = $whisperStatus
+            stt_model = [ordered]@{
+                name = $sttModel
+                cached = $sttModelCached
+                status_code = $sttModelStatus.status_code
+                url = $sttModelUrl
+                recovery_command = "Invoke-WebRequest -Method POST -Uri '$sttModelUrl' -TimeoutSec 3600"
+            }
         }
     }
 
@@ -168,6 +185,15 @@ function Write-DreamInstallReport {
     $lines += "- Open WebUI: $($report.health.open_webui.ok) (status $($report.health.open_webui.status_code))"
     $lines += "- Dashboard: $($report.health.dashboard.ok) (status $($report.health.dashboard.status_code))"
     $lines += "- Dashboard API: $($report.health.dashboard_api.ok) (status $($report.health.dashboard_api.status_code))"
+    $lines += "- Whisper: $($report.health.whisper.ok) (status $($report.health.whisper.status_code))"
+    if ($report.health.whisper.ok) {
+        $lines += "- Whisper STT model cached: $($report.health.stt_model.cached) ($($report.health.stt_model.name), status $($report.health.stt_model.status_code))"
+        if (-not $report.health.stt_model.cached) {
+            $lines += "  Recovery: $($report.health.stt_model.recovery_command)"
+        }
+    } else {
+        $lines += "- Whisper STT model cached: skipped (Whisper unavailable)"
+    }
     $lines += ""
     $lines += "Raw command snippets are available in report.json."
 

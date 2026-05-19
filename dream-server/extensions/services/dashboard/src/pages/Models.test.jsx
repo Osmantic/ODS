@@ -24,11 +24,14 @@ function baseState(overrides = {}) {
     models: [],
     gpu: { vramUsed: 2, vramTotal: 8, vramFree: 6 },
     currentModel: null,
+    configuredModel: null,
+    recommendationAlternatives: [],
     loading: false,
     error: null,
     actionLoading: null,
     downloadModel: vi.fn(),
     loadModel: vi.fn(),
+    benchmarkModel: vi.fn(),
     deleteModel: vi.fn(),
     refresh: vi.fn(),
     ...overrides,
@@ -86,19 +89,61 @@ test('renders the model library layout from catalog fields only', () => {
   expect(screen.getByRole('link', { name: /dashboard/i })).toHaveAttribute('href', '/')
   expect(screen.getByText('51.7 tok/s')).toBeInTheDocument()
   expect(screen.getByText('69.8 tok/s')).toBeInTheDocument()
-  expect(screen.getByText('3.2 GB')).toBeInTheDocument()
+  expect(screen.getByText('~3.2 GB incl. KV')).toBeInTheDocument()
 })
 
-test('loaded models show active state without benchmark actions', () => {
+test('loaded models show active state and benchmark action', () => {
+  const benchmarkModel = vi.fn()
   useModelsMock.mockReturnValue(baseState({
     currentModel: 'qwen3.5-9b-q4',
+    benchmarkModel,
     models: [model({ status: 'loaded' })],
   }))
 
   renderModels()
 
   expect(screen.getByText('Active')).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: /benchmark/i })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: /benchmark/i }))
+  expect(benchmarkModel).toHaveBeenCalledWith('qwen3.5-9b-q4')
+})
+
+test('renders oracle source labels and install recommendation context', () => {
+  useModelsMock.mockReturnValue(baseState({
+    configuredModel: 'qwen3.5-9b-q4',
+    recommendationAlternatives: [
+      { id: 'qwen3.5-9b-q4', name: 'Qwen 3.5 9B' },
+      { id: 'deepseek-r1-7b-q4', name: 'DeepSeek R1 7B' },
+    ],
+    models: [
+      model({
+        recommended: true,
+        performanceLabel: 'Benchmark after first launch',
+        performance: { source: 'benchmark_required' },
+      }),
+      model({
+        id: 'phi4-mini-q4',
+        name: 'Phi-4 Mini',
+        size: '2.4 GB',
+        sizeGb: 2.4,
+        vramRequired: 4,
+        estimatedRequired: 4.4,
+        contextLength: 128000,
+        specialty: 'Balanced',
+        description: 'Compact model.',
+        performanceLabel: '32.1 tok/s measured locally',
+        performance: { source: 'measured_local' },
+      }),
+    ],
+  }))
+
+  renderModels()
+
+  expect(screen.getByText('Benchmark after first launch')).toBeInTheDocument()
+  expect(screen.getByText('Benchmark required')).toBeInTheDocument()
+  expect(screen.getByText(/Top catalog fit: Qwen 3.5 9B/)).toBeInTheDocument()
+  expect(screen.getByText('Selected install')).toBeInTheDocument()
+  expect(screen.getByText('Measured locally')).toBeInTheDocument()
+  expect(screen.getByText('~4.4 GB incl. KV')).toBeInTheDocument()
 })
 
 test('runs downloaded models through the existing load action', () => {

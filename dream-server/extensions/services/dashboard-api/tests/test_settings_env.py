@@ -278,6 +278,26 @@ def test_api_settings_env_apply_calls_host_agent(test_client, monkeypatch):
     assert captured["service_ids"] == ["llama-server"]
 
 
+def test_api_settings_env_apply_allows_hermes_services(test_client, monkeypatch):
+    captured = {}
+
+    def fake_call(service_ids):
+        captured["service_ids"] = service_ids
+        return {"status": "ok"}
+
+    monkeypatch.setattr("main._call_agent_core_recreate", fake_call)
+
+    response = test_client.post(
+        "/api/settings/env/apply",
+        headers=test_client.auth_headers,
+        json={"service_ids": ["hermes-proxy", "hermes"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert captured["service_ids"] == ["hermes", "hermes-proxy"]
+
+
 def test_api_settings_env_apply_rejects_disallowed_service(test_client):
     response = test_client.post(
         "/api/settings/env/apply",
@@ -287,6 +307,27 @@ def test_api_settings_env_apply_rejects_disallowed_service(test_client):
 
     assert response.status_code == 400
     assert "not eligible" in response.json()["detail"]["message"].lower()
+
+
+def test_settings_apply_plan_maps_hermes_env_keys():
+    from settings import _compute_env_apply_plan
+
+    previous = {
+        "HERMES_LANGUAGE": "en",
+        "HERMES_PROXY_PORT": "9120",
+        "DREAM_AUTH_UPSTREAM": "dream-dashboard-api:3002",
+    }
+    updated = {
+        "HERMES_LANGUAGE": "pt",
+        "HERMES_PROXY_PORT": "9121",
+        "DREAM_AUTH_UPSTREAM": "dashboard-api:3002",
+    }
+
+    plan = _compute_env_apply_plan(previous, updated)
+
+    assert plan["status"] == "ready"
+    assert plan["services"] == ["hermes", "hermes-proxy"]
+    assert plan["manualKeys"] == []
 
 
 # --- Render round-trip fidelity ---

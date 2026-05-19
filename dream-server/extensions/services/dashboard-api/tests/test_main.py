@@ -1,14 +1,32 @@
 """Tests for main.py — core endpoints and helper functions."""
 
+import json
 import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from main import get_allowed_origins, _build_api_status, _fallback_services, _serialize_services, TTLCache
+from main import (
+    TTLCache,
+    _build_api_status,
+    _build_model_readiness_payload,
+    _build_readiness_payload,
+    _fallback_services,
+    _read_installed_version,
+    _serialize_services,
+    get_allowed_origins,
+)
 
 
 # --- get_allowed_origins ---
+
+
+def test_read_installed_version_parses_json_version_file(tmp_path, monkeypatch):
+    version_file = tmp_path / ".version"
+    version_file.write_text(json.dumps({"version": "3.1.4"}), encoding="utf-8")
+    monkeypatch.setattr("main._resolve_install_root", lambda: tmp_path)
+
+    assert _read_installed_version() == "3.1.4"
 
 
 class TestGetAllowedOrigins:
@@ -257,6 +275,129 @@ class TestBuildApiStatus:
 
         result = await _build_api_status()
         assert result["tier"] == "Strix Halo 90+"
+
+
+# --- Readiness ---
+
+
+class TestReadinessPayload:
+
+    def test_core_ready_with_disabled_voice(self):
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status="healthy"),
+        ]
+
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=None,
+            stt_model_name="Systran/faster-whisper-base",
+        )
+
+        assert result["ready"] is True
+        assert result["status"] == "ready"
+        assert result["canChat"] is True
+        assert result["canUseVoice"] is False
+        assert any(check["id"] == "voice" and check["status"] == "disabled" for check in result["checks"])
+
+    def test_missing_model_blocks_chat(self):
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status="healthy"),
+        ]
+
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model=None,
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=None,
+            stt_model_name="Systran/faster-whisper-base",
+        )
+
+        assert result["ready"] is False
+        assert result["status"] == "blocked"
+        assert result["canChat"] is False
+        assert "dream restart llama-server" in result["repairHints"]
+
+    def test_voice_ready_requires_services_and_cached_stt_model(self):
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status="healthy"),
+            ServiceStatus(id="whisper", name="Whisper", port=8000, external_port=9000, status="healthy"),
+            ServiceStatus(id="tts", name="TTS", port=8880, external_port=8880, status="healthy"),
+        ]
+
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=True,
+            stt_model_name="deepdml/faster-whisper-large-v3-turbo-ct2",
+        )
+
+        assert result["canUseVoice"] is True
+        assert any(check["id"] == "voice" and check["ready"] is True for check in result["checks"])
+
+    def test_uncached_stt_model_degrades_optional_voice(self):
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status="healthy"),
+            ServiceStatus(id="whisper", name="Whisper", port=8000, external_port=9000, status="healthy"),
+            ServiceStatus(id="tts", name="TTS", port=8880, external_port=8880, status="healthy"),
+        ]
+
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=False,
+            stt_model_name="deepdml/faster-whisper-large-v3-turbo-ct2",
+        )
+
+        assert result["ready"] is True
+        assert result["status"] == "degraded"
+        assert result["canUseVoice"] is False
+        assert "dream repair voice" in result["repairHints"]
+
+    def test_api_readiness_endpoint(self, test_client, monkeypatch):
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status="healthy"),
+        ]
+        monkeypatch.setattr("main._get_services", AsyncMock(return_value=statuses))
+        monkeypatch.setattr("main.get_loaded_model", AsyncMock(return_value="Test-32B"))
+        monkeypatch.setattr("main.get_llama_context_size", AsyncMock(return_value=32768))
+        monkeypatch.setattr("main.get_bootstrap_status", lambda: BootstrapStatus(active=False))
+        monkeypatch.setattr("main._probe_host_agent_health", lambda: {"available": True})
+        monkeypatch.setattr("main._check_stt_model_cached", AsyncMock(return_value=(None, "Systran/faster-whisper-base")))
+
+        resp = test_client.get("/api/readiness", headers=test_client.auth_headers)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ready"] is True
+        assert data["canChat"] is True
+        assert "checks" in data
 
 
 # --- /api/service-tokens ---
@@ -552,6 +693,75 @@ class TestCoreEndpoints:
         assert resp.json()["active"] is False
 
 
+# --- model readiness ---
+
+
+class TestModelReadiness:
+
+    def test_ready_when_loaded_context_meets_hermes_minimum(self):
+        from models import BootstrapStatus, ModelInfo
+
+        result = _build_model_readiness_payload(
+            model_info=ModelInfo(name="qwen", size_gb=6.0, context_length=131072, quantization="GGUF"),
+            bootstrap_info=BootstrapStatus(active=False),
+            loaded_model="qwen",
+            runtime_context=131072,
+        )
+
+        assert result["ready"] is True
+        assert result["status"] == "ready"
+        assert result["context"]["meetsHermesMinimum"] is True
+        assert result["context"]["meetsHermesTarget"] is True
+        assert result["hermes"]["compatible"] is True
+
+    def test_bootstrap_can_be_hermes_compatible_before_full_model_ready(self):
+        from models import BootstrapStatus, ModelInfo
+
+        result = _build_model_readiness_payload(
+            model_info=ModelInfo(name="qwen3.5-2b", size_gb=1.5, context_length=65536, quantization="GGUF"),
+            bootstrap_info=BootstrapStatus(active=True, model_name="full-model.gguf", percent=42.0),
+            loaded_model="qwen3.5-2b",
+            runtime_context=65536,
+        )
+
+        assert result["ready"] is True
+        assert result["status"] == "bootstrap"
+        assert result["context"]["meetsHermesMinimum"] is True
+        assert result["context"]["meetsHermesTarget"] is False
+        assert any("Full model is still downloading" in issue for issue in result["issues"])
+
+    def test_context_below_hermes_minimum_blocks_readiness(self):
+        from models import BootstrapStatus, ModelInfo
+
+        result = _build_model_readiness_payload(
+            model_info=ModelInfo(name="small", size_gb=1.0, context_length=8192),
+            bootstrap_info=BootstrapStatus(active=False),
+            loaded_model="small",
+            runtime_context=8192,
+        )
+
+        assert result["ready"] is False
+        assert result["status"] == "blocked"
+        assert result["hermes"]["compatible"] is False
+        assert any("Context is below Hermes minimum" in issue for issue in result["issues"])
+
+    def test_model_readiness_endpoint(self, test_client, monkeypatch):
+        from models import BootstrapStatus, ModelInfo
+
+        monkeypatch.setattr("main.get_model_info", lambda: ModelInfo(name="qwen", size_gb=6.0, context_length=131072))
+        monkeypatch.setattr("main.get_bootstrap_status", lambda: BootstrapStatus(active=False))
+        monkeypatch.setattr("main.get_loaded_model", AsyncMock(return_value="qwen"))
+        monkeypatch.setattr("main.get_llama_context_size", AsyncMock(return_value=131072))
+
+        resp = test_client.get("/api/model-readiness", headers=test_client.auth_headers)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ready"] is True
+        assert data["activeModel"] == "qwen"
+        assert data["hermes"]["targetReady"] is True
+
+
 # --- /status endpoint (FullStatus) ---
 
 
@@ -583,8 +793,11 @@ class TestStatusEndpoint:
 
 class TestApiStatusServiceSerialization:
 
-    def test_serialize_services_includes_service_id(self):
+    def test_serialize_services_includes_service_id_and_semantics(self, monkeypatch):
         from models import ServiceStatus
+        monkeypatch.setattr("main.SERVICES", {
+            "llama-server": {"category": "core"},
+        })
         services = [
             ServiceStatus(
                 id="llama-server",
@@ -603,14 +816,65 @@ class TestApiStatusServiceSerialization:
             "status": "healthy",
             "port": 11434,
             "uptime": 42,
+            "category": "core",
+            "required": True,
+            "impact": "core",
+            "state": "ready",
+            "severity": "ok",
+            "countsAsIssue": False,
         }]
 
-    def test_fallback_services_include_service_ids(self, monkeypatch):
+    def test_serialize_optional_not_deployed_is_disabled(self, monkeypatch):
+        from models import ServiceStatus
+        monkeypatch.setattr("main.SERVICES", {
+            "tailscale": {"category": "optional"},
+        })
+        services = [
+            ServiceStatus(
+                id="tailscale",
+                name="Tailscale",
+                port=0,
+                external_port=0,
+                status="not_deployed",
+            )
+        ]
+
+        serialized = _serialize_services(services, uptime=42)
+
+        assert serialized[0]["required"] is False
+        assert serialized[0]["impact"] == "optional"
+        assert serialized[0]["state"] == "disabled"
+        assert serialized[0]["severity"] == "disabled"
+        assert serialized[0]["countsAsIssue"] is False
+
+    def test_optional_unknown_does_not_count_as_issue(self, monkeypatch):
+        from models import ServiceStatus
+        monkeypatch.setattr("main.SERVICES", {
+            "optional-tool": {"category": "optional"},
+        })
+        services = [
+            ServiceStatus(
+                id="optional-tool",
+                name="Optional Tool",
+                port=8080,
+                external_port=8080,
+                status="unknown",
+            )
+        ]
+
+        serialized = _serialize_services(services, uptime=42)
+
+        assert serialized[0]["state"] == "unknown"
+        assert serialized[0]["severity"] == "unknown"
+        assert serialized[0]["countsAsIssue"] is False
+
+    def test_fallback_services_include_service_ids_and_semantics(self, monkeypatch):
         monkeypatch.setattr("main.SERVICES", {
             "dashboard-api": {
                 "name": "Dashboard API (System Status)",
                 "port": 3002,
                 "external_port": 3002,
+                "category": "core",
             }
         })
 
@@ -622,6 +886,12 @@ class TestApiStatusServiceSerialization:
             "status": "unknown",
             "port": 3002,
             "uptime": None,
+            "category": "core",
+            "required": True,
+            "impact": "core",
+            "state": "blocked",
+            "severity": "critical",
+            "countsAsIssue": True,
         }]
 
 

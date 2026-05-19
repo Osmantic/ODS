@@ -94,6 +94,14 @@ if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]]; then
     esac
 fi
 
+if [[ "${ENABLE_HERMES:-false}" == "true" && "${DREAM_MODE:-local}" != "cloud" ]]; then
+    HERMES_CONTEXT_SIZE="${HERMES_CONTEXT_SIZE:-131072}"
+    if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
+        ai_warn "Hermes enabled: increasing llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (128K)."
+        MAX_CONTEXT="$HERMES_CONTEXT_SIZE"
+    fi
+fi
+
 # Sync optional-extension compose state with the ENABLE_* flags — the
 # resolver uses the .disabled convention to exclude services from the compose
 # stack. These mv calls are skipped during --dry-run so the source tree is

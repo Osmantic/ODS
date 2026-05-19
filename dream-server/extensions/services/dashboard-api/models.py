@@ -1,6 +1,6 @@
 """Pydantic response models for Dream Server Dashboard API."""
 
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -136,17 +136,32 @@ class MultiGPUStatus(BaseModel):
 class ModelLibraryEntry(BaseModel):
     id: str
     name: str
+    gguf: Optional[str] = None
+    ggufParts: Optional[list[dict[str, Any]]] = None
+    downloadUrl: Optional[str] = None
+    downloadSha256: Optional[str] = None
+    llmModelName: Optional[str] = None
     size: str
     sizeGb: float
-    vramRequired: int
+    vramRequired: float
+    estimatedRequired: Optional[float] = None
     contextLength: int
     specialty: str
     description: str
-    tokensPerSec: int
+    tokensPerSec: Optional[float] = None
+    tokensPerSecEstimate: Optional[float] = None
     quantization: Optional[str] = None
+    architecture: Optional[str] = None
+    activeParamsB: Optional[float] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
     status: str  # "loaded", "downloaded", "available"
+    recommended: bool = False
+    configured: bool = False
+    recommendation: Optional[dict[str, Any]] = None
     fitsVram: bool
     fitsCurrentVram: bool
+    performance: Optional[dict[str, Any]] = None
+    performanceLabel: Optional[str] = None
 
 
 class ModelLibraryGpu(BaseModel):
@@ -159,3 +174,7 @@ class ModelLibraryResponse(BaseModel):
     models: list[ModelLibraryEntry]
     gpu: Optional[ModelLibraryGpu] = None
     currentModel: Optional[str] = None
+    loadedModel: Optional[str] = None
+    configuredModel: Optional[str] = None
+    recommendationPolicy: Optional[str] = None
+    recommendationAlternatives: list[dict[str, Any]] = Field(default_factory=list)

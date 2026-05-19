@@ -14,7 +14,9 @@ describe('useModels', () => {
     const mockData = {
       models: [{ id: 'qwen-32b', name: 'Qwen2.5 32B' }],
       gpu: { vramTotal: 16 },
-      currentModel: 'qwen-32b'
+      currentModel: 'qwen-32b',
+      configuredModel: 'qwen-32b',
+      recommendationAlternatives: [{ id: 'qwen-32b', name: 'Qwen2.5 32B' }]
     }
     fetch.mockResolvedValue({
       ok: true,
@@ -30,6 +32,8 @@ describe('useModels', () => {
     expect(result.current.models[0].id).toBe('qwen-32b')
     expect(result.current.gpu.vramTotal).toBe(16)
     expect(result.current.currentModel).toBe('qwen-32b')
+    expect(result.current.configuredModel).toBe('qwen-32b')
+    expect(result.current.recommendationAlternatives[0].id).toBe('qwen-32b')
     expect(result.current.error).toBeNull()
   })
 
@@ -92,6 +96,30 @@ describe('useModels', () => {
     const deleteCall = fetch.mock.calls.find(c => c[1]?.method === 'DELETE')
     expect(deleteCall).toBeTruthy()
     expect(deleteCall[0]).toContain('to-delete')
+  })
+
+  test('benchmarkModel calls POST and refreshes', async () => {
+    fetch.mockImplementation((url, opts) => {
+      if (opts?.method === 'POST' && String(url).includes('/benchmark')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ tokensPerSecond: 42 }) })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ models: [{ id: 'qwen3.5-9b-q4' }], gpu: null, currentModel: 'qwen3.5-9b-q4' })
+      })
+    })
+
+    const { result } = renderHook(() => useModels())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      await result.current.benchmarkModel('qwen3.5-9b-q4')
+    })
+
+    const benchmarkCall = fetch.mock.calls.find(c => c[1]?.method === 'POST' && String(c[0]).includes('/benchmark'))
+    expect(benchmarkCall).toBeTruthy()
+    expect(benchmarkCall[0]).toContain('qwen3.5-9b-q4')
+    expect(benchmarkCall[1].body).toContain('max_tokens')
   })
 
   test('deleteModel aborts when user cancels confirm', async () => {

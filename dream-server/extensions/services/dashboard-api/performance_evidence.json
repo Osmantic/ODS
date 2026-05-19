@@ -1,0 +1,89 @@
+{
+  "schema_version": "dream.performance-evidence.v1",
+  "updated_at": "2026-05-12",
+  "entries": [
+    {
+      "id": "witcheer-4060ti-qwen35-9b-q4km-16k",
+      "model_id": "qwen3.5-9b",
+      "model_names": ["qwen3.5-9b", "Qwen3.5-9B-Q4_K_M.gguf"],
+      "quantization": "Q4_K_M",
+      "backend": "nvidia",
+      "gpu_name": "NVIDIA GeForce RTX 4060 Ti",
+      "vram_gb": 8,
+      "context_length": 16384,
+      "tokens_per_second": 44.17,
+      "metric": "decode_tok_s",
+      "runtime": "LM Studio",
+      "source_label": "witcheer/windows-rtx-4060ti-8gb-bench-2026-05",
+      "source_url": "https://huggingface.co/datasets/witcheer/windows-rtx-4060ti-8gb-bench-2026-05",
+      "license": "cc-by-4.0"
+    },
+    {
+      "id": "witcheer-4060ti-qwen36-35b-a3b-ncmoe30-32k",
+      "model_id": "qwen3.6-35b-a3b",
+      "model_names": ["qwen3.6-35b-a3b", "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"],
+      "quantization": "UD-Q4_K_M",
+      "backend": "nvidia",
+      "gpu_name": "NVIDIA GeForce RTX 4060 Ti",
+      "vram_gb": 8,
+      "context_length": 32768,
+      "tokens_per_second": 35.36,
+      "metric": "decode_tok_s",
+      "runtime": "llama-server",
+      "flags": {
+        "n_cpu_moe": "30",
+        "cache_type_k": "q8_0",
+        "cache_type_v": "q8_0",
+        "flash_attn": "on"
+      },
+      "source_label": "witcheer/windows-rtx-4060ti-8gb-moe-offload-bench-2026-05",
+      "source_url": "https://huggingface.co/datasets/witcheer/windows-rtx-4060ti-8gb-moe-offload-bench-2026-05",
+      "license": "cc-by-4.0"
+    },
+    {
+      "id": "witcheer-4060ti-qwen36-35b-a3b-turbo3-64k-checkpoint-disabled",
+      "model_id": "qwen3.6-35b-a3b",
+      "model_names": ["qwen3.6-35b-a3b", "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"],
+      "quantization": "UD-Q4_K_M",
+      "backend": "nvidia",
+      "gpu_name": "NVIDIA GeForce RTX 4060 Ti",
+      "vram_gb": 8,
+      "context_length": 65536,
+      "tokens_per_second": 30.26,
+      "metric": "decode_tok_s",
+      "runtime": "turboquant",
+      "flags": {
+        "n_cpu_moe": "30",
+        "cache_type_k": "q8_0",
+        "cache_type_v": "turbo3",
+        "no_cache_prompt": "1",
+        "checkpoint_every_n_tokens": "-1"
+      },
+      "source_label": "witcheer/rtx-4060ti-8gb-turboquant-bench-2026-05",
+      "source_url": "https://huggingface.co/datasets/witcheer/rtx-4060ti-8gb-turboquant-bench-2026-05",
+      "license": "mit"
+    },
+    {
+      "id": "witcheer-4060ti-gemma4-26b-a4b-ncmoe23-32k",
+      "model_id": "gemma-4-26b-a4b",
+      "model_names": ["gemma-4-26b-a4b", "gemma-4-26B-A4B-it-Q4_K_M.gguf"],
+      "quantization": "Q4_K_M",
+      "backend": "nvidia",
+      "gpu_name": "NVIDIA GeForce RTX 4060 Ti",
+      "vram_gb": 8,
+      "context_length": 32768,
+      "tokens_per_second": 29.27,
+      "metric": "decode_tok_s",
+      "runtime": "turboquant",
+      "flags": {
+        "n_cpu_moe": "23",
+        "cache_type_k": "q8_0",
+        "cache_type_v": "q8_0",
+        "flash_attn": "on"
+      },
+      "source_label": "witcheer/windows-rtx-4060ti-8gb-moe-offload-bench-2026-05",
+      "source_url": "https://huggingface.co/datasets/witcheer/windows-rtx-4060ti-8gb-moe-offload-bench-2026-05",
+      "license": "cc-by-4.0"
+    }
+  ]
+}
