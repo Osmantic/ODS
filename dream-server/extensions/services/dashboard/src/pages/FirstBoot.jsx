@@ -596,7 +596,7 @@ function DoneScreen({ invite, onDone }) {
       </div>
 
       <p className="text-xs text-theme-text-muted mt-6 text-center">
-        Need more invites later? They live under <strong>Invites</strong> in the sidebar.
+        Need more invites later? They live under <strong>Settings</strong> / <strong>Account</strong>.
       </p>
     </div>
   )
