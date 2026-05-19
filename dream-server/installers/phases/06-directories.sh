@@ -123,15 +123,16 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     fi
 
     # Copy extensions library to data dir for dashboard portal.
-    # Source resolution: dev installs (running from a checkout) find it via
-    # $SCRIPT_DIR/../resources/. Bootstrap installs (curl-piped) get the
-    # templates bundled inside the install dir by get-dream-server.sh under
-    # extensions-library-bundle/. Without one of these paths, dashboard-api's
-    # /api/extensions/{id}/install endpoint returns 503 "Extensions library is
-    # unavailable" and the dashboard's Extensions page is non-functional.
+    # Source resolution: dev installs and full checkouts read the product-owned
+    # library under extensions/library/. Bootstrap installs also get the same
+    # templates bundled by get-dream-server.sh under extensions-library-bundle/.
+    # Without one of these paths, dashboard-api's /api/extensions/{id}/install
+    # endpoint returns 503 "Extensions library is unavailable" and the
+    # dashboard's Extensions page is non-functional.
     _ext_lib_src=""
     for _candidate in \
-        "$SCRIPT_DIR/../resources/dev/extensions-library/services" \
+        "$SCRIPT_DIR/extensions/library/services" \
+        "$INSTALL_DIR/extensions/library/services" \
         "$INSTALL_DIR/extensions-library-bundle/services"
     do
         if [[ -d "$_candidate" ]]; then _ext_lib_src="$_candidate"; break; fi
@@ -417,6 +418,9 @@ $(if [[ -n "${LLAMA_ARG_N_CPU_MOE:-}" ]]; then echo "LLAMA_ARG_N_CPU_MOE=${LLAMA
 $(if [[ -n "${LLAMA_ARG_NO_CACHE_PROMPT:-}" ]]; then echo "LLAMA_ARG_NO_CACHE_PROMPT=${LLAMA_ARG_NO_CACHE_PROMPT}"; fi)
 $(if [[ -n "${LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS:-}" ]]; then echo "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=${LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS}"; fi)
 LLAMA_PARALLEL=${LLAMA_PARALLEL:-1}
+# Optional MTP speculative decoding only. Requires an MTP-capable GGUF and llama.cpp build.
+# LLAMA_ARG_SPEC_TYPE=draft-mtp
+# LLAMA_ARG_SPEC_DRAFT_N_MAX=3
 LLAMA_CPU_LIMIT=${LLAMA_CPU_LIMIT}
 LLAMA_CPU_RESERVATION=${LLAMA_CPU_RESERVATION}
 

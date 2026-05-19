@@ -60,6 +60,10 @@ services:
       # profile explicitly requires them.
       - LLAMA_ARG_NO_CACHE_PROMPT
       - LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS
+      # Optional speculative decoding for GGUFs with llama.cpp MTP support.
+      # Leave unset unless the selected model/runtime explicitly supports it.
+      - LLAMA_ARG_SPEC_TYPE
+      - LLAMA_ARG_SPEC_DRAFT_N_MAX
     security_opt:
       - no-new-privileges:true
     logging: *default-logging

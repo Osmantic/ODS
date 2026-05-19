@@ -222,7 +222,9 @@ auto_select_tier() {
 BOOTSTRAP_GGUF_FILE="Qwen3.5-2B-Q4_K_M.gguf"
 BOOTSTRAP_GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
 BOOTSTRAP_LLM_MODEL="qwen3.5-2b"
-BOOTSTRAP_MAX_CONTEXT=8192
+# Hermes requires at least a 64K context window. Keep the fast-start model at
+# that floor so Hermes works during the first-run bootstrap experience too.
+BOOTSTRAP_MAX_CONTEXT=65536
 
 macos_tier_rank() {
     case "$1" in

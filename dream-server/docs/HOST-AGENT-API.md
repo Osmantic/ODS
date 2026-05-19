@@ -14,7 +14,7 @@ The Dashboard API runs inside a Docker container and cannot directly run `docker
 | macOS | Started by the installer (`installers/macos/install-macos.sh`) |
 | Windows | Started by the installer (`installers/windows/phases/07-devtools.ps1`, managed via `dream.ps1`) |
 
-The agent is started during installation. macOS and Windows bind to `127.0.0.1` by default. Linux auto-detects the Docker bridge gateway so containers can reach the agent, and falls back to `127.0.0.1` if bridge detection fails. It does not bind to `0.0.0.0` unless `DREAM_AGENT_BIND` is explicitly set.
+The agent is started during installation. macOS and Windows bind to `127.0.0.1` by default. Linux auto-detects the `dream-network` gateway so containers can reach the agent, falls back to the default Docker bridge gateway for partial/older installs, and then falls back to `127.0.0.1`. It does not bind to `0.0.0.0` unless `DREAM_AGENT_BIND` is explicitly set.
 
 ## Configuration
 
@@ -23,7 +23,7 @@ The agent reads its configuration from the `.env` file in the DreamServer instal
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DREAM_AGENT_KEY` | *(none)* | API key for authenticating requests. Falls back to `DASHBOARD_API_KEY` if unset. |
-| `DREAM_AGENT_BIND` | Platform-specific | Bind address. macOS/Windows default to `127.0.0.1`; Linux uses the Docker bridge gateway when detected, otherwise `127.0.0.1`. |
+| `DREAM_AGENT_BIND` | Platform-specific | Bind address. macOS/Windows default to `127.0.0.1`; Linux uses the `dream-network` gateway when detected, then the Docker bridge gateway, otherwise `127.0.0.1`. |
 | `DREAM_AGENT_PORT` | `7710` | Port the agent listens on. |
 | `GPU_BACKEND` | `nvidia` | Passed to `resolve-compose-stack.sh` when building compose flags. |
 | `TIER` | `1` | Hardware tier, passed to compose stack resolution. |
@@ -55,6 +55,41 @@ Health check. No authentication required.
   "version": "1.0.0"
 }
 ```
+
+### `GET /v1/update/status`
+
+Return the last host-agent managed update run status.
+
+**Authentication:** Required
+
+**Response (200):**
+```json
+{
+  "status": "succeeded",
+  "action": "update",
+  "returncode": 0,
+  "updated_at": "2026-05-18T18:00:00Z"
+}
+```
+
+If no update has run, the response is `{ "status": "idle" }`.
+
+### `POST /v1/update/check`, `POST /v1/update/backup`, `POST /v1/update/start`
+
+Run `dream-update.sh` from the host-agent boundary. `check` and `backup` run synchronously and return script output. `start` launches the update in a background thread and writes `data/update-status.json` for polling.
+
+**Authentication:** Required
+
+**Request body:** optional JSON object. `backup` accepts an optional `backup_id`; otherwise the host agent generates one.
+
+**Error responses:**
+| Code | Condition |
+|------|-----------|
+| 401 | Missing Authorization header |
+| 403 | Invalid API key |
+| 409 | Update already running |
+| 501 | Update system or usable Bash runtime not available |
+| 504 | Update check/backup timed out |
 
 ### `POST /v1/extension/start`
 
@@ -140,7 +175,7 @@ If the container does not exist yet (e.g. image is still pulling), a 200 respons
 The host agent is a **critical security boundary** because it can start and stop Docker containers on the host.
 
 Protections in place:
-- **Scoped network binding**: macOS/Windows bind to `127.0.0.1`; Linux binds to the Docker bridge gateway when detected so containers can reach the agent. It does not bind to `0.0.0.0` unless explicitly configured.
+- **Scoped network binding**: macOS/Windows bind to `127.0.0.1`; Linux binds to the `dream-network` gateway when detected so containers can reach the agent, with Docker bridge as a compatibility fallback. It does not bind to `0.0.0.0` unless explicitly configured.
 - **API key auth**: All mutation endpoints require Bearer token authentication
 - **Core service protection**: Core services (loaded from `config/core-service-ids.json` with hardcoded fallback) cannot be managed
 - **Service ID validation**: Regex-validated, must map to an actual extension directory with a manifest

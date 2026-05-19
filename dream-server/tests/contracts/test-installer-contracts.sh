@@ -124,4 +124,7 @@ grep -q "python3 -c 'import yaml'" installers/macos/install-macos.sh \
 grep -q 'python3 -m pip install --user .*pyyaml' installers/macos/install-macos.sh \
   || { echo "[FAIL] macOS installer must install PyYAML via python3 -m pip, not a possibly unrelated pip3"; exit 1; }
 
+echo "[contract] Hermes context defaults are installer-wide"
+bash tests/test-installer-context-parity.sh
+
 echo "[PASS] installer contracts"

@@ -12,7 +12,7 @@ This document covers the migration path for existing Dream Server installs that 
 
 ## Platform support in this release
 
-The default-agent swap is wired through the **Linux and macOS** installers in this release. The Windows installer (`installers/windows/`) continues to ship OpenClaw enabled by default through the deprecation window; Windows users who want Hermes can run `dream enable hermes` and `dream enable hermes-proxy` post-install. Windows installer parity (default-Hermes, `--hermes` / `--no-hermes` flags, data-dir creation) lands in a follow-up PR before the removal release.
+The default-agent swap is wired through the **Linux, macOS, and Windows** installers in this release. Windows now has installer parity with `-Hermes` / `-NoHermes` flags, Hermes data-dir creation, and the same context handling used on the other platforms.
 
 ## Why the swap
 
@@ -87,7 +87,7 @@ For planning, here's what the removal PR drops:
 - `tests/test-openclaw-inject-token.sh`
 - All `ENABLE_OPENCLAW` / `--openclaw` / `--no-openclaw` references in `install-core.sh` and `dream-uninstall.sh`
 - The OpenClaw row from `extensions/CATALOG.md`
-- `resources/blog/m1-fully-local-openclaw-launch.md` moves to `resources/legacy/blog/`
+- The legacy OpenClaw launch blog is removed from the maintained product tree
 
 If any of these touch a workflow you care about, please open an issue before the next release ships so we can either preserve it (rename / refactor under the Hermes namespace) or document a clean alternative.
 

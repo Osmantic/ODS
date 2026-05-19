@@ -10,7 +10,7 @@ Dream Server is a fully local AI stack (LLM inference, chat, voice, agents, work
 
 The repo has two layers:
 
-- **Root level** — outer wrapper with top-level README, install scripts (`install.sh`, `install.ps1`), CI workflows (`.github/workflows/`), and `resources/` (cookbooks, blog, dev tools, frameworks)
+- **Root level** — outer wrapper with top-level README, install scripts (`install.sh`, `install.ps1`), and CI workflows (`.github/workflows/`)
 - **`dream-server/`** — the core product containing all deployable code
 
 Within `dream-server/`:
@@ -20,6 +20,7 @@ Within `dream-server/`:
 - **`installers/phases/`** — 13 sequential install steps (`01-preflight` through `13-summary`), each sourced by install-core
 - **`installers/macos/`**, **`installers/windows/`** — platform-specific installer variants
 - **`extensions/services/`** — 17 service extensions, each a directory with `manifest.yaml` + optional `compose.yaml` and GPU overlays
+- **`extensions/library/`** — optional extension catalog, templates, workflows, and manifest schema used by the dashboard Extensions page
 - **`docker-compose.base.yml`** — core service definitions; `docker-compose.{amd,nvidia,apple}.yml` are GPU overlays
 - **`dream-cli`** — main CLI tool (~45K lines Bash) for managing the stack
 - **`config/`** — backend configs (`backends/amd.json`, `nvidia.json`, etc.), GPU database, LiteLLM config, hardware classes

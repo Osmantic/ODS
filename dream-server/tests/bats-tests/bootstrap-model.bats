@@ -108,7 +108,7 @@ setup() {
     [[ -n "$BOOTSTRAP_LLM_MODEL" ]]
 }
 
-@test "BOOTSTRAP_MAX_CONTEXT: is a positive integer" {
+@test "BOOTSTRAP_MAX_CONTEXT: meets Hermes 64K floor" {
     [[ "$BOOTSTRAP_MAX_CONTEXT" =~ ^[0-9]+$ ]]
-    [[ "$BOOTSTRAP_MAX_CONTEXT" -gt 0 ]]
+    [[ "$BOOTSTRAP_MAX_CONTEXT" -ge 64000 ]]
 }

@@ -67,6 +67,8 @@ By default, Dream Server uses **bootstrap mode** for instant gratification:
 
 No more staring at download bars. Start playing immediately.
 
+Hermes-enabled installs keep this fast-start path: the bootstrap model runs at a 64K context floor so Hermes can start cleanly, then the background full-model swap promotes the local context target to 128K.
+
 Model download, switching, and manual GGUF notes: [docs/MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md)
 
 To skip bootstrap and wait for the full model: `./install.sh --no-bootstrap`
@@ -123,6 +125,8 @@ See [`docs/WINDOWS-QUICKSTART.md`](docs/WINDOWS-QUICKSTART.md) for details.
 ## Hardware Tiers
 
 The installer **automatically detects your GPU** and selects the right configuration. `MODEL_PROFILE=qwen` is the default; `MODEL_PROFILE=gemma4` and `MODEL_PROFILE=auto` are also supported by the tier map where those GGUFs are available.
+
+When Hermes is enabled, installers keep the bootstrap model at 64K context and promote the full local model context to 128K. The table contexts below are the base tier choices used for core-only or `--no-hermes` installs.
 
 ### AMD Strix Halo (Unified Memory)
 
@@ -279,6 +283,8 @@ LLAMA_ARG_FLASH_ATTN=auto                  # auto, on, or off
 LLAMA_ARG_CACHE_TYPE_K=f16                 # f16 or q8_0
 LLAMA_ARG_CACHE_TYPE_V=f16                 # f16 or q8_0
 # LLAMA_ARG_N_CPU_MOE=25                   # Optional MoE-only CPU expert offload
+# LLAMA_ARG_SPEC_TYPE=draft-mtp            # Optional MTP speculative decoding
+# LLAMA_ARG_SPEC_DRAFT_N_MAX=3             # Optional MTP draft token cap
 ```
 
 ## dream-cli

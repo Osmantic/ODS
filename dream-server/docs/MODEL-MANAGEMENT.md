@@ -73,6 +73,11 @@ grep -E "^(LLM_MODEL|GGUF_FILE|CTX_SIZE|MAX_CONTEXT)=" ~/dream-server/.env
 `LLM_MODEL` is the friendly logical model name used by scripts and config.
 `CTX_SIZE` and `MAX_CONTEXT` control context length.
 
+Hermes requires at least a 64K context window. Installer bootstrap mode uses
+`65536` for the fast-start model, then switches `.env`, llama-server, and
+Hermes config to the full model context, usually `131072`, when the background
+download completes.
+
 ## Manual: Download a Catalog Model
 
 For most users, use the Dashboard. If you are debugging a failed download or
@@ -135,6 +140,7 @@ n-ctx = 8192
 ```yaml
 model:
   default: "MyModel-Q4_K_M.gguf"
+  context_length: 65536
 ```
 
 For Lemonade/AMD backends, use:
@@ -142,7 +148,12 @@ For Lemonade/AMD backends, use:
 ```yaml
 model:
   default: "extra.MyModel-Q4_K_M.gguf"
+  context_length: 65536
 ```
+
+Also keep `auxiliary.compression.context_length` at the same value and use
+`compression.threshold: 0.50`; older absolute-token thresholds can leave Hermes
+waiting too long to compact.
 
 5. Restart the affected services.
 
@@ -223,7 +234,7 @@ If the server is correct, refresh the app. If the server is wrong, restart
 Hermes has its own config:
 
 ```bash
-grep -n "default:" data/hermes/config.yaml
+grep -n "default:\|context_length:" data/hermes/config.yaml
 docker restart dream-hermes
 ```
 

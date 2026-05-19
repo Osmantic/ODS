@@ -14,6 +14,7 @@
 #   ./install-macos.sh --dry-run        # Validate without installing
 #   ./install-macos.sh --all            # Enable all optional services
 #   ./install-macos.sh --non-interactive # Headless install (defaults)
+#   ./install-macos.sh --no-bootstrap   # Wait for the full model before launch
 #
 # ============================================================================
 
@@ -89,6 +90,8 @@ NO_LANGFUSE_EXPLICIT=false
 OPENCLAW_EXPLICIT=false
 ALL_FEATURES=false
 CLOUD_MODE=false
+NO_BOOTSTRAP=false
+HERMES_CONTEXT_SIZE=131072
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -107,6 +110,7 @@ while [[ $# -gt 0 ]]; do
         --no-langfuse)   ENABLE_LANGFUSE=false; NO_LANGFUSE_EXPLICIT=true; shift ;;
         --all)           ALL_FEATURES=true; shift ;;
         --cloud)         CLOUD_MODE=true; shift ;;
+        --no-bootstrap)  NO_BOOTSTRAP=true; shift ;;
         *)               echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -604,6 +608,13 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
     esac
 fi
 
+if $ENABLE_HERMES && ! $CLOUD_MODE; then
+    if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
+        ai_warn "Hermes enabled: increasing macOS llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (128K)."
+        MAX_CONTEXT="$HERMES_CONTEXT_SIZE"
+    fi
+fi
+
 ai "Features:"
 info_box "  Voice:" "$(if $ENABLE_VOICE; then echo enabled; else echo disabled; fi)"
 info_box "  Workflows:" "$(if $ENABLE_WORKFLOWS; then echo enabled; else echo disabled; fi)"
@@ -693,12 +704,13 @@ else
     fi
 
     # Copy extensions library to data dir for dashboard portal.
-    # Source resolution: dev installs find it via SOURCE_ROOT/.. (outer repo).
-    # Bootstrap installs (curl-piped) get the templates bundled inside the
-    # install dir by get-dream-server.sh under extensions-library-bundle/.
+    # Source resolution: dev installs and full checkouts read the product-owned
+    # library under extensions/library/. Bootstrap installs also get the same
+    # templates bundled by get-dream-server.sh under extensions-library-bundle/.
     _ext_lib_src=""
     for _candidate in \
-        "${SOURCE_ROOT}/../resources/dev/extensions-library/services" \
+        "${SOURCE_ROOT}/extensions/library/services" \
+        "${INSTALL_DIR}/extensions/library/services" \
         "${INSTALL_DIR}/extensions-library-bundle/services"
     do
         if [[ -d "$_candidate" ]]; then _ext_lib_src="$_candidate"; break; fi
@@ -729,6 +741,11 @@ else
         ai_ok "Preserved existing .env (use --force to regenerate secrets)"
     else
         ai_ok "Generated .env with secure secrets"
+    fi
+    if $ENABLE_HERMES && ! $CLOUD_MODE; then
+        upsert_env_value "${INSTALL_DIR}/.env" "MAX_CONTEXT" "$MAX_CONTEXT"
+        upsert_env_value "${INSTALL_DIR}/.env" "CTX_SIZE" "$MAX_CONTEXT"
+        ai_ok "Set macOS llama context to ${MAX_CONTEXT} for Hermes"
     fi
 
     # Generate SearXNG config
@@ -858,13 +875,34 @@ else
     if ! $CLOUD_MODE; then
         _hermes_tpl="${INSTALL_DIR}/extensions/services/hermes/cli-config.yaml.template"
         if [[ -f "$_hermes_tpl" ]]; then
-            sed -i '' \
-                -e "s|^  default: \"qwen3.5-9b\"|  default: \"${GGUF_FILE}\"|" \
-                -e "s|^  base_url: \"http://llama-server:8080/v1\"|  base_url: \"http://host.docker.internal:${OLLAMA_PORT:-8080}/v1\"|" \
-                "$_hermes_tpl"
+            _hermes_base_url="http://host.docker.internal:${OLLAMA_PORT:-8080}/v1"
+            _hermes_patcher="${INSTALL_DIR}/scripts/patch-hermes-config.py"
+            if [[ -f "$_hermes_patcher" ]]; then
+                python3 "$_hermes_patcher" "$_hermes_tpl" \
+                    --model "$GGUF_FILE" \
+                    --base-url "$_hermes_base_url" \
+                    --context-length "$MAX_CONTEXT" >>"$LOG_FILE" 2>&1 || \
+                    ai_warn "Hermes template patch failed — hand-edit ${_hermes_tpl} if prompts hang."
+                _hermes_live="${INSTALL_DIR}/data/hermes/config.yaml"
+                if [[ -f "$_hermes_live" ]]; then
+                    python3 "$_hermes_patcher" "$_hermes_live" \
+                        --model "$GGUF_FILE" \
+                        --base-url "$_hermes_base_url" \
+                        --context-length "$MAX_CONTEXT" >>"$LOG_FILE" 2>&1 || \
+                        ai_warn "Hermes live config patch failed — hand-edit ${_hermes_live} and restart Hermes if prompts hang."
+                fi
+            else
+                sed -i '' \
+                    -e "s|^  default: \"qwen3.5-9b\"|  default: \"${GGUF_FILE}\"|" \
+                    -e "s|^  base_url: \"http://llama-server:8080/v1\"|  base_url: \"${_hermes_base_url}\"|" \
+                    -e "s|^  context_length: .*|  context_length: ${MAX_CONTEXT}|" \
+                    -e "s|^    context_length: .*|    context_length: ${MAX_CONTEXT}|" \
+                    "$_hermes_tpl"
+            fi
             if grep -q "host.docker.internal" "$_hermes_tpl" && \
-               grep -q "^  default: \"${GGUF_FILE}\"$" "$_hermes_tpl"; then
-                ai_ok "Patched Hermes template for macOS (model=${GGUF_FILE}, base_url=host.docker.internal)"
+               grep -q "^  default: \"${GGUF_FILE}\"$" "$_hermes_tpl" && \
+               grep -q "^  context_length: ${MAX_CONTEXT}$" "$_hermes_tpl"; then
+                ai_ok "Patched Hermes config for macOS (model=${GGUF_FILE}, context=${MAX_CONTEXT}, base_url=host.docker.internal)"
             else
                 ai_warn "Hermes template patch incomplete — Hermes may fail to reach llama-server. Hand-edit ${_hermes_tpl} if prompts hang."
             fi
@@ -999,6 +1037,8 @@ else
         _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _n_cpu_moe=$(grep '^LLAMA_ARG_N_CPU_MOE=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+        _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+        _spec_draft_n_max=$(grep '^LLAMA_ARG_SPEC_DRAFT_N_MAX=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _llama_args=(
             --host "$_bind" --port 8080
             --model "$MODEL_FULL_PATH"
@@ -1011,6 +1051,8 @@ else
         [[ -n "$_cache_type_k" ]] && _llama_args+=(--cache-type-k "$_cache_type_k")
         [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")
         [[ -n "$_n_cpu_moe" ]] && _llama_args+=(--n-cpu-moe "$_n_cpu_moe")
+        [[ -n "$_spec_type" ]] && _llama_args+=(--spec-type "$_spec_type")
+        [[ -n "$_spec_draft_n_max" ]] && _llama_args+=(--spec-draft-n-max "$_spec_draft_n_max")
 
         "$LLAMA_SERVER_BIN" "${_llama_args[@]}" > "$LLAMA_SERVER_LOG" 2>&1 &
         LLAMA_PID=$!

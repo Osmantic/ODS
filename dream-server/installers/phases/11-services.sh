@@ -382,7 +382,7 @@ MODELS_INI_EOF
             _env_file="$INSTALL_DIR/.env"
             if [[ -f "$_env_file" ]]; then
                 _env_patch_ok=true
-                for _key_val in "GGUF_FILE=$GGUF_FILE" "LLM_MODEL=$LLM_MODEL" "MAX_CONTEXT=$MAX_CONTEXT"; do
+                for _key_val in "GGUF_FILE=$GGUF_FILE" "LLM_MODEL=$LLM_MODEL" "MAX_CONTEXT=$MAX_CONTEXT" "CTX_SIZE=$MAX_CONTEXT"; do
                     _key="${_key_val%%=*}"
                     _val="${_key_val#*=}"
                     if awk -v v="$_val" '{ if (index($0, "'"$_key"'=") == 1) print "'"$_key"'=" v; else print }' \
@@ -460,11 +460,24 @@ MODELS_INI_EOF
             # base_url stays at the compose-bridge name for Linux installs.
             # On Linux there's a sibling llama-server container; on macOS
             # the install-macos.sh path handles the host.docker.internal swap.
-            sed -i.bak \
-                -e "s|^  default: \"qwen3.5-9b\"|  default: \"$_hermes_model\"|" \
-                "$_hermes_tpl" 2>>"$LOG_FILE" && rm -f "${_hermes_tpl}.bak"
-            if grep -q "^  default: \"$_hermes_model\"$" "$_hermes_tpl"; then
-                ai_ok "Patched Hermes template: model.default=$_hermes_model"
+            _hermes_context="${MAX_CONTEXT:-131072}"
+            _hermes_patcher="$INSTALL_DIR/scripts/patch-hermes-config.py"
+            _python_cmd="$(ds_detect_python_cmd 2>/dev/null || command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+            if [[ -n "$_python_cmd" && -f "$_hermes_patcher" ]]; then
+                "$_python_cmd" "$_hermes_patcher" "$_hermes_tpl" \
+                    --model "$_hermes_model" \
+                    --context-length "$_hermes_context" >>"$LOG_FILE" 2>&1 || \
+                    warn "Hermes config patcher failed for $_hermes_tpl"
+            else
+                sed -i.bak \
+                    -e "s|^  default: \"qwen3.5-9b\"|  default: \"$_hermes_model\"|" \
+                    -e "s|^  context_length: .*|  context_length: ${_hermes_context}|" \
+                    -e "s|^    context_length: .*|    context_length: ${_hermes_context}|" \
+                    "$_hermes_tpl" 2>>"$LOG_FILE" && rm -f "${_hermes_tpl}.bak"
+            fi
+            if grep -q "^  default: \"$_hermes_model\"$" "$_hermes_tpl" && \
+               grep -q "^  context_length: ${_hermes_context}$" "$_hermes_tpl"; then
+                ai_ok "Patched Hermes template: model.default=$_hermes_model, context=$_hermes_context"
             else
                 warn "Hermes template substitution didn't take effect — Hermes may 404 every chat completion. Hand-edit $_hermes_tpl after install if Hermes prompts hang."
             fi
@@ -630,6 +643,21 @@ except Exception:
     $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build >> "$LOG_FILE" 2>&1 || true
     # Step 3: catch any stragglers from the second pass
     $DOCKER_CMD start $($DOCKER_CMD ps -a --filter status=created -q) 2>/dev/null || true
+
+    # If DREAM_AGENT_BIND is unset, the Linux host-agent binds to the Dream
+    # Docker network gateway once that network exists. Phase 07 may have
+    # started it before compose created dream-network, so restart it here to
+    # let the safer scoped bind take effect.
+    if [[ -z "${DREAM_AGENT_BIND:-}" ]] \
+      && [[ "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]] \
+      && command -v systemctl >/dev/null 2>&1 \
+      && sudo -n systemctl is-enabled dream-host-agent.service >/dev/null 2>&1; then
+        if sudo -n systemctl restart dream-host-agent.service 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+            ai_ok "Restarted dream-host-agent after dream-network creation"
+        else
+            ai_warn "dream-host-agent restart after network creation failed (non-fatal)"
+        fi
+    fi
 
     # dashboard-api reaches the host agent from the compose network gateway.
     # With default-DROP UFW/firewalld, the host INPUT chain can block that

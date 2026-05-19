@@ -181,10 +181,10 @@ check_install_dir_filesystem
 check_docker_desktop_sharing
 
 # Firewall check: warn if UFW or firewalld is active. The dashboard host agent
-# binds to the Docker bridge gateway (default 172.17.0.1:7710) and compose
-# containers reach it via the host INPUT chain. Default-DROP firewalls block
-# that traffic and the dashboard reports "Host agent is offline". Warn-only —
-# never abort install.
+# binds to the dream-network gateway by default on Linux, and compose containers
+# reach it via the host INPUT chain. Default-DROP firewalls block that traffic
+# and the dashboard reports "Host agent is offline". Warn-only; never abort
+# install.
 if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
     ai_warn "UFW is active. The dashboard host agent must be reachable from compose subnets."
     ai_warn "The installer will auto-add a scoped rule for the actual dream-network subnet after compose starts."

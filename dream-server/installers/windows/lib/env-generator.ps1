@@ -303,6 +303,9 @@ LLAMA_ARG_CACHE_TYPE_V=$(Get-EnvOrNew "LLAMA_ARG_CACHE_TYPE_V" "$(if ($TierConfi
 $(if ($TierConfig.LLAMA_ARG_N_CPU_MOE) { "LLAMA_ARG_N_CPU_MOE=$($TierConfig.LLAMA_ARG_N_CPU_MOE)" })
 $(if ($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT) { "LLAMA_ARG_NO_CACHE_PROMPT=$($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT)" })
 $(if ($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS) { "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=$($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS)" })
+# Optional MTP speculative decoding only. Requires an MTP-capable GGUF and llama.cpp build.
+# LLAMA_ARG_SPEC_TYPE=draft-mtp
+# LLAMA_ARG_SPEC_DRAFT_N_MAX=3
 LLAMA_CPU_LIMIT=$llamaCpuLimit
 LLAMA_CPU_RESERVATION=$llamaCpuReservation
 
@@ -318,6 +321,14 @@ QDRANT_API_KEY=$qdrantApiKey
 LITELLM_PORT=4000
 OPENCLAW_PORT=7860
 SEARXNG_PORT=8888
+
+#=== Hermes Agent ===
+HERMES_LLM_BASE_URL=$llmApiUrl$llmApiBasePath
+HERMES_LLM_API_KEY=sk-dream-hermes-local
+HERMES_LANGUAGE=en
+HERMES_PROXY_PORT=9120
+HERMES_PROXY_UPSTREAM=dream-hermes:9119
+DREAM_AUTH_UPSTREAM=dream-dashboard-api:3002
 
 #=== Security (auto-generated, keep secret!) ===
 WEBUI_SECRET=$webuiSecret

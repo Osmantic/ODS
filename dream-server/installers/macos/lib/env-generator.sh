@@ -295,6 +295,9 @@ LLAMA_ARG_FLASH_ATTN=${LLAMA_ARG_FLASH_ATTN:-auto}
 LLAMA_ARG_CACHE_TYPE_K=${LLAMA_ARG_CACHE_TYPE_K:-f16}
 LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
+# Optional MTP speculative decoding only. Requires an MTP-capable GGUF and llama.cpp build.
+# LLAMA_ARG_SPEC_TYPE=draft-mtp
+# LLAMA_ARG_SPEC_DRAFT_N_MAX=3
 LLAMA_CPU_LIMIT=${detected_cpu_limit}
 LLAMA_CPU_RESERVATION=${detected_cpu_reservation}
 

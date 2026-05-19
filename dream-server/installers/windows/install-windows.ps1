@@ -30,6 +30,8 @@
 #   .\install-windows.ps1 --Cloud          # Cloud-only (no local GPU)
 #   .\install-windows.ps1 --DryRun         # Validate without installing
 #   .\install-windows.ps1 --All            # Enable all optional services
+#   .\install-windows.ps1 -NoHermes        # Disable Hermes Agent
+#   .\install-windows.ps1 -NoBootstrap     # Wait for full model before launch
 #   .\install-windows.ps1 --NonInteractive # Headless install (defaults)
 #
 # ============================================================================
@@ -43,6 +45,8 @@ param(
     [switch]$Voice,
     [switch]$Workflows,
     [switch]$Rag,
+    [switch]$Hermes,
+    [switch]$NoHermes,
     [switch]$OpenClaw,
     [switch]$All,
     [switch]$Cloud,
@@ -51,6 +55,7 @@ param(
     [switch]$Lan,
     [switch]$Langfuse,
     [switch]$NoLangfuse,
+    [switch]$NoBootstrap,
     [string]$SummaryJsonPath = ""
 )
 
@@ -85,6 +90,8 @@ $tierOverride   = $Tier
 $voiceFlag      = $Voice.IsPresent
 $workflowsFlag  = $Workflows.IsPresent
 $ragFlag        = $Rag.IsPresent
+$hermesFlag     = $Hermes.IsPresent
+$noHermesFlag   = $NoHermes.IsPresent
 $openClawFlag   = $OpenClaw.IsPresent
 $allFlag        = $All.IsPresent
 $comfyuiFlag    = $Comfyui.IsPresent
@@ -92,6 +99,7 @@ $noComfyuiFlag  = $NoComfyui.IsPresent
 $lanFlag        = $Lan.IsPresent
 $langfuseFlag   = $Langfuse.IsPresent
 $noLangfuseFlag = $NoLangfuse.IsPresent
+$noBootstrapFlag = $NoBootstrap.IsPresent
 $installDir     = $script:DS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
 
@@ -205,7 +213,8 @@ if ($dryRun) {
         $fullTierConfig = $null
 
         if (Should-UseBootstrap -Tier $selectedTier -InstallDir $installDir `
-                -GgufFile $tierConfig.GgufFile -CloudMode $cloudMode) {
+                -GgufFile $tierConfig.GgufFile -CloudMode $cloudMode `
+                -NoBootstrap $noBootstrapFlag) {
             $bootstrapActive = $true
             $fullTierConfig = @{}
             foreach ($k in $tierConfig.Keys) { $fullTierConfig[$k] = $tierConfig[$k] }
@@ -272,6 +281,26 @@ if ($dryRun) {
                 $envContent = $envContent -replace "(?m)^CTX_SIZE=.*$", "CTX_SIZE=$($tierConfig.MaxContext)"
                 [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
                 Write-AISuccess "Patched .env for bootstrap model ($($tierConfig.GgufFile))"
+            }
+
+            if ($enableHermes) {
+                $hermesModel = $(if ($tierConfig.GgufFile) {
+                    if ($gpuInfo.Backend -eq "amd") { "extra.$($tierConfig.GgufFile)" } else { $tierConfig.GgufFile }
+                } else {
+                    $tierConfig.LlmModel
+                })
+                $hermesBaseUrl = $(if ($gpuInfo.Backend -eq "amd") {
+                    "http://host.docker.internal:8080/api/v1"
+                } elseif ($cloudMode) {
+                    "http://litellm:4000/v1"
+                } else {
+                    "http://llama-server:8080/v1"
+                })
+                $hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
+                $hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
+                Update-HermesConfigFile -Path $hermesTemplate -Model $hermesModel -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
+                Update-HermesConfigFile -Path $hermesLive -Model $hermesModel -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
+                Write-AISuccess "Patched Hermes config for bootstrap model (model=$hermesModel, context=$($tierConfig.MaxContext))"
             }
         }
 
@@ -447,6 +476,8 @@ if ($dryRun) {
                 if ($_llamaEnv["LLAMA_PARALLEL"]) { $llamaArgs += @("--parallel", $_llamaEnv["LLAMA_PARALLEL"]) }
                 if ($_llamaEnv["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) { $llamaArgs += @("--checkpoint-every-n-tokens", $_llamaEnv["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) }
                 if ($_llamaEnv["LLAMA_ARG_NO_CACHE_PROMPT"] -and $_llamaEnv["LLAMA_ARG_NO_CACHE_PROMPT"] -notin @("0", "false", "off", "no")) { $llamaArgs += @("--no-cache-prompt") }
+                if ($_llamaEnv["LLAMA_ARG_SPEC_TYPE"]) { $llamaArgs += @("--spec-type", $_llamaEnv["LLAMA_ARG_SPEC_TYPE"]) }
+                if ($_llamaEnv["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) { $llamaArgs += @("--spec-draft-n-max", $_llamaEnv["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) }
                 $pidDir = Split-Path $script:INFERENCE_PID_FILE
                 New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
 
@@ -565,6 +596,8 @@ if ($dryRun) {
                     "n8n"        { if (-not $enableWorkflows) { $skip = $true } }
                     "qdrant"     { if (-not $enableRag)       { $skip = $true } }
                     "embeddings" { if (-not $enableRag)       { $skip = $true } }
+                    "hermes"     { if (-not $enableHermes)    { $skip = $true } }
+                    "hermes-proxy" { if (-not $enableHermes)  { $skip = $true } }
                     "openclaw"   { if (-not $enableOpenClaw)  { $skip = $true } }
                     "comfyui"    { if (-not $enableComfyui)   { $skip = $true } }
                     # Paid API extension; users enable it post-install after adding a key.
@@ -887,6 +920,10 @@ foreach ($check in $healthChecks) {
 # Speaches does NOT auto-download on transcription requests — it returns 404.
 # Trigger the download explicitly, verify it completed, surface recovery
 # instructions on failure. Mirrors Linux Phase 12 and macOS install-macos.sh.
+$sttModelReady = (-not $enableVoice)
+$sttModelNameForReadiness = ""
+$sttModelCacheUrl = ""
+$sttRecoveryCmd = ""
 if ($enableVoice) {
     # Read AUDIO_STT_MODEL and WHISPER_PORT from .env (written by env-generator.ps1).
     # Use ReadAllText with explicit UTF8NoBom encoding so legacy BOM-prefixed
@@ -919,6 +956,8 @@ if ($enableVoice) {
     $sttModelEncoded = $sttModel -replace "/", "%2F"
     $whisperUrl = "http://localhost:$whisperPort"
     $sttRecoveryCmd = "Invoke-WebRequest -Method POST -Uri '$whisperUrl/v1/models/$sttModelEncoded' -TimeoutSec 3600"
+    $sttModelNameForReadiness = $sttModel
+    $sttModelCacheUrl = "$whisperUrl/v1/models/$sttModelEncoded"
 
     # Step 1: wait briefly for the models API to be ready (max 15s).
     $sttApiReady = $false
@@ -931,6 +970,8 @@ if ($enableVoice) {
     }
 
     if (-not $sttApiReady) {
+        $sttModelReady = $false
+        $allHealthy = $false
         Write-AIWarn "STT models API not ready -- download manually:"
         Write-Host "    $sttRecoveryCmd" -ForegroundColor DarkGray
     } else {
@@ -942,12 +983,13 @@ if ($enableVoice) {
         } catch { }
 
         if ($alreadyCached) {
+            $sttModelReady = $true
             Write-AISuccess "STT model already cached ($sttModel)"
         } else {
             # Step 3: POST to trigger download.
             Write-AI "Downloading STT model ($sttModel)..."
             try {
-                Invoke-WebRequest -Method POST -Uri "$whisperUrl/v1/models/$sttModelEncoded" -TimeoutSec 3600 -UseBasicParsing -ErrorAction Stop | Out-Null
+                Invoke-WebRequest -Method POST -Uri "$whisperUrl/v1/models/$sttModelEncoded" -TimeoutSec 600 -UseBasicParsing -ErrorAction Stop | Out-Null
             } catch {
                 # Fall through to verification step regardless — POST can succeed or partial-fail.
             }
@@ -960,8 +1002,11 @@ if ($enableVoice) {
             } catch { }
 
             if ($verified) {
+                $sttModelReady = $true
                 Write-AISuccess "STT model cached ($sttModel)"
             } else {
+                $sttModelReady = $false
+                $allHealthy = $false
                 Write-AIWarn "STT model download failed -- run manually:"
                 Write-Host "    $sttRecoveryCmd" -ForegroundColor DarkGray
             }
@@ -1005,6 +1050,9 @@ if ($enableVoice) {
     $whisperPort = Get-ReadinessPort -Name "WHISPER_PORT" -Default "9000"
     $ttsPort = Get-ReadinessPort -Name "TTS_PORT" -Default "8880"
     $readinessChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$whisperPort/health"; Container = "dream-whisper"; OpenUrl = "http://localhost:$whisperPort" }
+    if ($sttModelCacheUrl) {
+        $readinessChecks += @{ Name = "Whisper STT model cache"; Url = $sttModelCacheUrl; Container = "dream-whisper"; OpenUrl = $sttModelNameForReadiness; Hint = "Run: $sttRecoveryCmd" }
+    }
     $readinessChecks += @{ Name = "Kokoro (TTS)"; Url = "http://localhost:$ttsPort/health"; Container = "dream-tts"; OpenUrl = "http://localhost:$ttsPort" }
 }
 if ($enableWorkflows) {
@@ -1094,6 +1142,7 @@ if ($SummaryJsonPath) {
         gpuBackend = $gpuInfo.Backend
         gpuName    = $gpuInfo.Name
         installDir = $installDir
+        sttModelCached = $sttModelReady
         features   = @{
             voice     = $enableVoice
             workflows = $enableWorkflows
