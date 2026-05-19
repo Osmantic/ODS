@@ -371,9 +371,14 @@ if [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=dream-llama-server --f
     # Restart llama-server — strategy depends on GPU backend:
     # - AMD (Lemonade): use 'restart' to preserve cached llama-server build.
     #   Lemonade reads models.ini at startup, so it picks up the new model.
-    # - NVIDIA/CPU (llama.cpp): use 'stop + up -d' to recreate the container.
-    #   The model path is in the compose command (--model /models/${GGUF_FILE}),
-    #   which is only resolved from .env when the container is created.
+    # - NVIDIA/CPU (llama.cpp): force-recreate so the new GGUF_FILE in .env
+    #   takes effect. `compose stop` + `compose up -d` is NOT enough — when the
+    #   service has a stopped container, compose will start the existing
+    #   container in place (preserving its baked --model arg) instead of
+    #   building a fresh one from the updated .env. The original CMD points at
+    #   /models/${BOOTSTRAP_GGUF_FILE}, which Phase 4b just deleted, so the
+    #   container crash-loops. `--force-recreate --no-deps` guarantees a new
+    #   container; --no-deps avoids touching other services in the project.
     log "Restarting llama-server container (backend: ${_gpu_backend:-unknown})..."
     if [[ "$_gpu_backend" == "amd" ]]; then
         # Lemonade: restart preserves cached binary, reads models.ini on boot
@@ -383,10 +388,9 @@ if [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=dream-llama-server --f
             $DOCKER_CMD restart dream-llama-server 2>&1 || true
         fi
     else
-        # llama.cpp: recreate to pick up new GGUF_FILE from .env
+        # llama.cpp: force-recreate to pick up new GGUF_FILE from .env
         if [[ ${#COMPOSE_ARGS[@]} -gt 0 && -n "$DOCKER_COMPOSE_CMD" ]]; then
-            $DOCKER_COMPOSE_CMD "${COMPOSE_ARGS[@]}" stop llama-server 2>&1 || true
-            $DOCKER_COMPOSE_CMD "${COMPOSE_ARGS[@]}" up -d llama-server 2>&1 || true
+            $DOCKER_COMPOSE_CMD "${COMPOSE_ARGS[@]}" up -d --force-recreate --no-deps llama-server 2>&1 || true
         else
             # No compose flags — use docker rm to force a fresh container that
             # re-reads GGUF_FILE from the env file. 'docker start' reuses the old
@@ -456,6 +460,24 @@ if [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=dream-llama-server --f
         fi
         sleep 5
     done
+
+    # Assert the recreated container's --model arg actually points at the new
+    # GGUF file. If compose handed us back a started-not-recreated container
+    # (the bug --force-recreate above is meant to prevent), the health check
+    # may still pass on Lemonade (which loads on demand) but llama.cpp will
+    # crash-loop the moment the next request hits, because Phase 4b has
+    # already deleted the bootstrap GGUF the baked CMD refers to. Fail loudly
+    # so the operator does not discover this hours later via a 502.
+    if [[ "$_gpu_backend" != "amd" ]] && [[ -n "$DOCKER_CMD" ]]; then
+        _running_cmd=$($DOCKER_CMD inspect dream-llama-server --format '{{join .Config.Cmd " "}}' 2>/dev/null || echo "")
+        if [[ -n "$_running_cmd" ]] && ! [[ "$_running_cmd" == *"/models/${FULL_GGUF_FILE}"* ]]; then
+            log "ERROR: llama-server container started with stale --model arg."
+            log "  expected /models/${FULL_GGUF_FILE}, got: $_running_cmd"
+            log "  This means 'compose up -d --force-recreate' did not recreate the container."
+            log "  Recover with: cd $INSTALL_DIR && docker compose \$(cat .compose-flags) up -d --force-recreate --no-deps llama-server"
+            _healthy=false
+        fi
+    fi
 
     if $_healthy; then
         log "SUCCESS: llama-server is running with $FULL_LLM_MODEL"
