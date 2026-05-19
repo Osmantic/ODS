@@ -7,12 +7,13 @@
 #
 # Expects: INTERACTIVE, DRY_RUN, TIER, ENABLE_VOICE, ENABLE_WORKFLOWS,
 #           ENABLE_RAG, ENABLE_HERMES, ENABLE_OPENCLAW, GPU_COUNT, GPU_BACKEND,
+#           HOST_ARCH,
 #           GPU_TOPOLOGY_JSON, LLM_MODEL_SIZE_MB, SCRIPT_DIR, VERBOSE, DEBUG,
 #           GPU_INDICES, GPU_UUIDS (arrays from topology),
 #           show_phase(), show_install_menu(), chapter(), bootline(),
 #           success(), log(), warn(), error(), signal()
-# Provides: ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_HERMES,
-#           ENABLE_OPENCLAW, OPENCLAW_CONFIG, GPU_ASSIGNMENT_JSON,
+# Provides: ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_EMBEDDINGS,
+#           ENABLE_HERMES, ENABLE_OPENCLAW, OPENCLAW_CONFIG, GPU_ASSIGNMENT_JSON,
 #           LLAMA_SERVER_GPU_UUIDS, WHISPER_GPU_UUID, COMFYUI_GPU_UUID,
 #           EMBEDDINGS_GPU_UUID, LLAMA_ARG_SPLIT_MODE, LLAMA_ARG_TENSOR_SPLIT
 #
@@ -64,10 +65,6 @@ if $INTERACTIVE && ! $DRY_RUN; then
         echo
         if [[ $REPLY =~ ^[Nn]$ ]]; then ENABLE_COMFYUI=false; else ENABLE_COMFYUI=true; fi
 
-        read -p "  Enable DreamForge agent system? [Y/n] " -r < /dev/tty
-        echo
-        if [[ $REPLY =~ ^[Nn]$ ]]; then ENABLE_DREAMFORGE=false; else ENABLE_DREAMFORGE=true; fi
-
         read -p "  Enable Langfuse (LLM observability + telemetry, ~500MB)? [y/N] " -r < /dev/tty
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then ENABLE_LANGFUSE=true; else ENABLE_LANGFUSE=false; fi
@@ -95,6 +92,14 @@ if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]]; then
             log "ComfyUI auto-disabled for Tier $TIER (insufficient RAM for shm_size 8GB)"
             ;;
     esac
+fi
+
+if [[ "${ENABLE_HERMES:-false}" == "true" && "${DREAM_MODE:-local}" != "cloud" ]]; then
+    HERMES_CONTEXT_SIZE="${HERMES_CONTEXT_SIZE:-131072}"
+    if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
+        ai_warn "Hermes enabled: increasing llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (128K)."
+        MAX_CONTEXT="$HERMES_CONTEXT_SIZE"
+    fi
 fi
 
 # Sync optional-extension compose state with the ENABLE_* flags — the
@@ -127,12 +132,20 @@ _sync_extension_compose() {
 }
 
 if ! $DRY_RUN; then
+    ENABLE_EMBEDDINGS="${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}"
+    if [[ "${ENABLE_HERMES:-false}" != "true" && "${ENABLE_OPENCLAW:-false}" != "true" ]]; then
+        ENABLE_APE=false
+    fi
+    _sync_extension_compose "${ENABLE_RECOMMENDED:-}" litellm    "LiteLLM"       "recommended services not enabled"
+    _sync_extension_compose "${ENABLE_RECOMMENDED:-}" searxng    "SearXNG"       "recommended services not enabled"
+    _sync_extension_compose "${ENABLE_RECOMMENDED:-}" token-spy  "Token Spy"     "recommended services not enabled"
     _sync_extension_compose "${ENABLE_VOICE:-}"      whisper    "Whisper (STT)" "voice not enabled"
     _sync_extension_compose "${ENABLE_VOICE:-}"      tts        "Kokoro (TTS)"  "voice not enabled"
     _sync_extension_compose "${ENABLE_WORKFLOWS:-}"  n8n        "n8n"           "workflows not enabled"
     # RAG = qdrant (vector store) + embeddings (TEI). Both must follow
     # ENABLE_RAG, otherwise opting out leaves the embeddings container
-    # being pulled and started even though nothing queries it.
+    # being pulled and started even though nothing queries it. aarch64 Linux
+    # has a temporary TEI-only exception below while Qdrant remains enabled.
     _sync_extension_compose "${ENABLE_RAG:-}"        qdrant     "Qdrant"        "RAG not enabled"
     _sync_extension_compose "${ENABLE_RAG:-}"        embeddings "Embeddings (TEI)" "RAG not enabled"
     # Hermes is the default agent as of 2026-05-12. hermes-proxy is the
@@ -142,10 +155,38 @@ if ! $DRY_RUN; then
     _sync_extension_compose "${ENABLE_HERMES:-}"     hermes        "Hermes Agent"  "Hermes agent not enabled"
     _sync_extension_compose "${ENABLE_HERMES:-}"     hermes-proxy  "Hermes proxy"  "Hermes agent not enabled"
     _sync_extension_compose "${ENABLE_OPENCLAW:-}"   openclaw   "OpenClaw"      "agent framework not enabled"
+    _sync_extension_compose "${ENABLE_APE:-}"        ape        "APE"           "agent governance not enabled"
     _sync_extension_compose "${ENABLE_COMFYUI:-}"    comfyui    "ComfyUI"       "image generation not enabled"
-    _sync_extension_compose "${ENABLE_DREAMFORGE:-}" dreamforge "DreamForge"    "agent system not enabled"
+    _sync_extension_compose "${ENABLE_PERPLEXICA:-}" perplexica "Perplexica"    "deep research not enabled"
+    _sync_extension_compose "${ENABLE_PRIVACY_SHIELD:-}" privacy-shield "Privacy Shield" "privacy shield not enabled"
+    _sync_extension_compose "${ENABLE_DREAM_PROXY:-false}" dream-proxy "Dream proxy" "LAN web proxy not enabled"
+    _sync_extension_compose "${ENABLE_TAILSCALE:-false}" tailscale "Tailscale"  "remote access not enabled"
     _sync_extension_compose "${ENABLE_LANGFUSE:-}"   langfuse   "Langfuse"      "LLM observability not enabled"
     _sync_extension_compose "${ENABLE_BRAVE_SEARCH:-false}" brave-search "Brave Search" "Brave Search API not enabled"
+
+    # ── arm64 / aarch64 platform guard ──
+    # One extension in the current --all bundle ships amd64-only binaries
+    # inside its image and crash-loops on aarch64 (DGX Spark, ARM SBCs,
+    # etc.) with `exec /usr/local/bin/...: exec format error`:
+    #
+    #   - embeddings (HF text-embeddings-inference) — upstream tag
+    #     `cpu-1.9.1` is amd64-only. The compose file pins
+    #     `platform: linux/amd64`, which works under Rosetta 2 on Apple
+    #     Silicon but produces ENOEXEC on aarch64 Linux without QEMU.
+    #
+    # Until upstream ships a multi-arch image, exclude this from the
+    # compose stack on aarch64 hosts. The other services run cleanly on
+    # arm64 and the operator gets a clear "not available on aarch64" line
+    # rather than hours of crash-loop forensics.
+    _host_arch="${HOST_ARCH:-$(uname -m 2>/dev/null || echo unknown)}"
+    if [[ "$_host_arch" == "arm64" || "$_host_arch" == "aarch64" ]]; then
+        if [[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]]; then
+            ai_warn "Embeddings (TEI): upstream image is amd64-only — disabled on aarch64. Qdrant remains enabled; only the embeddings router is skipped."
+            _sync_extension_compose "false" embeddings "Embeddings (TEI)"  "amd64-only image, no arm64 multi-arch yet"
+            ENABLE_EMBEDDINGS=false
+        fi
+    fi
+    unset _host_arch
 fi
 
 # Re-resolve compose flags now that feature selection may have disabled services.

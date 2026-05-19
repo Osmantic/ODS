@@ -6,6 +6,20 @@
 
 set -euo pipefail
 
+# Anchor CWD to a known-good directory. Without this, a user who just
+# uninstalled Dream Server and immediately re-runs the bootstrap from the
+# same terminal will land here with a deleted working directory — `git
+# clone` then fails with `fatal: Unable to read current working directory`
+# and the user sees a misleading "check your internet connection" message.
+DREAM_BOOTSTRAP_ROOT="${HOME:-/tmp}"
+if ! cd "$DREAM_BOOTSTRAP_ROOT" 2>/dev/null; then
+    DREAM_BOOTSTRAP_ROOT="/tmp"
+    cd "$DREAM_BOOTSTRAP_ROOT" 2>/dev/null || {
+        echo "[error] Cannot find a usable working directory (\$HOME and /tmp both inaccessible)." >&2
+        exit 1
+    }
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -16,7 +30,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 REPO_URL="https://github.com/Light-Heart-Labs/DreamServer.git"
-INSTALL_DIR="$HOME/dream-server"
+INSTALL_DIR="$DREAM_BOOTSTRAP_ROOT/dream-server"
 
 log()     { echo -e "${CYAN}[dream]${NC} $1"; }
 success() { echo -e "${GREEN}[  ok ]${NC} $1"; }
@@ -81,7 +95,12 @@ for _v in /sys/class/drm/card*/device/vendor; do
     case "$(cat "$_v" 2>/dev/null)" in
         0x10de) # NVIDIA
             if command -v nvidia-smi &> /dev/null; then
-                _info=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1)
+                # Capture all output then take the first line in-shell. Piping
+                # `... | head -1` SIGPIPEs nvidia-smi (~17% on multi-GPU hosts):
+                # head closes the pipe after line 1, nvidia-smi exits 141, and
+                # pipefail propagates the failure → `set -e` aborts the bootstrap.
+                _info=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null) || _info=""
+                _info=${_info%%$'\n'*}
                 [[ -n "$_info" ]] && success "NVIDIA GPU detected: $_info" && _gpu_found=true
             else
                 success "NVIDIA GPU detected (driver not yet installed — installer will handle it)"
@@ -186,16 +205,27 @@ log "Cloning Dream Server..."
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
-git clone --depth 1 --filter=blob:none --sparse "$REPO_URL" "$TEMP_DIR/repo" 2>&1 | tail -1 || \
-    error "Failed to clone repository. Check your internet connection."
+_clone_err=$(git clone --depth 1 --filter=blob:none --sparse "$REPO_URL" "$TEMP_DIR/repo" 2>&1) || {
+    case "$_clone_err" in
+        *"Unable to read current working directory"*|*"getcwd"*)
+            error "git could not read the current working directory. This usually means the directory you launched from has been deleted (e.g. you uninstalled Dream Server and re-ran the bootstrap from the same shell). Run \`cd ~\` and re-run the bootstrap." ;;
+        *"Could not resolve host"*|*"Failed to connect"*|*"Connection refused"*|*"Network is unreachable"*)
+            error "Failed to reach github.com. Check your internet connection or proxy settings.\n  git said: $_clone_err" ;;
+        *"Permission denied"*|*"could not create"*)
+            error "git failed to write to $TEMP_DIR (permissions). Check that /tmp is writable.\n  git said: $_clone_err" ;;
+        *)
+            error "Failed to clone repository.\n  git said: $_clone_err" ;;
+    esac
+}
+echo "$_clone_err" | tail -1
 
 cd "$TEMP_DIR/repo"
 git sparse-checkout set dream-server 2>/dev/null || {
     # Fallback: full clone if sparse checkout fails
-    cd /
+    cd "$DREAM_BOOTSTRAP_ROOT"
     rm -rf "$TEMP_DIR/repo"
     git clone --depth 1 "$REPO_URL" "$TEMP_DIR/repo" 2>&1 | tail -1 || \
-        error "Failed to clone repository."
+        error "Failed to clone repository (fallback full clone also failed)."
     cd "$TEMP_DIR/repo"
 }
 
@@ -233,6 +263,25 @@ else
 fi
 
 success "Cloned to $INSTALL_DIR"
+
+# ── Bundle extensions-library templates ──────────────
+# The dashboard's Extensions page reads from data/extensions-library/. The
+# source library now ships inside dream-server/extensions/library/, which the
+# rsync above copies as part of the product tree. Without it, dashboard-api returns:
+#   503 {"detail":"Extensions library is unavailable"}
+# on every install. Bundle the templates inside the install dir so the
+# installer can find them deterministically regardless of where it's invoked.
+if [[ -d "$TEMP_DIR/repo/dream-server/extensions/library" ]]; then
+    if rm -rf "$INSTALL_DIR/extensions-library-bundle" \
+        && mkdir -p "$INSTALL_DIR/extensions-library-bundle" \
+        && cp -R "$TEMP_DIR/repo/dream-server/extensions/library/." "$INSTALL_DIR/extensions-library-bundle/"; then
+        success "Bundled extensions-library templates"
+    else
+        warn "Failed to bundle extensions-library — Extensions page may 503"
+    fi
+else
+    warn "dream-server/extensions/library not in clone — Extensions page will 503"
+fi
 
 # ── Make scripts executable ──────────────────────────
 chmod +x "$INSTALL_DIR/install.sh" 2>/dev/null || true

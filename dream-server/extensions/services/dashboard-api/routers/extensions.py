@@ -882,6 +882,14 @@ async def extensions_catalog(
             "dependents": [],
             "dependency_status": {},
         }
+        # Surface install-failure reason inline. The progress file already
+        # records `error` (set by _write_error_progress) but it lives behind
+        # a separate /progress endpoint, so a caller seeing `status: "error"`
+        # in the catalog has no idea why without a second round-trip.
+        if status == "error":
+            _progress = _read_progress(ext_id)
+            if _progress and _progress.get("error"):
+                enriched["error_message"] = _progress["error"]
 
         if category and ext.get("category") != category:
             continue
@@ -1012,11 +1020,19 @@ async def extension_detail(
     user_dir = USER_EXTENSIONS_DIR / service_id
     source = "user" if user_dir.is_dir() else ("core" if service_id in SERVICES else "library")
 
+    # See extensions_catalog: same rationale for inlining the install error.
+    error_message: Optional[str] = None
+    if status == "error":
+        _progress = _read_progress(service_id)
+        if _progress and _progress.get("error"):
+            error_message = _progress["error"]
+
     return {
         "id": ext["id"],
         "name": ext["name"],
         "description": ext.get("description", ""),
         "status": status,
+        "error_message": error_message,
         "source": source,
         "installable": installable,
         "manifest": ext,

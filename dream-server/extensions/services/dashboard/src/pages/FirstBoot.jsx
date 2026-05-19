@@ -132,6 +132,28 @@ export default function FirstBoot({ onComplete }) {
         )
       }
 
+      // Mint an admin dream-session cookie for the operator who just
+      // completed the wizard. Without this, after onboarding they'd
+      // be blocked at the Hermes / chat tiles by the same forward_auth
+      // gate that requires magic-link redemption — having to mint and
+      // redeem an invite to themselves is absurd UX. The endpoint is
+      // gated by DASHBOARD_API_KEY (nginx injects the header) so only
+      // someone with admin trust can mint. Non-fatal: if it fails the
+      // wizard still finishes; the user can re-mint by reloading the
+      // dashboard (App.jsx's useSessionBootstrap retries on every load).
+      try {
+        const adminResp = await fetch('/api/auth/admin-session', { method: 'POST' })
+        if (!adminResp.ok && adminResp.status !== 503) {
+          // 503 = signing not configured server-side; surfaced elsewhere.
+          // Other errors are operationally interesting but non-fatal here.
+          // eslint-disable-next-line no-console
+          console.warn('[dream-session] admin-session returned', adminResp.status)
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[dream-session] admin-session network failure:', err)
+      }
+
       setInvite(inviteData)
       clearProgress()
       // Stay on the success screen until the user taps "Open dashboard".

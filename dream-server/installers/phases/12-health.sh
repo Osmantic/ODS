@@ -7,7 +7,8 @@
 #          pre-download STT model
 #
 # Expects: DRY_RUN, GPU_BACKEND, ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG,
-#           ENABLE_HERMES, ENABLE_OPENCLAW, LLM_MODEL, LOG_FILE, BGRN, AMB, NC,
+#           ENABLE_EMBEDDINGS, ENABLE_HERMES, ENABLE_OPENCLAW, LLM_MODEL,
+#           LOG_FILE, BGRN, AMB, NC,
 #           WHISPER_PORT, TTS_PORT, OPENCLAW_PORT,
 #           PERPLEXICA_PORT (:-3004), COMFYUI_PORT (:-8188),
 #           show_phase(), check_service(), ai(), ai_ok(), ai_warn(), signal()
@@ -41,6 +42,7 @@ if $DRY_RUN; then
     [[ "$ENABLE_VOICE" == "true" ]] && log "[DRY RUN]   - Whisper (STT), Kokoro (TTS), pre-download STT model"
     [[ "$ENABLE_WORKFLOWS" == "true" ]] && log "[DRY RUN]   - n8n"
     [[ "$ENABLE_RAG" == "true" ]] && log "[DRY RUN]   - Qdrant"
+    [[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]] && log "[DRY RUN]   - Embeddings (TEI)"
     echo ""
     signal "All systems nominal. (dry run)"
     ai_ok "Sovereign intelligence is online. (dry run)"
@@ -108,6 +110,41 @@ _check_container_health() {
 # llama-server: 150 attempts * adaptive backoff (2s->8s) = up to ~20 minutes (model loading can be slow)
 dream_progress 86 "health" "Waiting for LLM engine"
 _check_health "llama-server" "http://127.0.0.1:${SERVICE_PORTS[llama-server]:-8080}${SERVICE_HEALTH[llama-server]:-/health}" 150 15 "$(sr_container llama-server)"
+
+# ── Pre-warm the LLM slot so the first real chat doesn't 503 ──
+#
+# /health goes green once the model is mmap'd, but the FIRST chat
+# completion still materializes the KV cache, JIT-compiles fused kernels,
+# and processes any system prompt the caller injects. While that's in
+# flight, llama-server returns `HTTP 503: Loading model` to concurrent
+# requests — including from Hermes Agent, which sends a ~14k-token system
+# prompt and only retries 3 times within 120s. On big-model + single-GPU
+# boxes (DGX Spark with the 45 GB qwen3-coder-next, tested 2026-05-12),
+# that 14k prefill alone takes ~54s — fitting inside Hermes's first-call
+# window only by luck. Roll the dice the wrong way and Hermes 503s every
+# prompt for the rest of the install run.
+#
+# Pre-warming with a tiny dummy completion forces the slot through its
+# cold path inside the installer (where time isn't surprising) so Hermes
+# lands on an already-hot slot. Bounded by curl --max-time so a stalled
+# llama-server doesn't hang phase 12.
+dream_progress 87 "health" "Pre-warming LLM slot"
+_prewarm_api_path="/v1"
+_prewarm_model="${GGUF_FILE:-${LLM_MODEL:-default}}"
+if [[ "${GPU_BACKEND:-}" == "amd" ]]; then
+    _prewarm_api_path="/api/v1"
+    [[ -n "${GGUF_FILE:-}" ]] && _prewarm_model="extra.${GGUF_FILE}"
+fi
+_prewarm_url="http://127.0.0.1:${SERVICE_PORTS[llama-server]:-8080}${_prewarm_api_path}/chat/completions"
+_prewarm_body="{\"model\":\"${_prewarm_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}"
+if curl -sf --max-time 120 -X POST "$_prewarm_url" \
+    -H "Content-Type: application/json" \
+    -d "$_prewarm_body" >/dev/null 2>&1; then
+    ai_ok "LLM slot pre-warmed (first real chat will be fast)"
+else
+    ai_warn "LLM pre-warm timed out — first Hermes prompt may need a retry or two while the slot finishes warming."
+fi
+
 # Open WebUI: 150 attempts * adaptive backoff = up to ~20 minutes
 dream_progress 89 "health" "Waiting for Chat UI"
 _check_health "Open WebUI" "http://127.0.0.1:${SERVICE_PORTS[open-webui]:-3000}${SERVICE_HEALTH[open-webui]:-/}" 150 10 "$(sr_container open-webui)"
@@ -119,10 +156,15 @@ if [[ "$ENABLE_COMFYUI" == "true" ]]; then
     dream_progress 93 "health" "Waiting for Image generation"
     _check_health "ComfyUI" "http://127.0.0.1:${SERVICE_PORTS[comfyui]:-8188}${SERVICE_HEALTH[comfyui]:-/}" 150 15 "$(sr_container comfyui)"
 fi
-# Embeddings (TEI): model load on first run can take 1-2 minutes after start_period
-if [[ "$ENABLE_RAG" == "true" ]]; then
+# Embeddings (TEI): 150 attempts * adaptive backoff = up to ~20 minutes.
+# Matches every other service. The 30-attempt cap (~230s total) used to
+# print spurious "embeddings delayed (may still be starting)" warnings on
+# fresh installs because TEI downloads its ONNX model from HuggingFace on
+# first start (BAAI/bge-base-en-v1.5 is ~440 MB), which can take 3-7 min
+# on bufferbloated networks before /health responds.
+if [[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]]; then
     dream_progress 94 "health" "Waiting for Embeddings"
-    _check_health "embeddings" "http://127.0.0.1:${SERVICE_PORTS[embeddings]:-7860}${SERVICE_HEALTH[embeddings]:-/health}" 30 10 "$(sr_container embeddings)"
+    _check_health "embeddings" "http://127.0.0.1:${SERVICE_PORTS[embeddings]:-7860}${SERVICE_HEALTH[embeddings]:-/health}" 150 10 "$(sr_container embeddings)"
 fi
 
 # Perplexica auto-config: seed chat model + embedding model on first boot.
@@ -233,7 +275,7 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
     STT_MODEL_ENCODED="${STT_MODEL//\//%2F}"
     WHISPER_PORT_RESOLVED="${SERVICE_PORTS[whisper]:-9000}"
     WHISPER_URL="http://127.0.0.1:${WHISPER_PORT_RESOLVED}"
-    STT_RECOVERY_CMD="curl --max-time 3600 -X POST ${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}"
+    STT_RECOVERY_CMD="curl --max-time 1800 -X POST ${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}"
 
     # Step 1: wait briefly for the models API to be ready. Whisper's /health
     # endpoint can pass before the models endpoint responds, so we probe
@@ -255,9 +297,14 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
         printf "\r  ${BGRN}✓${NC} %-60s\n" "STT model already cached (${STT_MODEL})"
     else
         # Step 3: POST to trigger download. Log stdout/stderr to install log.
+        # max-time 600s (10 min): bounded retry budget so a stuck
+        # huggingface_hub.snapshot_download (well-known on slow links and
+        # under bufferbloat) can't consume the entire install timeout. The
+        # next step verifies cache state via GET and prints the recovery
+        # command if the timeout was hit before completion.
         ai "Downloading STT model (${STT_MODEL})..."
-        curl -s --max-time 3600 -X POST "${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}" \
-            >> "$LOG_FILE" 2>&1
+        curl -s --max-time 600 -X POST "${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}" \
+            >> "$LOG_FILE" 2>&1 || true
 
         # Step 4: verify the model is actually cached. POST can return 200
         # even if the download partially fails, so this GET is the real test.
@@ -274,7 +321,6 @@ fi
 dream_progress 96 "health" "Checking workflow and RAG services"
 [[ "$ENABLE_WORKFLOWS" == "true" ]] && _check_health "n8n" "http://127.0.0.1:${SERVICE_PORTS[n8n]:-5678}${SERVICE_HEALTH[n8n]:-/healthz}" 150 10 "$(sr_container n8n)"
 [[ "$ENABLE_RAG" == "true" ]] && _check_health "Qdrant" "http://127.0.0.1:${SERVICE_PORTS[qdrant]:-6333}${SERVICE_HEALTH[qdrant]:-/}" 150 10 "$(sr_container qdrant)"
-[[ "${ENABLE_DREAMFORGE:-}" == "true" ]] && _check_health "DreamForge" "http://127.0.0.1:${SERVICE_PORTS[dreamforge]:-3010}${SERVICE_HEALTH[dreamforge]:-/health}" 150 10 "$(sr_container dreamforge)"
 
 dream_progress 97 "health" "Health checks complete"
 echo ""

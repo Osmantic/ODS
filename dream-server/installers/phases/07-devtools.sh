@@ -320,6 +320,7 @@ if [[ -f "$INSTALL_DIR/bin/dream-host-agent.py" ]]; then
                 fi
             fi
             # loginctl enable-linger no longer needed for host agent (system-mode unit)
+
         else
             ai_warn "No systemd detected — dream host agent not auto-installed."
             ai_warn "  Start manually: dream agent start"

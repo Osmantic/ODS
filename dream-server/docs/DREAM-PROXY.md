@@ -96,3 +96,4 @@ If you want LAN access to a single specific service without the proxy, add a `po
 |---|---|---|
 | 2026-05-12 | `caddy:2.8.4-alpine` | Initial integration. HTTP only; TLS deferred. |
 | 2026-05-12 | `caddy:2.8.4-alpine` | Switched from path-based (`/chat`, `/api/*`) to host-based (`chat.<device>.local`, etc.) routing after audit on subpath issues. Cookie domain via `DREAM_COOKIE_DOMAIN`. |
+| 2026-05-15 | `caddy:2.11.3-alpine` | Updated Dream Proxy image to the current Caddy 2.x stable pin. |

@@ -19,6 +19,64 @@ setup() {
     source "$BATS_TEST_DIRNAME/../../installers/lib/amd-topo.sh"
 }
 
+# -- AMD card ordering and memory classification --------------------------------
+
+@test "_amd_sort_card_dirs: orders non-contiguous DRM cards numerically" {
+    local drm="$BATS_TEST_TMPDIR/sys/class/drm"
+    mkdir -p "$drm/card0/device" "$drm/card16/device" "$drm/card24/device" "$drm/card8/device"
+
+    run _amd_sort_card_dirs \
+        "$drm/card0/device" \
+        "$drm/card16/device" \
+        "$drm/card24/device" \
+        "$drm/card8/device"
+    assert_success
+    assert_line --index 0 "$drm/card0/device"
+    assert_line --index 1 "$drm/card8/device"
+    assert_line --index 2 "$drm/card16/device"
+    assert_line --index 3 "$drm/card24/device"
+}
+
+@test "amd_memory_type: keeps 32GB+ discrete cards discrete" {
+    run amd_memory_type $((32 * 1073741824)) $((16 * 1073741824))
+    assert_success
+    assert_output "discrete"
+}
+
+@test "amd_memory_type: detects AMD APUs from large GTT" {
+    run amd_memory_type $((8 * 1073741824)) $((96 * 1073741824))
+    assert_success
+    assert_output "unified"
+}
+
+@test "detect_amd_topo: emits GPUs in numeric DRM card order" {
+    local drm="$BATS_TEST_TMPDIR/sys/class/drm"
+    local card
+    for card in 0 8 16 24; do
+        local card_dir="$drm/card${card}/device"
+        mkdir -p "$card_dir"
+        echo "0x1002" > "$card_dir/vendor"
+        echo "0x74b5" > "$card_dir/device"
+        echo "0x${card}" > "$card_dir/subsystem_device"
+        echo "$((16 * 1073741824))" > "$card_dir/mem_info_vram_total"
+        echo "$((16 * 1073741824))" > "$card_dir/mem_info_gtt_total"
+        echo "AMD card${card}" > "$card_dir/product_name"
+        echo "0x00000000000000${card}" > "$card_dir/unique_id"
+    done
+
+    amd-smi() { return 1; }
+    rocm-smi() { return 1; }
+    rocminfo() { return 1; }
+    export DREAM_DRM_SYS="$drm"
+
+    local output names
+    output=$(detect_amd_topo)
+    names=$(echo "$output" | jq -r '.gpus[].name' | paste -sd ',' -)
+
+    assert_equal "$names" "AMD card0,AMD card8,AMD card16,AMD card24"
+    assert_equal "$(echo "$output" | jq -r '.gpus[].memory_type' | sort -u)" "discrete"
+}
+
 # ── amd_render_node ─────────────────────────────────────────────────────────
 
 @test "amd_render_node: returns numeric ID, not full name" {

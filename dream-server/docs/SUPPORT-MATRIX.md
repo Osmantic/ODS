@@ -1,6 +1,6 @@
 # Dream Server Support Matrix
 
-Last updated: 2026-03-17
+Last updated: 2026-05-15
 
 ## What Works Today
 
@@ -25,9 +25,9 @@ Last updated: 2026-03-17
 | Platform | GPU Path | Installer Tier | Notes |
 |---|---|---|---|
 | Linux (Ubuntu/Debian family) | NVIDIA (llama-server/CUDA) | Tier B | Installer path exists in `install-core.sh`; broader distro test matrix still pending |
-| Linux (Strix Halo / AMD unified memory) | AMD (llama-server/ROCm) | Tier A | Primary path via `docker-compose.base.yml` + `docker-compose.amd.yml` |
+| Linux (Strix Halo / AMD unified memory) | AMD (Lemonade/ROCm) | Tier A | Primary managed path via `docker-compose.base.yml` + `docker-compose.amd.yml` |
 | Linux (Intel Arc A770/A750) | Intel SYCL (llama-server/oneAPI) | **Tier C** | `docker-compose.arc.yml`; builds llama.cpp from `intel/oneapi-basekit`; see [INTEL-ARC-GUIDE.md](INTEL-ARC-GUIDE.md) |
-| Windows (Docker Desktop + WSL2) | NVIDIA/AMD via Docker Desktop | Tier B | Standalone installer (`.\install.ps1`) with GPU auto-detection, Docker orchestration, health checks, and desktop shortcuts |
+| Windows (Docker Desktop + WSL2) | NVIDIA via Docker Desktop; AMD via host Vulkan runtime | Tier B | Standalone installer (`.\install.ps1`) with GPU auto-detection, Docker orchestration, health checks, and desktop shortcuts |
 | macOS (Apple Silicon) | Metal (native llama-server) | Tier B | Standalone installer (`./install.sh`) with chip detection, native Metal inference, Docker services, and LaunchAgent auto-start |
 
 ## GPU Tier Map
@@ -50,9 +50,11 @@ Last updated: 2026-03-17
 
 - **Linux, Windows, and macOS are fully supported.**
 - Linux + NVIDIA is supported but needs broader validation and CI matrix coverage.
-- Windows installs via `.\install.ps1` with Docker Desktop + WSL2 backend. Windows delegated installer flow is available via WSL2.
+- Windows installs via `.\install.ps1` with Docker Desktop + WSL2 backend. Windows AMD local inference is host-managed and uses Vulkan today, either through legacy Lemonade Server or native `llama-server` fallback.
 - Windows native installer UX is Tier B (delegated via Docker Desktop + WSL2).
 - macOS installs via `./install.sh` — llama-server runs natively with Metal acceleration, all other services in Docker.
+- AMD runtime diagnostics are explicit: `.env` records runtime, location, selected backend, supported backends, and whether DreamServer manages the process. Lemonade's newer CLI/default port is documented upstream but is not the managed DreamServer path yet.
+- AMD discrete GPUs beyond the documented Strix Halo path should be treated as validation-required until the repo has tier/model benchmarks for that hardware.
 - **Intel Arc (SYCL) is Tier C / experimental.** The installer auto-detects and selects the correct compose overlay and tier. Runtime works on A770/A750 (Linux). ComfyUI and Whisper GPU acceleration are not yet available for Arc. See [INTEL-ARC-GUIDE.md](INTEL-ARC-GUIDE.md) for limitations.
 - For release gates (CI), macOS (Apple Silicon) is documented as Tier C (installer MVP) in manifest; SUPPORT-MATRIX table may show Tier B for user-facing status.
 - Version baselines for triage are in `docs/KNOWN-GOOD-VERSIONS.md`.

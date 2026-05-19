@@ -167,18 +167,10 @@ OPENCLAW_PROVIDER_NAME_DEFAULT="${BACKEND_PROVIDER_NAME:-local-llama}"
 OPENCLAW_PROVIDER_URL_DEFAULT="${BACKEND_PROVIDER_URL:-http://llama-server:8080/v1}"
 
 #-----------------------------------------------------------------------------
-# Host architecture-aware image selection
+# Host architecture detection
 #-----------------------------------------------------------------------------
-# Some upstream images are amd64-only (TEI, pre-2025 speaches releases). On
-# arm64 + nvidia hosts (DGX Spark / GH200) override the image pins so the
-# install works without qemu emulation. amd64 behaviour is unchanged. Each
-# var is set with := so a user-supplied value (env or .env) wins.
 HOST_ARCH=$(detect_host_arch)
 log "Host architecture: ${HOST_ARCH}"
-if [[ "$HOST_ARCH" == "arm64" ]]; then
-    # dreamforge upstream image is amd64-only — build locally on arm64.
-    : "${DREAMFORGE_PULL_POLICY:=build}"
-fi
 
 #-----------------------------------------------------------------------------
 # Secure Boot + NVIDIA auto-fix
@@ -188,6 +180,8 @@ fi
 if [[ "${GPU_BACKEND_FORCED_CPU:-false}" != "true" && $GPU_COUNT -eq 0 && "$GPU_BACKEND" != "amd" ]] && ! $DRY_RUN; then
     fix_nvidia_secure_boot || true
 fi
+
+validate_nvidia_blackwell_open_modules
 
 # NVIDIA Driver Compatibility Check
 # llama-server (CUDA) requires driver >= 570
@@ -200,6 +194,12 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
         log "NVIDIA driver: $DRIVER_VERSION"
         if [[ "$DRIVER_VERSION" -lt "$MIN_DRIVER_VERSION" ]]; then
             ai_bad "NVIDIA driver $DRIVER_VERSION is too old. llama-server (CUDA) requires driver >= $MIN_DRIVER_VERSION."
+            if nvidia_blackwell_hardware_detected; then
+                ai_bad "This is a Blackwell GPU, so install an NVIDIA open kernel module driver."
+                ai "  sudo apt install nvidia-open"
+                ai "  # or: sudo apt install nvidia-driver-${MIN_DRIVER_VERSION}-open"
+                error "Blackwell requires driver >= ${MIN_DRIVER_VERSION} with open kernel modules."
+            fi
             ai "Attempting to install a compatible driver..."
             if ! $DRY_RUN; then
                 if command -v ubuntu-drivers &> /dev/null; then
@@ -496,25 +496,62 @@ if [[ -z "${MODEL_PROFILE:-}" ]]; then
 fi
 resolve_tier_config
 
+# Refine the tier's model choice using the versioned catalog before any GGUF is
+# downloaded. This keeps install-time selection aligned with the dashboard
+# oracle while preserving the tier map as a no-Python fallback.
+if [[ "${DREAM_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" != "CLOUD" ]]; then
+    _selector_script="$SCRIPT_DIR/scripts/select-model.py"
+    _selector_catalog="$SCRIPT_DIR/config/model-library.json"
+    if [[ -f "$_selector_script" && -f "$_selector_catalog" ]]; then
+        _selector_python=""
+        if [[ -f "$SCRIPT_DIR/lib/python-cmd.sh" ]]; then
+            # shellcheck source=/dev/null
+            . "$SCRIPT_DIR/lib/python-cmd.sh"
+            _selector_python="$(ds_detect_python_cmd || true)"
+        fi
+        if [[ -z "$_selector_python" ]]; then
+            if command -v python3 >/dev/null 2>&1; then
+                _selector_python="python3"
+            elif command -v python >/dev/null 2>&1; then
+                _selector_python="python"
+            fi
+        fi
+        if [[ -n "$_selector_python" ]]; then
+            _selector_env="$("$_selector_python" "$_selector_script" \
+                --catalog "$_selector_catalog" \
+                --backend "${GPU_BACKEND:-unknown}" \
+                --memory-type "${GPU_MEMORY_TYPE:-discrete}" \
+                --vram-mb "${GPU_VRAM:-0}" \
+                --ram-gb "${RAM_GB:-0}" \
+                --profile "${MODEL_PROFILE_EFFECTIVE:-${MODEL_PROFILE:-qwen}}" \
+                --tier "${TIER:-1}" \
+                --host-arch "${HOST_ARCH:-unknown}" \
+                --installable-only \
+                --env 2>>"$LOG_FILE" || true)"
+            if [[ -n "$_selector_env" ]]; then
+                eval "$_selector_env"
+                log "Catalog model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"
+            else
+                log "Catalog model selector unavailable; using tier-map model ${LLM_MODEL}"
+            fi
+        else
+            log "Python unavailable for catalog model selector; using tier-map model ${LLM_MODEL}"
+        fi
+    fi
+fi
+
 # Display hardware summary with nice formatting
 CPU_INFO=$(grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs || echo "Unknown")
 if [[ "$INTERACTIVE" == "true" ]]; then
     show_hardware_summary "$GPU_NAME" "$((GPU_VRAM / 1024))" "$CPU_INFO" "$RAM_GB" "$DISK_AVAIL"
 
-    # Estimate tokens/sec and concurrent users based on tier
-    case $TIER in
-        NV_ULTRA)   SPEED_EST=50; USERS_EST="10-20" ;;
-        SH_LARGE)   SPEED_EST=40; USERS_EST="5-10" ;;
-        SH_COMPACT) SPEED_EST=80; USERS_EST="5-10" ;;
-        ARC)        SPEED_EST=35; USERS_EST="3-5" ;;
-        ARC_LITE)   SPEED_EST=20; USERS_EST="1-2" ;;
-        0) SPEED_EST=50; USERS_EST="1" ;;
-        1) SPEED_EST=25; USERS_EST="1-2" ;;
-        2) SPEED_EST=45; USERS_EST="3-5" ;;
-        3) SPEED_EST=55; USERS_EST="5-8" ;;
-        4) SPEED_EST=40; USERS_EST="10-15" ;;
-        *)          SPEED_EST=30;  USERS_EST="varies" ;;
-    esac
+    if [[ "$TIER" == "CLOUD" ]]; then
+        SPEED_EST="cloud API"
+        USERS_EST="depends on API tier"
+    else
+        SPEED_EST="benchmark after first launch"
+        USERS_EST="measured after local benchmark"
+    fi
     show_tier_recommendation "$TIER" "$LLM_MODEL" "$SPEED_EST" "$USERS_EST"
 else
     success "Configuration: Tier $TIER ($TIER_NAME)"

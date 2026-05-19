@@ -13,7 +13,9 @@
 #
 # Flow:
 #   1. Request arrives on :9120
-#   2. /health and /favicon.ico — always answered (so health checks work)
+#   2. /health, /healthz, and /favicon.ico — always answered (so health
+#      checks work; /healthz is the k8s-convention path that dream-fleet-test
+#      and other standard health checkers probe)
 #   3. /auth/* — static "you need an invite" assets (always served)
 #   4. Everything else: forward_auth to dashboard-api/api/auth/verify-session
 #      - 2xx → reverse-proxy to dream-hermes:9119
@@ -23,7 +25,6 @@
 # This is auth GATING, not user identification. Once past the gate,
 # all users share the same Hermes instance (same memories, skills,
 # persona). See docs/HERMES-SSO.md for the explicit limitation.
-
 {
 	# Disable Caddy's auto-HTTPS — Dream Server's TLS is handled at the
 	# Tailscale layer (PR-12) or by an explicit operator-side reverse
@@ -42,70 +43,99 @@
 # Listen on the proxy's internal port. Compose maps this to the external
 # HERMES_PROXY_PORT via the host port mapping.
 :9120 {
-	# Cheap health endpoint for Docker / dashboard probes. NEVER gates on
-	# the cookie — health checks are anonymous by design.
-	@health path /health
-	handle @health {
-		respond "ok" 200
-	}
-
-	@favicon path /favicon.ico
-	handle @favicon {
-		respond 204
-	}
-
-	# Static "you need an invite" page lives at /auth/required. Always
-	# accessible; this is where unauthenticated requests get bounced.
-	#
-	# `templates` lets index.html substitute `{{env "HERMES_PROXY_AUTH_DOCS_URL"}}`
-	# at response time, so operators can point recipients at a help doc /
-	# admin-contact page via env var without editing the HTML. The page
-	# only renders the "Need help?" row when the var is non-empty.
-	@auth_static path /auth/required* /auth/static/*
-	handle @auth_static {
-		root * /srv/auth-required
-		try_files {path} /index.html
-		templates
-		file_server
-	}
-
-	# Real session verification: delegate to dashboard-api's
-	# /api/auth/verify-session. That endpoint reads the dream-session
-	# cookie, verifies the HMAC signature against DREAM_SESSION_SECRET,
-	# and returns 200 (valid) or 401 (missing/expired/bad-signature).
-	#
-	# Caddy's forward_auth issues a sub-request to the auth upstream
-	# with the original Cookie header copied across, then:
-	#   * 2xx → falls through to reverse_proxy below
-	#   * non-2xx → the handle_response @denied block fires, sending the
-	#               user to the auth-required page (303 — important so a
-	#               no-cookie POST doesn't replay its body to /auth/required)
-	#
-	# DREAM_AUTH_UPSTREAM defaults to the in-network dashboard-api
-	# hostname (which only the compose bridge can resolve); operators
-	# can override via env if dashboard-api lives elsewhere.
-	forward_auth {$DREAM_AUTH_UPSTREAM:dream-dashboard-api:3002} {
-		uri /api/auth/verify-session
-		copy_headers Cookie
-
-		@denied status 401 403
-		handle_response @denied {
-			redir /auth/required 303
+	# Caddy's global directive order would otherwise run forward_auth before
+	# these local handle blocks. Keep the literal order so health, favicon,
+	# and invite-help assets remain public, while every other path is gated.
+	route {
+		# Cheap health endpoints for Docker / dashboard / k8s probes. NEVER
+		# gate on the cookie — health checks are anonymous by design. Match
+		# both /health (Docker / our dashboard) and /healthz (k8s convention,
+		# what dream-fleet-test verify hits — anything monitoring at the
+		# standard k8s path was getting a 303 to /auth/required and being
+		# marked unhealthy).
+		@health path /health /healthz
+		handle @health {
+			respond "ok" 200
 		}
-	}
 
-	# Forward everything to Hermes. reverse_proxy handles streaming
-	# responses (SSE) and WebSocket upgrades natively — Caddy's
-	# upstream-handling is the reason we picked it over rolling our
-	# own FastAPI proxy.
-	reverse_proxy {$HERMES_PROXY_UPSTREAM:dream-hermes:9119} {
-		# Pass-through with sane defaults. Caddy's defaults are
-		# correct for SSE + WS; we don't need to tweak buffering.
-		header_up X-Forwarded-Proto {scheme}
-		header_up X-Forwarded-Host {host}
-		# Add a marker the operator can grep for in Hermes's logs
-		# if they're debugging a "did this request come via the
-		# proxy or directly?" question.
-		header_up X-Dream-Auth-Proxy "1"
+		@favicon path /favicon.ico
+		handle @favicon {
+			respond 204
+		}
+
+		# Static "you need an invite" page lives at /auth/required. Always
+		# accessible; this is where unauthenticated requests get bounced.
+		#
+		# `templates` lets index.html substitute `{{env "HERMES_PROXY_AUTH_DOCS_URL"}}`
+		# at response time, so operators can point recipients at a help doc /
+		# admin-contact page via env var without editing the HTML. The page
+		# only renders the "Need help?" row when the var is non-empty.
+		@auth_static path /auth/required* /auth/static/*
+		handle @auth_static {
+			root * /srv/auth-required
+			try_files {path} /index.html
+			templates
+			file_server
+		}
+
+		# Real session verification: delegate to dashboard-api's
+		# /api/auth/verify-session. That endpoint reads the dream-session
+		# cookie, verifies the HMAC signature against DREAM_SESSION_SECRET,
+		# and returns 200 (valid) or 401 (missing/expired/bad-signature).
+		#
+		# Caddy's forward_auth issues a sub-request to the auth upstream
+		# with the original Cookie header copied across, then:
+		#   * 2xx → falls through to reverse_proxy below
+		#   * non-2xx → the handle_response @denied block fires, sending the
+		#               user to the auth-required page (303 — important so a
+		#               no-cookie POST doesn't replay its body to /auth/required)
+		#
+		# DREAM_AUTH_UPSTREAM defaults to the in-network dashboard-api
+		# hostname (which only the compose bridge can resolve); operators
+		# can override via env if dashboard-api lives elsewhere.
+		forward_auth {$DREAM_AUTH_UPSTREAM:dream-dashboard-api:3002} {
+			uri /api/auth/verify-session
+			copy_headers Cookie
+			# Strip WebSocket upgrade headers from the auth sub-request.
+			# Hermes's in-browser chat opens WebSockets to /api/ws +
+			# /api/pty + /api/events. Without these strips, Caddy
+			# propagates the Upgrade/Connection/Sec-WebSocket-* headers
+			# to the verify-session sub-request, dashboard-api's FastAPI
+			# treats it as a malformed WS handshake (no WS handler at
+			# that path), returns 403, and forward_auth bounces the user
+			# to /auth/required even though their cookie is valid. The
+			# auth sub-request is plain HTTP regardless of what protocol
+			# the original request is; force that here.
+			header_up -Connection
+			header_up -Upgrade
+			header_up -Sec-Websocket-Key
+			header_up -Sec-Websocket-Version
+			header_up -Sec-Websocket-Protocol
+			header_up -Sec-Websocket-Extensions
+
+			@denied status 401 403
+			handle_response @denied {
+				# The leading `*` is intentional. Without an explicit matcher,
+				# Caddy parses `/auth/required` as a path matcher and `303` as
+				# the redirect target, so unauthenticated `/` requests fall
+				# through to Hermes instead of being bounced to the invite page.
+				redir * /auth/required 303
+			}
+		}
+
+		# Forward everything to Hermes. reverse_proxy handles streaming
+		# responses (SSE) and WebSocket upgrades natively — Caddy's
+		# upstream-handling is the reason we picked it over rolling our
+		# own FastAPI proxy.
+		reverse_proxy {$HERMES_PROXY_UPSTREAM:dream-hermes:9119} {
+			# Pass-through with sane defaults. Caddy's defaults are
+			# correct for SSE + WS; we don't need to tweak buffering.
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+			# Add a marker the operator can grep for in Hermes's logs
+			# if they're debugging a "did this request come via the
+			# proxy or directly?" question.
+			header_up X-Dream-Auth-Proxy "1"
+		}
 	}
 }

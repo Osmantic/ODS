@@ -257,6 +257,23 @@
       "llama_server_image": null
     },
     {
+      "id": "qwen3.6-35b-a3b-ud-q4",
+      "name": "Qwen 3.6 35B-A3B",
+      "family": "qwen",
+      "gguf_file": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+      "gguf_sha256": "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61",
+      "size_mb": 21110,
+      "vram_required_gb": 24,
+      "context_length": 131072,
+      "quantization": "UD-Q4_K_M",
+      "specialty": "Quality",
+      "description": "Current A3B MoE successor for Spark-class unified-memory hosts. Verified on DGX Spark with llama.cpp b9014.",
+      "tokens_per_sec_estimate": 59,
+      "llm_model_name": "qwen3.6-35b-a3b",
+      "llama_server_image": null
+    },
+    {
       "id": "deepseek-r1-70b-q4",
       "name": "DeepSeek R1 70B",
       "family": "deepseek",

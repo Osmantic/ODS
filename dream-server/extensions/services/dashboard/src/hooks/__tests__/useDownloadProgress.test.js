@@ -34,7 +34,11 @@ describe('useDownloadProgress', () => {
   test('clears progress when status is complete', async () => {
     fetch.mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ status: 'complete' })
+      json: () => Promise.resolve({
+        status: 'complete',
+        model: 'test-model',
+        updatedAt: '2026-05-16T12:00:00Z'
+      })
     })
 
     const { result } = renderHook(() => useDownloadProgress())
@@ -45,6 +49,11 @@ describe('useDownloadProgress', () => {
     })
     expect(result.current.isDownloading).toBe(false)
     expect(result.current.progress).toBeNull()
+    expect(result.current.completedDownload).toEqual({
+      status: 'complete',
+      model: 'test-model',
+      updatedAt: '2026-05-16T12:00:00Z'
+    })
   })
 
   test('formatBytes formats GB/MB/KB correctly', () => {

@@ -20,7 +20,13 @@ DISTRO_ID_LIKE=""
 
 # Use sudo only when not already root (e.g. Docker containers run as root)
 _SUDO=""
-if [[ ${EUID:-$(id -u)} -ne 0 ]]; then _SUDO="sudo"; fi
+if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+    if declare -f ds_sudo >/dev/null 2>&1; then
+        _SUDO="ds_sudo"
+    else
+        _SUDO="sudo"
+    fi
+fi
 
 # Detect the system's package manager from /etc/os-release
 # Sets: PKG_MANAGER, DISTRO_ID, DISTRO_ID_LIKE

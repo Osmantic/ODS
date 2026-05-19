@@ -6,7 +6,8 @@
 # Purpose: Build image pull list and download all Docker images
 #
 # Expects: DRY_RUN, GPU_BACKEND, ENABLE_VOICE, ENABLE_WORKFLOWS,
-#           ENABLE_RAG, ENABLE_HERMES, ENABLE_OPENCLAW, DOCKER_CMD, LOG_FILE, BGRN, AMB, NC,
+#           ENABLE_RAG, ENABLE_EMBEDDINGS, ENABLE_HERMES, ENABLE_OPENCLAW,
+#           DOCKER_CMD, LOG_FILE, BGRN, AMB, NC,
 #           show_phase(), bootline(), signal(), ai(), ai_ok(), ai_warn(),
 #           pull_with_progress()
 # Provides: (Docker images pulled locally)
@@ -26,7 +27,8 @@ fi
 # Format: "image|friendly_name"
 PULL_LIST=()
 if [[ "$GPU_BACKEND" == "amd" ]]; then
-    PULL_LIST+=("ghcr.io/lemonade-sdk/lemonade-server:v10.0.0|LEMONADE — downloading the brain (AMD ROCm)")
+    _lemonade_image="${LEMONADE_SERVER_IMAGE:-${BACKEND_LEMONADE_CONTAINER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0}}"
+    PULL_LIST+=("${_lemonade_image}|LEMONADE — downloading the brain (AMD ROCm)")
     [[ "$ENABLE_COMFYUI" == "true" ]] && PULL_LIST+=("ignatberesnev/comfyui-gfx1151:v0.2|COMFYUI — image generation engine (gfx1151)")
 elif [[ "$GPU_BACKEND" == "cpu" ]]; then
     PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b8248}|LLAMA-SERVER — downloading the brain (CPU)")
@@ -50,11 +52,10 @@ if [[ "$ENABLE_HERMES" == "true" ]]; then
     # rationale + "How to bump the pin" in docs/HERMES.md. Hermes-proxy
     # is the auth gate (Caddy) and is pulled alongside Hermes.
     PULL_LIST+=("nousresearch/hermes-agent:sha-dd0923bb89ed2dd56f82cb63656a1323f6f42e6f|HERMES — default agent (Nous Research)")
-    PULL_LIST+=("caddy:2.8.4-alpine|HERMES PROXY — magic-link auth gate (Caddy)")
+    PULL_LIST+=("caddy:2.11.3-alpine|HERMES PROXY — magic-link auth gate (Caddy)")
 fi
 [[ "$ENABLE_OPENCLAW" == "true" ]] && PULL_LIST+=("ghcr.io/openclaw/openclaw:2026.3.8|OPENCLAW — agent framework")
-[[ "$ENABLE_RAG" == "true" ]] && PULL_LIST+=("ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1|TEI — embedding engine")
-[[ "${ENABLE_DREAMFORGE:-}" == "true" ]] && PULL_LIST+=("ghcr.io/light-heart-labs/dreamforge:v0.1.0|DREAMFORGE — agent system")
+[[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]] && PULL_LIST+=("ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1|TEI — embedding engine")
 
 if $DRY_RUN; then
     ai "[DRY RUN] I would download ${#PULL_LIST[@]} modules."

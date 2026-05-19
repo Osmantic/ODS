@@ -7,7 +7,6 @@ const statusPayload = {
     { id: 'comfyui', name: 'ComfyUI (Image Generation)', status: 'healthy', port: 8188, uptime: 120 },
     { id: 'dashboard', name: 'Dashboard (Control Center)', status: 'healthy', port: 3001, uptime: 120 },
     { id: 'dashboard-api', name: 'Dashboard API (System Status)', status: 'healthy', port: 3002, uptime: 120 },
-    { id: 'dreamforge', name: 'DreamForge', status: 'healthy', port: 3006, uptime: 120 },
     { id: 'embeddings', name: 'TEI (Embeddings)', status: 'healthy', port: 8090, uptime: 120 },
     { id: 'langfuse', name: 'Langfuse (LLM Observability)', status: 'healthy', port: 3007, uptime: 120 },
     { id: 'llama-server', name: 'llama-server (LLM Inference)', status: 'healthy', port: 11434, uptime: 120 },
@@ -31,7 +30,6 @@ const expectedIds = [
   'comfyui',
   'dashboard',
   'dashboard-api',
-  'dreamforge',
   'embeddings',
   'langfuse',
   'llama-server',
@@ -68,7 +66,6 @@ const expectedCategories = {
   openclaw: 'user-facing',
   dashboard: 'user-facing',
   comfyui: 'user-facing',
-  dreamforge: 'user-facing',
   opencode: 'user-facing',
 }
 
@@ -91,8 +88,6 @@ const expectedEdges = [
   ['privacy-shield', 'litellm', 'privacy'],
   ['comfyui', 'open-webui', 'API'],
   ['ape', 'litellm', 'LLM proxy'],
-  ['dreamforge', 'litellm', 'LLM proxy'],
-  ['dreamforge', 'searxng', 'search'],
 ]
 
 describe('buildTopology', () => {

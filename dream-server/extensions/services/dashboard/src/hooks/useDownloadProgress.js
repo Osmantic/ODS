@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 /**
  * Hook to poll download progress during model downloads.
@@ -7,6 +7,8 @@ import { useState, useEffect, useCallback } from 'react'
 export function useDownloadProgress(pollIntervalMs = 1000) {
   const [progress, setProgress] = useState(null)
   const [isDownloading, setIsDownloading] = useState(false)
+  const [completedDownload, setCompletedDownload] = useState(null)
+  const lastCompleteKeyRef = useRef(null)
 
   const fetchProgress = useCallback(async () => {
     try {
@@ -34,6 +36,17 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
       } else if (data.status === 'complete' || data.status === 'idle') {
         setIsDownloading(false)
         setProgress(null)
+        if (data.status === 'complete') {
+          const completeKey = `${data.model || ''}:${data.updatedAt || ''}`
+          if (completeKey && completeKey !== lastCompleteKeyRef.current) {
+            lastCompleteKeyRef.current = completeKey
+            setCompletedDownload({
+              model: data.model,
+              status: data.status,
+              updatedAt: data.updatedAt
+            })
+          }
+        }
       } else if (data.status === 'failed' || data.status === 'error' || data.status === 'cancelled') {
         setIsDownloading(false)
         setProgress({
@@ -41,7 +54,7 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
           model: data.model
         })
       }
-    } catch (err) {
+    } catch {
       // Silently fail - API might not be available
     }
   }, [])
@@ -88,6 +101,7 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
   return {
     isDownloading,
     progress,
+    completedDownload,
     formatBytes,
     formatEta,
     refresh: fetchProgress,

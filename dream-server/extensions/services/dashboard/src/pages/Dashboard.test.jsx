@@ -156,6 +156,48 @@ describe('Dashboard system overview', () => {
     expect(screen.queryByText('APE (Agent Policy Engine)')).not.toBeInTheDocument()
   })
 
+  it('uses core service metadata for the headline health summary', async () => {
+    mockResources = { services: [] }
+    const statusWithOptionalIssue = {
+      ...baseStatus,
+      services: [
+        {
+          id: 'llama-server',
+          name: 'llama-server (LLM Inference)',
+          status: 'healthy',
+          required: true,
+          impact: 'core',
+          port: 11434,
+          uptime: 14400,
+        },
+        {
+          id: 'open-webui',
+          name: 'Open WebUI (Chat)',
+          status: 'healthy',
+          required: true,
+          impact: 'core',
+          port: 3000,
+          uptime: 14400,
+        },
+        {
+          id: 'whisper',
+          name: 'Whisper (STT)',
+          status: 'down',
+          required: false,
+          impact: 'optional',
+          category: 'optional',
+          port: 9000,
+          uptime: null,
+        },
+      ],
+    }
+
+    await renderDashboard(statusWithOptionalIssue)
+
+    expect(screen.getByText('2/2 core services online.')).toBeInTheDocument()
+    expect(screen.getByText('Optional')).toBeInTheDocument()
+  })
+
   it('renders real service CPU and RAM metrics from the resources endpoint', async () => {
     mockResources = {
       services: [

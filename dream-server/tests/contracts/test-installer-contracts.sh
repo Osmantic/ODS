@@ -43,6 +43,18 @@ bash tests/contracts/test-port-contracts.sh
 echo "[contract] Windows AMD local compose readiness"
 bash tests/contracts/test-windows-amd-local-compose.sh
 
+echo "[contract] AMD reassign keeps HSA override Strix-only"
+grep -q '_env_set "HSA_OVERRIDE_GFX_VERSION" "11.5.1"' dream-cli \
+  || { echo "[FAIL] dream-cli must set HSA override to 11.5.1 for gfx1151"; exit 1; }
+grep -q '_env_unset "HSA_OVERRIDE_GFX_VERSION"' dream-cli \
+  || { echo "[FAIL] dream-cli must remove HSA override for non-Strix AMD GPUs"; exit 1; }
+grep -q '_env_unset "LEMONADE_LLAMACPP_ROCM_BIN"' dream-cli \
+  || { echo "[FAIL] dream-cli must remove gfx1151-only custom binary for non-Strix AMD GPUs"; exit 1; }
+if grep -q '_env_set "HSA_OVERRIDE_GFX_VERSION" "\$gfx_ver"' dream-cli; then
+  echo "[FAIL] dream-cli must not write raw gfx ids such as gfx942 to HSA_OVERRIDE_GFX_VERSION"
+  exit 1
+fi
+
 echo "[contract] dashboard diagnostics route through docker network URLs"
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   tmp_env="$(mktemp)"
@@ -137,6 +149,36 @@ for f in "${_resolver_callers[@]}"; do
   done < <(grep -nE 'resolve-compose-stack\.sh' "$f" || true)
 done
 unset _resolver_callers
+
+echo "[contract] optional extension compose files are installer-gated"
+# Bundled optional/recommended services that ship compose.yaml must not enter
+# a Core Only install just because their compose file exists in the source tree.
+for spec in \
+  'ENABLE_RECOMMENDED:litellm' \
+  'ENABLE_RECOMMENDED:searxng' \
+  'ENABLE_RECOMMENDED:token-spy' \
+  'ENABLE_HERMES:hermes' \
+  'ENABLE_HERMES:hermes-proxy' \
+  'ENABLE_OPENCLAW:openclaw' \
+  'ENABLE_APE:ape' \
+  'ENABLE_PERPLEXICA:perplexica' \
+  'ENABLE_PRIVACY_SHIELD:privacy-shield' \
+  'ENABLE_DREAM_PROXY:dream-proxy' \
+  'ENABLE_TAILSCALE:tailscale' \
+  'ENABLE_BRAVE_SEARCH:brave-search'
+do
+  flag="${spec%%:*}"
+  svc="${spec##*:}"
+  grep -qE "_sync_extension_compose +\"\\\$\\{${flag}:-[^}]*\\}\" +$svc\\b|_sync_extension_compose +\"\\\$\\{${flag}:-\\}\" +$svc\\b" "$features_phase" \
+    || { echo "[FAIL] $svc compose is not gated by $flag in $features_phase"; exit 1; }
+done
+
+windows_plan="installers/windows/lib/service-plan.ps1"
+test -f "$windows_plan" || { echo "[FAIL] missing $windows_plan"; exit 1; }
+for svc in litellm searxng token-spy hermes hermes-proxy openclaw ape perplexica privacy-shield dream-proxy tailscale brave-search; do
+  grep -q "\"$svc\"" "$windows_plan" \
+    || { echo "[FAIL] Windows service plan missing '$svc'"; exit 1; }
+done
 
 echo "[contract] Token Spy dashboard ships offline chart assets"
 test -f extensions/services/token-spy/dashboard_charts.js || { echo "[FAIL] missing extensions/services/token-spy/dashboard_charts.js"; exit 1; }
@@ -244,5 +286,14 @@ _classify_bw()   { _classify "$@" | jq -r '.bandwidth_gbps'; }
 result=$(_classify_id "0xFFFF" "Unknown GPU" amd 8192)
 [[ -n "$result" && "$result" != "null" ]] \
   || { echo "[FAIL] unknown GPU crashed"; exit 1; }
+
+echo "[contract] macOS compose resolver installs PyYAML into checked python3"
+grep -q "python3 -c 'import yaml'" installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer does not verify PyYAML with python3"; exit 1; }
+grep -q 'python3 -m pip install --user .*pyyaml' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must install PyYAML via python3 -m pip, not a possibly unrelated pip3"; exit 1; }
+
+echo "[contract] Hermes context defaults are installer-wide"
+bash tests/test-installer-context-parity.sh
 
 echo "[PASS] installer contracts"

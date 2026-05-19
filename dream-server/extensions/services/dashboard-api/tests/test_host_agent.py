@@ -5,6 +5,7 @@ import io
 import json
 import subprocess
 import sys
+import time
 import types
 from pathlib import Path, PurePosixPath
 
@@ -21,11 +22,44 @@ _spec.loader.exec_module(_mod)
 _parse_mem_value = _mod._parse_mem_value
 _iso_now = _mod._iso_now
 _to_bash_path = _mod._to_bash_path
+_resolve_agent_bind_addr = _mod._resolve_agent_bind_addr
 resolve_compose_flags = _mod.resolve_compose_flags
 validate_core_recreate_ids = _mod.validate_core_recreate_ids
 invalidate_compose_cache = _mod.invalidate_compose_cache
 _post_install_core_recreate = _mod._post_install_core_recreate
 _split_nmcli_terse = _mod._split_nmcli_terse
+
+
+class TestResolveAgentBindAddr:
+
+    def test_explicit_bind_wins(self):
+        assert _resolve_agent_bind_addr({"DREAM_AGENT_BIND": "0.0.0.0"}, "Linux") == "0.0.0.0"
+        assert _resolve_agent_bind_addr({"DREAM_AGENT_BIND": "192.168.1.10"}, "Linux") == "192.168.1.10"
+
+    def test_desktop_platforms_default_loopback(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_detect_docker_network_gateway", lambda network: "172.18.0.1")
+        monkeypatch.setattr(_mod, "_detect_docker_bridge_gateway", lambda: "172.17.0.1")
+
+        assert _resolve_agent_bind_addr({}, "Windows") == "127.0.0.1"
+        assert _resolve_agent_bind_addr({}, "Darwin") == "127.0.0.1"
+
+    def test_linux_prefers_dream_network_gateway(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_detect_docker_network_gateway", lambda network: "172.18.0.1")
+        monkeypatch.setattr(_mod, "_detect_docker_bridge_gateway", lambda: "172.17.0.1")
+
+        assert _resolve_agent_bind_addr({}, "Linux") == "172.18.0.1"
+
+    def test_linux_falls_back_to_bridge_gateway(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_detect_docker_network_gateway", lambda network: "")
+        monkeypatch.setattr(_mod, "_detect_docker_bridge_gateway", lambda: "172.17.0.1")
+
+        assert _resolve_agent_bind_addr({}, "Linux") == "172.17.0.1"
+
+    def test_linux_falls_back_to_loopback(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_detect_docker_network_gateway", lambda network: "")
+        monkeypatch.setattr(_mod, "_detect_docker_bridge_gateway", lambda: "")
+
+        assert _resolve_agent_bind_addr({}, "Linux") == "127.0.0.1"
 
 
 # --- _split_nmcli_terse — parser for nmcli -t (terse) output ---
@@ -222,6 +256,13 @@ class TestValidateCoreRecreateIds:
         assert ok is True
         assert error == ""
 
+    @pytest.mark.parametrize("service_id", ["hermes", "hermes-proxy"])
+    def test_accepts_hermes_core_recreate_services(self, monkeypatch, service_id):
+        monkeypatch.setattr(_mod, "CORE_SERVICE_IDS", {service_id})
+        ok, error = validate_core_recreate_ids([service_id])
+        assert ok is True
+        assert error == ""
+
     def test_rejects_non_core_service(self, monkeypatch):
         monkeypatch.setattr(_mod, "CORE_SERVICE_IDS", {"dashboard-api"})
         ok, error = validate_core_recreate_ids(["llama-server"])
@@ -282,6 +323,212 @@ class TestComposeCacheInvalidationWire:
             monkeypatch.setattr(ext_router, "DREAM_AGENT_KEY", "wrong-secret")
             ext_router._call_agent_invalidate_compose_cache()
             assert cache_file.exists()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+
+class TestUpdateWire:
+    """End-to-end HTTP tests for host-agent managed update actions."""
+
+    def test_check_runs_update_script_on_host_agent(self, tmp_path, monkeypatch):
+        import threading
+        import urllib.request
+        from http.server import HTTPServer
+
+        install_dir = tmp_path / "dream-server"
+        install_dir.mkdir()
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "wire-test-secret")
+        monkeypatch.setattr(
+            _mod,
+            "_run_update_script",
+            lambda action, *args, timeout: subprocess.CompletedProcess(
+                ["dream-update", action, *args],
+                2,
+                "update available\n",
+                "",
+            ),
+        )
+
+        server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/update/check",
+                data=b"{}",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer wire-test-secret",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            assert resp.status == 200
+            assert data["success"] is True
+            assert data["update_available"] is True
+            assert data["returncode"] == 2
+            assert "update available" in data["output"]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_start_records_background_update_status(self, tmp_path, monkeypatch):
+        import threading
+        import urllib.request
+        from http.server import HTTPServer
+
+        install_dir = tmp_path / "dream-server"
+        install_dir.mkdir()
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "wire-test-secret")
+        monkeypatch.setattr(
+            _mod,
+            "_run_update_script",
+            lambda action, *args, timeout: subprocess.CompletedProcess(
+                ["dream-update", action, *args],
+                0,
+                "updated\n",
+                "",
+            ),
+        )
+
+        server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/update/start",
+                data=b"{}",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer wire-test-secret",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                accepted = json.loads(resp.read().decode("utf-8"))
+
+            assert resp.status == 202
+            assert accepted["status"] == "started"
+
+            deadline = time.time() + 2
+            status = {}
+            while time.time() < deadline:
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/update/status",
+                    headers={"Authorization": "Bearer wire-test-secret"},
+                )
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    status = json.loads(resp.read().decode("utf-8"))
+                if status.get("status") == "succeeded":
+                    break
+                time.sleep(0.05)
+
+            assert status["status"] == "succeeded"
+            assert status["returncode"] == 0
+            assert "updated" in status["output_tail"]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_status_marks_stale_running_update_failed(self, tmp_path, monkeypatch):
+        import threading
+        import urllib.request
+        from http.server import HTTPServer
+
+        install_dir = tmp_path / "dream-server"
+        install_dir.mkdir()
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "wire-test-secret")
+        monkeypatch.setattr(_mod, "_update_thread", None)
+        _mod._write_update_status("running", "update", started_at="2026-01-01T00:00:00+00:00")
+
+        server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/update/status",
+                headers={"Authorization": "Bearer wire-test-secret"},
+            )
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                status = json.loads(resp.read().decode("utf-8"))
+
+            assert resp.status == 200
+            assert status["status"] == "failed"
+            assert status["action"] == "update"
+            assert "before reporting completion" in status["error"]
+            assert _mod._read_update_status()["status"] == "failed"
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_start_records_unexpected_background_failure(self, tmp_path, monkeypatch):
+        import threading
+        import urllib.request
+        from http.server import HTTPServer
+
+        install_dir = tmp_path / "dream-server"
+        install_dir.mkdir()
+
+        def fail_update(action, *args, timeout):
+            raise ValueError("boom")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "wire-test-secret")
+        monkeypatch.setattr(_mod, "_update_thread", None)
+        monkeypatch.setattr(_mod, "_run_update_script", fail_update)
+
+        server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/update/start",
+                data=b"{}",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer wire-test-secret",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                accepted = json.loads(resp.read().decode("utf-8"))
+
+            assert resp.status == 202
+            assert accepted["status"] == "started"
+
+            deadline = time.time() + 2
+            status = {}
+            while time.time() < deadline:
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/update/status",
+                    headers={"Authorization": "Bearer wire-test-secret"},
+                )
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    status = json.loads(resp.read().decode("utf-8"))
+                if status.get("status") == "failed":
+                    break
+                time.sleep(0.05)
+
+            assert status["status"] == "failed"
+            assert "unexpectedly" in status["error"]
+            assert "boom" in status["error"]
         finally:
             server.shutdown()
             server.server_close()
@@ -979,6 +1226,74 @@ class _FakeHandler:
     def parse_response(self):
         # json_response writes the JSON body via wfile.write()
         return json.loads(self.wfile.getvalue().decode("utf-8"))
+
+
+class TestTailscaleStatus:
+    """Direct host-agent tests for /v1/tailscale/status behavior."""
+
+    @pytest.fixture(autouse=True)
+    def _auth(self, monkeypatch):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+
+    def _handler(self):
+        handler = _FakeHandler(b"")
+        handler._write_tailscale_status_payload = types.MethodType(
+            _mod.AgentHandler._write_tailscale_status_payload, handler
+        )
+        handler._find_native_tailscale_cli = types.MethodType(
+            _mod.AgentHandler._find_native_tailscale_cli, handler
+        )
+        handler._try_native_tailscale_status = types.MethodType(
+            _mod.AgentHandler._try_native_tailscale_status, handler
+        )
+        return handler
+
+    def test_falls_back_to_native_tailscale_when_container_absent(self, monkeypatch):
+        payload = {
+            "BackendState": "Running",
+            "Self": {
+                "HostName": "dream-win",
+                "DNSName": "dream-win.tail-example.ts.net.",
+                "TailscaleIPs": ["100.64.0.42"],
+                "Online": True,
+            },
+            "MagicDNSSuffix": "tail-example.ts.net",
+            "CurrentTailnet": {"Name": "example.com"},
+        }
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[:2] == ["docker", "exec"]:
+                return subprocess.CompletedProcess(cmd, 1, "", "No such container: dream-tailscale")
+            if cmd[:3] == ["tailscale", "status", "--json"]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        monkeypatch.setattr(_mod.shutil, "which", lambda name: "tailscale" if name == "tailscale" else None)
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        handler = self._handler()
+        _mod.AgentHandler._handle_tailscale_status(handler)
+        body = handler.parse_response()
+
+        assert handler.response_code == 200
+        assert body["running"] is True
+        assert body["authenticated"] is True
+        assert body["source"] == "native"
+        assert body["self"]["dns_name"] == "dream-win.tail-example.ts.net"
+
+    def test_absent_container_without_native_tailscale_is_not_running(self, monkeypatch):
+        def fake_run(cmd, *args, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, "", "No such container: dream-tailscale")
+
+        monkeypatch.setattr(_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        handler = self._handler()
+        _mod.AgentHandler._handle_tailscale_status(handler)
+        body = handler.parse_response()
+
+        assert handler.response_code == 200
+        assert body == {"running": False}
 
 
 class TestServiceRestart:
@@ -2586,3 +2901,168 @@ class TestModelDownloadCatalogUnavailable:
         assert handler.response_code == 403
         body = handler.parse_response()
         assert body["error"] == "Model not in library catalog"
+
+
+class TestModelDownloadFileIntegrity:
+
+    class _NoCancel:
+        def clear(self):
+            pass
+
+        def is_set(self):
+            return False
+
+        def wait(self, timeout=None):
+            return False
+
+    def _setup_env(self, tmp_path, monkeypatch, library_models=None):
+        install_dir = tmp_path / "install"
+        (install_dir / "config").mkdir(parents=True)
+        (install_dir / "data" / "models").mkdir(parents=True)
+        models = library_models or [{
+            "gguf_file": "test-model.gguf",
+            "gguf_url": "https://example.com/test-model.gguf",
+            "gguf_sha256": "",
+        }]
+        (install_dir / "config" / "model-library.json").write_text(
+            json.dumps({"models": models}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "_model_download_thread", None)
+        monkeypatch.setattr(_mod, "_model_download_proc", None)
+        monkeypatch.setattr(_mod, "_model_download_cancel", self._NoCancel())
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            lambda cmd, *a, **kw: subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout="content-length: 123456\n",
+                stderr="",
+            ),
+        )
+        return install_dir
+
+    def _body(self):
+        return json.dumps({
+            "gguf_file": "test-model.gguf",
+            "gguf_url": "https://example.com/test-model.gguf",
+        }).encode("utf-8")
+
+    def _patch_curl_download(self, monkeypatch, payload: bytes):
+        outputs = []
+
+        class FakeProc:
+            def __init__(self, cmd, *args, **kwargs):
+                self.cmd = cmd
+                self.returncode = None
+                self.output = Path(cmd[cmd.index("-o") + 1])
+                outputs.append(self.output.name)
+
+            def wait(self, timeout=None):
+                self.output.parent.mkdir(parents=True, exist_ok=True)
+                self.output.write_bytes(payload)
+                self.returncode = 0
+                return 0
+
+            def kill(self):
+                self.returncode = -9
+
+        monkeypatch.setattr(_mod.subprocess, "Popen", FakeProc)
+        return outputs
+
+    def test_empty_existing_model_is_redownloaded(self, tmp_path, monkeypatch):
+        install_dir = self._setup_env(tmp_path, monkeypatch)
+        self._patch_curl_download(monkeypatch, b"valid gguf bytes")
+        model_path = install_dir / "data" / "models" / "test-model.gguf"
+        model_path.write_bytes(b"")
+
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response()["status"] == "started"
+        _mod._model_download_thread.join(timeout=2)
+        assert not _mod._model_download_thread.is_alive()
+        assert model_path.read_bytes() == b"valid gguf bytes"
+        status = json.loads((install_dir / "data" / "model-download-status.json").read_text(encoding="utf-8"))
+        assert status["status"] == "complete"
+
+    def test_existing_model_clears_stale_downloading_status(self, tmp_path, monkeypatch):
+        install_dir = self._setup_env(tmp_path, monkeypatch)
+        model_path = install_dir / "data" / "models" / "test-model.gguf"
+        model_path.write_bytes(b"already here")
+        status_path = install_dir / "data" / "model-download-status.json"
+        status_path.write_text(
+            json.dumps({"status": "downloading", "model": "test-model.gguf"}),
+            encoding="utf-8",
+        )
+
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response()["status"] == "already_downloaded"
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        assert status["status"] == "complete"
+        assert status["model"] == "test-model.gguf"
+
+    def test_empty_finished_download_is_failed_not_complete(self, tmp_path, monkeypatch):
+        install_dir = self._setup_env(tmp_path, monkeypatch)
+        self._patch_curl_download(monkeypatch, b"")
+
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response()["status"] == "started"
+        _mod._model_download_thread.join(timeout=2)
+        assert not _mod._model_download_thread.is_alive()
+        status = json.loads((install_dir / "data" / "model-download-status.json").read_text(encoding="utf-8"))
+        assert status["status"] == "failed"
+        assert "missing or empty" in status["error"]
+
+    def test_split_download_skips_existing_non_empty_parts(self, tmp_path, monkeypatch):
+        parts = [
+            {
+                "file": "split-model-00001-of-00002.gguf",
+                "url": "https://example.com/split-model-00001-of-00002.gguf",
+                "sha256": "",
+            },
+            {
+                "file": "split-model-00002-of-00002.gguf",
+                "url": "https://example.com/split-model-00002-of-00002.gguf",
+                "sha256": "",
+            },
+        ]
+        install_dir = self._setup_env(
+            tmp_path,
+            monkeypatch,
+            library_models=[{
+                "gguf_file": "split-model-00001-of-00002.gguf",
+                "gguf_url": "",
+                "gguf_sha256": "",
+                "gguf_parts": parts,
+            }],
+        )
+        calls = self._patch_curl_download(monkeypatch, b"downloaded second part")
+        models_dir = install_dir / "data" / "models"
+        (models_dir / "split-model-00001-of-00002.gguf").write_bytes(b"existing first part")
+
+        handler = _FakeHandler(json.dumps({
+            "gguf_file": "split-model-00001-of-00002.gguf",
+            "gguf_parts": parts,
+        }).encode("utf-8"))
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response()["status"] == "started"
+        _mod._model_download_thread.join(timeout=2)
+        assert not _mod._model_download_thread.is_alive()
+        assert calls == ["split-model-00002-of-00002.gguf.part"]
+        assert (models_dir / "split-model-00001-of-00002.gguf").read_bytes() == b"existing first part"
+        assert (models_dir / "split-model-00002-of-00002.gguf").read_bytes() == b"downloaded second part"
+        status = json.loads((install_dir / "data" / "model-download-status.json").read_text(encoding="utf-8"))
+        assert status["status"] == "complete"

@@ -213,11 +213,11 @@ fi
 if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
     append_check "FIREWALL_CHECK" "warn" \
         "UFW active — may block container→host:7710 traffic" \
-        "sudo ufw allow from 172.16.0.0/12 to any port 7710 proto tcp comment 'dream-host-agent'"
+        "Installer will auto-add a scoped rule for the actual dream-network subnet after compose starts."
 elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
     append_check "FIREWALL_CHECK" "warn" \
         "firewalld active — may block container→host:7710 traffic" \
-        "sudo firewall-cmd --permanent --add-rich-rule='rule family=\"ipv4\" source address=\"172.16.0.0/12\" port protocol=\"tcp\" port=\"7710\" accept' && sudo firewall-cmd --reload"
+        "Installer will auto-add a scoped rule for the actual dream-network subnet after compose starts."
 else
     append_check "FIREWALL_CHECK" "pass" \
         "No restrictive host firewall detected" ""

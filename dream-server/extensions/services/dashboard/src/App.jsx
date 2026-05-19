@@ -5,6 +5,7 @@ import InstallPromptBanner from './components/InstallPromptBanner'
 import { useSystemStatus } from './hooks/useSystemStatus'
 import { useVersion } from './hooks/useVersion'
 import { useFirstRun } from './hooks/useFirstRun'
+import { useSessionBootstrap } from './hooks/useSessionBootstrap'
 import { getInternalRoutes } from './plugins/registry'
 import SplashScreen from './components/SplashScreen'
 
@@ -30,6 +31,12 @@ function setStorageValue(storage, key, value) {
 }
 
 function App() {
+  // Auto-mint a dream-session cookie on load so the install owner can
+  // reach cookie-gated services (Hermes, future ones) without redeeming
+  // a magic link to themselves. No-ops if a valid cookie already exists.
+  // See hooks/useSessionBootstrap.js for the full rationale.
+  useSessionBootstrap()
+
   // Show splash only once per browser session — not on every F5 / new tab
   const [splashDone, setSplashDone] = useState(
     () => getStorageValue(globalThis.sessionStorage, 'dream-splash-shown') === '1'

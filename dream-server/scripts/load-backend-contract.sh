@@ -61,6 +61,17 @@ out("BACKEND_PUBLIC_HEALTH_URL", contract.get("public_health_url", ""))
 out("BACKEND_PROVIDER_NAME", contract.get("provider_name", ""))
 out("BACKEND_PROVIDER_URL", contract.get("provider_url", ""))
 out("BACKEND_CONTRACT_FILE", sys.argv[1])
+
+runtime = contract.get("runtime", {})
+lemonade = runtime.get("lemonade", {}) if isinstance(runtime, dict) else {}
+out("BACKEND_LEMONADE_CONTAINER_IMAGE", lemonade.get("container_image", ""))
+out("BACKEND_LEMONADE_WINDOWS_VERSION", lemonade.get("windows_version", ""))
+out("BACKEND_LEMONADE_WINDOWS_MSI_FILE", lemonade.get("windows_msi_file", ""))
+out("BACKEND_LEMONADE_WINDOWS_EXECUTABLE", lemonade.get("windows_executable", ""))
+out("BACKEND_LEMONADE_API_PORT", lemonade.get("api_port", ""))
+out("BACKEND_LEMONADE_HEALTH_PATH", lemonade.get("health_path", ""))
+out("BACKEND_LEMONADE_LINUX_BACKEND", lemonade.get("linux_backend", ""))
+out("BACKEND_LEMONADE_WINDOWS_BACKEND", lemonade.get("windows_backend", ""))
 PY
 else
     cat "$CONTRACT_FILE"

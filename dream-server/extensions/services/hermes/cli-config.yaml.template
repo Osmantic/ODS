@@ -13,28 +13,54 @@
 # Model — points at Dream Server's local LLM by default
 # =============================================================================
 model:
-  # The local model name. Defaults to "qwen3.5-9b" because that's Dream
-  # Server's default; if you've switched llama-server to a different
-  # model, edit this line in /opt/data/config.yaml after first start.
-  # (Hermes does NOT read HERMES_MODEL_NAME from env — the config.yaml
-  # is the source of truth once it's copied out of the example.)
+  # Local model name advertised to Hermes. llama.cpp's OpenAI-compat server
+  # ignores this field and serves whatever's loaded, but Lemonade (AMD) and
+  # other strict OpenAI-compat servers DO require an exact match — they will
+  # 404 every chat completion if Hermes asks for "qwen3.5-9b" but the server
+  # only serves "extra.Qwen3.5-4B-Q4_K_M.gguf" or similar. The installer
+  # should sed-replace this value with the actually-served model name
+  # during phase 11 (open follow-up). Until that lands, operators on
+  # AMD / Apple Silicon / aarch64 must hand-edit /opt/data/config.yaml
+  # after first start to match the output of:
+  #   curl http://<llama-server-host>:<port>/v1/models | jq .data[0].id
+  # (Hermes does NOT read HERMES_MODEL_NAME from env — config.yaml is the
+  # source of truth once it's copied out of the example.)
   default: "qwen3.5-9b"
 
   # provider=custom = any OpenAI-compatible local server. Aliases:
   # ollama, vllm, llamacpp. We pick "custom" for portability.
   provider: "custom"
 
-  # base_url is overridden at container start by OPENAI_BASE_URL env
-  # (which compose.yaml wires to http://llama-server:8080/v1). The
-  # value here is the fallback if the env var is unset.
+  # base_url for the LLM client. This value WINS over the OPENAI_BASE_URL
+  # env var that compose.yaml sets — empirically verified on macOS, where
+  # HERMES_LLM_BASE_URL=http://host.docker.internal:8080/v1 in .env got
+  # passed through as OPENAI_BASE_URL but Hermes still dialed
+  # llama-server:8080 and failed with `Connection error`. Operators on
+  # macOS (where llama-server runs native on the host, not as a sibling
+  # container) must hand-edit this to `http://host.docker.internal:8080/v1`
+  # or rely on a future installer-side substitution.
   base_url: "http://llama-server:8080/v1"
 
-  # Match the LLM's context window. Dream Server's default CTX_SIZE is
-  # 16384; bump this in /opt/data/config.yaml if you've raised CTX_SIZE
-  # in .env. Upstream Hermes reads this from model.context_length —
-  # earlier drafts used a top-level context: block which is silently
-  # ignored.
-  context_length: 16384
+  # Hermes needs a large working window for tool-calling workflows. Dream's
+  # installers keep this value aligned with CTX_SIZE: 64K for the fast-start
+  # bootstrap model, then 128K after the full model swap. Advertising a larger
+  # window than llama-server actually allocates causes "context length
+  # exceeded / max compression attempts reached" loops.
+  context_length: 131072
+
+# =============================================================================
+# Auxiliary models — compression, etc.
+# =============================================================================
+# Hermes runs a separate "compression" model when the conversation history
+# nears the context budget. That model's context window is ALSO checked
+# against the 64K minimum, independent of model.context_length above.
+# Without this override, prompts bomb with:
+#   "Auxiliary compression model X has a context window of N tokens, which
+#    is below the minimum 64,000 required by Hermes Agent."
+# even after the main model.context_length is bumped.
+auxiliary:
+  compression:
+    context_length: 131072
 
 # =============================================================================
 # Terminal backend — where tool calls execute
@@ -68,15 +94,16 @@ terminal:
 # Compression — keep memory bounded on small devices
 # =============================================================================
 # Hermes auto-compacts long conversations once they cross the threshold.
-# These are the upstream-correct keys (compression.*); an earlier draft
-# used compact_threshold under a context: block which upstream silently
-# ignores.
+# Current upstream reads threshold as a fraction of model.context_length
+# (0.50 = 50%), not an absolute token count. A stale value like 10000
+# effectively disables proactive compression until the backend rejects the
+# request, which is how sessions fall into max-compression-attempt loops.
 compression:
-  # Token count at which Hermes starts compacting the conversation.
-  # Lower = more aggressive = lower disk/token cost but more summary loss.
-  # Keep this comfortably below model.context_length so there's headroom
-  # before hitting the hard window limit.
-  threshold: 10000
-  # Fraction of the conversation to retain after compaction. 0.5 = aim
-  # for half the original token count post-summary.
-  target_ratio: 0.5
+  # Enable automatic context compression.
+  enabled: true
+  # Trigger compression at this fraction of the context window.
+  threshold: 0.50
+  # Preserve this fraction of the threshold-sized window as recent tail.
+  target_ratio: 0.20
+  # Keep roughly the last ten full turns intact during compression.
+  protect_last_n: 20

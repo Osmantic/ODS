@@ -3,7 +3,7 @@
 # Test: community extensions port-binding sweep
 # ============================================================================
 # Regression guard for PR #964 follow-up: every community extension compose
-# file under resources/dev/extensions-library/services/ must bind its host
+# file under dream-server/extensions/library/services/ must bind its host
 # ports via ${BIND_ADDRESS:-127.0.0.1} — never a bare "127.0.0.1:" literal.
 # A hard-coded 127.0.0.1 defeats the --lan / dashboard opt-in that flips
 # BIND_ADDRESS to 0.0.0.0.
@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT_DIR/.." && pwd)"
 
-EXT_DIR="$REPO_ROOT/resources/dev/extensions-library/services"
+EXT_DIR="$REPO_ROOT/dream-server/extensions/library/services"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'

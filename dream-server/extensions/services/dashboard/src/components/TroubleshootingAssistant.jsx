@@ -51,7 +51,7 @@ const commonIssues = [
     solutions: [
       {
         title: 'Check model download progress',
-        command: 'ls -lh ~/dream-server/models/',
+        command: 'ls -lh ~/dream-server/data/models/',
         description: 'Verify model files exist and have size > 1GB'
       },
       {

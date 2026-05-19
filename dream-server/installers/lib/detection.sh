@@ -474,6 +474,91 @@ detect_gpu() {
 
 MIN_DRIVER_VERSION=570
 
+nvidia_name_is_blackwell() {
+    local name="$1"
+    echo "$name" | grep -Eiq 'Blackwell|Grace Blackwell|GB10|GB200|RTX PRO 6000|RTX 50[0-9][0-9]|RTX 5090|RTX 5080|RTX 5070|RTX 5060|B100|B200'
+}
+
+nvidia_blackwell_hardware_detected() {
+    local raw line name compute_cap cc_major
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        raw=$(nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader,nounits 2>/dev/null || true)
+        if [[ -n "$raw" ]]; then
+            while IFS=',' read -r name compute_cap; do
+                name="$(echo "${name:-}" | xargs)"
+                compute_cap="$(echo "${compute_cap:-}" | xargs)"
+                cc_major="${compute_cap%%.*}"
+                [[ "$cc_major" =~ ^[0-9]+$ && "$cc_major" -ge 12 ]] && return 0
+                nvidia_name_is_blackwell "$name" && return 0
+            done <<< "$raw"
+        fi
+    fi
+
+    if command -v lspci >/dev/null 2>&1; then
+        while IFS= read -r line; do
+            nvidia_name_is_blackwell "$line" && return 0
+        done < <(lspci 2>/dev/null | grep -i nvidia || true)
+    fi
+
+    [[ -n "${GPU_NAME:-}" ]] && nvidia_name_is_blackwell "$GPU_NAME" && return 0
+    return 1
+}
+
+nvidia_kernel_module_flavor() {
+    local license version
+    if command -v modinfo >/dev/null 2>&1; then
+        license=$(modinfo -F license nvidia 2>/dev/null | head -1 || true)
+        if echo "$license" | grep -Eiq 'MIT|GPL'; then
+            echo "open"
+            return 0
+        fi
+        if [[ -n "$license" ]]; then
+            echo "proprietary"
+            return 0
+        fi
+    fi
+
+    if [[ -r /proc/driver/nvidia/version ]]; then
+        version="$(cat /proc/driver/nvidia/version 2>/dev/null || true)"
+        if echo "$version" | grep -Eiq 'Open Kernel Module|open kernel'; then
+            echo "open"
+            return 0
+        fi
+        if echo "$version" | grep -qi 'NVIDIA'; then
+            echo "proprietary"
+            return 0
+        fi
+    fi
+
+    echo "unknown"
+}
+
+validate_nvidia_blackwell_open_modules() {
+    nvidia_blackwell_hardware_detected || return 0
+
+    local flavor
+    flavor="$(nvidia_kernel_module_flavor)"
+    case "$flavor" in
+        open)
+            ai_ok "NVIDIA Blackwell GPU detected with open kernel modules"
+            ;;
+        proprietary)
+            ai_bad "NVIDIA Blackwell GPU detected, but proprietary NVIDIA kernel modules appear to be loaded."
+            ai_bad "Blackwell GPUs require NVIDIA open kernel modules."
+            ai "On Ubuntu 22.04/24.04, install the open driver stack, for example:"
+            ai "  sudo apt install nvidia-open"
+            ai "or the distro package matching your driver branch, e.g.:"
+            ai "  sudo apt install nvidia-driver-${MIN_DRIVER_VERSION}-open"
+            ai "Then reboot and re-run the Dream Server installer."
+            error "Blackwell requires NVIDIA open kernel modules."
+            ;;
+        *)
+            ai_warn "NVIDIA Blackwell GPU detected, but kernel module flavor could not be verified."
+            ai_warn "Blackwell requires NVIDIA open kernel modules. If GPU containers fail, install nvidia-open / nvidia-driver-*-open and reboot."
+            ;;
+    esac
+}
+
 fix_nvidia_secure_boot() {
     # Step 1: Is there even NVIDIA hardware on this machine?
     if ! lspci 2>/dev/null | grep -qi 'nvidia'; then
@@ -487,13 +572,21 @@ fix_nvidia_secure_boot() {
     installed_driver=$(dpkg-query -W -f='${Package}\n' 'nvidia-driver-*' 2>/dev/null \
                        | sed -n 's/.*nvidia-driver-\([0-9][0-9]*\).*/\1/p' | sort -n | tail -1 || true)
 
+    if nvidia_blackwell_hardware_detected; then
+        ai_warn "Blackwell NVIDIA hardware needs the open kernel module driver stack."
+        ai "Install the open driver, reboot, and re-run:"
+        ai "  sudo apt install nvidia-open"
+        ai "  # or: sudo apt install nvidia-driver-${MIN_DRIVER_VERSION}-open"
+        return 1
+    fi
+
     if [[ -z "$installed_driver" ]]; then
         ai "No NVIDIA driver package found. Installing recommended driver..."
         if command -v ubuntu-drivers &>/dev/null; then
-            sudo ubuntu-drivers install 2>>"$LOG_FILE" || \
-            sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
+            ds_sudo ubuntu-drivers install 2>>"$LOG_FILE" || \
+            ds_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
         else
-            sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
+            ds_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
         fi
         installed_driver=$(dpkg-query -W -f='${Package}\n' 'nvidia-driver-*' 2>/dev/null \
                            | sed -n 's/.*nvidia-driver-\([0-9][0-9]*\).*/\1/p' | sort -n | tail -1 || true)
@@ -508,13 +601,13 @@ fix_nvidia_secure_boot() {
 
     # Step 3: Try loading the module — see why it fails
     local modprobe_err
-    modprobe_err=$(sudo modprobe nvidia 2>&1) || true
+    modprobe_err=$(ds_sudo modprobe nvidia 2>&1) || true
 
     if nvidia-smi &>/dev/null; then
         ai_ok "NVIDIA driver loaded successfully"
         # Regenerate CDI spec so Docker sees the correct driver libraries
         if command -v nvidia-ctk &>/dev/null; then
-            sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml 2>>"$LOG_FILE" || true
+            ds_sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml 2>>"$LOG_FILE" || true
         fi
         detect_gpu || true
         return 0
@@ -533,22 +626,22 @@ fix_nvidia_secure_boot() {
     local kver mok_dir sign_file
     kver=$(uname -r)
     mok_dir="/var/lib/shim-signed/mok"
-    sudo mkdir -p "$mok_dir"
+    ds_sudo mkdir -p "$mok_dir"
 
     # Ensure linux-headers are present (needed for sign-file)
     if [[ ! -d "/usr/src/linux-headers-${kver}" ]]; then
         ai "Installing kernel headers for ${kver}..."
-        sudo apt-get install -y "linux-headers-${kver}" 2>>"$LOG_FILE" || true
+        ds_sudo apt-get install -y "linux-headers-${kver}" 2>>"$LOG_FILE" || true
     fi
 
     # Generate MOK keypair if not already present
     if [[ ! -f "$mok_dir/MOK.priv" ]] || [[ ! -f "$mok_dir/MOK.der" ]]; then
-        sudo openssl req -new -x509 -newkey rsa:2048 \
+        ds_sudo openssl req -new -x509 -newkey rsa:2048 \
             -keyout "$mok_dir/MOK.priv" \
             -outform DER -out "$mok_dir/MOK.der" \
             -nodes -days 36500 \
             -subj "/CN=Dream Server Module Signing/" 2>>"$LOG_FILE"
-        sudo chmod 600 "$mok_dir/MOK.priv"
+        ds_sudo chmod 600 "$mok_dir/MOK.priv"
         ai_ok "Generated MOK signing key"
     else
         ai_ok "Using existing MOK signing key"
@@ -579,31 +672,31 @@ fix_nvidia_secure_boot() {
         [[ -f "$mod_path" ]] || continue
         case "$mod_path" in
             *.zst)
-                sudo zstd -d -f "$mod_path" -o "${mod_path%.zst}" 2>>"$LOG_FILE"
-                sudo "$sign_file" sha256 "$mok_dir/MOK.priv" "$mok_dir/MOK.der" "${mod_path%.zst}" 2>>"$LOG_FILE"
-                sudo zstd -f --rm "${mod_path%.zst}" -o "$mod_path" 2>>"$LOG_FILE"
+                ds_sudo zstd -d -f "$mod_path" -o "${mod_path%.zst}" 2>>"$LOG_FILE"
+                ds_sudo "$sign_file" sha256 "$mok_dir/MOK.priv" "$mok_dir/MOK.der" "${mod_path%.zst}" 2>>"$LOG_FILE"
+                ds_sudo zstd -f --rm "${mod_path%.zst}" -o "$mod_path" 2>>"$LOG_FILE"
                 ;;
             *.xz)
-                sudo xz -d -f -k "$mod_path" 2>>"$LOG_FILE"
-                sudo "$sign_file" sha256 "$mok_dir/MOK.priv" "$mok_dir/MOK.der" "${mod_path%.xz}" 2>>"$LOG_FILE"
-                sudo xz -f "${mod_path%.xz}" 2>>"$LOG_FILE"
-                sudo mv "${mod_path%.xz}.xz" "$mod_path" 2>>"$LOG_FILE"
+                ds_sudo xz -d -f -k "$mod_path" 2>>"$LOG_FILE"
+                ds_sudo "$sign_file" sha256 "$mok_dir/MOK.priv" "$mok_dir/MOK.der" "${mod_path%.xz}" 2>>"$LOG_FILE"
+                ds_sudo xz -f "${mod_path%.xz}" 2>>"$LOG_FILE"
+                ds_sudo mv "${mod_path%.xz}.xz" "$mod_path" 2>>"$LOG_FILE"
                 ;;
             *)
-                sudo "$sign_file" sha256 "$mok_dir/MOK.priv" "$mok_dir/MOK.der" "$mod_path" 2>>"$LOG_FILE"
+                ds_sudo "$sign_file" sha256 "$mok_dir/MOK.priv" "$mok_dir/MOK.der" "$mod_path" 2>>"$LOG_FILE"
                 ;;
         esac
         signed_count=$((signed_count + 1))
     done
-    sudo depmod -a 2>>"$LOG_FILE"
+    ds_sudo depmod -a 2>>"$LOG_FILE"
     ai_ok "Signed $signed_count NVIDIA module(s)"
 
     # Step 6: Try loading — if MOK key is already enrolled, this works immediately
-    if sudo modprobe nvidia 2>>"$LOG_FILE" && nvidia-smi &>/dev/null; then
+    if ds_sudo modprobe nvidia 2>>"$LOG_FILE" && nvidia-smi &>/dev/null; then
         ai_ok "NVIDIA driver loaded — GPU is online"
         # Regenerate CDI spec so Docker sees the correct driver libraries
         if command -v nvidia-ctk &>/dev/null; then
-            sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml 2>>"$LOG_FILE" || true
+            ds_sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml 2>>"$LOG_FILE" || true
         fi
         detect_gpu || true
         return 0
@@ -615,7 +708,7 @@ fix_nvidia_secure_boot() {
 
     local mok_pass
     mok_pass=$(openssl rand -hex 4)
-    printf '%s\n%s\n' "$mok_pass" "$mok_pass" | sudo mokutil --import "$mok_dir/MOK.der" 2>>"$LOG_FILE"
+    printf '%s\n%s\n' "$mok_pass" "$mok_pass" | ds_sudo mokutil --import "$mok_dir/MOK.der" 2>>"$LOG_FILE"
 
     # --- Auto-resume: create a systemd oneshot so the install continues
     #     automatically after reboot (user doesn't have to re-run manually)
@@ -629,7 +722,7 @@ fix_nvidia_secure_boot() {
     [[ -n "$TIER" ]] && resume_args="$resume_args --tier $TIER"
     [[ "$OFFLINE_MODE" == "true" ]] && resume_args="$resume_args --offline"
 
-    sudo tee /etc/systemd/system/${svc_name}.service > /dev/null << SVCEOF
+    ds_sudo tee /etc/systemd/system/${svc_name}.service > /dev/null << SVCEOF
 [Unit]
 Description=Dream Server Install (auto-resume after Secure Boot enrollment)
 After=network-online.target docker.service
@@ -649,8 +742,8 @@ StandardError=journal+console
 [Install]
 WantedBy=multi-user.target
 SVCEOF
-    sudo systemctl daemon-reload
-    sudo systemctl enable "${svc_name}.service" 2>>"$LOG_FILE"
+    ds_sudo systemctl daemon-reload
+    ds_sudo systemctl enable "${svc_name}.service" 2>>"$LOG_FILE"
     log "Auto-resume service installed: ${svc_name}.service"
 
     # --- Show a clean, friendly reboot screen ---
@@ -679,7 +772,7 @@ SVCEOF
 
     if $INTERACTIVE; then
         read -p "  Press Enter to reboot (or Ctrl+C to do it later)... " -r < /dev/tty
-        sudo reboot
+        ds_sudo reboot
     fi
 
     # Non-interactive mode: exit cleanly (not an error — reboot is a normal install phase)

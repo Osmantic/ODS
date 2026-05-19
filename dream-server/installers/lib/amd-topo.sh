@@ -25,6 +25,40 @@
 #     SYS  = 10  Cross-NUMA
 # ============================================================================
 
+_amd_card_id() {
+    local card_dir="$1"
+    local card_name
+    card_name=$(basename "$(dirname "$card_dir")" 2>/dev/null) || card_name=""
+    card_name="${card_name#card}"
+    if [[ "$card_name" =~ ^[0-9]+$ ]]; then
+        echo "$card_name"
+    else
+        echo "999999"
+    fi
+}
+
+_amd_sort_card_dirs() {
+    local card_dir
+    for card_dir in "$@"; do
+        printf '%s\t%s\n' "$(_amd_card_id "$card_dir")" "$card_dir"
+    done | sort -n -k1,1 | cut -f2-
+}
+
+amd_memory_type() {
+    local vram_bytes="${1:-0}"
+    local gtt_bytes="${2:-0}"
+    local gtt_gb_int=$(( gtt_bytes / 1073741824 ))
+    local vram_gb_int=$(( vram_bytes / 1073741824 ))
+
+    # GTT is the reliable unified-memory signal for AMD APUs. VRAM alone is
+    # not: MI300X and future 32 GB+ discrete cards report large VRAM too.
+    if [[ $gtt_gb_int -ge 16 && $vram_gb_int -le 4 ]] || [[ $gtt_gb_int -ge 32 ]]; then
+        echo "unified"
+    else
+        echo "discrete"
+    fi
+}
+
 # Generate a stable AMD GPU identifier using tiered strategy:
 #   1. amd-smi UUID (Instinct only)
 #   2. sysfs unique_id (Instinct only)
@@ -353,12 +387,16 @@ _sysfs_link_type() {
 detect_amd_topo() {
     # Discover all AMD GPU card dirs (vendor 0x1002)
     local card_dirs=()
-    for card_dir in /sys/class/drm/card*/device; do
+    local drm_sys="${DREAM_DRM_SYS:-/sys/class/drm}"
+    for card_dir in "$drm_sys"/card*/device; do
         [[ -d "$card_dir" ]] || continue
         local vendor
         vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
         [[ "$vendor" == "0x1002" ]] && card_dirs+=("$card_dir")
     done
+    if [[ ${#card_dirs[@]} -gt 1 ]]; then
+        mapfile -t card_dirs < <(_amd_sort_card_dirs "${card_dirs[@]}")
+    fi
 
     local gpu_count=${#card_dirs[@]}
     if [[ $gpu_count -eq 0 ]]; then
@@ -395,13 +433,7 @@ detect_amd_topo() {
         # Detect memory type per card
         local gtt_bytes mem_type
         gtt_bytes=$(cat "$card_dir/mem_info_gtt_total" 2>/dev/null) || gtt_bytes=0
-        local gtt_gb_int=$(( gtt_bytes / 1073741824 ))
-        local vram_gb_int=$(( vram_bytes / 1073741824 ))
-        if [[ $gtt_gb_int -ge 16 && $vram_gb_int -le 4 ]] || [[ $gtt_gb_int -ge 32 ]] || [[ $vram_gb_int -ge 32 ]]; then
-            mem_type="unified"
-        else
-            mem_type="discrete"
-        fi
+        mem_type=$(amd_memory_type "$vram_bytes" "$gtt_bytes")
 
         gpus_tsv+="${idx}	${name}	${vram_gb}	${pcie_gen}	x${pcie_width}	${uuid}	${gfx_ver}	${render_node}	${mem_type}	${pci_bdf}"$'\n'
         idx=$((idx + 1))

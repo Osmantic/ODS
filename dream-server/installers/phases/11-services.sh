@@ -67,6 +67,64 @@ else
         ai_ok "Rewrote .env for CPU fallback"
     }
 
+    _phase11_allow_host_agent_firewall() {
+        local network_name="${1:-dream-network}"
+        local port="${DREAM_AGENT_PORT:-7710}"
+        local bind_addr="${DREAM_AGENT_BIND:-}"
+        local subnet fw_rule
+        local -a subnets=()
+
+        [[ "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]] || return 0
+        command -v systemctl >/dev/null 2>&1 || return 0
+        command -v sudo >/dev/null 2>&1 || return 0
+
+        if [[ -n "$bind_addr" && "$bind_addr" != "0.0.0.0" ]]; then
+            ai_warn "DREAM_AGENT_BIND=$bind_addr; skipping automatic host-agent firewall rule."
+            return 0
+        fi
+
+        while IFS= read -r subnet; do
+            [[ -n "$subnet" && "$subnet" != *:* ]] && subnets+=("$subnet")
+        done < <($DOCKER_CMD network inspect "$network_name" \
+            --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}' 2>/dev/null || true)
+
+        if [[ ${#subnets[@]} -eq 0 ]]; then
+            if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
+                ai_warn "UFW is active, but I could not detect the $network_name subnet for host-agent access."
+                ai_warn "If dashboard says host-agent is offline, inspect: docker network inspect $network_name"
+            elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+                ai_warn "firewalld is active, but I could not detect the $network_name subnet for host-agent access."
+                ai_warn "If dashboard says host-agent is offline, inspect: docker network inspect $network_name"
+            fi
+            return 0
+        fi
+
+        for subnet in "${subnets[@]}"; do
+            if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
+                if sudo ufw status 2>/dev/null | grep -F "${port}/tcp" | grep -F "$subnet" >/dev/null; then
+                    ai_ok "UFW already allows dream-host-agent (port $port) from $network_name subnet $subnet"
+                elif sudo ufw allow from "$subnet" to any port "$port" proto tcp comment 'dream-host-agent' 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                    ai_ok "UFW: allowed dream-host-agent (port $port) from $network_name subnet $subnet"
+                else
+                    ai_warn "UFW: failed to auto-add host-agent rule - run manually:"
+                    ai_warn "  sudo ufw allow from $subnet to any port $port proto tcp comment 'dream-host-agent'"
+                fi
+            elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+                fw_rule="rule family=\"ipv4\" source address=\"$subnet\" port protocol=\"tcp\" port=\"$port\" accept"
+                if sudo firewall-cmd --query-rich-rule="$fw_rule" >/dev/null 2>&1; then
+                    ai_ok "firewalld already allows dream-host-agent (port $port) from $network_name subnet $subnet"
+                elif sudo firewall-cmd --permanent --add-rich-rule="$fw_rule" 2>&1 | tee -a "$LOG_FILE" >/dev/null \
+                  && sudo firewall-cmd --reload 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                    ai_ok "firewalld: allowed dream-host-agent (port $port) from $network_name subnet $subnet"
+                else
+                    ai_warn "firewalld: failed to auto-add host-agent rule - run manually:"
+                    ai_warn "  sudo firewall-cmd --permanent --add-rich-rule='$fw_rule'"
+                    ai_warn "  sudo firewall-cmd --reload"
+                fi
+            fi
+        done
+    }
+
     if [[ "${GPU_BACKEND:-}" == "amd" ]] && ! amd_gpu_runtime_devices_available; then
         _amd_missing_devices="$(amd_gpu_missing_devices_csv)"
         if [[ "${GPU_BACKEND_FORCED:-false}" == "true" ]]; then
@@ -191,10 +249,21 @@ else
                 dl_pid=$!
 
                 if spin_task $dl_pid "Downloading $GGUF_FILE"; then
-                    mv "$GGUF_DIR/$GGUF_FILE.part" "$GGUF_DIR/$GGUF_FILE"
-                    printf "\r  ${BGRN}✓${NC} %-60s\n" "Model downloaded: $GGUF_FILE"
-                    _dl_success=true
-                    break
+                    # Verify the file actually landed before claiming success.
+                    # Today's chain (spin_task → mv → printf) trusts each step's
+                    # exit code separately and can race: mv can silently fail if
+                    # the target dir is read-only or .part was truncated, or
+                    # another process can remove the file before the printf
+                    # fires. A spurious "Model downloaded" line then misleads
+                    # later phases that depend on the file existing.
+                    if mv "$GGUF_DIR/$GGUF_FILE.part" "$GGUF_DIR/$GGUF_FILE" && [[ -s "$GGUF_DIR/$GGUF_FILE" ]]; then
+                        printf "\r  ${BGRN}✓${NC} %-60s\n" "Model downloaded: $GGUF_FILE"
+                        _dl_success=true
+                        break
+                    else
+                        rm -f "$GGUF_DIR/$GGUF_FILE" 2>/dev/null || true
+                        printf "\r  ${AMB}⚠${NC} %-60s\n" "Download claimed to succeed but $GGUF_FILE is missing/empty"
+                    fi
                 fi
                 printf "\r  ${AMB}⚠${NC} %-60s\n" "Download attempt $_attempt failed"
                 sleep 3
@@ -318,14 +387,25 @@ MODELS_INI_EOF
             _env_file="$INSTALL_DIR/.env"
             if [[ -f "$_env_file" ]]; then
                 _env_patch_ok=true
-                for _key_val in "GGUF_FILE=$GGUF_FILE" "LLM_MODEL=$LLM_MODEL" "MAX_CONTEXT=$MAX_CONTEXT"; do
+                for _key_val in "GGUF_FILE=$GGUF_FILE" "LLM_MODEL=$LLM_MODEL" "MAX_CONTEXT=$MAX_CONTEXT" "CTX_SIZE=$MAX_CONTEXT"; do
                     _key="${_key_val%%=*}"
                     _val="${_key_val#*=}"
                     if awk -v v="$_val" '{ if (index($0, "'"$_key"'=") == 1) print "'"$_key"'=" v; else print }' \
                         "$_env_file" > "${_env_file}.tmp" 2>>"$LOG_FILE" \
                         && cat "${_env_file}.tmp" > "$_env_file" 2>>"$LOG_FILE" \
                         && rm -f "${_env_file}.tmp"; then
-                        : # success
+                        # Verify the patch took effect — the awk-then-cat
+                        # chain can succeed bytewise while landing a line
+                        # that isn't what we asked for (e.g. when $_val
+                        # contains awk-meta characters or the original
+                        # line had trailing whitespace the regex didn't
+                        # match). Re-read the file and assert.
+                        if grep -Fqx "${_key}=${_val}" "$_env_file"; then
+                            : # confirmed
+                        else
+                            _env_patch_ok=false
+                            warn "Patched $_key in .env, but verification re-read shows a different value (expected '$_val')"
+                        fi
                     else
                         _env_patch_ok=false
                         warn "Failed to patch $_key in .env"
@@ -334,6 +414,77 @@ MODELS_INI_EOF
                 if [[ "$_env_patch_ok" == "true" ]]; then
                     ai_ok "Patched .env for bootstrap model ($GGUF_FILE)"
                 fi
+            fi
+
+            # End-of-bootstrap-block sanity: refuse to leave Phase 11 with
+            # $LLM_MODEL pointing at a file that isn't on disk. Without this
+            # guard, compose-up brings up llama-server, which immediately
+            # crash-loops trying to open a missing GGUF, and the operator
+            # spends the next ~20 minutes watching the linker retry. Better
+            # to surface the missing file here, while there's still a clean
+            # recovery path (re-run the download, fix .env, then resume).
+            if [[ -n "${GGUF_DIR:-}" && -n "${GGUF_FILE:-}" ]]; then
+                if [[ ! -s "$GGUF_DIR/$GGUF_FILE" ]]; then
+                    warn "Bootstrap sanity: $GGUF_DIR/$GGUF_FILE missing or empty after Phase 11 — llama-server will crash-loop on compose-up. Investigate before proceeding."
+                fi
+            fi
+        fi
+
+        # ── Hermes config substitution ──
+        #
+        # The Hermes Agent extension ships a config template at
+        # extensions/services/hermes/cli-config.yaml.template which is
+        # mounted into the container at /opt/hermes/cli-config.yaml.example.
+        # On first container start, Hermes's entrypoint copies that into
+        # /opt/data/config.yaml — and never reads it again. So the values
+        # we want Hermes to use (model name, base_url) need to land in the
+        # template BEFORE compose-up, not after.
+        #
+        # Two values vary per platform / backend and the template ships
+        # placeholders for both:
+        #   model.default — Hermes asks the LLM server for this exact name.
+        #                   llama.cpp serves under "<file>.gguf"; Lemonade
+        #                   (AMD) wraps it as "extra.<file>.gguf". Asking
+        #                   for the wrong name 404s every chat completion.
+        #   model.base_url — llama-server's URL. The compose bridge name
+        #                   "llama-server:8080" works for the Linux installs,
+        #                   but on macOS llama-server runs native on the
+        #                   host (not as a sibling container), so Hermes
+        #                   has to dial "host.docker.internal:8080".
+        #
+        # Substitute both values now, then verify. macOS does its own
+        # substitution in installers/macos/install-macos.sh.
+        _hermes_tpl="$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template"
+        if [[ -f "$_hermes_tpl" ]]; then
+            # Model name: Lemonade prefixes with "extra.", llama.cpp uses
+            # the file name as-is.
+            _hermes_model="$GGUF_FILE"
+            if [[ "${GPU_BACKEND:-}" == "amd" ]]; then
+                _hermes_model="extra.$GGUF_FILE"
+            fi
+            # base_url stays at the compose-bridge name for Linux installs.
+            # On Linux there's a sibling llama-server container; on macOS
+            # the install-macos.sh path handles the host.docker.internal swap.
+            _hermes_context="${MAX_CONTEXT:-131072}"
+            _hermes_patcher="$INSTALL_DIR/scripts/patch-hermes-config.py"
+            _python_cmd="$(ds_detect_python_cmd 2>/dev/null || command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+            if [[ -n "$_python_cmd" && -f "$_hermes_patcher" ]]; then
+                "$_python_cmd" "$_hermes_patcher" "$_hermes_tpl" \
+                    --model "$_hermes_model" \
+                    --context-length "$_hermes_context" >>"$LOG_FILE" 2>&1 || \
+                    warn "Hermes config patcher failed for $_hermes_tpl"
+            else
+                sed -i.bak \
+                    -e "s|^  default: \"qwen3.5-9b\"|  default: \"$_hermes_model\"|" \
+                    -e "s|^  context_length: .*|  context_length: ${_hermes_context}|" \
+                    -e "s|^    context_length: .*|    context_length: ${_hermes_context}|" \
+                    "$_hermes_tpl" 2>>"$LOG_FILE" && rm -f "${_hermes_tpl}.bak"
+            fi
+            if grep -q "^  default: \"$_hermes_model\"$" "$_hermes_tpl" && \
+               grep -q "^  context_length: ${_hermes_context}$" "$_hermes_tpl"; then
+                ai_ok "Patched Hermes template: model.default=$_hermes_model, context=$_hermes_context"
+            else
+                warn "Hermes template substitution didn't take effect — Hermes may 404 every chat completion. Hand-edit $_hermes_tpl after install if Hermes prompts hang."
             fi
         fi
     fi
@@ -375,35 +526,105 @@ MODELS_INI_EOF
     _build_count=0
     _build_services=(dashboard dashboard-api ape token-spy privacy-shield)
     [[ "$ENABLE_COMFYUI" == "true" ]] && _build_services+=(comfyui)
-    if [[ "${ENABLE_DREAMFORGE:-}" == "true" ]]; then
-        _dreamforge_image="${DREAMFORGE_IMAGE:-ghcr.io/light-heart-labs/dreamforge:v0.1.0}"
-        if ! $DOCKER_CMD image inspect "$_dreamforge_image" &>/dev/null; then
-            _build_services+=(dreamforge)
-        else
-            log "DreamForge image found locally — skipping source build"
-        fi
-    fi
     [[ "$GPU_BACKEND" == "amd" ]] && _build_services+=(llama-server)
     if [[ "$GPU_BACKEND" == "nvidia" && " ${_build_services[*]} " == *" comfyui "* ]]; then
         ai "ComfyUI is compiling from source for NVIDIA — this takes 25-40 minutes on first run."
     fi
-    if [[ " ${_build_services[*]} " == *" dreamforge "* ]]; then
-        ai "DreamForge is compiling from Rust source — this takes 15-25 minutes on first run."
-    fi
     _build_total=${#_build_services[@]}
+    # Track builds that didn't produce a usable image so we don't abort the
+    # whole compose-up on a single missing service. Each entry is a service
+    # name (matches dream-cli's service id) that will be excluded below.
+    _failed_build_services=()
     for _svc in "${_build_services[@]}"; do
         _build_count=$((_build_count + 1))
         $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" build --no-cache "$_svc" >> "$LOG_FILE" 2>&1 &
         _build_pid=$!
-        if ! spin_task $_build_pid "[$_build_count/$_build_total] Building $_svc"; then
-            printf "\r  ${AMB}⚠${NC} %-60s\n" "$_svc build failed (non-critical)"
+        _build_failed=false
+        spin_task $_build_pid "[$_build_count/$_build_total] Building $_svc" || _build_failed=true
+        # Cross-check: did the build actually produce a usable image? A
+        # build can "succeed" (exit 0) yet leave no tagged image (rare —
+        # buildx bugs, disk-full mid-export) and a "failed" build can
+        # still leave a usable cached image (idempotent re-run). Inspect
+        # the resolved image tag rather than trusting the exit code alone.
+        _resolved_image=$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --format json 2>/dev/null \
+            | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    svc_name = '$_svc'
+    svc = d.get('services', {}).get(svc_name, {})
+    image = svc.get('image', '') or ''
+    if not image and svc.get('build') is not None:
+        project = d.get('name') or 'dream-server'
+        image = f'{project}-{svc_name}'
+    print(image)
+except Exception:
+    pass
+" 2>/dev/null || echo "")
+        if [[ -n "$_resolved_image" ]] && ! $DOCKER_CMD image inspect "$_resolved_image" &>/dev/null; then
+            _build_failed=true
+        fi
+        if $_build_failed; then
+            printf "\r  ${AMB}⚠${NC} %-60s\n" "$_svc build failed or image missing"
+            _failed_build_services+=("$_svc")
         else
             printf "\r  ${BGRN}✓${NC} %-60s\n" "$_svc built"
         fi
     done
-    # Start everything — --no-build skips services whose images failed to build.
-    # Up to 3 attempts with increasing wait between retries. On AMD/Lemonade,
-    # the first boot builds a cached llama-server binary which can take 3-5 min.
+
+    # Exclude failed-build services from compose-up. Without this, --no-build
+    # at compose-up time would see a referenced image that doesn't exist and
+    # abort the ENTIRE stack — a single failed build of, say, comfyui takes
+    # down the other 24+ healthy services. Repro'd on Tower2 during today's
+    # cross-platform install test. Removing the compose file from
+    # COMPOSE_FLAGS_ARR lets compose-up proceed with everything that did
+    # build, and the operator can re-attempt the failed extension later via
+    # `dream enable <svc>` once they've fixed the build cause.
+    if [[ ${#_failed_build_services[@]} -gt 0 ]]; then
+        _new_compose_flags_arr=()
+        _excluded_build_services=()
+        _skip_next=false
+        for _arg in "${COMPOSE_FLAGS_ARR[@]}"; do
+            if $_skip_next; then
+                _skip_next=false
+                _drop=false
+                for _failed in "${_failed_build_services[@]}"; do
+                    if [[ "$_arg" == *"/extensions/services/$_failed/"* ]]; then
+                        _drop=true
+                        if [[ " ${_excluded_build_services[*]} " != *" $_failed "* ]]; then
+                            _excluded_build_services+=("$_failed")
+                        fi
+                        break
+                    fi
+                done
+                $_drop || _new_compose_flags_arr+=("-f" "$_arg")
+            elif [[ "$_arg" == "-f" ]]; then
+                _skip_next=true
+            else
+                _new_compose_flags_arr+=("$_arg")
+            fi
+        done
+        COMPOSE_FLAGS_ARR=("${_new_compose_flags_arr[@]}")
+        _retained_failed_build_services=()
+        for _failed in "${_failed_build_services[@]}"; do
+            if [[ " ${_excluded_build_services[*]} " != *" $_failed "* ]]; then
+                _retained_failed_build_services+=("$_failed")
+            fi
+        done
+        if [[ ${#_excluded_build_services[@]} -gt 0 ]]; then
+            ai_warn "Excluding from compose-up due to build failure: ${_excluded_build_services[*]}"
+        fi
+        if [[ ${#_retained_failed_build_services[@]} -gt 0 ]]; then
+            ai_warn "Build failed for core/overlay service(s) still present in compose-up: ${_retained_failed_build_services[*]}"
+        fi
+    fi
+
+    # Start everything. --no-build is intentional: the explicit build loop
+    # above already produced (or failed-and-excluded) every buildable image,
+    # and we don't want compose-up silently re-invoking the slow ComfyUI build
+    # on each retry. Up to 3 attempts with increasing wait
+    # between retries — on AMD/Lemonade, the first boot builds a cached
+    # llama-server binary which can take 3-5 min.
     for _attempt in 1 2 3; do
         $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build >> "$LOG_FILE" 2>&1 &
         compose_pid=$!
@@ -427,6 +648,27 @@ MODELS_INI_EOF
     $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build >> "$LOG_FILE" 2>&1 || true
     # Step 3: catch any stragglers from the second pass
     $DOCKER_CMD start $($DOCKER_CMD ps -a --filter status=created -q) 2>/dev/null || true
+
+    # If DREAM_AGENT_BIND is unset, the Linux host-agent binds to the Dream
+    # Docker network gateway once that network exists. Phase 07 may have
+    # started it before compose created dream-network, so restart it here to
+    # let the safer scoped bind take effect.
+    if [[ -z "${DREAM_AGENT_BIND:-}" ]] \
+      && [[ "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]] \
+      && command -v systemctl >/dev/null 2>&1 \
+      && sudo -n systemctl is-enabled dream-host-agent.service >/dev/null 2>&1; then
+        if sudo -n systemctl restart dream-host-agent.service 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+            ai_ok "Restarted dream-host-agent after dream-network creation"
+        else
+            ai_warn "dream-host-agent restart after network creation failed (non-fatal)"
+        fi
+    fi
+
+    # dashboard-api reaches the host agent from the compose network gateway.
+    # With default-DROP UFW/firewalld, the host INPUT chain can block that
+    # traffic. Add a scoped rule only after compose has created dream-network,
+    # so we allow the actual Docker subnet instead of a broad RFC1918 range.
+    _phase11_allow_host_agent_firewall dream-network
 
     if $compose_ok; then
         printf "\r  ${BGRN}✓${NC} %-60s\n" "All containers launched"

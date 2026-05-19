@@ -56,6 +56,14 @@ services:
       # Optional MoE expert CPU offload. Do not default to an empty value:
       # llama.cpp parses this as an integer and exits if it is blank.
       - LLAMA_ARG_N_CPU_MOE
+      # Optional long-context runtime flags. Leave unset unless a model
+      # profile explicitly requires them.
+      - LLAMA_ARG_NO_CACHE_PROMPT
+      - LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS
+      # Optional speculative decoding for GGUFs with llama.cpp MTP support.
+      # Leave unset unless the selected model/runtime explicitly supports it.
+      - LLAMA_ARG_SPEC_TYPE
+      - LLAMA_ARG_SPEC_DRAFT_N_MAX
     security_opt:
       - no-new-privileges:true
     logging: *default-logging
@@ -184,6 +192,7 @@ services:
       - DREAM_INSTALL_DIR=/dream-server
       - DREAM_DATA_DIR=/data
       - DREAM_EXTENSIONS_LIBRARY_DIR=/data/extensions-library
+      - DREAM_AGENT_HOST=${DREAM_AGENT_HOST:-}
       - DREAM_AGENT_PORT=${DREAM_AGENT_PORT:-7710}
       - GPU_BACKEND=${GPU_BACKEND:-nvidia}
       - GPU_COUNT=${GPU_COUNT:-1}
@@ -193,6 +202,7 @@ services:
       - HOST_RAM_GB=${HOST_RAM_GB:-0}
       - OLLAMA_URL=${LLM_API_URL:-http://llama-server:8080}
       - LLM_MODEL=${LLM_MODEL:-qwen3:30b-a3b}
+      - GGUF_FILE=${GGUF_FILE:-}
       - KOKORO_URL=${KOKORO_URL:-http://tts:8880}
       - N8N_URL=${N8N_URL:-http://n8n:5678}
       - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-}
@@ -207,6 +217,11 @@ services:
       # phase 06; an unconfigured dev box without the secret will fail
       # magic-link redemption loudly rather than mint unsignable cookies.
       - DREAM_SESSION_SECRET=${DREAM_SESSION_SECRET:-}
+      # Device/public URL inputs used by magic-link generation. Keep these
+      # aligned with dream-proxy and dream-mdns so invite QR codes point at
+      # the actual LAN-facing auth/chat hosts for the unit.
+      - DREAM_DEVICE_NAME=${DREAM_DEVICE_NAME:-dream}
+      - DREAM_PUBLIC_URL=${DREAM_PUBLIC_URL:-}
       # Cookie Domain scope. Set to <device>.local (no leading dot) so
       # cookies are shared across chat / auth / hermes / dashboard
       # subdomains routed by the dream-proxy. Empty = host-only (only

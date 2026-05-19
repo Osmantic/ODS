@@ -20,6 +20,7 @@ _spec.loader.exec_module(_mod)
 _check_lemonade_health = _mod._check_lemonade_health
 _send_lemonade_warmup = _mod._send_lemonade_warmup
 _write_lemonade_config = _mod._write_lemonade_config
+_patch_hermes_model_config = _mod._patch_hermes_model_config
 _compose_restart_llama_server = _mod._compose_restart_llama_server
 _launch_native_llama_server = _mod._launch_native_llama_server
 
@@ -158,6 +159,44 @@ class TestWriteLemonadeConfig:
         litellm_dir.mkdir(parents=True)
         _write_lemonade_config(tmp_path, "model.gguf")
         assert (litellm_dir / "lemonade.yaml").exists()
+
+
+class TestPatchHermesModelConfig:
+
+    def test_updates_model_default_only(self, tmp_path):
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "# example\n"
+            "model:\n"
+            "  default: \"old-model\"\n"
+            "  provider: \"custom\"\n"
+            "  base_url: \"http://llama-server:8080/v1\"\n"
+            "other:\n"
+            "  default: \"leave-me\"\n",
+            encoding="utf-8",
+        )
+
+        assert _patch_hermes_model_config(config, "new-model.gguf") is True
+
+        text = config.read_text(encoding="utf-8")
+        assert '  default: "new-model.gguf"' in text
+        assert '  provider: "custom"' in text
+        assert '  default: "leave-me"' in text
+
+    def test_missing_file_is_noop(self, tmp_path):
+        assert _patch_hermes_model_config(tmp_path / "missing.yaml", "model.gguf") is False
+
+    def test_permission_denied_stat_is_noop(self, tmp_path, monkeypatch):
+        config = tmp_path / "config.yaml"
+        original_exists = Path.exists
+
+        def fake_exists(path):
+            if path == config:
+                raise PermissionError("container-owned")
+            return original_exists(path)
+
+        monkeypatch.setattr(Path, "exists", fake_exists)
+        assert _patch_hermes_model_config(config, "model.gguf") is False
 
 
 class TestComposeRestartLlamaServer:
@@ -371,6 +410,144 @@ class TestModelActivateRollback:
         content = lemonade_yaml.read_text(encoding="utf-8")
         assert "api_key: sk-inline-from-env-file-67890" in content
         assert "api_key: sk-lemonade" not in content
+
+    def test_activation_patches_hermes_configs_and_restarts_hermes(self, tmp_path, monkeypatch):
+        install_dir, _env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        hermes_live = install_dir / "data" / "hermes" / "config.yaml"
+        hermes_template = install_dir / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
+        hermes_live.parent.mkdir(parents=True)
+        hermes_template.parent.mkdir(parents=True)
+        hermes_text = (
+            "model:\n"
+            "  default: \"old-model\"\n"
+            "  provider: \"custom\"\n"
+            "  base_url: \"http://llama-server:8080/v1\"\n"
+        )
+        hermes_live.write_text(hermes_text, encoding="utf-8")
+        hermes_template.write_text(hermes_text, encoding="utf-8")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delenv("DREAM_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+
+        calls = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(cmd)
+            stdout = '{"status": "ok"}' if cmd and cmd[0] == "curl" else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        assert '  default: "new-model.gguf"' in hermes_live.read_text(encoding="utf-8")
+        assert '  default: "new-model.gguf"' in hermes_template.read_text(encoding="utf-8")
+        assert ["docker", "restart", "dream-hermes"] in calls
+
+    def test_activation_skips_hermes_restart_when_live_config_unreadable(self, tmp_path, monkeypatch):
+        install_dir, _env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        hermes_live = install_dir / "data" / "hermes" / "config.yaml"
+        hermes_template = install_dir / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
+        hermes_live.parent.mkdir(parents=True)
+        hermes_template.parent.mkdir(parents=True)
+        hermes_live.write_text("model:\n  default: \"old-live\"\n", encoding="utf-8")
+        hermes_template.write_text("model:\n  default: \"old-template\"\n", encoding="utf-8")
+
+        original_exists = Path.exists
+
+        def fake_exists(path):
+            if path == hermes_live:
+                raise PermissionError("container-owned")
+            return original_exists(path)
+
+        monkeypatch.setattr(Path, "exists", fake_exists)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delenv("DREAM_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+
+        calls = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(cmd)
+            stdout = '{"status": "ok"}' if cmd and cmd[0] == "curl" else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        assert '  default: "new-model.gguf"' in hermes_template.read_text(encoding="utf-8")
+        assert ["docker", "restart", "dream-hermes"] not in calls
+
+    def test_activation_applies_matching_runtime_profile_flags(self, tmp_path, monkeypatch):
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        model_library = install_dir / "config" / "model-library.json"
+        model_library.write_text(json.dumps({
+            "models": [{
+                "id": "target-model",
+                "gguf_file": "new-model.gguf",
+                "llm_model_name": "new-model",
+                "context_length": 131072,
+                "runtime_profiles": [{
+                    "id": "nvidia-8gb-test",
+                    "label": "Advanced test profile",
+                    "backend": "nvidia",
+                    "memory_type": "discrete",
+                    "vram_min_gb": 7.5,
+                    "vram_max_gb": 12.5,
+                    "system_ram_min_gb": 32,
+                    "context_length": 65536,
+                    "llama_server_image": "example.test/llama:turbo",
+                    "env": {
+                        "LLAMA_PARALLEL": "1",
+                        "LLAMA_ARG_FLASH_ATTN": "on",
+                        "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+                        "LLAMA_ARG_CACHE_TYPE_V": "turbo3",
+                        "LLAMA_ARG_N_CPU_MOE": "30",
+                        "LLAMA_ARG_NO_CACHE_PROMPT": "1",
+                        "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS": "-1",
+                    },
+                }],
+            }]
+        }), encoding="utf-8")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delenv("DREAM_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(_mod, "_nvidia_vram_gb", lambda: 8.0)
+        monkeypatch.setattr(_mod, "_system_ram_gb", lambda: 32)
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+
+        def fake_run(cmd, **_kwargs):
+            stdout = '{"status": "ok"}' if cmd and cmd[0] == "curl" else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        env_text = env_path.read_text(encoding="utf-8")
+        assert "MAX_CONTEXT=65536" in env_text
+        assert "MODEL_RUNTIME_PROFILE=nvidia-8gb-test" in env_text
+        assert "LLAMA_SERVER_IMAGE=example.test/llama:turbo" in env_text
+        assert "LLAMA_ARG_CACHE_TYPE_V=turbo3" in env_text
+        assert "LLAMA_ARG_N_CPU_MOE=30" in env_text
+        assert "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=-1" in env_text
 
     def test_unexpected_failure_rolls_back_all_config_backups(self, tmp_path, monkeypatch):
         install_dir, env_path, env_text, models_ini, ini_text, lemonade_yaml, lemonade_text = (

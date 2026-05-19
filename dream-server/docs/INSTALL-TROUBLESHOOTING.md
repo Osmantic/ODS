@@ -4,6 +4,33 @@ This guide provides solutions for common issues encountered during the installat
 
 For **Linux**, run `./scripts/linux-install-preflight.sh` (or `./dream-preflight.sh --install-env`) for a structured report with stable check IDs; see [LINUX-TROUBLESHOOTING-GUIDE.md](LINUX-TROUBLESHOOTING-GUIDE.md) for ID-by-ID fixes.
 
+## Linux Installer Startup
+
+### Problem: Installer Stops Near System Detection With `No module named 'yaml'`
+**Solution:** Deactivate Conda/venv before installing, or install PyYAML into the active Python.
+
+Dream Server prefers the system Python during Linux install because distro packages such as `python3-yaml` are installed for `/usr/bin/python3`. If a Conda or venv Python is first in `PATH`, it may not see those modules.
+
+```bash
+conda deactivate
+./install.sh
+```
+
+Or:
+
+```bash
+python3 -m pip install pyyaml
+./install.sh
+```
+
+### Problem: `--non-interactive` Appears Hung During Docker Or NVIDIA Setup
+**Solution:** Cache sudo credentials before starting, or run interactively.
+
+```bash
+sudo -v
+./install.sh --non-interactive
+```
+
 ## Docker Issues
 
 ### Problem: Docker Not Installed
@@ -48,6 +75,23 @@ sudo systemctl restart docker
 Verify GPU detection:
 ```bash
 docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
+```
+
+### Problem: Blackwell GPU Shows Driver But No Devices
+**Solution:** Install NVIDIA open kernel modules.
+
+Blackwell GPUs, including RTX PRO 6000 Blackwell and Grace Blackwell systems, require the NVIDIA open kernel module driver stack. On Ubuntu 22.04/24.04:
+
+```bash
+sudo apt install nvidia-open
+sudo reboot
+```
+
+If your distro uses branch-specific package names, install the matching open package, for example:
+
+```bash
+sudo apt install nvidia-driver-580-open
+sudo reboot
 ```
 
 ## Port Conflicts

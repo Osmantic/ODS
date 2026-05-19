@@ -55,6 +55,14 @@ elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
 
+if ! "$PYTHON_CMD" -c 'import yaml' >/dev/null 2>&1; then
+    echo "ERROR: PyYAML is required by resolve-compose-stack.sh for compose validation." >&2
+    echo "       Active Python: $PYTHON_CMD ($(command -v "$PYTHON_CMD" 2>/dev/null || echo "$PYTHON_CMD"))" >&2
+    echo "       If Conda/venv is active, run 'conda deactivate' before installing Dream Server." >&2
+    echo "       Or install manually: $PYTHON_CMD -m pip install pyyaml" >&2
+    exit 2
+fi
+
 "$PYTHON_CMD" - "$SCRIPT_DIR" "$TIER" "$GPU_BACKEND" "$PROFILE_OVERLAYS" "$ENV_MODE" "$SKIP_BROKEN" "$GPU_COUNT" <<'PY'
 import os
 import pathlib
@@ -174,7 +182,7 @@ try:
     )
 except (OSError, ValueError):
     _CORE_SERVICE_IDS = {
-        "ape", "comfyui", "dashboard", "dashboard-api", "dreamforge",
+        "ape", "comfyui", "dashboard", "dashboard-api",
         "embeddings", "langfuse", "litellm", "llama-server", "n8n",
         "open-webui", "openclaw", "perplexica", "privacy-shield", "qdrant",
         "searxng", "token-spy", "tts", "whisper",

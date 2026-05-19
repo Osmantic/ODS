@@ -1,5 +1,0 @@
-rust/target/
-rust/.dreamforge-agents/
-rust/frontend/node_modules/
-.git/
-*.md

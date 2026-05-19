@@ -3,7 +3,7 @@ services:
     # Pinned Caddy 2.x. Single static binary, ~50MB image, native
     # SSE/WebSocket support — much lighter than a custom FastAPI proxy
     # for what amounts to "check a cookie, forward, or 303 redirect."
-    image: caddy:2.8.4-alpine
+    image: caddy:2.11.3-alpine
     container_name: dream-hermes-proxy
     restart: unless-stopped
     depends_on:

@@ -108,6 +108,14 @@ _env_set() {
     fi
 }
 
+_env_unset() {
+    local key="$1" file="$INSTALL_DIR/.env"
+    [[ -f "$file" ]] || return 0
+    awk -v k="$key" 'index($0, k "=") != 1 { print }' "$file" > "${file}.tmp" \
+        && cat "${file}.tmp" > "$file" \
+        && rm -f "${file}.tmp"
+}
+
 _env_get_raw() {
     local key="$1" file="$INSTALL_DIR/.env"
     [[ -f "$file" ]] || { echo ""; return 0; }
@@ -673,7 +681,6 @@ _check_docker_access() {
 # Conditionally rebuilds based on .env state:
 #   - comfyui     (ENABLE_COMFYUI=true)
 #   - llama-server (GPU_BACKEND=amd, e.g. AMD Lemonade)
-#   - dreamforge   (ENABLE_DREAMFORGE=true)
 # Mirrors the conditional logic in installers/phases/11-services.sh. Unlike that
 # phase's image-inspect fast-path, --rebuild-images is an explicit opt-in so we
 # always rebuild every applicable service from source.
@@ -681,13 +688,11 @@ _check_docker_access() {
 _dream_cli_rebuild_images() {
     local flags=("$@")
     local svcs=(dashboard dashboard-api ape token-spy privacy-shield)
-    # Mirror phases/11-services.sh conditional builds: ComfyUI when enabled,
-    # llama-server on AMD (Lemonade builds the binary in the container), and
-    # dreamforge when enabled (Rust source build). Other GPU backends pull
-    # pre-built images.
+    # Mirror phases/11-services.sh conditional builds: ComfyUI when enabled
+    # and llama-server on AMD (Lemonade builds the binary in the container).
+    # Other GPU backends pull pre-built images.
     [[ "${ENABLE_COMFYUI:-}" == "true" ]] && svcs+=(comfyui)
     [[ "${GPU_BACKEND:-}" == "amd" ]] && svcs+=(llama-server)
-    [[ "${ENABLE_DREAMFORGE:-}" == "true" ]] && svcs+=(dreamforge)
     _check_docker_access
     log "Rebuilding local-built images (--rebuild-images)..."
     if ! docker compose "${flags[@]}" build --no-cache "${svcs[@]}"; then
@@ -1693,7 +1698,51 @@ if dgx_status == 'pass':
 elif dgx_status == 'warn':
     print(f"  {YELLOW}⚠{NC} DGX Spark llama-server CUDA arch: {dgx_message}")
 
+amd_runtime = runtime.get('amd_runtime', {})
+if amd_runtime.get('available'):
+    status = amd_runtime.get('health', 'unknown')
+    symbol = GREEN + '✓' + NC if status == 'reachable' else YELLOW + '⚠' + NC
+    print(
+        f"  {symbol} AMD runtime: "
+        f"{amd_runtime.get('runtime')} / {amd_runtime.get('selectedBackend')} / "
+        f"{amd_runtime.get('location')} / {status}"
+    )
+    for warning in amd_runtime.get('warnings', [])[:3]:
+        print(f"    {YELLOW}⚠{NC} {warning}")
+elif amd_runtime.get('reason') and amd_runtime.get('reason') != 'not_amd':
+    print(f"  {YELLOW}⚠{NC} AMD runtime: {amd_runtime.get('reason')}")
+
 print()
+
+# Voice checks
+stt_cached = runtime.get('stt_model_cached', 'unknown')
+stt_model = runtime.get('stt_model_name') or '<not configured>'
+tts_http = runtime.get('tts_http', 'unknown')
+if stt_cached != 'unknown' or tts_http != 'unknown':
+    print(f"{CYAN}Voice Readiness:{NC}")
+    if stt_cached == 'true':
+        print(f"  {GREEN}✓{NC} Whisper STT model cached: {stt_model}")
+    elif stt_cached == 'false':
+        print(f"  {YELLOW}⚠{NC} Whisper STT model missing: {stt_model}")
+        has_failures = True
+    elif stt_cached == 'service_down':
+        print(f"  {RED}✗{NC} Whisper STT service not responding")
+        has_failures = True
+    elif stt_cached == 'disabled':
+        print(f"  {YELLOW}?{NC} Whisper STT disabled")
+    else:
+        print(f"  {YELLOW}?{NC} Whisper STT model cache unknown")
+
+    if tts_http == 'true':
+        print(f"  {GREEN}✓{NC} Kokoro TTS responding")
+    elif tts_http == 'false':
+        print(f"  {RED}✗{NC} Kokoro TTS not responding")
+        has_failures = True
+    elif tts_http == 'disabled':
+        print(f"  {YELLOW}?{NC} Kokoro TTS disabled")
+    else:
+        print(f"  {YELLOW}?{NC} Kokoro TTS status unknown")
+    print()
 
 # Preflight checks
 preflight = report.get('preflight', {})
@@ -2630,7 +2679,7 @@ cmd_model() {
             echo "  T4         — qwen3-30b-a3b (48GB+)"
             echo "  SH         — qwen3-30b-a3b (Strix Halo unified)"
             echo "  SH_LARGE   — qwen3-coder-next (90GB+ unified)"
-            echo "  NV_ULTRA   — qwen3-coder-next (90GB+ NVIDIA)"
+            echo "  NV_ULTRA   — qwen3-coder-next (amd64) / qwen3.6-35b-a3b (arm64 Spark)"
             echo ""
             echo "Usage: dream model swap <tier>"
             ;;
@@ -3449,11 +3498,40 @@ _gpu_reassign_write_amd_env() {
     local topo_json="$1" indices_csv="$2"
     _env_set "LLAMA_SERVER_GPU_INDICES" "$indices_csv"
     _env_set "ROCR_VISIBLE_DEVICES" "$indices_csv"
+
+    _gpu_reassign_update_amd_arch_env "$topo_json" "$indices_csv"
+
     local video_gid render_gid
     video_gid=$(getent group video 2>/dev/null | cut -d: -f3) || video_gid="44"
     render_gid=$(getent group render 2>/dev/null | cut -d: -f3) || render_gid="992"
     _env_set "VIDEO_GID" "$video_gid"
     _env_set "RENDER_GID" "$render_gid"
+}
+
+_gpu_reassign_update_amd_arch_env() {
+    local topo_json="$1" indices_csv="$2"
+    local unique_gfx gfx_ver
+
+    unique_gfx=$(echo "$topo_json" | jq -r --arg csv "$indices_csv" '
+        ($csv | split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(length > 0))) as $idxs |
+        [.gpus[] | select((.index | tostring) as $i | $idxs | index($i)) | .gfx_version // empty] |
+        map(select(. != "" and . != "null" and . != "unknown")) |
+        unique
+    ' 2>/dev/null) || unique_gfx="[]"
+
+    if [[ "$(echo "$unique_gfx" | jq 'length' 2>/dev/null || echo 0)" -eq 1 ]]; then
+        gfx_ver=$(echo "$unique_gfx" | jq -r '.[0]')
+    else
+        gfx_ver=""
+    fi
+
+    if [[ "$gfx_ver" == "gfx1151" ]]; then
+        _env_set "HSA_OVERRIDE_GFX_VERSION" "11.5.1"
+        _env_set "LEMONADE_LLAMACPP_ROCM_BIN" "/opt/llama-custom/llama-server"
+    else
+        _env_unset "HSA_OVERRIDE_GFX_VERSION"
+        _env_unset "LEMONADE_LLAMACPP_ROCM_BIN"
+    fi
 }
 
 _gpu_reassign() {
@@ -3719,6 +3797,7 @@ _gpu_reassign() {
         done < <(echo "$assignment_json" | jq -r '.gpu_assignment.services.llama_server.gpus[]' 2>/dev/null)
         [[ -n "$llama_idx_csv" ]] && _env_set "LLAMA_SERVER_GPU_INDICES" "$llama_idx_csv"
         _env_set "ROCR_VISIBLE_DEVICES" "$llama_idx_csv"
+        _gpu_reassign_update_amd_arch_env "$topo_json" "$llama_idx_csv"
 
         # Write GPU index for auxiliary services (whisper, comfyui, embeddings)
         _amd_svc_env() {
@@ -3739,14 +3818,6 @@ _gpu_reassign() {
         _env_set "VIDEO_GID" "$video_gid"
         _env_set "RENDER_GID" "$render_gid"
 
-        # Check mixed gfx — set global HSA_OVERRIDE_GFX_VERSION if all llama GPUs share one
-        local unique_gfx
-        unique_gfx=$(echo "$topo_json" | jq -r '[.gpus[].gfx_version] | unique | length')
-        if [[ "$unique_gfx" -eq 1 ]]; then
-            local gfx_ver
-            gfx_ver=$(echo "$topo_json" | jq -r '.gpus[0].gfx_version')
-            [[ -n "$gfx_ver" && "$gfx_ver" != "null" ]] && _env_set "HSA_OVERRIDE_GFX_VERSION" "$gfx_ver"
-        fi
     fi
 
     success "GPU assignment updated (strategy: ${strategy})"
@@ -3798,8 +3869,78 @@ cmd_gpu() {
 }
 
 cmd_repair() {
-    warn "The 'repair' command is not yet implemented."
-    log "Run 'dream doctor' to diagnose issues, then check the output for suggested fixes."
+    check_install
+    cd "$INSTALL_DIR"
+    load_env
+    sr_load
+
+    local target="${1:-voice}"
+    case "$target" in
+        voice|stt|tts)
+            local flags_str
+            flags_str=$(get_compose_flags)
+            local -a flags
+            read -ra flags <<< "$flags_str"
+
+            local services
+            services=$(docker compose "${flags[@]}" config --services 2>/dev/null || true)
+            local missing=()
+            grep -qx "whisper" <<< "$services" || missing+=("whisper")
+            grep -qx "tts" <<< "$services" || missing+=("tts")
+            if (( ${#missing[@]} > 0 )); then
+                log_error "Voice services are not in this compose stack: ${missing[*]}"
+                echo "  Enable voice, or add the whisper/tts extension compose files, then retry."
+                return 1
+            fi
+
+            _compose_run_with_summary "Starting voice services" "${flags[@]}" up -d whisper tts
+
+            local model port url tts_port tts_url
+            model=$(_env_get_raw AUDIO_STT_MODEL)
+            [[ -z "$model" ]] && model="Systran/faster-whisper-base"
+            port=$(_env_get_raw WHISPER_PORT)
+            [[ -z "$port" ]] && port="9000"
+            url="http://127.0.0.1:${port}"
+            tts_port=$(_env_get_raw TTS_PORT)
+            [[ -z "$tts_port" ]] && tts_port="8880"
+            tts_url="http://127.0.0.1:${tts_port}"
+
+            local ready=false
+            for _i in $(seq 1 45); do
+                if curl -sf --max-time 2 "${url}/health" >/dev/null 2>&1; then
+                    ready=true
+                    break
+                fi
+                sleep 2
+            done
+            if ! $ready; then
+                log_error "Whisper STT is still not responding. Check: dream logs whisper"
+                return 1
+            fi
+
+            cmd_stt download "$model"
+
+            local tts_ready=false
+            for _i in $(seq 1 45); do
+                if curl -sf --max-time 2 "${tts_url}/health" >/dev/null 2>&1; then
+                    tts_ready=true
+                    break
+                fi
+                sleep 2
+            done
+            if ! $tts_ready; then
+                log_error "Kokoro TTS is still not responding. Check: dream logs tts"
+                return 1
+            fi
+
+            success "Voice repair complete"
+            ;;
+        *)
+            log "Usage: dream repair voice"
+            log_error "Unknown repair target: $target"
+            return 1
+            ;;
+    esac
 }
 
 #=============================================================================
@@ -4032,7 +4173,7 @@ ${CYAN}Commands:${NC}
   chat "<message>"    Quick chat with the LLM
   benchmark           Run a quick performance test
   doctor [report|--json]   Run diagnostics (--json writes JSON to stdout)
-  repair|fix          Run basic repairs (currently redirects to doctor)
+  repair|fix [voice]  Repair voice services and cache the STT model
   template [action]   Apply pre-built service templates (list|preview|apply)
   audit [extensions]  Audit extension manifests and compose contracts
   agent [action]      Manage dream host agent (status|start|stop|restart|logs)
@@ -4117,6 +4258,7 @@ ${CYAN}Examples:${NC}
   dream audit --json whisper      # Audit one service as JSON
   dream agent status              # Check host agent health
   dream agent restart             # Restart host agent
+  dream repair voice              # Start voice services and cache STT model
 
 ${CYAN}Environment:${NC}
   DREAM_HOME          Installation directory (default: ~/dream-server)

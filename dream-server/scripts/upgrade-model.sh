@@ -1,11 +1,11 @@
 #!/bin/bash
 #=============================================================================
-# upgrade-model.sh — Atomic Model Upgrade with Rollback
+# upgrade-model.sh — Legacy Model Directory Upgrade with Rollback
 #
 # Part of Dream Server — Phase 0 Foundation
 #
-# Gracefully swaps models in llama-server with automatic rollback on failure.
-# Ensures zero downtime when possible, minimal downtime otherwise.
+# Legacy helper for older model-directory layouts. Current Dream Server GGUF
+# installs should prefer the Dashboard Models page and docs/MODEL-MANAGEMENT.md.
 #
 # Usage:
 #   ./upgrade-model.sh <new-model>           # Upgrade to new model
@@ -292,7 +292,7 @@ cmd_list() {
     fi
     
     echo ""
-    echo "Download more models with: model-bootstrap.sh"
+    echo "For current GGUF downloads and swaps, see: docs/MODEL-MANAGEMENT.md"
 }
 
 cmd_current() {
@@ -441,6 +441,11 @@ Usage:
   $0 --current           Show current model
   $0 --rollback          Rollback to previous model
   $0 --help              Show this help
+
+Note:
+  This is a legacy helper for model directories containing config.json.
+  Current GGUF installs should use the Dashboard Models page or
+  docs/MODEL-MANAGEMENT.md.
 
 Examples:
   $0 Qwen2.5-32B-Instruct-AWQ

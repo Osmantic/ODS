@@ -133,7 +133,6 @@ systemctl --user is-active opencode-web &>/dev/null && echo "  • OpenCode:    
 [[ "$ENABLE_VOICE" == "true" ]] && echo "  • TTS (Kokoro):  http://localhost:${SERVICE_PORTS[tts]:-8880}"
 [[ "$ENABLE_WORKFLOWS" == "true" ]] && echo "  • n8n:           http://localhost:${SERVICE_PORTS[n8n]:-5678}"
 [[ "$ENABLE_RAG" == "true" ]] && echo "  • Qdrant:        http://localhost:${SERVICE_PORTS[qdrant]:-6333}"
-[[ "${ENABLE_DREAMFORGE:-}" == "true" ]] && echo "  • DreamForge:    http://localhost:${SERVICE_PORTS[dreamforge]:-3010}"
 echo ""
 
 # Configuration summary
@@ -364,6 +363,10 @@ if command -v dream_readiness_summary >/dev/null 2>&1; then
             "${SERVICE_PORTS[qdrant]:-6333}" "${SERVICE_HEALTH[qdrant]:-/}" "$(sr_container qdrant)" "http://localhost:${SERVICE_PORTS[qdrant]:-6333}"
         [[ "${ENABLE_COMFYUI:-}" == "true" ]] && printf 'ComfyUI|http://127.0.0.1:%s%s|%s|%s\n' \
             "${SERVICE_PORTS[comfyui]:-8188}" "${SERVICE_HEALTH[comfyui]:-/}" "$(sr_container comfyui)" "http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
+        # Ensure the block exits 0 regardless of the trailing optional conditionals:
+        # under set -e + pipefail, a false `[[ ENABLE_x ]] && printf` makes the block
+        # return 1, which propagates through the pipe and trips the ERR trap.
+        :
     } | dream_readiness_summary "dream status" "$LOG_FILE" "$_dashboard_url"
 fi
 

@@ -266,7 +266,7 @@ start_native_llama() {
 
     read_dream_env
     local gguf_file="${ENV_GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}"
-    local ctx_size="${ENV_CTX_SIZE:-16384}"
+    local ctx_size="${ENV_CTX_SIZE:-131072}"
     local model_path="${INSTALL_DIR}/data/models/${gguf_file}"
 
     if [[ ! -f "$model_path" ]]; then
@@ -297,6 +297,8 @@ start_native_llama() {
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_K:-}" ]] && llama_args+=(--cache-type-k "$ENV_LLAMA_ARG_CACHE_TYPE_K")
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_V:-}" ]] && llama_args+=(--cache-type-v "$ENV_LLAMA_ARG_CACHE_TYPE_V")
     [[ -n "${ENV_LLAMA_ARG_N_CPU_MOE:-}" ]] && llama_args+=(--n-cpu-moe "$ENV_LLAMA_ARG_N_CPU_MOE")
+    [[ -n "${ENV_LLAMA_ARG_SPEC_TYPE:-}" ]] && llama_args+=(--spec-type "$ENV_LLAMA_ARG_SPEC_TYPE")
+    [[ -n "${ENV_LLAMA_ARG_SPEC_DRAFT_N_MAX:-}" ]] && llama_args+=(--spec-draft-n-max "$ENV_LLAMA_ARG_SPEC_DRAFT_N_MAX")
 
     "$LLAMA_SERVER_BIN" "${llama_args[@]}" > "$LLAMA_SERVER_LOG" 2>&1 &
     local pid=$!

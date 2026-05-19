@@ -2,7 +2,7 @@ services:
   dream-proxy:
     # Pinned Caddy 2.x. Same image we use for the Hermes auth proxy — single
     # static binary, ~50MB, native WS/SSE support, simple Caddyfile config.
-    image: caddy:2.8.4-alpine
+    image: caddy:2.11.3-alpine
     container_name: dream-proxy
     restart: unless-stopped
     depends_on:

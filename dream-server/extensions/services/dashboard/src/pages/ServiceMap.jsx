@@ -37,7 +37,6 @@ const CATEGORY_MAP = {
   openclaw: 'user-facing',
   dashboard: 'user-facing',
   comfyui: 'user-facing',
-  dreamforge: 'user-facing',
   opencode: 'user-facing',
 }
 
@@ -46,7 +45,6 @@ const NAME_TO_ID = {
   'ComfyUI (Image Generation)': 'comfyui',
   'Dashboard (Control Center)': 'dashboard',
   'Dashboard API (System Status)': 'dashboard-api',
-  DreamForge: 'dreamforge',
   'Kokoro (TTS)': 'tts',
   'LiteLLM (API Gateway)': 'litellm',
   'llama-server (LLM Inference)': 'llama-server',
@@ -83,8 +81,6 @@ const KNOWN_EDGES = [
   ['privacy-shield', 'litellm', 'privacy'],
   ['comfyui', 'open-webui', 'API'],
   ['ape', 'litellm', 'LLM proxy'],
-  ['dreamforge', 'litellm', 'LLM proxy'],
-  ['dreamforge', 'searxng', 'search'],
 ]
 
 const EDGE_META = {

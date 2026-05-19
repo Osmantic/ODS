@@ -3,6 +3,7 @@
 import sqlite3
 import os
 import threading
+from datetime import date, timedelta
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "data", "usage.db"))
 
@@ -59,7 +60,9 @@ def init_db():
             -- Derived
             estimated_cost_usd REAL DEFAULT 0,
             duration_ms INTEGER DEFAULT 0,
-            stop_reason TEXT
+            stop_reason TEXT,
+            provider_name TEXT,
+            cost_source TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage(timestamp);
@@ -73,6 +76,8 @@ def init_db():
         "filter_chars_saved": "INTEGER DEFAULT 0",
         "filter_tokens_saved": "INTEGER DEFAULT 0",
         "filter_tools_removed": "INTEGER DEFAULT 0",
+        "provider_name": "TEXT",
+        "cost_source": "TEXT",
     }
 
     import re
@@ -108,6 +113,7 @@ def log_usage(entry: dict):
         "conversation_history_chars",
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
         "estimated_cost_usd", "duration_ms", "stop_reason",
+        "provider_name", "cost_source",
         "filter_chars_saved", "filter_tokens_saved", "filter_tools_removed",
     ]
     values = [entry.get(c) for c in cols]
@@ -129,6 +135,215 @@ def query_usage(agent: str | None = None, hours: int = 24, limit: int = 200) -> 
     params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
+
+
+def _parse_report_dates(start: str, end: str) -> tuple[date, date, date]:
+    start_day = date.fromisoformat(start)
+    end_day = date.fromisoformat(end)
+    if end_day < start_day:
+        raise ValueError("end must be on or after start")
+    return start_day, end_day, end_day + timedelta(days=1)
+
+
+def _date_range(start_day: date, end_day: date) -> list[str]:
+    days = []
+    current = start_day
+    while current <= end_day:
+        days.append(current.isoformat())
+        current += timedelta(days=1)
+    return days
+
+
+def _normalize_cost_source(row: dict) -> str:
+    source = row.get("cost_source")
+    if source in {"actual_billed", "priced_from_tokens", "local_zero_cost", "untracked"}:
+        return source
+    if float(row.get("estimated_cost_usd") or 0) > 0:
+        return "priced_from_tokens"
+    local_agents = set(filter(None, os.environ.get("LOCAL_MODEL_AGENTS", "").split(",")))
+    if row.get("agent") in local_agents or row.get("provider_name") == "local":
+        return "local_zero_cost"
+    return "untracked"
+
+
+def _empty_report(start: str, end: str) -> dict:
+    start_day, end_day, _ = _parse_report_dates(start, end)
+    return {
+        "period": {"start": start, "end": end},
+        "summary": {
+            "spend_usd": 0,
+            "requests": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "total_tokens": 0,
+            "tracked_providers": 0,
+            "billing_providers": 0,
+            "local_providers": 0,
+            "untracked_providers": 0,
+            "paid_cost_usd": 0,
+            "local_cost_usd": 0,
+        },
+        "daily": [
+            {
+                "date": day,
+                "spend_usd": 0,
+                "requests": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+            }
+            for day in _date_range(start_day, end_day)
+        ],
+        "models": [],
+        "services": [],
+        "sources": [],
+    }
+
+
+def query_report(start: str, end: str) -> dict:
+    """Aggregate real usage/cost data for an inclusive date range."""
+    start_day, end_day, end_exclusive = _parse_report_dates(start, end)
+    conn = _get_conn()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT
+            timestamp, agent, model, provider_name, cost_source,
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+            estimated_cost_usd
+        FROM usage
+        WHERE timestamp >= ? AND timestamp < ?
+        ORDER BY timestamp ASC
+        """,
+        (f"{start_day.isoformat()}T00:00:00Z", f"{end_exclusive.isoformat()}T00:00:00Z"),
+    ).fetchall()
+
+    report = _empty_report(start, end)
+    daily = {row["date"]: row for row in report["daily"]}
+    models: dict[tuple[str, str, str, str], dict] = {}
+    services: dict[str, dict] = {}
+    sources: dict[str, dict] = {}
+    provider_names = set()
+    billing_providers = set()
+    local_providers = set()
+    untracked_providers = set()
+
+    for sqlite_row in rows:
+        row = dict(sqlite_row)
+        day = (row.get("timestamp") or "")[:10]
+        if day not in daily:
+            continue
+        service = row.get("agent") or "unknown"
+        model = row.get("model") or "unknown"
+        provider = row.get("provider_name") or "unknown"
+        source = _normalize_cost_source(row)
+        input_tokens = int(row.get("input_tokens") or 0)
+        output_tokens = int(row.get("output_tokens") or 0)
+        cache_read = int(row.get("cache_read_tokens") or 0)
+        cache_write = int(row.get("cache_write_tokens") or 0)
+        cost = float(row.get("estimated_cost_usd") or 0)
+
+        provider_names.add(provider)
+        if source in {"actual_billed", "priced_from_tokens"}:
+            billing_providers.add(provider)
+        elif source == "local_zero_cost":
+            local_providers.add(provider)
+        else:
+            untracked_providers.add(provider)
+
+        day_row = daily[day]
+        day_row["spend_usd"] += cost
+        day_row["requests"] += 1
+        day_row["input_tokens"] += input_tokens
+        day_row["output_tokens"] += output_tokens
+        day_row["cache_read_tokens"] += cache_read
+        day_row["cache_write_tokens"] += cache_write
+
+        model_key = (model, provider, service, source)
+        model_row = models.setdefault(model_key, {
+            "model": model,
+            "provider": provider,
+            "service": service,
+            "cost_source": source,
+            "requests": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "cost_usd": 0,
+        })
+        service_row = services.setdefault(service, {
+            "service": service,
+            "requests": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "cost_usd": 0,
+        })
+        source_row = sources.setdefault(source, {
+            "source": source,
+            "requests": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "cost_usd": 0,
+        })
+
+        for target in (model_row, service_row, source_row):
+            target["requests"] += 1
+            target["input_tokens"] += input_tokens
+            target["output_tokens"] += output_tokens
+            target["cache_read_tokens"] += cache_read
+            target["cache_write_tokens"] += cache_write
+            target["cost_usd"] += cost
+
+    summary = report["summary"]
+    summary["requests"] = len(rows)
+    for day_row in report["daily"]:
+        summary["spend_usd"] += day_row["spend_usd"]
+        summary["input_tokens"] += day_row["input_tokens"]
+        summary["output_tokens"] += day_row["output_tokens"]
+        summary["cache_read_tokens"] += day_row["cache_read_tokens"]
+        summary["cache_write_tokens"] += day_row["cache_write_tokens"]
+        day_row["spend_usd"] = round(day_row["spend_usd"], 6)
+    summary["total_tokens"] = (
+        summary["input_tokens"]
+        + summary["output_tokens"]
+        + summary["cache_read_tokens"]
+        + summary["cache_write_tokens"]
+    )
+    summary["spend_usd"] = round(summary["spend_usd"], 6)
+    summary["paid_cost_usd"] = round(sum(
+        source["cost_usd"] for source in sources.values()
+        if source["source"] in {"actual_billed", "priced_from_tokens"}
+    ), 6)
+    summary["local_cost_usd"] = round(sum(
+        source["cost_usd"] for source in sources.values()
+        if source["source"] == "local_zero_cost"
+    ), 6)
+    summary["tracked_providers"] = len(provider_names)
+    summary["billing_providers"] = len(billing_providers)
+    summary["local_providers"] = len(local_providers)
+    summary["untracked_providers"] = len(untracked_providers)
+
+    report["models"] = sorted(
+        ({**row, "cost_usd": round(row["cost_usd"], 6)} for row in models.values()),
+        key=lambda row: (-row["cost_usd"], row["model"], row["service"]),
+    )
+    report["services"] = sorted(
+        ({**row, "cost_usd": round(row["cost_usd"], 6)} for row in services.values()),
+        key=lambda row: (-row["cost_usd"], row["service"]),
+    )
+    report["sources"] = sorted(
+        ({**row, "cost_usd": round(row["cost_usd"], 6)} for row in sources.values()),
+        key=lambda row: row["source"],
+    )
+    return report
 
 
 def query_summary(hours: int = 24) -> list[dict]:

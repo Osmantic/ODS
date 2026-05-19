@@ -406,7 +406,9 @@ docker compose down
 ```
 
 **4. Manual download (advanced):**
-If automatic download keeps failing, you can download the model manually using huggingface-cli.
+If automatic download keeps failing, see
+[`MODEL-MANAGEMENT.md`](MODEL-MANAGEMENT.md) for the supported model directory,
+catalog filename matching, and manual GGUF swap checklist.
 
 ### Problem: "Web UI loads but AI doesn't respond"
 

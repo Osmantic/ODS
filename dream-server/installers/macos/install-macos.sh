@@ -14,6 +14,7 @@
 #   ./install-macos.sh --dry-run        # Validate without installing
 #   ./install-macos.sh --all            # Enable all optional services
 #   ./install-macos.sh --non-interactive # Headless install (defaults)
+#   ./install-macos.sh --no-bootstrap   # Wait for the full model before launch
 #
 # ============================================================================
 
@@ -75,11 +76,17 @@ TIER_OVERRIDE=""
 ENABLE_VOICE=false
 ENABLE_WORKFLOWS=false
 ENABLE_RAG=false
+ENABLE_RECOMMENDED=true
 # Hermes Agent is the new default agent as of 2026-05-12. OpenClaw is
 # deprecated and gates behind --openclaw for the deprecation release.
 ENABLE_HERMES=true
 ENABLE_OPENCLAW=false
 ENABLE_BRAVE_SEARCH=false
+ENABLE_APE=true
+ENABLE_PERPLEXICA=false
+ENABLE_PRIVACY_SHIELD=false
+ENABLE_DREAM_PROXY=false
+ENABLE_TAILSCALE=false
 # Langfuse defaults OFF because its clickhouse + postgres + minio stack adds
 # ~500MB baseline memory. Enable via --langfuse, --all, or post-install
 # `dream enable langfuse`. --no-langfuse honored as explicit override so a
@@ -89,6 +96,8 @@ NO_LANGFUSE_EXPLICIT=false
 OPENCLAW_EXPLICIT=false
 ALL_FEATURES=false
 CLOUD_MODE=false
+NO_BOOTSTRAP=false
+HERMES_CONTEXT_SIZE=131072
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -99,6 +108,8 @@ while [[ $# -gt 0 ]]; do
         --voice)         ENABLE_VOICE=true; shift ;;
         --workflows)     ENABLE_WORKFLOWS=true; shift ;;
         --rag)           ENABLE_RAG=true; shift ;;
+        --recommended)   ENABLE_RECOMMENDED=true; shift ;;
+        --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
         --hermes)        ENABLE_HERMES=true; shift ;;
         --no-hermes)     ENABLE_HERMES=false; shift ;;
         --openclaw)      ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
@@ -107,6 +118,7 @@ while [[ $# -gt 0 ]]; do
         --no-langfuse)   ENABLE_LANGFUSE=false; NO_LANGFUSE_EXPLICIT=true; shift ;;
         --all)           ALL_FEATURES=true; shift ;;
         --cloud)         CLOUD_MODE=true; shift ;;
+        --no-bootstrap)  NO_BOOTSTRAP=true; shift ;;
         *)               echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -115,11 +127,15 @@ if $ALL_FEATURES; then
     ENABLE_VOICE=true
     ENABLE_WORKFLOWS=true
     ENABLE_RAG=true
+    ENABLE_RECOMMENDED=true
     # --all enables the new default Hermes Agent. OpenClaw stays opt-in via
     # --openclaw during the deprecation release; will be removed entirely
     # in the next release.
     ENABLE_HERMES=true
     $OPENCLAW_EXPLICIT || ENABLE_OPENCLAW=false
+    ENABLE_APE=true
+    ENABLE_PERPLEXICA=true
+    ENABLE_PRIVACY_SHIELD=true
     # --all enables Langfuse unless the user explicitly passed --no-langfuse.
     $NO_LANGFUSE_EXPLICIT || ENABLE_LANGFUSE=true
 fi
@@ -363,6 +379,31 @@ if ! $DISK_SUFFICIENT; then
 fi
 ai_ok "Disk space OK"
 
+# PyYAML — required by scripts/resolve-compose-stack.sh for the compose
+# security scan (it parses every extension/overlay manifest before letting
+# user composes through). Linux distros generally bundle python3-yaml with
+# the system python; macOS does not. Without PyYAML, every extension install
+# fails at compose resolution with a cryptic "ModuleNotFoundError: No module
+# named 'yaml'" returned through the dashboard-api as state=error.
+if command -v python3 >/dev/null 2>&1; then
+    if python3 -c 'import yaml' >/dev/null 2>&1; then
+        ai_ok "PyYAML available"
+    else
+        ai "Installing PyYAML (required by compose resolver)..."
+        if python3 -m pip install --user --quiet --no-warn-script-location pyyaml 2>&1 | tee -a "$LOG_FILE" >/dev/null \
+           && python3 -c 'import yaml' >/dev/null 2>&1; then
+            ai_ok "PyYAML installed (python3 -m pip --user)"
+        else
+            ai_err "Failed to install PyYAML for $(command -v python3)."
+            ai_err "Run manually: python3 -m pip install --user pyyaml"
+            exit 1
+        fi
+    fi
+else
+    ai_err "python3 not available — required for compose resolver"
+    exit 1
+fi
+
 # Ollama conflict detection
 check_ollama_conflict
 if $OLLAMA_RUNNING; then
@@ -454,6 +495,44 @@ if [[ -z "${MODEL_PROFILE:-}" ]]; then
 fi
 
 resolve_tier_config "$SELECTED_TIER"
+if [[ "${DREAM_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_TIER" != "CLOUD" ]]; then
+    _selector_script="${SOURCE_ROOT}/scripts/select-model.py"
+    _selector_catalog="${SOURCE_ROOT}/config/model-library.json"
+    if [[ -f "$_selector_script" && -f "$_selector_catalog" ]]; then
+        _selector_python=""
+        if [[ -f "${SOURCE_ROOT}/lib/python-cmd.sh" ]]; then
+            # shellcheck source=/dev/null
+            . "${SOURCE_ROOT}/lib/python-cmd.sh"
+            _selector_python="$(ds_detect_python_cmd || true)"
+        fi
+        if [[ -z "$_selector_python" ]]; then
+            if command -v python3 >/dev/null 2>&1; then
+                _selector_python="python3"
+            elif command -v python >/dev/null 2>&1; then
+                _selector_python="python"
+            fi
+        fi
+        if [[ -n "$_selector_python" ]]; then
+            _selector_env="$("$_selector_python" "$_selector_script" \
+                --catalog "$_selector_catalog" \
+                --backend "apple" \
+                --memory-type "unified" \
+                --vram-mb "0" \
+                --ram-gb "${SYSTEM_RAM_GB:-0}" \
+                --profile "${MODEL_PROFILE_EFFECTIVE:-${MODEL_PROFILE:-qwen}}" \
+                --tier "$SELECTED_TIER" \
+                --host-arch "$(uname -m 2>/dev/null || echo unknown)" \
+                --installable-only \
+                --env 2>>"$LOG_FILE" || true)"
+            if [[ -n "$_selector_env" ]]; then
+                eval "$_selector_env"
+                ai "Model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"
+            else
+                ai "Model selector unavailable; using tier-map model ${LLM_MODEL}"
+            fi
+        fi
+    fi
+fi
 if [[ -n "${LLAMA_CPP_RELEASE_TAG_OVERRIDE:-}" ]]; then
     LLAMA_CPP_RELEASE_TAG="$LLAMA_CPP_RELEASE_TAG_OVERRIDE"
     LLAMA_CPP_MACOS_ASSET="llama-${LLAMA_CPP_RELEASE_TAG}-bin-macos-arm64.tar.gz"
@@ -464,8 +543,16 @@ info_box "Model:" "${LLM_MODEL}"
 info_box "GGUF:" "${GGUF_FILE}"
 info_box "Context:" "${MAX_CONTEXT}"
 
-# Re-check disk space for model + Docker images
-if [[ "$GGUF_FILE" =~ 31B ]]; then
+# Re-check disk space for model + Docker images. Prefer the catalog selector's
+# exact model size when available; it can choose entries that do not fit the
+# older tier-map filename heuristics.
+_model_size_mb="${LLM_MODEL_SIZE_MB:-0}"
+if [[ "$_model_size_mb" =~ ^[0-9]+$ && "$_model_size_mb" -gt 0 ]]; then
+    _model_gb=$(( (_model_size_mb + 1023) / 1024 ))
+    NEEDED_GB=$(( _model_gb + 15 ))
+elif [[ "$GGUF_FILE" =~ 80B|Coder-Next ]]; then
+    NEEDED_GB=65
+elif [[ "$GGUF_FILE" =~ 31B ]]; then
     NEEDED_GB=38
 elif [[ "$GGUF_FILE" =~ 30B|26B ]]; then
     NEEDED_GB=35
@@ -501,13 +588,21 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
         1)
             ENABLE_VOICE=true; ENABLE_WORKFLOWS=true
             ENABLE_RAG=true; ENABLE_HERMES=true
+            ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
+            ENABLE_APE=true
+            ENABLE_PERPLEXICA=true
+            ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
             ;;
         2)
             ENABLE_VOICE=false; ENABLE_WORKFLOWS=false
-            ENABLE_RAG=false; ENABLE_HERMES=false
+            ENABLE_RAG=false; ENABLE_RECOMMENDED=false
+            ENABLE_HERMES=false
             ENABLE_OPENCLAW=false
+            ENABLE_APE=false
+            ENABLE_PERPLEXICA=false
+            ENABLE_PRIVACY_SHIELD=false
             ENABLE_LANGFUSE=false
             ;;
         3)
@@ -517,29 +612,55 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             [[ "$yn" =~ ^[yY] ]] && ENABLE_WORKFLOWS=true
             read -r -p "  Enable RAG (Qdrant + embeddings)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_RAG=true
+            read -r -p "  Enable recommended support (LiteLLM + SearXNG + Token Spy)? [Y/n] " yn < /dev/tty
+            [[ "$yn" =~ ^[nN] ]] && ENABLE_RECOMMENDED=false || ENABLE_RECOMMENDED=true
             read -r -p "  Enable Hermes Agent (default AI agent)? [Y/n] " yn < /dev/tty
             [[ "$yn" =~ ^[nN] ]] && ENABLE_HERMES=false || ENABLE_HERMES=true
             read -r -p "  Enable OpenClaw (DEPRECATED — Hermes replaces it)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_OPENCLAW=true
+            read -r -p "  Enable Perplexica deep research? [y/N] " yn < /dev/tty
+            [[ "$yn" =~ ^[yY] ]] && ENABLE_PERPLEXICA=true
+            read -r -p "  Enable Privacy Shield? [y/N] " yn < /dev/tty
+            [[ "$yn" =~ ^[yY] ]] && ENABLE_PRIVACY_SHIELD=true
             read -r -p "  Enable Langfuse (LLM observability, ~500MB)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_LANGFUSE=true
             ;;
         *)
             ENABLE_VOICE=true; ENABLE_WORKFLOWS=true
             ENABLE_RAG=true; ENABLE_HERMES=true
+            ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
+            ENABLE_APE=true
+            ENABLE_PERPLEXICA=true
+            ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
             ;;
     esac
+fi
+
+if $ENABLE_HERMES && ! $CLOUD_MODE; then
+    if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
+        ai_warn "Hermes enabled: increasing macOS llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (128K)."
+        MAX_CONTEXT="$HERMES_CONTEXT_SIZE"
+    fi
 fi
 
 ai "Features:"
 info_box "  Voice:" "$(if $ENABLE_VOICE; then echo enabled; else echo disabled; fi)"
 info_box "  Workflows:" "$(if $ENABLE_WORKFLOWS; then echo enabled; else echo disabled; fi)"
 info_box "  RAG:" "$(if $ENABLE_RAG; then echo enabled; else echo disabled; fi)"
+info_box "  Recommended:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
 info_box "  Hermes:" "$(if $ENABLE_HERMES; then echo enabled; else echo disabled; fi)"
 info_box "  OpenClaw:" "$(if $ENABLE_OPENCLAW; then echo "enabled (DEPRECATED)"; else echo disabled; fi)"
+info_box "  Perplexica:" "$(if $ENABLE_PERPLEXICA; then echo enabled; else echo disabled; fi)"
+info_box "  Privacy Shield:" "$(if $ENABLE_PRIVACY_SHIELD; then echo enabled; else echo disabled; fi)"
 info_box "  Langfuse:" "$(if $ENABLE_LANGFUSE; then echo enabled; else echo disabled; fi)"
+# The macOS installer doesn't currently ship a ComfyUI container — none of
+# the published ComfyUI images target Apple Silicon Metal, and the upstream
+# Python build under MPS is non-trivial to package as a Docker service.
+# Surface this to operators who passed --all so they aren't left wondering
+# why the dashboard shows no image-gen tile after install.
+info_box "  ComfyUI:" "not available on macOS (no MPS Docker image upstream)"
 
 if $ENABLE_VOICE && [[ -z "$_docker_cpu_override" ]] && [[ "${_docker_cpu_preflight_min:-0}" -lt 10 ]]; then
     _require_docker_cpu_budget 10 8 "voice-enabled compose stack"
@@ -572,7 +693,6 @@ else
     mkdir -p "${INSTALL_DIR}/data/qdrant"
     mkdir -p "${INSTALL_DIR}/data/models"
     mkdir -p "${INSTALL_DIR}/data/privacy-shield"
-    mkdir -p "${INSTALL_DIR}/data/dreamforge"
     mkdir -p "${INSTALL_DIR}/data/ape"
     mkdir -p "${INSTALL_DIR}/data/token-spy"
     mkdir -p "${INSTALL_DIR}/data/hermes"
@@ -608,16 +728,32 @@ else
         ai "Running in-place, skipping file copy"
     fi
 
+    # Retired from the shipped stack after Hermes became the default agent
+    # surface. Remove stale service files left behind by non-pruning upgrades,
+    # while preserving data/dreamforge for user-controlled archival.
+    if [[ -d "${INSTALL_DIR}/extensions/services/dreamforge" ]]; then
+        rm -rf "${INSTALL_DIR}/extensions/services/dreamforge"
+        log "Removed retired DreamForge service files from extensions/services"
+    fi
+
     # Copy extensions library to data dir for dashboard portal.
-    # SOURCE_ROOT resolves to dream-server/, so we climb one more level
-    # ($SOURCE_ROOT/..) to reach the repo root where resources/ lives.
-    _ext_lib_src="${SOURCE_ROOT}/../resources/dev/extensions-library/services"
-    if [[ -d "$_ext_lib_src" ]]; then
+    # Source resolution: dev installs and full checkouts read the product-owned
+    # library under extensions/library/. Bootstrap installs also get the same
+    # templates bundled by get-dream-server.sh under extensions-library-bundle/.
+    _ext_lib_src=""
+    for _candidate in \
+        "${SOURCE_ROOT}/extensions/library/services" \
+        "${INSTALL_DIR}/extensions/library/services" \
+        "${INSTALL_DIR}/extensions-library-bundle/services"
+    do
+        if [[ -d "$_candidate" ]]; then _ext_lib_src="$_candidate"; break; fi
+    done
+    if [[ -n "$_ext_lib_src" ]]; then
         mkdir -p "${INSTALL_DIR}/data/extensions-library"
         cp -r "$_ext_lib_src/." "${INSTALL_DIR}/data/extensions-library/"
-        ai_ok "Extensions library copied to data/extensions-library/"
+        ai_ok "Extensions library copied to data/extensions-library/ (from $_ext_lib_src)"
     else
-        ai_warn "Extensions library not found at ${_ext_lib_src}; dashboard Extensions page will return 503 until populated"
+        ai_warn "Extensions library not found; dashboard Extensions page will return 503 until populated"
     fi
 
     # Copy CLI tool to install root
@@ -638,6 +774,11 @@ else
         ai_ok "Preserved existing .env (use --force to regenerate secrets)"
     else
         ai_ok "Generated .env with secure secrets"
+    fi
+    if $ENABLE_HERMES && ! $CLOUD_MODE; then
+        upsert_env_value "${INSTALL_DIR}/.env" "MAX_CONTEXT" "$MAX_CONTEXT"
+        upsert_env_value "${INSTALL_DIR}/.env" "CTX_SIZE" "$MAX_CONTEXT"
+        ai_ok "Set macOS llama context to ${MAX_CONTEXT} for Hermes"
     fi
 
     # Generate SearXNG config
@@ -743,6 +884,62 @@ else
             sed -i '' "s|^CTX_SIZE=.*|CTX_SIZE=${MAX_CONTEXT}|" "$_env_file"
             ai_ok "Patched .env for bootstrap model ($GGUF_FILE)"
         fi
+
+    fi
+
+    # ── Hermes config substitution (macOS-specific) ──
+    #
+    # Same pattern as the Linux phase 11 substitution but with the
+    # macOS-specific base_url. The template ships with
+    # `base_url: "http://llama-server:8080/v1"`, which only resolves
+    # inside the dream-server compose bridge. On macOS llama-server
+    # runs native on the host (Metal binary, port 8080), so the
+    # Hermes container reaches it via host.docker.internal — and
+    # crucially `model.base_url` in cli-config.yaml WINS over the
+    # OPENAI_BASE_URL env compose.yaml sets, so the env override the
+    # Linux path relies on doesn't help here.
+    #
+    # Also patch model.default to the actual served file name. Native
+    # Mac llama.cpp serves under the file basename (Qwen3.5-9B-Q4_K_M.gguf
+    # rather than the friendly "qwen3.5-9b" the template ships with).
+    # This must run for all local macOS installs, not only bootstrap mode:
+    # Tier 0, offline/no-bootstrap, and already-downloaded full models need
+    # the same host.docker.internal base_url.
+    if ! $CLOUD_MODE; then
+        _hermes_tpl="${INSTALL_DIR}/extensions/services/hermes/cli-config.yaml.template"
+        if [[ -f "$_hermes_tpl" ]]; then
+            _hermes_base_url="http://host.docker.internal:${OLLAMA_PORT:-8080}/v1"
+            _hermes_patcher="${INSTALL_DIR}/scripts/patch-hermes-config.py"
+            if [[ -f "$_hermes_patcher" ]]; then
+                python3 "$_hermes_patcher" "$_hermes_tpl" \
+                    --model "$GGUF_FILE" \
+                    --base-url "$_hermes_base_url" \
+                    --context-length "$MAX_CONTEXT" >>"$LOG_FILE" 2>&1 || \
+                    ai_warn "Hermes template patch failed — hand-edit ${_hermes_tpl} if prompts hang."
+                _hermes_live="${INSTALL_DIR}/data/hermes/config.yaml"
+                if [[ -f "$_hermes_live" ]]; then
+                    python3 "$_hermes_patcher" "$_hermes_live" \
+                        --model "$GGUF_FILE" \
+                        --base-url "$_hermes_base_url" \
+                        --context-length "$MAX_CONTEXT" >>"$LOG_FILE" 2>&1 || \
+                        ai_warn "Hermes live config patch failed — hand-edit ${_hermes_live} and restart Hermes if prompts hang."
+                fi
+            else
+                sed -i '' \
+                    -e "s|^  default: \"qwen3.5-9b\"|  default: \"${GGUF_FILE}\"|" \
+                    -e "s|^  base_url: \"http://llama-server:8080/v1\"|  base_url: \"${_hermes_base_url}\"|" \
+                    -e "s|^  context_length: .*|  context_length: ${MAX_CONTEXT}|" \
+                    -e "s|^    context_length: .*|    context_length: ${MAX_CONTEXT}|" \
+                    "$_hermes_tpl"
+            fi
+            if grep -q "host.docker.internal" "$_hermes_tpl" && \
+               grep -q "^  default: \"${GGUF_FILE}\"$" "$_hermes_tpl" && \
+               grep -q "^  context_length: ${MAX_CONTEXT}$" "$_hermes_tpl"; then
+                ai_ok "Patched Hermes config for macOS (model=${GGUF_FILE}, context=${MAX_CONTEXT}, base_url=host.docker.internal)"
+            else
+                ai_warn "Hermes template patch incomplete — Hermes may fail to reach llama-server. Hand-edit ${_hermes_tpl} if prompts hang."
+            fi
+        fi
     fi
 
     # ── Download and start native llama-server (Metal) ──
@@ -835,6 +1032,22 @@ else
                 sleep 2
             fi
         fi
+        # Reap orphan native llama-server processes from prior install runs.
+        # The PID file only tracks the most recent process, so model switches
+        # or interrupted installs can leave older copies shadowing the new
+        # config. Scope to this install dir so personal llama-server installs
+        # elsewhere are left alone, and do this only when we are about to start
+        # the replacement server so failed preflights do not take a working
+        # server down.
+        _reaped=0
+        if command -v pgrep >/dev/null 2>&1 && [[ -x "${LLAMA_SERVER_BIN:-}" ]]; then
+            while read -r _pid; do
+                [[ -z "$_pid" ]] && continue
+                kill "$_pid" 2>/dev/null && _reaped=$((_reaped + 1))
+            done < <(pgrep -f "$LLAMA_SERVER_BIN" 2>/dev/null)
+            [[ "$_reaped" -gt 0 ]] && ai "Reaped $_reaped orphan llama-server process(es) from prior install run(s)."
+        fi
+        unset _reaped
 
         # Read reasoning mode from .env (default off to prevent thinking models
         # from consuming the entire token budget on internal reasoning)
@@ -857,6 +1070,8 @@ else
         _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _n_cpu_moe=$(grep '^LLAMA_ARG_N_CPU_MOE=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+        _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+        _spec_draft_n_max=$(grep '^LLAMA_ARG_SPEC_DRAFT_N_MAX=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _llama_args=(
             --host "$_bind" --port 8080
             --model "$MODEL_FULL_PATH"
@@ -869,6 +1084,8 @@ else
         [[ -n "$_cache_type_k" ]] && _llama_args+=(--cache-type-k "$_cache_type_k")
         [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")
         [[ -n "$_n_cpu_moe" ]] && _llama_args+=(--n-cpu-moe "$_n_cpu_moe")
+        [[ -n "$_spec_type" ]] && _llama_args+=(--spec-type "$_spec_type")
+        [[ -n "$_spec_draft_n_max" ]] && _llama_args+=(--spec-draft-n-max "$_spec_draft_n_max")
 
         "$LLAMA_SERVER_BIN" "${_llama_args[@]}" > "$LLAMA_SERVER_LOG" 2>&1 &
         LLAMA_PID=$!
@@ -899,6 +1116,26 @@ else
 
         if $HEALTHY; then
             ai_ok "Native llama-server healthy (PID ${LLAMA_PID})"
+
+            # ── Pre-warm the LLM slot ──
+            # /health returning 200 only means the model is mmap'd. The
+            # FIRST chat completion still has to materialize KV cache and
+            # JIT compile fused kernels — during that, llama-server 503s
+            # concurrent requests. Hermes Agent's default 3-retry / 120s
+            # budget burns out on this on slower hardware, so we force
+            # the slot through cold path here while we're already in the
+            # "this may take a minute" install context. Bounded by curl
+            # --max-time so a stalled llama-server can't hang the install.
+            _prewarm_url="http://127.0.0.1:${OLLAMA_PORT:-8080}/v1/chat/completions"
+            _prewarm_model="${GGUF_FILE:-default}"
+            _prewarm_body="{\"model\":\"${_prewarm_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}"
+            if curl -sf --max-time 120 -X POST "$_prewarm_url" \
+                -H "Content-Type: application/json" \
+                -d "$_prewarm_body" >/dev/null 2>&1; then
+                ai_ok "LLM slot pre-warmed (first real chat will be fast)"
+            else
+                ai_warn "LLM pre-warm timed out — first Hermes prompt may need a retry while the slot warms."
+            fi
         else
             ai_warn "llama-server did not become healthy within ${MAX_WAIT}s. It may still be loading."
         fi
@@ -919,6 +1156,9 @@ else
     EXT_DIR="${INSTALL_DIR}/extensions/services"
     CURRENT_BACKEND="apple"
     $CLOUD_MODE && CURRENT_BACKEND="none"
+    if ! $ENABLE_HERMES && ! $ENABLE_OPENCLAW; then
+        ENABLE_APE=false
+    fi
 
     # Sync Langfuse compose state with ENABLE_LANGFUSE before manifest discovery.
     # Langfuse ships as compose.yaml.disabled; enable it here when the user opted
@@ -1002,11 +1242,17 @@ else
             # Check feature flags
             SKIP=false
             case "$SVC_NAME" in
+                litellm|searxng|token-spy) $ENABLE_RECOMMENDED || SKIP=true ;;
                 whisper|tts)   $ENABLE_VOICE || SKIP=true ;;
                 n8n)           $ENABLE_WORKFLOWS || SKIP=true ;;
                 qdrant|embeddings) $ENABLE_RAG || SKIP=true ;;
                 hermes|hermes-proxy) $ENABLE_HERMES || SKIP=true ;;
                 openclaw)      $ENABLE_OPENCLAW || SKIP=true ;;
+                ape)           $ENABLE_APE || SKIP=true ;;
+                perplexica)    $ENABLE_PERPLEXICA || SKIP=true ;;
+                privacy-shield) $ENABLE_PRIVACY_SHIELD || SKIP=true ;;
+                dream-proxy)   $ENABLE_DREAM_PROXY || SKIP=true ;;
+                tailscale)     $ENABLE_TAILSCALE || SKIP=true ;;
                 langfuse)      $ENABLE_LANGFUSE || SKIP=true ;;
                 brave-search)  [[ "${ENABLE_BRAVE_SEARCH:-false}" == "true" ]] || SKIP=true ;;
             esac
@@ -1064,15 +1310,13 @@ else
 
     # ── Rebuild local-built images ─────────────────────────────────────
     # Mirrors phases/11-services.sh on Linux: local Dockerfiles (dashboard,
-    # dashboard-api, ape, token-spy, privacy-shield, and Apple-Silicon
-    # DreamForge builds) can drift from the baked images, so we always
+    # dashboard-api, ape, token-spy, and privacy-shield) can drift from the
+    # baked images, so we always
     # rebuild without cache before `up -d`.
     # ComfyUI has no Apple-Silicon variant (only amd/nvidia/multigpu); the
     # llama-server runs natively on macOS via Metal — neither is built here.
     ai "Rebuilding local-built images (no-cache)..."
     _macos_build_services=(dashboard dashboard-api ape token-spy privacy-shield)
-    _dreamforge_pull_policy="$(grep -m1 '^DREAMFORGE_PULL_POLICY=' "${INSTALL_DIR}/.env" 2>/dev/null | cut -d= -f2- | tr -d '"'\''[:space:]' || true)"
-    [[ "$_dreamforge_pull_policy" == "build" ]] && _macos_build_services+=(dreamforge)
     declare -a _macos_build_pids _macos_build_names
     for _svc in "${_macos_build_services[@]}"; do
         docker compose "${COMPOSE_FLAGS[@]}" build --no-cache "$_svc" >> "$DS_LOG_FILE" 2>&1 &
@@ -1396,7 +1640,7 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
     # macOS reassigns Whisper to 9100 if port 9000 is in use (AirPlay Receiver).
     WHISPER_PORT_RESOLVED="${WHISPER_PORT:-9000}"
     WHISPER_URL="http://127.0.0.1:${WHISPER_PORT_RESOLVED}"
-    STT_RECOVERY_CMD="curl --max-time 3600 -X POST ${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}"
+    STT_RECOVERY_CMD="curl --max-time 1800 -X POST ${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}"
 
     # Step 1: wait briefly for the models API to be ready (max 15s).
     _stt_api_ready=false
@@ -1416,8 +1660,13 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
         ai_ok "STT model already cached (${STT_MODEL})"
     else
         # Step 3: POST to trigger download.
+        # max-time 600s (10 min): bounded retry budget so a stuck
+        # huggingface_hub.snapshot_download (well-known on slow links and
+        # under bufferbloat) can't consume the entire install timeout. The
+        # next step verifies cache state via GET and prints the recovery
+        # command if the timeout was hit before completion.
         ai "Downloading STT model (${STT_MODEL})..."
-        curl -s --max-time 3600 -X POST "${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}" \
+        curl -s --max-time 600 -X POST "${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}" \
             >> "$DS_LOG_FILE" 2>&1 || true
 
         # Step 4: verify the model is actually cached.

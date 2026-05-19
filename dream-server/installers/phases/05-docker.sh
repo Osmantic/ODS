@@ -80,18 +80,18 @@ else
             pacman)
                 # Arch/Manjaro/CachyOS/EndeavourOS -- Docker is in the official repos
                 pkg_install docker
-                sudo systemctl enable --now docker.service 2>>"$LOG_FILE" || true
+                ds_sudo systemctl enable --now docker.service 2>>"$LOG_FILE" || true
                 ;;
             xbps)
                 # Void Linux -- runit service management
                 pkg_install docker
-                sudo ln -s /etc/sv/docker /var/service/ 2>/dev/null || true
+                ds_sudo ln -s /etc/sv/docker /var/service/ 2>/dev/null || true
                 ;;
             apk)
                 # Alpine -- OpenRC service management
                 pkg_install docker
-                sudo rc-update add docker boot 2>>"$LOG_FILE" || true
-                sudo service docker start 2>>"$LOG_FILE" || true
+                ds_sudo rc-update add docker boot 2>>"$LOG_FILE" || true
+                ds_sudo service docker start 2>>"$LOG_FILE" || true
                 ;;
             *)
                 # Unknown distro -- try get.docker.com as best-effort fallback
@@ -106,7 +106,7 @@ else
 
         # Add the invoking user (not root) to the docker group
         target_user="${SUDO_USER:-$USER}"
-        sudo usermod -aG docker "$target_user"
+        ds_sudo usermod -aG docker "$target_user"
 
         # In most cases group membership won't take effect until a new login shell.
         if ! id -nG "$target_user" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
@@ -127,14 +127,14 @@ if command -v docker &>/dev/null && ! $DRY_RUN; then
         # Detect package format
         if command -v apt-get &>/dev/null; then
             _distro_codename=$(. /etc/os-release 2>/dev/null && echo "$VERSION_CODENAME" || echo "noble")
-            sudo apt-get install -y --allow-downgrades \
+            ds_sudo apt-get install -y --allow-downgrades \
                 docker-ce=5:29.2.1-1~ubuntu."$(. /etc/os-release && echo "$VERSION_ID")"~"$_distro_codename" \
                 docker-ce-cli=5:29.2.1-1~ubuntu."$(. /etc/os-release && echo "$VERSION_ID")"~"$_distro_codename" \
                 >> "$LOG_FILE" 2>&1 && \
                 ai_ok "Docker downgraded to 29.2.1 (AMD GPU fix)" || \
                 ai_warn "Could not downgrade Docker. GPU containers may fail. Manual fix: sudo apt install docker-ce=5:29.2.1-1~ubuntu.24.04~noble"
         elif command -v dnf &>/dev/null; then
-            sudo dnf downgrade -y docker-ce-29.2.1 docker-ce-cli-29.2.1 >> "$LOG_FILE" 2>&1 && \
+            ds_sudo dnf downgrade -y docker-ce-29.2.1 docker-ce-cli-29.2.1 >> "$LOG_FILE" 2>&1 && \
                 ai_ok "Docker downgraded to 29.2.1 (AMD GPU fix)" || \
                 ai_warn "Could not downgrade Docker. GPU containers may fail."
         elif command -v pacman &>/dev/null; then
@@ -148,7 +148,7 @@ if command -v docker &>/dev/null && ! $DRY_RUN; then
         else
             ai_warn "Could not downgrade Docker on this system. GPU containers may fail."
         fi
-        sudo systemctl restart docker 2>/dev/null || true
+        ds_sudo systemctl restart docker 2>/dev/null || true
     fi
 fi
 
@@ -248,9 +248,9 @@ _docker_ensure_daemon() {
             # Clear start-limit-hit if docker has been restarted too many times
             if systemctl is-failed docker &>/dev/null; then
                 ai_warn "Docker is in failed state (possible start-limit-hit). Resetting..."
-                sudo systemctl reset-failed docker 2>>"$LOG_FILE" || true
+                ds_sudo systemctl reset-failed docker 2>>"$LOG_FILE" || true
             fi
-            sudo systemctl start docker 2>>"$LOG_FILE" || true
+            ds_sudo systemctl start docker 2>>"$LOG_FILE" || true
             # Give the daemon a moment to initialize
             sleep 2
         fi
@@ -349,7 +349,7 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
         ai_ok "NVIDIA Container Toolkit installed"
         # Always regenerate CDI spec — driver version may have changed since last run
         if command -v nvidia-ctk &>/dev/null && ! $DRY_RUN; then
-            sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml 2>>"$LOG_FILE" || true
+            ds_sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml 2>>"$LOG_FILE" || true
         fi
     else
         ai "Installing NVIDIA Container Toolkit..."
@@ -359,7 +359,7 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
                 apt)
                     # Add NVIDIA GPG key (apt's signed-by trust anchor for the toolkit repo)
                     curl -fsSL --max-time 60 https://nvidia.github.io/libnvidia-container/gpgkey | \
-                        sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+                        ds_sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
                     if [[ ! -s /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg ]]; then
                         error "NVIDIA Container Toolkit keyring download failed (empty or missing /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg). Check network connectivity to nvidia.github.io."
                     fi
@@ -394,22 +394,22 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
                     unset _nvidia_expected_fp _nvidia_actual_fp
                     curl -s -L --max-time 60 https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
                         sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-                        sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
+                        ds_sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
                     # Verify we got a valid repo file, not an HTML 404
                     if grep -q '<html' /etc/apt/sources.list.d/nvidia-container-toolkit.list 2>/dev/null; then
                         warn "Failed to download NVIDIA Container Toolkit repo list. Trying fallback..."
                         echo "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/\$(ARCH) /" | \
-                            sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
+                            ds_sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
                     fi
-                    sudo apt-get update
-                    if ! sudo apt-get install -y nvidia-container-toolkit; then
+                    ds_sudo apt-get update
+                    if ! ds_sudo apt-get install -y nvidia-container-toolkit; then
                         error "Failed to install NVIDIA Container Toolkit. Check network connectivity and GPU drivers."
                     fi
                     ;;
                 dnf)
                     curl -s -L --max-time 60 https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \
-                        sudo tee /etc/yum.repos.d/nvidia-container-toolkit.repo > /dev/null
-                    if ! sudo dnf install -y nvidia-container-toolkit 2>>"$LOG_FILE"; then
+                        ds_sudo tee /etc/yum.repos.d/nvidia-container-toolkit.repo > /dev/null
+                    if ! ds_sudo dnf install -y nvidia-container-toolkit 2>>"$LOG_FILE"; then
                         error "Failed to install NVIDIA Container Toolkit. Check network connectivity and NVIDIA repo configuration."
                     fi
                     ;;
@@ -428,9 +428,9 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
                     fi
                     ;;
                 zypper)
-                    sudo zypper addrepo https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo 2>/dev/null || true
-                    sudo zypper --non-interactive --gpg-auto-import-keys refresh 2>>"$LOG_FILE"
-                    if ! sudo zypper --non-interactive install nvidia-container-toolkit 2>>"$LOG_FILE"; then
+                    ds_sudo zypper addrepo https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo 2>/dev/null || true
+                    ds_sudo zypper --non-interactive --gpg-auto-import-keys refresh 2>>"$LOG_FILE"
+                    if ! ds_sudo zypper --non-interactive install nvidia-container-toolkit 2>>"$LOG_FILE"; then
                         error "Failed to install NVIDIA Container Toolkit."
                     fi
                     ;;
@@ -439,9 +439,9 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
                     ;;
             esac
 
-            sudo nvidia-ctk runtime configure --runtime=docker
-            sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml 2>>"$LOG_FILE" || true
-            sudo systemctl restart docker
+            ds_sudo nvidia-ctk runtime configure --runtime=docker
+            ds_sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml 2>>"$LOG_FILE" || true
+            ds_sudo systemctl restart docker
         fi
         if command -v nvidia-container-cli &> /dev/null 2>&1; then
             ai_ok "NVIDIA Container Toolkit installed"

@@ -6,27 +6,34 @@
 # QR CODE DISPLAY
 # ═══════════════════════════════════════════════════════════════
 
+# Best-effort LAN IP detection for remote access URLs.
+_dream_lan_ip() {
+    local lan_ip=""
+    if command -v ip >/dev/null 2>&1; then
+        lan_ip=$(ip route get 1 2>/dev/null | awk '{print $7; exit}')
+    fi
+
+    if [[ -z "$lan_ip" ]] && command -v ifconfig >/dev/null 2>&1; then
+        lan_ip=$(ifconfig 2>/dev/null | awk '/inet / && $2 != "127.0.0.1" {print $2; exit}')
+    fi
+
+    printf '%s' "$lan_ip"
+}
+
 # Print a QR code for the dashboard URL
 # Falls back to plain text if qrencode not available
 print_dashboard_qr() {
-    local url=${1:-"http://localhost:3001"}
-    local hostname
-    hostname=$(hostname 2>/dev/null || echo "localhost")
-    
-    # Try to get LAN IP for remote access
-    local lan_ip=""
-    if command -v ip &>/dev/null; then
-        lan_ip=$(ip route get 1 2>/dev/null | awk '{print $7; exit}')
-    elif command -v ifconfig &>/dev/null; then
-        lan_ip=$(ifconfig 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | head -1 | awk '{print $2}')
+    local display_url="${1:-}"
+    if [[ -z "$display_url" ]]; then
+        local lan_ip
+        lan_ip=$(_dream_lan_ip)
+        display_url="http://${lan_ip:-localhost}:3001"
     fi
-    
-    local display_url="http://${lan_ip:-localhost}:3001"
     
     echo ""
     
     # Try qrencode if available
-    if command -v qrencode &>/dev/null; then
+    if command -v qrencode >/dev/null 2>&1; then
         echo -e "  ${BOLD}Scan to open Dashboard:${NC}"
         echo ""
         qrencode -t ANSIUTF8 -m 2 "$display_url" | sed 's/^/    /'
@@ -65,10 +72,8 @@ print_success_card() {
     local api_url=${4:-"http://localhost:8000/v1"}
     
     # Get LAN IP for remote access URLs
-    local lan_ip=""
-    if command -v ip &>/dev/null; then
-        lan_ip=$(ip route get 1 2>/dev/null | awk '{print $7; exit}')
-    fi
+    local lan_ip
+    lan_ip=$(_dream_lan_ip)
     
     local remote_dash="http://${lan_ip:-localhost}:3001"
     local remote_api="http://${lan_ip:-localhost}:8000/v1"

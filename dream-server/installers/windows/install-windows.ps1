@@ -6,7 +6,8 @@
 # NVIDIA:           Docker Desktop handles GPU passthrough via WSL2.
 #                   docker-compose.base.yml + docker-compose.nvidia.yml used unchanged.
 #
-# AMD Strix Halo:   llama-server runs natively with Vulkan on Windows.
+# AMD Strix Halo:   Lemonade runs natively with Vulkan on Windows, with
+#                   llama-server.exe Vulkan fallback if Lemonade is unavailable.
 #                   Everything else runs in Docker. Containers reach the host
 #                   via host.docker.internal.
 #
@@ -30,6 +31,9 @@
 #   .\install-windows.ps1 --Cloud          # Cloud-only (no local GPU)
 #   .\install-windows.ps1 --DryRun         # Validate without installing
 #   .\install-windows.ps1 --All            # Enable all optional services
+#   .\install-windows.ps1 --Hermes         # Enable Hermes Agent
+#   .\install-windows.ps1 -NoHermes        # Disable Hermes Agent
+#   .\install-windows.ps1 -NoBootstrap     # Wait for full model before launch
 #   .\install-windows.ps1 --NonInteractive # Headless install (defaults)
 #
 # ============================================================================
@@ -43,6 +47,10 @@ param(
     [switch]$Voice,
     [switch]$Workflows,
     [switch]$Rag,
+    [switch]$Recommended,
+    [switch]$NoRecommended,
+    [switch]$Hermes,
+    [switch]$NoHermes,
     [switch]$OpenClaw,
     [switch]$All,
     [switch]$Cloud,
@@ -51,6 +59,7 @@ param(
     [switch]$Lan,
     [switch]$Langfuse,
     [switch]$NoLangfuse,
+    [switch]$NoBootstrap,
     [string]$SummaryJsonPath = ""
 )
 
@@ -66,12 +75,14 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "constants.ps1")
 . (Join-Path $LibDir "ui.ps1")
 . (Join-Path $LibDir "compose-diagnostics.ps1")
+. (Join-Path $LibDir "backend-contract.ps1")
 . (Join-Path $LibDir "tier-map.ps1")
 . (Join-Path $LibDir "detection.ps1")
 . (Join-Path $LibDir "env-generator.ps1")
 . (Join-Path $LibDir "llm-endpoint.ps1")
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
+. (Join-Path $LibDir "service-plan.ps1")
 
 # ── Phase context variables ───────────────────────────────────────────────────
 # These are plain (non-$script:) variables set in the orchestrator scope.
@@ -85,6 +96,10 @@ $tierOverride   = $Tier
 $voiceFlag      = $Voice.IsPresent
 $workflowsFlag  = $Workflows.IsPresent
 $ragFlag        = $Rag.IsPresent
+$recommendedFlag = $Recommended.IsPresent
+$noRecommendedFlag = $NoRecommended.IsPresent
+$hermesFlag     = $Hermes.IsPresent
+$noHermesFlag   = $NoHermes.IsPresent
 $openClawFlag   = $OpenClaw.IsPresent
 $allFlag        = $All.IsPresent
 $comfyuiFlag    = $Comfyui.IsPresent
@@ -92,6 +107,7 @@ $noComfyuiFlag  = $NoComfyui.IsPresent
 $lanFlag        = $Lan.IsPresent
 $langfuseFlag   = $Langfuse.IsPresent
 $noLangfuseFlag = $NoLangfuse.IsPresent
+$noBootstrapFlag = $NoBootstrap.IsPresent
 $installDir     = $script:DS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
 
@@ -174,6 +190,16 @@ Write-DreamBanner
 . (Join-Path $PhasesDir "03-features.ps1")
 . (Join-Path $PhasesDir "04-requirements.ps1")
 . (Join-Path $PhasesDir "05-docker.ps1")
+$amdLemonadeRuntime = $null
+if ($gpuInfo.Backend -eq "amd") {
+    $amdLemonadeRuntime = Get-DreamAmdLemonadeRuntime -RootPath $SourceRoot
+    $script:LEMONADE_VERSION = [string]$amdLemonadeRuntime.windows_version
+    $script:LEMONADE_MSI_FILE = [string]$amdLemonadeRuntime.windows_msi_file
+    $script:LEMONADE_MSI_URL = "https://github.com/lemonade-sdk/lemonade/releases/download/v$($script:LEMONADE_VERSION)/$($script:LEMONADE_MSI_FILE)"
+    $script:LEMONADE_EXE = Join-Path (Join-Path $script:LEMONADE_INSTALL_DIR "bin") ([string]$amdLemonadeRuntime.windows_executable)
+    $script:LEMONADE_PORT = [int]$amdLemonadeRuntime.api_port
+    $script:LEMONADE_HEALTH_URL = "http://localhost:$($script:LEMONADE_PORT)$($amdLemonadeRuntime.health_path)"
+}
 . (Join-Path $PhasesDir "06-directories.ps1")
 . (Join-Path $PhasesDir "07-devtools.ps1")
 
@@ -205,7 +231,8 @@ if ($dryRun) {
         $fullTierConfig = $null
 
         if (Should-UseBootstrap -Tier $selectedTier -InstallDir $installDir `
-                -GgufFile $tierConfig.GgufFile -CloudMode $cloudMode) {
+                -GgufFile $tierConfig.GgufFile -CloudMode $cloudMode `
+                -NoBootstrap $noBootstrapFlag) {
             $bootstrapActive = $true
             $fullTierConfig = @{}
             foreach ($k in $tierConfig.Keys) { $fullTierConfig[$k] = $tierConfig[$k] }
@@ -272,6 +299,26 @@ if ($dryRun) {
                 $envContent = $envContent -replace "(?m)^CTX_SIZE=.*$", "CTX_SIZE=$($tierConfig.MaxContext)"
                 [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
                 Write-AISuccess "Patched .env for bootstrap model ($($tierConfig.GgufFile))"
+            }
+
+            if ($enableHermes) {
+                $hermesModel = $(if ($tierConfig.GgufFile) {
+                    if ($gpuInfo.Backend -eq "amd") { "extra.$($tierConfig.GgufFile)" } else { $tierConfig.GgufFile }
+                } else {
+                    $tierConfig.LlmModel
+                })
+                $hermesBaseUrl = $(if ($gpuInfo.Backend -eq "amd") {
+                    "http://host.docker.internal:8080/api/v1"
+                } elseif ($cloudMode) {
+                    "http://litellm:4000/v1"
+                } else {
+                    "http://llama-server:8080/v1"
+                })
+                $hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
+                $hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
+                Update-HermesConfigFile -Path $hermesTemplate -Model $hermesModel -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
+                Update-HermesConfigFile -Path $hermesLive -Model $hermesModel -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
+                Write-AISuccess "Patched Hermes config for bootstrap model (model=$hermesModel, context=$($tierConfig.MaxContext))"
             }
         }
 
@@ -444,6 +491,11 @@ if ($dryRun) {
                 if ($_llamaEnv["LLAMA_ARG_CACHE_TYPE_K"]) { $llamaArgs += @("--cache-type-k", $_llamaEnv["LLAMA_ARG_CACHE_TYPE_K"]) }
                 if ($_llamaEnv["LLAMA_ARG_CACHE_TYPE_V"]) { $llamaArgs += @("--cache-type-v", $_llamaEnv["LLAMA_ARG_CACHE_TYPE_V"]) }
                 if ($_llamaEnv["LLAMA_ARG_N_CPU_MOE"]) { $llamaArgs += @("--n-cpu-moe", $_llamaEnv["LLAMA_ARG_N_CPU_MOE"]) }
+                if ($_llamaEnv["LLAMA_PARALLEL"]) { $llamaArgs += @("--parallel", $_llamaEnv["LLAMA_PARALLEL"]) }
+                if ($_llamaEnv["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) { $llamaArgs += @("--checkpoint-every-n-tokens", $_llamaEnv["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) }
+                if ($_llamaEnv["LLAMA_ARG_NO_CACHE_PROMPT"] -and $_llamaEnv["LLAMA_ARG_NO_CACHE_PROMPT"] -notin @("0", "false", "off", "no")) { $llamaArgs += @("--no-cache-prompt") }
+                if ($_llamaEnv["LLAMA_ARG_SPEC_TYPE"]) { $llamaArgs += @("--spec-type", $_llamaEnv["LLAMA_ARG_SPEC_TYPE"]) }
+                if ($_llamaEnv["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) { $llamaArgs += @("--spec-draft-n-max", $_llamaEnv["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) }
                 $pidDir = Split-Path $script:INFERENCE_PID_FILE
                 New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
 
@@ -475,6 +527,13 @@ if ($dryRun) {
                     $envContent = Get-Content $envPath -Raw
                     $envContent = $envContent -replace "(?m)^LLM_BACKEND=.*$", "LLM_BACKEND=llama-server"
                     $envContent = $envContent -replace "(?m)^LLM_API_BASE_PATH=.*$", "LLM_API_BASE_PATH=/v1"
+                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_RUNTIME=.*$", "AMD_INFERENCE_RUNTIME=llama-server"
+                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_BACKEND=.*$", "AMD_INFERENCE_BACKEND=vulkan"
+                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_LOCATION=.*$", "AMD_INFERENCE_LOCATION=host"
+                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_PORT=.*$", "AMD_INFERENCE_PORT=8080"
+                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_SUPPORTED_BACKENDS=.*$", "AMD_INFERENCE_SUPPORTED_BACKENDS=vulkan"
+                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_RUNTIME_MODE=.*$", "AMD_INFERENCE_RUNTIME_MODE=windows-llama-server-fallback"
+                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_MANAGED=.*$", "AMD_INFERENCE_MANAGED=true"
                     [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
                     Write-AISuccess "Patched .env for llama-server backend"
                 }
@@ -521,6 +580,21 @@ if ($dryRun) {
         # and gpu_backends before including a service's compose file.
         $extDir        = Join-Path (Join-Path $installDir "extensions") "services"
         $currentBackend = $(if ($cloudMode) { "none" } else { $gpuInfo.Backend })
+        $servicePlan = New-DreamWindowsServicePlan `
+            -EnableRecommended $enableRecommended `
+            -EnableVoice $enableVoice `
+            -EnableWorkflows $enableWorkflows `
+            -EnableRag $enableRag `
+            -EnableHermes $enableHermes `
+            -EnableOpenClaw $enableOpenClaw `
+            -EnableComfyui $enableComfyui `
+            -EnableDeepResearch $enableDeepResearch `
+            -EnablePrivacyShield $enablePrivacyShield `
+            -EnableBraveSearch $enableBraveSearch `
+            -EnableDreamProxy $enableDreamProxy `
+            -EnableRemoteAccess $enableRemoteAccess
+        $enabledExtensionServices = @()
+        $skippedExtensionServices = @()
 
         if (Test-Path $extDir) {
             $extServices = Get-ChildItem -Path $extDir -Directory | Sort-Object Name
@@ -536,6 +610,12 @@ if ($dryRun) {
 
                 $hasSchema = $manifestLines | Where-Object { $_ -match "schema_version:\s*dream\.services\.v1" }
                 if (-not $hasSchema) { continue }
+
+                $category = ""
+                $categoryLine = $manifestLines | Where-Object { $_ -match "^\s*category:" } | Select-Object -First 1
+                if ($categoryLine) {
+                    $category = (($categoryLine -split "category:")[1]).Trim().Trim('"').Trim("'")
+                }
 
                 $backendsLine = $manifestLines | Where-Object { $_ -match "gpu_backends:" }
                 if ($backendsLine -and $currentBackend -ne "none") {
@@ -555,31 +635,44 @@ if ($dryRun) {
                 if (-not (Test-Path $composePath)) { continue }
 
                 $svcName = $svcDir.Name
-                $skip    = $false
-                switch ($svcName) {
-                    "whisper"    { if (-not $enableVoice)     { $skip = $true } }
-                    "tts"        { if (-not $enableVoice)     { $skip = $true } }
-                    "n8n"        { if (-not $enableWorkflows) { $skip = $true } }
-                    "qdrant"     { if (-not $enableRag)       { $skip = $true } }
-                    "embeddings" { if (-not $enableRag)       { $skip = $true } }
-                    "openclaw"   { if (-not $enableOpenClaw)  { $skip = $true } }
-                    "comfyui"    { if (-not $enableComfyui)   { $skip = $true } }
-                    # Paid API extension; users enable it post-install after adding a key.
-                    "brave-search" { $skip = $true }
+                $decision = Get-DreamWindowsServicePlanDecision `
+                    -ServiceId $svcName `
+                    -Category $category `
+                    -Plan $servicePlan `
+                    -EnableRecommended $enableRecommended
+                if (-not $decision.Enabled) {
+                    $skippedExtensionServices += "$svcName ($($decision.DisabledReason))"
+                    continue
                 }
-                if ($skip) { continue }
 
                 $relPath = $composePath.Substring($installDir.Length + 1) -replace "\\", "/"
                 $composeFlags += @("-f", $relPath)
+                $enabledExtensionServices += $svcName
 
                 if ($currentBackend -eq "nvidia" -and -not $script:gpuPassthroughFailed) {
                     $gpuOverlay = Join-Path $svcDir.FullName "compose.nvidia.yaml"
                     if (Test-Path $gpuOverlay) {
-                        $relOverlay = $gpuOverlay.Substring($installDir.Length + 1) -replace "\\", "/"
-                        $composeFlags += @("-f", $relOverlay)
+                        $useGpuOverlay = $true
+                        if ($svcName -eq "whisper" -and $gpuInfo.DriverMajor -lt 575) {
+                            $useGpuOverlay = $false
+                            Write-AIWarn "Whisper CUDA image requires a newer NVIDIA driver than $($gpuInfo.DriverVersion); using CPU Whisper."
+                        }
+                        if ($useGpuOverlay) {
+                            $relOverlay = $gpuOverlay.Substring($installDir.Length + 1) -replace "\\", "/"
+                            $composeFlags += @("-f", $relOverlay)
+                        }
                     }
                 }
             }
+        }
+
+        if ($enabledExtensionServices.Count -gt 0) {
+            Write-AI "Extension service plan: $($enabledExtensionServices -join ', ')"
+        } else {
+            Write-AI "Extension service plan: core services only"
+        }
+        if ($skippedExtensionServices.Count -gt 0) {
+            Write-AI "Skipped extension services: $($skippedExtensionServices.Count)"
         }
 
         # Tier 0 memory overlay
@@ -704,7 +797,16 @@ if ($dryRun) {
         # `up -d`. llama-server runs natively on Windows (Lemonade or Vulkan
         # binary) so it is not built here. ComfyUI is included only if
         # explicitly enabled.
-        $_buildServices = @("dashboard", "dashboard-api", "ape", "token-spy", "privacy-shield")
+        $_buildServices = @("dashboard", "dashboard-api")
+        if (Test-DreamWindowsServiceEnabled -ServiceId "ape" -Plan $servicePlan) {
+            $_buildServices += "ape"
+        }
+        if (Test-DreamWindowsServiceEnabled -ServiceId "token-spy" -Plan $servicePlan) {
+            $_buildServices += "token-spy"
+        }
+        if (Test-DreamWindowsServiceEnabled -ServiceId "privacy-shield" -Plan $servicePlan) {
+            $_buildServices += "privacy-shield"
+        }
         if ($enableComfyui) { $_buildServices += "comfyui" }
         Write-AI "Rebuilding local-built images (no-cache)..."
         $_buildLog = Join-Path $_composeLogDir "compose-build.log"
@@ -807,8 +909,23 @@ exec bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($full
 Write-Phase -Phase 9 -Total 13 -Name "VERIFICATION" -Estimate "~30 seconds"
 
 if ($dryRun) {
-    Write-AI "[DRY RUN] Would health-check all services"
-    Write-AI "[DRY RUN] Would auto-configure Perplexica for $($tierConfig.LlmModel)"
+    $_dryRunServicePlan = New-DreamWindowsServicePlan `
+        -EnableRecommended $enableRecommended `
+        -EnableVoice $enableVoice `
+        -EnableWorkflows $enableWorkflows `
+        -EnableRag $enableRag `
+        -EnableHermes $enableHermes `
+        -EnableOpenClaw $enableOpenClaw `
+        -EnableComfyui $enableComfyui `
+        -EnableDeepResearch $enableDeepResearch `
+        -EnablePrivacyShield $enablePrivacyShield `
+        -EnableBraveSearch $enableBraveSearch `
+        -EnableDreamProxy $enableDreamProxy `
+        -EnableRemoteAccess $enableRemoteAccess
+    Write-AI "[DRY RUN] Would health-check selected services"
+    if (Test-DreamWindowsServiceEnabled -ServiceId "perplexica" -Plan $_dryRunServicePlan) {
+        Write-AI "[DRY RUN] Would auto-configure Perplexica for $($tierConfig.LlmModel)"
+    }
     Write-AI "[DRY RUN] Install validation complete"
     Write-AISuccess "Dry run finished -- no changes made"
     exit 0
@@ -877,6 +994,10 @@ foreach ($check in $healthChecks) {
 # Speaches does NOT auto-download on transcription requests — it returns 404.
 # Trigger the download explicitly, verify it completed, surface recovery
 # instructions on failure. Mirrors Linux Phase 12 and macOS install-macos.sh.
+$sttModelReady = (-not $enableVoice)
+$sttModelNameForReadiness = ""
+$sttModelCacheUrl = ""
+$sttRecoveryCmd = ""
 if ($enableVoice) {
     # Read AUDIO_STT_MODEL and WHISPER_PORT from .env (written by env-generator.ps1).
     # Use ReadAllText with explicit UTF8NoBom encoding so legacy BOM-prefixed
@@ -909,6 +1030,8 @@ if ($enableVoice) {
     $sttModelEncoded = $sttModel -replace "/", "%2F"
     $whisperUrl = "http://localhost:$whisperPort"
     $sttRecoveryCmd = "Invoke-WebRequest -Method POST -Uri '$whisperUrl/v1/models/$sttModelEncoded' -TimeoutSec 3600"
+    $sttModelNameForReadiness = $sttModel
+    $sttModelCacheUrl = "$whisperUrl/v1/models/$sttModelEncoded"
 
     # Step 1: wait briefly for the models API to be ready (max 15s).
     $sttApiReady = $false
@@ -921,6 +1044,8 @@ if ($enableVoice) {
     }
 
     if (-not $sttApiReady) {
+        $sttModelReady = $false
+        $allHealthy = $false
         Write-AIWarn "STT models API not ready -- download manually:"
         Write-Host "    $sttRecoveryCmd" -ForegroundColor DarkGray
     } else {
@@ -932,12 +1057,13 @@ if ($enableVoice) {
         } catch { }
 
         if ($alreadyCached) {
+            $sttModelReady = $true
             Write-AISuccess "STT model already cached ($sttModel)"
         } else {
             # Step 3: POST to trigger download.
             Write-AI "Downloading STT model ($sttModel)..."
             try {
-                Invoke-WebRequest -Method POST -Uri "$whisperUrl/v1/models/$sttModelEncoded" -TimeoutSec 3600 -UseBasicParsing -ErrorAction Stop | Out-Null
+                Invoke-WebRequest -Method POST -Uri "$whisperUrl/v1/models/$sttModelEncoded" -TimeoutSec 600 -UseBasicParsing -ErrorAction Stop | Out-Null
             } catch {
                 # Fall through to verification step regardless — POST can succeed or partial-fail.
             }
@@ -950,8 +1076,11 @@ if ($enableVoice) {
             } catch { }
 
             if ($verified) {
+                $sttModelReady = $true
                 Write-AISuccess "STT model cached ($sttModel)"
             } else {
+                $sttModelReady = $false
+                $allHealthy = $false
                 Write-AIWarn "STT model download failed -- run manually:"
                 Write-Host "    $sttRecoveryCmd" -ForegroundColor DarkGray
             }
@@ -960,12 +1089,14 @@ if ($enableVoice) {
 }
 
 # ── Auto-configure Perplexica ─────────────────────────────────────────────────
-Write-AI "Configuring Perplexica..."
-$perplexicaOk = Set-PerplexicaConfig -PerplexicaPort 3004 -LlmModel $tierConfig.LlmModel
-if ($perplexicaOk) {
-    Write-AISuccess "Perplexica configured (model: $($tierConfig.LlmModel))"
-} else {
-    Write-AIWarn "Perplexica auto-config skipped -- complete setup at http://localhost:3004"
+if (Test-DreamWindowsServiceEnabled -ServiceId "perplexica" -Plan $servicePlan) {
+    Write-AI "Configuring Perplexica..."
+    $perplexicaOk = Set-PerplexicaConfig -PerplexicaPort 3004 -LlmModel $tierConfig.LlmModel
+    if ($perplexicaOk) {
+        Write-AISuccess "Perplexica configured (model: $($tierConfig.LlmModel))"
+    } else {
+        Write-AIWarn "Perplexica auto-config skipped -- complete setup at http://localhost:3004"
+    }
 }
 
 $readinessEnv = Get-WindowsDreamEnvMap -InstallDir $installDir
@@ -980,21 +1111,32 @@ function Get-ReadinessPort {
 $dashboardPort = Get-ReadinessPort -Name "DASHBOARD_PORT" -Default "3001"
 $webuiPort = Get-ReadinessPort -Name "WEBUI_PORT" -Default "3000"
 $dashboardApiPort = Get-ReadinessPort -Name "DASHBOARD_API_PORT" -Default "3002"
-$litellmPort = Get-ReadinessPort -Name "LITELLM_PORT" -Default "4000"
-$perplexicaPort = Get-ReadinessPort -Name "PERPLEXICA_PORT" -Default "3004"
 $llmContainer = if ($useLemonade -or $cloudMode -or $gpuInfo.Backend -eq "amd") { "" } else { "dream-llama-server" }
 $readinessChecks = @(
     @{ Name = "Dashboard"; Url = "http://localhost:$dashboardPort"; Container = "dream-dashboard"; OpenUrl = "http://localhost:$dashboardPort" }
     @{ Name = "Chat UI (Open WebUI)"; Url = "http://localhost:$webuiPort"; Container = "dream-webui"; OpenUrl = "http://localhost:$webuiPort" }
     @{ Name = $llmEndpoint.Name; Url = $llmEndpoint.HealthUrl; Container = $llmContainer; OpenUrl = $llmEndpoint.BaseUrl }
     @{ Name = "Dashboard API"; Url = "http://localhost:$dashboardApiPort/health"; Container = "dream-dashboard-api"; OpenUrl = "http://localhost:$dashboardApiPort" }
-    @{ Name = "LiteLLM"; Url = "http://localhost:$litellmPort/health/readiness"; Container = "dream-litellm"; OpenUrl = "http://localhost:$litellmPort" }
-    @{ Name = "Perplexica"; Url = "http://localhost:$perplexicaPort"; Container = "dream-perplexica"; OpenUrl = "http://localhost:$perplexicaPort" }
 )
+if (Test-DreamWindowsServiceEnabled -ServiceId "litellm" -Plan $servicePlan) {
+    $litellmPort = Get-ReadinessPort -Name "LITELLM_PORT" -Default "4000"
+    $readinessChecks += @{ Name = "LiteLLM"; Url = "http://localhost:$litellmPort/health/readiness"; Container = "dream-litellm"; OpenUrl = "http://localhost:$litellmPort" }
+}
+if (Test-DreamWindowsServiceEnabled -ServiceId "searxng" -Plan $servicePlan) {
+    $searxngPort = Get-ReadinessPort -Name "SEARXNG_PORT" -Default "8888"
+    $readinessChecks += @{ Name = "SearXNG"; Url = "http://localhost:$searxngPort/healthz"; Container = "dream-searxng"; OpenUrl = "http://localhost:$searxngPort" }
+}
+if (Test-DreamWindowsServiceEnabled -ServiceId "token-spy" -Plan $servicePlan) {
+    $tokenSpyPort = Get-ReadinessPort -Name "TOKEN_SPY_PORT" -Default "3005"
+    $readinessChecks += @{ Name = "Token Spy"; Url = "http://localhost:$tokenSpyPort/health"; Container = "dream-token-spy"; OpenUrl = "http://localhost:$tokenSpyPort" }
+}
 if ($enableVoice) {
     $whisperPort = Get-ReadinessPort -Name "WHISPER_PORT" -Default "9000"
     $ttsPort = Get-ReadinessPort -Name "TTS_PORT" -Default "8880"
     $readinessChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$whisperPort/health"; Container = "dream-whisper"; OpenUrl = "http://localhost:$whisperPort" }
+    if ($sttModelCacheUrl) {
+        $readinessChecks += @{ Name = "Whisper STT model cache"; Url = $sttModelCacheUrl; Container = "dream-whisper"; OpenUrl = $sttModelNameForReadiness; Hint = "Run: $sttRecoveryCmd" }
+    }
     $readinessChecks += @{ Name = "Kokoro (TTS)"; Url = "http://localhost:$ttsPort/health"; Container = "dream-tts"; OpenUrl = "http://localhost:$ttsPort" }
 }
 if ($enableWorkflows) {
@@ -1009,9 +1151,21 @@ if ($enableOpenClaw) {
     $openClawPort = Get-ReadinessPort -Name "OPENCLAW_PORT" -Default "7860"
     $readinessChecks += @{ Name = "OpenClaw"; Url = "http://localhost:$openClawPort"; Container = "dream-openclaw"; OpenUrl = "http://localhost:$openClawPort" }
 }
+if (Test-DreamWindowsServiceEnabled -ServiceId "hermes-proxy" -Plan $servicePlan) {
+    $hermesProxyPort = Get-ReadinessPort -Name "HERMES_PROXY_PORT" -Default "9120"
+    $readinessChecks += @{ Name = "Hermes Proxy"; Url = "http://localhost:$hermesProxyPort/health"; Container = "dream-hermes-proxy"; OpenUrl = "http://localhost:$hermesProxyPort" }
+}
 if ($enableComfyui) {
     $comfyPort = Get-ReadinessPort -Name "COMFYUI_PORT" -Default "8188"
     $readinessChecks += @{ Name = "ComfyUI"; Url = "http://localhost:$comfyPort"; Container = "dream-comfyui"; OpenUrl = "http://localhost:$comfyPort" }
+}
+if (Test-DreamWindowsServiceEnabled -ServiceId "perplexica" -Plan $servicePlan) {
+    $perplexicaPort = Get-ReadinessPort -Name "PERPLEXICA_PORT" -Default "3004"
+    $readinessChecks += @{ Name = "Perplexica"; Url = "http://localhost:$perplexicaPort"; Container = "dream-perplexica"; OpenUrl = "http://localhost:$perplexicaPort" }
+}
+if (Test-DreamWindowsServiceEnabled -ServiceId "privacy-shield" -Plan $servicePlan) {
+    $privacyPort = Get-ReadinessPort -Name "SHIELD_PORT" -Default "8085"
+    $readinessChecks += @{ Name = "Privacy Shield"; Url = "http://localhost:$privacyPort/health"; Container = "dream-privacy-shield"; OpenUrl = "http://localhost:$privacyPort" }
 }
 Write-DreamInstallReadinessSummary -Checks $readinessChecks `
     -StatusCommand ".\dream.ps1 status" `
@@ -1084,11 +1238,17 @@ if ($SummaryJsonPath) {
         gpuBackend = $gpuInfo.Backend
         gpuName    = $gpuInfo.Name
         installDir = $installDir
+        sttModelCached = $sttModelReady
         features   = @{
-            voice     = $enableVoice
-            workflows = $enableWorkflows
-            rag       = $enableRag
-            openclaw  = $enableOpenClaw
+            voice        = $enableVoice
+            workflows    = $enableWorkflows
+            rag          = $enableRag
+            recommended  = $enableRecommended
+            hermes       = $enableHermes
+            openclaw     = $enableOpenClaw
+            comfyui      = $enableComfyui
+            deepResearch = $enableDeepResearch
+            privacyShield = $enablePrivacyShield
         }
         healthy    = $allHealthy
         timestamp  = (Get-Date -Format "o")

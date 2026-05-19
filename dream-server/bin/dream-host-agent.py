@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """DreamServer Host Agent — manages extension containers from the host."""
 
+# PEP 604 union syntax (e.g. `threading.Thread | None`) is evaluated at runtime
+# in non-stringified annotations, which crashes on Python 3.9 — the version
+# Apple ships as /usr/bin/python3 on macOS 14.x. The LaunchAgent fails at
+# import with `TypeError: unsupported operand type(s) for |: 'type' and
+# 'NoneType'`, leaving Dream Server's macOS install with no host agent.
+# `from __future__ import annotations` makes ALL annotations lazy strings,
+# so PEP 604 syntax parses on Python 3.7+. The host-agent doesn't use
+# typing.get_type_hints() at runtime, so lazy annotations are safe here.
+from __future__ import annotations
+
 import argparse
 import atexit
 import collections
@@ -40,7 +50,7 @@ logger = logging.getLogger("dream-host-agent")
 # the API key to stop core services like llama-server or dashboard-api.
 _FALLBACK_CORE_IDS = frozenset({
     "dashboard-api", "dashboard", "llama-server", "open-webui",
-    "litellm", "langfuse", "n8n", "openclaw", "opencode",
+    "litellm", "langfuse", "hermes", "hermes-proxy", "n8n", "openclaw", "opencode",
     "perplexica", "searxng", "qdrant", "tts", "whisper",
     "embeddings", "token-spy", "comfyui", "ape", "privacy-shield",
 })
@@ -62,9 +72,9 @@ EXTENSIONS_DIR: Path = Path()
 _service_locks: dict[str, threading.Lock] = collections.defaultdict(threading.Lock)
 _ALLOWED_CORE_RECREATE_IDS = frozenset({
     "llama-server", "open-webui", "litellm", "langfuse", "n8n",
-    "openclaw", "opencode", "perplexica", "searxng", "qdrant",
+    "hermes", "hermes-proxy", "openclaw", "opencode", "perplexica", "searxng", "qdrant",
     "tts", "whisper", "embeddings", "token-spy", "comfyui",
-    "ape", "privacy-shield", "dreamforge",
+    "ape", "privacy-shield",
 })
 
 
@@ -87,6 +97,11 @@ _model_download_proc: subprocess.Popen | None = None
 _model_download_cancel = threading.Event()
 # Model activation lock — prevent concurrent .env writes and Docker restarts
 _model_activate_lock = threading.Lock()
+# Update lock/state: only one background dream-update run at a time.
+_update_lock = threading.Lock()
+_update_status_lock = threading.Lock()
+_update_thread: threading.Thread | None = None
+_update_usable_bash: str | bool | None = None
 
 
 def load_env(env_path: Path) -> dict:
@@ -117,17 +132,17 @@ def load_core_service_ids(config_path: Path) -> set:
         return set(_FALLBACK_CORE_IDS)
 
 
-def _detect_docker_bridge_gateway() -> str:
-    """Detect the Docker bridge gateway IP for secure binding on Linux.
+def _detect_docker_network_gateway(network_name: str) -> str:
+    """Detect a Docker network gateway IP for scoped host-agent binding.
 
-    Returns the gateway IP (e.g. '172.17.0.1') or empty string on failure.
-    Containers reach this IP via the host-gateway extra_hosts mapping,
-    while LAN devices cannot (it's on a virtual bridge interface).
+    Returns the gateway IP (for example ``172.18.0.1``) or empty string on
+    failure. Containers on that Docker network can reach this address, while
+    LAN devices cannot route to it directly.
     """
     import ipaddress as _ipaddress
     try:
         result = subprocess.run(
-            ["docker", "network", "inspect", "bridge",
+            ["docker", "network", "inspect", network_name,
              "--format", "{{(index .IPAM.Config 0).Gateway}}"],
             capture_output=True, text=True, timeout=10,
         )
@@ -135,19 +150,48 @@ def _detect_docker_bridge_gateway() -> str:
             addr = result.stdout.strip()
             if addr:
                 _ipaddress.ip_address(addr)  # validate — Docker can return "<no value>"
-                logger.info("Detected Docker bridge gateway: %s", addr)
+                logger.info("Detected Docker network gateway for %s: %s", network_name, addr)
                 return addr
         else:
             logger.warning(
-                "Docker bridge gateway detection failed (exit %d): %s",
+                "Docker network gateway detection failed for %s (exit %d): %s",
+                network_name,
                 result.returncode,
                 result.stderr.strip() or "<no stderr>",
             )
     except ValueError:
-        logger.debug("Docker bridge returned non-IP value, ignoring")
+        logger.debug("Docker network %s returned non-IP gateway value, ignoring", network_name)
     except (subprocess.SubprocessError, OSError) as exc:
-        logger.warning("Docker bridge detection failed: %s", exc)
+        logger.warning("Docker network gateway detection failed for %s: %s", network_name, exc)
     return ""
+
+
+def _detect_docker_bridge_gateway() -> str:
+    """Detect Docker's default bridge gateway as a compatibility fallback."""
+    return _detect_docker_network_gateway("bridge")
+
+
+def _resolve_agent_bind_addr(env: dict, system_name: str | None = None) -> str:
+    """Resolve the host-agent bind address without exposing LAN by default."""
+    explicit = env.get("DREAM_AGENT_BIND", "").strip()
+    if explicit:
+        return explicit
+
+    system_name = system_name or platform.system()
+    if system_name in ("Darwin", "Windows"):
+        return "127.0.0.1"
+
+    if system_name == "Linux":
+        # Prefer Dream's actual compose network. The bridge fallback keeps
+        # older/partial installs reachable without binding the Docker
+        # management API to every LAN interface.
+        return (
+            _detect_docker_network_gateway("dream-network")
+            or _detect_docker_bridge_gateway()
+            or "127.0.0.1"
+        )
+
+    return "127.0.0.1"
 
 
 def invalidate_compose_cache() -> None:
@@ -447,6 +491,14 @@ def _write_progress(service_id: str, status: str, phase_label: str = "",
     os.replace(str(tmp_file), str(progress_file))
 
 
+def _model_file_ready(path: Path) -> bool:
+    """Return True only for a final GGUF file that exists and is non-empty."""
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def _read_progress_status(service_id: str) -> str | None:
     """Return the ``status`` field of the progress file, or None if absent/unreadable.
 
@@ -725,6 +777,25 @@ def read_json_body(handler) -> dict | None:
         return None
 
 
+def read_optional_json_body(handler) -> dict | None:
+    try:
+        length = int(handler.headers.get("Content-Length", 0))
+    except (ValueError, TypeError):
+        json_response(handler, 400, {"error": "Invalid Content-Length"})
+        return None
+    if length <= 0:
+        return {}
+    try:
+        data = json.loads(handler.rfile.read(min(length, MAX_BODY)))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        json_response(handler, 400, {"error": "Invalid JSON"})
+        return None
+    if not isinstance(data, dict):
+        json_response(handler, 400, {"error": "JSON body must be an object"})
+        return None
+    return data
+
+
 def validate_service_id(handler, body: dict) -> str | None:
     sid = body.get("service_id", "")
     if not isinstance(sid, str) or not SERVICE_ID_RE.match(sid):
@@ -948,6 +1019,119 @@ def _narrowed_compose_set_resolves(narrowed_flags: list, service_id: str,
     return service_id in result.stdout.split()
 
 
+def _update_status_path() -> Path:
+    return INSTALL_DIR / "data" / "update-status.json"
+
+
+def _write_update_status(status: str, action: str, **fields) -> None:
+    with _update_status_lock:
+        path = _update_status_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "status": status,
+            "action": action,
+            "updated_at": _iso_now(),
+            **fields,
+        }
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(path)
+
+
+def _read_update_status() -> dict:
+    with _update_status_lock:
+        path = _update_status_path()
+        if not path.exists():
+            return {"status": "idle"}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"status": "unknown", "error": "could not read update status"}
+    return data if isinstance(data, dict) else {"status": "unknown"}
+
+
+def _fail_stale_update_status(data: dict) -> dict:
+    """Convert a non-live queued/running update record into a terminal failure."""
+    if data.get("status") not in {"queued", "running"}:
+        return data
+
+    action = data.get("action")
+    if not isinstance(action, str) or not action:
+        action = "update"
+
+    fields = {
+        key: value
+        for key, value in data.items()
+        if key not in {"status", "action", "updated_at", "error", "finished_at"}
+    }
+    fields["error"] = data.get("error") or "Update process exited before reporting completion."
+    fields["finished_at"] = _iso_now()
+    _write_update_status("failed", action, **fields)
+    return _read_update_status()
+
+
+def _find_update_script() -> Path | None:
+    for candidate in (
+        INSTALL_DIR / "dream-update.sh",
+        INSTALL_DIR / "scripts" / "dream-update.sh",
+        INSTALL_DIR.parent / "scripts" / "dream-update.sh",
+    ):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _find_update_bash() -> str | None:
+    global _update_usable_bash
+    if isinstance(_update_usable_bash, str):
+        return _update_usable_bash
+    if _update_usable_bash is False:
+        return None
+
+    bash = shutil.which("bash")
+    if not bash:
+        _update_usable_bash = False
+        return None
+    try:
+        result = subprocess.run(
+            [bash, "-lc", "printf ok"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        _update_usable_bash = False
+        return None
+    if result.returncode == 0 and result.stdout == "ok":
+        _update_usable_bash = bash
+        return bash
+    _update_usable_bash = False
+    return None
+
+
+def _update_command(script_path: Path, *args: str) -> list[str]:
+    if platform.system() != "Windows":
+        return [str(script_path), *args]
+    bash = _find_update_bash()
+    if not bash:
+        raise RuntimeError(
+            "Update actions require a usable Bash runtime on Windows. "
+            "Install Git Bash or run Dream Server through WSL/Linux."
+        )
+    return [bash, _to_bash_path(script_path), *args]
+
+
+def _run_update_script(action: str, *args: str, timeout: int | None) -> subprocess.CompletedProcess:
+    script = _find_update_script()
+    if script is None:
+        raise FileNotFoundError("dream-update.sh not found")
+    return subprocess.run(
+        _update_command(script, action, *args),
+        cwd=str(INSTALL_DIR),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
 class AgentHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         logger.info(fmt, *args)
@@ -969,21 +1153,97 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_tailscale_status()
         elif self.path == "/v1/ap-mode/status":
             self._handle_ap_mode_status()
+        elif self.path == "/v1/update/status":
+            self._handle_update_status()
         else:
             json_response(self, 404, {"error": "Not found"})
 
+    def _write_tailscale_status_payload(self, payload: dict, source: str):
+        """Distill `tailscale status --json` into the dashboard response."""
+        self_node = payload.get("Self", {}) or {}
+        magic_dns = payload.get("MagicDNSSuffix") or ""
+        dns_name = self_node.get("DNSName", "").rstrip(".") or None
+        tailnet = payload.get("CurrentTailnet")
+        tailnet_name = (
+            tailnet.get("Name") if isinstance(tailnet, dict) else None
+        )
+        json_response(self, 200, {
+            "running": True,
+            "authenticated": payload.get("BackendState") == "Running",
+            "backend_state": payload.get("BackendState"),
+            "source": source,
+            "self": {
+                "hostname": self_node.get("HostName"),
+                "dns_name": dns_name,
+                "ips": self_node.get("TailscaleIPs", []),
+                "online": self_node.get("Online", False),
+            },
+            "magic_dns_suffix": magic_dns,
+            "tailnet_name": tailnet_name,
+        })
+
+    def _find_native_tailscale_cli(self) -> str | None:
+        """Return a host-native tailscale CLI path if one is installed."""
+        tailscale = shutil.which("tailscale")
+        if tailscale:
+            return tailscale
+        if platform.system() == "Windows":
+            for base in (
+                os.environ.get("ProgramFiles"),
+                os.environ.get("ProgramFiles(x86)"),
+            ):
+                if not base:
+                    continue
+                candidate = Path(base) / "Tailscale" / "tailscale.exe"
+                if candidate.exists():
+                    return str(candidate)
+        return None
+
+    def _try_native_tailscale_status(self) -> bool:
+        """Return True after writing a response from host-native Tailscale."""
+        tailscale = self._find_native_tailscale_cli()
+        if not tailscale:
+            return False
+        try:
+            result = subprocess.run(
+                [tailscale, "status", "--json"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            lowered = stderr.lower()
+            if "logged out" in lowered or "needs login" in lowered:
+                json_response(self, 200, {
+                    "running": True,
+                    "authenticated": False,
+                    "source": "native",
+                    "reason": "Native Tailscale is installed but not authenticated.",
+                })
+                return True
+            return False
+
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return False
+
+        self._write_tailscale_status_payload(payload, "native")
+        return True
+
     def _handle_tailscale_status(self):
-        """Return Tailscale daemon status by docker-exec'ing into the
-        dream-tailscale container.
+        """Return Tailscale daemon status from Dream's container or the host.
 
         Three outcome shapes:
-          1. Container running AND authenticated:
+          1. Tailscale running AND authenticated:
              {running:true, authenticated:true, self:{...},
-              magic_dns_suffix:"tail-xxxxx.ts.net", ...}
-          2. Container running but not authenticated (auth key absent
-             or rejected):
+              magic_dns_suffix:"tail-xxxxx.ts.net", source:"..."}
+          2. Tailscale running but not authenticated (auth key absent,
+             rejected, or host app logged out):
              {running:true, authenticated:false, reason:"..."}
-          3. Container not running:
+          3. Dream container and host-native Tailscale are not running:
              {running:false}
 
         We never return 5xx for "container not running" — that's a normal
@@ -1007,8 +1267,13 @@ class AgentHandler(BaseHTTPRequestHandler):
         if result.returncode != 0:
             stderr = (result.stderr or "").strip()
             lowered = stderr.lower()
-            # Container not running -> normal "not enabled yet" state.
+            # Container not running -> try host-native Tailscale first. This
+            # covers Windows/macOS installs where users already run Tailscale
+            # outside Docker; absent both, it remains a normal "not enabled
+            # yet" state.
             if "no such container" in lowered or "is not running" in lowered:
+                if self._try_native_tailscale_status():
+                    return
                 json_response(self, 200, {"running": False})
                 return
             # Container up but daemon not yet authed.
@@ -1032,28 +1297,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 500, {"error": f"could not parse tailscale status: {exc}"})
             return
 
-        # Distill the chunky `tailscale status --json` blob to what the
-        # dashboard actually needs.
-        self_node = payload.get("Self", {}) or {}
-        magic_dns = payload.get("MagicDNSSuffix") or ""
-        dns_name = self_node.get("DNSName", "").rstrip(".") or None
-        tailnet = payload.get("CurrentTailnet")
-        tailnet_name = (
-            tailnet.get("Name") if isinstance(tailnet, dict) else None
-        )
-        json_response(self, 200, {
-            "running": True,
-            "authenticated": payload.get("BackendState") == "Running",
-            "backend_state": payload.get("BackendState"),
-            "self": {
-                "hostname": self_node.get("HostName"),
-                "dns_name": dns_name,
-                "ips": self_node.get("TailscaleIPs", []),
-                "online": self_node.get("Online", False),
-            },
-            "magic_dns_suffix": magic_dns,
-            "tailnet_name": tailnet_name,
-        })
+        self._write_tailscale_status_payload(payload, "container")
 
     def _handle_ap_mode_status(self):
         """Read-only AP-mode status snapshot.
@@ -1186,6 +1430,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_invalidate_compose_cache()
         elif self.path == "/v1/env/update":
             self._handle_env_update()
+        elif self.path in ("/v1/update/check", "/v1/update/backup", "/v1/update/start"):
+            self._handle_update_action()
         elif self.path == "/v1/network/wifi-connect":
             self._handle_network_wifi_connect()
         elif self.path == "/v1/network/wifi-forget":
@@ -1200,6 +1446,146 @@ class AgentHandler(BaseHTTPRequestHandler):
         invalidate_compose_cache()
         logger.info("compose-flags cache invalidated")
         json_response(self, 200, {"status": "ok"})
+
+    def _handle_update_status(self):
+        """Return the last host-agent managed update run status."""
+        if not check_auth(self):
+            return
+        data = _read_update_status()
+        with _update_lock:
+            running = _update_thread is not None and _update_thread.is_alive()
+        if running:
+            data = {**data, "status": "running"}
+        else:
+            data = _fail_stale_update_status(data)
+        json_response(self, 200, data)
+
+    def _handle_update_action(self):
+        """Run dream-update.sh from the host-agent trust boundary."""
+        if not check_auth(self):
+            return
+        body = read_optional_json_body(self)
+        if body is None:
+            return
+
+        endpoint_action = self.path.rsplit("/", 1)[-1]
+        if endpoint_action == "check":
+            self._handle_update_check()
+        elif endpoint_action == "backup":
+            backup_id = body.get("backup_id")
+            if not isinstance(backup_id, str) or not backup_id.strip():
+                backup_id = f"dashboard-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            self._handle_update_backup(backup_id.strip())
+        elif endpoint_action == "start":
+            self._handle_update_start()
+        else:
+            json_response(self, 404, {"error": "Not found"})
+
+    def _handle_update_check(self):
+        try:
+            result = _run_update_script("check", timeout=30)
+        except FileNotFoundError:
+            json_response(self, 501, {"error": "Update system not installed."})
+            return
+        except RuntimeError as exc:
+            json_response(self, 501, {"error": str(exc)})
+            return
+        except subprocess.TimeoutExpired:
+            json_response(self, 504, {"error": "Update check timed out"})
+            return
+        except OSError as exc:
+            json_response(self, 500, {"error": f"Update check failed: {exc}"})
+            return
+
+        output = (result.stdout or "") + (result.stderr or "")
+        json_response(self, 200, {
+            "success": result.returncode in (0, 2),
+            "update_available": result.returncode == 2,
+            "returncode": result.returncode,
+            "output": output,
+        })
+
+    def _handle_update_backup(self, backup_id: str):
+        try:
+            result = _run_update_script("backup", backup_id, timeout=60)
+        except FileNotFoundError:
+            json_response(self, 501, {"error": "Update system not installed."})
+            return
+        except RuntimeError as exc:
+            json_response(self, 501, {"error": str(exc)})
+            return
+        except subprocess.TimeoutExpired:
+            json_response(self, 504, {"error": "Backup timed out"})
+            return
+        except OSError as exc:
+            json_response(self, 500, {"error": f"Backup failed: {exc}"})
+            return
+
+        output = (result.stdout or "") + (result.stderr or "")
+        json_response(self, 200, {
+            "success": result.returncode == 0,
+            "returncode": result.returncode,
+            "output": output,
+        })
+
+    def _handle_update_start(self):
+        global _update_thread
+
+        with _update_lock:
+            if _update_thread is not None and _update_thread.is_alive():
+                json_response(self, 409, {
+                    "success": False,
+                    "status": "running",
+                    "message": "Update already running",
+                })
+                return
+
+            _write_update_status("queued", "update", started_at=_iso_now())
+
+            def _run_background_update():
+                try:
+                    _write_update_status("running", "update", started_at=_iso_now())
+                    result = _run_update_script("update", timeout=3600)
+                    output = ((result.stdout or "") + (result.stderr or ""))[-8000:]
+                    _write_update_status(
+                        "succeeded" if result.returncode == 0 else "failed",
+                        "update",
+                        returncode=result.returncode,
+                        output_tail=output,
+                        finished_at=_iso_now(),
+                    )
+                except FileNotFoundError:
+                    _write_update_status(
+                        "failed", "update",
+                        error="Update system not installed.",
+                        finished_at=_iso_now(),
+                    )
+                except RuntimeError as exc:
+                    _write_update_status("failed", "update", error=str(exc), finished_at=_iso_now())
+                except subprocess.TimeoutExpired:
+                    _write_update_status("failed", "update", error="Update timed out", finished_at=_iso_now())
+                except OSError as exc:
+                    _write_update_status(
+                        "failed", "update",
+                        error=f"Update failed: {exc}",
+                        finished_at=_iso_now(),
+                    )
+                except Exception as exc:
+                    logger.exception("Unhandled update failure")
+                    _write_update_status(
+                        "failed", "update",
+                        error=f"Update failed unexpectedly: {exc}",
+                        finished_at=_iso_now(),
+                    )
+
+            _update_thread = threading.Thread(target=_run_background_update, daemon=True)
+            _update_thread.start()
+
+        json_response(self, 202, {
+            "success": True,
+            "status": "started",
+            "message": "Update started in background. Check update status for progress.",
+        })
 
     # ------------------------------------------------------------------
     # Wi-Fi / network management (Linux + NetworkManager only)
@@ -2575,11 +2961,25 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
 
         models_dir = INSTALL_DIR / "data" / "models"
+        status_path = INSTALL_DIR / "data" / "model-download-status.json"
         # For split models, check ALL parts exist (not just the first)
-        all_downloaded = all((models_dir / fn).exists() for fn, _ in download_plan)
+        all_downloaded = all(_model_file_ready(models_dir / fn) for fn, _ in download_plan)
         if all_downloaded:
+            # A previous process can leave stale "downloading" status after the
+            # final file is already on disk. Normalize that here so the
+            # dashboard stops showing phantom progress.
+            _write_model_status(status_path, "complete", gguf_file, 0, 0)
             json_response(self, 200, {"status": "already_downloaded"})
             return
+        for fn, _ in download_plan:
+            target = models_dir / fn
+            if target.is_file() and not _model_file_ready(target):
+                target.unlink(missing_ok=True)
+        pending_download_plan = [
+            (idx, fn, url)
+            for idx, (fn, url) in enumerate(download_plan, 1)
+            if not _model_file_ready(models_dir / fn)
+        ]
 
         # Check for concurrent download
         with _model_download_lock:
@@ -2591,13 +2991,12 @@ class AgentHandler(BaseHTTPRequestHandler):
 
             def _download():
                 global _model_download_proc
-                status_path = INSTALL_DIR / "data" / "model-download-status.json"
                 try:
                     models_dir.mkdir(parents=True, exist_ok=True)
                     label = gguf_file if len(download_plan) == 1 else f"{gguf_file} ({len(download_plan)} parts)"
                     _write_model_status(status_path, "downloading", label, 0, 0)
 
-                    for part_idx, (part_file_name, part_url) in enumerate(download_plan, 1):
+                    for part_idx, part_file_name, part_url in pending_download_plan:
                         if _model_download_cancel.is_set():
                             break
                         part_target = models_dir / part_file_name
@@ -2649,6 +3048,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         # Download with retry. Use Popen (not run) so the process can
                         # be killed from the cancel handler or _poll_progress thread.
                         success = False
+                        last_error = ""
                         for attempt in range(1, 4):
                             if _model_download_cancel.is_set():
                                 break
@@ -2672,11 +3072,26 @@ class AgentHandler(BaseHTTPRequestHandler):
                             if _model_download_cancel.is_set():
                                 break
                             if proc.returncode == 0:
-                                _stop_progress.set()
-                                part_tmp.rename(part_target)
-                                success = True
-                                break
-                            _write_model_status(status_path, "downloading", part_label, 0, part_total, f"Retry {attempt}/3")
+                                try:
+                                    part_tmp.rename(part_target)
+                                except OSError as exc:
+                                    last_error = f"Download finished but final file could not be moved into place: {exc}"
+                                else:
+                                    if _model_file_ready(part_target):
+                                        success = True
+                                        break
+                                    last_error = "Download finished but model file is missing or empty"
+                                    part_target.unlink(missing_ok=True)
+                            else:
+                                last_error = f"curl exited with code {proc.returncode}"
+                            _write_model_status(
+                                status_path,
+                                "downloading",
+                                part_label,
+                                0,
+                                part_total,
+                                f"Retry {attempt}/3: {last_error}",
+                            )
 
                         _stop_progress.set()
                         progress_thread.join(timeout=3)
@@ -2689,7 +3104,14 @@ class AgentHandler(BaseHTTPRequestHandler):
 
                         if not success:
                             part_tmp.unlink(missing_ok=True)
-                            _write_model_status(status_path, "failed", part_label, 0, part_total, "Download failed after 3 attempts")
+                            _write_model_status(
+                                status_path,
+                                "failed",
+                                part_label,
+                                0,
+                                part_total,
+                                last_error or "Download failed after 3 attempts",
+                            )
                             return
 
                     # Verify SHA256 for every downloaded part. Catalog is the
@@ -2704,6 +3126,16 @@ class AgentHandler(BaseHTTPRequestHandler):
                     for part_idx, (part_file_name, _) in enumerate(download_plan, 1):
                         expected = expected_sha_by_file.get(part_file_name, "")
                         final_target = models_dir / part_file_name
+                        if not _model_file_ready(final_target):
+                            _write_model_status(
+                                status_path,
+                                "failed",
+                                part_file_name,
+                                0,
+                                0,
+                                "Download finished but model file is missing or empty",
+                            )
+                            return
                         if not expected:
                             logger.warning(
                                 "SHA256 verification skipped for %s: no checksum in model-library.json",
@@ -2823,12 +3255,15 @@ class AgentHandler(BaseHTTPRequestHandler):
         env_path = INSTALL_DIR / ".env"
         models_ini = INSTALL_DIR / "config" / "llama-server" / "models.ini"
         lemonade_yaml = INSTALL_DIR / "config" / "litellm" / "lemonade.yaml"
+        hermes_live_config = INSTALL_DIR / "data" / "hermes" / "config.yaml"
+        hermes_template_config = INSTALL_DIR / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
 
         # Hoisted so the outer except's rollback can reference them safely.
         # None means the snapshot was not captured, so rollback must skip it.
         env_backup: str | None = None
         ini_backup: str | None = None
         lemonade_backup = None
+        hermes_backups: dict[Path, str] = {}
         committed = False
 
         def restore_backups():
@@ -2838,16 +3273,46 @@ class AgentHandler(BaseHTTPRequestHandler):
                 models_ini.write_text(ini_backup, encoding="utf-8")
             if lemonade_backup is not None:
                 lemonade_yaml.write_text(lemonade_backup, encoding="utf-8")
+            for hermes_path, hermes_text in hermes_backups.items():
+                hermes_path.write_text(hermes_text, encoding="utf-8")
 
         try:
             # Read current env BEFORE modification — needed for gpu_backend guard
             env_pre = load_env(env_path)
             gpu_backend = env_pre.get("GPU_BACKEND", "nvidia")
+            runtime_profile = _select_runtime_profile(model, env_pre)
+            runtime_env = {}
+            if runtime_profile:
+                try:
+                    context_length = int(runtime_profile.get("context_length") or context_length)
+                except (TypeError, ValueError):
+                    pass
+                llama_server_image = runtime_profile.get("llama_server_image") or llama_server_image
+                runtime_env = runtime_profile.get("env") if isinstance(runtime_profile.get("env"), dict) else {}
 
             # Save rollback snapshot
             env_backup = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
             ini_backup = models_ini.read_text(encoding="utf-8") if models_ini.exists() else ""
             lemonade_backup = lemonade_yaml.read_text(encoding="utf-8") if lemonade_yaml.exists() else None
+            # Hermes's live config dir is created by the container at first
+            # boot with UID 10000 / mode 0700, so the host-agent (running as
+            # the host user) cannot read or write data/hermes/config.yaml.
+            # That's expected — patching the model name there is a courtesy
+            # so the next Hermes restart picks up the new model. If we can't
+            # read it, skip the backup/patch and continue. bootstrap-upgrade.sh
+            # already treats this as non-fatal (line ~640) — mirror it here.
+            for hermes_path in (hermes_live_config, hermes_template_config):
+                try:
+                    if hermes_path.exists():
+                        hermes_backups[hermes_path] = hermes_path.read_text(encoding="utf-8")
+                except PermissionError:
+                    logger.warning(
+                        "Hermes config %s not readable by host-agent (likely owned by "
+                        "container UID); skipping backup. Patch attempt will also skip; "
+                        "operator can manually edit the live config and then "
+                        "`docker restart dream-hermes` to pick up the new model.",
+                        hermes_path,
+                    )
 
             # Update .env
             if env_path.exists():
@@ -2857,7 +3322,37 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "LLM_MODEL": llm_model_name,
                     "CTX_SIZE": str(context_length),
                     "MAX_CONTEXT": str(context_length),
+                    "MODEL_RUNTIME_PROFILE": runtime_profile.get("id", "") if runtime_profile else "",
+                    "MODEL_RUNTIME_PROFILE_LABEL": runtime_profile.get("label", "") if runtime_profile else "",
+                    "MODEL_RUNTIME_PROFILE_SOURCE": runtime_profile.get("source_url", "") if runtime_profile else "",
                 }
+                runtime_keys = {
+                    "LLAMA_PARALLEL",
+                    "LLAMA_ARG_FLASH_ATTN",
+                    "LLAMA_ARG_CACHE_TYPE_K",
+                    "LLAMA_ARG_CACHE_TYPE_V",
+                    "LLAMA_ARG_N_CPU_MOE",
+                    "LLAMA_ARG_NO_CACHE_PROMPT",
+                    "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS",
+                }
+                if runtime_profile:
+                    for key, value in runtime_env.items():
+                        if key in runtime_keys and value is not None:
+                            updates[key] = str(value)
+                else:
+                    updates.update({
+                        "LLAMA_PARALLEL": "1",
+                        "LLAMA_ARG_FLASH_ATTN": "auto",
+                        "LLAMA_ARG_CACHE_TYPE_K": "f16",
+                        "LLAMA_ARG_CACHE_TYPE_V": "f16",
+                    })
+                remove_keys = {
+                    "LLAMA_ARG_N_CPU_MOE",
+                    "LLAMA_ARG_NO_CACHE_PROMPT",
+                    "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS",
+                    "LLAMA_SERVER_IMAGE",
+                }
+                remove_keys.difference_update(updates)
                 # Only update LLAMA_SERVER_IMAGE on Docker backends.
                 # macOS runs llama-server natively (no Docker image to pull).
                 if llama_server_image and gpu_backend != "apple":
@@ -2869,6 +3364,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                     if key and key in updates:
                         new_lines.append(f"{key}={updates[key]}")
                         seen.add(key)
+                    elif key and key in remove_keys:
+                        continue
                     else:
                         new_lines.append(line)
                 for key, val in updates.items():
@@ -2917,6 +3414,25 @@ class AgentHandler(BaseHTTPRequestHandler):
                     encoding="utf-8",
                 )
                 logger.info("Regenerated lemonade.yaml for model: extra.%s", gguf_file)
+
+            hermes_model_name = f"extra.{gguf_file}" if gpu_backend == "amd" else gguf_file
+            try:
+                hermes_live_exists = hermes_live_config.exists()
+            except PermissionError:
+                hermes_live_exists = None
+            hermes_live_patched = _patch_hermes_model_config(hermes_live_config, hermes_model_name)
+            hermes_template_patched = _patch_hermes_model_config(hermes_template_config, hermes_model_name)
+            # Restart Hermes only when its persisted live config changed, or
+            # when no persisted config exists and a patched template can seed
+            # the next start. If live config is container-owned and unreadable,
+            # restarting would keep the old persisted model, so skip it.
+            hermes_patched = hermes_live_patched or (hermes_template_patched and hermes_live_exists is False)
+            if hermes_template_patched and not hermes_patched:
+                logger.warning(
+                    "Patched Hermes template but not the live config; skipping "
+                    "dream-hermes restart because it would keep using the old "
+                    "persisted config until an operator edits data/hermes/config.yaml."
+                )
 
             # Restart llama-server with the new model.
             # Three strategies depending on platform / agent location:
@@ -2971,7 +3487,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 # Re-launch native llama-server with new model
                 _launch_native_llama_server(env_path, llama_bin, llama_log, pid_file)
             elif _in_container:
-                override_image = llama_server_image or ""
+                override_image = llama_server_image or ("ghcr.io/ggml-org/llama.cpp:server-cuda-b9014" if gpu_backend == "nvidia" else "")
                 _recreate_llama_server(env, override_image=override_image)
             else:
                 _compose_restart_llama_server(env)
@@ -3045,7 +3561,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                     _write_lemonade_config(INSTALL_DIR, gguf_file)
 
                 # Restart dependent services so they pick up the new model
-                for svc in ["dream-litellm", "dream-dreamforge"]:
+                dependent_services = ["dream-litellm"]
+                if hermes_patched:
+                    dependent_services.append("dream-hermes")
+                for svc in dependent_services:
                     subprocess.run(["docker", "restart", svc],
                                    capture_output=True, timeout=60)
                 committed = True  # system state is committed before the response write
@@ -3226,6 +3745,162 @@ def _write_lemonade_config(install_dir: Path, gguf_file: str):
     config_path.write_text(content, encoding="utf-8")
     logger.info("Wrote lemonade.yaml for model: extra.%s", gguf_file)
 
+
+def _patch_hermes_model_config(path: Path, model_name: str) -> bool:
+    """Patch `model.default` in a Hermes config/template YAML file.
+
+    Hermes copies the template once into data/hermes/config.yaml and then uses
+    the persisted copy as source of truth. Patch both when present so current
+    and future Hermes starts request the model that Dream Server just loaded.
+
+    Non-fatal: the live config lives in a container-owned dir (UID 10000,
+    mode 0700) so the host-agent often can't read or write it. Treat any
+    permission error as a skip, not a failure.
+    """
+    try:
+        if not path.exists():
+            return False
+    except PermissionError:
+        logger.warning(
+            "Hermes config %s not statable by host-agent (container-owned dir); "
+            "skipping patch. Operator can manually edit the live config and then "
+            "`docker restart dream-hermes` to pick up the new model.",
+            path,
+        )
+        return False
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        logger.warning("Could not read Hermes config for model patch: %s", path)
+        return False
+
+    in_model_block = False
+    changed = False
+    new_lines = []
+    for line in lines:
+        if re.match(r"^model:\s*(?:#.*)?$", line):
+            in_model_block = True
+            new_lines.append(line)
+            continue
+        if in_model_block and line and not line.startswith((" ", "\t", "#")):
+            in_model_block = False
+        if in_model_block and re.match(r"^\s+default:\s*", line):
+            indent = line[:len(line) - len(line.lstrip())]
+            new_line = f'{indent}default: "{model_name}"'
+            new_lines.append(new_line)
+            changed = changed or new_line != line
+            continue
+        new_lines.append(line)
+
+    if not changed:
+        return False
+    try:
+        path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        logger.info("Patched Hermes model.default in %s to %s", path, model_name)
+        return True
+    except OSError:
+        logger.warning("Could not write Hermes config model patch: %s", path)
+        return False
+
+
+def _normalize_key(value) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+
+
+def _normalize_host_arch(value) -> str:
+    key = _normalize_key(value)
+    if key in {"aarch64", "arm64"}:
+        return "arm64"
+    if key in {"x86-64", "x86_64", "amd64", "x64"}:
+        return "amd64"
+    return key or "unknown"
+
+
+def _system_ram_gb() -> int:
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return int(round(stat.ullTotalPhys / (1024**3)))
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        return int(round((pages * page_size) / (1024**3)))
+    except (AttributeError, OSError, ValueError):
+        return 0
+
+
+def _nvidia_vram_gb() -> float:
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        if result.returncode == 0:
+            first = result.stdout.strip().splitlines()[0].strip()
+            return float(first) / 1024.0
+    except (IndexError, OSError, subprocess.TimeoutExpired, ValueError):
+        pass
+    return 0.0
+
+
+def _select_runtime_profile(model: dict, env: dict) -> dict | None:
+    profiles = model.get("runtime_profiles")
+    if not isinstance(profiles, list):
+        return None
+    backend = _normalize_key(env.get("GPU_BACKEND", GPU_BACKEND or ""))
+    memory_type = _normalize_key(env.get("GPU_MEMORY_TYPE", "discrete"))
+    host_arch = _normalize_host_arch(platform.machine())
+    vram_gb = _nvidia_vram_gb() if backend == "nvidia" else 0.0
+    try:
+        ram_gb = int(env.get("SYSTEM_RAM_GB") or 0) or _system_ram_gb()
+    except (TypeError, ValueError):
+        ram_gb = _system_ram_gb()
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        if _normalize_key(profile.get("backend")) not in {"", backend}:
+            continue
+        allowed_arches = {
+            _normalize_host_arch(item)
+            for item in (profile.get("host_arch") if isinstance(profile.get("host_arch"), list) else [profile.get("host_arch")])
+            if item
+        }
+        if allowed_arches and host_arch not in allowed_arches:
+            continue
+        required_memory_type = _normalize_key(profile.get("memory_type"))
+        if required_memory_type and required_memory_type != memory_type:
+            continue
+        try:
+            if profile.get("vram_min_gb") is not None and vram_gb < float(profile["vram_min_gb"]):
+                continue
+            if profile.get("vram_max_gb") is not None and vram_gb > float(profile["vram_max_gb"]):
+                continue
+            if profile.get("system_ram_min_gb") is not None and float(ram_gb or 0) < float(profile["system_ram_min_gb"]):
+                continue
+        except (TypeError, ValueError):
+            continue
+        return profile
+    return None
+
+
 def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path, pid_file: Path):
     """Launch the native (Metal) llama-server process and write its PID file.
 
@@ -3246,6 +3921,7 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         "--model", str(model_path),
         "--ctx-size", ctx_size,
         "--n-gpu-layers", "999",
+        "--parallel", env.get("LLAMA_PARALLEL", "1"),
         "--reasoning-format", reasoning_fmt,
         "--metrics",
     ]
@@ -3254,11 +3930,16 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         "LLAMA_ARG_CACHE_TYPE_K": "--cache-type-k",
         "LLAMA_ARG_CACHE_TYPE_V": "--cache-type-v",
         "LLAMA_ARG_N_CPU_MOE": "--n-cpu-moe",
+        "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS": "--checkpoint-every-n-tokens",
+        "LLAMA_ARG_SPEC_TYPE": "--spec-type",
+        "LLAMA_ARG_SPEC_DRAFT_N_MAX": "--spec-draft-n-max",
     }
     for env_key, flag in optional_args.items():
         value = env.get(env_key, "").strip()
         if value:
             args.extend([flag, value])
+    if _normalize_key(env.get("LLAMA_ARG_NO_CACHE_PROMPT")) not in {"", "0", "false", "off", "no"}:
+        args.append("--no-cache-prompt")
     with open(llama_log, "a") as log_f:
         proc = subprocess.Popen(
             args,
@@ -3361,6 +4042,10 @@ def _recreate_llama_server(env: dict, override_image: str = ""):
             new_cmd.append("--ctx-size")
             new_cmd.append(ctx_size)
             skip_next = True
+        elif arg == "--parallel" and i + 1 < len(old_cmd):
+            new_cmd.append("--parallel")
+            new_cmd.append(env.get("LLAMA_PARALLEL", "1"))
+            skip_next = True
         else:
             new_cmd.append(arg)
 
@@ -3414,8 +4099,24 @@ def _recreate_llama_server(env: dict, override_image: str = ""):
             run_cmd += ["-v", f"{src}:{dst}:{mode}"]
 
     # Environment variables
+    replacement_env = {
+        key: value
+        for key, value in env.items()
+        if key.startswith("LLAMA_ARG_") or key in {"LLAMA_PARALLEL", "LLAMA_REASONING", "GGUF_FILE", "LLM_MODEL", "CTX_SIZE", "MAX_CONTEXT"}
+    }
+    seen_env_keys = set()
     for e in (config["Config"].get("Env") or []):
-        run_cmd += ["-e", e]
+        key = e.split("=", 1)[0]
+        if key in replacement_env:
+            run_cmd += ["-e", f"{key}={replacement_env[key]}"]
+            seen_env_keys.add(key)
+        elif key.startswith("LLAMA_ARG_") or key in {"LLAMA_PARALLEL"}:
+            continue
+        else:
+            run_cmd += ["-e", e]
+    for key, value in replacement_env.items():
+        if key not in seen_env_keys:
+            run_cmd += ["-e", f"{key}={value}"]
 
     # Extra hosts
     for eh in (host_config.get("ExtraHosts") or []):
@@ -3472,14 +4173,19 @@ def _write_model_status(path: Path, status: str, model: str, downloaded: int, to
     }
     if error:
         data["error"] = error
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps(data), encoding="utf-8")
-        tmp.rename(path)
+        os.replace(str(tmp), str(path))
     except OSError as e:
         # Don't crash the activate flow; surface to the journal so operators
         # can diagnose why progress stalled.
         logger.warning("Failed to write model status to %s: %s", path, e)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -3544,26 +4250,22 @@ def main():
         pid_path.write_text(str(os.getpid()), encoding="utf-8")
         atexit.register(lambda: pid_path.unlink(missing_ok=True))
 
-    # Determine bind address: env var override, or platform-aware default.
-    # macOS/Windows: 127.0.0.1 (Docker Desktop routes host.docker.internal to loopback)
-    # Linux: Docker bridge gateway IP (containers reach via host-gateway,
-    #   LAN devices cannot — the bridge is a virtual interface).
-    #   Falls back to 127.0.0.1 if detection fails.
-    bind_addr = env.get("DREAM_AGENT_BIND", "")
-    bind_from_env = bool(bind_addr)
-    if not bind_addr:
-        if platform.system() in ("Darwin", "Windows"):
-            bind_addr = "127.0.0.1"
-        else:
-            bind_addr = _detect_docker_bridge_gateway() or "127.0.0.1"
+    # Determine bind address: explicit env override, or a platform-aware safe
+    # default. Linux prefers the dream-network gateway so dashboard-api
+    # containers can reach the agent without exposing it to the LAN. The bridge
+    # gateway fallback keeps partial/older installs reachable until phase 11 can
+    # restart the service after dream-network exists.
+    bind_addr = _resolve_agent_bind_addr(env)
 
     server = ThreadedHTTPServer((bind_addr, port), AgentHandler)
     signal.signal(signal.SIGTERM, lambda *_: server.shutdown())
     logger.info("Dream Host Agent v%s listening on %s:%d", VERSION, bind_addr, port)
-    if bind_addr == "127.0.0.1" and not bind_from_env and platform.system() not in ("Darwin", "Windows"):
-        logger.warning(
-            "Docker bridge detection failed, using loopback (127.0.0.1). "
-            "Containers may not reach the agent. Set DREAM_AGENT_BIND=<bridge-ip> in .env."
+    if bind_addr == "0.0.0.0":
+        logger.info(
+            "Bound to all interfaces. Bearer-auth (DREAM_AGENT_KEY) is enforced "
+            "on every endpoint. To restrict to a specific interface, set "
+            "DREAM_AGENT_BIND=<ip> in %s/.env.",
+            INSTALL_DIR,
         )
     logger.info("Install dir: %s | GPU: %s | Tier: %s", INSTALL_DIR, GPU_BACKEND, TIER)
     try:

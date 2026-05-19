@@ -63,9 +63,13 @@ By default, Dream Server uses **bootstrap mode** for instant gratification:
 1. Starts immediately with a tiny 1.5B model (downloads in <1 minute)
 2. You can start chatting within **2 minutes** of running the installer
 3. The full model downloads in the background
-4. When ready, run `./scripts/upgrade-model.sh` to hot-swap to the full model
+4. Use the Dashboard **Models** page to download and load larger catalog models
 
 No more staring at download bars. Start playing immediately.
+
+Hermes-enabled installs keep this fast-start path: the bootstrap model runs at a 64K context floor so Hermes can start cleanly, then the background full-model swap promotes the local context target to 128K.
+
+Model download, switching, and manual GGUF notes: [docs/MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md)
 
 To skip bootstrap and wait for the full model: `./install.sh --no-bootstrap`
 
@@ -106,7 +110,6 @@ See [`docs/WINDOWS-QUICKSTART.md`](docs/WINDOWS-QUICKSTART.md) for details.
 | **OpenClaw** | Autonomous AI agent framework | 7860 | Optional |
 | **APE** | Agent Policy Engine for policy/audit controls | 7890 | Optional |
 | **OpenCode** | Browser IDE / coding assistant | 3003 | Optional host service |
-| **DreamForge** | Developer/build service extension | 3010 | Optional |
 | **Perplexica** | Deep research engine | 3004 | Optional |
 | **Brave Search** | Paid Brave Search API bridge | 8585 | Optional |
 | **n8n** | Workflow automation | 5678 | Optional |
@@ -122,6 +125,8 @@ See [`docs/WINDOWS-QUICKSTART.md`](docs/WINDOWS-QUICKSTART.md) for details.
 ## Hardware Tiers
 
 The installer **automatically detects your GPU** and selects the right configuration. `MODEL_PROFILE=qwen` is the default; `MODEL_PROFILE=gemma4` and `MODEL_PROFILE=auto` are also supported by the tier map where those GGUFs are available.
+
+When Hermes is enabled, installers keep the bootstrap model at 64K context and promote the full local model context to 128K. The table contexts below are the base tier choices used for core-only or `--no-hermes` installs.
 
 ### AMD Strix Halo (Unified Memory)
 
@@ -278,6 +283,8 @@ LLAMA_ARG_FLASH_ATTN=auto                  # auto, on, or off
 LLAMA_ARG_CACHE_TYPE_K=f16                 # f16 or q8_0
 LLAMA_ARG_CACHE_TYPE_V=f16                 # f16 or q8_0
 # LLAMA_ARG_N_CPU_MOE=25                   # Optional MoE-only CPU expert offload
+# LLAMA_ARG_SPEC_TYPE=draft-mtp            # Optional MTP speculative decoding
+# LLAMA_ARG_SPEC_DRAFT_N_MAX=3             # Optional MTP draft token cap
 ```
 
 ## dream-cli
@@ -315,6 +322,7 @@ dream preset load <name>  # Restore a saved preset
 ```
 
 Full mode-switching documentation: [docs/MODE-SWITCH.md](docs/MODE-SWITCH.md)
+Model download and manual GGUF documentation: [docs/MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md)
 
 ## Showcase & Demos
 
@@ -409,6 +417,8 @@ dream mode status                        # Show current mode
 
 - [docs/README.md](docs/README.md) — **Full documentation index** (start here)
 - [QUICKSTART.md](QUICKSTART.md) — Detailed setup guide
+- [HEADLESS-SETUP.md](docs/HEADLESS-SETUP.md) — QR onboarding, first-boot setup, AP mode, mDNS, and local agent access
+- [MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md) — Dashboard model downloads, switching, and manual GGUF use
 - [HARDWARE-GUIDE.md](docs/HARDWARE-GUIDE.md) — What to buy
 - [EXTENSIONS.md](docs/EXTENSIONS.md) — Add services, manifests, dashboard plugins
 - [INSTALLER-ARCHITECTURE.md](docs/INSTALLER-ARCHITECTURE.md) — Modding the installer
@@ -420,7 +430,7 @@ dream mode status                        # Show current mode
 
 Dream Server exists because of the incredible people, projects, and communities that make open-source AI possible. We are grateful to every contributor, maintainer, and tinkerer whose work powers this stack.
 
-Thanks to [kyuz0](https://github.com/kyuz0) for [amd-strix-halo-toolboxes](https://github.com/kyuz0/amd-strix-halo-toolboxes) — pre-built ROCm containers for Strix Halo that saved us from having to build our own. And to [lhl](https://github.com/lhl) for [strix-halo-testing](https://github.com/lhl/strix-halo-testing) — the foundational Strix Halo AI research and rocWMMA performance work that the broader community builds on.
+Thanks to [lhl](https://github.com/lhl) for [strix-halo-testing](https://github.com/lhl/strix-halo-testing) — the foundational Strix Halo AI research and rocWMMA performance work that the broader community builds on.
 
 ### Community Builds
 
@@ -434,7 +444,6 @@ Thanks to [kyuz0](https://github.com/kyuz0) for [amd-strix-halo-toolboxes](https
 *   [ComfyUI](https://github.com/comfyanonymous/ComfyUI) — Image generation engine
 *   [SDXL Lightning (ByteDance)](https://huggingface.co/ByteDance/SDXL-Lightning) — Image generation model
 *   [AMD ROCm](https://github.com/ROCm/ROCm) — GPU compute platform
-*   [AMD Strix Halo Toolboxes (kyuz0)](https://github.com/kyuz0/amd-strix-halo-toolboxes) — Pre-built ROCm containers for AMD inference
 *   [Strix Halo Testing (lhl)](https://github.com/lhl/strix-halo-testing) — Foundational Strix Halo AI research and rocWMMA optimizations
 *   [n8n](https://github.com/n8n-io/n8n) — Workflow automation
 *   [Qdrant](https://github.com/qdrant/qdrant) — Vector database

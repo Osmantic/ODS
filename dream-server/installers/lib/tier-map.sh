@@ -97,6 +97,24 @@ set_qwen_tier_config() {
             GGUF_SHA256="9e6032d2f3b50a60f17ce8bf5a1d85c71af9b53b89c7978020ae7c660f29b090"
             MAX_CONTEXT=131072
             LLM_MODEL_SIZE_MB=48500   # 48.5 GB per HF file listing
+            # NV_ULTRA on aarch64 (DGX Spark / GB10): qwen3-coder-next MoE
+            # Q4_K_M produces all-`?` tokens on every chat completion against
+            # llama.cpp b9014 on Blackwell-aarch64 (SHA256 verifies, server
+            # starts cleanly, decode rate is normal, but every token is `?`).
+            # Verified bug is coder-next-specific, not a general MoE kernel
+            # bug: Qwen3.6-35B-A3B (UD-Q4_K_M) serves cleanly on the same
+            # build, same hardware. Until upstream fixes coder-next on this
+            # build, route Spark to the A3B MoE — same architectural fit
+            # (large total / small active params on unified memory).
+            if [[ "${HOST_ARCH:-}" == "arm64" ]]; then
+                TIER_NAME="NVIDIA Ultra (90GB+, aarch64 — A3B substitution)"
+                LLM_MODEL="qwen3.6-35b-a3b"
+                GGUF_FILE="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+                GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+                GGUF_SHA256="ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
+                MAX_CONTEXT=131072
+                LLM_MODEL_SIZE_MB=21110
+            fi
             ;;
         SH_LARGE)
             TIER_NAME="Strix Halo 90+"
@@ -330,7 +348,13 @@ tier_to_model() {
         *)
             case "$t" in
                 CLOUD)          model="anthropic/claude-sonnet-4-5-20250514" ;;
-                NV_ULTRA)       model="qwen3-coder-next" ;;
+                NV_ULTRA)
+                    if [[ "${HOST_ARCH:-}" == "arm64" ]]; then
+                        model="qwen3.6-35b-a3b"
+                    else
+                        model="qwen3-coder-next"
+                    fi
+                    ;;
                 SH_LARGE)       model="qwen3-coder-next" ;;
                 SH_COMPACT|SH)  model="qwen3-30b-a3b" ;;
                 ARC)            model="qwen3.5-9b" ;;

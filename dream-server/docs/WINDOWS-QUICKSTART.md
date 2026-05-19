@@ -53,7 +53,7 @@ First user becomes admin. Start chatting immediately.
 
 ## Bootstrap Mode (Faster Start)
 
-The installer automatically uses bootstrap mode when applicable — a small model (~1.5 GB) downloads first so you can start chatting within 2 minutes, while the full model downloads in the background. No extra flags needed.
+The installer automatically uses bootstrap mode when applicable — a small model (~1.5 GB) downloads first so you can start chatting within 2 minutes, while the full model downloads in the background. Hermes-enabled installs run that bootstrap model at a 64K context floor, then promote the full local model context to 128K after the swap. No extra flags needed.
 
 ---
 
@@ -65,10 +65,15 @@ The installer automatically uses bootstrap mode when applicable — a small mode
 | `-Voice` | Enable Whisper + TTS |
 | `-Workflows` | Enable n8n automation |
 | `-Rag` | Enable Qdrant vector DB |
-| `-OpenClaw` | Enable OpenClaw agent framework |
+| `-Recommended` | Enable LiteLLM + SearXNG + Token Spy support services |
+| `-NoRecommended` | Disable LiteLLM + SearXNG + Token Spy support services |
+| `-Hermes` | Enable Hermes Agent |
+| `-NoHermes` | Disable Hermes Agent |
+| `-NoBootstrap` | Wait for the full model before launching |
+| `-OpenClaw` | Enable deprecated OpenClaw legacy agent framework |
 | `-Comfyui` | Enable ComfyUI image generation |
 | `-Langfuse` | Enable Langfuse LLM observability |
-| `-All` | Everything enabled |
+| `-All` | Full stack enabled, except deprecated OpenClaw unless `-OpenClaw` is also passed |
 | `-Cloud` | Use cloud LLM provider instead of local |
 | `-DryRun` | Simulate install without making changes |
 
@@ -121,7 +126,7 @@ GPU access: Windows driver → WSL2 → Docker Container Toolkit → llama-serve
 |------|-------|
 | Install directory | `%LOCALAPPDATA%\DreamServer` |
 | Config | `.env` file in install directory |
-| Models | Docker volume `dream-server_model-cache` |
+| Models | `%LOCALAPPDATA%\DreamServer\data\models\` |
 | Logs | `docker compose logs` |
 | Data | Docker volumes (auto-managed) |
 

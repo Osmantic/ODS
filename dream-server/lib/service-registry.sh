@@ -60,9 +60,12 @@ sr_load() {
         PYTHON_CMD="python"
     fi
 
-    # Ensure PyYAML is available (Arch, Void, Alpine don't ship it by default)
+    # Ensure PyYAML is available (Arch, Void, Alpine don't ship it by default).
+    # install-core.sh initially loads the registry before CLI flags are parsed,
+    # so avoid surprise sudo prompts until the installer has prepared sudo and
+    # explicitly enabled DREAM_SR_AUTO_INSTALL_PYYAML.
     if ! "$PYTHON_CMD" -c "import yaml" 2>/dev/null; then
-        if declare -f pkg_install &>/dev/null && declare -f pkg_resolve &>/dev/null; then
+        if [[ "${DREAM_SR_AUTO_INSTALL_PYYAML:-}" == "1" ]] && declare -f pkg_install &>/dev/null && declare -f pkg_resolve &>/dev/null; then
             [[ -z "${PKG_MANAGER:-}" ]] && declare -f detect_pkg_manager &>/dev/null && detect_pkg_manager
             declare -f log &>/dev/null && log "PyYAML not found; installing system package..."
             # shellcheck disable=SC2046

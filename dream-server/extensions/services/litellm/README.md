@@ -13,7 +13,7 @@ LiteLLM runs at `http://localhost:4000` and is the recommended integration point
 - **Single endpoint for all modes**: Same `POST /v1/chat/completions` URL regardless of backend
 - **Three operating modes**: Local, cloud, and hybrid with automatic fallback
 - **OpenAI-compatible API**: Works with any OpenAI SDK client
-- **Multi-provider routing**: Anthropic, OpenAI, Together AI, and local llama-server
+- **Multi-provider routing**: Anthropic, OpenAI, Together AI, MiniMax, and local llama-server
 - **Master key auth**: Secure all requests with `LITELLM_KEY`
 - **Drop params**: Unsupported parameters silently ignored across backends
 
@@ -42,6 +42,8 @@ model_list:
   - model_name: default       # → anthropic/claude-sonnet-4-5-20250514
   - model_name: gpt4o         # → openai/gpt-4o
   - model_name: fast          # → anthropic/claude-haiku-4-5-20251001
+  - model_name: minimax       # → MiniMax-M2.7 via minimax API
+  - model_name: minimax-fast  # → MiniMax-M2.7-highspeed
 ```
 
 ### hybrid
@@ -71,6 +73,7 @@ Environment variables (set in `.env`):
 | `ANTHROPIC_API_KEY` | *(empty)* | Required for `cloud` and `hybrid` modes |
 | `OPENAI_API_KEY` | *(empty)* | Required for OpenAI models in `cloud` mode |
 | `TOGETHER_API_KEY` | *(empty)* | Required for Together AI models in `cloud` mode |
+| `MINIMAX_API_KEY` | *(empty)* | Required for MiniMax models in `cloud`/`hybrid` modes |
 
 ## API Endpoints
 

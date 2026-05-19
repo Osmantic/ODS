@@ -12,11 +12,13 @@
 # Provides: BOOTSTRAP_* constants, bootstrap_needed()
 # ============================================================================
 
-# Bootstrap model: Tier 0 (Qwen 3.5 2B, Q4_K_M quantization, ~1.5GB)
+# Bootstrap model: Tier 0 (Qwen 3.5 2B, Q4_K_M quantization, ~1.5GB).
+# Hermes requires at least a 64K context window, so fast-start installs keep
+# the bootstrap server at that floor instead of the older 8K default.
 BOOTSTRAP_GGUF_FILE="Qwen3.5-2B-Q4_K_M.gguf"
 BOOTSTRAP_GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
 BOOTSTRAP_LLM_MODEL="qwen3.5-2b"
-BOOTSTRAP_MAX_CONTEXT=8192
+BOOTSTRAP_MAX_CONTEXT=65536
 
 # bootstrap_needed — Should we use the fast-start bootstrap pattern?
 #

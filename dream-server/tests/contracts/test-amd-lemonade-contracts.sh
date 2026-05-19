@@ -12,6 +12,19 @@ FAIL=0
 
 pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
+json_get() {
+    python3 - "$1" "$2" <<'PY'
+import json
+import sys
+
+path, key_path = sys.argv[1], sys.argv[2]
+with open(path, "r", encoding="utf-8") as f:
+    value = json.load(f)
+for key in key_path.split("."):
+    value = value[key]
+print(value)
+PY
+}
 
 # ---------------------------------------------------------------------------
 # 1. Required compose files exist
@@ -88,12 +101,13 @@ fi
 # 7. Dockerfile.amd pins image tag (not :latest)
 # ---------------------------------------------------------------------------
 echo "[contract] Dockerfile.amd pins Lemonade image tag"
+AMD_LEMONADE_IMAGE="$(json_get config/backends/amd.json runtime.lemonade.container_image)"
 if grep -q 'lemonade-server:latest' extensions/services/llama-server/Dockerfile.amd; then
     fail "Dockerfile.amd: must pin a specific tag, not :latest"
-elif grep -q 'lemonade-server:v' extensions/services/llama-server/Dockerfile.amd; then
-    pass "Dockerfile.amd: pinned image tag"
+elif grep -q "$AMD_LEMONADE_IMAGE" extensions/services/llama-server/Dockerfile.amd; then
+    pass "Dockerfile.amd: pinned image tag matches amd.json"
 else
-    fail "Dockerfile.amd: no lemonade-server image reference found"
+    fail "Dockerfile.amd: no matching Lemonade image reference found"
 fi
 
 # ---------------------------------------------------------------------------
@@ -146,6 +160,104 @@ if grep -q 'lemonade' scripts/resolve-compose-stack.sh; then
     pass "resolve-compose-stack.sh: lemonade mode recognized"
 else
     fail "resolve-compose-stack.sh: must recognize lemonade mode for local overlays"
+fi
+
+# ---------------------------------------------------------------------------
+# 13. AMD backend contract centralizes Lemonade runtime metadata
+# ---------------------------------------------------------------------------
+echo "[contract] AMD backend contract exposes Lemonade runtime"
+if [[ "$(json_get config/backends/amd.json runtime.lemonade.container_image)" == "ghcr.io/lemonade-sdk/lemonade-server:v10.2.0" ]]; then
+    pass "amd.json: Linux Lemonade image pin present"
+else
+    fail "amd.json: runtime.lemonade.container_image must pin v10.2.0"
+fi
+if [[ "$(json_get config/backends/amd.json runtime.lemonade.windows_version)" == "10.0.0" ]] \
+    && [[ "$(json_get config/backends/amd.json runtime.lemonade.windows_msi_file)" == "lemonade-server-minimal.msi" ]]; then
+    pass "amd.json: Windows Lemonade MSI contract present"
+else
+    fail "amd.json: Windows Lemonade MSI contract missing"
+fi
+
+# ---------------------------------------------------------------------------
+# 14. Linux AMD image consumers use the same Lemonade image pin
+# ---------------------------------------------------------------------------
+echo "[contract] AMD Lemonade image pin is consistent"
+if grep -q "$AMD_LEMONADE_IMAGE" docker-compose.amd.yml \
+    && grep -q "$AMD_LEMONADE_IMAGE" extensions/services/llama-server/Dockerfile.amd \
+    && grep -q "$AMD_LEMONADE_IMAGE" installers/phases/08-images.sh; then
+    pass "compose, Dockerfile, and phase 08 share AMD Lemonade image pin"
+else
+    fail "compose, Dockerfile, and phase 08 must share AMD Lemonade image pin"
+fi
+
+# ---------------------------------------------------------------------------
+# 15. AMD runtime env contract exists and is passed to dashboard-api
+# ---------------------------------------------------------------------------
+echo "[contract] AMD runtime env contract"
+for key in AMD_INFERENCE_RUNTIME AMD_INFERENCE_BACKEND AMD_INFERENCE_LOCATION AMD_INFERENCE_PORT AMD_INFERENCE_SUPPORTED_BACKENDS AMD_INFERENCE_RUNTIME_MODE AMD_INFERENCE_MANAGED LEMONADE_SERVER_IMAGE; do
+    if grep -q "\"$key\"" .env.schema.json; then
+        pass ".env.schema.json: $key documented"
+    else
+        fail ".env.schema.json: $key missing"
+    fi
+done
+for key in AMD_INFERENCE_RUNTIME AMD_INFERENCE_BACKEND AMD_INFERENCE_LOCATION AMD_INFERENCE_PORT AMD_INFERENCE_SUPPORTED_BACKENDS AMD_INFERENCE_RUNTIME_MODE AMD_INFERENCE_MANAGED; do
+    if grep -q "$key" docker-compose.amd.yml && grep -q "$key" installers/windows/docker-compose.windows-amd.yml; then
+        pass "dashboard-api overlays pass $key"
+    else
+        fail "dashboard-api overlays must pass $key"
+    fi
+done
+if grep -q 'AMD_INFERENCE_RUNTIME_MODE=.*linux-container' installers/phases/06-directories.sh \
+    && grep -q 'AMD_INFERENCE_SUPPORTED_BACKENDS=' installers/phases/06-directories.sh \
+    && grep -q 'AMD_INFERENCE_MANAGED=.*true' installers/phases/06-directories.sh; then
+    pass "Linux installer writes AMD capability metadata"
+else
+    fail "Linux installer must write AMD runtime mode, managed state, and supported backends"
+fi
+if grep -q 'windows-legacy-lemonade' installers/windows/phases/06-directories.ps1 \
+    && grep -q 'windows-llama-server-fallback' installers/windows/install-windows.ps1 \
+    && grep -q 'AMD_INFERENCE_SUPPORTED_BACKENDS' installers/windows/lib/env-generator.ps1; then
+    pass "Windows installer writes AMD capability metadata"
+else
+    fail "Windows installer must write legacy Lemonade and llama-server fallback capability metadata"
+fi
+
+# ---------------------------------------------------------------------------
+# 16. Windows backend contract helper parses explicit roots
+# ---------------------------------------------------------------------------
+echo "[contract] Windows backend contract helper"
+if [[ -f installers/windows/lib/backend-contract.ps1 ]]; then
+    pass "backend-contract.ps1 exists"
+else
+    fail "backend-contract.ps1 missing"
+fi
+if command -v pwsh >/dev/null 2>&1; then
+    _ps_tmp="${TMPDIR:-/tmp}"
+    if ROOT_DIR="$ROOT_DIR" AMD_LEMONADE_IMAGE="$AMD_LEMONADE_IMAGE" TEMP="$_ps_tmp" ProgramFiles="$_ps_tmp" USERPROFILE="$_ps_tmp" pwsh -NoProfile -Command '
+        $ErrorActionPreference = "Stop"
+        . (Join-Path $env:ROOT_DIR "installers/windows/lib/backend-contract.ps1")
+        $runtime = Get-DreamAmdLemonadeRuntime -RootPath $env:ROOT_DIR
+        if ($runtime.container_image -ne $env:AMD_LEMONADE_IMAGE) {
+            throw "Unexpected container image: $($runtime.container_image)"
+        }
+        $failed = $false
+        try {
+            Get-DreamAmdLemonadeRuntime -RootPath (Join-Path $env:ROOT_DIR "missing-root") | Out-Null
+        } catch {
+            $failed = $true
+        }
+        if (-not $failed) {
+            throw "Expected missing root to fail"
+        }
+        . (Join-Path $env:ROOT_DIR "installers/windows/lib/constants.ps1")
+    '; then
+        pass "backend-contract.ps1: reads explicit root and constants.ps1 stays standalone"
+    else
+        fail "backend-contract.ps1: PowerShell contract failed"
+    fi
+else
+    pass "backend-contract.ps1: runtime test skipped (pwsh unavailable)"
 fi
 
 # ---------------------------------------------------------------------------

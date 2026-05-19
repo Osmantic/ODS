@@ -492,11 +492,6 @@ LITELLM_UPGRADE_EOF
             log "Restarting LiteLLM to pick up model change..."
             $DOCKER_CMD restart dream-litellm 2>&1 || log "WARNING: LiteLLM restart failed (non-fatal)"
         fi
-        # Restart DreamForge so it auto-detects the new model from llama-server
-        if $DOCKER_CMD ps --filter name=dream-dreamforge --format '{{.Names}}' 2>/dev/null | grep -q dream-dreamforge; then
-            log "Restarting DreamForge to pick up model change..."
-            $DOCKER_CMD restart dream-dreamforge 2>&1 || log "WARNING: DreamForge restart failed (non-fatal)"
-        fi
         # Recreate OpenClaw so inject-token.js picks up the new GGUF_FILE/LLM_MODEL
         # from .env. A restart alone won't work — env vars are baked in at container
         # creation time, and inject-token.js builds the Lemonade model name from them.
@@ -515,6 +510,154 @@ LITELLM_UPGRADE_EOF
                     log "WARNING: OpenClaw recreate failed (non-fatal)"
             else
                 log "WARNING: No compose binary available (DOCKER_COMPOSE_CMD empty or compose args missing) — OpenClaw was NOT recreated. The new model will not take effect until OpenClaw is recreated manually with: docker compose up -d --force-recreate openclaw"
+            fi
+        fi
+        # Patch Hermes Agent's config so it stops asking the LLM server for the
+        # bootstrap model id. PR #1191 substitutes model.default in the template
+        # at install time, but at install time we've only loaded the bootstrap
+        # model (Qwen3.5-2B) — Hermes's /opt/data/config.yaml is therefore
+        # pinned to that name. Once this script swaps Lemonade/llama-server
+        # to the full model, Hermes keeps sending the stale bootstrap id and
+        # every chat completion 404s.
+        #
+        # This is hard-broken on AMD/Lemonade (which strictly validates the
+        # `model` field) and silently masked on NVIDIA/Apple (llama.cpp
+        # ignores the field and serves whatever's loaded), so the bug
+        # surfaces as "Hermes works on Tower2/Mac but every prompt 404s on
+        # Strix Halo" after a bootstrap-to-full swap.
+        #
+        # Two files to keep in sync:
+        #   1. /opt/data/config.yaml inside the container — the live config
+        #      Hermes reads at startup. Owned by container UID; patch via
+        #      `docker exec` so we don't need host sudo.
+        #   2. extensions/services/hermes/cli-config.yaml.template — the
+        #      source Hermes copies into /opt/data on first start. Updating
+        #      it keeps subsequent down-and-up cycles correct.
+        # Lemonade prefixes the served model id with "extra."; llama.cpp
+        # serves under the bare file name. Mirror the same branch PR #1191
+        # added in installers/phases/11-services.sh.
+        _hermes_old_model="$BOOTSTRAP_GGUF_FILE"
+        _hermes_new_model="$FULL_GGUF_FILE"
+        _gpu_backend_for_hermes=$(grep -E '^GPU_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' || echo "")
+        if [[ "$_gpu_backend_for_hermes" == "amd" ]]; then
+            _hermes_old_model="extra.$BOOTSTRAP_GGUF_FILE"
+            _hermes_new_model="extra.$FULL_GGUF_FILE"
+        fi
+        log "Patching Hermes config: model.default $_hermes_old_model -> $_hermes_new_model"
+
+        # Template on host (user-owned, no sudo needed). Patch this even when
+        # Hermes is stopped so future container creates do not copy the stale
+        # bootstrap model id.
+        _hermes_tpl="$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template"
+        if [[ -f "$_hermes_tpl" ]]; then
+            _hermes_patcher="$INSTALL_DIR/scripts/patch-hermes-config.py"
+            _python_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+            if [[ -n "$_python_cmd" && -f "$_hermes_patcher" ]]; then
+                if ! "$_python_cmd" "$_hermes_patcher" "$_hermes_tpl" \
+                    --model "$_hermes_new_model" \
+                    --context-length "$FULL_MAX_CONTEXT" 2>&1; then
+                    log "WARNING: Could not patch ${_hermes_tpl} with patch-hermes-config.py (non-fatal — operator can hand-edit before restarting Hermes)"
+                fi
+            elif sed -i.bak \
+                -e "s|^  default: \"${_hermes_old_model}\"|  default: \"${_hermes_new_model}\"|" \
+                -e "s|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|" \
+                -e "s|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|" \
+                "$_hermes_tpl" 2>&1; then
+                rm -f "${_hermes_tpl}.bak"
+            else
+                log "WARNING: Could not patch ${_hermes_tpl} (non-fatal — operator can hand-edit before restarting Hermes)"
+            fi
+        fi
+
+        if $DOCKER_CMD ps --filter name=dream-hermes --format '{{.Names}}' 2>/dev/null | grep -q dream-hermes; then
+            # Live config inside the running container (owned by container UID).
+            $DOCKER_CMD exec dream-hermes sh -c \
+                "sed -i -e 's|^  default: \"${_hermes_old_model}\"|  default: \"${_hermes_new_model}\"|' -e 's|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|' -e 's|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|' -e 's|^  threshold: .*|  threshold: 0.50|' -e 's|^  target_ratio: .*|  target_ratio: 0.20|' /opt/data/config.yaml" 2>&1 || \
+                log "WARNING: Could not patch Hermes /opt/data/config.yaml (non-fatal — operator can hand-edit and 'docker restart dream-hermes')"
+            log "Restarting Hermes to pick up model change..."
+            $DOCKER_CMD restart dream-hermes 2>&1 || log "WARNING: Hermes restart failed (non-fatal — hand-restart with 'docker restart dream-hermes')"
+
+            # Pre-warm the freshly-swapped LLM + Hermes's 14K-token system prompt.
+            #
+            # Two latency hits if we skip this:
+            #   1. llama-server / Lemonade loads the full model into VRAM on first
+            #      request (`--n-gpu-layers 999` is lazy). PR #1192 already warms
+            #      this at install time, but that warm-up was against the
+            #      bootstrap model — after the swap, the slot is cold again.
+            #   2. Hermes's runtime config bakes a 14K-token system prompt
+            #      (skills, soul, tool descriptors). First Hermes prompt has
+            #      to prefill all of it. Empirically 67s on Strix Halo,
+            #      1m25s on macOS, ~5s once cached. We've seen real users
+            #      think Hermes is broken because they alt-tabbed away during
+            #      a fresh install and the first prompt looked stuck.
+            #
+            # Mirrors PR #1192's pattern: best-effort, time-bounded, never fails
+            # the upgrade. If either warm-up times out the swap still succeeds —
+            # the user just eats the slow first call.
+            log "Pre-warming llama-server slot with full model..."
+            _prewarm_api_path="/v1"
+            _prewarm_model="$FULL_GGUF_FILE"
+            if [[ "$_gpu_backend_for_hermes" == "amd" ]]; then
+                _prewarm_api_path="/api/v1"
+                _prewarm_model="extra.$FULL_GGUF_FILE"
+            fi
+            _prewarm_body="{\"model\":\"${_prewarm_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}"
+            if $DOCKER_CMD exec dream-hermes curl -sf --max-time 120 -X POST \
+                "http://llama-server:8080${_prewarm_api_path}/chat/completions" \
+                -H "Content-Type: application/json" \
+                -d "$_prewarm_body" >/dev/null 2>&1; then
+                log "llama-server slot pre-warmed."
+            else
+                log "WARNING: llama-server pre-warm timed out — first Hermes prompt may be slow."
+            fi
+
+            # Wait for Hermes to come back up after the restart, then trigger
+            # one no-op invocation so the 14K system prompt gets into
+            # llama-server's KV cache. We cap at 90s total — long enough for
+            # Hermes's skills sync + config bootstrap (start_period: 60s in
+            # compose.yaml) plus a few decode tokens, short enough that a
+            # broken Hermes doesn't stall the script forever.
+            log "Pre-warming Hermes system prompt (caches 14K-token prefill)..."
+            _hermes_ready=false
+            for _i in $(seq 1 30); do
+                if $DOCKER_CMD exec dream-hermes curl -sf --max-time 3 http://127.0.0.1:9119/api/status >/dev/null 2>&1; then
+                    _hermes_ready=true
+                    break
+                fi
+                sleep 2
+            done
+            if $_hermes_ready; then
+                if $DOCKER_CMD exec dream-hermes timeout 90 \
+                    /opt/hermes/.venv/bin/hermes -z "ping" --yolo \
+                    >/dev/null 2>&1; then
+                    log "Hermes system prompt cached — first user prompt will be fast."
+                else
+                    log "WARNING: Hermes warm-up timed out (>90s). First user prompt will incur the full 14K-token prefill."
+                fi
+            else
+                log "WARNING: Hermes did not respond on /api/status within 60s; skipping system-prompt warm-up."
+            fi
+        else
+            # If Hermes is stopped, its persisted /opt/data mount may still
+            # exist on the host. Patch it when writable; otherwise the template
+            # update above still protects first-time/fresh data starts.
+            _hermes_live="$INSTALL_DIR/data/hermes/config.yaml"
+            if [[ -f "$_hermes_live" ]]; then
+                if [[ -n "${_python_cmd:-}" && -f "${_hermes_patcher:-}" ]]; then
+                    if ! "$_python_cmd" "$_hermes_patcher" "$_hermes_live" \
+                        --model "$_hermes_new_model" \
+                        --context-length "$FULL_MAX_CONTEXT" 2>&1; then
+                        log "WARNING: Could not patch ${_hermes_live} with patch-hermes-config.py (non-fatal — operator can hand-edit and restart Hermes)"
+                    fi
+                elif sed -i.bak \
+                    -e "s|^  default: \"${_hermes_old_model}\"|  default: \"${_hermes_new_model}\"|" \
+                    -e "s|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|" \
+                    -e "s|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|" \
+                    "$_hermes_live" 2>&1; then
+                    rm -f "${_hermes_live}.bak"
+                else
+                    log "WARNING: Could not patch ${_hermes_live} (non-fatal — operator can hand-edit and restart Hermes)"
+                fi
             fi
         fi
         sync_windows_opencode_config
@@ -583,6 +726,8 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _n_cpu_moe=$(grep '^LLAMA_ARG_N_CPU_MOE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+            _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+            _spec_draft_n_max=$(grep '^LLAMA_ARG_SPEC_DRAFT_N_MAX=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _llama_args=(
                 --host "$_bind" --port 8080
                 --model "$_model_path"
@@ -595,6 +740,8 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             [[ -n "$_cache_type_k" ]] && _llama_args+=(--cache-type-k "$_cache_type_k")
             [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")
             [[ -n "$_n_cpu_moe" ]] && _llama_args+=(--n-cpu-moe "$_n_cpu_moe")
+            [[ -n "$_spec_type" ]] && _llama_args+=(--spec-type "$_spec_type")
+            [[ -n "$_spec_draft_n_max" ]] && _llama_args+=(--spec-draft-n-max "$_spec_draft_n_max")
 
             # Relaunch with new model
             log "Starting native llama-server with ${_gguf_file}..."

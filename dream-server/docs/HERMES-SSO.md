@@ -163,3 +163,4 @@ dream disable hermes-proxy
 | Date | Pinned Caddy | Notes |
 |---|---|---|
 | 2026-05-12 | `caddy:2.8.4-alpine` | Initial integration. |
+| 2026-05-15 | `caddy:2.11.3-alpine` | Updated Hermes Proxy image to the current Caddy 2.x stable pin. |

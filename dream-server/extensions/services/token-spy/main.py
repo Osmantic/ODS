@@ -8,6 +8,7 @@ Supports Anthropic, Moonshot, OpenAI, and generic OpenAI-compatible APIs.
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ import shlex
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
@@ -29,9 +31,9 @@ from providers import ProviderRegistry
 DB_BACKEND = os.environ.get("DB_BACKEND", "sqlite").lower()
 
 if DB_BACKEND == "postgres":
-    from db_postgres import init_db, log_usage, query_session_status, query_summary, query_usage, query_recent_events
+    from db_postgres import init_db, log_usage, query_report, query_session_status, query_summary, query_usage, query_recent_events
 else:
-    from db import init_db, log_usage, query_session_status, query_summary, query_usage, query_recent_events
+    from db import init_db, log_usage, query_report, query_session_status, query_summary, query_usage, query_recent_events
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -68,6 +70,35 @@ if not OPENAI_UPSTREAM:
         OPENAI_UPSTREAM = UPSTREAM_BASE_URL
     else:
         OPENAI_UPSTREAM = UPSTREAM_BASE_URL  # fallback: same upstream
+
+LOCAL_PROVIDER_NAMES = {"local", "ollama", "llama", "llama.cpp", "llama-server", "vllm"}
+LOCAL_UPSTREAM_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal", "llama-server", "ollama"}
+
+
+def _is_local_upstream_url(url: str) -> bool:
+    """Return true only for hostnames/IPs that indicate a self-hosted runtime."""
+    try:
+        hostname = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    if not hostname:
+        return False
+    if hostname in LOCAL_UPSTREAM_HOSTS or hostname.endswith(".local"):
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private
+
+
+def _provider_uses_local_runtime(provider_name: str) -> bool:
+    provider = (provider_name or "").lower()
+    if provider in LOCAL_PROVIDER_NAMES:
+        return True
+    if provider == "anthropic":
+        return _is_local_upstream_url(ANTHROPIC_UPSTREAM)
+    return _is_local_upstream_url(OPENAI_UPSTREAM) or _is_local_upstream_url(UPSTREAM_BASE_URL)
 
 # Cost per million tokens by model prefix (longer prefixes matched first)
 # USD per 1M tokens — input, output, cache_read, cache_write
@@ -596,6 +627,15 @@ def estimate_cost(model: str, input_tokens: int, output_tokens: int,
         + cache_read * rates["cache_read"] / 1_000_000
         + cache_write * rates["cache_write"] / 1_000_000
     )
+
+
+def classify_cost_source(cost: float, provider_name: str, agent_name: str) -> str:
+    """Classify where a usage row's cost came from without guessing billing."""
+    if cost > 0:
+        return "priced_from_tokens"
+    if provider_name == "local" or agent_name in LOCAL_MODEL_AGENTS:
+        return "local_zero_cost"
+    return "untracked"
 
 
 # ── Message Cap Helper ────────────────────────────────────────────────────────
@@ -1432,10 +1472,14 @@ def _log_entry(model, sys_analysis, msg_analysis, tools, raw_body, usage, start_
         usage["cache_write_tokens"],
         provider_name=provider_name,
     )
+    if cost == 0 and _provider_uses_local_runtime(provider_name):
+        provider_name = "local"
 
     entry = {
         "agent": AGENT_NAME,
         "model": model,
+        "provider_name": provider_name,
+        "cost_source": classify_cost_source(cost, provider_name, AGENT_NAME),
         "request_body_bytes": len(raw_body),
         "tool_count": len(tools),
         "estimated_cost_usd": round(cost, 6),
@@ -1614,6 +1658,15 @@ def _update_timer_interval(minutes: int):
 @app.get("/api/usage", dependencies=[Depends(verify_api_key)])
 def api_usage(agent: str | None = None, hours: int = 24, limit: int = 200):
     return query_usage(agent=agent, hours=hours, limit=limit)
+
+
+@app.get("/api/report", dependencies=[Depends(verify_api_key)])
+def api_report(start: str, end: str):
+    """Aggregate real usage and cost metrics for an inclusive date range."""
+    try:
+        return query_report(start=start, end=end)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
 
 
 @app.get("/token-usage", dependencies=[Depends(verify_api_key)])

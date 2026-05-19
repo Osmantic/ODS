@@ -9,6 +9,7 @@ Links from this directory use `../` for the repo root (e.g. `../README.md`, `../
 | [HOW-DREAM-SERVER-WORKS.md](HOW-DREAM-SERVER-WORKS.md) | **Everyone** | **The friendly guide — what Dream Server is, why it exists, how every piece fits together, and how to make it your own. No technical background required.** |
 | [../README.md](../README.md) | Everyone | Project overview, quickstart, architecture |
 | [../QUICKSTART.md](../QUICKSTART.md) | Operators | Step-by-step first install |
+| [HEADLESS-SETUP.md](HEADLESS-SETUP.md) | Operators / hardware builders | Hardware-neutral QR onboarding, first-boot setup, AP mode, mDNS, and local-agent access map |
 | [../EDGE-QUICKSTART.md](../EDGE-QUICKSTART.md) | Operators | Edge devices (planned — do not follow yet; use cloud mode for CPU-only today) |
 | [../.env.example](../.env.example) | Operators | All environment variables with defaults |
 
@@ -29,6 +30,7 @@ Links from this directory use `../` for the repo root (e.g. `../README.md`, `../
 | [HARDWARE-GUIDE.md](HARDWARE-GUIDE.md) | Buyers | GPU buying advice, tier recommendations |
 | [HARDWARE-CLASSES.md](HARDWARE-CLASSES.md) | Developers | GPU-to-tier classification logic |
 | [SUPPORT-MATRIX.md](SUPPORT-MATRIX.md) | Operators | Platform/GPU support status |
+| [MODEL-MANAGEMENT.md](MODEL-MANAGEMENT.md) | Operators | Dashboard model downloads, switching, and manual GGUF workflows |
 | [CAPABILITY-PROFILE.md](CAPABILITY-PROFILE.md) | Developers | Machine capability profiling schema |
 | [MULTI-USER-SETUP.md](MULTI-USER-SETUP.md) | Operators | Expose and tune one install for multiple users |
 | [PROFILES.md](PROFILES.md) | Reference | Docker Compose profiles (historical reference) |
@@ -69,6 +71,7 @@ Links from this directory use `../` for the repo root (e.g. `../README.md`, `../
 | Doc | Audience | Description |
 |-----|----------|-------------|
 | [M1-OFFLINE-MODE.md](M1-OFFLINE-MODE.md) | Operators | Air-gapped operation guide |
+| [SETUP-CARD.md](SETUP-CARD.md) | Operators / hardware builders | Generate printable QR setup cards for headless devices |
 | [POST-INSTALL-CHECKLIST.md](POST-INSTALL-CHECKLIST.md) | Operators | Post-install verification |
 | [KNOWN-GOOD-VERSIONS.md](KNOWN-GOOD-VERSIONS.md) | Operators | Tested image/version combos |
 | [PLATFORM-TRUTH-TABLE.md](PLATFORM-TRUTH-TABLE.md) | Developers | Platform feature matrix |

@@ -93,6 +93,8 @@ The first start takes a minute — image is ~3GB, Hermes runs its `skills_sync.p
 ## Defaults Dream Server applies
 
 - **Provider:** `custom` (OpenAI-compatible) pointing at `llama-server:8080/v1`
+- **Context:** Hermes requires at least 64K tokens. Local installers run the bootstrap model at 64K so Hermes works immediately, then move the full model and Hermes config to 128K after the background model upgrade completes.
+- **Compression:** enabled at `compression.threshold: 0.50` with `target_ratio: 0.20` so long sessions compact before the backend hard-rejects an over-window request.
 - **Model name:** `qwen3.5-9b` (Dream Server's default LLM — to switch models, edit `model.default` in `data/hermes/config.yaml` after first start; there is no env-var hook for this)
 - **Persona (`SOUL.md`):** a generalist Dream-Server-aware persona (see `extensions/services/hermes/SOUL.md.template`)
 - **Messaging gateways DISABLED:** Telegram / Discord / Slack / WhatsApp / Signal / Teams / Google Chat / Matrix / Mattermost / SMS — all off by default. Dream Server users reach Hermes via the web dashboard. To enable any platform, see [upstream messaging docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/).
@@ -108,6 +110,8 @@ Three layers, highest to lowest precedence:
 3. **Fall back to Dream Server's defaults** — defined in `extensions/services/hermes/cli-config.yaml.template`.
 
 To bring up Hermes pointing at a different LLM (e.g. OpenRouter, OpenAI, Anthropic), edit `data/hermes/config.yaml`'s `model.provider` and `model.base_url` and restart. The whole gamut of provider options is listed in the upstream config — Hermes supports OpenRouter / Anthropic / OpenAI / Hugging Face / NVIDIA NIM / z.ai / Kimi / Gemini / Ollama Cloud / LM Studio / etc. out of the box.
+
+For local backends, keep `model.context_length` and `auxiliary.compression.context_length` aligned with `.env`'s `CTX_SIZE` / `MAX_CONTEXT`. Values below 64000 will make Hermes reject prompts; values above the server's real context can produce `context length exceeded` / `max compression attempts reached` loops.
 
 ## Security posture
 
@@ -176,6 +180,17 @@ docker exec dream-hermes curl -fs http://llama-server:8080/v1/models
 ```
 
 If that fails, the most likely cause is that the Hermes container isn't on Dream Server's docker network. Check `docker network inspect dream-server_default`.
+
+### Hermes says context length exceeded or max compression attempts reached
+
+Check that the running backend and Hermes agree on context:
+
+```bash
+grep -E "^(CTX_SIZE|MAX_CONTEXT)=" .env
+grep -n "context_length\|threshold\|target_ratio" data/hermes/config.yaml
+```
+
+For Hermes, `CTX_SIZE` / `MAX_CONTEXT`, `model.context_length`, and `auxiliary.compression.context_length` should be at least `65536`. Fresh local installs use `65536` during bootstrap and `131072` after the full model swap.
 
 ### Sessions / memories / skills disappeared after upgrade
 

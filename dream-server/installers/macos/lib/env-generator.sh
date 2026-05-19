@@ -139,11 +139,10 @@ generate_dream_env() {
         if [[ -z "$(read_env_value "$env_path" "DREAM_AGENT_KEY")" ]]; then
             upsert_env_value "$env_path" "DREAM_AGENT_KEY" "$(new_secure_hex 32)"
         fi
-        # Upsert DREAMFORGE_PULL_POLICY=build on existing Apple Silicon
-        # installs so the dreamforge upstream amd64-only image isn't pulled
-        # under Rosetta 2 — same logic as the fresh-install branch below.
-        if [[ "$(uname -m)" == "arm64" ]] && [[ -z "$(read_env_value "$env_path" "DREAMFORGE_PULL_POLICY")" ]]; then
-            upsert_env_value "$env_path" "DREAMFORGE_PULL_POLICY" "build"
+        # Dashboard API runs in Docker; host-agent stays loopback-only on
+        # Docker Desktop and is reachable from containers via this hostname.
+        if [[ -z "$(read_env_value "$env_path" "DREAM_AGENT_HOST")" ]]; then
+            upsert_env_value "$env_path" "DREAM_AGENT_HOST" "host.docker.internal"
         fi
         # Upsert SHIELD_API_KEY when missing (Privacy Shield cross-service auth)
         if [[ -z "$(read_env_value "$env_path" "SHIELD_API_KEY")" ]]; then
@@ -258,6 +257,8 @@ generate_dream_env() {
 # macOS has no --lan flag; operators opt in by setting BIND_ADDRESS=0.0.0.0
 # manually. HOST_LAN_IP is only populated when that pre-existed at install time.
 HOST_LAN_IP=${host_lan_ip}
+# Docker Desktop containers reach loopback-only host services through this name.
+DREAM_AGENT_HOST=${DREAM_AGENT_HOST:-host.docker.internal}
 
 #=== LLM Backend Mode ===
 DREAM_MODE=local
@@ -267,6 +268,7 @@ LLM_API_URL=${llm_api_url}
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 TOGETHER_API_KEY=
+MINIMAX_API_KEY=
 
 #=== LLM Settings (llama-server -- native Metal) ===
 MODEL_PROFILE=${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}
@@ -275,6 +277,16 @@ LLM_MODEL=${LLM_MODEL}
 GGUF_FILE=${GGUF_FILE}
 MAX_CONTEXT=${MAX_CONTEXT}
 CTX_SIZE=${MAX_CONTEXT}
+MODEL_RECOMMENDED_MODEL=${LLM_MODEL}
+MODEL_RECOMMENDED_GGUF=${GGUF_FILE}
+MODEL_RECOMMENDED_CONTEXT=${MAX_CONTEXT}
+MODEL_RECOMMENDATION_SOURCE=${MODEL_RECOMMENDATION_SOURCE:-installer_tier_map}
+MODEL_RECOMMENDATION_POLICY=${MODEL_RECOMMENDATION_POLICY:-tier-map}
+MODEL_RECOMMENDATION_CONFIDENCE=${MODEL_RECOMMENDATION_CONFIDENCE:-medium}
+MODEL_RECOMMENDATION_REASON=${MODEL_RECOMMENDATION_REASON:-Selected by installer tier ${tier} (${TIER_NAME}) for apple backend; benchmark locally after first launch.}
+MODEL_RECOMMENDED_ALTERNATIVES=${MODEL_RECOMMENDED_ALTERNATIVES:-}
+MODEL_PERFORMANCE_SOURCE=benchmark_required
+MODEL_PERFORMANCE_LABEL=Benchmark after first launch
 GPU_BACKEND=apple
 HOST_RAM_GB=${SYSTEM_RAM_GB}
 $(if [[ -n "${LLAMA_SERVER_IMAGE:-}" ]]; then echo "LLAMA_SERVER_IMAGE=${LLAMA_SERVER_IMAGE}"; fi)
@@ -283,12 +295,9 @@ LLAMA_ARG_FLASH_ATTN=${LLAMA_ARG_FLASH_ATTN:-auto}
 LLAMA_ARG_CACHE_TYPE_K=${LLAMA_ARG_CACHE_TYPE_K:-f16}
 LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
-$(if [[ "$(uname -m)" == "arm64" ]]; then
-    # Apple Silicon: dreamforge upstream image is linux/amd64 only.
-    # Build locally via Dockerfile.rust to get a native arm64 image
-    # instead of relying on Rosetta 2 emulation.
-    echo "DREAMFORGE_PULL_POLICY=build"
-fi)
+# Optional MTP speculative decoding only. Requires an MTP-capable GGUF and llama.cpp build.
+# LLAMA_ARG_SPEC_TYPE=draft-mtp
+# LLAMA_ARG_SPEC_DRAFT_N_MAX=3
 LLAMA_CPU_LIMIT=${detected_cpu_limit}
 LLAMA_CPU_RESERVATION=${detected_cpu_reservation}
 

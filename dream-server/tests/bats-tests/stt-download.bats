@@ -5,7 +5,8 @@
 # Guards against re-breakage of:
 #   - PR #984: silent-failure message ("will download on first use" lie)
 #   - PR #985: AUDIO_STT_MODEL env var wiring + backward-compat fallback
-#   - Post-#985 bug fix: recovery command must include --max-time 3600
+#   - Post-#985 bug fix: recovery command must include --max-time
+#   - PR #1229: bounded preload timeout must stay non-fatal under set -e
 #
 # We execute only the STT pre-download block (lines ~165-215 of 12-health.sh)
 # with curl stubbed, then assert on the commands it would have run and on the
@@ -28,6 +29,7 @@ echo "CURL: $*" >> "$TMPDIR_TEST/curl.log"
 #   cache-hit:      GET /v1/models/{id} returns 0 (cached), all other calls return 0
 #   cache-miss:     GET /v1/models returns 0, GET /v1/models/{id} returns 1, POST returns 0, verify GET returns 0
 #   download-fail:  everything returns 0 except the verify GET after POST
+#   post-timeout:   POST returns 28, verify GET fails, recovery path still runs
 #   api-not-ready:  all curls return 1
 case "${STT_STUB_MODE:-cache-hit}" in
     cache-hit)       exit 0 ;;
@@ -42,6 +44,12 @@ case "${STT_STUB_MODE:-cache-hit}" in
     download-fail)
         if [[ "$*" == */v1/models ]] || [[ "$*" == *"/v1/models" ]]; then exit 0
         elif [[ "$*" == *"-X POST"* ]]; then exit 0
+        else exit 1  # cache GET + verify GET both fail
+        fi
+        ;;
+    post-timeout)
+        if [[ "$*" == */v1/models ]] || [[ "$*" == *"/v1/models" ]]; then exit 0
+        elif [[ "$*" == *"-X POST"* ]]; then exit 28
         else exit 1  # cache GET + verify GET both fail
         fi
         ;;
@@ -72,7 +80,7 @@ teardown() {
 # If 12-health.sh drifts, update this block to match.
 _run_stt_block() {
     bash -c '
-        set -u
+        set -euo pipefail
         declare -A SERVICE_PORTS
         SERVICE_PORTS[whisper]="9000"
 
@@ -87,7 +95,7 @@ _run_stt_block() {
             STT_MODEL_ENCODED="${STT_MODEL//\//%2F}"
             WHISPER_PORT_RESOLVED="${SERVICE_PORTS[whisper]:-9000}"
             WHISPER_URL="http://localhost:${WHISPER_PORT_RESOLVED}"
-            STT_RECOVERY_CMD="curl --max-time 3600 -X POST ${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}"
+            STT_RECOVERY_CMD="curl --max-time 1800 -X POST ${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}"
 
             _stt_api_ready=false
             for _i in $(seq 1 3); do
@@ -104,7 +112,7 @@ _run_stt_block() {
                 echo "ALREADY_CACHED: ${STT_MODEL}"
             else
                 echo "DOWNLOADING: ${STT_MODEL}"
-                curl -s --max-time 3600 -X POST "${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}" >> "$LOG_FILE" 2>&1 || true
+                curl -s --max-time 600 -X POST "${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}" >> "$LOG_FILE" 2>&1 || true
                 if curl -sf --max-time 10 "${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}" >/dev/null 2>&1; then
                     echo "CACHED: ${STT_MODEL}"
                 else
@@ -162,7 +170,7 @@ _run_stt_block() {
     [[ ! -s "$TMPDIR_TEST/curl.log" ]]
 }
 
-@test "stt: recovery command includes --max-time 3600" {
+@test "stt: recovery command includes bounded manual retry timeout" {
     export ENABLE_VOICE=true
     export GPU_BACKEND=amd
     export AUDIO_STT_MODEL="Systran/faster-whisper-base"
@@ -173,7 +181,21 @@ _run_stt_block() {
     # Must not say "will download on first use" (the old lie from pre-PR #984).
     refute_output --partial "will download on first use"
     # Must include the recovery command with --max-time.
-    assert_output --partial "curl --max-time 3600 -X POST"
+    assert_output --partial "curl --max-time 1800 -X POST"
+}
+
+@test "stt: preload POST timeout is non-fatal under set -e" {
+    export ENABLE_VOICE=true
+    export GPU_BACKEND=amd
+    export AUDIO_STT_MODEL="Systran/faster-whisper-base"
+    export STT_STUB_MODE=post-timeout
+
+    run _run_stt_block
+    assert_success
+    assert_output --partial "DOWNLOAD_FAILED"
+    assert_output --partial "curl --max-time 1800 -X POST"
+    run grep -F -- "--max-time 600 -X POST" "$TMPDIR_TEST/curl.log"
+    assert_success
 }
 
 @test "stt: already-cached short-circuits without POST" {
@@ -186,7 +208,7 @@ _run_stt_block() {
     assert_success
     assert_output --partial "ALREADY_CACHED"
     # Should NOT have issued a POST.
-    run grep -F "-X POST" "$TMPDIR_TEST/curl.log"
+    run grep -F -- "-X POST" "$TMPDIR_TEST/curl.log"
     assert_failure
 }
 

@@ -4,6 +4,7 @@ import json
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import httpx
+from fastapi import HTTPException
 
 
 def test_get_version_requires_auth(test_client):
@@ -114,14 +115,22 @@ def test_trigger_update_requires_auth(test_client):
     assert resp.status_code == 401
 
 
-def test_trigger_update_no_script(test_client):
-    """POST /api/update when update script is missing → 501."""
+def test_trigger_update_host_agent_unreachable(test_client, monkeypatch):
+    """POST /api/update surfaces host-agent reachability failures."""
+    import routers.updates as updates_mod
+
+    def fail(action, payload, timeout):
+        raise HTTPException(status_code=503, detail="Host agent unreachable: timed out")
+
+    monkeypatch.setattr(updates_mod, "_call_update_agent", fail)
+
     resp = test_client.post(
         "/api/update",
         json={"action": "check"},
-        headers=test_client.auth_headers
+        headers=test_client.auth_headers,
     )
-    assert resp.status_code == 501
+    assert resp.status_code == 503
+    assert "Host agent unreachable" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +206,30 @@ def test_releases_manifest_github_error_fallback(test_client, tmp_path, monkeypa
     assert len(data["releases"]) == 1
     assert data["releases"][0]["version"] == "1.2.3"
     assert "error" in data
+
+
+def test_releases_manifest_github_error_fallback_reads_json_version(test_client, tmp_path, monkeypatch):
+    """GET /api/releases/manifest reads JSON-formatted .version files."""
+    import routers.updates as updates_mod
+
+    install_dir = tmp_path / "dream-server"
+    install_dir.mkdir()
+    (install_dir / ".version").write_text(json.dumps({"version": "3.1.4"}))
+    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))
+
+    async def mock_get(url, **kwargs):
+        raise httpx.HTTPError("connection failed")
+
+    mock_client = AsyncMock()
+    mock_client.get = mock_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.updates.httpx.AsyncClient", return_value=mock_client):
+        resp = test_client.get("/api/releases/manifest", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["releases"][0]["version"] == "3.1.4"
 
 
 # ---------------------------------------------------------------------------
@@ -331,24 +364,29 @@ def test_update_dry_run_no_files(test_client, tmp_path, monkeypatch):
     assert data["images"] == []
 
 
+def test_get_update_status_proxies_host_agent(test_client, monkeypatch):
+    """GET /api/update/status returns host-agent update status."""
+    import routers.updates as updates_mod
+
+    monkeypatch.setattr(
+        updates_mod,
+        "_get_update_agent_status",
+        lambda: {"status": "succeeded", "returncode": 0},
+    )
+
+    resp = test_client.get("/api/update/status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "succeeded", "returncode": 0}
+
+
 # ---------------------------------------------------------------------------
 # POST /api/update — invalid action
 # ---------------------------------------------------------------------------
 
 
-def test_trigger_update_invalid_action(test_client, tmp_path, monkeypatch):
+def test_trigger_update_invalid_action(test_client):
     """POST /api/update with unknown action → 400."""
-    import routers.updates as updates_mod
-
-    # Create a fake script so we get past the 501 check
-    install_dir = tmp_path / "dream-server"
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    script = scripts_dir / "dream-update.sh"
-    script.write_text("#!/bin/bash\nexit 0")
-    script.chmod(0o755)
-    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))
-
     resp = test_client.post(
         "/api/update",
         json={"action": "destroy"},
@@ -363,18 +401,17 @@ def test_trigger_update_invalid_action(test_client, tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_trigger_update_action_update(test_client, tmp_path, monkeypatch):
+def test_trigger_update_action_update(test_client, monkeypatch):
     """POST /api/update with action=update → 200, starts background task."""
     import routers.updates as updates_mod
 
-    install_dir = tmp_path / "dream-server"
-    install_dir.mkdir()
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    script = scripts_dir / "dream-update.sh"
-    script.write_text("#!/bin/bash\nexit 0")
-    script.chmod(0o755)
-    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))
+    calls = []
+
+    def fake_call(action, payload, timeout):
+        calls.append((action, payload, timeout))
+        return {"success": True, "message": "Update started in background."}
+
+    monkeypatch.setattr(updates_mod, "_call_update_agent", fake_call)
 
     resp = test_client.post(
         "/api/update",
@@ -385,6 +422,7 @@ def test_trigger_update_action_update(test_client, tmp_path, monkeypatch):
     data = resp.json()
     assert data["success"] is True
     assert "background" in data["message"].lower()
+    assert calls == [("start", {}, 10)]
 
 
 # ---------------------------------------------------------------------------
@@ -392,18 +430,17 @@ def test_trigger_update_action_update(test_client, tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_trigger_update_action_check(test_client, tmp_path, monkeypatch):
+def test_trigger_update_action_check(test_client, monkeypatch):
     """POST /api/update with action=check → 200, runs script and returns output."""
     import routers.updates as updates_mod
 
-    install_dir = tmp_path / "dream-server"
-    install_dir.mkdir()
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    script = scripts_dir / "dream-update.sh"
-    script.write_text("#!/bin/bash\necho 'no updates'\nexit 0")
-    script.chmod(0o755)
-    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))
+    calls = []
+
+    def fake_call(action, payload, timeout):
+        calls.append((action, payload, timeout))
+        return {"success": True, "update_available": False, "output": "no updates"}
+
+    monkeypatch.setattr(updates_mod, "_call_update_agent", fake_call)
 
     resp = test_client.post(
         "/api/update",
@@ -415,6 +452,7 @@ def test_trigger_update_action_check(test_client, tmp_path, monkeypatch):
     assert data["success"] is True
     assert data["update_available"] is False
     assert "no updates" in data["output"]
+    assert calls == [("check", {}, 35)]
 
 
 # ---------------------------------------------------------------------------
@@ -422,18 +460,17 @@ def test_trigger_update_action_check(test_client, tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_trigger_update_action_backup(test_client, tmp_path, monkeypatch):
+def test_trigger_update_action_backup(test_client, monkeypatch):
     """POST /api/update with action=backup → 200, runs backup script."""
     import routers.updates as updates_mod
 
-    install_dir = tmp_path / "dream-server"
-    install_dir.mkdir()
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    script = scripts_dir / "dream-update.sh"
-    script.write_text("#!/bin/bash\necho 'backup complete'\nexit 0")
-    script.chmod(0o755)
-    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))
+    calls = []
+
+    def fake_call(action, payload, timeout):
+        calls.append((action, payload, timeout))
+        return {"success": True, "output": "backup complete"}
+
+    monkeypatch.setattr(updates_mod, "_call_update_agent", fake_call)
 
     resp = test_client.post(
         "/api/update",
@@ -444,3 +481,6 @@ def test_trigger_update_action_backup(test_client, tmp_path, monkeypatch):
     data = resp.json()
     assert data["success"] is True
     assert "backup" in data["output"].lower()
+    assert calls[0][0] == "backup"
+    assert calls[0][1]["backup_id"].startswith("dashboard-")
+    assert calls[0][2] == 65

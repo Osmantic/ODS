@@ -41,6 +41,21 @@ services:
       # --no-open equivalent: stops Hermes from trying to spawn a browser
       # inside the container.
       - HERMES_DASHBOARD_NO_OPEN=1
+      # Enable the in-browser chat tab. Hermes's chat surface is PTY-
+      # backed (it runs a real REPL inside the container and pipes it
+      # to the browser via WebSocket on /api/pty + /api/ws + /api/events).
+      # Without HERMES_DASHBOARD_TUI=1 those endpoints stay off and
+      # the React UI renders Sessions / Analytics / Models / Cron /
+      # Skills / etc. but has no way to actually start a conversation.
+      # Upstream defaults this off because PTY = shell access; we flip
+      # it on because (a) Hermes is the agent we ship — chat is the
+      # point — and (b) the surface is gated end-to-end:
+      #   * hermes container is internal-only (compose `expose:`)
+      #   * hermes-proxy in front does forward_auth against
+      #     dashboard-api/api/auth/verify-session
+      #   * a magic-link session OR admin-session bootstrap (#1222) is
+      #     required before Caddy lets the request through
+      - HERMES_DASHBOARD_TUI=1
     volumes:
       # Persistent state: Hermes's HERMES_HOME. Sessions, skills, memories,
       # cron jobs, audit logs all live here.

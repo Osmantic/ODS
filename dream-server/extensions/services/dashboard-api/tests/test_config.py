@@ -4,7 +4,8 @@ import logging
 
 import pytest
 
-from config import load_extension_manifests, _read_manifest_file
+import config
+from config import _detect_container_default_gateway, load_extension_manifests, _read_manifest_file
 
 
 VALID_MANIFEST = """\
@@ -51,6 +52,50 @@ class TestReadManifestFile:
             _read_manifest_file(f)
 
 
+class TestHostAgentResolution:
+
+    def test_detect_container_default_gateway_reads_little_endian_route(self, tmp_path):
+        route = tmp_path / "route"
+        route.write_text(
+            "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+            "eth0\t00000000\t010012AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n",
+            encoding="utf-8",
+        )
+
+        assert _detect_container_default_gateway(str(route)) == "172.18.0.1"
+
+    def test_detect_container_default_gateway_requires_gateway_flag(self, tmp_path):
+        route = tmp_path / "route"
+        route.write_text(
+            "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+            "eth0\t00000000\t010012AC\t0001\t0\t0\t0\t00000000\t0\t0\t0\n",
+            encoding="utf-8",
+        )
+
+        assert _detect_container_default_gateway(str(route)) == ""
+
+    def test_resolve_agent_host_honors_explicit_env(self, monkeypatch):
+        monkeypatch.setenv("DREAM_AGENT_HOST", "  10.9.8.7  ")
+        monkeypatch.setattr(config, "_running_inside_container", lambda: True)
+        monkeypatch.setattr(config, "_detect_container_default_gateway", lambda: "172.18.0.1")
+
+        assert config._resolve_agent_host() == "10.9.8.7"
+
+    def test_resolve_agent_host_uses_gateway_inside_container(self, monkeypatch):
+        monkeypatch.delenv("DREAM_AGENT_HOST", raising=False)
+        monkeypatch.setattr(config, "_running_inside_container", lambda: True)
+        monkeypatch.setattr(config, "_detect_container_default_gateway", lambda: "172.18.0.1")
+
+        assert config._resolve_agent_host() == "172.18.0.1"
+
+    def test_resolve_agent_host_falls_back_outside_container(self, monkeypatch):
+        monkeypatch.delenv("DREAM_AGENT_HOST", raising=False)
+        monkeypatch.setattr(config, "_running_inside_container", lambda: False)
+        monkeypatch.setattr(config, "_detect_container_default_gateway", lambda: "192.168.1.1")
+
+        assert config._resolve_agent_host() == "host.docker.internal"
+
+
 class TestLoadExtensionManifests:
 
     def test_loads_valid_manifest(self, tmp_path):
@@ -83,6 +128,22 @@ class TestLoadExtensionManifests:
 
         assert services["internal-service"]["port"] == 9119
         assert services["internal-service"]["external_port"] == 0
+
+    def test_preserves_host_network_flag(self, tmp_path):
+        svc_dir = tmp_path / "host-network-service"
+        svc_dir.mkdir()
+        (svc_dir / "manifest.yaml").write_text(
+            "schema_version: dream.services.v1\n"
+            "service:\n"
+            "  id: host-network-service\n"
+            "  name: Host Network Service\n"
+            "  host_network: true\n"
+            "  port: 0\n"
+        )
+
+        services, _, _ = load_extension_manifests(tmp_path, "nvidia")
+
+        assert services["host-network-service"]["host_network"] is True
 
     def test_skips_wrong_schema_version(self, tmp_path):
         svc_dir = tmp_path / "old-service"

@@ -1,5 +1,0 @@
-services:
-  dreamforge:
-    depends_on:
-      llama-server:
-        condition: service_healthy

@@ -131,3 +131,74 @@ def test_error_response_is_the_same_regardless_of_reason(test_client):
     body_str = str(bodies[0])
     for leak in ("bad-signature", "no-secret", "malformed"):
         assert leak not in body_str, f"reason leaked: {leak!r} in {body_str!r}"
+
+
+# ---------------------------------------------------------------------------
+# admin-session — install owner mints their own cookie via the admin API key.
+# ---------------------------------------------------------------------------
+
+
+class TestAdminSession:
+
+    def test_requires_api_key(self, test_client):
+        """No auth header → 401. The endpoint is admin-only."""
+        resp = test_client.post("/api/auth/admin-session")
+        assert resp.status_code == 401
+
+    def test_with_api_key_returns_200_and_sets_cookie(self, test_client):
+        resp = test_client.post(
+            "/api/auth/admin-session",
+            headers=test_client.auth_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["expires_at"] > 0
+        set_cookies = [h for h in resp.headers.raw if h[0].lower() == b"set-cookie"]
+        cookie_blob = b" ".join(c[1] for c in set_cookies).lower()
+        assert b"dream-session=" in cookie_blob
+        assert b"httponly" in cookie_blob
+        assert b"samesite=lax" in cookie_blob
+
+    def test_minted_cookie_verifies(self, test_client):
+        """The cookie this endpoint mints must round-trip through
+        verify-session — proving it's the same signed shape that
+        forward_auth consumes from magic-link redemptions."""
+        resp = test_client.post(
+            "/api/auth/admin-session",
+            headers=test_client.auth_headers,
+        )
+        assert resp.status_code == 200
+        cookie = resp.cookies.get("dream-session")
+        assert cookie
+
+        # Roundtrip the cookie through verify-session directly.
+        ok, reason = session_signer.verify(cookie)
+        assert ok is True, f"admin-session cookie did not verify: {reason}"
+
+    def test_503_when_signing_unconfigured(self, test_client):
+        """If DREAM_SESSION_SECRET is empty, the endpoint refuses to mint."""
+        session_signer._set_secret_for_tests("")
+        try:
+            resp = test_client.post(
+                "/api/auth/admin-session",
+                headers=test_client.auth_headers,
+            )
+            assert resp.status_code == 503
+            assert "not configured" in resp.json()["detail"].lower()
+        finally:
+            session_signer._set_secret_for_tests("test-secret-for-verify-endpoint")
+
+    def test_respects_cookie_domain_env(self, test_client, monkeypatch):
+        """DREAM_COOKIE_DOMAIN flows through to the Cookie's Domain attribute
+        so subdomain SSO works the same as for magic-link cookies."""
+        monkeypatch.setenv("DREAM_COOKIE_DOMAIN", "kitchen.local")
+        resp = test_client.post(
+            "/api/auth/admin-session",
+            headers=test_client.auth_headers,
+        )
+        assert resp.status_code == 200
+        cookie_blob = b" ".join(
+            v for k, v in resp.headers.raw if k.lower() == b"set-cookie"
+        ).lower()
+        assert b"domain=kitchen.local" in cookie_blob

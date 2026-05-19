@@ -64,10 +64,14 @@ trap '' TSTP
 # Load libraries (pure functions, no side effects)
 #=============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]]; then
+    export DREAM_PYTHON_PREFER_SYSTEM="${DREAM_PYTHON_PREFER_SYSTEM:-1}"
+fi
 
 source "$SCRIPT_DIR/installers/lib/constants.sh"
 source "$SCRIPT_DIR/installers/lib/logging.sh"
 source "$SCRIPT_DIR/installers/lib/ui.sh"
+source "$SCRIPT_DIR/installers/lib/sudo.sh"
 source "$SCRIPT_DIR/installers/lib/detection.sh"
 source "$SCRIPT_DIR/installers/lib/host-arch.sh"
 source "$SCRIPT_DIR/installers/lib/tier-map.sh"
@@ -76,6 +80,7 @@ source "$SCRIPT_DIR/installers/lib/compose-select.sh"
 source "$SCRIPT_DIR/installers/lib/compose-failure-report.sh"
 source "$SCRIPT_DIR/installers/lib/readiness-summary.sh"
 source "$SCRIPT_DIR/installers/lib/packaging.sh"
+source "$SCRIPT_DIR/installers/lib/python-runtime.sh"
 source "$SCRIPT_DIR/installers/lib/progress.sh"
 if [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]]; then 
     source "$SCRIPT_DIR/lib/service-registry.sh" 
@@ -97,6 +102,7 @@ TIER=""
 ENABLE_VOICE=true
 ENABLE_WORKFLOWS=true
 ENABLE_RAG=true
+ENABLE_RECOMMENDED=true
 # Default agent flipped to Hermes Agent (Nous Research) on 2026-05-12.
 # OpenClaw is deprecated and will be removed in the next release; new
 # installs no longer enable it by default. Users who explicitly pass
@@ -106,7 +112,12 @@ ENABLE_HERMES=true
 ENABLE_OPENCLAW=false
 OPENCLAW_EXPLICIT=false
 ENABLE_COMFYUI=true
-ENABLE_DREAMFORGE=true
+ENABLE_APE=true
+ENABLE_PERPLEXICA=true
+ENABLE_PRIVACY_SHIELD=true
+ENABLE_DREAM_PROXY=false
+ENABLE_TAILSCALE=false
+ENABLE_BRAVE_SEARCH=false
 # Langfuse (LLM observability) defaults OFF on all tiers because its
 # clickhouse + postgres + minio stack adds ~500MB baseline memory that is
 # nontrivial even on Tier 3+ systems. Users opt in via --langfuse, --all,
@@ -137,14 +148,16 @@ Options:
     --no-workflows    Disable n8n workflow automation
     --rag             Enable RAG with Qdrant vector database
     --no-rag          Disable RAG / Qdrant
+    --recommended     Enable LiteLLM + SearXNG + Token Spy support services
+    --no-recommended  Disable recommended support services
     --hermes          Enable Hermes Agent (default; new default agent as of 2026-05-12)
     --no-hermes       Disable Hermes Agent
     --openclaw        Enable OpenClaw (DEPRECATED — see docs/MIGRATION-OPENCLAW-TO-HERMES.md)
     --no-openclaw     Disable OpenClaw
     --comfyui         Enable ComfyUI image generation
     --no-comfyui      Disable ComfyUI image generation (saves ~34GB)
-    --dreamforge      Enable DreamForge agent system (default)
-    --no-dreamforge   Disable DreamForge
+    --dreamforge      Deprecated no-op; DreamForge has been removed
+    --no-dreamforge   Deprecated no-op; DreamForge has been removed
     --langfuse        Enable Langfuse LLM observability (off by default)
     --no-langfuse     Explicitly disable Langfuse (for --all overrides)
     --all             Enable all optional services (including Langfuse)
@@ -190,22 +203,24 @@ while [[ $# -gt 0 ]]; do
         --no-workflows) ENABLE_WORKFLOWS=false; shift ;;
         --rag) ENABLE_RAG=true; shift ;;
         --no-rag) ENABLE_RAG=false; shift ;;
+        --recommended) ENABLE_RECOMMENDED=true; shift ;;
+        --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
         --hermes) ENABLE_HERMES=true; shift ;;
         --no-hermes) ENABLE_HERMES=false; shift ;;
         --openclaw) ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
         --no-openclaw) ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
         --comfyui) ENABLE_COMFYUI=true; shift ;;
         --no-comfyui) ENABLE_COMFYUI=false; shift ;;
-        --dreamforge) ENABLE_DREAMFORGE=true; shift ;;
-        --no-dreamforge) ENABLE_DREAMFORGE=false; shift ;;
+        --dreamforge) warn "DreamForge has been removed; ignoring --dreamforge"; shift ;;
+        --no-dreamforge) warn "DreamForge has been removed; ignoring --no-dreamforge"; shift ;;
         --langfuse) ENABLE_LANGFUSE=true; shift ;;
         # NOTE: with --all, --no-langfuse must appear AFTER --all on the command
-        # line (flag processing is case-loop ordered, matching comfyui/dreamforge).
+        # line (flag processing is case-loop ordered, matching comfyui).
         --no-langfuse) ENABLE_LANGFUSE=false; shift ;;
         # --all enables Hermes (the new default agent) but NOT OpenClaw —
         # the deprecated agent is opt-in via --openclaw for the deprecation
         # release. Will be dropped entirely in the removal release.
-        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_COMFYUI=true; ENABLE_DREAMFORGE=true; ENABLE_LANGFUSE=true; shift ;;
+        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; shift ;;
         --non-interactive) INTERACTIVE=false; shift ;;
         --offline) OFFLINE_MODE=true; shift ;;
         --lan) BIND_ADDRESS="0.0.0.0"; shift ;;
@@ -224,6 +239,10 @@ fi
 # Detect distro + package manager (after arg parsing so --help still shows
 # the correct VERSION before /etc/os-release overwrites it)
 detect_pkg_manager
+log "Installer run started: pid=$$, script=$0"
+ds_prepare_sudo "Dream Server installer setup"
+export DREAM_SR_AUTO_INSTALL_PYYAML=1
+ds_ensure_python_module yaml python3-pyyaml pyyaml PyYAML
 
 #=============================================================================
 # Splash
