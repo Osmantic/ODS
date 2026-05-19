@@ -117,13 +117,24 @@ set_qwen_tier_config() {
             fi
             ;;
         SH_LARGE)
+            # Strix Halo (AMD Ryzen AI MAX+ 395, 124GB unified) hits the same
+            # MoE-on-unified-memory pathology that forced the NV_ULTRA aarch64
+            # branch off coder-next: qwen3-coder-next has known correctness +
+            # throughput issues on unified-memory backends, while
+            # Qwen3.6-35B-A3B (UD-Q4_K_M) serves cleanly with the same
+            # architectural shape (large total / small active params).
+            # Verified on strix-halo 2026-05-19: bootstrap-upgrade
+            # downloaded the 48.5GB coder-next-Q4_K_M.gguf, stalled at 91%,
+            # and the model would not have worked on this hardware even if
+            # the download completed. Substituting to 35B-A3B (~22GB) drops
+            # the download time by half and yields a working model.
             TIER_NAME="Strix Halo 90+"
-            LLM_MODEL="qwen3-coder-next"
-            GGUF_FILE="qwen3-coder-next-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/resolve/main/Qwen3-Coder-Next-Q4_K_M.gguf"
-            GGUF_SHA256="9e6032d2f3b50a60f17ce8bf5a1d85c71af9b53b89c7978020ae7c660f29b090"
+            LLM_MODEL="qwen3.6-35b-a3b"
+            GGUF_FILE="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+            GGUF_SHA256="ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
             MAX_CONTEXT=131072
-            LLM_MODEL_SIZE_MB=48500   # 48.5 GB per HF file listing
+            LLM_MODEL_SIZE_MB=21110   # 21.1 GB UD-Q4_K_M per HF file listing
             ;;
         SH_COMPACT)
             TIER_NAME="Strix Halo Compact"
@@ -355,7 +366,10 @@ tier_to_model() {
                         model="qwen3-coder-next"
                     fi
                     ;;
-                SH_LARGE)       model="qwen3-coder-next" ;;
+                # SH_LARGE substituted to 35B-A3B for the same unified-
+                # memory reason as NV_ULTRA on aarch64 (see the SH_LARGE
+                # block in select_tier_model() above for the rationale).
+                SH_LARGE)       model="qwen3.6-35b-a3b" ;;
                 SH_COMPACT|SH)  model="qwen3-30b-a3b" ;;
                 ARC)            model="qwen3.5-9b" ;;
                 ARC_LITE)       model="qwen3.5-4b" ;;
