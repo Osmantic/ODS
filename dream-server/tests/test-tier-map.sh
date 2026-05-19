@@ -277,6 +277,28 @@ assert_eq "SELECTOR_GGUF_FILE" "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" "$GGUF_FILE"
 assert_eq "SELECTOR_POLICY" "context-aware-largest-capable-general-v1+spark-aarch64-nv-ultra-a3b-v1" "$MODEL_RECOMMENDATION_POLICY"
 echo ""
 
+# Strix Halo (SH_LARGE, AMD Ryzen AI MAX+ 395, 124 GB unified) hit the same
+# coder-next pathology as Spark aarch64. The selector should substitute to
+# 35B-A3B via the unified-memory policy (distinct tag from the Spark one).
+echo "Catalog selector (amd unified SH_LARGE substitutes coder-next → A3B):"
+_selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
+    --catalog "$SCRIPT_DIR/config/model-library.json" \
+    --backend amd \
+    --memory-type unified \
+    --vram-mb 0 \
+    --ram-gb 124 \
+    --profile qwen \
+    --tier SH_LARGE \
+    --host-arch amd64 \
+    --installable-only \
+    --env)"
+LLM_MODEL="" GGUF_FILE="" MODEL_RECOMMENDATION_POLICY=""
+load_selector_env "$_selector_env"
+assert_eq "SELECTOR_LLM_MODEL" "qwen3.6-35b-a3b" "$LLM_MODEL"
+assert_eq "SELECTOR_GGUF_FILE" "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" "$GGUF_FILE"
+assert_eq "SELECTOR_POLICY" "context-aware-largest-capable-general-v1+unified-memory-coder-next-a3b-v1" "$MODEL_RECOMMENDATION_POLICY"
+echo ""
+
 echo "Catalog selector (8GB NVIDIA qwen uses upstream catalog fit):"
 _selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
     --catalog "$SCRIPT_DIR/config/model-library.json" \

@@ -21,6 +21,14 @@ VRAM_FIT_TOLERANCE_GB = 0.25
 POLICY = "context-aware-largest-capable-general-v1"
 SPARK_AARCH64_POLICY = "spark-aarch64-nv-ultra-a3b-v1"
 SPARK_AARCH64_MODEL_ID = "qwen3.6-35b-a3b-ud-q4"
+# Unified-memory hosts (Strix Halo SH_LARGE, future AMD/NV unified-memory
+# tiers) hit the same coder-next correctness pathology as Spark aarch64.
+# Until upstream fixes coder-next on unified-memory backends, route the
+# qwen profile to the same 35B-A3B substitution used for Spark — same
+# model id, separate policy tag so the recommendation_reason is honest
+# about why the substitution fired.
+UNIFIED_MEMORY_POLICY = "unified-memory-coder-next-a3b-v1"
+UNIFIED_MEMORY_MODEL_ID = SPARK_AARCH64_MODEL_ID
 
 
 def normalize_key(value: Any) -> str:
@@ -275,19 +283,46 @@ def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
 
 
 def arch_policy_model(catalog: list[dict[str, Any]], tier: str, profile: str,
-                      host_arch: str, installable_only: bool) -> dict[str, Any] | None:
-    """Return an architecture-specific model override when the tier map requires one."""
-    if normalize_key(tier) != "nv-ultra" or profile != "qwen" or normalize_host_arch(host_arch) != "arm64":
-        return None
+                      host_arch: str, memory_type: str,
+                      installable_only: bool) -> tuple[dict[str, Any] | None, str | None]:
+    """Return (model, policy_tag) for an architecture-specific override, or (None, None).
+
+    Two routes both substitute coder-next → Qwen3.6-35B-A3B-UD on unified
+    memory hosts where the qwen profile would otherwise pick coder-next
+    (which produces all-`?` tokens on those backends — see in-source
+    notes in installers/lib/tier-map.sh NV_ULTRA + SH_LARGE blocks):
+
+      - nv-ultra + qwen + arm64: Spark / GB10 Grace Blackwell.
+      - any-tier + qwen + memory_type=unified: Strix Halo + future
+        unified-memory NV/AMD tiers. Memory-type is the authoritative
+        signal (not arch or tier alone) because that's the actual
+        characteristic that triggers the pathology.
+    """
+    if profile != "qwen":
+        return None, None
+
+    is_spark_aarch64 = (
+        normalize_key(tier) == "nv-ultra"
+        and normalize_host_arch(host_arch) == "arm64"
+    )
+    is_unified_memory = normalize_key(memory_type) == "unified"
+    if not (is_spark_aarch64 or is_unified_memory):
+        return None, None
+
     for model in catalog:
         if installable_only and not model.get("gguf_url"):
             continue
         if normalize_key(model.get("id")) == normalize_key(SPARK_AARCH64_MODEL_ID):
-            return model
-    return None
+            policy = SPARK_AARCH64_POLICY if is_spark_aarch64 else UNIFIED_MEMORY_POLICY
+            return model, policy
+    return None, None
 
 
 def is_spark_aarch64_excluded_model(model: dict[str, Any]) -> bool:
+    """True if `model` is the coder-next entry that we route around on
+    unified-memory backends. Function name preserved for backwards compat
+    with existing callers; the broader semantic is "excluded on unified
+    memory" (see arch_policy_model)."""
     return normalize_key(model.get("llm_model_name")) == "qwen3-coder-next"
 
 
@@ -325,16 +360,27 @@ def recommendation_reason(model: dict[str, Any], capacity_gb: float, memory_labe
     )
 
 
-def arch_policy_reason(model: dict[str, Any], capacity_gb: float, memory_label: str) -> str:
+def arch_policy_reason(model: dict[str, Any], capacity_gb: float,
+                       memory_label: str, policy_tag: str) -> str:
     context_k = int((model.get("context_length") or 0) / 1024)
     required = selector_required_memory_gb(model)
+    if policy_tag == UNIFIED_MEMORY_POLICY:
+        rationale = (
+            "is selected for unified-memory hosts (e.g. Strix Halo, future "
+            "AMD/NV unified-memory tiers) because qwen3-coder-next produces "
+            "all-`?` tokens on unified-memory backends"
+        )
+    else:
+        rationale = (
+            "is selected for arm64 NV_ULTRA Spark-class NVIDIA hosts because "
+            "qwen3-coder-next is excluded on this architecture by the tier map"
+        )
     return (
-        f"Arch-aware catalog policy ({SPARK_AARCH64_POLICY}): {model['name']} "
-        f"is selected for arm64 NV_ULTRA Spark-class NVIDIA hosts because "
-        f"qwen3-coder-next is excluded on this architecture by the tier map. "
-        f"It needs about {required:g}GB including context/KV, fits {capacity_gb:.1f}GB "
-        f"{memory_label}, and gives {context_k}K context. "
-        f"Throughput requires a local benchmark after first launch."
+        f"Arch-aware catalog policy ({policy_tag}): {model['name']} "
+        f"{rationale}. It needs about {required:g}GB including context/KV, "
+        f"fits {capacity_gb:.1f}GB {memory_label}, and gives "
+        f"{context_k}K context. Throughput requires a local benchmark after "
+        f"first launch."
     )
 
 
@@ -356,7 +402,9 @@ def main() -> int:
     profile = effective_profile(normalize_profile(args.profile), args.backend, args.tier)
     capacity_gb, memory_label = usable_memory_gb(args.backend, args.memory_type, args.vram_mb, args.ram_gb)
     confidence = "high" if args.backend not in {"unknown", "none"} and capacity_gb > 0 else "medium"
-    arch_selected = arch_policy_model(catalog, args.tier, profile, args.host_arch, args.installable_only)
+    arch_selected, arch_policy_tag = arch_policy_model(
+        catalog, args.tier, profile, args.host_arch, args.memory_type, args.installable_only,
+    )
     ranked = rank_models(
         catalog,
         capacity_gb,
@@ -374,9 +422,9 @@ def main() -> int:
             model for model in ranked
             if model["id"] != selected["id"] and not is_spark_aarch64_excluded_model(model)
         ][:2]
-        policy = f"{POLICY}+{SPARK_AARCH64_POLICY}"
+        policy = f"{POLICY}+{arch_policy_tag}"
         source = "catalog_arch_policy_pre_download"
-        reason = arch_policy_reason(selected, capacity_gb, memory_label)
+        reason = arch_policy_reason(selected, capacity_gb, memory_label, arch_policy_tag)
     else:
         selected = ranked[0]
         alternatives = ranked[:3]
