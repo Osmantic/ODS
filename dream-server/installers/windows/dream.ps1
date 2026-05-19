@@ -128,6 +128,47 @@ function Read-DreamEnv {
     return Get-WindowsDreamEnvMap -InstallDir $InstallDir
 }
 
+function Get-DreamEnvValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string]$Default = ""
+    )
+    try {
+        $envMap = Read-DreamEnv
+        if ($envMap.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace($envMap[$Name])) {
+            return $envMap[$Name]
+        }
+    } catch { }
+    return $Default
+}
+
+function Test-DreamSttModelCache {
+    $whisperPort = Get-DreamEnvValue -Name "WHISPER_PORT" -Default "9000"
+    $whisperUrl = "http://localhost:$whisperPort"
+
+    try {
+        Invoke-WebRequest -Uri "$whisperUrl/health" -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop | Out-Null
+    } catch {
+        return
+    }
+
+    $sttModel = Get-DreamEnvValue -Name "AUDIO_STT_MODEL" -Default "Systran/faster-whisper-base"
+    $sttModelEncoded = $sttModel -replace "/", "%2F"
+    $modelUrl = "$whisperUrl/v1/models/$sttModelEncoded"
+    $recoveryCmd = "Invoke-WebRequest -Method POST -Uri '$modelUrl' -TimeoutSec 3600"
+
+    try {
+        $resp = Invoke-WebRequest -Uri $modelUrl -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+        if ($resp.StatusCode -eq 200) {
+            Write-AISuccess "Whisper STT model: cached ($sttModel)"
+            return
+        }
+    } catch { }
+
+    Write-AIWarn "Whisper STT model missing ($sttModel) -- transcription will 404"
+    Write-Host "  Run: $recoveryCmd" -ForegroundColor DarkGray
+}
+
 function Set-DreamEnvValue {
     <#
     .SYNOPSIS
@@ -480,6 +521,7 @@ function Invoke-Status {
                 Write-AIWarn "$($ep.Name): not responding"
             }
         }
+        Test-DreamSttModelCache
 
         # GPU status
         Write-Host ""

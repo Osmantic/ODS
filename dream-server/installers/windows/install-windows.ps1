@@ -911,6 +911,10 @@ foreach ($check in $healthChecks) {
 # Speaches does NOT auto-download on transcription requests — it returns 404.
 # Trigger the download explicitly, verify it completed, surface recovery
 # instructions on failure. Mirrors Linux Phase 12 and macOS install-macos.sh.
+$sttModelReady = (-not $enableVoice)
+$sttModelNameForReadiness = ""
+$sttModelCacheUrl = ""
+$sttRecoveryCmd = ""
 if ($enableVoice) {
     # Read AUDIO_STT_MODEL and WHISPER_PORT from .env (written by env-generator.ps1).
     # Use ReadAllText with explicit UTF8NoBom encoding so legacy BOM-prefixed
@@ -943,6 +947,8 @@ if ($enableVoice) {
     $sttModelEncoded = $sttModel -replace "/", "%2F"
     $whisperUrl = "http://localhost:$whisperPort"
     $sttRecoveryCmd = "Invoke-WebRequest -Method POST -Uri '$whisperUrl/v1/models/$sttModelEncoded' -TimeoutSec 3600"
+    $sttModelNameForReadiness = $sttModel
+    $sttModelCacheUrl = "$whisperUrl/v1/models/$sttModelEncoded"
 
     # Step 1: wait briefly for the models API to be ready (max 15s).
     $sttApiReady = $false
@@ -955,6 +961,8 @@ if ($enableVoice) {
     }
 
     if (-not $sttApiReady) {
+        $sttModelReady = $false
+        $allHealthy = $false
         Write-AIWarn "STT models API not ready -- download manually:"
         Write-Host "    $sttRecoveryCmd" -ForegroundColor DarkGray
     } else {
@@ -966,12 +974,13 @@ if ($enableVoice) {
         } catch { }
 
         if ($alreadyCached) {
+            $sttModelReady = $true
             Write-AISuccess "STT model already cached ($sttModel)"
         } else {
             # Step 3: POST to trigger download.
             Write-AI "Downloading STT model ($sttModel)..."
             try {
-                Invoke-WebRequest -Method POST -Uri "$whisperUrl/v1/models/$sttModelEncoded" -TimeoutSec 3600 -UseBasicParsing -ErrorAction Stop | Out-Null
+                Invoke-WebRequest -Method POST -Uri "$whisperUrl/v1/models/$sttModelEncoded" -TimeoutSec 600 -UseBasicParsing -ErrorAction Stop | Out-Null
             } catch {
                 # Fall through to verification step regardless — POST can succeed or partial-fail.
             }
@@ -984,8 +993,11 @@ if ($enableVoice) {
             } catch { }
 
             if ($verified) {
+                $sttModelReady = $true
                 Write-AISuccess "STT model cached ($sttModel)"
             } else {
+                $sttModelReady = $false
+                $allHealthy = $false
                 Write-AIWarn "STT model download failed -- run manually:"
                 Write-Host "    $sttRecoveryCmd" -ForegroundColor DarkGray
             }
@@ -1029,6 +1041,9 @@ if ($enableVoice) {
     $whisperPort = Get-ReadinessPort -Name "WHISPER_PORT" -Default "9000"
     $ttsPort = Get-ReadinessPort -Name "TTS_PORT" -Default "8880"
     $readinessChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$whisperPort/health"; Container = "dream-whisper"; OpenUrl = "http://localhost:$whisperPort" }
+    if ($sttModelCacheUrl) {
+        $readinessChecks += @{ Name = "Whisper STT model cache"; Url = $sttModelCacheUrl; Container = "dream-whisper"; OpenUrl = $sttModelNameForReadiness; Hint = "Run: $sttRecoveryCmd" }
+    }
     $readinessChecks += @{ Name = "Kokoro (TTS)"; Url = "http://localhost:$ttsPort/health"; Container = "dream-tts"; OpenUrl = "http://localhost:$ttsPort" }
 }
 if ($enableWorkflows) {
@@ -1118,6 +1133,7 @@ if ($SummaryJsonPath) {
         gpuBackend = $gpuInfo.Backend
         gpuName    = $gpuInfo.Name
         installDir = $installDir
+        sttModelCached = $sttModelReady
         features   = @{
             voice     = $enableVoice
             workflows = $enableWorkflows

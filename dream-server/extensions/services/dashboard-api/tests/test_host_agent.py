@@ -1221,6 +1221,74 @@ class _FakeHandler:
         return json.loads(self.wfile.getvalue().decode("utf-8"))
 
 
+class TestTailscaleStatus:
+    """Direct host-agent tests for /v1/tailscale/status behavior."""
+
+    @pytest.fixture(autouse=True)
+    def _auth(self, monkeypatch):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+
+    def _handler(self):
+        handler = _FakeHandler(b"")
+        handler._write_tailscale_status_payload = types.MethodType(
+            _mod.AgentHandler._write_tailscale_status_payload, handler
+        )
+        handler._find_native_tailscale_cli = types.MethodType(
+            _mod.AgentHandler._find_native_tailscale_cli, handler
+        )
+        handler._try_native_tailscale_status = types.MethodType(
+            _mod.AgentHandler._try_native_tailscale_status, handler
+        )
+        return handler
+
+    def test_falls_back_to_native_tailscale_when_container_absent(self, monkeypatch):
+        payload = {
+            "BackendState": "Running",
+            "Self": {
+                "HostName": "dream-win",
+                "DNSName": "dream-win.tail-example.ts.net.",
+                "TailscaleIPs": ["100.64.0.42"],
+                "Online": True,
+            },
+            "MagicDNSSuffix": "tail-example.ts.net",
+            "CurrentTailnet": {"Name": "example.com"},
+        }
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[:2] == ["docker", "exec"]:
+                return subprocess.CompletedProcess(cmd, 1, "", "No such container: dream-tailscale")
+            if cmd[:3] == ["tailscale", "status", "--json"]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        monkeypatch.setattr(_mod.shutil, "which", lambda name: "tailscale" if name == "tailscale" else None)
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        handler = self._handler()
+        _mod.AgentHandler._handle_tailscale_status(handler)
+        body = handler.parse_response()
+
+        assert handler.response_code == 200
+        assert body["running"] is True
+        assert body["authenticated"] is True
+        assert body["source"] == "native"
+        assert body["self"]["dns_name"] == "dream-win.tail-example.ts.net"
+
+    def test_absent_container_without_native_tailscale_is_not_running(self, monkeypatch):
+        def fake_run(cmd, *args, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, "", "No such container: dream-tailscale")
+
+        monkeypatch.setattr(_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        handler = self._handler()
+        _mod.AgentHandler._handle_tailscale_status(handler)
+        body = handler.parse_response()
+
+        assert handler.response_code == 200
+        assert body == {"running": False}
+
+
 class TestServiceRestart:
     """Direct host-agent tests for POST /v1/service/restart behavior."""
 

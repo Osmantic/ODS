@@ -77,6 +77,9 @@ function Write-DreamInstallReadinessSummary {
                 $state = "needs attention"
                 $detail = "container $containerState, HTTP $($http.Code)"
             }
+            if ($check.Hint) {
+                $detail = "$detail; $($check.Hint)"
+            }
             [void]$attention.Add(("{0,-28} {1} - {2}" -f $check.Name, $state, $detail))
         }
     }

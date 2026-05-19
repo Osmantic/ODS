@@ -1155,18 +1155,92 @@ class AgentHandler(BaseHTTPRequestHandler):
         else:
             json_response(self, 404, {"error": "Not found"})
 
+    def _write_tailscale_status_payload(self, payload: dict, source: str):
+        """Distill `tailscale status --json` into the dashboard response."""
+        self_node = payload.get("Self", {}) or {}
+        magic_dns = payload.get("MagicDNSSuffix") or ""
+        dns_name = self_node.get("DNSName", "").rstrip(".") or None
+        tailnet = payload.get("CurrentTailnet")
+        tailnet_name = (
+            tailnet.get("Name") if isinstance(tailnet, dict) else None
+        )
+        json_response(self, 200, {
+            "running": True,
+            "authenticated": payload.get("BackendState") == "Running",
+            "backend_state": payload.get("BackendState"),
+            "source": source,
+            "self": {
+                "hostname": self_node.get("HostName"),
+                "dns_name": dns_name,
+                "ips": self_node.get("TailscaleIPs", []),
+                "online": self_node.get("Online", False),
+            },
+            "magic_dns_suffix": magic_dns,
+            "tailnet_name": tailnet_name,
+        })
+
+    def _find_native_tailscale_cli(self) -> str | None:
+        """Return a host-native tailscale CLI path if one is installed."""
+        tailscale = shutil.which("tailscale")
+        if tailscale:
+            return tailscale
+        if platform.system() == "Windows":
+            for base in (
+                os.environ.get("ProgramFiles"),
+                os.environ.get("ProgramFiles(x86)"),
+            ):
+                if not base:
+                    continue
+                candidate = Path(base) / "Tailscale" / "tailscale.exe"
+                if candidate.exists():
+                    return str(candidate)
+        return None
+
+    def _try_native_tailscale_status(self) -> bool:
+        """Return True after writing a response from host-native Tailscale."""
+        tailscale = self._find_native_tailscale_cli()
+        if not tailscale:
+            return False
+        try:
+            result = subprocess.run(
+                [tailscale, "status", "--json"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            lowered = stderr.lower()
+            if "logged out" in lowered or "needs login" in lowered:
+                json_response(self, 200, {
+                    "running": True,
+                    "authenticated": False,
+                    "source": "native",
+                    "reason": "Native Tailscale is installed but not authenticated.",
+                })
+                return True
+            return False
+
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return False
+
+        self._write_tailscale_status_payload(payload, "native")
+        return True
+
     def _handle_tailscale_status(self):
-        """Return Tailscale daemon status by docker-exec'ing into the
-        dream-tailscale container.
+        """Return Tailscale daemon status from Dream's container or the host.
 
         Three outcome shapes:
-          1. Container running AND authenticated:
+          1. Tailscale running AND authenticated:
              {running:true, authenticated:true, self:{...},
-              magic_dns_suffix:"tail-xxxxx.ts.net", ...}
-          2. Container running but not authenticated (auth key absent
-             or rejected):
+              magic_dns_suffix:"tail-xxxxx.ts.net", source:"..."}
+          2. Tailscale running but not authenticated (auth key absent,
+             rejected, or host app logged out):
              {running:true, authenticated:false, reason:"..."}
-          3. Container not running:
+          3. Dream container and host-native Tailscale are not running:
              {running:false}
 
         We never return 5xx for "container not running" — that's a normal
@@ -1190,8 +1264,13 @@ class AgentHandler(BaseHTTPRequestHandler):
         if result.returncode != 0:
             stderr = (result.stderr or "").strip()
             lowered = stderr.lower()
-            # Container not running -> normal "not enabled yet" state.
+            # Container not running -> try host-native Tailscale first. This
+            # covers Windows/macOS installs where users already run Tailscale
+            # outside Docker; absent both, it remains a normal "not enabled
+            # yet" state.
             if "no such container" in lowered or "is not running" in lowered:
+                if self._try_native_tailscale_status():
+                    return
                 json_response(self, 200, {"running": False})
                 return
             # Container up but daemon not yet authed.
@@ -1215,28 +1294,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 500, {"error": f"could not parse tailscale status: {exc}"})
             return
 
-        # Distill the chunky `tailscale status --json` blob to what the
-        # dashboard actually needs.
-        self_node = payload.get("Self", {}) or {}
-        magic_dns = payload.get("MagicDNSSuffix") or ""
-        dns_name = self_node.get("DNSName", "").rstrip(".") or None
-        tailnet = payload.get("CurrentTailnet")
-        tailnet_name = (
-            tailnet.get("Name") if isinstance(tailnet, dict) else None
-        )
-        json_response(self, 200, {
-            "running": True,
-            "authenticated": payload.get("BackendState") == "Running",
-            "backend_state": payload.get("BackendState"),
-            "self": {
-                "hostname": self_node.get("HostName"),
-                "dns_name": dns_name,
-                "ips": self_node.get("TailscaleIPs", []),
-                "online": self_node.get("Online", False),
-            },
-            "magic_dns_suffix": magic_dns,
-            "tailnet_name": tailnet_name,
-        })
+        self._write_tailscale_status_payload(payload, "container")
 
     def _handle_ap_mode_status(self):
         """Read-only AP-mode status snapshot.

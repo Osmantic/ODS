@@ -14,7 +14,7 @@ from typing import Optional
 import aiohttp
 import httpx
 
-from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND
+from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, AGENT_URL, DREAM_AGENT_KEY
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
 
 
@@ -79,6 +79,38 @@ async def _get_httpx_client() -> httpx.AsyncClient:
     if _httpx_client is None or _httpx_client.is_closed:
         _httpx_client = httpx.AsyncClient(timeout=5.0)
     return _httpx_client
+
+
+def _service_status_from_config(service_id: str, config: dict, status: str) -> ServiceStatus:
+    return ServiceStatus(
+        id=service_id, name=config["name"], port=config["port"],
+        external_port=config.get("external_port", config["port"]),
+        status=status, response_time_ms=None,
+    )
+
+
+async def _check_tailscale_health(service_id: str, config: dict) -> ServiceStatus:
+    """Map the host-agent Tailscale snapshot into a service health status.
+
+    Tailscale has no HTTP port to poll. Treat an absent container as
+    not_deployed so the optional Remote Access feature does not make a fresh
+    local install look degraded.
+    """
+    try:
+        client = await _get_httpx_client()
+        headers = {"Authorization": f"Bearer {DREAM_AGENT_KEY}"} if DREAM_AGENT_KEY else {}
+        resp = await client.get(f"{AGENT_URL}/v1/tailscale/status", headers=headers)
+        if resp.status_code >= 500:
+            return _service_status_from_config(service_id, config, "not_deployed")
+        payload = resp.json()
+    except (httpx.HTTPError, httpx.TimeoutException, ValueError, OSError):
+        return _service_status_from_config(service_id, config, "not_deployed")
+
+    if not payload.get("running"):
+        return _service_status_from_config(service_id, config, "not_deployed")
+    if payload.get("authenticated"):
+        return _service_status_from_config(service_id, config, "healthy")
+    return _service_status_from_config(service_id, config, "unhealthy")
 
 
 # --- Token Tracking ---
@@ -250,11 +282,12 @@ async def check_service_health(
         # Host-systemd services bind to 127.0.0.1 and are unreachable from
         # inside Docker.  The installer manages them via systemd (auto-restart
         # on failure), so treat them as healthy when configured.
-        return ServiceStatus(
-            id=service_id, name=config["name"], port=config["port"],
-            external_port=config.get("external_port", config["port"]),
-            status="healthy", response_time_ms=None,
-        )
+        return _service_status_from_config(service_id, config, "healthy")
+
+    if config.get("host_network") and int(config.get("port") or 0) <= 0:
+        if service_id == "tailscale":
+            return await _check_tailscale_health(service_id, config)
+        return _service_status_from_config(service_id, config, "not_deployed")
 
     host = config.get('host', 'localhost')
     health_port = config.get('health_port', config['port'])
