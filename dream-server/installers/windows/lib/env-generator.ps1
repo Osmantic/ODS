@@ -300,6 +300,14 @@ LITELLM_PORT=4000
 OPENCLAW_PORT=7860
 SEARXNG_PORT=8888
 
+#=== Hermes Agent ===
+HERMES_LLM_BASE_URL=$llmApiUrl$llmApiBasePath
+HERMES_LLM_API_KEY=sk-dream-hermes-local
+HERMES_LANGUAGE=en
+HERMES_PROXY_PORT=9120
+HERMES_PROXY_UPSTREAM=dream-hermes:9119
+DREAM_AUTH_UPSTREAM=dream-dashboard-api:3002
+
 #=== Security (auto-generated, keep secret!) ===
 WEBUI_SECRET=$webuiSecret
 DASHBOARD_API_KEY=$dashboardApiKey

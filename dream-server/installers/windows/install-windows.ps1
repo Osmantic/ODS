@@ -30,6 +30,7 @@
 #   .\install-windows.ps1 --Cloud          # Cloud-only (no local GPU)
 #   .\install-windows.ps1 --DryRun         # Validate without installing
 #   .\install-windows.ps1 --All            # Enable all optional services
+#   .\install-windows.ps1 -NoHermes        # Disable Hermes Agent
 #   .\install-windows.ps1 --NonInteractive # Headless install (defaults)
 #
 # ============================================================================
@@ -43,6 +44,8 @@ param(
     [switch]$Voice,
     [switch]$Workflows,
     [switch]$Rag,
+    [switch]$Hermes,
+    [switch]$NoHermes,
     [switch]$OpenClaw,
     [switch]$All,
     [switch]$Cloud,
@@ -85,6 +88,8 @@ $tierOverride   = $Tier
 $voiceFlag      = $Voice.IsPresent
 $workflowsFlag  = $Workflows.IsPresent
 $ragFlag        = $Rag.IsPresent
+$hermesFlag     = $Hermes.IsPresent
+$noHermesFlag   = $NoHermes.IsPresent
 $openClawFlag   = $OpenClaw.IsPresent
 $allFlag        = $All.IsPresent
 $comfyuiFlag    = $Comfyui.IsPresent
@@ -272,6 +277,26 @@ if ($dryRun) {
                 $envContent = $envContent -replace "(?m)^CTX_SIZE=.*$", "CTX_SIZE=$($tierConfig.MaxContext)"
                 [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
                 Write-AISuccess "Patched .env for bootstrap model ($($tierConfig.GgufFile))"
+            }
+
+            if ($enableHermes) {
+                $hermesModel = $(if ($tierConfig.GgufFile) {
+                    if ($gpuInfo.Backend -eq "amd") { "extra.$($tierConfig.GgufFile)" } else { $tierConfig.GgufFile }
+                } else {
+                    $tierConfig.LlmModel
+                })
+                $hermesBaseUrl = $(if ($gpuInfo.Backend -eq "amd") {
+                    "http://host.docker.internal:8080/api/v1"
+                } elseif ($cloudMode) {
+                    "http://litellm:4000/v1"
+                } else {
+                    "http://llama-server:8080/v1"
+                })
+                $hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
+                $hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
+                Update-HermesConfigFile -Path $hermesTemplate -Model $hermesModel -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
+                Update-HermesConfigFile -Path $hermesLive -Model $hermesModel -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
+                Write-AISuccess "Patched Hermes config for bootstrap model (model=$hermesModel, context=$($tierConfig.MaxContext))"
             }
         }
 
@@ -562,6 +587,8 @@ if ($dryRun) {
                     "n8n"        { if (-not $enableWorkflows) { $skip = $true } }
                     "qdrant"     { if (-not $enableRag)       { $skip = $true } }
                     "embeddings" { if (-not $enableRag)       { $skip = $true } }
+                    "hermes"     { if (-not $enableHermes)    { $skip = $true } }
+                    "hermes-proxy" { if (-not $enableHermes)  { $skip = $true } }
                     "openclaw"   { if (-not $enableOpenClaw)  { $skip = $true } }
                     "comfyui"    { if (-not $enableComfyui)   { $skip = $true } }
                     # Paid API extension; users enable it post-install after adding a key.

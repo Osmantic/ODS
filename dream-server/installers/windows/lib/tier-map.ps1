@@ -417,7 +417,9 @@ function ConvertTo-ModelFromTier {
 $script:BOOTSTRAP_GGUF_FILE    = "Qwen3.5-2B-Q4_K_M.gguf"
 $script:BOOTSTRAP_GGUF_URL     = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
 $script:BOOTSTRAP_LLM_MODEL    = "qwen3.5-2b"
-$script:BOOTSTRAP_MAX_CONTEXT   = 8192
+# Hermes requires at least a 64K context window. Keep the fast-start model at
+# that floor so Hermes works during the first-run bootstrap experience too.
+$script:BOOTSTRAP_MAX_CONTEXT   = 65536
 
 function Get-TierRank {
     param([string]$Tier)

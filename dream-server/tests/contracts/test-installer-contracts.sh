@@ -124,4 +124,54 @@ grep -q "python3 -c 'import yaml'" installers/macos/install-macos.sh \
 grep -q 'python3 -m pip install --user .*pyyaml' installers/macos/install-macos.sh \
   || { echo "[FAIL] macOS installer must install PyYAML via python3 -m pip, not a possibly unrelated pip3"; exit 1; }
 
+echo "[contract] Hermes context defaults are installer-wide"
+grep -q '^BOOTSTRAP_MAX_CONTEXT=65536$' installers/lib/bootstrap-model.sh \
+  || { echo "[FAIL] Linux bootstrap context must meet Hermes 64K floor"; exit 1; }
+grep -q '^BOOTSTRAP_MAX_CONTEXT=65536$' installers/macos/lib/tier-map.sh \
+  || { echo "[FAIL] macOS bootstrap context must meet Hermes 64K floor"; exit 1; }
+grep -q 'BOOTSTRAP_MAX_CONTEXT.*65536' installers/windows/lib/tier-map.ps1 \
+  || { echo "[FAIL] Windows bootstrap context must meet Hermes 64K floor"; exit 1; }
+grep -q '"CTX_SIZE=$MAX_CONTEXT"' installers/phases/11-services.sh \
+  || { echo "[FAIL] Linux bootstrap .env patch must update CTX_SIZE as well as MAX_CONTEXT"; exit 1; }
+grep -q 'Patched Hermes config for bootstrap model' installers/windows/install-windows.ps1 \
+  || { echo "[FAIL] Windows bootstrap path must re-patch Hermes config after switching to bootstrap model"; exit 1; }
+grep -q 'threshold: 0.50' extensions/services/hermes/cli-config.yaml.template \
+  || { echo "[FAIL] Hermes compression threshold must use upstream fractional semantics"; exit 1; }
+
+python_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+test -n "$python_cmd" || { echo "[FAIL] python is required to test Hermes config patcher"; exit 1; }
+tmp_hermes="$(mktemp)"
+cat > "$tmp_hermes" <<'HERMES_EOF'
+model:
+  default: "old-model"
+  provider: "custom"
+  base_url: "http://old.example/v1"
+  context_length: 8192
+
+compression:
+  threshold: 10000
+  target_ratio: 0.5
+terminal:
+  backend: "local"
+HERMES_EOF
+"$python_cmd" scripts/patch-hermes-config.py "$tmp_hermes" \
+  --model "Qwen3.5-2B-Q4_K_M.gguf" \
+  --base-url "http://llama-server:8080/v1" \
+  --context-length 65536 >/dev/null
+grep -q 'default: "Qwen3.5-2B-Q4_K_M.gguf"' "$tmp_hermes" \
+  || { echo "[FAIL] Hermes patcher did not update model.default"; rm -f "$tmp_hermes"; exit 1; }
+grep -q 'base_url: "http://llama-server:8080/v1"' "$tmp_hermes" \
+  || { echo "[FAIL] Hermes patcher did not update base_url"; rm -f "$tmp_hermes"; exit 1; }
+grep -q '^  context_length: 65536$' "$tmp_hermes" \
+  || { echo "[FAIL] Hermes patcher did not update model.context_length"; rm -f "$tmp_hermes"; exit 1; }
+grep -q '^    context_length: 65536$' "$tmp_hermes" \
+  || { echo "[FAIL] Hermes patcher did not add auxiliary compression context"; rm -f "$tmp_hermes"; exit 1; }
+grep -q '^  threshold: 0.50$' "$tmp_hermes" \
+  || { echo "[FAIL] Hermes patcher did not normalize compression threshold"; rm -f "$tmp_hermes"; exit 1; }
+grep -q '^  target_ratio: 0.20$' "$tmp_hermes" \
+  || { echo "[FAIL] Hermes patcher did not normalize compression target_ratio"; rm -f "$tmp_hermes"; exit 1; }
+grep -q '^  protect_last_n: 20$' "$tmp_hermes" \
+  || { echo "[FAIL] Hermes patcher did not add protect_last_n"; rm -f "$tmp_hermes"; exit 1; }
+rm -f "$tmp_hermes"
+
 echo "[PASS] installer contracts"

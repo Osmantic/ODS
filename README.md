@@ -176,6 +176,8 @@ The installer detects your GPU and picks the optimal model automatically. No man
 
 The current model map supports `MODEL_PROFILE=qwen` by default, plus `MODEL_PROFILE=gemma4` and `MODEL_PROFILE=auto` for Gemma 4 tiers where supported. Override tier selection with `./install.sh --tier 3`; override the model family with `MODEL_PROFILE=gemma4 ./install.sh` or `MODEL_PROFILE=auto ./install.sh`.
 
+When Hermes is enabled, which is the default agent path, installers keep the first-run bootstrap model at a 64K context floor and promote the full local model context to 128K. That avoids Hermes's hard 64K minimum while preserving the under-2-minute first chat experience. Core-only or `--no-hermes` installs keep the smaller tier contexts shown below.
+
 ### NVIDIA
 
 | Tier | VRAM | Qwen profile | Gemma 4 profile | Context | Example GPUs |
@@ -231,6 +233,8 @@ No waiting for large downloads. Dream Server uses bootstrap mode by default:
 *The installer pulls all services in parallel. Downloads are resume-capable — interrupted downloads pick up where they left off.*
 
 </div>
+
+The bootstrap model starts with a 64K context window so Hermes can work during the first session. After the background download finishes, Dream Server swaps to the full model and restores the Hermes/full-model context target.
 
 Skip bootstrap: `./install.sh --no-bootstrap`
 

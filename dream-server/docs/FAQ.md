@@ -286,7 +286,7 @@ Applying a template only enables services — it doesn't disable anything you've
 
 ### Can I chat while models are downloading?
 
-Yes. During install, a small bootstrap model (~1.5GB, Qwen 3.5 2B) downloads first so you can start chatting within a couple of minutes. The full tier-appropriate model downloads in the background.
+Yes. During install, a small bootstrap model (~1.5GB, Qwen 3.5 2B) downloads first so you can start chatting within a couple of minutes. The bootstrap context is 64K so Hermes can work during the first session. The full tier-appropriate model downloads in the background.
 
 When the full model finishes, the system swaps it in automatically — you don't need to do anything. `dream status` shows the current bootstrap state if a swap is still in progress.
 

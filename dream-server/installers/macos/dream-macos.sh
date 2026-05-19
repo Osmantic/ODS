@@ -262,7 +262,7 @@ start_native_llama() {
 
     read_dream_env
     local gguf_file="${ENV_GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}"
-    local ctx_size="${ENV_CTX_SIZE:-16384}"
+    local ctx_size="${ENV_CTX_SIZE:-131072}"
     local model_path="${INSTALL_DIR}/data/models/${gguf_file}"
 
     if [[ ! -f "$model_path" ]]; then

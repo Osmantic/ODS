@@ -62,7 +62,10 @@ $_dirs = @(
     (Join-Path $_dataDir "qdrant"),
     (Join-Path $_dataDir "models"),
     (Join-Path $_dataDir "comfyui"),
-    (Join-Path $_dataDir "perplexica")
+    (Join-Path $_dataDir "perplexica"),
+    (Join-Path $_dataDir "hermes"),
+    (Join-Path $_dataDir "hermes-proxy\caddy-data"),
+    (Join-Path $_dataDir "hermes-proxy\caddy-config")
 )
 foreach ($_d in $_dirs) {
     New-Item -ItemType Directory -Path $_d -Force | Out-Null
@@ -163,6 +166,76 @@ if ($_missingKeys.Count -gt 0) {
     exit 1
 }
 Write-AISuccess "Verified .env contains all required secrets"
+
+function Update-HermesConfigFile {
+    param(
+        [string]$Path,
+        [string]$Model,
+        [string]$BaseUrl,
+        [int]$ContextLength
+    )
+
+    if (-not (Test-Path $Path)) { return }
+
+    $content = Get-Content $Path -Raw
+    $content = $content -replace '(?m)^  default: ".*"$', "  default: `"$Model`""
+    $content = $content -replace '(?m)^  base_url: ".*"$', "  base_url: `"$BaseUrl`""
+    $content = $content -replace '(?m)^  context_length: .+$', "  context_length: $ContextLength"
+    $content = $content -replace '(?m)^    context_length: .+$', "    context_length: $ContextLength"
+
+    if ($content -notmatch '(?m)^auxiliary:\s*$') {
+        if ($content -match '(?m)^terminal:\s*$') {
+            $content = $content -replace '(?m)^terminal:\s*$', "auxiliary:`n  compression:`n    context_length: $ContextLength`n`nterminal:"
+        } else {
+            $content += "`nauxiliary:`n  compression:`n    context_length: $ContextLength`n"
+        }
+    } elseif ($content -notmatch '(?m)^  compression:\s*$') {
+        $content = $content -replace '(?m)^auxiliary:\s*$', "auxiliary:`n  compression:`n    context_length: $ContextLength"
+    }
+
+    if ($content -notmatch '(?m)^compression:\s*$') {
+        $content += "`ncompression:`n  enabled: true`n  threshold: 0.50`n  target_ratio: 0.20`n  protect_last_n: 20`n"
+    } else {
+        if ($content -notmatch '(?m)^  enabled:') {
+            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  enabled: true"
+        }
+        if ($content -match '(?m)^  threshold:') {
+            $content = $content -replace '(?m)^  threshold: .+$', "  threshold: 0.50"
+        } else {
+            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  threshold: 0.50"
+        }
+        if ($content -match '(?m)^  target_ratio:') {
+            $content = $content -replace '(?m)^  target_ratio: .+$', "  target_ratio: 0.20"
+        } else {
+            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  target_ratio: 0.20"
+        }
+        if ($content -notmatch '(?m)^  protect_last_n:') {
+            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  protect_last_n: 20"
+        }
+    }
+
+    Write-Utf8NoBom -Path $Path -Content $content
+}
+
+if ($enableHermes) {
+    $_hermesModel = $(if ($tierConfig.GgufFile) {
+        if ($gpuInfo.Backend -eq "amd") { "extra.$($tierConfig.GgufFile)" } else { $tierConfig.GgufFile }
+    } else {
+        $tierConfig.LlmModel
+    })
+    $_hermesBaseUrl = $(if ($gpuInfo.Backend -eq "amd") {
+        "http://host.docker.internal:8080/api/v1"
+    } elseif ($cloudMode) {
+        "http://litellm:4000/v1"
+    } else {
+        "http://llama-server:8080/v1"
+    })
+    $_hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
+    $_hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
+    Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
+    Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
+    Write-AISuccess "Patched Hermes config (model=$_hermesModel, context=$($tierConfig.MaxContext))"
+}
 
 # ── Generate SearXNG config ───────────────────────────────────────────────────
 $_searxngPath = New-SearxngConfig -InstallDir $installDir -SecretKey $envResult.SearxngSecret

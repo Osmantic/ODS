@@ -550,8 +550,18 @@ LITELLM_UPGRADE_EOF
         # bootstrap model id.
         _hermes_tpl="$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template"
         if [[ -f "$_hermes_tpl" ]]; then
-            if sed -i.bak \
+            _hermes_patcher="$INSTALL_DIR/scripts/patch-hermes-config.py"
+            _python_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+            if [[ -n "$_python_cmd" && -f "$_hermes_patcher" ]]; then
+                if ! "$_python_cmd" "$_hermes_patcher" "$_hermes_tpl" \
+                    --model "$_hermes_new_model" \
+                    --context-length "$FULL_MAX_CONTEXT" 2>&1; then
+                    log "WARNING: Could not patch ${_hermes_tpl} with patch-hermes-config.py (non-fatal — operator can hand-edit before restarting Hermes)"
+                fi
+            elif sed -i.bak \
                 -e "s|^  default: \"${_hermes_old_model}\"|  default: \"${_hermes_new_model}\"|" \
+                -e "s|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|" \
+                -e "s|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|" \
                 "$_hermes_tpl" 2>&1; then
                 rm -f "${_hermes_tpl}.bak"
             else
@@ -562,7 +572,7 @@ LITELLM_UPGRADE_EOF
         if $DOCKER_CMD ps --filter name=dream-hermes --format '{{.Names}}' 2>/dev/null | grep -q dream-hermes; then
             # Live config inside the running container (owned by container UID).
             $DOCKER_CMD exec dream-hermes sh -c \
-                "sed -i 's|^  default: \"${_hermes_old_model}\"|  default: \"${_hermes_new_model}\"|' /opt/data/config.yaml" 2>&1 || \
+                "sed -i -e 's|^  default: \"${_hermes_old_model}\"|  default: \"${_hermes_new_model}\"|' -e 's|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|' -e 's|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|' -e 's|^  threshold: .*|  threshold: 0.50|' -e 's|^  target_ratio: .*|  target_ratio: 0.20|' /opt/data/config.yaml" 2>&1 || \
                 log "WARNING: Could not patch Hermes /opt/data/config.yaml (non-fatal — operator can hand-edit and 'docker restart dream-hermes')"
             log "Restarting Hermes to pick up model change..."
             $DOCKER_CMD restart dream-hermes 2>&1 || log "WARNING: Hermes restart failed (non-fatal — hand-restart with 'docker restart dream-hermes')"
@@ -633,8 +643,16 @@ LITELLM_UPGRADE_EOF
             # update above still protects first-time/fresh data starts.
             _hermes_live="$INSTALL_DIR/data/hermes/config.yaml"
             if [[ -f "$_hermes_live" ]]; then
-                if sed -i.bak \
+                if [[ -n "${_python_cmd:-}" && -f "${_hermes_patcher:-}" ]]; then
+                    if ! "$_python_cmd" "$_hermes_patcher" "$_hermes_live" \
+                        --model "$_hermes_new_model" \
+                        --context-length "$FULL_MAX_CONTEXT" 2>&1; then
+                        log "WARNING: Could not patch ${_hermes_live} with patch-hermes-config.py (non-fatal — operator can hand-edit and restart Hermes)"
+                    fi
+                elif sed -i.bak \
                     -e "s|^  default: \"${_hermes_old_model}\"|  default: \"${_hermes_new_model}\"|" \
+                    -e "s|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|" \
+                    -e "s|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|" \
                     "$_hermes_live" 2>&1; then
                     rm -f "${_hermes_live}.bak"
                 else

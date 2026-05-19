@@ -7,7 +7,7 @@
 #
 # Reads:
 #   $voiceFlag, $workflowsFlag, $ragFlag, $openClawFlag, $allFlag
-#   $comfyuiFlag, $noComfyuiFlag
+#   $hermesFlag, $noHermesFlag, $comfyuiFlag, $noComfyuiFlag
 #   $nonInteractive  -- suppress menus (use flag defaults)
 #   $dryRun          -- skip prompts, log only
 #   $selectedTier    -- from phase 02, for tier-appropriate OpenClaw config
@@ -16,6 +16,7 @@
 #   $enableVoice      -- bool: enable Whisper + Kokoro TTS
 #   $enableWorkflows  -- bool: enable n8n workflow automation
 #   $enableRag        -- bool: enable Qdrant + embeddings (RAG)
+#   $enableHermes     -- bool: enable Hermes Agent
 #   $enableOpenClaw   -- bool: enable OpenClaw agent framework
 #   $enableComfyui    -- bool: enable ComfyUI image generation
 #   $openClawConfig   -- string: tier-appropriate OpenClaw config filename
@@ -32,7 +33,9 @@ Write-Phase -Phase 3 -Total 13 -Name "FEATURE SELECTION" -Estimate "interactive"
 $enableVoice      = $voiceFlag -or $allFlag
 $enableWorkflows  = $workflowsFlag -or $allFlag
 $enableRag        = $ragFlag -or $allFlag
-$enableOpenClaw   = $openClawFlag -or $allFlag
+$enableHermes     = (-not $noHermesFlag) -and ($hermesFlag -or $allFlag -or (-not $nonInteractive))
+if ($nonInteractive -and -not $noHermesFlag) { $enableHermes = $true }
+$enableOpenClaw   = $openClawFlag
 $enableComfyui    = -not $noComfyuiFlag
 # Langfuse defaults OFF on all tiers because its clickhouse + postgres + minio
 # stack adds ~500MB baseline memory. Opt in via -Langfuse, -All, the Custom
@@ -45,7 +48,7 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
     Write-Host ""
     Write-Host "  Choose your Dream Server configuration:" -ForegroundColor White
     Write-Host ""
-    Write-Host "  [1] Full Stack   -- Voice + Workflows + RAG + Agents (everything)" -ForegroundColor Green
+    Write-Host "  [1] Full Stack   -- Hermes + Voice + Workflows + RAG + image generation" -ForegroundColor Green
     Write-Host "  [2] Core Only    -- Chat + LLM inference (lean, fastest startup)" -ForegroundColor White
     Write-Host "  [3] Custom       -- Choose each feature individually" -ForegroundColor White
     Write-Host ""
@@ -56,6 +59,7 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
             $enableVoice     = $false
             $enableWorkflows = $false
             $enableRag       = $false
+            $enableHermes    = $false
             $enableOpenClaw  = $false
             $enableComfyui   = $false
             $enableLangfuse  = $false
@@ -65,7 +69,8 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
             $enableVoice     = (Read-Host "  Enable Voice (Whisper STT + Kokoro TTS)?  [y/N]") -match "^[yY]"
             $enableWorkflows = (Read-Host "  Enable Workflows (n8n, 400+ integrations)? [y/N]") -match "^[yY]"
             $enableRag       = (Read-Host "  Enable RAG (Qdrant vector DB + embeddings)? [y/N]") -match "^[yY]"
-            $enableOpenClaw  = (Read-Host "  Enable OpenClaw (autonomous AI agents)?    [y/N]") -match "^[yY]"
+            $enableHermes    = (Read-Host "  Enable Hermes Agent (default AI agent)? [Y/n]") -notmatch "^[nN]"
+            $enableOpenClaw  = (Read-Host "  Enable OpenClaw (DEPRECATED; Hermes replaces it)? [y/N]") -match "^[yY]"
             $enableComfyui   = (Read-Host "  Enable image generation (ComfyUI + SDXL Lightning, ~6.5GB)? [y/N]") -match "^[yY]"
             $enableLangfuse  = (Read-Host "  Enable Langfuse (LLM observability, ~500MB)? [y/N]") -match "^[yY]"
 
@@ -80,7 +85,8 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
             $enableVoice     = $true
             $enableWorkflows = $true
             $enableRag       = $true
-            $enableOpenClaw  = $true
+            $enableHermes    = $true
+            $enableOpenClaw  = $false
             $enableComfyui   = $true
             $enableLangfuse  = $true
 
@@ -92,6 +98,10 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
             }
         }
     }
+}
+
+if ($noHermesFlag) {
+    $enableHermes = $false
 }
 
 # Tier safety net: disable ComfyUI on Tier 0/1 or CLOUD in non-interactive mode.
@@ -107,12 +117,21 @@ if ($enableComfyui -and $selectedTier -eq "CLOUD") {
     Write-AIWarn "ComfyUI disabled for CLOUD tier (requires local GPU for image generation)"
 }
 
+if ($enableHermes -and -not $cloudMode) {
+    $hermesContextSize = 131072
+    if ([int]$tierConfig.MaxContext -lt $hermesContextSize) {
+        Write-AIWarn "Hermes enabled: increasing llama context from $($tierConfig.MaxContext) to $hermesContextSize (128K)."
+        $tierConfig.MaxContext = $hermesContextSize
+    }
+}
+
 # ── Feature summary ───────────────────────────────────────────────────────────
 Write-Host ""
 Write-AI "Feature configuration:"
 Write-InfoBox "  Voice (Whisper + Kokoro):" $(if ($enableVoice)     { "enabled" } else { "disabled" })
 Write-InfoBox "  Workflows (n8n):"          $(if ($enableWorkflows) { "enabled" } else { "disabled" })
 Write-InfoBox "  RAG (Qdrant + embeddings):" $(if ($enableRag)      { "enabled" } else { "disabled" })
+Write-InfoBox "  Hermes Agent:"              $(if ($enableHermes)   { "enabled" } else { "disabled" })
 Write-InfoBox "  Agents (OpenClaw):"         $(if ($enableOpenClaw) { "enabled" } else { "disabled" })
 Write-InfoBox "  Image gen (ComfyUI):"        $(if ($enableComfyui)  { "enabled" } else { "disabled" })
 Write-InfoBox "  Langfuse (observability):"   $(if ($enableLangfuse) { "enabled" } else { "disabled" })
