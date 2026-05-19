@@ -69,6 +69,10 @@ dream doctor --json > report.json
 - **capability_profile**: Hardware detection snapshot
 - **preflight**: Blocker/warning analysis
 - **runtime**: Docker/Compose/UI reachability checks
+- **runtime.amd_runtime**: Explicit AMD inference runtime diagnostics from
+  installer-written env state. Reports runtime (`lemonade` or `llama-server`),
+  host/container location, selected backend, supported backends, DreamServer
+  management state, and health endpoint reachability.
 - **runtime.dgx_spark_cuda_arch_check**: Warns when a DGX Spark / GB10
   machine is running a llama.cpp CUDA binary that does not report `sm_121`
   support in `llama-server` logs.
@@ -95,6 +99,9 @@ The doctor command integrates with:
 - `scripts/build-capability-profile.sh` - Hardware detection
 - `scripts/preflight-engine.sh` - Requirement validation
 - Service registry - Port resolution
+- AMD runtime contract - ROCm on Linux container installs, Vulkan on Windows
+  host-managed installs. Modern Lemonade CLI/port 13305 is tracked as a
+  follow-up and is not auto-detected from inside dashboard containers.
 
 ## Default Report Path
 

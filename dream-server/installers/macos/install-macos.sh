@@ -14,6 +14,7 @@
 #   ./install-macos.sh --dry-run        # Validate without installing
 #   ./install-macos.sh --all            # Enable all optional services
 #   ./install-macos.sh --non-interactive # Headless install (defaults)
+#   ./install-macos.sh --no-bootstrap   # Wait for the full model before launch
 #
 # ============================================================================
 
@@ -75,11 +76,17 @@ TIER_OVERRIDE=""
 ENABLE_VOICE=false
 ENABLE_WORKFLOWS=false
 ENABLE_RAG=false
+ENABLE_RECOMMENDED=true
 # Hermes Agent is the new default agent as of 2026-05-12. OpenClaw is
 # deprecated and gates behind --openclaw for the deprecation release.
 ENABLE_HERMES=true
 ENABLE_OPENCLAW=false
 ENABLE_BRAVE_SEARCH=false
+ENABLE_APE=true
+ENABLE_PERPLEXICA=false
+ENABLE_PRIVACY_SHIELD=false
+ENABLE_DREAM_PROXY=false
+ENABLE_TAILSCALE=false
 # Langfuse defaults OFF because its clickhouse + postgres + minio stack adds
 # ~500MB baseline memory. Enable via --langfuse, --all, or post-install
 # `dream enable langfuse`. --no-langfuse honored as explicit override so a
@@ -89,6 +96,8 @@ NO_LANGFUSE_EXPLICIT=false
 OPENCLAW_EXPLICIT=false
 ALL_FEATURES=false
 CLOUD_MODE=false
+NO_BOOTSTRAP=false
+HERMES_CONTEXT_SIZE=131072
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -99,6 +108,8 @@ while [[ $# -gt 0 ]]; do
         --voice)         ENABLE_VOICE=true; shift ;;
         --workflows)     ENABLE_WORKFLOWS=true; shift ;;
         --rag)           ENABLE_RAG=true; shift ;;
+        --recommended)   ENABLE_RECOMMENDED=true; shift ;;
+        --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
         --hermes)        ENABLE_HERMES=true; shift ;;
         --no-hermes)     ENABLE_HERMES=false; shift ;;
         --openclaw)      ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
@@ -107,6 +118,7 @@ while [[ $# -gt 0 ]]; do
         --no-langfuse)   ENABLE_LANGFUSE=false; NO_LANGFUSE_EXPLICIT=true; shift ;;
         --all)           ALL_FEATURES=true; shift ;;
         --cloud)         CLOUD_MODE=true; shift ;;
+        --no-bootstrap)  NO_BOOTSTRAP=true; shift ;;
         *)               echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -115,11 +127,15 @@ if $ALL_FEATURES; then
     ENABLE_VOICE=true
     ENABLE_WORKFLOWS=true
     ENABLE_RAG=true
+    ENABLE_RECOMMENDED=true
     # --all enables the new default Hermes Agent. OpenClaw stays opt-in via
     # --openclaw during the deprecation release; will be removed entirely
     # in the next release.
     ENABLE_HERMES=true
     $OPENCLAW_EXPLICIT || ENABLE_OPENCLAW=false
+    ENABLE_APE=true
+    ENABLE_PERPLEXICA=true
+    ENABLE_PRIVACY_SHIELD=true
     # --all enables Langfuse unless the user explicitly passed --no-langfuse.
     $NO_LANGFUSE_EXPLICIT || ENABLE_LANGFUSE=true
 fi
@@ -479,6 +495,44 @@ if [[ -z "${MODEL_PROFILE:-}" ]]; then
 fi
 
 resolve_tier_config "$SELECTED_TIER"
+if [[ "${DREAM_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_TIER" != "CLOUD" ]]; then
+    _selector_script="${SOURCE_ROOT}/scripts/select-model.py"
+    _selector_catalog="${SOURCE_ROOT}/config/model-library.json"
+    if [[ -f "$_selector_script" && -f "$_selector_catalog" ]]; then
+        _selector_python=""
+        if [[ -f "${SOURCE_ROOT}/lib/python-cmd.sh" ]]; then
+            # shellcheck source=/dev/null
+            . "${SOURCE_ROOT}/lib/python-cmd.sh"
+            _selector_python="$(ds_detect_python_cmd || true)"
+        fi
+        if [[ -z "$_selector_python" ]]; then
+            if command -v python3 >/dev/null 2>&1; then
+                _selector_python="python3"
+            elif command -v python >/dev/null 2>&1; then
+                _selector_python="python"
+            fi
+        fi
+        if [[ -n "$_selector_python" ]]; then
+            _selector_env="$("$_selector_python" "$_selector_script" \
+                --catalog "$_selector_catalog" \
+                --backend "apple" \
+                --memory-type "unified" \
+                --vram-mb "0" \
+                --ram-gb "${SYSTEM_RAM_GB:-0}" \
+                --profile "${MODEL_PROFILE_EFFECTIVE:-${MODEL_PROFILE:-qwen}}" \
+                --tier "$SELECTED_TIER" \
+                --host-arch "$(uname -m 2>/dev/null || echo unknown)" \
+                --installable-only \
+                --env 2>>"$LOG_FILE" || true)"
+            if [[ -n "$_selector_env" ]]; then
+                eval "$_selector_env"
+                ai "Model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"
+            else
+                ai "Model selector unavailable; using tier-map model ${LLM_MODEL}"
+            fi
+        fi
+    fi
+fi
 if [[ -n "${LLAMA_CPP_RELEASE_TAG_OVERRIDE:-}" ]]; then
     LLAMA_CPP_RELEASE_TAG="$LLAMA_CPP_RELEASE_TAG_OVERRIDE"
     LLAMA_CPP_MACOS_ASSET="llama-${LLAMA_CPP_RELEASE_TAG}-bin-macos-arm64.tar.gz"
@@ -489,8 +543,16 @@ info_box "Model:" "${LLM_MODEL}"
 info_box "GGUF:" "${GGUF_FILE}"
 info_box "Context:" "${MAX_CONTEXT}"
 
-# Re-check disk space for model + Docker images
-if [[ "$GGUF_FILE" =~ 31B ]]; then
+# Re-check disk space for model + Docker images. Prefer the catalog selector's
+# exact model size when available; it can choose entries that do not fit the
+# older tier-map filename heuristics.
+_model_size_mb="${LLM_MODEL_SIZE_MB:-0}"
+if [[ "$_model_size_mb" =~ ^[0-9]+$ && "$_model_size_mb" -gt 0 ]]; then
+    _model_gb=$(( (_model_size_mb + 1023) / 1024 ))
+    NEEDED_GB=$(( _model_gb + 15 ))
+elif [[ "$GGUF_FILE" =~ 80B|Coder-Next ]]; then
+    NEEDED_GB=65
+elif [[ "$GGUF_FILE" =~ 31B ]]; then
     NEEDED_GB=38
 elif [[ "$GGUF_FILE" =~ 30B|26B ]]; then
     NEEDED_GB=35
@@ -526,13 +588,21 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
         1)
             ENABLE_VOICE=true; ENABLE_WORKFLOWS=true
             ENABLE_RAG=true; ENABLE_HERMES=true
+            ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
+            ENABLE_APE=true
+            ENABLE_PERPLEXICA=true
+            ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
             ;;
         2)
             ENABLE_VOICE=false; ENABLE_WORKFLOWS=false
-            ENABLE_RAG=false; ENABLE_HERMES=false
+            ENABLE_RAG=false; ENABLE_RECOMMENDED=false
+            ENABLE_HERMES=false
             ENABLE_OPENCLAW=false
+            ENABLE_APE=false
+            ENABLE_PERPLEXICA=false
+            ENABLE_PRIVACY_SHIELD=false
             ENABLE_LANGFUSE=false
             ;;
         3)
@@ -542,28 +612,48 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             [[ "$yn" =~ ^[yY] ]] && ENABLE_WORKFLOWS=true
             read -r -p "  Enable RAG (Qdrant + embeddings)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_RAG=true
+            read -r -p "  Enable recommended support (LiteLLM + SearXNG + Token Spy)? [Y/n] " yn < /dev/tty
+            [[ "$yn" =~ ^[nN] ]] && ENABLE_RECOMMENDED=false || ENABLE_RECOMMENDED=true
             read -r -p "  Enable Hermes Agent (default AI agent)? [Y/n] " yn < /dev/tty
             [[ "$yn" =~ ^[nN] ]] && ENABLE_HERMES=false || ENABLE_HERMES=true
             read -r -p "  Enable OpenClaw (DEPRECATED — Hermes replaces it)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_OPENCLAW=true
+            read -r -p "  Enable Perplexica deep research? [y/N] " yn < /dev/tty
+            [[ "$yn" =~ ^[yY] ]] && ENABLE_PERPLEXICA=true
+            read -r -p "  Enable Privacy Shield? [y/N] " yn < /dev/tty
+            [[ "$yn" =~ ^[yY] ]] && ENABLE_PRIVACY_SHIELD=true
             read -r -p "  Enable Langfuse (LLM observability, ~500MB)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_LANGFUSE=true
             ;;
         *)
             ENABLE_VOICE=true; ENABLE_WORKFLOWS=true
             ENABLE_RAG=true; ENABLE_HERMES=true
+            ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
+            ENABLE_APE=true
+            ENABLE_PERPLEXICA=true
+            ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
             ;;
     esac
+fi
+
+if $ENABLE_HERMES && ! $CLOUD_MODE; then
+    if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
+        ai_warn "Hermes enabled: increasing macOS llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (128K)."
+        MAX_CONTEXT="$HERMES_CONTEXT_SIZE"
+    fi
 fi
 
 ai "Features:"
 info_box "  Voice:" "$(if $ENABLE_VOICE; then echo enabled; else echo disabled; fi)"
 info_box "  Workflows:" "$(if $ENABLE_WORKFLOWS; then echo enabled; else echo disabled; fi)"
 info_box "  RAG:" "$(if $ENABLE_RAG; then echo enabled; else echo disabled; fi)"
+info_box "  Recommended:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
 info_box "  Hermes:" "$(if $ENABLE_HERMES; then echo enabled; else echo disabled; fi)"
 info_box "  OpenClaw:" "$(if $ENABLE_OPENCLAW; then echo "enabled (DEPRECATED)"; else echo disabled; fi)"
+info_box "  Perplexica:" "$(if $ENABLE_PERPLEXICA; then echo enabled; else echo disabled; fi)"
+info_box "  Privacy Shield:" "$(if $ENABLE_PRIVACY_SHIELD; then echo enabled; else echo disabled; fi)"
 info_box "  Langfuse:" "$(if $ENABLE_LANGFUSE; then echo enabled; else echo disabled; fi)"
 # The macOS installer doesn't currently ship a ComfyUI container — none of
 # the published ComfyUI images target Apple Silicon Metal, and the upstream
@@ -647,12 +737,13 @@ else
     fi
 
     # Copy extensions library to data dir for dashboard portal.
-    # Source resolution: dev installs find it via SOURCE_ROOT/.. (outer repo).
-    # Bootstrap installs (curl-piped) get the templates bundled inside the
-    # install dir by get-dream-server.sh under extensions-library-bundle/.
+    # Source resolution: dev installs and full checkouts read the product-owned
+    # library under extensions/library/. Bootstrap installs also get the same
+    # templates bundled by get-dream-server.sh under extensions-library-bundle/.
     _ext_lib_src=""
     for _candidate in \
-        "${SOURCE_ROOT}/../resources/dev/extensions-library/services" \
+        "${SOURCE_ROOT}/extensions/library/services" \
+        "${INSTALL_DIR}/extensions/library/services" \
         "${INSTALL_DIR}/extensions-library-bundle/services"
     do
         if [[ -d "$_candidate" ]]; then _ext_lib_src="$_candidate"; break; fi
@@ -683,6 +774,11 @@ else
         ai_ok "Preserved existing .env (use --force to regenerate secrets)"
     else
         ai_ok "Generated .env with secure secrets"
+    fi
+    if $ENABLE_HERMES && ! $CLOUD_MODE; then
+        upsert_env_value "${INSTALL_DIR}/.env" "MAX_CONTEXT" "$MAX_CONTEXT"
+        upsert_env_value "${INSTALL_DIR}/.env" "CTX_SIZE" "$MAX_CONTEXT"
+        ai_ok "Set macOS llama context to ${MAX_CONTEXT} for Hermes"
     fi
 
     # Generate SearXNG config
@@ -812,13 +908,34 @@ else
     if ! $CLOUD_MODE; then
         _hermes_tpl="${INSTALL_DIR}/extensions/services/hermes/cli-config.yaml.template"
         if [[ -f "$_hermes_tpl" ]]; then
-            sed -i '' \
-                -e "s|^  default: \"qwen3.5-9b\"|  default: \"${GGUF_FILE}\"|" \
-                -e "s|^  base_url: \"http://llama-server:8080/v1\"|  base_url: \"http://host.docker.internal:${OLLAMA_PORT:-8080}/v1\"|" \
-                "$_hermes_tpl"
+            _hermes_base_url="http://host.docker.internal:${OLLAMA_PORT:-8080}/v1"
+            _hermes_patcher="${INSTALL_DIR}/scripts/patch-hermes-config.py"
+            if [[ -f "$_hermes_patcher" ]]; then
+                python3 "$_hermes_patcher" "$_hermes_tpl" \
+                    --model "$GGUF_FILE" \
+                    --base-url "$_hermes_base_url" \
+                    --context-length "$MAX_CONTEXT" >>"$LOG_FILE" 2>&1 || \
+                    ai_warn "Hermes template patch failed — hand-edit ${_hermes_tpl} if prompts hang."
+                _hermes_live="${INSTALL_DIR}/data/hermes/config.yaml"
+                if [[ -f "$_hermes_live" ]]; then
+                    python3 "$_hermes_patcher" "$_hermes_live" \
+                        --model "$GGUF_FILE" \
+                        --base-url "$_hermes_base_url" \
+                        --context-length "$MAX_CONTEXT" >>"$LOG_FILE" 2>&1 || \
+                        ai_warn "Hermes live config patch failed — hand-edit ${_hermes_live} and restart Hermes if prompts hang."
+                fi
+            else
+                sed -i '' \
+                    -e "s|^  default: \"qwen3.5-9b\"|  default: \"${GGUF_FILE}\"|" \
+                    -e "s|^  base_url: \"http://llama-server:8080/v1\"|  base_url: \"${_hermes_base_url}\"|" \
+                    -e "s|^  context_length: .*|  context_length: ${MAX_CONTEXT}|" \
+                    -e "s|^    context_length: .*|    context_length: ${MAX_CONTEXT}|" \
+                    "$_hermes_tpl"
+            fi
             if grep -q "host.docker.internal" "$_hermes_tpl" && \
-               grep -q "^  default: \"${GGUF_FILE}\"$" "$_hermes_tpl"; then
-                ai_ok "Patched Hermes template for macOS (model=${GGUF_FILE}, base_url=host.docker.internal)"
+               grep -q "^  default: \"${GGUF_FILE}\"$" "$_hermes_tpl" && \
+               grep -q "^  context_length: ${MAX_CONTEXT}$" "$_hermes_tpl"; then
+                ai_ok "Patched Hermes config for macOS (model=${GGUF_FILE}, context=${MAX_CONTEXT}, base_url=host.docker.internal)"
             else
                 ai_warn "Hermes template patch incomplete — Hermes may fail to reach llama-server. Hand-edit ${_hermes_tpl} if prompts hang."
             fi
@@ -953,6 +1070,8 @@ else
         _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _n_cpu_moe=$(grep '^LLAMA_ARG_N_CPU_MOE=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+        _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+        _spec_draft_n_max=$(grep '^LLAMA_ARG_SPEC_DRAFT_N_MAX=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _llama_args=(
             --host "$_bind" --port 8080
             --model "$MODEL_FULL_PATH"
@@ -965,6 +1084,8 @@ else
         [[ -n "$_cache_type_k" ]] && _llama_args+=(--cache-type-k "$_cache_type_k")
         [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")
         [[ -n "$_n_cpu_moe" ]] && _llama_args+=(--n-cpu-moe "$_n_cpu_moe")
+        [[ -n "$_spec_type" ]] && _llama_args+=(--spec-type "$_spec_type")
+        [[ -n "$_spec_draft_n_max" ]] && _llama_args+=(--spec-draft-n-max "$_spec_draft_n_max")
 
         "$LLAMA_SERVER_BIN" "${_llama_args[@]}" > "$LLAMA_SERVER_LOG" 2>&1 &
         LLAMA_PID=$!
@@ -1035,6 +1156,9 @@ else
     EXT_DIR="${INSTALL_DIR}/extensions/services"
     CURRENT_BACKEND="apple"
     $CLOUD_MODE && CURRENT_BACKEND="none"
+    if ! $ENABLE_HERMES && ! $ENABLE_OPENCLAW; then
+        ENABLE_APE=false
+    fi
 
     # Sync Langfuse compose state with ENABLE_LANGFUSE before manifest discovery.
     # Langfuse ships as compose.yaml.disabled; enable it here when the user opted
@@ -1118,11 +1242,17 @@ else
             # Check feature flags
             SKIP=false
             case "$SVC_NAME" in
+                litellm|searxng|token-spy) $ENABLE_RECOMMENDED || SKIP=true ;;
                 whisper|tts)   $ENABLE_VOICE || SKIP=true ;;
                 n8n)           $ENABLE_WORKFLOWS || SKIP=true ;;
                 qdrant|embeddings) $ENABLE_RAG || SKIP=true ;;
                 hermes|hermes-proxy) $ENABLE_HERMES || SKIP=true ;;
                 openclaw)      $ENABLE_OPENCLAW || SKIP=true ;;
+                ape)           $ENABLE_APE || SKIP=true ;;
+                perplexica)    $ENABLE_PERPLEXICA || SKIP=true ;;
+                privacy-shield) $ENABLE_PRIVACY_SHIELD || SKIP=true ;;
+                dream-proxy)   $ENABLE_DREAM_PROXY || SKIP=true ;;
+                tailscale)     $ENABLE_TAILSCALE || SKIP=true ;;
                 langfuse)      $ENABLE_LANGFUSE || SKIP=true ;;
                 brave-search)  [[ "${ENABLE_BRAVE_SEARCH:-false}" == "true" ]] || SKIP=true ;;
             esac

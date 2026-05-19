@@ -13,6 +13,7 @@ services:
       args:
         AMDGPU_TARGET: ${AMDGPU_TARGET:-gfx1151}
         LLAMA_CPP_REF: ${LLAMA_CPP_REF:-b8763}
+        LEMONADE_SERVER_IMAGE: ${LEMONADE_SERVER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0}
     image: dream-lemonade-server:latest
     entrypoint: ["/opt/lemonade/lemonade-server"]
     command:
@@ -76,6 +77,14 @@ services:
     environment:
       - GPU_BACKEND=amd
       - LLM_BACKEND=lemonade
+      - LLM_API_BASE_PATH=/api/v1
+      - AMD_INFERENCE_RUNTIME=${AMD_INFERENCE_RUNTIME:-lemonade}
+      - AMD_INFERENCE_BACKEND=${AMD_INFERENCE_BACKEND:-rocm}
+      - AMD_INFERENCE_LOCATION=${AMD_INFERENCE_LOCATION:-container}
+      - AMD_INFERENCE_PORT=${AMD_INFERENCE_PORT:-8080}
+      - AMD_INFERENCE_SUPPORTED_BACKENDS=${AMD_INFERENCE_SUPPORTED_BACKENDS:-rocm}
+      - AMD_INFERENCE_RUNTIME_MODE=${AMD_INFERENCE_RUNTIME_MODE:-linux-container}
+      - AMD_INFERENCE_MANAGED=${AMD_INFERENCE_MANAGED:-true}
       - LLAMA_METRICS_PORT=8001
     volumes:
       - /sys/class/drm:/sys/class/drm:ro

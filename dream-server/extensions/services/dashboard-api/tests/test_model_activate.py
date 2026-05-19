@@ -490,6 +490,65 @@ class TestModelActivateRollback:
         assert '  default: "new-model.gguf"' in hermes_template.read_text(encoding="utf-8")
         assert ["docker", "restart", "dream-hermes"] not in calls
 
+    def test_activation_applies_matching_runtime_profile_flags(self, tmp_path, monkeypatch):
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        model_library = install_dir / "config" / "model-library.json"
+        model_library.write_text(json.dumps({
+            "models": [{
+                "id": "target-model",
+                "gguf_file": "new-model.gguf",
+                "llm_model_name": "new-model",
+                "context_length": 131072,
+                "runtime_profiles": [{
+                    "id": "nvidia-8gb-test",
+                    "label": "Advanced test profile",
+                    "backend": "nvidia",
+                    "memory_type": "discrete",
+                    "vram_min_gb": 7.5,
+                    "vram_max_gb": 12.5,
+                    "system_ram_min_gb": 32,
+                    "context_length": 65536,
+                    "llama_server_image": "example.test/llama:turbo",
+                    "env": {
+                        "LLAMA_PARALLEL": "1",
+                        "LLAMA_ARG_FLASH_ATTN": "on",
+                        "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+                        "LLAMA_ARG_CACHE_TYPE_V": "turbo3",
+                        "LLAMA_ARG_N_CPU_MOE": "30",
+                        "LLAMA_ARG_NO_CACHE_PROMPT": "1",
+                        "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS": "-1",
+                    },
+                }],
+            }]
+        }), encoding="utf-8")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delenv("DREAM_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(_mod, "_nvidia_vram_gb", lambda: 8.0)
+        monkeypatch.setattr(_mod, "_system_ram_gb", lambda: 32)
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+
+        def fake_run(cmd, **_kwargs):
+            stdout = '{"status": "ok"}' if cmd and cmd[0] == "curl" else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        env_text = env_path.read_text(encoding="utf-8")
+        assert "MAX_CONTEXT=65536" in env_text
+        assert "MODEL_RUNTIME_PROFILE=nvidia-8gb-test" in env_text
+        assert "LLAMA_SERVER_IMAGE=example.test/llama:turbo" in env_text
+        assert "LLAMA_ARG_CACHE_TYPE_V=turbo3" in env_text
+        assert "LLAMA_ARG_N_CPU_MOE=30" in env_text
+        assert "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=-1" in env_text
+
     def test_unexpected_failure_rolls_back_all_config_backups(self, tmp_path, monkeypatch):
         install_dir, env_path, env_text, models_ini, ini_text, lemonade_yaml, lemonade_text = (
             _write_model_activation_fixture(tmp_path, gpu_backend="amd", lemonade=True)

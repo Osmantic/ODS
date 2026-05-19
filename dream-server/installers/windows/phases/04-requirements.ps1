@@ -135,7 +135,11 @@ $_portsToCheck = [ordered]@{
     "Open WebUI (chat)"   = 3000
     "Dashboard"           = 3001
     "Dashboard API"       = 3002
-    "SearXNG (search)"    = 8888
+}
+if ($enableRecommended) {
+    $_portsToCheck["LiteLLM (API gateway)"] = 4000
+    $_portsToCheck["SearXNG (search)"] = 8888
+    $_portsToCheck["Token Spy (usage monitor)"] = 3005
 }
 if ($enableVoice) {
     $_portsToCheck["Whisper (STT)"] = 9000
@@ -146,9 +150,25 @@ if ($enableWorkflows) {
 }
 if ($enableRag) {
     $_portsToCheck["Qdrant (vector DB)"] = 6333
+    $_portsToCheck["TEI (embeddings)"] = 8090
+}
+if ($enableHermes) {
+    $_portsToCheck["Hermes auth proxy"] = 9120
 }
 if ($enableOpenClaw) {
     $_portsToCheck["OpenClaw (agents)"] = 7860
+}
+if ($enableHermes -or $enableOpenClaw) {
+    $_portsToCheck["APE (agent policy engine)"] = 7890
+}
+if ($enableComfyui) {
+    $_portsToCheck["ComfyUI (image generation)"] = 8188
+}
+if ($enableDeepResearch) {
+    $_portsToCheck["Perplexica (deep research)"] = 3004
+}
+if ($enablePrivacyShield) {
+    $_portsToCheck["Privacy Shield"] = 8085
 }
 
 $_portConflicts = @()

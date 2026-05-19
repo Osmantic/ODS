@@ -129,6 +129,7 @@ def load_extension_manifests(
                     "container_name": service.get("container_name", f"dream-{service_id}"),
                     "depends_on": service.get("depends_on", []),
                     "category": service.get("category", "optional"),
+                    "host_network": bool(service.get("host_network", False)),
                     "setup_hook": service.get("setup_hook", ""),
                     "hooks": service.get("hooks", {}),
                     "gpu_backends": service.get("gpu_backends", []),
@@ -234,6 +235,8 @@ SIDEBAR_ICONS = {
     "open-webui": "MessageSquare",
     "n8n": "Network",
     "openclaw": "Bot",
+    "hermes": "Bot",
+    "hermes-proxy": "Shield",
     "opencode": "Code",
     "perplexica": "Search",
     "comfyui": "Image",
@@ -268,7 +271,7 @@ def _load_core_service_ids() -> frozenset:
     # Fallback to hardcoded list
     return frozenset({
         "dashboard-api", "dashboard", "llama-server", "open-webui",
-        "litellm", "langfuse", "n8n", "openclaw", "opencode",
+        "litellm", "langfuse", "hermes", "hermes-proxy", "n8n", "openclaw", "opencode",
         "perplexica", "searxng", "qdrant", "tts", "whisper",
         "embeddings", "token-spy", "comfyui", "ape", "privacy-shield",
     })
@@ -317,13 +320,12 @@ def _detect_container_default_gateway(route_path: str = "/proc/net/route") -> st
     a little-endian-hex gateway in the 3rd field.
 
     Why this matters: dashboard-api runs on `dream-network` (a custom bridge,
-    e.g. 172.18.0.0/16). The dream-host-agent on the host binds 0.0.0.0 and
-    thus listens on every host-side bridge interface — including
-    dream-network's gateway (172.18.0.1). Targeting that gateway directly is
-    routable from inside the container without depending on
-    `host.docker.internal:host-gateway`, which Docker resolves to the *default*
-    bridge gateway (172.17.0.1) — unreachable from custom networks under
-    Docker's default DOCKER-ISOLATION-STAGE-2 iptables rules.
+    e.g. 172.18.0.0/16). On Linux, the dream-host-agent binds to that network's
+    host-side gateway when it can, so targeting this container's default gateway
+    is routable without depending on `host.docker.internal:host-gateway`, which
+    Docker often resolves to the default bridge gateway (172.17.0.1). That
+    default bridge address is unreachable from custom networks under Docker's
+    default DOCKER-ISOLATION-STAGE-2 iptables rules.
     """
     try:
         with open(route_path, "r", encoding="utf-8") as f:

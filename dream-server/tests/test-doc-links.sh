@@ -3,6 +3,7 @@
 #
 # Scope (intentionally minimal):
 #  - repo root README.md
+#  - dream-server/*.md
 #  - dream-server/docs/**/*.md
 #
 # This catches broken relative links caused by file moves/renames.
@@ -115,7 +116,12 @@ main() {
     files_to_check+=("$REPO_ROOT/README.md")
   fi
 
-  # 2) dream-server/docs/**/*.md
+  # 2) dream-server/*.md
+  while IFS= read -r -d '' f; do
+    files_to_check+=("$f")
+  done < <(find "$ROOT_DIR" -maxdepth 1 -type f -name '*.md' -print0)
+
+  # 3) dream-server/docs/**/*.md
   while IFS= read -r -d '' f; do
     files_to_check+=("$f")
   done < <(find "$ROOT_DIR/docs" -type f -name '*.md' -print0)
@@ -132,7 +138,7 @@ main() {
     fail "$failures markdown file(s) contain broken local links"
   fi
 
-  pass "No broken local links found in README.md and dream-server/docs"
+  pass "No broken local links found in repo README, dream-server root docs, and dream-server/docs"
 }
 
 main "$@"

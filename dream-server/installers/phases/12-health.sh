@@ -156,10 +156,15 @@ if [[ "$ENABLE_COMFYUI" == "true" ]]; then
     dream_progress 93 "health" "Waiting for Image generation"
     _check_health "ComfyUI" "http://127.0.0.1:${SERVICE_PORTS[comfyui]:-8188}${SERVICE_HEALTH[comfyui]:-/}" 150 15 "$(sr_container comfyui)"
 fi
-# Embeddings (TEI): model load on first run can take 1-2 minutes after start_period
+# Embeddings (TEI): 150 attempts * adaptive backoff = up to ~20 minutes.
+# Matches every other service. The 30-attempt cap (~230s total) used to
+# print spurious "embeddings delayed (may still be starting)" warnings on
+# fresh installs because TEI downloads its ONNX model from HuggingFace on
+# first start (BAAI/bge-base-en-v1.5 is ~440 MB), which can take 3-7 min
+# on bufferbloated networks before /health responds.
 if [[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]]; then
     dream_progress 94 "health" "Waiting for Embeddings"
-    _check_health "embeddings" "http://127.0.0.1:${SERVICE_PORTS[embeddings]:-7860}${SERVICE_HEALTH[embeddings]:-/health}" 30 10 "$(sr_container embeddings)"
+    _check_health "embeddings" "http://127.0.0.1:${SERVICE_PORTS[embeddings]:-7860}${SERVICE_HEALTH[embeddings]:-/health}" 150 10 "$(sr_container embeddings)"
 fi
 
 # Perplexica auto-config: seed chat model + embedding model on first boot.

@@ -232,6 +232,89 @@ assert_eq "GGUF_FILE"               "Qwen3.5-9B-Q4_K_M.gguf"   "$GGUF_FILE"
 unset MODEL_PROFILE
 echo ""
 
+echo "Catalog selector (amd64 NV_ULTRA keeps coder-next):"
+_selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
+    --catalog "$SCRIPT_DIR/config/model-library.json" \
+    --backend nvidia \
+    --memory-type discrete \
+    --vram-mb 98304 \
+    --ram-gb 128 \
+    --profile qwen \
+    --tier NV_ULTRA \
+    --host-arch amd64 \
+    --installable-only \
+    --env)"
+LLM_MODEL="" GGUF_FILE="" MODEL_RECOMMENDATION_POLICY=""
+eval "$_selector_env"
+assert_eq "SELECTOR_LLM_MODEL" "qwen3-coder-next" "$LLM_MODEL"
+assert_eq "SELECTOR_GGUF_FILE" "qwen3-coder-next-Q4_K_M.gguf" "$GGUF_FILE"
+assert_eq "SELECTOR_POLICY" "context-aware-largest-capable-general-v1" "$MODEL_RECOMMENDATION_POLICY"
+echo ""
+
+echo "Catalog selector (arm64 NV_ULTRA preserves A3B substitution):"
+_selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
+    --catalog "$SCRIPT_DIR/config/model-library.json" \
+    --backend nvidia \
+    --memory-type unified \
+    --vram-mb 0 \
+    --ram-gb 128 \
+    --profile qwen \
+    --tier NV_ULTRA \
+    --host-arch arm64 \
+    --installable-only \
+    --env)"
+LLM_MODEL="" GGUF_FILE="" MODEL_RECOMMENDATION_POLICY=""
+eval "$_selector_env"
+assert_eq "SELECTOR_LLM_MODEL" "qwen3.6-35b-a3b" "$LLM_MODEL"
+assert_eq "SELECTOR_GGUF_FILE" "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" "$GGUF_FILE"
+assert_eq "SELECTOR_POLICY" "context-aware-largest-capable-general-v1+spark-aarch64-nv-ultra-a3b-v1" "$MODEL_RECOMMENDATION_POLICY"
+echo ""
+
+echo "Catalog selector (8GB NVIDIA qwen uses upstream catalog fit):"
+_selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
+    --catalog "$SCRIPT_DIR/config/model-library.json" \
+    --backend nvidia \
+    --memory-type discrete \
+    --vram-mb 8188 \
+    --ram-gb 31 \
+    --profile qwen \
+    --tier 1 \
+    --host-arch amd64 \
+    --installable-only \
+    --env)"
+LLM_MODEL="" GGUF_FILE="" MAX_CONTEXT="" MODEL_RUNTIME_PROFILE="" LLAMA_ARG_N_CPU_MOE="" LLAMA_ARG_CACHE_TYPE_V="" LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=""
+eval "$_selector_env"
+assert_eq "SELECTOR_LLM_MODEL" "qwen3.5-9b" "$LLM_MODEL"
+assert_eq "SELECTOR_GGUF_FILE" "Qwen3.5-9B-Q4_K_M.gguf" "$GGUF_FILE"
+assert_eq "SELECTOR_CONTEXT" "32768" "$MAX_CONTEXT"
+assert_eq "SELECTOR_RUNTIME_PROFILE" "" "$MODEL_RUNTIME_PROFILE"
+assert_eq "SELECTOR_N_CPU_MOE" "" "$LLAMA_ARG_N_CPU_MOE"
+assert_eq "SELECTOR_CACHE_V" "" "$LLAMA_ARG_CACHE_TYPE_V"
+assert_eq "SELECTOR_CHECKPOINTS" "" "$LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"
+echo ""
+
+echo "Catalog selector (8GB NVIDIA gemma uses upstream catalog fit):"
+_selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
+    --catalog "$SCRIPT_DIR/config/model-library.json" \
+    --backend nvidia \
+    --memory-type discrete \
+    --vram-mb 8188 \
+    --ram-gb 31 \
+    --profile gemma4 \
+    --tier 1 \
+    --host-arch amd64 \
+    --installable-only \
+    --env)"
+LLM_MODEL="" GGUF_FILE="" MAX_CONTEXT="" MODEL_RUNTIME_PROFILE="" LLAMA_ARG_N_CPU_MOE="" LLAMA_ARG_CACHE_TYPE_V=""
+eval "$_selector_env"
+assert_eq "SELECTOR_LLM_MODEL" "gemma-4-e4b-it" "$LLM_MODEL"
+assert_eq "SELECTOR_GGUF_FILE" "gemma-4-E4B-it-Q4_K_M.gguf" "$GGUF_FILE"
+assert_eq "SELECTOR_CONTEXT" "32768" "$MAX_CONTEXT"
+assert_eq "SELECTOR_RUNTIME_PROFILE" "" "$MODEL_RUNTIME_PROFILE"
+assert_eq "SELECTOR_N_CPU_MOE" "" "$LLAMA_ARG_N_CPU_MOE"
+assert_eq "SELECTOR_CACHE_V" "" "$LLAMA_ARG_CACHE_TYPE_V"
+echo ""
+
 # --- Summary ---
 echo "==============================="
 echo "Results: $PASS passed, $FAIL failed"

@@ -62,6 +62,13 @@ else
     fail "runtime display missing"
 fi
 
+# Test 6b: AMD runtime diagnostics display
+if grep -q "AMD runtime" "$ROOT_DIR/dream-cli"; then
+    pass "AMD runtime diagnostics display"
+else
+    fail "AMD runtime diagnostics display missing"
+fi
+
 # Test 7: Preflight checks display
 if grep -q "Preflight Checks" "$ROOT_DIR/dream-cli"; then
     pass "preflight checks display"

@@ -41,12 +41,11 @@ model:
   # or rely on a future installer-side substitution.
   base_url: "http://llama-server:8080/v1"
 
-  # Hermes Agent v0.13.0+ enforces a 64K minimum context window — anything
-  # smaller and *every* prompt 500s with "context window of N tokens is
-  # below the minimum 64,000 required by Hermes Agent". 131072 (128K) gives
-  # plenty of headroom for long agentic conversations while staying well
-  # within qwen3-coder-next's native 128K context. Bump higher in
-  # /opt/data/config.yaml if you've loaded a model with a larger context.
+  # Hermes needs a large working window for tool-calling workflows. Dream's
+  # installers keep this value aligned with CTX_SIZE: 64K for the fast-start
+  # bootstrap model, then 128K after the full model swap. Advertising a larger
+  # window than llama-server actually allocates causes "context length
+  # exceeded / max compression attempts reached" loops.
   context_length: 131072
 
 # =============================================================================
@@ -95,15 +94,16 @@ terminal:
 # Compression — keep memory bounded on small devices
 # =============================================================================
 # Hermes auto-compacts long conversations once they cross the threshold.
-# These are the upstream-correct keys (compression.*); an earlier draft
-# used compact_threshold under a context: block which upstream silently
-# ignores.
+# Current upstream reads threshold as a fraction of model.context_length
+# (0.50 = 50%), not an absolute token count. A stale value like 10000
+# effectively disables proactive compression until the backend rejects the
+# request, which is how sessions fall into max-compression-attempt loops.
 compression:
-  # Token count at which Hermes starts compacting the conversation.
-  # Lower = more aggressive = lower disk/token cost but more summary loss.
-  # Keep this comfortably below model.context_length so there's headroom
-  # before hitting the hard window limit.
-  threshold: 10000
-  # Fraction of the conversation to retain after compaction. 0.5 = aim
-  # for half the original token count post-summary.
-  target_ratio: 0.5
+  # Enable automatic context compression.
+  enabled: true
+  # Trigger compression at this fraction of the context window.
+  threshold: 0.50
+  # Preserve this fraction of the threshold-sized window as recent tail.
+  target_ratio: 0.20
+  # Keep roughly the last ten full turns intact during compression.
+  protect_last_n: 20

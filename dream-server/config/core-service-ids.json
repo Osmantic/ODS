@@ -5,6 +5,8 @@
   "dashboard-api",
   "embeddings",
   "langfuse",
+  "hermes",
+  "hermes-proxy",
   "litellm",
   "llama-server",
   "n8n",

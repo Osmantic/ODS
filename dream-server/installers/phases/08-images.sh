@@ -27,7 +27,8 @@ fi
 # Format: "image|friendly_name"
 PULL_LIST=()
 if [[ "$GPU_BACKEND" == "amd" ]]; then
-    PULL_LIST+=("ghcr.io/lemonade-sdk/lemonade-server:v10.0.0|LEMONADE — downloading the brain (AMD ROCm)")
+    _lemonade_image="${LEMONADE_SERVER_IMAGE:-${BACKEND_LEMONADE_CONTAINER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0}}"
+    PULL_LIST+=("${_lemonade_image}|LEMONADE — downloading the brain (AMD ROCm)")
     [[ "$ENABLE_COMFYUI" == "true" ]] && PULL_LIST+=("ignatberesnev/comfyui-gfx1151:v0.2|COMFYUI — image generation engine (gfx1151)")
 elif [[ "$GPU_BACKEND" == "cpu" ]]; then
     PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b8248}|LLAMA-SERVER — downloading the brain (CPU)")

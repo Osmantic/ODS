@@ -378,8 +378,16 @@ show_tier_recommendation() {
     echo -e "${GRN}|${NC}  ${BGRN}CLASSIFICATION: TIER ${tier}${NC}                                      ${GRN}|${NC}"
     echo -e "${GRN}+-------------------------------------------------------------+${NC}"
     printf "${GRN}|${NC}  Model:   %-49s ${GRN}|${NC}\n" "$model"
-    printf "${GRN}|${NC}  Speed:   %-49s ${GRN}|${NC}\n" "~${speed} tokens/second"
-    printf "${GRN}|${NC}  Users:   %-49s ${GRN}|${NC}\n" "${users} concurrent comfortably"
+    if [[ "$speed" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        printf "${GRN}|${NC}  Speed:   %-49s ${GRN}|${NC}\n" "~${speed} tokens/second"
+    else
+        printf "${GRN}|${NC}  Speed:   %-49s ${GRN}|${NC}\n" "$speed"
+    fi
+    if [[ "$users" =~ ^[0-9]+(-[0-9]+)?$ ]]; then
+        printf "${GRN}|${NC}  Users:   %-49s ${GRN}|${NC}\n" "${users} concurrent comfortably"
+    else
+        printf "${GRN}|${NC}  Users:   %-49s ${GRN}|${NC}\n" "$users"
+    fi
     echo -e "${GRN}+-------------------------------------------------------------+${NC}"
 }
 
@@ -409,9 +417,13 @@ show_install_menu() {
             ENABLE_VOICE=true
             ENABLE_WORKFLOWS=true
             ENABLE_RAG=true
+            ENABLE_RECOMMENDED=true
             ENABLE_HERMES=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the new default
             ENABLE_COMFYUI=true
+            ENABLE_APE=true
+            ENABLE_PERPLEXICA=true
+            ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
 
             # Disable image generation on low-tier systems (insufficient RAM/VRAM)
@@ -431,9 +443,13 @@ show_install_menu() {
             ENABLE_VOICE=false
             ENABLE_WORKFLOWS=false
             ENABLE_RAG=false
+            ENABLE_RECOMMENDED=false
             ENABLE_HERMES=false
             ENABLE_OPENCLAW=false
             ENABLE_COMFYUI=false
+            ENABLE_APE=false
+            ENABLE_PERPLEXICA=false
+            ENABLE_PRIVACY_SHIELD=false
             ENABLE_LANGFUSE=false
             ;;
         3)
@@ -445,9 +461,13 @@ show_install_menu() {
             ENABLE_VOICE=true
             ENABLE_WORKFLOWS=true
             ENABLE_RAG=true
+            ENABLE_RECOMMENDED=true
             ENABLE_HERMES=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the new default
             ENABLE_COMFYUI=true
+            ENABLE_APE=true
+            ENABLE_PERPLEXICA=true
+            ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
 
             # Disable image generation on low-tier systems (insufficient RAM/VRAM)

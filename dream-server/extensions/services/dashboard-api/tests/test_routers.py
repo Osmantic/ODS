@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.error
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -18,6 +19,135 @@ def test_health_returns_ok(test_client):
     data = resp.json()
     assert data["status"] == "ok"
     assert "timestamp" in data
+
+
+def test_host_agent_diagnostics_requires_auth(test_client):
+    """GET /api/host-agent/diagnostics without auth returns 401."""
+    resp = test_client.get("/api/host-agent/diagnostics")
+    assert resp.status_code == 401
+
+
+def test_host_agent_diagnostics_success(test_client, monkeypatch):
+    """Host-agent diagnostics reports URL, gateway, auth, and probe state."""
+    import main as main_mod
+
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def getcode(self):
+            return self.status
+
+        def read(self, limit=-1):
+            return b'{"status":"ok","version":"1.0.0"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.get_header("Authorization")
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(main_mod, "AGENT_URL", "http://172.18.0.1:7710")
+    monkeypatch.setattr(main_mod, "AGENT_HOST", "172.18.0.1")
+    monkeypatch.setattr(main_mod, "AGENT_PORT", 7710)
+    monkeypatch.setattr(main_mod, "DREAM_AGENT_KEY", "secret")
+    monkeypatch.setattr(main_mod, "_running_inside_container", lambda: True)
+    monkeypatch.setattr(main_mod, "_detect_container_default_gateway", lambda: "172.18.0.1")
+    monkeypatch.setattr(main_mod, "_host_agent_probe_state", {"last_success_at": None, "last_error": None})
+    monkeypatch.setattr(main_mod.urllib.request, "urlopen", fake_urlopen)
+
+    resp = test_client.get("/api/host-agent/diagnostics", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["configured"]["url"] == "http://172.18.0.1:7710"
+    assert data["configured"]["dream_agent_key_configured"] is True
+    assert data["container"]["inside_container"] is True
+    assert data["container"]["default_gateway"] == "172.18.0.1"
+    assert data["probe"]["available"] is True
+    assert data["probe"]["status_code"] == 200
+    assert data["probe"]["response"]["status"] == "ok"
+    assert data["probe"]["last_success_at"]
+    assert data["probe"]["last_error"] is None
+    assert captured == {
+        "url": "http://172.18.0.1:7710/health",
+        "authorization": "Bearer secret",
+        "timeout": 3,
+    }
+
+
+def test_host_agent_diagnostics_omits_gateway_outside_container(test_client, monkeypatch):
+    """Host-side diagnostics should not report a host route as a container gateway."""
+    import main as main_mod
+
+    monkeypatch.setattr(main_mod, "AGENT_URL", "http://127.0.0.1:7710")
+    monkeypatch.setattr(main_mod, "AGENT_HOST", "127.0.0.1")
+    monkeypatch.setattr(main_mod, "AGENT_PORT", 7710)
+    monkeypatch.setattr(main_mod, "DREAM_AGENT_KEY", "")
+    monkeypatch.setattr(main_mod, "_running_inside_container", lambda: False)
+    monkeypatch.setattr(
+        main_mod,
+        "_detect_container_default_gateway",
+        lambda: (_ for _ in ()).throw(AssertionError("gateway detection should not run")),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_probe_host_agent_health",
+        lambda: {
+            "available": False,
+            "status_code": None,
+            "response": None,
+            "error": "not checked",
+            "checked_at": "2026-01-01T00:00:00+00:00",
+        },
+    )
+    monkeypatch.setattr(main_mod, "_host_agent_probe_state", {"last_success_at": None, "last_error": None})
+
+    resp = test_client.get("/api/host-agent/diagnostics", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["container"]["inside_container"] is False
+    assert data["container"]["default_gateway"] is None
+
+
+def test_host_agent_diagnostics_failure_keeps_last_success(test_client, monkeypatch):
+    """A failed probe reports the error without discarding last success."""
+    import main as main_mod
+
+    monkeypatch.setattr(main_mod, "AGENT_URL", "http://172.18.0.1:7710")
+    monkeypatch.setattr(main_mod, "AGENT_HOST", "172.18.0.1")
+    monkeypatch.setattr(main_mod, "AGENT_PORT", 7710)
+    monkeypatch.setattr(main_mod, "DREAM_AGENT_KEY", "")
+    monkeypatch.setattr(main_mod, "_running_inside_container", lambda: True)
+    monkeypatch.setattr(main_mod, "_detect_container_default_gateway", lambda: "172.18.0.1")
+    monkeypatch.setattr(
+        main_mod,
+        "_host_agent_probe_state",
+        {"last_success_at": "2026-01-01T00:00:00+00:00", "last_error": None},
+    )
+
+    def fake_urlopen(request, timeout):
+        raise urllib.error.URLError("timed out")
+
+    monkeypatch.setattr(main_mod.urllib.request, "urlopen", fake_urlopen)
+
+    resp = test_client.get("/api/host-agent/diagnostics", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    probe = resp.json()["probe"]
+    assert probe["available"] is False
+    assert probe["status_code"] is None
+    assert "timed out" in probe["error"]
+    assert probe["last_success_at"] == "2026-01-01T00:00:00+00:00"
+    assert "timed out" in probe["last_error"]
 
 
 # ---------------------------------------------------------------------------

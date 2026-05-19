@@ -1,273 +1,235 @@
 # Dream Server Quick Start
 
-One command to a fully running local AI stack. No manual config, no dependency hell.
+One command to a running local AI stack. The installer detects your hardware,
+chooses a model, writes the config, starts the services, and leaves you with a
+chat UI plus the `dream` management command.
 
-> **This quickstart covers Linux, Windows, and macOS.** For Windows, see the [Windows install section](#windows) below. For macOS, see the [macOS Quickstart](docs/MACOS-QUICKSTART.md).
+This quickstart covers Linux, macOS, and Windows. For deeper platform notes,
+see [MACOS-QUICKSTART.md](docs/MACOS-QUICKSTART.md),
+[WINDOWS-QUICKSTART.md](docs/WINDOWS-QUICKSTART.md), and
+[SUPPORT-MATRIX.md](docs/SUPPORT-MATRIX.md).
 
 ## Prerequisites
 
-**Linux (NVIDIA GPU):**
-- Docker with Compose v2+ ([Install](https://docs.docker.com/get-docker/))
-- NVIDIA GPU with 8GB+ VRAM (16GB+ recommended)
-- NVIDIA Container Toolkit ([Install](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html))
-- 40GB+ disk space (for models)
+**Linux:**
 
-**Linux (AMD Strix Halo):**
-- Docker with Compose v2+ ([Install](https://docs.docker.com/get-docker/))
-- AMD Ryzen AI MAX+ APU with 64GB+ unified memory
-- ROCm-compatible kernel (6.17+ recommended, 6.18.4+ ideal)
-- `/dev/kfd` and `/dev/dri` accessible (user in `video` + `render` groups)
-- 60GB+ disk space (for GGUF model files)
+- Docker with Compose v2+
+- `curl` and `git`
+- NVIDIA Container Toolkit for NVIDIA GPUs, ROCm devices for AMD Strix Halo, or
+  Intel compute runtime for Arc
+- 40 GB+ free disk space for models and container images
 
-**Windows:** See [Windows section](#windows) below.
+**macOS:**
 
-## Step 1: Run the Installer (Linux)
+- Apple Silicon Mac
+- Docker Desktop running
+- 16 GB+ unified memory recommended
+- 20 GB+ free disk space
+
+**Windows:**
+
+- Windows 10/11
+- Docker Desktop with WSL2 backend enabled and running
+- NVIDIA GPU or AMD Strix Halo recommended
+- PowerShell launched as Administrator for install
+
+## Install
+
+### Linux One-Liner
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/Light-Heart-Labs/DreamServer/main/dream-server/get-dream-server.sh | bash
+```
+
+### Manual Clone
+
+```bash
+git clone https://github.com/Light-Heart-Labs/DreamServer.git
+cd DreamServer
 ./install.sh
 ```
 
-The installer will:
-1. **Detect your GPU** and auto-select the right tier:
-   - **AMD Strix Halo (unified memory)**:
-     - SH_LARGE (90GB+): qwen3-coder-next (80B MoE), 128K context
-     - SH_COMPACT (64-89GB): qwen3-30b-a3b (30B MoE), 128K context
-   - **NVIDIA (discrete GPU)**:
-     - Tier 1 (Entry): <12GB VRAM → qwen3.5-9b (GGUF Q4_K_M), 16K context
-     - Tier 2 (Prosumer): 12-20GB VRAM → qwen3.5-9b (GGUF Q4_K_M), 32K context
-     - Tier 3 (Pro): 20-40GB VRAM → qwen3-30b-a3b (GGUF Q4_K_M), 32K context
-     - Tier 4 (Enterprise): 40GB+ VRAM → qwen3-30b-a3b (GGUF Q4_K_M), 128K context
-2. Check Docker and GPU toolkit (NVIDIA Container Toolkit or ROCm devices)
-3. Ask which optional components to enable (voice, workflows, RAG)
-4. Generate secure passwords and configuration
-5. Apply system tuning (AMD: sysctl, amdgpu modprobe, etc.)
-6. Start all services
-
-**Override tier manually:** `./install.sh --tier 3`
-
-**Time Estimate:** 5-10 minutes interactive setup, plus 10-30 minutes for first model download.
-
-## Step 2: Wait for Model Download
-
-**NVIDIA:** First run downloads the LLM (~20GB for 32B GGUF). Watch progress:
-
-```bash
-docker compose logs -f llama-server
-```
-
-When you see `server is listening on`, you're ready!
-
-**AMD Strix Halo:** The GGUF model downloads in the background (~25-52GB). Watch progress:
-
-```bash
-tail -f ~/dream-server/logs/model-download.log
-
-# Or check llama-server readiness:
-docker compose -f docker-compose.base.yml -f docker-compose.amd.yml logs -f llama-server
-```
-
-When you see `server is listening on`, the model is loaded and ready.
-
-## Step 3: Validate Installation
-
-Verify everything is working:
-
-```bash
-./scripts/dream-preflight.sh
-```
-
-This tests all services and confirms Dream Server is ready. You should see green checkmarks for each test.
-
-**For comprehensive testing:**
-```bash
-./scripts/dream-test.sh
-```
-
-This runs the full validation suite including load tests.
-
-## Step 4: Open Chat UI
-
-Visit: **http://localhost:3000**
-
-1. Create an account (first user becomes admin)
-2. Select a model from the dropdown
-3. Start chatting!
-
-## Step 5: Test the API
-
-**NVIDIA:**
-```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen3-30b-a3b",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-**AMD Strix Halo:**
-```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen3-coder-next",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
----
-
-## Hardware Tiers
-
-The installer auto-detects your GPU and selects the optimal configuration:
-
-**AMD Strix Halo:**
-
-| Tier | Unified VRAM | Model | Hardware |
-|------|-------------|-------|----------|
-| SH_LARGE | 90GB+ | qwen3-coder-next (80B MoE) | Ryzen AI MAX+ (96GB config) |
-| SH_COMPACT | 64-89GB | qwen3:30b-a3b (30B MoE) | Ryzen AI MAX+ (64GB config) |
-
-**NVIDIA:**
-
-| Tier | VRAM | Model | Example GPUs |
-|------|------|-------|--------------|
-| 1 (Entry) | <12GB | qwen3.5-9b (GGUF Q4_K_M) | RTX 3080, RTX 4070 |
-| 2 (Prosumer) | 12-20GB | qwen3.5-9b (GGUF Q4_K_M) | RTX 3090, RTX 4080 |
-| 3 (Pro) | 20-40GB | qwen3-30b-a3b (GGUF Q4_K_M) | RTX 4090, A6000 |
-| 4 (Enterprise) | 40GB+ | qwen3-30b-a3b (GGUF Q4_K_M) | A100, H100 |
-
-To check what tier you'd get without installing:
-
-```bash
-./scripts/detect-hardware.sh
-```
-
----
-
-## Common Issues
-
-### "OOM" or "CUDA out of memory" (NVIDIA)
-
-Reduce context window in `.env`:
-```
-CTX_SIZE=4096  # or even 2048
-```
-
-Or switch to a smaller model:
-```
-LLM_MODEL=qwen3.5-9b
-```
-
-### AMD: llama-server crash loop
-
-Check logs: `docker compose -f docker-compose.base.yml -f docker-compose.amd.yml logs llama-server`
-
-Common causes:
-- GGUF file not found: ensure `data/models/*.gguf` exists
-- Wrong GGUF format: use upstream llama.cpp GGUFs (NOT Ollama blobs)
-- Missing ROCm env vars: `HSA_OVERRIDE_GFX_VERSION=11.5.1` must be set
-
-### Model download fails
-
-1. Check disk space: `df -h`
-2. **NVIDIA:** Try again: `docker compose restart llama-server`
-3. **AMD:** Resume download: `wget -c -O data/models/<model>.gguf <url>`
-
-### WebUI shows "No models available"
-
-The inference engine is still loading.
-- **NVIDIA:** Check: `docker compose logs llama-server`
-- **AMD:** Check: `docker compose -f docker-compose.base.yml -f docker-compose.amd.yml logs llama-server`
-
-### Port conflicts
-
-Edit `.env` to change ports:
-```
-WEBUI_PORT=3001
-OLLAMA_PORT=8081          # LLM inference port
-```
-
----
-
-## Next Steps
-
-- **Add workflows**: Open n8n at http://localhost:5678 to create custom automation workflows
-- **Connect OpenClaw**: Use this as your local inference backend at http://localhost:7860
-- **Dashboard**: Monitor services, GPU, and health at http://localhost:3001
-
----
-
-## Windows
-
-### Prerequisites
-
-- Windows 10/11 with [Docker Desktop](https://docs.docker.com/desktop/install/windows-install/) (WSL2 backend enabled)
-- NVIDIA GPU with 8GB+ VRAM, or AMD Strix Halo APU
-- 40GB+ free disk space
-
-### Install
+### Windows
 
 ```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 git clone https://github.com/Light-Heart-Labs/DreamServer.git
 cd DreamServer
 .\install.ps1
 ```
 
-The installer handles everything — GPU detection, tier selection, Docker setup, credential generation, service startup, and Desktop/Start Menu shortcuts.
+Useful install flags:
 
-### Manage
+| Linux/macOS | Windows | Purpose |
+|-------------|---------|---------|
+| `--all` | `-All` | Enable the recommended full stack |
+| `--voice` | `-Voice` | Enable Whisper STT and Kokoro TTS |
+| `--workflows` | `-Workflows` | Enable n8n workflows |
+| `--rag` | `-Rag` | Enable Qdrant and embeddings |
+| `--no-hermes` | `-NoHermes` | Disable the default Hermes agent |
+| `--no-bootstrap` | `-NoBootstrap` | Wait for the full model instead of fast-start |
+| `--tier 3` | `-Tier 3` | Force a hardware/model tier |
 
-```powershell
-.\dream-server\installers\windows\dream.ps1 status           # Health checks + GPU status
-.\dream-server\installers\windows\dream.ps1 start            # Start all services
-.\dream-server\installers\windows\dream.ps1 stop             # Stop all services
-.\dream-server\installers\windows\dream.ps1 restart           # Restart all services
-.\dream-server\installers\windows\dream.ps1 logs llm          # Tail LLM logs
-```
+## What Happens First
 
-### Common Windows Issues
+Bootstrap mode is enabled by default when your selected full model is large.
+Dream Server downloads a small model first so you can start chatting quickly,
+then downloads and hot-swaps the full model in the background.
 
-**Ollama conflict:** If you set `OLLAMA_PORT=11434` and Ollama Desktop is running, ports will conflict. Keep `OLLAMA_PORT=8080` (default) or stop Ollama.
+Hermes is the default agent. Hermes-enabled installs keep the bootstrap model at
+a 64K context floor, then promote the full local model target to 128K after the
+background swap.
 
-**Docker Desktop not running:** Start Docker Desktop from the Start Menu before running the installer.
-
-**WSL2 backend not enabled:** Open Docker Desktop > Settings > General > check "Use WSL 2 based engine".
-
----
-
-## Stopping
-
-```bash
-# NVIDIA
-docker compose down
-
-# AMD Strix Halo
-docker compose -f docker-compose.base.yml -f docker-compose.amd.yml down
-```
-
-```powershell
-# Windows
-.\dream-server\installers\windows\dream.ps1 stop
-```
-
-## Updating
+Check progress:
 
 ```bash
-# NVIDIA
-docker compose pull
-docker compose up -d
+dream status
+tail -f ~/dream-server/logs/model-upgrade.log
+```
 
-# AMD Strix Halo
-docker compose -f docker-compose.base.yml -f docker-compose.amd.yml pull
-docker compose -f docker-compose.base.yml -f docker-compose.amd.yml up -d --build
+On Windows:
+
+```powershell
+cd $env:USERPROFILE\dream-server
+.\dream.ps1 status
+Get-Content .\logs\model-upgrade.log -Wait
+```
+
+## Open The UI
+
+- Chat UI: http://localhost:3000
+- Dashboard: http://localhost:3001
+- OpenCode IDE, when enabled: http://localhost:3003
+
+The first Chat UI user becomes admin.
+
+## Validate The Install
+
+```bash
+dream status
+dream chat "Say exactly: Dream Server is ready."
+dream doctor
+```
+
+On Windows:
+
+```powershell
+cd $env:USERPROFILE\dream-server
+.\dream.ps1 status
+.\dream.ps1 logs llm
+.\dream.ps1 report
+```
+
+For a lower-level source-tree check on Linux/macOS:
+
+```bash
+cd ~/dream-server
+./dream-preflight.sh
+./scripts/dream-test.sh
+```
+
+## Test The Local API
+
+Use the port written to `.env`. Linux Docker installs commonly expose
+llama-server on `OLLAMA_PORT=11434`; macOS native Metal installs commonly use
+`8080`.
+
+```bash
+cd ~/dream-server
+LLM_PORT="$(grep -E '^OLLAMA_PORT=' .env | tail -n1 | cut -d= -f2 | tr -d '\"')"
+LLM_MODEL="$(grep -E '^LLM_MODEL=' .env | tail -n1 | cut -d= -f2 | tr -d '\"')"
+
+curl "http://localhost:${LLM_PORT:-11434}/health"
+
+curl "http://localhost:${LLM_PORT:-11434}/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"model\": \"${LLM_MODEL:-qwen3.5-2b}\",
+    \"messages\": [{\"role\": \"user\", \"content\": \"Hello from Dream Server\"}]
+  }"
+```
+
+## Hardware Tiers
+
+The installer auto-detects your GPU, memory, and platform, then picks an
+appropriate model and context window. The canonical tier tables live in:
+
+- [README.md](README.md#hardware-tiers)
+- [HARDWARE-GUIDE.md](docs/HARDWARE-GUIDE.md)
+- [SUPPORT-MATRIX.md](docs/SUPPORT-MATRIX.md)
+
+Override detection only when you know the target tier:
+
+```bash
+./install.sh --tier 3
 ```
 
 ```powershell
-# Windows
-.\dream-server\installers\windows\dream.ps1 update
+.\install.ps1 -Tier 3
 ```
 
----
+## Common Issues
 
-Built by The Collective • [DreamServer](https://github.com/Light-Heart-Labs/DreamServer)
+### Out Of Memory
+
+Choose a lower tier and reinstall, or lower `CTX_SIZE` in `.env`. If Hermes is
+enabled, keep context at least `65536` or disable Hermes during install.
+
+### WebUI Shows No Models
+
+The inference engine may still be loading or the full model may still be
+downloading. Check:
+
+```bash
+dream status
+docker compose logs llama-server
+```
+
+### Port Conflicts
+
+Edit `.env` and restart:
+
+```bash
+WEBUI_PORT=3001
+OLLAMA_PORT=11435
+```
+
+If Ollama Desktop is already using `11434`, stop Ollama Desktop or choose a
+different `OLLAMA_PORT`.
+
+### Docker Desktop Not Running
+
+Start Docker Desktop, wait until it reports ready, then rerun the installer.
+
+## Manage The Stack
+
+Linux/macOS:
+
+```bash
+dream status
+dream start
+dream stop
+dream restart
+dream logs llm
+dream update
+```
+
+Windows:
+
+```powershell
+cd $env:USERPROFILE\dream-server
+.\dream.ps1 status
+.\dream.ps1 start
+.\dream.ps1 stop
+.\dream.ps1 restart
+.\dream.ps1 logs llm
+.\dream.ps1 update
+```
+
+## Next Steps
+
+- Open the Dashboard at http://localhost:3001 to watch service health.
+- Use Hermes for local agent workflows, or disable it if you only want chat.
+- Enable n8n workflows when you want automations.
+- Enable RAG when you want local document/vector search.
+- Read [MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md) before swapping GGUFs.

@@ -9,11 +9,18 @@ param(
     [switch]$Voice,
     [switch]$Workflows,
     [switch]$Rag,
+    [switch]$Recommended,
+    [switch]$NoRecommended,
+    [switch]$Hermes,
+    [switch]$NoHermes,
     [switch]$OpenClaw,
     [switch]$All,
     [switch]$Cloud,
     [switch]$Comfyui,
     [switch]$NoComfyui,
+    [switch]$Langfuse,
+    [switch]$NoLangfuse,
+    [switch]$NoBootstrap,
     [switch]$Lan,
     [string]$SummaryJsonPath = ""
 )

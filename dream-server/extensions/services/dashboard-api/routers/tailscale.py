@@ -1,8 +1,9 @@
 """Tailscale (remote access) — dashboard-api proxy in front of the host-agent.
 
-The host-agent has /v1/tailscale/status, which docker-exec's into the
-dream-tailscale container to query the daemon. This module exposes that
-to the dashboard UI via /api/tailscale/status.
+The host-agent has /v1/tailscale/status, which queries the dream-tailscale
+container or falls back to host-native Tailscale when the container is not
+running. This module exposes that to the dashboard UI via
+/api/tailscale/status.
 
 For the typical lifecycle the operator runs:
   1. Generate an auth key at https://login.tailscale.com/admin/settings/keys

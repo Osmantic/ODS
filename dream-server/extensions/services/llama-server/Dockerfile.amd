@@ -78,7 +78,8 @@ RUN mkdir -p /opt/llama-dist && \
 
 # ── Stage 2: Lemonade runtime with custom binary ────────────────────────────
 
-FROM ghcr.io/lemonade-sdk/lemonade-server:v10.2.0
+ARG LEMONADE_SERVER_IMAGE=ghcr.io/lemonade-sdk/lemonade-server:v10.2.0
+FROM ${LEMONADE_SERVER_IMAGE}
 
 # ROCm llama-server binary requires libatomic1 which is missing from the
 # upstream Lemonade image. Without it, lemonade-server starts but inference

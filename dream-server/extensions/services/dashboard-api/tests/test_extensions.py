@@ -375,7 +375,7 @@ def _patch_mutation_config(monkeypatch, tmp_path, lib_dir=None, user_dir=None):
     monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR",
                         tmp_path / "builtin")
     monkeypatch.setattr("routers.extensions.CORE_SERVICE_IDS",
-                        frozenset({"dashboard-api", "open-webui"}))
+                        frozenset({"dashboard-api", "open-webui", "hermes", "hermes-proxy"}))
 
 
 # --- Install endpoint ---
@@ -1499,6 +1499,23 @@ class TestComposeScanEdgeCases:
             "/api/extensions/bad-ext/install",
             headers=test_client.auth_headers,
         )
+        assert resp.status_code == 400
+        assert "conflicts with core service" in resp.json()["detail"]
+
+    @pytest.mark.parametrize("service_name", ["hermes", "hermes-proxy"])
+    def test_scan_rejects_hermes_core_service_name(
+        self, test_client, monkeypatch, tmp_path, service_name,
+    ):
+        """Hermes built-ins must be protected from user extension shadowing."""
+        compose = f"services:\n  {service_name}:\n    image: test:latest\n"
+        lib_dir = _setup_library_ext(tmp_path, "bad-ext", compose_content=compose)
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=lib_dir)
+
+        resp = test_client.post(
+            "/api/extensions/bad-ext/install",
+            headers=test_client.auth_headers,
+        )
+
         assert resp.status_code == 400
         assert "conflicts with core service" in resp.json()["detail"]
 
@@ -3228,7 +3245,7 @@ class TestAssertNotCoreAllowsBuiltins:
     @pytest.mark.parametrize("service_id", [
         "n8n", "tts", "whisper", "comfyui", "litellm", "openclaw",
         "perplexica", "searxng", "privacy-shield", "token-spy", "qdrant",
-        "embeddings", "ape", "langfuse", "opencode",
+        "embeddings", "ape", "langfuse", "opencode", "hermes", "hermes-proxy",
     ])
     def test_assert_not_core_allows_builtin_extension(self, service_id):
         """Built-in extensions are toggleable and must not be blocked."""
@@ -3242,6 +3259,14 @@ class TestAssertNotCoreAllowsBuiltins:
         with pytest.raises(HTTPException) as exc_info:
             _assert_not_core(service_id)
         assert exc_info.value.status_code == 403
+
+
+def test_production_core_service_ids_include_hermes_services():
+    """The production anti-shadowing allowlist must cover Hermes built-ins."""
+    core_ids_path = Path(__file__).resolve().parents[4] / "config" / "core-service-ids.json"
+    core_ids = set(json.loads(core_ids_path.read_text(encoding="utf-8")))
+
+    assert {"hermes", "hermes-proxy"} <= core_ids
 
 
 class TestCallAgentErrorNarrowing:

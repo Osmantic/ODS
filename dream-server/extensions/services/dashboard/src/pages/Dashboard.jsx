@@ -35,8 +35,12 @@ function computeHealth(services) {
   if (!services?.length) return { text: 'Waiting for telemetry...', color: 'text-theme-text-secondary' }
   const deployed = services.filter(s => s.status !== 'not_deployed')
   if (!deployed.length) return { text: 'No services deployed', color: 'text-theme-text-secondary' }
-  const healthy = deployed.filter(s => s.status === 'healthy').length
-  return { text: `${healthy}/${deployed.length} services online.`, color: healthy === deployed.length ? 'text-green-400' : 'text-theme-text-secondary' }
+  const hasRequiredMetadata = deployed.some(s => typeof s.required === 'boolean')
+  const scoped = hasRequiredMetadata ? deployed.filter(s => s.required) : deployed
+  if (!scoped.length) return { text: 'Optional services only.', color: 'text-theme-text-secondary' }
+  const healthy = scoped.filter(s => s.status === 'healthy').length
+  const label = hasRequiredMetadata ? 'core services' : 'services'
+  return { text: `${healthy}/${scoped.length} ${label} online.`, color: healthy === scoped.length ? 'text-green-400' : 'text-theme-text-secondary' }
 }
 
 const FEATURE_ICONS = {
@@ -371,12 +375,20 @@ function buildServiceRows(statusServices, resourceServices) {
     .forEach((service, index) => {
       const resource = resourcesByName.get(normalizeServiceKey(service.name))
       const id = resource?.id || normalizeServiceKey(service.name) || `service-${index}`
+      const hasSemantics = typeof service.required === 'boolean' || service.impact || service.category
       seen.add(id)
       rows.push({
         id,
         name: service.name || resource?.name || id,
         description: getServiceDescription(id, service.name || resource?.name),
         status: service.status || 'unknown',
+        category: service.category || null,
+        required: service.required === true,
+        hasSemantics,
+        impact: service.impact || (hasSemantics ? (service.required ? 'core' : 'optional') : null),
+        state: service.state || null,
+        severity: service.severity || null,
+        countsAsIssue: service.countsAsIssue === true,
         port: service.port,
         uptime: service.uptime,
         cpuPercent: Number.isFinite(resource?.container?.cpu_percent) ? resource.container.cpu_percent : null,
@@ -394,11 +406,19 @@ function buildServiceRows(statusServices, resourceServices) {
   resources.forEach((resource, index) => {
     const id = resource.id || normalizeServiceKey(resource.name) || `resource-${index}`
     if (seen.has(id)) return
+    const hasSemantics = typeof resource.required === 'boolean' || resource.impact || resource.category
     rows.push({
       id,
       name: resource.name || id,
       description: getServiceDescription(id, resource.name),
       status: 'unknown',
+      category: resource.category || null,
+      required: resource.required === true,
+      hasSemantics,
+      impact: resource.impact || (hasSemantics ? (resource.required ? 'core' : 'optional') : null),
+      state: resource.state || null,
+      severity: resource.severity || null,
+      countsAsIssue: resource.countsAsIssue === true,
       port: null,
       uptime: null,
       cpuPercent: Number.isFinite(resource?.container?.cpu_percent) ? resource.container.cpu_percent : null,
@@ -1355,6 +1375,11 @@ const ServiceTableRow = memo(function ServiceTableRow({
         <div className="flex min-w-0 items-center gap-2">
           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${status.dot}`} />
           <span className="truncate text-xs font-semibold text-theme-text">{service.name}</span>
+          {service.hasSemantics && !service.required && (
+            <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.035] px-1.5 py-0.5 text-[8px] font-semibold uppercase text-theme-text-muted/70">
+              Optional
+            </span>
+          )}
         </div>
         <div className="mt-1 truncate pl-3.5 text-[10px] text-theme-text-muted/65">
           {service.description}

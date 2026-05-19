@@ -76,6 +76,15 @@ function New-DreamEnv {
         [string]$GpuBackend = "nvidia",
         [string]$DreamMode = "local",
         [string]$LlamaServerImage = "",
+        [string]$AmdInferenceRuntime = "",
+        [string]$AmdInferenceBackend = "",
+        [string]$AmdInferenceLocation = "",
+        [string]$AmdInferencePort = "",
+        [string]$AmdInferenceSupportedBackends = "",
+        [string]$AmdInferenceRuntimeMode = "",
+        [string]$AmdInferenceManaged = "",
+        [string]$LemonadeServerImage = "",
+        [int]$SystemRamGB = 0,
         # Mirror the install-time ENABLE_LANGFUSE toggle from phase 03 into
         # .env's LANGFUSE_ENABLED default. Re-install preserves whatever the
         # user already had in .env (via Get-EnvOrNew), so manual
@@ -263,6 +272,13 @@ DREAM_MODE=$DreamMode
 LLM_BACKEND=$llmBackend
 LLM_API_URL=$llmApiUrl
 LLM_API_BASE_PATH=$llmApiBasePath
+AMD_INFERENCE_RUNTIME=$AmdInferenceRuntime
+AMD_INFERENCE_BACKEND=$AmdInferenceBackend
+AMD_INFERENCE_LOCATION=$AmdInferenceLocation
+AMD_INFERENCE_PORT=$AmdInferencePort
+AMD_INFERENCE_SUPPORTED_BACKENDS=$AmdInferenceSupportedBackends
+AMD_INFERENCE_RUNTIME_MODE=$AmdInferenceRuntimeMode
+AMD_INFERENCE_MANAGED=$AmdInferenceManaged
 
 #=== Cloud API Keys ===
 ANTHROPIC_API_KEY=$(Get-EnvOrNew "ANTHROPIC_API_KEY" "")
@@ -276,14 +292,36 @@ LLM_MODEL=$($TierConfig.LlmModel)
 GGUF_FILE=$($TierConfig.GgufFile)
 MAX_CONTEXT=$($TierConfig.MaxContext)
 CTX_SIZE=$($TierConfig.MaxContext)
+MODEL_RECOMMENDED_MODEL=$($TierConfig.LlmModel)
+MODEL_RECOMMENDED_GGUF=$($TierConfig.GgufFile)
+MODEL_RECOMMENDED_CONTEXT=$($TierConfig.MaxContext)
+MODEL_RECOMMENDATION_SOURCE=$(if ($TierConfig.RecommendationSource) { $TierConfig.RecommendationSource } else { "installer_tier_map" })
+MODEL_RECOMMENDATION_POLICY=$(if ($TierConfig.RecommendationPolicy) { $TierConfig.RecommendationPolicy } else { "tier-map" })
+MODEL_RECOMMENDATION_CONFIDENCE=$(if ($TierConfig.RecommendationConfidence) { $TierConfig.RecommendationConfidence } else { "medium" })
+MODEL_RECOMMENDATION_REASON=$(if ($TierConfig.RecommendationReason) { $TierConfig.RecommendationReason } else { "Selected by installer tier $Tier ($($TierConfig.TierName)) for $GpuBackend backend; benchmark locally after first launch." })
+MODEL_RECOMMENDED_ALTERNATIVES=$(if ($TierConfig.RecommendationAlternatives) { $TierConfig.RecommendationAlternatives } else { "" })
+MODEL_RUNTIME_PROFILE=$(if ($TierConfig.RuntimeProfile) { $TierConfig.RuntimeProfile } else { "" })
+MODEL_RUNTIME_PROFILE_LABEL=$(if ($TierConfig.RuntimeProfileLabel) { $TierConfig.RuntimeProfileLabel } else { "" })
+MODEL_RUNTIME_PROFILE_SOURCE=$(if ($TierConfig.RuntimeProfileSource) { $TierConfig.RuntimeProfileSource } else { "" })
+MODEL_PERFORMANCE_SOURCE=benchmark_required
+MODEL_PERFORMANCE_LABEL=Benchmark after first launch
 GPU_BACKEND=$GpuBackend
+SYSTEM_RAM_GB=$SystemRamGB
 $(if ($LlamaServerImage) { "LLAMA_SERVER_IMAGE=$LlamaServerImage" } else { "#LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda" })
 $(if ($llamaServerImageFallback) { "LLAMA_SERVER_IMAGE_FALLBACK=$llamaServerImageFallback" } else { "#LLAMA_SERVER_IMAGE_FALLBACK=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014" })
+$(if ($LemonadeServerImage) { "LEMONADE_SERVER_IMAGE=$LemonadeServerImage" } else { "#LEMONADE_SERVER_IMAGE=ghcr.io/lemonade-sdk/lemonade-server:v10.2.0" })
 #=== llama.cpp Runtime Tuning ===
-LLAMA_ARG_FLASH_ATTN=$(Get-EnvOrNew "LLAMA_ARG_FLASH_ATTN" "auto")
-LLAMA_ARG_CACHE_TYPE_K=$(Get-EnvOrNew "LLAMA_ARG_CACHE_TYPE_K" "f16")
-LLAMA_ARG_CACHE_TYPE_V=$(Get-EnvOrNew "LLAMA_ARG_CACHE_TYPE_V" "f16")
+LLAMA_PARALLEL=$(Get-EnvOrNew "LLAMA_PARALLEL" "$(if ($TierConfig.LLAMA_PARALLEL) { $TierConfig.LLAMA_PARALLEL } else { "1" })")
+LLAMA_ARG_FLASH_ATTN=$(Get-EnvOrNew "LLAMA_ARG_FLASH_ATTN" "$(if ($TierConfig.LLAMA_ARG_FLASH_ATTN) { $TierConfig.LLAMA_ARG_FLASH_ATTN } else { "auto" })")
+LLAMA_ARG_CACHE_TYPE_K=$(Get-EnvOrNew "LLAMA_ARG_CACHE_TYPE_K" "$(if ($TierConfig.LLAMA_ARG_CACHE_TYPE_K) { $TierConfig.LLAMA_ARG_CACHE_TYPE_K } else { "f16" })")
+LLAMA_ARG_CACHE_TYPE_V=$(Get-EnvOrNew "LLAMA_ARG_CACHE_TYPE_V" "$(if ($TierConfig.LLAMA_ARG_CACHE_TYPE_V) { $TierConfig.LLAMA_ARG_CACHE_TYPE_V } else { "f16" })")
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
+$(if ($TierConfig.LLAMA_ARG_N_CPU_MOE) { "LLAMA_ARG_N_CPU_MOE=$($TierConfig.LLAMA_ARG_N_CPU_MOE)" })
+$(if ($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT) { "LLAMA_ARG_NO_CACHE_PROMPT=$($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT)" })
+$(if ($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS) { "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=$($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS)" })
+# Optional MTP speculative decoding only. Requires an MTP-capable GGUF and llama.cpp build.
+# LLAMA_ARG_SPEC_TYPE=draft-mtp
+# LLAMA_ARG_SPEC_DRAFT_N_MAX=3
 LLAMA_CPU_LIMIT=$llamaCpuLimit
 LLAMA_CPU_RESERVATION=$llamaCpuReservation
 
@@ -299,6 +337,14 @@ QDRANT_API_KEY=$qdrantApiKey
 LITELLM_PORT=4000
 OPENCLAW_PORT=7860
 SEARXNG_PORT=8888
+
+#=== Hermes Agent ===
+HERMES_LLM_BASE_URL=$llmApiUrl$llmApiBasePath
+HERMES_LLM_API_KEY=sk-dream-hermes-local
+HERMES_LANGUAGE=en
+HERMES_PROXY_PORT=9120
+HERMES_PROXY_UPSTREAM=dream-hermes:9119
+DREAM_AUTH_UPSTREAM=dream-dashboard-api:3002
 
 #=== Security (auto-generated, keep secret!) ===
 WEBUI_SECRET=$webuiSecret

@@ -1,6 +1,6 @@
-# Extension changes: branch targets (main vs resources/dev)
+# Extension changes: branch targets
 
-Dream Server splits **core runtime** (installer, `dream-server/` compose, CLI, shipped extensions under `dream-server/extensions/`) from the larger **extensions library** under `resources/dev/extensions-library/` (catalog of optional services, workflows, and templates).
+Dream Server keeps both **core runtime** (installer, `dream-server/` compose, CLI, shipped extensions under `dream-server/extensions/services/`) and the optional **extensions library** under `dream-server/extensions/library/`.
 
 Use this guide when coordinating PRs that touch extensions or integrations.
 
@@ -9,7 +9,7 @@ Use this guide when coordinating PRs that touch extensions or integrations.
 | Change | Target branch | Notes |
 |--------|---------------|--------|
 | Installer, `dream-cli`, compose base files, dashboard, dashboard-api, **shipped** `dream-server/extensions/services/*` used by default installs | **main** (via normal PR flow) | Follow [EXTENSIONS.md](EXTENSIONS.md) for manifest/schema. |
-| Catalog-only updates: new or updated entries under **`resources/dev/extensions-library/`** (extra services, workflows, templates) | Often **`resources/dev`** or team policy for catalog branches | Does not change core install until wired by installer/catalog pipeline; coordinate with maintainers. |
+| Catalog-only updates: new or updated entries under **`dream-server/extensions/library/`** (extra services, workflows, templates) | **main** (via normal PR flow) | Regenerate `dream-server/config/extensions-catalog.json` when manifests change. |
 | Docs-only (troubleshooting, field reports) | **main** | Unless your team batches docs on a doc branch. |
 | **Both** core behavior and catalog | Split PRs or one PR with explicit maintainer agreement | Easier review when core and catalog are separate. |
 

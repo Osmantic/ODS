@@ -5,14 +5,16 @@ import json
 import logging
 import re
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
-from config import INSTALL_DIR
+from config import AGENT_URL, DREAM_AGENT_KEY, INSTALL_DIR
 from models import VersionInfo, UpdateAction
 from security import verify_api_key
 
@@ -28,12 +30,17 @@ _version_cache: dict[str, object] = {"expires_at": 0.0, "payload": None}
 _version_refresh_task: Optional[asyncio.Task] = None
 
 
+def _read_utf8(path: Path) -> str:
+    """Read repository text files consistently across Windows and Linux."""
+    return path.read_text(encoding="utf-8")
+
+
 def _read_current_version() -> str:
     """Read installed version from .env (preferred) or .version file."""
     env_file = Path(INSTALL_DIR) / ".env"
     if env_file.exists():
         try:
-            for line in env_file.read_text().splitlines():
+            for line in _read_utf8(env_file).splitlines():
                 if line.startswith("DREAM_VERSION="):
                     return line.split("=", 1)[1].strip().strip("\"'")
         except OSError:
@@ -41,15 +48,19 @@ def _read_current_version() -> str:
     version_file = Path(INSTALL_DIR) / ".version"
     if version_file.exists():
         try:
-            raw = version_file.read_text().strip()
+            raw = _read_utf8(version_file).strip()
             if raw:
+                if raw.startswith("{"):
+                    data = json.loads(raw)
+                    if isinstance(data, dict) and data.get("version"):
+                        return str(data["version"])
                 return raw
-        except OSError:
+        except (OSError, json.JSONDecodeError, ValueError):
             pass
     manifest_file = Path(INSTALL_DIR) / "manifest.json"
     if manifest_file.exists():
         try:
-            data = json.loads(manifest_file.read_text())
+            data = json.loads(_read_utf8(manifest_file))
             version = (
                 data.get("release", {}).get("version")
                 or data.get("dream_version")
@@ -62,12 +73,67 @@ def _read_current_version() -> str:
     main_file = Path(__file__).resolve().parents[1] / "main.py"
     if main_file.exists():
         try:
-            match = re.search(r'version\s*=\s*"([^"]+)"', main_file.read_text())
+            match = re.search(r'version\s*=\s*"([^"]+)"', _read_utf8(main_file))
             if match:
                 return match.group(1)
         except OSError:
             pass
     return "0.0.0"
+
+
+def _call_update_agent(endpoint_action: str, payload: dict, timeout: int) -> dict:
+    """Call the host agent for update execution."""
+    url = f"{AGENT_URL}/v1/update/{endpoint_action}"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {DREAM_AGENT_KEY}",
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8") or "{}")
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            body = {}
+        detail = body.get("error") or body.get("detail") or exc.reason
+        raise HTTPException(status_code=exc.code, detail=detail)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        detail = str(getattr(exc, "reason", exc))
+        raise HTTPException(status_code=503, detail=f"Host agent unreachable: {detail}")
+
+    try:
+        parsed = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        parsed = {"success": False, "output": raw}
+    return parsed if isinstance(parsed, dict) else {"success": False, "output": raw}
+
+
+def _get_update_agent_status(timeout: int = 5) -> dict:
+    url = f"{AGENT_URL}/v1/update/status"
+    headers = {"Authorization": f"Bearer {DREAM_AGENT_KEY}"}
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8") or "{}")
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            body = {}
+        detail = body.get("error") or body.get("detail") or exc.reason
+        raise HTTPException(status_code=exc.code, detail=detail)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        detail = str(getattr(exc, "reason", exc))
+        raise HTTPException(status_code=503, detail=f"Host agent unreachable: {detail}")
+
+    try:
+        parsed = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        parsed = {"status": "unknown", "output": raw}
+    return parsed if isinstance(parsed, dict) else {"status": "unknown", "output": raw}
 
 
 def _get_cached_release_payload(allow_stale: bool = False) -> Optional[dict]:
@@ -208,13 +274,13 @@ async def get_update_dry_run():
     version_file = install_path / ".version"
 
     if env_file.exists():
-        for line in env_file.read_text().splitlines():
+        for line in _read_utf8(env_file).splitlines():
             if line.startswith("DREAM_VERSION="):
                 current = line.split("=", 1)[1].strip()
                 break
     if current == "0.0.0" and version_file.exists():
         try:
-            raw = version_file.read_text().strip()
+            raw = _read_utf8(version_file).strip()
             parsed = json.loads(raw) if raw.startswith("{") else None
             current = (parsed or {}).get("version", raw) or raw or "0.0.0"
         except (json.JSONDecodeError, OSError):
@@ -246,7 +312,7 @@ async def get_update_dry_run():
     images: list[str] = []
     for compose_file in sorted(install_path.glob("docker-compose*.yml")):
         try:
-            for line in compose_file.read_text().splitlines():
+            for line in _read_utf8(compose_file).splitlines():
                 stripped = line.strip()
                 if stripped.startswith("image:"):
                     tag = stripped.split(":", 1)[1].strip()
@@ -258,7 +324,7 @@ async def get_update_dry_run():
     # ── .env keys relevant to the update path ────────────────────────────────
     env_snapshot: dict[str, str] = {}
     if env_file.exists():
-        for line in env_file.read_text().splitlines():
+        for line in _read_utf8(env_file).splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -278,57 +344,22 @@ async def get_update_dry_run():
     }
 
 
+@router.get("/api/update/status", dependencies=[Depends(verify_api_key)])
+async def get_update_status():
+    """Return host-agent managed update status."""
+    return await asyncio.to_thread(_get_update_agent_status)
+
+
 @router.post("/api/update")
-async def trigger_update(action: UpdateAction, background_tasks: BackgroundTasks, api_key: str = Depends(verify_api_key)):
+async def trigger_update(action: UpdateAction, api_key: str = Depends(verify_api_key)):
     """Trigger update actions via dashboard."""
     if action.action not in _VALID_ACTIONS:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action.action}")
 
-    script_path = Path(INSTALL_DIR) / "dream-update.sh"
-    if not script_path.exists():
-        script_path = Path(INSTALL_DIR).parent / "scripts" / "dream-update.sh"
-    if not script_path.exists():
-        script_path = Path(INSTALL_DIR) / "scripts" / "dream-update.sh"
-
-    if not script_path.exists():
-        logger.error("dream-update.sh not found at %s", script_path)
-        raise HTTPException(status_code=501, detail="Update system not installed.")
-
     if action.action == "check":
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                str(script_path), "check",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-            return {"success": True, "update_available": proc.returncode == 2, "output": stdout.decode() + stderr.decode()}
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="Update check timed out")
-        except OSError:
-            logger.exception("Update check failed")
-            raise HTTPException(status_code=500, detail="Check failed")
-    elif action.action == "backup":
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                str(script_path), "backup", f"dashboard-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-            return {"success": proc.returncode == 0, "output": stdout.decode() + stderr.decode()}
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="Backup timed out")
-        except OSError:
-            logger.exception("Backup failed")
-            raise HTTPException(status_code=500, detail="Backup failed")
-    elif action.action == "update":
-        async def run_update():
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    str(script_path), "update",
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                )
-                await proc.communicate()
-            except OSError:
-                logger.exception("update task failed")
-        background_tasks.add_task(run_update)
-        return {"success": True, "message": "Update started in background. Check logs for progress."}
+        return await asyncio.to_thread(_call_update_agent, "check", {}, 35)
+    if action.action == "backup":
+        payload = {"backup_id": f"dashboard-{datetime.now().strftime('%Y%m%d-%H%M%S')}"}
+        return await asyncio.to_thread(_call_update_agent, "backup", payload, 65)
+
+    return await asyncio.to_thread(_call_update_agent, "start", {}, 10)
