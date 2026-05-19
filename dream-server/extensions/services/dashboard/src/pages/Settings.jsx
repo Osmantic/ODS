@@ -6,8 +6,12 @@ import {
   Download,
   Network,
   FileText,
+  UserPlus,
+  CreditCard,
+  ChevronRight,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import EnvEditor from '../components/settings/EnvEditor'
 
 const fetchJson = async (url, ms = 8000, options = {}) => {
@@ -247,6 +251,23 @@ export default function Settings() {
       <div className="max-w-5xl space-y-6 liquid-metal-sequence-grid liquid-metal-sequence-grid--services">
         <SettingsSection title="System Identity" icon={Server}><div className="grid gap-4 sm:grid-cols-2"><InfoRow label="Version" value={version?.version || 'Unknown'} /><InfoRow label="Install Date" value={version?.install_date || 'Unknown'} /><InfoRow label="Tier" value={version?.tier || 'Community'} /><InfoRow label="Uptime" value={version?.uptime || 'Unknown'} /></div></SettingsSection>
 
+        <SettingsSection title="Account" icon={SettingsIcon}>
+          <div className="divide-y divide-theme-border">
+            <SettingsNavRow
+              to="/usage"
+              icon={CreditCard}
+              label="Usage"
+              description="Token and request counts, model-level cost insights, and historical activity."
+            />
+            <SettingsNavRow
+              to="/invites"
+              icon={UserPlus}
+              label="Invites"
+              description="Create, share, and revoke magic-link invites for trusted devices."
+            />
+          </div>
+        </SettingsSection>
+
         {services.length > 0 ? <SettingsSection title="Routing Table" icon={Network}><div className="space-y-3"><div className="flex flex-wrap items-center gap-2"><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/60">route surfaces</p><span className="rounded-full border border-white/10 bg-black/[0.12] px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.16em] text-theme-text">{getDashboardHost()}</span></div><div className="grid gap-3 xl:grid-cols-3">{routingGroups.map(group => <RoutingGroup key={group.key} {...group} />)}</div></div></SettingsSection> : null}
 
         {envEditor ? <SettingsSection title="Environment Editor" icon={FileText}><EnvEditor editor={envEditor} search={envSearch} onSearchChange={setEnvSearch} sections={envSections} activeSection={activeEnvSection} onSectionChange={setEnvActiveSection} fields={envFields} values={envValues} issues={envIssues} issueMap={envIssueMap} revealedSecrets={envRevealSecrets} onToggleReveal={(key) => setEnvRevealSecrets(current => ({ ...current, [key]: !current[key] }))} onFieldChange={(key, value) => setEnvValues(current => ({ ...current, [key]: value }))} onReload={() => fetchEnvEditor({ announce: true })} onSave={handleSaveEnv} onApply={handleApplyEnv} dirty={envDirty} saving={envSaving} applyPlan={envApplyPlan} applying={envApplying} /></SettingsSection> : null}
@@ -289,3 +310,19 @@ function StorageBlock({ storage }) {
 }
 
 function ActionButton({ icon: Icon, label, description, onClick }) { return <button onClick={onClick} className="w-full flex items-center gap-4 p-3 rounded-lg transition-colors hover:bg-theme-surface-hover"><Icon size={20} className="text-theme-text-muted" /><div className="text-left"><p className="text-sm text-theme-text font-medium">{label}</p><p className="text-xs text-theme-text-muted">{description}</p></div></button> }
+
+// Settings → sub-page link row. Mirrors the visual shape of ActionButton
+// but renders a router <Link> so navigation works without an onClick handler
+// and the route gets registered with the SPA's history/scroll restoration.
+function SettingsNavRow({ to, icon: Icon, label, description }) {
+  return (
+    <Link to={to} className="flex items-center gap-4 p-3 rounded-lg transition-colors hover:bg-theme-surface-hover">
+      <Icon size={20} className="text-theme-text-muted" />
+      <div className="flex-1 text-left">
+        <p className="text-sm text-theme-text font-medium">{label}</p>
+        <p className="text-xs text-theme-text-muted">{description}</p>
+      </div>
+      <ChevronRight size={16} className="text-theme-text-muted/60" />
+    </Link>
+  )
+}

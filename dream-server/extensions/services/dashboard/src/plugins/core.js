@@ -71,6 +71,11 @@ export const coreRoutes = [
     sidebar: true,
     order: 3,
   },
+  // Usage + Invites are reachable from the Settings page ("Account" section)
+  // rather than the top-level sidebar — the sidebar was getting crowded and
+  // these are settings-adjacent surfaces (one is billing-style insight, the
+  // other is share-link admin). Direct URLs still work for bookmarks and
+  // for the magic-link redemption page which renders inside this dashboard.
   {
     id: 'usage',
     path: '/usage',
@@ -78,7 +83,7 @@ export const coreRoutes = [
     icon: CreditCard,
     component: Usage,
     getProps: ({ status }) => ({ status }),
-    sidebar: true,
+    sidebar: false,
     order: 3.5,
   },
   {
@@ -88,7 +93,7 @@ export const coreRoutes = [
     icon: UserPlus,
     component: Invites,
     getProps: () => ({}),
-    sidebar: true,
+    sidebar: false,
     order: 4,
   },
   {

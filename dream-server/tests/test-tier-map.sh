@@ -114,12 +114,14 @@ unset HOST_ARCH
 echo ""
 
 # --- SH_LARGE ---
+# SH_LARGE substitutes to 35B-A3B for the same unified-memory reason as
+# NV_ULTRA aarch64 — see tier-map.sh SH_LARGE block.
 echo "SH_LARGE (Strix Halo 90+):"
 run_tier SH_LARGE
 assert_eq "TIER_NAME"   "Strix Halo 90+"                      "$TIER_NAME"
 assert_eq "MODEL_PROFILE_EFFECTIVE" "qwen"                   "$MODEL_PROFILE_EFFECTIVE"
-assert_eq "LLM_MODEL"   "qwen3-coder-next"                   "$LLM_MODEL"
-assert_eq "GGUF_FILE"   "qwen3-coder-next-Q4_K_M.gguf"       "$GGUF_FILE"
+assert_eq "LLM_MODEL"   "qwen3.6-35b-a3b"                    "$LLM_MODEL"
+assert_eq "GGUF_FILE"   "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"     "$GGUF_FILE"
 assert_eq "MAX_CONTEXT"  "131072"                               "$MAX_CONTEXT"
 echo ""
 

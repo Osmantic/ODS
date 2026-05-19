@@ -220,7 +220,13 @@ while [[ $# -gt 0 ]]; do
         # --all enables Hermes (the new default agent) but NOT OpenClaw —
         # the deprecated agent is opt-in via --openclaw for the deprecation
         # release. Will be dropped entirely in the removal release.
-        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; shift ;;
+        # ENABLE_DREAM_PROXY is included so magic-link invite URLs
+        # (http://auth.<device>.local/magic-link/<token>) actually resolve.
+        # Without dream-proxy on host :80, mDNS publishes the hostname but
+        # nothing serves it, and a phone clicking the invite gets
+        # "site can't be reached." Operators who don't want the LAN-facing
+        # surface can set ENABLE_DREAM_PROXY=false in .env after install.
+        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_DREAM_PROXY=true; shift ;;
         --non-interactive) INTERACTIVE=false; shift ;;
         --offline) OFFLINE_MODE=true; shift ;;
         --lan) BIND_ADDRESS="0.0.0.0"; shift ;;

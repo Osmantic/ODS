@@ -136,6 +136,7 @@ if $ALL_FEATURES; then
     ENABLE_APE=true
     ENABLE_PERPLEXICA=true
     ENABLE_PRIVACY_SHIELD=true
+    ENABLE_DREAM_PROXY=true
     # --all enables Langfuse unless the user explicitly passed --no-langfuse.
     $NO_LANGFUSE_EXPLICIT || ENABLE_LANGFUSE=true
 fi

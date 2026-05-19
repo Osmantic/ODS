@@ -327,6 +327,34 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     # used for every other persistent value in this phase).
     HOST_LAN_IP=$(_env_get HOST_LAN_IP "$HOST_LAN_IP")
 
+    # Device name — used by dream-mdns (publishes <name>.local + per-service
+    # subdomains: auth.<name>.local, chat.<name>.local, etc.) and by magic-
+    # link URL generation in dashboard-api. The previous default literal
+    # "dream" causes mDNS NonUniqueNameException collisions when more than
+    # one Dream Server install is on the same LAN: the first one wins and
+    # every subsequent host's mDNS service crash-loops, so phones following
+    # invite QR codes from the losing hosts land on the winning host (or
+    # nothing at all). Auto-derive from the system hostname for per-host
+    # uniqueness, sanitized to match .env.schema.json's pattern
+    # (^[a-zA-Z0-9][a-zA-Z0-9-]{0,30}[a-zA-Z0-9]$|^[a-zA-Z0-9]$). Fall back
+    # to "dream" only when the hostname can't be sanitized into the schema.
+    _device_default="dream"
+    if command -v hostname >/dev/null 2>&1; then
+        _raw_hn="$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)"
+        # Lowercase; collapse any non-[a-z0-9-] to a single '-'; trim
+        # leading/trailing '-'; cap at 32 chars.
+        _hn="$(printf '%s' "$_raw_hn" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//' \
+            | cut -c1-32 \
+            | sed -E 's/-+$//')"
+        # Schema requires first + last char alphanumeric.
+        if [[ -n "$_hn" && "$_hn" =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]]; then
+            _device_default="$_hn"
+        fi
+    fi
+    DREAM_DEVICE_NAME=$(_env_get DREAM_DEVICE_NAME "$_device_default")
+
     # Whisper STT model — NVIDIA picks the larger turbo model, everyone else
     # uses base. Phase 12 reads this to pre-download the right file, and
     # Open WebUI reads it to request the same model for transcription.
@@ -538,6 +566,15 @@ WHISPER_MODEL=base
 # Auto-selected based on GPU backend; edit to override.
 AUDIO_STT_MODEL=${AUDIO_STT_MODEL}
 TTS_VOICE=en_US-lessac-medium
+
+#=== Device Name / mDNS / Proxy hostnames ===
+# Used by dream-mdns to publish <name>.local on the LAN, by dream-proxy
+# to route auth/chat/dashboard subdomains, and by dashboard-api when
+# generating magic-link invite URLs. Auto-derived from the system
+# hostname at install time so multiple Dream Server installs on the
+# same LAN don't collide on a shared default name. Override by editing
+# this line and restarting dream-mdns + dream-proxy.
+DREAM_DEVICE_NAME=${DREAM_DEVICE_NAME}
 
 #=== Web UI Settings ===
 WEBUI_AUTH=true
