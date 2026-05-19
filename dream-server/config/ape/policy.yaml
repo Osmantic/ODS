@@ -8,6 +8,17 @@
 #   deny        — always block
 #   allowlist   — permit only listed commands; optionally reject by regex pattern
 #   path_guard  — permit writes only within allowed_paths
+#
+# Governance layers (issue #1269):
+#   rate_limit       — legacy per-session 60s window (unchanged)
+#   windowed_limits  — per-intent sliding-window caps (5m/1h/1d). A tier may
+#                      hard-deny ("action: deny") or escalate to a human via
+#                      "action: require_approval" (a third decision tier; the
+#                      /verify response gains optional `decision` and
+#                      `approval_token` fields, retried through POST /approve).
+#   circuit_breaker  — trips to deny-all when the deny ratio over a rolling
+#                      window is too high; tripped state is persisted across
+#                      restarts under /data/ape/state.json.
 
 version: 1
 
@@ -67,3 +78,40 @@ intents:
 
 rate_limit:
   requests_per_minute: 60
+
+# Per-intent sliding-window caps. Each tier value is either an integer
+# (hard cap → deny) or a mapping {limit, action}. action is "deny" or
+# "require_approval". Intents without an explicit entry use `default`.
+# Set enabled: false to disable this layer entirely (legacy behaviour).
+windowed_limits:
+  enabled: true
+  default:
+    5min: {limit: 120, action: deny}
+    hour: {limit: 1000, action: deny}
+    day: {limit: 5000, action: deny}
+  intents:
+    ExecuteCommand:
+      5min: {limit: 40, action: require_approval}
+      hour: {limit: 200, action: deny}
+      day: {limit: 800, action: deny}
+    WriteFile:
+      5min: {limit: 60, action: require_approval}
+      hour: {limit: 400, action: deny}
+      day: {limit: 1500, action: deny}
+    NetworkFetch:
+      5min: {limit: 60, action: require_approval}
+      hour: {limit: 400, action: deny}
+      day: {limit: 1500, action: deny}
+    SpawnAgent:
+      5min: {limit: 10, action: require_approval}
+      hour: {limit: 60, action: deny}
+      day: {limit: 200, action: deny}
+
+# Trips to deny-all when too many decisions are denied over a rolling window.
+# The tripped state is persisted so a restart does not silently reset it.
+circuit_breaker:
+  enabled: true
+  window_seconds: 300
+  min_samples: 20
+  deny_ratio: 0.5
+  cooldown_seconds: 120
