@@ -11,7 +11,7 @@ import time
 import httpx
 import secrets
 import hashlib
-from fastapi import FastAPI, Request, Response, Depends, HTTPException, Security, WebSocket
+from fastapi import FastAPI, Request, Depends, HTTPException, Security, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from functools import lru_cache
