@@ -155,10 +155,16 @@ def get_session(request: Request) -> CachedPrivacyShield:
 def _token_valid(token: str | None) -> bool:
     """Constant-time compare a presented token against SHIELD_API_KEY.
 
-    Same secret + ``secrets.compare_digest`` used by ``verify_api_key`` /
-    ``_is_authenticated`` so the WS lane cannot drift from the HTTP lane.
+    Compared as UTF-8 bytes so a non-ASCII presented token is a clean
+    mismatch rather than a TypeError on the pre-auth path. Same secret +
+    secrets.compare_digest as verify_api_key / _is_authenticated.
     """
-    return bool(token) and secrets.compare_digest(token, SHIELD_API_KEY)
+    if not token:
+        return False
+    return secrets.compare_digest(
+        token.encode("utf-8", "strict"),
+        SHIELD_API_KEY.encode("utf-8", "strict"),
+    )
 
 
 def _is_authenticated(request: Request) -> bool:
@@ -185,6 +191,10 @@ def _extract_ws_token(client_ws: WebSocket) -> tuple[str | None, str | None]:
     """
     auth = client_ws.headers.get("authorization", "")
     if auth.startswith("Bearer "):
+        # A present-but-empty "Authorization: Bearer " header short-circuits
+        # here and suppresses the ?token= / subprotocol fallbacks. Intentional
+        # / deferred: this can only ever cause a false REJECT (empty token
+        # fails _token_valid), never a false accept.
         return auth[7:], None
 
     token = client_ws.query_params.get("token")

@@ -343,6 +343,25 @@ class TestWebSocketAuth:
                 pass  # pragma: no cover - connect must be rejected
         assert exc.value.code == 1008
 
+    def test_websocket_non_ascii_token_rejected_no_upstream(self, client, monkeypatch):
+        """A non-ASCII ``?token=`` (here ``café``) must be a clean 1008
+        policy-violation reject — never a TypeError out of
+        secrets.compare_digest on the pre-auth path — and must not reach
+        upstream."""
+        try:
+            import websockets  # noqa: F401
+        except ModuleNotFoundError:
+            pytest.skip("websockets lib unavailable")
+        self._block_upstream(monkeypatch)
+
+        from starlette.websockets import WebSocketDisconnect
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            # caf%C3%A9 == "café" URL-encoded.
+            with client.websocket_connect("/v1/realtime?token=caf%C3%A9"):
+                pass  # pragma: no cover - connect must be rejected
+        assert exc.value.code == 1008
+
     def test_websocket_valid_token_query_param_round_trips(self, client, monkeypatch):
         """A valid ``?token=`` connects and a frame round-trips end-to-end
         (browser WS clients can't set an Authorization header)."""
