@@ -42,25 +42,19 @@ const SOURCE_META = {
     label: 'actual_billed',
     tone: 'text-purple-300 border-purple-500/30 bg-purple-500/12',
     dot: '#a855f7',
-    description: 'Costs from real invoices or billing APIs. Most accurate.',
+    description: 'Costs from explicit billing sources when a provider exposes them.',
   },
   priced_from_tokens: {
     label: 'priced_from_tokens',
     tone: 'text-blue-300 border-blue-500/30 bg-blue-500/12',
     dot: '#3b82f6',
-    description: 'Costs estimated using published pricing and your token usage.',
+    description: 'Directional estimate from configured provider pricing and tracked tokens.',
   },
   local_zero_cost: {
     label: 'local_zero_cost',
     tone: 'text-emerald-300 border-emerald-500/30 bg-emerald-500/12',
     dot: '#34d399',
-    description: 'Local models without a matching published token price. No API bill.',
-  },
-  local_estimated_from_tokens: {
-    label: 'local_estimated',
-    tone: 'text-cyan-300 border-cyan-500/30 bg-cyan-500/12',
-    dot: '#22d3ee',
-    description: 'Local model usage priced against a matching public API rate. Estimate, not a bill.',
+    description: 'Local runtime usage. Token telemetry only, no external API bill.',
   },
   untracked: {
     label: 'untracked',
@@ -336,10 +330,10 @@ export default function Usage({ status }) {
         <div>
           <h1 className="text-[22px] font-bold leading-tight tracking-tight text-theme-text">Usage</h1>
           <p className="mt-0.5 text-sm text-theme-text-secondary">
-            Track real costs, tokens, and requests across all your AI services.
+            Track tokens, requests, and explicit or estimated provider costs across your AI services.
           </p>
           <p className="mt-1.5 text-xs text-theme-text-muted">
-            Costs are only shown when backed by real billing sources or token pricing. Local models are free unless a billing source exists.
+            Cost values are directional unless a provider billing source exists. Local runtime counters stay token-only and are not priced by DreamServer.
           </p>
         </div>
         <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center lg:flex-col lg:items-end">
@@ -365,9 +359,10 @@ export default function Usage({ status }) {
       <section className="mb-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
         <SummaryCard
           icon={WalletCards}
-          title="Monthly Cost"
+          title="Cost Estimate"
           value={formatCurrency(summary.spend_usd)}
           unit="USD"
+          subvalue="Directional, not a bill"
           delta={computeDelta(summary.spend_usd, previous.spend_usd)}
           series={spendSpark}
           accent="#9d00ff"
@@ -403,7 +398,7 @@ export default function Usage({ status }) {
       <section className="mb-3 grid grid-cols-1 gap-3 xl:grid-cols-12">
         <SpendPanel report={report} className="xl:col-span-4" />
         <TokensPanel report={report} className="xl:col-span-5" />
-        <LocalPaidPanel summary={summary} className="xl:col-span-3" />
+        <CostConfidencePanel summary={summary} className="xl:col-span-3" />
       </section>
 
       <CostSourceGuide />
@@ -412,7 +407,7 @@ export default function Usage({ status }) {
         <UsageByModelTable rows={report.models || []} />
         <div className="grid gap-3">
           <TopConsumers services={report.services || []} />
-          <CostByService services={report.services || []} totalCost={summary.spend_usd || 0} />
+          <TokensByService services={report.services || []} totalTokens={summary.total_tokens || 0} />
         </div>
       </section>
     </div>
@@ -568,12 +563,12 @@ function SpendPanel({ report, className }) {
     <Panel className={className}>
       <div className="p-3">
         <div className="flex min-h-8 items-center justify-between gap-3">
-          <PanelHeader title="Daily Cost (USD)" info />
+          <PanelHeader title="Daily Cost Estimate" info />
           <Segmented tabs={['daily', 'weekly', 'cumulative']} active={mode} onChange={setMode} />
         </div>
         <div className="mt-2 h-10">
           <p className="font-mono text-xl font-bold leading-none">{formatCurrency(report.summary?.spend_usd || 0)}</p>
-          <p className="mt-1 text-xs text-theme-text-muted">total</p>
+          <p className="mt-1 text-xs text-theme-text-muted">estimated total</p>
         </div>
         <BarChart values={values} color="#8b35d6" currency />
       </div>
@@ -602,14 +597,15 @@ function TokensPanel({ report, className }) {
   )
 }
 
-function LocalPaidPanel({ summary, className }) {
+function CostConfidencePanel({ summary, className }) {
   const paid = Number(summary.paid_cost_usd || 0)
   const local = Number(summary.local_cost_usd || 0)
-  const localLabel = local > 0 ? 'Local Equivalent' : 'Local (Zero Cost)'
+  const untracked = Number(summary.untracked_providers || 0)
+  const total = Math.max(paid + local, paid, 1)
   return (
     <Panel className={className}>
       <div className="p-3">
-        <PanelHeader title="Local vs Paid Usage" info />
+        <PanelHeader title="Cost Confidence" info />
         <div className="mt-3 grid gap-3 sm:grid-cols-[124px_1fr] xl:grid-cols-1 2xl:grid-cols-[124px_1fr]">
           <DonutChart
             total={paid + local}
@@ -617,16 +613,19 @@ function LocalPaidPanel({ summary, className }) {
               { value: paid, color: '#8b35d6' },
               { value: local, color: '#34d399' },
             ]}
-            centerTop="By Cost"
+            centerTop="Estimate"
             centerMain={formatCurrency(paid + local)}
             centerBottom="Total"
           />
           <div className="space-y-4 pt-2 text-sm">
-            <CostSplitRow color="#8b35d6" label="Paid (External APIs)" value={paid} total={paid + local} />
-            <CostSplitRow color="#34d399" label={localLabel} value={local} total={paid + local} />
+            <CostSplitRow color="#8b35d6" label="Provider estimate" value={paid} total={total} />
+            <CostSplitRow color="#34d399" label="Local API bill" value={local} total={total} />
+            <div className="rounded-md border border-amber-500/20 bg-amber-500/[0.07] px-2 py-1.5 text-xs text-amber-100">
+              {formatInteger(untracked)} untracked provider{untracked === 1 ? '' : 's'}
+            </div>
           </div>
         </div>
-        <p className="mt-1.5 text-xs text-theme-text-muted">Local usage can show an equivalent estimate, but it is not a provider bill.</p>
+        <p className="mt-1.5 text-xs text-theme-text-muted">Provider prices can vary by plan, cache behavior, region, and time. Treat these as telemetry, not invoices.</p>
       </div>
     </Panel>
   )
@@ -637,17 +636,17 @@ function CostSourceGuide() {
   const guideItems = [
     ['actual_billed', {
       ...SOURCE_META.actual_billed,
-      description: 'Real invoices or billing APIs. Most accurate.',
+      description: 'Explicit billing data when available.',
     }],
     ['priced_from_tokens', {
       ...SOURCE_META.priced_from_tokens,
-      description: 'Published pricing times tracked tokens.',
+      description: 'Configured provider pricing times tracked tokens.',
     }],
     ['local_combined', {
       ...localMeta,
       label: 'local_zero_cost',
       tone: localMeta.tone,
-      description: 'Local hardware usage. $0.00 API bill.',
+      description: 'Local runtime telemetry. No external API bill.',
     }],
     ['untracked', {
       ...SOURCE_META.untracked,
@@ -658,8 +657,8 @@ function CostSourceGuide() {
     <Panel>
       <div className="grid gap-2 p-2 lg:grid-cols-2 xl:grid-cols-[220px_repeat(5,minmax(0,1fr))]">
         <div className="lg:col-span-2 xl:col-span-1">
-          <h2 className="font-semibold text-theme-text">Cost Source Guide</h2>
-          <p className="mt-1 text-xs text-theme-text-muted">Where costs come from and what they mean.</p>
+          <h2 className="font-semibold text-theme-text">Tracking Source Guide</h2>
+          <p className="mt-1 text-xs text-theme-text-muted">Where token and cost signals come from.</p>
         </div>
         {guideItems.map(([key, meta]) => (
           <div key={key} className="rounded-lg border border-white/10 bg-black/15 p-1.5">
@@ -677,7 +676,7 @@ function CostSourceGuide() {
             Learn more -&gt;
           </button>
           <div className="pointer-events-none absolute bottom-full right-0 z-20 mb-2 hidden w-72 rounded-lg border border-white/10 bg-[#101018] p-3 text-xs leading-5 text-theme-text-secondary shadow-2xl group-hover:block group-focus-within:block">
-            Token counts come from Token Spy or llama.cpp Prometheus counters. Costs use explicit billing data or the backend pricing catalog URL on each row. If neither source exists, DreamServer leaves the row untracked.
+            Token counts come from Token Spy or llama.cpp Prometheus counters. Cost estimates use configured provider pricing only; local runtime counters are token-only. If neither source exists, DreamServer leaves the row untracked.
           </div>
         </div>
       </div>
@@ -749,7 +748,7 @@ function UsageByModelTable({ rows }) {
             <span className="text-right">Input Tokens</span>
             <span className="text-right">Output Tokens</span>
             <span className="text-right">Requests</span>
-            <span className="text-right">Cost (USD)</span>
+            <span className="text-right">Est. Cost</span>
             <span className="pl-4">Source</span>
             <span />
           </div>
@@ -786,7 +785,7 @@ function UsageRow({ row }) {
       <Cell label="Input" align="right">{formatCompact(row.input_tokens)}</Cell>
       <Cell label="Output" align="right">{formatCompact(row.output_tokens)}</Cell>
       <Cell label="Requests" align="right">{formatInteger(row.requests)}</Cell>
-      <Cell label="Cost" align="right">{row.cost_source === 'untracked' ? '-' : formatCurrency(row.cost_usd)}</Cell>
+      <Cell label="Est. Cost" align="right">{row.cost_source === 'untracked' ? '-' : formatCurrency(row.cost_usd)}</Cell>
       <Cell label="Source" className="xl:pl-4"><span className={`rounded border px-2 py-0.5 font-mono text-[11px] ${meta.tone}`}>{meta.label}</span></Cell>
       <MoreHorizontal size={16} className="text-theme-text-muted" />
     </div>
@@ -805,19 +804,19 @@ function Cell({ label, children, align = 'left', className = '' }) {
 
 function TopConsumers({ services }) {
   const top = services.slice(0, 5)
-  const max = Math.max(...top.map(service => service.cost_usd || 0), 1)
+  const max = Math.max(...top.map(service => serviceTokens(service)), 1)
   return (
     <Panel>
       <div className="p-3.5">
-        <h2 className="mb-3 font-semibold">Top Consumers by Cost</h2>
+        <h2 className="mb-3 font-semibold">Top Consumers by Tokens</h2>
         <div className="space-y-3">
           {top.length > 0 ? top.map(service => (
             <div key={service.service} className="grid grid-cols-[120px_1fr_70px] items-center gap-3 text-sm">
               <span className="truncate text-theme-text-secondary">{service.service}</span>
               <div className="h-1.5 rounded-full bg-white/[0.08]">
-                <div className="h-full rounded-full bg-theme-accent" style={{ width: `${((service.cost_usd || 0) / max) * 100}%` }} />
+                <div className="h-full rounded-full bg-theme-accent" style={{ width: `${(serviceTokens(service) / max) * 100}%` }} />
               </div>
-              <span className="text-right font-mono">{formatCurrency(service.cost_usd)}</span>
+              <span className="text-right font-mono">{formatCompact(serviceTokens(service))}</span>
             </div>
           )) : (
             <p className="py-5 text-sm text-theme-text-muted">No tracked usage for this period</p>
@@ -829,24 +828,28 @@ function TopConsumers({ services }) {
   )
 }
 
-function CostByService({ services, totalCost }) {
+function serviceTokens(service) {
+  return Number(service.input_tokens || 0) + Number(service.output_tokens || 0) + Number(service.cache_read_tokens || 0) + Number(service.cache_write_tokens || 0)
+}
+
+function TokensByService({ services, totalTokens }) {
   const top = services.slice(0, 4)
-  const otherCost = Math.max((totalCost || 0) - top.reduce((sum, item) => sum + (item.cost_usd || 0), 0), 0)
+  const otherTokens = Math.max((totalTokens || 0) - top.reduce((sum, item) => sum + serviceTokens(item), 0), 0)
   const segments = [
-    ...top.map((service, index) => ({ label: service.service, value: service.cost_usd || 0, color: ['#8b35d6', '#3b82f6', '#34d399', '#c4c4c4'][index] })),
-    ...(otherCost > 0 ? [{ label: 'Other', value: otherCost, color: '#a1a1aa' }] : []),
+    ...top.map((service, index) => ({ label: service.service, value: serviceTokens(service), color: ['#8b35d6', '#3b82f6', '#34d399', '#c4c4c4'][index] })),
+    ...(otherTokens > 0 ? [{ label: 'Other', value: otherTokens, color: '#a1a1aa' }] : []),
   ]
   return (
     <Panel>
       <div className="p-3.5">
-        <h2 className="mb-3 font-semibold">Cost by Service</h2>
+        <h2 className="mb-3 font-semibold">Tokens by Service</h2>
         <div className="grid gap-3 sm:grid-cols-[128px_1fr] xl:grid-cols-1 2xl:grid-cols-[128px_1fr]">
-          <DonutChart total={totalCost || 0} segments={segments} centerMain={formatCurrency(totalCost)} centerBottom="Total" />
+          <DonutChart total={totalTokens || 0} segments={segments} centerMain={formatCompact(totalTokens)} centerBottom="tokens" />
           <div className="space-y-3">
             {segments.length > 0 ? segments.map(segment => (
-              <CostSplitRow key={segment.label} color={segment.color} label={segment.label} value={segment.value} total={totalCost || 0} />
+              <CostSplitRow key={segment.label} color={segment.color} label={segment.label} value={segment.value} total={totalTokens || 0} formatter={formatCompact} />
             )) : (
-              <p className="text-sm text-theme-text-muted">No service cost data</p>
+              <p className="text-sm text-theme-text-muted">No service token data</p>
             )}
           </div>
         </div>
@@ -1034,7 +1037,7 @@ function DonutChart({ total, segments, centerTop, centerMain, centerBottom }) {
   )
 }
 
-function CostSplitRow({ color, label, value, total }) {
+function CostSplitRow({ color, label, value, total, formatter = formatCurrency }) {
   const pct = total > 0 ? (value / total) * 100 : 0
   return (
     <div className="grid grid-cols-[1fr_auto] gap-3 text-xs">
@@ -1043,7 +1046,7 @@ function CostSplitRow({ color, label, value, total }) {
         <span className="truncate">{label}</span>
       </div>
       <div className="text-right font-mono text-theme-text">
-        <div>{formatCurrency(value)}</div>
+        <div>{formatter(value)}</div>
         <div className="text-theme-text-muted">{pct.toFixed(1)}%</div>
       </div>
     </div>

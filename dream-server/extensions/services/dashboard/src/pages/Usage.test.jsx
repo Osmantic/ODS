@@ -183,17 +183,17 @@ describe('Usage page', () => {
     render(<Usage status={{ tier: 'Minimal', version: '2.0.0', inference: { loadedModel: 'qwen3.5-9b' } }} />)
 
     expect(await screen.findByRole('heading', { name: 'Usage' })).toBeInTheDocument()
-    expect(screen.getByText('Monthly Cost')).toBeInTheDocument()
+    expect(screen.getByText('Cost Estimate')).toBeInTheDocument()
     expect(screen.getByText('Tokens')).toBeInTheDocument()
     expect(screen.getAllByText('Requests')[0]).toBeInTheDocument()
     expect(screen.getByText('Tracked Providers')).toBeInTheDocument()
-    expect(screen.getByText('Daily Cost (USD)')).toBeInTheDocument()
+    expect(screen.getByText('Daily Cost Estimate')).toBeInTheDocument()
     expect(screen.getByText('Tokens per Day')).toBeInTheDocument()
-    expect(screen.getByText('Local vs Paid Usage')).toBeInTheDocument()
-    expect(screen.getByText('Cost Source Guide')).toBeInTheDocument()
+    expect(screen.getByText('Cost Confidence')).toBeInTheDocument()
+    expect(screen.getByText('Tracking Source Guide')).toBeInTheDocument()
     expect(screen.getByText('Usage by Model')).toBeInTheDocument()
-    expect(screen.getByText('Top Consumers by Cost')).toBeInTheDocument()
-    expect(screen.getByText('Cost by Service')).toBeInTheDocument()
+    expect(screen.getByText('Top Consumers by Tokens')).toBeInTheDocument()
+    expect(screen.getByText('Tokens by Service')).toBeInTheDocument()
     expect(screen.getAllByText('$3.75')[0]).toBeInTheDocument()
     expect(screen.getByText('gpt-4o')).toBeInTheDocument()
     expect(screen.getAllByText('qwen3.5-9b')[0]).toBeInTheDocument()
@@ -235,7 +235,7 @@ describe('Usage page', () => {
     expect(screen.queryByText('unknown-model')).not.toBeInTheDocument()
   })
 
-  it('switches spend chart modes and exports the filtered real rows', async () => {
+  it('switches estimate chart modes and exports the filtered real rows', async () => {
     installFetchMock()
     const clickSpy = vi.spyOn(globalThis.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
     vi.stubGlobal('URL', {

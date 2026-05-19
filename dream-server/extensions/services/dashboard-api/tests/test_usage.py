@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from datetime import date
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 
@@ -96,7 +93,7 @@ def test_usage_report_rejects_reversed_date_range(test_client):
     assert data["source"]["detail"] == "end must be on or after start"
 
 
-def test_usage_report_includes_direct_local_runtime_counters(test_client, monkeypatch):
+def test_usage_report_surfaces_local_runtime_counters_without_date_bucketing(test_client, monkeypatch):
     import routers.usage as usage_router
 
     fetch = AsyncMock(return_value=usage_router._empty_report("2026-05-01", "2026-05-31", status="ok"))
@@ -115,8 +112,6 @@ def test_usage_report_includes_direct_local_runtime_counters(test_client, monkey
     ]
     monkeypatch.setattr(usage_router, "_fetch_token_spy_report", fetch)
     monkeypatch.setattr(usage_router, "_fetch_local_runtime_counters", AsyncMock(return_value=counters))
-    monkeypatch.setattr(usage_router, "_today", lambda: date(2026, 5, 16))
-
     resp = test_client.get(
         "/api/usage/report?start=2026-05-01&end=2026-05-31",
         headers=test_client.auth_headers,
@@ -124,12 +119,40 @@ def test_usage_report_includes_direct_local_runtime_counters(test_client, monkey
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["summary"]["input_tokens"] == 178
-    assert data["summary"]["output_tokens"] == 62
-    assert data["summary"]["total_tokens"] == 240
-    assert data["summary"]["local_providers"] == 1
-    assert round(data["summary"]["spend_usd"], 7) == 0.0000271
-    assert data["models"] == [
+    assert data["summary"]["input_tokens"] == 0
+    assert data["summary"]["output_tokens"] == 0
+    assert data["summary"]["total_tokens"] == 0
+    assert data["summary"]["local_providers"] == 0
+    assert data["summary"]["spend_usd"] == 0
+    assert data["models"] == []
+    assert data["daily"][15]["input_tokens"] == 0
+    assert data["source"]["local_runtime"] == {
+        "status": "observed",
+        "detail": "Cumulative llama.cpp counters observed but not merged into date-bounded totals because Prometheus counters do not include event timestamps",
+        "included_in_totals": False,
+        "adapters": ["llama.cpp"],
+        "counters": [
+            {
+                "runtime": "llama.cpp",
+                "service": "llama-server",
+                "model": "Qwen3.5-9B-Q4_K_M.gguf",
+                "input_tokens": 178,
+                "output_tokens": 62,
+                "requests": 0,
+                "request_count_source": "unavailable",
+            }
+        ],
+        "request_count_available": False,
+        "request_count_sources": ["unavailable"],
+        "request_count_note": None,
+    }
+
+
+def test_usage_report_keeps_token_spy_local_rows_in_date_range(test_client, monkeypatch):
+    import routers.usage as usage_router
+
+    payload = usage_router._empty_report("2026-05-01", "2026-05-31", status="ok")
+    payload["models"].append(
         {
             "model": "Qwen3.5-9B-Q4_K_M.gguf",
             "provider": "local",
@@ -139,21 +162,28 @@ def test_usage_report_includes_direct_local_runtime_counters(test_client, monkey
             "cache_read_tokens": 0,
             "cache_write_tokens": 0,
             "requests": 0,
-            "cost_usd": data["models"][0]["cost_usd"],
-            "cost_source": "local_estimated_from_tokens",
-            "pricing_provider": "Together AI",
-            "pricing_model": "Qwen3.5 9B",
-            "pricing_input_usd_per_1m": 0.1,
-            "pricing_output_usd_per_1m": 0.15,
-            "pricing_source_url": "https://www.together.ai/pricing",
+            "cost_usd": 0,
+            "cost_source": "local_zero_cost",
         }
-    ]
-    assert round(data["models"][0]["cost_usd"], 7) == 0.0000271
-    assert data["daily"][15]["input_tokens"] == 178
-    assert data["source"]["local_runtime"]["status"] == "ok"
-    assert data["source"]["local_runtime"]["adapters"] == ["llama.cpp"]
-    assert data["source"]["local_runtime"]["request_count_available"] is False
-    assert data["source"]["local_runtime"]["request_count_sources"] == ["unavailable"]
+    )
+    payload["summary"]["input_tokens"] = 178
+    payload["summary"]["output_tokens"] = 62
+    payload["summary"]["total_tokens"] = 240
+    payload["summary"]["local_providers"] = 1
+    payload["daily"][15]["input_tokens"] = 178
+    monkeypatch.setattr(usage_router, "_fetch_token_spy_report", AsyncMock(return_value=payload))
+    monkeypatch.setattr(usage_router, "_fetch_local_runtime_counters", AsyncMock(return_value=[]))
+
+    resp = test_client.get(
+        "/api/usage/report?start=2026-05-01&end=2026-05-31",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["summary"]["input_tokens"] == 178
+    assert data["summary"]["local_providers"] == 1
+    assert data["models"][0]["cost_source"] == "local_zero_cost"
 
 
 def test_llama_cpp_prometheus_metrics_are_detected_as_local_runtime(monkeypatch):
@@ -217,25 +247,6 @@ def test_llama_cpp_prometheus_request_count_uses_observed_delta_when_counter_is_
     assert second["requests"] == 1
     assert second["request_count_available"] is True
     assert second["request_count_source"] == "observed_counter_delta"
-
-
-def test_local_equivalent_pricing_covers_model_library_catalog():
-    import routers.usage as usage_router
-
-    repo_root = Path(__file__).resolve().parents[4]
-    models = json.loads((repo_root / "config" / "model-library.json").read_text(encoding="utf-8"))["models"]
-    missing = []
-    for model in models:
-        names = [
-            model.get("gguf_file", ""),
-            model.get("llm_model_name", ""),
-            model.get("id", ""),
-            model.get("name", ""),
-        ]
-        if not any(usage_router._local_equivalent_price(name, 1000, 1000) for name in names if name):
-            missing.append(model["id"])
-
-    assert missing == []
 
 
 def test_usage_token_spy_key_falls_back_to_shared_data_file(tmp_path, monkeypatch):
