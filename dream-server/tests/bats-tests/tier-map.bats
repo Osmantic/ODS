@@ -85,12 +85,13 @@ teardown() {
     assert_equal "$MAX_CONTEXT" "131072"
 }
 
-@test "resolve_tier_config: default profile keeps SH_LARGE on Qwen Coder Next" {
+@test "resolve_tier_config: default profile substitutes SH_LARGE to Qwen 35B A3B" {
     TIER=SH_LARGE
     resolve_tier_config
     assert_equal "$TIER_NAME" "Strix Halo 90+"
     assert_equal "$MODEL_PROFILE_EFFECTIVE" "qwen"
-    assert_equal "$LLM_MODEL" "qwen3-coder-next"
+    assert_equal "$LLM_MODEL" "qwen3.6-35b-a3b"
+    assert_equal "$GGUF_FILE" "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
     assert_equal "$MAX_CONTEXT" "131072"
 }
 
@@ -158,7 +159,7 @@ teardown() {
     assert_output "qwen3-coder-next"
 
     run tier_to_model SH_LARGE
-    assert_output "qwen3-coder-next"
+    assert_output "qwen3.6-35b-a3b"
 
     run tier_to_model SH_COMPACT
     assert_output "qwen3-30b-a3b"
