@@ -220,7 +220,7 @@ _clone_err=$(git clone --depth 1 --filter=blob:none --sparse "$REPO_URL" "$TEMP_
 echo "$_clone_err" | tail -1
 
 cd "$TEMP_DIR/repo"
-git sparse-checkout set dream-server resources/dev/extensions-library 2>/dev/null || {
+git sparse-checkout set dream-server 2>/dev/null || {
     # Fallback: full clone if sparse checkout fails
     cd "$DREAM_BOOTSTRAP_ROOT"
     rm -rf "$TEMP_DIR/repo"
@@ -265,23 +265,22 @@ fi
 success "Cloned to $INSTALL_DIR"
 
 # ── Bundle extensions-library templates ──────────────
-# The dashboard's Extensions page reads from data/extensions-library/, which the
-# installer (phase 06 / install-macos.sh) populates from resources/dev/extensions-library/.
-# That source path is in the OUTER repo (one level above dream-server/), which
-# the rsync above does not copy. Without it, dashboard-api returns:
+# The dashboard's Extensions page reads from data/extensions-library/. The
+# source library now ships inside dream-server/extensions/library/, which the
+# rsync above copies as part of the product tree. Without it, dashboard-api returns:
 #   503 {"detail":"Extensions library is unavailable"}
 # on every install. Bundle the templates inside the install dir so the
 # installer can find them deterministically regardless of where it's invoked.
-if [[ -d "$TEMP_DIR/repo/resources/dev/extensions-library" ]]; then
+if [[ -d "$TEMP_DIR/repo/dream-server/extensions/library" ]]; then
     if rm -rf "$INSTALL_DIR/extensions-library-bundle" \
         && mkdir -p "$INSTALL_DIR/extensions-library-bundle" \
-        && cp -R "$TEMP_DIR/repo/resources/dev/extensions-library/." "$INSTALL_DIR/extensions-library-bundle/"; then
+        && cp -R "$TEMP_DIR/repo/dream-server/extensions/library/." "$INSTALL_DIR/extensions-library-bundle/"; then
         success "Bundled extensions-library templates"
     else
         warn "Failed to bundle extensions-library — Extensions page may 503"
     fi
 else
-    warn "resources/dev/extensions-library not in clone — Extensions page will 503"
+    warn "dream-server/extensions/library not in clone — Extensions page will 503"
 fi
 
 # ── Make scripts executable ──────────────────────────

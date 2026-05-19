@@ -14,7 +14,7 @@ If AI is becoming critical infrastructure, it shouldn’t be rented. Self-hostin
 [![GitHub Stars](https://img.shields.io/github/stars/Light-Heart-Labs/DreamServer)](https://github.com/Light-Heart-Labs/DreamServer/stargazers)
 [![Release](https://img.shields.io/github/v/release/Light-Heart-Labs/DreamServer)](https://github.com/Light-Heart-Labs/DreamServer/releases)
 
-![Dream Server Dashboard](resources/docs/images/dashboard.png)
+![Dream Server Dashboard](dream-server/docs/images/dashboard.png)
 
 [![Watch the demo](https://img.shields.io/badge/Demo-Watch%20on%20YouTube-red?logo=youtube)](https://youtu.be/nO8xFNHX-HA)
 
@@ -73,7 +73,7 @@ Open **http://localhost:3000** and start chatting.
 
 <div align="center">
 
-![Dream Server Installer](resources/docs/images/installer-splash.gif)
+![Dream Server Installer](dream-server/docs/images/installer-splash.gif)
 
 *The DREAMGATE installer handles everything — GPU detection, model selection, service orchestration.*
 
@@ -226,7 +226,7 @@ No waiting for large downloads. Dream Server uses bootstrap mode by default:
 
 <div align="center">
 
-![Installer downloading modules](resources/docs/images/installer-download.png)
+![Installer downloading modules](dream-server/docs/images/installer-download.png)
 
 *The installer pulls all services in parallel. Downloads are resume-capable — interrupted downloads pick up where they left off.*
 
@@ -406,7 +406,7 @@ Thanks to [lhl](https://github.com/lhl) for [strix-halo-testing](https://github.
 *   [reo0603](https://github.com/reo0603) — Fixed Makefile paths after dashboard-api move and heredoc quoting bug in session-manager.sh SSH command, narrowed broad exception catches to specific types across dashboard-api, parallelized health checks for 17× faster execution, added compose.local.yaml for dashboard/open-webui/privacy-shield service dependencies, added .dockerignore files to all custom Dockerfiles reducing build context, fixed H2C smuggling vector in nginx proxy and added wss:// for HTTPS in voice agent, added comprehensive extension integration and hardware compatibility test suites, and hardened secret management with .gitignore patterns for key/pem/credential files and SQL identifier validation in token-spy
 *   [Arifuzzaman Joy (Arifuzzamanjoy)](https://github.com/Arifuzzamanjoy) — Pinned yq and docker-compose versions in the bootstrap Dockerfile replacing floating `/latest/` tags with reproducible ARG-based version pins, added Draft7Validator compatibility for jsonschema 3.x on Ubuntu 22.04/24.04, added compatibility blocks (dream_min version bounds) to 25 extension library manifests, added missing gpu_backends to 8 extension manifests, added cpu and none to the gpu_backends schema enum enabling CPU-only service declarations, fixed gpu_backends on 13+ extension manifests resolving schema validation failures, added missing required fields (icon, category, requirements, priority) to localai features, fixed env_vars schema compliance (name to key) in bark and rvc manifests, corrected privacy-shield service ID to match schema pattern, and fixed typo in baserow manifest tags
 *   [nt1412](https://github.com/nt1412) — Wired dashboard-api agent metrics to Token Spy with background metrics collection, added TOKEN_SPY_URL/TOKEN_SPY_API_KEY env vars, fixed missing key_management.py in privacy-shield Dockerfile, and added ui_path to dashboard sidebar links so extension services open at their correct UI page
-*   [evereq](https://github.com/evereq) — Relocated docs/images to resources/docs/images for cleaner monorepo root
+*   [evereq](https://github.com/evereq) — Relocated docs/images for cleaner monorepo root
 *   [championVisionAI](https://github.com/championVisionAI) — Added Alpine Linux (apk) and Void Linux (xbps) package manager support to the installer abstraction layer, hardened hardware detection with JSON output escaping and container/WSL2 detection, rewrote healthcheck.py with retries, HEAD-to-GET fallback, status code matching, and structured JSON output, hardened Docker phase with daemon start/retry logic and compose v1/v2 detection, added cross-platform python3/python command resolution with shared detection utility, and hardened env schema validation with robust .env parsing, enum validation, and line-number error reporting, added sim summary validation test suite with 10 test cases covering help, missing files, invalid JSON, and strict mode, hardened hardware detection with JSON output escaping and container/WSL2 detection, hardened healthcheck.py with retries and HEAD-to-GET fallback, hardened Docker phase with daemon start/retry and compose v1/v2 detection, fixed Windows python3/python command resolution, added extension audit workflow with 838-line Python auditor and 'dream audit' CLI command, added duplicate key detection to env validation, added compact JSON output mode and --help flag to hardware detection, and failed env validation on duplicate keys preventing silent config corruption
 
 *   [buddy0323](https://github.com/buddy0323) — Ported Windows installer phases 01-07 to native PowerShell decomposing the monolithic script into focused phase files, added Intel Arc SYCL tier map (ARC/ARC_LITE) with docker-compose.intel.yml overlay, detection logic, tier-map tests, and SHA256 verification, added Intel Arc oneAPI SYCL compose overlay with two-stage llama-sycl Dockerfile, added Intel Arc detection checks (lspci, Level Zero runtime, render nodes, group membership), and authored the Intel Arc support matrix documentation and setup guide

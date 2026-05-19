@@ -647,12 +647,13 @@ else
     fi
 
     # Copy extensions library to data dir for dashboard portal.
-    # Source resolution: dev installs find it via SOURCE_ROOT/.. (outer repo).
-    # Bootstrap installs (curl-piped) get the templates bundled inside the
-    # install dir by get-dream-server.sh under extensions-library-bundle/.
+    # Source resolution: dev installs and full checkouts read the product-owned
+    # library under extensions/library/. Bootstrap installs also get the same
+    # templates bundled by get-dream-server.sh under extensions-library-bundle/.
     _ext_lib_src=""
     for _candidate in \
-        "${SOURCE_ROOT}/../resources/dev/extensions-library/services" \
+        "${SOURCE_ROOT}/extensions/library/services" \
+        "${INSTALL_DIR}/extensions/library/services" \
         "${INSTALL_DIR}/extensions-library-bundle/services"
     do
         if [[ -d "$_candidate" ]]; then _ext_lib_src="$_candidate"; break; fi

@@ -10,8 +10,8 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMPLATES_DIR="$PROJECT_DIR/templates"
 EXTENSIONS_DIR="$PROJECT_DIR/extensions/services"
 # Library extension source (pre-install). Runtime path after install is
-# data/extensions-library/ but the source tree ships them under resources/dev/.
-EXTENSIONS_LIBRARY_DIR="${EXTENSIONS_LIBRARY_DIR:-$PROJECT_DIR/../resources/dev/extensions-library/services}"
+# data/extensions-library/ but the source tree ships them under dream-server/extensions/library/.
+EXTENSIONS_LIBRARY_DIR="${EXTENSIONS_LIBRARY_DIR:-$PROJECT_DIR/extensions/library/services}"
 
 PASS=0
 FAIL=0

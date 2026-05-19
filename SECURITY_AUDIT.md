@@ -24,7 +24,7 @@ The Critical finding should be addressed immediately — format-valid credential
 
 ### C1 — Likely real LiveKit credentials committed to public repo
 
-**File:** `resources/frameworks/voice-agent/core/hvac-token-server.py:19-20`
+**Historical file:** legacy voice-agent framework token server, removed from the maintained product tree
 **Detected by:** gitleaks (generic-api-key)
 
 ```python
@@ -43,7 +43,7 @@ These are not placeholder values. They appear to be real LiveKit credentials bel
 
 **Remediation:**
 1. Rotate the LiveKit API key and secret immediately at console.livekit.io
-2. Remove the file from git history: `git filter-repo --path resources/frameworks/voice-agent/core/hvac-token-server.py --invert-paths`
+2. Remove the historical file from git history with `git filter-repo` if the project chooses to rewrite public history
 3. Replace with environment variable references: `API_KEY = os.environ['LIVEKIT_API_KEY']`
 
 ---

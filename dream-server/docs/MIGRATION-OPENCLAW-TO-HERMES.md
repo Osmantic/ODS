@@ -87,7 +87,7 @@ For planning, here's what the removal PR drops:
 - `tests/test-openclaw-inject-token.sh`
 - All `ENABLE_OPENCLAW` / `--openclaw` / `--no-openclaw` references in `install-core.sh` and `dream-uninstall.sh`
 - The OpenClaw row from `extensions/CATALOG.md`
-- `resources/blog/m1-fully-local-openclaw-launch.md` moves to `resources/legacy/blog/`
+- The legacy OpenClaw launch blog is removed from the maintained product tree
 
 If any of these touch a workflow you care about, please open an issue before the next release ships so we can either preserve it (rename / refactor under the Hermes namespace) or document a clean alternative.
 

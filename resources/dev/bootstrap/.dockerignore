@@ -1,8 +1,0 @@
-.git
-data/
-logs/
-*.log
-node_modules/
-dist/
-__pycache__/
-*.pyc

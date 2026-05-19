@@ -123,15 +123,16 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     fi
 
     # Copy extensions library to data dir for dashboard portal.
-    # Source resolution: dev installs (running from a checkout) find it via
-    # $SCRIPT_DIR/../resources/. Bootstrap installs (curl-piped) get the
-    # templates bundled inside the install dir by get-dream-server.sh under
-    # extensions-library-bundle/. Without one of these paths, dashboard-api's
-    # /api/extensions/{id}/install endpoint returns 503 "Extensions library is
-    # unavailable" and the dashboard's Extensions page is non-functional.
+    # Source resolution: dev installs and full checkouts read the product-owned
+    # library under extensions/library/. Bootstrap installs also get the same
+    # templates bundled by get-dream-server.sh under extensions-library-bundle/.
+    # Without one of these paths, dashboard-api's /api/extensions/{id}/install
+    # endpoint returns 503 "Extensions library is unavailable" and the
+    # dashboard's Extensions page is non-functional.
     _ext_lib_src=""
     for _candidate in \
-        "$SCRIPT_DIR/../resources/dev/extensions-library/services" \
+        "$SCRIPT_DIR/extensions/library/services" \
+        "$INSTALL_DIR/extensions/library/services" \
         "$INSTALL_DIR/extensions-library-bundle/services"
     do
         if [[ -d "$_candidate" ]]; then _ext_lib_src="$_candidate"; break; fi
