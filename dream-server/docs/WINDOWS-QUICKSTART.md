@@ -67,6 +67,7 @@ The installer automatically uses bootstrap mode when applicable — a small mode
 | `-Rag` | Enable Qdrant vector DB |
 | `-Hermes` | Enable Hermes Agent explicitly |
 | `-NoHermes` | Disable Hermes Agent |
+| `-NoBootstrap` | Wait for the full model before launching |
 | `-OpenClaw` | Enable deprecated OpenClaw agent framework |
 | `-Comfyui` | Enable ComfyUI image generation |
 | `-Langfuse` | Enable Langfuse LLM observability |

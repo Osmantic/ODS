@@ -31,6 +31,7 @@
 #   .\install-windows.ps1 --DryRun         # Validate without installing
 #   .\install-windows.ps1 --All            # Enable all optional services
 #   .\install-windows.ps1 -NoHermes        # Disable Hermes Agent
+#   .\install-windows.ps1 -NoBootstrap     # Wait for full model before launch
 #   .\install-windows.ps1 --NonInteractive # Headless install (defaults)
 #
 # ============================================================================
@@ -54,6 +55,7 @@ param(
     [switch]$Lan,
     [switch]$Langfuse,
     [switch]$NoLangfuse,
+    [switch]$NoBootstrap,
     [string]$SummaryJsonPath = ""
 )
 
@@ -97,6 +99,7 @@ $noComfyuiFlag  = $NoComfyui.IsPresent
 $lanFlag        = $Lan.IsPresent
 $langfuseFlag   = $Langfuse.IsPresent
 $noLangfuseFlag = $NoLangfuse.IsPresent
+$noBootstrapFlag = $NoBootstrap.IsPresent
 $installDir     = $script:DS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
 
@@ -210,7 +213,8 @@ if ($dryRun) {
         $fullTierConfig = $null
 
         if (Should-UseBootstrap -Tier $selectedTier -InstallDir $installDir `
-                -GgufFile $tierConfig.GgufFile -CloudMode $cloudMode) {
+                -GgufFile $tierConfig.GgufFile -CloudMode $cloudMode `
+                -NoBootstrap $noBootstrapFlag) {
             $bootstrapActive = $true
             $fullTierConfig = @{}
             foreach ($k in $tierConfig.Keys) { $fullTierConfig[$k] = $tierConfig[$k] }
