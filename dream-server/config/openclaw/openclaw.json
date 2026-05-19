@@ -32,7 +32,7 @@
     "mode": "local",
     "controlUi": {
       "allowInsecureAuth": true,
-      "dangerouslyDisableDeviceAuth": true
+      "dangerouslyDisableDeviceAuth": false
     }
   }
 }

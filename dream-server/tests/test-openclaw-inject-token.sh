@@ -11,8 +11,11 @@
 #     container start, so any cosmetic edit to openclaw.json/pro.json/
 #     openclaw-strix-halo.json is overridden by this script. The test must
 #     guard the *runtime* output, not just the static JSON files.
-#   - dangerouslyDisableDeviceAuth=true MUST stay (Docker auto-connect breaks
-#     without it; the auth pairing flow is incompatible with inject-token.js).
+#   - Device auth defaults ON (#1270): with the opt-in env unset,
+#     dangerouslyDisableDeviceAuth must be false/absent in BOTH the merged
+#     config and the ~/.openclaw home config. Setting
+#     OPENCLAW_DANGEROUSLY_DISABLE_DEVICE_AUTH=true deliberately disables it
+#     and must emit a loud startup warning.
 #   - allowedOrigins must be populated so the gateway no longer needs the
 #     Host-header fallback to accept cross-origin requests from the Control UI.
 #
@@ -127,12 +130,72 @@ else
     pass "dangerouslyAllowHostHeaderOriginFallback absent from merged config"
 fi
 
-# ── Assertion 2: dangerouslyDisableDeviceAuth still TRUE (Docker regression guard) ─
-if [[ "$(jq -r '.gateway.controlUi.dangerouslyDisableDeviceAuth' "$MERGED_PATH")" == "true" ]]; then
-    pass "dangerouslyDisableDeviceAuth=true preserved (Docker auto-connect intact)"
+# ── Assertion 2: device auth ENABLED by default (#1270 security guard) ──────
+# With OPENCLAW_DANGEROUSLY_DISABLE_DEVICE_AUTH unset, inject-token.js must NOT
+# disable device auth. The flag must be false or absent in BOTH the merged
+# config (Part 3) and the ~/.openclaw home config (Part 1).
+HOME_CONFIG="$TEST_HOME/.openclaw/openclaw.json"
+merged_da="$(jq -r '.gateway.controlUi.dangerouslyDisableDeviceAuth // "ABSENT"' "$MERGED_PATH")"
+if [[ "$merged_da" == "false" || "$merged_da" == "ABSENT" ]]; then
+    pass "merged config: device auth enabled by default (dangerouslyDisableDeviceAuth=$merged_da)"
 else
-    fail "dangerouslyDisableDeviceAuth must remain true — Docker auto-connect would break"
+    fail "merged config: device auth must default ON — dangerouslyDisableDeviceAuth=$merged_da (expected false/absent)"
 fi
+if [[ -f "$HOME_CONFIG" ]]; then
+    home_da="$(jq -r '.gateway.controlUi.dangerouslyDisableDeviceAuth // "ABSENT"' "$HOME_CONFIG")"
+    if [[ "$home_da" == "false" || "$home_da" == "ABSENT" ]]; then
+        pass "home config: device auth enabled by default (dangerouslyDisableDeviceAuth=$home_da)"
+    else
+        fail "home config: device auth must default ON — dangerouslyDisableDeviceAuth=$home_da (expected false/absent)"
+    fi
+else
+    fail "home config ~/.openclaw/openclaw.json not written (Part 1)"
+fi
+
+# ── Assertion 2b: explicit opt-in disables device auth AND warns ───────────
+# OPENCLAW_DANGEROUSLY_DISABLE_DEVICE_AUTH=true must (a) set the flag true in
+# both configs and (b) emit a loud startup warning on stderr.
+OPTIN_HOME="$(mktemp -d -t dream-openclaw-optin-XXXXXXXX)"
+mkdir -p "$OPTIN_HOME/.openclaw"
+printf '%s\n' '<!doctype html><html><head></head><body></body></html>' >"$OPTIN_HOME/index.html"
+rm -f "$MERGED_PATH"
+optin_stderr="$(
+    HOME="$OPTIN_HOME" \
+    OPENCLAW_GATEWAY_TOKEN="test-token-abc123" \
+    OPENCLAW_EXTERNAL_PORT="7860" \
+    OPENCLAW_CONFIG="$SOURCE_CONFIG" \
+    OPENCLAW_CONTROL_UI_HTML="$OPTIN_HOME/index.html" \
+    OPENCLAW_AUTO_TOKEN_JS="$OPTIN_HOME/auto-token.js" \
+    BIND_ADDRESS="127.0.0.1" \
+    LLM_MODEL="test-model" \
+    GGUF_FILE="" \
+    OLLAMA_URL="" \
+    OPENCLAW_LLM_URL="" \
+    LITELLM_KEY="" \
+    OPENCLAW_DANGEROUSLY_DISABLE_DEVICE_AUTH="true" \
+        node "$INJECT_SCRIPT" 2>&1 >/dev/null
+)"
+OPTIN_HOME_CONFIG="$OPTIN_HOME/.openclaw/openclaw.json"
+if [[ "$(jq -r '.gateway.controlUi.dangerouslyDisableDeviceAuth' "$MERGED_PATH")" == "true" ]]; then
+    pass "opt-in: merged config disables device auth when env=true"
+else
+    fail "opt-in: merged config should disable device auth when OPENCLAW_DANGEROUSLY_DISABLE_DEVICE_AUTH=true"
+fi
+if [[ -f "$OPTIN_HOME_CONFIG" ]] && [[ "$(jq -r '.gateway.controlUi.dangerouslyDisableDeviceAuth' "$OPTIN_HOME_CONFIG")" == "true" ]]; then
+    pass "opt-in: home config disables device auth when env=true"
+else
+    fail "opt-in: home config should disable device auth when OPENCLAW_DANGEROUSLY_DISABLE_DEVICE_AUTH=true"
+fi
+if grep -Eqi 'SECURITY WARNING.*DEVICE AUTH DISABLED' <<<"$optin_stderr"; then
+    pass "opt-in: loud device-auth-disabled warning emitted"
+else
+    fail "opt-in: expected a loud device-auth-disabled startup warning on stderr"
+fi
+rm -rf "$OPTIN_HOME"
+rm -f "$MERGED_PATH"
+# Restore the default (no-opt-in) merged + home config for later assertions.
+write_test_html
+run_inject
 
 # ── Assertion 3: allowInsecureAuth still TRUE (HTTP-only deployment guard) ──
 if [[ "$(jq -r '.gateway.controlUi.allowInsecureAuth' "$MERGED_PATH")" == "true" ]]; then

@@ -34,6 +34,52 @@ const CONFIG_PATH = path.join(process.env.HOME || '/home/node', '.openclaw', 'op
 const HTML_PATH = process.env.OPENCLAW_CONTROL_UI_HTML || '/app/dist/control-ui/index.html';
 const JS_PATH = process.env.OPENCLAW_AUTO_TOKEN_JS || '/app/dist/control-ui/auto-token.js';
 
+// ── Device auth policy (#1270) ────────────────────────────────────────────────
+//
+// Device auth (pairing) is a SEPARATE gate from token auth. Token auth + a
+// valid injected gateway token still auto-connect on loopback with device auth
+// ON, so device auth defaults to ON regardless of bind mode. Disabling it is an
+// explicit, deliberate opt-in via OPENCLAW_DANGEROUSLY_DISABLE_DEVICE_AUTH.
+//
+// Behaviour:
+//   - unset / anything but "true"  -> device auth ON (delete the disable key so
+//                                     the gateway default of device auth ON
+//                                     takes effect)
+//   - exactly "true"               -> device auth DISABLED + loud startup banner
+//
+// allowInsecureAuth is a distinct transport concern and is intentionally NOT
+// touched here.
+const DISABLE_DEVICE_AUTH =
+  (process.env.OPENCLAW_DANGEROUSLY_DISABLE_DEVICE_AUTH || '').trim().toLowerCase() === 'true';
+let _deviceAuthWarned = false;
+
+// Apply the device-auth decision to a controlUi object in place. When disabled,
+// emit the warning banner exactly once per process (Part 1 and Part 3 share
+// this helper). Logging is redaction-safe: no token or secret is ever printed.
+function applyDeviceAuthPolicy(controlUi) {
+  if (DISABLE_DEVICE_AUTH) {
+    controlUi.dangerouslyDisableDeviceAuth = true;
+    if (!_deviceAuthWarned) {
+      _deviceAuthWarned = true;
+      console.warn('[inject-token] ┌──────────────────────────────────────────────────────────┐');
+      console.warn('[inject-token] │  *** SECURITY WARNING: DEVICE AUTH DISABLED ***          │');
+      console.warn('[inject-token] │                                                          │');
+      console.warn('[inject-token] │  OPENCLAW_DANGEROUSLY_DISABLE_DEVICE_AUTH=true is set.   │');
+      console.warn('[inject-token] │  The OpenClaw gateway will NOT require device pairing.   │');
+      console.warn('[inject-token] │  Anyone who can reach the gateway (LAN/Tailscale/0.0.0.0 │');
+      console.warn('[inject-token] │  binds) gets an UNAUTHENTICATED agent with exec / read / │');
+      console.warn('[inject-token] │  write tools. Unset this variable to restore the secure  │');
+      console.warn('[inject-token] │  default (device auth ON).                               │');
+      console.warn('[inject-token] └──────────────────────────────────────────────────────────┘');
+    }
+  } else {
+    // Remove the key entirely so the gateway falls back to its secure default
+    // (device auth ON). Deleting is more robust than setting false against
+    // pre-PR configs persisted on the named Docker volume.
+    delete controlUi.dangerouslyDisableDeviceAuth;
+  }
+}
+
 // ── Part 1: Patch runtime config ──────────────────────────────────────────────
 
 try {
@@ -71,7 +117,8 @@ try {
 
   // Ensure controlUi flags are set for local use
   config.gateway.controlUi.allowInsecureAuth = true;
-  config.gateway.controlUi.dangerouslyDisableDeviceAuth = true;
+  // Device auth defaults ON; disable only via explicit opt-in env (#1270).
+  applyDeviceAuthPolicy(config.gateway.controlUi);
   delete config.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback;  // defang upgrades from pre-PR installs that wrote this flag to the persistent volume
 
   // Keep token auth (required for LAN bind) with token from env
@@ -251,7 +298,8 @@ try {
     if (!primary.gateway.mode) primary.gateway.mode = 'local';
     if (!primary.gateway.controlUi) primary.gateway.controlUi = {};
     primary.gateway.controlUi.allowInsecureAuth = true;
-    primary.gateway.controlUi.dangerouslyDisableDeviceAuth = true;
+    // Device auth defaults ON; disable only via explicit opt-in env (#1270).
+    applyDeviceAuthPolicy(primary.gateway.controlUi);
     delete primary.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback;  // defang carry-over (mirrors Part 1)
     const extPort = process.env.OPENCLAW_EXTERNAL_PORT || '7860';
     const origins = primary.gateway.controlUi.allowedOrigins || [];
