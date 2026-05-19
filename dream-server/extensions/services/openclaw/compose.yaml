@@ -52,9 +52,20 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # When OpenClaw is enabled, register it as a second model backend in Open WebUI.
-  # Port 18790 is the OpenAI-compat shim (serves /v1/models + proxies /v1/chat/completions).
-  open-webui:
-    environment:
-      - OPENAI_API_BASE_URLS=${LLM_API_URL:-http://llama-server:8080}/v1;http://openclaw:18790/v1
-      - OPENAI_API_KEYS=;${OPENCLAW_TOKEN:-}
+  # NOTE: OpenClaw's OpenAI-compat shim (port 18790) is conditional on
+  # OPENCLAW_HTTP_API=true, which is not set anywhere in our compose path
+  # — so 18790 isn't listening, and an Open WebUI override that adds
+  # `http://openclaw:18790/v1` to OPENAI_API_BASE_URLS produced
+  # "Connection refused" against the second upstream, breaking the model
+  # dropdown entirely (it would silently swallow llama-server's models
+  # depending on the OWUI version's fan-out failure mode).
+  #
+  # Given OpenClaw is being deprecated in favor of Hermes Agent (see
+  # docs/HERMES.md "OpenClaw migration"), the right move is to stop
+  # routing Open WebUI through the broken shim. Users wanting the
+  # OpenClaw UI directly still reach it on its host port (default 7860,
+  # bound by `ports:` above).
+  #
+  # If we ever want to re-add OpenClaw as a WebUI backend, the fix is:
+  # (a) set OPENCLAW_HTTP_API=true on the openclaw service to enable
+  #     the 18790 shim, and (b) restore the upstream block below.
