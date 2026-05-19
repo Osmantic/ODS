@@ -733,7 +733,7 @@ except Exception:
     _phase11_allow_host_agent_firewall dream-network
 
     if $compose_ok; then
-        if ! _phase11_assert_managed_containers false; then
+        if ! _phase11_assert_managed_containers; then
             exit 1
         fi
         printf "\r  ${BGRN}✓${NC} %-60s\n" "All containers launched"

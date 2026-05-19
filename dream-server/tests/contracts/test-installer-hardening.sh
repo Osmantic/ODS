@@ -17,6 +17,19 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local file="$1"
+  local pattern="$2"
+  local msg="$3"
+  if grep -qE "$pattern" "$file"; then
+    echo "[FAIL] $msg"
+    echo "---- output ----"
+    cat "$file"
+    echo "----------------"
+    exit 1
+  fi
+}
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -151,6 +164,7 @@ echo "[contract] compose launch cannot silently produce zero containers"
 assert_contains "installers/phases/11-services.sh" 'logs/compose-launch\.txt' "Linux installer missing compose launch record"
 assert_contains "installers/phases/11-services.sh" 'ps -q' "Linux installer does not count compose-managed containers"
 assert_contains "installers/phases/11-services.sh" 'Docker Compose did not create any managed containers' "Linux installer does not fail loud on zero managed containers"
+assert_not_contains "installers/phases/11-services.sh" '_phase11_assert_managed_containers false' "Linux zero-container path must write a compose failure report"
 assert_contains "installers/macos/install-macos.sh" 'compose-launch\.txt' "macOS installer missing compose launch record"
 assert_contains "installers/macos/install-macos.sh" 'ps -q' "macOS installer does not count compose-managed containers"
 assert_contains "installers/macos/install-macos.sh" 'docker compose up completed but created no managed containers' "macOS installer does not fail loud on zero managed containers"
