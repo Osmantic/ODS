@@ -141,6 +141,12 @@ else
     fail "archive does not contain manifest.json"
 fi
 
+if grep -q "/manifest/evidence.json$" "$TAR_LIST"; then
+    pass "archive contains manifest/evidence.json"
+else
+    fail "archive does not contain manifest/evidence.json"
+fi
+
 if [[ -f "$BUNDLE_DIR/config/env.redacted" ]] && grep -q "DASHBOARD_API_KEY=\\[REDACTED\\]" "$BUNDLE_DIR/config/env.redacted"; then
     pass ".env is included only as redacted env"
 else
@@ -151,6 +157,32 @@ if grep -R "$SECRET_VALUE" "$BUNDLE_DIR" >/dev/null 2>&1; then
     fail "raw test secret leaked into bundle directory"
 else
     pass "raw test secret is absent from bundle directory"
+fi
+
+EVIDENCE_PATH="$BUNDLE_DIR/manifest/evidence.json"
+if [[ -f "$EVIDENCE_PATH" ]] && python3 -m json.tool "$EVIDENCE_PATH" >/dev/null; then
+    pass "evidence.json is valid JSON"
+else
+    fail "evidence.json is missing or invalid"
+fi
+
+if python3 - "$EVIDENCE_PATH" <<'PY'
+import json
+import sys
+evidence = json.load(open(sys.argv[1], encoding="utf-8"))
+assert evidence["version"] == "1"
+assert "platform" in evidence
+assert "backend" in evidence
+assert "compose" in evidence
+assert "config_hashes" in evidence
+assert evidence["env_keys"]["DASHBOARD_API_KEY"]["redacted"] is True
+assert evidence["env_keys"]["DASHBOARD_API_KEY"]["value"] is None
+assert evidence["env_keys"]["NORMAL_VALUE"]["value"] == "visible-value"
+PY
+then
+    pass "evidence.json records redacted env and support metadata"
+else
+    fail "evidence.json is missing expected support metadata"
 fi
 
 ENV_MEMBER="$(grep '/config/env.redacted$' "$TAR_LIST" | sed -n '1p')"
@@ -179,6 +211,7 @@ assert manifest["tool"] == "dream-support-bundle"
 assert isinstance(manifest["files"], list) and manifest["files"]
 assert isinstance(manifest["commands"], list) and manifest["commands"]
 assert any(command["label"] == "docker-version" for command in manifest["commands"])
+assert any(item["path"] == "manifest/evidence.json" for item in manifest["files"])
 PY
 then
     pass "manifest records files and command exit codes"

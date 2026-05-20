@@ -117,6 +117,9 @@ jobs:
       - name: Update Rollback Contract
         run: bash tests/test-update-rollback-contract.sh
 
+      - name: Support Bundle Evidence Tests
+        run: bash tests/test-support-bundle.sh
+
       - name: Upload Installer Simulation Artifacts
         uses: actions/upload-artifact@v7
         with:

@@ -525,6 +525,152 @@ manifest = {
 PY
 }
 
+write_evidence() {
+    "$PYTHON_CMD" - "$BUNDLE_DIR" "$ROOT_DIR" <<'PY'
+import hashlib
+import json
+import platform
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+bundle_dir = Path(sys.argv[1])
+root_dir = Path(sys.argv[2])
+status_path = bundle_dir / "manifest" / "command-status.tsv"
+
+secret = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)", re.I)
+
+
+def load_json(path):
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return None
+
+
+def env_pairs(path):
+    result = {}
+    if not path.exists():
+        return result
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[7:].strip()
+        result[key] = value.strip().strip('"').strip("'")
+    return result
+
+
+def sha256_file(path):
+    if not path.exists() or not path.is_file():
+        return None
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def command_statuses():
+    commands = []
+    if status_path.exists():
+        for line in status_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            parts = line.split("\t")
+            if len(parts) != 3:
+                continue
+            label, path, exit_code = parts
+            try:
+                exit_code_value = int(exit_code)
+            except ValueError:
+                exit_code_value = None
+            commands.append({"label": label, "path": path, "exit_code": exit_code_value})
+    return commands
+
+
+def parse_compose_flags():
+    path = bundle_dir / "validation" / "compose-flags.txt"
+    result = {"raw": "", "files": []}
+    if not path.exists():
+        return result
+    text = path.read_text(encoding="utf-8", errors="replace")
+    for line in text.splitlines():
+        if line.startswith("COMPOSE_FLAGS="):
+            raw = line.split("=", 1)[1].strip()
+            result["raw"] = raw
+            parts = raw.split()
+            result["files"] = [parts[i + 1] for i, part in enumerate(parts[:-1]) if part == "-f"]
+            break
+    return result
+
+
+manifest = load_json(root_dir / "manifest.json") or {}
+doctor = load_json(bundle_dir / "diagnostics" / "dream-doctor.json") or {}
+extension_audit = load_json(bundle_dir / "diagnostics" / "extension-audit.json") or {}
+env = env_pairs(root_dir / ".env")
+
+public_env_keys = {
+    key: {
+        "present": True,
+        "redacted": bool(secret.search(key)),
+        "value": None if secret.search(key) else value,
+    }
+    for key, value in sorted(env.items())
+}
+
+config_hash_targets = [
+    "manifest.json",
+    ".env.schema.json",
+    "config/ports.json",
+    "config/golden-paths.json",
+    "config/generated-config-contracts.json",
+    "config/litellm/lemonade.yaml",
+    "extensions/services/hermes/cli-config.yaml.template",
+]
+
+evidence = {
+    "version": "1",
+    "generated_at": datetime.now(timezone.utc).isoformat(),
+    "tool": "dream-support-bundle",
+    "platform": {
+        "system": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+        "python": platform.python_version(),
+    },
+    "dream": {
+        "version": manifest.get("dream_version") or manifest.get("release", {}).get("version"),
+        "release": manifest.get("release", {}),
+    },
+    "backend": {
+        "dream_mode": env.get("DREAM_MODE"),
+        "gpu_backend": env.get("GPU_BACKEND"),
+        "gpu_count": env.get("GPU_COUNT"),
+        "llm_backend": env.get("LLM_BACKEND"),
+        "llm_model": env.get("LLM_MODEL"),
+    },
+    "env_keys": public_env_keys,
+    "compose": parse_compose_flags(),
+    "doctor_summary": doctor.get("summary", {}),
+    "extension_audit_summary": extension_audit.get("summary", {}),
+    "config_hashes": {
+        target: sha256_file(root_dir / target)
+        for target in config_hash_targets
+        if (root_dir / target).exists()
+    },
+    "commands": command_statuses(),
+}
+
+(bundle_dir / "manifest" / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+    redact_file "$BUNDLE_DIR/manifest/evidence.json"
+}
+
 write_summary_json() {
     "$PYTHON_CMD" - "$BUNDLE_DIR" "$ARCHIVE_PATH" <<'PY'
 import json
@@ -550,6 +696,7 @@ collect_config
 collect_diagnostics
 collect_compose_validation
 collect_docker
+write_evidence
 write_manifest
 
 tar -czf "$ARCHIVE_PATH" -C "$OUTPUT_DIR" "$BUNDLE_NAME"
