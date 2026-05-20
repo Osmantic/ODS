@@ -847,6 +847,77 @@ else
     log "Docker services not running. Config updated — full model will load on next start."
 fi
 
+# ── Phase 5c: Update Perplexica's defaultChatModel ──
+# Phase 12 of the installer configures Perplexica with whatever LLM_MODEL was
+# in scope at that time — which on bootstrap installs is the bootstrap model
+# name (e.g. qwen3.5-2b), NOT the full model. Without an update here,
+# Perplexica's settings.preferences.defaultChatModel stays "qwen3.5-2b"
+# forever, even after the hot-swap replaces the underlying GGUF. The UI
+# shows the wrong model name in the dropdown, and the chatModels list under
+# the OpenAI provider keeps the bootstrap entry instead of the full model.
+#
+# Requests still functionally route via LiteLLM's `*` wildcard or llama.cpp's
+# served-model-passthrough, so this hasn't been a hard failure — but it's a
+# cosmetic + future-proofing issue (a non-wildcard router would 404 the
+# stale model id). Mirror the install-time logic from
+# installers/phases/12-health.sh:194-238: update modelProviders + preferences
+# via Perplexica's `/api/config` PUT endpoint.
+PERPLEXICA_PORT=$(grep -E '^PERPLEXICA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r')
+: "${PERPLEXICA_PORT:=3004}"
+_perplexica_url="http://127.0.0.1:${PERPLEXICA_PORT}"
+if curl -sf --max-time 3 "${_perplexica_url}/api/config" >/dev/null 2>&1; then
+    log "Updating Perplexica config to point at ${FULL_LLM_MODEL}..."
+    _py_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+    if [[ -n "$_py_cmd" ]]; then
+        # On Lemonade, LiteLLM exposes the model id as "extra.<GGUF_FILE>".
+        # On NVIDIA/Apple/CPU, llama.cpp serves under the bare model id —
+        # Phase 12 picks the friendly LLM_MODEL string, so do the same.
+        _px_model="$FULL_LLM_MODEL"
+        _gpu_backend_for_perplexica=$(grep -E '^GPU_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' || echo "")
+        if [[ "$_gpu_backend_for_perplexica" == "amd" ]]; then
+            _px_model="extra.$FULL_GGUF_FILE"
+        fi
+        _litellm_key=$(grep -E '^LITELLM_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' || echo "no-key")
+        : "${_litellm_key:=no-key}"
+        if curl -sf --max-time 3 "${_perplexica_url}/api/config" 2>/dev/null | \
+            PERPLEXICA_URL="$_perplexica_url" \
+            PX_MODEL="$_px_model" \
+            PX_KEY="$_litellm_key" \
+            "$_py_cmd" -c '
+import os, sys, json, urllib.request
+config = json.load(sys.stdin)["values"]
+providers = config.get("modelProviders", [])
+openai_prov = next((p for p in providers if p["type"] == "openai"), None)
+if not openai_prov:
+    sys.exit(0)  # Perplexica has no OpenAI provider configured; skip (non-fatal)
+url = os.environ["PERPLEXICA_URL"] + "/api/config"
+model = os.environ["PX_MODEL"]
+key = os.environ["PX_KEY"]
+def post(k, v):
+    data = json.dumps({"key": k, "value": v}).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    urllib.request.urlopen(req, timeout=5)
+openai_prov["chatModels"] = [{"key": model, "name": model}]
+# Preserve baseURL on the provider config but refresh the key
+prov_config = openai_prov.get("config") or {}
+prov_config["apiKey"] = key
+openai_prov["config"] = prov_config
+post("modelProviders", providers)
+prefs = config.get("preferences", {})
+prefs["defaultChatModel"] = model
+prefs["defaultChatProvider"] = openai_prov["id"]
+post("preferences", prefs)
+print("ok")
+' >/dev/null 2>&1; then
+            log "Perplexica defaultChatModel updated to ${_px_model}."
+        else
+            log "WARNING: Perplexica config update failed (non-fatal — defaultChatModel may still read the bootstrap value)"
+        fi
+    else
+        log "WARNING: python3 not found, skipping Perplexica config update"
+    fi
+fi
+
 # ── Phase 6: Restart host agent (if running) ──
 # The host agent may cache stale state — restart it so it picks up the new
 # model config and any updated endpoints.
