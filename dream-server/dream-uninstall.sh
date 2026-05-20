@@ -127,6 +127,54 @@ for unit in opencode-web.service openclaw-session-cleanup.timer \
 done
 systemctl --user daemon-reload 2>/dev/null || true
 
+# Reap orphan host-managed processes that survive `systemctl --user stop`.
+# These were observed in the fleet test surviving multiple uninstall/reinstall
+# cycles, holding their ports and serving stale state to users on the next
+# install:
+#
+#   - `opencode web` and `opencode serve`: the systemd unit's ExecStart has
+#     changed across versions (Dream Server moved from the legacy `web`
+#     subcommand to the newer `serve` subcommand). `systemctl stop` reaps
+#     whatever process the CURRENT unit definition started, but a leftover
+#     process from a PRIOR unit's ExecStart keeps its port. The next install
+#     rewrites the unit, the new systemd-managed process fails to bind, and
+#     the user ends up hitting the 19-hour-old orphan with no DB wired up.
+#
+#   - Native macOS llama-server: the bootstrap-upgrade.sh and install-macos.sh
+#     spawn the Metal binary directly and track it via a PID file. If the file
+#     gets out of sync (PID reused, kill not flushed, prior install path
+#     changed), the kill misses and a stale llama-server keeps port 8080.
+#     `dream-uninstall` currently has no path that catches this.
+#
+# Two passes: SIGTERM first (let the process flush state), then SIGKILL for
+# anything still alive after 2s. Patterns are anchored to the install dir's
+# `.opencode/bin/opencode` and `bin/llama-server` so we don't touch unrelated
+# `opencode` or `llama-server` binaries the user may have elsewhere.
+log_info "Reaping any orphan host-managed processes..."
+_dream_uninstall_orphan_pids=()
+if command -v pgrep >/dev/null 2>&1; then
+    # opencode (both subcommands; bin path is per-user, not per-install)
+    while IFS= read -r _pid; do
+        [[ -n "$_pid" ]] && _dream_uninstall_orphan_pids+=("$_pid")
+    done < <(pgrep -f '\.opencode/bin/opencode (web|serve)' 2>/dev/null || true)
+    # macOS-native llama-server: only matches the dream-server-shipped binary
+    while IFS= read -r _pid; do
+        [[ -n "$_pid" ]] && _dream_uninstall_orphan_pids+=("$_pid")
+    done < <(pgrep -f "$HOME/dream-server/bin/llama-server" 2>/dev/null || true)
+fi
+if (( ${#_dream_uninstall_orphan_pids[@]} > 0 )); then
+    log_info "  Sending SIGTERM to ${#_dream_uninstall_orphan_pids[@]} orphan PID(s): ${_dream_uninstall_orphan_pids[*]}"
+    for _pid in "${_dream_uninstall_orphan_pids[@]}"; do kill "$_pid" 2>/dev/null || true; done
+    sleep 2
+    for _pid in "${_dream_uninstall_orphan_pids[@]}"; do
+        if kill -0 "$_pid" 2>/dev/null; then
+            log_info "  PID $_pid still alive, sending SIGKILL"
+            kill -9 "$_pid" 2>/dev/null || true
+        fi
+    done
+fi
+unset _dream_uninstall_orphan_pids _pid
+
 # Remove system-mode dream-host-agent unit (migrated from --user mode).
 # Idempotent — no-op if the unit was never installed (e.g. older user-mode installs).
 if systemctl is-enabled dream-host-agent.service >/dev/null 2>&1; then
