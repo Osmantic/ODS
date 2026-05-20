@@ -229,9 +229,22 @@ _require_docker_cpu_budget() {
 # ── Resolve install directory ──
 INSTALL_DIR="${DS_INSTALL_DIR}"
 
-if ! $OPENCLAW_EXPLICIT && [[ -f "${INSTALL_DIR}/extensions/services/openclaw/compose.yaml" ]]; then
-    ENABLE_OPENCLAW=true
-    ai "Existing OpenClaw install detected; preserving it for this deprecation release"
+if ! $OPENCLAW_EXPLICIT; then
+    _existing_openclaw=false
+    if command -v docker >/dev/null 2>&1 \
+       && docker ps -a --filter "name=^/dream-openclaw$" --format '{{.Names}}' 2>/dev/null \
+            | grep -q '^dream-openclaw$'; then
+        _existing_openclaw=true
+    fi
+    if [[ -d "${INSTALL_DIR}/data/openclaw" ]] \
+       && [[ -n "$(ls -A "${INSTALL_DIR}/data/openclaw" 2>/dev/null)" ]]; then
+        _existing_openclaw=true
+    fi
+    if $_existing_openclaw; then
+        ENABLE_OPENCLAW=true
+        ai "Existing OpenClaw install detected; preserving it for this deprecation release"
+    fi
+    unset _existing_openclaw
 fi
 
 # Initialize log file

@@ -183,6 +183,20 @@ for svc in litellm searxng token-spy hermes hermes-proxy openclaw ape perplexica
     || { echo "[FAIL] Windows service plan missing '$svc'"; exit 1; }
 done
 
+echo "[contract] OpenClaw deprecation preserves actual installs only"
+for installer in install-core.sh installers/macos/install-macos.sh; do
+  grep -q 'name=^/dream-openclaw$' "$installer" \
+    || { echo "[FAIL] $installer must preserve OpenClaw when a prior container exists"; exit 1; }
+  grep -q 'data/openclaw' "$installer" \
+    || { echo "[FAIL] $installer must preserve OpenClaw when persisted data exists"; exit 1; }
+  installer_code="$(sed '/^[[:space:]]*#/d' "$installer")"
+  if grep -q 'extensions/services/openclaw/compose.yaml' <<<"$installer_code"; then
+    echo "[FAIL] $installer must not auto-enable OpenClaw just because the bundled compose file exists"
+    exit 1
+  fi
+  unset installer_code
+done
+
 echo "[contract] Token Spy dashboard ships offline chart assets"
 test -f extensions/services/token-spy/dashboard_charts.js || { echo "[FAIL] missing extensions/services/token-spy/dashboard_charts.js"; exit 1; }
 grep -q '/dashboard-assets/charts.js' extensions/services/token-spy/main.py || \
