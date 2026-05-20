@@ -185,12 +185,12 @@ done
 
 echo "[contract] OpenClaw deprecation preserves actual installs only"
 for installer in install-core.sh installers/macos/install-macos.sh; do
-  grep -q 'name=^/dream-openclaw$' "$installer" \
+  grep -Fq 'name=^/dream-openclaw$' "$installer" \
     || { echo "[FAIL] $installer must preserve OpenClaw when a prior container exists"; exit 1; }
-  grep -q 'data/openclaw' "$installer" \
+  grep -Fq 'data/openclaw' "$installer" \
     || { echo "[FAIL] $installer must preserve OpenClaw when persisted data exists"; exit 1; }
   installer_code="$(sed '/^[[:space:]]*#/d' "$installer")"
-  if grep -q 'extensions/services/openclaw/compose.yaml' <<<"$installer_code"; then
+  if grep -Fq 'extensions/services/openclaw/compose.yaml' <<<"$installer_code"; then
     echo "[FAIL] $installer must not auto-enable OpenClaw just because the bundled compose file exists"
     exit 1
   fi
