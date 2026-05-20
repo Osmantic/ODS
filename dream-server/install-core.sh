@@ -237,9 +237,36 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$OPENCLAW_EXPLICIT" != "true" && -f "$INSTALL_DIR/extensions/services/openclaw/compose.yaml" ]]; then
-    ENABLE_OPENCLAW=true
-    log "Existing OpenClaw install detected; preserving it for this deprecation release"
+# OpenClaw deprecation back-compat: preserve OpenClaw on UPGRADES of installs
+# that previously had it enabled. The earlier heuristic — "does the compose
+# file exist on disk?" — was wrong: extensions/services/openclaw/compose.yaml
+# is part of the source tree, so every fresh install (including `--all` which
+# explicitly sets ENABLE_OPENCLAW=false) was being silently re-enabled. That
+# tacked ~20 minutes onto every install (a slow OpenClaw container blocking
+# the phase-12 health-link loop) and contradicted both the deprecation policy
+# AND what `--all` claims to do.
+#
+# Correct heuristic: there's an actual OpenClaw container on this host (running
+# or stopped from a prior install), OR there's persisted OpenClaw data on disk.
+# Either signal means the user already opted in once, so preserve their choice
+# through the deprecation window. A fresh install matches neither and leaves
+# ENABLE_OPENCLAW at its --no-openclaw / --all / default-false value.
+if [[ "$OPENCLAW_EXPLICIT" != "true" ]]; then
+    _existing_openclaw=false
+    if command -v docker >/dev/null 2>&1 \
+       && docker ps -a --filter "name=^/dream-openclaw$" --format '{{.Names}}' 2>/dev/null \
+            | grep -q '^dream-openclaw$'; then
+        _existing_openclaw=true
+    fi
+    if [[ -d "$INSTALL_DIR/data/openclaw" ]] \
+       && [[ -n "$(ls -A "$INSTALL_DIR/data/openclaw" 2>/dev/null)" ]]; then
+        _existing_openclaw=true
+    fi
+    if $_existing_openclaw; then
+        ENABLE_OPENCLAW=true
+        log "Existing OpenClaw install detected; preserving it for this deprecation release"
+    fi
+    unset _existing_openclaw
 fi
 
 # Detect distro + package manager (after arg parsing so --help still shows
