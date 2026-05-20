@@ -122,6 +122,9 @@ class TestWriteLemonadeConfig:
         assert "model: openai/extra.Qwen3.5-9B-Q4_K_M.gguf" in content
         assert "api_base: http://llama-server:8080/api/v1" in content
         assert "api_key: sk-lemonade" in content
+        assert "extra_body:" in content
+        assert "chat_template_kwargs:" in content
+        assert "enable_thinking: false" in content
         assert 'model_name: "*"' in content
         assert "drop_params: true" in content
 
@@ -410,6 +413,7 @@ class TestModelActivateRollback:
         content = lemonade_yaml.read_text(encoding="utf-8")
         assert "api_key: sk-inline-from-env-file-67890" in content
         assert "api_key: sk-lemonade" not in content
+        assert "enable_thinking: false" in content
 
     def test_activation_patches_hermes_configs_and_restarts_hermes(self, tmp_path, monkeypatch):
         install_dir, _env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
