@@ -698,6 +698,62 @@ if ($dryRun) {
             }
         }
 
+        function Assert-DreamWindowsComposeCwd {
+            param([string]$InstallDir)
+
+            $expected = (Resolve-Path -LiteralPath $InstallDir).Path
+            $locationPath = (Get-Location).ProviderPath
+            $dotnetPath = [Environment]::CurrentDirectory
+
+            if ($locationPath -ne $expected -or $dotnetPath -ne $expected) {
+                Write-AIError "Internal installer error: Docker Compose is not running from the install directory."
+                Write-AI "  Install dir: $expected"
+                Write-AI "  PowerShell location: $locationPath"
+                Write-AI "  .NET current directory: $dotnetPath"
+                Write-AI "  This prevents Compose from accidentally reading .env or compose files from the source checkout."
+                exit 1
+            }
+        }
+
+        function Write-DreamWindowsComposeLaunchRecord {
+            param(
+                [string]$InstallDir,
+                [string[]]$ComposeFlags,
+                [string[]]$ComposeArgs
+            )
+
+            $logDir = Join-Path $InstallDir "logs"
+            if (-not (Test-Path $logDir)) {
+                New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+            }
+            $recordPath = Join-Path $logDir "compose-launch.txt"
+            $composeCommand = ("docker compose " + (($ComposeFlags + $ComposeArgs) -join " ")).Trim()
+            $composeFiles = New-Object System.Collections.Generic.List[string]
+            for ($i = 0; $i -lt $ComposeFlags.Count; $i++) {
+                if ($ComposeFlags[$i] -eq "-f" -and ($i + 1) -lt $ComposeFlags.Count) {
+                    [void]$composeFiles.Add($ComposeFlags[$i + 1])
+                }
+            }
+
+            $lines = @(
+                "timestamp=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))",
+                "cwd=$((Get-Location).ProviderPath)",
+                "dotnet_cwd=$([Environment]::CurrentDirectory)",
+                "install_dir=$InstallDir",
+                "compose_command=$composeCommand",
+                "compose_flags=$($ComposeFlags -join ' ')",
+                "compose_flags_file=$InstallDir\.compose-flags",
+                "compose_ps_command=cd '$InstallDir'; docker compose $($ComposeFlags -join ' ') ps -a",
+                "compose_logs_command=cd '$InstallDir'; docker compose $($ComposeFlags -join ' ') logs --tail 200",
+                "compose_files="
+            )
+            foreach ($file in $composeFiles) {
+                $lines += "  - $file"
+            }
+            [System.IO.File]::WriteAllText($recordPath, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+            Write-AI "Saved compose launch record to $recordPath"
+        }
+
         # ── Start Docker services ─────────────────────────────────────────────
         Write-Chapter "STARTING SERVICES"
 
@@ -780,6 +836,10 @@ if ($dryRun) {
                 }
             }
         }
+
+        Assert-DreamWindowsComposeCwd -InstallDir $installDir
+        Write-DreamWindowsComposeLaunchRecord -InstallDir $installDir -ComposeFlags $composeFlags `
+            -ComposeArgs @("up", "-d", "--remove-orphans", "--no-build")
 
         Write-AI "Running: docker compose $($composeFlags -join ' ') up -d --remove-orphans --no-build"
         # PS 5.1 treats ANY stderr output from native commands as NativeCommandError.

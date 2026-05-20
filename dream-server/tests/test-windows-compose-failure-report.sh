@@ -47,6 +47,10 @@ check '[switch]$SaveReport' "$DIAG_LIB" "diagnostics only save report when reque
 check '-ComposeLogPath $_composeLog' "$INSTALL_PS1" "installer passes compose log to diagnostics"
 check '-ComposeArgs @("up", "-d", "--remove-orphans", "--no-build")' "$INSTALL_PS1" "installer passes exact compose up args"
 check '-SaveReport' "$INSTALL_PS1" "installer enables saved report on compose failure"
+check 'function Assert-DreamWindowsComposeCwd' "$INSTALL_PS1" "installer asserts compose cwd before launch"
+check 'Write-DreamWindowsComposeLaunchRecord' "$INSTALL_PS1" "installer writes compose launch record"
+check '"compose-launch.txt"' "$INSTALL_PS1" "installer records compose launch artifact path"
+check '[Environment]::CurrentDirectory' "$INSTALL_PS1" "installer keeps .NET cwd aligned with install dir"
 
 if grep -q "Write-DreamComposeDiagnostics .*SaveReport" "$ROOT_DIR/installers/windows/dream.ps1"; then
     fail "dream.ps1 command failures should not create install reports by default"
@@ -130,6 +134,51 @@ EOF
         pass "PowerShell report writer creates redacted report with mocked docker"
     else
         fail "PowerShell report writer runtime behavior failed"
+    fi
+
+    if INSTALL_PS1="$INSTALL_PS1" INSTALL_DIR="$INSTALL_DIR" pwsh -NoProfile -Command '
+        $ErrorActionPreference = "Stop"
+        $code = Get-Content $env:INSTALL_PS1 -Raw
+        $assertStart = $code.IndexOf("function Assert-DreamWindowsComposeCwd")
+        $recordStart = $code.IndexOf("function Write-DreamWindowsComposeLaunchRecord")
+        $launchStart = $code.IndexOf("# ── Start Docker services")
+        if ($assertStart -lt 0 -or $recordStart -lt 0 -or $launchStart -lt 0) {
+            throw "required function block not found"
+        }
+        $helperCode = $code.Substring($assertStart, $launchStart - $assertStart)
+        function Write-AIError { param([string]$Message) Write-Host "ERROR:$Message" }
+        function Write-AI { param([string]$Message) Write-Host "INFO:$Message" }
+        Invoke-Expression $helperCode
+
+        Push-Location $env:INSTALL_DIR
+        $previous = [Environment]::CurrentDirectory
+        [Environment]::CurrentDirectory = $env:INSTALL_DIR
+        try {
+            Assert-DreamWindowsComposeCwd -InstallDir $env:INSTALL_DIR
+            Write-DreamWindowsComposeLaunchRecord -InstallDir $env:INSTALL_DIR `
+                -ComposeFlags @("--env-file", ".env", "-f", "docker-compose.base.yml") `
+                -ComposeArgs @("up", "-d", "--remove-orphans", "--no-build")
+        }
+        finally {
+            [Environment]::CurrentDirectory = $previous
+            Pop-Location
+        }
+
+        $record = Join-Path $env:INSTALL_DIR "logs\compose-launch.txt"
+        if (-not (Test-Path $record)) { throw "launch record not created" }
+        $text = Get-Content $record -Raw
+        foreach ($needle in @(
+            "cwd=$env:INSTALL_DIR",
+            "dotnet_cwd=$env:INSTALL_DIR",
+            "compose_command=docker compose --env-file .env -f docker-compose.base.yml up -d --remove-orphans --no-build",
+            "compose_ps_command=cd"
+        )) {
+            if (-not $text.Contains($needle)) { throw "missing $needle" }
+        }
+    '; then
+        pass "PowerShell compose launch record captures install-dir cwd"
+    else
+        fail "PowerShell compose launch record runtime behavior failed"
     fi
 else
     pass "PowerShell runtime behavior skipped (pwsh unavailable)"
