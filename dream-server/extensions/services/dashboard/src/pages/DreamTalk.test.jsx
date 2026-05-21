@@ -122,6 +122,39 @@ describe('DreamTalk', () => {
     expect(await screen.findByText('Hello world')).toBeInTheDocument()
   })
 
+  test('renders markdown in assistant bubbles (bold/lists), not raw asterisks', async () => {
+    // Hermes formats replies with markdown by default. The bubble should
+    // render that as HTML so a list looks like a list, not "- one\n- two".
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') return response({ capabilities: { text_chat: true } })
+      if (url === '/api/talk/message/stream' && options.method === 'POST') {
+        return sseResponse([
+          { type: 'session', session_id: 'sid' },
+          { type: 'complete', session_id: 'sid', text: 'Pick **one**:\n\n- alpha\n- beta', status: 'ok' },
+          { type: 'done' },
+        ])
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { container } = render(<DreamTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Message Dream Server'), {
+      target: { value: 'choose' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    // Bold renders as <strong>, not as ** in the text.
+    expect(await screen.findByText('one')).toBeInTheDocument()
+    expect(screen.getByText('one').tagName).toBe('STRONG')
+    // List items render as <li> under a <ul>.
+    expect(container.querySelector('ul li')).toBeTruthy()
+    expect(screen.getByText('alpha').closest('li')).toBeTruthy()
+    // And the raw `**` is gone from the DOM text.
+    expect(container.textContent).not.toContain('**')
+  })
+
   test('surfaces SSE error frame as an assistant error', async () => {
     const fetchMock = vi.fn(async (url, options = {}) => {
       if (url === '/api/talk/status') return response({ capabilities: { text_chat: true } })

@@ -1,8 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
 import {
   AlertCircle, CheckCircle2, Loader2, Mic, Paperclip, RefreshCw,
   Send, Volume2, VolumeX,
 } from 'lucide-react'
+
+// Hermes likes to format with markdown (bold, lists, code). Rendering it as
+// HTML keeps the chat bubbles readable instead of showing raw `**` and `-`.
+// react-markdown defaults to CommonMark + no raw HTML, which is the safe
+// posture for content coming back from any LLM — even our trusted local one.
+const MARKDOWN_COMPONENTS = {
+  p: ({ children }) => <p className="break-words [&:not(:first-child)]:mt-3">{children}</p>,
+  ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
+  ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
+  li: ({ children }) => <li className="break-words">{children}</li>,
+  strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+  em: ({ children }) => <em className="italic">{children}</em>,
+  h1: ({ children }) => <h1 className="my-2 text-lg font-semibold">{children}</h1>,
+  h2: ({ children }) => <h2 className="my-2 text-base font-semibold">{children}</h2>,
+  h3: ({ children }) => <h3 className="my-2 text-sm font-semibold uppercase tracking-wide">{children}</h3>,
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noreferrer" className="underline decoration-zinc-400 underline-offset-2 hover:decoration-zinc-700">{children}</a>
+  ),
+  code: ({ inline, children }) => inline
+    ? <code className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-[13px] text-zinc-800">{children}</code>
+    : <code className="block whitespace-pre-wrap break-words rounded bg-zinc-100 p-2 font-mono text-[13px] text-zinc-800">{children}</code>,
+  pre: ({ children }) => <pre className="my-2 overflow-x-auto rounded bg-zinc-100">{children}</pre>,
+  blockquote: ({ children }) => <blockquote className="my-2 border-l-2 border-zinc-300 pl-3 italic text-zinc-700">{children}</blockquote>,
+  hr: () => <hr className="my-3 border-zinc-200" />,
+}
 
 const welcomeMessage = {
   id: 'welcome',
@@ -470,8 +496,15 @@ function MessageBubble({ message }) {
             <Loader2 size={14} className="animate-spin" />
             Thinking
           </span>
-        ) : (
+        ) : user || message.status === 'error' ? (
+          // User messages and error bubbles stay as plain text — markdown
+          // in those contexts would let typos render as headings or
+          // accidental bold, which we don't want.
           <p className="whitespace-pre-wrap break-words">{message.text}</p>
+        ) : (
+          <div className="space-y-0 text-[15px] leading-6">
+            <ReactMarkdown components={MARKDOWN_COMPONENTS}>{message.text}</ReactMarkdown>
+          </div>
         )}
         {message.warning && (
           <p className="mt-2 text-xs text-amber-600">{message.warning}</p>
