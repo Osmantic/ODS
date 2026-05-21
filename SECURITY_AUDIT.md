@@ -2,7 +2,7 @@
 
 - **Original audit date:** 2026-03-08
 - **Original analyst:** latentcollapse
-- **Status review:** 2026-05-20
+- **Status review:** 2026-05-21
 - **Scope:** `Light-Heart-Labs/DreamServer` public repository, local clone only. No live infrastructure was touched.
 - **Current operator guide:** [`dream-server/SECURITY.md`](dream-server/SECURITY.md)
 
@@ -19,6 +19,7 @@ repository tree, targeted regression tests, and security-relevant docs.
 | Status | Meaning |
 |--------|---------|
 | `Remediated in tree` | Current source or config contains the mitigation, with file or test evidence. |
+| `Resolved / operator-confirmed` | The maintained source tree no longer contains the vulnerable behavior, and the remaining external action has been confirmed by maintainers or a private incident record. |
 | `Mitigated / accepted local risk` | The behavior changed, but a local-only or operator-controlled residual risk remains by design. |
 | `Needs confirmation` | Repository state cannot prove the full remediation, usually because it requires an external secret rotation or live-site change. |
 | `External / out of repo` | The finding concerns infrastructure or web properties not represented in this repository. |
@@ -27,7 +28,7 @@ repository tree, targeted regression tests, and security-relevant docs.
 
 | Original severity | Original count | Current status |
 |-------------------|----------------|----------------|
-| Critical | 1 | Code artifact is historical/removed from the maintained product tree; credential rotation still needs private confirmation. |
+| Critical | 1 | Resolved by operator confirmation: code artifact is historical/removed from the maintained product tree, and the exposed LiveKit credentials were already retired when they leaked. |
 | High | 3 | All three have current code/config mitigations and regression evidence. |
 | Medium | 5 | Four are remediated in tree; one is mitigated by HTTPS-aware behavior with local HTTP accepted. |
 | Low | 2 | One is remediated in tree; one concerns the external marketing site and is outside repository verification. |
@@ -36,7 +37,7 @@ repository tree, targeted regression tests, and security-relevant docs.
 
 | ID | Original finding | Current status | Evidence / receipt | Remaining action |
 |----|------------------|----------------|--------------------|------------------|
-| C1 | Likely real LiveKit credentials committed to a historical voice-agent token server | Needs confirmation | The file is described as historical and removed from the maintained product tree. The repository cannot prove whether LiveKit credentials were rotated. | Security owner should keep a private incident record confirming key rotation and revocation. Do not publish unredacted credentials. |
+| C1 | Likely real LiveKit credentials committed to a historical voice-agent token server | Resolved / operator-confirmed | The file is historical and removed from the maintained product tree. Maintainers confirmed the exposed LiveKit credentials had already been retired when they leaked; the private incident record remains the authoritative evidence because git cannot prove external credential state. | Keep the private incident record for auditability. Do not publish unredacted credentials. |
 | H1 | SearXNG shipped a static shared `secret_key` | Remediated in tree | [`dream-server/config/searxng/settings.yml`](dream-server/config/searxng/settings.yml) now contains an installer placeholder; Linux and Windows installers generate `SEARXNG_SECRET`; [`dream-server/extensions/services/searxng/compose.yaml`](dream-server/extensions/services/searxng/compose.yaml) requires it. | Keep generated secrets out of committed config and support bundles. |
 | H2 | Installer used `eval` on helper script output | Remediated in tree | [`dream-server/lib/safe-env.sh`](dream-server/lib/safe-env.sh) provides non-evaluating parsers; maintained installer paths call `load_env_from_output`; [`dream-server/tests/test-safe-env.sh`](dream-server/tests/test-safe-env.sh) verifies command substitutions are not executed. | Keep docs and future scripts on `safe-env.sh`; avoid reintroducing `eval "$(...)"` examples. |
 | H3 | OpenClaw gateway combined disabled device auth with LAN binding | Remediated in tree | OpenClaw is deprecated and optional in [`dream-server/extensions/services/openclaw/manifest.yaml`](dream-server/extensions/services/openclaw/manifest.yaml); compose requires `OPENCLAW_TOKEN`; static configs set `dangerouslyDisableDeviceAuth` false; [`dream-server/tests/contracts/test-network-exposure-contracts.py`](dream-server/tests/contracts/test-network-exposure-contracts.py) keeps OpenClaw opt-in and token-gated. | Keep OpenClaw legacy-only; default users should use Hermes plus `hermes-proxy`. |
@@ -65,8 +66,9 @@ has moved beyond the original audit findings:
 
 ## Residual Risks To Keep Visible
 
-- Secret rotation cannot be proven from git. The LiveKit finding needs a
-  private rotation record outside this public repository.
+- External credential state cannot be proven from git. For historical credential
+  findings such as the LiveKit incident, keep a private incident record that
+  documents retirement or rotation timing without publishing secrets.
 - `--lan` and `BIND_ADDRESS=0.0.0.0` are operator-controlled exposure choices.
   They are useful for headless devices and private networks, but they should be
   paired with firewall rules, TLS, or a VPN.
