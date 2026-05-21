@@ -62,7 +62,7 @@ describe('Invites', () => {
     expect(await screen.findByText('No owner cards yet')).toBeInTheDocument()
   })
 
-  test('generates owner card with revoke-only Hermes payload and loads QR', async () => {
+  test('generates owner card with revoke-only Dream Talk payload and loads QR', async () => {
     const fetchMock = vi.fn(async (url, options = {}) => {
       if (url === '/api/auth/magic-link/list') {
         return response({ tokens: [] })
@@ -162,7 +162,7 @@ describe('Invites', () => {
     render(<Invites />)
 
     expect(await screen.findByText('Voice readiness')).toBeInTheDocument()
-    expect(screen.getByText(/Mobile browsers usually block microphone access/i)).toBeInTheDocument()
+    expect(screen.getByText(/Mobile browsers usually block live microphone access/i)).toBeInTheDocument()
 
     if (descriptor) Object.defineProperty(window, 'isSecureContext', descriptor)
   })

@@ -312,7 +312,7 @@ function UserStep({ username, setUsername, onNext, onBack }) {
       </div>
       <h1 className="text-3xl font-bold text-theme-text mb-3">Who&apos;s the first user?</h1>
       <p className="text-theme-text-muted mb-8 leading-relaxed">
-        We&apos;ll generate an owner card for them at the end. They scan it to reach Hermes on this Dream Server.
+        We&apos;ll generate an owner card for them at the end. They scan it to reach Dream Talk on this Dream Server.
       </p>
 
       <label className="block mb-6">
@@ -429,7 +429,7 @@ function ConfirmStep({ deviceName, username, stack, onBack, onFinish, finishing,
     <div>
       <h1 className="text-3xl font-bold text-theme-text mb-6">Ready?</h1>
       <p className="text-theme-text-muted mb-6 leading-relaxed">
-        Tap Finish and we&apos;ll generate the owner QR for Hermes.
+        Tap Finish and we&apos;ll generate the owner QR for Dream Talk.
       </p>
 
       <dl className="bg-theme-card border border-theme-border rounded-xl divide-y divide-theme-border mb-8">
@@ -526,7 +526,7 @@ function DoneScreen({ invite, onDone }) {
     try {
       await navigator.share({
         title: `Dream Server owner card for ${invite.target_username}`,
-        text: 'Tap to open Hermes on Dream Server',
+        text: 'Tap to open Dream Talk on Dream Server',
         url: invite.url,
       })
     } catch {
@@ -542,7 +542,7 @@ function DoneScreen({ invite, onDone }) {
       <h1 className="text-3xl font-bold text-theme-text mb-3">You&apos;re set.</h1>
       <p className="text-theme-text-muted mb-6 leading-relaxed">
         Here&apos;s the owner card for <strong className="text-theme-text">{invite.target_username}</strong>.
-        They scan or tap it to open Hermes. Keep the printed QR safe; it remains valid until revoked.
+        They scan or tap it to open Dream Talk. Keep the printed QR safe; it remains valid until revoked.
       </p>
 
       {qrDataUrl ? (

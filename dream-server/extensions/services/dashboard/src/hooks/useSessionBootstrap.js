@@ -31,10 +31,11 @@ import { useEffect, useRef } from 'react'
  * admin-session POST 503s; we surface that in console as a hint to
  * set DREAM_SESSION_SECRET, but don't block the dashboard.
  */
-export function useSessionBootstrap() {
+export function useSessionBootstrap(enabled = true) {
   const ran = useRef(false)
 
   useEffect(() => {
+    if (!enabled) return
     if (ran.current) return
     ran.current = true
 
@@ -60,7 +61,6 @@ export function useSessionBootstrap() {
         // works; cookie-gated services won't. Surface the hint quietly.
         if (mint.status === 503) {
           const body = await mint.json().catch(() => ({}))
-          // eslint-disable-next-line no-console
           console.warn(
             '[dream-session] could not mint admin session:',
             body.detail || 'server misconfigured',
@@ -72,14 +72,12 @@ export function useSessionBootstrap() {
         // Other failures (network, 5xx) — log for the operator but don't
         // crash the dashboard. The user still has the dashboard surface;
         // just the Hermes / chat tiles will route them to the invite page.
-        // eslint-disable-next-line no-console
         console.warn('[dream-session] admin-session returned', mint.status)
       } catch (err) {
-        // eslint-disable-next-line no-console
         console.warn('[dream-session] bootstrap failed:', err)
       }
     }
 
     run()
-  }, [])
+  }, [enabled])
 }

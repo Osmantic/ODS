@@ -1,6 +1,6 @@
 # AP mode — first-boot Wi-Fi access point
 
-When a Dream Server device boots fresh, it can host its own Wi-Fi network so the recipient's phone can reach the setup wizard or redeem a factory owner card without already being on a configured network. This is the "true out-of-box" flow: take it out of the box, scan QR #1 to join the AP, then scan QR #2 to open setup or Hermes.
+When a Dream Server device boots fresh, it can host its own Wi-Fi network so the recipient's phone can reach the setup wizard or redeem a factory owner card without already being on a configured network. This is the "true out-of-box" flow: take it out of the box, scan QR #1 to join the AP, then scan QR #2 to open setup or Dream Talk.
 
 This page describes the AP-mode machinery: scripts, systemd unit, host-agent endpoint, and the operator workflow to enable it.
 

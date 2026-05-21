@@ -1,6 +1,6 @@
 # Dream Server reverse proxy (`dream-proxy`)
 
-The single LAN-facing entry that makes `http://<device>.local` (no port) actually work, with per-service subdomains for chat, dashboard, auth, and hermes.
+The single LAN-facing entry that makes `http://<device>.local` (no port) actually work, with per-service subdomains for chat, dashboard, Dream Talk, auth, and hermes.
 
 Without this extension, Dream Server's services bind to `127.0.0.1` by default — they're reachable from the host but not from another device on the LAN. A phone scanning a "browse to `http://dream.local`" QR code hits port 80 on the device, finds nothing, gives up. The dashboard's promise of `<device>.local` as a one-tap entry was broken before this extension.
 
@@ -10,6 +10,7 @@ With it, port 80 becomes the single entry point. Caddy answers each subdomain on
 <device>.local           → 302 → chat.<device>.local
 chat.<device>.local      → Open WebUI            (port 3000)
 dashboard.<device>.local → Dream Dashboard       (port 3001)
+talk.<device>.local      → Dream Talk mobile UI  (port 3001)
 auth.<device>.local      → dashboard-api         (port 3002, magic-link redemption)
 api.<device>.local       → dashboard-api         (port 3002, admin /api/*)
 hermes.<device>.local    → hermes-proxy          (port 9120, when enabled)
@@ -45,6 +46,7 @@ dream enable dream-proxy
 # Test (substitute <device> with your DREAM_DEVICE_NAME, default "dream"):
 curl http://chat.<device>.local/         # → Open WebUI
 curl http://dashboard.<device>.local/    # → Dream Dashboard
+curl http://talk.<device>.local/talk     # -> Dream Talk
 curl http://auth.<device>.local/health   # → ok (Caddy)
 ```
 
@@ -64,6 +66,7 @@ The installer's first-boot flow handles both. If you're not using the installer,
 - `dashboard-api`: API key (`DASHBOARD_API_KEY`)
 - Open WebUI: its own auth (`WEBUI_AUTH=true` by default — users sign up / sign in)
 - Dashboard SPA: the React app shows admin features only when the API call succeeds
+- Dream Talk: signed `dream-session` cookie from owner-card redemption; no dashboard admin API control
 - `hermes-proxy`: Caddy `forward_auth` against `dashboard-api/api/auth/verify-session` (signed-cookie check)
 
 The proxy itself adds NO auth layer. Adding one here would duplicate without strengthening.

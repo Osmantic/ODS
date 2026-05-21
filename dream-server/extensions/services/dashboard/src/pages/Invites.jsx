@@ -22,7 +22,7 @@ const fetchJson = async (url, init = {}, ms = 8000) => {
 
 const SCOPES = [
   { value: 'chat', label: 'Chat', help: 'Guest lands in Open WebUI chat.' },
-  { value: 'hermes', label: 'Hermes', help: 'Guest lands in the Hermes Agent behind the same session gate.' },
+  { value: 'hermes', label: 'Advanced Hermes', help: 'Guest lands in the full Hermes Agent behind the same session gate.' },
 ]
 
 const EXPIRY_PRESETS = [
@@ -133,7 +133,7 @@ export default function Invites() {
         <div>
           <h1 className="text-2xl font-bold text-theme-text">Setup / Owner</h1>
           <p className="text-theme-text-muted mt-1">
-            Create factory owner cards for Hermes, and keep guest chat invites available when you need them.
+            Create factory owner cards for Dream Talk, and keep guest chat invites available when you need them.
           </p>
         </div>
         <button
@@ -165,7 +165,7 @@ export default function Invites() {
             </div>
             <p className="mt-2 max-w-2xl text-sm text-theme-text-muted">
               This QR is a physical key for the shipped device. It creates normal 12-hour Dream sessions
-              and lands the holder in Hermes; the QR itself remains valid until revoked.
+              and lands the holder in Dream Talk; the QR itself remains valid until revoked.
             </p>
           </div>
           <button
@@ -196,7 +196,7 @@ export default function Invites() {
               <h2 className="text-lg font-semibold">Guest access</h2>
             </div>
             <p className="mt-2 max-w-2xl text-sm text-theme-text-muted">
-              Time-limited magic links still work for short-term access to chat or Hermes.
+              Time-limited magic links still work for short-term access to chat or advanced Hermes.
             </p>
           </div>
           <button
@@ -264,8 +264,8 @@ function VoiceReadiness() {
         <p className="font-medium text-theme-text">Voice readiness</p>
         <p className="mt-1 text-theme-text-muted">
           {secure
-            ? 'This browser origin is secure, so mobile microphone access can be offered when Hermes and voice services are ready.'
-            : 'Mobile browsers usually block microphone access on plain HTTP. Owner QR chat still works; voice should be validated from HTTPS or Tailscale HTTPS.'}
+            ? 'This browser origin is secure, so live microphone access can be offered when Dream Talk voice services are ready.'
+            : 'Mobile browsers usually block live microphone access on plain HTTP. Dream Talk text still works, with phone-native audio capture when the browser offers it.'}
         </p>
       </div>
     </div>
@@ -404,7 +404,7 @@ function CreateOwnerModal({ onClose, onCreated }) {
             className="mt-1 w-full bg-theme-bg border border-theme-border rounded-lg px-3 py-2 text-theme-text focus:outline-none focus:border-theme-accent"
           />
           <span className="text-xs text-theme-text-muted">
-            Owner cards are reusable until revoked and redirect to Hermes.
+            Owner cards are reusable until revoked and redirect to Dream Talk.
           </span>
         </label>
         <FormError message={formError} />
@@ -621,7 +621,7 @@ function GeneratedTokenModal({ record, onClose }) {
     try {
       await navigator.share({
         title: owner ? `Dream Server owner card for ${record.target_username}` : `Dream Server invite for ${record.target_username}`,
-        text: owner ? 'Scan to open Hermes on this Dream Server' : 'Tap to open Dream Server',
+        text: owner ? 'Scan to open Dream Talk on this Dream Server' : 'Tap to open Dream Server',
         url: record.url,
       })
     } catch {
@@ -653,7 +653,7 @@ function GeneratedTokenModal({ record, onClose }) {
 
         <p className="text-sm text-theme-text-muted mb-4">
           {owner
-            ? 'Print this as QR #2 on the factory card. It lands in Hermes and remains usable until revoked.'
+            ? 'Print this as QR #2 on the factory card. It lands in Dream Talk and remains usable until revoked.'
             : 'Share this temporary link with the intended guest. Each redemption is logged.'}
         </p>
 

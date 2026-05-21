@@ -59,6 +59,7 @@ from routers import (
     gpu as gpu_router, resources, voice, models as models_router, templates,
     auth as auth_router,
     magic_link,
+    talk,
     tailscale,
     usage,
 )
@@ -987,6 +988,7 @@ app.include_router(models_router.router)
 app.include_router(templates.router)
 app.include_router(auth_router.router)
 app.include_router(magic_link.router)
+app.include_router(talk.router)
 app.include_router(tailscale.router)
 app.include_router(usage.router)
 

@@ -36,25 +36,26 @@ Wi-Fi chipsets, AP-mode behavior, and client devices vary. In particular:
 2. The operator prints or ships a setup card with:
    - QR #1: a Wi-Fi QR code for the device setup AP, if AP mode is used;
    - QR #2: either the setup URL for first-run provisioning, or a permanent
-     owner-card magic link that lands the new owner in Hermes.
+     owner-card magic link that lands the new owner in Dream Talk.
 3. The recipient scans the setup QR, opens the first-boot wizard, and joins the
    device to their home network when needed.
 4. Dream Server generates an owner-card magic link and QR code for the first user.
-5. After redemption, the user lands in Hermes. Power users can still open the
-   dashboard for model, service, and diagnostics controls.
+5. After redemption, the user lands in Dream Talk, a mobile-first local chat
+   portal backed by Hermes. Power users can still open the dashboard and the
+   advanced Hermes surface for model, service, and diagnostics controls.
 
 ## Main Components
 
 | Component | Code | Tests / Docs | Purpose |
 |---|---|---|---|
-| Setup card generator | [`scripts/generate-setup-card.py`](../scripts/generate-setup-card.py) | [`tests/test_setup_card.py`](../tests/test_setup_card.py), [`SETUP-CARD.md`](SETUP-CARD.md) | Produces printable cards with Wi-Fi + setup QR codes or Wi-Fi + owner Hermes QR codes. |
+| Setup card generator | [`scripts/generate-setup-card.py`](../scripts/generate-setup-card.py) | [`tests/test_setup_card.py`](../tests/test_setup_card.py), [`SETUP-CARD.md`](SETUP-CARD.md) | Produces printable cards with Wi-Fi + setup QR codes or Wi-Fi + owner Dream Talk QR codes. |
 | First-run state | [`extensions/services/dashboard-api/routers/setup.py`](../extensions/services/dashboard-api/routers/setup.py), [`extensions/services/dashboard/src/hooks/useFirstRun.js`](../extensions/services/dashboard/src/hooks/useFirstRun.js) | [`tests/test_setup.py`](../extensions/services/dashboard-api/tests/test_setup.py), [`App.test.jsx`](../extensions/services/dashboard/src/App.test.jsx) | Server-side setup sentinel that decides whether the wizard should appear. |
 | Phone-first wizard | [`extensions/services/dashboard/src/pages/FirstBoot.jsx`](../extensions/services/dashboard/src/pages/FirstBoot.jsx) | [`FirstBoot.test.jsx`](../extensions/services/dashboard/src/pages/FirstBoot.test.jsx) | Guides first setup and shows the owner-card QR. |
 | Magic-link auth and QR | [`extensions/services/dashboard-api/routers/magic_link.py`](../extensions/services/dashboard-api/routers/magic_link.py), [`extensions/services/dashboard/src/pages/Invites.jsx`](../extensions/services/dashboard/src/pages/Invites.jsx) | [`test_magic_link.py`](../extensions/services/dashboard-api/tests/test_magic_link.py), [`Invites.test.jsx`](../extensions/services/dashboard/src/pages/Invites.test.jsx), [`HERMES-SSO.md`](HERMES-SSO.md) | Creates revoke-only owner cards and temporary guest links, renders QR codes, redeems tokens, and issues signed session cookies. |
 | Wi-Fi setup API | [`extensions/services/dashboard-api/routers/setup.py`](../extensions/services/dashboard-api/routers/setup.py), [`bin/dream-host-agent.py`](../bin/dream-host-agent.py) | [`test_network_config.py`](../extensions/services/dashboard-api/tests/test_network_config.py), [`test_host_agent.py`](../extensions/services/dashboard-api/tests/test_host_agent.py) | Lets the dashboard ask the host agent to scan, connect, check status, and forget Wi-Fi profiles. |
 | First-boot AP mode | [`scripts/ap-mode.sh`](../scripts/ap-mode.sh), [`scripts/systemd/dream-ap-mode.service`](../scripts/systemd/dream-ap-mode.service), [`scripts/ap-mode.conf.example`](../scripts/ap-mode.conf.example) | [`test-ap-mode.sh`](../tests/test-ap-mode.sh), [`AP-MODE.md`](AP-MODE.md) | Optional setup access point for devices that are not yet on the user's network. |
 | LAN discovery | [`bin/dream-mdns.py`](../bin/dream-mdns.py), [`scripts/systemd/dream-mdns.service`](../scripts/systemd/dream-mdns.service) | [`MDNS.md`](MDNS.md) | Publishes `<device>.local` and service subdomains on the local network. |
-| LAN reverse proxy | [`extensions/services/dream-proxy/Caddyfile`](../extensions/services/dream-proxy/Caddyfile), [`extensions/services/dream-proxy/compose.yaml`](../extensions/services/dream-proxy/compose.yaml) | [`DREAM-PROXY.md`](DREAM-PROXY.md) | Routes `chat.<device>.local`, `dashboard.<device>.local`, `auth.<device>.local`, `api.<device>.local`, and `hermes.<device>.local`. |
+| LAN reverse proxy | [`extensions/services/dream-proxy/Caddyfile`](../extensions/services/dream-proxy/Caddyfile), [`extensions/services/dream-proxy/compose.yaml`](../extensions/services/dream-proxy/compose.yaml) | [`DREAM-PROXY.md`](DREAM-PROXY.md) | Routes `chat.<device>.local`, `dashboard.<device>.local`, `talk.<device>.local`, `auth.<device>.local`, `api.<device>.local`, and `hermes.<device>.local`. |
 | Agent surface | [`extensions/services/hermes-proxy/Caddyfile`](../extensions/services/hermes-proxy/Caddyfile) | [`HERMES.md`](HERMES.md), [`HERMES-SSO.md`](HERMES-SSO.md) | Gates Hermes behind Dream Server magic-link session auth. |
 
 ## Operator Prep Checklist

@@ -130,7 +130,7 @@ def render_card(
     right_url = owner_url if mode == "factory-owner" else setup_url
     if not right_url:
         raise ValueError("--owner-url is required for factory-owner mode" if mode == "factory-owner" else "--setup-url is required")
-    right_caption = "2. OPEN HERMES" if mode == "factory-owner" else "2. OPEN SETUP"
+    right_caption = "2. OPEN DREAM TALK" if mode == "factory-owner" else "2. OPEN SETUP"
     tagline = "Scan to join. Scan to talk." if mode == "factory-owner" else "Scan to set up. Scan to chat."
     fallback_url_label = "owner url" if mode == "factory-owner" else "then visit"
 
@@ -311,7 +311,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Generate a printable setup or factory-owner card for a Dream Server unit.",
     )
     parser.add_argument("--mode", default="setup", choices=["setup", "factory-owner"],
-                        help="Card mode. setup prints Wi-Fi + setup URL; factory-owner prints Wi-Fi + owner Hermes QR")
+                        help="Card mode. setup prints Wi-Fi + setup URL; factory-owner prints Wi-Fi + owner Dream Talk QR")
     parser.add_argument("--ssid", required=True, help="Wi-Fi SSID of the device's setup AP")
     parser.add_argument("--password", default="", help="Wi-Fi password (empty for open network)")
     parser.add_argument("--security", default="WPA", choices=["WPA", "WEP", "nopass"],

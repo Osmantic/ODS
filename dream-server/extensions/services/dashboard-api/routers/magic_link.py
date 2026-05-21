@@ -422,9 +422,23 @@ def _hermes_url(url_mode: str = "auto") -> str:
     return f"http://hermes.{_device_name()}.local"
 
 
+def _talk_url(url_mode: str = "auto") -> str:
+    """Where a successful owner-card redemption redirects.
+
+    Dream Talk is served by the dashboard container but presented as its own
+    phone-first host so owner cards don't land consumers in the advanced
+    Hermes interface.
+    """
+    if _use_public_url(url_mode):
+        return f"{_public_base()}/talk"
+    return f"http://talk.{_device_name()}.local/talk"
+
+
 def _redirect_url(record: dict) -> str:
     record = _normalize_record(record)
     if record["scope"] == "hermes":
+        if record["token_type"] == "owner":
+            return _talk_url(record["url_mode"])
         return _hermes_url(record["url_mode"])
     return _chat_url(record["url_mode"])
 

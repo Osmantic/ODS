@@ -1,0 +1,421 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  AlertCircle, CheckCircle2, Loader2, Mic, Paperclip, RefreshCw,
+  Send, Volume2, VolumeX,
+} from 'lucide-react'
+
+const welcomeMessage = {
+  id: 'welcome',
+  role: 'assistant',
+  text: 'Hi. I am Dream Server. Ask me anything and I will keep it local to this box.',
+  status: 'done',
+}
+
+function makeId(prefix) {
+  if (globalThis.crypto?.randomUUID) return `${prefix}-${globalThis.crypto.randomUUID()}`
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+async function parseError(resp, fallback) {
+  const body = await resp.json().catch(() => ({}))
+  return body.detail || fallback || `Request failed: ${resp.status}`
+}
+
+export default function DreamTalk() {
+  const [messages, setMessages] = useState([welcomeMessage])
+  const [input, setInput] = useState('')
+  const [status, setStatus] = useState('loading')
+  const [statusText, setStatusText] = useState('Connecting to Dream Talk...')
+  const [sending, setSending] = useState(false)
+  const [recording, setRecording] = useState(false)
+  const [spokenReplies, setSpokenReplies] = useState(() => {
+    try {
+      return globalThis.localStorage?.getItem('dream-talk-spoken-replies') === '1'
+    } catch {
+      return false
+    }
+  })
+  const [voiceState, setVoiceState] = useState({
+    tts: false,
+    audioMessage: false,
+    liveMic: false,
+  })
+
+  const bottomRef = useRef(null)
+  const fileInputRef = useRef(null)
+  const recorderRef = useRef(null)
+  const recordingChunksRef = useRef([])
+
+  const liveMicSupported = useMemo(() => {
+    return Boolean(
+      typeof window !== 'undefined' &&
+      window.isSecureContext &&
+      navigator.mediaDevices?.getUserMedia &&
+      globalThis.MediaRecorder,
+    )
+  }, [])
+
+  const refreshStatus = useCallback(async () => {
+    setStatus('loading')
+    try {
+      const resp = await fetch('/api/talk/status', { credentials: 'same-origin' })
+      if (resp.status === 401) {
+        setStatus('expired')
+        setStatusText('Session expired. Scan the owner card again.')
+        return
+      }
+      if (!resp.ok) throw new Error(await parseError(resp, 'Dream Talk is not ready.'))
+      const data = await resp.json()
+      const capabilities = data.capabilities || {}
+      setVoiceState({
+        tts: Boolean(capabilities.tts),
+        audioMessage: Boolean(capabilities.audio_message),
+        liveMic: Boolean(liveMicSupported && capabilities.audio_message),
+      })
+      setStatus('ready')
+      setStatusText('Ready')
+    } catch (err) {
+      setStatus('offline')
+      setStatusText(err.message || 'Dream Talk is offline.')
+    }
+  }, [liveMicSupported])
+
+  useEffect(() => { refreshStatus() }, [refreshStatus])
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView?.({ block: 'end' })
+  }, [messages])
+
+  useEffect(() => {
+    try {
+      globalThis.localStorage?.setItem('dream-talk-spoken-replies', spokenReplies ? '1' : '0')
+    } catch {
+      // Best-effort preference.
+    }
+  }, [spokenReplies])
+
+  const speak = useCallback(async (text) => {
+    if (!spokenReplies || !voiceState.tts || !text.trim()) return
+    try {
+      const body = new FormData()
+      body.set('text', text)
+      const resp = await fetch('/api/talk/speak', {
+        method: 'POST',
+        body,
+        credentials: 'same-origin',
+      })
+      if (!resp.ok) return
+      const blob = await resp.blob()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audio.addEventListener('ended', () => URL.revokeObjectURL(url), { once: true })
+      audio.addEventListener('error', () => URL.revokeObjectURL(url), { once: true })
+      await audio.play()
+    } catch {
+      // Audio playback is an enhancement; never interrupt text chat for it.
+    }
+  }, [spokenReplies, voiceState.tts])
+
+  const sendText = useCallback(async (text, { transcriptId = null } = {}) => {
+    const clean = text.trim()
+    if (!clean || sending || status === 'expired') return
+    setSending(true)
+
+    const userId = transcriptId || makeId('user')
+    const assistantId = makeId('assistant')
+    if (!transcriptId) {
+      setMessages(items => [...items, { id: userId, role: 'user', text: clean, status: 'done' }])
+    }
+    setMessages(items => [...items, { id: assistantId, role: 'assistant', text: '', status: 'pending' }])
+    setInput('')
+
+    try {
+      const resp = await fetch('/api/talk/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ text: clean }),
+      })
+      if (resp.status === 401) {
+        setStatus('expired')
+        setStatusText('Session expired. Scan the owner card again.')
+        throw new Error('Session expired.')
+      }
+      if (!resp.ok) throw new Error(await parseError(resp, 'Hermes did not answer.'))
+      const data = await resp.json()
+      const reply = data.text || 'I did not get a response back.'
+      setMessages(items => items.map(item =>
+        item.id === assistantId
+          ? { ...item, text: reply, status: 'done', warning: data.warning || null }
+          : item,
+      ))
+      speak(reply)
+    } catch (err) {
+      setMessages(items => items.map(item =>
+        item.id === assistantId
+          ? { ...item, text: err.message || 'Something went wrong.', status: 'error' }
+          : item,
+      ))
+    } finally {
+      setSending(false)
+    }
+  }, [sending, speak, status])
+
+  const sendAudioFile = useCallback(async (file) => {
+    if (!file || sending || status === 'expired') return
+    setSending(true)
+    const userId = makeId('voice')
+    const assistantId = makeId('assistant')
+    setMessages(items => [
+      ...items,
+      { id: userId, role: 'user', text: 'Voice message', status: 'pending' },
+      { id: assistantId, role: 'assistant', text: '', status: 'pending' },
+    ])
+
+    try {
+      const body = new FormData()
+      body.set('file', file, file.name || 'dream-talk-audio.webm')
+      const resp = await fetch('/api/talk/audio-message', {
+        method: 'POST',
+        body,
+        credentials: 'same-origin',
+      })
+      if (resp.status === 401) {
+        setStatus('expired')
+        setStatusText('Session expired. Scan the owner card again.')
+        throw new Error('Session expired.')
+      }
+      if (!resp.ok) throw new Error(await parseError(resp, 'Voice message could not be sent.'))
+      const data = await resp.json()
+      const reply = data.text || 'I did not get a response back.'
+      setMessages(items => items.map(item => {
+        if (item.id === userId) return { ...item, text: data.transcript || 'Voice message', status: 'done' }
+        if (item.id === assistantId) return { ...item, text: reply, status: 'done', warning: data.warning || null }
+        return item
+      }))
+      speak(reply)
+    } catch (err) {
+      setMessages(items => items.map(item => {
+        if (item.id === userId) return { ...item, status: 'error' }
+        if (item.id === assistantId) return { ...item, text: err.message || 'Something went wrong.', status: 'error' }
+        return item
+      }))
+    } finally {
+      setSending(false)
+    }
+  }, [sending, speak, status])
+
+  const startRecording = async () => {
+    if (!voiceState.liveMic || recording || sending) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recorder = new MediaRecorder(stream)
+      recordingChunksRef.current = []
+      recorder.ondataavailable = event => {
+        if (event.data?.size) recordingChunksRef.current.push(event.data)
+      }
+      recorder.onstop = () => {
+        stream.getTracks().forEach(track => track.stop())
+        const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+        if (blob.size > 0) {
+          sendAudioFile(new File([blob], 'recording.webm', { type: blob.type || 'audio/webm' }))
+        }
+      }
+      recorderRef.current = recorder
+      recorder.start()
+      setRecording(true)
+    } catch {
+      setVoiceState(current => ({ ...current, liveMic: false }))
+    }
+  }
+
+  const stopRecording = () => {
+    const recorder = recorderRef.current
+    if (!recorder || recorder.state === 'inactive') return
+    recorder.stop()
+    recorderRef.current = null
+    setRecording(false)
+  }
+
+  const submit = (event) => {
+    event.preventDefault()
+    sendText(input)
+  }
+
+  const retryLast = () => {
+    const lastUser = [...messages].reverse().find(message => message.role === 'user' && message.status !== 'pending')
+    if (lastUser) sendText(lastUser.text)
+  }
+
+  const canSend = input.trim().length > 0 && !sending && status !== 'expired'
+
+  return (
+    <div className="min-h-dvh bg-[#f8faf8] text-zinc-950 antialiased">
+      <div className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col">
+        <header className="sticky top-0 z-10 border-b border-zinc-200 bg-[#f8faf8]/95 px-4 py-3 backdrop-blur">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="text-base font-semibold leading-tight tracking-normal">Dream Talk</h1>
+              <div className="mt-1 flex items-center gap-1.5 text-xs text-zinc-500">
+                {status === 'ready' ? <CheckCircle2 size={13} className="text-emerald-600" /> : null}
+                {status === 'loading' ? <Loader2 size={13} className="animate-spin" /> : null}
+                {status === 'offline' || status === 'expired' ? <AlertCircle size={13} className="text-amber-600" /> : null}
+                <span>{statusText}</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setSpokenReplies(value => !value)}
+                className={`grid h-10 w-10 place-items-center rounded-full border ${
+                  spokenReplies ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-zinc-200 bg-white text-zinc-500'
+                }`}
+                aria-label={spokenReplies ? 'Turn spoken replies off' : 'Turn spoken replies on'}
+                title={spokenReplies ? 'Spoken replies on' : 'Spoken replies off'}
+              >
+                {spokenReplies ? <Volume2 size={18} /> : <VolumeX size={18} />}
+              </button>
+              <button
+                type="button"
+                onClick={refreshStatus}
+                className="grid h-10 w-10 place-items-center rounded-full border border-zinc-200 bg-white text-zinc-500"
+                aria-label="Refresh Dream Talk status"
+                title="Refresh"
+              >
+                <RefreshCw size={17} />
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="flex-1 overflow-y-auto px-4 py-4">
+          <div className="space-y-3">
+            {messages.map(message => (
+              <MessageBubble key={message.id} message={message} />
+            ))}
+            <div ref={bottomRef} />
+          </div>
+        </main>
+
+        {status === 'expired' && (
+          <div className="mx-4 mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            This owner session ended. Scan the owner card again to continue.
+          </div>
+        )}
+
+        {status === 'offline' && (
+          <div className="mx-4 mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
+            Dream Talk cannot reach its local services. Try again after the box finishes starting.
+          </div>
+        )}
+
+        {typeof window !== 'undefined' && !window.isSecureContext && (
+          <div className="mx-4 mb-3 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-600">
+            Live mic needs HTTPS. Text chat still works here, and your phone may offer native audio capture.
+          </div>
+        )}
+
+        <form onSubmit={submit} className="sticky bottom-0 border-t border-zinc-200 bg-[#f8faf8]/95 p-3 backdrop-blur">
+          <div className="flex items-end gap-2 rounded-[1.75rem] border border-zinc-200 bg-white p-2 shadow-sm">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/*"
+              capture
+              className="hidden"
+              onChange={event => {
+                const file = event.target.files?.[0]
+                event.target.value = ''
+                if (file) sendAudioFile(file)
+              }}
+              aria-label="Choose audio message"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={sending || status === 'expired'}
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-zinc-500 disabled:opacity-40"
+              aria-label="Attach voice message"
+              title="Voice message"
+            >
+              <Paperclip size={19} />
+            </button>
+            <textarea
+              value={input}
+              onChange={event => setInput(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault()
+                  if (canSend) sendText(input)
+                }
+              }}
+              rows={1}
+              placeholder="Message Dream Server"
+              className="max-h-32 min-h-11 flex-1 resize-none bg-transparent px-1 py-2.5 text-[16px] leading-6 text-zinc-950 outline-none placeholder:text-zinc-400"
+              disabled={status === 'expired'}
+            />
+            {voiceState.liveMic ? (
+              <button
+                type="button"
+                onClick={recording ? stopRecording : startRecording}
+                disabled={sending}
+                className={`grid h-11 w-11 shrink-0 place-items-center rounded-full ${
+                  recording ? 'bg-red-600 text-white' : 'bg-zinc-100 text-zinc-700'
+                } disabled:opacity-40`}
+                aria-label={recording ? 'Stop recording' : 'Record voice'}
+                title={recording ? 'Stop recording' : 'Record'}
+              >
+                {recording ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
+              </button>
+            ) : null}
+            <button
+              type="submit"
+              disabled={!canSend}
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-zinc-950 text-white disabled:bg-zinc-200 disabled:text-zinc-400"
+              aria-label="Send message"
+              title="Send"
+            >
+              {sending ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+            </button>
+          </div>
+          {messages.some(message => message.status === 'error') && (
+            <div className="mt-2 flex justify-end">
+              <button type="button" onClick={retryLast} className="text-sm font-medium text-zinc-700">
+                Retry last message
+              </button>
+            </div>
+          )}
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function MessageBubble({ message }) {
+  const user = message.role === 'user'
+  return (
+    <div className={`flex ${user ? 'justify-end' : 'justify-start'}`}>
+      <div
+        className={`max-w-[84%] rounded-2xl px-4 py-3 text-[15px] leading-6 shadow-sm ${
+          user
+            ? 'rounded-br-md bg-zinc-950 text-white'
+            : message.status === 'error'
+              ? 'rounded-bl-md border border-red-200 bg-red-50 text-red-900'
+              : 'rounded-bl-md border border-zinc-200 bg-white text-zinc-900'
+        }`}
+      >
+        {message.status === 'pending' && !message.text ? (
+          <span className="inline-flex items-center gap-2 text-zinc-500">
+            <Loader2 size={14} className="animate-spin" />
+            Thinking
+          </span>
+        ) : (
+          <p className="whitespace-pre-wrap break-words">{message.text}</p>
+        )}
+        {message.warning && (
+          <p className="mt-2 text-xs text-amber-600">{message.warning}</p>
+        )}
+      </div>
+    </div>
+  )
+}

@@ -401,6 +401,22 @@ def test_redeem_hermes_scope_redirects_to_hermes_subdomain(magic_link_client, mo
     assert resp.headers["location"] == "http://hermes.kitchen.local"
 
 
+def test_owner_hermes_scope_redirects_to_dream_talk(magic_link_client, monkeypatch):
+    monkeypatch.setenv("DREAM_DEVICE_NAME", "kitchen")
+    monkeypatch.setenv("DREAM_COOKIE_DOMAIN", "kitchen.local")
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner", "scope": "hermes"},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    resp = magic_link_client.get(f"/magic-link/{token}", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://talk.kitchen.local/talk"
+
+
 def test_owner_token_can_be_redeemed_repeatedly_and_revoked(
     magic_link_client, magic_link_module, monkeypatch
 ):
@@ -417,7 +433,7 @@ def test_owner_token_can_be_redeemed_repeatedly_and_revoked(
     second = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
     assert first.status_code == 302
     assert second.status_code == 302
-    assert first.headers["location"] == "http://hermes.studio.local"
+    assert first.headers["location"] == "http://talk.studio.local/talk"
 
     store = magic_link_module._ensure_store()
     assert store["tokens"][0]["expires_at"] is None
