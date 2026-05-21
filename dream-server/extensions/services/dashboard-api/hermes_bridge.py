@@ -12,6 +12,16 @@ fresh WS-B for ``prompt.submit``, Hermes accepts the submit (returns
 already closed. The bridge would then wait forever for events that never
 arrive and 502 at the request timeout. So a single submit_prompt / stream_prompt
 call MUST do both create-session and submit-prompt on the same WS.
+
+Per-cookie connection pool (issue #1322): instead of opening a new WS for
+every Dream Talk message, we hold one ``HermesConnection`` per ``session_key``
+in a process-wide pool and reuse the same Hermes session across messages from
+the same phone. Hermes's per-WS event scoping makes this work — the same WS
+is the owner, so events keep flowing. The big win is llama-server's
+prompt-cache stays warm across messages, so the second "hey" doesn't pay the
+30-60s prefill of the 16k-token agent system prompt. An idle sweeper closes
+connections that have been quiet for >5 minutes so a fleet of one-time
+visitors doesn't pin Hermes resources forever.
 """
 
 from __future__ import annotations
@@ -22,7 +32,8 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 import aiohttp
@@ -32,6 +43,10 @@ logger = logging.getLogger(__name__)
 TOKEN_RE = re.compile(r'window\.__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"')
 DEFAULT_HERMES_URL = "http://dream-hermes:9119"
 DEFAULT_TIMEOUT_SECONDS = 180
+
+# Connection pool tuning. Override per environment if needed.
+_IDLE_EXPIRY_SECONDS = int(os.environ.get("DREAM_TALK_IDLE_EXPIRY", "300"))  # 5 min default
+_IDLE_SWEEP_INTERVAL = 60  # how often the background sweeper runs
 
 
 class HermesBridgeError(RuntimeError):
@@ -132,23 +147,219 @@ async def _create_session_on_ws(ws: aiohttp.ClientWebSocketResponse, *, timeout:
         return session_id
 
 
-_SUBMIT_LOCKS: dict[str, asyncio.Lock] = {}
-_SUBMIT_LOCKS_GUARD = asyncio.Lock()
+@dataclass
+class _HermesConnection:
+    """One long-lived WS + Hermes session, scoped to a single phone cookie.
 
+    Holding the WS open across messages lets Hermes reuse its session_id and
+    keeps the 16k-token system prompt warm in llama-server's KV cache. Each
+    new prompt on the same connection costs ~1k tokens of context (the user
+    message + maybe a tool result), not 16k+1k. Big latency win.
 
-async def _submit_lock(session_key: str) -> asyncio.Lock:
-    """Per-session-key mutex so two prompts from the same phone don't pile
-    up on llama-server slots. Each call to stream_prompt holds the lock for
-    the whole bridge round-trip; subsequent same-key submits wait until the
-    previous one finishes (or the client disconnects, which cancels the
-    bridge and releases the lock).
+    The per-connection ``lock`` serializes two prompts from the same phone:
+    Hermes can't multiplex two prompt.submit calls on one session anyway,
+    and the SPA's UI already enforces "wait for the previous reply" — this
+    is the server-side belt to that suspenders.
     """
-    async with _SUBMIT_LOCKS_GUARD:
-        lock = _SUBMIT_LOCKS.get(session_key)
-        if lock is None:
-            lock = asyncio.Lock()
-            _SUBMIT_LOCKS[session_key] = lock
-        return lock
+    http_session: aiohttp.ClientSession
+    ws: aiohttp.ClientWebSocketResponse
+    session_id: str
+    last_used: float = field(default_factory=time.monotonic)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    closed: bool = False
+
+    async def aclose(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            await self.ws.close()
+        except Exception:  # pragma: no cover — best-effort cleanup
+            logger.debug("ws.close raised during pool eviction", exc_info=True)
+        try:
+            await self.http_session.close()
+        except Exception:  # pragma: no cover
+            logger.debug("http_session.close raised during pool eviction", exc_info=True)
+
+
+_CONNECTION_POOL: dict[str, _HermesConnection] = {}
+_POOL_GUARD = asyncio.Lock()
+_SWEEPER_TASK: asyncio.Task | None = None
+
+
+async def _open_connection(session_key: str) -> _HermesConnection:
+    """Open one fresh WS + run session.create. Caller holds _POOL_GUARD."""
+    timeout_seconds = _request_timeout()
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds + 20)
+    http_session = aiohttp.ClientSession(timeout=timeout)
+    try:
+        ws = await _connect_ws(http_session)
+    except Exception:
+        await http_session.close()
+        raise
+    try:
+        session_id = await _create_session_on_ws(ws, timeout=30)
+    except Exception:
+        await ws.close()
+        await http_session.close()
+        raise
+    conn = _HermesConnection(http_session=http_session, ws=ws, session_id=session_id)
+    logger.info("hermes-bridge: opened pooled connection for %s (session_id=%s)", session_key[:8], session_id)
+    return conn
+
+
+async def _get_connection(session_key: str) -> _HermesConnection:
+    """Look up the pooled connection for this session_key, or create one.
+
+    Caller must use ``async with conn.lock:`` around any send/receive cycle
+    to keep concurrent same-key prompts from interleaving on the same WS.
+    """
+    async with _POOL_GUARD:
+        conn = _CONNECTION_POOL.get(session_key)
+        if conn is not None and not conn.closed and not conn.ws.closed:
+            return conn
+        # Either no entry, marked closed, or the underlying ws died. Drop
+        # whatever is in the slot and open fresh.
+        if conn is not None:
+            await conn.aclose()
+        new_conn = await _open_connection(session_key)
+        _CONNECTION_POOL[session_key] = new_conn
+        return new_conn
+
+
+async def _drop_connection(session_key: str, conn: _HermesConnection) -> None:
+    """Evict a connection from the pool (e.g. after a dead-WS error)."""
+    async with _POOL_GUARD:
+        current = _CONNECTION_POOL.get(session_key)
+        if current is conn:
+            _CONNECTION_POOL.pop(session_key, None)
+    await conn.aclose()
+
+
+async def _sweep_idle_connections() -> None:
+    """Background task: close pool entries idle for > _IDLE_EXPIRY_SECONDS.
+
+    Runs forever; the task is held in ``_SWEEPER_TASK``. Cancelled by
+    ``shutdown_pool()`` on app shutdown.
+    """
+    while True:
+        try:
+            await asyncio.sleep(_IDLE_SWEEP_INTERVAL)
+            now = time.monotonic()
+            stale: list[tuple[str, _HermesConnection]] = []
+            async with _POOL_GUARD:
+                for key, conn in list(_CONNECTION_POOL.items()):
+                    if conn.closed or conn.ws.closed:
+                        stale.append((key, conn))
+                        _CONNECTION_POOL.pop(key, None)
+                        continue
+                    if now - conn.last_used > _IDLE_EXPIRY_SECONDS:
+                        stale.append((key, conn))
+                        _CONNECTION_POOL.pop(key, None)
+            for key, conn in stale:
+                logger.info("hermes-bridge: evicting idle connection for %s", key[:8])
+                await conn.aclose()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover — keep sweeper alive on bugs
+            logger.exception("hermes-bridge: idle sweeper hit an error; continuing")
+
+
+def _ensure_sweeper_running() -> None:
+    """Lazily start the idle sweeper on first use. Idempotent."""
+    global _SWEEPER_TASK
+    if _SWEEPER_TASK is not None and not _SWEEPER_TASK.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _SWEEPER_TASK = loop.create_task(_sweep_idle_connections())
+
+
+async def shutdown_pool() -> None:
+    """Close every pooled connection. Call from a FastAPI lifespan handler
+    so a graceful shutdown doesn't leak WSes / file descriptors."""
+    global _SWEEPER_TASK
+    if _SWEEPER_TASK is not None:
+        _SWEEPER_TASK.cancel()
+        try:
+            await _SWEEPER_TASK
+        except (asyncio.CancelledError, Exception):
+            pass
+        _SWEEPER_TASK = None
+    async with _POOL_GUARD:
+        connections = list(_CONNECTION_POOL.values())
+        _CONNECTION_POOL.clear()
+    for conn in connections:
+        await conn.aclose()
+
+
+async def _submit_on_connection(
+    conn: _HermesConnection, text: str, timeout_seconds: int,
+) -> AsyncIterator[dict[str, Any]]:
+    """Send one prompt on an already-open pooled connection and yield events.
+
+    Caller must hold ``conn.lock`` for the duration of this generator so two
+    same-key prompts can't interleave on the same WS. Mutates ``conn.last_used``
+    on completion. Raises HermesUnavailable / HermesBridgeError on failure;
+    the caller decides whether to evict the pool entry.
+    """
+    request_id = f"dream-talk-prompt-{int(time.monotonic() * 1000)}"
+    await conn.ws.send_str(json.dumps({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "prompt.submit",
+        "params": {"session_id": conn.session_id, "text": text},
+    }))
+
+    chunks: list[str] = []
+    while True:
+        frame = await _recv_json(conn.ws, timeout_seconds)
+
+        # Reply to our prompt.submit RPC — informational; events still follow.
+        if frame.get("id") == request_id:
+            if frame.get("error"):
+                err = frame["error"]
+                message = err.get("message") if isinstance(err, dict) else str(err)
+                raise HermesBridgeError(message or "Hermes prompt failed")
+            continue
+
+        if frame.get("method") != "event":
+            continue
+        event = frame.get("params") or {}
+        if not isinstance(event, dict):
+            continue
+        if event.get("session_id") and event.get("session_id") != conn.session_id:
+            # Stray event from a sibling session — ignore.
+            continue
+
+        payload = event.get("payload") or {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        event_type = event.get("type")
+        if event_type == "message.delta":
+            chunk = payload.get("text")
+            if isinstance(chunk, str) and chunk:
+                chunks.append(chunk)
+                yield {"type": "delta", "text": chunk}
+        elif event_type == "message.complete":
+            final_text = payload.get("text")
+            if not isinstance(final_text, str) or not final_text.strip():
+                final_text = "".join(chunks)
+            conn.last_used = time.monotonic()
+            yield {
+                "type": "complete",
+                "session_id": conn.session_id,
+                "text": final_text.strip(),
+                "status": str(payload.get("status") or "ok"),
+                "warning": payload.get("warning") if isinstance(payload.get("warning"), str) else None,
+            }
+            return
+        elif event_type == "error":
+            message = payload.get("message") if isinstance(payload.get("message"), str) else "Hermes reported an error"
+            raise HermesBridgeError(message)
 
 
 async def stream_prompt(session_key: str, text: str) -> AsyncIterator[dict[str, Any]]:
@@ -161,79 +372,45 @@ async def stream_prompt(session_key: str, text: str) -> AsyncIterator[dict[str, 
 
     On error, raises HermesUnavailable / HermesBridgeError; no partial yield.
 
-    The session_key argument is currently advisory for Hermes session reuse
-    (Hermes scopes events per-WS, so we can't safely persist a session across
-    submit calls — see module docstring), but it IS used to serialize concurrent
-    submits from the same phone. Two messages from the same cookie can't
-    overlap; the second waits for the first to finish or be cancelled.
-    Conversational memory across calls is provided by Hermes's own agent
-    memory layer, not by session_id reuse.
+    Uses the per-cookie connection pool so subsequent messages from the same
+    phone reuse the same Hermes session_id (and therefore keep llama-server's
+    prompt cache warm for the 16k-token agent system prompt). On the first
+    call for a cookie, opens a fresh WS and runs session.create; on later
+    calls, reuses the pooled connection and just sends prompt.submit. The
+    pool's idle sweeper closes inactive connections after
+    DREAM_TALK_IDLE_EXPIRY seconds (default 300s = 5 min) so a fleet of
+    one-time visitors doesn't pin resources forever.
+
+    Two same-key prompts can't overlap (per-connection ``lock`` serializes
+    them); two different-key prompts run in parallel as long as
+    llama-server's slots can absorb the load.
     """
+    _ensure_sweeper_running()
     timeout_seconds = _request_timeout()
-    timeout = aiohttp.ClientTimeout(total=timeout_seconds + 20)
 
-    lock = await _submit_lock(session_key)
-    async with lock:
-        async with aiohttp.ClientSession(timeout=timeout) as http_session:
-            ws = await _connect_ws(http_session)
-            async with ws:
-                session_id = await _create_session_on_ws(ws, timeout=30)
-                yield {"type": "session", "session_id": session_id}
+    conn = await _get_connection(session_key)
+    async with conn.lock:
+        # Yield the session frame from inside the lock so the SPA's first
+        # frame always carries the live session_id (and not one stale from a
+        # connection that got swapped out between yield and submit).
+        yield {"type": "session", "session_id": conn.session_id}
 
-                request_id = "dream-talk-prompt"
-                await ws.send_str(json.dumps({
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "method": "prompt.submit",
-                    "params": {"session_id": session_id, "text": text},
-                }))
+        try:
+            async for event in _submit_on_connection(conn, text, timeout_seconds):
+                yield event
+            return
+        except HermesUnavailable:
+            # WS died (closed, reset, etc). Evict + retry ONCE on a fresh
+            # connection so a Hermes container restart looks like a one-call
+            # blip, not a sticky failure for the cookie.
+            await _drop_connection(session_key, conn)
+            raise
 
-                chunks: list[str] = []
-                while True:
-                    frame = await _recv_json(ws, timeout_seconds)
-
-                    # Reply to our prompt.submit RPC — informational; events still follow.
-                    if frame.get("id") == request_id:
-                        if frame.get("error"):
-                            err = frame["error"]
-                            message = err.get("message") if isinstance(err, dict) else str(err)
-                            raise HermesBridgeError(message or "Hermes prompt failed")
-                        continue
-
-                    if frame.get("method") != "event":
-                        continue
-                    event = frame.get("params") or {}
-                    if not isinstance(event, dict):
-                        continue
-                    if event.get("session_id") and event.get("session_id") != session_id:
-                        # Stray event from a sibling session — ignore.
-                        continue
-
-                    payload = event.get("payload") or {}
-                    if not isinstance(payload, dict):
-                        payload = {}
-
-                    event_type = event.get("type")
-                    if event_type == "message.delta":
-                        chunk = payload.get("text")
-                        if isinstance(chunk, str) and chunk:
-                            chunks.append(chunk)
-                            yield {"type": "delta", "text": chunk}
-                    elif event_type == "message.complete":
-                        final_text = payload.get("text")
-                        if not isinstance(final_text, str) or not final_text.strip():
-                            final_text = "".join(chunks)
-                        yield {
-                            "type": "complete",
-                            "session_id": session_id,
-                            "text": final_text.strip(),
-                            "status": str(payload.get("status") or "ok"),
-                            "warning": payload.get("warning") if isinstance(payload.get("warning"), str) else None,
-                        }
-                        return
-                    elif event_type == "error":
-                        message = payload.get("message") if isinstance(payload.get("message"), str) else "Hermes reported an error"
-                        raise HermesBridgeError(message)
+    # NOTE: a fully-fledged "retry once on dead connection" path would require
+    # nesting another acquire here. For now we surface HermesUnavailable to
+    # the SSE layer, which renders an error frame; the SPA's next send creates
+    # a fresh connection. Two-tap recovery is acceptable for v1; a transparent
+    # retry can land in a follow-up if real-world data shows it's needed.
 
 
 async def submit_prompt(session_key: str, text: str) -> HermesReply:

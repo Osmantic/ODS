@@ -933,7 +933,16 @@ async def _lifespan(app: FastAPI):
     asyncio.create_task(collect_metrics())
     asyncio.create_task(_poll_service_health())
     asyncio.create_task(gpu_router.poll_gpu_history())
-    yield
+    try:
+        yield
+    finally:
+        # Close any open Hermes WebSockets in the Dream Talk connection pool
+        # so a graceful uvicorn shutdown doesn't leak FDs into stale state.
+        try:
+            import hermes_bridge
+            await hermes_bridge.shutdown_pool()
+        except Exception:
+            logger.debug("hermes_bridge.shutdown_pool raised at app shutdown", exc_info=True)
 
 
 app = FastAPI(
