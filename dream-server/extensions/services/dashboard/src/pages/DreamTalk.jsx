@@ -129,10 +129,19 @@ export default function DreamTalk() {
     setMessages(items => [...items, { id: assistantId, role: 'assistant', text: '', status: 'pending' }])
     setInput('')
 
+    // Live-streamed reply via SSE. The endpoint emits one JSON object per
+    // ``data:`` frame: {type: "session" | "delta" | "complete" | "error" | "done"}.
+    // We append delta text into the assistant bubble as each frame arrives, then
+    // finalise the bubble on the ``complete`` frame. The ``done`` frame is
+    // always last (even after an error) so the loop terminates cleanly.
+    let assembled = ''
+    let finalWarning = null
+    let errorDetail = null
+
     try {
-      const resp = await fetch('/api/talk/message', {
+      const resp = await fetch('/api/talk/message/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
         credentials: 'same-origin',
         body: JSON.stringify({ text: clean }),
       })
@@ -141,12 +150,52 @@ export default function DreamTalk() {
         setStatusText('Session expired. Scan the owner card again.')
         throw new Error('Session expired.')
       }
-      if (!resp.ok) throw new Error(await parseError(resp, 'Hermes did not answer.'))
-      const data = await resp.json()
-      const reply = data.text || 'I did not get a response back.'
+      if (!resp.ok || !resp.body) {
+        throw new Error(await parseError(resp, 'Hermes did not answer.'))
+      }
+
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      // SSE frames are separated by a blank line (\n\n). Buffer partial frames
+      // across reads — chunked transport can split mid-frame.
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let sepIdx
+        while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, sepIdx)
+          buffer = buffer.slice(sepIdx + 2)
+          const dataLines = frame.split('\n').filter(line => line.startsWith('data:'))
+          if (dataLines.length === 0) continue
+          const json = dataLines.map(l => l.slice(5).trimStart()).join('\n')
+          let payload
+          try {
+            payload = JSON.parse(json)
+          } catch {
+            continue
+          }
+          if (payload.type === 'delta' && typeof payload.text === 'string') {
+            assembled += payload.text
+            const snapshot = assembled
+            setMessages(items => items.map(item =>
+              item.id === assistantId ? { ...item, text: snapshot, status: 'pending' } : item,
+            ))
+          } else if (payload.type === 'complete') {
+            if (typeof payload.text === 'string' && payload.text) assembled = payload.text
+            finalWarning = payload.warning || null
+          } else if (payload.type === 'error') {
+            errorDetail = payload.detail || 'Hermes did not finish the response.'
+          }
+        }
+      }
+
+      if (errorDetail) throw new Error(errorDetail)
+      const reply = assembled || 'I did not get a response back.'
       setMessages(items => items.map(item =>
         item.id === assistantId
-          ? { ...item, text: reply, status: 'done', warning: data.warning || null }
+          ? { ...item, text: reply, status: 'done', warning: finalWarning }
           : item,
       ))
       speak(reply)

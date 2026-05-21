@@ -8,6 +8,39 @@ const response = (body, status = 200) => ({
   json: async () => body,
 })
 
+// Build a fake fetch Response with a streaming body. ``frames`` is an array
+// of JS objects; each one is encoded as a single SSE frame (data: <json>\n\n).
+// If ``chunks`` is provided it's an array of frame-index arrays — each chunk
+// emits those frames in one reader.read() pass, simulating partial transport.
+const sseResponse = (frames, { status = 200, chunks } = {}) => {
+  const encoder = new TextEncoder()
+  const frameBytes = frames.map(f => encoder.encode(`data: ${JSON.stringify(f)}\n\n`))
+  const chunkGroups = chunks
+    ? chunks.map(group => Buffer.concat ? Buffer.concat(group.map(i => frameBytes[i])) : (() => {
+        // browser/jsdom path — concat Uint8Arrays manually
+        const totalLen = group.reduce((acc, i) => acc + frameBytes[i].byteLength, 0)
+        const out = new Uint8Array(totalLen)
+        let offset = 0
+        for (const i of group) { out.set(frameBytes[i], offset); offset += frameBytes[i].byteLength }
+        return out
+      })())
+    : frameBytes
+  let idx = 0
+  const reader = {
+    read: async () => {
+      if (idx >= chunkGroups.length) return { done: true, value: undefined }
+      const value = chunkGroups[idx++]
+      return { done: false, value }
+    },
+  }
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    body: { getReader: () => reader },
+    json: async () => ({}),
+  }
+}
+
 describe('DreamTalk', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false })
@@ -29,9 +62,15 @@ describe('DreamTalk', () => {
           },
         })
       }
-      if (url === '/api/talk/message' && options.method === 'POST') {
+      if (url === '/api/talk/message/stream' && options.method === 'POST') {
         expect(JSON.parse(options.body)).toEqual({ text: 'What can you do?' })
-        return response({ session_id: 'sid', text: 'I can help from this Dream Server.' })
+        return sseResponse([
+          { type: 'session', session_id: 'sid' },
+          { type: 'delta', text: 'I can help' },
+          { type: 'delta', text: ' from this Dream Server.' },
+          { type: 'complete', session_id: 'sid', text: 'I can help from this Dream Server.', status: 'ok' },
+          { type: 'done' },
+        ])
       }
       throw new Error(`unexpected request: ${url}`)
     })
@@ -47,6 +86,64 @@ describe('DreamTalk', () => {
 
     expect(await screen.findByText('What can you do?')).toBeInTheDocument()
     expect(await screen.findByText('I can help from this Dream Server.')).toBeInTheDocument()
+  })
+
+  test('accumulates SSE deltas across split chunks', async () => {
+    // Transport may split a single SSE frame across chunk boundaries. The
+    // reader has to buffer the partial frame across reads, not drop bytes.
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') {
+        return response({ capabilities: { text_chat: true } })
+      }
+      if (url === '/api/talk/message/stream' && options.method === 'POST') {
+        // Five frames in three transport chunks: [session][delta delta][complete done]
+        return sseResponse(
+          [
+            { type: 'session', session_id: 'sid' },
+            { type: 'delta', text: 'Hello' },
+            { type: 'delta', text: ' world' },
+            { type: 'complete', session_id: 'sid', text: 'Hello world', status: 'ok' },
+            { type: 'done' },
+          ],
+          { chunks: [[0], [1, 2], [3, 4]] },
+        )
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<DreamTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Message Dream Server'), {
+      target: { value: 'hello' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    expect(await screen.findByText('Hello world')).toBeInTheDocument()
+  })
+
+  test('surfaces SSE error frame as an assistant error', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') return response({ capabilities: { text_chat: true } })
+      if (url === '/api/talk/message/stream' && options.method === 'POST') {
+        return sseResponse([
+          { type: 'session', session_id: 'sid' },
+          { type: 'error', status_code: 502, detail: 'Hermes did not finish the response.' },
+          { type: 'done' },
+        ])
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<DreamTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Message Dream Server'), {
+      target: { value: 'hi' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    expect(await screen.findByText('Hermes did not finish the response.')).toBeInTheDocument()
   })
 
   test('shows an expired owner-card session state', async () => {
@@ -102,8 +199,13 @@ describe('DreamTalk', () => {
           capabilities: { text_chat: true, tts: true, audio_message: false },
         })
       }
-      if (url === '/api/talk/message') {
-        return response({ session_id: 'sid', text: 'Spoken answer.' })
+      if (url === '/api/talk/message/stream') {
+        return sseResponse([
+          { type: 'session', session_id: 'sid' },
+          { type: 'delta', text: 'Spoken answer.' },
+          { type: 'complete', session_id: 'sid', text: 'Spoken answer.', status: 'ok' },
+          { type: 'done' },
+        ])
       }
       if (url === '/api/talk/speak' && options.method === 'POST') {
         return {
