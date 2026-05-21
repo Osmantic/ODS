@@ -71,6 +71,7 @@ export default function DreamTalk() {
   const fileInputRef = useRef(null)
   const recorderRef = useRef(null)
   const recordingChunksRef = useRef([])
+  const streamControllerRef = useRef(null)
 
   const liveMicSupported = useMemo(() => {
     return Boolean(
@@ -120,6 +121,13 @@ export default function DreamTalk() {
     }
   }, [spokenReplies])
 
+  useEffect(() => {
+    return () => {
+      streamControllerRef.current?.abort()
+      streamControllerRef.current = null
+    }
+  }, [])
+
   const speak = useCallback(async (text) => {
     if (!spokenReplies || !voiceState.tts || !text.trim()) return
     try {
@@ -168,6 +176,8 @@ export default function DreamTalk() {
     // in-flight stream. Server-side the bridge stops pulling from llama-server
     // when the connection drops, freeing the slot for the next request.
     const controller = new AbortController()
+    streamControllerRef.current?.abort()
+    streamControllerRef.current = controller
     try {
       const resp = await fetch('/api/talk/message/stream', {
         method: 'POST',
@@ -244,6 +254,9 @@ export default function DreamTalk() {
         ))
       }
     } finally {
+      if (streamControllerRef.current === controller) {
+        streamControllerRef.current = null
+      }
       setSending(false)
     }
   }, [sending, speak, status])

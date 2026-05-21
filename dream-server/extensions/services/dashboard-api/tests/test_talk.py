@@ -290,8 +290,10 @@ def test_talk_message_stream_cancels_upstream_on_client_disconnect(talk_client, 
     body = b"".join(chunks).decode("utf-8")
     # The session frame should have made it out.
     assert '"type":"session"' in body
-    # The generator must have exited via the disconnect path, emitting `done`.
-    assert '"type":"done"' in body
+    # The generator must have exited via the disconnect path without trying to
+    # write a final frame to a dead response. Normal/error completions still
+    # emit `done`.
+    assert '"type":"done"' not in body
     # And the upstream bridge task must have been cancelled (no hang).
     assert bridge_started.is_set()
     assert bridge_cancelled.is_set()

@@ -15,15 +15,18 @@ const response = (body, status = 200) => ({
 const sseResponse = (frames, { status = 200, chunks } = {}) => {
   const encoder = new TextEncoder()
   const frameBytes = frames.map(f => encoder.encode(`data: ${JSON.stringify(f)}\n\n`))
+  const concatFrames = (group) => {
+    const totalLen = group.reduce((acc, i) => acc + frameBytes[i].byteLength, 0)
+    const out = new Uint8Array(totalLen)
+    let offset = 0
+    for (const i of group) {
+      out.set(frameBytes[i], offset)
+      offset += frameBytes[i].byteLength
+    }
+    return out
+  }
   const chunkGroups = chunks
-    ? chunks.map(group => Buffer.concat ? Buffer.concat(group.map(i => frameBytes[i])) : (() => {
-        // browser/jsdom path — concat Uint8Arrays manually
-        const totalLen = group.reduce((acc, i) => acc + frameBytes[i].byteLength, 0)
-        const out = new Uint8Array(totalLen)
-        let offset = 0
-        for (const i of group) { out.set(frameBytes[i], offset); offset += frameBytes[i].byteLength }
-        return out
-      })())
+    ? chunks.map(group => concatFrames(group))
     : frameBytes
   let idx = 0
   const reader = {

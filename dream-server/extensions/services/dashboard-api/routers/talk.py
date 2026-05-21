@@ -9,6 +9,7 @@ must not grant access here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -151,8 +152,10 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
     """SSE generator wrapping the bridge's stream_prompt.
 
     Yields one ``data:`` line per bridge event, terminated by ``\\n\\n``. A
-    final ``done`` frame is always emitted, so the client knows the stream
-    closed cleanly even after an error. Errors map to an ``error`` frame.
+    final ``done`` frame is emitted on normal completion or bridge errors, so
+    the client knows the stream closed cleanly. If the HTTP client disconnects
+    or the ASGI task is cancelled, the upstream bridge is cancelled without
+    trying to write another frame to the dead response.
 
     Two ongoing-availability mechanisms:
 
@@ -168,6 +171,16 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
     """
     bridge_iter = hermes_bridge.stream_prompt(session_key, text).__aiter__()
     pending: asyncio.Task | None = None
+    emit_done = True
+
+    async def cancel_pending() -> None:
+        nonlocal pending
+        if pending is not None and not pending.done():
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+                await pending
+        pending = None
+
     try:
         while True:
             if pending is None:
@@ -175,13 +188,15 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
             try:
                 done_set, _ = await asyncio.wait({pending}, timeout=_KEEPALIVE_INTERVAL)
             except asyncio.CancelledError:
-                pending.cancel()
+                emit_done = False
+                await cancel_pending()
                 raise
             if not done_set:
                 # No bridge event in the keepalive window; check disconnect
                 # before sending more bytes, then emit a keepalive comment.
                 if await request.is_disconnected():
-                    pending.cancel()
+                    emit_done = False
+                    await cancel_pending()
                     return
                 yield _SSE_KEEPALIVE
                 continue
@@ -214,11 +229,9 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
                     "warning": event.get("warning"),
                 })
     finally:
-        if pending is not None and not pending.done():
-            pending.cancel()
-        # Always emit a terminal frame so the client's stream-consumer loop
-        # exits cleanly, even on disconnect or error.
-        yield _sse_event("done", {})
+        await cancel_pending()
+        if emit_done:
+            yield _sse_event("done", {})
 
 
 @router.get("/api/talk/status")
