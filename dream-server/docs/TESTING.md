@@ -54,6 +54,14 @@ full hardware fleet runs. `tower2` is provisioned with:
 - Distrobox for interactive distro debugging;
 - Incus + KVM/QEMU for disposable systemd-capable VMs.
 
+If the host firewall is active, allow the Incus bridge to serve DHCP/DNS and
+NAT guest traffic:
+
+```bash
+sudo ufw allow in on incusbr0 from any to any
+sudo ufw route allow in on incusbr0 from any to any
+```
+
 Use the Docker runner for every fleet run:
 
 ```bash
@@ -89,14 +97,34 @@ accepted by the runner for quick ad-hoc checks. The matrix uses Linux Mint
 21.3 because the current Mint 22 Docker images report plain Ubuntu in
 `/etc/os-release`, which is less useful for distro detection.
 
-Use Incus VMs when a regression needs real systemd, boot, kernel, or Docker
-daemon behavior:
+Use the Incus VM runner when a regression needs real systemd, boot, kernel, or
+Docker daemon behavior:
 
 ```bash
-incus launch images:ubuntu/24.04 ds-ubuntu2404 --vm -c limits.cpu=4 -c limits.memory=8GiB
-incus exec ds-ubuntu2404 -- bash -lc 'cat /etc/os-release; systemctl is-system-running || true'
-incus delete -f ds-ubuntu2404
+tests/fleet-incus-vm.sh
+tests/fleet-incus-vm.sh ubuntu/24.04 archlinux/current
+tests/fleet-incus-vm.sh --keep-vms rocky9
 ```
+
+The VM matrix intentionally stays smaller than the Docker matrix because it
+boots full virtual machines and installs Docker inside each guest. It currently
+covers:
+
+| Distro ID | Incus image | Package Manager | VM Checks |
+|-----------|-------------|-----------------|-----------|
+| `ubuntu2404` | `images:ubuntu/24.04` | apt | systemd, Docker daemon, installer dry-run |
+| `fedora42` | `images:fedora/42` | dnf | systemd, Docker daemon, installer dry-run |
+| `rocky9` | `images:rockylinux/9` | dnf | systemd, Docker daemon, installer dry-run |
+| `arch` | `images:archlinux/current` | pacman | systemd, Docker daemon, installer dry-run |
+| `opensuse` | `images:opensuse/tumbleweed` | zypper | systemd, Docker daemon, installer dry-run |
+
+The Fedora VM lane uses Fedora 42 because the Incus public image server no
+longer publishes Fedora 41 VM images. The Docker matrix still keeps
+`fedora:41` coverage while the container image is available.
+
+The Rocky VM lane verifies the RHEL-family Docker CE fallback. If Docker's
+Rocky repository does not publish installable `docker-ce` packages, the
+installer uses the CentOS/RHEL Docker CE repository instead.
 
 For CachyOS, use the container matrix for package-manager coverage. Keep a
 manual CachyOS VM template for systemd/kernel coverage because CachyOS publishes
@@ -265,3 +293,5 @@ Every PR automatically tests installer detection on 10 distros via GitHub Action
 5. Test with Distrobox: `distrobox create --name dream-test-newdistro --image newdistro:latest`
 6. Run: `./tests/test-multi-distro.sh newdistro`
 7. Run the fleet matrix path: `./tests/fleet-multi-distro.sh newdistro`
+8. If the distro has an Incus VM image, add a VM lane in `tests/fleet-incus-vm.sh`
+   and run `./tests/fleet-incus-vm.sh newdistro`
