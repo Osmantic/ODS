@@ -44,8 +44,16 @@ TOKEN_RE = re.compile(r'window\.__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"')
 DEFAULT_HERMES_URL = "http://dream-hermes:9119"
 DEFAULT_TIMEOUT_SECONDS = 180
 
+
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = os.environ.get(name, "")
+    if raw.isdigit():
+        return max(minimum, int(raw))
+    return default
+
+
 # Connection pool tuning. Override per environment if needed.
-_IDLE_EXPIRY_SECONDS = int(os.environ.get("DREAM_TALK_IDLE_EXPIRY", "300"))  # 5 min default
+_IDLE_EXPIRY_SECONDS = _env_int("DREAM_TALK_IDLE_EXPIRY", 300)  # 5 min default
 _IDLE_SWEEP_INTERVAL = 60  # how often the background sweeper runs
 
 
@@ -55,6 +63,16 @@ class HermesBridgeError(RuntimeError):
 
 class HermesUnavailable(HermesBridgeError):
     """Hermes is not reachable or did not expose the expected dashboard API."""
+
+
+class HermesConnectionStale(HermesUnavailable):
+    """The pooled WebSocket died before a prompt was submitted.
+
+    This is safe to retry transparently because Hermes never accepted the
+    prompt on that transport. Once prompt.submit has been sent, later
+    connection drops surface as errors instead of retrying and potentially
+    duplicating tool calls or streamed text.
+    """
 
 
 @dataclass
@@ -249,6 +267,11 @@ async def _sweep_idle_connections() -> None:
             stale: list[tuple[str, _HermesConnection]] = []
             async with _POOL_GUARD:
                 for key, conn in list(_CONNECTION_POOL.items()):
+                    if conn.lock.locked():
+                        # Active prompt. Do not close the WS while Hermes is
+                        # streaming or pre-filling a long response; last_used
+                        # is refreshed again when the prompt completes.
+                        continue
                     if conn.closed or conn.ws.closed:
                         stale.append((key, conn))
                         _CONNECTION_POOL.pop(key, None)
@@ -307,6 +330,7 @@ async def _submit_on_connection(
     """
     request_id = f"dream-talk-prompt-{int(time.monotonic() * 1000)}"
     try:
+        conn.last_used = time.monotonic()
         await conn.ws.send_str(json.dumps({
             "jsonrpc": "2.0",
             "id": request_id,
@@ -316,9 +340,10 @@ async def _submit_on_connection(
     except (aiohttp.ClientError, ConnectionResetError, ConnectionError) as exc:
         # Pooled WS was closed under us between the freshness check and this
         # send (Hermes restart, network blip, idle timeout that hadn't been
-        # noticed yet). Surface as HermesUnavailable so stream_prompt evicts
-        # the pool entry + retries on a fresh connection.
-        raise HermesUnavailable(f"Hermes WS closed on send: {exc}") from exc
+        # noticed yet). Surface as HermesConnectionStale so stream_prompt
+        # evicts the pool entry + retries on a fresh connection. This is the
+        # only transparent-retry case because the prompt was not submitted.
+        raise HermesConnectionStale(f"Hermes WS closed before prompt submit: {exc}") from exc
 
     chunks: list[str] = []
     while True:
@@ -395,12 +420,11 @@ async def stream_prompt(session_key: str, text: str) -> AsyncIterator[dict[str, 
     _ensure_sweeper_running()
     timeout_seconds = _request_timeout()
 
-    # Attempt twice: the first try uses the pooled connection (warm cache,
-    # fast path); if that connection turns out to be dead (Hermes restart,
-    # idle timeout that hadn't been swept yet, network reset), evict it and
-    # try once more with a freshly-opened connection. Two attempts max so a
-    # truly broken Hermes doesn't loop forever — the second failure surfaces
-    # as HermesUnavailable to the SSE layer, which renders an error frame.
+    # Attempt twice only for the pre-submit stale-WS case: the first try uses
+    # the pooled connection (warm cache, fast path); if send_str fails before
+    # Hermes accepts prompt.submit, evict it and try once more with a fresh
+    # connection. Once prompt.submit has been sent, later WS failures surface
+    # as errors instead of retrying and duplicating tool calls or text.
     session_frame_emitted = False
     for attempt in (1, 2):
         conn = await _get_connection(session_key)
@@ -416,14 +440,17 @@ async def stream_prompt(session_key: str, text: str) -> AsyncIterator[dict[str, 
                 async for event in _submit_on_connection(conn, text, timeout_seconds):
                     yield event
                 return
-            except HermesUnavailable as exc:
+            except HermesConnectionStale as exc:
                 await _drop_connection(session_key, conn)
                 if attempt == 2:
                     # Already retried once; give up and surface the failure.
                     raise
-                logger.info("hermes-bridge: retrying once after dead WS (%s)", exc)
+                logger.info("hermes-bridge: retrying once after stale WS (%s)", exc)
                 # Drop the lock + loop to attempt 2 with a fresh connection.
                 continue
+            except HermesUnavailable:
+                await _drop_connection(session_key, conn)
+                raise
 
 
 async def submit_prompt(session_key: str, text: str) -> HermesReply:

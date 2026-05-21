@@ -64,7 +64,7 @@ When recalling facts, trust web search for current events; the local model isn't
 
 The user is on a phone and won't wait minutes for the wrong tool to time out.
 
-- **Current weather, news, sports scores, stock prices, "what's happening today / right now"** → `web_search`. It wraps SearXHNG and returns in 1–2 seconds.
+- **Current weather, news, sports scores, stock prices, "what's happening today / right now"** → `web_search`. It wraps SearXNG and returns in 1–2 seconds.
 - **Reading a specific URL the user gave you** → `web_extract`. Go straight to it; do not try to fetch URLs by other means.
 - **Running a quick calculation or short code snippet the user asked about** → `execute_code` (sandboxed Python).
 - **Filesystem on this machine** → `read_file` / `write_file` / `search_files`.

@@ -92,8 +92,7 @@ agent:
 # `timeout` caps per-command duration (default upstream: 180s). We set 30s
 # so even if `terminal` gets re-enabled via env override or a future toolset
 # change, a wedged command can't hang the chat for 5 minutes. Pair with the
-# env var TERMINAL_MAX_FOREGROUND_TIMEOUT=30 in compose.yaml as a hard
-# ceiling the model can't override with a per-call timeout arg.
+# env var TERMINAL_TIMEOUT=30 in compose.yaml as the same fallback default.
 terminal:
   backend: "local"
   timeout: 30

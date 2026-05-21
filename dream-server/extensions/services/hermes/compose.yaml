@@ -25,14 +25,10 @@ services:
       # >60s to load a model under heavy use.
       - HERMES_API_TIMEOUT=1800
       - HERMES_API_CALL_STALE_TIMEOUT=900
-      # Hard ceiling on terminal-tool foreground commands. Hermes upstream
-      # default is 600s, which on the Dream Talk consumer surface means a
-      # single wedged curl can hang the chat for ten minutes. We disable the
-      # `terminal` toolset entirely via cli-config.yaml's
-      # `agent.disabled_toolsets`, but this env var is belt-and-suspenders:
-      # if a future config refactor re-enables terminal, no single command
-      # can stall the model for more than 30s.
-      - TERMINAL_MAX_FOREGROUND_TIMEOUT=30
+      # Default terminal-tool timeout. We disable the `terminal` toolset
+      # entirely via cli-config.yaml's `agent.disabled_toolsets`, but this is
+      # belt-and-suspenders if a future config refactor re-enables it.
+      - TERMINAL_TIMEOUT=30
       # Locale + timezone match the rest of the stack.
       - TZ=${TIMEZONE:-UTC}
       - HERMES_LANGUAGE=${HERMES_LANGUAGE:-en}
