@@ -61,21 +61,31 @@ each host where the phase is applicable.
 
 ## Representative Evidence
 
-Recent distro-lab runs on 2026-05-21 passed the 10-distro Docker container
-matrix and the 5-lane Incus VM matrix. Those runs exercised Ubuntu 24.04,
-Ubuntu 22.04, Debian 12, Linux Mint 21.3, Fedora, Rocky 9, Arch, Manjaro,
-CachyOS, and openSUSE installer logic, plus systemd and Docker-daemon behavior
-inside Incus VMs for Ubuntu, Fedora, Rocky, Arch, and openSUSE. The work also
-surfaced infrastructure and product-relevant issues: tower2 needed Incus
-bridge/firewall allowance, and Rocky-family installs needed a Docker CE fallback
-when distro packages were not available.
+The 2.5.0 release-candidate fleet run on 2026-05-21 passed in
+`/home/michael/dream-fleet-test/runs/2026-05-21T15-48-27Z`. The run exercised
+tower2, Strix Halo, Spark, Mac mini, and M5 MacBook Pro with fresh install,
+7/7 verify, Hermes seeded echo, UI checks, and applicable capability probes.
+Strix Halo and the M5 MacBook Pro fully proved capability probes on
+Qwen3.6-35B-A3B; the Mac mini fully proved capability probes on Qwen3.5-9B;
+tower2 and Spark deferred capability probes while still in bootstrap mode.
+Regression replay finished 9/9 fixtures green with 0 bugs detected and 0 PRs
+opened.
 
-Recent hardware fleet runs on 2026-05-20 exercised the Linux NVIDIA, Linux AMD,
-Linux ARM NVIDIA, constrained macOS, and high-memory macOS surfaces with fresh
-install, verify, dashboard, Hermes, and capability phases. The harness also
-surfaced an external DNS/download failure on one macOS run, which is evidence
-that environment failures are visible rather than silently converted into
-product passes.
+The same release-candidate pass included the distro lab. The Docker matrix
+validated 10/10 distros: Ubuntu 24.04, Ubuntu 22.04, Debian 12, Linux Mint
+21.3, Fedora 41, Rocky 9, Arch, Manjaro, CachyOS, and openSUSE Tumbleweed.
+Linux Mint and Fedora hit transient I/O contention while tower2 was also doing
+a heavy fleet install, then passed cleanly on solo retry. The Incus VM matrix
+validated 5/5 VMs: Ubuntu 24.04, Fedora 42, Rocky 9, Arch current, and
+openSUSE Tumbleweed, each booting real systemd + Docker and running the
+installer dry-run cleanly.
+
+Earlier 2026-05-21 distro-lab work also surfaced infrastructure and
+product-relevant issues: tower2 needed Incus bridge/firewall allowance, and
+Rocky-family installs needed a Docker CE fallback when distro packages were not
+available. The harness also previously surfaced an external DNS/download
+failure on one macOS run, which is evidence that environment failures are
+visible rather than silently converted into product passes.
 
 The Windows laptop is part of the validation surface so Windows + Docker
 Desktop/WSL2 + mobile NVIDIA/Intel hybrid GPU behavior is not inferred from
