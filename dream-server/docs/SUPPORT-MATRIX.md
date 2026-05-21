@@ -1,19 +1,20 @@
 # Dream Server Support Matrix
 
-Last updated: 2026-05-20
+Last updated: 2026-05-21
 
 ## What Works Today
 
 **Linux, Windows, and macOS are fully supported. Intel Arc is experimental.**
 
-For the real hardware evidence behind these claims, see
-[VALIDATION-MATRIX.md](VALIDATION-MATRIX.md). The matrix is sanitized so it can
-be public without exposing private lab hostnames, LAN addresses, or paths.
+For the layered evidence behind these claims, see
+[VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) and [TESTING.md](TESTING.md). The
+matrix is sanitized so it can be public without exposing private lab hostnames,
+LAN addresses, or paths.
 
 | Platform | Status | What you get today |
 |----------|--------|-------------------|
 | **Linux + AMD Strix Halo (ROCm)** | **Fully supported** | Complete install and runtime. Primary development platform. |
-| **Linux + NVIDIA (CUDA)** | **Supported** | Complete install and runtime. Broader distro test matrix still expanding. |
+| **Linux + NVIDIA (CUDA)** | **Supported** | Complete install and runtime. Distro breadth runs in CI, tower2 Docker containers, and tower2 Incus VMs; GPU runtime is validated on real NVIDIA hardware. |
 | **Windows (Docker Desktop + WSL2)** | **Supported** | Complete install and runtime via `.\install.ps1`. GPU auto-detection (NVIDIA/AMD). |
 | **macOS (Apple Silicon)** | **Supported** | Complete install and runtime via `./install.sh`. Native Metal inference + Docker services. |
 | **Linux + Intel Arc (SYCL)** | **Experimental** | Installer auto-detects Arc, assigns ARC/ARC\_LITE tier, and selects `docker-compose.arc.yml`. End-to-end runtime on A770/A750. See [INTEL-ARC-GUIDE.md](INTEL-ARC-GUIDE.md). |
@@ -28,7 +29,7 @@ be public without exposing private lab hostnames, LAN addresses, or paths.
 
 | Platform | GPU Path | Installer Tier | Notes |
 |---|---|---|---|
-| Linux (Ubuntu/Debian family) | NVIDIA (llama-server/CUDA) | Tier B | Validated on real high-memory multi-GPU NVIDIA hardware; broader distro matrix continues in CI/distro testing |
+| Linux (Ubuntu/Debian family) | NVIDIA (llama-server/CUDA) | Tier B | Validated on real high-memory multi-GPU NVIDIA hardware; broader distro matrix runs in CI, tower2 Docker containers, and tower2 Incus VMs |
 | Linux (Strix Halo / AMD unified memory) | AMD (Lemonade/ROCm) | Tier A | Primary managed path via `docker-compose.base.yml` + `docker-compose.amd.yml`; validated on real Strix Halo hardware |
 | Linux (Intel Arc A770/A750) | Intel SYCL (llama-server/oneAPI) | **Tier C** | `docker-compose.arc.yml`; builds llama.cpp from `intel/oneapi-basekit`; see [INTEL-ARC-GUIDE.md](INTEL-ARC-GUIDE.md) |
 | Windows (Docker Desktop + WSL2) | NVIDIA via Docker Desktop; AMD via host Vulkan runtime | Tier B | Standalone installer (`.\install.ps1`) with GPU auto-detection, Docker orchestration, health checks, and desktop shortcuts; Windows laptop fleet target tracks Docker Desktop/WSL2 evidence |
@@ -53,14 +54,14 @@ be public without exposing private lab hostnames, LAN addresses, or paths.
 ## Current Truth
 
 - **Linux, Windows, and macOS are fully supported.**
-- Linux + NVIDIA is supported and validated on real high-memory NVIDIA hardware; broader distro coverage continues through CI and distrobox/Ventoy testing.
+- Linux + NVIDIA is supported and validated on real high-memory NVIDIA hardware; broader distro coverage now runs through CI, tower2 Docker containers, and tower2 Incus VMs.
 - Windows installs via `.\install.ps1` with Docker Desktop + WSL2 backend. Windows AMD local inference is host-managed and uses Vulkan today, either through legacy Lemonade Server or native `llama-server` fallback.
 - Windows native installer UX is Tier B (delegated via Docker Desktop + WSL2).
 - macOS installs via `./install.sh` — llama-server runs natively with Metal acceleration, all other services in Docker.
 - AMD runtime diagnostics are explicit: `.env` records runtime, location, selected backend, supported backends, and whether DreamServer manages the process. Lemonade's newer CLI/default port is documented upstream but is not the managed DreamServer path yet.
 - AMD discrete GPUs beyond the documented Strix Halo path should be treated as validation-required until the repo has tier/model benchmarks for that hardware.
 - **Intel Arc (SYCL) is Tier C / experimental.** The installer auto-detects and selects the correct compose overlay and tier. Runtime works on A770/A750 (Linux). ComfyUI and Whisper GPU acceleration are not yet available for Arc. See [INTEL-ARC-GUIDE.md](INTEL-ARC-GUIDE.md) for limitations.
-- Release-readiness claims should cite a matching version/tag and a fleet receipt from [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md).
+- Release-readiness claims should cite a matching version/tag, relevant distro-lab evidence, and a real-hardware fleet receipt from [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md).
 - Version baselines for triage are in `docs/KNOWN-GOOD-VERSIONS.md`.
 
 ## Roadmap
@@ -75,7 +76,7 @@ be public without exposing private lab hostnames, LAN addresses, or paths.
 
 ## Next Milestones
 
-1. Keep expanding the existing `matrix-smoke.yml` coverage with more real distro and GPU fixtures.
+1. Keep the CI/container/Incus distro matrix green and add targeted full-install VM lanes where regressions justify the cost.
 2. Keep Windows laptop fleet evidence current for Docker Desktop/WSL2, NVIDIA mobile GPU, and Intel hybrid-GPU behavior.
 3. Expand macOS test coverage across more Apple Silicon generations and RAM tiers.
 4. Validate Intel Arc B580 (Battlemage 12 GB) on the `ARC` tier.
@@ -83,7 +84,8 @@ be public without exposing private lab hostnames, LAN addresses, or paths.
 
 ## See also
 
-- [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) - real-hardware fleet coverage and release-readiness evidence.
+- [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) - layered CI, distro-lab, and real-hardware fleet release-readiness evidence.
+- [TESTING.md](TESTING.md) - local test commands, fleet distro lab, and Incus VM runner usage.
 
 - [LINUX-PORTABILITY.md](LINUX-PORTABILITY.md) — Linux installer edge cases, `.env` validation, extension manifests.
 - [config/system-tuning/README.md](../config/system-tuning/README.md) — Performance tuning for AMD Strix Halo (GRUB, modprobe, sysctl, CPU governor settings).

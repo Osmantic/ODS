@@ -32,7 +32,9 @@ If AI is becoming critical infrastructure, it shouldn’t be rented. Self-hostin
 > | **Windows** (NVIDIA + AMD) | **Supported** — install and run today |
 > | **macOS** (Apple Silicon) | **Supported** — install and run today |
 >
-> **Tested Linux distros:** Ubuntu 24.04/22.04, Debian 12, Fedora 41+, Arch Linux, CachyOS, openSUSE Tumbleweed. Other distros using apt, dnf, pacman, or zypper should also work — [open an issue](https://github.com/Light-Heart-Labs/DreamServer/issues) if yours doesn't.
+> **Tested Linux distros:** Ubuntu 24.04/22.04, Debian 12, Linux Mint 21.3, Fedora 41+, Rocky Linux 9, Arch Linux, Manjaro, CachyOS, and openSUSE Tumbleweed. Other distros using apt, dnf, pacman, or zypper should also work — [open an issue](https://github.com/Light-Heart-Labs/DreamServer/issues) if yours doesn't.
+>
+> **Testing surface:** CI and tower2 Docker containers cover broad distro installer logic; tower2 Incus VMs cover systemd + Docker daemon behavior on Ubuntu, Fedora/Rocky, Arch, and openSUSE; the real hardware fleet remains the release gate for NVIDIA/AMD/Apple GPU runtime, dashboard, Hermes, UI, and capability validation.
 >
 > **Windows:** Requires Docker Desktop with WSL2 backend. NVIDIA GPUs use Docker GPU passthrough; AMD Strix Halo runs through the platform-specific accelerated path documented in the Windows installer and support matrix.
 >
@@ -40,7 +42,7 @@ If AI is becoming critical infrastructure, it shouldn’t be rented. Self-hostin
 >
 > See the [Support Matrix](dream-server/docs/SUPPORT-MATRIX.md) for supported
 > platform claims and the [Validation Matrix](dream-server/docs/VALIDATION-MATRIX.md)
-> for the real hardware fleet used to test those claims.
+> for the layered test surface used to test those claims.
 
 ---
 
@@ -358,7 +360,7 @@ Other tools get you part of the way. Dream Server gets you the whole way.
 | [Build On Dream Server](dream-server/docs/BUILD-ON-DREAM-SERVER.md) | Forking, custom editions, extension templates, and downstream validation |
 | [Headless Setup](dream-server/docs/HEADLESS-SETUP.md) | QR onboarding, first-boot setup, AP mode, mDNS, and local agent access |
 | [Support Matrix](dream-server/docs/SUPPORT-MATRIX.md) | Current platform and GPU support status |
-| [Validation Matrix](dream-server/docs/VALIDATION-MATRIX.md) | Sanitized real-hardware fleet coverage and release-readiness evidence |
+| [Validation Matrix](dream-server/docs/VALIDATION-MATRIX.md) | Sanitized CI, distro lab, and real-hardware fleet release-readiness evidence |
 | [Model Management](dream-server/docs/MODEL-MANAGEMENT.md) | Dashboard model downloads, switching, and manual GGUF workflows |
 | [Hardware Guide](dream-server/docs/HARDWARE-GUIDE.md) | What to buy, tier recommendations |
 | [FAQ](dream-server/FAQ.md) | Common questions and configuration |

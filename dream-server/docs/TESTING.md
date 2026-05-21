@@ -5,10 +5,11 @@ Dream Server supports multiple Linux distributions. This guide covers how to tes
 ## Real Hardware Fleet Validation
 
 Dream Server also uses a private real-hardware fleet for release-readiness
-evidence. CI and distrobox are useful for fast installer logic checks, but the
-fleet is where fresh installs, Docker startup, GPU runtime behavior, dashboard
-flows, Hermes auth, model switching, extension install paths, and agent
-capabilities are exercised on real machines.
+evidence. CI, Docker containers, Distrobox, and Incus VMs are useful for fast
+installer logic, package-manager, systemd, and Docker-daemon checks, but the
+physical fleet is where fresh installs, Docker startup, GPU runtime behavior,
+dashboard flows, Hermes auth, model switching, extension install paths, and
+agent capabilities are exercised on real machines.
 
 The sanitized public coverage is maintained in
 [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md). Release notes should cite the
@@ -17,7 +18,8 @@ blocked, deferred, skipped, or not-run phases.
 
 Volunteer and community testers are important for broader distro, GPU, driver,
 and network coverage. Treat those reports as complementary breadth evidence;
-the fleet is the repeatable parallel gate that can run whenever code changes.
+the physical fleet is the repeatable parallel gate that can run whenever code
+changes.
 
 Fleet phases currently include:
 
