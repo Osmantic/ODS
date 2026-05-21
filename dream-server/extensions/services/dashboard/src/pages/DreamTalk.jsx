@@ -7,7 +7,7 @@ import {
 const welcomeMessage = {
   id: 'welcome',
   role: 'assistant',
-  text: 'Hi. I am Dream Server. Ask me anything and I will keep it local to this box.',
+  text: "Hey, I'm Dream — your local AI buddy, running entirely on your own hardware. Nothing leaves this box.\n\nTry me: ask anything, draft an email, run some code, plan a trip, or just chat. Or hit the mic and talk to me.",
   status: 'done',
 }
 
