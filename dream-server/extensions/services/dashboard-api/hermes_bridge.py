@@ -302,16 +302,23 @@ async def _submit_on_connection(
 
     Caller must hold ``conn.lock`` for the duration of this generator so two
     same-key prompts can't interleave on the same WS. Mutates ``conn.last_used``
-    on completion. Raises HermesUnavailable / HermesBridgeError on failure;
-    the caller decides whether to evict the pool entry.
+    on completion. Raises HermesUnavailable when the WS is dead (caller is
+    expected to evict + reopen), HermesBridgeError on protocol-level errors.
     """
     request_id = f"dream-talk-prompt-{int(time.monotonic() * 1000)}"
-    await conn.ws.send_str(json.dumps({
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "method": "prompt.submit",
-        "params": {"session_id": conn.session_id, "text": text},
-    }))
+    try:
+        await conn.ws.send_str(json.dumps({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "prompt.submit",
+            "params": {"session_id": conn.session_id, "text": text},
+        }))
+    except (aiohttp.ClientError, ConnectionResetError, ConnectionError) as exc:
+        # Pooled WS was closed under us between the freshness check and this
+        # send (Hermes restart, network blip, idle timeout that hadn't been
+        # noticed yet). Surface as HermesUnavailable so stream_prompt evicts
+        # the pool entry + retries on a fresh connection.
+        raise HermesUnavailable(f"Hermes WS closed on send: {exc}") from exc
 
     chunks: list[str] = []
     while True:
@@ -388,29 +395,35 @@ async def stream_prompt(session_key: str, text: str) -> AsyncIterator[dict[str, 
     _ensure_sweeper_running()
     timeout_seconds = _request_timeout()
 
-    conn = await _get_connection(session_key)
-    async with conn.lock:
-        # Yield the session frame from inside the lock so the SPA's first
-        # frame always carries the live session_id (and not one stale from a
-        # connection that got swapped out between yield and submit).
-        yield {"type": "session", "session_id": conn.session_id}
-
-        try:
-            async for event in _submit_on_connection(conn, text, timeout_seconds):
-                yield event
-            return
-        except HermesUnavailable:
-            # WS died (closed, reset, etc). Evict + retry ONCE on a fresh
-            # connection so a Hermes container restart looks like a one-call
-            # blip, not a sticky failure for the cookie.
-            await _drop_connection(session_key, conn)
-            raise
-
-    # NOTE: a fully-fledged "retry once on dead connection" path would require
-    # nesting another acquire here. For now we surface HermesUnavailable to
-    # the SSE layer, which renders an error frame; the SPA's next send creates
-    # a fresh connection. Two-tap recovery is acceptable for v1; a transparent
-    # retry can land in a follow-up if real-world data shows it's needed.
+    # Attempt twice: the first try uses the pooled connection (warm cache,
+    # fast path); if that connection turns out to be dead (Hermes restart,
+    # idle timeout that hadn't been swept yet, network reset), evict it and
+    # try once more with a freshly-opened connection. Two attempts max so a
+    # truly broken Hermes doesn't loop forever — the second failure surfaces
+    # as HermesUnavailable to the SSE layer, which renders an error frame.
+    session_frame_emitted = False
+    for attempt in (1, 2):
+        conn = await _get_connection(session_key)
+        async with conn.lock:
+            if not session_frame_emitted:
+                # Yield the session frame once, from the *first* attempt's
+                # connection. If the connection dies before any deltas, the
+                # retry's session_id will be different but the SPA only cares
+                # about the most recent — replacing the frame is fine.
+                yield {"type": "session", "session_id": conn.session_id}
+                session_frame_emitted = True
+            try:
+                async for event in _submit_on_connection(conn, text, timeout_seconds):
+                    yield event
+                return
+            except HermesUnavailable as exc:
+                await _drop_connection(session_key, conn)
+                if attempt == 2:
+                    # Already retried once; give up and surface the failure.
+                    raise
+                logger.info("hermes-bridge: retrying once after dead WS (%s)", exc)
+                # Drop the lock + loop to attempt 2 with a fresh connection.
+                continue
 
 
 async def submit_prompt(session_key: str, text: str) -> HermesReply:

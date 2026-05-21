@@ -409,6 +409,67 @@ def test_hermes_bridge_pool_serializes_same_key_parallels_different_keys(monkeyp
     assert diff_creates == {"phoneA": 1, "phoneB": 1}
 
 
+def test_hermes_bridge_transparent_retry_on_send_reset(monkeypatch):
+    """Most insidious dead-WS pattern: ``ws.closed`` reports False, but the
+    next ``send_str`` raises ClientConnectionResetError because the upstream
+    Hermes closed the socket between checks (e.g. a Hermes restart that
+    raced with the freshness check). The bridge must catch that, evict, and
+    transparently retry once on a fresh connection — the user shouldn't see
+    "load failed" just because Hermes restarted in the background."""
+    import asyncio as _asyncio
+    import aiohttp
+    import hermes_bridge
+
+    hermes_bridge._CONNECTION_POOL.clear()
+    hermes_bridge._SWEEPER_TASK = None
+
+    class DeadOnSendWS:
+        closed = False
+        async def send_str(self, _):
+            raise aiohttp.ClientConnectionResetError("Cannot write to closing transport")
+        async def close(self):
+            self.closed = True
+
+    class LiveWS:
+        closed = False
+        async def send_str(self, _): pass
+        async def close(self): self.closed = True
+
+    class FakeHTTP:
+        async def close(self): pass
+
+    open_calls = 0
+
+    async def fake_open(session_key):
+        nonlocal open_calls
+        open_calls += 1
+        # First connection has a WS that fails on send; second is healthy.
+        ws = DeadOnSendWS() if open_calls == 1 else LiveWS()
+        return hermes_bridge._HermesConnection(
+            http_session=FakeHTTP(), ws=ws, session_id=f"sid-{open_calls}",
+        )
+
+    monkeypatch.setattr("hermes_bridge._open_connection", fake_open)
+
+    async def fake_recv(_ws, _timeout):
+        return {"method": "event", "params": {"type": "message.complete", "payload": {"text": "ok"}}}
+    monkeypatch.setattr("hermes_bridge._recv_json", fake_recv)
+
+    async def main():
+        events = []
+        async for ev in hermes_bridge.stream_prompt("retry-key", "hi"):
+            events.append(ev["type"])
+            if ev["type"] == "complete":
+                break
+        return events, open_calls
+
+    events, opens = _run_with_one_loop(main)
+    # User got a clean stream: session frame + complete frame, no error.
+    assert "complete" in events, f"expected transparent retry to deliver complete, got {events}"
+    # Two connection opens: the dead one + the retry's fresh one.
+    assert opens == 2, f"expected 1 retry (opens == 2), got {opens}"
+
+
 def test_hermes_bridge_pool_evicts_and_recreates_on_dead_ws(monkeypatch):
     """If the cached WS has closed (e.g. Hermes container restarted between
     messages), the pool must evict it and open a fresh connection on the
