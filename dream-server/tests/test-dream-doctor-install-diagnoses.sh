@@ -43,17 +43,20 @@ FLAGS_PATH="$ROOT_DIR/.compose-flags"
 LOGS_DIR="$ROOT_DIR/logs"
 LAUNCH_PATH="$LOGS_DIR/compose-launch.txt"
 COMPOSE_UP_PATH="$LOGS_DIR/compose-up.log"
+INSTALL_LOG_PATH="$LOGS_DIR/install.log"
 INSTALL_REPORT_PATH="$ROOT_DIR/install-report-2999-01-01-000000.txt"
 
 HAD_ENV=false
 HAD_FLAGS=false
 HAD_LAUNCH=false
 HAD_COMPOSE_UP=false
+HAD_INSTALL_LOG=false
 HAD_LOGS_DIR=false
 ENV_BACKUP="$TMP_DIR/env.backup"
 FLAGS_BACKUP="$TMP_DIR/compose-flags.backup"
 LAUNCH_BACKUP="$TMP_DIR/compose-launch.backup"
 COMPOSE_UP_BACKUP="$TMP_DIR/compose-up.backup"
+INSTALL_LOG_BACKUP="$TMP_DIR/install-log.backup"
 
 cleanup() {
     if [[ "$HAD_ENV" == "true" ]]; then
@@ -78,6 +81,12 @@ cleanup() {
     else
         rm -f "$COMPOSE_UP_PATH"
     fi
+    if [[ "$HAD_INSTALL_LOG" == "true" ]]; then
+        mkdir -p "$LOGS_DIR"
+        cp "$INSTALL_LOG_BACKUP" "$INSTALL_LOG_PATH"
+    else
+        rm -f "$INSTALL_LOG_PATH"
+    fi
     rm -f "$INSTALL_REPORT_PATH"
     if [[ "$HAD_LOGS_DIR" != "true" && -d "$LOGS_DIR" ]]; then
         rmdir "$LOGS_DIR" 2>/dev/null || true
@@ -91,6 +100,7 @@ trap cleanup EXIT
 [[ -f "$FLAGS_PATH" ]] && HAD_FLAGS=true && cp "$FLAGS_PATH" "$FLAGS_BACKUP"
 [[ -f "$LAUNCH_PATH" ]] && HAD_LAUNCH=true && cp "$LAUNCH_PATH" "$LAUNCH_BACKUP"
 [[ -f "$COMPOSE_UP_PATH" ]] && HAD_COMPOSE_UP=true && cp "$COMPOSE_UP_PATH" "$COMPOSE_UP_BACKUP"
+[[ -f "$INSTALL_LOG_PATH" ]] && HAD_INSTALL_LOG=true && cp "$INSTALL_LOG_PATH" "$INSTALL_LOG_BACKUP"
 
 mkdir -p "$LOGS_DIR"
 cat > "$ENV_PATH" <<'ENV'
@@ -110,6 +120,12 @@ cat > "$COMPOSE_UP_PATH" <<'LOG'
 Docker Compose did not create any managed containers.
 ModuleNotFoundError: No module named 'yaml'
 LOG
+cat > "$INSTALL_LOG_PATH" <<'LOG'
+[XX] Docker could not download alpine:3.20, which is required for the file-sharing probe.
+>   Start Docker Desktop, confirm it has internet access, then run:
+>   docker pull alpine:3.20
+>   Re-run this installer after the pull succeeds.
+LOG
 cat > "$INSTALL_REPORT_PATH" <<'REPORT_EOF'
 Dream Server install failure report
 Phase: install-core phase 11 docker compose up
@@ -122,7 +138,7 @@ else
     fail "dream-doctor failed with fixture install artifacts"
 fi
 
-if jq -e '.diagnoses | type == "array" and length >= 4' "$REPORT" >/dev/null; then
+if jq -e '.diagnoses | type == "array" and length >= 5' "$REPORT" >/dev/null; then
     pass "doctor report includes evidence-ranked diagnoses"
 else
     fail "doctor report missing expected diagnoses array"
@@ -132,7 +148,8 @@ for id in \
     DS-COMPOSE-CWD-MISMATCH \
     DS-DOCKER-IMAGE-UNRESOLVED \
     DS-COMPOSE-ZERO-CONTAINERS \
-    DS-PYTHON-PYYAML-MISSING
+    DS-PYTHON-PYYAML-MISSING \
+    DS-WINDOWS-FILE-SHARING-PROBE-IMAGE
 do
     if jq -e --arg id "$id" '.diagnoses[] | select(.id == $id)' "$REPORT" >/dev/null; then
         pass "diagnosis present: $id"
@@ -147,7 +164,13 @@ else
     fail "image diagnosis missing install report evidence"
 fi
 
-if jq -e '.summary.diagnoses_blockers >= 4' "$REPORT" >/dev/null; then
+if jq -e '.diagnoses[] | select(.id == "DS-WINDOWS-FILE-SHARING-PROBE-IMAGE") | .evidence[0].source == "logs/install.log"' "$REPORT" >/dev/null; then
+    pass "Alpine probe diagnosis records installer log evidence"
+else
+    fail "Alpine probe diagnosis missing installer log evidence"
+fi
+
+if jq -e '.summary.diagnoses_blockers >= 4 and .summary.diagnoses_warnings >= 1' "$REPORT" >/dev/null; then
     pass "summary counts diagnosis blockers"
 else
     fail "summary does not count diagnosis blockers"

@@ -551,10 +551,28 @@ def _extract_image(text):
     return match.group(1) if match else ""
 
 
+def _is_windows_alpine_probe_failure(text):
+    lowered = text.lower()
+    has_alpine_probe = (
+        "alpine:3.20" in lowered
+        or "unable to find image 'alpine" in lowered
+        or 'unable to find image "alpine' in lowered
+    )
+    if not has_alpine_probe:
+        return False
+    return (
+        "docker could not download" in lowered
+        or "bind-mount probe" in lowered
+        or "file-sharing probe" in lowered
+        or "cannot bind-mount" in lowered
+    )
+
+
 def _collect_install_artifacts():
     latest_report = _latest_install_report()
     compose_launch = root_dir / "logs" / "compose-launch.txt"
     compose_up = root_dir / "logs" / "compose-up.log"
+    install_log = root_dir / "logs" / "install.log"
     env_file = root_dir / ".env"
     compose_flags = root_dir / ".compose-flags"
     return {
@@ -575,6 +593,10 @@ def _collect_install_artifacts():
             "path": _source(compose_up),
             "exists": compose_up.is_file(),
         },
+        "install_log": {
+            "path": _source(install_log),
+            "exists": install_log.is_file(),
+        },
         "latest_install_report": (
             {
                 "path": _source(latest_report),
@@ -592,6 +614,7 @@ def _collect_install_diagnoses(artifacts):
     flags_path = root_dir / ".compose-flags"
     compose_launch_path = root_dir / "logs" / "compose-launch.txt"
     compose_up_path = root_dir / "logs" / "compose-up.log"
+    install_log_path = root_dir / "logs" / "install.log"
     latest_report_path = _latest_install_report()
 
     installed_like = (
@@ -647,9 +670,14 @@ def _collect_install_diagnoses(artifacts):
                     )
                 )
 
-    report_text = _read_text(latest_report_path) if latest_report_path else ""
-    compose_up_text = _read_text(compose_up_path)
-    combined_failure_text = "\n".join(x for x in [report_text, compose_up_text] if x)
+    failure_sources = []
+    if latest_report_path:
+        failure_sources.append((latest_report_path, _read_text(latest_report_path)))
+    if compose_up_path.exists():
+        failure_sources.append((compose_up_path, _read_text(compose_up_path)))
+    if install_log_path.exists():
+        failure_sources.append((install_log_path, _read_text(install_log_path)))
+    combined_failure_text = "\n".join(text for _, text in failure_sources if text)
 
     if combined_failure_text:
         failed_image = _extract_image(combined_failure_text)
@@ -716,7 +744,12 @@ def _collect_install_diagnoses(artifacts):
                 )
             )
 
-        if "unable to find image 'alpine" in lowered and "cannot bind-mount" in lowered:
+        alpine_probe_source = None
+        for source_path, source_text in failure_sources:
+            if _is_windows_alpine_probe_failure(source_text):
+                alpine_probe_source = source_path
+                break
+        if alpine_probe_source:
             diagnoses.append(
                 _diagnosis(
                     "DS-WINDOWS-FILE-SHARING-PROBE-IMAGE",
@@ -725,13 +758,13 @@ def _collect_install_diagnoses(artifacts):
                     "Windows bind-mount probe was blocked before the file-sharing check completed",
                     [
                         _evidence(
-                            _source(latest_report_path) if latest_report_path else _source(compose_up_path),
-                            "Failure text includes Alpine probe image pull and bind-mount failure.",
+                            _source(alpine_probe_source),
+                            "Failure text includes Alpine probe image pull/download or bind-mount probe failure.",
                         )
                     ],
                     "Docker Desktop can report a file-sharing failure when the real prerequisite is the probe image/network path.",
                     [
-                        "Ensure Docker Desktop can pull alpine:3.20.",
+                        "Run `docker pull alpine:3.20` and verify Docker Desktop has internet access.",
                         "Then verify Docker Desktop > Settings > Resources > File Sharing includes the install directory.",
                     ],
                 )
