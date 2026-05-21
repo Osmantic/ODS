@@ -46,7 +46,7 @@ service:
     - key: HERMES_PROXY_AUTH_DOCS_URL
       default: ""
       description: |
-        Optional URL shown on the "you need an invite" page if the operator
+        Optional URL shown on the owner-card help page if the operator
         has a help doc / contact info. Empty hides the row.
 
 features:

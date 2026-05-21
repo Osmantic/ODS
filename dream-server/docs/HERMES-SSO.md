@@ -8,7 +8,7 @@ When this extension is enabled:
 - The proxy binds the LAN-facing port (default `9120`) — that's what users browse to.
 - Every request to the proxy is verified via `forward_auth` against dashboard-api's `/api/auth/verify-session` endpoint — which HMAC-validates the `dream-session` cookie's signature against `DREAM_SESSION_SECRET`.
 - Verified (HTTP 200 from the verify endpoint) → traffic is forwarded to `dream-hermes:9119`. Hermes's own [per-process session token model](HERMES.md#security-posture) then handles per-request `/api/` auth.
-- Not verified (HTTP 401 — missing cookie, bad signature, or expired) → 303 redirect to a static "you need an invite" page.
+- Not verified (HTTP 401 — missing cookie, bad signature, or expired) → 303 redirect to a static "you need an owner card" page.
 
 ## Why this design
 
@@ -37,26 +37,23 @@ dream enable hermes
 # 2. Enable the auth proxy (this extension)
 dream enable hermes-proxy
 
-# 3. Generate an invite from the dashboard
-#    → Browse to http://<device>:3001/invites
-#    → "New invite" → scope: chat or all → Generate
-#    → Save the QR / URL
+# 3. Generate an owner card from the dashboard
+#    -> Browse to http://<device>:3001/invites
+#    -> Setup / Owner -> Print owner card
+#    -> Save the QR / URL
 
 # 4. Recipient scans the QR on their phone
-#    → Lands on the dream-proxy at <device>.local/auth/magic-link/<token>
-#    → Redemption sets the HMAC-signed dream-session cookie on <device>.local
-#    → 302 redirect to /chat (same origin → cookie travels along)
-#    → They now have a valid cookie for any same-host port too (cookies
-#      are scoped by host, not port — so <device>.local:9120 will receive
-#      it as well)
+#    -> Lands on auth.<device>.local/magic-link/<token>
+#    -> Redemption sets the HMAC-signed dream-session cookie for <device>.local
+#    -> 302 redirect to hermes.<device>.local
 
 # 5. Recipient browses to http://<device>.local:9120
-#    → Proxy forward_auths to dashboard-api/api/auth/verify-session
-#    → Signature check passes → forward to Hermes
-#    → Hermes serves the SPA → they chat
+#    -> Proxy forward_auths to dashboard-api/api/auth/verify-session
+#    -> Signature check passes -> forward to Hermes
+#    -> Hermes serves the SPA and they chat
 ```
 
-If the recipient hasn't yet redeemed an invite, step 5 lands them on the "you need an invite" page with instructions.
+If the recipient has not yet redeemed an owner card or guest invite, step 5 lands them on the "you need an owner card" page with instructions.
 
 ## Architecture
 
@@ -135,6 +132,10 @@ For the Dream Server trust model (single home, trusted LAN, family-scale users),
 5. **Direct access to Hermes is now blocked.** Anyone who was reaching Hermes at `:9119` before this extension lands needs to switch to `:9120` (the proxy port). If they want raw direct access for testing, they can `docker exec dream-hermes` or temporarily re-add a `ports:` binding to the Hermes compose.
 
 6. **`DREAM_SESSION_SECRET` must be configured.** With no secret set, `verify-session` returns 401 for every request (and `issue()` raises during magic-link redemption) — the proxy gate effectively becomes "nobody passes." Set a 32+-byte random value in `.env` before enabling `hermes-proxy`.
+
+7. **Owner cards are physical keys.** Owner magic links do not auto-expire and are not device-bound in v1. They mint normal 12-hour sessions, but the QR itself remains reusable until revoked from Setup / Owner.
+
+8. **Voice requires a secure browser origin.** Hermes text access works over the LAN-local HTTP flow. Mobile microphone access should be validated over HTTPS or Tailscale HTTPS; plain HTTP origins are expected to show readiness/fallback copy rather than promise voice.
 
 ## Future: Option B — per-user Hermes
 

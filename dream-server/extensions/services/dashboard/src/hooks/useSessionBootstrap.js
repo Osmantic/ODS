@@ -7,7 +7,7 @@ import { useEffect, useRef } from 'react'
  * ---------------
  * Cookie-gated services (hermes-proxy today, more later) `forward_auth`
  * against `/api/auth/verify-session` and bounce anyone without a valid
- * dream-session cookie to a "you need an invite" page. Without this
+ * dream-session cookie to the owner-card help page. Without this
  * bootstrap the install owner would have to mint + redeem a magic
  * link to themselves before they could reach their own services —
  * absurd UX.

@@ -3,7 +3,7 @@
 Covers:
   * Auth enforcement on admin endpoints
   * Generate happy path (returns plaintext token + URL)
-  * Generate validation (bad username, expiry bounds, chat-only scope)
+  * Generate validation (bad username, expiry bounds, scoped redirect targets)
   * Redeem happy path (single-use, sets session cookie, 302 to chat)
   * Redeem failure modes (invalid, expired, already-redeemed, revoked) → all
     return the same opaque 404
@@ -31,6 +31,7 @@ def magic_link_module(tmp_path, monkeypatch):
     monkeypatch.delenv("DREAM_PUBLIC_URL", raising=False)
     monkeypatch.delenv("WEBUI_URL", raising=False)
     monkeypatch.delenv("DREAM_TRUST_FORWARDED", raising=False)
+    monkeypatch.delenv("DREAM_COOKIE_DOMAIN", raising=False)
 
     # session_signer reads DREAM_SESSION_SECRET at import time, so any
     # already-loaded copy keeps the old value. Force-set it for the test.
@@ -113,6 +114,8 @@ def test_generate_returns_token_and_url(magic_link_client):
     data = resp.json()
     assert data["target_username"] == "alice"
     assert data["scope"] == "chat"
+    assert data["token_type"] == "guest"
+    assert data["url_mode"] == "auto"
     assert data["reusable"] is False
     assert len(data["token"]) >= 32
     # New URL shape: http://auth.<device>.local/magic-link/<token>.
@@ -230,6 +233,16 @@ def test_generate_rejects_invalid_scope(magic_link_client, scope):
     assert resp.status_code == 422
 
 
+def test_generate_accepts_hermes_scope(magic_link_client):
+    resp = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice", "scope": "hermes"},
+        headers=magic_link_client.auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["scope"] == "hermes"
+
+
 def test_generate_rejects_short_expiry(magic_link_client):
     resp = magic_link_client.post(
         "/api/auth/magic-link/generate",
@@ -246,6 +259,55 @@ def test_generate_rejects_long_expiry(magic_link_client):
         headers=magic_link_client.auth_headers,
     )
     assert resp.status_code == 422
+
+
+def test_generate_owner_token_defaults_to_revoke_only_hermes_lan(magic_link_client, monkeypatch):
+    monkeypatch.setenv("DREAM_PUBLIC_URL", "https://dream.example")
+    resp = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner", "note": "factory card"},
+        headers=magic_link_client.auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["token_type"] == "owner"
+    assert data["scope"] == "hermes"
+    assert data["url_mode"] == "lan"
+    assert data["reusable"] is True
+    assert data["expires_at"] is None
+    assert data["url"].startswith("http://auth.dream.local/magic-link/")
+
+
+def test_generate_owner_rejects_expiry(magic_link_client):
+    resp = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner", "expires_in": 3600},
+        headers=magic_link_client.auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+def test_owner_public_url_mode_uses_public_url_when_requested(magic_link_client, monkeypatch):
+    monkeypatch.setenv("DREAM_PUBLIC_URL", "https://dream.example")
+    resp = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner", "url_mode": "public"},
+        headers=magic_link_client.auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["url_mode"] == "public"
+    assert data["url"].startswith("https://dream.example/auth/magic-link/")
+
+
+def test_public_url_mode_requires_public_url(magic_link_client):
+    resp = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner", "url_mode": "public"},
+        headers=magic_link_client.auth_headers,
+    )
+    assert resp.status_code == 400
+    assert "DREAM_PUBLIC_URL" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +383,55 @@ def test_redeem_redirects_to_chat_subdomain(magic_link_client, magic_link_module
     resp = magic_link_client.get(f"/magic-link/{token}", follow_redirects=False)
     assert resp.status_code == 302
     assert resp.headers["location"] == "http://chat.kitchen.local"
+
+
+def test_redeem_hermes_scope_redirects_to_hermes_subdomain(magic_link_client, monkeypatch):
+    monkeypatch.setenv("DREAM_DEVICE_NAME", "kitchen")
+    monkeypatch.setenv("DREAM_COOKIE_DOMAIN", "kitchen.local")
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice", "scope": "hermes"},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    resp = magic_link_client.get(f"/magic-link/{token}", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "http://hermes.kitchen.local"
+
+
+def test_owner_token_can_be_redeemed_repeatedly_and_revoked(
+    magic_link_client, magic_link_module, monkeypatch
+):
+    monkeypatch.setenv("DREAM_DEVICE_NAME", "studio")
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner"},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    first = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+    second = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+    assert first.status_code == 302
+    assert second.status_code == 302
+    assert first.headers["location"] == "http://hermes.studio.local"
+
+    store = magic_link_module._ensure_store()
+    assert store["tokens"][0]["expires_at"] is None
+    assert len(store["tokens"][0]["redemptions"]) == 2
+
+    prefix = store["tokens"][0]["token_hash"][:8]
+    rev = magic_link_client.delete(
+        f"/api/auth/magic-link/{prefix}",
+        headers=magic_link_client.auth_headers,
+    )
+    assert rev.status_code == 200
+
+    after_revoke = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+    assert after_revoke.status_code == 404
 
 
 def test_redeem_sets_cookie_with_configured_domain(magic_link_client, magic_link_module, monkeypatch):
@@ -529,6 +640,30 @@ def test_reusable_token_can_be_redeemed_multiple_times(
     assert len(redemptions) == 3
 
 
+def test_owner_token_survives_pruning(magic_link_module):
+    store = {
+        "tokens": [
+            {
+                "token_hash": "a" * 64,
+                "target_username": "owner",
+                "scope": "hermes",
+                "reusable": True,
+                "token_type": "owner",
+                "url_mode": "lan",
+                "created_at": (datetime.now(timezone.utc) - timedelta(days=365)).isoformat(),
+                "expires_at": None,
+                "created_by_ip": "127.0.0.1",
+                "redemptions": [],
+                "revoked_at": None,
+                "note": "factory card",
+            }
+        ]
+    }
+    pruned = magic_link_module._prune(store)
+    assert len(pruned["tokens"]) == 1
+    assert pruned["tokens"][0]["token_type"] == "owner"
+
+
 # ---------------------------------------------------------------------------
 # Rate-limit
 # ---------------------------------------------------------------------------
@@ -571,10 +706,40 @@ def test_list_includes_generated_token(magic_link_client):
     tokens = resp.json()["tokens"]
     assert len(tokens) == 1
     assert tokens[0]["target_username"] == "alice"
+    assert tokens[0]["token_type"] == "guest"
+    assert tokens[0]["url_mode"] == "auto"
     assert tokens[0]["note"] == "for laptop"
     assert len(tokens[0]["token_hash_prefix"]) == 8
     assert tokens[0]["redemption_count"] == 0
     assert tokens[0]["revoked_at"] is None
+
+
+def test_list_normalizes_legacy_records(magic_link_client, magic_link_module):
+    magic_link_module._write_store({
+        "tokens": [
+            {
+                "token_hash": "b" * 64,
+                "target_username": "legacy",
+                "scope": "chat",
+                "reusable": False,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+                "created_by_ip": "127.0.0.1",
+                "redemptions": [],
+                "revoked_at": None,
+                "note": None,
+            }
+        ]
+    })
+    resp = magic_link_client.get(
+        "/api/auth/magic-link/list",
+        headers=magic_link_client.auth_headers,
+    )
+    assert resp.status_code == 200
+    token = resp.json()["tokens"][0]
+    assert token["token_type"] == "guest"
+    assert token["url_mode"] == "auto"
+    assert token["scope"] == "chat"
 
 
 def test_list_reflects_redemption_count(magic_link_client):

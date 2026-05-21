@@ -21,14 +21,14 @@ services:
       # to the in-network dashboard-api container; override if dashboard-api
       # lives on a different host or non-standard port.
       - DREAM_AUTH_UPSTREAM=${DREAM_AUTH_UPSTREAM:-dream-dashboard-api:3002}
-      # Optional help URL surfaced on the "you need an invite" page via
+      # Optional help URL surfaced on the owner-card help page via
       # Caddy `templates` substitution. Empty hides the row entirely.
       - HERMES_PROXY_AUTH_DOCS_URL=${HERMES_PROXY_AUTH_DOCS_URL:-}
     volumes:
       # Caddyfile is read-only; mounting :ro reduces the blast radius if
       # the container were ever compromised.
       - ./extensions/services/hermes-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
-      # Static "you need an invite" page served when no cookie is present.
+      # Static owner-card help page served when no cookie is present.
       - ./extensions/services/hermes-proxy/auth-required:/srv/auth-required:ro
       # Caddy persists its own state (certs, etc.) — empty for us since
       # auto_https is off, but keeping the volume avoids first-start chatter.

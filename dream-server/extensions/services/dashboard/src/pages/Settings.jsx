@@ -259,11 +259,16 @@ export default function Settings() {
               label="Usage"
               description="Token and request counts, model-level cost insights, and historical activity."
             />
+          </div>
+        </SettingsSection>
+
+        <SettingsSection title="Remote Setup" icon={UserPlus}>
+          <div className="divide-y divide-theme-border">
             <SettingsNavRow
               to="/invites"
               icon={UserPlus}
-              label="Invites"
-              description="Create, share, and revoke magic-link invites for trusted devices."
+              label="Setup / Owner"
+              description="Pre-stage a system for its intended owner, or create a temporary support invite."
             />
           </div>
         </SettingsSection>

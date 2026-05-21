@@ -7,9 +7,9 @@
 //
 // 4 screens:
 //   1. Welcome - label this setup
-//   2. First user - username for the initial magic-link invite
+//   2. First user - username for the owner magic-link card
 //   3. Pick your stack - chat-only / chat+agents / everything
-//   4. Done - generate magic-link, show QR
+//   4. Done - generate owner magic-link, show QR
 //
 // Progress is mirrored to localStorage so a phone refresh doesn't
 // lose state mid-wizard. The server-side flip happens only on the
@@ -99,17 +99,17 @@ export default function FirstBoot({ onComplete }) {
     setFinishing(true)
     setFinishError(null)
     try {
-      // Generate the first magic-link for the named user. Reuses PR-4's
-      // backend; this is the same endpoint /Invites consumes.
+      // Generate the owner magic-link for the named user. Reuses the same
+      // backend the Setup / Owner page consumes.
       const genResp = await fetch('/api/auth/magic-link/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           target_username: username,
-          scope: 'chat',
-          expires_in: 86400, // 24h; the wizard target may not redeem immediately
-          reusable: false,
-          note: `First-boot invite (${deviceName.trim() || 'dream'})`,
+          token_type: 'owner',
+          scope: 'hermes',
+          url_mode: 'lan',
+          note: `First-boot owner card (${deviceName.trim() || 'dream'})`,
         }),
       })
       if (!genResp.ok) {
@@ -123,12 +123,12 @@ export default function FirstBoot({ onComplete }) {
       // moved on regardless of status, which left the server in
       // first-run mode while the UI said "You're set." If complete
       // fails, throw and let the catch surface the error to the user
-      // (with the invite still safely visible on the previous screen).
+      // (with the owner card still safely visible on the previous screen).
       const completeResp = await fetch('/api/setup/complete', { method: 'POST' })
       if (!completeResp.ok) {
         const body = await completeResp.json().catch(() => ({}))
         throw new Error(
-          body.detail || `Failed to mark setup complete (${completeResp.status}). Your invite was generated; ask the admin to re-run setup.`,
+          body.detail || `Failed to mark setup complete (${completeResp.status}). Your owner card was generated; ask the admin to re-run setup.`,
         )
       }
 
@@ -136,7 +136,7 @@ export default function FirstBoot({ onComplete }) {
       // completed the wizard. Without this, after onboarding they'd
       // be blocked at the Hermes / chat tiles by the same forward_auth
       // gate that requires magic-link redemption — having to mint and
-      // redeem an invite to themselves is absurd UX. The endpoint is
+      // redeem an owner card to themselves is absurd UX. The endpoint is
       // gated by DASHBOARD_API_KEY (nginx injects the header) so only
       // someone with admin trust can mint. Non-fatal: if it fails the
       // wizard still finishes; the user can re-mint by reloading the
@@ -262,7 +262,7 @@ function WelcomeStep({ deviceName, setDeviceName, onNext }) {
       </div>
       <h1 className="text-3xl font-bold text-theme-text mb-3">Welcome to Dream.</h1>
       <p className="text-theme-text-muted mb-8 leading-relaxed">
-        Let&apos;s get you set up in about a minute. First, give this setup a friendly label for the invite audit trail.
+        Let&apos;s get you set up in about a minute. First, give this setup a friendly label for the owner-card audit trail.
       </p>
 
       <label className="block mb-6">
@@ -279,7 +279,7 @@ function WelcomeStep({ deviceName, setDeviceName, onNext }) {
           spellCheck={false}
         />
         <span className="text-xs text-theme-text-muted mt-2 block">
-          This label is recorded on the first invite only. It does not rename the host yet;
+          This label is recorded on the first owner card only. It does not rename the host yet;
           change <code className="text-theme-accent">DREAM_DEVICE_NAME</code> in Settings before expecting
           <code className="text-theme-accent"> {deviceName.trim() || 'dream'}.local</code> to resolve.
           Letters, numbers, and dashes only.
@@ -312,7 +312,7 @@ function UserStep({ username, setUsername, onNext, onBack }) {
       </div>
       <h1 className="text-3xl font-bold text-theme-text mb-3">Who&apos;s the first user?</h1>
       <p className="text-theme-text-muted mb-8 leading-relaxed">
-        We&apos;ll generate a magic link for them at the end. They scan it once to reach the chat surface.
+        We&apos;ll generate an owner card for them at the end. They scan it to reach Hermes on this Dream Server.
       </p>
 
       <label className="block mb-6">
@@ -330,8 +330,7 @@ function UserStep({ username, setUsername, onNext, onBack }) {
           spellCheck={false}
         />
         <span className="text-xs text-theme-text-muted mt-2 block">
-          Recorded with the invite for the audit trail. Open WebUI may still ask the
-          recipient to sign in or pick a profile name on first arrival.
+          Recorded with the owner card audit trail. The card remains valid until it is revoked.
         </span>
       </label>
 
@@ -430,11 +429,11 @@ function ConfirmStep({ deviceName, username, stack, onBack, onFinish, finishing,
     <div>
       <h1 className="text-3xl font-bold text-theme-text mb-6">Ready?</h1>
       <p className="text-theme-text-muted mb-6 leading-relaxed">
-        Tap Finish and we&apos;ll generate the first invite. Bring it up on a phone or share the QR.
+        Tap Finish and we&apos;ll generate the owner QR for Hermes.
       </p>
 
       <dl className="bg-theme-card border border-theme-border rounded-xl divide-y divide-theme-border mb-8">
-        <Row label="Setup label" value={deviceName.trim() || 'dream'} hint="invite audit note" />
+        <Row label="Setup label" value={deviceName.trim() || 'dream'} hint="owner-card audit note" />
         <Row label="First user" value={username.trim()} />
         <Row label="Stack" value={stackTitle} hint="enable extras from Extensions" />
       </dl>
@@ -480,7 +479,7 @@ function Row({ label, value, hint }) {
 }
 
 // ---------------------------------------------------------------------------
-// Done - show generated invite
+// Done - show generated owner card
 // ---------------------------------------------------------------------------
 
 function DoneScreen({ invite, onDone }) {
@@ -526,8 +525,8 @@ function DoneScreen({ invite, onDone }) {
     }
     try {
       await navigator.share({
-        title: `Dream Server invite for ${invite.target_username}`,
-        text: 'Tap to open Dream Server',
+        title: `Dream Server owner card for ${invite.target_username}`,
+        text: 'Tap to open Hermes on Dream Server',
         url: invite.url,
       })
     } catch {
@@ -542,14 +541,13 @@ function DoneScreen({ invite, onDone }) {
       </div>
       <h1 className="text-3xl font-bold text-theme-text mb-3">You&apos;re set.</h1>
       <p className="text-theme-text-muted mb-6 leading-relaxed">
-        Here&apos;s the magic link for <strong className="text-theme-text">{invite.target_username}</strong>.
-        They scan or tap it to reach the chat surface. (Open WebUI may still prompt for a
-        sign-in until SSO is wired up.)
+        Here&apos;s the owner card for <strong className="text-theme-text">{invite.target_username}</strong>.
+        They scan or tap it to open Hermes. Keep the printed QR safe; it remains valid until revoked.
       </p>
 
       {qrDataUrl ? (
         <div className="bg-white p-4 rounded-xl flex justify-center mb-6">
-          <img src={qrDataUrl} alt="QR code for invite link" className="w-56 h-56" />
+          <img src={qrDataUrl} alt="QR code for owner card" className="w-56 h-56" />
         </div>
       ) : (
         <div className="bg-theme-card border border-theme-border rounded-xl p-8 flex flex-col items-center justify-center mb-6 min-h-56">
@@ -570,7 +568,7 @@ function DoneScreen({ invite, onDone }) {
         <button
           onClick={copy}
           title="Copy link"
-          aria-label="Copy invite link"
+          aria-label="Copy owner link"
           className="flex items-center gap-1 px-3 py-2 bg-theme-card border border-theme-border rounded-lg text-theme-text hover:bg-theme-surface-hover text-sm"
         >
           {copied ? <Check size={16} className="text-green-400" /> : <Copy size={16} />}
@@ -596,7 +594,7 @@ function DoneScreen({ invite, onDone }) {
       </div>
 
       <p className="text-xs text-theme-text-muted mt-6 text-center">
-        Need more invites later? They live under <strong>Settings</strong> / <strong>Account</strong>.
+        Need more cards or guest invites later? They live under <strong>Settings</strong> / <strong>Setup / Owner</strong>.
       </p>
     </div>
   )

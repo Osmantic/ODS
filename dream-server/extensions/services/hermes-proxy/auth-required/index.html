@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#0f0f13" />
-  <title>Hermes — Invite required</title>
+  <title>Hermes - Owner card required</title>
   <style>
     :root {
       --bg: #0f0f13;
@@ -118,13 +118,13 @@
       </svg>
     </div>
     <div class="badge">HERMES AGENT</div>
-    <h1>You need an invite.</h1>
-    <p>This Hermes Agent is gated behind Dream Server's magic-link auth. To reach the chat surface, an admin needs to send you an invite link from their dashboard.</p>
+    <h1>You need an owner card.</h1>
+    <p>This Hermes Agent is gated behind Dream Server's magic-link auth. Scan the owner QR from the setup card, or ask the operator to create one from Setup / Owner.</p>
 
     <ol class="steps">
-      <li>Ask the admin to open their dashboard's <strong>Invites</strong> page.</li>
-      <li>They generate a magic-link with scope <code>chat</code> or <code>all</code>.</li>
-      <li>They share the QR or URL with you — scan or tap once and you're in.</li>
+      <li>Open the dashboard's <strong>Setup / Owner</strong> page.</li>
+      <li>Create an owner card for Hermes, or a temporary guest invite.</li>
+      <li>Scan or tap the QR to redeem a Dream session and return here.</li>
     </ol>
 
     {{ $docsUrl := env "HERMES_PROXY_AUTH_DOCS_URL" }}{{ if $docsUrl }}
@@ -134,8 +134,8 @@
     {{ end }}
 
     <p class="footer">
-      Already have a link? Open it directly — redemption sets the session cookie
-      this page is waiting for, and you'll be redirected straight to Hermes.
+      Already have a QR or link? Open it directly. Redemption sets the session cookie
+      this page is waiting for, and sends you straight to Hermes.
     </p>
   </div>
 </body>
