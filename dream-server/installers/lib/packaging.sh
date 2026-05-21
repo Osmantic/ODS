@@ -101,7 +101,15 @@ pkg_update() {
 # Install one or more packages
 # Usage: pkg_install curl jq rsync
 pkg_install() {
-    local pkgs=("$@")
+    local requested=("$@")
+    local pkgs=()
+    local pkg resolved
+    for pkg in "${requested[@]}"; do
+        resolved="$(pkg_resolve "$pkg")"
+        # Some canonical packages intentionally expand to multiple packages.
+        # shellcheck disable=SC2206
+        pkgs+=($resolved)
+    done
     [[ ${#pkgs[@]} -eq 0 ]] && return 0
 
     log "Installing packages (${PKG_MANAGER}): ${pkgs[*]}"
@@ -145,6 +153,13 @@ pkg_resolve() {
             ;;
         dnf)
             case "$canonical" in
+                curl)
+                    if command -v rpm &>/dev/null && rpm -q curl-minimal &>/dev/null; then
+                        echo "curl-minimal"
+                    else
+                        echo "curl"
+                    fi
+                    ;;
                 docker-compose-plugin) echo "docker-compose-plugin" ;;
                 python3-pyyaml)        echo "python3-pyyaml" ;;
                 build-essential)       echo "gcc gcc-c++ make" ;;

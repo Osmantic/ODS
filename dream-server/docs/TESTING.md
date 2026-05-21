@@ -40,9 +40,67 @@ Fleet phases currently include:
 | Method | Speed | GPU Testing | Kernel Testing | Best For |
 |--------|-------|-------------|----------------|----------|
 | **Fleet harness** | 15-75 min | Yes | Yes | Release readiness on real heterogeneous hardware |
+| **Fleet distro lab** | 5-20 min | No | Container: no / VM: yes | Multi-distro installer and Docker lifecycle coverage on tower2 |
 | **Distrobox** | Instant (2s) | Yes | No | Daily dev, package manager validation |
 | **Ventoy USB** | 5-10 min boot | Yes | Yes | Weekly full-stack validation |
 | **CI Matrix** | Automatic | No | No | Every PR, syntax + detection checks |
+
+## Fleet Distro Lab (tower2)
+
+The fleet distro lab is the repeatable middle rung between CI containers and
+full hardware fleet runs. `tower2` is provisioned with:
+
+- Docker for fast disposable distro containers;
+- Distrobox for interactive distro debugging;
+- Incus + KVM/QEMU for disposable systemd-capable VMs.
+
+Use the Docker runner for every fleet run:
+
+```bash
+cd ~/DreamServer/dream-server
+tests/fleet-multi-distro.sh --pull
+```
+
+Run a focused subset while debugging:
+
+```bash
+tests/fleet-multi-distro.sh ubuntu/24.04 archlinux/current mint
+tests/fleet-multi-distro.sh --no-dry-run ubuntu2404
+```
+
+The fast fleet matrix currently covers:
+
+| Distro ID | Image | Package Manager |
+|-----------|-------|-----------------|
+| `ubuntu2404` | `ubuntu:24.04` | apt |
+| `ubuntu2204` | `ubuntu:22.04` | apt |
+| `debian12` | `debian:12` | apt |
+| `mint213` | `linuxmintd/mint21.3-amd64:latest` | apt |
+| `fedora41` | `fedora:41` | dnf |
+| `rocky9` | `rockylinux:9` | dnf |
+| `arch` | `archlinux:latest` | pacman |
+| `manjaro` | `manjarolinux/base:latest` | pacman |
+| `cachyos` | `cachyos/cachyos:latest` | pacman |
+| `opensuse` | `opensuse/tumbleweed:latest` | zypper |
+
+Aliases such as `ubuntu/24.04`, `ubuntu/22.04`, `debian/12`,
+`fedora/41`, `archlinux/current`, `opensuse/tumbleweed`, and `mint` are
+accepted by the runner for quick ad-hoc checks. The matrix uses Linux Mint
+21.3 because the current Mint 22 Docker images report plain Ubuntu in
+`/etc/os-release`, which is less useful for distro detection.
+
+Use Incus VMs when a regression needs real systemd, boot, kernel, or Docker
+daemon behavior:
+
+```bash
+incus launch images:ubuntu/24.04 ds-ubuntu2404 --vm -c limits.cpu=4 -c limits.memory=8GiB
+incus exec ds-ubuntu2404 -- bash -lc 'cat /etc/os-release; systemctl is-system-running || true'
+incus delete -f ds-ubuntu2404
+```
+
+For CachyOS, use the container matrix for package-manager coverage. Keep a
+manual CachyOS VM template for systemd/kernel coverage because CachyOS publishes
+installer ISOs rather than a standard Incus cloud image.
 
 ## Distrobox (Daily Testing)
 
@@ -57,9 +115,13 @@ curl -s https://raw.githubusercontent.com/89luca89/distrobox/main/install | sudo
 # Create test containers for target distros
 distrobox create --name dream-test-fedora --image fedora:41
 distrobox create --name dream-test-arch --image archlinux:latest
+distrobox create --name dream-test-manjaro --image manjarolinux/base:latest
+distrobox create --name dream-test-cachyos --image cachyos/cachyos:latest
 distrobox create --name dream-test-opensuse --image opensuse/tumbleweed:latest
 distrobox create --name dream-test-debian --image debian:12
 distrobox create --name dream-test-ubuntu2204 --image ubuntu:22.04
+distrobox create --name dream-test-mint213 --image linuxmintd/mint21.3-amd64:latest
+distrobox create --name dream-test-rocky9 --image rockylinux:9
 ```
 
 ### Usage
@@ -116,7 +178,9 @@ Boot any Linux distro from a single USB drive. Pick from a menu, boot into a liv
 | CachyOS | Arch-based, issue #33 | pacman |
 | openSUSE Tumbleweed | Rolling release | zypper |
 | Debian 12 | apt but not Ubuntu | apt |
-| Linux Mint 22 | Ubuntu derivative | apt |
+| Linux Mint 21.3 | Ubuntu derivative with `ID=linuxmint` | apt |
+| Rocky Linux 9 | RHEL-family server baseline | dnf |
+| Manjaro | Arch derivative with desktop-user reach | pacman |
 
 Total: ~25GB for all ISOs.
 
@@ -157,7 +221,7 @@ Run installer validation across all Distrobox containers automatically:
 ./tests/test-multi-distro.sh
 
 # Run specific distros
-./tests/test-multi-distro.sh fedora41 arch
+./tests/test-multi-distro.sh fedora41 arch cachyos mint213
 
 # Clean up
 ./tests/test-multi-distro.sh --cleanup
@@ -184,7 +248,7 @@ Run installer validation across all Distrobox containers automatically:
 
 ## CI Matrix
 
-Every PR automatically tests installer detection on 6 distros via GitHub Actions containers. See `.github/workflows/matrix-smoke.yml`.
+Every PR automatically tests installer detection on 10 distros via GitHub Actions containers. See `.github/workflows/matrix-smoke.yml`.
 
 **Tested per PR:**
 - `/etc/os-release` parsing
@@ -196,6 +260,8 @@ Every PR automatically tests installer detection on 6 distros via GitHub Actions
 
 1. Add the distro ID to `installers/lib/packaging.sh` in the `detect_pkg_manager()` case block
 2. Add a test entry in `tests/test-multi-distro.sh` DISTROS array
-3. Add a CI matrix entry in `.github/workflows/matrix-smoke.yml`
-4. Test with Distrobox: `distrobox create --name dream-test-newdistro --image newdistro:latest`
-5. Run: `./tests/test-multi-distro.sh newdistro`
+3. Add a fleet entry in `tests/fleet-multi-distro.sh`
+4. Add a CI matrix entry in `.github/workflows/matrix-smoke.yml`
+5. Test with Distrobox: `distrobox create --name dream-test-newdistro --image newdistro:latest`
+6. Run: `./tests/test-multi-distro.sh newdistro`
+7. Run the fleet matrix path: `./tests/fleet-multi-distro.sh newdistro`

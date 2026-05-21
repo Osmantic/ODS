@@ -55,6 +55,28 @@ setup() {
     assert_output "curl"
 }
 
+@test "pkg_resolve: dnf keeps curl-minimal when it is already installed" {
+    rpm() {
+        [[ "$1" == "-q" && "$2" == "curl-minimal" ]]
+    }
+    export -f rpm
+
+    PKG_MANAGER="dnf"
+    run pkg_resolve curl
+    assert_output "curl-minimal"
+}
+
+@test "pkg_install resolves canonical package names before invoking dnf" {
+    dnf() { echo "$*"; }
+    export -f dnf
+
+    PKG_MANAGER="dnf"
+    _SUDO=""
+    run pkg_install build-essential
+    assert_success
+    assert_output "install -y -q gcc gcc-c++ make"
+}
+
 # ── pkg_resolve: pacman ─────────────────────────────────────────────────────
 
 @test "pkg_resolve: pacman maps docker-compose-plugin to docker-compose" {
