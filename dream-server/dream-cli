@@ -1025,6 +1025,24 @@ _dream_cli_refresh_soul() {
     py=$(command -v python3 || command -v python || true)
     [[ -n "$py" ]] || return 0
     "$py" "$script" >/dev/null 2>&1 || return 1
+
+    # Push the updated assembled SOUL.md into the running container's
+    # data dir, where Hermes actually reads from at session.create
+    # time. The bind-mount target (/opt/hermes/docker/SOUL.md) is just
+    # the upstream-default that Hermes's entrypoint copies to
+    # /opt/data/SOUL.md ONLY on first start; the per-install file is
+    # what's read after that. macOS Docker Desktop's virtiofs refuses
+    # to bind-mount /opt/data/SOUL.md directly (nested-mount limit),
+    # so we use docker exec for the in-container copy — works on
+    # Linux + macOS uniformly. Container has to be running for this
+    # to matter; if it's not, the entrypoint will pick up the docker/
+    # default on next start anyway.
+    if command -v docker >/dev/null 2>&1; then
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^dream-hermes$'; then
+            docker exec dream-hermes cp /opt/hermes/docker/SOUL.md /opt/data/SOUL.md \
+                >/dev/null 2>&1 || true
+        fi
+    fi
     return 0
 }
 

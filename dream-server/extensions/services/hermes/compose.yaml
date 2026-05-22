@@ -86,24 +86,30 @@ services:
       # data/persona/SOUL.md with a generated "About this installation"
       # section — what GPU backend, which model, which services are
       # running, which URLs are reachable. So Dream answers truthfully
-      # when asked about its own environment instead of inventing
-      # capabilities.
+      # about its own environment instead of inventing capabilities.
       #
-      # Two mount points: the upstream Hermes image expects the persona
-      # at /opt/data/SOUL.md (its `HERMES_HOME`) at runtime — that's
-      # where the agent actually loads from. The /opt/hermes/docker/
-      # path is just the in-image default that the entrypoint copies to
-      # /opt/data/SOUL.md on first start only; updates to it after that
-      # are ignored. So we bind-mount BOTH paths to the same assembled
-      # file: the docker/ one keeps the install-default convention,
-      # the data/ one is what the running agent actually reads.
+      # Why only ONE mount here, not two: Hermes reads the persona at
+      # /opt/data/SOUL.md (its HERMES_HOME) at runtime, but its
+      # entrypoint copies the in-image /opt/hermes/docker/SOUL.md to
+      # /opt/data/SOUL.md ONLY on first start. We used to bind-mount
+      # BOTH paths so updates after first start would land, but macOS
+      # Docker Desktop's virtiofs layer refuses nested bind-mounts (a
+      # file mount inside the /opt/data directory mount) with:
       #
-      # Why data/persona/ and not data/hermes/: data/hermes/ is owned by
-      # uid 10000 (HERMES_UID) — the Hermes container's own state lives
+      #   create mountpoint for /opt/data/SOUL.md ... mountpoint "..."
+      #   is outside of rootfs
+      #
+      # So we mount only the non-nested docker/ path here. For updates
+      # after first install, the dream-cli's refresh-soul step does
+      # `docker exec dream-hermes cp /opt/hermes/docker/SOUL.md
+      # /opt/data/SOUL.md` — same source, container-side copy, works
+      # uniformly on Linux + macOS (colima AND Docker Desktop).
+      #
+      # Why data/persona/ and not data/hermes/: data/hermes/ is owned
+      # by uid 10000 (HERMES_UID) — the container's own state lives
       # there. data/persona/ stays operator-owned so the host can
       # regenerate the file without sudo.
       - ./data/persona/SOUL.md:/opt/hermes/docker/SOUL.md:ro
-      - ./data/persona/SOUL.md:/opt/data/SOUL.md:ro
     # Hermes is exposed to the LAN via dream-hermes-proxy on port 9120 — that
     # Caddy sidecar forward_auths to dashboard-api's verify-session and only
     # then forwards traffic here. By NOT binding a host port on the Hermes
