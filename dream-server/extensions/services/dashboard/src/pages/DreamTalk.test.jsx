@@ -267,8 +267,8 @@ describe('DreamTalk', () => {
 
     // Pick a fake image file via the hidden file input.
     const fileInput = container.querySelector('input[type="file"]')
-    const blob = new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })
-    const file = new File([blob], 'photo.png', { type: 'image/png' })
+    const blob = new globalThis.Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })
+    const file = new globalThis.File([blob], 'photo.png', { type: 'image/png' })
     fireEvent.change(fileInput, { target: { files: [file] } })
 
     // Preview strip shows the filename + an X button to discard.
@@ -285,13 +285,65 @@ describe('DreamTalk', () => {
     expect(await screen.findByText('A red square.')).toBeInTheDocument()
     // Backend was hit on the attachment endpoint with FormData.
     expect(attachmentRequest).not.toBeNull()
-    expect(attachmentRequest.body).toBeInstanceOf(FormData)
+    expect(attachmentRequest.body).toBeInstanceOf(globalThis.FormData)
     expect(attachmentRequest.body.get('file')).toBeTruthy()
     expect(attachmentRequest.body.get('text')).toBe('What color is this?')
     // The user's bubble shows the image inline.
     const userImg = container.querySelector('img[alt="Attached"]')
     expect(userImg).toBeTruthy()
     expect(userImg.getAttribute('src')).toMatch(/^blob:/)
+  })
+
+  test('retry keeps image attachment context after an attachment stream error', async () => {
+    vi.stubGlobal('URL', {
+      ...globalThis.URL,
+      createObjectURL: () => 'blob:retry-image',
+      revokeObjectURL: () => {},
+    })
+
+    let attachmentRequests = 0
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') return response({ capabilities: { text_chat: true } })
+      if (url === '/api/talk/attachment' && options.method === 'POST') {
+        attachmentRequests += 1
+        expect(options.body).toBeInstanceOf(globalThis.FormData)
+        expect(options.body.get('file')).toBeTruthy()
+        expect(options.body.get('text')).toBe('What color is this?')
+        if (attachmentRequests === 1) {
+          return sseResponse([
+            { type: 'session', session_id: 'vision-oneshot' },
+            { type: 'error', status_code: 502, detail: 'Vision timed out.' },
+            { type: 'done' },
+          ])
+        }
+        return sseResponse([
+          { type: 'session', session_id: 'vision-oneshot' },
+          { type: 'delta', text: 'A red square.' },
+          { type: 'complete', session_id: 'vision-oneshot', text: 'A red square.', status: 'ok' },
+          { type: 'done' },
+        ])
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { container } = render(<DreamTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+
+    const fileInput = container.querySelector('input[type="file"]')
+    const blob = new globalThis.Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })
+    const file = new globalThis.File([blob], 'photo.png', { type: 'image/png' })
+    fireEvent.change(fileInput, { target: { files: [file] } })
+    fireEvent.change(screen.getByPlaceholderText('Message Dream Server'), {
+      target: { value: 'What color is this?' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    expect(await screen.findByText('Vision timed out.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry last message' }))
+
+    expect(await screen.findByText('A red square.')).toBeInTheDocument()
+    expect(attachmentRequests).toBe(2)
   })
 
   test('surfaces SSE error frame as an assistant error', async () => {

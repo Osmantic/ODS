@@ -42,6 +42,17 @@ MAX_DOC_CHARS = 80_000               # post-extraction character cap so a megaby
 
 # MIME types we accept on the attach surface. Anything else → 415.
 _IMAGE_MIME_PREFIXES = ("image/",)
+_IMAGE_EXTENSION_MIMES = {
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 _TEXT_LIKE_MIMES = {
     "text/plain", "text/markdown", "text/csv", "text/x-markdown",
     "application/json", "application/xml", "text/xml",
@@ -540,6 +551,8 @@ def _classify_attachment(file: UploadFile) -> str:
 
     if any(ct.startswith(p) for p in _IMAGE_MIME_PREFIXES):
         return "image"
+    if ext in _IMAGE_EXTENSION_MIMES:
+        return "image"
     if ct in _TEXT_LIKE_MIMES:
         return "text"
     if ext in _TEXT_LIKE_EXTENSIONS:
@@ -548,6 +561,17 @@ def _classify_attachment(file: UploadFile) -> str:
         status_code=415,
         detail=f"This file type isn't supported on chat yet (got {ct or 'unknown'}, {ext or 'no extension'}). Try an image, .txt, .md, .csv, .json, or code file.",
     )
+
+
+def _image_content_type(file: UploadFile) -> str:
+    """Return a browser-safe image MIME, falling back from filename extension."""
+    ct = (file.content_type or "").lower()
+    if any(ct.startswith(p) for p in _IMAGE_MIME_PREFIXES):
+        return ct
+
+    name = (file.filename or "").lower()
+    ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+    return _IMAGE_EXTENSION_MIMES.get(ext, "image/png")
 
 
 @router.post("/api/talk/attachment")
@@ -585,7 +609,7 @@ async def talk_attachment(
             raise HTTPException(status_code=413, detail=f"Image is too large (max {MAX_IMAGE_BYTES // (1024 * 1024)} MB).")
         prompt_text = caption or "Describe what you see in this image."
         return StreamingResponse(
-            _stream_vision_chat(data, file.content_type or "image/png", prompt_text),
+            _stream_vision_chat(data, _image_content_type(file), prompt_text),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

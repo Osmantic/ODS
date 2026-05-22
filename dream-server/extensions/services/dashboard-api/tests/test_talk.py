@@ -846,6 +846,34 @@ def test_talk_attachment_image_routes_to_vision_endpoint_bypassing_hermes(talk_c
     assert not hermes_stream_called
 
 
+def test_talk_attachment_image_uses_filename_when_mobile_uploads_octet_stream(talk_client, monkeypatch):
+    """Mobile browsers sometimes send captured images as octet-stream.
+    Filename fallback keeps phone uploads on the image path and gives the
+    vision model a real image MIME in the data URL."""
+    captured_content_type = None
+
+    async def fake_vision_stream(image_bytes, content_type, prompt_text):
+        nonlocal captured_content_type
+        from routers.talk import _sse_event
+        captured_content_type = content_type
+        yield _sse_event("session", {"session_id": "vision"})
+        yield _sse_event("complete", {"session_id": "vision", "text": "Red.", "status": "ok", "warning": None})
+        yield _sse_event("done", {})
+
+    monkeypatch.setattr("routers.talk._stream_vision_chat", fake_vision_stream)
+
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": ("phone-capture.png", png_bytes, "application/octet-stream")},
+        data={"text": "what color?"},
+    )
+    assert resp.status_code == 200
+    assert captured_content_type == "image/png"
+    frames = _parse_sse_frames(resp.content)
+    assert any(f.get("type") == "complete" and f.get("text") == "Red." for f in frames)
+
+
 def test_talk_attachment_image_too_large_returns_413(talk_client):
     """Image size cap is enforced at the multipart boundary."""
     big = b"\x89PNG\r\n\x1a\n" + b"x" * (11 * 1024 * 1024)

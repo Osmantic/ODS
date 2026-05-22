@@ -177,6 +177,7 @@ export default function DreamTalk() {
         text: clean,
         imageUrl: attachment?.kind === 'image' ? attachment.previewUrl : null,
         fileName: attachment?.kind === 'text' ? attachment.name : null,
+        attachmentForRetry: attachment,
         status: 'done',
       }])
     }
@@ -427,7 +428,7 @@ export default function DreamTalk() {
 
   const retryLast = () => {
     const lastUser = [...messages].reverse().find(message => message.role === 'user' && message.status !== 'pending')
-    if (lastUser) sendText(lastUser.text)
+    if (lastUser) sendText(lastUser.text, { attachment: lastUser.attachmentForRetry || null })
   }
 
   // Send is enabled either with text OR an attachment (an image alone is a
