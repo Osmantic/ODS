@@ -9,11 +9,12 @@ must not grant access here.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
 import os
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -31,6 +32,140 @@ router = APIRouter(tags=["talk"])
 SESSION_COOKIE_NAME = "dream-session"
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 MAX_MESSAGE_CHARS = 8000
+
+# Attachment limits — chat surface, not document-ingestion. Pick conservative
+# ceilings that still let a phone photo + a short doc through.
+MAX_IMAGE_BYTES = 10 * 1024 * 1024   # 10 MB raw — base64 inflates to ~13 MB on the wire
+MAX_DOC_BYTES = 5 * 1024 * 1024      # 5 MB extracted text limit, generous
+MAX_DOC_CHARS = 80_000               # post-extraction character cap so a megabyte
+                                     # log doesn't blow past the model's context
+
+# MIME types we accept on the attach surface. Anything else → 415.
+_IMAGE_MIME_PREFIXES = ("image/",)
+_IMAGE_EXTENSION_MIMES = {
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+_TEXT_LIKE_MIMES = {
+    "text/plain", "text/markdown", "text/csv", "text/x-markdown",
+    "application/json", "application/xml", "text/xml",
+    "application/x-yaml", "text/yaml", "text/x-yaml",
+}
+_TEXT_LIKE_EXTENSIONS = {  # browsers sometimes upload these as application/octet-stream
+    ".txt", ".md", ".markdown", ".csv", ".json", ".yaml", ".yml",
+    ".log", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".sh",
+}
+
+
+def _vision_model_name() -> str:
+    """Lemonade name of the vision-capable model. Defaults match the strix
+    user.* registration we ship; operators can override per-host via env."""
+    return os.environ.get("DREAM_TALK_VISION_MODEL", "user.Qwen3.6-35B-A3B-Vision")
+
+
+def _vision_backend_url() -> str:
+    """Where to send multimodal requests. Defaults to Lemonade direct
+    (``http://llama-server:8080``) — NOT litellm — because litellm's
+    ``model_name: '*'`` wildcard normalises our ``user.*`` model id down to
+    whatever llama-server has currently loaded, which silently downgrades
+    image queries to the text-only model. Lemonade routes by exact model
+    id and auto-swaps to the vision variant on first multimodal call.
+
+    Operators can override with ``DREAM_TALK_VISION_URL`` for hosts where
+    vision lives somewhere else (e.g. a dedicated VL server).
+    """
+    return (os.environ.get("DREAM_TALK_VISION_URL")
+            or os.environ.get("LLM_API_URL")
+            or "http://llama-server:8080").rstrip("/")
+
+
+def _vision_backend_key() -> str:
+    """Bearer token for the vision backend. Empty when hitting Lemonade
+    direct on the internal docker network (no auth needed there); set when
+    a host routes through litellm or another authenticated proxy."""
+    return os.environ.get("DREAM_TALK_VISION_KEY") or ""
+
+
+async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text: str) -> AsyncIterator[bytes]:
+    """Send a single multimodal turn directly to litellm and translate the
+    streaming response into the same SSE frame shape Dream Talk already uses
+    (session / delta / complete / done / error). Bypasses Hermes for image
+    queries because Hermes's prompt.submit only takes text — the multimodal
+    content array is a litellm/llama-server-level concept.
+
+    Trade-off: image queries don't get Hermes's tool layer (no web_search,
+    memory, etc.) — they're a one-shot "describe this image" exchange. For
+    follow-up turns, users continue typing normally and Hermes resumes.
+    """
+    image_url = f"data:{content_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    payload = {
+        "model": _vision_model_name(),
+        "stream": True,
+        "max_tokens": 1024,
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": prompt_text},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ]},
+        ],
+    }
+    yield _sse_event("session", {"session_id": "vision-oneshot"})
+
+    accumulated: list[str] = []
+    timeout = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
+    headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+    key = _vision_backend_key()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(
+                "POST",
+                f"{_vision_backend_url()}/v1/chat/completions",
+                headers=headers,
+                json=payload,
+            ) as resp:
+                if resp.status_code >= 400:
+                    body = await resp.aread()
+                    detail = body.decode("utf-8", errors="replace")[:300]
+                    yield _sse_event("error", {"status_code": resp.status_code, "detail": detail})
+                    yield _sse_event("done", {})
+                    return
+                async for raw in resp.aiter_lines():
+                    if not raw or not raw.startswith("data:"):
+                        continue
+                    payload_str = raw[5:].strip()
+                    if payload_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload_str)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    text = delta.get("content")
+                    if isinstance(text, str) and text:
+                        accumulated.append(text)
+                        yield _sse_event("delta", {"text": text})
+    except (httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPError) as exc:
+        yield _sse_event("error", {"status_code": 502, "detail": f"Vision model unavailable: {exc}"})
+        yield _sse_event("done", {})
+        return
+
+    final_text = "".join(accumulated).strip() or "(no response)"
+    yield _sse_event("complete", {
+        "session_id": "vision-oneshot",
+        "text": final_text,
+        "status": "ok",
+        "warning": None,
+    })
+    yield _sse_event("done", {})
 
 
 def _require_session(request: Request) -> tuple[str, int]:
@@ -399,6 +534,115 @@ async def talk_message_stream(payload: dict[str, Any], request: Request) -> Stre
         _stream_hermes_sse(session_key, text, request),
         media_type="text/event-stream",
         headers=headers,
+    )
+
+
+def _classify_attachment(file: UploadFile) -> str:
+    """Return one of: ``image``, ``text``, or raise 415.
+
+    Looks at the MIME type the browser supplied first; falls back to filename
+    extension because some browsers / iOS upload everything as
+    application/octet-stream. We deliberately keep the accept-set narrow on
+    this v1 surface — chat, not document ingestion.
+    """
+    ct = (file.content_type or "").lower()
+    name = (file.filename or "").lower()
+    ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+
+    if any(ct.startswith(p) for p in _IMAGE_MIME_PREFIXES):
+        return "image"
+    if ext in _IMAGE_EXTENSION_MIMES:
+        return "image"
+    if ct in _TEXT_LIKE_MIMES:
+        return "text"
+    if ext in _TEXT_LIKE_EXTENSIONS:
+        return "text"
+    raise HTTPException(
+        status_code=415,
+        detail=f"This file type isn't supported on chat yet (got {ct or 'unknown'}, {ext or 'no extension'}). Try an image, .txt, .md, .csv, .json, or code file.",
+    )
+
+
+def _image_content_type(file: UploadFile) -> str:
+    """Return a browser-safe image MIME, falling back from filename extension."""
+    ct = (file.content_type or "").lower()
+    if any(ct.startswith(p) for p in _IMAGE_MIME_PREFIXES):
+        return ct
+
+    name = (file.filename or "").lower()
+    ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+    return _IMAGE_EXTENSION_MIMES.get(ext, "image/png")
+
+
+@router.post("/api/talk/attachment")
+async def talk_attachment(
+    request: Request,
+    file: UploadFile = File(...),
+    text: str = Form(""),
+) -> StreamingResponse:
+    """Multipart attachment endpoint. Returns the same SSE event shape as
+    ``/api/talk/message/stream`` so the SPA can use a single rendering path.
+
+    Two routing paths inside:
+
+    1. **Images** → multimodal one-shot to litellm against the vision-capable
+       model (e.g. ``user.Qwen3.6-35B-A3B-Vision`` on Lemonade hosts). Hermes's
+       prompt.submit API only accepts plain text, so vision queries bypass
+       the agent loop. Acceptable trade-off for v1: image queries don't get
+       Hermes's tool layer, but they do get a real model-vision answer.
+    2. **Text-like files** (.txt/.md/.csv/.json/code) → extract content,
+       prepend to the user's caption, route through the existing Hermes
+       bridge so the agent retains tools and memory.
+
+    PDF/docx aren't in scope for v1 (no parser dependency yet).
+    """
+    session_key, _expires_at = _require_session(request)
+    kind = _classify_attachment(file)
+
+    caption = (text or "").strip()
+    if len(caption) > MAX_MESSAGE_CHARS:
+        raise HTTPException(status_code=413, detail="Caption is too long.")
+
+    if kind == "image":
+        data = await file.read(MAX_IMAGE_BYTES + 1)
+        if len(data) > MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail=f"Image is too large (max {MAX_IMAGE_BYTES // (1024 * 1024)} MB).")
+        prompt_text = caption or "Describe what you see in this image."
+        return StreamingResponse(
+            _stream_vision_chat(data, _image_content_type(file), prompt_text),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
+
+    # text-like
+    data = await file.read(MAX_DOC_BYTES + 1)
+    if len(data) > MAX_DOC_BYTES:
+        raise HTTPException(status_code=413, detail=f"File is too large (max {MAX_DOC_BYTES // (1024 * 1024)} MB).")
+    try:
+        content = data.decode("utf-8")
+    except UnicodeDecodeError:
+        content = data.decode("utf-8", errors="replace")
+    if len(content) > MAX_DOC_CHARS:
+        content = content[:MAX_DOC_CHARS] + f"\n\n[Truncated — file was {len(data):,} bytes, showing first {MAX_DOC_CHARS:,} chars]"
+
+    filename = file.filename or "attachment.txt"
+    prompt = (
+        f"[Attached file: {filename}]\n"
+        f"```\n{content}\n```\n\n"
+        f"{caption or 'Take a look at this and let me know what you think.'}"
+    )
+    return StreamingResponse(
+        _stream_hermes_sse(session_key, prompt, request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 

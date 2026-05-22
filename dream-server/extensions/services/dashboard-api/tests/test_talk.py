@@ -769,6 +769,131 @@ def test_talk_message_stream_status_label_handles_browser_prefix(monkeypatch):
     assert _label_for_tool("random_unknown_tool") == "Using `random_unknown_tool`…"
 
 
+def test_talk_attachment_text_file_routes_through_hermes_with_inlined_content(talk_client, monkeypatch):
+    """Text-like attachments (.txt/.md/.json/code/etc.) get their content
+    decoded and prepended to the user's caption, then routed through the
+    existing Hermes bridge — so the agent retains tools, memory, and the
+    same SSE event shape as a regular text message."""
+    captured_prompt = None
+
+    async def fake_stream(session_key, text):
+        nonlocal captured_prompt
+        captured_prompt = text
+        yield {"type": "session", "session_id": "sid"}
+        yield {"type": "complete", "session_id": "sid", "text": "Reviewed.", "status": "ok", "warning": None}
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": ("notes.md", b"# Hello\nFoo bar", "text/markdown")},
+        data={"text": "what's in this?"},
+    )
+    assert resp.status_code == 200
+    assert "Hello" in captured_prompt
+    assert "Foo bar" in captured_prompt
+    assert "what's in this?" in captured_prompt
+    assert "notes.md" in captured_prompt
+
+
+def test_talk_attachment_unknown_filetype_returns_415(talk_client):
+    """Unsupported file types (zip/exe/etc.) should be rejected at the
+    attachment surface, not silently passed through. v1 is image-and-text-
+    only by design."""
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": ("archive.zip", b"PK\x03\x04...", "application/zip")},
+        data={"text": ""},
+    )
+    assert resp.status_code == 415
+
+
+def test_talk_attachment_image_routes_to_vision_endpoint_bypassing_hermes(talk_client, monkeypatch):
+    """Images go to litellm directly (not through Hermes) because Hermes's
+    prompt.submit accepts only text — multimodal content arrays are a
+    litellm/llama-server-level concept. Regression guard that we don't
+    accidentally re-route images through the text-only Hermes path."""
+    hermes_stream_called = False
+
+    async def fake_hermes_stream(session_key, text):
+        nonlocal hermes_stream_called
+        hermes_stream_called = True
+        yield {"type": "session", "session_id": "sid"}
+        yield {"type": "complete", "session_id": "sid", "text": "wrong-path", "status": "ok", "warning": None}
+
+    async def fake_vision_stream(image_bytes, content_type, prompt_text):
+        from routers.talk import _sse_event
+        yield _sse_event("session", {"session_id": "vision"})
+        yield _sse_event("delta", {"text": "Red."})
+        yield _sse_event("complete", {"session_id": "vision", "text": "Red.", "status": "ok", "warning": None})
+        yield _sse_event("done", {})
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_hermes_stream)
+    monkeypatch.setattr("routers.talk._stream_vision_chat", fake_vision_stream)
+
+    # Minimal valid PNG bytes (PNG signature + IHDR).
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": ("photo.png", png_bytes, "image/png")},
+        data={"text": "what color?"},
+    )
+    assert resp.status_code == 200
+    frames = _parse_sse_frames(resp.content)
+    assert any(f.get("type") == "complete" and f.get("text") == "Red." for f in frames)
+    # Hermes was NOT called for an image — image flow bypasses the text
+    # agent loop.
+    assert not hermes_stream_called
+
+
+def test_talk_attachment_image_uses_filename_when_mobile_uploads_octet_stream(talk_client, monkeypatch):
+    """Mobile browsers sometimes send captured images as octet-stream.
+    Filename fallback keeps phone uploads on the image path and gives the
+    vision model a real image MIME in the data URL."""
+    captured_content_type = None
+
+    async def fake_vision_stream(image_bytes, content_type, prompt_text):
+        nonlocal captured_content_type
+        from routers.talk import _sse_event
+        captured_content_type = content_type
+        yield _sse_event("session", {"session_id": "vision"})
+        yield _sse_event("complete", {"session_id": "vision", "text": "Red.", "status": "ok", "warning": None})
+        yield _sse_event("done", {})
+
+    monkeypatch.setattr("routers.talk._stream_vision_chat", fake_vision_stream)
+
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": ("phone-capture.png", png_bytes, "application/octet-stream")},
+        data={"text": "what color?"},
+    )
+    assert resp.status_code == 200
+    assert captured_content_type == "image/png"
+    frames = _parse_sse_frames(resp.content)
+    assert any(f.get("type") == "complete" and f.get("text") == "Red." for f in frames)
+
+
+def test_talk_attachment_image_too_large_returns_413(talk_client):
+    """Image size cap is enforced at the multipart boundary."""
+    big = b"\x89PNG\r\n\x1a\n" + b"x" * (11 * 1024 * 1024)
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": ("huge.png", big, "image/png")},
+    )
+    assert resp.status_code == 413
+
+
+def test_talk_attachment_requires_session(test_client):
+    """No cookie ⇒ 401 even with a valid file."""
+    resp = test_client.post(
+        "/api/talk/attachment",
+        files={"file": ("notes.md", b"hi", "text/markdown")},
+        headers=test_client.auth_headers,
+    )
+    assert resp.status_code == 401
+
+
 def test_talk_message_stream_sets_unbuffered_headers(talk_client, monkeypatch):
     """nginx upstream needs ``X-Accel-Buffering: no`` + ``Cache-Control: no-cache``
     so each SSE frame is forwarded immediately. Regression guard for the SSE
