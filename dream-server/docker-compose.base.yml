@@ -236,6 +236,18 @@ services:
       - TTS_URL=${TTS_URL:-http://tts:8880}
       - EMBEDDING_URL=${EMBEDDING_URL:-http://embeddings:80}
       - WHISPER_URL=${WHISPER_URL:-http://whisper:8000}
+      # Dream Talk's image-attachment endpoint calls the vision backend
+      # directly (bypassing litellm because litellm's wildcard model
+      # routing collapses our model id down to whatever's loaded).
+      # Defaults point at the Lemonade/llama-server service on the
+      # internal docker network — no auth needed there. Operators with
+      # an external vision server set DREAM_TALK_VISION_URL +
+      # DREAM_TALK_VISION_KEY.
+      - DREAM_TALK_VISION_URL=${DREAM_TALK_VISION_URL:-http://llama-server:8080}
+      - DREAM_TALK_VISION_KEY=${DREAM_TALK_VISION_KEY:-}
+      # Model id of the vision-capable variant. Defaults to the user.*
+      # name we register on AMD install (Qwen3.6-35B-A3B + mmproj-F16).
+      - DREAM_TALK_VISION_MODEL=${DREAM_TALK_VISION_MODEL:-user.Qwen3.6-35B-A3B-Vision}
     volumes:
       - ./scripts:/dream-server/scripts:ro
       - ./config:/dream-server/config:ro

@@ -67,6 +67,11 @@ export default function DreamTalk() {
     liveMic: false,
   })
 
+  const [pendingAttachment, setPendingAttachment] = useState(null)
+  // {file: File, previewUrl: string|null, kind: 'image'|'text', name: string}
+  // Held in state between picking a file and sending — lets the user add a
+  // caption in the textarea before submitting.
+
   const bottomRef = useRef(null)
   const fileInputRef = useRef(null)
   const recorderRef = useRef(null)
@@ -150,18 +155,37 @@ export default function DreamTalk() {
     }
   }, [spokenReplies, voiceState.tts])
 
-  const sendText = useCallback(async (text, { transcriptId = null } = {}) => {
+  const sendText = useCallback(async (text, { transcriptId = null, attachment = null } = {}) => {
     const clean = text.trim()
-    if (!clean || sending || status === 'expired') return
+    // Allow an attachment with no text — the backend supplies a default
+    // prompt for images ("Describe what you see in this image."). Without
+    // either a caption or an attachment, there's nothing to send.
+    if (!clean && !attachment) return
+    if (sending || status === 'expired') return
     setSending(true)
 
     const userId = transcriptId || makeId('user')
     const assistantId = makeId('assistant')
     if (!transcriptId) {
-      setMessages(items => [...items, { id: userId, role: 'user', text: clean, status: 'done' }])
+      // Show the user's bubble with the image preview inline (if any) and
+      // the caption text. The previewUrl is a blob: URL, valid until the
+      // component unmounts or we revoke it; the browser GCs it for us when
+      // the message is removed from state.
+      setMessages(items => [...items, {
+        id: userId,
+        role: 'user',
+        text: clean,
+        imageUrl: attachment?.kind === 'image' ? attachment.previewUrl : null,
+        fileName: attachment?.kind === 'text' ? attachment.name : null,
+        status: 'done',
+      }])
     }
     setMessages(items => [...items, { id: assistantId, role: 'assistant', text: '', status: 'pending' }])
     setInput('')
+    // Clear the pending-attachment slot now that we've moved it into the
+    // chat thread. Don't revoke the blob URL yet — the user message bubble
+    // is still rendering from it.
+    if (attachment) setPendingAttachment(null)
 
     // Live-streamed reply via SSE. The endpoint emits one JSON object per
     // ``data:`` frame: {type: "session" | "delta" | "complete" | "error" | "done"}.
@@ -179,13 +203,31 @@ export default function DreamTalk() {
     streamControllerRef.current?.abort()
     streamControllerRef.current = controller
     try {
-      const resp = await fetch('/api/talk/message/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ text: clean }),
-        signal: controller.signal,
-      })
+      // Two endpoints + body shapes — same SSE response shape on both, so
+      // the consumption loop below is unchanged.
+      let resp
+      if (attachment) {
+        const form = new FormData()
+        form.set('file', attachment.file, attachment.name)
+        form.set('text', clean)
+        resp = await fetch('/api/talk/attachment', {
+          method: 'POST',
+          // Don't set Content-Type — fetch fills in multipart/form-data
+          // with the right boundary string automatically.
+          headers: { 'Accept': 'text/event-stream' },
+          credentials: 'same-origin',
+          body: form,
+          signal: controller.signal,
+        })
+      } else {
+        resp = await fetch('/api/talk/message/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ text: clean }),
+          signal: controller.signal,
+        })
+      }
       if (resp.status === 401) {
         setStatus('expired')
         setStatusText('Session expired. Scan the owner card again.')
@@ -355,9 +397,32 @@ export default function DreamTalk() {
     setRecording(false)
   }
 
+  const handleAttachmentPicked = useCallback((file) => {
+    if (!file || sending || status === 'expired') return
+    const isImage = (file.type || '').startsWith('image/')
+    const previewUrl = isImage ? URL.createObjectURL(file) : null
+    setPendingAttachment(prev => {
+      // Revoke a previous blob URL before swapping in a new one so the
+      // browser can GC the old image bytes.
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl)
+      return { file, previewUrl, kind: isImage ? 'image' : 'text', name: file.name || 'attachment' }
+    })
+  }, [sending, status])
+
+  const clearPendingAttachment = useCallback(() => {
+    setPendingAttachment(prev => {
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl)
+      return null
+    })
+  }, [])
+
   const submit = (event) => {
     event.preventDefault()
-    sendText(input)
+    if (pendingAttachment) {
+      sendText(input, { attachment: pendingAttachment })
+    } else {
+      sendText(input)
+    }
   }
 
   const retryLast = () => {
@@ -365,7 +430,9 @@ export default function DreamTalk() {
     if (lastUser) sendText(lastUser.text)
   }
 
-  const canSend = input.trim().length > 0 && !sending && status !== 'expired'
+  // Send is enabled either with text OR an attachment (an image alone is a
+  // valid message — the model gets a default "describe this" prompt).
+  const canSend = (input.trim().length > 0 || pendingAttachment) && !sending && status !== 'expired'
 
   return (
     <div className="min-h-dvh bg-[#f8faf8] text-zinc-950 antialiased">
@@ -434,27 +501,42 @@ export default function DreamTalk() {
         )}
 
         <form onSubmit={submit} className="sticky bottom-0 border-t border-zinc-200 bg-[#f8faf8]/95 p-3 backdrop-blur">
+          {/* Attachment preview strip — appears above the input bar between
+              pick and send. Shows a thumbnail for images, a generic icon for
+              text/code files, with an X to discard. */}
+          {pendingAttachment && (
+            <AttachmentPreview
+              attachment={pendingAttachment}
+              onClear={() => clearPendingAttachment()}
+            />
+          )}
           <div className="flex items-end gap-2 rounded-[1.75rem] border border-zinc-200 bg-white p-2 shadow-sm">
             <input
               ref={fileInputRef}
               type="file"
-              accept="audio/*"
-              capture
+              // Image-first attach UX. ``capture`` is deliberately NOT set —
+              // its presence makes iOS Safari open the camera/video recorder
+              // instead of the file/photo picker, which was the cause of the
+              // earlier "paperclip opens video mode" UX bug. Accept list is
+              // narrow on purpose: images for vision, common code/text files
+              // for inline context. PDFs/docx need a parser dependency we
+              // haven't added yet.
+              accept="image/*,.txt,.md,.markdown,.csv,.json,.yaml,.yml,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh"
               className="hidden"
               onChange={event => {
                 const file = event.target.files?.[0]
                 event.target.value = ''
-                if (file) sendAudioFile(file)
+                if (file) handleAttachmentPicked(file)
               }}
-              aria-label="Choose audio message"
+              aria-label="Attach image or file"
             />
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={sending || status === 'expired'}
+              disabled={sending || status === 'expired' || pendingAttachment}
               className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-zinc-500 disabled:opacity-40"
-              aria-label="Attach voice message"
-              title="Voice message"
+              aria-label="Attach image or file"
+              title="Attach image or file"
             >
               <Paperclip size={19} />
             </button>
@@ -543,7 +625,21 @@ function MessageBubble({ message }) {
           // User messages and error bubbles stay as plain text — markdown
           // in those contexts would let typos render as headings or
           // accidental bold, which we don't want.
-          <p className="whitespace-pre-wrap break-words">{message.text}</p>
+          <>
+            {message.imageUrl && (
+              <img
+                src={message.imageUrl}
+                alt="Attached"
+                className="mb-2 max-h-72 max-w-full rounded-lg object-contain"
+              />
+            )}
+            {message.fileName && !message.imageUrl && (
+              <p className="mb-2 inline-flex items-center gap-1.5 rounded-md bg-zinc-800/80 px-2 py-1 text-xs">
+                <Paperclip size={12} />{message.fileName}
+              </p>
+            )}
+            {message.text && <p className="whitespace-pre-wrap break-words">{message.text}</p>}
+          </>
         ) : (
           <div className="space-y-0 text-[15px] leading-6">
             <ReactMarkdown components={MARKDOWN_COMPONENTS}>{message.text}</ReactMarkdown>
@@ -553,6 +649,41 @@ function MessageBubble({ message }) {
           <p className="mt-2 text-xs text-amber-600">{message.warning}</p>
         )}
       </div>
+    </div>
+  )
+}
+
+function AttachmentPreview({ attachment, onClear }) {
+  // Strip rendered above the input bar between picking a file and pressing
+  // Send. Lets the user see what they're about to attach + add a caption +
+  // back out cleanly with the X button.
+  const isImage = attachment.kind === 'image'
+  return (
+    <div className="mb-2 flex items-center gap-2 rounded-xl border border-zinc-200 bg-white px-2 py-1.5 shadow-sm">
+      {isImage ? (
+        <img
+          src={attachment.previewUrl}
+          alt="Attachment preview"
+          className="h-12 w-12 shrink-0 rounded-md object-cover"
+        />
+      ) : (
+        <div className="grid h-12 w-12 shrink-0 place-items-center rounded-md bg-zinc-100 text-zinc-500">
+          <Paperclip size={18} />
+        </div>
+      )}
+      <div className="min-w-0 flex-1 text-sm">
+        <p className="truncate font-medium text-zinc-900">{attachment.name}</p>
+        <p className="text-xs text-zinc-500">{isImage ? 'Image' : 'File'}</p>
+      </div>
+      <button
+        type="button"
+        onClick={onClear}
+        className="grid h-8 w-8 place-items-center rounded-full text-zinc-500 hover:bg-zinc-100"
+        aria-label="Remove attachment"
+        title="Remove"
+      >
+        ✕
+      </button>
     </div>
   )
 }

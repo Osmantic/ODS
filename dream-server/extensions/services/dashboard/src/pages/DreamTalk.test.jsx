@@ -232,6 +232,68 @@ describe('DreamTalk', () => {
     expect(screen.queryByText('Thinking…')).not.toBeInTheDocument()
   })
 
+  test('attaching an image POSTs to /api/talk/attachment + shows preview + renders user image', async () => {
+    // Stub URL.createObjectURL so the blob: URL the SPA generates for the
+    // preview doesn't break jsdom (which has no blob support by default).
+    const createdUrls = []
+    vi.stubGlobal('URL', {
+      ...globalThis.URL,
+      createObjectURL: (blob) => {
+        const url = `blob:test-${createdUrls.length}`
+        createdUrls.push({ url, blob })
+        return url
+      },
+      revokeObjectURL: () => {},
+    })
+
+    let attachmentRequest = null
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') return response({ capabilities: { text_chat: true } })
+      if (url === '/api/talk/attachment' && options.method === 'POST') {
+        attachmentRequest = options
+        return sseResponse([
+          { type: 'session', session_id: 'vision-oneshot' },
+          { type: 'delta', text: 'A red square.' },
+          { type: 'complete', session_id: 'vision-oneshot', text: 'A red square.', status: 'ok' },
+          { type: 'done' },
+        ])
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { container } = render(<DreamTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+
+    // Pick a fake image file via the hidden file input.
+    const fileInput = container.querySelector('input[type="file"]')
+    const blob = new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })
+    const file = new File([blob], 'photo.png', { type: 'image/png' })
+    fireEvent.change(fileInput, { target: { files: [file] } })
+
+    // Preview strip shows the filename + an X button to discard.
+    expect(await screen.findByText('photo.png')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove attachment' })).toBeInTheDocument()
+
+    // Add a caption and send.
+    fireEvent.change(screen.getByPlaceholderText('Message Dream Server'), {
+      target: { value: 'What color is this?' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    // Assistant reply renders.
+    expect(await screen.findByText('A red square.')).toBeInTheDocument()
+    // Backend was hit on the attachment endpoint with FormData.
+    expect(attachmentRequest).not.toBeNull()
+    expect(attachmentRequest.body).toBeInstanceOf(FormData)
+    expect(attachmentRequest.body.get('file')).toBeTruthy()
+    expect(attachmentRequest.body.get('text')).toBe('What color is this?')
+    // The user's bubble shows the image inline.
+    const userImg = container.querySelector('img[alt="Attached"]')
+    expect(userImg).toBeTruthy()
+    expect(userImg.getAttribute('src')).toMatch(/^blob:/)
+  })
+
   test('surfaces SSE error frame as an assistant error', async () => {
     const fetchMock = vi.fn(async (url, options = {}) => {
       if (url === '/api/talk/status') return response({ capabilities: { text_chat: true } })
@@ -290,7 +352,10 @@ describe('DreamTalk', () => {
 
     expect(await screen.findByText('Ready')).toBeInTheDocument()
     expect(screen.getByText(/Live mic needs HTTPS/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Attach voice message' })).toBeEnabled()
+    // Paperclip is now the general image/file attach button (it used to be
+    // mis-wired to "Attach voice message" + capture, which made iOS open
+    // the video recorder).
+    expect(screen.getByRole('button', { name: 'Attach image or file' })).toBeEnabled()
     expect(screen.queryByRole('button', { name: 'Record voice' })).not.toBeInTheDocument()
   })
 
