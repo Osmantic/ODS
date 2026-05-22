@@ -248,6 +248,54 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('Remote Access')).toBeInTheDocument()
   })
 
+  it('keeps legacy feature cards away from raw backend API ports', async () => {
+    mockFeatures = [
+      {
+        id: 'chat',
+        name: 'AI Chat',
+        description: 'Chat with a local model',
+        icon: 'MessageSquare',
+        status: 'enabled',
+        requirements: { servicesAny: ['llama-server'], servicesMissing: [] },
+      },
+      {
+        id: 'hermes-agent',
+        name: 'Hermes Agent',
+        description: 'Advanced Hermes agent console',
+        icon: 'MessageSquare',
+        status: 'enabled',
+        requirements: { servicesAll: ['llama-server'], servicesMissing: [] },
+      },
+      {
+        id: 'usage-api',
+        name: 'Usage API',
+        description: 'Internal usage telemetry backend',
+        icon: 'MessageSquare',
+        status: 'enabled',
+        requirements: { servicesAll: ['token-spy'], servicesMissing: [] },
+      },
+    ]
+
+    const statusWithRawBackends = {
+      ...baseStatus,
+      services: [
+        { id: 'llama-server', name: 'llama-server (LLM Inference)', status: 'healthy', port: 11434, uptime: 14400 },
+        { id: 'litellm', name: 'LiteLLM (API Gateway)', status: 'healthy', port: 4000, uptime: 14400 },
+        { id: 'token-spy', name: 'Token Spy (Usage Monitor)', status: 'healthy', port: 3005, uptime: 14400 },
+        { id: 'open-webui', name: 'Open WebUI (Chat)', status: 'healthy', port: 3000, uptime: 14400 },
+        { id: 'hermes-proxy', name: 'Hermes Auth Proxy', status: 'healthy', port: 9120, uptime: 14400 },
+      ],
+    }
+
+    await renderDashboard(statusWithRawBackends)
+
+    expect(await screen.findByRole('link', { name: /AI Chat/ })).toHaveAttribute('href', 'http://localhost:3000')
+    expect(screen.getByRole('link', { name: /Hermes Agent/ })).toHaveAttribute('href', 'http://localhost:9120')
+    expect(screen.queryByRole('link', { name: /Usage API/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /AI Chat/ })).not.toHaveAttribute('href', 'http://localhost:11434')
+    expect(screen.queryByRole('link', { name: /Hermes Agent/ })).not.toHaveAttribute('href', 'http://localhost:11434')
+  })
+
   it('renders real service CPU and RAM metrics from the resources endpoint', async () => {
     mockResources = {
       services: [

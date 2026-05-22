@@ -60,6 +60,36 @@ const SERVICE_LINK_ALIASES = {
   'dream-proxy': ['dream-proxy', 'dream server web', 'dream web proxy'],
 }
 
+const FEATURE_LAUNCH_FALLBACKS = {
+  chat: { type: 'service', service: 'open-webui' },
+  voice: { type: 'service', service: 'open-webui' },
+  documents: { type: 'service', service: 'open-webui' },
+  'hermes-agent': { type: 'service', service: 'hermes-proxy' },
+  'hermes-sso': { type: 'service', service: 'hermes-proxy' },
+  images: { type: 'service', service: 'comfyui' },
+  workflows: { type: 'service', service: 'n8n' },
+  coding: { type: 'service', service: 'opencode' },
+  observability: { type: 'service', service: 'langfuse' },
+  'lan-web': { type: 'service', service: 'dream-proxy' },
+  'remote-access': { type: 'none' },
+  'agent-governance': { type: 'none' },
+  'brave-web-search': { type: 'none' },
+}
+
+const NON_USER_FACING_LINK_SERVICES = new Set([
+  'dashboard-api',
+  'embeddings',
+  'hermes',
+  'litellm',
+  'llama-server',
+  'privacy-shield',
+  'qdrant',
+  'searxng',
+  'token-spy',
+  'tts',
+  'whisper',
+])
+
 function serviceMatchesTarget(service, target) {
   const targetKey = normalizeServiceKey(target)
   if (!targetKey) return false
@@ -79,7 +109,8 @@ function findHealthyService(services, serviceId) {
 }
 
 function pickFeatureLink(feature, services) {
-  const launch = feature?.launch
+  const featureKey = normalizeServiceKey(feature?.id)
+  const launch = feature?.launch || FEATURE_LAUNCH_FALLBACKS[featureKey]
   if (launch?.type === 'none') return null
   if (launch?.type === 'internal') return launch.path || null
   if (launch?.type === 'service') {
@@ -97,7 +128,10 @@ function pickFeatureLink(feature, services) {
     ...(req.servicesAny || req.services_any || []),
   ]
   const wanted = enabledWanted.length ? enabledWanted : requirementWanted
-  const firstHealthy = wanted.map(serviceId => findHealthyService(services, serviceId)).find(Boolean)
+  const firstHealthy = wanted
+    .filter(serviceId => !NON_USER_FACING_LINK_SERVICES.has(normalizeServiceKey(serviceId)))
+    .map(serviceId => findHealthyService(services, serviceId))
+    .find(Boolean)
   return firstHealthy ? getExternalUrl(firstHealthy.port) : null
 }
 
