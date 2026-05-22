@@ -566,7 +566,7 @@ MODELS_INI_EOF
             fi
         fi
 
-        # Render data/hermes/SOUL.md = static persona + dynamic installation
+        # Render data/persona/SOUL.md = static persona + dynamic installation
         # context (GPU backend, model, running services, reachable URLs). The
         # Hermes compose bind-mounts this file as /opt/hermes/docker/SOUL.md
         # so the agent introspects truthfully when asked about its own
@@ -576,10 +576,17 @@ MODELS_INI_EOF
         # until later in this phase), but the script still emits a valid
         # SOUL.md with the static parts intact. `dream restart hermes`
         # regenerates it once services are running.
-        local _soul_builder="$INSTALL_DIR/scripts/build-installation-context.py"
+        _soul_builder="$INSTALL_DIR/scripts/build-installation-context.py"
+        _soul_output="$INSTALL_DIR/data/persona/SOUL.md"
+        _soul_template="$INSTALL_DIR/extensions/services/hermes/SOUL.md.template"
+        mkdir -p "$(dirname "$_soul_output")"
         if [[ -n "$_python_cmd" && -f "$_soul_builder" ]]; then
             "$_python_cmd" "$_soul_builder" >>"$LOG_FILE" 2>&1 || \
                 warn "Could not generate Hermes installation-context SOUL.md (non-fatal — Hermes will use the template's default text)"
+        fi
+        if [[ ! -f "$_soul_output" && -f "$_soul_template" ]]; then
+            sed '/<!-- INSTALLATION_CONTEXT -->/d' "$_soul_template" >"$_soul_output" || \
+                warn "Could not create fallback Hermes SOUL.md at $_soul_output"
         fi
     fi
 
@@ -773,7 +780,7 @@ except Exception:
         echo ""
         ai_ok "Services started (llama-server)"
 
-        # Re-render data/hermes/SOUL.md now that services are actually
+        # Re-render data/persona/SOUL.md now that services are actually
         # running — the first pass earlier in this phase happened pre-
         # compose-up, so its docker ps was empty. The persona's "About
         # this installation" section needs to reflect what's actually

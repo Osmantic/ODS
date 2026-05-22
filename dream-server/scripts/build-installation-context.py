@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate ``data/hermes/SOUL.md`` from the static persona template plus a
+"""Generate ``data/persona/SOUL.md`` from the static persona template plus a
 detected snapshot of *this* Dream Server install — what GPU backend it has,
 which model is loaded, which services are running, what URLs are reachable.
 
@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import socket
 import subprocess
@@ -347,9 +346,12 @@ def build_soul(template_path: Path, env_path: Path, output_path: Path) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     repo_root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(
-        description="Build data/hermes/SOUL.md from the static persona + detected install state.",
+        description="Build data/persona/SOUL.md from the static persona + detected install state.",
     )
     parser.add_argument(
         "--template",
