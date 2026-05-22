@@ -148,6 +148,49 @@ _SSE_KEEPALIVE = b": keepalive\n\n"
 _KEEPALIVE_INTERVAL = 5.0
 
 
+# Hermes tool name → human-readable spinner caption. We map by exact name
+# first, then by a few well-known prefixes. The fallback is a literal "Using
+# `<name>`…" so an unrecognised tool still produces something honest rather
+# than a blank.
+_TOOL_LABELS: dict[str, str] = {
+    "web_search": "Searching the web…",
+    "web_extract": "Reading the page…",
+    "execute_code": "Running code…",
+    "read_file": "Looking at a file…",
+    "write_file": "Saving a file…",
+    "patch": "Editing a file…",
+    "search_files": "Searching files…",
+    "memory": "Checking memory…",
+    "text_to_speech": "Generating voice…",
+    "session_search": "Searching past conversations…",
+    "todo": "Updating todos…",
+    "cronjob": "Scheduling…",
+    "delegate_task": "Delegating to a subagent…",
+    "image_generate": "Drawing an image…",
+    "vision_analyze": "Looking at an image…",
+    "clarify": "Asking for clarification…",
+    "send_message": "Sending a message…",
+}
+
+
+def _label_for_tool(tool_name: str) -> str:
+    """Map a Hermes tool name to a friendly spinner caption."""
+    if tool_name in _TOOL_LABELS:
+        return _TOOL_LABELS[tool_name]
+    # Common prefixes — browser_* / memory_* / skill_* etc.
+    if tool_name.startswith("browser_"):
+        return "Browsing…"
+    if tool_name.startswith("memory_") or tool_name.startswith("memory"):
+        return "Checking memory…"
+    if tool_name.startswith("skill_") or tool_name == "skills_list":
+        return "Loading a skill…"
+    if tool_name.startswith("github_"):
+        return "Talking to GitHub…"
+    # Honest fallback — show the literal tool name so the operator can map it
+    # in _TOOL_LABELS next pass.
+    return f"Using `{tool_name}`…"
+
+
 async def _stream_hermes_sse(session_key: str, text: str, request: Request):
     """SSE generator wrapping the bridge's stream_prompt.
 
@@ -221,6 +264,36 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
                 yield _sse_event("session", {"session_id": event.get("session_id", "")})
             elif et == "delta":
                 yield _sse_event("delta", {"text": event.get("text", "")})
+            elif et == "status":
+                # Hermes pre-formatted status text (e.g. "⏳ Retrying in 5.1s…",
+                # "🔎 Searching the web…"). Forward verbatim — upstream is
+                # responsible for the human-readable wording.
+                yield _sse_event("status", {
+                    "label": event.get("label"),
+                    "kind": event.get("kind"),
+                    "tool": None,
+                    "detail": None,
+                })
+            elif et == "tool_start":
+                # Translate raw bridge event into a friendly "status" frame
+                # the SPA renders as the spinner caption. The SPA replaces
+                # the caption on each new status, then drops it once
+                # message.delta frames start arriving.
+                tool_name = event.get("tool", "")
+                yield _sse_event("status", {
+                    "label": _label_for_tool(tool_name),
+                    "tool": tool_name,
+                    "detail": event.get("detail") or None,
+                })
+            elif et == "tool_complete":
+                # Tool finished — flip back to the default "Thinking…" caption
+                # until the next tool starts or message.delta arrives. SPA
+                # treats label=None as "clear and show default."
+                yield _sse_event("status", {
+                    "label": None,
+                    "tool": None,
+                    "detail": None,
+                })
             elif et == "complete":
                 yield _sse_event("complete", {
                     "session_id": event.get("session_id", ""),

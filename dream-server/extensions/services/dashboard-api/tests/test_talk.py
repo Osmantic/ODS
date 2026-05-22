@@ -670,6 +670,105 @@ def test_hermes_bridge_pool_sweeper_evicts_idle_connections(monkeypatch):
     assert "idle-key" in closed, f"sweeper should have called aclose(), got {closed}"
 
 
+def test_talk_message_stream_forwards_hermes_status_updates(talk_client, monkeypatch):
+    """Hermes (pinned image) emits status.update events with pre-formatted
+    human-readable text and a `kind` category, e.g.
+    ``{"kind": "lifecycle", "text": "⏳ Retrying in 5.1s (attempt 2/3)..."}``.
+    The bridge forwards them as ``status`` events and the SSE layer relays
+    them verbatim — upstream owns the wording, we just route it to the SPA.
+    Regression guard for the user-visible "spinner caption is dynamic" UX."""
+    async def fake_stream(session_key, text):
+        yield {"type": "session", "session_id": "sid"}
+        yield {"type": "status", "label": "⏳ Retrying in 5.1s (attempt 2/3)...", "kind": "lifecycle"}
+        yield {"type": "status", "label": "🔎 Searching the web…", "kind": "tool"}
+        yield {"type": "delta", "text": "OK"}
+        yield {"type": "complete", "session_id": "sid", "text": "OK", "status": "ok", "warning": None}
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+
+    resp = talk_client.post("/api/talk/message/stream", json={"text": "hi"})
+    assert resp.status_code == 200
+    frames = _parse_sse_frames(resp.content)
+    status_frames = [f for f in frames if f["type"] == "status"]
+    # Both status updates make it through, verbatim text + kind preserved.
+    assert len(status_frames) == 2
+    assert status_frames[0]["label"] == "⏳ Retrying in 5.1s (attempt 2/3)..."
+    assert status_frames[0]["kind"] == "lifecycle"
+    assert status_frames[1]["label"] == "🔎 Searching the web…"
+    assert status_frames[1]["kind"] == "tool"
+
+
+def test_talk_message_stream_translates_tool_events_to_status_frames(talk_client, monkeypatch):
+    """Hermes emits tool.start / tool.complete events while the agent is
+    working. The bridge surfaces those as ``tool_start`` / ``tool_complete``
+    events, and the SSE layer translates them into friendly ``status``
+    frames the SPA renders as the spinner caption. This is the user-facing
+    "what's the agent doing?" visibility added per the operator's feedback —
+    a phone shouldn't sit on a plain "Thinking" spinner for 30s while
+    web_search is mid-flight."""
+    async def fake_stream(session_key, text):
+        yield {"type": "session", "session_id": "sid"}
+        yield {"type": "tool_start", "tool": "web_search", "detail": "weather in San Francisco"}
+        yield {"type": "tool_complete", "tool": "web_search", "duration_s": 1.2, "summary": "Did 1 search"}
+        yield {"type": "delta", "text": "Sunny, 64°F."}
+        yield {"type": "complete", "session_id": "sid", "text": "Sunny, 64°F.", "status": "ok", "warning": None}
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+
+    resp = talk_client.post("/api/talk/message/stream", json={"text": "what is the weather?"})
+    assert resp.status_code == 200
+    frames = _parse_sse_frames(resp.content)
+    types = [f["type"] for f in frames]
+    # Required ordering: session → status(active) → status(cleared) → delta → complete → done
+    assert types[0] == "session"
+    status_frames = [f for f in frames if f["type"] == "status"]
+    assert len(status_frames) == 2, f"expected one status-active + one status-clear, got {status_frames}"
+    # First status: friendly label + tool name + detail string preserved.
+    assert status_frames[0]["label"] == "Searching the web…"
+    assert status_frames[0]["tool"] == "web_search"
+    assert status_frames[0]["detail"] == "weather in San Francisco"
+    # Second status: label=None signals SPA to drop the caption (default
+    # "Thinking…" until next status or delta).
+    assert status_frames[1]["label"] is None
+    assert status_frames[1]["tool"] is None
+    # And the actual content + complete frame still come through unchanged.
+    assert any(f["type"] == "delta" and f["text"] == "Sunny, 64°F." for f in frames)
+    assert any(f["type"] == "complete" for f in frames)
+
+
+def test_talk_message_stream_status_label_for_unknown_tool(talk_client, monkeypatch):
+    """Unknown tools should still produce a status frame — falling back to
+    a literal "Using `<name>`…" caption so the operator can map the tool in
+    a future _TOOL_LABELS pass instead of staring at a blank spinner."""
+    async def fake_stream(session_key, text):
+        yield {"type": "session", "session_id": "sid"}
+        yield {"type": "tool_start", "tool": "some_new_skill_2026", "detail": None}
+        yield {"type": "complete", "session_id": "sid", "text": "ok", "status": "ok", "warning": None}
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+
+    resp = talk_client.post("/api/talk/message/stream", json={"text": "hi"})
+    assert resp.status_code == 200
+    frames = _parse_sse_frames(resp.content)
+    status_frames = [f for f in frames if f["type"] == "status"]
+    assert len(status_frames) == 1
+    # Honest fallback — literal name appears in the caption so an operator
+    # who sees "Using `foo`…" on the phone knows exactly what to map.
+    assert "some_new_skill_2026" in status_frames[0]["label"]
+
+
+def test_talk_message_stream_status_label_handles_browser_prefix(monkeypatch):
+    """Tools we don't enumerate explicitly but share a known prefix get a
+    sensible group caption (browser_* → "Browsing…")."""
+    from routers.talk import _label_for_tool
+    assert _label_for_tool("browser_navigate") == "Browsing…"
+    assert _label_for_tool("browser_console") == "Browsing…"
+    assert _label_for_tool("memory_save") == "Checking memory…"
+    assert _label_for_tool("skill_view") == "Loading a skill…"
+    # Honest fallback for genuinely unknown:
+    assert _label_for_tool("random_unknown_tool") == "Using `random_unknown_tool`…"
+
+
 def test_talk_message_stream_sets_unbuffered_headers(talk_client, monkeypatch):
     """nginx upstream needs ``X-Accel-Buffering: no`` + ``Cache-Control: no-cache``
     so each SSE frame is forwarded immediately. Regression guard for the SSE

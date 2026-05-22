@@ -222,8 +222,26 @@ export default function DreamTalk() {
           if (payload.type === 'delta' && typeof payload.text === 'string') {
             assembled += payload.text
             const snapshot = assembled
+            // Once token deltas start arriving the spinner caption is no
+            // longer useful — clear it so the assistant bubble shows the
+            // live text instead. `status: null` signals MessageBubble to
+            // render the accumulated text rather than a spinner.
             setMessages(items => items.map(item =>
-              item.id === assistantId ? { ...item, text: snapshot, status: 'pending' } : item,
+              item.id === assistantId
+                ? { ...item, text: snapshot, status: 'pending', statusLabel: null, statusTool: null, statusDetail: null }
+                : item,
+            ))
+          } else if (payload.type === 'status') {
+            // Friendly progress caption from the bridge (e.g. "Searching the
+            // web…"). Replaces the default "Thinking…" while a tool is in
+            // flight. label=null means "tool done; flip back to default."
+            const label = typeof payload.label === 'string' ? payload.label : null
+            const tool = typeof payload.tool === 'string' ? payload.tool : null
+            const detail = typeof payload.detail === 'string' ? payload.detail : null
+            setMessages(items => items.map(item =>
+              item.id === assistantId
+                ? { ...item, statusLabel: label, statusTool: tool, statusDetail: detail }
+                : item,
             ))
           } else if (payload.type === 'complete') {
             if (typeof payload.text === 'string' && payload.text) assembled = payload.text
@@ -505,9 +523,21 @@ function MessageBubble({ message }) {
         }`}
       >
         {message.status === 'pending' && !message.text ? (
-          <span className="inline-flex items-center gap-2 text-zinc-500">
-            <Loader2 size={14} className="animate-spin" />
-            Thinking
+          // While the assistant is working but hasn't streamed any tokens
+          // yet, the spinner shows a dynamic caption sourced from the
+          // bridge's tool events ("Searching the web…", "Running code…",
+          // etc.). Falls back to "Thinking…" when no tool is active.
+          // statusDetail (e.g. the search query) is rendered below the
+          // caption when present, so the user can see *what* is being
+          // searched/read, not just "doing something."
+          <span className="inline-flex flex-col gap-0.5 text-zinc-500">
+            <span className="inline-flex items-center gap-2">
+              <Loader2 size={14} className="animate-spin" />
+              {message.statusLabel || 'Thinking…'}
+            </span>
+            {message.statusDetail && (
+              <span className="ml-6 text-xs text-zinc-400">{message.statusDetail}</span>
+            )}
           </span>
         ) : user || message.status === 'error' ? (
           // User messages and error bubbles stay as plain text — markdown
