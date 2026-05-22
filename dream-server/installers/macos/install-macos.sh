@@ -1324,14 +1324,28 @@ else
     chapter "STARTING SERVICES"
 
     # ── Rebuild local-built images ─────────────────────────────────────
-    # Mirrors phases/11-services.sh on Linux: local Dockerfiles (dashboard,
-    # dashboard-api, ape, token-spy, and privacy-shield) can drift from the
-    # baked images, so we always
-    # rebuild without cache before `up -d`.
-    # ComfyUI has no Apple-Silicon variant (only amd/nvidia/multigpu); the
-    # llama-server runs natively on macOS via Metal — neither is built here.
+    # Mirrors phases/11-services.sh on Linux: local Dockerfiles can drift from
+    # baked images, so rebuild the local services that are actually present in
+    # the resolved macOS compose stack. Optional services such as
+    # privacy-shield may be disabled by feature flags; building them anyway can
+    # surface unrelated Dockerfile failures and make a healthy selected stack
+    # look broken.
     ai "Rebuilding local-built images (no-cache)..."
-    _macos_build_services=(dashboard dashboard-api ape token-spy privacy-shield)
+    _macos_candidate_build_services=(dashboard dashboard-api ape token-spy privacy-shield)
+    if ! _macos_enabled_services="$(docker compose "${COMPOSE_FLAGS[@]}" config --services 2>>"$DS_LOG_FILE")"; then
+        ai_err "Could not resolve macOS compose services for local image rebuilds."
+        ai "Inspect compose config with: cd '$INSTALL_DIR' && docker compose ${COMPOSE_FLAGS[*]} config --services"
+        exit 1
+    fi
+    _macos_build_services=()
+    for _svc in "${_macos_candidate_build_services[@]}"; do
+        if printf '%s\n' "$_macos_enabled_services" | grep -qx "$_svc"; then
+            _macos_build_services+=("$_svc")
+        else
+            log "Skipping local image rebuild for disabled service: $_svc"
+        fi
+    done
+
     declare -a _macos_build_pids _macos_build_names
     for _svc in "${_macos_build_services[@]}"; do
         docker compose "${COMPOSE_FLAGS[@]}" build --no-cache "$_svc" >> "$DS_LOG_FILE" 2>&1 &
