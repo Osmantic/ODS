@@ -32,6 +32,7 @@ const baseStatus = {
 }
 
 let mockResources
+let mockFeatures
 let restartCalls
 let restartDeferred
 
@@ -52,7 +53,7 @@ function installFetchMock() {
     if (String(url).includes('/api/features')) {
       return {
         ok: true,
-        json: async () => ({ features: [] }),
+        json: async () => ({ features: mockFeatures }),
       }
     }
     if (String(url).includes('/api/services/') && String(url).endsWith('/restart')) {
@@ -83,6 +84,7 @@ async function renderDashboard(status = baseStatus) {
 
 describe('Dashboard system overview', () => {
   beforeEach(() => {
+    mockFeatures = []
     mockResources = {
       services: services.map(service => ({
         id: service.name.toLowerCase().replace(/\([^)]*\)/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
@@ -196,6 +198,54 @@ describe('Dashboard system overview', () => {
 
     expect(screen.getByText('2/2 core services online.')).toBeInTheDocument()
     expect(screen.getByText('Optional')).toBeInTheDocument()
+  })
+
+  it('launches feature cards to explicit user-facing targets', async () => {
+    mockFeatures = [
+      {
+        id: 'chat',
+        name: 'AI Chat',
+        description: 'Chat with a local model',
+        icon: 'MessageSquare',
+        status: 'enabled',
+        launch: { type: 'service', service: 'open-webui' },
+        requirements: { servicesMissing: [] },
+      },
+      {
+        id: 'hermes-agent',
+        name: 'Hermes Agent',
+        description: 'Advanced Hermes agent console',
+        icon: 'MessageSquare',
+        status: 'enabled',
+        launch: { type: 'service', service: 'hermes-proxy' },
+        requirements: { servicesAll: ['llama-server'], servicesMissing: [] },
+      },
+      {
+        id: 'remote-access',
+        name: 'Remote Access',
+        description: 'Tailscale remote access status',
+        icon: 'MessageSquare',
+        status: 'enabled',
+        launch: { type: 'none' },
+        requirements: { servicesMissing: [] },
+      },
+    ]
+
+    const statusWithLaunchTargets = {
+      ...baseStatus,
+      services: [
+        { id: 'llama-server', name: 'llama-server (LLM Inference)', status: 'healthy', port: 11434, uptime: 14400 },
+        { id: 'open-webui', name: 'Open WebUI (Chat)', status: 'healthy', port: 3000, uptime: 14400 },
+        { id: 'hermes-proxy', name: 'Hermes Auth Proxy', status: 'healthy', port: 9120, uptime: 14400 },
+      ],
+    }
+
+    await renderDashboard(statusWithLaunchTargets)
+
+    expect(await screen.findByRole('link', { name: /AI Chat/ })).toHaveAttribute('href', 'http://localhost:3000')
+    expect(screen.getByRole('link', { name: /Hermes Agent/ })).toHaveAttribute('href', 'http://localhost:9120')
+    expect(screen.queryByRole('link', { name: /Remote Access/ })).not.toBeInTheDocument()
+    expect(screen.getByText('Remote Access')).toBeInTheDocument()
   })
 
   it('renders real service CPU and RAM metrics from the resources endpoint', async () => {

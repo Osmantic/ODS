@@ -33,4 +33,7 @@ features:
     enabled_services_all: [whisper, tts]
     setup_time: ~5 minutes
     priority: 2
+    launch:
+      type: service
+      service: open-webui
     gpu_backends: [all]

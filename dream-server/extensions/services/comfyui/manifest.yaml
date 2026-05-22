@@ -33,4 +33,7 @@ features:
     enabled_services_all: [comfyui]
     setup_time: Ready
     priority: 5
+    launch:
+      type: service
+      service: comfyui
     gpu_backends: [amd, nvidia]

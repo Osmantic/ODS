@@ -61,4 +61,7 @@ features:
     enabled_services_all: [hermes-proxy]
     setup_time: Ready
     priority: 5
+    launch:
+      type: service
+      service: hermes-proxy
     gpu_backends: [all]
