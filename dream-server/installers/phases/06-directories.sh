@@ -536,8 +536,15 @@ OPENCLAW_PORT=7860
 LANGFUSE_PORT=${LANGFUSE_PORT}
 
 #=== Hermes Agent ===
-HERMES_LLM_BASE_URL=${HERMES_LLM_BASE_URL:-http://llama-server:8080/v1}
-HERMES_LLM_API_KEY=${HERMES_LLM_API_KEY:-sk-dream-hermes-local}
+# On AMD/Lemonade hosts, route Hermes through litellm. Lemonade is strict
+# about model names (returns 404 if model field doesn't exactly match the
+# loaded gguf) and drops concurrent connections during multi-step agent
+# loops (web_search → reason → tool result → reason …) with
+# APIConnectionError. litellm wraps with "*" wildcard normalization +
+# retry logic, hiding both bumps. On non-AMD installs, talk direct to
+# llama-server (native llama.cpp tolerates any model field).
+HERMES_LLM_BASE_URL=${HERMES_LLM_BASE_URL:-$(if [[ "$GPU_BACKEND" == "amd" ]]; then echo "http://litellm:4000/v1"; else echo "http://llama-server:8080/v1"; fi)}
+HERMES_LLM_API_KEY=${HERMES_LLM_API_KEY:-$(if [[ "$GPU_BACKEND" == "amd" ]]; then echo "${LITELLM_KEY}"; else echo "sk-dream-hermes-local"; fi)}
 HERMES_LANGUAGE=${HERMES_LANGUAGE:-en}
 HERMES_PROXY_PORT=${HERMES_PROXY_PORT:-9120}
 HERMES_PROXY_UPSTREAM=${HERMES_PROXY_UPSTREAM:-dream-hermes:9119}

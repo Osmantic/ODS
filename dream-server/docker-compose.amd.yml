@@ -15,7 +15,13 @@ services:
         LLAMA_CPP_REF: ${LLAMA_CPP_REF:-b8763}
         LEMONADE_SERVER_IMAGE: ${LEMONADE_SERVER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0}
     image: dream-lemonade-server:latest
-    entrypoint: ["/opt/lemonade/lemonade-server"]
+    # Wrapper entrypoint syncs ctx_size from LEMONADE_CTX_SIZE env into
+    # Lemonade's cached config.json before launch. Without this, Lemonade
+    # only reads the env on first-start and ignores subsequent bumps —
+    # leaving e.g. Qwen3.6-35B-A3B (native 256k context) serving at 64k.
+    # Bind-mounted from the source tree so updating the script doesn't
+    # require an image rebuild.
+    entrypoint: ["/bin/sh", "/opt/lemonade-entrypoint.sh"]
     command:
       - serve
       - --port
@@ -36,6 +42,9 @@ services:
       - lemonade-cache:/root/.cache/huggingface
       - lemonade-llama:/opt/lemonade/llama
       - lemonade-recipe:/root/.cache/lemonade
+      # Read-only bind of the wrapper entrypoint. Updating ctx-size sync
+      # logic doesn't require rebuilding the image.
+      - ./extensions/services/llama-server/lemonade-entrypoint.sh:/opt/lemonade-entrypoint.sh:ro
     devices:
       - /dev/dri:/dev/dri
       - /dev/kfd:/dev/kfd
