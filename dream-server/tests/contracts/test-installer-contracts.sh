@@ -183,6 +183,16 @@ for svc in litellm searxng token-spy hermes hermes-proxy openclaw ape perplexica
     || { echo "[FAIL] Windows service plan missing '$svc'"; exit 1; }
 done
 
+echo "[contract] Linux local rebuilds respect selected compose services"
+grep -q 'config --services' installers/phases/11-services.sh \
+  || { echo "[FAIL] Linux installer must inspect selected compose services before local rebuilds"; exit 1; }
+grep -q 'Skipping local image build for disabled service' installers/phases/11-services.sh \
+  || { echo "[FAIL] Linux installer must skip disabled local-build services"; exit 1; }
+if grep -q '^[[:space:]]*_build_services=(dashboard dashboard-api ape token-spy privacy-shield)' installers/phases/11-services.sh; then
+  echo "[FAIL] Linux installer must not build every local service unconditionally"
+  exit 1
+fi
+
 echo "[contract] OpenClaw deprecation preserves actual installs only"
 for installer in install-core.sh installers/macos/install-macos.sh; do
   grep -Fq 'name=^/dream-openclaw$' "$installer" \

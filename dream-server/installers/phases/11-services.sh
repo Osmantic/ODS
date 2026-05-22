@@ -602,9 +602,22 @@ MODELS_INI_EOF
     compose_ok=false
     # Build locally-built images individually so one failure doesn't block the rest
     _build_count=0
-    _build_services=(dashboard dashboard-api ape token-spy privacy-shield)
-    [[ "$ENABLE_COMFYUI" == "true" ]] && _build_services+=(comfyui)
-    [[ "$GPU_BACKEND" == "amd" ]] && _build_services+=(llama-server)
+    _candidate_build_services=(dashboard dashboard-api ape token-spy privacy-shield)
+    [[ "$ENABLE_COMFYUI" == "true" ]] && _candidate_build_services+=(comfyui)
+    [[ "$GPU_BACKEND" == "amd" ]] && _candidate_build_services+=(llama-server)
+    if ! _enabled_compose_services="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --services 2>>"$LOG_FILE")"; then
+        ai_bad "Could not resolve compose services before local image builds."
+        ai "Inspect compose config with: $(_phase11_compose_command_text) config --services"
+        exit 1
+    fi
+    _build_services=()
+    for _svc in "${_candidate_build_services[@]}"; do
+        if printf '%s\n' "$_enabled_compose_services" | grep -qx "$_svc"; then
+            _build_services+=("$_svc")
+        else
+            log "Skipping local image build for disabled service: $_svc"
+        fi
+    done
     if [[ "$GPU_BACKEND" == "nvidia" && " ${_build_services[*]} " == *" comfyui "* ]]; then
         ai "ComfyUI is compiling from source for NVIDIA — this takes 25-40 minutes on first run."
     fi
