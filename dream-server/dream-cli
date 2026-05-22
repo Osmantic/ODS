@@ -997,12 +997,35 @@ cmd_restart() {
 
     [[ "$rebuild_images" == "true" ]] && _dream_cli_rebuild_images "${flags[@]}"
 
+    # Refresh data/hermes/SOUL.md whenever Hermes (or the full stack) is
+    # restarted, so the persona's "About this installation" section
+    # reflects which services are currently up. Non-fatal — if the
+    # generator fails (Python missing, etc.) Hermes still boots from
+    # whatever assembled SOUL.md is already on disk, or the template if
+    # the assembled file is missing.
+    if [[ -z "$service" || "$service" == "hermes" ]]; then
+        _dream_cli_refresh_soul || true
+    fi
+
     if [[ -z "$service" ]]; then
         _compose_run_with_summary "Restarting all services" "${flags[@]}" up -d
     else
         service=$(resolve_service "$service")
         _compose_run_with_summary "Restarting $service" "${flags[@]}" up -d "$service"
     fi
+}
+
+# Refresh data/hermes/SOUL.md from the static template + detected install
+# state. Idempotent. Called automatically by cmd_restart (when restarting
+# hermes or the whole stack) and invocable manually by an operator.
+_dream_cli_refresh_soul() {
+    local script="$INSTALL_DIR/scripts/build-installation-context.py"
+    [[ -x "$script" ]] || [[ -f "$script" ]] || return 0
+    local py
+    py=$(command -v python3 || command -v python || true)
+    [[ -n "$py" ]] || return 0
+    "$py" "$script" >/dev/null 2>&1 || return 1
+    return 0
 }
 
 cmd_stop() {
