@@ -16,7 +16,8 @@
 #           LLAMA_SERVER_GPU_UUIDS, LLAMA_ARG_SPLIT_MODE, LLAMA_ARG_TENSOR_SPLIT,
 #           chapter(), ai(), ai_ok(), ai_warn(), log(), warn(), error()
 # Provides: WEBUI_SECRET, N8N_PASS, LITELLM_KEY, LIVEKIT_SECRET,
-#           DASHBOARD_API_KEY, SHIELD_API_KEY, OPENCODE_SERVER_PASSWORD,
+#           DASHBOARD_API_KEY, SHIELD_API_KEY, TOKEN_SPY_API_KEY,
+#           OPENCODE_SERVER_PASSWORD,
 #           OPENCLAW_TOKEN, OPENCLAW_PROVIDER_NAME, OPENCLAW_PROVIDER_URL,
 #           OPENCLAW_MODEL, OPENCLAW_CONTEXT, GPU_ASSIGNMENT_JSON_B64 (in .env)
 #
@@ -256,6 +257,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     SHIELD_API_KEY=$(_env_get SHIELD_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
     DIFY_SECRET_KEY=$(_env_get DIFY_SECRET_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
     QDRANT_API_KEY=$(_env_get QDRANT_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
+    _token_spy_key_default=""
+    if [[ -f "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt" ]]; then
+        _token_spy_key_default=$(tr -d '\r\n' < "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt" 2>/dev/null || true)
+    fi
+    if [[ -z "$_token_spy_key_default" ]]; then
+        _token_spy_key_default=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)
+    fi
+    TOKEN_SPY_API_KEY=$(_env_get TOKEN_SPY_API_KEY "$_token_spy_key_default")
+    unset _token_spy_key_default
     OPENCODE_SERVER_PASSWORD=$(_env_get OPENCODE_SERVER_PASSWORD "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
     SEARXNG_SECRET=$(_env_get SEARXNG_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
 
@@ -563,6 +573,7 @@ LIVEKIT_API_KEY=$(_env_get LIVEKIT_API_KEY "$(openssl rand -hex 16 2>/dev/null |
 LIVEKIT_API_SECRET=${LIVEKIT_SECRET}
 OPENCLAW_TOKEN=${OPENCLAW_TOKEN:-$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | xxd -p)}
 QDRANT_API_KEY=${QDRANT_API_KEY}
+TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY}
 OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD}
 SEARXNG_SECRET=${SEARXNG_SECRET}
 DIFY_SECRET_KEY=${DIFY_SECRET_KEY}

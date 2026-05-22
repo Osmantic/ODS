@@ -19,7 +19,7 @@ services:
       - PII_CACHE_TTL=${PII_CACHE_TTL:-300}
       - LOG_LEVEL=${LOG_LEVEL:-info}
     volumes:
-      - ./data/privacy-shield:/data
+      - ./data/privacy-shield:/data:z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${SHIELD_PORT:-8085}:8085"
     deploy:

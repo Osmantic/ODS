@@ -38,13 +38,13 @@ services:
     expose:
       - "8001"
     volumes:
-      - ./data/models:/models:ro
+      - ./data/models:/models:ro,z
       - lemonade-cache:/root/.cache/huggingface
       - lemonade-llama:/opt/lemonade/llama
       - lemonade-recipe:/root/.cache/lemonade
       # Read-only bind of the wrapper entrypoint. Updating ctx-size sync
       # logic doesn't require rebuilding the image.
-      - ./extensions/services/llama-server/lemonade-entrypoint.sh:/opt/lemonade-entrypoint.sh:ro
+      - ./extensions/services/llama-server/lemonade-entrypoint.sh:/opt/lemonade-entrypoint.sh:ro,z
     devices:
       - /dev/dri:/dev/dri
       - /dev/kfd:/dev/kfd

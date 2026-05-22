@@ -8,6 +8,7 @@
 #   AMDGPU_TARGET  — GPU architecture (default: gfx1151 for Strix Halo)
 #   LLAMA_CPP_REF  — llama.cpp git ref to build (default: b8763)
 #   ROCM_VERSION   — ROCm SDK version for builder (default: 7.2)
+#   LEMONADE_SERVER_IMAGE — Lemonade runtime image tag
 #
 # The custom binary is placed at /opt/llama-custom/ and activated via the
 # LEMONADE_LLAMACPP_ROCM_BIN env var in docker-compose.amd.yml.
@@ -17,6 +18,7 @@
 # ── Stage 1: Build llama.cpp with ROCm + rocWMMA + patches ──────────────────
 
 ARG ROCM_VERSION=7.2
+ARG LEMONADE_SERVER_IMAGE=ghcr.io/lemonade-sdk/lemonade-server:v10.2.0
 FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete AS builder
 
 ARG AMDGPU_TARGET=gfx1151
@@ -78,7 +80,6 @@ RUN mkdir -p /opt/llama-dist && \
 
 # ── Stage 2: Lemonade runtime with custom binary ────────────────────────────
 
-ARG LEMONADE_SERVER_IMAGE=ghcr.io/lemonade-sdk/lemonade-server:v10.2.0
 FROM ${LEMONADE_SERVER_IMAGE}
 
 # ROCm llama-server binary requires libatomic1 which is missing from the

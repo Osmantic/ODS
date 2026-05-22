@@ -51,7 +51,7 @@ services:
       # interface, not loopback. See the network_mode comment above.
       - TS_USERSPACE=false
     volumes:
-      - ./data/tailscale:/var/lib/tailscale
+      - ./data/tailscale:/var/lib/tailscale:z
     healthcheck:
       # `tailscale status` returns 0 if the daemon is up and authenticated,
       # 1 if not. Useful for "is this device on the tailnet right now."

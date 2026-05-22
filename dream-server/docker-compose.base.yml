@@ -26,8 +26,8 @@ services:
     container_name: dream-llama-server
     restart: unless-stopped
     volumes:
-      - ./data/models:/models
-      - ./config/llama-server/models.ini:/config/models.ini:ro
+      - ./data/models:/models:z
+      - ./config/llama-server/models.ini:/config/models.ini:ro,z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${OLLAMA_PORT:-8080}:8080"
     command:
@@ -154,7 +154,7 @@ services:
       AUDIO_TTS_VOICE: "af_heart"
       TZ: "${TIMEZONE:-UTC}"
     volumes:
-      - ./data/open-webui:/app/backend/data
+      - ./data/open-webui:/app/backend/data:z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${WEBUI_PORT:-3000}:8080"
     deploy:
@@ -249,14 +249,14 @@ services:
       # name we register on AMD install (Qwen3.6-35B-A3B + mmproj-F16).
       - DREAM_TALK_VISION_MODEL=${DREAM_TALK_VISION_MODEL:-user.Qwen3.6-35B-A3B-Vision}
     volumes:
-      - ./scripts:/dream-server/scripts:ro
-      - ./config:/dream-server/config:ro
-      - ./extensions:/dream-server/extensions:ro
-      - ./.env:/dream-server/.env:ro
-      - ./.env.example:/dream-server/.env.example:ro
-      - ./.env.schema.json:/dream-server/.env.schema.json:ro
-      - ./data:/data
-      - ./templates:/dream-server/templates:ro
+      - ./scripts:/dream-server/scripts:ro,z
+      - ./config:/dream-server/config:ro,z
+      - ./extensions:/dream-server/extensions:ro,z
+      - ./.env:/dream-server/.env:ro,z
+      - ./.env.example:/dream-server/.env.example:ro,z
+      - ./.env.schema.json:/dream-server/.env.schema.json:ro,z
+      - ./data:/data:z
+      - ./templates:/dream-server/templates:ro,z
     deploy:
       resources:
         limits:
@@ -287,7 +287,7 @@ services:
     environment:
       - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-}
     volumes:
-      - ./data:/data:ro
+      - ./data:/data:ro,z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-3001}:3001"
     deploy:
