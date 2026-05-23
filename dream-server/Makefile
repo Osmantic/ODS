@@ -49,6 +49,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== bootstrap OpenClaw compose-guard regression ==="
 	@bash tests/test-bootstrap-openclaw-compose-guard.sh
+	@echo ""
+	@echo "=== bootstrap-upgrade spawn closes inherited FDs ==="
+	@bash tests/test-bootstrap-upgrade-close-inherited-fds.sh
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="

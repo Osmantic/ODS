@@ -1586,9 +1586,16 @@ else
         _upgrade_script="$INSTALL_DIR/scripts/bootstrap-upgrade.sh"
 
         if [[ -x "$_upgrade_script" ]] || [[ -f "$_upgrade_script" ]]; then
+            # Close inherited FDs 3-9 so this long-lived background daemon
+            # never holds a parent's advisory lock (e.g. a fleet-test harness
+            # flock on FD 9) for the lifetime of the model download. The
+            # parent process exits when the installer returns, but the kernel
+            # keeps any flock alive as long as ANY inherited FD points to the
+            # locked file.
             nohup bash "$_upgrade_script" \
                 "$INSTALL_DIR" "$FULL_GGUF_FILE" "$FULL_GGUF_URL" \
                 "$FULL_GGUF_SHA256" "$FULL_LLM_MODEL" "$FULL_MAX_CONTEXT" \
+                3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- \
                 > "$INSTALL_DIR/logs/model-upgrade.log" 2>&1 &
             ai "Full model ($FULL_LLM_MODEL) downloading in background."
             ai "Check progress: tail -f $INSTALL_DIR/logs/model-upgrade.log"
