@@ -157,6 +157,9 @@ if [[ -f "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh" ]]; then
     source "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh"
 fi
 source "${SOURCE_ROOT}/lib/safe-env.sh"
+if [[ -f "${SOURCE_ROOT}/lib/python-cmd.sh" ]]; then
+    source "${SOURCE_ROOT}/lib/python-cmd.sh"
+fi
 source "${SOURCE_ROOT}/installers/lib/readiness-summary.sh"
 
 # ── File-local helpers ──
@@ -189,17 +192,32 @@ _compute_launchd_path() {
     printf '%s' "$path_out"
 }
 
+_opencode_candidate_is_file() {
+    local candidate="$1"
+    [[ -n "$candidate" && "$candidate" == /* && -x "$candidate" && ! -d "$candidate" ]]
+}
+
 _find_opencode_bin() {
-    local candidate
+    local candidate="" brew_prefix=""
     for candidate in "${OPENCODE_BIN:-}" "$HOME/.opencode/bin/opencode"; do
-        [[ -n "$candidate" && -x "$candidate" ]] && {
+        if _opencode_candidate_is_file "$candidate"; then
             printf '%s\n' "$candidate"
             return 0
-        }
+        fi
     done
 
-    if command -v opencode >/dev/null 2>&1; then
-        command -v opencode
+    if command -v brew >/dev/null 2>&1; then
+        brew_prefix="$(brew --prefix 2>/dev/null || true)"
+        candidate="${brew_prefix:+${brew_prefix}/bin/opencode}"
+        if _opencode_candidate_is_file "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    fi
+
+    candidate="$(type -P opencode 2>/dev/null || true)"
+    if _opencode_candidate_is_file "$candidate"; then
+        printf '%s\n' "$candidate"
         return 0
     fi
 
@@ -281,7 +299,74 @@ _require_docker_cpu_budget() {
     ai_ok "Docker CPU budget: ${docker_ncpu} (>=${min_cpus} required for ${workload})"
 }
 
-# ── Resolve install directory ──
+_macos_python_imports_yaml() {
+    local pycmd="${1:-python3}"
+    "$pycmd" -c 'import yaml' >/dev/null 2>&1
+}
+
+_set_installer_python_cmd() {
+    local pycmd="$1"
+    export DREAM_PYTHON_CMD="$pycmd"
+    # python-cmd.sh caches the first runnable interpreter. Keep the cache aligned
+    # when this installer creates a private venv after the first detection.
+    if declare -p _ds_python_cmd_cached >/dev/null 2>&1; then
+        _ds_python_cmd_cached="$pycmd"
+    fi
+}
+
+_ensure_macos_pyyaml() {
+    local pycmd=""
+    if declare -f ds_detect_python_cmd >/dev/null 2>&1; then
+        pycmd="$(ds_detect_python_cmd 2>/dev/null || true)"
+    fi
+    if [[ -z "$pycmd" ]]; then
+        pycmd="$(command -v python3 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$pycmd" ]]; then
+        ai_err "python3 not available -- required for compose resolver"
+        exit 1
+    fi
+
+    if _macos_python_imports_yaml "$pycmd"; then
+        _set_installer_python_cmd "$pycmd"
+        ai_ok "PyYAML available for $pycmd"
+        return 0
+    fi
+
+    if $DRY_RUN; then
+        ai_warn "PyYAML is not importable by $pycmd (dry-run: would create installer Python venv)."
+        return 0
+    fi
+
+    local venv_dir="${INSTALL_DIR}/.venv/installer-python"
+    local venv_python="${venv_dir}/bin/python"
+
+    ai "Installing PyYAML in isolated installer Python runtime..."
+    mkdir -p "$(dirname "$venv_dir")"
+    if ! "$pycmd" -m venv "$venv_dir" 2>&1 | tee -a "$DS_LOG_FILE" >/dev/null; then
+        ai_err "Failed to create installer Python venv at $venv_dir."
+        ai "  Your Python may be missing the venv module."
+        ai "  Try: brew install python"
+        ai "  Then re-run this installer."
+        exit 1
+    fi
+
+    if "$venv_python" -m pip install --quiet --no-warn-script-location pyyaml 2>&1 | tee -a "$DS_LOG_FILE" >/dev/null \
+       && _macos_python_imports_yaml "$venv_python"; then
+        _set_installer_python_cmd "$venv_python"
+        ai_ok "PyYAML available in installer venv"
+        return 0
+    fi
+
+    ai_err "Failed to install PyYAML for the macOS compose resolver."
+    ai "  Log file: $DS_LOG_FILE"
+    ai "  Manual recovery:"
+    ai "    $pycmd -m venv '$venv_dir' && '$venv_python' -m pip install pyyaml"
+    exit 1
+}
+
+# Resolve install directory
 INSTALL_DIR="${DS_INSTALL_DIR}"
 
 if ! $OPENCLAW_EXPLICIT; then
@@ -449,30 +534,12 @@ if ! $DISK_SUFFICIENT; then
 fi
 ai_ok "Disk space OK"
 
-# PyYAML — required by scripts/resolve-compose-stack.sh for the compose
+# PyYAML -- required by scripts/resolve-compose-stack.sh for the compose
 # security scan (it parses every extension/overlay manifest before letting
-# user composes through). Linux distros generally bundle python3-yaml with
-# the system python; macOS does not. Without PyYAML, every extension install
-# fails at compose resolution with a cryptic "ModuleNotFoundError: No module
-# named 'yaml'" returned through the dashboard-api as state=error.
-if command -v python3 >/dev/null 2>&1; then
-    if python3 -c 'import yaml' >/dev/null 2>&1; then
-        ai_ok "PyYAML available"
-    else
-        ai "Installing PyYAML (required by compose resolver)..."
-        if python3 -m pip install --user --quiet --no-warn-script-location pyyaml 2>&1 | tee -a "$DS_LOG_FILE" >/dev/null \
-           && python3 -c 'import yaml' >/dev/null 2>&1; then
-            ai_ok "PyYAML installed (python3 -m pip --user)"
-        else
-            ai_err "Failed to install PyYAML for $(command -v python3)."
-            ai_err "Run manually: python3 -m pip install --user pyyaml"
-            exit 1
-        fi
-    fi
-else
-    ai_err "python3 not available — required for compose resolver"
-    exit 1
-fi
+# user composes through). Homebrew Python on macOS is externally managed, so
+# `pip --user` can fail under PEP 668. Keep the resolver dependency in a
+# Dream-owned venv and point shared Python helpers at that interpreter.
+_ensure_macos_pyyaml
 
 # Ollama conflict detection
 check_ollama_conflict
@@ -1009,6 +1076,21 @@ else
             else
                 ai_warn "Hermes template patch incomplete — Hermes may fail to reach llama-server. Hand-edit ${_hermes_tpl} if prompts hang."
             fi
+
+            # Render data/persona/SOUL.md = static persona + dynamic install
+            # context. The Hermes compose mounts this file as the agent's
+            # SOUL.md so it answers truthfully about what services + hardware
+            # it has on this Dream Server. MUST run before docker compose up,
+            # otherwise Docker's bind-mount engine auto-creates the source
+            # path as a *directory* and the install fails at compose-up with
+            # "not a directory: Are you trying to mount a directory onto a
+            # file" — which then persists across reinstalls because `nuke
+            # install dir` preserves data/.
+            _soul_builder="${INSTALL_DIR}/scripts/build-installation-context.py"
+            if [[ -f "$_soul_builder" ]]; then
+                python3 "$_soul_builder" >>"$DS_LOG_FILE" 2>&1 || \
+                    ai_warn "Could not generate Hermes installation-context SOUL.md (non-fatal — Hermes will use the template default)"
+            fi
         fi
     fi
 
@@ -1464,6 +1546,21 @@ else
         exit 1
     fi
     ai_ok "Docker services started"
+
+    # Refresh the generated Hermes persona now that the stack is actually
+    # running, then copy it into Hermes's runtime data dir from inside the
+    # container. This avoids Docker Desktop's nested bind-mount restriction
+    # while still keeping /opt/data/SOUL.md current for new sessions.
+    _soul_builder="${INSTALL_DIR}/scripts/build-installation-context.py"
+    if [[ -f "$_soul_builder" ]]; then
+        python3 "$_soul_builder" >>"$DS_LOG_FILE" 2>&1 || \
+            ai_warn "Could not refresh Hermes installation-context SOUL.md after compose-up"
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'dream-hermes'; then
+            docker exec dream-hermes cp /opt/hermes/docker/SOUL.md /opt/data/SOUL.md \
+                >>"$DS_LOG_FILE" 2>&1 || \
+                ai_warn "Could not sync installation-context SOUL.md into running Hermes container"
+        fi
+    fi
 
     # Save compose flags for dream-macos.sh
     echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"

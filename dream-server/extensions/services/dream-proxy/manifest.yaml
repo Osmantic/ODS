@@ -71,4 +71,7 @@ features:
     enabled_services_all: [dream-proxy]
     setup_time: Ready
     priority: 1
+    launch:
+      type: service
+      service: dream-proxy
     gpu_backends: [all]

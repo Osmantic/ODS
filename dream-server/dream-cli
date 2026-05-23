@@ -997,12 +997,55 @@ cmd_restart() {
 
     [[ "$rebuild_images" == "true" ]] && _dream_cli_rebuild_images "${flags[@]}"
 
+    local refresh_soul="false"
+    if [[ -z "$service" || "$service" == "hermes" ]]; then
+        refresh_soul="true"
+    fi
+
     if [[ -z "$service" ]]; then
         _compose_run_with_summary "Restarting all services" "${flags[@]}" up -d
     else
         service=$(resolve_service "$service")
         _compose_run_with_summary "Restarting $service" "${flags[@]}" up -d "$service"
     fi
+
+    # Refresh SOUL.md after compose has ensured Hermes is running, so the
+    # generated install context can be copied into /opt/data/SOUL.md without
+    # needing the Docker Desktop-hostile nested bind mount.
+    if [[ "$refresh_soul" == "true" ]]; then
+        _dream_cli_refresh_soul || true
+    fi
+}
+
+# Refresh data/hermes/SOUL.md from the static template + detected install
+# state. Idempotent. Called automatically by cmd_restart (when restarting
+# hermes or the whole stack) and invocable manually by an operator.
+_dream_cli_refresh_soul() {
+    local script="$INSTALL_DIR/scripts/build-installation-context.py"
+    [[ -x "$script" ]] || [[ -f "$script" ]] || return 0
+    local py
+    py=$(command -v python3 || command -v python || true)
+    [[ -n "$py" ]] || return 0
+    "$py" "$script" >/dev/null 2>&1 || return 1
+
+    # Push the updated assembled SOUL.md into the running container's
+    # data dir, where Hermes actually reads from at session.create
+    # time. The bind-mount target (/opt/hermes/docker/SOUL.md) is just
+    # the upstream-default that Hermes's entrypoint copies to
+    # /opt/data/SOUL.md ONLY on first start; the per-install file is
+    # what's read after that. macOS Docker Desktop's virtiofs refuses
+    # to bind-mount /opt/data/SOUL.md directly (nested-mount limit),
+    # so we use docker exec for the in-container copy — works on
+    # Linux + macOS uniformly. Container has to be running for this
+    # to matter; if it's not, the entrypoint will pick up the docker/
+    # default on next start anyway.
+    if command -v docker >/dev/null 2>&1; then
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^dream-hermes$'; then
+            docker exec dream-hermes cp /opt/hermes/docker/SOUL.md /opt/data/SOUL.md \
+                >/dev/null 2>&1 || true
+        fi
+    fi
+    return 0
 }
 
 cmd_stop() {
@@ -1770,11 +1813,42 @@ if pf_checks:
             print(f"  {YELLOW}?{NC} {name}: {message}")
     print()
 
+# Evidence-ranked diagnoses
+diagnoses = report.get('diagnoses', [])
+if diagnoses:
+    print(f"{CYAN}Diagnoses:{NC}")
+    severity_colors = {
+        'blocker': RED,
+        'warn': YELLOW,
+        'info': CYAN,
+    }
+    for diagnosis in diagnoses[:5]:
+        severity = diagnosis.get('severity', 'info')
+        color = severity_colors.get(severity, CYAN)
+        diag_id = diagnosis.get('id', 'DS-UNKNOWN')
+        confidence = diagnosis.get('confidence', 'unknown')
+        title = diagnosis.get('title', 'Unknown diagnosis')
+        print(f"  {color}{severity.upper()}{NC} {diag_id}: {title} ({confidence} confidence)")
+        evidence = diagnosis.get('evidence') or []
+        if evidence:
+            first = evidence[0]
+            print(f"    evidence: {first.get('source', 'unknown')} — {first.get('detail', '')}")
+        next_steps = diagnosis.get('next_steps') or []
+        if next_steps:
+            print(f"    next: {next_steps[0]}")
+        if severity == 'blocker':
+            has_failures = True
+    if len(diagnoses) > 5:
+        print(f"    ... {len(diagnoses) - 5} more diagnosis item(s) in the JSON report")
+    print()
+
 # Summary
 summary = report.get('summary', {})
 blocker_count = summary.get('preflight_blockers', 0)
 warning_count = summary.get('preflight_warnings', 0)
 runtime_warning_count = summary.get('runtime_warnings', 0)
+diagnosis_blocker_count = summary.get('diagnoses_blockers', 0)
+diagnosis_warning_count = summary.get('diagnoses_warnings', 0)
 runtime_ready = summary.get('runtime_ready', False)
 
 print(f"{CYAN}Summary:{NC}")
@@ -1784,7 +1858,11 @@ if warning_count > 0:
     print(f"  {YELLOW}⚠{NC} {warning_count} warning(s) found")
 if runtime_warning_count > 0:
     print(f"  {YELLOW}⚠{NC} {runtime_warning_count} runtime warning(s) found")
-if blocker_count == 0 and warning_count == 0 and runtime_warning_count == 0 and runtime_ready:
+if diagnosis_blocker_count > 0:
+    print(f"  {RED}✗{NC} {diagnosis_blocker_count} diagnosis blocker(s) found")
+if diagnosis_warning_count > 0:
+    print(f"  {YELLOW}⚠{NC} {diagnosis_warning_count} diagnosis warning(s) found")
+if blocker_count == 0 and warning_count == 0 and runtime_warning_count == 0 and diagnosis_blocker_count == 0 and diagnosis_warning_count == 0 and runtime_ready:
     print(f"  {GREEN}✓{NC} All checks passed")
 
 print()

@@ -176,17 +176,49 @@ if ($_fsNetworked) {
 
 # ── Docker Desktop file-sharing allowlist check ──────────────────────────────
 # Bind-mounting a path outside the Docker Desktop file-sharing list fails at
-# `docker compose up` with a cryptic OCI error. Probe with a throwaway alpine
+# `docker compose up` with a cryptic OCI error. Probe with a throwaway Alpine
 # container so we surface a clear message before any compose work starts.
+# Pull the probe image first so a missing image/network problem is not reported
+# as a Docker Desktop file-sharing problem.
 $_shareOk = $true
 $_shareErr = ""
+$_probeImage = "alpine:3.20"
 try {
+    & docker image inspect $_probeImage *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-AI "Downloading Docker bind-mount probe image ($_probeImage)..."
+        $_pullOut = & docker pull $_probeImage 2>&1
+        $_pullExit = $LASTEXITCODE
+        if ($_pullExit -ne 0) {
+            Write-AIError "Docker could not download $_probeImage, which is required for the file-sharing probe."
+            Write-AI "  Start Docker Desktop, confirm it has internet access, then run:"
+            Write-AI "  docker pull $_probeImage"
+            Write-AI "  Re-run this installer after the pull succeeds."
+            if ($_pullOut) {
+                Write-AI "  Pull output:"
+                ($_pullOut -join "`n") -split "`n" | ForEach-Object { Write-Host "    $_" }
+            }
+            exit 1
+        }
+    }
+
     # PowerShell -v argument needs careful quoting for paths with spaces.
-    $_probeOut = & docker run --rm -v "${_fsProbe}:/check:ro" alpine true 2>&1
+    $_probeOut = & docker run --rm -v "${_fsProbe}:/check:ro" $_probeImage true 2>&1
+    $_probeExit = $LASTEXITCODE
     $_probeText = ($_probeOut -join "`n")
-    if ($_probeText -match "not shared from the host|Mounts denied|file sharing|filesharing") {
+    if ($_probeExit -ne 0 -and $_probeText -match "not shared from the host|Mounts denied|file sharing|filesharing") {
         $_shareOk = $false
         $_shareErr = $_probeText
+    } elseif ($_probeExit -ne 0) {
+        Write-AIError "Docker bind-mount probe failed before compose startup."
+        Write-AI "  This probe uses $_probeImage to verify Docker can mount:"
+        Write-AI "  $installDir"
+        Write-AI "  Confirm Docker Desktop is running, WSL2 backend is enabled, and $_probeImage is downloaded."
+        if ($_probeText) {
+            Write-AI "  Probe output:"
+            $_probeText -split "`n" | ForEach-Object { Write-Host "    $_" }
+        }
+        exit 1
     }
 } catch {
     $_shareOk = $false
@@ -196,6 +228,7 @@ if (-not $_shareOk) {
     Write-AIError "Docker Desktop cannot bind-mount $installDir."
     Write-AIError "Add the path to Docker Desktop > Settings > Resources > File Sharing,"
     Write-AIError "apply, then re-run this installer."
+    Write-AI "  The probe image ($_probeImage) is already available; this is a file-sharing path issue."
     if ($_shareErr) {
         Write-AI "  Probe output:"
         $_shareErr -split "`n" | ForEach-Object { Write-Host "    $_" }

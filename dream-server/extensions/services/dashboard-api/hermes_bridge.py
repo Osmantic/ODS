@@ -376,6 +376,49 @@ async def _submit_on_connection(
             if isinstance(chunk, str) and chunk:
                 chunks.append(chunk)
                 yield {"type": "delta", "text": chunk}
+        elif event_type == "status.update":
+            # Hermes (pinned image) emits status.update events with a pre-
+            # formatted human-readable text and a `kind` category. Examples
+            # we've observed in the wild:
+            #
+            #   {"kind": "lifecycle", "text": "⏳ Retrying in 5.1s (attempt 2/3)..."}
+            #   {"kind": "lifecycle", "text": "⚠️ Max retries (3) exhausted..."}
+            #
+            # Upstream is responsible for the human-readable wording (often
+            # with emoji prefixes); we just forward the text so the SPA's
+            # spinner caption shows what Hermes is actually doing. The
+            # "Searching the web…" / "Reading the page…" labels we add on
+            # the SSE-layer side are for older `tool.start`-style events
+            # that some builds may still emit; this branch handles the
+            # newer status.update path.
+            status_text = payload.get("text") if isinstance(payload.get("text"), str) else None
+            if status_text:
+                yield {
+                    "type": "status",
+                    "label": status_text,
+                    "kind": payload.get("kind") if isinstance(payload.get("kind"), str) else None,
+                }
+        elif event_type == "tool.start":
+            # Older-build path: Hermes may also emit explicit tool.start
+            # events with name + context. We translate those into status
+            # frames via the SSE layer's _label_for_tool() mapping.
+            tool_name = payload.get("name") if isinstance(payload.get("name"), str) else None
+            if tool_name:
+                yield {
+                    "type": "tool_start",
+                    "tool": tool_name,
+                    "detail": payload.get("context") if isinstance(payload.get("context"), str) else None,
+                }
+        elif event_type == "tool.complete":
+            # Older-build path companion: tool finished, clear the caption.
+            tool_name = payload.get("name") if isinstance(payload.get("name"), str) else None
+            if tool_name:
+                yield {
+                    "type": "tool_complete",
+                    "tool": tool_name,
+                    "duration_s": payload.get("duration_s") if isinstance(payload.get("duration_s"), (int, float)) else None,
+                    "summary": payload.get("summary") if isinstance(payload.get("summary"), str) else None,
+                }
         elif event_type == "message.complete":
             final_text = payload.get("text")
             if not isinstance(final_text, str) or not final_text.strip():
@@ -398,9 +441,12 @@ async def stream_prompt(session_key: str, text: str) -> AsyncIterator[dict[str, 
     """Submit a prompt to Hermes and yield delta events as they stream back.
 
     Yields dicts with:
-      {"type": "session",  "session_id": <id>}                      # once at start
-      {"type": "delta",    "text": <chunk>}                          # zero or more
-      {"type": "complete", "session_id": <id>, "text": <full>, ...}  # once at end
+      {"type": "session",        "session_id": <id>}                          # once at start
+      {"type": "tool_start",     "tool": <name>, "detail": <context|None>}    # zero or more
+      {"type": "tool_complete",  "tool": <name>, "duration_s": <float|None>,
+                                 "summary": <str|None>}                       # zero or more
+      {"type": "delta",          "text": <chunk>}                             # zero or more
+      {"type": "complete",       "session_id": <id>, "text": <full>, ...}     # once at end
 
     On error, raises HermesUnavailable / HermesBridgeError; no partial yield.
 

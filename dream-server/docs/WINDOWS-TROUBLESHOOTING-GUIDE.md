@@ -13,6 +13,8 @@
 | "Docker not found" | Install Docker Desktop first |
 | "GPU not detected" | Update NVIDIA drivers |
 | "Installation hangs" | Check internet connection, wait 30 min for model download |
+| "Docker Desktop cannot bind-mount..." | Add `C:\Users\<you>\dream-server` to Docker Desktop -> Settings -> Resources -> File Sharing |
+| "Docker could not download alpine..." | Run `docker pull alpine:3.20`, then re-run the installer |
 
 Do not use "Run as administrator" for the Dream Server installer unless you
 are intentionally accepting admin-owned files under your user profile. The
@@ -35,6 +37,8 @@ What the diagnostics include (in order):
 **Things to check on your machine before re-running:**
 
 - Docker Desktop is **running** (whale icon in the tray) and **WSL 2** is enabled for the engine (Settings → General).
+- Docker Desktop can pull the small bind-mount probe image: `docker pull alpine:3.20`.
+- Docker Desktop file sharing includes the **installed** Dream Server folder, usually `C:\Users\<you>\dream-server`, not just the cloned `DreamServer` source folder.
 - No other app is blocking the same **ports** as in `.env` (e.g. another stack using 3000, 8080, 11434).
 - Enough **disk space** for images and volumes.
 - If you edited compose files or added overrides, temporarily remove **`docker-compose.override.yml`** and try again.

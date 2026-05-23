@@ -93,6 +93,41 @@ The installer will:
 - Create the installation directory at `$env:USERPROFILE\dream-server`
 - Download and start all services
 
+### Important: repo checkout vs runtime directory
+
+The `DreamServer` folder you cloned is the source checkout used by the
+installer. The running Windows install lives in `$env:USERPROFILE\dream-server`
+by default, or in `$env:DREAM_HOME` if you set that variable before install.
+The runtime directory is where the installer writes `.env`, generated secrets,
+model files, logs, data directories, and compose state.
+
+After installation, run management commands from the runtime directory:
+
+```powershell
+cd $env:USERPROFILE\dream-server
+.\dream.ps1 status
+.\dream.ps1 logs llama-server
+```
+
+If you run raw `docker compose` from the cloned source checkout, Compose will
+not see the generated `.env` and relative volume paths will point at the wrong
+place. Manual Compose commands are supported, but run them from the runtime
+directory:
+
+```powershell
+cd $env:USERPROFILE\dream-server
+docker compose ps
+docker compose logs -f
+```
+
+For in-place development only, set `DREAM_HOME` before running the installer so
+the runtime is intentionally created inside your checkout:
+
+```powershell
+$env:DREAM_HOME = "C:\path\to\DreamServer\dream-server"
+.\install.ps1
+```
+
 **First run takes 10-30 minutes** depending on download speed. Bootstrap mode
 starts a small model first, then downloads and hot-swaps the full model in the
 background.
@@ -192,13 +227,13 @@ Then: `docker compose up -d`
 
 | Task | Command |
 |------|---------|
-| Stop Dream Server | `docker compose down` |
-| Start Dream Server | `docker compose up -d` |
-| View logs | `docker compose logs -f` |
-| Update | `.\dream.ps1 update` |
+| Stop Dream Server | `cd $env:USERPROFILE\dream-server; .\dream.ps1 stop` |
+| Start Dream Server | `cd $env:USERPROFILE\dream-server; .\dream.ps1 start` |
+| View logs | `cd $env:USERPROFILE\dream-server; .\dream.ps1 logs` |
+| Update | `cd $env:USERPROFILE\dream-server; .\dream.ps1 update` |
 | Enable voice | Add `-Voice` flag or edit `.env` |
 | Enable workflows | Add `-Workflows` flag |
-| Support report | `.\dream.ps1 report` |
+| Support report | `cd $env:USERPROFILE\dream-server; .\dream.ps1 report` |
 
 ---
 

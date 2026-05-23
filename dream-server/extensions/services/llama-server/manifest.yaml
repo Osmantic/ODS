@@ -33,6 +33,9 @@ features:
     enabled_services_any: [llama-server]
     setup_time: Ready
     priority: 1
+    launch:
+      type: service
+      service: open-webui
     gpu_backends: [amd, nvidia]
 
   - id: documents
@@ -48,4 +51,7 @@ features:
     enabled_services_all: [qdrant]
     setup_time: ~2 minutes
     priority: 3
+    launch:
+      type: service
+      service: open-webui
     gpu_backends: [amd, nvidia]

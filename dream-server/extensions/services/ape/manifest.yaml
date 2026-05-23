@@ -37,4 +37,6 @@ features:
     enabled_services_any: [ape]
     setup_time: Ready
     priority: 10
+    launch:
+      type: none
     gpu_backends: [all]
