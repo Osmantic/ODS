@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""Parallel docker image pull with aggregated live progress.
+"""Parallel docker image pull with an aggregated live dashboard.
 
 Replaces the sequential pull-with-spinner loop in installers/phases/08-images.sh.
-Runs up to --concurrency pulls at once, parses each docker pull's per-layer
-"Downloading X/Y" lines, sums bytes across layers, and renders one dashboard
-with per-job rows + combined throughput. Lore strings rotate inline at the
-bottom of the dashboard every 8s instead of being printed on new lines.
+Runs up to --concurrency pulls at once and renders one dashboard with per-job
+rows showing spinner, per-image elapsed, and layer-event counts
+("3/8 layers"). Lore strings rotate inline at the dashboard footer every 8s
+instead of being printed on new lines.
+
+Why layer counts and not bytes/MB/percent: the "X.YZMB / AB.CDMB" suffix
+on docker's "Downloading" lines only appears reliably with the classic
+overlay2 image store. Docker's containerd snapshotter (default on Docker
+Desktop, opt-in on engine) emits bare "abc: Downloading" with no bytes in
+non-TTY mode. A bytes-based progress display silently showed 0 on those
+installs. Layer-event counts (Pull complete / Already exists / Download
+complete / Pulling fs layer / Downloading) work across both stores.
 
 Usage:
   parallel-pull.py [-c N] [-l LOG] [--lore TEXT]... [--max-attempts N]
@@ -65,13 +73,16 @@ SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 #   9f87c8ff3cb8: Already exists
 #   Status: Downloaded newer image for ...
 _LAYER = r"([a-f0-9]{6,64})"
-_SIZE = r"([\d.]+)\s*([kKMGT]?)B"
-DOWNLOADING_RE = re.compile(
-    rf"^{_LAYER}:\s+Downloading\s+(?:\[[^\]]*\]\s*)?{_SIZE}\s*/\s*{_SIZE}"
-)
-EXTRACTING_RE = re.compile(
-    rf"^{_LAYER}:\s+Extracting\s+(?:\[[^\]]*\]\s*)?{_SIZE}\s*/\s*{_SIZE}"
-)
+# We deliberately do NOT parse the "X.YZMB / AB.CDMB" suffix on
+# Downloading/Extracting lines: that format only appears reliably with
+# the classic overlay2 image store. Docker's containerd snapshotter
+# (default on Docker Desktop, opt-in on engine) emits bare events like
+# "abc: Downloading" with no bytes, so any bytes-derived display
+# (per-row %, combined throughput) silently shows 0 forever on those
+# installs. Layer-event counting is the robust signal across stores.
+PULLING_LAYER_RE = re.compile(rf"^{_LAYER}:\s+Pulling fs layer")
+DOWNLOADING_RE = re.compile(rf"^{_LAYER}:\s+Downloading")
+EXTRACTING_RE = re.compile(rf"^{_LAYER}:\s+Extracting")
 DOWNLOAD_COMPLETE_RE = re.compile(rf"^{_LAYER}:\s+Download complete")
 PULL_COMPLETE_RE = re.compile(rf"^{_LAYER}:\s+Pull complete")
 ALREADY_EXISTS_RE = re.compile(rf"^{_LAYER}:\s+Already exists")
@@ -81,26 +92,6 @@ NON_RETRYABLE_RE = re.compile(
     r"no space left on device|cannot connect to the docker daemon|"
     r"is the docker daemon running|manifest unknown"
 )
-
-_UNIT = {"": 1, "k": 1_000, "K": 1_000,
-         "M": 1_000_000, "G": 1_000_000_000, "T": 1_000_000_000_000}
-
-
-def parse_bytes(value: str, unit_char: str) -> int:
-    return int(float(value) * _UNIT[unit_char])
-
-
-def fmt_bytes(n: int) -> str:
-    """Render byte count in human units (1000-based, matching docker)."""
-    if n < 1000:
-        return f"{n} B"
-    units = ("kB", "MB", "GB", "TB")
-    v = float(n)
-    for u in units:
-        v /= 1000
-        if v < 1000 or u == "TB":
-            return f"{v:.1f} {u}"
-    return f"{v:.1f} TB"  # unreachable
 
 
 def fmt_duration(seconds: float) -> str:
@@ -118,11 +109,11 @@ def fmt_duration(seconds: float) -> str:
 
 @dataclass
 class Layer:
-    download_bytes: int = 0
-    download_total: int = 0
-    download_done: bool = False
-    pull_done: bool = False
-    already_exists: bool = False
+    # Three coarse states: seen (default) -> downloading -> done.
+    # "done" covers Pull complete + Already exists + Download complete; we
+    # don't distinguish further because the bytes view is gone.
+    downloading: bool = False
+    done: bool = False
 
 
 @dataclass
@@ -142,32 +133,12 @@ class Job:
     last_lines: list = field(default_factory=list)
 
     @property
-    def downloaded(self) -> int:
-        total = 0
-        for L in self.layers.values():
-            if L.already_exists:
-                continue
-            if L.pull_done or L.download_done:
-                total += L.download_total
-            else:
-                total += L.download_bytes
-        return total
+    def layers_done(self) -> int:
+        return sum(1 for L in self.layers.values() if L.done)
 
     @property
-    def total(self) -> int:
-        return sum(L.download_total for L in self.layers.values()
-                   if not L.already_exists)
-
-    @property
-    def progress(self) -> float:
-        t = self.total
-        if t == 0:
-            # Either we haven't seen any size info yet, or all layers already
-            # exist. Treat "all already exists" as 100%, otherwise 0%.
-            if self.layers and all(L.already_exists for L in self.layers.values()):
-                return 1.0
-            return 0.0
-        return min(self.downloaded / t, 1.0)
+    def layers_seen(self) -> int:
+        return len(self.layers)
 
 
 # --- subprocess management --------------------------------------------------
@@ -235,41 +206,25 @@ def consume_output(job: Job) -> None:
 
 
 def _apply_line(job: Job, line: str) -> None:
-    m = DOWNLOADING_RE.match(line)
-    if m:
-        layer_id = m.group(1)
-        L = job.layers.setdefault(layer_id, Layer())
-        L.download_bytes = parse_bytes(m.group(2), m.group(3))
-        new_total = parse_bytes(m.group(4), m.group(5))
-        # Docker can revise per-layer total upward as it discovers more
-        # blobs; take the max so a late update doesn't shrink the bar.
-        L.download_total = max(L.download_total, new_total)
-        return
-    m = DOWNLOAD_COMPLETE_RE.match(line)
-    if m:
-        L = job.layers.setdefault(m.group(1), Layer())
-        L.download_done = True
-        if L.download_total and L.download_bytes < L.download_total:
-            L.download_bytes = L.download_total
-        return
-    m = PULL_COMPLETE_RE.match(line)
-    if m:
-        L = job.layers.setdefault(m.group(1), Layer())
-        L.pull_done = True
-        L.download_done = True
-        if L.download_total:
-            L.download_bytes = L.download_total
-        return
-    m = ALREADY_EXISTS_RE.match(line)
-    if m:
-        L = job.layers.setdefault(m.group(1), Layer())
-        L.already_exists = True
-        L.pull_done = True
-        return
-    m = EXTRACTING_RE.match(line)
-    if m:
-        L = job.layers.setdefault(m.group(1), Layer())
-        L.download_done = True
+    # Check the terminal states first so "Download complete" doesn't get
+    # demoted to "downloading" by the simpler Downloading regex below.
+    for rx in (PULL_COMPLETE_RE, ALREADY_EXISTS_RE, DOWNLOAD_COMPLETE_RE):
+        m = rx.match(line)
+        if m:
+            L = job.layers.setdefault(m.group(1), Layer())
+            L.done = True
+            return
+    for rx in (PULLING_LAYER_RE,):
+        m = rx.match(line)
+        if m:
+            job.layers.setdefault(m.group(1), Layer())
+            return
+    for rx in (DOWNLOADING_RE, EXTRACTING_RE):
+        m = rx.match(line)
+        if m:
+            L = job.layers.setdefault(m.group(1), Layer())
+            L.downloading = True
+            return
 
 
 def _is_non_retryable(job: Job) -> tuple[bool, str]:
@@ -322,25 +277,10 @@ class TTYRenderer:
         self.frame = 0
         self.start = time.monotonic()
         self.last_drawn = 0
-        self.bw_history: list = []  # [(t, total_bytes)]
         self.last_lore_advance = self.start
 
     def _spinner(self) -> str:
         return SPINNER_FRAMES[self.frame % len(SPINNER_FRAMES)]
-
-    def _combined_rate(self, total_downloaded: int) -> float:
-        now = time.monotonic()
-        self.bw_history.append((now, total_downloaded))
-        cutoff = now - 5.0
-        self.bw_history = [(t, b) for t, b in self.bw_history if t >= cutoff]
-        if len(self.bw_history) < 2:
-            return 0.0
-        t0, b0 = self.bw_history[0]
-        t1, b1 = self.bw_history[-1]
-        dt = t1 - t0
-        if dt < 0.5:
-            return 0.0
-        return max(0.0, (b1 - b0) / dt)
 
     def _row(self, j: Job) -> str:
         label = j.label[:LABEL_WIDTH].ljust(LABEL_WIDTH)
@@ -351,19 +291,16 @@ class TTYRenderer:
         if j.status == "failed":
             return f"  {RED}✗{RESET} {label}  {RED}{j.error_reason[:60]}{RESET}"
         if j.status == "running":
-            dl = j.downloaded
-            tot = j.total
-            if tot:
-                size = f"{fmt_bytes(dl)} / {fmt_bytes(tot)}"
-                pct = int(j.progress * 100)
+            per_elapsed = fmt_duration(time.monotonic() - j.start_time)
+            if j.layers_seen:
+                progress = f"{j.layers_done}/{j.layers_seen} layers"
             else:
-                size = "starting…"
-                pct = 0
+                progress = "starting…"
             attempt = ""
             if j.attempt > 1:
                 attempt = f" {AMBER}(try {j.attempt}/{j.max_attempts}){RESET}"
             return (f"  {GREEN}{self._spinner()}{RESET} {label}  "
-                    f"{size:>22}  {pct:3d}%{attempt}")
+                    f"[{per_elapsed:>6}] {progress:>15}{attempt}")
         return f"  {DIM_GREEN}·{RESET} {label}  queued"
 
     def render(self, jobs: list) -> None:
@@ -371,8 +308,6 @@ class TTYRenderer:
         completed = sum(1 for j in jobs if j.status in ("success", "failed"))
         total = len(jobs)
         elapsed = time.monotonic() - self.start
-        total_dl = sum(j.downloaded for j in jobs)
-        rate = self._combined_rate(total_dl)
         running = sum(1 for j in jobs if j.status == "running")
 
         bar_width = 24
@@ -381,8 +316,7 @@ class TTYRenderer:
 
         header = (
             f"  [{GREEN}{bar}{RESET}] {completed}/{total} modules · "
-            f"{running} active · elapsed {fmt_duration(elapsed)} · "
-            f"combined {fmt_bytes(int(rate))}/s"
+            f"{running} active · elapsed {fmt_duration(elapsed)}"
         )
 
         # Rotate lore on a wall-clock cadence so it doesn't speed up just
