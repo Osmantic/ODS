@@ -95,22 +95,45 @@ else
         ai "  Install later: npm i -g @anthropic-ai/claude-code @openai/codex"
     fi
 
+    _opencode_candidate_is_file() {
+        local candidate="$1"
+        [[ -n "$candidate" && "$candidate" == /* && -x "$candidate" && ! -d "$candidate" ]]
+    }
+
+    _find_opencode_bin() {
+        local candidate
+        candidate="$HOME/.opencode/bin/opencode"
+        if _opencode_candidate_is_file "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+        candidate="$(type -P opencode 2>/dev/null || true)"
+        if _opencode_candidate_is_file "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+        return 1
+    }
+
     # ── OpenCode (local agentic coding platform) ──
-    if ! command -v opencode &> /dev/null && [[ ! -x "$HOME/.opencode/bin/opencode" ]]; then
+    OPENCODE_BIN="$(_find_opencode_bin || true)"
+    if [[ -z "$OPENCODE_BIN" ]]; then
         ai "Installing OpenCode..."
         tmpfile=$(mktemp /tmp/opencode-install.XXXXXX.sh)
         if curl -fsSL --max-time 300 https://opencode.ai/install -o "$tmpfile" 2>/dev/null && bash "$tmpfile" >> "$LOG_FILE" 2>&1; then
-            ai_ok "OpenCode installed (~/.opencode/bin/opencode)"
+            OPENCODE_BIN="$(_find_opencode_bin || true)"
+            ai_ok "OpenCode installer completed"
         else
             ai_warn "OpenCode install failed — install later with: curl -fsSL https://opencode.ai/install | bash"
         fi
         rm -f "$tmpfile"
+        [[ -n "$OPENCODE_BIN" ]] && ai_ok "OpenCode installed ($OPENCODE_BIN)" || ai_warn "OpenCode installer completed but opencode was not found"
     else
-        ai_ok "OpenCode already installed"
+        ai_ok "OpenCode already installed ($OPENCODE_BIN)"
     fi
 
     # Configure OpenCode to use local llama-server
-    if [[ -x "$HOME/.opencode/bin/opencode" ]]; then
+    if [[ -n "$OPENCODE_BIN" && -x "$OPENCODE_BIN" ]]; then
         OPENCODE_CONFIG_DIR="$HOME/.config/opencode"
         mkdir -p "$OPENCODE_CONFIG_DIR"
         # Read OLLAMA_PORT and DREAM_MODE from .env generated in phase 06
@@ -226,7 +249,11 @@ OPENCODE_EOF
             cp "$INSTALL_DIR/opencode/opencode-web.service" "$svc_tmp"
             # Escape sed special chars to prevent injection from path values
             _home_esc=$(printf '%s\n' "$HOME" | sed 's/[&/\]/\\&/g')
+            _opencode_bin_esc=$(printf '%s\n' "$OPENCODE_BIN" | sed 's/[&/\]/\\&/g')
+            _opencode_bin_dir_esc=$(printf '%s\n' "$(dirname "$OPENCODE_BIN")" | sed 's/[&/\]/\\&/g')
             _sed_i "s|__HOME__|${_home_esc}|g" "$svc_tmp"
+            _sed_i "s|__OPENCODE_BIN__|${_opencode_bin_esc}|g" "$svc_tmp"
+            _sed_i "s|__OPENCODE_BIN_DIR__|${_opencode_bin_dir_esc}|g" "$svc_tmp"
             cp "$svc_tmp" "$SYSTEMD_USER_DIR/opencode-web.service"
             rm -f "$svc_tmp"
 

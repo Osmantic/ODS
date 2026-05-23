@@ -13,7 +13,7 @@ services:
       - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
       - LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-false}
     volumes:
-      - ./config/litellm/${DREAM_MODE:-local}.yaml:/app/config.yaml:ro
+      - ./config/litellm/${DREAM_MODE:-local}.yaml:/app/config.yaml:ro,z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${LITELLM_PORT:-4000}:4000"
     entrypoint: ["/bin/sh", "-c"]

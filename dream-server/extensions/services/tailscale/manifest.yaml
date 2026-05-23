@@ -53,4 +53,6 @@ features:
     enabled_services_all: [tailscale]
     setup_time: ~2 minutes
     priority: 3
+    launch:
+      type: none
     gpu_backends: [all]

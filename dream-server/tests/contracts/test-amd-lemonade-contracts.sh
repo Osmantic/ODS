@@ -43,13 +43,14 @@ for f in docker-compose.base.yml docker-compose.amd.yml \
 done
 
 # ---------------------------------------------------------------------------
-# 2. Lemonade entrypoint uses absolute path
+# 2. Lemonade launch uses absolute path
 # ---------------------------------------------------------------------------
-echo "[contract] Lemonade entrypoint uses absolute path"
-if grep -q '/opt/lemonade/lemonade-server' docker-compose.amd.yml; then
-    pass "entrypoint: absolute path /opt/lemonade/lemonade-server"
+echo "[contract] Lemonade launch uses absolute path"
+if grep -q '/opt/lemonade/lemonade-server' docker-compose.amd.yml \
+    || grep -q 'exec /opt/lemonade/lemonade-server' extensions/services/llama-server/lemonade-entrypoint.sh; then
+    pass "entrypoint: launches absolute path /opt/lemonade/lemonade-server"
 else
-    fail "entrypoint: must use absolute path /opt/lemonade/lemonade-server"
+    fail "entrypoint: must launch absolute path /opt/lemonade/lemonade-server directly or via wrapper"
 fi
 
 # ---------------------------------------------------------------------------
@@ -109,6 +110,19 @@ elif grep -q "$AMD_LEMONADE_IMAGE" extensions/services/llama-server/Dockerfile.a
 else
     fail "Dockerfile.amd: no matching Lemonade image reference found"
 fi
+
+# ---------------------------------------------------------------------------
+# 7b. Dockerfile.amd scopes Lemonade image ARG before first FROM
+# ---------------------------------------------------------------------------
+echo "[contract] Dockerfile.amd scopes Lemonade image ARG before FROM"
+_first_from=$(grep -n '^FROM ' extensions/services/llama-server/Dockerfile.amd | head -1 | cut -d: -f1)
+_lemonade_arg=$(grep -n '^ARG LEMONADE_SERVER_IMAGE=' extensions/services/llama-server/Dockerfile.amd | head -1 | cut -d: -f1)
+if [[ -n "$_first_from" && -n "$_lemonade_arg" && "$_lemonade_arg" -lt "$_first_from" ]]; then
+    pass "Dockerfile.amd: LEMONADE_SERVER_IMAGE declared before first FROM"
+else
+    fail "Dockerfile.amd: LEMONADE_SERVER_IMAGE must be declared before first FROM for later FROM use"
+fi
+unset _first_from _lemonade_arg
 
 # ---------------------------------------------------------------------------
 # 8. Context size is configurable

@@ -144,6 +144,30 @@ class TestCalculateFeatureStatusGeneral:
         assert result["status"] == "enabled"
         assert result["enabled"] is True
 
+    def test_preserves_launch_and_enabled_service_metadata(self):
+        from routers.features import calculate_feature_status
+        from models import GPUInfo
+
+        gpu = GPUInfo(
+            name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
+            memory_percent=8.3, utilization_percent=35, temperature_c=62,
+            gpu_backend="nvidia",
+        )
+        feature = self._make_feature(
+            vram_gb=8,
+            services=["llama-server"],
+            enabled_all=["llama-server"],
+        )
+        feature["launch"] = {"type": "service", "service": "open-webui"}
+        services = [self._make_service_status("llama-server", "healthy")]
+
+        with patch("routers.features.GPU_BACKEND", "nvidia"):
+            result = calculate_feature_status(feature, services, gpu)
+
+        assert result["enabledServicesAll"] == ["llama-server"]
+        assert result["enabledServicesAny"] == []
+        assert result["launch"] == {"type": "service", "service": "open-webui"}
+
     def test_insufficient_vram(self):
         from routers.features import calculate_feature_status
         from models import GPUInfo
@@ -223,6 +247,32 @@ class TestFeatureEnableInstructions:
         assert data["featureId"] == "chat"
         assert "instructions" in data
         assert "steps" in data["instructions"]
+
+    def test_instruction_links_use_request_host(self, test_client, monkeypatch):
+        test_features = [
+            {"id": "documents", "name": "Documents", "description": "Document Q&A",
+             "icon": "FileText", "category": "productivity",
+             "setup_time": "2 min", "priority": 3,
+             "requirements": {"vram_gb": 0, "services": [], "services_any": []},
+             "enabled_services_all": [], "enabled_services_any": []}
+        ]
+        monkeypatch.setattr("routers.features.FEATURES", test_features)
+        monkeypatch.setattr(
+            "routers.features.SERVICES",
+            {"open-webui": {"external_port": 3000}},
+        )
+
+        resp = test_client.get(
+            "/api/features/documents/enable",
+            headers={**test_client.auth_headers, "host": "dashboard.dream.local:3001"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["instructions"]["links"][0] == {
+            "label": "Open Chat",
+            "url": "http://dashboard.dream.local:3000",
+        }
 
     def test_404_for_unknown_feature(self, test_client, monkeypatch):
         monkeypatch.setattr("routers.features.FEATURES", [])

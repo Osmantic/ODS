@@ -164,6 +164,17 @@
           "enabled_services_any": { "type": "array", "items": { "type": "string" } },
           "setup_time": { "type": "string" },
           "priority": { "type": "integer", "minimum": 1 },
+          "launch": {
+            "type": "object",
+            "description": "Dashboard feature-card launch target. Use type=service for user-facing service UIs, internal for dashboard routes, and none for backend/API-only features.",
+            "required": ["type"],
+            "properties": {
+              "type": { "type": "string", "enum": ["service", "internal", "none"] },
+              "service": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+              "path": { "type": "string", "pattern": "^/.*" }
+            },
+            "additionalProperties": false
+          },
           "gpu_backends": {
             "type": "array",
             "items": { "type": "string", "enum": ["amd", "nvidia", "apple", "cpu", "none", "all"] },

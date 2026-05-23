@@ -332,7 +332,7 @@ else
 
             if [[ "$_dl_success" != "true" ]]; then
                 printf "\r  ${RED}✗${NC} %-60s\n" "Download failed after 3 attempts: $GGUF_FILE"
-                ai "Manual retry: curl -fSL -C - -o '$GGUF_DIR/$GGUF_FILE.part' '$GGUF_URL' && mv '$GGUF_DIR/$GGUF_FILE.part' '$GGUF_DIR/$GGUF_FILE'"
+                ai "Manual retry: curl -fSL -C - --connect-timeout 30 --max-time 3600 --retry 3 --retry-delay 5 --retry-all-errors -o '$GGUF_DIR/$GGUF_FILE.part' '$GGUF_URL' && mv '$GGUF_DIR/$GGUF_FILE.part' '$GGUF_DIR/$GGUF_FILE'"
             else
                 # Verify freshly downloaded file
                 if [[ -n "$GGUF_SHA256" ]]; then
@@ -565,6 +565,29 @@ MODELS_INI_EOF
                 warn "Hermes template substitution didn't take effect — Hermes may 404 every chat completion. Hand-edit $_hermes_tpl after install if Hermes prompts hang."
             fi
         fi
+
+        # Render data/persona/SOUL.md = static persona + dynamic installation
+        # context (GPU backend, model, running services, reachable URLs). The
+        # Hermes compose bind-mounts this file as /opt/hermes/docker/SOUL.md
+        # so the agent introspects truthfully when asked about its own
+        # environment instead of inventing capabilities.
+        #
+        # docker ps right here may return nothing useful (services aren't up
+        # until later in this phase), but the script still emits a valid
+        # SOUL.md with the static parts intact. `dream restart hermes`
+        # regenerates it once services are running.
+        _soul_builder="$INSTALL_DIR/scripts/build-installation-context.py"
+        _soul_output="$INSTALL_DIR/data/persona/SOUL.md"
+        _soul_template="$INSTALL_DIR/extensions/services/hermes/SOUL.md.template"
+        mkdir -p "$(dirname "$_soul_output")"
+        if [[ -n "$_python_cmd" && -f "$_soul_builder" ]]; then
+            "$_python_cmd" "$_soul_builder" >>"$LOG_FILE" 2>&1 || \
+                warn "Could not generate Hermes installation-context SOUL.md (non-fatal — Hermes will use the template's default text)"
+        fi
+        if [[ ! -f "$_soul_output" && -f "$_soul_template" ]]; then
+            sed '/<!-- INSTALLATION_CONTEXT -->/d' "$_soul_template" >"$_soul_output" || \
+                warn "Could not create fallback Hermes SOUL.md at $_soul_output"
+        fi
     fi
 
     # Validate service dependencies before launching
@@ -769,6 +792,24 @@ except Exception:
         printf "\r  ${BGRN}✓${NC} %-60s\n" "All containers launched"
         echo ""
         ai_ok "Services started (llama-server)"
+
+        # Re-render data/persona/SOUL.md now that services are actually
+        # running — the first pass earlier in this phase happened pre-
+        # compose-up, so its docker ps was empty. The persona's "About
+        # this installation" section needs to reflect what's actually
+        # reachable, not the pre-launch state. Hermes reads from
+        # /opt/data/SOUL.md at session time; because macOS Docker Desktop
+        # rejects the old nested bind mount, copy the generated file into
+        # the running container instead.
+        if [[ -n "${_python_cmd:-}" ]] && [[ -f "$INSTALL_DIR/scripts/build-installation-context.py" ]]; then
+            "$_python_cmd" "$INSTALL_DIR/scripts/build-installation-context.py" >>"$LOG_FILE" 2>&1 || \
+                warn "Installation-context SOUL.md regen failed post-launch (non-fatal — earlier static SOUL.md is in place)"
+            if $DOCKER_CMD ps --format '{{.Names}}' 2>/dev/null | grep -qx 'dream-hermes'; then
+                $DOCKER_CMD exec dream-hermes cp /opt/hermes/docker/SOUL.md /opt/data/SOUL.md \
+                    >>"$LOG_FILE" 2>&1 || \
+                    warn "Could not sync installation-context SOUL.md into running Hermes container"
+            fi
+        fi
     else
         printf "\r  ${RED}✗${NC} %-60s\n" "Some containers failed to launch"
         echo ""

@@ -11,9 +11,10 @@ services:
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${TOKEN_SPY_PORT:-3005}:8080"
     volumes:
-      - ./data/token-spy:/app/data
+      - ./data/token-spy:/app/data:z
     environment:
       - OLLAMA_URL=${LLM_API_URL:-http://llama-server:8080}
+      - TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY:-}
     deploy:
       resources:
         limits:

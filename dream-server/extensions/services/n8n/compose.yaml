@@ -15,8 +15,8 @@ services:
       - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678}
       - GENERIC_TIMEZONE=${TIMEZONE:-UTC}
     volumes:
-      - ./data/n8n:/home/node/.n8n
-      - ./config/n8n:/home/node/workflows
+      - ./data/n8n:/home/node/.n8n:z
+      - ./config/n8n:/home/node/workflows:z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${N8N_PORT:-5678}:5678"
     deploy:
