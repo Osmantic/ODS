@@ -14,12 +14,16 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 from fastapi import APIRouter, Depends, Query
 
+from config import EXTENSIONS_DIR, SERVICES, USER_EXTENSIONS_DIR
+from helpers import check_service_health, get_cached_services
 from security import verify_api_key
 
 router = APIRouter(prefix="/api/usage", tags=["usage"])
 
+TOKEN_SPY_SERVICE_ID = "token-spy"
 TOKEN_SPY_URL = os.environ.get("TOKEN_SPY_URL", "http://token-spy:8080")
 TOKEN_SPY_API_KEY = os.environ.get("TOKEN_SPY_API_KEY", "")
 TOKEN_SPY_KEY_FILE = Path(os.environ.get("TOKEN_SPY_KEY_FILE", "/data/token-spy/token-spy-api-key.txt"))
@@ -85,6 +89,226 @@ def _empty_report(start: str, end: str, status: str = "unavailable", detail: str
         "services": [],
         "sources": [],
     }
+
+
+def _token_spy_extension_state() -> dict[str, Any]:
+    """Return install-time state for the Token Spy extension files.
+
+    This is intentionally filesystem-based instead of Docker-based: it works
+    the same when dashboard-api runs inside Linux containers on Windows/WSL,
+    macOS, or Linux, and leaves compose actions to the host-agent endpoints.
+    """
+    for source, base_dir in (
+        ("user", USER_EXTENSIONS_DIR),
+        ("builtin", EXTENSIONS_DIR),
+    ):
+        ext_dir = Path(base_dir) / TOKEN_SPY_SERVICE_ID
+        manifest = ext_dir / "manifest.yaml"
+        if not manifest.exists():
+            continue
+        compose = ext_dir / "compose.yaml"
+        disabled_compose = ext_dir / "compose.yaml.disabled"
+        return {
+            "source": source,
+            "path": str(ext_dir),
+            "installed": True,
+            "enabled": compose.exists(),
+            "disabled": disabled_compose.exists() and not compose.exists(),
+            "compose_file": str(compose) if compose.exists() else None,
+            "disabled_compose_file": str(disabled_compose) if disabled_compose.exists() else None,
+        }
+
+    return {
+        "source": None,
+        "path": None,
+        "installed": False,
+        "enabled": False,
+        "disabled": False,
+        "compose_file": None,
+        "disabled_compose_file": None,
+    }
+
+
+def _public_extension_state(extension_state: dict[str, Any]) -> dict[str, Any]:
+    """Return extension state safe for browser responses.
+
+    The readiness UI only needs booleans and source. Avoid returning absolute
+    install paths such as /home/<user>/dream-server/... to the browser.
+    """
+    return {
+        "source": extension_state.get("source"),
+        "installed": bool(extension_state.get("installed")),
+        "enabled": bool(extension_state.get("enabled")),
+        "disabled": bool(extension_state.get("disabled")),
+    }
+
+
+async def _token_spy_service_status() -> dict[str, Any] | None:
+    """Return Token Spy health from the dashboard service registry/cache."""
+    if TOKEN_SPY_SERVICE_ID not in SERVICES:
+        return None
+    services = get_cached_services()
+    service = _find_token_spy_service(services)
+    if service and service.get("status") == "healthy":
+        return service
+    # The shared cache can briefly lag behind container restarts. Refresh once
+    # before showing a recovery CTA so Usage does not report stale degraded
+    # state while Token Spy is already reachable.
+    refreshed = await check_service_health(
+        TOKEN_SPY_SERVICE_ID,
+        SERVICES[TOKEN_SPY_SERVICE_ID],
+        timeout=aiohttp.ClientTimeout(total=5),
+    )
+    return _service_status_to_dict(refreshed)
+
+
+def _find_token_spy_service(services: list[Any] | None) -> dict[str, Any] | None:
+    for service in services or []:
+        if getattr(service, "id", None) == TOKEN_SPY_SERVICE_ID:
+            return _service_status_to_dict(service)
+    return None
+
+
+def _service_status_to_dict(service: Any) -> dict[str, Any]:
+    return {
+        "id": service.id,
+        "name": service.name,
+        "status": service.status,
+        "port": service.port,
+        "external_port": getattr(service, "external_port", service.port),
+    }
+
+
+def _usage_action(url: str, label: str, description: str) -> dict[str, str]:
+    return {
+        "method": "POST",
+        "url": url,
+        "label": label,
+        "description": description,
+    }
+
+
+def _readiness_payload(
+    *,
+    status: str,
+    message: str,
+    detail: str | None,
+    extension_state: dict[str, Any],
+    service: dict[str, Any] | None,
+    actions: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    service_status = service.get("status") if service else "unknown"
+    enabled = bool(extension_state.get("enabled"))
+    healthy = service_status == "healthy"
+    configured = bool(TOKEN_SPY_URL)
+    return {
+        "service_id": TOKEN_SPY_SERVICE_ID,
+        "status": status,
+        "available": status == "ready",
+        "configured": configured,
+        "installed": bool(extension_state.get("installed")),
+        "enabled": enabled,
+        "healthy": healthy,
+        "service_status": service_status,
+        "message": message,
+        "detail": detail,
+        "extension": _public_extension_state(extension_state),
+        "service": service,
+        "actions": actions,
+    }
+
+
+@router.get("/readiness")
+async def usage_readiness(api_key: str = Depends(verify_api_key)):
+    """Return Usage/Token Spy readiness and safe operator actions.
+
+    The browser should not guess compose state or run platform-specific
+    commands. This endpoint reports the state from DreamServer's manifests and
+    service health cache, then points the UI at existing enable/restart APIs.
+    """
+    del api_key
+    extension_state = _token_spy_extension_state()
+    service = await _token_spy_service_status()
+    actions: dict[str, dict[str, str]] = {}
+
+    if not extension_state["installed"]:
+        return _readiness_payload(
+            status="missing",
+            message="Usage tracking files are missing.",
+            detail="Token Spy was not found in the installed extensions directory. Update or reinstall DreamServer to restore usage tracking.",
+            extension_state=extension_state,
+            service=service,
+            actions=actions,
+        )
+
+    if not TOKEN_SPY_URL:
+        return _readiness_payload(
+            status="unconfigured",
+            message="Usage tracking is installed but not configured.",
+            detail="TOKEN_SPY_URL is empty, so Dashboard API cannot query Token Spy.",
+            extension_state=extension_state,
+            service=service,
+            actions=actions,
+        )
+
+    enable_action = _usage_action(
+        "/api/extensions/token-spy/enable?auto_enable_deps=true",
+        "Enable Usage Tracking",
+        "Enable Token Spy in the active compose plan and ask DreamServer to start it.",
+    )
+    restart_action = _usage_action(
+        "/api/services/token-spy/restart",
+        "Restart Token Spy",
+        "Restart the Token Spy container through the DreamServer host agent.",
+    )
+
+    if extension_state["disabled"]:
+        actions["enable"] = enable_action
+        return _readiness_payload(
+            status="disabled",
+            message="Usage tracking is not enabled for this stack.",
+            detail="Enable Token Spy to collect future token, request, and cost-source telemetry. Existing data remains unchanged.",
+            extension_state=extension_state,
+            service=service,
+            actions=actions,
+        )
+
+    if not extension_state["enabled"]:
+        actions["enable"] = enable_action
+        return _readiness_payload(
+            status="not_deployed",
+            message="Usage tracking is installed but not deployed.",
+            detail="Token Spy has no active compose file in this install. Enable it from here or from Extensions.",
+            extension_state=extension_state,
+            service=service,
+            actions=actions,
+        )
+
+    if service and service.get("status") == "healthy":
+        return _readiness_payload(
+            status="ready",
+            message="Usage tracking is ready.",
+            detail=None,
+            extension_state=extension_state,
+            service=service,
+            actions={"restart": restart_action},
+        )
+
+    actions["enable"] = _usage_action(
+        "/api/extensions/token-spy/enable?auto_enable_deps=true",
+        "Start Usage Tracking",
+        "Ask DreamServer to include and start Token Spy from the current compose plan.",
+    )
+    actions["restart"] = restart_action
+    status = service.get("status") if service else "unknown"
+    return _readiness_payload(
+        status="offline",
+        message="Usage tracking is enabled but not healthy.",
+        detail=f"Token Spy service status is {status}. Start or restart it, then refresh this page.",
+        extension_state=extension_state,
+        service=service,
+        actions=actions,
+    )
 
 
 def _token_spy_api_key() -> str:

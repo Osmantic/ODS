@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Usage from './Usage' // eslint-disable-line no-unused-vars
 
@@ -130,6 +130,66 @@ const previousReport = {
   sources: [],
 }
 
+const readyReadiness = {
+  service_id: 'token-spy',
+  status: 'ready',
+  available: true,
+  configured: true,
+  installed: true,
+  enabled: true,
+  healthy: true,
+  service_status: 'healthy',
+  message: 'Usage tracking is ready.',
+  detail: null,
+  actions: {
+    restart: {
+      method: 'POST',
+      url: '/api/services/token-spy/restart',
+      label: 'Restart Token Spy',
+    },
+  },
+}
+
+const disabledReadiness = {
+  service_id: 'token-spy',
+  status: 'disabled',
+  available: false,
+  configured: true,
+  installed: true,
+  enabled: false,
+  healthy: false,
+  service_status: 'unknown',
+  message: 'Usage tracking is not enabled for this stack.',
+  detail: 'Enable Token Spy to collect future token, request, and cost-source telemetry.',
+  actions: {
+    enable: {
+      method: 'POST',
+      url: '/api/extensions/token-spy/enable?auto_enable_deps=true',
+      label: 'Enable Usage Tracking',
+    },
+  },
+}
+
+const offlineReadiness = {
+  service_id: 'token-spy',
+  status: 'offline',
+  available: false,
+  configured: true,
+  installed: true,
+  enabled: true,
+  healthy: false,
+  service_status: 'down',
+  message: 'Usage tracking is enabled but not healthy.',
+  detail: 'Token Spy service status is down. Start or restart it, then refresh this page.',
+  actions: {
+    restart: {
+      method: 'POST',
+      url: '/api/services/token-spy/restart',
+      label: 'Restart Token Spy',
+    },
+  },
+}
+
 function makeEmptyReport(start = '2026-05-01', end = '2026-05-31') {
   return {
     period: { start, end },
@@ -156,9 +216,26 @@ function makeEmptyReport(start = '2026-05-01', end = '2026-05-31') {
   }
 }
 
-function installFetchMock({ current = currentReport, previous = previousReport } = {}) {
-  vi.stubGlobal('fetch', vi.fn(async (url) => {
-    const value = String(url).includes('start=2026-04-01') ? previous : current
+function installFetchMock({
+  current = currentReport,
+  previous = previousReport,
+  readiness = readyReadiness,
+} = {}) {
+  vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
+    const text = String(url)
+    if (options.method === 'POST') {
+      return {
+        ok: true,
+        json: async () => ({ message: 'Action accepted' }),
+      }
+    }
+    if (text.includes('/api/usage/readiness')) {
+      return {
+        ok: true,
+        json: async () => readiness,
+      }
+    }
+    const value = text.includes('start=2026-04-01') ? previous : current
     return {
       ok: true,
       json: async () => value,
@@ -200,10 +277,14 @@ describe('Usage page', () => {
   })
 
   it('keeps the layout honest when Token Spy has no data', async () => {
-    installFetchMock({ current: makeEmptyReport(), previous: makeEmptyReport('2026-04-01', '2026-04-30') })
+    installFetchMock({
+      current: makeEmptyReport(),
+      previous: makeEmptyReport('2026-04-01', '2026-04-30'),
+      readiness: disabledReadiness,
+    })
     render(<Usage status={{}} />)
 
-    expect(await screen.findByText('Token Spy unavailable')).toBeInTheDocument()
+    expect(await screen.findByText('Usage tracking is not enabled for this stack.')).toBeInTheDocument()
     expect(screen.getAllByText('$0.00')[0]).toBeInTheDocument()
     expect(screen.getAllByText('No tracked usage for this period')[0]).toBeInTheDocument()
     expect(screen.queryByText('$77.67')).not.toBeInTheDocument()
@@ -264,5 +345,39 @@ describe('Usage page', () => {
     const row = screen.getByText('unknown-model').closest('div.grid')
     expect(within(row).getByText('untracked')).toBeInTheDocument()
     expect(within(row).getByText('-')).toBeInTheDocument()
+  })
+
+  it('offers a safe enable action when Token Spy is installed but disabled', async () => {
+    installFetchMock({
+      current: makeEmptyReport(),
+      previous: makeEmptyReport('2026-04-01', '2026-04-30'),
+      readiness: disabledReadiness,
+    })
+    render(<Usage status={{}} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Enable Usage Tracking/i }))
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        '/api/extensions/token-spy/enable?auto_enable_deps=true',
+        { method: 'POST' },
+      )
+    })
+    expect(await screen.findByText('Action accepted')).toBeInTheDocument()
+  })
+
+  it('offers a restart action when Token Spy is enabled but unhealthy', async () => {
+    installFetchMock({
+      current: makeEmptyReport(),
+      previous: makeEmptyReport('2026-04-01', '2026-04-30'),
+      readiness: offlineReadiness,
+    })
+    render(<Usage status={{}} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Restart Token Spy/i }))
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith('/api/services/token-spy/restart', { method: 'POST' })
+    })
   })
 })

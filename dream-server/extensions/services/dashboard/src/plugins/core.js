@@ -71,10 +71,8 @@ export const coreRoutes = [
     sidebar: true,
     order: 3,
   },
-  // Setup / Owner is reachable from Settings rather than the top-level
-  // sidebar. It is a factory/distributor/service-provider flow, not a
-  // day-to-day dashboard surface. Direct URLs still work for bookmarks and
-  // for the magic-link redemption page which renders inside this dashboard.
+  // Usage is a day-to-day operations surface. Setup / Owner stays in Settings
+  // because it is a factory/distributor/service-provider flow, not normal daily use.
   {
     id: 'usage',
     path: '/usage',
