@@ -237,6 +237,13 @@ def _build_services(env: dict[str, str], device_name: str, ip: str) -> list[Serv
         # upstream container isn't running, which is the right failure
         # mode for an optional extension.
         ("hermes",    "Hermes Agent (via proxy)"),
+        # talk.<device>.local is the owner-card redemption target for the
+        # mobile portal added in #1319. magic_link.py's _talk_url() points
+        # phones at this hostname; dream-proxy's Caddy block routes it to
+        # the dashboard container's /talk route. Without an A record here
+        # the redirect lands the phone on an unresolvable host and the
+        # owner experience stalls on a white screen.
+        ("talk",      "Dream Talk (mobile owner portal)"),
     )
     for suffix, label in subdomain_routes:
         server = f"{device_name}.local." if suffix == "root" else f"{suffix}.{device_name}.local."

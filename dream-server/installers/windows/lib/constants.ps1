@@ -10,7 +10,7 @@
 #   Change DS_VERSION for custom builds. Must match constants.sh VERSION.
 # ============================================================================
 
-$script:DS_VERSION = "2.4.0"
+$script:DS_VERSION = "2.5.0"
 
 # Install location (override via $env:DREAM_HOME)
 # NOTE: $(if ...) syntax required for PS 5.1 compatibility (bare if-as-expression is PS 7+ only)

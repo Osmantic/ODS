@@ -11,7 +11,7 @@
 #   Change DS_VERSION for custom builds. Must match constants.sh VERSION.
 # ============================================================================
 
-DS_VERSION="2.4.0"
+DS_VERSION="2.5.0"
 
 # Install location - use shared path resolution if available.
 # constants.sh lives at two different depths depending on layout:

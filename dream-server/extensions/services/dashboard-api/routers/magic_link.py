@@ -1,24 +1,23 @@
-"""Magic-link auth — generate single-use URLs for granting chat access.
+"""Magic-link auth - generate QR-friendly URLs for owner and guest access.
 
-Phase 1 of the magic-link work: provides the storage, lifecycle, and redemption
-plumbing. Redemption today sets an audited dashboard-api session cookie and
-redirects to the chat surface; deeper Open WebUI session bridging (so the
-redeemed user lands already-logged-in to chat) is a follow-up PR — see
-the PR description.
+Provides the storage, lifecycle, and redemption plumbing for temporary guest
+links and revoke-only owner cards. Redemption sets an audited dashboard-api
+session cookie and redirects to the token's target surface.
 
 Endpoints:
   POST   /api/auth/magic-link/generate   admin → create token, return URL + QR data
-  GET    /auth/magic-link/{token}        public → redeem, set cookie, 302 to chat
+  GET    /auth/magic-link/{token}        public -> redeem, set cookie, 302 to target
   GET    /api/auth/magic-link/list       admin → pending + recently-redeemed
   DELETE /api/auth/magic-link/{token}    admin → revoke
 
 Security posture:
   * Tokens are 32 url-safe bytes from secrets.token_urlsafe; only the SHA-256
     hash is persisted — plaintext lives in memory only during generation.
-  * Redemption is single-use by default; reusable=True marks a token as
+  * Guest redemption is single-use by default; reusable=True marks a token as
     shareable (e.g. a family invite poster) and tracks each redemption in the
     audit trail.
-  * 60-minute default expiry; configurable per-token (60s minimum, 24h max).
+  * Guest tokens have a 60-minute default expiry; owner tokens are reusable
+    until revoked and never returned by the list API in plaintext.
   * Rate-limit on redemption: 5 failed attempts per remote IP per minute.
   * Cookie issued is HttpOnly + SameSite=Lax + Secure when HTTPS. Default
     host-based links set Domain=<device>.local so redemption on auth.<device>.local
@@ -63,7 +62,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 import session_signer
 from security import verify_api_key
@@ -112,18 +111,28 @@ class GenerateRequest(BaseModel):
     )
     scope: str = Field(
         default="chat",
-        pattern=r"^chat$",
-        description="Magic links currently grant chat access only. Wider scopes require scoped session enforcement.",
+        pattern=r"^(chat|hermes)$",
+        description="Redirect target after redemption. chat lands in Open WebUI; hermes lands in the Hermes Agent.",
     )
-    expires_in: int = Field(
-        default=DEFAULT_EXPIRY_SECONDS,
+    expires_in: Optional[int] = Field(
+        default=None,
         ge=MIN_EXPIRY_SECONDS,
         le=MAX_EXPIRY_SECONDS,
-        description="Token validity in seconds.",
+        description="Guest token validity in seconds. Owner tokens are revoke-only and must omit this.",
     )
     reusable: bool = Field(
         default=False,
         description="When True, the token can be redeemed multiple times until expiry. Useful for family/share-poster invites.",
+    )
+    token_type: str = Field(
+        default="guest",
+        pattern=r"^(guest|owner)$",
+        description="guest tokens expire; owner tokens are reusable until manually revoked.",
+    )
+    url_mode: str = Field(
+        default="auto",
+        pattern=r"^(auto|lan|public)$",
+        description="auto uses the normal URL policy; lan forces .local URLs; public uses DREAM_PUBLIC_URL when configured.",
     )
     note: Optional[str] = Field(
         default=None,
@@ -136,14 +145,40 @@ class GenerateRequest(BaseModel):
     def _strip_username(cls, v: str) -> str:
         return v.strip()
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_lifecycle(cls, data):
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        token_type = normalized.get("token_type") or "guest"
+        normalized["token_type"] = token_type
+
+        if token_type == "owner":
+            if normalized.get("expires_in") is not None:
+                raise ValueError("owner tokens are revoke-only; omit expires_in")
+            normalized["scope"] = normalized.get("scope") or "hermes"
+            normalized["reusable"] = True
+            if normalized.get("url_mode") in (None, "auto"):
+                normalized["url_mode"] = "lan"
+        else:
+            normalized["scope"] = normalized.get("scope") or "chat"
+            if normalized.get("expires_in") is None:
+                normalized["expires_in"] = DEFAULT_EXPIRY_SECONDS
+            normalized["url_mode"] = normalized.get("url_mode") or "auto"
+
+        return normalized
+
 
 class GenerateResponse(BaseModel):
     token: str  # plaintext — returned ONCE on generation, never persisted in cleartext
     url: str
-    expires_at: str
+    expires_at: Optional[str]
     target_username: str
     scope: str
     reusable: bool
+    token_type: str
+    url_mode: str
 
 
 class TokenSummary(BaseModel):
@@ -151,8 +186,10 @@ class TokenSummary(BaseModel):
     target_username: str
     scope: str
     reusable: bool
+    token_type: str
+    url_mode: str
     created_at: str
-    expires_at: str
+    expires_at: Optional[str]
     redemption_count: int
     last_redeemed_at: Optional[str]
     revoked_at: Optional[str]
@@ -196,7 +233,42 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalize_record(record: dict) -> dict:
+    """Fill defaults for records created before owner onboarding existed."""
+    token_type = record.get("token_type") or "guest"
+    if token_type not in {"guest", "owner"}:
+        token_type = "guest"
+    record["token_type"] = token_type
+
+    scope = record.get("scope") or "chat"
+    if scope not in {"chat", "hermes"}:
+        scope = "chat"
+    record["scope"] = scope
+
+    url_mode = record.get("url_mode") or "auto"
+    if url_mode not in {"auto", "lan", "public"}:
+        url_mode = "auto"
+    if token_type == "owner" and url_mode == "auto":
+        url_mode = "lan"
+    record["url_mode"] = url_mode
+
+    if token_type == "owner":
+        record["reusable"] = True
+        record["expires_at"] = None
+    else:
+        record["reusable"] = bool(record.get("reusable", False))
+
+    if not isinstance(record.get("redemptions"), list):
+        record["redemptions"] = []
+    record.setdefault("note", None)
+    record.setdefault("revoked_at", None)
+    return record
+
+
 def _is_expired(token_record: dict, now: Optional[datetime] = None) -> bool:
+    token_record = _normalize_record(token_record)
+    if token_record["token_type"] == "owner" or not token_record.get("expires_at"):
+        return False
     now = now or datetime.now(timezone.utc)
     expires_at = datetime.fromisoformat(token_record["expires_at"])
     return now >= expires_at
@@ -207,6 +279,7 @@ def _prune(store: dict) -> dict:
     now = datetime.now(timezone.utc)
     keep = []
     for record in store.get("tokens", []):
+        record = _normalize_record(record)
         # Always keep revoked or recently-redeemed records for audit.
         if record.get("revoked_at"):
             keep.append(record)
@@ -311,20 +384,23 @@ def _public_base() -> str:
     return (os.environ.get("DREAM_PUBLIC_URL") or "").rstrip("/")
 
 
-def _auth_url() -> str:
+def _use_public_url(url_mode: str = "auto") -> bool:
+    return url_mode != "lan" and bool(_public_base())
+
+
+def _auth_url(url_mode: str = "auto") -> str:
     """Origin where magic-link redemption (this service) is reached.
 
     Default: http://auth.<DREAM_DEVICE_NAME>.local — the dream-proxy
     on :80 with Host: auth.<name>.local routes to dashboard-api.
     DREAM_PUBLIC_URL overrides for tunneled / non-mDNS deployments.
     """
-    override = _public_base()
-    if override:
-        return override
+    if _use_public_url(url_mode):
+        return _public_base()
     return f"http://auth.{_device_name()}.local"
 
 
-def _chat_url() -> str:
+def _chat_url(url_mode: str = "auto") -> str:
     """Where a successful redemption redirects to (Open WebUI via proxy).
 
     Default: http://chat.<DREAM_DEVICE_NAME>.local. Cookie set by
@@ -332,15 +408,42 @@ def _chat_url() -> str:
     across to the chat subdomain — that's how single-redemption SSO
     works without identity claims in the cookie.
     """
-    override = _public_base()
-    if override:
+    if _use_public_url(url_mode):
         # When DREAM_PUBLIC_URL is overridden, assume /chat is the chat
         # path on that origin (mirrors WEBUI_URL=…/chat for tunnel users).
-        return f"{override}/chat"
+        return f"{_public_base()}/chat"
     return f"http://chat.{_device_name()}.local"
 
 
-def _magic_link_url(token: str) -> str:
+def _hermes_url(url_mode: str = "auto") -> str:
+    """Where a successful Hermes redemption redirects."""
+    if _use_public_url(url_mode):
+        return f"{_public_base()}/hermes"
+    return f"http://hermes.{_device_name()}.local"
+
+
+def _talk_url(url_mode: str = "auto") -> str:
+    """Where a successful owner-card redemption redirects.
+
+    Dream Talk is served by the dashboard container but presented as its own
+    phone-first host so owner cards don't land consumers in the advanced
+    Hermes interface.
+    """
+    if _use_public_url(url_mode):
+        return f"{_public_base()}/talk"
+    return f"http://talk.{_device_name()}.local/talk"
+
+
+def _redirect_url(record: dict) -> str:
+    record = _normalize_record(record)
+    if record["scope"] == "hermes":
+        if record["token_type"] == "owner":
+            return _talk_url(record["url_mode"])
+        return _hermes_url(record["url_mode"])
+    return _chat_url(record["url_mode"])
+
+
+def _magic_link_url(token: str, url_mode: str = "auto") -> str:
     """Public URL the user scans/clicks to redeem.
 
     Default: http://auth.<DREAM_DEVICE_NAME>.local/magic-link/<token>.
@@ -348,17 +451,17 @@ def _magic_link_url(token: str) -> str:
     Domain=<DREAM_DEVICE_NAME>.local so it's also sent to
     chat.<name>.local, hermes.<name>.local, etc. (subdomain SSO).
     """
-    base = _auth_url().rstrip("/")
+    base = _auth_url(url_mode).rstrip("/")
     # When using the override (DREAM_PUBLIC_URL), preserve the /auth/
     # prefix that the dream-proxy historically routed to dashboard-api.
     # When using the default subdomain, no /auth/ prefix is needed
     # since auth.<name>.local already targets dashboard-api at root.
-    if _public_base():
+    if _use_public_url(url_mode):
         return f"{base}/auth/magic-link/{token}"
     return f"{base}/magic-link/{token}"
 
 
-def _cookie_domain() -> Optional[str]:
+def _cookie_domain(url_mode: str = "auto") -> Optional[str]:
     """Cookie Domain attribute. Empty/None = host-only cookie.
 
     DREAM_COOKIE_DOMAIN can override the parent domain used for subdomain SSO.
@@ -370,7 +473,7 @@ def _cookie_domain() -> Optional[str]:
     raw = (os.environ.get("DREAM_COOKIE_DOMAIN") or "").strip()
     if raw:
         return raw
-    if _public_base():
+    if _use_public_url(url_mode):
         return None
     return f"{_device_name()}.local"
 
@@ -381,17 +484,28 @@ def _cookie_domain() -> Optional[str]:
 @router.post("/api/auth/magic-link/generate", dependencies=[Depends(verify_api_key)])
 def generate_magic_link(payload: GenerateRequest, request: Request) -> GenerateResponse:
     """Create a new magic link. Admin-only (verify_api_key)."""
+    if payload.url_mode == "public" and not _public_base():
+        raise HTTPException(
+            status_code=400,
+            detail="url_mode=public requires DREAM_PUBLIC_URL to be configured",
+        )
     token = secrets.token_urlsafe(32)
     token_hash = _hash_token(token)
     created_at = datetime.now(timezone.utc)
-    expires_at = created_at + timedelta(seconds=payload.expires_in)
+    expires_at = (
+        None
+        if payload.token_type == "owner"
+        else created_at + timedelta(seconds=payload.expires_in or DEFAULT_EXPIRY_SECONDS)
+    )
     record = {
         "token_hash": token_hash,
         "target_username": payload.target_username,
         "scope": payload.scope,
         "reusable": payload.reusable,
+        "token_type": payload.token_type,
+        "url_mode": payload.url_mode,
         "created_at": created_at.isoformat(),
-        "expires_at": expires_at.isoformat(),
+        "expires_at": expires_at.isoformat() if expires_at else None,
         "created_by_ip": _client_ip(request),
         "redemptions": [],
         "revoked_at": None,
@@ -402,19 +516,21 @@ def generate_magic_link(payload: GenerateRequest, request: Request) -> GenerateR
         store["tokens"].append(record)
         _write_store(store)
 
-    url = _magic_link_url(token)
+    url = _magic_link_url(token, payload.url_mode)
     logger.info(
-        "magic-link generated for target=%s scope=%s reusable=%s expires_in=%ds",
-        payload.target_username, payload.scope, payload.reusable, payload.expires_in,
+        "magic-link generated for target=%s type=%s scope=%s reusable=%s expires_at=%s",
+        payload.target_username, payload.token_type, payload.scope, payload.reusable, record["expires_at"],
     )
 
     return GenerateResponse(
         token=token,
         url=url,
-        expires_at=expires_at.isoformat(),
+        expires_at=expires_at.isoformat() if expires_at else None,
         target_username=payload.target_username,
         scope=payload.scope,
         reusable=payload.reusable,
+        token_type=payload.token_type,
+        url_mode=payload.url_mode,
     )
 
 
@@ -483,6 +599,7 @@ def redeem_magic_link(token: str, request: Request, response: Response) -> Redir
         if record is None:
             _record_failure(ip)
             raise HTTPException(status_code=404, detail="Invalid or expired magic link")
+        record = _normalize_record(record)
         if record.get("revoked_at"):
             _record_failure(ip)
             raise HTTPException(status_code=404, detail="Invalid or expired magic link")
@@ -492,6 +609,7 @@ def redeem_magic_link(token: str, request: Request, response: Response) -> Redir
         if record["redemptions"] and not record.get("reusable", False):
             _record_failure(ip)
             raise HTTPException(status_code=404, detail="Invalid or expired magic link")
+        redirect_to = _redirect_url(record)
 
         # Success — record the redemption and persist.
         user_agent = request.headers.get("user-agent", "")[:200]
@@ -507,11 +625,11 @@ def redeem_magic_link(token: str, request: Request, response: Response) -> Redir
     # don't reach this line without a usable secret.
     session_token = session_signer.issue(ttl_seconds=SESSION_TTL_SECONDS)
     secure_cookie = request.url.scheme == "https"
-    cookie_domain = _cookie_domain()
+    cookie_domain = _cookie_domain(record.get("url_mode", "auto"))
 
     logger.info(
-        "magic-link redeemed target=%s scope=%s ip=%s redirecting=%s",
-        record["target_username"], record["scope"], ip, redirect_to,
+        "magic-link redeemed target=%s type=%s scope=%s ip=%s redirecting=%s",
+        record["target_username"], record["token_type"], record["scope"], ip, redirect_to,
     )
 
     redirect = RedirectResponse(url=redirect_to, status_code=302)
@@ -561,13 +679,16 @@ def list_magic_links() -> dict:
         _write_store(store)  # persist pruning
         out: list[TokenSummary] = []
         for r in store.get("tokens", []):
+            r = _normalize_record(r)
             out.append(TokenSummary(
                 token_hash_prefix=r["token_hash"][:8],
                 target_username=r["target_username"],
                 scope=r["scope"],
                 reusable=r.get("reusable", False),
+                token_type=r["token_type"],
+                url_mode=r["url_mode"],
                 created_at=r["created_at"],
-                expires_at=r["expires_at"],
+                expires_at=r.get("expires_at"),
                 redemption_count=len(r.get("redemptions", [])),
                 last_redeemed_at=(r["redemptions"][-1]["at"] if r.get("redemptions") else None),
                 revoked_at=r.get("revoked_at"),

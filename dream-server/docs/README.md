@@ -19,7 +19,8 @@ at [`../../README.md`](../../README.md).
 | Change installer behavior | [INSTALLER-ARCHITECTURE.md](INSTALLER-ARCHITECTURE.md) | [BACKEND-CONTRACT.md](BACKEND-CONTRACT.md), [PREFLIGHT-ENGINE.md](PREFLIGHT-ENGINE.md) |
 | Change model routing | [MODEL-MANAGEMENT.md](MODEL-MANAGEMENT.md) | [MODE-SWITCH.md](MODE-SWITCH.md), [BACKEND-CONTRACT.md](BACKEND-CONTRACT.md) |
 | Add or harden a service | [EXTENSIONS.md](EXTENSIONS.md) | [../extensions/CATALOG.md](../extensions/CATALOG.md), [../extensions/schema/README.md](../extensions/schema/README.md) |
-| Review a PR | [../CONTRIBUTING.md](../CONTRIBUTING.md) | [TESTING.md](TESTING.md), [PLATFORM-TRUTH-TABLE.md](PLATFORM-TRUTH-TABLE.md) |
+| Build a custom edition or fork | [BUILD-ON-DREAM-SERVER.md](BUILD-ON-DREAM-SERVER.md) | [EXTENSIONS.md](EXTENSIONS.md), [INSTALLER-ARCHITECTURE.md](INSTALLER-ARCHITECTURE.md), [../extensions/templates/README.md](../extensions/templates/README.md) |
+| Review a PR | [../CONTRIBUTING.md](../CONTRIBUTING.md) | [TESTING.md](TESTING.md), [PLATFORM-TRUTH-TABLE.md](PLATFORM-TRUTH-TABLE.md), [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) |
 
 ## Current Truths
 
@@ -59,7 +60,9 @@ at [`../../README.md`](../../README.md).
 
 | Doc | Audience | Description |
 |-----|----------|-------------|
+| [BUILD-ON-DREAM-SERVER.md](BUILD-ON-DREAM-SERVER.md) | Downstream builders | Forking, custom editions, source-of-truth map, extension compatibility, and validation checklist |
 | [EXTENSIONS.md](EXTENSIONS.md) | Builders | Add Docker services, manifests, dashboard plugins |
+| [../extensions/templates/README.md](../extensions/templates/README.md) | Builders | Starter manifest, compose, GPU overlay, and dashboard plugin templates |
 | [../extensions/CATALOG.md](../extensions/CATALOG.md) | Builders / reviewers | Current bundled service manifest catalog |
 | [INSTALLER-ARCHITECTURE.md](INSTALLER-ARCHITECTURE.md) | Modders | Installer module map, mod recipes, header convention |
 | [INTEGRATION-GUIDE.md](INTEGRATION-GUIDE.md) | Developers | Connect apps via OpenAI SDK, LangChain, n8n |
@@ -120,6 +123,7 @@ at [`../../README.md`](../../README.md).
 | [POST-INSTALL-CHECKLIST.md](POST-INSTALL-CHECKLIST.md) | Operators | Post-install verification |
 | [KNOWN-GOOD-VERSIONS.md](KNOWN-GOOD-VERSIONS.md) | Operators | Tested image/version combos |
 | [PLATFORM-TRUTH-TABLE.md](PLATFORM-TRUTH-TABLE.md) | Developers | Platform feature matrix |
+| [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) | Operators / release reviewers | Sanitized CI, distro lab, and real-hardware fleet release-readiness evidence |
 
 ## Project
 
@@ -127,6 +131,7 @@ at [`../../README.md`](../../README.md).
 |-----|----------|-------------|
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Contributors | How to contribute |
 | [../SECURITY.md](../SECURITY.md) | Everyone | Security guide and disclosure |
+| [../../SECURITY_AUDIT.md](../../SECURITY_AUDIT.md) | Maintainers / reviewers | Historical security audit with current remediation status and receipts |
 | [../CHANGELOG.md](../CHANGELOG.md) | Everyone | Version history |
 | [COMPOSABILITY-EXECUTION-BOARD.md](COMPOSABILITY-EXECUTION-BOARD.md) | Maintainers | Internal project tracking |
 | [OSS-LAUNCH-CHECKLIST.md](OSS-LAUNCH-CHECKLIST.md) | Maintainers | Open-source launch tasks |

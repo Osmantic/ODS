@@ -14,6 +14,14 @@ Thanks for wanting to contribute. Dream Server is open source and we welcome hel
 
 No CLA, no hoops.
 
+## Forks and Custom Editions
+
+Building on Dream Server for a hardware appliance, lab image, vertical bundle,
+or downstream distribution? Start with
+**[dream-server/docs/BUILD-ON-DREAM-SERVER.md](dream-server/docs/BUILD-ON-DREAM-SERVER.md)**.
+It explains the extension points, source-of-truth files, validation commands,
+and rebase-friendly patterns that keep custom work easy to maintain.
+
 ## Full Contributor Guide
 
 For current priorities, validation checklists, PR expectations, and style guidelines, see the detailed guide:

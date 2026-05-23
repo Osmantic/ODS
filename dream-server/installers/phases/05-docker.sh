@@ -43,6 +43,46 @@ docker_compose_run() {
     "${cmd[@]}" compose "$@"
 }
 
+_docker_install_from_script() {
+    local tmpfile
+    tmpfile=$(mktemp /tmp/install-docker.XXXXXX.sh)
+    if ! curl -fsSL --max-time 300 https://get.docker.com -o "$tmpfile" || ! sh "$tmpfile"; then
+        rm -f "$tmpfile"
+        return 1
+    fi
+    rm -f "$tmpfile"
+}
+
+_docker_install_dnf_rhel_family() {
+    local distro_id="unknown"
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        distro_id="${ID:-unknown}"
+    fi
+
+    case "$distro_id" in
+        rocky|almalinux|rhel|ol|centos)
+            ai "Using Docker CE CentOS/RHEL repository for ${distro_id}..."
+            ds_sudo dnf install -y dnf-plugins-core >> "$LOG_FILE" 2>&1
+            ds_sudo rm -f /etc/yum.repos.d/docker-ce.repo /etc/yum.repos.d/docker-ce-staging.repo
+            ds_sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo >> "$LOG_FILE" 2>&1
+            ds_sudo dnf makecache >> "$LOG_FILE" 2>&1
+            ds_sudo dnf install -y \
+                docker-ce \
+                docker-ce-cli \
+                containerd.io \
+                docker-compose-plugin \
+                docker-buildx-plugin \
+                >> "$LOG_FILE" 2>&1
+            ds_sudo systemctl enable --now docker.service >> "$LOG_FILE" 2>&1 || true
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # Track whether docker group membership is active in this shell
 DOCKER_NEEDS_SUDO=false
 
@@ -68,14 +108,18 @@ else
         fi
 
         case "$PKG_MANAGER" in
-            apt|dnf|zypper)
-                # Docker CE via get.docker.com (supports Debian/Ubuntu/Fedora/RHEL/SLES)
-                tmpfile=$(mktemp /tmp/install-docker.XXXXXX.sh)
-                if ! curl -fsSL --max-time 300 https://get.docker.com -o "$tmpfile" || ! sh "$tmpfile"; then
-                    rm -f "$tmpfile"
+            apt|zypper)
+                # Docker CE via get.docker.com (supports Debian/Ubuntu/Fedora/SLES)
+                if ! _docker_install_from_script; then
                     error "Docker installation failed. Check network connectivity and try again."
                 fi
-                rm -f "$tmpfile"
+                ;;
+            dnf)
+                # Fedora works with get.docker.com; RHEL-family rebuilds need the
+                # CentOS/RHEL Docker CE repo because the Rocky repo can be empty.
+                if ! _docker_install_dnf_rhel_family && ! _docker_install_from_script; then
+                    error "Docker installation failed. Check network connectivity and try again."
+                fi
                 ;;
             pacman)
                 # Arch/Manjaro/CachyOS/EndeavourOS -- Docker is in the official repos
@@ -95,12 +139,9 @@ else
                 ;;
             *)
                 # Unknown distro -- try get.docker.com as best-effort fallback
-                tmpfile=$(mktemp /tmp/install-docker.XXXXXX.sh)
-                if ! curl -fsSL --max-time 300 https://get.docker.com -o "$tmpfile" || ! sh "$tmpfile"; then
-                    rm -f "$tmpfile"
+                if ! _docker_install_from_script; then
                     error "Docker installation failed. Your distro (${DISTRO_ID:-unknown}) may not be supported. Install Docker manually and re-run with --skip-docker."
                 fi
-                rm -f "$tmpfile"
                 ;;
         esac
 

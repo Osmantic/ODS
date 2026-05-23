@@ -7,7 +7,7 @@
 #
 # Usage:
 #   ./tests/test-multi-distro.sh              # Run all distros
-#   ./tests/test-multi-distro.sh fedora arch  # Run specific distros
+#   ./tests/test-multi-distro.sh fedora41 arch cachyos mint213  # Run specific distros
 #   ./tests/test-multi-distro.sh --create     # Create containers only
 #   ./tests/test-multi-distro.sh --cleanup    # Remove all test containers
 #
@@ -40,8 +40,12 @@ declare -A DISTROS=(
     [ubuntu2404]="ubuntu:24.04"
     [ubuntu2204]="ubuntu:22.04"
     [debian12]="debian:12"
+    [mint213]="linuxmintd/mint21.3-amd64:latest"
     [fedora41]="fedora:41"
+    [rocky9]="rockylinux:9"
     [arch]="archlinux:latest"
+    [manjaro]="manjarolinux/base:latest"
+    [cachyos]="cachyos/cachyos:latest"
     [opensuse]="opensuse/tumbleweed:latest"
 )
 
@@ -50,8 +54,12 @@ declare -A EXPECTED_PKG=(
     [ubuntu2404]="apt"
     [ubuntu2204]="apt"
     [debian12]="apt"
+    [mint213]="apt"
     [fedora41]="dnf"
+    [rocky9]="dnf"
     [arch]="pacman"
+    [manjaro]="pacman"
+    [cachyos]="pacman"
     [opensuse]="zypper"
 )
 

@@ -71,10 +71,9 @@ export const coreRoutes = [
     sidebar: true,
     order: 3,
   },
-  // Usage + Invites are reachable from the Settings page ("Account" section)
-  // rather than the top-level sidebar — the sidebar was getting crowded and
-  // these are settings-adjacent surfaces (one is billing-style insight, the
-  // other is share-link admin). Direct URLs still work for bookmarks and
+  // Usage + Setup / Owner are reachable from Settings rather than the top-level
+  // sidebar. Setup / Owner is a factory/distributor/service-provider flow, not
+  // a day-to-day dashboard surface. Direct URLs still work for bookmarks and
   // for the magic-link redemption page which renders inside this dashboard.
   {
     id: 'usage',
@@ -89,7 +88,7 @@ export const coreRoutes = [
   {
     id: 'invites',
     path: '/invites',
-    label: 'Invites',
+    label: 'Setup / Owner',
     icon: UserPlus,
     component: Invites,
     getProps: () => ({}),

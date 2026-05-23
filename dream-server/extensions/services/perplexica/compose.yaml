@@ -10,9 +10,16 @@ services:
       - OPENAI_BASE_URL=${LLM_API_URL:-http://llama-server:8080}/v1
       - OPENAI_API_KEY=${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}
       - HOSTNAME=0.0.0.0
+      - PERPLEXICA_SCRAPE_URL_MAX_CHARS=${PERPLEXICA_SCRAPE_URL_MAX_CHARS:-30000}
+    entrypoint: ["/bin/sh", "-c", "until [ -x /app/dream-entrypoint.sh ]; do sleep 0.5; done; exec /app/dream-entrypoint.sh \"$@\"", "dream-entrypoint"]
+    # Docker drops the image CMD when `entrypoint:` is overridden, so the
+    # upstream command (`node server.js`) must be restated here. Without this
+    # the patched entrypoint exits 0 with no app process, restart-looping.
+    command: ["node", "server.js"]
     volumes:
       - perplexica-data:/home/perplexica/data
       - perplexica-uploads:/home/perplexica/uploads
+      - ./extensions/services/perplexica/docker-entrypoint.sh:/app/dream-entrypoint.sh:ro,z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${PERPLEXICA_PORT:-3004}:3000"
     deploy:

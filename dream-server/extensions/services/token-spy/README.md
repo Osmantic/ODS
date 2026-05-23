@@ -16,6 +16,8 @@ Your agent -> Token Spy proxy -> Upstream API (Anthropic, OpenAI, etc.)
 
 Point your agent's API base URL at Token Spy instead of the upstream provider. Clients authenticate to Token Spy with `TOKEN_SPY_API_KEY`. For external providers, Token Spy uses server-side `UPSTREAM_API_KEY` and never forwards its own Bearer token upstream. Local OpenAI-compatible backends such as llama-server or Ollama can still run without an upstream key.
 
+In a Dream Server install, `TOKEN_SPY_API_KEY` is written to `.env` by the installer and passed to both Token Spy and dashboard-api. Older installs that already have `data/token-spy/token-spy-api-key.txt` keep that value on upgrade so existing clients do not lose access.
+
 ## Features
 
 - **Real-time dashboard** -- session health cards, cost charts, token breakdown, cumulative cost, recent turns table

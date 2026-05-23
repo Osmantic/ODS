@@ -49,6 +49,8 @@ scripts/preflight-engine.sh \
 For shell integration:
 
 ```bash
-eval "$(scripts/preflight-engine.sh --env ...)"
+source lib/safe-env.sh
+PREFLIGHT_ENV="$(scripts/preflight-engine.sh --env ...)"
+load_env_from_output <<< "$PREFLIGHT_ENV"
 echo "$PREFLIGHT_BLOCKERS $PREFLIGHT_WARNINGS $PREFLIGHT_CAN_PROCEED"
 ```

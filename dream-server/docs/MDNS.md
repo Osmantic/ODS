@@ -25,8 +25,9 @@ Two flavors:
 | `auth.<device>.local` | LAN IP, port 80 | proxy → dashboard-api (magic-link redemption) |
 | `api.<device>.local` | LAN IP, port 80 | proxy → dashboard-api (admin `/api/*`) |
 | `hermes.<device>.local` | LAN IP, port 80 | proxy → hermes-proxy (when enabled) |
+| `talk.<device>.local` | LAN IP, port 80 | proxy → dashboard `/talk` (mobile owner portal, #1319) |
 
-All six names resolve to the same IP — the device's LAN address. Routing happens at the dream-proxy by Host header (see `docs/DREAM-PROXY.md`). The bare `<device>.local` redirects to chat for the friendliest landing.
+All seven names resolve to the same IP — the device's LAN address. Routing happens at the dream-proxy by Host header (see `docs/DREAM-PROXY.md`). The bare `<device>.local` redirects to chat for the friendliest landing.
 
 **Direct-port SRV records (back-compat for service discovery):**
 

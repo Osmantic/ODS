@@ -25,10 +25,12 @@ import { Link } from 'react-router-dom'
 import { FeatureDiscoveryBanner } from '../components/FeatureDiscovery'
 
 // Helper to build external service URLs from current host
-const getExternalUrl = (port) =>
-  typeof window !== 'undefined'
-    ? `http://${window.location.hostname}:${port}`
-    : `http://localhost:${port}`
+const getExternalUrl = (port, path = '') => {
+  const suffix = path && path !== '/' ? path : ''
+  return typeof window !== 'undefined'
+    ? `http://${window.location.hostname}:${port}${suffix}`
+    : `http://localhost:${port}${suffix}`
+}
 
 // Compute overall health from services (excludes not_deployed from counts)
 function computeHealth(services) {
@@ -52,23 +54,85 @@ const FEATURE_ICONS = {
   Code,
 }
 
+const SERVICE_LINK_ALIASES = {
+  'open-webui': ['open-webui', 'open webui'],
+  'hermes-proxy': ['hermes-proxy', 'hermes auth proxy', 'hermes single sign-on', 'hermes sso'],
+  'dream-proxy': ['dream-proxy', 'dream server web', 'dream web proxy'],
+}
+
+const FEATURE_LAUNCH_FALLBACKS = {
+  chat: { type: 'service', service: 'open-webui' },
+  voice: { type: 'service', service: 'open-webui' },
+  documents: { type: 'service', service: 'open-webui' },
+  'hermes-agent': { type: 'service', service: 'hermes-proxy' },
+  'hermes-sso': { type: 'service', service: 'hermes-proxy' },
+  images: { type: 'service', service: 'comfyui' },
+  workflows: { type: 'service', service: 'n8n' },
+  coding: { type: 'service', service: 'opencode' },
+  observability: { type: 'service', service: 'langfuse' },
+  'lan-web': { type: 'service', service: 'dream-proxy' },
+  'remote-access': { type: 'none' },
+  'agent-governance': { type: 'none' },
+  'brave-web-search': { type: 'none' },
+}
+
+const NON_USER_FACING_LINK_SERVICES = new Set([
+  'dashboard-api',
+  'embeddings',
+  'hermes',
+  'litellm',
+  'llama-server',
+  'privacy-shield',
+  'qdrant',
+  'searxng',
+  'token-spy',
+  'tts',
+  'whisper',
+])
+
+function serviceMatchesTarget(service, target) {
+  const targetKey = normalizeServiceKey(target)
+  if (!targetKey) return false
+  const serviceKeys = [service?.id, service?.name].map(normalizeServiceKey)
+  if (serviceKeys.includes(targetKey)) return true
+
+  const aliases = SERVICE_LINK_ALIASES[targetKey] || []
+  return aliases.some(alias => serviceKeys.includes(normalizeServiceKey(alias)))
+}
+
+function findHealthyService(services, serviceId) {
+  return (services || []).find(service =>
+    service?.status === 'healthy' &&
+    service?.port &&
+    serviceMatchesTarget(service, serviceId)
+  )
+}
+
 function pickFeatureLink(feature, services) {
-  const svc = services || []
-  const req = feature?.requirements || {}
-  const wanted = [...(req.servicesAll || req.services || []), ...(req.servicesAny || req.services_any || [])]
-
-  // Match by name substring since status API uses display names, not IDs
-  const matchService = (needle) =>
-    svc.find(s => s.status === 'healthy' && s.port &&
-      (s.name || '').toLowerCase().includes(needle.toLowerCase()))
-
-  const firstHealthy = wanted.map(matchService).find(Boolean)
-  if (firstHealthy) {
-    return getExternalUrl(firstHealthy.port)
+  const featureKey = normalizeServiceKey(feature?.id)
+  const launch = feature?.launch || FEATURE_LAUNCH_FALLBACKS[featureKey]
+  if (launch?.type === 'none') return null
+  if (launch?.type === 'internal') return launch.path || null
+  if (launch?.type === 'service') {
+    const launchService = findHealthyService(services, launch.service)
+    return launchService ? getExternalUrl(launchService.port, launch.path) : null
   }
 
-  const fallbackWebUi = matchService('webui') || matchService('open webui')
-  return fallbackWebUi ? getExternalUrl(fallbackWebUi.port) : null
+  const req = feature?.requirements || {}
+  const enabledWanted = [
+    ...(feature?.enabledServicesAll || []),
+    ...(feature?.enabledServicesAny || []),
+  ]
+  const requirementWanted = [
+    ...(req.servicesAll || req.services || []),
+    ...(req.servicesAny || req.services_any || []),
+  ]
+  const wanted = enabledWanted.length ? enabledWanted : requirementWanted
+  const firstHealthy = wanted
+    .filter(serviceId => !NON_USER_FACING_LINK_SERVICES.has(normalizeServiceKey(serviceId)))
+    .map(serviceId => findHealthyService(services, serviceId))
+    .find(Boolean)
+  return firstHealthy ? getExternalUrl(firstHealthy.port) : null
 }
 
 function normalizeFeatureStatus(featureStatus) {
@@ -798,6 +862,7 @@ export default function Dashboard({ status, loading }) {
 
 const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, href, status, hint }) {
   const isExternal = href?.startsWith('http')
+  const isInteractive = status !== 'disabled' && status !== 'coming' && Boolean(href)
   const statusColors = {
     ready: 'hover:border-theme-accent/30',
     disabled: 'opacity-60',
@@ -819,7 +884,7 @@ const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, 
 
   const content = (
     <div
-      className={`feature-card-compact liquid-metal-frame liquid-metal-sequence-card group h-full min-h-[56px] px-2.5 py-2 rounded-xl border ${statusColors[status]} transition-all cursor-pointer hover:shadow-md flex items-center justify-between gap-2`}
+      className={`feature-card-compact liquid-metal-frame liquid-metal-sequence-card group h-full min-h-[56px] px-2.5 py-2 rounded-xl border ${statusColors[status]} transition-all ${isInteractive ? 'cursor-pointer hover:shadow-md' : 'cursor-default'} flex items-center justify-between gap-2`}
       style={{ ...TECH_TILE_STYLE, overflow: 'visible' }}
     >
       <div className="min-w-0 flex items-center gap-2">

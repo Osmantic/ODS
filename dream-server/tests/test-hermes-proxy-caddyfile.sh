@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CADDYFILE="$PROJECT_DIR/extensions/services/hermes-proxy/Caddyfile"
+AUTH_PAGE="$PROJECT_DIR/extensions/services/hermes-proxy/auth-required/index.html"
 
 fail() {
     echo "[FAIL] $*" >&2
@@ -11,6 +12,7 @@ fail() {
 }
 
 [[ -f "$CADDYFILE" ]] || fail "Hermes proxy Caddyfile not found"
+[[ -f "$AUTH_PAGE" ]] || fail "Hermes proxy auth-required page not found"
 
 route_line=$(grep -nE '^[[:space:]]*route[[:space:]]*\{' "$CADDYFILE" | head -n 1 | cut -d: -f1)
 health_line=$(grep -nE '^[[:space:]]*@health[[:space:]]+path[[:space:]]+/health' "$CADDYFILE" | head -n 1 | cut -d: -f1)
@@ -40,3 +42,10 @@ grep -Eq '^[[:space:]]*@health[[:space:]]+path([[:space:]]+/[A-Za-z]+)*[[:space:
 
 echo "[PASS] Hermes proxy auth redirect uses explicit wildcard matcher"
 echo "[PASS] Hermes proxy /health and /healthz both anonymous"
+
+grep -q 'Setup / Owner' "$AUTH_PAGE" \
+    || fail "Hermes auth-required page should point operators to Setup / Owner"
+if grep -Eq 'Invites|scope[[:space:]]+<code>.*all|scope: chat or all' "$AUTH_PAGE"; then
+    fail "Hermes auth-required page still contains stale Invites/scope-all copy"
+fi
+echo "[PASS] Hermes auth-required copy uses owner-card language"

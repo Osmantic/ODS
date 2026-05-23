@@ -16,7 +16,8 @@
 #           LLAMA_SERVER_GPU_UUIDS, LLAMA_ARG_SPLIT_MODE, LLAMA_ARG_TENSOR_SPLIT,
 #           chapter(), ai(), ai_ok(), ai_warn(), log(), warn(), error()
 # Provides: WEBUI_SECRET, N8N_PASS, LITELLM_KEY, LIVEKIT_SECRET,
-#           DASHBOARD_API_KEY, SHIELD_API_KEY, OPENCODE_SERVER_PASSWORD,
+#           DASHBOARD_API_KEY, SHIELD_API_KEY, TOKEN_SPY_API_KEY,
+#           OPENCODE_SERVER_PASSWORD,
 #           OPENCLAW_TOKEN, OPENCLAW_PROVIDER_NAME, OPENCLAW_PROVIDER_URL,
 #           OPENCLAW_MODEL, OPENCLAW_CONTEXT, GPU_ASSIGNMENT_JSON_B64 (in .env)
 #
@@ -28,6 +29,12 @@
 dream_progress 38 "directories" "Preparing installation directory"
 chapter "SETTING UP INSTALLATION"
 
+_phase06_step() {
+    local step="$1"
+    export INSTALL_PHASE="06-directories/${step}"
+    log "Phase 06 step: ${step}"
+}
+
 if $DRY_RUN; then
     log "[DRY RUN] Would create: $INSTALL_DIR/{config,data,models}"
     log "[DRY RUN] Would copy compose files ($COMPOSE_FLAGS) and source tree"
@@ -38,6 +45,7 @@ if $DRY_RUN; then
     log "[DRY RUN] Would validate .env against schema"
 else
     # Create directories
+    _phase06_step "create-directories"
     dream_progress 38 "directories" "Creating directory structure"
     mkdir -p "$INSTALL_DIR"/{config,data,models}
     mkdir -p "$INSTALL_DIR"/data/{open-webui,whisper,tts,n8n,qdrant,models,privacy-shield,ape,token-spy,hermes}
@@ -75,6 +83,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     fi
 
     # Copy entire source tree to install dir (skip if same directory)
+    _phase06_step "copy-source"
     dream_progress 39 "directories" "Copying source files"
     if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
         ai "Copying source files to $INSTALL_DIR..."
@@ -117,6 +126,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     # files. Delete only the retired service code so stale compose files cannot
     # be picked up; preserve data/dreamforge for users who want to archive it.
     _retired_dreamforge_dir="$INSTALL_DIR/extensions/services/dreamforge"
+    _phase06_step "prune-retired-services"
     if [[ -d "$_retired_dreamforge_dir" ]]; then
         rm -rf "$_retired_dreamforge_dir"
         log "Removed retired DreamForge service files from extensions/services"
@@ -129,6 +139,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     # Without one of these paths, dashboard-api's /api/extensions/{id}/install
     # endpoint returns 503 "Extensions library is unavailable" and the
     # dashboard's Extensions page is non-functional.
+    _phase06_step "copy-extensions-library"
     _ext_lib_src=""
     for _candidate in \
         "$SCRIPT_DIR/extensions/library/services" \
@@ -146,6 +157,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     fi
 
     # Select tier-appropriate OpenClaw config
+    _phase06_step "configure-legacy-openclaw"
     if [[ "$ENABLE_OPENCLAW" == "true" && -n "$OPENCLAW_CONFIG" ]]; then
         OPENCLAW_MODEL="$LLM_MODEL"
         OPENCLAW_CONTEXT=$MAX_CONTEXT
@@ -212,9 +224,11 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     fi
 
     # token-spy container runs as uid 1000 (baked in Dockerfile) — fix ownership
+    _phase06_step "prepare-service-permissions"
     chown -R 1000:1000 "$INSTALL_DIR/data/token-spy" || warn "Failed to chown data/token-spy to 1000:1000 (non-fatal); container may crash if installer ran as a different uid"
 
     # ── .env merge logic: preserve user-configured values on re-install ──
+    _phase06_step "generate-env"
     dream_progress 40 "directories" "Generating secrets and configuration"
     # If an existing .env exists, read user-editable values so we don't
     # destroy API keys, custom ports, or manually-set secrets.
@@ -256,6 +270,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     SHIELD_API_KEY=$(_env_get SHIELD_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
     DIFY_SECRET_KEY=$(_env_get DIFY_SECRET_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
     QDRANT_API_KEY=$(_env_get QDRANT_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
+    _token_spy_key_default=""
+    if [[ -f "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt" ]]; then
+        _token_spy_key_default=$(tr -d '\r\n' < "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt" 2>/dev/null || true)
+    fi
+    if [[ -z "$_token_spy_key_default" ]]; then
+        _token_spy_key_default=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)
+    fi
+    TOKEN_SPY_API_KEY=$(_env_get TOKEN_SPY_API_KEY "$_token_spy_key_default")
+    unset _token_spy_key_default
     OPENCODE_SERVER_PASSWORD=$(_env_get OPENCODE_SERVER_PASSWORD "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
     SEARXNG_SECRET=$(_env_get SEARXNG_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
 
@@ -392,7 +415,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
 # Tier: ${TIER} (${TIER_NAME})
 
 #=== Dream Server Version (used by dream-cli update for version-compat checks) ===
-DREAM_VERSION=${VERSION:-2.4.0}
+DREAM_VERSION=${VERSION:-2.5.0}
 
 #=== Network Binding ===
 # 127.0.0.1 = localhost only (secure default)
@@ -536,8 +559,15 @@ OPENCLAW_PORT=7860
 LANGFUSE_PORT=${LANGFUSE_PORT}
 
 #=== Hermes Agent ===
-HERMES_LLM_BASE_URL=${HERMES_LLM_BASE_URL:-http://llama-server:8080/v1}
-HERMES_LLM_API_KEY=${HERMES_LLM_API_KEY:-sk-dream-hermes-local}
+# On AMD/Lemonade hosts, route Hermes through litellm. Lemonade is strict
+# about model names (returns 404 if model field doesn't exactly match the
+# loaded gguf) and drops concurrent connections during multi-step agent
+# loops (web_search → reason → tool result → reason …) with
+# APIConnectionError. litellm wraps with "*" wildcard normalization +
+# retry logic, hiding both bumps. On non-AMD installs, talk direct to
+# llama-server (native llama.cpp tolerates any model field).
+HERMES_LLM_BASE_URL=${HERMES_LLM_BASE_URL:-$(if [[ "$GPU_BACKEND" == "amd" ]]; then echo "http://litellm:4000/v1"; else echo "http://llama-server:8080/v1"; fi)}
+HERMES_LLM_API_KEY=${HERMES_LLM_API_KEY:-$(if [[ "$GPU_BACKEND" == "amd" ]]; then echo "${LITELLM_KEY}"; else echo "sk-dream-hermes-local"; fi)}
 HERMES_LANGUAGE=${HERMES_LANGUAGE:-en}
 HERMES_PROXY_PORT=${HERMES_PROXY_PORT:-9120}
 HERMES_PROXY_UPSTREAM=${HERMES_PROXY_UPSTREAM:-dream-hermes:9119}
@@ -556,6 +586,7 @@ LIVEKIT_API_KEY=$(_env_get LIVEKIT_API_KEY "$(openssl rand -hex 16 2>/dev/null |
 LIVEKIT_API_SECRET=${LIVEKIT_SECRET}
 OPENCLAW_TOKEN=${OPENCLAW_TOKEN:-$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | xxd -p)}
 QDRANT_API_KEY=${QDRANT_API_KEY}
+TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY}
 OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD}
 SEARXNG_SECRET=${SEARXNG_SECRET}
 DIFY_SECRET_KEY=${DIFY_SECRET_KEY}
@@ -638,6 +669,7 @@ ENV_EOF
     # requests to the concrete model ID that lemonade actually serves.
     # bootstrap-upgrade.sh regenerates this config when the model swaps.
     if [[ "$GPU_BACKEND" == "amd" ]]; then
+        _phase06_step "render-amd-litellm-config"
         mkdir -p "$INSTALL_DIR/config/litellm"
         # Source bootstrap-model.sh for BOOTSTRAP_GGUF_FILE and bootstrap_needed().
         # Pure library (zero side effects), all deps available by phase 06.
@@ -715,6 +747,7 @@ LITELLM_EOF
     fi
 
     # Validate generated .env against schema (fails fast on missing/unknown keys).
+    _phase06_step "validate-env"
     dream_progress 41 "directories" "Validating configuration"
     if [[ -f "$SCRIPT_DIR/scripts/validate-env.sh" && -f "$SCRIPT_DIR/.env.schema.json" ]]; then
         if bash "$SCRIPT_DIR/scripts/validate-env.sh" "$INSTALL_DIR/.env" "$SCRIPT_DIR/.env.schema.json" >> "$LOG_FILE" 2>&1; then
@@ -728,6 +761,7 @@ LITELLM_EOF
 
     # Generate SearXNG config with randomized secret key
     # Fix ownership from previous container runs (SearXNG writes as uid 977)
+    _phase06_step "generate-searxng-config"
     mkdir -p "$INSTALL_DIR/config/searxng"
     if [[ -f "$INSTALL_DIR/config/searxng/settings.yml" ]] && ! [[ -w "$INSTALL_DIR/config/searxng/settings.yml" ]]; then
         sudo chown "$(id -u):$(id -g)" "$INSTALL_DIR/config/searxng/settings.yml" 2>/dev/null || true

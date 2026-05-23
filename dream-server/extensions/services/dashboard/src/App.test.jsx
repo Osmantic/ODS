@@ -1,5 +1,8 @@
 import { screen } from '@testing-library/react'
 import { render } from './test/test-utils'
+import { render as rtlRender } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom' // eslint-disable-line no-unused-vars
+import { ThemeProvider } from './contexts/ThemeContext' // eslint-disable-line no-unused-vars
 import App from './App' // eslint-disable-line no-unused-vars
 import { useFirstRun } from './hooks/useFirstRun'
 
@@ -41,6 +44,10 @@ vi.mock('./pages/FirstBoot', () => ({
       <button onClick={onComplete}>Complete</button>
     </div>
   )
+}))
+
+vi.mock('./pages/DreamTalk', () => ({
+  default: () => <div data-testid="dream-talk">Dream Talk Portal</div>,
 }))
 
 vi.mock('./components/SplashScreen', () => ({
@@ -95,5 +102,18 @@ describe('App', () => {
     render(<App />)
     expect(document.querySelector('aside')).toBeInTheDocument()
     expect(document.querySelector('main')).toBeInTheDocument()
+  })
+
+  test('renders Dream Talk without dashboard chrome on /talk', async () => {
+    rtlRender(
+      <MemoryRouter initialEntries={['/talk']}>
+        <ThemeProvider>
+          <App />
+        </ThemeProvider>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByTestId('dream-talk')).toBeInTheDocument()
+    expect(document.querySelector('aside')).not.toBeInTheDocument()
+    expect(globalThis.fetch).not.toHaveBeenCalledWith('/api/auth/admin-session', expect.anything())
   })
 })

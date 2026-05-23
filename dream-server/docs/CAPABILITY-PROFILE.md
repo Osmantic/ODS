@@ -18,7 +18,9 @@ scripts/build-capability-profile.sh --output /tmp/dream-server-capabilities.json
 For shell-driven installers:
 
 ```bash
-eval "$(scripts/build-capability-profile.sh --env)"
+source lib/safe-env.sh
+CAPABILITY_ENV="$(scripts/build-capability-profile.sh --env)"
+load_env_from_output <<< "$CAPABILITY_ENV"
 ```
 
 This exports:

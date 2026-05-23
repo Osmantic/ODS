@@ -32,6 +32,7 @@ Environment variables (set in `.env`):
 |----------|---------|-------------|
 | `PERPLEXICA_PORT` | 3004 | External port for the Perplexica web UI |
 | `LLM_API_URL` | `http://llama-server:8080` | Base URL of the LLM backend (OpenAI-compatible) |
+| `PERPLEXICA_SCRAPE_URL_MAX_CHARS` | 30000 | Per-URL cap applied to Perplexica's internal `scrape_url` tool output before synthesis |
 
 > **LLM API key:** Perplexica uses `LITELLM_KEY` automatically when LiteLLM auth is enabled, then falls back to `OPENAI_API_KEY`, then `no-key` for direct llama-server installs that do not require authentication. No changes needed for local use.
 
@@ -115,3 +116,4 @@ docker compose logs dream-perplexica
 **Slow or incomplete answers:**
 - Perplexica performance is limited by LLM inference speed. Ensure llama-server has GPU access.
 - Reduce the number of search results by adjusting SearXNG settings
+- DreamServer caps Perplexica's internal `scrape_url` output at startup so oversized web pages do not overflow local model context windows. If a specific page needs more context, raise `PERPLEXICA_SCRAPE_URL_MAX_CHARS` in `.env` and restart Perplexica.

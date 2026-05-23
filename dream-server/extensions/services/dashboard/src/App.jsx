@@ -1,4 +1,4 @@
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, useLocation } from 'react-router-dom'
 import { useState, useEffect, Suspense, useMemo, useCallback, lazy } from 'react'
 import Sidebar from './components/Sidebar'
 import InstallPromptBanner from './components/InstallPromptBanner'
@@ -13,6 +13,7 @@ import SplashScreen from './components/SplashScreen'
 // when useFirstRun() reports firstRun=true. Lazy-loaded so the wizard
 // bundle isn't paid for on every page load after onboarding.
 const FirstBoot = lazy(() => import('./pages/FirstBoot'))
+const DreamTalk = lazy(() => import('./pages/DreamTalk'))
 
 function getStorageValue(storage, key) {
   try {
@@ -31,11 +32,15 @@ function setStorageValue(storage, key, value) {
 }
 
 function App() {
+  const location = useLocation()
+  const isTalkHost = typeof window !== 'undefined' && window.location.hostname.startsWith('talk.')
+  const isTalkPath = isTalkHost || location.pathname.startsWith('/talk')
+
   // Auto-mint a dream-session cookie on load so the install owner can
   // reach cookie-gated services (Hermes, future ones) without redeeming
   // a magic link to themselves. No-ops if a valid cookie already exists.
   // See hooks/useSessionBootstrap.js for the full rationale.
-  useSessionBootstrap()
+  useSessionBootstrap(!isTalkPath)
 
   // Show splash only once per browser session — not on every F5 / new tab
   const [splashDone, setSplashDone] = useState(
@@ -64,6 +69,20 @@ function App() {
 
   const routes = useMemo(() => getInternalRoutes({ status, loading }), [status, loading])
   const handleToggle = useCallback(() => setSidebarCollapsed(c => !c), [])
+
+  if (isTalkPath) {
+    return (
+      <div className="min-h-screen bg-theme-bg text-theme-text">
+        <Suspense fallback={
+          <div className="min-h-screen flex items-center justify-center">
+            <div className="text-sm text-theme-text-muted">Opening Dream Talk...</div>
+          </div>
+        }>
+          <DreamTalk />
+        </Suspense>
+      </div>
+    )
+  }
 
   // First-boot path: render the FirstBoot SPA fullscreen and lock out the
   // rest of the dashboard. The user can't reach Settings / Extensions / etc.

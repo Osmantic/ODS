@@ -108,6 +108,47 @@ def test_cli_writes_valid_png(tmp_path):
 
 
 @pillow_required
+def test_cli_writes_factory_owner_png(tmp_path):
+    out = tmp_path / "owner-card.png"
+    result = subprocess.run(
+        [
+            sys.executable, str(SCRIPT),
+            "--mode", "factory-owner",
+            "--ssid", "Dream-Setup-TEST",
+            "--password", "supersecret",
+            "--owner-url", "http://auth.dream.local/magic-link/owner-token",
+            "--device-name", "dream-test.local",
+            "--output", str(out),
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert out.exists()
+    with open(out, "rb") as f:
+        assert f.read(8) == b"\x89PNG\r\n\x1a\n"
+
+
+@pillow_required
+def test_cli_writes_factory_owner_pdf(tmp_path):
+    out = tmp_path / "owner-card.pdf"
+    result = subprocess.run(
+        [
+            sys.executable, str(SCRIPT),
+            "--mode", "factory-owner",
+            "--ssid", "Dream-Setup-TEST",
+            "--password", "supersecret",
+            "--owner-url", "http://auth.dream.local/magic-link/owner-token",
+            "--output", str(out),
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert out.exists()
+    with open(out, "rb") as f:
+        assert f.read(4) == b"%PDF"
+
+
+@pillow_required
 def test_cli_creates_parent_directory(tmp_path):
     nested = tmp_path / "deep" / "subdir" / "card.png"
     result = subprocess.run(
@@ -163,6 +204,20 @@ def test_cli_requires_setup_url():
     assert "setup-url" in result.stderr.lower() or "setup_url" in result.stderr.lower()
 
 
+def test_cli_requires_owner_url_in_factory_owner_mode(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable, str(SCRIPT),
+            "--mode", "factory-owner",
+            "--ssid", "x",
+            "--output", str(tmp_path / "owner.png"),
+        ],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode != 0
+    assert "owner-url" in result.stderr.lower() or "owner_url" in result.stderr.lower()
+
+
 def test_cli_help_works_without_pillow():
     """Argparse help shouldn't require Pillow; helpful when an operator is
     checking flags before installing deps."""
@@ -173,6 +228,7 @@ def test_cli_help_works_without_pillow():
     assert result.returncode == 0
     assert "ssid" in result.stdout.lower()
     assert "setup-url" in result.stdout.lower()
+    assert "owner-url" in result.stdout.lower()
 
 
 @pillow_required

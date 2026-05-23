@@ -27,6 +27,14 @@ Usage:
         --serial 'DRM-2026-A4F2'      \\
         --output card-A4F2.png
 
+    python3 generate-setup-card.py \\
+        --mode factory-owner \\
+        --ssid 'Dream-Setup-A4F2' \\
+        --password 'xxxxxxxx' \\
+        --owner-url 'http://auth.dream-a4f2.local/magic-link/...' \\
+        --device-name 'dream-a4f2.local' \\
+        --output owner-card-A4F2.pdf
+
 Requires: Pillow + qrcode. Imports lazily so `--help` works without them.
 """
 
@@ -107,13 +115,24 @@ def render_qr(text: str, target_px: int):
 def render_card(
     ssid: str,
     password: str,
-    setup_url: str,
+    setup_url: str | None,
     device_name: str,
     security: str = "WPA",
     serial: str | None = None,
+    mode: str = "setup",
+    owner_url: str | None = None,
 ):
     """Compose the full card image. Returns a Pillow Image."""
     from PIL import Image, ImageDraw  # noqa: PLC0415
+
+    if mode not in {"setup", "factory-owner"}:
+        raise ValueError("mode must be setup or factory-owner")
+    right_url = owner_url if mode == "factory-owner" else setup_url
+    if not right_url:
+        raise ValueError("--owner-url is required for factory-owner mode" if mode == "factory-owner" else "--setup-url is required")
+    right_caption = "2. OPEN DREAM TALK" if mode == "factory-owner" else "2. OPEN SETUP"
+    tagline = "Scan to join. Scan to talk." if mode == "factory-owner" else "Scan to set up. Scan to chat."
+    fallback_url_label = "owner url" if mode == "factory-owner" else "then visit"
 
     card = Image.new("RGB", (CARD_W, CARD_H), COLOR_BG)
     draw = ImageDraw.Draw(card)
@@ -141,7 +160,7 @@ def render_card(
     )
     draw.text(
         (MARGIN, MARGIN + 160),
-        "Scan to set up. Scan to chat.",
+        tagline,
         font=body_font,
         fill=COLOR_MUTED,
     )
@@ -150,7 +169,7 @@ def render_card(
     qr_size = (CARD_W - MARGIN * 3) // 2  # two QRs + margin between
     qr_y = 400
     wifi_qr = render_qr(build_wifi_qr_payload(ssid, password, security), qr_size)
-    url_qr = render_qr(setup_url, qr_size)
+    url_qr = render_qr(right_url, qr_size)
     card.paste(wifi_qr, (MARGIN, qr_y))
     card.paste(url_qr, (MARGIN * 2 + qr_size, qr_y))
 
@@ -163,7 +182,7 @@ def render_card(
     )
     draw.text(
         (MARGIN * 2 + qr_size, qr_y + qr_size + 20),
-        "2. OPEN SETUP",
+        right_caption,
         font=heading_font,
         fill=COLOR_ACCENT,
     )
@@ -180,7 +199,7 @@ def render_card(
     rows = [
         ("network", ssid),
         ("password", password if password else "(open)"),
-        ("then visit", setup_url),
+        (fallback_url_label, right_url),
     ]
     # The value column starts at x=MARGIN+240 and must fit within the right
     # margin (CARD_W - MARGIN). Anything wider gets shrunk to fit OR wrapped
@@ -289,25 +308,41 @@ def _load_font(size: int, bold: bool = False, monospace: bool = False):
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate a printable setup card PNG for a Dream Server unit.",
+        description="Generate a printable setup or factory-owner card for a Dream Server unit.",
     )
+    parser.add_argument("--mode", default="setup", choices=["setup", "factory-owner"],
+                        help="Card mode. setup prints Wi-Fi + setup URL; factory-owner prints Wi-Fi + owner Dream Talk QR")
     parser.add_argument("--ssid", required=True, help="Wi-Fi SSID of the device's setup AP")
     parser.add_argument("--password", default="", help="Wi-Fi password (empty for open network)")
     parser.add_argument("--security", default="WPA", choices=["WPA", "WEP", "nopass"],
                         help="Wi-Fi security type (default WPA)")
-    parser.add_argument("--setup-url", required=True,
+    parser.add_argument("--setup-url", default=None,
                         help="URL to open after joining the AP (e.g. http://192.168.7.1/setup)")
+    parser.add_argument("--owner-url", default=None,
+                        help="Owner magic-link URL for factory-owner cards")
     parser.add_argument("--device-name", default="dream.local",
                         help="The mDNS name printed on the card (default dream.local)")
     parser.add_argument("--serial", default=None,
                         help="Optional serial / batch identifier printed in the footer")
+    parser.add_argument("--format", choices=["png", "pdf"], default=None,
+                        help="Output format. Defaults to PNG unless the output path ends in .pdf")
     parser.add_argument("--output", "-o", required=True,
-                        help="Output PNG path")
+                        help="Output path")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+
+    if args.security == "nopass" and args.password:
+        print("error: --security nopass cannot be combined with --password", file=sys.stderr)
+        return 2
+    if args.mode == "setup" and not args.setup_url:
+        print("error: --setup-url is required in setup mode", file=sys.stderr)
+        return 2
+    if args.mode == "factory-owner" and not args.owner_url:
+        print("error: --owner-url is required in factory-owner mode", file=sys.stderr)
+        return 2
 
     try:
         import PIL  # noqa: F401, PLC0415
@@ -317,10 +352,6 @@ def main(argv: list[str] | None = None) -> int:
               "Install with: pip install 'qrcode[pil]'", file=sys.stderr)
         return 2
 
-    if args.security == "nopass" and args.password:
-        print("error: --security nopass cannot be combined with --password", file=sys.stderr)
-        return 2
-
     card = render_card(
         ssid=args.ssid,
         password=args.password,
@@ -328,11 +359,17 @@ def main(argv: list[str] | None = None) -> int:
         device_name=args.device_name,
         security=args.security,
         serial=args.serial,
+        mode=args.mode,
+        owner_url=args.owner_url,
     )
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    card.save(out_path, format="PNG", dpi=(300, 300))
+    out_format = args.format or ("pdf" if out_path.suffix.lower() == ".pdf" else "png")
+    if out_format == "pdf":
+        card.save(out_path, format="PDF", resolution=300.0)
+    else:
+        card.save(out_path, format="PNG", dpi=(300, 300))
     print(f"wrote {out_path} ({CARD_W}×{CARD_H} @ 300 DPI = 4×6 inches)")
     return 0
 

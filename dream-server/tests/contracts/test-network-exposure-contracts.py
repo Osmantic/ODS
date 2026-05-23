@@ -72,6 +72,20 @@ def test_hermes_is_internal_only_and_proxy_gated() -> None:
     assert_true("reverse_proxy {$HERMES_PROXY_UPSTREAM:dream-hermes:9119}" in proxy_caddyfile, "hermes-proxy must forward to internal Hermes")
 
 
+def test_dream_proxy_routes_talk_portal() -> None:
+    caddyfile = read(SERVICES / "dream-proxy" / "Caddyfile")
+
+    assert_true("talk.{$DREAM_DEVICE_NAME:dream}.local" in caddyfile, "dream-proxy must route talk.<device>.local")
+    assert_true("reverse_proxy dashboard:3001" in caddyfile, "Dream Talk should be served by the dashboard container")
+
+
+def test_dashboard_csp_allows_dream_talk_tts_blob_audio() -> None:
+    nginx_conf = read(SERVICES / "dashboard" / "nginx.conf")
+
+    assert_true("Content-Security-Policy" in nginx_conf, "dashboard must keep a CSP header")
+    assert_true("media-src 'self' blob:" in nginx_conf, "Dream Talk TTS playback uses blob: audio URLs")
+
+
 def test_openclaw_stays_deprecated_optional_and_token_gated() -> None:
     manifest = read(SERVICES / "openclaw" / "manifest.yaml")
     docs = read(ROOT / "docs" / "OPENCLAW-INTEGRATION.md")
@@ -98,6 +112,8 @@ def main() -> int:
     tests = [
         test_exposed_services_are_policy_labeled,
         test_hermes_is_internal_only_and_proxy_gated,
+        test_dream_proxy_routes_talk_portal,
+        test_dashboard_csp_allows_dream_talk_tts_blob_audio,
         test_openclaw_stays_deprecated_optional_and_token_gated,
         test_litellm_gateway_auth_is_enforced,
     ]

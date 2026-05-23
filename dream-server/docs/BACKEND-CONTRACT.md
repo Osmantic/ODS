@@ -22,7 +22,9 @@ Each contract defines:
 Example:
 
 ```bash
-eval "$(scripts/load-backend-contract.sh --backend amd --env)"
+source lib/safe-env.sh
+BACKEND_ENV="$(scripts/load-backend-contract.sh --backend amd --env)"
+load_env_from_output <<< "$BACKEND_ENV"
 echo "$BACKEND_PUBLIC_HEALTH_URL $BACKEND_PROVIDER_URL"
 ```
 

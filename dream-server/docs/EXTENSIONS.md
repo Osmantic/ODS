@@ -6,6 +6,7 @@
 |---|---|---|
 | Add a Docker service (new container, health check, dashboard tile) | Service extension | This guide (below) |
 | Change the installer itself (new tier, swap theme, add/skip phase) | Installer mod | [INSTALLER-ARCHITECTURE.md](INSTALLER-ARCHITECTURE.md) |
+| Build a custom downstream edition or appliance | Fork / downstream build | [BUILD-ON-DREAM-SERVER.md](BUILD-ON-DREAM-SERVER.md) |
 
 This guide is the fastest path to extend Dream Server without editing core internals.
 
@@ -39,13 +40,13 @@ extensions/services/
 
 ```bash
 mkdir extensions/services/my-service
+cp extensions/templates/service-template.yaml extensions/services/my-service/manifest.yaml
+cp extensions/templates/compose-template.yaml extensions/services/my-service/compose.yaml
 ```
+
+The commented starter files live in [`extensions/templates/`](../extensions/templates/README.md).
 
 ### Step 2: Create the manifest
-
-```bash
-cp extensions/templates/service-template.yaml extensions/services/my-service/manifest.yaml
-```
 
 Edit the manifest:
 - set `service.id` to a unique kebab-case ID

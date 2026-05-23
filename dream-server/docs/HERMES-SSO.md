@@ -1,6 +1,6 @@
 # Hermes SSO — magic-link gating in front of the Hermes Agent
 
-Dream Server's `hermes-proxy` extension is a Caddy reverse proxy that fronts the [Hermes Agent container](HERMES.md) and gates access on Dream Server's magic-link auth.
+Dream Server's `hermes-proxy` extension is a Caddy reverse proxy that fronts the [Hermes Agent container](HERMES.md) and gates advanced Hermes access on Dream Server's magic-link auth. Owner cards now land normal recipients in Dream Talk first; Hermes remains the advanced backend surface.
 
 When this extension is enabled:
 
@@ -8,7 +8,7 @@ When this extension is enabled:
 - The proxy binds the LAN-facing port (default `9120`) — that's what users browse to.
 - Every request to the proxy is verified via `forward_auth` against dashboard-api's `/api/auth/verify-session` endpoint — which HMAC-validates the `dream-session` cookie's signature against `DREAM_SESSION_SECRET`.
 - Verified (HTTP 200 from the verify endpoint) → traffic is forwarded to `dream-hermes:9119`. Hermes's own [per-process session token model](HERMES.md#security-posture) then handles per-request `/api/` auth.
-- Not verified (HTTP 401 — missing cookie, bad signature, or expired) → 303 redirect to a static "you need an invite" page.
+- Not verified (HTTP 401 — missing cookie, bad signature, or expired) → 303 redirect to a static "you need an owner card" page.
 
 ## Why this design
 
@@ -21,7 +21,8 @@ This extension does NOT try to give you real multi-user. It gives you:
 | Property | Achieved? |
 |---|---|
 | Magic-link-authed gateway | ✅ |
-| Anyone with a valid invite can reach Hermes | ✅ |
+| Anyone with a valid owner card can reach Dream Talk | ✅ |
+| Anyone with a valid advanced Hermes invite can reach Hermes | ✅ |
 | Anyone without a valid invite gets bounced | ✅ |
 | Mom's memories / skills / sessions isolated from Dad's | ❌ — shared |
 | The proxy knows WHO is logged in | ❌ — only that *someone* has a valid invite |
@@ -37,26 +38,29 @@ dream enable hermes
 # 2. Enable the auth proxy (this extension)
 dream enable hermes-proxy
 
-# 3. Generate an invite from the dashboard
-#    → Browse to http://<device>:3001/invites
-#    → "New invite" → scope: chat or all → Generate
-#    → Save the QR / URL
+# 3. Generate an owner card from the dashboard
+#    -> Browse to http://<device>:3001/invites
+#    -> Setup / Owner -> Print owner card
+#    -> Save the QR / URL
 
 # 4. Recipient scans the QR on their phone
-#    → Lands on the dream-proxy at <device>.local/auth/magic-link/<token>
-#    → Redemption sets the HMAC-signed dream-session cookie on <device>.local
-#    → 302 redirect to /chat (same origin → cookie travels along)
-#    → They now have a valid cookie for any same-host port too (cookies
-#      are scoped by host, not port — so <device>.local:9120 will receive
-#      it as well)
+#    -> Lands on auth.<device>.local/magic-link/<token>
+#    -> Redemption sets the HMAC-signed dream-session cookie for <device>.local
+#    -> 302 redirect to talk.<device>.local/talk
 
 # 5. Recipient browses to http://<device>.local:9120
-#    → Proxy forward_auths to dashboard-api/api/auth/verify-session
-#    → Signature check passes → forward to Hermes
-#    → Hermes serves the SPA → they chat
+#    -> Proxy forward_auths to dashboard-api/api/auth/verify-session
+#    -> Signature check passes -> forward to Hermes
+#    -> Hermes serves the advanced SPA
 ```
 
-If the recipient hasn't yet redeemed an invite, step 5 lands them on the "you need an invite" page with instructions.
+If the recipient has not yet redeemed an owner card or guest invite, step 5 lands them on the "you need an owner card" page with instructions.
+
+## Dream Talk owner-card flow
+
+Factory owner cards still mint the same signed `dream-session` cookie, but their default landing page is now Dream Talk at `talk.<device>.local/talk`. Dream Talk is a mobile-first local chat portal served by the dashboard container. It talks to Hermes from the server side, so the phone never sees Hermes's internal dashboard token and never gets dashboard admin API control.
+
+Text chat is the primary local flow and works over the normal LAN HTTP path. Spoken replies use the local Kokoro TTS service when enabled. Audio messages can use the phone's native audio picker/capture when the browser offers it. Live browser microphone recording is only shown on secure origins because mobile browsers gate `getUserMedia()` behind HTTPS or equivalent secure contexts.
 
 ## Architecture
 
@@ -135,6 +139,10 @@ For the Dream Server trust model (single home, trusted LAN, family-scale users),
 5. **Direct access to Hermes is now blocked.** Anyone who was reaching Hermes at `:9119` before this extension lands needs to switch to `:9120` (the proxy port). If they want raw direct access for testing, they can `docker exec dream-hermes` or temporarily re-add a `ports:` binding to the Hermes compose.
 
 6. **`DREAM_SESSION_SECRET` must be configured.** With no secret set, `verify-session` returns 401 for every request (and `issue()` raises during magic-link redemption) — the proxy gate effectively becomes "nobody passes." Set a 32+-byte random value in `.env` before enabling `hermes-proxy`.
+
+7. **Owner cards are physical keys.** Owner magic links do not auto-expire and are not device-bound in v1. They mint normal 12-hour sessions, but the QR itself remains reusable until revoked from Setup / Owner.
+
+8. **Live mic requires a secure browser origin.** Dream Talk text access works over the LAN-local HTTP flow. Spoken replies and best-effort phone-native audio uploads can work without live mic access, but browser `MediaRecorder` / `getUserMedia()` recording is only offered on secure origins.
 
 ## Future: Option B — per-user Hermes
 

@@ -2,13 +2,143 @@
 
 Dream Server supports multiple Linux distributions. This guide covers how to test across distros efficiently.
 
+## Real Hardware Fleet Validation
+
+Dream Server also uses a private real-hardware fleet for release-readiness
+evidence. CI, Docker containers, Distrobox, and Incus VMs are useful for fast
+installer logic, package-manager, systemd, and Docker-daemon checks, but the
+physical fleet is where fresh installs, Docker startup, GPU runtime behavior,
+dashboard flows, Hermes auth, model switching, extension install paths, and
+agent capabilities are exercised on real machines.
+
+The sanitized public coverage is maintained in
+[VALIDATION-MATRIX.md](VALIDATION-MATRIX.md). Release notes should cite the
+fleet run date, hardware classes covered, regression replay result, and any
+blocked, deferred, skipped, or not-run phases.
+
+Volunteer and community testers are important for broader distro, GPU, driver,
+and network coverage. Treat those reports as complementary breadth evidence;
+the physical fleet is the repeatable parallel gate that can run whenever code
+changes.
+
+Fleet phases currently include:
+
+- regression replay for previously fixed fleet bugs;
+- a constrained Apple Silicon smoke gate before parallel installs;
+- read-only preflight snapshots for OS, RAM, disk, Docker, firewall, ports, and
+  prior install state;
+- non-interactive fresh installs from the public bootstrap path;
+- core HTTP verification for dashboard-api, dashboard UI, llama-server, and
+  Hermes proxy;
+- dashboard model and extension flows;
+- Hermes magic-link auth and seeded chat checks;
+- Playwright dashboard UI checks;
+- agent capability probes for chat, web search, files, code, skills, and model
+  identity;
+- opt-in lifecycle checks for reinstall, restart, and doctor behavior.
+
 ## Quick Reference
 
 | Method | Speed | GPU Testing | Kernel Testing | Best For |
 |--------|-------|-------------|----------------|----------|
+| **Fleet harness** | 15-75 min | Yes | Yes | Release readiness on real heterogeneous hardware |
+| **Fleet distro lab** | 5-20 min | No | Container: no / VM: yes | Multi-distro installer and Docker lifecycle coverage on tower2 |
 | **Distrobox** | Instant (2s) | Yes | No | Daily dev, package manager validation |
 | **Ventoy USB** | 5-10 min boot | Yes | Yes | Weekly full-stack validation |
 | **CI Matrix** | Automatic | No | No | Every PR, syntax + detection checks |
+
+## Fleet Distro Lab (tower2)
+
+The fleet distro lab is the repeatable middle rung between CI containers and
+full hardware fleet runs. `tower2` is provisioned with:
+
+- Docker for fast disposable distro containers;
+- Distrobox for interactive distro debugging;
+- Incus + KVM/QEMU for disposable systemd-capable VMs.
+
+If the host firewall is active, allow the Incus bridge to serve DHCP/DNS and
+NAT guest traffic:
+
+```bash
+sudo ufw allow in on incusbr0 from any to any
+sudo ufw route allow in on incusbr0 from any to any
+```
+
+Use the Docker runner for every fleet run:
+
+```bash
+cd ~/DreamServer/dream-server
+tests/fleet-multi-distro.sh --pull
+```
+
+The Docker and Incus distro runners take a shared host lock by default:
+`/tmp/dream-fleet-heavy.lock`, or `DREAM_FLEET_HOST_LOCK` when set. The
+`/dream-fleet-test` harness uses the same lock when launching heavy tower2
+install work, so distro-lab dry-runs do not compete with full fleet installs
+for Docker/build I/O on the same host. Use `--lock-timeout SECONDS` when a CI
+or automation should fail instead of waiting, and reserve `--no-host-lock` for
+local debugging when you know no full fleet install is running.
+
+Run a focused subset while debugging:
+
+```bash
+tests/fleet-multi-distro.sh ubuntu/24.04 archlinux/current mint
+tests/fleet-multi-distro.sh --no-dry-run ubuntu2404
+```
+
+The fast fleet matrix currently covers:
+
+| Distro ID | Image | Package Manager |
+|-----------|-------|-----------------|
+| `ubuntu2404` | `ubuntu:24.04` | apt |
+| `ubuntu2204` | `ubuntu:22.04` | apt |
+| `debian12` | `debian:12` | apt |
+| `mint213` | `linuxmintd/mint21.3-amd64:latest` | apt |
+| `fedora41` | `fedora:41` | dnf |
+| `rocky9` | `rockylinux:9` | dnf |
+| `arch` | `archlinux:latest` | pacman |
+| `manjaro` | `manjarolinux/base:latest` | pacman |
+| `cachyos` | `cachyos/cachyos:latest` | pacman |
+| `opensuse` | `opensuse/tumbleweed:latest` | zypper |
+
+Aliases such as `ubuntu/24.04`, `ubuntu/22.04`, `debian/12`,
+`fedora/41`, `archlinux/current`, `opensuse/tumbleweed`, and `mint` are
+accepted by the runner for quick ad-hoc checks. The matrix uses Linux Mint
+21.3 because the current Mint 22 Docker images report plain Ubuntu in
+`/etc/os-release`, which is less useful for distro detection.
+
+Use the Incus VM runner when a regression needs real systemd, boot, kernel, or
+Docker daemon behavior:
+
+```bash
+tests/fleet-incus-vm.sh
+tests/fleet-incus-vm.sh ubuntu/24.04 archlinux/current
+tests/fleet-incus-vm.sh --keep-vms rocky9
+```
+
+The VM matrix intentionally stays smaller than the Docker matrix because it
+boots full virtual machines and installs Docker inside each guest. It currently
+covers:
+
+| Distro ID | Incus image | Package Manager | VM Checks |
+|-----------|-------------|-----------------|-----------|
+| `ubuntu2404` | `images:ubuntu/24.04` | apt | systemd, Docker daemon, installer dry-run |
+| `fedora42` | `images:fedora/42` | dnf | systemd, Docker daemon, installer dry-run |
+| `rocky9` | `images:rockylinux/9` | dnf | systemd, Docker daemon, installer dry-run |
+| `arch` | `images:archlinux/current` | pacman | systemd, Docker daemon, installer dry-run |
+| `opensuse` | `images:opensuse/tumbleweed` | zypper | systemd, Docker daemon, installer dry-run |
+
+The Fedora VM lane uses Fedora 42 because the Incus public image server no
+longer publishes Fedora 41 VM images. The Docker matrix still keeps
+`fedora:41` coverage while the container image is available.
+
+The Rocky VM lane verifies the RHEL-family Docker CE fallback. If Docker's
+Rocky repository does not publish installable `docker-ce` packages, the
+installer uses the CentOS/RHEL Docker CE repository instead.
+
+For CachyOS, use the container matrix for package-manager coverage. Keep a
+manual CachyOS VM template for systemd/kernel coverage because CachyOS publishes
+installer ISOs rather than a standard Incus cloud image.
 
 ## Distrobox (Daily Testing)
 
@@ -23,9 +153,13 @@ curl -s https://raw.githubusercontent.com/89luca89/distrobox/main/install | sudo
 # Create test containers for target distros
 distrobox create --name dream-test-fedora --image fedora:41
 distrobox create --name dream-test-arch --image archlinux:latest
+distrobox create --name dream-test-manjaro --image manjarolinux/base:latest
+distrobox create --name dream-test-cachyos --image cachyos/cachyos:latest
 distrobox create --name dream-test-opensuse --image opensuse/tumbleweed:latest
 distrobox create --name dream-test-debian --image debian:12
 distrobox create --name dream-test-ubuntu2204 --image ubuntu:22.04
+distrobox create --name dream-test-mint213 --image linuxmintd/mint21.3-amd64:latest
+distrobox create --name dream-test-rocky9 --image rockylinux:9
 ```
 
 ### Usage
@@ -82,7 +216,9 @@ Boot any Linux distro from a single USB drive. Pick from a menu, boot into a liv
 | CachyOS | Arch-based, issue #33 | pacman |
 | openSUSE Tumbleweed | Rolling release | zypper |
 | Debian 12 | apt but not Ubuntu | apt |
-| Linux Mint 22 | Ubuntu derivative | apt |
+| Linux Mint 21.3 | Ubuntu derivative with `ID=linuxmint` | apt |
+| Rocky Linux 9 | RHEL-family server baseline | dnf |
+| Manjaro | Arch derivative with desktop-user reach | pacman |
 
 Total: ~25GB for all ISOs.
 
@@ -123,7 +259,7 @@ Run installer validation across all Distrobox containers automatically:
 ./tests/test-multi-distro.sh
 
 # Run specific distros
-./tests/test-multi-distro.sh fedora41 arch
+./tests/test-multi-distro.sh fedora41 arch cachyos mint213
 
 # Clean up
 ./tests/test-multi-distro.sh --cleanup
@@ -150,7 +286,7 @@ Run installer validation across all Distrobox containers automatically:
 
 ## CI Matrix
 
-Every PR automatically tests installer detection on 6 distros via GitHub Actions containers. See `.github/workflows/matrix-smoke.yml`.
+Every PR automatically tests installer detection on 10 distros via GitHub Actions containers. See `.github/workflows/matrix-smoke.yml`.
 
 **Tested per PR:**
 - `/etc/os-release` parsing
@@ -162,6 +298,10 @@ Every PR automatically tests installer detection on 6 distros via GitHub Actions
 
 1. Add the distro ID to `installers/lib/packaging.sh` in the `detect_pkg_manager()` case block
 2. Add a test entry in `tests/test-multi-distro.sh` DISTROS array
-3. Add a CI matrix entry in `.github/workflows/matrix-smoke.yml`
-4. Test with Distrobox: `distrobox create --name dream-test-newdistro --image newdistro:latest`
-5. Run: `./tests/test-multi-distro.sh newdistro`
+3. Add a fleet entry in `tests/fleet-multi-distro.sh`
+4. Add a CI matrix entry in `.github/workflows/matrix-smoke.yml`
+5. Test with Distrobox: `distrobox create --name dream-test-newdistro --image newdistro:latest`
+6. Run: `./tests/test-multi-distro.sh newdistro`
+7. Run the fleet matrix path: `./tests/fleet-multi-distro.sh newdistro`
+8. If the distro has an Incus VM image, add a VM lane in `tests/fleet-incus-vm.sh`
+   and run `./tests/fleet-incus-vm.sh newdistro`

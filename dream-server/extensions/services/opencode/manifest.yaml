@@ -31,4 +31,7 @@ features:
     enabled_services_all: [opencode]
     setup_time: Ready
     priority: 6
+    launch:
+      type: service
+      service: opencode
     gpu_backends: [all]

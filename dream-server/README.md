@@ -426,6 +426,7 @@ dream mode status                        # Show current mode
 ## Documentation
 
 - [docs/README.md](docs/README.md) — **Full documentation index** (start here)
+- [BUILD-ON-DREAM-SERVER.md](docs/BUILD-ON-DREAM-SERVER.md) — Forking, custom editions, extension templates, and downstream validation
 - [QUICKSTART.md](QUICKSTART.md) — Detailed setup guide
 - [HEADLESS-SETUP.md](docs/HEADLESS-SETUP.md) — QR onboarding, first-boot setup, AP mode, mDNS, and local agent access
 - [MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md) — Dashboard model downloads, switching, and manual GGUF use
@@ -441,10 +442,6 @@ dream mode status                        # Show current mode
 Dream Server exists because of the incredible people, projects, and communities that make open-source AI possible. We are grateful to every contributor, maintainer, and tinkerer whose work powers this stack.
 
 Thanks to [lhl](https://github.com/lhl) for [strix-halo-testing](https://github.com/lhl/strix-halo-testing) — the foundational Strix Halo AI research and rocWMMA performance work that the broader community builds on.
-
-### Community Builds
-
-*   [halo-ai (bong-water-water-bong)](https://github.com/bong-water-water-bong/halo-ai) — Bare-metal DreamServer rebuild for Strix Halo on Arch Linux. Zero containers, compiled from source, 89 tok/s. Proved Vulkan > ROCm for generation on gfx1151 and contributed kernel tuning research back to the ecosystem. Early DreamServer advocate who introduced us to the Lemonade SDK community and AMD developer team.
 
 ### Projects that make Dream Server possible
 

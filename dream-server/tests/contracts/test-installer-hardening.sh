@@ -58,6 +58,22 @@ fi
 assert_contains "$missing_yaml_err" 'PyYAML is required' "resolver did not explain PyYAML requirement"
 assert_contains "$missing_yaml_err" 'conda deactivate' "resolver did not include Conda/venv recovery hint"
 
+echo "[contract] macOS PyYAML install falls back to private installer venv"
+macos_installer="installers/macos/install-macos.sh"
+assert_contains "$macos_installer" '_ensure_macos_pyyaml' "macOS installer missing PyYAML helper"
+assert_contains "$macos_installer" 'python-cmd.sh' "macOS installer does not load python command resolver"
+assert_contains "$macos_installer" 'python3 -m pip --user' "macOS installer no longer tries user-site PyYAML first"
+assert_contains "$macos_installer" '\.installer-venv' "macOS installer missing private venv fallback"
+assert_contains "$macos_installer" 'export DREAM_PYTHON_CMD' "macOS installer does not export selected Python"
+assert_contains "$macos_installer" '_ds_python_cmd_cached=' "macOS installer does not refresh python resolver cache"
+
+echo "[contract] Linux phase 06 reports substeps on failure"
+phase06="installers/phases/06-directories.sh"
+assert_contains "$phase06" 'export INSTALL_PHASE="06-directories/\$\{step\}"' "phase 06 missing substep INSTALL_PHASE updates"
+for step in create-directories copy-source copy-extensions-library generate-env validate-env generate-searxng-config; do
+  assert_contains "$phase06" "_phase06_step \"$step\"" "phase 06 missing substep: $step"
+done
+
 echo "[contract] ds_sudo uses sudo -n in non-interactive mode"
 fakebin="$tmpdir/fakebin"
 mkdir -p "$fakebin"

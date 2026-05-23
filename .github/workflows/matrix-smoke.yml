@@ -7,6 +7,9 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
   linux-smoke:
     runs-on: ubuntu-latest
@@ -16,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: AMD Path Smoke
         run: bash tests/smoke/linux-amd.sh
@@ -44,11 +49,23 @@ jobs:
           - distro: debian-12
             container: debian:12
             expected_pkg: apt
+          - distro: linux-mint-21.3
+            container: linuxmintd/mint21.3-amd64:latest
+            expected_pkg: apt
           - distro: fedora-41
             container: fedora:41
             expected_pkg: dnf
+          - distro: rocky-9
+            container: rockylinux:9
+            expected_pkg: dnf
           - distro: archlinux
             container: archlinux:latest
+            expected_pkg: pacman
+          - distro: manjaro
+            container: manjarolinux/base:latest
+            expected_pkg: pacman
+          - distro: cachyos
+            container: cachyos/cachyos:latest
             expected_pkg: pacman
           - distro: opensuse-tw
             container: opensuse/tumbleweed:latest
@@ -60,21 +77,24 @@ jobs:
         working-directory: dream-server
     name: "distro: ${{ matrix.distro }}"
     steps:
-      - name: Install git (distro-aware)
+      - name: Install checkout prerequisites (distro-aware)
         working-directory: /
         run: |
           if command -v apt-get &>/dev/null; then
-            apt-get update -qq && apt-get install -y -qq git curl
+            apt-get update -qq && apt-get install -y -qq ca-certificates git curl
           elif command -v dnf &>/dev/null; then
-            dnf install -y -q git curl
+            dnf install -y -q ca-certificates git curl-minimal
           elif command -v pacman &>/dev/null; then
-            pacman -Sy --noconfirm git curl
+            pacman -Syu --noconfirm --needed ca-certificates git curl
           elif command -v zypper &>/dev/null; then
-            zypper --non-interactive install git curl
+            zypper --non-interactive refresh
+            zypper --non-interactive install ca-certificates git curl
           fi
 
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Verify /etc/os-release
         working-directory: /
@@ -116,13 +136,19 @@ jobs:
           source installers/lib/packaging.sh
           detect_pkg_manager
           pkg_update
-          pkg_install curl jq || echo "WARN: jq install failed (may not be in repos)"
+          pkg_install curl jq rsync || echo "WARN: jq/rsync install failed (may not be in repos)"
 
-          # Verify at least curl works
+          # Verify the core tools used by installer phases.
           if command -v curl &>/dev/null; then
             echo "PASS: curl available"
           else
             echo "FAIL: curl not available after pkg_install"
+            exit 1
+          fi
+          if command -v rsync &>/dev/null; then
+            echo "PASS: rsync available"
+          else
+            echo "FAIL: rsync not available after pkg_install"
             exit 1
           fi
 
@@ -142,6 +168,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: macOS Dispatch Smoke
         run: bash tests/smoke/macos-dispatch.sh

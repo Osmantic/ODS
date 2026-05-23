@@ -41,4 +41,6 @@ features:
     enabled_services_all: [brave-search]
     setup_time: ~2 minutes
     priority: 50
+    launch:
+      type: none
     gpu_backends: [all]
