@@ -104,7 +104,7 @@ def _token_spy_extension_state() -> dict[str, Any]:
     ):
         ext_dir = Path(base_dir) / TOKEN_SPY_SERVICE_ID
         manifest = ext_dir / "manifest.yaml"
-        if not ext_dir.exists() and not manifest.exists():
+        if not manifest.exists():
             continue
         compose = ext_dir / "compose.yaml"
         disabled_compose = ext_dir / "compose.yaml.disabled"
@@ -126,6 +126,20 @@ def _token_spy_extension_state() -> dict[str, Any]:
         "disabled": False,
         "compose_file": None,
         "disabled_compose_file": None,
+    }
+
+
+def _public_extension_state(extension_state: dict[str, Any]) -> dict[str, Any]:
+    """Return extension state safe for browser responses.
+
+    The readiness UI only needs booleans and source. Avoid returning absolute
+    install paths such as /home/<user>/dream-server/... to the browser.
+    """
+    return {
+        "source": extension_state.get("source"),
+        "installed": bool(extension_state.get("installed")),
+        "enabled": bool(extension_state.get("enabled")),
+        "disabled": bool(extension_state.get("disabled")),
     }
 
 
@@ -198,7 +212,7 @@ def _readiness_payload(
         "service_status": service_status,
         "message": message,
         "detail": detail,
-        "extension": extension_state,
+        "extension": _public_extension_state(extension_state),
         "service": service,
         "actions": actions,
     }

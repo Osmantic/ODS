@@ -71,8 +71,8 @@ export const coreRoutes = [
     sidebar: true,
     order: 3,
   },
-  // Usage is a day-to-day operations surface. Setup / Owner remains reachable
-  // by direct URL because it is a factory/distributor/service-provider flow.
+  // Usage is a day-to-day operations surface. Setup / Owner stays in Settings
+  // because it is a factory/distributor/service-provider flow, not normal daily use.
   {
     id: 'usage',
     path: '/usage',

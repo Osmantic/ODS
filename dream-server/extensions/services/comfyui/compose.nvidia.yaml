@@ -10,10 +10,10 @@ services:
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${COMFYUI_PORT:-8188}:8188"
     volumes:
-      - ./data/comfyui/models:/models
-      - ./data/comfyui/output:/output
-      - ./data/comfyui/input:/input
-      - ./data/comfyui/workflows:/workflows:ro
+      - ./data/comfyui/models:/models:z
+      - ./data/comfyui/output:/output:z
+      - ./data/comfyui/input:/input:z
+      - ./data/comfyui/workflows:/workflows:ro,z
     shm_size: '8g'
     deploy:
       resources:

@@ -148,13 +148,13 @@ pass "Hermes patcher updates model.context_length"
 grep -q '^    context_length: 65536$' "$tmp_hermes" \
     || fail "Hermes patcher writes auxiliary compression context"
 pass "Hermes patcher writes auxiliary compression context"
-grep -q '^  threshold: 0.50$' "$tmp_hermes" \
+grep -q '^  threshold: 0.75$' "$tmp_hermes" \
     || fail "Hermes patcher normalizes compression threshold"
 pass "Hermes patcher normalizes compression threshold"
-grep -q '^  target_ratio: 0.20$' "$tmp_hermes" \
+grep -q '^  target_ratio: 0.50$' "$tmp_hermes" \
     || fail "Hermes patcher normalizes compression target_ratio"
 pass "Hermes patcher normalizes compression target_ratio"
-grep -q '^  protect_last_n: 20$' "$tmp_hermes" \
+grep -q '^  protect_last_n: 40$' "$tmp_hermes" \
     || fail "Hermes patcher writes protect_last_n"
 pass "Hermes patcher writes protect_last_n"
 

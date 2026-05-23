@@ -80,6 +80,8 @@ def test_usage_readiness_reports_ready_token_spy(test_client, monkeypatch):
     assert data["enabled"] is True
     assert data["healthy"] is True
     assert data["actions"]["restart"]["url"] == "/api/services/token-spy/restart"
+    assert "path" not in data["extension"]
+    assert "compose_file" not in data["extension"]
 
 
 def test_usage_readiness_reports_disabled_token_spy_with_enable_action(test_client, monkeypatch):
@@ -193,6 +195,23 @@ def test_usage_readiness_reads_disabled_compose_state(tmp_path, monkeypatch):
     assert state["installed"] is True
     assert state["enabled"] is False
     assert state["disabled"] is True
+
+
+
+def test_usage_readiness_ignores_partial_extension_without_manifest(tmp_path, monkeypatch):
+    import routers.usage as usage_router
+
+    extensions_dir = tmp_path / "extensions" / "services"
+    token_spy = extensions_dir / "token-spy"
+    token_spy.mkdir(parents=True)
+    (token_spy / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(usage_router, "EXTENSIONS_DIR", extensions_dir)
+    monkeypatch.setattr(usage_router, "USER_EXTENSIONS_DIR", tmp_path / "user-extensions")
+
+    state = usage_router._token_spy_extension_state()
+
+    assert state["installed"] is False
+    assert state["enabled"] is False
 
 
 def test_usage_report_returns_token_spy_payload(test_client, monkeypatch):

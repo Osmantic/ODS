@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIAG_LIB="$ROOT_DIR/installers/windows/lib/compose-diagnostics.ps1"
 INSTALL_PS1="$ROOT_DIR/installers/windows/install-windows.ps1"
+PRE_SCRIPT="$ROOT_DIR/installers/windows/phases/01-preflight.ps1"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -36,6 +37,7 @@ echo ""
 
 [[ -f "$DIAG_LIB" ]] && pass "compose diagnostics library exists" || fail "compose diagnostics library missing"
 [[ -f "$INSTALL_PS1" ]] && pass "Windows installer exists" || fail "Windows installer missing"
+[[ -f "$PRE_SCRIPT" ]] && pass "Windows preflight phase exists" || fail "Windows preflight phase missing"
 
 check 'function Write-DreamComposeFailureReport' "$DIAG_LIB" "report writer function exists"
 check 'install-report-$stamp.txt' "$DIAG_LIB" "report uses install-report timestamp path"
@@ -47,6 +49,17 @@ check '[switch]$SaveReport' "$DIAG_LIB" "diagnostics only save report when reque
 check '-ComposeLogPath $_composeLog' "$INSTALL_PS1" "installer passes compose log to diagnostics"
 check '-ComposeArgs @("up", "-d", "--remove-orphans", "--no-build")' "$INSTALL_PS1" "installer passes exact compose up args"
 check '-SaveReport' "$INSTALL_PS1" "installer enables saved report on compose failure"
+check 'function Assert-DreamWindowsComposeCwd' "$INSTALL_PS1" "installer asserts compose cwd before launch"
+check 'Write-DreamWindowsComposeLaunchRecord' "$INSTALL_PS1" "installer writes compose launch record"
+check '"compose-launch.txt"' "$INSTALL_PS1" "installer records compose launch artifact path"
+check '[Environment]::CurrentDirectory' "$INSTALL_PS1" "installer keeps .NET cwd aligned with install dir"
+check 'Compose working directory: $installDir' "$INSTALL_PS1" "installer logs compose working directory"
+check 'Push-Location $installDir' "$INSTALL_PS1" "installer runs compose build/up from install dir"
+check 'Join-Path $installDir $cfPath' "$INSTALL_PS1" "installer validates relative compose files under install dir"
+check '$_probeImage = "alpine:3.20"' "$PRE_SCRIPT" "preflight uses pinned Alpine probe image"
+check 'docker pull $_probeImage' "$PRE_SCRIPT" "preflight pulls missing probe image before bind-mount test"
+check 'Docker could not download $_probeImage' "$PRE_SCRIPT" "preflight reports Alpine pull failure separately"
+check 'The probe image ($_probeImage) is already available; this is a file-sharing path issue.' "$PRE_SCRIPT" "preflight separates file sharing from image availability"
 
 if grep -q "Write-DreamComposeDiagnostics .*SaveReport" "$ROOT_DIR/installers/windows/dream.ps1"; then
     fail "dream.ps1 command failures should not create install reports by default"
@@ -130,6 +143,51 @@ EOF
         pass "PowerShell report writer creates redacted report with mocked docker"
     else
         fail "PowerShell report writer runtime behavior failed"
+    fi
+
+    if INSTALL_PS1="$INSTALL_PS1" INSTALL_DIR="$INSTALL_DIR" pwsh -NoProfile -Command '
+        $ErrorActionPreference = "Stop"
+        $code = Get-Content $env:INSTALL_PS1 -Raw
+        $assertStart = $code.IndexOf("function Assert-DreamWindowsComposeCwd")
+        $recordStart = $code.IndexOf("function Write-DreamWindowsComposeLaunchRecord")
+        $launchStart = $code.IndexOf("# ── Start Docker services")
+        if ($assertStart -lt 0 -or $recordStart -lt 0 -or $launchStart -lt 0) {
+            throw "required function block not found"
+        }
+        $helperCode = $code.Substring($assertStart, $launchStart - $assertStart)
+        function Write-AIError { param([string]$Message) Write-Host "ERROR:$Message" }
+        function Write-AI { param([string]$Message) Write-Host "INFO:$Message" }
+        Invoke-Expression $helperCode
+
+        Push-Location $env:INSTALL_DIR
+        $previous = [Environment]::CurrentDirectory
+        [Environment]::CurrentDirectory = $env:INSTALL_DIR
+        try {
+            Assert-DreamWindowsComposeCwd -InstallDir $env:INSTALL_DIR
+            Write-DreamWindowsComposeLaunchRecord -InstallDir $env:INSTALL_DIR `
+                -ComposeFlags @("--env-file", ".env", "-f", "docker-compose.base.yml") `
+                -ComposeArgs @("up", "-d", "--remove-orphans", "--no-build")
+        }
+        finally {
+            [Environment]::CurrentDirectory = $previous
+            Pop-Location
+        }
+
+        $record = Join-Path $env:INSTALL_DIR "logs\compose-launch.txt"
+        if (-not (Test-Path $record)) { throw "launch record not created" }
+        $text = Get-Content $record -Raw
+        foreach ($needle in @(
+            "cwd=$env:INSTALL_DIR",
+            "dotnet_cwd=$env:INSTALL_DIR",
+            "compose_command=docker compose --env-file .env -f docker-compose.base.yml up -d --remove-orphans --no-build",
+            "compose_ps_command=cd"
+        )) {
+            if (-not $text.Contains($needle)) { throw "missing $needle" }
+        }
+    '; then
+        pass "PowerShell compose launch record captures install-dir cwd"
+    else
+        fail "PowerShell compose launch record runtime behavior failed"
     fi
 else
     pass "PowerShell runtime behavior skipped (pwsh unavailable)"

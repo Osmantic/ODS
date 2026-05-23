@@ -304,11 +304,49 @@ result=$(_classify_id "0xFFFF" "Unknown GPU" amd 8192)
 [[ -n "$result" && "$result" != "null" ]] \
   || { echo "[FAIL] unknown GPU crashed"; exit 1; }
 
-echo "[contract] macOS compose resolver installs PyYAML into checked python3"
-grep -q "python3 -c 'import yaml'" installers/macos/install-macos.sh \
-  || { echo "[FAIL] macOS installer does not verify PyYAML with python3"; exit 1; }
-grep -q 'python3 -m pip install --user .*pyyaml' installers/macos/install-macos.sh \
-  || { echo "[FAIL] macOS installer must install PyYAML via python3 -m pip, not a possibly unrelated pip3"; exit 1; }
+echo "[contract] macOS compose resolver installs PyYAML into an isolated selected-Python venv"
+grep -q '_ensure_macos_pyyaml' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer does not use the PyYAML readiness helper"; exit 1; }
+grep -q 'python-cmd.sh' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer does not load the shared Python resolver"; exit 1; }
+grep -q '_macos_python_imports_yaml "$pycmd"' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer does not verify PyYAML with the selected Python"; exit 1; }
+grep -q '"$pycmd" -m venv "$venv_dir"' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must create the PyYAML venv with the selected Python"; exit 1; }
+grep -q '_set_installer_python_cmd "$venv_python"' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must route compose resolver to the venv Python"; exit 1; }
+if grep -q 'pip install --user .*pyyaml\|pip install .*--user .*pyyaml' installers/macos/install-macos.sh; then
+  echo "[FAIL] macOS installer must not use pip --user for PyYAML; Homebrew Python rejects it under PEP 668"
+  exit 1
+fi
+grep -q 'export DREAM_PYTHON_CMD' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer does not export the selected Python for resolver scripts"; exit 1; }
+
+echo "[contract] macOS OpenCode uses discoverable binary path"
+grep -q 'type -P opencode' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must resolve an executable OpenCode file, not a shell function/alias"; exit 1; }
+grep -q 'brew --prefix' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must check the Homebrew prefix for OpenCode"; exit 1; }
+grep -q '_opencode_candidate_is_file' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must validate resolved OpenCode as an absolute executable file"; exit 1; }
+grep -q 'brew install opencode' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer should prefer Homebrew OpenCode when brew is available"; exit 1; }
+grep -q '<string>${OPENCODE_BIN}</string>' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS OpenCode LaunchAgent must use resolved OPENCODE_BIN"; exit 1; }
+grep -q '_compute_launchd_path "$(dirname "$OPENCODE_BIN")"' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS OpenCode LaunchAgent PATH must include resolved binary directory"; exit 1; }
+
+echo "[contract] macOS local rebuilds respect selected compose services"
+grep -q 'config --services' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must inspect selected compose services before local rebuilds"; exit 1; }
+grep -q 'Could not resolve macOS compose services for local image rebuilds' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must fail clearly if compose service resolution fails"; exit 1; }
+grep -q 'Skipping local image rebuild for disabled service' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must skip disabled local-build services"; exit 1; }
+if grep -q '_macos_build_services=(dashboard dashboard-api ape token-spy privacy-shield)' installers/macos/install-macos.sh; then
+  echo "[FAIL] macOS installer must not rebuild every local service unconditionally"
+  exit 1
+fi
 
 echo "[contract] Hermes context defaults are installer-wide"
 bash tests/test-installer-context-parity.sh
