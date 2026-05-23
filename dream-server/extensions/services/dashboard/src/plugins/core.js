@@ -71,8 +71,10 @@ export const coreRoutes = [
     sidebar: true,
     order: 3,
   },
-  // Usage is a day-to-day operations surface. Setup / Owner stays in Settings
-  // because it is a factory/distributor/service-provider flow, not normal daily use.
+  // Usage + Setup / Owner are reachable from Settings rather than the top-level
+  // sidebar. Setup / Owner is a factory/distributor/service-provider flow, not
+  // a day-to-day dashboard surface. Direct URLs still work for bookmarks and
+  // for the magic-link redemption page which renders inside this dashboard.
   {
     id: 'usage',
     path: '/usage',
@@ -80,7 +82,7 @@ export const coreRoutes = [
     icon: CreditCard,
     component: Usage,
     getProps: ({ status }) => ({ status }),
-    sidebar: true,
+    sidebar: false,
     order: 3.5,
   },
   {
