@@ -32,13 +32,17 @@ If AI is becoming critical infrastructure, it shouldn’t be rented. Self-hostin
 > | **Windows** (NVIDIA + AMD) | **Supported** — install and run today |
 > | **macOS** (Apple Silicon) | **Supported** — install and run today |
 >
-> **Tested Linux distros:** Ubuntu 24.04/22.04, Debian 12, Fedora 41+, Arch Linux, CachyOS, openSUSE Tumbleweed. Other distros using apt, dnf, pacman, or zypper should also work — [open an issue](https://github.com/Light-Heart-Labs/DreamServer/issues) if yours doesn't.
+> **Tested Linux distros:** Ubuntu 24.04/22.04, Debian 12, Linux Mint 21.3, Fedora 41+, Rocky Linux 9, Arch Linux, Manjaro, CachyOS, and openSUSE Tumbleweed. Other distros using apt, dnf, pacman, or zypper should also work — [open an issue](https://github.com/Light-Heart-Labs/DreamServer/issues) if yours doesn't.
+>
+> **Testing surface:** CI and tower2 Docker containers cover broad distro installer logic; tower2 Incus VMs cover systemd + Docker daemon behavior on Ubuntu, Fedora/Rocky, Arch, and openSUSE; the real hardware fleet remains the release gate for NVIDIA/AMD/Apple GPU runtime, dashboard, Hermes, UI, and capability validation.
 >
 > **Windows:** Requires Docker Desktop with WSL2 backend. NVIDIA GPUs use Docker GPU passthrough; AMD Strix Halo runs through the platform-specific accelerated path documented in the Windows installer and support matrix.
 >
 > **macOS:** Requires Apple Silicon (M1+) and Docker Desktop. llama-server runs natively with Metal GPU acceleration; all other services run in Docker.
 >
-> See the [Support Matrix](dream-server/docs/SUPPORT-MATRIX.md) for details.
+> See the [Support Matrix](dream-server/docs/SUPPORT-MATRIX.md) for supported
+> platform claims and the [Validation Matrix](dream-server/docs/VALIDATION-MATRIX.md)
+> for the layered test surface used to test those claims.
 
 ---
 
@@ -356,6 +360,7 @@ Other tools get you part of the way. Dream Server gets you the whole way.
 | [Build On Dream Server](dream-server/docs/BUILD-ON-DREAM-SERVER.md) | Forking, custom editions, extension templates, and downstream validation |
 | [Headless Setup](dream-server/docs/HEADLESS-SETUP.md) | QR onboarding, first-boot setup, AP mode, mDNS, and local agent access |
 | [Support Matrix](dream-server/docs/SUPPORT-MATRIX.md) | Current platform and GPU support status |
+| [Validation Matrix](dream-server/docs/VALIDATION-MATRIX.md) | Sanitized CI, distro lab, and real-hardware fleet release-readiness evidence |
 | [Model Management](dream-server/docs/MODEL-MANAGEMENT.md) | Dashboard model downloads, switching, and manual GGUF workflows |
 | [Hardware Guide](dream-server/docs/HARDWARE-GUIDE.md) | What to buy, tier recommendations |
 | [FAQ](dream-server/FAQ.md) | Common questions and configuration |
@@ -377,10 +382,6 @@ Dream Server has been recognized by the local AI and developer community, includ
 Thanks to [lhl](https://github.com/lhl) for [strix-halo-testing](https://github.com/lhl/strix-halo-testing) — the foundational Strix Halo AI research and rocWMMA performance work that the broader community builds on.
 
 [Tony363 (Tony Siu)](https://github.com/Tony363), a former [Google University Research lead](https://technical.ly/workforce/tony-siu-code-and-coffee-how-i-got-here/) and founder of [Code & Coffee Philadelphia](https://www.meetup.com/coffee-code-philly/), has been one of the biggest reasons Dream Server reached broader awareness in the Philly AI ecosystem. Code & Coffee is now a 4,000+ developer community, and Tony's support helped bring Dream Server into that world, including multiple Pennovation Works features. More than any title, he cares deeply about local AI, empowerment for the masses, and seeing this project succeed. We are also eternally grateful to [Ahmad Osman](https://ahmadosman.com/about/) for [featuring and publicly supporting Dream Server](https://x.com/TheAhmadOsman/status/2055344995041771776?s=20); after his endorsement, the project grew from roughly 500 to nearly 1,500 GitHub stars in four days, bringing a wave of visibility, adoption, and encouragement we will not forget.
-
-### Community Builds
-
-*   [halo-ai (bong-water-water-bong)](https://github.com/bong-water-water-bong/halo-ai) — Bare-metal DreamServer rebuild for Strix Halo on Arch Linux. Zero containers, compiled from source, 89 tok/s. Proved Vulkan > ROCm for generation on gfx1151 and contributed kernel tuning research (`amd_iommu=off`, TTM page pool expansion) back to the ecosystem. Early DreamServer advocate who introduced us to the Lemonade SDK community and AMD developer team.
 
 ### Projects that make Dream Server possible
 

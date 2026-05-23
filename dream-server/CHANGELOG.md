@@ -6,17 +6,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Fleet distro lab Docker and Incus runners now take a shared host lock so
+  tower2 distro dry-runs do not contend with heavy full-fleet install/build
+  work on the same host.
+
+## [2.5.0] - 2026-05-21
+
 ### Added
-- AMD runtime diagnostics endpoint (`/api/gpu/amd-runtime`) reports Lemonade vs llama-server, host vs container, accelerator backend, and health from explicit installer state.
-- Explicit AMD inference env contract (`AMD_INFERENCE_RUNTIME`, `AMD_INFERENCE_BACKEND`, `AMD_INFERENCE_LOCATION`, `AMD_INFERENCE_PORT`) for Linux, Windows, and WSL/Docker Desktop installs.
-- AMD runtime capability metadata (`AMD_INFERENCE_SUPPORTED_BACKENDS`, `AMD_INFERENCE_RUNTIME_MODE`, `AMD_INFERENCE_MANAGED`) for dashboard diagnostics and `dream doctor`.
+- Multi-distro release validation covering Ubuntu 24.04/22.04, Debian 12,
+  Linux Mint 21.3, Fedora 41, Rocky Linux 9, Arch, Manjaro, CachyOS, and
+  openSUSE Tumbleweed in CI/container form.
+- tower2 Incus VM distro lab for real systemd, network, Docker daemon, Docker
+  Compose, and installer dry-run coverage on Ubuntu 24.04, Fedora 42, Rocky 9,
+  Arch current, and openSUSE Tumbleweed.
+- Sanitized validation matrix documenting the layered CI, distro lab, and
+  real-hardware fleet surface, tested phases, release-readiness receipt, and
+  current evidence boundaries.
+- AMD runtime diagnostics endpoint (`/api/gpu/amd-runtime`) reports Lemonade vs
+  llama-server, host vs container, accelerator backend, and health from
+  explicit installer state.
+- Explicit AMD inference env contract (`AMD_INFERENCE_RUNTIME`,
+  `AMD_INFERENCE_BACKEND`, `AMD_INFERENCE_LOCATION`, `AMD_INFERENCE_PORT`) for
+  Linux, Windows, and WSL/Docker Desktop installs.
+- AMD runtime capability metadata (`AMD_INFERENCE_SUPPORTED_BACKENDS`,
+  `AMD_INFERENCE_RUNTIME_MODE`, `AMD_INFERENCE_MANAGED`) for dashboard
+  diagnostics and `dream doctor`.
+- Release evidence and golden-path contracts for generated config, update
+  rollback behavior, and downstream builder validation.
 
 ### Changed
+- Linked public support, testing, and platform-claim docs to the validation
+  matrix so release claims point at layered evidence instead of informal
+  maintainer memory.
 - Updated Dream Proxy and Hermes Proxy to `caddy:2.11.3-alpine`.
-- Centralized AMD Lemonade runtime metadata in `config/backends/amd.json` and aligned the Linux Docker image pin to `ghcr.io/lemonade-sdk/lemonade-server:v10.2.0`.
+- Centralized AMD Lemonade runtime metadata in `config/backends/amd.json` and
+  aligned the Linux Docker image pin to
+  `ghcr.io/lemonade-sdk/lemonade-server:v10.2.0`.
+- Hardened installer/runtime defaults for Hermes, OpenCode, Perplexica,
+  bootstrap model swaps, update flows, and extension gating.
 
 ### Fixed
-- Windows AMD installs now pass deterministic runtime state into dashboard-api instead of requiring the container to infer host-side Lemonade vs Vulkan fallback.
+- Rocky/RHEL-family Docker installation now falls back to Docker's CentOS/RHEL
+  repository when distro packages are unavailable.
+- DNF package resolution now avoids `curl` vs `curl-minimal` conflicts on
+  Fedora/RHEL-style systems.
+- Windows AMD installs now pass deterministic runtime state into dashboard-api
+  instead of requiring the container to infer host-side Lemonade vs Vulkan
+  fallback.
+- Perplexica, LiteLLM, OpenCode, bootstrap-upgrade, uninstall, macOS logging,
+  and model-selection regressions fixed across the 2.5.0 cycle.
+
+### Security
+- Documented the retired LiveKit credential exposure as resolved so public audit
+  readers do not mistake retired leaked values for active secrets.
+- Added or expanded release contracts for dependency pinning, network exposure,
+  support bundles, and secret scanning.
+
+### Validation
+- Full fleet pass on 2026-05-21 in
+  `/home/michael/dream-fleet-test/runs/2026-05-21T15-48-27Z`.
+- Hardware fleet: tower2, Strix Halo, Spark, Mac mini, and M5 MacBook Pro all
+  passed install, 7/7 verify, Hermes seeded echo, UI checks, and applicable
+  capability probes.
+- Regressions: 9/9 fixtures green, 0 bugs detected, 0 PRs opened.
+- Distro lab: Docker matrix passed 10/10 distros; Incus VM matrix passed 5/5
+  VMs with real systemd + Docker and clean installer dry-runs.
+- Known follow-up: concurrent `fleet-multi-distro.sh` and a heavy
+  `dream-fleet-test` install on the same host can create I/O contention. Prefer
+  serialization or a future `--parallel-limit` flag when running both surfaces
+  together.
 
 ## [2.4.0] - 2026-03-24
 

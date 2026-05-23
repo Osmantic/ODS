@@ -40,6 +40,7 @@ service:
         auth.<device>.local      → dashboard-api (magic-link redemption)
         api.<device>.local       → dashboard-api (admin /api/*)
         hermes.<device>.local    → hermes-proxy (when enabled)
+        talk.<device>.local      → dashboard /talk (mobile owner portal)
     Per-subdomain routing means every backend stays root-mounted (no
     subpath gymnastics) and the dream-session cookie can be Domain-scoped
     to <device>.local so SSO works across all of them.
@@ -70,4 +71,7 @@ features:
     enabled_services_all: [dream-proxy]
     setup_time: Ready
     priority: 1
+    launch:
+      type: service
+      service: dream-proxy
     gpu_backends: [all]

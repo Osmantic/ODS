@@ -29,16 +29,18 @@ describe('FirstBoot', () => {
     globalThis.localStorage.removeItem('dream-firstboot-progress')
   })
 
-  test('generates the first invite, marks setup complete, and shows the QR', async () => {
+  test('generates the owner card, marks setup complete, and shows the QR', async () => {
     const onComplete = vi.fn()
     const fetchMock = vi.fn(async (url, options = {}) => {
       if (url === '/api/auth/magic-link/generate' && options.method === 'POST') {
         return response({
           url: 'http://auth.spark.local/magic-link/first-token',
           target_username: 'sam',
-          expires_at: new Date(Date.now() + 86_400_000).toISOString(),
-          scope: 'chat',
-          reusable: false,
+          expires_at: null,
+          scope: 'hermes',
+          reusable: true,
+          token_type: 'owner',
+          url_mode: 'lan',
         })
       }
       if (url === '/api/setup/complete' && options.method === 'POST') {
@@ -59,13 +61,14 @@ describe('FirstBoot', () => {
     const generateCall = fetchMock.mock.calls.find(([url]) => url === '/api/auth/magic-link/generate')
     expect(JSON.parse(generateCall[1].body)).toMatchObject({
       target_username: 'sam',
-      scope: 'chat',
-      expires_in: 86400,
-      reusable: false,
-      note: 'First-boot invite (spark)',
+      token_type: 'owner',
+      scope: 'hermes',
+      url_mode: 'lan',
+      note: 'First-boot owner card (spark)',
     })
+    expect(JSON.parse(generateCall[1].body)).not.toHaveProperty('expires_in')
     expect(fetchMock).toHaveBeenCalledWith('/api/setup/complete', { method: 'POST' })
-    expect(await screen.findByAltText('QR code for invite link')).toHaveAttribute('src', 'data:image/png;base64,qrpayload')
+    expect(await screen.findByAltText('QR code for owner card')).toHaveAttribute('src', 'data:image/png;base64,qrpayload')
 
     fireEvent.click(screen.getByRole('button', { name: /open dashboard/i }))
     expect(onComplete).toHaveBeenCalledTimes(1)
@@ -77,9 +80,11 @@ describe('FirstBoot', () => {
         return response({
           url: 'http://auth.spark.local/magic-link/first-token',
           target_username: 'sam',
-          expires_at: new Date(Date.now() + 86_400_000).toISOString(),
-          scope: 'chat',
-          reusable: false,
+          expires_at: null,
+          scope: 'hermes',
+          reusable: true,
+          token_type: 'owner',
+          url_mode: 'lan',
         })
       }
       if (url === '/api/setup/complete' && options.method === 'POST') {

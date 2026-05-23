@@ -18,11 +18,11 @@ services:
       # the value, so the proxy still comes up on a fresh box.
       - DREAM_DEVICE_NAME=${DREAM_DEVICE_NAME:-dream}
     volumes:
-      - ./extensions/services/dream-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./extensions/services/dream-proxy/Caddyfile:/etc/caddy/Caddyfile:ro,z
       # Caddy persists its own state (certs, ACME data) — empty for the
       # HTTP-only default but keeps Caddy quiet on restart.
-      - ./data/dream-proxy/caddy-data:/data
-      - ./data/dream-proxy/caddy-config:/config
+      - ./data/dream-proxy/caddy-data:/data:z
+      - ./data/dream-proxy/caddy-config:/config:z
     ports:
       # DREAM_PROXY_BIND defaults to 0.0.0.0 (LAN-exposed) because the
       # proxy IS the LAN-facing surface. This is an explicit exception to

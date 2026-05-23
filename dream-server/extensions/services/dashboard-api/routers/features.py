@@ -4,7 +4,7 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from config import FEATURES, GPU_BACKEND, SERVICES
 from gpu import get_gpu_info, get_gpu_tier
@@ -76,6 +76,13 @@ def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[G
     else:
         status = "available"
 
+    launch = feature.get("launch")
+    if launch is None:
+        if enabled_all:
+            launch = {"type": "service", "service": enabled_all[0]}
+        elif enabled_any:
+            launch = {"type": "service", "service": enabled_any[0]}
+
     return {
         "id": feature["id"],
         "name": feature["name"],
@@ -95,6 +102,9 @@ def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[G
             "servicesMissing": services_missing,
             "servicesOk": services_ok,
         },
+        "enabledServicesAll": enabled_all,
+        "enabledServicesAny": enabled_any,
+        "launch": launch,
         "setupTime": feature.get("setup_time", "Unknown"),
         "priority": feature.get("priority", 99)
     }
@@ -176,7 +186,11 @@ async def api_features(api_key: str = Depends(verify_api_key)):
 
 
 @router.get("/api/features/{feature_id}/enable")
-async def feature_enable_instructions(feature_id: str, api_key: str = Depends(verify_api_key)):
+async def feature_enable_instructions(
+    feature_id: str,
+    request: Request,
+    api_key: str = Depends(verify_api_key),
+):
     """Get instructions to enable a specific feature."""
     feature = next((f for f in FEATURES if f["id"] == feature_id), None)
     if not feature:
@@ -185,23 +199,33 @@ async def feature_enable_instructions(feature_id: str, api_key: str = Depends(ve
     def _svc_url(service_id: str) -> str:
         cfg = SERVICES.get(service_id, {})
         port = cfg.get("external_port", cfg.get("port", 0))
-        return f"http://localhost:{port}" if port else ""
+        if not port:
+            return ""
+        forwarded_host = request.headers.get("x-forwarded-host")
+        host_header = forwarded_host or request.headers.get("host") or "localhost"
+        hostname = host_header.rsplit(":", 1)[0] if ":" in host_header else host_header
+        scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
+        return f"{scheme}://{hostname}:{port}"
 
     def _svc_port(service_id: str) -> int:
         cfg = SERVICES.get(service_id, {})
         return cfg.get("external_port", cfg.get("port", 0))
 
     webui_url = _svc_url("open-webui")
-    dashboard_url = _svc_url("dashboard")
     n8n_url = _svc_url("n8n")
+    comfyui_url = _svc_url("comfyui")
+    opencode_url = _svc_url("opencode")
+    hermes_url = _svc_url("hermes-proxy")
 
     instructions = {
         "chat": {"steps": ["Chat is already enabled if llama-server is running", "Open the Dashboard and click 'Chat' to start"], "links": [{"label": "Open Chat", "url": webui_url}]},
-        "voice": {"steps": [f"Ensure Whisper (STT) is running on port {_svc_port('whisper')}", f"Ensure Kokoro (TTS) is running on port {_svc_port('tts')}", "Start LiveKit for WebRTC", "Open the Voice page in the Dashboard"], "links": [{"label": "Voice Dashboard", "url": f"{dashboard_url}/voice"}]},
-        "documents": {"steps": ["Ensure Qdrant vector database is running", "Enable the 'Document Q&A' workflow", "Upload documents via the workflow endpoint"], "links": [{"label": "Workflows", "url": f"{dashboard_url}/workflows"}]},
-        "workflows": {"steps": [f"Ensure n8n is running on port {_svc_port('n8n')}", "Open the Workflows page to see available automations", "Click 'Enable' on any workflow to import it"], "links": [{"label": "n8n Dashboard", "url": n8n_url}, {"label": "Workflows", "url": f"{dashboard_url}/workflows"}]},
-        "images": {"steps": ["Image generation requires additional setup", "Coming soon in a future update"], "links": []},
-        "coding": {"steps": ["Switch to a coding-oriented local model profile for best results", "Use the model manager to download and load it", "Chat will now be optimized for code"], "links": [{"label": "Model Manager", "url": f"{dashboard_url}/models"}]},
+        "voice": {"steps": [f"Ensure Whisper (STT) is running on port {_svc_port('whisper')}", f"Ensure Kokoro (TTS) is running on port {_svc_port('tts')}", "Open Open WebUI and use its voice controls"], "links": [{"label": "Open Chat", "url": webui_url}]},
+        "documents": {"steps": ["Ensure Qdrant vector database is running", "Open Open WebUI and use its document/RAG controls"], "links": [{"label": "Open Chat", "url": webui_url}]},
+        "workflows": {"steps": [f"Ensure n8n is running on port {_svc_port('n8n')}", "Open n8n to see and manage available automations"], "links": [{"label": "n8n Dashboard", "url": n8n_url}]},
+        "images": {"steps": [f"Ensure ComfyUI is running on port {_svc_port('comfyui')}", "Open ComfyUI to build and run image workflows"], "links": [{"label": "Open ComfyUI", "url": comfyui_url}]},
+        "coding": {"steps": [f"Ensure OpenCode is running on port {_svc_port('opencode')}", "Open OpenCode for the browser-based coding assistant"], "links": [{"label": "Open OpenCode", "url": opencode_url}]},
+        "hermes-agent": {"steps": [f"Ensure Hermes proxy is running on port {_svc_port('hermes-proxy')}", "Open Hermes for advanced agent access"], "links": [{"label": "Open Hermes", "url": hermes_url}]},
+        "hermes-sso": {"steps": [f"Ensure Hermes proxy is running on port {_svc_port('hermes-proxy')}", "Open Hermes through Dream SSO"], "links": [{"label": "Open Hermes", "url": hermes_url}]},
         "observability": {"steps": [f"Langfuse is running on port {_svc_port('langfuse')}", "Open Langfuse to view LLM traces and evaluations", "LiteLLM automatically sends traces — no additional configuration needed"], "links": [{"label": "Open Langfuse", "url": _svc_url("langfuse")}]},
     }
 

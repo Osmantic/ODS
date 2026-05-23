@@ -20,7 +20,7 @@ at [`../../README.md`](../../README.md).
 | Change model routing | [MODEL-MANAGEMENT.md](MODEL-MANAGEMENT.md) | [MODE-SWITCH.md](MODE-SWITCH.md), [BACKEND-CONTRACT.md](BACKEND-CONTRACT.md) |
 | Add or harden a service | [EXTENSIONS.md](EXTENSIONS.md) | [../extensions/CATALOG.md](../extensions/CATALOG.md), [../extensions/schema/README.md](../extensions/schema/README.md) |
 | Build a custom edition or fork | [BUILD-ON-DREAM-SERVER.md](BUILD-ON-DREAM-SERVER.md) | [EXTENSIONS.md](EXTENSIONS.md), [INSTALLER-ARCHITECTURE.md](INSTALLER-ARCHITECTURE.md), [../extensions/templates/README.md](../extensions/templates/README.md) |
-| Review a PR | [../CONTRIBUTING.md](../CONTRIBUTING.md) | [TESTING.md](TESTING.md), [PLATFORM-TRUTH-TABLE.md](PLATFORM-TRUTH-TABLE.md) |
+| Review a PR | [../CONTRIBUTING.md](../CONTRIBUTING.md) | [TESTING.md](TESTING.md), [PLATFORM-TRUTH-TABLE.md](PLATFORM-TRUTH-TABLE.md), [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) |
 
 ## Current Truths
 
@@ -123,6 +123,7 @@ at [`../../README.md`](../../README.md).
 | [POST-INSTALL-CHECKLIST.md](POST-INSTALL-CHECKLIST.md) | Operators | Post-install verification |
 | [KNOWN-GOOD-VERSIONS.md](KNOWN-GOOD-VERSIONS.md) | Operators | Tested image/version combos |
 | [PLATFORM-TRUTH-TABLE.md](PLATFORM-TRUTH-TABLE.md) | Developers | Platform feature matrix |
+| [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) | Operators / release reviewers | Sanitized CI, distro lab, and real-hardware fleet release-readiness evidence |
 
 ## Project
 

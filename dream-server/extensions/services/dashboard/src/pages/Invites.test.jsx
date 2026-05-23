@@ -15,7 +15,7 @@ describe('Invites', () => {
     vi.restoreAllMocks()
   })
 
-  test('lists and revokes active invites', async () => {
+  test('renders Setup / Owner first and revokes active owner cards', async () => {
     let listCount = 0
     const fetchMock = vi.fn(async (url, options = {}) => {
       if (url === '/api/auth/magic-link/list') {
@@ -23,15 +23,17 @@ describe('Invites', () => {
         return response({
           tokens: listCount === 1 ? [{
             token_hash_prefix: 'abc12345',
-            target_username: 'alice',
-            scope: 'chat',
-            reusable: false,
+            target_username: 'owner',
+            scope: 'hermes',
+            reusable: true,
+            token_type: 'owner',
+            url_mode: 'lan',
             created_at: new Date().toISOString(),
-            expires_at: future,
+            expires_at: null,
             redemption_count: 0,
             last_redeemed_at: null,
             revoked_at: null,
-            note: 'family phone',
+            note: 'factory card',
           }] : [],
         })
       }
@@ -44,10 +46,12 @@ describe('Invites', () => {
 
     render(<Invites />)
 
-    expect(await screen.findByText('alice')).toBeInTheDocument()
-    expect(screen.getByText('family phone')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Setup / Owner' })).toBeInTheDocument()
+    expect(screen.getByText('Factory owner card')).toBeInTheDocument()
+    expect(screen.getAllByText('owner').length).toBeGreaterThan(0)
+    expect(screen.getByText('revoke-only')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /revoke invite for alice/i }))
+    fireEvent.click(screen.getByRole('button', { name: /revoke owner card for owner/i }))
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -55,10 +59,55 @@ describe('Invites', () => {
         expect.objectContaining({ method: 'DELETE' }),
       )
     })
-    expect(await screen.findByText('No invites yet')).toBeInTheDocument()
+    expect(await screen.findByText('No owner cards yet')).toBeInTheDocument()
   })
 
-  test('generates chat-scoped invite from the backend URL and loads QR', async () => {
+  test('generates owner card with revoke-only Dream Talk payload and loads QR', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/list') {
+        return response({ tokens: [] })
+      }
+      if (url === '/api/auth/magic-link/generate' && options.method === 'POST') {
+        return response({
+          token: 'plain-owner-token',
+          url: 'http://auth.dream.local/magic-link/plain-owner-token',
+          expires_at: null,
+          target_username: 'mike',
+          scope: 'hermes',
+          reusable: true,
+          token_type: 'owner',
+          url_mode: 'lan',
+        })
+      }
+      if (String(url).startsWith('/api/auth/magic-link/qr?url=')) {
+        return response({ data_url: 'data:image/png;base64,ownerqr' })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<Invites />)
+
+    await screen.findByText('No owner cards yet')
+    fireEvent.click(screen.getByRole('button', { name: 'Create owner card' }))
+    fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: 'mike' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate owner QR' }))
+
+    await screen.findByRole('dialog', { name: 'Owner card created' })
+    const generateCall = fetchMock.mock.calls.find(([url]) => url === '/api/auth/magic-link/generate')
+    const body = JSON.parse(generateCall[1].body)
+    expect(body).toMatchObject({
+      target_username: 'mike',
+      token_type: 'owner',
+      scope: 'hermes',
+      url_mode: 'lan',
+    })
+    expect(body).not.toHaveProperty('expires_in')
+    expect(screen.getByDisplayValue('http://auth.dream.local/magic-link/plain-owner-token')).toBeInTheDocument()
+    expect(await screen.findByAltText('QR code for owner card')).toHaveAttribute('src', 'data:image/png;base64,ownerqr')
+  })
+
+  test('generates guest invite from the backend URL and loads QR', async () => {
     const fetchMock = vi.fn(async (url, options = {}) => {
       if (url === '/api/auth/magic-link/list') {
         return response({ tokens: [] })
@@ -71,6 +120,8 @@ describe('Invites', () => {
           target_username: 'bob',
           scope: 'chat',
           reusable: false,
+          token_type: 'guest',
+          url_mode: 'auto',
         })
       }
       if (String(url).startsWith('/api/auth/magic-link/qr?url=')) {
@@ -82,8 +133,8 @@ describe('Invites', () => {
 
     render(<Invites />)
 
-    await screen.findByText('No invites yet')
-    fireEvent.click(screen.getByRole('button', { name: 'New invite' }))
+    await screen.findByText('No guest invites yet')
+    fireEvent.click(screen.getByRole('button', { name: 'Create guest invite' }))
     fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: 'bob' } })
     fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
 
@@ -91,10 +142,28 @@ describe('Invites', () => {
     const generateCall = fetchMock.mock.calls.find(([url]) => url === '/api/auth/magic-link/generate')
     expect(JSON.parse(generateCall[1].body)).toMatchObject({
       target_username: 'bob',
+      token_type: 'guest',
       scope: 'chat',
       reusable: false,
     })
     expect(screen.getByDisplayValue('http://auth.dream.local/magic-link/plain-secret-token')).toBeInTheDocument()
     expect(await screen.findByAltText('QR code for invite link')).toHaveAttribute('src', 'data:image/png;base64,abc123')
+  })
+
+  test('shows voice fallback when the browser origin is not secure', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(window, 'isSecureContext')
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false })
+    const fetchMock = vi.fn(async (url) => {
+      if (url === '/api/auth/magic-link/list') return response({ tokens: [] })
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<Invites />)
+
+    expect(await screen.findByText('Voice readiness')).toBeInTheDocument()
+    expect(screen.getByText(/Mobile browsers usually block live microphone access/i)).toBeInTheDocument()
+
+    if (descriptor) Object.defineProperty(window, 'isSecureContext', descriptor)
   })
 })

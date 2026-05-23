@@ -59,6 +59,8 @@ from routers import (
     gpu as gpu_router, resources, voice, models as models_router, templates,
     auth as auth_router,
     magic_link,
+    oauth_passthrough,
+    talk,
     tailscale,
     usage,
 )
@@ -932,12 +934,21 @@ async def _lifespan(app: FastAPI):
     asyncio.create_task(collect_metrics())
     asyncio.create_task(_poll_service_health())
     asyncio.create_task(gpu_router.poll_gpu_history())
-    yield
+    try:
+        yield
+    finally:
+        # Close any open Hermes WebSockets in the Dream Talk connection pool
+        # so a graceful uvicorn shutdown doesn't leak FDs into stale state.
+        try:
+            import hermes_bridge
+            await hermes_bridge.shutdown_pool()
+        except Exception:
+            logger.debug("hermes_bridge.shutdown_pool raised at app shutdown", exc_info=True)
 
 
 app = FastAPI(
     title="Dream Server Dashboard API",
-    version="2.4.0",
+    version="2.5.0",
     description="System status API for Dream Server Dashboard",
     lifespan=_lifespan,
 )
@@ -987,6 +998,8 @@ app.include_router(models_router.router)
 app.include_router(templates.router)
 app.include_router(auth_router.router)
 app.include_router(magic_link.router)
+app.include_router(oauth_passthrough.router)
+app.include_router(talk.router)
 app.include_router(tailscale.router)
 app.include_router(usage.router)
 

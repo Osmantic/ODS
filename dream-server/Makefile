@@ -3,7 +3,7 @@
 
 SHELL_FILES := $(shell find . -name '*.sh' -not -path './node_modules/*' -not -path './.git/*' -not -path './data/*' -not -path './token-spy/*')
 
-.PHONY: help lint test bats smoke simulate gate doctor
+.PHONY: help lint test bats smoke simulate fleet-distros fleet-vms gate doctor
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -64,6 +64,12 @@ smoke: ## Run platform smoke tests
 
 simulate: ## Run installer simulation harness
 	@bash scripts/simulate-installers.sh
+
+fleet-distros: ## Run disposable Docker multi-distro fleet checks
+	@bash tests/fleet-multi-distro.sh
+
+fleet-vms: ## Run disposable Incus VM fleet checks
+	@bash tests/fleet-incus-vm.sh
 
 doctor: ## Run diagnostic report
 	@bash scripts/dream-doctor.sh

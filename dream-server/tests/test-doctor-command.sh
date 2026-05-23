@@ -83,35 +83,42 @@ else
     fail "hints display missing"
 fi
 
-# Test 9: Help text updated
+# Test 9: Evidence-ranked diagnoses display
+if grep -q "Diagnoses" "$ROOT_DIR/dream-cli"; then
+    pass "diagnoses display"
+else
+    fail "diagnoses display missing"
+fi
+
+# Test 10: Help text updated
 if grep -q "doctor.*diagnostics" "$ROOT_DIR/dream-cli"; then
     pass "help text updated"
 else
     fail "help not updated"
 fi
 
-# Test 10: dream-doctor.sh exists
+# Test 11: dream-doctor.sh exists
 if [[ -f "$ROOT_DIR/scripts/dream-doctor.sh" ]]; then
     pass "dream-doctor.sh exists"
 else
     fail "script not found"
 fi
 
-# Test 11: Bash syntax valid
+# Test 12: Bash syntax valid
 if bash -n "$ROOT_DIR/dream-cli" 2>/dev/null; then
     pass "bash syntax valid"
 else
     fail "syntax errors"
 fi
 
-# Test 12: Report file configurable
+# Test 13: Report file configurable
 if grep -q "report_file=" "$ROOT_DIR/dream-cli"; then
     pass "report file configurable"
 else
     fail "not configurable"
 fi
 
-# Test 13: Functional test - exit code and output
+# Test 14: Functional test - exit code and output
 if command -v python3 &>/dev/null; then
     # Create a mock report with failures
     mock_report=$(mktemp)

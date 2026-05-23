@@ -42,4 +42,7 @@ features:
     enabled_services_all: [n8n]
     setup_time: ~1 minute
     priority: 4
+    launch:
+      type: service
+      service: n8n
     gpu_backends: [all]

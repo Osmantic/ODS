@@ -1,6 +1,6 @@
 # AP mode — first-boot Wi-Fi access point
 
-When a Dream Server device boots fresh, it can host its own Wi-Fi network so the recipient's phone can reach the setup wizard without already being on a configured network. This is the "true out-of-box" flow: take it out of the box, scan a QR (PR-9's setup card), join the AP, run the wizard, switch to the home network.
+When a Dream Server device boots fresh, it can host its own Wi-Fi network so the recipient's phone can reach the setup wizard or redeem a factory owner card without already being on a configured network. This is the "true out-of-box" flow: take it out of the box, scan QR #1 to join the AP, then scan QR #2 to open setup or Dream Talk.
 
 This page describes the AP-mode machinery: scripts, systemd unit, host-agent endpoint, and the operator workflow to enable it.
 
@@ -102,6 +102,11 @@ When the wizard finishes and the device should join the home network instead:
 sudo systemctl disable --now dream-ap-mode
 ```
 
+Factory owner cards use the same AP QR for QR #1. QR #2 is the owner magic-link
+URL generated from Setup / Owner, and should resolve to the LAN-local auth host
+(`http://auth.<device>.local/magic-link/...`) unless the operator intentionally
+prints a public/Tailscale URL.
+
 ## Config reference
 
 All settings are bash variables sourced from `/etc/dream/ap-mode.conf`. See `scripts/ap-mode.conf.example` for the annotated version.
@@ -141,6 +146,7 @@ The script refuses to run on non-Linux or when any binary is missing — better 
 - The captive-portal DNS catches *every* DNS query from clients on the AP. That's intentional — it's how the wizard auto-opens. It also means malicious clients on the AP can't reach upstream services from your network during the wizard window. That's a feature.
 - `iptables` rules are tagged with `--comment dream-ap-mode` so `ap-mode.sh down` removes exactly those rules and nothing else.
 - **Don't expose the AP to the internet.** The dashboard's auth surface assumes a trusted LAN; the AP is part of "the device's trusted LAN" for the wizard window only.
+- **Treat owner cards as keys.** Owner QR links are reusable until revoked and are not device-bound in v1. If a printed card is lost or photographed, revoke it from Setup / Owner and print a fresh card.
 
 ## Troubleshooting
 

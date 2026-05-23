@@ -16,11 +16,11 @@
 #   2. /health, /healthz, and /favicon.ico — always answered (so health
 #      checks work; /healthz is the k8s-convention path that dream-fleet-test
 #      and other standard health checkers probe)
-#   3. /auth/* — static "you need an invite" assets (always served)
+#   3. /auth/* — static owner-card help assets (always served)
 #   4. Everything else: forward_auth to dashboard-api/api/auth/verify-session
 #      - 2xx → reverse-proxy to dream-hermes:9119
 #               (Hermes's own X-Hermes-Session-Token check still runs)
-#      - 401 → 303 redirect to /auth/required (the "ask the admin" page)
+#      - 401 → 303 redirect to /auth/required (the owner-card help page)
 #
 # This is auth GATING, not user identification. Once past the gate,
 # all users share the same Hermes instance (same memories, skills,
@@ -63,7 +63,7 @@
 			respond 204
 		}
 
-		# Static "you need an invite" page lives at /auth/required. Always
+		# Static owner-card help page lives at /auth/required. Always
 		# accessible; this is where unauthenticated requests get bounced.
 		#
 		# `templates` lets index.html substitute `{{env "HERMES_PROXY_AUTH_DOCS_URL"}}`

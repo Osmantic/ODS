@@ -12,6 +12,7 @@
 #   <device>.local          — bare hostname: 302 redirect to chat
 #   chat.<device>.local     — Open WebUI (root-mounted)
 #   dashboard.<device>.local— Dream Dashboard (operator UI)
+#   talk.<device>.local     — Dream Talk mobile owner-card portal
 #   auth.<device>.local     — dashboard-api: magic-link redemption
 #                              + /api/auth/verify-session
 #   api.<device>.local      — dashboard-api: /api/* admin surface
@@ -75,6 +76,20 @@ http://chat.{$DREAM_DEVICE_NAME:dream}.local {
 # dashboard.<device>.local → Dream Dashboard (operator UI)
 # ---------------------------------------------------------------------
 http://dashboard.{$DREAM_DEVICE_NAME:dream}.local {
+	reverse_proxy dashboard:3001 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+	}
+}
+
+# ---------------------------------------------------------------------
+# talk.<device>.local → Dream Talk mobile owner-card portal
+#
+# Served by the dashboard container but rendered as a chrome-free route.
+# /api/* requests still proxy to dashboard-api through dashboard nginx;
+# the talk router ignores admin API-key auth and requires dream-session.
+# ---------------------------------------------------------------------
+http://talk.{$DREAM_DEVICE_NAME:dream}.local {
 	reverse_proxy dashboard:3001 {
 		header_up X-Forwarded-Proto {scheme}
 		header_up X-Forwarded-Host {host}

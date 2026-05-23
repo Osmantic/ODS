@@ -305,10 +305,16 @@ result=$(_classify_id "0xFFFF" "Unknown GPU" amd 8192)
   || { echo "[FAIL] unknown GPU crashed"; exit 1; }
 
 echo "[contract] macOS compose resolver installs PyYAML into checked python3"
-grep -q "python3 -c 'import yaml'" installers/macos/install-macos.sh \
-  || { echo "[FAIL] macOS installer does not verify PyYAML with python3"; exit 1; }
-grep -q 'python3 -m pip install --user .*pyyaml' installers/macos/install-macos.sh \
-  || { echo "[FAIL] macOS installer must install PyYAML via python3 -m pip, not a possibly unrelated pip3"; exit 1; }
+grep -q '_ensure_macos_pyyaml' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer does not use the PyYAML readiness helper"; exit 1; }
+grep -q 'python-cmd.sh' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer does not load the shared Python resolver"; exit 1; }
+grep -q '\$pycmd" -c '\''import yaml'\''' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer does not verify PyYAML with the selected Python"; exit 1; }
+grep -q '\$pycmd" -m pip install --user .*pyyaml' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must install PyYAML through the selected Python, not a possibly unrelated pip"; exit 1; }
+grep -q 'export DREAM_PYTHON_CMD' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer does not export the selected Python for resolver scripts"; exit 1; }
 
 echo "[contract] Hermes context defaults are installer-wide"
 bash tests/test-installer-context-parity.sh

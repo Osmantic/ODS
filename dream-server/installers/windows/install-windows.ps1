@@ -690,8 +690,13 @@ if ($dryRun) {
         for ($fi = 0; $fi -lt $composeFlags.Count; $fi++) {
             if ($composeFlags[$fi] -eq "-f" -and ($fi + 1) -lt $composeFlags.Count) {
                 $cf = $composeFlags[$fi + 1]
-                if (-not (Test-Path $cf)) {
+                $cfPath = $cf
+                if (-not [System.IO.Path]::IsPathRooted($cfPath)) {
+                    $cfPath = Join-Path $installDir $cfPath
+                }
+                if (-not (Test-Path $cfPath)) {
                     Write-AIError "Compose file not found: $cf"
+                    Write-AI "  Expected path: $cfPath"
                     Write-AI "  Re-run with --Force or check that $installDir is intact."
                     exit 1
                 }
@@ -842,6 +847,7 @@ if ($dryRun) {
             -ComposeArgs @("up", "-d", "--remove-orphans", "--no-build")
 
         Write-AI "Running: docker compose $($composeFlags -join ' ') up -d --remove-orphans --no-build"
+        Write-AI "Compose working directory: $installDir"
         # PS 5.1 treats ANY stderr output from native commands as NativeCommandError.
         # Silence stderr-as-error so $LASTEXITCODE reflects the real compose exit code.
         # Write output to log file to avoid ForEach-Object pipeline hang on failure.
@@ -868,22 +874,29 @@ if ($dryRun) {
             $_buildServices += "privacy-shield"
         }
         if ($enableComfyui) { $_buildServices += "comfyui" }
-        Write-AI "Rebuilding local-built images (no-cache)..."
         $_buildLog = Join-Path $_composeLogDir "compose-build.log"
         "" | Out-File -FilePath $_buildLog -Encoding ascii
-        foreach ($_svc in $_buildServices) {
-            Write-AI "  building $_svc ..."
-            & docker compose @composeFlags build --no-cache $_svc *>> $_buildLog
-            if ($LASTEXITCODE -ne 0) {
-                Write-AIWarn "$_svc build failed (non-fatal - see $_buildLog)"
-            }
-        }
-        Write-AISuccess "Local images rebuilt"
 
-        Write-AI "Starting services... this may take several minutes."
-        & docker compose @composeFlags up -d --remove-orphans --no-build *> $_composeLog
-        $composeExit = $LASTEXITCODE
-        $ErrorActionPreference = $prevEAP
+        Push-Location $installDir
+        try {
+            Write-AI "Rebuilding local-built images (no-cache)..."
+            foreach ($_svc in $_buildServices) {
+                Write-AI "  building $_svc ..."
+                & docker compose @composeFlags build --no-cache $_svc *>> $_buildLog
+                if ($LASTEXITCODE -ne 0) {
+                    Write-AIWarn "$_svc build failed (non-fatal - see $_buildLog)"
+                }
+            }
+            Write-AISuccess "Local images rebuilt"
+
+            Write-AI "Starting services... this may take several minutes."
+            & docker compose @composeFlags up -d --remove-orphans --no-build *> $_composeLog
+            $composeExit = $LASTEXITCODE
+        }
+        finally {
+            Pop-Location
+            $ErrorActionPreference = $prevEAP
+        }
         # Show tail of compose output for immediate feedback
         if (Test-Path $_composeLog) {
             Get-Content $_composeLog -Tail 20 | ForEach-Object { Write-Host "  $_" }

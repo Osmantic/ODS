@@ -31,12 +31,12 @@ services:
     # (OPENCLAW_CONFIG_PATH), so the gateway is always configured at start.
     entrypoint: ["/bin/sh", "-c", "chown -R 1000:1000 /home/node/.openclaw; exec setpriv --reuid=1000 --regid=1000 --clear-groups /bin/sh -c 'node /config/inject-token.js; export OPENCLAW_CONFIG_PATH=/tmp/openclaw-config.json; case \"$${BIND_ADDRESS:-127.0.0.1}\" in 127.0.0.1|localhost|::1) BIND_MODE=localhost ;; *) BIND_MODE=lan ;; esac; exec docker-entrypoint.sh node openclaw.mjs gateway --bind \"$$BIND_MODE\"'"]
     volumes:
-      - ./config/openclaw:/config:ro
-      - ./data/openclaw:/data
-      - ./data/openclaw/home/agents:/home/node/.openclaw/agents
-      - ./data/openclaw/home/canvas:/home/node/.openclaw/canvas
-      - ./data/openclaw/home/cron:/home/node/.openclaw/cron
-      - ./config/openclaw/workspace:/home/node/.openclaw/workspace
+      - ./config/openclaw:/config:ro,z
+      - ./data/openclaw:/data:z
+      - ./data/openclaw/home/agents:/home/node/.openclaw/agents:z
+      - ./data/openclaw/home/canvas:/home/node/.openclaw/canvas:z
+      - ./data/openclaw/home/cron:/home/node/.openclaw/cron:z
+      - ./config/openclaw/workspace:/home/node/.openclaw/workspace:z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${OPENCLAW_PORT:-7860}:18789"
     deploy:
