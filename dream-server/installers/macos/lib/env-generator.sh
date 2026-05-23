@@ -64,6 +64,37 @@ upsert_env_value() {
     fi
 }
 
+cap_cpu_value() {
+    local desired="$1" ceiling="$2"
+    awk -v desired="$desired" -v ceiling="$ceiling" '
+        BEGIN {
+            if (ceiling <= 0) ceiling = 1
+            value = desired
+            if (value > ceiling) value = ceiling
+            if (value < 0.01) value = 0.01
+            printf "%.1f", value
+        }'
+}
+
+select_auto_cpu_value() {
+    local existing="$1" detected="$2"
+    if [[ "$existing" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN { exit !($existing > 0 && $existing <= $detected) }"; then
+        echo "$existing"
+    else
+        echo "$detected"
+    fi
+}
+
+select_env_service_cpu_limit() {
+    local env_path="$1" key="$2" desired="$3" available="$4"
+    select_auto_cpu_value "$(read_env_value "$env_path" "$key")" "$(cap_cpu_value "$desired" "$available")"
+}
+
+select_env_service_cpu_reservation() {
+    local env_path="$1" key="$2" desired="$3" limit="$4"
+    select_auto_cpu_value "$(read_env_value "$env_path" "$key")" "$(cap_cpu_value "$desired" "$limit")"
+}
+
 # Detect the host's LAN IP. Used to populate HOST_LAN_IP when the operator
 # has set BIND_ADDRESS=0.0.0.0 (macOS has no --lan flag; this is opt-in via
 # manual .env edit). Returns empty string when no non-loopback address can
@@ -130,6 +161,8 @@ generate_dream_env() {
     local searx_settings_path="${install_dir}/config/searxng/settings.yml"
     local cpu_limit_raw cpu_reservation_raw docker_available_cpus
     local detected_cpu_limit detected_cpu_reservation
+    local tts_cpu_limit tts_cpu_reservation whisper_cpu_limit whisper_cpu_reservation
+    local hermes_cpu_limit hermes_cpu_reservation comfyui_cpu_limit comfyui_cpu_reservation
     read -r cpu_limit_raw cpu_reservation_raw docker_available_cpus <<< "$(calculate_llama_cpu_budget "apple")"
     detected_cpu_limit="${cpu_limit_raw}.0"
     detected_cpu_reservation="${cpu_reservation_raw}.0"
@@ -162,6 +195,22 @@ generate_dream_env() {
         fi
         upsert_env_value "$env_path" "LLAMA_CPU_LIMIT" "$detected_cpu_limit"
         upsert_env_value "$env_path" "LLAMA_CPU_RESERVATION" "$detected_cpu_reservation"
+        tts_cpu_limit="$(select_env_service_cpu_limit "$env_path" "TTS_CPU_LIMIT" "8.0" "$docker_available_cpus")"
+        tts_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "TTS_CPU_RESERVATION" "2.0" "$tts_cpu_limit")"
+        whisper_cpu_limit="$(select_env_service_cpu_limit "$env_path" "WHISPER_CPU_LIMIT" "4.0" "$docker_available_cpus")"
+        whisper_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "WHISPER_CPU_RESERVATION" "1.0" "$whisper_cpu_limit")"
+        hermes_cpu_limit="$(select_env_service_cpu_limit "$env_path" "HERMES_CPU_LIMIT" "4.0" "$docker_available_cpus")"
+        hermes_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "HERMES_CPU_RESERVATION" "0.5" "$hermes_cpu_limit")"
+        comfyui_cpu_limit="$(select_env_service_cpu_limit "$env_path" "COMFYUI_CPU_LIMIT" "16.0" "$docker_available_cpus")"
+        comfyui_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "COMFYUI_CPU_RESERVATION" "2.0" "$comfyui_cpu_limit")"
+        upsert_env_value "$env_path" "TTS_CPU_LIMIT" "$tts_cpu_limit"
+        upsert_env_value "$env_path" "TTS_CPU_RESERVATION" "$tts_cpu_reservation"
+        upsert_env_value "$env_path" "WHISPER_CPU_LIMIT" "$whisper_cpu_limit"
+        upsert_env_value "$env_path" "WHISPER_CPU_RESERVATION" "$whisper_cpu_reservation"
+        upsert_env_value "$env_path" "HERMES_CPU_LIMIT" "$hermes_cpu_limit"
+        upsert_env_value "$env_path" "HERMES_CPU_RESERVATION" "$hermes_cpu_reservation"
+        upsert_env_value "$env_path" "COMFYUI_CPU_LIMIT" "$comfyui_cpu_limit"
+        upsert_env_value "$env_path" "COMFYUI_CPU_RESERVATION" "$comfyui_cpu_reservation"
 
         # Upsert DREAM_AGENT_KEY when missing (pre-PR-#979 upgrade path)
         if [[ -z "$(read_env_value "$env_path" "DREAM_AGENT_KEY")" ]]; then
@@ -230,6 +279,14 @@ generate_dream_env() {
     dream_session_secret=$(new_secure_hex 32)
     local shield_api_key
     shield_api_key=$(new_secure_hex 32)
+    tts_cpu_limit="$(select_env_service_cpu_limit "$env_path" "TTS_CPU_LIMIT" "8.0" "$docker_available_cpus")"
+    tts_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "TTS_CPU_RESERVATION" "2.0" "$tts_cpu_limit")"
+    whisper_cpu_limit="$(select_env_service_cpu_limit "$env_path" "WHISPER_CPU_LIMIT" "4.0" "$docker_available_cpus")"
+    whisper_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "WHISPER_CPU_RESERVATION" "1.0" "$whisper_cpu_limit")"
+    hermes_cpu_limit="$(select_env_service_cpu_limit "$env_path" "HERMES_CPU_LIMIT" "4.0" "$docker_available_cpus")"
+    hermes_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "HERMES_CPU_RESERVATION" "0.5" "$hermes_cpu_limit")"
+    comfyui_cpu_limit="$(select_env_service_cpu_limit "$env_path" "COMFYUI_CPU_LIMIT" "16.0" "$docker_available_cpus")"
+    comfyui_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "COMFYUI_CPU_RESERVATION" "2.0" "$comfyui_cpu_limit")"
     local openclaw_token
     openclaw_token=$(new_secure_hex 24)
     local qdrant_api_key
@@ -340,6 +397,16 @@ LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 # LLAMA_ARG_SPEC_DRAFT_N_MAX=3
 LLAMA_CPU_LIMIT=${detected_cpu_limit}
 LLAMA_CPU_RESERVATION=${detected_cpu_reservation}
+
+#=== Bundled Service CPU Budgets ===
+TTS_CPU_LIMIT=${tts_cpu_limit}
+TTS_CPU_RESERVATION=${tts_cpu_reservation}
+WHISPER_CPU_LIMIT=${whisper_cpu_limit}
+WHISPER_CPU_RESERVATION=${whisper_cpu_reservation}
+HERMES_CPU_LIMIT=${hermes_cpu_limit}
+HERMES_CPU_RESERVATION=${hermes_cpu_reservation}
+COMFYUI_CPU_LIMIT=${comfyui_cpu_limit}
+COMFYUI_CPU_RESERVATION=${comfyui_cpu_reservation}
 
 #=== Ports ===
 OLLAMA_PORT=8080

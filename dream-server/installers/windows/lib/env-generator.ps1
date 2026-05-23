@@ -136,6 +136,46 @@ function New-DreamEnv {
         return $Detected
     }
 
+    function Select-CappedCpuValue {
+        param(
+            [string]$Desired,
+            [string]$Ceiling
+        )
+
+        $desiredNumber = 0.0
+        $ceilingNumber = 0.0
+        $style = [System.Globalization.NumberStyles]::Float
+        $culture = [System.Globalization.CultureInfo]::InvariantCulture
+        if (-not [double]::TryParse($Desired, $style, $culture, [ref]$desiredNumber)) {
+            $desiredNumber = 1.0
+        }
+        if (-not [double]::TryParse($Ceiling, $style, $culture, [ref]$ceilingNumber) -or $ceilingNumber -le 0) {
+            $ceilingNumber = 1.0
+        }
+
+        $value = [Math]::Min($desiredNumber, $ceilingNumber)
+        if ($value -lt 0.01) { $value = 0.01 }
+        return $value.ToString("0.0", $culture)
+    }
+
+    function Select-ServiceCpuLimit {
+        param(
+            [string]$Key,
+            [string]$Desired,
+            [string]$Available
+        )
+        return Select-AutoCpuValue -Key $Key -Detected (Select-CappedCpuValue -Desired $Desired -Ceiling $Available)
+    }
+
+    function Select-ServiceCpuReservation {
+        param(
+            [string]$Key,
+            [string]$Desired,
+            [string]$Limit
+        )
+        return Select-AutoCpuValue -Key $Key -Detected (Select-CappedCpuValue -Desired $Desired -Ceiling $Limit)
+    }
+
     # Generate secrets (reuse existing on re-install)
     $webuiSecret     = Get-EnvOrNew "WEBUI_SECRET"       (New-SecureHex -Bytes 32)
     $n8nPass         = Get-EnvOrNew "N8N_PASS"           (New-SecureBase64 -Bytes 16)
@@ -169,6 +209,14 @@ function New-DreamEnv {
             $llamaCpuReservation = $llamaCpuLimit
         }
     }
+    $ttsCpuLimit = Select-ServiceCpuLimit -Key "TTS_CPU_LIMIT" -Desired "8.0" -Available $cpuBudget.Available
+    $ttsCpuReservation = Select-ServiceCpuReservation -Key "TTS_CPU_RESERVATION" -Desired "2.0" -Limit $ttsCpuLimit
+    $whisperCpuLimit = Select-ServiceCpuLimit -Key "WHISPER_CPU_LIMIT" -Desired "4.0" -Available $cpuBudget.Available
+    $whisperCpuReservation = Select-ServiceCpuReservation -Key "WHISPER_CPU_RESERVATION" -Desired "1.0" -Limit $whisperCpuLimit
+    $hermesCpuLimit = Select-ServiceCpuLimit -Key "HERMES_CPU_LIMIT" -Desired "4.0" -Available $cpuBudget.Available
+    $hermesCpuReservation = Select-ServiceCpuReservation -Key "HERMES_CPU_RESERVATION" -Desired "0.5" -Limit $hermesCpuLimit
+    $comfyuiCpuLimit = Select-ServiceCpuLimit -Key "COMFYUI_CPU_LIMIT" -Desired "16.0" -Available $cpuBudget.Available
+    $comfyuiCpuReservation = Select-ServiceCpuReservation -Key "COMFYUI_CPU_RESERVATION" -Desired "2.0" -Limit $comfyuiCpuLimit
 
     # Langfuse observability secrets
     $langfusePort              = Get-EnvOrNew "LANGFUSE_PORT"              "3006"
@@ -324,6 +372,16 @@ $(if ($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS) { "LLAMA_ARG_CHECKPOINT_E
 # LLAMA_ARG_SPEC_DRAFT_N_MAX=3
 LLAMA_CPU_LIMIT=$llamaCpuLimit
 LLAMA_CPU_RESERVATION=$llamaCpuReservation
+
+#=== Bundled Service CPU Budgets ===
+TTS_CPU_LIMIT=$ttsCpuLimit
+TTS_CPU_RESERVATION=$ttsCpuReservation
+WHISPER_CPU_LIMIT=$whisperCpuLimit
+WHISPER_CPU_RESERVATION=$whisperCpuReservation
+HERMES_CPU_LIMIT=$hermesCpuLimit
+HERMES_CPU_RESERVATION=$hermesCpuReservation
+COMFYUI_CPU_LIMIT=$comfyuiCpuLimit
+COMFYUI_CPU_RESERVATION=$comfyuiCpuReservation
 
 #=== Ports ===
 OLLAMA_PORT=11434

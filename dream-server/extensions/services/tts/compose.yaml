@@ -14,10 +14,10 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '8.0'
+          cpus: '${TTS_CPU_LIMIT:-1.0}'
           memory: 4G
         reservations:
-          cpus: '2.0'
+          cpus: '${TTS_CPU_RESERVATION:-0.5}'
           memory: 1G
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8880/health', timeout=5)"]

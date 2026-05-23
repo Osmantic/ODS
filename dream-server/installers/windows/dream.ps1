@@ -374,6 +374,28 @@ function Select-AutoCpuValue {
     return $Detected
 }
 
+function Select-CappedCpuValue {
+    param(
+        [string]$Desired,
+        [string]$Ceiling
+    )
+
+    $desiredNumber = 0.0
+    $ceilingNumber = 0.0
+    $style = [System.Globalization.NumberStyles]::Float
+    $culture = [System.Globalization.CultureInfo]::InvariantCulture
+    if (-not [double]::TryParse($Desired, $style, $culture, [ref]$desiredNumber)) {
+        $desiredNumber = 1.0
+    }
+    if (-not [double]::TryParse($Ceiling, $style, $culture, [ref]$ceilingNumber) -or $ceilingNumber -le 0) {
+        $ceilingNumber = 1.0
+    }
+
+    $value = [Math]::Min($desiredNumber, $ceilingNumber)
+    if ($value -lt 0.01) { $value = 0.01 }
+    return $value.ToString("0.0", $culture)
+}
+
 function Ensure-LlamaCpuBudget {
     <#
     .SYNOPSIS
@@ -416,6 +438,43 @@ function Ensure-LlamaCpuBudget {
     if ($changed) {
         Write-AI ("Auto-adjusted llama-server CPU budget: limit={0}, reservation={1} (Docker CPUs: {2})" -f `
             $llamaCpuLimit, $llamaCpuReservation, $budget.Available)
+    }
+
+    $serviceChanged = $false
+    $serviceBudgets = @(
+        @{ Name = "TTS"; DesiredLimit = "8.0"; DesiredReservation = "2.0" },
+        @{ Name = "WHISPER"; DesiredLimit = "4.0"; DesiredReservation = "1.0" },
+        @{ Name = "HERMES"; DesiredLimit = "4.0"; DesiredReservation = "0.5" },
+        @{ Name = "COMFYUI"; DesiredLimit = "16.0"; DesiredReservation = "2.0" }
+    )
+    foreach ($service in $serviceBudgets) {
+        $limitKey = "$($service.Name)_CPU_LIMIT"
+        $reservationKey = "$($service.Name)_CPU_RESERVATION"
+        $detectedLimit = Select-CappedCpuValue -Desired $service.DesiredLimit -Ceiling $budget.Available
+        $finalLimit = Select-AutoCpuValue -Existing $envVars[$limitKey] -Detected $detectedLimit
+        $detectedReservation = Select-CappedCpuValue -Desired $service.DesiredReservation -Ceiling $finalLimit
+        $finalReservation = Select-AutoCpuValue -Existing $envVars[$reservationKey] -Detected $detectedReservation
+
+        $finalLimitNumber = 0.0
+        $finalReservationNumber = 0.0
+        if ([double]::TryParse($finalLimit, $style, $culture, [ref]$finalLimitNumber) -and
+            [double]::TryParse($finalReservation, $style, $culture, [ref]$finalReservationNumber) -and
+            $finalReservationNumber -gt $finalLimitNumber) {
+            $finalReservation = $finalLimit
+        }
+
+        if ($envVars[$limitKey] -ne $finalLimit) {
+            Set-DreamEnvValue -Key $limitKey -Value $finalLimit
+            $serviceChanged = $true
+        }
+        if ($envVars[$reservationKey] -ne $finalReservation) {
+            Set-DreamEnvValue -Key $reservationKey -Value $finalReservation
+            $serviceChanged = $true
+        }
+    }
+
+    if ($serviceChanged) {
+        Write-AI ("Auto-adjusted bundled service CPU budgets (Docker CPUs: {0})" -f $budget.Available)
     }
 }
 

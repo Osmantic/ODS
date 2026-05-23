@@ -26,10 +26,10 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '16.0'
+          cpus: '${COMFYUI_CPU_LIMIT:-1.0}'
           memory: 96G
         reservations:
-          cpus: '2.0'
+          cpus: '${COMFYUI_CPU_RESERVATION:-0.5}'
           memory: 4G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8188/"]

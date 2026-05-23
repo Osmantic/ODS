@@ -92,7 +92,7 @@ docker compose logs tts
 
 **Slow synthesis:**
 - The CPU image processes speech on CPU; synthesis takes 1–5 seconds depending on text length
-- Ensure the container has sufficient CPU allocation (`cpus: '8.0'` limit in `compose.yaml`)
+- Ensure the container has sufficient CPU allocation (`TTS_CPU_LIMIT` in `.env`; the installer auto-caps it to Docker's visible CPU count)
 
 **Wrong voice:**
 - List available voices: `curl http://localhost:8880/v1/voices`

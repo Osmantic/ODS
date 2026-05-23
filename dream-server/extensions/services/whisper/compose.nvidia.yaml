@@ -14,7 +14,7 @@ services:
               count: 1
               capabilities: [gpu]
         limits:
-          cpus: '4.0'
+          cpus: '${WHISPER_CPU_LIMIT:-1.0}'
           memory: 8G
     logging:
       driver: "json-file"

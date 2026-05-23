@@ -19,10 +19,10 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '4.0'
+          cpus: '${WHISPER_CPU_LIMIT:-1.0}'
           memory: 4G
         reservations:
-          cpus: '1.0'
+          cpus: '${WHISPER_CPU_RESERVATION:-0.5}'
           memory: 1G
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]

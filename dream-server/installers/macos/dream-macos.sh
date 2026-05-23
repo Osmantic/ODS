@@ -183,6 +183,45 @@ select_auto_cpu_value() {
     fi
 }
 
+cap_cpu_value() {
+    local desired="$1" ceiling="$2"
+    awk -v desired="$desired" -v ceiling="$ceiling" '
+        BEGIN {
+            if (ceiling <= 0) ceiling = 1
+            value = desired
+            if (value > ceiling) value = ceiling
+            if (value < 0.01) value = 0.01
+            printf "%.1f", value
+        }'
+}
+
+ensure_service_cpu_pair() {
+    local env_file="$1" available="$2" name="$3" desired_limit="$4" desired_reservation="$5"
+    local limit_key="${name}_CPU_LIMIT"
+    local reservation_key="${name}_CPU_RESERVATION"
+    local detected_limit current_limit final_limit detected_reservation current_reservation final_reservation
+
+    detected_limit="$(cap_cpu_value "$desired_limit" "$available")"
+    current_limit="$(read_env_value "$env_file" "$limit_key")"
+    final_limit="$(select_auto_cpu_value "$current_limit" "$detected_limit")"
+
+    detected_reservation="$(cap_cpu_value "$desired_reservation" "$final_limit")"
+    current_reservation="$(read_env_value "$env_file" "$reservation_key")"
+    final_reservation="$(select_auto_cpu_value "$current_reservation" "$detected_reservation")"
+    if awk "BEGIN { exit !($final_reservation > $final_limit) }"; then
+        final_reservation="$final_limit"
+    fi
+
+    if [[ "$current_limit" != "$final_limit" ]]; then
+        upsert_env_value "$env_file" "$limit_key" "$final_limit"
+        SERVICE_CPU_BUDGET_CHANGED=true
+    fi
+    if [[ "$current_reservation" != "$final_reservation" ]]; then
+        upsert_env_value "$env_file" "$reservation_key" "$final_reservation"
+        SERVICE_CPU_BUDGET_CHANGED=true
+    fi
+}
+
 ensure_llama_cpu_budget() {
     local env_file="${INSTALL_DIR}/.env"
     [[ -f "$env_file" ]] || return 0
@@ -220,6 +259,16 @@ ensure_llama_cpu_budget() {
     if [[ "$changed" == "true" ]]; then
         ai "Auto-adjusted llama-server CPU budget: limit=${final_limit}, reservation=${final_reservation} (Docker CPUs: ${available})"
     fi
+
+    SERVICE_CPU_BUDGET_CHANGED=false
+    ensure_service_cpu_pair "$env_file" "$available" "TTS" "8.0" "2.0"
+    ensure_service_cpu_pair "$env_file" "$available" "WHISPER" "4.0" "1.0"
+    ensure_service_cpu_pair "$env_file" "$available" "HERMES" "4.0" "0.5"
+    ensure_service_cpu_pair "$env_file" "$available" "COMFYUI" "16.0" "2.0"
+    if [[ "$SERVICE_CPU_BUDGET_CHANGED" == "true" ]]; then
+        ai "Auto-adjusted bundled service CPU budgets (Docker CPUs: ${available})"
+    fi
+    unset SERVICE_CPU_BUDGET_CHANGED
 }
 
 # ── Native llama-server management ──

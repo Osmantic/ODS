@@ -87,6 +87,24 @@ else
   echo "[SKIP] docker compose unavailable"
 fi
 
+echo "[contract] bundled service CPU limits are env-driven"
+grep -qF "cpus: '\${TTS_CPU_LIMIT:-1.0}'" extensions/services/tts/compose.yaml \
+  || { echo "[FAIL] Kokoro TTS CPU limit must be env-driven with safe fallback"; exit 1; }
+grep -qF "cpus: '\${WHISPER_CPU_LIMIT:-1.0}'" extensions/services/whisper/compose.yaml \
+  || { echo "[FAIL] Whisper CPU limit must be env-driven with safe fallback"; exit 1; }
+grep -qF "cpus: '\${WHISPER_CPU_LIMIT:-1.0}'" extensions/services/whisper/compose.nvidia.yaml \
+  || { echo "[FAIL] Whisper NVIDIA CPU limit must be env-driven with safe fallback"; exit 1; }
+grep -qF "cpus: '\${HERMES_CPU_LIMIT:-1.0}'" extensions/services/hermes/compose.yaml \
+  || { echo "[FAIL] Hermes CPU limit must be env-driven with safe fallback"; exit 1; }
+grep -qF "cpus: '\${COMFYUI_CPU_LIMIT:-1.0}'" extensions/services/comfyui/compose.nvidia.yaml \
+  || { echo "[FAIL] ComfyUI NVIDIA CPU limit must be env-driven with safe fallback"; exit 1; }
+grep -qF "cpus: '\${COMFYUI_CPU_LIMIT:-1.0}'" extensions/services/comfyui/compose.amd.yaml \
+  || { echo "[FAIL] ComfyUI AMD CPU limit must be env-driven with safe fallback"; exit 1; }
+for key in TTS_CPU_LIMIT TTS_CPU_RESERVATION WHISPER_CPU_LIMIT WHISPER_CPU_RESERVATION HERMES_CPU_LIMIT HERMES_CPU_RESERVATION COMFYUI_CPU_LIMIT COMFYUI_CPU_RESERVATION; do
+  jq -e --arg key "$key" '.properties[$key]' .env.schema.json >/dev/null \
+    || { echo "[FAIL] .env.schema.json missing bundled service CPU key: $key"; exit 1; }
+done
+
 echo "[contract] resolver scripts executable"
 for s in scripts/build-capability-profile.sh scripts/classify-hardware.sh scripts/load-backend-contract.sh scripts/resolve-compose-stack.sh scripts/preflight-engine.sh scripts/dream-doctor.sh scripts/simulate-installers.sh; do
   test -x "$s" || { echo "[FAIL] script not executable: $s"; exit 1; }

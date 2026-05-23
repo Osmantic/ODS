@@ -152,10 +152,10 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '4.0'
+          cpus: '${HERMES_CPU_LIMIT:-1.0}'
           memory: 4G
         reservations:
-          cpus: '0.5'
+          cpus: '${HERMES_CPU_RESERVATION:-0.5}'
           memory: 1G
     security_opt:
       - no-new-privileges:true

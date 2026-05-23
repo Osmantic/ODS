@@ -313,6 +313,28 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         fi
     }
 
+    _cap_cpu_value() {
+        local desired="$1" ceiling="$2"
+        awk -v desired="$desired" -v ceiling="$ceiling" '
+            BEGIN {
+                if (ceiling <= 0) ceiling = 1
+                value = desired
+                if (value > ceiling) value = ceiling
+                if (value < 0.01) value = 0.01
+                printf "%.1f", value
+            }'
+    }
+
+    _select_service_cpu_limit() {
+        local key="$1" desired="$2" available="$3"
+        _select_auto_cpu_value "$key" "$(_cap_cpu_value "$desired" "$available")"
+    }
+
+    _select_service_cpu_reservation() {
+        local key="$1" desired="$2" limit="$3"
+        _select_auto_cpu_value "$key" "$(_cap_cpu_value "$desired" "$limit")"
+    }
+
     _cpu_backend="${GPU_BACKEND:-cpu}"
     [[ "$_cpu_backend" == "none" ]] && _cpu_backend="cpu"
     read -r _llama_cpu_limit_raw _llama_cpu_reservation_raw _docker_available_cpus <<< "$(calculate_llama_cpu_budget "$_cpu_backend")"
@@ -323,6 +345,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     if awk "BEGIN { exit !($LLAMA_CPU_RESERVATION > $LLAMA_CPU_LIMIT) }"; then
         LLAMA_CPU_RESERVATION="$LLAMA_CPU_LIMIT"
     fi
+
+    TTS_CPU_LIMIT=$(_select_service_cpu_limit TTS_CPU_LIMIT "8.0" "$_docker_available_cpus")
+    TTS_CPU_RESERVATION=$(_select_service_cpu_reservation TTS_CPU_RESERVATION "2.0" "$TTS_CPU_LIMIT")
+    WHISPER_CPU_LIMIT=$(_select_service_cpu_limit WHISPER_CPU_LIMIT "4.0" "$_docker_available_cpus")
+    WHISPER_CPU_RESERVATION=$(_select_service_cpu_reservation WHISPER_CPU_RESERVATION "1.0" "$WHISPER_CPU_LIMIT")
+    HERMES_CPU_LIMIT=$(_select_service_cpu_limit HERMES_CPU_LIMIT "4.0" "$_docker_available_cpus")
+    HERMES_CPU_RESERVATION=$(_select_service_cpu_reservation HERMES_CPU_RESERVATION "0.5" "$HERMES_CPU_LIMIT")
+    COMFYUI_CPU_LIMIT=$(_select_service_cpu_limit COMFYUI_CPU_LIMIT "16.0" "$_docker_available_cpus")
+    COMFYUI_CPU_RESERVATION=$(_select_service_cpu_reservation COMFYUI_CPU_RESERVATION "2.0" "$COMFYUI_CPU_LIMIT")
 
     # Network binding (--lan sets 0.0.0.0; default is localhost-only)
     BIND_ADDRESS=$(_env_get BIND_ADDRESS "${BIND_ADDRESS:-127.0.0.1}")
@@ -481,6 +512,17 @@ LLAMA_PARALLEL=${LLAMA_PARALLEL:-1}
 # LLAMA_ARG_SPEC_DRAFT_N_MAX=3
 LLAMA_CPU_LIMIT=${LLAMA_CPU_LIMIT}
 LLAMA_CPU_RESERVATION=${LLAMA_CPU_RESERVATION}
+
+# Bundled service CPU budgets. These are capped to CPUs exposed by Docker so
+# small hosts do not fail container creation on fixed compose limits.
+TTS_CPU_LIMIT=${TTS_CPU_LIMIT}
+TTS_CPU_RESERVATION=${TTS_CPU_RESERVATION}
+WHISPER_CPU_LIMIT=${WHISPER_CPU_LIMIT}
+WHISPER_CPU_RESERVATION=${WHISPER_CPU_RESERVATION}
+HERMES_CPU_LIMIT=${HERMES_CPU_LIMIT}
+HERMES_CPU_RESERVATION=${HERMES_CPU_RESERVATION}
+COMFYUI_CPU_LIMIT=${COMFYUI_CPU_LIMIT}
+COMFYUI_CPU_RESERVATION=${COMFYUI_CPU_RESERVATION}
 
 $(if [[ "$GPU_BACKEND" == "amd" ]]; then
     # Read gfx target from topology detection. Falls back to gfx1151 (Strix Halo)

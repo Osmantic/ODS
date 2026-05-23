@@ -142,7 +142,7 @@ export ENABLE_OPENCLAW=true
 
     docker() {
         if [[ \"\$1\" == \"info\" && \"\${2:-}\" == \"--format\" ]]; then
-            echo 6
+            echo 4
             return 0
         fi
         command docker \"\$@\"
@@ -173,7 +173,7 @@ else
 fi
 
 if [[ "$ENV_GENERATED" == true && -f "$INSTALL_DIR/.env" ]]; then
-    if grep -q '^LLAMA_CPU_LIMIT=6.0$' "$INSTALL_DIR/.env"; then
+    if grep -q '^LLAMA_CPU_LIMIT=4.0$' "$INSTALL_DIR/.env"; then
         pass "LLAMA_CPU_LIMIT auto-caps to Docker CPU count"
     else
         fail "LLAMA_CPU_LIMIT was not auto-capped as expected"
@@ -183,6 +183,20 @@ if [[ "$ENV_GENERATED" == true && -f "$INSTALL_DIR/.env" ]]; then
         pass "LLAMA_CPU_RESERVATION stays within the capped limit"
     else
         fail "LLAMA_CPU_RESERVATION was not written as expected"
+    fi
+
+    if grep -q '^TTS_CPU_LIMIT=4.0$' "$INSTALL_DIR/.env"; then
+        pass "TTS_CPU_LIMIT auto-caps to Docker CPU count"
+    else
+        fail "TTS_CPU_LIMIT was not auto-capped as expected"
+    fi
+
+    if grep -q '^WHISPER_CPU_LIMIT=4.0$' "$INSTALL_DIR/.env" \
+        && grep -q '^HERMES_CPU_LIMIT=4.0$' "$INSTALL_DIR/.env" \
+        && grep -q '^COMFYUI_CPU_LIMIT=4.0$' "$INSTALL_DIR/.env"; then
+        pass "Bundled service CPU limits stay at or below Docker CPU count"
+    else
+        fail "Bundled service CPU limits were not written as expected"
     fi
 fi
 

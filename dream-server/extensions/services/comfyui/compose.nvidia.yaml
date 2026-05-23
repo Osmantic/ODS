@@ -18,7 +18,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '16.0'
+          cpus: '${COMFYUI_CPU_LIMIT:-1.0}'
           memory: 24G
         reservations:
           devices:
