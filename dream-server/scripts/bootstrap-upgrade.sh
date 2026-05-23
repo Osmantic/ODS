@@ -380,38 +380,43 @@ if [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=dream-llama-server --f
     #   container crash-loops. `--force-recreate --no-deps` guarantees a new
     #   container; --no-deps avoids touching other services in the project.
     log "Restarting llama-server container (backend: ${_gpu_backend:-unknown})..."
-    if [[ "$_gpu_backend" == "amd" ]]; then
-        # Lemonade: restart preserves cached binary, reads models.ini on boot
-        if [[ ${#COMPOSE_ARGS[@]} -gt 0 && -n "$DOCKER_COMPOSE_CMD" ]]; then
-            $DOCKER_COMPOSE_CMD "${COMPOSE_ARGS[@]}" restart llama-server 2>&1 || true
-        else
-            $DOCKER_CMD restart dream-llama-server 2>&1 || true
-        fi
+    # Both backends need a container *recreate*, not just a restart, so the
+    # updated CTX_SIZE / MAX_CONTEXT / GGUF_FILE env values from the
+    # freshly-bumped .env land in the new container. A plain `compose
+    # restart` preserves the original env vars from when the container
+    # first started — which on AMD/Lemonade leaves LEMONADE_CTX_SIZE pinned
+    # at the bootstrap-tier value (e.g. 8192) even after .env says 131072.
+    # The lemonade-entrypoint.sh wrapper then sees the stale env value,
+    # never updates /root/.cache/lemonade/config.json, and Lemonade serves
+    # the full model at the bootstrap context size — Hermes then returns
+    # empty responses in ~1s because its 16k-token tool catalog overruns
+    # the 8k context window. OpenCode hits the same wall.
+    #
+    # `env -u` strips the model-config vars from compose's shell so the
+    # freshly-updated .env wins interpolation. Compose precedence is
+    # shell-env > .env > compose default, and Phase 11 (parent of this
+    # nohup'd script) sets the bootstrap-tier values as shell variables.
+    #
+    # Named volumes (lemonade-cache / lemonade-llama / lemonade-recipe on
+    # AMD) survive --force-recreate, so the Lemonade binary cache + HF
+    # cache + recipe state all persist across the recreate. The older
+    # "AMD uses restart to preserve cached binary" comment was wrong —
+    # named volumes are decoupled from the container lifecycle.
+    if [[ ${#COMPOSE_ARGS[@]} -gt 0 && -n "$DOCKER_COMPOSE_CMD" ]]; then
+        env -u GGUF_FILE -u LLM_MODEL -u MAX_CONTEXT -u CTX_SIZE \
+            $DOCKER_COMPOSE_CMD "${COMPOSE_ARGS[@]}" up -d --force-recreate --no-deps llama-server 2>&1 || true
     else
-        # llama.cpp: force-recreate to pick up new GGUF_FILE from .env.
-        # `env -u` strips the model-config vars from compose's shell so they
-        # cannot win interpolation over the freshly-updated .env. Compose
-        # variable precedence is shell-env > .env file > compose default,
-        # and Phase 11 of the installer (parent of this nohup'd script) sets
-        # GGUF_FILE / LLM_MODEL / MAX_CONTEXT / CTX_SIZE to the bootstrap
-        # values as shell variables before forking us. Empirically those
-        # leak into our env on Linux even without an explicit `export`, and
-        # without this guard compose silently recreates the container with
-        # `--model /models/${BOOTSTRAP_GGUF_FILE}` — pointing at the file
-        # Phase 4b just deleted, hence the crash-loop on next restart.
-        if [[ ${#COMPOSE_ARGS[@]} -gt 0 && -n "$DOCKER_COMPOSE_CMD" ]]; then
-            env -u GGUF_FILE -u LLM_MODEL -u MAX_CONTEXT -u CTX_SIZE \
-                $DOCKER_COMPOSE_CMD "${COMPOSE_ARGS[@]}" up -d --force-recreate --no-deps llama-server 2>&1 || true
-        else
-            # No compose flags — use docker rm to force a fresh container that
-            # re-reads GGUF_FILE from the env file. 'docker start' reuses the old
-            # baked environment and would crash-loop if the bootstrap model was
-            # already deleted in Phase 4b.
-            $DOCKER_CMD stop dream-llama-server 2>&1 || true
-            $DOCKER_CMD rm dream-llama-server 2>&1 || true
-            log "WARNING: .compose-flags not found — container removed. Run 'dream restart' to bring llama-server back up with the correct model."
-            write_status "failed"
-        fi
+        # No compose flags — fall back to docker rm + manual recreate. On
+        # NVIDIA the original CMD points at /models/${BOOTSTRAP_GGUF_FILE}
+        # which Phase 4b just deleted; on AMD the container env still has
+        # bootstrap-tier LEMONADE_CTX_SIZE. Either way `docker start`
+        # would reuse the stale state, so we remove the container and ask
+        # the operator to bring it back up via `dream restart` (which
+        # re-runs compose with the latest .env).
+        $DOCKER_CMD stop dream-llama-server 2>&1 || true
+        $DOCKER_CMD rm dream-llama-server 2>&1 || true
+        log "WARNING: .compose-flags not found — container removed. Run 'dream restart' to bring llama-server back up with the correct model + context size."
+        write_status "failed"
     fi
 
     # Pick health endpoint based on GPU backend — Lemonade (AMD) serves
@@ -676,7 +681,7 @@ LITELLM_UPGRADE_EOF
         if $DOCKER_CMD ps --filter name=dream-hermes --format '{{.Names}}' 2>/dev/null | grep -q dream-hermes; then
             # Live config inside the running container (owned by container UID).
             $DOCKER_CMD exec dream-hermes sh -c \
-                "sed -i -e 's|^  default: \"${_hermes_old_model}\"|  default: \"${_hermes_new_model}\"|' -e 's|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|' -e 's|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|' -e 's|^  threshold: .*|  threshold: 0.50|' -e 's|^  target_ratio: .*|  target_ratio: 0.20|' /opt/data/config.yaml" 2>&1 || \
+                "sed -i -e 's|^  default: \"${_hermes_old_model}\"|  default: \"${_hermes_new_model}\"|' -e 's|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|' -e 's|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|' -e 's|^  enabled: .*|  enabled: true|' -e 's|^  threshold: .*|  threshold: 0.75|' -e 's|^  target_ratio: .*|  target_ratio: 0.50|' -e 's|^  protect_last_n: .*|  protect_last_n: 40|' /opt/data/config.yaml" 2>&1 || \
                 log "WARNING: Could not patch Hermes /opt/data/config.yaml (non-fatal — operator can hand-edit and 'docker restart dream-hermes')"
             log "Restarting Hermes to pick up model change..."
             $DOCKER_CMD restart dream-hermes 2>&1 || log "WARNING: Hermes restart failed (non-fatal — hand-restart with 'docker restart dream-hermes')"

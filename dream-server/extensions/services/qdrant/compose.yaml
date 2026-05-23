@@ -8,7 +8,7 @@ services:
     environment:
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-}
     volumes:
-      - ./data/qdrant:/qdrant/storage
+      - ./data/qdrant:/qdrant/storage:z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${QDRANT_PORT:-6333}:6333"
       - "${BIND_ADDRESS:-127.0.0.1}:${QDRANT_GRPC_PORT:-6334}:6334"

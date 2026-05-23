@@ -12,8 +12,8 @@ services:
     # the mount is ready, causing transient "permission denied" errors.
     entrypoint: ["/bin/sh", "-c", "until [ -x /app/docker-entrypoint.sh ]; do sleep 0.5; done; exec /app/docker-entrypoint.sh"]
     volumes:
-      - ./data/whisper:/home/ubuntu/.cache/huggingface/hub
-      - ./extensions/services/whisper/docker-entrypoint.sh:/app/docker-entrypoint.sh:ro
+      - ./data/whisper:/home/ubuntu/.cache/huggingface/hub:z
+      - ./extensions/services/whisper/docker-entrypoint.sh:/app/docker-entrypoint.sh:ro,z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${WHISPER_PORT:-9000}:8000"
     deploy:

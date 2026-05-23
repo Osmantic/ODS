@@ -104,8 +104,10 @@ auxiliary:
     context_length: {inputs.context_length}
 
 compression:
-  threshold: 0.50
-  target_ratio: 0.20
+  enabled: true
+  threshold: 0.75
+  target_ratio: 0.50
+  protect_last_n: 40
 """
     return RenderedFile("hermes", "data/hermes/config.yaml", content)
 

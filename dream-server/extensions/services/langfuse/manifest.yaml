@@ -33,4 +33,7 @@ features:
     enabled_services_any: []
     setup_time: ~2 minutes
     priority: 10
+    launch:
+      type: service
+      service: langfuse
     gpu_backends: [all]

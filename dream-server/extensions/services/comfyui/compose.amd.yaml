@@ -17,7 +17,7 @@ services:
       - PYTORCH_TUNABLEOP_ENABLED=1
       - TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
     volumes:
-      - ./data/comfyui/ComfyUI:/opt/ComfyUI
+      - ./data/comfyui/ComfyUI:/opt/ComfyUI:z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${COMFYUI_PORT:-8188}:8188"
     command: >-

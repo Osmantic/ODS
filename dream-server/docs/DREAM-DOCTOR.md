@@ -32,6 +32,8 @@ Displays color-coded diagnostics:
 - ✓ Green: Passing checks
 - ⚠ Yellow: Warnings
 - ✗ Red: Failures/blockers
+- Diagnosis entries: evidence-ranked root causes with the file/command that
+  supports the conclusion and the next concrete recovery step.
 
 Example output:
 ```
@@ -49,6 +51,11 @@ Preflight Checks:
   ✓ RAM: 16GB available
   ⚠ Disk: 50GB available (recommended: 100GB)
   ✓ GPU: NVIDIA RTX 4090 detected
+
+Diagnoses:
+  BLOCKER DS-DOCKER-IMAGE-UNRESOLVED: Docker image reference could not be resolved (high confidence)
+    evidence: install-report-2026-05-20-120000.txt — Failed image: ghcr.io/example/missing:v0
+    next: Check whether `ghcr.io/example/missing:v0` exists in the registry.
 
 Summary:
   ⚠ 1 warning(s) found
@@ -68,6 +75,17 @@ dream doctor --json > report.json
 
 - **capability_profile**: Hardware detection snapshot
 - **preflight**: Blocker/warning analysis
+- **install_artifacts**: Presence and paths for installer evidence such as
+  `.env`, `.compose-flags`, `logs/compose-launch.txt`, `logs/compose-up.log`,
+  and the latest `install-report-*.txt`.
+- **diagnoses**: Stable, evidence-ranked install/runtime root-cause diagnoses.
+  Each item includes:
+  - `id`: stable issue code, for example `DS-COMPOSE-CWD-MISMATCH`
+  - `severity`: `blocker`, `warn`, or `info`
+  - `confidence`: evidence confidence
+  - `evidence`: source file/command and observed detail
+  - `impact`: why the issue matters
+  - `next_steps`: concrete recovery actions
 - **runtime**: Docker/Compose/UI reachability checks
 - **runtime.amd_runtime**: Explicit AMD inference runtime diagnostics from
   installer-written env state. Reports runtime (`lemonade` or `llama-server`),
@@ -78,6 +96,34 @@ dream doctor --json > report.json
   support in `llama-server` logs.
 - **summary**: Aggregate status (blockers, warnings, runtime_ready)
 - **autofix_hints**: Prioritized remediation actions
+
+## Evidence-Based Install Diagnoses
+
+Dream Doctor intentionally distinguishes a failing symptom from the evidence
+that supports a root cause. For example, a generic `docker compose up` failure
+can mean a missing image, wrong working directory, missing `.env`, or a resolver
+dependency problem. The `diagnoses` array records the specific cause only when
+the saved install artifacts support it.
+
+Current install diagnoses include:
+
+- `DS-INSTALL-ENV-MISSING`: an installed-looking tree is missing its generated
+  `.env`.
+- `DS-COMPOSE-CWD-MISMATCH`: `logs/compose-launch.txt` says compose was launched
+  from a different directory than the Doctor root.
+- `DS-DOCKER-IMAGE-UNRESOLVED`: saved install logs show an image tag that Docker
+  could not resolve.
+- `DS-COMPOSE-ZERO-CONTAINERS`: compose completed but no managed DreamServer
+  containers were created.
+- `DS-PYTHON-PYYAML-MISSING`: the selected installer Python could not import
+  PyYAML.
+- `DS-WINDOWS-FILE-SHARING-PROBE-IMAGE`: Windows file-sharing probe evidence is
+  mixed with an Alpine probe image pull failure, so the report calls out both
+  prerequisites.
+
+These diagnoses are additive. Existing `autofix_hints`, `runtime`, and
+`preflight` fields remain available for scripts that already consume Doctor
+JSON.
 
 ## Exit Codes
 

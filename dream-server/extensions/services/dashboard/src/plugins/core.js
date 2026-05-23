@@ -71,9 +71,9 @@ export const coreRoutes = [
     sidebar: true,
     order: 3,
   },
-  // Usage + Setup / Owner are reachable from Settings rather than the top-level
-  // sidebar. Setup / Owner is a factory/distributor/service-provider flow, not
-  // a day-to-day dashboard surface. Direct URLs still work for bookmarks and
+  // Setup / Owner is reachable from Settings rather than the top-level
+  // sidebar. It is a factory/distributor/service-provider flow, not a
+  // day-to-day dashboard surface. Direct URLs still work for bookmarks and
   // for the magic-link redemption page which renders inside this dashboard.
   {
     id: 'usage',
@@ -82,7 +82,7 @@ export const coreRoutes = [
     icon: CreditCard,
     component: Usage,
     getProps: ({ status }) => ({ status }),
-    sidebar: false,
+    sidebar: true,
     order: 3.5,
   },
   {
