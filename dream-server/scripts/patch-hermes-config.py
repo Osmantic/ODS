@@ -115,6 +115,17 @@ def _ensure_auxiliary(lines: list[str], context_length: int | None) -> None:
 
 
 def _ensure_compression(lines: list[str]) -> None:
+    """Set the compression block to Dream Talk's tuned values.
+
+    Previous defaults (0.50 / 0.20 / 20) caused the agent to lose granular
+    context mid-conversation when a single tool result briefly spiked
+    context past the 50% threshold. Bumped per Dream Talk live-testing —
+    see cli-config.yaml.template for the full reasoning.
+
+    Idempotent: every install (fresh or upgrade) that runs this patcher
+    converges /opt/data/config.yaml to these values, automatically
+    migrating existing operator installs on the next bootstrap-upgrade.
+    """
     block = _top_level_block(lines, "compression")
     if block is None:
         lines.extend(
@@ -122,17 +133,17 @@ def _ensure_compression(lines: list[str]) -> None:
                 "",
                 "compression:",
                 "  enabled: true",
-                "  threshold: 0.50",
-                "  target_ratio: 0.20",
-                "  protect_last_n: 20",
+                "  threshold: 0.75",
+                "  target_ratio: 0.50",
+                "  protect_last_n: 40",
             ]
         )
         return
 
     block = _set_key(lines, block, "enabled", "true", 2)
-    block = _set_key(lines, block, "threshold", "0.50", 2)
-    block = _set_key(lines, block, "target_ratio", "0.20", 2)
-    _set_key(lines, block, "protect_last_n", "20", 2)
+    block = _set_key(lines, block, "threshold", "0.75", 2)
+    block = _set_key(lines, block, "target_ratio", "0.50", 2)
+    _set_key(lines, block, "protect_last_n", "40", 2)
 
 
 def patch_config(path: Path, model: str | None, base_url: str | None, context_length: int | None, api_key: str | None = None) -> bool:

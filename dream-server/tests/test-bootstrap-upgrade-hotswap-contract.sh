@@ -21,11 +21,11 @@ pass() {
 active_code="$(grep -v '^[[:space:]]*#' "$TARGET")"
 
 grep -qF 'up -d --force-recreate --no-deps llama-server' <<<"$active_code" \
-    || fail "llama.cpp hot-swap must force-recreate llama-server without deps"
-pass "llama.cpp hot-swap uses force-recreate/no-deps"
+    || fail "llama-server hot-swap must force-recreate llama-server without deps"
+pass "llama-server hot-swap uses force-recreate/no-deps"
 
 llama_recreate_block="$(awk '
-    /force-recreate to pick up new GGUF_FILE/ { in_block=1 }
+    /Restarting llama-server container/ { in_block=1 }
     in_block { print }
     in_block && /up -d --force-recreate --no-deps llama-server/ { exit }
 ' "$TARGET" | grep -v '^[[:space:]]*#')"
@@ -33,6 +33,11 @@ llama_recreate_block="$(awk '
 grep -qF 'env -u GGUF_FILE -u LLM_MODEL -u MAX_CONTEXT -u CTX_SIZE' <<<"$llama_recreate_block" \
     || fail "llama-server recreate must strip model vars so .env wins compose interpolation"
 pass "llama-server recreate strips model env before compose"
+
+if grep -qE '\brestart[[:space:]]+(llama-server|dream-llama-server)\b' <<<"$active_code"; then
+    fail "llama-server hot-swap must not use restart; recreate is required so updated env lands"
+fi
+pass "llama-server hot-swap does not use restart shortcut"
 
 if grep -qE '\bstop[[:space:]]+llama-server\b' <<<"$active_code"; then
     fail "llama.cpp hot-swap must not stop llama-server before compose up"

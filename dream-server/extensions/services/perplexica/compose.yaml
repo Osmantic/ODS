@@ -19,7 +19,7 @@ services:
     volumes:
       - perplexica-data:/home/perplexica/data
       - perplexica-uploads:/home/perplexica/uploads
-      - ./extensions/services/perplexica/docker-entrypoint.sh:/app/dream-entrypoint.sh:ro
+      - ./extensions/services/perplexica/docker-entrypoint.sh:/app/dream-entrypoint.sh:ro,z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${PERPLEXICA_PORT:-3004}:3000"
     deploy:

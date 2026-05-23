@@ -6,13 +6,13 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=__HOME__
-ExecStart=__HOME__/.opencode/bin/opencode serve --port 3003 --hostname 127.0.0.1
+ExecStart=__OPENCODE_BIN__ serve --port 3003 --hostname 127.0.0.1
 Restart=on-failure
 RestartSec=5
 
 # Environment
 Environment=HOME=__HOME__
-Environment=PATH=__HOME__/.opencode/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=__OPENCODE_BIN_DIR__:/usr/local/bin:/usr/bin:/bin
 # Do not import Dream Server's full .env here. OpenCode treats
 # OPENCODE_SERVER_PASSWORD as a Basic Auth password when present, but this
 # localhost-only web UI should be reachable without a login prompt.

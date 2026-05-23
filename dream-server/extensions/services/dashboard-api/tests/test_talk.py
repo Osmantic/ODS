@@ -86,17 +86,43 @@ def test_talk_audio_message_transcribes_and_routes(talk_client, monkeypatch):
     assert data["text"] == "answer to what is running locally"
 
 
-def test_talk_speak_returns_audio(talk_client, monkeypatch):
-    async def fake_speak(text):
+def test_talk_speak_streams_audio(talk_client, monkeypatch):
+    """The /api/talk/speak endpoint streams MP3 bytes from Kokoro as they
+    arrive (instead of buffering the whole reply into a single Response).
+    Verify the streamed bytes are concatenated correctly + the right
+    headers are set so reverse proxies don't re-buffer the stream."""
+    async def fake_stream(text):
         assert text == "read this"
-        return b"mp3 bytes", "audio/mpeg"
+        # Simulate Kokoro emitting two chunks as the audio synthesises.
+        yield b"mp3 chunk 1 "
+        yield b"mp3 chunk 2"
 
-    monkeypatch.setattr("routers.talk._speak_text", fake_speak)
+    monkeypatch.setattr("routers.talk._stream_speech", fake_stream)
 
     resp = talk_client.post("/api/talk/speak", data={"text": "read this"})
     assert resp.status_code == 200, resp.text
-    assert resp.content == b"mp3 bytes"
+    assert resp.content == b"mp3 chunk 1 mp3 chunk 2"
     assert resp.headers["content-type"].startswith("audio/mpeg")
+    # Critical for streaming through nginx / dream-proxy: without this
+    # the reverse proxy would re-buffer the stream and undo our work.
+    assert resp.headers.get("X-Accel-Buffering") == "no"
+
+
+def test_talk_speak_handles_empty_stream(talk_client, monkeypatch):
+    """If Kokoro errors before any audio is produced, the streaming
+    response should close cleanly with empty body — the SPA's `if (!resp.ok
+    || !resp.body)` short-circuit then suppresses playback without
+    interrupting the text chat."""
+    async def fake_stream(text):
+        # Kokoro upstream failure: nothing to yield.
+        if False:
+            yield b""  # pragma: no cover
+
+    monkeypatch.setattr("routers.talk._stream_speech", fake_stream)
+
+    resp = talk_client.post("/api/talk/speak", data={"text": "silent"})
+    assert resp.status_code == 200
+    assert resp.content == b""
 
 
 # ----------------------------------------------------------------------
@@ -668,6 +694,230 @@ def test_hermes_bridge_pool_sweeper_evicts_idle_connections(monkeypatch):
     still_in_pool, closed = _run_with_one_loop(main)
     assert not still_in_pool, "sweeper should have evicted the idle connection"
     assert "idle-key" in closed, f"sweeper should have called aclose(), got {closed}"
+
+
+def test_talk_message_stream_forwards_hermes_status_updates(talk_client, monkeypatch):
+    """Hermes (pinned image) emits status.update events with pre-formatted
+    human-readable text and a `kind` category, e.g.
+    ``{"kind": "lifecycle", "text": "⏳ Retrying in 5.1s (attempt 2/3)..."}``.
+    The bridge forwards them as ``status`` events and the SSE layer relays
+    them verbatim — upstream owns the wording, we just route it to the SPA.
+    Regression guard for the user-visible "spinner caption is dynamic" UX."""
+    async def fake_stream(session_key, text):
+        yield {"type": "session", "session_id": "sid"}
+        yield {"type": "status", "label": "⏳ Retrying in 5.1s (attempt 2/3)...", "kind": "lifecycle"}
+        yield {"type": "status", "label": "🔎 Searching the web…", "kind": "tool"}
+        yield {"type": "delta", "text": "OK"}
+        yield {"type": "complete", "session_id": "sid", "text": "OK", "status": "ok", "warning": None}
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+
+    resp = talk_client.post("/api/talk/message/stream", json={"text": "hi"})
+    assert resp.status_code == 200
+    frames = _parse_sse_frames(resp.content)
+    status_frames = [f for f in frames if f["type"] == "status"]
+    # Both status updates make it through, verbatim text + kind preserved.
+    assert len(status_frames) == 2
+    assert status_frames[0]["label"] == "⏳ Retrying in 5.1s (attempt 2/3)..."
+    assert status_frames[0]["kind"] == "lifecycle"
+    assert status_frames[1]["label"] == "🔎 Searching the web…"
+    assert status_frames[1]["kind"] == "tool"
+
+
+def test_talk_message_stream_translates_tool_events_to_status_frames(talk_client, monkeypatch):
+    """Hermes emits tool.start / tool.complete events while the agent is
+    working. The bridge surfaces those as ``tool_start`` / ``tool_complete``
+    events, and the SSE layer translates them into friendly ``status``
+    frames the SPA renders as the spinner caption. This is the user-facing
+    "what's the agent doing?" visibility added per the operator's feedback —
+    a phone shouldn't sit on a plain "Thinking" spinner for 30s while
+    web_search is mid-flight."""
+    async def fake_stream(session_key, text):
+        yield {"type": "session", "session_id": "sid"}
+        yield {"type": "tool_start", "tool": "web_search", "detail": "weather in San Francisco"}
+        yield {"type": "tool_complete", "tool": "web_search", "duration_s": 1.2, "summary": "Did 1 search"}
+        yield {"type": "delta", "text": "Sunny, 64°F."}
+        yield {"type": "complete", "session_id": "sid", "text": "Sunny, 64°F.", "status": "ok", "warning": None}
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+
+    resp = talk_client.post("/api/talk/message/stream", json={"text": "what is the weather?"})
+    assert resp.status_code == 200
+    frames = _parse_sse_frames(resp.content)
+    types = [f["type"] for f in frames]
+    # Required ordering: session → status(active) → status(cleared) → delta → complete → done
+    assert types[0] == "session"
+    status_frames = [f for f in frames if f["type"] == "status"]
+    assert len(status_frames) == 2, f"expected one status-active + one status-clear, got {status_frames}"
+    # First status: friendly label + tool name + detail string preserved.
+    assert status_frames[0]["label"] == "Searching the web…"
+    assert status_frames[0]["tool"] == "web_search"
+    assert status_frames[0]["detail"] == "weather in San Francisco"
+    # Second status: label=None signals SPA to drop the caption (default
+    # "Thinking…" until next status or delta).
+    assert status_frames[1]["label"] is None
+    assert status_frames[1]["tool"] is None
+    # And the actual content + complete frame still come through unchanged.
+    assert any(f["type"] == "delta" and f["text"] == "Sunny, 64°F." for f in frames)
+    assert any(f["type"] == "complete" for f in frames)
+
+
+def test_talk_message_stream_status_label_for_unknown_tool(talk_client, monkeypatch):
+    """Unknown tools should still produce a status frame — falling back to
+    a literal "Using `<name>`…" caption so the operator can map the tool in
+    a future _TOOL_LABELS pass instead of staring at a blank spinner."""
+    async def fake_stream(session_key, text):
+        yield {"type": "session", "session_id": "sid"}
+        yield {"type": "tool_start", "tool": "some_new_skill_2026", "detail": None}
+        yield {"type": "complete", "session_id": "sid", "text": "ok", "status": "ok", "warning": None}
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+
+    resp = talk_client.post("/api/talk/message/stream", json={"text": "hi"})
+    assert resp.status_code == 200
+    frames = _parse_sse_frames(resp.content)
+    status_frames = [f for f in frames if f["type"] == "status"]
+    assert len(status_frames) == 1
+    # Honest fallback — literal name appears in the caption so an operator
+    # who sees "Using `foo`…" on the phone knows exactly what to map.
+    assert "some_new_skill_2026" in status_frames[0]["label"]
+
+
+def test_talk_message_stream_status_label_handles_browser_prefix(monkeypatch):
+    """Tools we don't enumerate explicitly but share a known prefix get a
+    sensible group caption (browser_* → "Browsing…")."""
+    from routers.talk import _label_for_tool
+    assert _label_for_tool("browser_navigate") == "Browsing…"
+    assert _label_for_tool("browser_console") == "Browsing…"
+    assert _label_for_tool("memory_save") == "Checking memory…"
+    assert _label_for_tool("skill_view") == "Loading a skill…"
+    # Honest fallback for genuinely unknown:
+    assert _label_for_tool("random_unknown_tool") == "Using `random_unknown_tool`…"
+
+
+def test_talk_attachment_text_file_routes_through_hermes_with_inlined_content(talk_client, monkeypatch):
+    """Text-like attachments (.txt/.md/.json/code/etc.) get their content
+    decoded and prepended to the user's caption, then routed through the
+    existing Hermes bridge — so the agent retains tools, memory, and the
+    same SSE event shape as a regular text message."""
+    captured_prompt = None
+
+    async def fake_stream(session_key, text):
+        nonlocal captured_prompt
+        captured_prompt = text
+        yield {"type": "session", "session_id": "sid"}
+        yield {"type": "complete", "session_id": "sid", "text": "Reviewed.", "status": "ok", "warning": None}
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": ("notes.md", b"# Hello\nFoo bar", "text/markdown")},
+        data={"text": "what's in this?"},
+    )
+    assert resp.status_code == 200
+    assert "Hello" in captured_prompt
+    assert "Foo bar" in captured_prompt
+    assert "what's in this?" in captured_prompt
+    assert "notes.md" in captured_prompt
+
+
+def test_talk_attachment_unknown_filetype_returns_415(talk_client):
+    """Unsupported file types (zip/exe/etc.) should be rejected at the
+    attachment surface, not silently passed through. v1 is image-and-text-
+    only by design."""
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": ("archive.zip", b"PK\x03\x04...", "application/zip")},
+        data={"text": ""},
+    )
+    assert resp.status_code == 415
+
+
+def test_talk_attachment_image_routes_to_vision_endpoint_bypassing_hermes(talk_client, monkeypatch):
+    """Images go to litellm directly (not through Hermes) because Hermes's
+    prompt.submit accepts only text — multimodal content arrays are a
+    litellm/llama-server-level concept. Regression guard that we don't
+    accidentally re-route images through the text-only Hermes path."""
+    hermes_stream_called = False
+
+    async def fake_hermes_stream(session_key, text):
+        nonlocal hermes_stream_called
+        hermes_stream_called = True
+        yield {"type": "session", "session_id": "sid"}
+        yield {"type": "complete", "session_id": "sid", "text": "wrong-path", "status": "ok", "warning": None}
+
+    async def fake_vision_stream(image_bytes, content_type, prompt_text):
+        from routers.talk import _sse_event
+        yield _sse_event("session", {"session_id": "vision"})
+        yield _sse_event("delta", {"text": "Red."})
+        yield _sse_event("complete", {"session_id": "vision", "text": "Red.", "status": "ok", "warning": None})
+        yield _sse_event("done", {})
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_hermes_stream)
+    monkeypatch.setattr("routers.talk._stream_vision_chat", fake_vision_stream)
+
+    # Minimal valid PNG bytes (PNG signature + IHDR).
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": ("photo.png", png_bytes, "image/png")},
+        data={"text": "what color?"},
+    )
+    assert resp.status_code == 200
+    frames = _parse_sse_frames(resp.content)
+    assert any(f.get("type") == "complete" and f.get("text") == "Red." for f in frames)
+    # Hermes was NOT called for an image — image flow bypasses the text
+    # agent loop.
+    assert not hermes_stream_called
+
+
+def test_talk_attachment_image_uses_filename_when_mobile_uploads_octet_stream(talk_client, monkeypatch):
+    """Mobile browsers sometimes send captured images as octet-stream.
+    Filename fallback keeps phone uploads on the image path and gives the
+    vision model a real image MIME in the data URL."""
+    captured_content_type = None
+
+    async def fake_vision_stream(image_bytes, content_type, prompt_text):
+        nonlocal captured_content_type
+        from routers.talk import _sse_event
+        captured_content_type = content_type
+        yield _sse_event("session", {"session_id": "vision"})
+        yield _sse_event("complete", {"session_id": "vision", "text": "Red.", "status": "ok", "warning": None})
+        yield _sse_event("done", {})
+
+    monkeypatch.setattr("routers.talk._stream_vision_chat", fake_vision_stream)
+
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": ("phone-capture.png", png_bytes, "application/octet-stream")},
+        data={"text": "what color?"},
+    )
+    assert resp.status_code == 200
+    assert captured_content_type == "image/png"
+    frames = _parse_sse_frames(resp.content)
+    assert any(f.get("type") == "complete" and f.get("text") == "Red." for f in frames)
+
+
+def test_talk_attachment_image_too_large_returns_413(talk_client):
+    """Image size cap is enforced at the multipart boundary."""
+    big = b"\x89PNG\r\n\x1a\n" + b"x" * (11 * 1024 * 1024)
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": ("huge.png", big, "image/png")},
+    )
+    assert resp.status_code == 413
+
+
+def test_talk_attachment_requires_session(test_client):
+    """No cookie ⇒ 401 even with a valid file."""
+    resp = test_client.post(
+        "/api/talk/attachment",
+        files={"file": ("notes.md", b"hi", "text/markdown")},
+        headers=test_client.auth_headers,
+    )
+    assert resp.status_code == 401
 
 
 def test_talk_message_stream_sets_unbuffered_headers(talk_client, monkeypatch):

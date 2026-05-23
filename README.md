@@ -383,10 +383,6 @@ Thanks to [lhl](https://github.com/lhl) for [strix-halo-testing](https://github.
 
 [Tony363 (Tony Siu)](https://github.com/Tony363), a former [Google University Research lead](https://technical.ly/workforce/tony-siu-code-and-coffee-how-i-got-here/) and founder of [Code & Coffee Philadelphia](https://www.meetup.com/coffee-code-philly/), has been one of the biggest reasons Dream Server reached broader awareness in the Philly AI ecosystem. Code & Coffee is now a 4,000+ developer community, and Tony's support helped bring Dream Server into that world, including multiple Pennovation Works features. More than any title, he cares deeply about local AI, empowerment for the masses, and seeing this project succeed. We are also eternally grateful to [Ahmad Osman](https://ahmadosman.com/about/) for [featuring and publicly supporting Dream Server](https://x.com/TheAhmadOsman/status/2055344995041771776?s=20); after his endorsement, the project grew from roughly 500 to nearly 1,500 GitHub stars in four days, bringing a wave of visibility, adoption, and encouragement we will not forget.
 
-### Community Builds
-
-*   [halo-ai (bong-water-water-bong)](https://github.com/bong-water-water-bong/halo-ai) — Bare-metal DreamServer rebuild for Strix Halo on Arch Linux. Zero containers, compiled from source, 89 tok/s. Proved Vulkan > ROCm for generation on gfx1151 and contributed kernel tuning research (`amd_iommu=off`, TTM page pool expansion) back to the ecosystem. Early DreamServer advocate who introduced us to the Lemonade SDK community and AMD developer team.
-
 ### Projects that make Dream Server possible
 
 *   [llama.cpp (ggerganov)](https://github.com/ggml-org/llama.cpp) — LLM inference engine

@@ -124,12 +124,29 @@ terminal:
 # (0.50 = 50%), not an absolute token count. A stale value like 10000
 # effectively disables proactive compression until the backend rejects the
 # request, which is how sessions fall into max-compression-attempt loops.
+#
+# Defaults tuned for Dream Talk — a deep mobile-chat conversation. Previous
+# values (threshold: 0.50, target_ratio: 0.20, protect_last_n: 20) caused
+# the agent to lose granular context mid-conversation: a single web_search
+# tool result (10-15kB of HTML/markdown) would briefly push context over
+# the 50% threshold, Hermes would compress earlier turns to 20% of their
+# original size, and the user would notice the agent "forgetting" what
+# they were working on. Reported live by the operator after a deeper
+# conversation. New values are deliberately more conservative — we defer
+# compression later and preserve more of it when it does trigger.
 compression:
-  # Enable automatic context compression.
+  # Enable automatic context compression. Disabling outright is appealing
+  # for a chat surface but lets a long session hit the hard context limit
+  # and fail mid-reply; better to compress gently than crash.
   enabled: true
-  # Trigger compression at this fraction of the context window.
-  threshold: 0.50
+  # Trigger compression at this fraction of the context window. Was 0.50;
+  # bumped to 0.75 so a transient tool-result spike doesn't fire it.
+  threshold: 0.75
   # Preserve this fraction of the threshold-sized window as recent tail.
-  target_ratio: 0.20
-  # Keep roughly the last ten full turns intact during compression.
-  protect_last_n: 20
+  # Was 0.20 (very aggressive, summarized 80% of history away); bumped to
+  # 0.50 so half the conversation survives a compression event verbatim.
+  target_ratio: 0.50
+  # Keep roughly the last N turns intact during compression. Was 20 turns
+  # (~10 user/assistant exchanges); bumped to 40 so a longer back-and-forth
+  # stays granular even after a compression pass.
+  protect_last_n: 40

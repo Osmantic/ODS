@@ -9,6 +9,8 @@ import {
   Download,
   Info,
   MoreHorizontal,
+  Power,
+  RefreshCw,
   Search,
   WalletCards,
 } from 'lucide-react'
@@ -78,6 +80,20 @@ const EMPTY_SUMMARY = {
   untracked_providers: 0,
   paid_cost_usd: 0,
   local_cost_usd: 0,
+}
+
+const EMPTY_READINESS = {
+  service_id: 'token-spy',
+  status: 'unknown',
+  available: false,
+  configured: false,
+  installed: false,
+  enabled: false,
+  healthy: false,
+  service_status: 'unknown',
+  message: 'Usage tracking status is unknown.',
+  detail: 'Dashboard API has not reported Token Spy readiness yet.',
+  actions: {},
 }
 
 function pad2(value) {
@@ -246,9 +262,10 @@ function seriesFromHistory(history, key, fallback = []) {
   return (fallback || []).some(value => Number(value || 0) > 0) ? fallback : values
 }
 
-function useUsageReport(range) {
+function useUsageReport(range, reloadToken = 0) {
   const [report, setReport] = useState(() => emptyReport(range.start, range.end))
   const [previousReport, setPreviousReport] = useState(null)
+  const [readiness, setReadiness] = useState(EMPTY_READINESS)
   const [history, setHistory] = useState(() => readUsageHistory().filter(item => item.period === `${range.start}:${range.end}`))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -261,19 +278,26 @@ function useUsageReport(range) {
       if (!silent) setLoading(true)
       if (!silent) setError(null)
       try {
-        const [currentRes, previousRes] = await Promise.all([
+        const [currentRes, previousRes, readinessRes] = await Promise.all([
           fetch(`/api/usage/report?start=${range.start}&end=${range.end}`),
           fetch(`/api/usage/report?start=${prevRange.start}&end=${prevRange.end}`),
+          fetch('/api/usage/readiness'),
         ])
         if (!currentRes.ok) throw new Error(`Usage API returned HTTP ${currentRes.status}`)
         const current = await currentRes.json()
         const previous = previousRes.ok ? await previousRes.json() : null
+        const usageReadiness = readinessRes.ok ? await readinessRes.json() : {
+          ...EMPTY_READINESS,
+          status: 'unavailable',
+          detail: `Usage readiness API returned HTTP ${readinessRes.status}`,
+        }
         if (!cancelled) {
           setReport({
             ...emptyReport(range.start, range.end),
             ...current,
             summary: { ...EMPTY_SUMMARY, ...(current.summary || {}) },
           })
+          setReadiness({ ...EMPTY_READINESS, ...usageReadiness, actions: usageReadiness.actions || {} })
           setHistory(appendUsageHistory(current))
           setPreviousReport(previous ? {
             ...emptyReport(prevRange.start, prevRange.end),
@@ -285,6 +309,7 @@ function useUsageReport(range) {
         if (!cancelled) {
           setError(err.message)
           setReport(emptyReport(range.start, range.end, err.message))
+          setReadiness({ ...EMPTY_READINESS, status: 'unavailable', detail: err.message })
           setPreviousReport(null)
         }
       } finally {
@@ -298,15 +323,17 @@ function useUsageReport(range) {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [range])
+  }, [range, reloadToken])
 
-  return { report, previousReport, history, loading, error }
+  return { report, previousReport, readiness, history, loading, error }
 }
 
 export default function Usage({ status }) {
   const [rangeAnchor, setRangeAnchor] = useState(() => monthRange().anchor)
+  const [reloadToken, setReloadToken] = useState(0)
+  const [actionState, setActionState] = useState(null)
   const range = useMemo(() => monthRange(rangeAnchor), [rangeAnchor])
-  const { report, previousReport, history, loading, error } = useUsageReport(range)
+  const { report, previousReport, readiness, history, loading, error } = useUsageReport(range, reloadToken)
   const summary = report.summary || EMPTY_SUMMARY
   const previous = previousReport?.summary || EMPTY_SUMMARY
   const dailySpend = report.daily?.map(day => day.spend_usd || 0) || []
@@ -323,6 +350,29 @@ export default function Usage({ status }) {
   const spendSpark = seriesFromHistory(history, 'spend_usd', dailySpend)
   const tokensSpark = seriesFromHistory(history, 'total_tokens', dailyProviders)
   const requestsSpark = requestsUnavailable ? [] : seriesFromHistory(history, 'requests', dailyRequests)
+  const showReadinessPanel = readiness.status !== 'ready' && !(loading && readiness.status === 'unknown')
+  const showGenericSourceWarning = (error || sourceStatus !== 'ok') && readiness.status === 'ready'
+
+  async function runUsageAction(kind) {
+    const action = readiness.actions?.[kind]
+    if (!action?.url) return
+    setActionState({ status: 'running', kind, message: action.label })
+    try {
+      const response = await fetch(action.url, { method: action.method || 'POST' })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload.detail || payload.message || `Action failed with HTTP ${response.status}`)
+      }
+      setActionState({
+        status: 'success',
+        kind,
+        message: payload.message || `${action.label} request accepted.`,
+      })
+      window.setTimeout(() => setReloadToken(value => value + 1), 1200)
+    } catch (err) {
+      setActionState({ status: 'error', kind, message: err.message })
+    }
+  }
 
   return (
     <div className="min-h-screen px-4 py-4 text-theme-text sm:px-5 xl:px-6 xl:py-5">
@@ -350,7 +400,15 @@ export default function Usage({ status }) {
         </div>
       </header>
 
-      {(error || sourceStatus !== 'ok') && (
+      {showReadinessPanel && (
+        <UsageReadinessPanel
+          readiness={readiness}
+          actionState={actionState}
+          onAction={runUsageAction}
+        />
+      )}
+
+      {showGenericSourceWarning && (
         <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/[0.08] px-4 py-3 text-xs text-amber-200">
           {report.source?.detail || error || 'No tracked usage for this period'}
         </div>
@@ -428,6 +486,61 @@ function MonthSelector({ range, onPrevious, onNext }) {
         <ChevronRight size={16} />
       </button>
     </div>
+  )
+}
+
+function UsageReadinessPanel({ readiness, actionState, onAction }) {
+  const actions = readiness.actions || {}
+  const busy = actionState?.status === 'running'
+  const tone = readiness.status === 'missing' || readiness.status === 'unconfigured'
+    ? 'border-red-500/25 bg-red-500/[0.08] text-red-100'
+    : 'border-amber-500/25 bg-amber-500/[0.08] text-amber-100'
+  return (
+    <section className={`mb-3 rounded-xl border px-4 py-3 ${tone}`}>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <Activity size={15} />
+            <h2 className="font-semibold text-theme-text">{readiness.message || 'Usage tracking needs attention.'}</h2>
+          </div>
+          <p className="mt-1 text-xs leading-5 text-theme-text-secondary">
+            {readiness.detail || 'Token Spy must be enabled and healthy before Usage can show complete real telemetry.'}
+          </p>
+          <p className="mt-1 text-[11px] text-theme-text-muted">
+            Token Spy: {readiness.enabled ? 'enabled' : 'not enabled'} · health: {readiness.service_status || 'unknown'}
+          </p>
+          {actionState?.status && actionState.status !== 'running' && (
+            <p className={`mt-2 text-xs ${actionState.status === 'error' ? 'text-red-300' : 'text-emerald-300'}`}>
+              {actionState.message}
+            </p>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {actions.enable?.url && (
+            <button
+              type="button"
+              onClick={() => onAction('enable')}
+              disabled={busy}
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-theme-accent/40 bg-theme-accent/20 px-3 text-xs font-semibold text-theme-accent-light hover:bg-theme-accent/30 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Power size={14} />
+              {busy && actionState?.kind === 'enable' ? 'Working...' : actions.enable.label || 'Enable Usage Tracking'}
+            </button>
+          )}
+          {actions.restart?.url && (
+            <button
+              type="button"
+              onClick={() => onAction('restart')}
+              disabled={busy}
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-white/10 bg-black/20 px-3 text-xs font-semibold text-theme-text hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <RefreshCw size={14} />
+              {busy && actionState?.kind === 'restart' ? 'Working...' : actions.restart.label || 'Restart Token Spy'}
+            </button>
+          )}
+        </div>
+      </div>
+    </section>
   )
 }
 

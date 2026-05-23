@@ -9,7 +9,7 @@ services:
     environment:
       - MODEL_ID=${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}
     volumes:
-      - ./data/embeddings:/data
+      - ./data/embeddings:/data:z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${EMBEDDINGS_PORT:-8090}:80"
     deploy:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 
@@ -34,6 +35,183 @@ def _usage_payload():
 def test_usage_report_requires_auth(test_client):
     resp = test_client.get("/api/usage/report?start=2026-05-01&end=2026-05-31")
     assert resp.status_code == 401
+
+
+def test_usage_readiness_requires_auth(test_client):
+    resp = test_client.get("/api/usage/readiness")
+    assert resp.status_code == 401
+
+
+def test_usage_readiness_reports_ready_token_spy(test_client, monkeypatch):
+    import routers.usage as usage_router
+
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_URL", "http://token-spy:8080")
+    monkeypatch.setattr(
+        usage_router,
+        "_token_spy_extension_state",
+        lambda: {
+            "source": "builtin",
+            "path": "/dream/extensions/services/token-spy",
+            "installed": True,
+            "enabled": True,
+            "disabled": False,
+            "compose_file": "/dream/extensions/services/token-spy/compose.yaml",
+            "disabled_compose_file": None,
+        },
+    )
+    monkeypatch.setattr(
+        usage_router,
+        "_token_spy_service_status",
+        AsyncMock(return_value={
+            "id": "token-spy",
+            "name": "Token Spy (Usage Monitor)",
+            "status": "healthy",
+            "port": 8080,
+            "external_port": 3005,
+        }),
+    )
+
+    resp = test_client.get("/api/usage/readiness", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ready"
+    assert data["available"] is True
+    assert data["enabled"] is True
+    assert data["healthy"] is True
+    assert data["actions"]["restart"]["url"] == "/api/services/token-spy/restart"
+    assert "path" not in data["extension"]
+    assert "compose_file" not in data["extension"]
+
+
+def test_usage_readiness_reports_disabled_token_spy_with_enable_action(test_client, monkeypatch):
+    import routers.usage as usage_router
+
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_URL", "http://token-spy:8080")
+    monkeypatch.setattr(
+        usage_router,
+        "_token_spy_extension_state",
+        lambda: {
+            "source": "builtin",
+            "path": "/dream/extensions/services/token-spy",
+            "installed": True,
+            "enabled": False,
+            "disabled": True,
+            "compose_file": None,
+            "disabled_compose_file": "/dream/extensions/services/token-spy/compose.yaml.disabled",
+        },
+    )
+    monkeypatch.setattr(usage_router, "_token_spy_service_status", AsyncMock(return_value=None))
+
+    resp = test_client.get("/api/usage/readiness", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "disabled"
+    assert data["available"] is False
+    assert data["enabled"] is False
+    assert data["actions"]["enable"]["url"] == "/api/extensions/token-spy/enable?auto_enable_deps=true"
+
+
+def test_usage_readiness_reports_offline_token_spy_with_recovery_actions(test_client, monkeypatch):
+    import routers.usage as usage_router
+
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_URL", "http://token-spy:8080")
+    monkeypatch.setattr(
+        usage_router,
+        "_token_spy_extension_state",
+        lambda: {
+            "source": "builtin",
+            "path": "/dream/extensions/services/token-spy",
+            "installed": True,
+            "enabled": True,
+            "disabled": False,
+            "compose_file": "/dream/extensions/services/token-spy/compose.yaml",
+            "disabled_compose_file": None,
+        },
+    )
+    monkeypatch.setattr(
+        usage_router,
+        "_token_spy_service_status",
+        AsyncMock(return_value={"id": "token-spy", "name": "Token Spy", "status": "down", "port": 8080, "external_port": 3005}),
+    )
+
+    resp = test_client.get("/api/usage/readiness", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "offline"
+    assert data["service_status"] == "down"
+    assert data["actions"]["enable"]["label"] == "Start Usage Tracking"
+    assert data["actions"]["restart"]["url"] == "/api/services/token-spy/restart"
+
+
+def test_usage_readiness_refreshes_stale_degraded_cache(test_client, monkeypatch):
+    import routers.usage as usage_router
+
+    degraded = SimpleNamespace(id="token-spy", name="Token Spy", status="degraded", port=8080, external_port=3005)
+    healthy = SimpleNamespace(id="token-spy", name="Token Spy", status="healthy", port=8080, external_port=3005)
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_URL", "http://token-spy:8080")
+    monkeypatch.setattr(usage_router, "SERVICES", {"token-spy": {}})
+    monkeypatch.setattr(usage_router, "get_cached_services", lambda: [degraded])
+    refresh = AsyncMock(return_value=healthy)
+    monkeypatch.setattr(usage_router, "check_service_health", refresh)
+    monkeypatch.setattr(
+        usage_router,
+        "_token_spy_extension_state",
+        lambda: {
+            "source": "builtin",
+            "path": "/dream/extensions/services/token-spy",
+            "installed": True,
+            "enabled": True,
+            "disabled": False,
+            "compose_file": "/dream/extensions/services/token-spy/compose.yaml",
+            "disabled_compose_file": None,
+        },
+    )
+
+    resp = test_client.get("/api/usage/readiness", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ready"
+    assert data["service_status"] == "healthy"
+    refresh.assert_awaited_once()
+
+
+def test_usage_readiness_reads_disabled_compose_state(tmp_path, monkeypatch):
+    import routers.usage as usage_router
+
+    extensions_dir = tmp_path / "extensions" / "services"
+    token_spy = extensions_dir / "token-spy"
+    token_spy.mkdir(parents=True)
+    (token_spy / "manifest.yaml").write_text("schema_version: dream.services.v1\n", encoding="utf-8")
+    (token_spy / "compose.yaml.disabled").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(usage_router, "EXTENSIONS_DIR", extensions_dir)
+    monkeypatch.setattr(usage_router, "USER_EXTENSIONS_DIR", tmp_path / "user-extensions")
+
+    state = usage_router._token_spy_extension_state()
+
+    assert state["installed"] is True
+    assert state["enabled"] is False
+    assert state["disabled"] is True
+
+
+
+def test_usage_readiness_ignores_partial_extension_without_manifest(tmp_path, monkeypatch):
+    import routers.usage as usage_router
+
+    extensions_dir = tmp_path / "extensions" / "services"
+    token_spy = extensions_dir / "token-spy"
+    token_spy.mkdir(parents=True)
+    (token_spy / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(usage_router, "EXTENSIONS_DIR", extensions_dir)
+    monkeypatch.setattr(usage_router, "USER_EXTENSIONS_DIR", tmp_path / "user-extensions")
+
+    state = usage_router._token_spy_extension_state()
+
+    assert state["installed"] is False
+    assert state["enabled"] is False
 
 
 def test_usage_report_returns_token_spy_payload(test_client, monkeypatch):
