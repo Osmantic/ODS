@@ -4245,7 +4245,12 @@ def main():
         logger.error("docker not found in PATH")
         sys.exit(1)
 
-    INSTALL_DIR = Path(args.install_dir).resolve() if args.install_dir else Path(__file__).resolve().parent.parent
+    if args.install_dir:
+        INSTALL_DIR = Path(args.install_dir).resolve()
+    elif os.environ.get("DREAM_HOME"):
+        INSTALL_DIR = Path(os.environ["DREAM_HOME"]).resolve()
+    else:
+        INSTALL_DIR = Path(__file__).resolve().parent.parent
     if not INSTALL_DIR.is_dir():
         logger.error("Install directory not found: %s", INSTALL_DIR)
         sys.exit(1)

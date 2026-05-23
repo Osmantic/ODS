@@ -1745,6 +1745,8 @@ if [[ -f "${INSTALL_DIR}/bin/dream-host-agent.py" ]] && [[ -n "$AGENT_PYTHON" ]]
     <array>
         <string>${AGENT_PYTHON}</string>
         <string>${INSTALL_DIR}/bin/dream-host-agent.py</string>
+        <string>--install-dir</string>
+        <string>${INSTALL_DIR}</string>
     </array>
     <key>WorkingDirectory</key>
     <string>${INSTALL_DIR}</string>
