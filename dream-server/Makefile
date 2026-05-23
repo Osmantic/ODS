@@ -50,6 +50,9 @@ test: ## Run unit and contract tests
 	@echo "=== bootstrap OpenClaw compose-guard regression ==="
 	@bash tests/test-bootstrap-openclaw-compose-guard.sh
 	@echo ""
+	@echo "=== macOS dream-host-agent bootstrap verification ==="
+	@bash tests/test-macos-host-agent-verification.sh
+	@echo ""
 	@echo "=== fleet-multi-distro keep-going on docker pull failure ==="
 	@bash tests/test-fleet-multi-distro-keep-going.sh
 

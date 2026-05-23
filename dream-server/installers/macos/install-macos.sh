@@ -1749,7 +1749,32 @@ AGENT_PLIST_EOF
     launchctl bootout "gui/$(id -u)/${DREAM_AGENT_PLIST_LABEL}" >/dev/null 2>&1 || true
     _agent_bootstrap_err="$(launchctl bootstrap "gui/$(id -u)" "$DREAM_AGENT_PLIST" 2>&1)" && _agent_bootstrap_rc=0 || _agent_bootstrap_rc=$?
     if [[ $_agent_bootstrap_rc -eq 0 ]]; then
-        ai_ok "Dream host agent installed (LaunchAgent, port ${DREAM_AGENT_PORT})"
+        # `launchctl bootstrap` can succeed (definition loaded) while launchd
+        # leaves the service in "pended nondemand spawn = speculative" and
+        # never actually launches the process — common right after a
+        # same-session bootout because the throttler hasn't reset yet, and
+        # `RunAtLoad=true` doesn't override the throttle. Force the spawn
+        # with `kickstart`, then poll /health so we don't report success
+        # while the agent is still down. Without this verification the
+        # dashboard-api will hit "Host agent unreachable" on every model and
+        # extension action even though the installer printed [OK].
+        launchctl kickstart -p "gui/$(id -u)/${DREAM_AGENT_PLIST_LABEL}" >/dev/null 2>&1 || true
+        _agent_health_ok=false
+        for _agent_health_i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS --max-time 1 "http://127.0.0.1:${DREAM_AGENT_PORT}/health" >/dev/null 2>&1; then
+                _agent_health_ok=true
+                break
+            fi
+            sleep 1
+        done
+        if [[ "$_agent_health_ok" == "true" ]]; then
+            ai_ok "Dream host agent installed (LaunchAgent, port ${DREAM_AGENT_PORT})"
+        else
+            ai_warn "Dream host agent loaded but not responding on :${DREAM_AGENT_PORT} after 10s."
+            ai_warn "  Log:         tail -F ~/Library/Logs/DreamServer/dream-host-agent.log"
+            ai_warn "  Force start: launchctl kickstart -p gui/\$(id -u)/${DREAM_AGENT_PLIST_LABEL}"
+            ai_warn "  Dashboard model + extension actions will fail until the agent comes up."
+        fi
     else
         ai_warn "Dream host agent LaunchAgent failed (rc=${_agent_bootstrap_rc}): ${_agent_bootstrap_err}"
         if [[ "${_agent_bootstrap_err}" == *"Input/output error"* ]]; then
