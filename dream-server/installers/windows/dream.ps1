@@ -144,6 +144,73 @@ function Get-DreamEnvValue {
     return $Default
 }
 
+function Invoke-HermesSoulRefresh {
+    <#
+    .SYNOPSIS
+        Render data/persona/SOUL.md and optionally copy it into dream-hermes.
+    #>
+    param([switch]$SyncContainer)
+
+    $builder = Join-Path (Join-Path $InstallDir "scripts") "build-installation-context.py"
+    $template = Join-Path (Join-Path (Join-Path $InstallDir "extensions") "services\hermes") "SOUL.md.template"
+    $envPath = Join-Path $InstallDir ".env"
+    $output = Join-Path (Join-Path (Join-Path $InstallDir "data") "persona") "SOUL.md"
+    $outputDir = Split-Path -Parent $output
+
+    if (-not (Test-Path $template)) {
+        Write-AIWarn "Hermes SOUL.md template not found; skipping persona refresh."
+        return
+    }
+
+    New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+    $rendered = $false
+    if (Test-Path $builder) {
+        $pythonCandidates = @(
+            @{ Command = "python"; Args = @() },
+            @{ Command = "python3"; Args = @() },
+            @{ Command = "py"; Args = @("-3") }
+        )
+
+        foreach ($candidate in $pythonCandidates) {
+            $cmd = Get-Command $candidate.Command -ErrorAction SilentlyContinue
+            if (-not $cmd -or -not $cmd.Source) { continue }
+            try {
+                & $cmd.Source @($candidate.Args) $builder "--template" $template "--env" $envPath "--output" $output *>> $script:DS_LOG_FILE
+                if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $output -PathType Leaf)) {
+                    $rendered = $true
+                    break
+                }
+            } catch {
+                Add-Content -Path $script:DS_LOG_FILE -Value "Hermes SOUL.md refresh failed with $($candidate.Command): $($_.Exception.Message)"
+            }
+        }
+    }
+
+    if (-not $rendered) {
+        if (Test-Path -LiteralPath $output -PathType Container) {
+            Remove-Item -LiteralPath $output -Recurse -Force
+        }
+        if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
+            $content = Get-Content -LiteralPath $template -Raw
+            $content = $content -replace "(?m)^\s*<!-- INSTALLATION_CONTEXT -->\s*\r?\n?", ""
+            [System.IO.File]::WriteAllText($output, $content, (New-Object System.Text.UTF8Encoding($false)))
+            Write-AIWarn "Generated fallback Hermes SOUL.md without dynamic installation context"
+        }
+    }
+
+    if ($SyncContainer) {
+        $names = & docker ps --format "{{.Names}}" 2>$null
+        if ($names -contains "dream-hermes") {
+            & docker exec dream-hermes cp /opt/hermes/docker/SOUL.md /opt/data/SOUL.md *>> $script:DS_LOG_FILE
+            if ($LASTEXITCODE -eq 0) {
+                Write-AISuccess "Synced Hermes SOUL.md"
+            } else {
+                Write-AIWarn "Could not sync Hermes SOUL.md into running container"
+            }
+        }
+    }
+}
+
 function Get-DreamVoiceDiagnosis {
     $whisperPort = Get-DreamEnvValue -Name "WHISPER_PORT" -Default "9000"
     $whisperUrl = "http://localhost:$whisperPort"
@@ -653,8 +720,12 @@ function Invoke-Start {
         }
 
         $flags = Get-ComposeFlags
+        $hermesInStack = Test-DreamComposeServiceAvailable -ComposeFlags $flags -Service "hermes"
         if ($Service) {
             Write-AI "Starting $Service..."
+            if ($Service -eq "hermes" -and $hermesInStack) {
+                Invoke-HermesSoulRefresh
+            }
             $composeExit = Invoke-DreamDockerCompose -InstallDir $InstallDir -ComposeFlags $flags `
                 -ComposeArgs @("up", "-d", $Service)
             if ($composeExit -ne 0) {
@@ -664,7 +735,13 @@ function Invoke-Start {
                 exit 1
             }
             Write-AISuccess "$Service started"
+            if ($Service -eq "hermes" -and $hermesInStack) {
+                Invoke-HermesSoulRefresh -SyncContainer
+            }
         } else {
+            if ($hermesInStack) {
+                Invoke-HermesSoulRefresh
+            }
             Write-AI "Starting all services..."
             $composeExit = Invoke-DreamDockerCompose -InstallDir $InstallDir -ComposeFlags $flags `
                 -ComposeArgs @("up", "-d")
@@ -674,6 +751,9 @@ function Invoke-Start {
                 exit 1
             }
             Write-AISuccess "All services started"
+            if ($hermesInStack) {
+                Invoke-HermesSoulRefresh -SyncContainer
+            }
         }
     } finally {
         Pop-Location
@@ -730,8 +810,12 @@ function Invoke-Restart {
         Ensure-LlamaCpuBudget
 
         $flags = Get-ComposeFlags
+        $hermesInStack = Test-DreamComposeServiceAvailable -ComposeFlags $flags -Service "hermes"
         if ($Service) {
             Write-AI "Restarting $Service..."
+            if ($Service -eq "hermes" -and $hermesInStack) {
+                Invoke-HermesSoulRefresh
+            }
             $composeExit = Invoke-DreamDockerCompose -InstallDir $InstallDir -ComposeFlags $flags `
                 -ComposeArgs @("restart", $Service)
             if ($composeExit -ne 0) {
@@ -741,11 +825,17 @@ function Invoke-Restart {
                 exit 1
             }
             Write-AISuccess "$Service restarted"
+            if ($Service -eq "hermes" -and $hermesInStack) {
+                Invoke-HermesSoulRefresh -SyncContainer
+            }
         } else {
             # For AMD, also restart native inference server
             if (Test-Path $script:INFERENCE_PID_FILE) {
                 Stop-NativeInferenceServer
                 Start-NativeInferenceServer
+            }
+            if ($hermesInStack) {
+                Invoke-HermesSoulRefresh
             }
             Write-AI "Restarting all services..."
             $composeExit = Invoke-DreamDockerCompose -InstallDir $InstallDir -ComposeFlags $flags `
@@ -756,6 +846,9 @@ function Invoke-Restart {
                 exit 1
             }
             Write-AISuccess "All services restarted"
+            if ($hermesInStack) {
+                Invoke-HermesSoulRefresh -SyncContainer
+            }
         }
     } finally {
         Pop-Location

@@ -912,6 +912,10 @@ if ($dryRun) {
         }
         Write-AISuccess "Docker services started"
 
+        if ($enableHermes -and (Get-Command Invoke-HermesSoulRefresh -ErrorAction SilentlyContinue)) {
+            Invoke-HermesSoulRefresh -InstallRoot $installDir -SyncContainer
+        }
+
         # Save compose flags for dream.ps1 (BOM-free for reliable parsing)
         $flagsFile = Join-Path $installDir ".compose-flags"
         Write-Utf8NoBom -Path $flagsFile -Content ($composeFlags -join " ")

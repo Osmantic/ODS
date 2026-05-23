@@ -580,6 +580,10 @@ MODELS_INI_EOF
         _soul_output="$INSTALL_DIR/data/persona/SOUL.md"
         _soul_template="$INSTALL_DIR/extensions/services/hermes/SOUL.md.template"
         mkdir -p "$(dirname "$_soul_output")"
+        if [[ -e "$_soul_output" && ! -f "$_soul_output" ]]; then
+            rm -rf "$_soul_output" || \
+                warn "Could not replace invalid Hermes SOUL.md path at $_soul_output"
+        fi
         if [[ -n "$_python_cmd" && -f "$_soul_builder" ]]; then
             "$_python_cmd" "$_soul_builder" >>"$LOG_FILE" 2>&1 || \
                 warn "Could not generate Hermes installation-context SOUL.md (non-fatal — Hermes will use the template's default text)"

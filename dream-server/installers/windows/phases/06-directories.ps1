@@ -67,6 +67,7 @@ $_dirs = @(
     (Join-Path $_dataDir "token-spy"),
     (Join-Path $_dataDir "privacy-shield"),
     (Join-Path $_dataDir "hermes"),
+    (Join-Path $_dataDir "persona"),
     (Join-Path (Join-Path $_dataDir "hermes-proxy") "caddy-data"),
     (Join-Path (Join-Path $_dataDir "hermes-proxy") "caddy-config")
 )
@@ -249,6 +250,75 @@ function Update-HermesConfigFile {
     Write-Utf8NoBom -Path $Path -Content $content
 }
 
+function Invoke-HermesSoulRefresh {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [switch]$SyncContainer
+    )
+
+    $_builder = Join-Path (Join-Path $InstallRoot "scripts") "build-installation-context.py"
+    $_template = Join-Path (Join-Path (Join-Path $InstallRoot "extensions") "services\hermes") "SOUL.md.template"
+    $_envPath = Join-Path $InstallRoot ".env"
+    $_output = Join-Path (Join-Path (Join-Path $InstallRoot "data") "persona") "SOUL.md"
+    $_outputDir = Split-Path -Parent $_output
+
+    if (-not (Test-Path $_template)) {
+        Write-AIWarn "Hermes SOUL.md template not found at $_template"
+        return
+    }
+
+    New-Item -ItemType Directory -Path $_outputDir -Force | Out-Null
+    $_rendered = $false
+
+    if (Test-Path $_builder) {
+        $_pythonCandidates = @(
+            @{ Command = "python"; Args = @() },
+            @{ Command = "python3"; Args = @() },
+            @{ Command = "py"; Args = @("-3") }
+        )
+
+        foreach ($_candidate in $_pythonCandidates) {
+            $_cmd = Get-Command $_candidate.Command -ErrorAction SilentlyContinue
+            if (-not $_cmd -or -not $_cmd.Source) { continue }
+
+            try {
+                & $_cmd.Source @($_candidate.Args) $_builder "--template" $_template "--env" $_envPath "--output" $_output *>> $script:DS_LOG_FILE
+                if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $_output -PathType Leaf)) {
+                    $_rendered = $true
+                    break
+                }
+            } catch {
+                $_msg = $_.Exception.Message
+                Add-Content -Path $script:DS_LOG_FILE -Value "Hermes SOUL.md render failed with $($_candidate.Command): $_msg"
+            }
+        }
+    }
+
+    if (-not $_rendered) {
+        if (Test-Path -LiteralPath $_output -PathType Container) {
+            Remove-Item -LiteralPath $_output -Recurse -Force
+        }
+        if (-not (Test-Path -LiteralPath $_output -PathType Leaf)) {
+            $_content = Get-Content -LiteralPath $_template -Raw
+            $_content = $_content -replace "(?m)^\s*<!-- INSTALLATION_CONTEXT -->\s*\r?\n?", ""
+            Write-Utf8NoBom -Path $_output -Content $_content
+            Write-AIWarn "Generated fallback Hermes SOUL.md without dynamic installation context"
+        }
+    }
+
+    if ($SyncContainer) {
+        $_names = & docker ps --format "{{.Names}}" 2>$null
+        if ($_names -contains "dream-hermes") {
+            & docker exec dream-hermes cp /opt/hermes/docker/SOUL.md /opt/data/SOUL.md *>> $script:DS_LOG_FILE
+            if ($LASTEXITCODE -eq 0) {
+                Write-AISuccess "Synced Hermes SOUL.md into running container"
+            } else {
+                Write-AIWarn "Could not sync Hermes SOUL.md into running container"
+            }
+        }
+    }
+}
+
 if ($enableHermes) {
     $_hermesModel = $(if ($tierConfig.GgufFile) {
         if ($gpuInfo.Backend -eq "amd") { "extra.$($tierConfig.GgufFile)" } else { $tierConfig.GgufFile }
@@ -266,6 +336,7 @@ if ($enableHermes) {
     $_hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
     Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
     Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
+    Invoke-HermesSoulRefresh -InstallRoot $installDir
     Write-AISuccess "Patched Hermes config (model=$_hermesModel, context=$($tierConfig.MaxContext))"
 }
 

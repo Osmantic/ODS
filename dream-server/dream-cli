@@ -997,16 +997,24 @@ cmd_restart() {
 
     [[ "$rebuild_images" == "true" ]] && _dream_cli_rebuild_images "${flags[@]}"
 
-    local refresh_soul="false"
-    if [[ -z "$service" || "$service" == "hermes" ]]; then
-        refresh_soul="true"
+    local resolved_service="$service"
+    if [[ -n "$resolved_service" ]]; then
+        resolved_service=$(resolve_service "$resolved_service")
     fi
 
-    if [[ -z "$service" ]]; then
+    local refresh_soul="false"
+    if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
+        refresh_soul="true"
+        # Must run before compose as well as after it. If a previous failed
+        # compose created data/persona/SOUL.md as a directory, Docker will fail
+        # the Hermes file bind mount before the post-start refresh can repair it.
+        _dream_cli_refresh_soul || true
+    fi
+
+    if [[ -z "$resolved_service" ]]; then
         _compose_run_with_summary "Restarting all services" "${flags[@]}" up -d
     else
-        service=$(resolve_service "$service")
-        _compose_run_with_summary "Restarting $service" "${flags[@]}" up -d "$service"
+        _compose_run_with_summary "Restarting $resolved_service" "${flags[@]}" up -d "$resolved_service"
     fi
 
     # Refresh SOUL.md after compose has ensured Hermes is running, so the
@@ -1093,13 +1101,27 @@ cmd_start() {
 
     [[ "$rebuild_images" == "true" ]] && _dream_cli_rebuild_images "${flags[@]}"
 
-    if [[ -z "$service" ]]; then
+    local resolved_service="$service"
+    if [[ -n "$resolved_service" ]]; then
+        resolved_service=$(resolve_service "$resolved_service")
+    fi
+
+    local refresh_soul="false"
+    if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
+        refresh_soul="true"
+        _dream_cli_refresh_soul || true
+    fi
+
+    if [[ -z "$resolved_service" ]]; then
         _compose_run_with_summary "Starting all services" "${flags[@]}" up -d
     else
-        service=$(resolve_service "$service")
-        _run_hook "$service" "pre_start"
-        _compose_run_with_summary "Starting $service" "${flags[@]}" up -d "$service"
-        _run_hook "$service" "post_start"
+        _run_hook "$resolved_service" "pre_start"
+        _compose_run_with_summary "Starting $resolved_service" "${flags[@]}" up -d "$resolved_service"
+        _run_hook "$resolved_service" "post_start"
+    fi
+
+    if [[ "$refresh_soul" == "true" ]]; then
+        _dream_cli_refresh_soul || true
     fi
 }
 
