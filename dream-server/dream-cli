@@ -625,6 +625,7 @@ get_compose_flags() {
 _compose_run_with_summary() {
     local _verb="$1"; shift
     log "${_verb}..."
+    _check_docker_access
 
     local _compose_log
     _compose_log=$(mktemp)
@@ -642,13 +643,19 @@ _compose_run_with_summary() {
 
     log_error "${_verb} failed:"
     local _surfaced
-    _surfaced=$(grep -iE 'error|unhealthy|failed|dependency' "$_compose_log" \
+    _surfaced=$(grep -iE 'error|unhealthy|failed|dependency|permission denied|docker API|docker daemon|docker\.sock|/var/run/docker\.sock' "$_compose_log" \
         | sed 's/^/  /' \
         | head -20 || true)
     if [[ -n "$_surfaced" ]]; then
         printf '%s\n' "$_surfaced"
     else
         warn "(no error keywords matched in compose log)"
+    fi
+    if grep -qiE 'permission denied.*(docker API|docker daemon|docker\.sock|/var/run/docker\.sock)|/var/run/docker\.sock.*permission denied' "$_compose_log"; then
+        warn "Docker socket permission denied. Add your user to the docker group, then start a new login shell:"
+        warn "  sudo usermod -aG docker \"\$USER\""
+        warn "  newgrp docker   # or log out and back in"
+        warn "Then verify with: docker ps"
     fi
     echo ""
     log "Full compose output: $_compose_log"
@@ -667,12 +674,17 @@ _compose_run_with_summary() {
 #=============================================================================
 _check_docker_access() {
     [[ "$(uname -s)" == Linux* ]] || return 0
-    if id -nG 2>/dev/null | grep -qw docker && docker ps >/dev/null 2>&1; then
+    local _docker_ps_output
+    if _docker_ps_output=$(docker ps 2>&1); then
         return 0
     fi
-    warn "Current user cannot reach the Docker daemon (not in 'docker' group, or daemon unreachable)."
-    warn "If the next step fails with 'permission denied', run:  newgrp docker  (current shell)"
-    warn "or log out and back in (all shells), then re-run your dream command."
+    if grep -qiE 'permission denied.*(docker API|docker daemon|docker\.sock|/var/run/docker\.sock)|/var/run/docker\.sock.*permission denied' <<<"$_docker_ps_output"; then
+        warn "Current user cannot reach the Docker daemon: Docker socket permission denied."
+        warn "Run: sudo usermod -aG docker \"\$USER\""
+        warn "Then run: newgrp docker  (or log out and back in) and retry."
+    else
+        warn "Current user cannot reach the Docker daemon. Start Docker and verify with: docker ps"
+    fi
 }
 
 #=============================================================================

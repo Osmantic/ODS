@@ -33,7 +33,8 @@ setup() {
     success()   { echo "✓ $1"; }
     warn()      { echo "⚠ $1"; }
     log_error() { echo "✗ $1" >&2; }
-    export -f log success warn log_error
+    _check_docker_access() { :; }
+    export -f log success warn log_error _check_docker_access
 
     # Extract _compose_run_with_summary from dream-cli.
     local _cli="$BATS_TEST_DIRNAME/../../dream-cli"
@@ -62,6 +63,10 @@ case "${DOCKER_STUB_MODE:-success}" in
     fail-nomatch)
         echo "Container dream-foo starting"
         echo "network busy (try again later)"
+        exit 1
+        ;;
+    fail-docker-sock)
+        echo "unable to get image 'ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.4': permission denied while trying to connect to the docker API at unix:///var/run/docker.sock"
         exit 1
         ;;
     *)
@@ -161,6 +166,7 @@ teardown() {
         success()   { echo "✓ $1"; }
         warn()      { echo "⚠ $1"; }
         log_error() { echo "✗ $1" >&2; }
+        _check_docker_access() { :; }
         eval "$(awk "/^_compose_run_with_summary\(\) \{/,/^\}$/" "'"$BATS_TEST_DIRNAME/../../dream-cli"'")"
         _compose_run_with_summary "Stopping service y" down y
     '
@@ -179,10 +185,22 @@ teardown() {
         success()   { echo "✓ $1"; }
         warn()      { echo "⚠ $1"; }
         log_error() { echo "✗ $1" >&2; }
+        _check_docker_access() { :; }
         eval "$(awk "/^_compose_run_with_summary\(\) \{/,/^\}$/" "'"$BATS_TEST_DIRNAME/../../dream-cli"'")"
         _compose_run_with_summary "Stopping" down
     '
     [ "$status" -eq 1 ]
+}
+
+@test "wrapper: docker socket permission denied is surfaced with a fix hint" {
+    export DOCKER_STUB_MODE=fail-docker-sock
+    run _compose_run_with_summary "Restarting all services" up -d
+    assert_failure
+    assert_output --partial "permission denied while trying to connect to the docker API"
+    assert_output --partial "Docker socket permission denied"
+    assert_output --partial "sudo usermod -aG docker"
+    assert_output --partial "newgrp docker"
+    assert_output --partial "Full compose output:"
 }
 
 # ── docker compose args passthrough ─────────────────────────────────────────
