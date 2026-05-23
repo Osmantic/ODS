@@ -21,6 +21,20 @@ The installer will:
 - Start all Docker services
 - Run health checks and create a Desktop shortcut
 
+### Source checkout vs runtime directory
+
+The cloned `DreamServer` folder is only the installer/source checkout. The
+Windows runtime is created under `$env:USERPROFILE\dream-server` by default
+(or `$env:DREAM_HOME` if you set it before installing). That runtime directory
+contains `.env`, generated secrets, model files, logs, data, and the compose
+state.
+
+Do not run raw `docker compose` commands from the cloned repository after
+installing; Compose will not find the generated `.env` there and relative
+volumes will point at the wrong data directory. Use `.\dream.ps1` from the
+runtime directory, or `cd $env:USERPROFILE\dream-server` before running manual
+Compose commands.
+
 Do not run as Administrator for the normal install. The Windows preflight warns
 about this because user-level paths such as `.opencode`, `.env`, and `data/`
 can become admin-owned and awkward to manage afterward.
@@ -31,7 +45,7 @@ can become admin-owned and awkward to manage afterward.
 
 ## Quick Commands
 
-Manage Dream Server using `dream.ps1` from your install directory:
+Manage Dream Server using `dream.ps1` from your runtime directory:
 
 ```powershell
 cd $env:USERPROFILE\dream-server
@@ -44,6 +58,17 @@ cd $env:USERPROFILE\dream-server
 .\dream.ps1 update              # Pull latest images and restart
 .\dream.ps1 report              # Generate diagnostics bundle
 ```
+
+For development installs where you intentionally want the runtime files inside
+your working tree, set `DREAM_HOME` before running the installer:
+
+```powershell
+$env:DREAM_HOME = "C:\path\to\DreamServer\dream-server"
+.\install.ps1
+```
+
+Only use this in-place mode if you want `.env`, `data\`, logs, and downloaded
+models to live inside that checkout.
 
 ---
 
@@ -135,7 +160,7 @@ selected by the installer; Docker services reach it through
 | Install directory | `$env:USERPROFILE\dream-server` by default; override with `DREAM_HOME` |
 | Config | `.env` file in install directory |
 | Models | `$env:USERPROFILE\dream-server\data\models\` |
-| Logs | `docker compose logs` |
+| Logs | `.\dream.ps1 logs <service>` or `docker compose logs` from the install directory |
 | Data | Docker volumes (auto-managed) |
 
 ---
@@ -144,12 +169,7 @@ selected by the installer; Docker services reach it through
 
 ```powershell
 cd $env:USERPROFILE\dream-server
-# Get latest
-git pull
-# Update containers
-docker compose pull
-# Restart
-docker compose up -d
+.\dream.ps1 update
 ```
 
 ---

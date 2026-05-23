@@ -7,6 +7,7 @@ How to run Dream Server reliably across different Linux machines (with or withou
 - **Entry:** `install.sh` → `install-core.sh` — see [INSTALLER-ARCHITECTURE.md](INSTALLER-ARCHITECTURE.md).
 - **CPU-only systems:** With a capability profile, set `CAP_LLM_BACKEND=cpu` so the installer keeps CPU inference (see `02-detection.sh`).
 - **Re-running the installer:** If a previous run left directories owned by container users, the installer checks that `config/*` and `data/*` are writable before copying files, uses `rsync` without preserving foreign ownership, and tells you to `chown` if something is still blocked (`06-directories.sh`).
+- **Fedora/RHEL SELinux:** Compose bind mounts use shared `:z` labels so enforcing SELinux can relabel Dream Server repo/data paths for containers. If you add custom bind mounts on SELinux systems, include `:z` as well.
 
 ## Extensions and integrations
 

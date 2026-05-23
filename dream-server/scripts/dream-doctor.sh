@@ -261,7 +261,9 @@ collect_extension_diagnostics() {
         # manifest-level concern, not a runtime doctor warning.
         if [[ "$backend" != "apple" ]] && declare -p SERVICE_GPU_BACKENDS &>/dev/null; then
             local gpu_backends="${SERVICE_GPU_BACKENDS[$sid]:-}"
-            if [[ -n "$gpu_backends" && ! " $gpu_backends " =~ " $backend " ]]; then
+            if [[ -n "$gpu_backends" \
+                && ! " $gpu_backends " =~ " all " \
+                && ! " $gpu_backends " =~ " $backend " ]]; then
                 issues+=("gpu_backend_incompatible")
             fi
         fi
@@ -310,19 +312,21 @@ elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
 
-"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" <<'PY'
+"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$ROOT_DIR" <<'PY'
 import json
 import os
 import pathlib
+import re
 import sys
 from datetime import datetime, timezone
 from urllib import error, request
 
-cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message = sys.argv[1:]
+cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, root_dir_arg = sys.argv[1:]
 
 cap = json.load(open(cap_file, "r", encoding="utf-8"))
 pre = json.load(open(preflight_file, "r", encoding="utf-8"))
 ext_diagnostics = json.loads(ext_diagnostics_json)
+root_dir = pathlib.Path(root_dir_arg).resolve()
 
 def _clean_env(name, default=""):
     return os.environ.get(name, default).strip()
@@ -476,12 +480,321 @@ def _amd_runtime_report():
 
 amd_runtime = _amd_runtime_report()
 
+
+def _read_text(path, max_chars=120_000):
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    if len(text) > max_chars:
+        return text[-max_chars:]
+    return text
+
+
+def _latest_install_report():
+    reports = []
+    try:
+        reports = [p for p in root_dir.glob("install-report-*.txt") if p.is_file()]
+    except OSError:
+        reports = []
+    if not reports:
+        return None
+    return max(reports, key=lambda p: p.stat().st_mtime)
+
+
+def _parse_kv_lines(text):
+    values = {}
+    for line in text.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            values[key] = value.strip()
+    return values
+
+
+def _source(path):
+    try:
+        return path.relative_to(root_dir).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _evidence(source, detail):
+    return {"source": source, "detail": detail}
+
+
+def _diagnosis(diag_id, severity, confidence, title, evidence, impact, next_steps):
+    return {
+        "id": diag_id,
+        "severity": severity,
+        "confidence": confidence,
+        "title": title,
+        "evidence": evidence,
+        "impact": impact,
+        "next_steps": next_steps,
+    }
+
+
+def _extract_image(text):
+    match = re.search(
+        r"failed to resolve reference\s+\"?([^\"\s]+:[A-Za-z0-9._-]+)\"?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match.group(1)
+    match = re.search(
+        r"([a-z0-9._-]+(?:[.:][0-9]+)?/[a-z0-9._/-]+:[A-Za-z0-9._-]+).*?(?:not found|manifest unknown)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return match.group(1) if match else ""
+
+
+def _is_windows_alpine_probe_failure(text):
+    lowered = text.lower()
+    has_alpine_probe = (
+        "alpine:3.20" in lowered
+        or "unable to find image 'alpine" in lowered
+        or 'unable to find image "alpine' in lowered
+    )
+    if not has_alpine_probe:
+        return False
+    return (
+        "docker could not download" in lowered
+        or "bind-mount probe" in lowered
+        or "file-sharing probe" in lowered
+        or "cannot bind-mount" in lowered
+    )
+
+
+def _collect_install_artifacts():
+    latest_report = _latest_install_report()
+    compose_launch = root_dir / "logs" / "compose-launch.txt"
+    compose_up = root_dir / "logs" / "compose-up.log"
+    install_log = root_dir / "logs" / "install.log"
+    env_file = root_dir / ".env"
+    compose_flags = root_dir / ".compose-flags"
+    return {
+        "root_dir": root_dir.as_posix(),
+        "env_file": {
+            "path": _source(env_file),
+            "exists": env_file.is_file(),
+        },
+        "compose_flags_file": {
+            "path": _source(compose_flags),
+            "exists": compose_flags.is_file(),
+        },
+        "compose_launch_record": {
+            "path": _source(compose_launch),
+            "exists": compose_launch.is_file(),
+        },
+        "compose_up_log": {
+            "path": _source(compose_up),
+            "exists": compose_up.is_file(),
+        },
+        "install_log": {
+            "path": _source(install_log),
+            "exists": install_log.is_file(),
+        },
+        "latest_install_report": (
+            {
+                "path": _source(latest_report),
+                "exists": True,
+            }
+            if latest_report
+            else {"path": None, "exists": False}
+        ),
+    }
+
+
+def _collect_install_diagnoses(artifacts):
+    diagnoses = []
+    env_path = root_dir / ".env"
+    flags_path = root_dir / ".compose-flags"
+    compose_launch_path = root_dir / "logs" / "compose-launch.txt"
+    compose_up_path = root_dir / "logs" / "compose-up.log"
+    install_log_path = root_dir / "logs" / "install.log"
+    latest_report_path = _latest_install_report()
+
+    installed_like = (
+        flags_path.exists()
+        or compose_launch_path.exists()
+        or (root_dir / "data").exists()
+        or bool(latest_report_path)
+    )
+    if installed_like and not env_path.exists():
+        diagnoses.append(
+            _diagnosis(
+                "DS-INSTALL-ENV-MISSING",
+                "blocker",
+                "high",
+                "Install directory is missing .env",
+                [
+                    _evidence(_source(env_path), "Expected installer-generated .env was not found."),
+                    _evidence(artifacts["root_dir"], "Doctor root appears to be an installed DreamServer tree."),
+                ],
+                "Docker Compose and service config can resolve missing or default values, causing startup failures.",
+                [
+                    "Re-run the installer from the source checkout.",
+                    "Run DreamServer commands from the installed directory that contains .env.",
+                ],
+            )
+        )
+
+    if compose_launch_path.exists():
+        launch_text = _read_text(compose_launch_path)
+        launch = _parse_kv_lines(launch_text)
+        launch_cwd = launch.get("cwd")
+        if launch_cwd:
+            try:
+                launch_cwd_path = pathlib.Path(launch_cwd).resolve()
+            except OSError:
+                launch_cwd_path = pathlib.Path(launch_cwd)
+            if launch_cwd_path != root_dir:
+                diagnoses.append(
+                    _diagnosis(
+                        "DS-COMPOSE-CWD-MISMATCH",
+                        "blocker",
+                        "high",
+                        "Compose launch record points at a different working directory",
+                        [
+                            _evidence(_source(compose_launch_path), f"cwd={launch_cwd}"),
+                            _evidence("doctor.root_dir", root_dir.as_posix()),
+                        ],
+                        "Compose can miss .env or use the wrong relative compose files when launched outside the install directory.",
+                        [
+                            f"Run DreamServer commands from {root_dir.as_posix()}.",
+                            "Use `dream start` / `dream restart` instead of raw docker compose from a source checkout.",
+                        ],
+                    )
+                )
+
+    failure_sources = []
+    if latest_report_path:
+        failure_sources.append((latest_report_path, _read_text(latest_report_path)))
+    if compose_up_path.exists():
+        failure_sources.append((compose_up_path, _read_text(compose_up_path)))
+    if install_log_path.exists():
+        failure_sources.append((install_log_path, _read_text(install_log_path)))
+    combined_failure_text = "\n".join(text for _, text in failure_sources if text)
+
+    if combined_failure_text:
+        failed_image = _extract_image(combined_failure_text)
+        if failed_image:
+            evidence = []
+            if latest_report_path:
+                evidence.append(_evidence(_source(latest_report_path), f"Failed image: {failed_image}"))
+            if compose_up_path.exists():
+                evidence.append(_evidence(_source(compose_up_path), f"Failed image: {failed_image}"))
+            diagnoses.append(
+                _diagnosis(
+                    "DS-DOCKER-IMAGE-UNRESOLVED",
+                    "blocker",
+                    "high",
+                    "Docker image reference could not be resolved",
+                    evidence,
+                    "The stack cannot start until the image tag is corrected, republished, or replaced by a supported fallback.",
+                    [
+                        f"Check whether `{failed_image}` exists in the registry.",
+                        "Update the image pin or pull a known-good DreamServer version, then re-run the installer.",
+                    ],
+                )
+            )
+
+        lowered = combined_failure_text.lower()
+        if "docker compose did not create any managed containers" in lowered or "zero managed containers" in lowered:
+            diagnoses.append(
+                _diagnosis(
+                    "DS-COMPOSE-ZERO-CONTAINERS",
+                    "blocker",
+                    "high",
+                    "Docker Compose completed without creating DreamServer containers",
+                    [
+                        _evidence(_source(latest_report_path), "Report/log mentions zero managed containers.")
+                        if latest_report_path
+                        else _evidence(_source(compose_up_path), "Compose log mentions zero managed containers.")
+                    ],
+                    "Startup may appear to finish while no service is actually managed by the resolved compose stack.",
+                    [
+                        "Open logs/compose-launch.txt and run the saved ps/logs commands.",
+                        "Fix the compose/runtime error and re-run the installer.",
+                    ],
+                )
+            )
+
+        if "modulenotfounderror: no module named 'yaml'" in lowered or "pyyaml is required" in lowered:
+            diagnoses.append(
+                _diagnosis(
+                    "DS-PYTHON-PYYAML-MISSING",
+                    "blocker",
+                    "high",
+                    "Selected Python cannot import PyYAML",
+                    [
+                        _evidence(
+                            _source(latest_report_path) if latest_report_path else _source(compose_up_path),
+                            "Failure text mentions missing yaml/PyYAML.",
+                        )
+                    ],
+                    "Compose resolution and generated config validation depend on PyYAML and can fail before services start.",
+                    [
+                        "Re-run the installer so it can install PyYAML or create the private installer venv.",
+                        "If using Conda/venv, deactivate it and retry with the system Python.",
+                    ],
+                )
+            )
+
+        alpine_probe_source = None
+        for source_path, source_text in failure_sources:
+            if _is_windows_alpine_probe_failure(source_text):
+                alpine_probe_source = source_path
+                break
+        if alpine_probe_source:
+            diagnoses.append(
+                _diagnosis(
+                    "DS-WINDOWS-FILE-SHARING-PROBE-IMAGE",
+                    "warn",
+                    "medium",
+                    "Windows bind-mount probe was blocked before the file-sharing check completed",
+                    [
+                        _evidence(
+                            _source(alpine_probe_source),
+                            "Failure text includes Alpine probe image pull/download or bind-mount probe failure.",
+                        )
+                    ],
+                    "Docker Desktop can report a file-sharing failure when the real prerequisite is the probe image/network path.",
+                    [
+                        "Run `docker pull alpine:3.20` and verify Docker Desktop has internet access.",
+                        "Then verify Docker Desktop > Settings > Resources > File Sharing includes the install directory.",
+                    ],
+                )
+            )
+
+    # Deduplicate by id while preserving order; one diagnosis per root cause keeps
+    # the human output stable and avoids noisy repeats across install report/log.
+    seen = set()
+    unique = []
+    for item in diagnoses:
+        if item["id"] in seen:
+            continue
+        seen.add(item["id"])
+        unique.append(item)
+    return unique
+
+
+install_artifacts = _collect_install_artifacts()
+diagnoses = _collect_install_diagnoses(install_artifacts)
+
 report = {
     "version": "1",
     "generated_at": datetime.now(timezone.utc).isoformat(),
     "autofix_hints": [],
     "capability_profile": cap,
     "preflight": pre,
+    "install_artifacts": install_artifacts,
+    "diagnoses": diagnoses,
     "runtime": {
         "docker_cli": docker_cli == "true",
         "docker_daemon": docker_daemon == "true",
@@ -512,6 +825,9 @@ report = {
             + (1 if tts_http == "false" else 0)
             + len(amd_runtime.get("warnings", []))
         ),
+        "diagnoses_total": len(diagnoses),
+        "diagnoses_blockers": sum(1 for d in diagnoses if d.get("severity") == "blocker"),
+        "diagnoses_warnings": sum(1 for d in diagnoses if d.get("severity") == "warn"),
         "runtime_ready": (docker_daemon == "true" and compose_cli == "true"),
         "extensions_total": len(ext_diagnostics),
         "extensions_healthy": sum(1 for e in ext_diagnostics if e.get("health_status") == "healthy"),
@@ -520,6 +836,9 @@ report = {
 }
 
 fix_hints = []
+for diagnosis in diagnoses:
+    fix_hints.extend(diagnosis.get("next_steps", []))
+
 for check in pre.get("checks", []):
     status = check.get("status")
     action = (check.get("action") or "").strip()
@@ -639,6 +958,14 @@ if amd_runtime.get("available"):
     )
 elif amd_runtime.get("reason") and amd_runtime.get("reason") != "not_amd":
     print(f"  AMD Runtime:   {amd_runtime.get('reason')}")
+
+diagnoses = data.get("diagnoses") or []
+if diagnoses:
+    blockers = sum(1 for item in diagnoses if item.get("severity") == "blocker")
+    warnings = sum(1 for item in diagnoses if item.get("severity") == "warn")
+    print(f"  Diagnoses:     {len(diagnoses)} total, {blockers} blocker(s), {warnings} warning(s)")
+    for item in diagnoses[:5]:
+        print(f"    - {item.get('id')}: {item.get('title')}")
 
 hints = data.get("autofix_hints") or []
 if hints:

@@ -27,13 +27,13 @@ services:
     volumes:
       # Caddyfile is read-only; mounting :ro reduces the blast radius if
       # the container were ever compromised.
-      - ./extensions/services/hermes-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./extensions/services/hermes-proxy/Caddyfile:/etc/caddy/Caddyfile:ro,z
       # Static owner-card help page served when no cookie is present.
-      - ./extensions/services/hermes-proxy/auth-required:/srv/auth-required:ro
+      - ./extensions/services/hermes-proxy/auth-required:/srv/auth-required:ro,z
       # Caddy persists its own state (certs, etc.) — empty for us since
       # auto_https is off, but keeping the volume avoids first-start chatter.
-      - ./data/hermes-proxy/caddy-data:/data
-      - ./data/hermes-proxy/caddy-config:/config
+      - ./data/hermes-proxy/caddy-data:/data:z
+      - ./data/hermes-proxy/caddy-config:/config:z
     ports:
       # BIND_ADDRESS gates LAN exposure (Dream Server convention). Default
       # 127.0.0.1 = localhost only. Set BIND_ADDRESS=0.0.0.0 in .env to

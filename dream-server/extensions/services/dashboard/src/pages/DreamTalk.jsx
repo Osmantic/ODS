@@ -33,7 +33,7 @@ const MARKDOWN_COMPONENTS = {
 const welcomeMessage = {
   id: 'welcome',
   role: 'assistant',
-  text: "Hey, I'm Dream — your local AI buddy, running entirely on your own hardware. Nothing leaves this box.\n\nTry me: ask anything, draft an email, run some code, plan a trip, or just chat. Or hit the mic and talk to me.",
+  text: "Hey, I'm Dream. Your local AI assistant living inside this machine. How can I help today?",
   status: 'done',
 }
 
@@ -67,11 +67,37 @@ export default function DreamTalk() {
     liveMic: false,
   })
 
+  const [pendingAttachment, setPendingAttachment] = useState(null)
+  // {file: File, previewUrl: string|null, kind: 'image'|'text', name: string}
+  // Held in state between picking a file and sending — lets the user add a
+  // caption in the textarea before submitting.
+
   const bottomRef = useRef(null)
   const fileInputRef = useRef(null)
   const recorderRef = useRef(null)
   const recordingChunksRef = useRef([])
   const streamControllerRef = useRef(null)
+  // Track the currently-playing TTS state so we can shut down whatever
+  // is in flight before starting the next reply's audio.
+  const activeSpeechRef = useRef(null)
+  // One persistent Audio element reused across all replies. iOS Safari's
+  // audio session model is single-element-per-page; if we create a new
+  // Audio() per turn (the obvious React-y pattern), the OS audio router
+  // throws "Load failed: a session is busy" because the previous Audio
+  // hasn't fully released the session by the time the new one tries to
+  // claim it. Reusing one element + swapping its src is the canonical
+  // way to do back-to-back audio playback on iOS — also a perf win
+  // because the browser doesn't have to reinitialise its audio
+  // pipeline between turns.
+  const audioElementRef = useRef(null)
+  const getSharedAudio = useCallback(() => {
+    if (!audioElementRef.current) {
+      const el = new Audio()
+      el.preload = 'auto'
+      audioElementRef.current = el
+    }
+    return audioElementRef.current
+  }, [])
 
   const liveMicSupported = useMemo(() => {
     return Boolean(
@@ -128,8 +154,39 @@ export default function DreamTalk() {
     }
   }, [])
 
+  // Stop whatever speech is in flight before a new turn begins. With the
+  // shared-Audio-element pattern we DON'T tear down the audio element
+  // itself (that's what was triggering "session busy" on iOS) — we just
+  // pause it, cancel any in-flight stream, and clean up the previous
+  // ObjectURL. The same element keeps its hold on the audio session
+  // across turns, so the next play() lands without contention.
+  const stopActiveSpeech = useCallback(() => {
+    const prev = activeSpeechRef.current
+    activeSpeechRef.current = null
+    if (!prev) return
+    try { prev.reader?.cancel() } catch { /* already closed */ }
+    try {
+      if (prev.mediaSource && prev.mediaSource.readyState === 'open') {
+        prev.mediaSource.endOfStream()
+      }
+    } catch { /* already closed */ }
+    try {
+      // Pause the SHARED audio element (don't destroy it). The next
+      // speak() will set a new src and call play() on the same element.
+      const el = audioElementRef.current
+      if (el && !el.paused) el.pause()
+    } catch { /* ignore */ }
+    if (prev.objectUrl) {
+      try { URL.revokeObjectURL(prev.objectUrl) } catch { /* ignore */ }
+    }
+  }, [])
+
   const speak = useCallback(async (text) => {
     if (!spokenReplies || !voiceState.tts || !text.trim()) return
+    // ALWAYS stop the previous Audio/MediaSource before starting a new
+    // one. Even if the previous one is still buffering chunks, the user
+    // has clearly moved on (a new reply text has arrived).
+    stopActiveSpeech()
     try {
       const body = new FormData()
       body.set('text', text)
@@ -138,30 +195,170 @@ export default function DreamTalk() {
         body,
         credentials: 'same-origin',
       })
-      if (!resp.ok) return
+      if (!resp.ok || !resp.body) return
+
+      // Preferred path: MediaSource API plays MP3 chunks as they arrive
+      // from the dashboard-api's streaming /api/talk/speak. Time-to-first-
+      // audio drops from "wait for the whole reply to synthesise"
+      // (~5-15s on a multi-sentence reply) to "wait for the first chunk
+      // out of Kokoro" (~500ms-1s).
+      //
+      // Browser support: MediaSource for audio/mpeg is universal in modern
+      // browsers (97%+ as of 2026). Older browsers transparently fall
+      // through to the Blob path below — no per-user setup, no codec
+      // configuration, no permission prompts in either path.
+      // Detect iOS Safari (incl. iPad masquerading as desktop). MediaSource
+      // for audio/mpeg on iOS has long-standing state-leak bugs — works for
+      // the first few turns, then the audio session gets stuck and
+      // subsequent speak() calls silently fail to produce sound even with
+      // proper cleanup. Fall back to the Blob path on iOS — slower
+      // time-to-first-audio (~1-4s for typical replies) but rock-solid
+      // because it uses the same `<audio src>` path the browser has had
+      // since iOS 5.
+      const ua = globalThis.navigator?.userAgent || ''
+      const isIOS = /iPad|iPhone|iPod/.test(ua) ||
+        // iPad on iPadOS 13+ identifies as Mac; distinguish by touch.
+        (/Mac/.test(ua) && globalThis.navigator?.maxTouchPoints > 1)
+      const isSafari = /^((?!chrome|android|crios|fxios|edgios).)*safari/i.test(ua)
+      const useMediaSource =
+        !(isIOS || (isSafari && /Mobile/i.test(ua))) &&
+        typeof globalThis.MediaSource !== 'undefined' &&
+        globalThis.MediaSource.isTypeSupported?.('audio/mpeg')
+
+      const canStream = useMediaSource
+
+      if (canStream) {
+        const ms = new globalThis.MediaSource()
+        const url = URL.createObjectURL(ms)
+        const audio = getSharedAudio()
+        audio.src = url
+        // Track this session BEFORE awaiting anything async so a fast
+        // follow-up speak() call can tear it down even if we're still
+        // in the sourceopen wait below.
+        const reader = resp.body.getReader()
+        const session = { audio, mediaSource: ms, objectUrl: url, reader, cancelled: false }
+        activeSpeechRef.current = session
+        const cleanup = () => {
+          if (activeSpeechRef.current === session) activeSpeechRef.current = null
+          URL.revokeObjectURL(url)
+        }
+        // Use once-listeners so this turn's handlers don't fire for the
+        // next turn's audio on the same shared element.
+        audio.addEventListener('ended', cleanup, { once: true })
+        audio.addEventListener('error', cleanup, { once: true })
+
+        // sourceopen fires once the MediaSource is attached to the
+        // <audio> element. We can only call addSourceBuffer / appendBuffer
+        // after that, so gate the streaming loop on the event.
+        await new Promise((resolve, reject) => {
+          ms.addEventListener('sourceopen', resolve, { once: true })
+          ms.addEventListener('error', reject, { once: true })
+        })
+        if (session.cancelled || activeSpeechRef.current !== session) return
+        const sb = ms.addSourceBuffer('audio/mpeg')
+
+        // Pump chunks in. Defer audio.play() until AFTER the first
+        // chunk is buffered — iOS Safari silently rejects play() on
+        // an empty source. Calling it once data is present makes
+        // playback land reliably across iOS / Android / desktop.
+        let started = false
+        try {
+          while (true) {
+            const { value, done } = await reader.read()
+            if (done) break
+            if (session.cancelled || activeSpeechRef.current !== session) break
+            // appendBuffer is async — wait for the previous chunk to
+            // commit before pushing the next one. Without this the
+            // browser throws InvalidStateError when buffers overlap.
+            await new Promise((resolve, reject) => {
+              sb.addEventListener('updateend', resolve, { once: true })
+              sb.addEventListener('error', reject, { once: true })
+              sb.appendBuffer(value)
+            })
+            if (!started) {
+              started = true
+              // play() returns a Promise on modern browsers. If iOS
+              // rejects it (e.g. autoplay policy hasn't been satisfied
+              // yet), surface that to the catch-all so it logs to the
+              // console rather than failing silently — at least the
+              // operator can spot the autoplay-permission case.
+              audio.play().catch(err => {
+                if (err?.name === 'NotAllowedError') {
+                  // Autoplay blocked. The speaker toggle in the chat
+                  // header is the user-gesture that should grant it,
+                  // but if iOS Low Power Mode is on it may persist.
+                  console.warn('[dream-talk] audio.play() blocked by browser policy:', err.message)
+                }
+              })
+            }
+          }
+          if (ms.readyState === 'open') ms.endOfStream()
+        } catch {
+          if (ms.readyState === 'open') {
+            try { ms.endOfStream() } catch { /* already closed */ }
+          }
+        }
+        return
+      }
+
+      // Fallback for iOS Safari + browsers without MediaSource for
+      // audio/mpeg. Collect the whole body into a Blob, then play.
+      // Uses the same shared Audio element as the streaming branch —
+      // this is what avoids the "Load failed: a session is busy" error
+      // iOS throws when each turn creates a new Audio element while
+      // the previous one is still releasing its audio session.
+      // The dashboard-api is still streaming on the network — we just
+      // wait until it's all here before starting playback.
       const blob = await resp.blob()
       const url = URL.createObjectURL(blob)
-      const audio = new Audio(url)
-      audio.addEventListener('ended', () => URL.revokeObjectURL(url), { once: true })
-      audio.addEventListener('error', () => URL.revokeObjectURL(url), { once: true })
+      const audio = getSharedAudio()
+      audio.src = url
+      const session = { audio, mediaSource: null, objectUrl: url, reader: null }
+      activeSpeechRef.current = session
+      const cleanup = () => {
+        if (activeSpeechRef.current === session) activeSpeechRef.current = null
+        URL.revokeObjectURL(url)
+      }
+      audio.addEventListener('ended', cleanup, { once: true })
+      audio.addEventListener('error', cleanup, { once: true })
       await audio.play()
     } catch {
       // Audio playback is an enhancement; never interrupt text chat for it.
     }
-  }, [spokenReplies, voiceState.tts])
+  }, [spokenReplies, voiceState.tts, stopActiveSpeech])
 
-  const sendText = useCallback(async (text, { transcriptId = null } = {}) => {
+  const sendText = useCallback(async (text, { transcriptId = null, attachment = null } = {}) => {
     const clean = text.trim()
-    if (!clean || sending || status === 'expired') return
+    // Allow an attachment with no text — the backend supplies a default
+    // prompt for images ("Describe what you see in this image."). Without
+    // either a caption or an attachment, there's nothing to send.
+    if (!clean && !attachment) return
+    if (sending || status === 'expired') return
     setSending(true)
 
     const userId = transcriptId || makeId('user')
     const assistantId = makeId('assistant')
     if (!transcriptId) {
-      setMessages(items => [...items, { id: userId, role: 'user', text: clean, status: 'done' }])
+      // Show the user's bubble with the image preview inline (if any) and
+      // the caption text. The previewUrl is a blob: URL, valid until the
+      // component unmounts or we revoke it; the browser GCs it for us when
+      // the message is removed from state.
+      setMessages(items => [...items, {
+        id: userId,
+        role: 'user',
+        text: clean,
+        imageUrl: attachment?.kind === 'image' ? attachment.previewUrl : null,
+        fileName: attachment?.kind === 'text' ? attachment.name : null,
+        attachmentForRetry: attachment,
+        status: 'done',
+      }])
     }
     setMessages(items => [...items, { id: assistantId, role: 'assistant', text: '', status: 'pending' }])
     setInput('')
+    // Clear the pending-attachment slot now that we've moved it into the
+    // chat thread. Don't revoke the blob URL yet — the user message bubble
+    // is still rendering from it.
+    if (attachment) setPendingAttachment(null)
 
     // Live-streamed reply via SSE. The endpoint emits one JSON object per
     // ``data:`` frame: {type: "session" | "delta" | "complete" | "error" | "done"}.
@@ -179,13 +376,31 @@ export default function DreamTalk() {
     streamControllerRef.current?.abort()
     streamControllerRef.current = controller
     try {
-      const resp = await fetch('/api/talk/message/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ text: clean }),
-        signal: controller.signal,
-      })
+      // Two endpoints + body shapes — same SSE response shape on both, so
+      // the consumption loop below is unchanged.
+      let resp
+      if (attachment) {
+        const form = new FormData()
+        form.set('file', attachment.file, attachment.name)
+        form.set('text', clean)
+        resp = await fetch('/api/talk/attachment', {
+          method: 'POST',
+          // Don't set Content-Type — fetch fills in multipart/form-data
+          // with the right boundary string automatically.
+          headers: { 'Accept': 'text/event-stream' },
+          credentials: 'same-origin',
+          body: form,
+          signal: controller.signal,
+        })
+      } else {
+        resp = await fetch('/api/talk/message/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ text: clean }),
+          signal: controller.signal,
+        })
+      }
       if (resp.status === 401) {
         setStatus('expired')
         setStatusText('Session expired. Scan the owner card again.')
@@ -222,8 +437,26 @@ export default function DreamTalk() {
           if (payload.type === 'delta' && typeof payload.text === 'string') {
             assembled += payload.text
             const snapshot = assembled
+            // Once token deltas start arriving the spinner caption is no
+            // longer useful — clear it so the assistant bubble shows the
+            // live text instead. `status: null` signals MessageBubble to
+            // render the accumulated text rather than a spinner.
             setMessages(items => items.map(item =>
-              item.id === assistantId ? { ...item, text: snapshot, status: 'pending' } : item,
+              item.id === assistantId
+                ? { ...item, text: snapshot, status: 'pending', statusLabel: null, statusTool: null, statusDetail: null }
+                : item,
+            ))
+          } else if (payload.type === 'status') {
+            // Friendly progress caption from the bridge (e.g. "Searching the
+            // web…"). Replaces the default "Thinking…" while a tool is in
+            // flight. label=null means "tool done; flip back to default."
+            const label = typeof payload.label === 'string' ? payload.label : null
+            const tool = typeof payload.tool === 'string' ? payload.tool : null
+            const detail = typeof payload.detail === 'string' ? payload.detail : null
+            setMessages(items => items.map(item =>
+              item.id === assistantId
+                ? { ...item, statusLabel: label, statusTool: tool, statusDetail: detail }
+                : item,
             ))
           } else if (payload.type === 'complete') {
             if (typeof payload.text === 'string' && payload.text) assembled = payload.text
@@ -337,17 +570,42 @@ export default function DreamTalk() {
     setRecording(false)
   }
 
+  const handleAttachmentPicked = useCallback((file) => {
+    if (!file || sending || status === 'expired') return
+    const isImage = (file.type || '').startsWith('image/')
+    const previewUrl = isImage ? URL.createObjectURL(file) : null
+    setPendingAttachment(prev => {
+      // Revoke a previous blob URL before swapping in a new one so the
+      // browser can GC the old image bytes.
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl)
+      return { file, previewUrl, kind: isImage ? 'image' : 'text', name: file.name || 'attachment' }
+    })
+  }, [sending, status])
+
+  const clearPendingAttachment = useCallback(() => {
+    setPendingAttachment(prev => {
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl)
+      return null
+    })
+  }, [])
+
   const submit = (event) => {
     event.preventDefault()
-    sendText(input)
+    if (pendingAttachment) {
+      sendText(input, { attachment: pendingAttachment })
+    } else {
+      sendText(input)
+    }
   }
 
   const retryLast = () => {
     const lastUser = [...messages].reverse().find(message => message.role === 'user' && message.status !== 'pending')
-    if (lastUser) sendText(lastUser.text)
+    if (lastUser) sendText(lastUser.text, { attachment: lastUser.attachmentForRetry || null })
   }
 
-  const canSend = input.trim().length > 0 && !sending && status !== 'expired'
+  // Send is enabled either with text OR an attachment (an image alone is a
+  // valid message — the model gets a default "describe this" prompt).
+  const canSend = (input.trim().length > 0 || pendingAttachment) && !sending && status !== 'expired'
 
   return (
     <div className="min-h-dvh bg-[#f8faf8] text-zinc-950 antialiased">
@@ -416,27 +674,42 @@ export default function DreamTalk() {
         )}
 
         <form onSubmit={submit} className="sticky bottom-0 border-t border-zinc-200 bg-[#f8faf8]/95 p-3 backdrop-blur">
+          {/* Attachment preview strip — appears above the input bar between
+              pick and send. Shows a thumbnail for images, a generic icon for
+              text/code files, with an X to discard. */}
+          {pendingAttachment && (
+            <AttachmentPreview
+              attachment={pendingAttachment}
+              onClear={() => clearPendingAttachment()}
+            />
+          )}
           <div className="flex items-end gap-2 rounded-[1.75rem] border border-zinc-200 bg-white p-2 shadow-sm">
             <input
               ref={fileInputRef}
               type="file"
-              accept="audio/*"
-              capture
+              // Image-first attach UX. ``capture`` is deliberately NOT set —
+              // its presence makes iOS Safari open the camera/video recorder
+              // instead of the file/photo picker, which was the cause of the
+              // earlier "paperclip opens video mode" UX bug. Accept list is
+              // narrow on purpose: images for vision, common code/text files
+              // for inline context. PDFs/docx need a parser dependency we
+              // haven't added yet.
+              accept="image/*,.txt,.md,.markdown,.csv,.json,.yaml,.yml,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh"
               className="hidden"
               onChange={event => {
                 const file = event.target.files?.[0]
                 event.target.value = ''
-                if (file) sendAudioFile(file)
+                if (file) handleAttachmentPicked(file)
               }}
-              aria-label="Choose audio message"
+              aria-label="Attach image or file"
             />
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={sending || status === 'expired'}
+              disabled={sending || status === 'expired' || pendingAttachment}
               className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-zinc-500 disabled:opacity-40"
-              aria-label="Attach voice message"
-              title="Voice message"
+              aria-label="Attach image or file"
+              title="Attach image or file"
             >
               <Paperclip size={19} />
             </button>
@@ -505,15 +778,41 @@ function MessageBubble({ message }) {
         }`}
       >
         {message.status === 'pending' && !message.text ? (
-          <span className="inline-flex items-center gap-2 text-zinc-500">
-            <Loader2 size={14} className="animate-spin" />
-            Thinking
+          // While the assistant is working but hasn't streamed any tokens
+          // yet, the spinner shows a dynamic caption sourced from the
+          // bridge's tool events ("Searching the web…", "Running code…",
+          // etc.). Falls back to "Thinking…" when no tool is active.
+          // statusDetail (e.g. the search query) is rendered below the
+          // caption when present, so the user can see *what* is being
+          // searched/read, not just "doing something."
+          <span className="inline-flex flex-col gap-0.5 text-zinc-500">
+            <span className="inline-flex items-center gap-2">
+              <Loader2 size={14} className="animate-spin" />
+              {message.statusLabel || 'Thinking…'}
+            </span>
+            {message.statusDetail && (
+              <span className="ml-6 text-xs text-zinc-400">{message.statusDetail}</span>
+            )}
           </span>
         ) : user || message.status === 'error' ? (
           // User messages and error bubbles stay as plain text — markdown
           // in those contexts would let typos render as headings or
           // accidental bold, which we don't want.
-          <p className="whitespace-pre-wrap break-words">{message.text}</p>
+          <>
+            {message.imageUrl && (
+              <img
+                src={message.imageUrl}
+                alt="Attached"
+                className="mb-2 max-h-72 max-w-full rounded-lg object-contain"
+              />
+            )}
+            {message.fileName && !message.imageUrl && (
+              <p className="mb-2 inline-flex items-center gap-1.5 rounded-md bg-zinc-800/80 px-2 py-1 text-xs">
+                <Paperclip size={12} />{message.fileName}
+              </p>
+            )}
+            {message.text && <p className="whitespace-pre-wrap break-words">{message.text}</p>}
+          </>
         ) : (
           <div className="space-y-0 text-[15px] leading-6">
             <ReactMarkdown components={MARKDOWN_COMPONENTS}>{message.text}</ReactMarkdown>
@@ -523,6 +822,41 @@ function MessageBubble({ message }) {
           <p className="mt-2 text-xs text-amber-600">{message.warning}</p>
         )}
       </div>
+    </div>
+  )
+}
+
+function AttachmentPreview({ attachment, onClear }) {
+  // Strip rendered above the input bar between picking a file and pressing
+  // Send. Lets the user see what they're about to attach + add a caption +
+  // back out cleanly with the X button.
+  const isImage = attachment.kind === 'image'
+  return (
+    <div className="mb-2 flex items-center gap-2 rounded-xl border border-zinc-200 bg-white px-2 py-1.5 shadow-sm">
+      {isImage ? (
+        <img
+          src={attachment.previewUrl}
+          alt="Attachment preview"
+          className="h-12 w-12 shrink-0 rounded-md object-cover"
+        />
+      ) : (
+        <div className="grid h-12 w-12 shrink-0 place-items-center rounded-md bg-zinc-100 text-zinc-500">
+          <Paperclip size={18} />
+        </div>
+      )}
+      <div className="min-w-0 flex-1 text-sm">
+        <p className="truncate font-medium text-zinc-900">{attachment.name}</p>
+        <p className="text-xs text-zinc-500">{isImage ? 'Image' : 'File'}</p>
+      </div>
+      <button
+        type="button"
+        onClick={onClear}
+        className="grid h-8 w-8 place-items-center rounded-full text-zinc-500 hover:bg-zinc-100"
+        aria-label="Remove attachment"
+        title="Remove"
+      >
+        ✕
+      </button>
     </div>
   )
 }

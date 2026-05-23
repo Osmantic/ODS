@@ -157,6 +157,9 @@ if [[ -f "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh" ]]; then
     source "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh"
 fi
 source "${SOURCE_ROOT}/lib/safe-env.sh"
+if [[ -f "${SOURCE_ROOT}/lib/python-cmd.sh" ]]; then
+    source "${SOURCE_ROOT}/lib/python-cmd.sh"
+fi
 source "${SOURCE_ROOT}/installers/lib/readiness-summary.sh"
 
 # ── File-local helpers ──
@@ -187,6 +190,76 @@ _compute_launchd_path() {
         esac
     done
     printf '%s' "$path_out"
+}
+
+_opencode_candidate_is_file() {
+    local candidate="$1"
+    [[ -n "$candidate" && "$candidate" == /* && -x "$candidate" && ! -d "$candidate" ]]
+}
+
+_find_opencode_bin() {
+    local candidate="" brew_prefix=""
+    for candidate in "${OPENCODE_BIN:-}" "$HOME/.opencode/bin/opencode"; do
+        if _opencode_candidate_is_file "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    if command -v brew >/dev/null 2>&1; then
+        brew_prefix="$(brew --prefix 2>/dev/null || true)"
+        candidate="${brew_prefix:+${brew_prefix}/bin/opencode}"
+        if _opencode_candidate_is_file "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    fi
+
+    candidate="$(type -P opencode 2>/dev/null || true)"
+    if _opencode_candidate_is_file "$candidate"; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+
+    return 1
+}
+
+_install_opencode() {
+    OPENCODE_BIN="$(_find_opencode_bin 2>/dev/null || true)"
+    if [[ -n "$OPENCODE_BIN" ]]; then
+        ai_ok "OpenCode already installed ($OPENCODE_BIN)"
+        return 0
+    fi
+
+    if command -v brew >/dev/null 2>&1; then
+        ai "Installing OpenCode with Homebrew..."
+        if brew install opencode >> "$DS_LOG_FILE" 2>&1; then
+            OPENCODE_BIN="$(_find_opencode_bin 2>/dev/null || true)"
+            if [[ -n "$OPENCODE_BIN" ]]; then
+                ai_ok "OpenCode installed with Homebrew ($OPENCODE_BIN)"
+                return 0
+            fi
+            ai_warn "Homebrew reported success but opencode was not found on PATH"
+        else
+            ai_warn "Homebrew OpenCode install failed — falling back to upstream installer"
+        fi
+    fi
+
+    ai "Installing OpenCode with upstream installer..."
+    local tmpfile
+    tmpfile=$(mktemp /tmp/opencode-install.XXXXXX.sh)
+    if curl -fsSL --max-time 300 https://opencode.ai/install -o "$tmpfile" 2>/dev/null \
+       && bash "$tmpfile" >> "$DS_LOG_FILE" 2>&1; then
+        OPENCODE_BIN="$(_find_opencode_bin 2>/dev/null || true)"
+        if [[ -n "$OPENCODE_BIN" ]]; then
+            ai_ok "OpenCode installed ($OPENCODE_BIN)"
+        else
+            ai_warn "OpenCode installer completed but opencode was not found"
+        fi
+    else
+        ai_warn "OpenCode install failed — install later with: brew install opencode"
+    fi
+    rm -f "$tmpfile"
 }
 
 _require_docker_cpu_budget() {
@@ -226,7 +299,74 @@ _require_docker_cpu_budget() {
     ai_ok "Docker CPU budget: ${docker_ncpu} (>=${min_cpus} required for ${workload})"
 }
 
-# ── Resolve install directory ──
+_macos_python_imports_yaml() {
+    local pycmd="${1:-python3}"
+    "$pycmd" -c 'import yaml' >/dev/null 2>&1
+}
+
+_set_installer_python_cmd() {
+    local pycmd="$1"
+    export DREAM_PYTHON_CMD="$pycmd"
+    # python-cmd.sh caches the first runnable interpreter. Keep the cache aligned
+    # when this installer creates a private venv after the first detection.
+    if declare -p _ds_python_cmd_cached >/dev/null 2>&1; then
+        _ds_python_cmd_cached="$pycmd"
+    fi
+}
+
+_ensure_macos_pyyaml() {
+    local pycmd=""
+    if declare -f ds_detect_python_cmd >/dev/null 2>&1; then
+        pycmd="$(ds_detect_python_cmd 2>/dev/null || true)"
+    fi
+    if [[ -z "$pycmd" ]]; then
+        pycmd="$(command -v python3 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$pycmd" ]]; then
+        ai_err "python3 not available -- required for compose resolver"
+        exit 1
+    fi
+
+    if _macos_python_imports_yaml "$pycmd"; then
+        _set_installer_python_cmd "$pycmd"
+        ai_ok "PyYAML available for $pycmd"
+        return 0
+    fi
+
+    if $DRY_RUN; then
+        ai_warn "PyYAML is not importable by $pycmd (dry-run: would create installer Python venv)."
+        return 0
+    fi
+
+    local venv_dir="${INSTALL_DIR}/.venv/installer-python"
+    local venv_python="${venv_dir}/bin/python"
+
+    ai "Installing PyYAML in isolated installer Python runtime..."
+    mkdir -p "$(dirname "$venv_dir")"
+    if ! "$pycmd" -m venv "$venv_dir" 2>&1 | tee -a "$DS_LOG_FILE" >/dev/null; then
+        ai_err "Failed to create installer Python venv at $venv_dir."
+        ai "  Your Python may be missing the venv module."
+        ai "  Try: brew install python"
+        ai "  Then re-run this installer."
+        exit 1
+    fi
+
+    if "$venv_python" -m pip install --quiet --no-warn-script-location pyyaml 2>&1 | tee -a "$DS_LOG_FILE" >/dev/null \
+       && _macos_python_imports_yaml "$venv_python"; then
+        _set_installer_python_cmd "$venv_python"
+        ai_ok "PyYAML available in installer venv"
+        return 0
+    fi
+
+    ai_err "Failed to install PyYAML for the macOS compose resolver."
+    ai "  Log file: $DS_LOG_FILE"
+    ai "  Manual recovery:"
+    ai "    $pycmd -m venv '$venv_dir' && '$venv_python' -m pip install pyyaml"
+    exit 1
+}
+
+# Resolve install directory
 INSTALL_DIR="${DS_INSTALL_DIR}"
 
 if ! $OPENCLAW_EXPLICIT; then
@@ -394,30 +534,12 @@ if ! $DISK_SUFFICIENT; then
 fi
 ai_ok "Disk space OK"
 
-# PyYAML — required by scripts/resolve-compose-stack.sh for the compose
+# PyYAML -- required by scripts/resolve-compose-stack.sh for the compose
 # security scan (it parses every extension/overlay manifest before letting
-# user composes through). Linux distros generally bundle python3-yaml with
-# the system python; macOS does not. Without PyYAML, every extension install
-# fails at compose resolution with a cryptic "ModuleNotFoundError: No module
-# named 'yaml'" returned through the dashboard-api as state=error.
-if command -v python3 >/dev/null 2>&1; then
-    if python3 -c 'import yaml' >/dev/null 2>&1; then
-        ai_ok "PyYAML available"
-    else
-        ai "Installing PyYAML (required by compose resolver)..."
-        if python3 -m pip install --user --quiet --no-warn-script-location pyyaml 2>&1 | tee -a "$DS_LOG_FILE" >/dev/null \
-           && python3 -c 'import yaml' >/dev/null 2>&1; then
-            ai_ok "PyYAML installed (python3 -m pip --user)"
-        else
-            ai_err "Failed to install PyYAML for $(command -v python3)."
-            ai_err "Run manually: python3 -m pip install --user pyyaml"
-            exit 1
-        fi
-    fi
-else
-    ai_err "python3 not available — required for compose resolver"
-    exit 1
-fi
+# user composes through). Homebrew Python on macOS is externally managed, so
+# `pip --user` can fail under PEP 668. Keep the resolver dependency in a
+# Dream-owned venv and point shared Python helpers at that interpreter.
+_ensure_macos_pyyaml
 
 # Ollama conflict detection
 check_ollama_conflict
@@ -954,6 +1076,21 @@ else
             else
                 ai_warn "Hermes template patch incomplete — Hermes may fail to reach llama-server. Hand-edit ${_hermes_tpl} if prompts hang."
             fi
+
+            # Render data/persona/SOUL.md = static persona + dynamic install
+            # context. The Hermes compose mounts this file as the agent's
+            # SOUL.md so it answers truthfully about what services + hardware
+            # it has on this Dream Server. MUST run before docker compose up,
+            # otherwise Docker's bind-mount engine auto-creates the source
+            # path as a *directory* and the install fails at compose-up with
+            # "not a directory: Are you trying to mount a directory onto a
+            # file" — which then persists across reinstalls because `nuke
+            # install dir` preserves data/.
+            _soul_builder="${INSTALL_DIR}/scripts/build-installation-context.py"
+            if [[ -f "$_soul_builder" ]]; then
+                python3 "$_soul_builder" >>"$DS_LOG_FILE" 2>&1 || \
+                    ai_warn "Could not generate Hermes installation-context SOUL.md (non-fatal — Hermes will use the template default)"
+            fi
         fi
     fi
 
@@ -1324,14 +1461,28 @@ else
     chapter "STARTING SERVICES"
 
     # ── Rebuild local-built images ─────────────────────────────────────
-    # Mirrors phases/11-services.sh on Linux: local Dockerfiles (dashboard,
-    # dashboard-api, ape, token-spy, and privacy-shield) can drift from the
-    # baked images, so we always
-    # rebuild without cache before `up -d`.
-    # ComfyUI has no Apple-Silicon variant (only amd/nvidia/multigpu); the
-    # llama-server runs natively on macOS via Metal — neither is built here.
+    # Mirrors phases/11-services.sh on Linux: local Dockerfiles can drift from
+    # baked images, so rebuild the local services that are actually present in
+    # the resolved macOS compose stack. Optional services such as
+    # privacy-shield may be disabled by feature flags; building them anyway can
+    # surface unrelated Dockerfile failures and make a healthy selected stack
+    # look broken.
     ai "Rebuilding local-built images (no-cache)..."
-    _macos_build_services=(dashboard dashboard-api ape token-spy privacy-shield)
+    _macos_candidate_build_services=(dashboard dashboard-api ape token-spy privacy-shield)
+    if ! _macos_enabled_services="$(docker compose "${COMPOSE_FLAGS[@]}" config --services 2>>"$DS_LOG_FILE")"; then
+        ai_err "Could not resolve macOS compose services for local image rebuilds."
+        ai "Inspect compose config with: cd '$INSTALL_DIR' && docker compose ${COMPOSE_FLAGS[*]} config --services"
+        exit 1
+    fi
+    _macos_build_services=()
+    for _svc in "${_macos_candidate_build_services[@]}"; do
+        if printf '%s\n' "$_macos_enabled_services" | grep -qx "$_svc"; then
+            _macos_build_services+=("$_svc")
+        else
+            log "Skipping local image rebuild for disabled service: $_svc"
+        fi
+    done
+
     declare -a _macos_build_pids _macos_build_names
     for _svc in "${_macos_build_services[@]}"; do
         docker compose "${COMPOSE_FLAGS[@]}" build --no-cache "$_svc" >> "$DS_LOG_FILE" 2>&1 &
@@ -1410,6 +1561,21 @@ else
     fi
     ai_ok "Docker services started"
 
+    # Refresh the generated Hermes persona now that the stack is actually
+    # running, then copy it into Hermes's runtime data dir from inside the
+    # container. This avoids Docker Desktop's nested bind-mount restriction
+    # while still keeping /opt/data/SOUL.md current for new sessions.
+    _soul_builder="${INSTALL_DIR}/scripts/build-installation-context.py"
+    if [[ -f "$_soul_builder" ]]; then
+        python3 "$_soul_builder" >>"$DS_LOG_FILE" 2>&1 || \
+            ai_warn "Could not refresh Hermes installation-context SOUL.md after compose-up"
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'dream-hermes'; then
+            docker exec dream-hermes cp /opt/hermes/docker/SOUL.md /opt/data/SOUL.md \
+                >>"$DS_LOG_FILE" 2>&1 || \
+                ai_warn "Could not sync installation-context SOUL.md into running Hermes container"
+        fi
+    fi
+
     # Save compose flags for dream-macos.sh
     echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"
 
@@ -1434,21 +1600,10 @@ else
     # ── Install & start OpenCode (native host binary) ──
     chapter "OPENCODE (AI CODING IDE)"
 
-    if [[ ! -x "$OPENCODE_BIN" ]]; then
-        ai "Installing OpenCode..."
-        tmpfile=$(mktemp /tmp/opencode-install.XXXXXX.sh)
-        if curl -fsSL --max-time 300 https://opencode.ai/install -o "$tmpfile" 2>/dev/null && bash "$tmpfile" >> "$DS_LOG_FILE" 2>&1; then
-            ai_ok "OpenCode installed (~/.opencode/bin/opencode)"
-        else
-            ai_warn "OpenCode install failed — install later with: curl -fsSL https://opencode.ai/install | bash"
-        fi
-        rm -f "$tmpfile"
-    else
-        ai_ok "OpenCode already installed"
-    fi
+    _install_opencode
 
     # Configure OpenCode to use local llama-server (native Metal, port 8080)
-    if [[ -x "$OPENCODE_BIN" ]]; then
+    if [[ -n "$OPENCODE_BIN" && -x "$OPENCODE_BIN" ]]; then
         mkdir -p "$OPENCODE_CONFIG_DIR"
         if [[ ! -f "$OPENCODE_CONFIG_DIR/opencode.json" ]]; then
             cat > "$OPENCODE_CONFIG_DIR/opencode.json" <<OPENCODE_EOF
@@ -1487,7 +1642,7 @@ OPENCODE_EOF
         # to exit 78 before the target process ever runs. $HOME/Library/Logs is
         # always inside xpcproxy's sandbox writable set, so use that instead.
         mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/DreamServer"
-        OPENCODE_LAUNCHD_PATH="$(_compute_launchd_path "${HOME}/.opencode/bin")"
+        OPENCODE_LAUNCHD_PATH="$(_compute_launchd_path "$(dirname "$OPENCODE_BIN")")"
         cat > "$OPENCODE_PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1497,7 +1652,7 @@ OPENCODE_EOF
     <string>${OPENCODE_PLIST_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${HOME}/.opencode/bin/opencode</string>
+        <string>${OPENCODE_BIN}</string>
         <string>web</string>
         <string>--port</string>
         <string>3003</string>
@@ -1537,7 +1692,7 @@ PLIST_EOF
             ai_ok "OpenCode Web UI service installed (LaunchAgent, port 3003)"
         else
             ai_warn "OpenCode LaunchAgent failed (rc=${_opencode_bootstrap_rc}): ${_opencode_bootstrap_err}"
-            ai_warn "Start manually: opencode web --port 3003"
+            ai_warn "Start manually: ${OPENCODE_BIN} web --port 3003"
         fi
     fi
 fi

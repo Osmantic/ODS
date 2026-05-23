@@ -96,7 +96,7 @@ fi
 
 # 6. Required top-level fields exist
 if command -v jq >/dev/null 2>&1; then
-    required_fields=("version" "generated_at" "autofix_hints" "capability_profile" "preflight" "runtime" "summary")
+    required_fields=("version" "generated_at" "autofix_hints" "capability_profile" "preflight" "runtime" "install_artifacts" "diagnoses" "summary")
     all_present=true
 
     for field in "${required_fields[@]}"; do
@@ -123,6 +123,25 @@ if command -v jq >/dev/null 2>&1; then
         pass "dream-doctor.sh autofix_hints is an array"
     else
         fail "dream-doctor.sh autofix_hints is not an array"
+    fi
+fi
+
+# 7b. diagnoses is an array and install_artifacts records artifact presence
+if command -v jq >/dev/null 2>&1; then
+    jq_exit=0
+    jq -e '.diagnoses | type == "array"' "$TEMP_REPORT" >/dev/null || jq_exit=$?
+    if [[ $jq_exit -eq 0 ]]; then
+        pass "dream-doctor.sh diagnoses is an array"
+    else
+        fail "dream-doctor.sh diagnoses is not an array"
+    fi
+
+    jq_exit=0
+    jq -e '.install_artifacts.env_file.exists | type == "boolean"' "$TEMP_REPORT" >/dev/null || jq_exit=$?
+    if [[ $jq_exit -eq 0 ]]; then
+        pass "dream-doctor.sh install_artifacts records env file state"
+    else
+        fail "dream-doctor.sh install_artifacts missing env file state"
     fi
 fi
 

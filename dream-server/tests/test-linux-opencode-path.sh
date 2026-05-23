@@ -10,9 +10,13 @@ fail() { echo "[FAIL] $1"; exit 1; }
 
 echo "=== Linux OpenCode path tests ==="
 
-grep -q 'command -v opencode' "$PHASE" \
-  && pass "phase detects OpenCode from PATH" \
-  || fail "phase must detect OpenCode from PATH"
+grep -q 'type -P opencode' "$PHASE" \
+  && pass "phase resolves executable OpenCode from PATH" \
+  || fail "phase must resolve executable OpenCode from PATH without accepting shell functions"
+
+grep -q '_opencode_candidate_is_file' "$PHASE" \
+  && pass "phase validates OpenCode as an absolute executable file" \
+  || fail "phase must validate OpenCode as an absolute executable file"
 
 grep -q 'OPENCODE_BIN="\$(_find_opencode_bin || true)"' "$PHASE" \
   && pass "phase stores resolved OpenCode binary" \

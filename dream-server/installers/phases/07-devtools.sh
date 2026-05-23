@@ -95,12 +95,24 @@ else
         ai "  Install later: npm i -g @anthropic-ai/claude-code @openai/codex"
     fi
 
+    _opencode_candidate_is_file() {
+        local candidate="$1"
+        [[ -n "$candidate" && "$candidate" == /* && -x "$candidate" && ! -d "$candidate" ]]
+    }
+
     _find_opencode_bin() {
-        if [[ -x "$HOME/.opencode/bin/opencode" ]]; then
-            printf '%s\n' "$HOME/.opencode/bin/opencode"
+        local candidate
+        candidate="$HOME/.opencode/bin/opencode"
+        if _opencode_candidate_is_file "$candidate"; then
+            printf '%s\n' "$candidate"
             return 0
         fi
-        command -v opencode 2>/dev/null
+        candidate="$(type -P opencode 2>/dev/null || true)"
+        if _opencode_candidate_is_file "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+        return 1
     }
 
     # ── OpenCode (local agentic coding platform) ──
