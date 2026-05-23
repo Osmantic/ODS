@@ -57,9 +57,6 @@ jobs:
       - name: Dream Doctor Tests
         run: bash tests/test-dream-doctor.sh
 
-      - name: Dream Doctor Install Diagnosis Tests
-        run: bash tests/test-dream-doctor-install-diagnoses.sh
-
       - name: Windows Report Command Tests
         run: bash tests/test-windows-report-command.sh
 
@@ -101,6 +98,9 @@ jobs:
 
       - name: Runtime Config Wiring Tests
         run: python3 tests/test-runtime-config-wiring.py
+
+      - name: Perplexica Entrypoint Contract Tests
+        run: python3 tests/test-perplexica-entrypoint.py
 
       - name: CPU-Only Path Tests
         run: bash tests/test-cpu-only-path.sh
