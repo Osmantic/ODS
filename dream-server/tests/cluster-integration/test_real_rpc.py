@@ -16,9 +16,7 @@ which forces *all* model layers onto the RPC devices. A successful
 Model: Qwen2.5-0.5B-Instruct-Q2_K (~280MB, downloaded from HF on first
 launch). Small enough for CPU inference in CI.
 """
-import time
 
-import pytest
 import requests
 
 

@@ -9,7 +9,6 @@ Usage: python3 tests/test-cluster-worker-agent.py
        pytest  tests/test-cluster-worker-agent.py -v
 """
 import importlib.util
-import json
 import os
 import socket
 import subprocess

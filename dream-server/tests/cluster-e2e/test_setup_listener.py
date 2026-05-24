@@ -5,9 +5,6 @@ the running controller instance.
 """
 import importlib.util
 import json
-import os
-import pathlib
-import tempfile
 
 
 def _load_listener():

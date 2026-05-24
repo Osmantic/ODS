@@ -658,7 +658,7 @@ def main():
     if stop_result.returncode == 0:
         _docker_run(["docker", "rm", "dream-rpc-server"])
     elif stop_result.returncode == 124:
-        print(f"[AGENT] docker stop timed out — container may persist", file=sys.stderr)
+        print("[AGENT] docker stop timed out — container may persist", file=sys.stderr)
     state.update(rpc_running=False)
     if args.pid_file and os.path.isfile(args.pid_file):
         os.unlink(args.pid_file)

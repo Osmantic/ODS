@@ -307,11 +307,11 @@ def main():
     )
     beacon.start()
 
-    print(f"\n\033[0;34m--- Cluster Setup ---\033[0m\n")
+    print("\n\033[0;34m--- Cluster Setup ---\033[0m\n")
     print(f"  Listening on {bind_ip}:{args.port}")
     print(f"  Broadcasting signed discovery beacon on {controller_ip} (UDP {DISCOVERY_PORT})")
-    print(f"  Waiting for workers to connect...")
-    print(f"  Press Ctrl+C when all workers have joined.\n")
+    print("  Waiting for workers to connect...")
+    print("  Press Ctrl+C when all workers have joined.\n")
 
     def handle_shutdown(signum, frame):
         # Raising from a signal handler can interrupt C code mid-op
@@ -376,7 +376,7 @@ def main():
             rpc_port = parsed["rpc_port"]
             gpu_info = format_gpu_info(gpus)
 
-            print(f"\n  \033[0;33mNew worker wants to join:\033[0m")
+            print("\n  \033[0;33mNew worker wants to join:\033[0m")
             print(f"    IP:       {worker_ip}")
             print(f"    RPC port: {rpc_port}")
             print(f"    Backend:  {gpu_backend}")

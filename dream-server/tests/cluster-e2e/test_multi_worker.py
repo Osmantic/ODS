@@ -18,7 +18,6 @@ import socket
 import subprocess
 import time
 
-import pytest
 import requests
 
 SUPERVISOR = "/app/scripts/dream-cluster-supervisor.py"

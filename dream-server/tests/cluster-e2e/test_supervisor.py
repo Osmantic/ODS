@@ -14,7 +14,6 @@ import subprocess
 import time
 from contextlib import contextmanager
 
-import pytest
 
 SUPERVISOR = "/app/scripts/dream-cluster-supervisor.py"
 EVENTS = "/tmp/cluster-events/events.json"

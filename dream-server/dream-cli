@@ -3290,8 +3290,8 @@ PY
     # Detect controller GPU info
     local gpu_name="CPU only" vram_mb=0 gpu_backend="${GPU_BACKEND:-nvidia}"
     if [[ "$gpu_backend" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
-        gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | xargs)
-        vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | xargs)
+        gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -n '1p' | xargs)
+        vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | sed -n '1p' | xargs)
     elif [[ "$gpu_backend" == "amd" ]]; then
         if _cluster_detect_local_amd_gpu; then
             gpu_name="$_detected_gpu_name"
@@ -3329,10 +3329,10 @@ PY
         local choice="${REPLY:-1}"
         controller_ip=$(echo "$all_ips" | sed -n "${choice}p")
         if [[ -z "$controller_ip" ]]; then
-            controller_ip=$(echo "$all_ips" | head -1)
+            controller_ip=$(echo "$all_ips" | sed -n '1p')
         fi
     else
-        controller_ip=$(echo "$all_ips" | head -1)
+        controller_ip=$(echo "$all_ips" | sed -n '1p')
     fi
     [[ -z "$controller_ip" ]] && controller_ip="<your-ip>"
 
@@ -3766,7 +3766,7 @@ _cluster_add() {
     local controller_vram_mb=0
     local gpu_backend="${GPU_BACKEND:-nvidia}"
     if [[ "$gpu_backend" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
-        controller_vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | xargs)
+        controller_vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | sed -n '1p' | xargs)
     elif [[ "$gpu_backend" == "amd" ]]; then
         if _cluster_detect_local_amd_gpu; then
             controller_vram_mb="$_detected_vram_mb"
@@ -4074,8 +4074,8 @@ _cluster_status_worker() {
     # Detect local GPU
     local gpu_name="CPU only" vram_mb=0
     if [[ "$gpu_backend" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
-        gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | xargs)
-        vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | xargs)
+        gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -n '1p' | xargs)
+        vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | sed -n '1p' | xargs)
     elif [[ "$gpu_backend" == "amd" ]]; then
         if _cluster_detect_local_amd_gpu; then
             gpu_name="$_detected_gpu_name"

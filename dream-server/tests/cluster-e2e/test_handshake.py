@@ -6,7 +6,6 @@ the full cluster_worker_agent Docker plumbing.
 import json
 import socket
 
-import pytest
 
 
 def _send_join(controller_ip, payload, recv_timeout=10.0):
@@ -117,9 +116,11 @@ def test_gpu_metadata_persists_in_config(controller_ip, token):
 
 def test_join_from_alt_container_carries_peer_ip(controller_ip, token):
     """Controller must record the worker's container IP (observed by accept()), not whatever the client claims."""
-    # This test-runner joins with rpc_port 51234 — the recorded IP will be OWN_IP.
-    import os
-    own = os.environ["OWN_IP"]
+    # This test-runner joins with rpc_port 51234 -- the recorded IP will be the
+    # container's OWN_IP (which the controller observes via accept(), not what
+    # the client sends in the payload). We don't read OWN_IP here because the
+    # assertion is just "accepted"; the IP-source verification lives in the
+    # controller-side cluster.json check in the next test.
     resp = _send_join(controller_ip, {
         "action": "join",
         "token": token,
