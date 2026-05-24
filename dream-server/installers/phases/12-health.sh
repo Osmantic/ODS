@@ -357,6 +357,10 @@ if [[ "$HEALTH_FAILURES" -gt 0 ]]; then
     ai_warn "${HEALTH_FAILURES} service(s) did not pass health checks."
     ai_warn "Some services may still be starting. Check with: dream status"
     ai_warn "Logs: docker compose logs <service-name>"
+    if [[ "${COMPOSE_STARTED_WITH_DELAYED_HEALTH:-false}" == "true" ]]; then
+        ai_warn "Docker Compose reported delayed LLM health during launch, and the longer health checks did not recover."
+        exit 1
+    fi
 else
     signal "All systems nominal."
     ai_ok "Sovereign intelligence is online."

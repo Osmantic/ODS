@@ -303,6 +303,23 @@ else
         return 1
     }
 
+    _phase11_has_managed_containers() {
+        local ids count
+        ids="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" ps -q 2>>"$LOG_FILE" || true)"
+        count=$(printf '%s\n' "$ids" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
+        if [[ "${count:-0}" -gt 0 ]]; then
+            log "Compose managed container count after delayed-health launch: $count"
+            return 0
+        fi
+        return 1
+    }
+
+    _phase11_compose_failure_is_delayed_health() {
+        local log_path="${LOG_FILE:-}"
+        [[ -n "$log_path" && -f "$log_path" ]] || return 1
+        grep -Eiq 'dependency failed to start: container dream-(llama-server|llama-ready|llama-server-ready) is unhealthy' "$log_path"
+    }
+
     # Cloud/external Lemonade modes skip Dream-managed GGUF downloads and
     # auto-enable LiteLLM because it is the routing surface for both paths.
     if [[ "${DREAM_MODE:-local}" == "cloud" ]]; then
@@ -726,6 +743,7 @@ MODELS_INI_EOF
     signal "Waking the stack..."
     ai "I'm bringing systems online. You can breathe."
     echo ""
+    COMPOSE_STARTED_WITH_DELAYED_HEALTH=false
     compose_ok=false
     # Build locally-built images individually so one failure doesn't block the rest
     _build_count=0
@@ -890,13 +908,32 @@ except Exception:
     _phase11_allow_host_agent_firewall dream-network
     _phase11_allow_external_lemonade_firewall dream-network
 
+    _compose_started_with_delayed_health=false
+    if ! $compose_ok && _phase11_compose_failure_is_delayed_health && _phase11_has_managed_containers; then
+        # docker compose treats `depends_on: condition: service_healthy` as a
+        # hard failure when a dependency is still cold-loading at the end of its
+        # healthcheck window. Large GGUFs can legitimately cross that window on
+        # reinstall/upgrade, while the containers are already created and phase
+        # 12 has the long adaptive health wait. Other compose failures still
+        # take the fatal path below.
+        _compose_started_with_delayed_health=true
+        COMPOSE_STARTED_WITH_DELAYED_HEALTH=true
+        compose_ok=true
+    fi
+
     if $compose_ok; then
-        if ! _phase11_assert_managed_containers; then
-            exit 1
+        if $_compose_started_with_delayed_health; then
+            printf "\r  ${AMB}⚠${NC} %-60s\n" "Containers launched; waiting on health checks"
+            echo ""
+            ai_warn "Some containers are still becoming healthy. Continuing to the longer health checks."
+        else
+            if ! _phase11_assert_managed_containers; then
+                exit 1
+            fi
+            printf "\r  ${BGRN}✓${NC} %-60s\n" "All containers launched"
+            echo ""
+            ai_ok "Services started (llama-server)"
         fi
-        printf "\r  ${BGRN}✓${NC} %-60s\n" "All containers launched"
-        echo ""
-        ai_ok "Services started (llama-server)"
 
         # Re-render data/persona/SOUL.md now that services are actually
         # running — the first pass earlier in this phase happened pre-
