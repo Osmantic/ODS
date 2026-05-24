@@ -66,7 +66,7 @@ detect_platform() {
         echo "windows"
     elif [[ "${OSTYPE:-}" == "darwin"* ]]; then
         echo "macos"
-    elif [[ "${OSTYPE:-}" == "linux-gnu"* ]]; then
+    elif [[ "${OSTYPE:-}" == linux* ]]; then
         echo "linux"
     else
         echo "unknown"

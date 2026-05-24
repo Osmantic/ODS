@@ -31,6 +31,7 @@ NC='\033[0m'
 
 REPO_URL="https://github.com/Light-Heart-Labs/DreamServer.git"
 INSTALL_DIR="$DREAM_BOOTSTRAP_ROOT/dream-server"
+DREAMSERVER_REF="${DREAMSERVER_REF:-${DREAM_BOOTSTRAP_REF:-}}"
 
 log()     { echo -e "${CYAN}[dream]${NC} $1"; }
 success() { echo -e "${GREEN}[  ok ]${NC} $1"; }
@@ -55,9 +56,9 @@ echo ""
 detect_os() {
     if [[ -f /proc/version ]] && grep -qi microsoft /proc/version 2>/dev/null; then
         echo "wsl"
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
+    elif [[ "${OSTYPE:-}" == "darwin"* ]]; then
         echo "macos"
-    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    elif [[ "${OSTYPE:-}" == linux* ]]; then
         echo "linux"
     else
         echo "unknown"
@@ -138,6 +139,9 @@ else
             sudo yum install -y -q git
         elif command -v pacman &> /dev/null; then
             sudo pacman -Sy --noconfirm git
+        elif command -v zypper &> /dev/null; then
+            sudo zypper --non-interactive --gpg-auto-import-keys refresh
+            sudo zypper --non-interactive install -y git
         else
             error "Cannot install git automatically. Please install git and re-run."
         fi
@@ -154,6 +158,13 @@ else
         sudo apt-get install -y -qq curl
     elif command -v dnf &> /dev/null; then
         sudo dnf install -y -q curl
+    elif command -v yum &> /dev/null; then
+        sudo yum install -y -q curl
+    elif command -v pacman &> /dev/null; then
+        sudo pacman -Sy --noconfirm curl
+    elif command -v zypper &> /dev/null; then
+        sudo zypper --non-interactive --gpg-auto-import-keys refresh
+        sudo zypper --non-interactive install -y curl
     else
         error "Please install curl and re-run."
     fi
@@ -200,12 +211,20 @@ fi
 
 # ── Clone repository ──────────────────────────────
 log "Cloning Dream Server..."
+if [[ -n "$DREAMSERVER_REF" ]]; then
+    log "Using repository ref: $DREAMSERVER_REF"
+fi
 
 # Clone just the dream-server subdirectory using sparse checkout
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
-_clone_err=$(git clone --depth 1 --filter=blob:none --sparse "$REPO_URL" "$TEMP_DIR/repo" 2>&1) || {
+clone_args=(--depth 1 --filter=blob:none --sparse)
+if [[ -n "$DREAMSERVER_REF" ]]; then
+    clone_args+=(--branch "$DREAMSERVER_REF")
+fi
+
+_clone_err=$(git clone "${clone_args[@]}" "$REPO_URL" "$TEMP_DIR/repo" 2>&1) || {
     case "$_clone_err" in
         *"Unable to read current working directory"*|*"getcwd"*)
             error "git could not read the current working directory. This usually means the directory you launched from has been deleted (e.g. you uninstalled Dream Server and re-ran the bootstrap from the same shell). Run \`cd ~\` and re-run the bootstrap." ;;
@@ -224,7 +243,11 @@ git sparse-checkout set dream-server 2>/dev/null || {
     # Fallback: full clone if sparse checkout fails
     cd "$DREAM_BOOTSTRAP_ROOT"
     rm -rf "$TEMP_DIR/repo"
-    git clone --depth 1 "$REPO_URL" "$TEMP_DIR/repo" 2>&1 | tail -1 || \
+    fallback_clone_args=(--depth 1)
+    if [[ -n "$DREAMSERVER_REF" ]]; then
+        fallback_clone_args+=(--branch "$DREAMSERVER_REF")
+    fi
+    git clone "${fallback_clone_args[@]}" "$REPO_URL" "$TEMP_DIR/repo" 2>&1 | tail -1 || \
         error "Failed to clone repository (fallback full clone also failed)."
     cd "$TEMP_DIR/repo"
 }

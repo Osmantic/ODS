@@ -120,6 +120,21 @@ assert_contains "$runtime_calls" 'pkg_install:python3' "Python guard did not ins
 assert_contains "$runtime_calls" 'pkg_install:python3-pyyaml' "Python guard did not install PyYAML after python3"
 assert_contains "$runtime_out" 'OK PyYAML available' "Python guard did not re-check PyYAML after install"
 
+echo "[contract] public bootstrap supports non-gnu Linux OSTYPE and zypper prerequisites"
+bootstrap="get-dream-server.sh"
+assert_contains "$bootstrap" '\$\{OSTYPE:-\}' "bootstrap should guard OSTYPE when detecting Linux"
+assert_contains "$bootstrap" '== linux\*' "bootstrap should treat openSUSE/Tumbleweed linux variants as Linux"
+assert_contains "$bootstrap" 'command -v zypper' "bootstrap missing zypper package-manager branch"
+assert_contains "$bootstrap" 'zypper --non-interactive install -y git' "bootstrap cannot install git on zypper distros"
+assert_contains "$bootstrap" 'zypper --non-interactive install -y curl' "bootstrap cannot install curl on zypper distros"
+assert_contains "$bootstrap" 'DREAMSERVER_REF' "bootstrap should allow PR/fleet lanes to clone a matching ref"
+assert_contains "$bootstrap" 'clone_args\+=\(--branch "\$DREAMSERVER_REF"\)' "bootstrap ref override should apply to git clone"
+
+echo "[contract] runtime dispatcher supports non-gnu Linux OSTYPE"
+dispatcher_common="installers/common.sh"
+assert_contains "$dispatcher_common" '\$\{OSTYPE:-\}' "dispatcher should guard OSTYPE when detecting Linux"
+assert_contains "$dispatcher_common" '== linux\*' "dispatcher should treat openSUSE/Tumbleweed linux variants as Linux"
+
 echo "[contract] install-core loads service registry after Python prerequisites"
 order_out="$tmpdir/install-core-order.out"
 python3 - "$ROOT_DIR/install-core.sh" >"$order_out" <<'PY'

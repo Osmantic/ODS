@@ -77,3 +77,12 @@ setup() {
     assert_success
     assert_output --partial "/install-core.sh"
 }
+
+@test "detect_platform: treats non-gnu Linux OSTYPE values as Linux" {
+    unset DREAM_PLATFORM_OVERRIDE
+    OSTYPE="linux"
+
+    run detect_platform
+    assert_success
+    assert_output "linux"
+}
