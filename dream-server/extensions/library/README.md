@@ -1,6 +1,6 @@
 # DreamServer Extensions Library
 
-**32 service extensions being tested for DreamServer. 17 are already in production — these are next.**
+**33 service extensions being tested for DreamServer. 17 are already in production — these are next.**
 
 Each extension is a self-contained directory with a `manifest.yaml` (service metadata), `compose.yaml` (Docker Compose fragment), and optional Dockerfiles, workflows, and documentation. Drop any of these into your DreamServer's `extensions/services/` directory and run `dream enable <service-id>`.
 
@@ -44,6 +44,7 @@ Each extension is a self-contained directory with a `manifest.yaml` (service met
 | [`aider/`](services/aider/) | Aider — AI pair programming in your terminal | AMD, NVIDIA, Apple |
 | [`continue/`](services/continue/) | Continue — AI coding assistant (VS Code / JetBrains) | AMD, NVIDIA, Apple |
 | [`crewai/`](services/crewai/) | CrewAI — multi-agent orchestration framework | CPU |
+| [`gaia/`](services/gaia/) | AMD GAIA — experimental local agent UI and framework | CPU |
 | [`open-interpreter/`](services/open-interpreter/) | Open Interpreter — natural language → system commands | CPU |
 | [`jupyter/`](services/jupyter/) | Jupyter — notebooks with local LLM kernel | AMD, NVIDIA |
 
@@ -100,6 +101,7 @@ Quick reference for hardware requirements. Data sourced from each service's `man
 | fooocus | ✓ | — | — | — | 8 GB |
 | forge | ✓ | — | — | — | 8 GB |
 | frigate | ✓ | — | — | — | 1 GB |
+| gaia | — | — | — | ✓ | — |
 | gitea | — | — | — | ✓ | — |
 | immich | ✓ | ✓ | — | — | 2 GB |
 | invokeai | ✓ | ✓ | — | — | 8 GB |

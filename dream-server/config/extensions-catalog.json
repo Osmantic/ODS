@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-10T14:01:59Z",
+  "generated_at": "2026-05-24T03:20:28Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1024,6 +1024,90 @@
           ]
         }
       ]
+    },
+    {
+      "id": "gaia",
+      "name": "AMD GAIA",
+      "description": "Experimental AMD GAIA Agent UI recipe for local agent workflows.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 4200,
+      "external_port_default": 7822,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "GAIA_AGENT_UI_VERSION",
+          "required": false,
+          "default": "0.19.0",
+          "description": "Agent UI npm package version to install when building the container."
+        },
+        {
+          "key": "GAIA_LEMONADE_BASE_URL",
+          "required": false,
+          "default": "",
+          "description": "Remote Lemonade/OpenAI-compatible API base URL for GAIA, usually ending in /api/v1."
+        },
+        {
+          "key": "GAIA_SKIP_GAIA_INIT",
+          "required": false,
+          "default": "true",
+          "description": "Skip GAIA's first-run Lemonade/model bootstrap to avoid automatic model downloads."
+        },
+        {
+          "key": "GAIA_UI_SERVE_ONLY",
+          "required": false,
+          "default": "false",
+          "description": "Serve only the Agent UI static frontend without starting the GAIA Python backend."
+        },
+        {
+          "key": "GAIA_DISABLE_UPDATE",
+          "required": false,
+          "default": "1",
+          "description": "Disable Agent UI auto-update checks inside the container."
+        }
+      ],
+      "tags": [
+        "amd",
+        "gaia",
+        "agents",
+        "agent-ui",
+        "ryzen-ai",
+        "experimental"
+      ],
+      "features": [
+        {
+          "id": "amd-gaia-agent-ui",
+          "name": "AMD GAIA Agent UI",
+          "description": "Experimental AMD local agent UI and framework integration",
+          "icon": "Bot",
+          "category": "ai",
+          "requirements": {
+            "services": [
+              "gaia"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 5
+          },
+          "enabled_services_all": [
+            "gaia"
+          ],
+          "setup_time": "~5-10 minutes first start",
+          "priority": 31,
+          "launch": {
+            "type": "service",
+            "service": "gaia",
+            "path": "/"
+          },
+          "gpu_backends": [
+            "all"
+          ]
+        }
+      ],
+      "startup_timeout": 300
     },
     {
       "id": "gitea",
