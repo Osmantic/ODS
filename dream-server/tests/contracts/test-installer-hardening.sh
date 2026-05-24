@@ -58,6 +58,90 @@ fi
 assert_contains "$missing_yaml_err" 'PyYAML is required' "resolver did not explain PyYAML requirement"
 assert_contains "$missing_yaml_err" 'conda deactivate' "resolver did not include Conda/venv recovery hint"
 
+echo "[contract] Linux Python guard installs a missing interpreter before PyYAML"
+runtime_out="$tmpdir/python-runtime.out"
+runtime_calls="$tmpdir/python-runtime.calls"
+bash -c '
+  set -euo pipefail
+  ROOT_DIR="$1"
+  tmpdir="$2"
+  calls="$3"
+  cd "$ROOT_DIR"
+
+  SCRIPT_DIR="$ROOT_DIR"
+  LOG_FILE=/dev/null
+  DRY_RUN=false
+  INTERACTIVE=false
+  PKG_MANAGER=apt
+
+  ai() { echo "AI $*"; }
+  ai_ok() { echo "OK $*"; }
+  ai_warn() { echo "WARN $*"; }
+  ai_bad() { echo "BAD $*"; }
+  error() { echo "ERROR $*" >&2; exit 1; }
+  pkg_update() { echo "pkg_update" >>"$calls"; }
+  pkg_install() {
+    local pkg
+    for pkg in "$@"; do
+      echo "pkg_install:$pkg" >>"$calls"
+      case "$pkg" in
+        python3) touch "$tmpdir/python-ready" ;;
+        python3-pyyaml|python3-yaml|pyyaml) touch "$tmpdir/yaml-ready" ;;
+      esac
+    done
+  }
+  pkg_resolve() { echo "$1"; }
+
+  fake_py="$tmpdir/fake-python3"
+  cat > "$fake_py" <<PYEOF
+#!/usr/bin/env bash
+code=""
+if [[ "\${1:-}" == "-c" ]]; then
+  code="\${2:-}"
+fi
+case "\$code" in
+  *"import sys"*) exit 0 ;;
+  *"import yaml"*) [[ -f "$tmpdir/yaml-ready" ]] && exit 0 || exit 1 ;;
+esac
+exit 0
+PYEOF
+  chmod +x "$fake_py"
+
+  source installers/lib/python-runtime.sh
+  ds_detect_python_cmd() {
+    [[ -f "$tmpdir/python-ready" ]] || return 1
+    printf "%s" "$fake_py"
+  }
+
+  ds_ensure_python_module yaml python3-pyyaml pyyaml PyYAML
+' bash "$ROOT_DIR" "$tmpdir" "$runtime_calls" >"$runtime_out"
+assert_contains "$runtime_calls" 'pkg_update' "Python guard did not update package metadata before installing"
+assert_contains "$runtime_calls" 'pkg_install:python3' "Python guard did not install missing python3"
+assert_contains "$runtime_calls" 'pkg_install:python3-pyyaml' "Python guard did not install PyYAML after python3"
+assert_contains "$runtime_out" 'OK PyYAML available' "Python guard did not re-check PyYAML after install"
+
+echo "[contract] install-core loads service registry after Python prerequisites"
+order_out="$tmpdir/install-core-order.out"
+python3 - "$ROOT_DIR/install-core.sh" >"$order_out" <<'PY'
+import sys
+from pathlib import Path
+
+lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+source_idx = next(i for i, line in enumerate(lines) if 'source "$SCRIPT_DIR/lib/service-registry.sh"' in line)
+ensure_idx = next(i for i, line in enumerate(lines) if "ds_ensure_python_module yaml" in line)
+load_idx = next(i for i, line in enumerate(lines) if "sr_load" in line and i > ensure_idx)
+early_loads = [
+    i for i, line in enumerate(lines)
+    if "sr_load" in line and source_idx < i < ensure_idx
+]
+if early_loads:
+    raise SystemExit("sr_load runs before Python prerequisites")
+if not (source_idx < ensure_idx < load_idx):
+    raise SystemExit("unexpected service-registry/Python prerequisite order")
+print("registry-load-after-python")
+PY
+assert_contains "$order_out" 'registry-load-after-python' "install-core does not defer service registry load until after Python prerequisites"
+
 echo "[contract] macOS PyYAML install uses private installer venv"
 macos_installer="installers/macos/install-macos.sh"
 assert_contains "$macos_installer" '_ensure_macos_pyyaml' "macOS installer missing PyYAML helper"

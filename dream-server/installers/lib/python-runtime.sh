@@ -37,6 +37,35 @@ ds_python_is_env_managed() {
     return 1
 }
 
+ds_ensure_python_runtime() {
+    local pycmd
+    pycmd="$(ds_detect_python_cmd 2>/dev/null || true)"
+    if [[ -n "$pycmd" ]]; then
+        printf '%s' "$pycmd"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        ai_warn "Python is not available (dry-run: would install python3)." >&2
+        return 1
+    fi
+
+    if declare -f pkg_install >/dev/null 2>&1; then
+        ai "Installing python3 for installer helpers..." >&2
+        if declare -f pkg_update >/dev/null 2>&1; then
+            case "${PKG_MANAGER:-}" in
+                apt|apk|dnf|xbps|zypper) pkg_update >/dev/null || true ;;
+            esac
+        fi
+        pkg_install python3 >/dev/null 2>>"${LOG_FILE:-/dev/null}" || true
+        _ds_python_cmd_cached=""
+    fi
+
+    pycmd="$(ds_detect_python_cmd 2>/dev/null || true)"
+    [[ -n "$pycmd" ]] || return 1
+    printf '%s' "$pycmd"
+}
+
 ds_ensure_python_module() {
     local module="$1"
     local canonical_pkg="$2"
@@ -44,7 +73,7 @@ ds_ensure_python_module() {
     local display="${4:-$module}"
 
     local pycmd
-    pycmd="$(ds_detect_python_cmd)" || error "Python is required but no runnable python3/python was found."
+    pycmd="$(ds_ensure_python_runtime)" || error "Python is required but no runnable python3/python was found."
 
     if ds_python_has_module "$module" "$pycmd"; then
         ai_ok "$display available for $pycmd"

@@ -84,12 +84,6 @@ source "$SCRIPT_DIR/installers/lib/python-runtime.sh"
 source "$SCRIPT_DIR/installers/lib/progress.sh"
 if [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]]; then 
     source "$SCRIPT_DIR/lib/service-registry.sh" 
-    sr_load
-    if [[ "${_SR_FAILED:-}" == "true" ]]; then
-        warn "Service registry failed to load. Will retry after dependencies are installed."
-        _SR_LOADED=false
-        _SR_FAILED=false
-    fi
 fi
 
 #=============================================================================
@@ -295,6 +289,9 @@ log "Installer run started: pid=$$, script=$0"
 ds_prepare_sudo "Dream Server installer setup"
 export DREAM_SR_AUTO_INSTALL_PYYAML=1
 ds_ensure_python_module yaml python3-pyyaml pyyaml PyYAML
+if declare -f sr_load >/dev/null 2>&1; then
+    sr_load
+fi
 
 #=============================================================================
 # Splash
