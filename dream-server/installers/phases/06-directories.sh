@@ -260,6 +260,45 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     N8N_PASS=$(_env_get N8N_PASS "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
     LITELLM_KEY=$(_env_get LITELLM_KEY "sk-dream-$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
     LITELLM_LEMONADE_API_KEY=$(_env_get LITELLM_LEMONADE_API_KEY "sk-dream-lemonade-$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
+    LEMONADE_EXTERNAL_VALUE="${LEMONADE_EXTERNAL:-false}"
+    [[ "${LEMONADE_EXTERNAL_VALUE,,}" == "true" ]] && LEMONADE_EXTERNAL_VALUE="true" || LEMONADE_EXTERNAL_VALUE="false"
+    if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" && -n "${LEMONADE_API_KEY:-}" ]]; then
+        LITELLM_LEMONADE_API_KEY="$LEMONADE_API_KEY"
+    fi
+    LEMONADE_API_BASE_PATH_VALUE="$(_env_get LEMONADE_API_BASE_PATH "/api/v1")"
+    [[ "$LEMONADE_API_BASE_PATH_VALUE" == /* ]] || LEMONADE_API_BASE_PATH_VALUE="/$LEMONADE_API_BASE_PATH_VALUE"
+    LEMONADE_BASE_URL_VALUE=""
+    LEMONADE_CONTAINER_BASE_URL_VALUE=""
+    LEMONADE_PORT_VALUE=""
+    if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
+        LEMONADE_BASE_URL_VALUE="$(_env_get LEMONADE_BASE_URL "${LEMONADE_BASE_URL:-http://localhost:13305}")"
+        LEMONADE_BASE_URL_VALUE="${LEMONADE_BASE_URL_VALUE%/}"
+        for _lemonade_suffix in "/api/v1" "/v1" "/api"; do
+            if [[ "$LEMONADE_BASE_URL_VALUE" == *"$_lemonade_suffix" ]]; then
+                LEMONADE_BASE_URL_VALUE="${LEMONADE_BASE_URL_VALUE%"$_lemonade_suffix"}"
+            fi
+        done
+        LEMONADE_PORT_VALUE="${AMD_INFERENCE_PORT:-}"
+        if [[ -z "$LEMONADE_PORT_VALUE" ]]; then
+            if [[ "$LEMONADE_BASE_URL_VALUE" =~ ^https?://[^/:]+:([0-9]+)(/|$) ]]; then
+                LEMONADE_PORT_VALUE="${BASH_REMATCH[1]}"
+            else
+                LEMONADE_PORT_VALUE="13305"
+            fi
+        fi
+        LEMONADE_CONTAINER_BASE_URL_VALUE="$(_env_get LEMONADE_CONTAINER_BASE_URL "")"
+        if [[ -z "$LEMONADE_CONTAINER_BASE_URL_VALUE" ]]; then
+            case "$LEMONADE_BASE_URL_VALUE" in
+                http://localhost:*) LEMONADE_CONTAINER_BASE_URL_VALUE="${LEMONADE_BASE_URL_VALUE/http:\/\/localhost:/http:\/\/host.docker.internal:}" ;;
+                http://127.0.0.1:*) LEMONADE_CONTAINER_BASE_URL_VALUE="${LEMONADE_BASE_URL_VALUE/http:\/\/127.0.0.1:/http:\/\/host.docker.internal:}" ;;
+                http://[::1]:*) LEMONADE_CONTAINER_BASE_URL_VALUE="${LEMONADE_BASE_URL_VALUE/http:\/\/[::1]:/http:\/\/host.docker.internal:}" ;;
+                *) LEMONADE_CONTAINER_BASE_URL_VALUE="$LEMONADE_BASE_URL_VALUE" ;;
+            esac
+        fi
+        LEMONADE_CONTAINER_BASE_URL_VALUE="${LEMONADE_CONTAINER_BASE_URL_VALUE%/}"
+    fi
+    LEMONADE_API_BASE_VALUE="${LEMONADE_BASE_URL_VALUE}${LEMONADE_API_BASE_PATH_VALUE}"
+    LEMONADE_CONTAINER_API_BASE_VALUE="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${LEMONADE_CONTAINER_BASE_URL_VALUE}${LEMONADE_API_BASE_PATH_VALUE}"; else echo "http://llama-server:8080/api/v1"; fi)"
     LIVEKIT_SECRET=$(_env_get LIVEKIT_API_SECRET "$(openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64)")
     DASHBOARD_API_KEY=$(_env_get DASHBOARD_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
     DREAM_AGENT_KEY=$(_env_get DREAM_AGENT_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
@@ -301,13 +340,13 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     LANGFUSE_INIT_USER_EMAIL=$(_env_get LANGFUSE_INIT_USER_EMAIL "admin@dreamserver.local")
     LANGFUSE_INIT_USER_PASSWORD=$(_env_get LANGFUSE_INIT_USER_PASSWORD "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
     MODEL_PROFILE_VALUE=$(_env_get MODEL_PROFILE "${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}")
-    DREAM_MODE_VALUE="$(if [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo "${DREAM_MODE:-local}"; fi)"
-    _default_llm_api_url="$(if [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "http://litellm:4000"; elif [[ "${DREAM_MODE:-local}" == "local" ]]; then echo "http://llama-server:8080"; else echo "http://litellm:4000"; fi)"
+    DREAM_MODE_VALUE="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo "${DREAM_MODE:-local}"; fi)"
+    _default_llm_api_url="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "http://litellm:4000"; elif [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "http://litellm:4000"; elif [[ "${DREAM_MODE:-local}" == "local" ]]; then echo "http://llama-server:8080"; else echo "http://litellm:4000"; fi)"
     LLM_API_URL_VALUE=$(_env_get LLM_API_URL "$_default_llm_api_url")
     if [[ "${DREAM_MODE:-local}" == "cloud" ]]; then
         _default_hermes_base_url="http://litellm:4000/v1"
         _default_hermes_api_key="${LITELLM_KEY}"
-    elif [[ "$GPU_BACKEND" == "amd" ]]; then
+    elif [[ "$GPU_BACKEND" == "amd" || "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
         _default_hermes_base_url="http://litellm:4000/v1"
         _default_hermes_api_key="${LITELLM_KEY}"
     else
@@ -319,6 +358,9 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     LLM_API_URL="$LLM_API_URL_VALUE"
     HERMES_LLM_BASE_URL="$HERMES_LLM_BASE_URL_VALUE"
     HERMES_LLM_API_KEY="$HERMES_LLM_API_KEY_VALUE"
+    if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" && "$LEMONADE_BASE_URL_VALUE" =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:|/|$) && "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]]; then
+        warn "Existing Lemonade URL uses loopback ($LEMONADE_BASE_URL_VALUE). Docker containers will use $LEMONADE_CONTAINER_BASE_URL_VALUE; ensure Lemonade is reachable there (for example: lemonade config set host=0.0.0.0 on a trusted host)."
+    fi
 
     _select_auto_cpu_value() {
         local key="$1" detected="$2"
@@ -477,13 +519,20 @@ HOST_LAN_IP=${HOST_LAN_IP}
 #=== LLM Backend Mode ===
 DREAM_MODE=${DREAM_MODE_VALUE}
 LLM_API_URL=${LLM_API_URL_VALUE}
-AMD_INFERENCE_RUNTIME=$(if [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo ""; fi)
-AMD_INFERENCE_BACKEND=$(if [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
-AMD_INFERENCE_LOCATION=$(if [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "container"; else echo ""; fi)
-AMD_INFERENCE_PORT=$(if [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_API_PORT:-8080}"; else echo ""; fi)
-AMD_INFERENCE_SUPPORTED_BACKENDS=$(if [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
-AMD_INFERENCE_RUNTIME_MODE=$(if [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "linux-container"; else echo ""; fi)
-AMD_INFERENCE_MANAGED=$(if [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "true"; else echo ""; fi)
+LLM_BACKEND=$(if [[ "$DREAM_MODE_VALUE" == "lemonade" ]]; then echo "lemonade"; else echo "llama-server"; fi)
+LLM_API_BASE_PATH=$(if [[ "$DREAM_MODE_VALUE" == "lemonade" ]]; then echo "${LEMONADE_API_BASE_PATH_VALUE}"; else echo "/v1"; fi)
+AMD_INFERENCE_RUNTIME=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" || ( "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ) ]]; then echo "lemonade"; else echo ""; fi)
+AMD_INFERENCE_BACKEND=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_BACKEND:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
+AMD_INFERENCE_LOCATION=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "host"; elif [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "container"; else echo ""; fi)
+AMD_INFERENCE_PORT=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${LEMONADE_PORT_VALUE}"; elif [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_API_PORT:-8080}"; else echo ""; fi)
+AMD_INFERENCE_SUPPORTED_BACKENDS=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_SUPPORTED_BACKENDS:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
+AMD_INFERENCE_RUNTIME_MODE=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "external-lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "linux-container"; else echo ""; fi)
+AMD_INFERENCE_MANAGED=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "false"; elif [[ "$GPU_BACKEND" == "amd" && "${DREAM_MODE:-local}" == "local" ]]; then echo "true"; else echo ""; fi)
+LEMONADE_EXTERNAL=${LEMONADE_EXTERNAL_VALUE}
+LEMONADE_BASE_URL=${LEMONADE_BASE_URL_VALUE}
+LEMONADE_CONTAINER_BASE_URL=${LEMONADE_CONTAINER_BASE_URL_VALUE}
+LEMONADE_API_BASE_PATH=${LEMONADE_API_BASE_PATH_VALUE}
+LEMONADE_MODEL=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${LEMONADE_MODEL:-${LLM_MODEL_VALUE}}"; else echo "${LEMONADE_MODEL:-}"; fi)
 
 #=== Cloud API Keys ===
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
@@ -728,7 +777,7 @@ ENV_EOF
     # model name verbatim and lemonade returns 404.  Instead, map all
     # requests to the concrete model ID that lemonade actually serves.
     # bootstrap-upgrade.sh regenerates this config when the model swaps.
-    if [[ "$GPU_BACKEND" == "amd" ]]; then
+    if [[ "$GPU_BACKEND" == "amd" || "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
         _phase06_step "render-amd-litellm-config"
         mkdir -p "$INSTALL_DIR/config/litellm"
         # Source bootstrap-model.sh for BOOTSTRAP_GGUF_FILE and bootstrap_needed().
@@ -739,6 +788,10 @@ ENV_EOF
             _active_gguf="$BOOTSTRAP_GGUF_FILE"
         else
             _active_gguf="$GGUF_FILE"
+        fi
+        _lemonade_model_id=""
+        if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
+            _lemonade_model_id="${LEMONADE_MODEL:-${LLM_MODEL_VALUE:-default}}"
         fi
         # Pass chat_template_kwargs.enable_thinking=false to Lemonade so Qwen3
         # thinking-mode is OFF by default for every client. Perplexica and any
@@ -766,6 +819,8 @@ ENV_EOF
                 --dream-mode lemonade \
                 --gpu-backend amd \
                 --gguf-file "$_active_gguf" \
+                --lemonade-model-id "$_lemonade_model_id" \
+                --lemonade-api-base "$LEMONADE_CONTAINER_API_BASE_VALUE" \
                 --litellm-key "$LITELLM_LEMONADE_API_KEY" \
                 --output-root "$INSTALL_DIR" \
                 --write >> "$LOG_FILE" 2>&1; then
@@ -779,8 +834,8 @@ ENV_EOF
 model_list:
   - model_name: default
     litellm_params:
-      model: openai/extra.${_active_gguf}
-      api_base: http://llama-server:8080/api/v1
+      model: openai/$(if [[ -n "$_lemonade_model_id" ]]; then echo "$_lemonade_model_id"; else echo "extra.${_active_gguf}"; fi)
+      api_base: ${LEMONADE_CONTAINER_API_BASE_VALUE}
       api_key: ${LITELLM_LEMONADE_API_KEY}
       extra_body:
         chat_template_kwargs:
@@ -788,8 +843,8 @@ model_list:
 
   - model_name: "*"
     litellm_params:
-      model: openai/extra.${_active_gguf}
-      api_base: http://llama-server:8080/api/v1
+      model: openai/$(if [[ -n "$_lemonade_model_id" ]]; then echo "$_lemonade_model_id"; else echo "extra.${_active_gguf}"; fi)
+      api_base: ${LEMONADE_CONTAINER_API_BASE_VALUE}
       api_key: ${LITELLM_LEMONADE_API_KEY}
       extra_body:
         chat_template_kwargs:
@@ -802,7 +857,11 @@ litellm_settings:
   stream_timeout: 60
 LITELLM_EOF
         fi
-        ai_ok "Generated LiteLLM config for Lemonade (model: extra.${_active_gguf})"
+        if [[ -n "$_lemonade_model_id" ]]; then
+            ai_ok "Generated LiteLLM config for external Lemonade (model: ${_lemonade_model_id})"
+        else
+            ai_ok "Generated LiteLLM config for Lemonade (model: extra.${_active_gguf})"
+        fi
         unset _renderer_ok _renderer_py
     fi
 

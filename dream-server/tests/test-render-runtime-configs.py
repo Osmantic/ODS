@@ -59,6 +59,27 @@ def test_lemonade_disables_thinking_and_uses_extra_alias() -> None:
     assert "enable_thinking: false" in content
 
 
+def test_external_lemonade_uses_supplied_model_and_api_base() -> None:
+    payload = run_renderer(
+        "--surface",
+        "litellm-lemonade",
+        "--dream-mode",
+        "lemonade",
+        "--gpu-backend",
+        "amd",
+        "--lemonade-model-id",
+        "Qwen3-0.6B-GGUF",
+        "--lemonade-api-base",
+        "http://host.docker.internal:13305/api/v1",
+        "--litellm-key",
+        "lemonade-secret",
+    )
+    content = file_by_surface(payload, "litellm-lemonade")["content"]
+    assert "model: openai/Qwen3-0.6B-GGUF" in content
+    assert "api_base: http://host.docker.internal:13305/api/v1" in content
+    assert "api_key: lemonade-secret" in content
+
+
 def test_hermes_uses_lemonade_model_id_for_amd() -> None:
     payload = run_renderer(
         "--surface",
@@ -131,6 +152,7 @@ def main() -> int:
     tests = [
         test_all_surfaces_render,
         test_lemonade_disables_thinking_and_uses_extra_alias,
+        test_external_lemonade_uses_supplied_model_and_api_base,
         test_hermes_uses_lemonade_model_id_for_amd,
         test_perplexica_default_model_matches_route,
         test_write_mode_writes_under_output_root,

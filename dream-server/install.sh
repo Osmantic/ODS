@@ -3,6 +3,7 @@
 # Pass-through options (implemented in install-core.sh):
 # --dry-run --skip-docker --force --tier --voice --workflows --rag
 # --openclaw --all --non-interactive --no-bootstrap --bootstrap --offline
+# --use-existing-lemonade --lemonade-url --lemonade-api-key
 
 set -euo pipefail
 

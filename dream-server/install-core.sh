@@ -125,6 +125,9 @@ ENABLE_BRAVE_SEARCH=false
 ENABLE_LANGFUSE=false
 INTERACTIVE=true
 DREAM_MODE="${DREAM_MODE:-local}"
+LEMONADE_EXTERNAL="${LEMONADE_EXTERNAL:-false}"
+LEMONADE_BASE_URL="${LEMONADE_BASE_URL:-}"
+LEMONADE_API_KEY="${LEMONADE_API_KEY:-}"
 OFFLINE_MODE=false   # M1 integration: fully air-gapped operation
 NO_BOOTSTRAP=false  # Skip bootstrap fast-start, download full model in foreground
 BIND_ADDRESS="${BIND_ADDRESS:-127.0.0.1}"
@@ -142,6 +145,11 @@ Options:
     --force           Overwrite existing installation
     --tier N          Force specific tier (1-4) instead of auto-detect
     --cloud           Cloud mode: skip GPU detection, use LiteLLM + cloud APIs
+    --use-existing-lemonade
+                      Use an already-running Lemonade SDK server as the AMD LLM runtime
+    --lemonade-url U  Lemonade server URL for --use-existing-lemonade (default: http://localhost:13305)
+    --lemonade-api-key K
+                      API key LiteLLM should send to the existing Lemonade server
     --voice           Enable voice services (Whisper + Kokoro)
     --no-voice        Disable voice services
     --workflows       Enable n8n workflow automation
@@ -183,6 +191,7 @@ Examples:
     $0 --tier 2 --voice          # Tier 2 with voice
     $0 --all --non-interactive   # Full stack, no prompts
     $0 --cloud                   # Cloud mode (no GPU needed, uses API keys)
+    $0 --use-existing-lemonade   # Wrap an existing Lemonade SDK runtime
     $0 --offline --all           # Fully offline (M1 mode) with all services
     $0 --dry-run                 # Preview installation
 
@@ -197,6 +206,9 @@ while [[ $# -gt 0 ]]; do
         --force) FORCE=true; shift ;;
         --tier) TIER="$2"; shift 2 ;;
         --cloud) DREAM_MODE="cloud"; shift ;;
+        --use-existing-lemonade) LEMONADE_EXTERNAL=true; DREAM_MODE="lemonade"; shift ;;
+        --lemonade-url) LEMONADE_EXTERNAL=true; DREAM_MODE="lemonade"; LEMONADE_BASE_URL="$2"; shift 2 ;;
+        --lemonade-api-key) LEMONADE_API_KEY="$2"; shift 2 ;;
         --voice) ENABLE_VOICE=true; shift ;;
         --no-voice) ENABLE_VOICE=false; shift ;;
         --workflows) ENABLE_WORKFLOWS=true; shift ;;
@@ -236,6 +248,13 @@ while [[ $# -gt 0 ]]; do
         *) error "Unknown option: $1" ;;
     esac
 done
+
+if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
+    DREAM_MODE="lemonade"
+    ENABLE_RECOMMENDED=true
+    LEMONADE_BASE_URL="${LEMONADE_BASE_URL:-http://localhost:13305}"
+    export LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_API_KEY
+fi
 
 # OpenClaw deprecation back-compat: preserve OpenClaw on UPGRADES of installs
 # that previously had it enabled. The earlier heuristic — "does the compose

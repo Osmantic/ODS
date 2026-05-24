@@ -150,7 +150,7 @@ def _split_backend_list(raw: str) -> tuple[list[str], Optional[str]]:
         backend = item.strip().lower()
         if not backend:
             continue
-        if backend in {"rocm", "vulkan"}:
+        if backend in {"auto", "cpu", "npu", "rocm", "vulkan"}:
             if backend not in backends:
                 backends.append(backend)
         else:
@@ -165,6 +165,20 @@ def _env_bool(name: str) -> bool:
 
 
 def _runtime_base_url(runtime: str, location: str, port: int) -> str:
+    external_lemonade = (
+        _env_bool("LEMONADE_EXTERNAL")
+        or _clean_env("AMD_INFERENCE_RUNTIME_MODE").lower() == "external-lemonade"
+        or _clean_env("AMD_INFERENCE_MANAGED").lower() == "false"
+    )
+    if runtime == "lemonade" and external_lemonade:
+        external_base = _clean_env("LEMONADE_CONTAINER_BASE_URL") or _clean_env("LEMONADE_BASE_URL")
+        if external_base:
+            external_base = external_base.rstrip("/")
+            for suffix in ("/api/v1", "/v1", "/api"):
+                if external_base.endswith(suffix):
+                    external_base = external_base[: -len(suffix)]
+                    break
+            return external_base
     if location == "host":
         return f"http://host.docker.internal:{port}"
     if location == "container":

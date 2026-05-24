@@ -4,8 +4,8 @@ model_list:
   # model name verbatim and lemonade returns 404.
   #
   # This file is a template. The installer (06-directories.sh) generates
-  # the actual config with the correct model ID at install time, and
-  # bootstrap-upgrade.sh regenerates it when the model swaps.
+  # the actual config with the correct model ID and Lemonade API base at
+  # install time, and bootstrap-upgrade.sh regenerates it when the model swaps.
   - model_name: "*"
     litellm_params:
       model: openai/extra.GGUF_FILENAME_HERE

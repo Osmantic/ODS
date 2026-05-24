@@ -146,8 +146,8 @@ The doctor command integrates with:
 - `scripts/preflight-engine.sh` - Requirement validation
 - Service registry - Port resolution
 - AMD runtime contract - ROCm on Linux container installs, Vulkan on Windows
-  host-managed installs. Modern Lemonade CLI/port 13305 is tracked as a
-  follow-up and is not auto-detected from inside dashboard containers.
+  host-managed installs, and external Lemonade SDK runtimes that Dream Server
+  wraps without managing.
 
 ## Default Report Path
 

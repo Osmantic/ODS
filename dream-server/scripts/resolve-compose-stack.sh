@@ -83,6 +83,13 @@ env_mode = (sys.argv[5] or "false").lower() == "true"
 skip_broken = (sys.argv[6] or "false").lower() == "true"
 gpu_count = int(sys.argv[7] or "1")
 dream_mode = (sys.argv[8] or os.environ.get("DREAM_MODE", "local")).lower()
+lemonade_external = (
+    os.environ.get("LEMONADE_EXTERNAL", "").lower() in {"1", "true", "yes", "on"}
+    or (
+        os.environ.get("AMD_INFERENCE_RUNTIME", "").lower() == "lemonade"
+        and os.environ.get("AMD_INFERENCE_MANAGED", "").lower() == "false"
+    )
+)
 
 IS_DARWIN = platform.system() == "Darwin"
 APPLE_OVERLAY = "installers/macos/docker-compose.macos.yml" if IS_DARWIN else "docker-compose.apple.yml"
@@ -96,6 +103,16 @@ primary = "docker-compose.yml"
 if profile_overlays and existing(profile_overlays):
     resolved = profile_overlays
     primary = profile_overlays[-1]
+elif lemonade_external and dream_mode == "lemonade":
+    if existing(["docker-compose.base.yml", "docker-compose.cloud.yml", "docker-compose.lemonade-external.yml"]):
+        resolved = ["docker-compose.base.yml", "docker-compose.cloud.yml", "docker-compose.lemonade-external.yml"]
+        primary = "docker-compose.lemonade-external.yml"
+    elif existing(["docker-compose.base.yml", "docker-compose.cloud.yml"]):
+        resolved = ["docker-compose.base.yml", "docker-compose.cloud.yml"]
+        primary = "docker-compose.cloud.yml"
+    elif existing(["docker-compose.base.yml"]):
+        resolved = ["docker-compose.base.yml"]
+        primary = "docker-compose.base.yml"
 elif dream_mode == "cloud" or tier == "CLOUD":
     if existing(["docker-compose.base.yml", "docker-compose.cloud.yml"]):
         resolved = ["docker-compose.base.yml", "docker-compose.cloud.yml"]

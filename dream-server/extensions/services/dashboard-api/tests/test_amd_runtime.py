@@ -42,6 +42,7 @@ def test_amd_runtime_linux_container_lemonade(monkeypatch, test_client):
     monkeypatch.setenv("AMD_INFERENCE_SUPPORTED_BACKENDS", "rocm")
     monkeypatch.setenv("AMD_INFERENCE_RUNTIME_MODE", "linux-container")
     monkeypatch.setenv("AMD_INFERENCE_MANAGED", "true")
+    monkeypatch.setenv("LEMONADE_CONTAINER_BASE_URL", "http://host.docker.internal:13305")
     monkeypatch.setenv("LLM_API_BASE_PATH", "/api/v1")
     _patch_probe(monkeypatch)
 
@@ -90,6 +91,35 @@ def test_amd_runtime_windows_host_lemonade(monkeypatch, test_client):
     assert payload["healthUrl"] == "http://host.docker.internal:8080/api/v1/health"
     assert payload["version"] == "10.0.0"
     assert payload["capabilities"] == ["vulkan"]
+
+
+def test_amd_runtime_external_lemonade_uses_container_base_url(monkeypatch, test_client):
+    monkeypatch.setenv("GPU_BACKEND", "amd")
+    monkeypatch.setenv("AMD_INFERENCE_RUNTIME", "lemonade")
+    monkeypatch.setenv("AMD_INFERENCE_BACKEND", "auto")
+    monkeypatch.setenv("AMD_INFERENCE_LOCATION", "host")
+    monkeypatch.setenv("AMD_INFERENCE_PORT", "13305")
+    monkeypatch.setenv("AMD_INFERENCE_SUPPORTED_BACKENDS", "auto")
+    monkeypatch.setenv("AMD_INFERENCE_RUNTIME_MODE", "external-lemonade")
+    monkeypatch.setenv("AMD_INFERENCE_MANAGED", "false")
+    monkeypatch.setenv("LEMONADE_CONTAINER_BASE_URL", "http://host.docker.internal:13305/api/v1")
+    monkeypatch.setenv("LLM_API_BASE_PATH", "/api/v1")
+    _patch_probe(monkeypatch, version="10.2.0")
+
+    response = test_client.get("/api/gpu/amd-runtime", headers=test_client.auth_headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["runtime"] == "lemonade"
+    assert payload["location"] == "host"
+    assert payload["runtimeMode"] == "external-lemonade"
+    assert payload["managedByDreamServer"] is False
+    assert payload["selectedBackend"] == "auto"
+    assert payload["supportedBackends"] == ["auto"]
+    assert payload["apiBase"] == "http://host.docker.internal:13305/api/v1"
+    assert payload["healthUrl"] == "http://host.docker.internal:13305/api/v1/health"
+    assert payload["version"] == "10.2.0"
+    assert payload["capabilities"] == ["auto"]
 
 
 def test_amd_runtime_windows_host_llama_server_fallback(monkeypatch, test_client):

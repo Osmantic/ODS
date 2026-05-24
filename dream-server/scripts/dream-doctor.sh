@@ -345,7 +345,7 @@ def _split_backends(raw):
         backend = item.strip().lower()
         if not backend:
             continue
-        if backend in {"rocm", "vulkan"}:
+        if backend in {"auto", "cpu", "npu", "rocm", "vulkan"}:
             if backend not in backends:
                 backends.append(backend)
         else:
@@ -358,6 +358,20 @@ def _env_bool(name):
 
 
 def _amd_health_url(runtime, location, port):
+    external_lemonade = (
+        _env_bool("LEMONADE_EXTERNAL")
+        or _clean_env("AMD_INFERENCE_RUNTIME_MODE").lower() == "external-lemonade"
+        or _clean_env("AMD_INFERENCE_MANAGED").lower() == "false"
+    )
+    if runtime == "lemonade" and external_lemonade:
+        lemonade_base = (_clean_env("LEMONADE_BASE_URL") or "").rstrip("/")
+        if lemonade_base:
+            for suffix in ("/api/v1", "/v1", "/api"):
+                if lemonade_base.endswith(suffix):
+                    lemonade_base = lemonade_base[: -len(suffix)]
+                    break
+            api_path = _clean_env("LEMONADE_API_BASE_PATH", _clean_env("LLM_API_BASE_PATH", "/api/v1")) or "/api/v1"
+            return _join_url(lemonade_base, _join_url(api_path, "health"))
     if location == "container":
         host_port = _clean_env("OLLAMA_PORT", port)
     else:

@@ -37,6 +37,24 @@ else
         ' "$env_file" > "$tmp_file" && cat "$tmp_file" > "$env_file" && rm -f "$tmp_file"
     }
 
+    _phase11_env_get() {
+        local key="$1" default="${2:-}" env_file="$INSTALL_DIR/.env"
+        if [[ -f "$env_file" ]]; then
+            local value
+            value=$(grep -m1 "^${key}=" "$env_file" 2>/dev/null | cut -d= -f2- || true)
+            [[ -n "$value" ]] && { echo "$value"; return 0; }
+        fi
+        echo "$default"
+    }
+
+    _phase11_external_lemonade() {
+        local external managed mode
+        external="${LEMONADE_EXTERNAL:-$(_phase11_env_get LEMONADE_EXTERNAL false)}"
+        managed="${AMD_INFERENCE_MANAGED:-$(_phase11_env_get AMD_INFERENCE_MANAGED "")}"
+        mode="${DREAM_MODE:-$(_phase11_env_get DREAM_MODE local)}"
+        [[ "${external,,}" == "true" ]] || [[ "${mode,,}" == "lemonade" && "${managed,,}" == "false" ]]
+    }
+
     _phase11_close_inherited_fds_for_daemon() {
         local fd fd_dir fd_name
 
@@ -240,7 +258,8 @@ else
         return 1
     }
 
-    # Cloud mode: skip model downloads, auto-enable litellm
+    # Cloud/external Lemonade modes skip Dream-managed GGUF downloads and
+    # auto-enable LiteLLM because it is the routing surface for both paths.
     if [[ "${DREAM_MODE:-local}" == "cloud" ]]; then
         ai "Cloud mode — skipping model download"
         # Auto-enable litellm extension
@@ -249,6 +268,14 @@ else
         if [[ -f "$litellm_disabled" && ! -f "$litellm_cf" ]]; then
             mv "$litellm_disabled" "$litellm_cf"
             ai_ok "Auto-enabled litellm for cloud mode"
+        fi
+    elif _phase11_external_lemonade; then
+        ai "Existing Lemonade mode - skipping Dream-managed GGUF download"
+        litellm_cf="$INSTALL_DIR/extensions/services/litellm/compose.yaml"
+        litellm_disabled="${litellm_cf}.disabled"
+        if [[ -f "$litellm_disabled" && ! -f "$litellm_cf" ]]; then
+            mv "$litellm_disabled" "$litellm_cf"
+            ai_ok "Auto-enabled litellm for external Lemonade mode"
         fi
     fi
 
@@ -283,7 +310,7 @@ else
     # Download GGUF model if not already present (with retry and integrity verification)
     dream_progress 76 "services" "Checking AI model"
     GGUF_DIR="$INSTALL_DIR/data/models"
-    if [[ "${DREAM_MODE:-local}" != "cloud" && -n "$GGUF_URL" ]]; then
+    if [[ "${DREAM_MODE:-local}" != "cloud" && -n "$GGUF_URL" ]] && ! _phase11_external_lemonade; then
         # Check if model exists and verify integrity
         if [[ -f "$GGUF_DIR/$GGUF_FILE" ]]; then
             if [[ -n "$GGUF_SHA256" ]]; then
@@ -380,7 +407,7 @@ else
         fi
 
         # Abort if model download/verification failed
-        if [[ "${DREAM_MODE:-local}" != "cloud" && -n "$GGUF_URL" && ! -f "$GGUF_DIR/$GGUF_FILE" ]]; then
+        if [[ "${DREAM_MODE:-local}" != "cloud" && -n "$GGUF_URL" && ! -f "$GGUF_DIR/$GGUF_FILE" ]] && ! _phase11_external_lemonade; then
             ai_bad "Model file missing or verification failed. Cannot proceed without a valid model."
             ai "Re-run the installer to retry the download."
             exit 1
@@ -451,7 +478,7 @@ else
     fi
 
     # Generate models.ini for llama-server (skip in cloud mode)
-    if [[ "${DREAM_MODE:-local}" != "cloud" ]]; then
+    if [[ "${DREAM_MODE:-local}" != "cloud" ]] && ! _phase11_external_lemonade; then
         mkdir -p "$INSTALL_DIR/config/llama-server"
         cat > "$INSTALL_DIR/config/llama-server/models.ini" << MODELS_INI_EOF
 [${LLM_MODEL}]
@@ -541,10 +568,12 @@ MODELS_INI_EOF
             # prefixes GGUF files with "extra."; llama.cpp uses the file name.
             if [[ "${DREAM_MODE:-local}" == "cloud" ]]; then
                 _hermes_model="${LLM_MODEL:-default}"
+            elif _phase11_external_lemonade; then
+                _hermes_model="${LEMONADE_MODEL:-$(_phase11_env_get LEMONADE_MODEL "${LLM_MODEL:-default}")}"
             else
                 _hermes_model="$GGUF_FILE"
             fi
-            if [[ "${GPU_BACKEND:-}" == "amd" && "${DREAM_MODE:-local}" != "cloud" ]]; then
+            if [[ "${GPU_BACKEND:-}" == "amd" && "${DREAM_MODE:-local}" != "cloud" ]] && ! _phase11_external_lemonade; then
                 _hermes_model="extra.$GGUF_FILE"
             fi
             # base_url: on AMD/Lemonade hosts, route Hermes through litellm
@@ -561,7 +590,7 @@ MODELS_INI_EOF
             if [[ "${DREAM_MODE:-local}" == "cloud" ]]; then
                 _hermes_base_url="${HERMES_LLM_BASE_URL:-http://litellm:4000/v1}"
                 _hermes_api_key="${HERMES_LLM_API_KEY:-${LITELLM_KEY:-}}"
-            elif [[ "${GPU_BACKEND:-}" == "amd" ]]; then
+            elif [[ "${GPU_BACKEND:-}" == "amd" ]] || _phase11_external_lemonade; then
                 _hermes_base_url="http://litellm:4000/v1"
                 _hermes_api_key="${LITELLM_KEY:-}"
             fi

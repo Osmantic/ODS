@@ -56,6 +56,11 @@ The installer auto-detects your GPU, picks the right model, generates secure pas
 
 On Linux Docker installs, llama-server is exposed to the host on **http://localhost:11434** (`OLLAMA_PORT`) and runs on `8080` inside Docker. Use `llama-server:8080` only from other containers on the Dream Server network. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden.
 
+On Linux AMD hosts already running Lemonade SDK, install Dream Server around it with
+`./install.sh --use-existing-lemonade` so Dream manages the app stack while
+Lemonade keeps owning inference and model storage. See
+[docs/LEMONADE-SDK-COMPAT.md](docs/LEMONADE-SDK-COMPAT.md).
+
 ### Instant Start (Bootstrap Mode)
 
 By default, Dream Server uses **bootstrap mode** for instant gratification:

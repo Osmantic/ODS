@@ -47,6 +47,7 @@ bootstrap_needed() {
 
     # Cloud mode — no local model needed
     [[ "${DREAM_MODE:-local}" == "cloud" ]] && return 1
+    [[ "${LEMONADE_EXTERNAL:-false}" == "true" ]] && return 1
 
     return 0
 }

@@ -28,6 +28,8 @@ NO_KEY = "no-key"
 class RenderInputs:
     model: str
     gguf_file: str
+    lemonade_model_id: str
+    lemonade_api_base: str
     gpu_backend: str
     dream_mode: str
     llm_base_url: str
@@ -48,6 +50,8 @@ def ensure_trailing_newline(text: str) -> str:
 
 
 def lemonade_model_id(inputs: RenderInputs) -> str:
+    if inputs.lemonade_model_id:
+        return inputs.lemonade_model_id
     return f"extra.{inputs.gguf_file}"
 
 
@@ -63,11 +67,12 @@ def opencode_key(inputs: RenderInputs) -> str:
 
 def render_litellm_lemonade(inputs: RenderInputs) -> RenderedFile:
     model = lemonade_model_id(inputs)
+    api_base = inputs.lemonade_api_base.rstrip("/") or "http://llama-server:8080/api/v1"
     content = f"""model_list:
   - model_name: default
     litellm_params:
       model: openai/{model}
-      api_base: http://llama-server:8080/api/v1
+      api_base: {api_base}
       api_key: {inputs.litellm_key}
       extra_body:
         chat_template_kwargs:
@@ -76,7 +81,7 @@ def render_litellm_lemonade(inputs: RenderInputs) -> RenderedFile:
   - model_name: "*"
     litellm_params:
       model: openai/{model}
-      api_base: http://llama-server:8080/api/v1
+      api_base: {api_base}
       api_key: {inputs.litellm_key}
       extra_body:
         chat_template_kwargs:
@@ -178,6 +183,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--surface", choices=["all", *sorted(RENDERERS)], default="all")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--gguf-file", default=DEFAULT_GGUF)
+    parser.add_argument("--lemonade-model-id", default="")
+    parser.add_argument("--lemonade-api-base", default="http://llama-server:8080/api/v1")
     parser.add_argument("--gpu-backend", choices=["amd", "apple", "cpu", "nvidia"], default="nvidia")
     parser.add_argument("--dream-mode", choices=["local", "cloud", "hybrid", "lemonade"], default="local")
     parser.add_argument("--llm-base-url", default="http://llama-server:8080/v1")
@@ -200,6 +207,8 @@ def render(args: argparse.Namespace) -> dict[str, object]:
     inputs = RenderInputs(
         model=args.model,
         gguf_file=args.gguf_file,
+        lemonade_model_id=args.lemonade_model_id,
+        lemonade_api_base=args.lemonade_api_base,
         gpu_backend=args.gpu_backend,
         dream_mode=args.dream_mode,
         llm_base_url=args.llm_base_url,

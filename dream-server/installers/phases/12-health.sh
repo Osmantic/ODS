@@ -105,10 +105,28 @@ _check_container_health() {
     return 1
 }
 
+_phase12_env_get() {
+    local key="$1" default="${2:-}" env_file="${INSTALL_DIR:-.}/.env"
+    if [[ -f "$env_file" ]]; then
+        local value
+        value=$(grep -m1 "^${key}=" "$env_file" 2>/dev/null | cut -d= -f2- || true)
+        [[ -n "$value" ]] && { echo "$value"; return 0; }
+    fi
+    echo "$default"
+}
+
+_phase12_external_lemonade() {
+    local external managed mode
+    external="${LEMONADE_EXTERNAL:-$(_phase12_env_get LEMONADE_EXTERNAL false)}"
+    managed="${AMD_INFERENCE_MANAGED:-$(_phase12_env_get AMD_INFERENCE_MANAGED "")}"
+    mode="${DREAM_MODE:-$(_phase12_env_get DREAM_MODE local)}"
+    [[ "${external,,}" == "true" ]] || [[ "${mode,,}" == "lemonade" && "${managed,,}" == "false" ]]
+}
+
 # Core service health checks with adaptive timeouts.
 # Cloud mode does not launch local llama-server; LiteLLM/external APIs are the
 # LLM surface, so do not wait on a container that intentionally is not running.
-if [[ "${DREAM_MODE:-local}" == "cloud" ]]; then
+if [[ "${DREAM_MODE:-local}" == "cloud" ]] || _phase12_external_lemonade; then
     dream_progress 86 "health" "Waiting for LiteLLM gateway"
     _check_health "LiteLLM" "http://127.0.0.1:${SERVICE_PORTS[litellm]:-4000}${SERVICE_HEALTH[litellm]:-/health/readiness}" 60 10 "$(sr_container litellm)"
 else
@@ -135,8 +153,8 @@ fi
 # cold path inside the installer (where time isn't surprising) so Hermes
 # lands on an already-hot slot. Bounded by curl --max-time so a stalled
 # llama-server doesn't hang phase 12.
-if [[ "${DREAM_MODE:-local}" == "cloud" ]]; then
-    ai "Cloud mode - skipping local llama-server pre-warm"
+if [[ "${DREAM_MODE:-local}" == "cloud" ]] || _phase12_external_lemonade; then
+    ai "External LLM mode - skipping local llama-server pre-warm"
 else
     dream_progress 87 "health" "Pre-warming LLM slot"
     _prewarm_api_path="/v1"

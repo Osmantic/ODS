@@ -58,7 +58,7 @@ LAN addresses, or paths.
 - Windows installs via `.\install.ps1` with Docker Desktop + WSL2 backend. Windows AMD local inference is host-managed and uses Vulkan today, either through legacy Lemonade Server or native `llama-server` fallback.
 - Windows native installer UX is Tier B (delegated via Docker Desktop + WSL2).
 - macOS installs via `./install.sh` — llama-server runs natively with Metal acceleration, all other services in Docker.
-- AMD runtime diagnostics are explicit: `.env` records runtime, location, selected backend, supported backends, and whether DreamServer manages the process. Lemonade's newer CLI/default port is documented upstream but is not the managed DreamServer path yet.
+- AMD runtime diagnostics are explicit: `.env` records runtime, location, selected backend, supported backends, and whether DreamServer manages the process. DreamServer supports its managed AMD Lemonade path and a Linux external Lemonade SDK wrapper path for existing Lemonade installs; see [LEMONADE-SDK-COMPAT.md](LEMONADE-SDK-COMPAT.md).
 - AMD discrete GPUs beyond the documented Strix Halo path should be treated as validation-required until the repo has tier/model benchmarks for that hardware.
 - **Intel Arc (SYCL) is Tier C / experimental.** The installer auto-detects and selects the correct compose overlay and tier. Runtime works on A770/A750 (Linux). ComfyUI and Whisper GPU acceleration are not yet available for Arc. See [INTEL-ARC-GUIDE.md](INTEL-ARC-GUIDE.md) for limitations.
 - Release-readiness claims should cite a matching version/tag, relevant distro-lab evidence, and a real-hardware fleet receipt from [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md).

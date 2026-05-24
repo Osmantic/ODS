@@ -103,6 +103,9 @@ All LLM traffic routes through the LiteLLM proxy, which delegates to the Lemonad
 
 For AMD Strix Halo performance tuning (GRUB, kernel module, sysctl settings), see [`config/system-tuning/README.md`](../config/system-tuning/README.md).
 
+Existing Lemonade SDK installs on Linux AMD hosts can be wrapped without letting
+Dream Server manage the Lemonade runtime. See [Lemonade SDK Compatibility](LEMONADE-SDK-COMPAT.md).
+
 ---
 
 ## .env Variables
