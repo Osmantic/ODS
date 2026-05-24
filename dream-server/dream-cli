@@ -3426,8 +3426,13 @@ PY
     echo "     Manual join (one-shot, no monitoring):"
     echo "       CLUSTER_TOKEN='${token}' dream cluster join ${controller_ip}"
     echo ""
-    echo "     (The CLUSTER_TOKEN env var is preferred over --token because"
-    echo "      --token is visible to other local users via 'ps aux'.)"
+    echo "     Or with the token in a mode-0600 file (preferred for systemd —"
+    echo "     the secret never lands in cluster-agent.json):"
+    echo "       echo '${token}' > /etc/dream-cluster.token && chmod 600 /etc/dream-cluster.token"
+    echo "       dream cluster agent start --token-file /etc/dream-cluster.token --controller ${controller_ip}"
+    echo ""
+    echo "     (Either CLUSTER_TOKEN env or --token-file is preferred over"
+    echo "      --token, which is visible to other local users via 'ps aux'.)"
     echo ""
     echo "  3. Accept each worker on this terminal, then Ctrl+C to finish."
     echo ""
@@ -4183,11 +4188,12 @@ _cluster_agent() {
     local agent_script="$INSTALL_DIR/scripts/cluster_worker_agent.py"
     local status_port=50054
 
-    # Parse --token, --interface, --controller on first start
-    local token="" interface="" controller=""
+    # Parse --token, --token-file, --interface, --controller on first start
+    local token="" token_file="" interface="" controller=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --token) token="${2:-}"; shift 2 ;;
+            --token-file) token_file="${2:-}"; shift 2 ;;
             --port) status_port="${2:-50054}"; shift 2 ;;
             --interface) interface="${2:-}"; shift 2 ;;
             --controller) controller="${2:-}"; shift 2 ;;
@@ -4195,9 +4201,45 @@ _cluster_agent() {
         esac
     done
 
+    # --token and --token-file are mutually exclusive — let it crash loud
+    # rather than silently pick one. Docs (LAN-CLUSTER-GUIDE.md) point
+    # operators at --token-file precisely because it avoids leaking the
+    # secret via `ps aux`; mixing them defeats the point.
+    if [[ -n "$token" && -n "$token_file" ]]; then
+        error "--token and --token-file are mutually exclusive"
+    fi
+
+    # Resolve --token-file to an absolute path so systemd's ExecStart and
+    # the nohup invocation both find it regardless of the daemon's cwd.
+    # Validate now so the operator gets the failure at start time rather
+    # than at the first restart inside systemd.
+    if [[ -n "$token_file" ]]; then
+        if [[ ! -f "$token_file" ]]; then
+            error "--token-file '$token_file' not found"
+        fi
+        # readlink -f for absolute path; fall back to realpath on busybox.
+        local _tf_abs
+        if _tf_abs=$(readlink -f "$token_file" 2>/dev/null) && [[ -n "$_tf_abs" ]]; then
+            token_file="$_tf_abs"
+        elif _tf_abs=$(realpath "$token_file" 2>/dev/null) && [[ -n "$_tf_abs" ]]; then
+            token_file="$_tf_abs"
+        fi
+        # Mirror the agent's mode check (cluster_worker_agent.py:_resolve_token).
+        # Warn but don't fail — the agent will still load the file; we just
+        # surface the same advisory at start time so operators see it before
+        # systemd swallows it into the journal.
+        local _tf_mode
+        if _tf_mode=$(stat -c '%a' "$token_file" 2>/dev/null) || \
+           _tf_mode=$(stat -f '%Lp' "$token_file" 2>/dev/null); then
+            if [[ -n "$_tf_mode" ]] && (( 8#$_tf_mode & 8#077 )); then
+                warn "--token-file '$token_file' has mode $_tf_mode (group/world readable); chmod 600 to restrict"
+            fi
+        fi
+    fi
+
     # CLUSTER_TOKEN env is the documented path ('dream cluster enable' hints
     # at it in 'Next steps'). CLI --token still works but leaks via `ps aux`.
-    if [[ -z "$token" ]] && [[ -n "${CLUSTER_TOKEN:-}" ]]; then
+    if [[ -z "$token" ]] && [[ -z "$token_file" ]] && [[ -n "${CLUSTER_TOKEN:-}" ]]; then
         token="$CLUSTER_TOKEN"
     fi
 
@@ -4210,8 +4252,11 @@ _cluster_agent() {
                 error "python3 not found in PATH"
             fi
 
-            # Initialize config if token provided
-            if [[ -n "$token" ]]; then
+            # Initialize config if token or token-file provided. token_file
+            # is stored as a path (NOT contents) so the secret never lands
+            # in cluster-agent.json — the Python agent re-reads the file at
+            # each start. token (string) keeps the existing inline behavior.
+            if [[ -n "$token" ]] || [[ -n "$token_file" ]]; then
                 local gpu_backend="${GPU_BACKEND:-}"
                 [[ -z "$gpu_backend" ]] && gpu_backend=$(python3 -c "
 import subprocess, os
@@ -4223,11 +4268,10 @@ else: print('cpu')
                 # Create the config file with mode 0600 before writing so
                 # the token is never briefly world-readable. AgentState
                 # later preserves 0600 via O_EXCL + os.replace.
-                python3 - "$config_file" "$token" "$controller" "$gpu_backend" "$interface" <<'PY'
+                python3 - "$config_file" "$token" "$token_file" "$controller" "$gpu_backend" "$interface" <<'PY'
 import json, os, sys
-config_file, token, controller, gpu_backend, interface = sys.argv[1:6]
+config_file, token, token_file, controller, gpu_backend, interface = sys.argv[1:7]
 cfg = {
-    "token": token,
     "controller_ip": controller,
     "setup_port": 50051,
     "rpc_port": 50052,
@@ -4235,6 +4279,13 @@ cfg = {
     "interface": interface,
     "status": "idle",
 }
+# token_file wins — never persist both in the config, so the secret only
+# exists at the path the operator chose. The agent's _resolve_token reads
+# the file fresh on every start.
+if token_file:
+    cfg["token_file"] = token_file
+else:
+    cfg["token"] = token
 tmp = config_file + ".tmp"
 if os.path.exists(tmp):
     os.unlink(tmp)
@@ -4257,7 +4308,20 @@ PY
             fi
 
             if [[ ! -f "$config_file" ]]; then
-                error "No agent config. Run: dream cluster agent start --token TOKEN"
+                error "No agent config. Run: dream cluster agent start --token TOKEN  (or --token-file PATH)"
+            fi
+
+            # On subsequent starts (no flags), recover token_file from the
+            # persisted config so systemd / nohup re-receive --token-file.
+            # Without this, restarting via `dream cluster agent start` after
+            # the first init would drop back to the no-flag invocation and
+            # the agent would fall through to the empty-state branch.
+            if [[ -z "$token" ]] && [[ -z "$token_file" ]] && [[ -f "$config_file" ]]; then
+                local _persisted
+                _persisted=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('token_file','') or '')" "$config_file" 2>/dev/null || true)
+                if [[ -n "$_persisted" ]]; then
+                    token_file="$_persisted"
+                fi
             fi
 
             # Detect daemon type
@@ -4275,12 +4339,22 @@ PY
                     local python3_path
                     python3_path=$(command -v python3)
                     mkdir -p "$unit_dir"
+                    # Render ` --token-file <abspath>` (with leading space)
+                    # so the placeholder collapses cleanly when no token-file
+                    # is in play. Quoted in the unit because the path may
+                    # contain spaces.
+                    local _token_file_flag=""
+                    if [[ -n "$token_file" ]]; then
+                        _token_file_flag=" --token-file \"${token_file}\""
+                    fi
                     local _unit_stale=true
                     if [[ -f "$unit_file" ]]; then
-                        # Unit is stale if the rendered CLUSTER_INTERFACE doesn't
-                        # match the current --interface arg. Empty interface is
-                        # valid (auto-bind) — encoded as empty literal.
-                        if grep -Fq "Environment=CLUSTER_INTERFACE=${interface}" "$unit_file"; then
+                        # Unit is stale if either CLUSTER_INTERFACE OR the
+                        # rendered --token-file flag changed. Both go into
+                        # ExecStart/Environment so a drift in either should
+                        # trigger a re-render + daemon-reload.
+                        if grep -Fq "Environment=CLUSTER_INTERFACE=${interface}" "$unit_file" \
+                           && grep -Fq "${_token_file_flag}" "$unit_file"; then
                             _unit_stale=false
                         fi
                     fi
@@ -4289,6 +4363,7 @@ PY
                             -e "s|__INSTALL_DIR__|${INSTALL_DIR}|g" \
                             -e "s|__HOME__|${HOME}|g" \
                             -e "s|__INTERFACE__|${interface}|g" \
+                            -e "s|__TOKEN_FILE_FLAG__|${_token_file_flag}|g" \
                             "$INSTALL_DIR/scripts/systemd/dream-cluster-agent.service" > "$unit_file"
                         systemctl --user daemon-reload
                     fi
@@ -4338,6 +4413,7 @@ PY
                         --pid-file "$pid_file" \
                         ${interface:+--interface "$interface"} \
                         ${controller:+--controller "$controller"} \
+                        ${token_file:+--token-file "$token_file"} \
                         >> "$log_file" 2>&1 &disown
                     local _pid=$!
                     echo ""
@@ -4464,8 +4540,9 @@ ${CYAN}Agent flow (recommended):${NC}
     dream cluster setup                                         # waits for workers
 
   Each worker:
-    dream cluster agent start --token <TOKEN> --controller <IP> # connects directly
-    dream cluster agent start --token <TOKEN>                   # or auto-discover
+    dream cluster agent start --token <TOKEN> --controller <IP>      # connects directly
+    dream cluster agent start --token <TOKEN>                        # or auto-discover
+    dream cluster agent start --token-file <PATH> --controller <IP>  # token from mode-0600 file (safer for systemd)
 
   Accept each worker on the controller, then Ctrl+C to finish.
 

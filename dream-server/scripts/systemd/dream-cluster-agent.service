@@ -10,7 +10,7 @@ StartLimitIntervalSec=300
 
 [Service]
 Type=simple
-ExecStart=__PYTHON3__ __INSTALL_DIR__/scripts/cluster_worker_agent.py --config __INSTALL_DIR__/config/cluster-agent.json --pid-file __INSTALL_DIR__/data/cluster-agent.pid
+ExecStart=__PYTHON3__ __INSTALL_DIR__/scripts/cluster_worker_agent.py --config __INSTALL_DIR__/config/cluster-agent.json --pid-file __INSTALL_DIR__/data/cluster-agent.pid__TOKEN_FILE_FLAG__
 WorkingDirectory=__INSTALL_DIR__
 Environment=DREAM_HOME=__INSTALL_DIR__
 Environment=HOME=__HOME__
