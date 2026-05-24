@@ -44,4 +44,10 @@ if grep -q 'docker-compose.amd.yml' <<<"$resolved"; then
   exit 1
 fi
 
+echo "[contract] installer scopes firewall access for host Lemonade"
+grep -q '_phase11_allow_external_lemonade_firewall' installers/phases/11-services.sh \
+  || { echo "[FAIL] phase 11 must allow container-to-host external Lemonade access"; exit 1; }
+grep -q 'dream-external-lemonade' installers/phases/11-services.sh \
+  || { echo "[FAIL] external Lemonade firewall rule should be labeled"; exit 1; }
+
 echo "[PASS] external Lemonade contracts"

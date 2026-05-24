@@ -129,6 +129,12 @@ mock_container="dream-lemonade-mock-$suffix"
 litellm_container="dream-litellm-e2e-$suffix"
 compose_project="dream-external-lemonade-e2e-$suffix"
 litellm_override_file="e2e-litellm-container.override.yml"
+dream_network="dream-network"
+
+ensure_dream_network() {
+    docker network inspect "$dream_network" >/dev/null 2>&1 \
+        || docker network create "$dream_network" >/dev/null
+}
 
 cleanup() {
     set +e
@@ -242,7 +248,8 @@ container_api_base="${container_base}${api_path}"
 litellm_port="${LEMONADE_E2E_LITELLM_PORT:-$(free_port)}"
 
 note "Checking container-side Lemonade reachability at $container_api_base"
-docker run --rm --add-host=host.docker.internal:host-gateway curlimages/curl:8.11.1 \
+ensure_dream_network
+docker run --rm --network "$dream_network" --add-host=host.docker.internal:host-gateway curlimages/curl:8.11.1 \
     -fsS "${container_api_base}/models" >/dev/null \
     || fail "Docker containers cannot reach Lemonade at ${container_api_base}/models"
 pass "container-side Lemonade models endpoint is reachable"

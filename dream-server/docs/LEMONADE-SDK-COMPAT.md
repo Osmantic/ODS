@@ -67,6 +67,11 @@ On a trusted host, configure Lemonade to bind beyond loopback:
 lemonade config set host=0.0.0.0
 ```
 
+If UFW or firewalld is active, the installer adds a scoped rule that allows
+Dream containers on `dream-network` to reach the configured Lemonade port. If
+that automatic rule cannot be added, allow the `dream-network` subnet to reach
+the Lemonade API port manually.
+
 If you expose Lemonade beyond localhost, set `LEMONADE_API_KEY` or
 `LEMONADE_ADMIN_API_KEY` in Lemonade and pass the matching key to Dream Server
 with `--lemonade-api-key`.
