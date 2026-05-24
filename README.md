@@ -2,25 +2,79 @@
 
 # Dream Server
 
-### Own your AI. One person, one dream, one machine at a time.
+**Turn your PC, Mac, or Linux box into a private AI server.**
 
-A handful of companies control the vast majority of global AI traffic — and with it, your data, your costs, and your uptime. Every query you send to a centralized provider is business intelligence you don’t own, running on infrastructure you don’t control, priced on terms you can’t negotiate.
-
-If AI is becoming critical infrastructure, it shouldn’t be rented. Self-hosting local AI should be a sovereign human right, not a career choice.
-
-**Dream Server is the exit.** A local-first AI stack — LLM inference, chat, voice, agents, workflows, RAG, image generation, and privacy tools — deployed on your hardware with a single command. No cloud required. No subscriptions required. No one watching. Cloud and hybrid API modes are optional when you choose them.
+AI server and homelab setup is rapidly becoming a solved problem.
+It should feel that way for everyone.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/Light-Heart-Labs/DreamServer)](https://github.com/Light-Heart-Labs/DreamServer/stargazers)
 [![Release](https://img.shields.io/github/v/release/Light-Heart-Labs/DreamServer)](https://github.com/Light-Heart-Labs/DreamServer/releases)
 
-![Dream Server Dashboard](dream-server/docs/images/dashboard.png)
-
 [![Watch the demo](https://img.shields.io/badge/Demo-Watch%20on%20YouTube-red?logo=youtube)](https://youtu.be/nO8xFNHX-HA)
+
+</div>
+
+---
+
+Dream Server installs and wires together everything you need to run AI locally, so you do not have to assemble Ollama, Open WebUI, n8n, ComfyUI, and privacy tools by hand:
+
+- **Local model inference** — run open models on your own hardware
+- **ChatGPT-style web UI** — talk to your models from any browser
+- **Control dashboard** — manage models, services, setup, GPU status, and extensions from one place
+- **Voice, agents, and workflows** — build automations that can listen, speak, call tools, and get work done
+- **RAG and search** — connect local documents, private search, and retrieval workflows
+- **Image generation** — run local image tools without sending prompts to a hosted API
+- **Privacy and ops** — keep service auth, secrets, observability, and diagnostics in one local stack
+
+No cloud required. No subscriptions required. Your prompts and data stay on your machine unless you choose otherwise. Cloud and hybrid API modes are optional when you want them.
+
+## Get Started
+
+Linux and macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Light-Heart-Labs/DreamServer/main/dream-server/get-dream-server.sh | bash
+```
+
+Windows users should use the PowerShell installer shown below or follow the [Windows Quickstart](dream-server/docs/WINDOWS-QUICKSTART.md).
+
+After install, open **http://localhost:3000** and start chatting.
+
+> **API endpoint:** Linux Docker installs expose llama-server on **http://localhost:11434** by default (`OLLAMA_PORT`) while containers use `llama-server:8080`. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden. Open WebUI stays on **http://localhost:3000**.
+
+> **No GPU?** Dream Server also runs in cloud mode — same full stack, powered by OpenAI/Anthropic/Together APIs instead of local inference:
+> ```bash
+> ./install.sh --cloud
+> ```
+
+> **Port conflicts?** Every port is configurable via environment variables. See [`.env.example`](dream-server/.env.example) for the full list, or override at install time:
+> ```bash
+> WEBUI_PORT=9090 ./install.sh
+> ```
+
+![Dream Server Dashboard](dream-server/docs/images/dashboard.png)
 
 **New here?** Read the [Friendly Guide](dream-server/docs/HOW-DREAM-SERVER-WORKS.md) or [listen to the audio version](https://open.spotify.com/episode/40MvqJ41bC8cEgvUyOyE3K) — a complete walkthrough of what Dream Server is, how it works, and how to make it your own. No technical background needed.
 
-</div>
+---
+
+## At A Glance
+
+| Question | Answer |
+|----------|--------|
+| **What is it?** | A local AI server stack for your own hardware, with a one-command Linux/macOS installer and a PowerShell installer for Windows. |
+| **Who is it for?** | People who want private AI at home, in a lab, or on a workstation without hand-wiring a dozen services. |
+| **What do I get?** | Local inference, Open WebUI chat, a control dashboard, voice, agents, workflows, RAG, search, image generation, privacy tools, observability, and developer tools. |
+| **What does it run on?** | Linux, Windows with WSL2/Docker Desktop, and macOS Apple Silicon. |
+| **Is cloud required?** | No. Local mode is the default; cloud and hybrid API modes are optional. |
+
+| If you know... | Dream Server adds... |
+|----------------|----------------------|
+| **Ollama / llama.cpp** | The surrounding server stack: chat, dashboard, voice, RAG, workflows, agents, privacy, and service management. |
+| **Open WebUI** | A full installer and control plane around Open WebUI, plus pre-wired local services. |
+| **AnythingLLM** | Broader local AI appliance behavior beyond RAG: inference, chat, voice, workflows, image generation, and ops. |
+| **n8n self-hosted AI starter kits** | Workflow automation as one part of a larger private AI server. |
 
 ---
 
@@ -48,6 +102,10 @@ If AI is becoming critical infrastructure, it shouldn’t be rented. Self-hostin
 
 ## Why Dream Server?
 
+A handful of companies control the vast majority of global AI traffic — and with it, your data, your costs, and your uptime. Every query you send to a centralized provider is business intelligence you don’t own, running on infrastructure you don’t control, priced on terms you can’t negotiate.
+
+If AI is becoming critical infrastructure, it shouldn’t be rented. Self-hosting local AI should be a sovereign human right, not a career choice.
+
 Because running your own AI shouldn't require a CS degree and a weekend of debugging CUDA drivers. Right now, setting up local AI means stitching together a dozen projects, writing Docker configs from scratch, and praying everything talks to each other. Most people give up and go back to paying OpenAI.
 
 We built Dream Server so you don't have to.
@@ -56,24 +114,6 @@ We built Dream Server so you don't have to.
 - **Chatting in under 2 minutes** — bootstrap mode gives you a working model instantly while your full model downloads in the background
 - **Full service stack, pre-wired** — chat, agents, voice, workflows, search, RAG, image generation, privacy tools, observability, and developer tools. All talking to each other out of the box
 - **Fully moddable** — every service is an extension. Drop in a folder, run `dream enable`, done
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Light-Heart-Labs/DreamServer/main/dream-server/get-dream-server.sh | bash
-```
-
-Open **http://localhost:3000** and start chatting.
-
-> **API endpoint:** Linux Docker installs expose llama-server on **http://localhost:11434** by default (`OLLAMA_PORT`) while containers use `llama-server:8080`. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden. Open WebUI stays on **http://localhost:3000**.
-
-> **No GPU?** Dream Server also runs in cloud mode — same full stack, powered by OpenAI/Anthropic/Together APIs instead of local inference:
-> ```bash
-> ./install.sh --cloud
-> ```
-
-> **Port conflicts?** Every port is configurable via environment variables. See [`.env.example`](dream-server/.env.example) for the full list, or override at install time:
-> ```bash
-> WEBUI_PORT=9090 ./install.sh
-> ```
 
 <div align="center">
 
