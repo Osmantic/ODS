@@ -32,6 +32,8 @@ service:
 
 proxy:
   subdomain: n8n
+  exposure: user
+  auth: service
   # Workflow imports and binary-node payloads occasionally exceed Caddy's
   # 10MB default; 50MB covers all but the largest exported workflows.
   client_max_body: 50MB

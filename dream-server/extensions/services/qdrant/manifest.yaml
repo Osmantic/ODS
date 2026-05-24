@@ -25,3 +25,6 @@ proxy:
   # HTTP API only (port 6333). The gRPC surface on 6334 needs h2c proxying
   # and stays on its own host port — out of scope for this entry.
   subdomain: qdrant
+  # Vector DB REST + dashboard with no built-in auth. Developer opt-in only.
+  exposure: developer-api
+  auth: none

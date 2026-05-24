@@ -23,6 +23,9 @@ service:
 
 proxy:
   subdomain: stt
+  # Raw STT API, no auth — opt-in only.
+  exposure: developer-api
+  auth: none
   # Audio uploads can be large; default Caddy limit is 10MB which trips on
   # longer recordings. 100MB covers ~30 minutes of 16kHz mono WAV.
   client_max_body: 100MB

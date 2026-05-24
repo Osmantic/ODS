@@ -22,6 +22,8 @@ service:
 
 proxy:
   subdomain: langfuse
+  exposure: user
+  auth: service
 
 features:
   - id: observability

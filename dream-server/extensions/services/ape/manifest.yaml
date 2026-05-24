@@ -28,6 +28,8 @@ service:
 
 proxy:
   subdomain: ape
+  exposure: user
+  auth: service
 
 features:
   - id: agent-governance

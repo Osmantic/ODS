@@ -34,3 +34,5 @@ service:
 
 proxy:
   subdomain: openclaw
+  exposure: user
+  auth: service

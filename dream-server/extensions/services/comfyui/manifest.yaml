@@ -23,6 +23,8 @@ service:
 
 proxy:
   subdomain: comfy
+  exposure: user
+  auth: service
   # Workflow JSON + reference image uploads can be tens of megabytes; bump
   # the limit so ComfyUI's drag-drop import doesn't 413 at the proxy.
   client_max_body: 200MB

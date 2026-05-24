@@ -22,3 +22,5 @@ service:
 
 proxy:
   subdomain: tokens
+  exposure: user
+  auth: service

@@ -23,3 +23,6 @@ service:
 
 proxy:
   subdomain: embed
+  # Raw embedding API with no built-in auth — opt-in only.
+  exposure: developer-api
+  auth: none

@@ -23,3 +23,7 @@ service:
 
 proxy:
   subdomain: searxng
+  # Open search UI + JSON API: trivially bot-abusable when LAN-reachable,
+  # so keep behind the developer profile.
+  exposure: developer-api
+  auth: none

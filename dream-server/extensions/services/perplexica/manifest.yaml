@@ -23,3 +23,5 @@ service:
 
 proxy:
   subdomain: perplexica
+  exposure: user
+  auth: service

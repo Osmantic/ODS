@@ -23,3 +23,6 @@ service:
 
 proxy:
   subdomain: tts
+  # Raw TTS API, no auth — opt-in only.
+  exposure: developer-api
+  auth: none
