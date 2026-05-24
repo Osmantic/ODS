@@ -165,6 +165,12 @@ if [[ "$MODE" == "mock" ]]; then
     host_base="http://127.0.0.1:${lemonade_port}"
     container_base="http://host.docker.internal:${lemonade_port}"
     note "Starting mock Lemonade server on $host_base"
+    mock_publish="127.0.0.1:${lemonade_port}:13305"
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        # On native Linux, containers reach host services through the bridge
+        # gateway, so a host service bound only to loopback is not reachable.
+        mock_publish="${lemonade_port}:13305"
+    fi
     read -r -d '' mock_code <<'PY' || true
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -213,7 +219,7 @@ class Handler(BaseHTTPRequestHandler):
 ThreadingHTTPServer(("0.0.0.0", 13305), Handler).serve_forever()
 PY
     docker run -d --name "$mock_container" \
-        -p "127.0.0.1:${lemonade_port}:13305" \
+        -p "$mock_publish" \
         "${LEMONADE_E2E_MOCK_IMAGE:-python:3.12-bookworm}" python -u -c "$mock_code" >/dev/null
     wait_url "${host_base}${api_path}/health" "mock Lemonade health is reachable" 120 \
         || fail "mock Lemonade did not become healthy"
