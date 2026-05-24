@@ -449,7 +449,11 @@ if ext_dir.exists():
             # service_healthy` inside compose.local.yaml overlays can never be
             # satisfied and deadlocks the stack. The real LLM-ready gate on macOS
             # is the `llama-server-ready` sidecar defined in the macOS overlay.
-            if dream_mode in ("local", "hybrid", "lemonade") and tier != "CLOUD" and gpu_backend != "apple":
+            # External Lemonade is also a host process. Its stack layers the
+            # cloud overlay to profile out Dream's managed llama-server, so
+            # local-mode overlays that wait on `llama-server: service_healthy`
+            # would point at a disabled service and break lifecycle commands.
+            if dream_mode in ("local", "hybrid", "lemonade") and tier != "CLOUD" and gpu_backend != "apple" and not lemonade_external:
                 local_mode_overlay = service_dir / "compose.local.yaml"
                 if local_mode_overlay.exists():
                     resolved.append(str(local_mode_overlay.relative_to(script_dir)))
@@ -566,8 +570,11 @@ if user_ext_dir.exists():
                 # service_healthy` inside compose.local.yaml overlays can never be
                 # satisfied and deadlocks the stack. The real LLM-ready gate on macOS
                 # is the `llama-server-ready` sidecar defined in the macOS overlay.
+                # External Lemonade likewise runs on the host and uses the cloud
+                # overlay to disable Dream's managed llama-server, so user-local
+                # overlays must not add local llama-server health dependencies.
                 # Mirrors the same guard in the built-in loop above (PR #1004).
-                if dream_mode in ("local", "hybrid", "lemonade") and tier != "CLOUD" and gpu_backend != "apple":
+                if dream_mode in ("local", "hybrid", "lemonade") and tier != "CLOUD" and gpu_backend != "apple" and not lemonade_external:
                     local_mode_overlay = service_dir / "compose.local.yaml"
                     if local_mode_overlay.exists():
                         # Same content scan as compose.yaml/gpu overlay above —

@@ -315,6 +315,7 @@ flags="$(LEMONADE_EXTERNAL=true DREAM_MODE=lemonade AMD_INFERENCE_RUNTIME=lemona
 [[ "$flags" == *"docker-compose.cloud.yml"* ]] || fail "external Lemonade stack must include cloud overlay"
 [[ "$flags" == *"docker-compose.lemonade-external.yml"* ]] || fail "external Lemonade stack must include external overlay"
 [[ "$flags" != *"docker-compose.amd.yml"* ]] || fail "external Lemonade stack must not include managed AMD overlay"
+[[ "$flags" != *"compose.local.yaml"* ]] || fail "external Lemonade stack must not include local llama-server dependency overlays"
 pass "compose resolver selects external Lemonade stack"
 
 note "Starting LiteLLM through Dream Server compose on http://127.0.0.1:${litellm_port}"

@@ -43,11 +43,50 @@ if grep -q 'docker-compose.amd.yml' <<<"$resolved"; then
   echo "[FAIL] external Lemonade must not include managed AMD overlay"
   exit 1
 fi
+if grep -q 'compose.local.yaml' <<<"$resolved"; then
+  echo "[FAIL] external Lemonade must not include local llama-server dependency overlays"
+  exit 1
+fi
+grep -Eq 'extensions[\\/]+services[\\/]+litellm[\\/]+compose.yaml' <<<"$resolved" \
+  || { echo "[FAIL] external Lemonade must keep LiteLLM gateway enabled"; exit 1; }
+
+echo "[contract] external Lemonade resolved compose config is valid"
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  compose_file_list="$(sed -n 's/^COMPOSE_FILE_LIST="\([^"]*\)".*/\1/p' <<<"$resolved")"
+  compose_file_list="${compose_file_list//\\//}"
+  IFS=',' read -r -a compose_files <<<"$compose_file_list"
+  compose_args=()
+  for compose_file in "${compose_files[@]}"; do
+    [[ -n "$compose_file" ]] && compose_args+=(-f "$compose_file")
+  done
+  WEBUI_SECRET=test \
+  LITELLM_KEY=test \
+  OPENCLAW_TOKEN=test \
+  N8N_USER=test@example.local \
+  N8N_PASS=test \
+  SEARXNG_SECRET=test \
+  DREAM_SESSION_SECRET=test \
+  LEMONADE_EXTERNAL=true \
+  DREAM_MODE=lemonade \
+  GPU_BACKEND=amd \
+  docker compose "${compose_args[@]}" config --services >/dev/null \
+    || { echo "[FAIL] external Lemonade compose config must not have missing dependencies"; exit 1; }
+else
+  echo "[SKIP] docker compose unavailable; resolver assertions cover compose selection"
+fi
 
 echo "[contract] installer scopes firewall access for host Lemonade"
 grep -q '_phase11_allow_external_lemonade_firewall' installers/phases/11-services.sh \
   || { echo "[FAIL] phase 11 must allow container-to-host external Lemonade access"; exit 1; }
 grep -q 'dream-external-lemonade' installers/phases/11-services.sh \
   || { echo "[FAIL] external Lemonade firewall rule should be labeled"; exit 1; }
+
+echo "[contract] CLI invalidates stale external Lemonade compose flags"
+grep -q 'docker-compose.lemonade-external.yml' dream-cli \
+  || { echo "[FAIL] dream-cli must recognize external Lemonade compose cache state"; exit 1; }
+grep -q 'AMD_INFERENCE_MANAGED' dream-cli \
+  || { echo "[FAIL] dream-cli must detect unmanaged external Lemonade installs"; exit 1; }
+grep -q 'compose.local.yaml' dream-cli \
+  || { echo "[FAIL] dream-cli must invalidate stale local dependency overlays"; exit 1; }
 
 echo "[PASS] external Lemonade contracts"

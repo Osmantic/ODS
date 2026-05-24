@@ -74,12 +74,13 @@ import sys
 
 root = Path(sys.argv[1])
 text = (root / "installers/phases/11-services.sh").read_text(encoding="utf-8")
-model_block = text.index('if [[ "${DREAM_MODE:-local}" != "cloud" ]]; then')
+model_config = text.index('mkdir -p "$INSTALL_DIR/config/llama-server"')
+hermes_block = text.index('if [[ "${ENABLE_HERMES:-false}" == "true" ]]; then')
 soul_block = text.index('_soul_output="$INSTALL_DIR/data/persona/SOUL.md"')
-if soul_block > model_block:
-    # Make sure the local-model block was closed before SOUL render begins.
-    between = text[model_block:soul_block]
-    if '\n    if [[ "${ENABLE_HERMES:-false}" == "true" ]]; then' in between:
+if model_config < hermes_block < soul_block:
+    # Make sure the local-model block was closed before Hermes/SOUL rendering begins.
+    between = text[model_config:hermes_block]
+    if '\n    fi\n' in between:
         print("[PASS] SOUL.md render is outside local-model-only block")
         sys.exit(0)
 print("[FAIL] SOUL.md render must run for cloud installs too", file=sys.stderr)

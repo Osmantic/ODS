@@ -616,6 +616,17 @@ get_compose_flags() {
                { [[ "$cached" == *"docker-compose.cpu.yml"* ]] || [[ "$cached" == *"compose.local.yaml"* ]] || [[ "$cached" != *"docker-compose.cloud.yml"* ]]; }; then
                 stale=1
             fi
+            local _lemonade_external="${LEMONADE_EXTERNAL:-false}"
+            local _amd_runtime="${AMD_INFERENCE_RUNTIME:-}"
+            local _amd_managed="${AMD_INFERENCE_MANAGED:-true}"
+            _lemonade_external="${_lemonade_external,,}"
+            _amd_runtime="${_amd_runtime,,}"
+            _amd_managed="${_amd_managed,,}"
+            if [[ "${DREAM_MODE:-local}" == "lemonade" ]] && \
+               { [[ "$_lemonade_external" =~ ^(1|true|yes|on)$ ]] || { [[ "$_amd_runtime" == "lemonade" ]] && [[ "$_amd_managed" =~ ^(0|false|no|off)$ ]]; }; } && \
+               { [[ "$cached" == *"compose.local.yaml"* ]] || [[ "$cached" == *"docker-compose.amd.yml"* ]] || [[ "$cached" != *"docker-compose.cloud.yml"* ]] || [[ "$cached" != *"docker-compose.lemonade-external.yml"* ]]; }; then
+                stale=1
+            fi
             if [[ "$stale" == "0" ]]; then
                 echo "$cached"
                 return
