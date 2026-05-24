@@ -134,22 +134,44 @@ esac
 _device=$(grep -E "^DREAM_DEVICE_NAME=" "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"')
 [[ -z "$_device" ]] && _device="dream"
 
+# DREAM_PROXY_PORT defaults to 80. Render `:8080` only when overridden;
+# without this the summary printed `http://chat.<device>.local` even when
+# the proxy was on a non-default port, sending users to port 80.
+_proxy_port=$(grep -E "^DREAM_PROXY_PORT=" "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"')
+[[ -z "$_proxy_port" ]] && _proxy_port=80
+_proxy_port_suffix=""
+[[ "$_proxy_port" != "80" ]] && _proxy_port_suffix=":${_proxy_port}"
+
+# DREAM_PROXY_PROFILE gates which URLs we advertise. `user` (default)
+# only lists routes that the resolver actually emits; `developer` adds
+# the raw-API routes (llm/embed/stt/tts/qdrant) the resolver now ships
+# under the developer profile.
+_proxy_profile=$(grep -E "^DREAM_PROXY_PROFILE=" "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr '[:upper:]' '[:lower:]')
+case "$_proxy_profile" in
+    user|developer|all) ;;
+    *) _proxy_profile="user" ;;
+esac
+
 if [[ "$_proxy_active" == "true" ]]; then
     bootline
-    echo -e "${BGRN}PROXY URLS${NC}  ${AMB}(http://${_device}.local on port 80)${NC}"
+    echo -e "${BGRN}PROXY URLS${NC}  ${AMB}(http://<sub>.${_device}.local${_proxy_port_suffix}, profile=${_proxy_profile})${NC}"
     bootline
-    echo "  • Chat:          http://chat.${_device}.local"
-    echo "  • Dashboard:     http://dashboard.${_device}.local"
-    echo "  • Admin API:     http://api.${_device}.local"
-    [[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes:        http://hermes.${_device}.local  (magic-link gated)"
-    # Extension subdomains (from manifest proxy.subdomain blocks):
-    echo "  • LLM API:       http://llm.${_device}.local/v1"
-    echo "  • ComfyUI:       http://comfy.${_device}.local"
-    [[ "$ENABLE_VOICE" == "true" ]] && echo "  • Whisper STT:   http://stt.${_device}.local"
-    [[ "$ENABLE_VOICE" == "true" ]] && echo "  • TTS (Kokoro):  http://tts.${_device}.local"
-    [[ "$ENABLE_WORKFLOWS" == "true" ]] && echo "  • n8n:           http://n8n.${_device}.local"
-    [[ "$ENABLE_RAG" == "true" ]] && echo "  • Qdrant:        http://qdrant.${_device}.local"
-    [[ "$ENABLE_OPENCLAW" == "true" ]] && echo "  • OpenClaw:      http://openclaw.${_device}.local"
+    # exposure=user (always shown when proxy is active):
+    echo "  • Chat:          http://chat.${_device}.local${_proxy_port_suffix}"
+    echo "  • Dashboard:     http://dashboard.${_device}.local${_proxy_port_suffix}"
+    echo "  • Admin API:     http://api.${_device}.local${_proxy_port_suffix}"
+    [[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes:        http://hermes.${_device}.local${_proxy_port_suffix}  (magic-link gated)"
+    echo "  • ComfyUI:       http://comfy.${_device}.local${_proxy_port_suffix}"
+    [[ "$ENABLE_WORKFLOWS" == "true" ]] && echo "  • n8n:           http://n8n.${_device}.local${_proxy_port_suffix}"
+    [[ "$ENABLE_OPENCLAW" == "true" ]] && echo "  • OpenClaw:      http://openclaw.${_device}.local${_proxy_port_suffix}"
+
+    # exposure=developer-api (only when DREAM_PROXY_PROFILE=developer|all):
+    if [[ "$_proxy_profile" == "developer" || "$_proxy_profile" == "all" ]]; then
+        echo "  • LLM API:       http://llm.${_device}.local${_proxy_port_suffix}/v1"
+        [[ "$ENABLE_VOICE" == "true" ]] && echo "  • Whisper STT:   http://stt.${_device}.local${_proxy_port_suffix}"
+        [[ "$ENABLE_VOICE" == "true" ]] && echo "  • TTS (Kokoro):  http://tts.${_device}.local${_proxy_port_suffix}"
+        [[ "$ENABLE_RAG" == "true" ]] && echo "  • Qdrant:        http://qdrant.${_device}.local${_proxy_port_suffix}"
+    fi
     echo ""
 fi
 

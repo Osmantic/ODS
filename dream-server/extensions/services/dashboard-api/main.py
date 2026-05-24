@@ -1395,6 +1395,16 @@ async def get_external_links(api_key: str = Depends(verify_api_key)):
     # disabled extensions, so we get a consistent enabled-set for free.
     proxy_enabled = "dream-proxy" in SERVICES
     device_name = (os.environ.get("DREAM_DEVICE_NAME") or "dream").strip() or "dream"
+    # DREAM_PROXY_PORT defaults to 80 (HTTP). Render :<port> only when it's
+    # non-default — otherwise the sidebar pretty-prints `http://chat.dream.local`
+    # without the port. An admin who overrode DREAM_PROXY_PORT=8080 was
+    # previously getting URLs that pointed at port 80; the proxy was actually
+    # on 8080 and the link 404'd from the browser.
+    try:
+        proxy_port = int((os.environ.get("DREAM_PROXY_PORT") or "80").strip() or "80")
+    except ValueError:
+        proxy_port = 80
+    proxy_port_suffix = f":{proxy_port}" if proxy_port != 80 else ""
 
     links = []
     for sid, cfg in SERVICES.items():
@@ -1409,7 +1419,7 @@ async def get_external_links(api_key: str = Depends(verify_api_key)):
         }
         subdomain = cfg.get("proxy_subdomain", "")
         if proxy_enabled and subdomain:
-            entry["proxy_url"] = f"http://{subdomain}.{device_name}.local"
+            entry["proxy_url"] = f"http://{subdomain}.{device_name}.local{proxy_port_suffix}"
         links.append(entry)
     return links
 
