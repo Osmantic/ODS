@@ -77,6 +77,40 @@ The proxy itself adds NO auth layer. Adding one here would duplicate without str
 - Tailscale: also fine — Tailscale's identity-based access is its own auth layer.
 - Public internet: ❌ **NEVER**. Don't publish port 80 to the public internet without an additional auth/TLS layer.
 
+## Profiles and exposure classification
+
+Extensions opt into proxy routing by declaring a `proxy:` block in their `manifest.yaml`. Two fields decide whether the resolver actually emits a Caddy fragment for a given route:
+
+- **`exposure`** — how user-facing the surface is:
+  - `user` — UI a household member would open (chat, dashboard, n8n, langfuse, ComfyUI, OpenClaw, …). Routed under every profile.
+  - `developer-api` — raw API or admin surface (`llama-server` `/v1`, embeddings, Whisper, Kokoro TTS, Qdrant, SearXNG, Brave search, LiteLLM). Routed only under `developer` and `all`.
+  - `internal` — service-to-service-only. Routed only under `all` (with a loud warning).
+- **`auth`** — what gates the route:
+  - `service` — the backend has its own auth (login, API key, OAuth).
+  - `dream-session` — the resolver injects a `forward_auth` block that verifies the `dream-session` cookie against `dashboard-api`. Same pattern hermes-proxy uses.
+  - `none` — no auth in front of the backend. Refused for `exposure: user` unless `DREAM_PROXY_ALLOW_UNAUTHENTICATED_USER=true` is set explicitly.
+
+`DREAM_PROXY_PROFILE` controls which `exposure` tiers route:
+
+| Profile | Routes |
+|---|---|
+| `user` (default) | only `exposure: user` |
+| `developer` | `user` + `developer-api` |
+| `all` | `user` + `developer-api` + `internal` (prints a warning at render) |
+
+Default `user` keeps Dream Server's "one safe LAN entrypoint" promise — enabling `dream-proxy` doesn't auto-LAN every raw backend just because someone wanted chat on a phone. Flip to `developer` if you actually want `llm.<device>.local/v1`, `qdrant.<device>.local`, etc. routable from the LAN.
+
+Missing `exposure` defaults to `developer-api` so a third-party extension without the new schema doesn't auto-LAN under the default profile.
+
+## Off-LAN access
+
+The proxy is designed for **trusted networks only**. For access beyond the LAN, put the proxy behind a Tailscale or WireGuard tunnel:
+
+- **Tailscale**: tag the Dream Server device, set `DREAM_PROXY_BIND=0.0.0.0`, and reach `http://<tailnet-name>` from any tailnet-joined device. Tailscale's identity layer is the auth.
+- **WireGuard**: similar — bind the proxy to the WireGuard interface IP, route household devices through the tunnel.
+
+Do **not** publish port 80 directly to the public internet. The proxy adds no auth itself, so unauthenticated backends become unauthenticated public surfaces. If you really need a public surface, terminate TLS + auth (oauth2-proxy, Cloudflare Access, etc.) upstream.
+
 ## TLS
 
 HTTP only in v1. Adding HTTPS needs one of:

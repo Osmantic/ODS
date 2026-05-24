@@ -29,6 +29,10 @@ Two flavors:
 
 All seven names resolve to the same IP — the device's LAN address. Routing happens at the dream-proxy by Host header (see `docs/DREAM-PROXY.md`). The bare `<device>.local` redirects to chat for the friendliest landing.
 
+**Port note:** if you've overridden `DREAM_PROXY_PORT` (default 80), URLs the installer summary and dashboard sidebar render include the `:<port>` suffix — e.g. `http://chat.dream.local:8080`. The mDNS A records don't carry port info, so adjust your bookmarks accordingly.
+
+**Profile note:** the per-subdomain table above shows the core entries that always route. Extension subdomains (`llm.<device>.local`, `qdrant.<device>.local`, `n8n.<device>.local`, …) are gated by `DREAM_PROXY_PROFILE`. See "Profiles and exposure classification" in `docs/DREAM-PROXY.md` for which routes appear under which profile.
+
 **Direct-port SRV records (back-compat for service discovery):**
 
 These are published only when `BIND_ADDRESS` is explicitly LAN-facing (for example `0.0.0.0` or a specific LAN IP). In the default safer posture, service ports stay on loopback and mDNS publishes only the proxy-routed names above.
