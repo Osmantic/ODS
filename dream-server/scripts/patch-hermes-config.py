@@ -146,6 +146,54 @@ def _ensure_compression(lines: list[str]) -> None:
     _set_key(lines, block, "protect_last_n", "40", 2)
 
 
+def _ensure_whatsapp_bridge(lines: list[str]) -> None:
+    """Keep WhatsApp off by default while avoiding upstream's port 3000 bridge.
+
+    Existing operator choices win: if a WhatsApp block already exists we do not
+    change its enabled state, and if it already has extra.bridge_port we leave
+    that value alone.
+    """
+
+    platforms = _top_level_block(lines, "platforms")
+    if platforms is None:
+        lines.extend(
+            [
+                "",
+                "platforms:",
+                "  whatsapp:",
+                "    enabled: false",
+                "    extra:",
+                "      bridge_port: 3010",
+            ]
+        )
+        return
+
+    whatsapp = _child_block(lines, platforms, "whatsapp", 2)
+    if whatsapp is None:
+        insert_at = platforms[1]
+        lines[insert_at:insert_at] = [
+            "  whatsapp:",
+            "    enabled: false",
+            "    extra:",
+            "      bridge_port: 3010",
+        ]
+        return
+
+    extra = _child_block(lines, whatsapp, "extra", 4)
+    if extra is None:
+        insert_at = whatsapp[1]
+        lines[insert_at:insert_at] = [
+            "    extra:",
+            "      bridge_port: 3010",
+        ]
+        return
+
+    for idx in range(extra[0] + 1, extra[1]):
+        if re.match(r"^\s{6}bridge_port:\s*.*$", lines[idx]):
+            return
+    _set_key(lines, extra, "bridge_port", "3010", 6)
+
+
 def patch_config(path: Path, model: str | None, base_url: str | None, context_length: int | None, api_key: str | None = None) -> bool:
     original = path.read_text(encoding="utf-8")
     trailing_newline = original.endswith("\n")
@@ -153,6 +201,7 @@ def patch_config(path: Path, model: str | None, base_url: str | None, context_le
 
     _ensure_model(lines, model, base_url, context_length, api_key)
     _ensure_auxiliary(lines, context_length)
+    _ensure_whatsapp_bridge(lines)
     _ensure_compression(lines)
 
     updated = "\n".join(lines)

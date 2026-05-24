@@ -102,19 +102,32 @@ terminal:
 # =============================================================================
 # Hermes ships with Telegram / Discord / Slack / WhatsApp / Signal / email /
 # Teams / Google Chat / Matrix / Mattermost / SMS gateway adapters. Dream
-# Server users reach Hermes via the web dashboard, not platform bots — so
-# none of these are configured here.
+# Server users reach Hermes via the web dashboard, not platform bots — so none
+# of these are enabled here.
 #
 # IMPORTANT: there is NO top-level `gateway.enabled: false` switch in
 # upstream's config schema. Earlier drafts of this template had one; it
 # was silently ignored. The gateway is "disabled" by simply not
-# configuring any adapter (no TELEGRAM_TOKEN, no DISCORD_TOKEN, etc.),
-# which means `hermes gateway run` starts, ticks cron, hosts the
-# dashboard, and has no platforms to message on.
+# enabling any adapter (no TELEGRAM_TOKEN, no DISCORD_TOKEN, etc.), which
+# means `hermes gateway run` starts, ticks cron, hosts the dashboard, and
+# has no platforms to message on.
+#
+# WhatsApp is pre-seeded as disabled only to override upstream's bridge
+# default. Upstream's WhatsApp bridge listens on 127.0.0.1:3000 by default
+# and attempts to clear that port before starting; Dream Server already uses
+# host port 3000 for Open WebUI. The bridge is internal to the Hermes
+# container in Dream's default compose network, but an explicit non-3000
+# value keeps native/host-network experiments from colliding with Open WebUI
+# when users intentionally enable WhatsApp.
 #
 # To enable a platform, follow upstream's adapter docs and add the
 # matching block under the platform-specific config keys, then restart
 # the container.
+platforms:
+  whatsapp:
+    enabled: false
+    extra:
+      bridge_port: 3010
 
 # =============================================================================
 # Compression — keep memory bounded on small devices

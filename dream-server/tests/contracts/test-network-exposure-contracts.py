@@ -72,6 +72,27 @@ def test_hermes_is_internal_only_and_proxy_gated() -> None:
     assert_true("reverse_proxy {$HERMES_PROXY_UPSTREAM:dream-hermes:9119}" in proxy_caddyfile, "hermes-proxy must forward to internal Hermes")
 
 
+def test_hermes_whatsapp_bridge_avoids_open_webui_port() -> None:
+    hermes_compose = read(SERVICES / "hermes" / "compose.yaml")
+    hermes_config = read(SERVICES / "hermes" / "cli-config.yaml.template")
+
+    assert_true("whatsapp:" in hermes_config, "Hermes config should pre-seed WhatsApp settings")
+    assert_true("enabled: false" in hermes_config, "WhatsApp must remain disabled by default")
+    assert_true(
+        re.search(r"(?m)^\s+bridge_port:\s*3010\s*$", hermes_config) is not None,
+        "WhatsApp bridge must default away from Open WebUI port 3000",
+    )
+    assert_true(
+        re.search(r"(?m)^\s+bridge_port:\s*3000\s*$", hermes_config) is None,
+        "WhatsApp bridge must not use upstream's port 3000 default",
+    )
+    assert_true(
+        re.search(r"(?m)^\s+-\s+WHATSAPP_ENABLED\s*$", hermes_compose) is not None,
+        "Hermes compose should pass intentional WhatsApp enables without blank defaults",
+    )
+    assert_true("3010:3010" not in hermes_compose, "WhatsApp bridge must not be host-bound")
+
+
 def test_dream_proxy_routes_talk_portal() -> None:
     caddyfile = read(SERVICES / "dream-proxy" / "Caddyfile")
 
@@ -112,6 +133,7 @@ def main() -> int:
     tests = [
         test_exposed_services_are_policy_labeled,
         test_hermes_is_internal_only_and_proxy_gated,
+        test_hermes_whatsapp_bridge_avoids_open_webui_port,
         test_dream_proxy_routes_talk_portal,
         test_dashboard_csp_allows_dream_talk_tts_blob_audio,
         test_openclaw_stays_deprecated_optional_and_token_gated,

@@ -116,7 +116,8 @@ python_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null ||
 [[ -n "$python_cmd" ]] || fail "python is required to test Hermes config patcher"
 
 tmp_hermes="$(mktemp)"
-trap 'rm -f "$tmp_hermes"' EXIT
+tmp_hermes_custom="$(mktemp)"
+trap 'rm -f "$tmp_hermes" "$tmp_hermes_custom"' EXIT
 cat > "$tmp_hermes" <<'HERMES_EOF'
 model:
   default: "old-model"
@@ -157,6 +158,30 @@ pass "Hermes patcher normalizes compression target_ratio"
 grep -q '^  protect_last_n: 40$' "$tmp_hermes" \
     || fail "Hermes patcher writes protect_last_n"
 pass "Hermes patcher writes protect_last_n"
+grep -q '^      bridge_port: 3010$' "$tmp_hermes" \
+    || fail "Hermes patcher writes WhatsApp bridge port away from Open WebUI"
+pass "Hermes patcher writes WhatsApp bridge port away from Open WebUI"
+
+cat > "$tmp_hermes_custom" <<'HERMES_CUSTOM_EOF'
+model:
+  default: "old-model"
+platforms:
+  whatsapp:
+    enabled: true
+    extra:
+      bridge_port: 3456
+compression:
+  threshold: 0.75
+HERMES_CUSTOM_EOF
+
+"$python_cmd" scripts/patch-hermes-config.py "$tmp_hermes_custom" >/dev/null
+
+grep -q '^    enabled: true$' "$tmp_hermes_custom" \
+    || fail "Hermes patcher preserves user-enabled WhatsApp"
+pass "Hermes patcher preserves user-enabled WhatsApp"
+grep -q '^      bridge_port: 3456$' "$tmp_hermes_custom" \
+    || fail "Hermes patcher preserves custom WhatsApp bridge port"
+pass "Hermes patcher preserves custom WhatsApp bridge port"
 
 echo ""
 echo "Results: $PASS passed"

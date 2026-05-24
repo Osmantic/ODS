@@ -97,7 +97,7 @@ The first start takes a minute — image is ~3GB, Hermes runs its `skills_sync.p
 - **Compression:** enabled at `compression.threshold: 0.50` with `target_ratio: 0.20` so long sessions compact before the backend hard-rejects an over-window request.
 - **Model name:** `qwen3.5-9b` (Dream Server's default LLM — to switch models, edit `model.default` in `data/hermes/config.yaml` after first start; there is no env-var hook for this)
 - **Persona (`SOUL.md`):** a generalist Dream-Server-aware persona (see `extensions/services/hermes/SOUL.md.template`)
-- **Messaging gateways DISABLED:** Telegram / Discord / Slack / WhatsApp / Signal / Teams / Google Chat / Matrix / Mattermost / SMS — all off by default. Dream Server owner-card users reach Hermes through the Dream Talk mobile portal, while advanced users can still open the full Hermes web dashboard. To enable any platform, see [upstream messaging docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/).
+- **Messaging gateways DISABLED:** Telegram / Discord / Slack / WhatsApp / Signal / Teams / Google Chat / Matrix / Mattermost / SMS — all off by default. Dream Server owner-card users reach Hermes through the Dream Talk mobile portal, while advanced users can still open the full Hermes web dashboard. WhatsApp is pre-seeded as disabled with `bridge_port: 3010` so upstream's default `3000` bridge does not collide with Open WebUI when users intentionally enable it. To enable any platform, see [upstream messaging docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/).
 - **Network exposure:** Hermes is **not directly LAN-reachable**. Once the `hermes-proxy` extension is enabled (see [docs/HERMES-SSO.md](HERMES-SSO.md)), the proxy at port 9120 fronts Hermes and gates access on Dream Server's magic-link cookie. Hermes's own port 9119 is internal-only. To restore direct access (e.g. for testing without auth), re-add a `ports:` binding to `extensions/services/hermes/compose.yaml`.
 - **Resource caps:** 4 CPUs / 4GB RAM hard limit, 0.5 CPU / 1GB reservation. Hermes's playwright + ML deps can be hungry; adjust in `extensions/services/hermes/compose.yaml` if needed.
 
@@ -106,7 +106,7 @@ The first start takes a minute — image is ~3GB, Hermes runs its `skills_sync.p
 Three layers, highest to lowest precedence:
 
 1. **Edit `data/hermes/config.yaml`** directly — Hermes's own config file, copied from our template on first start. Survives container restarts. Reset by deleting and restarting. **The model name lives here**, not in env.
-2. **Set env vars in Dream Server's `.env`** — `HERMES_LLM_BASE_URL`, `HERMES_LLM_API_KEY`, `HERMES_LANGUAGE`, and the `HERMES_PROXY_*` proxy settings. Hermes itself has no host-port env knob in the auth-gated stack; the LAN-facing port is `HERMES_PROXY_PORT`.
+2. **Set env vars in Dream Server's `.env`** — `HERMES_LLM_BASE_URL`, `HERMES_LLM_API_KEY`, `HERMES_LANGUAGE`, optional `WHATSAPP_*` gateway settings, and the `HERMES_PROXY_*` proxy settings. Hermes itself has no host-port env knob in the auth-gated stack; the LAN-facing port is `HERMES_PROXY_PORT`.
 3. **Fall back to Dream Server's defaults** — defined in `extensions/services/hermes/cli-config.yaml.template`.
 
 To bring up Hermes pointing at a different LLM (e.g. OpenRouter, OpenAI, Anthropic), edit `data/hermes/config.yaml`'s `model.provider` and `model.base_url` and restart. The whole gamut of provider options is listed in the upstream config — Hermes supports OpenRouter / Anthropic / OpenAI / Hugging Face / NVIDIA NIM / z.ai / Kimi / Gemini / Ollama Cloud / LM Studio / etc. out of the box.
@@ -180,6 +180,20 @@ docker exec dream-hermes curl -fs http://llama-server:8080/v1/models
 ```
 
 If that fails, the most likely cause is that the Hermes container isn't on Dream Server's docker network. Check `docker network inspect dream-server_default`.
+
+### WhatsApp reports port 3000 already in use
+
+Dream Server's bundled Hermes config uses `platforms.whatsapp.extra.bridge_port: 3010`, and the Hermes container does not bind that bridge to the host. If you see a WhatsApp bridge conflict on port 3000, you are probably running Hermes Agent natively, running upstream Hermes with host networking, or using an older `data/hermes/config.yaml` copied before this default existed.
+
+Set the WhatsApp bridge port in `data/hermes/config.yaml` and restart Hermes:
+
+```yaml
+platforms:
+  whatsapp:
+    enabled: true
+    extra:
+      bridge_port: 3010
+```
 
 ### Hermes says context length exceeded or max compression attempts reached
 
