@@ -53,9 +53,21 @@ else
     mkdir -p "$INSTALL_DIR"/data/langfuse/{postgres,clickhouse,redis,minio}
     mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,openclaw,searxng}
 
+    # Hermes runs its gateway/dashboard as the in-container `hermes` user
+    # (uid 10000) and keeps HERMES_HOME at data/hermes mounted as /opt/data.
+    # Upstream intentionally makes that directory 0700. A reinstall running
+    # as the host user must not "repair" it back to uid 1000, or Hermes's web
+    # status and Dream Talk JSON-RPC paths fail with PermissionError.
+    if [[ "${ENABLE_HERMES:-false}" == "true" && -d "$INSTALL_DIR/data/hermes" ]]; then
+        sudo chown -R 10000:10000 "$INSTALL_DIR/data/hermes" 2>/dev/null || \
+            warn "Failed to restore data/hermes ownership to Hermes uid 10000 (Hermes dashboard may be unhealthy)"
+        sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || true
+    fi
+
     # Fix ownership of data/config dirs that may have been created by containers
     # (e.g. SearXNG runs as uid 977, ComfyUI data owned by root)
     for _data_dir in "$INSTALL_DIR"/data/*/; do
+        [[ "${ENABLE_HERMES:-false}" == "true" && "$_data_dir" == "$INSTALL_DIR/data/hermes/" ]] && continue
         if [[ -d "$_data_dir" ]] && ! [[ -w "$_data_dir" ]]; then
             sudo chown -R "$(id -u):$(id -g)" "$_data_dir" 2>/dev/null || true
         fi
@@ -72,6 +84,7 @@ else
         for _root in config data; do
             [[ -d "$INSTALL_DIR/$_root" ]] || continue
             for _d in "$INSTALL_DIR/$_root"/*/; do
+                [[ "${ENABLE_HERMES:-false}" == "true" && "$_d" == "$INSTALL_DIR/data/hermes/" ]] && continue
                 [[ -d "$_d" ]] && ! [[ -w "$_d" ]] && _cant_write="$_cant_write ${_d#$INSTALL_DIR/}"
             done
         done
