@@ -32,7 +32,6 @@ Environment:
   LEMONADE_E2E_MOCK_IMAGE  Python image for --mock. Default: python:3.12-bookworm
   LEMONADE_E2E_PORT      Host port for --mock. Default: auto-selected free port
   LEMONADE_E2E_LITELLM_PORT  Host LiteLLM port. Default: auto-selected free port
-  LEMONADE_E2E_ALLOW_CLEAN   Set true to remove a pre-existing dream-litellm container
 EOF
 }
 
@@ -127,8 +126,9 @@ suffix="$(date +%s)-$$"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/dream-external-lemonade-e2e.XXXXXX")"
 runtime_dir="$work_dir/dream-server"
 mock_container="dream-lemonade-mock-$suffix"
-litellm_container="dream-litellm"
+litellm_container="dream-litellm-e2e-$suffix"
 compose_project="dream-external-lemonade-e2e-$suffix"
+litellm_override_file="e2e-litellm-container.override.yml"
 
 cleanup() {
     set +e
@@ -139,6 +139,7 @@ cleanup() {
             -f docker-compose.cloud.yml \
             -f docker-compose.lemonade-external.yml \
             -f extensions/services/litellm/compose.yaml \
+            -f "$litellm_override_file" \
             down --remove-orphans >/dev/null 2>&1)
     fi
     docker rm -f "$mock_container" >/dev/null 2>&1
@@ -153,14 +154,6 @@ trap cleanup EXIT
 note "Preparing temporary Dream Server tree at $runtime_dir"
 mkdir -p "$runtime_dir"
 (cd "$ROOT_DIR" && tar --exclude='.git' --exclude='.pytest_cache' -cf - .) | (cd "$runtime_dir" && tar -xf -)
-
-if docker ps -a --format '{{.Names}}' | grep -qx "$litellm_container"; then
-    if [[ "${LEMONADE_E2E_ALLOW_CLEAN:-false}" == "true" ]]; then
-        docker rm -f "$litellm_container" >/dev/null
-    else
-        fail "container $litellm_container already exists; stop Dream Server or set LEMONADE_E2E_ALLOW_CLEAN=true"
-    fi
-fi
 
 model="${LEMONADE_E2E_MODEL:-Qwen3-0.6B-GGUF}"
 lemonade_key="${LEMONADE_E2E_API_KEY:-sk-e2e-lemonade}"
@@ -292,6 +285,12 @@ DREAM_SESSION_SECRET=e2e-session-secret
 ENV
 chmod 600 .env
 
+cat > "$litellm_override_file" <<YAML
+services:
+  litellm:
+    container_name: ${litellm_container}
+YAML
+
 "$PY" -c 'import yaml' >/dev/null 2>&1 || fail "PyYAML is required for compose resolver"
 flags="$(LEMONADE_EXTERNAL=true DREAM_MODE=lemonade AMD_INFERENCE_RUNTIME=lemonade AMD_INFERENCE_MANAGED=false \
     DREAM_PYTHON_CMD="$PY" ./scripts/resolve-compose-stack.sh \
@@ -312,6 +311,7 @@ docker compose \
     -f docker-compose.cloud.yml \
     -f docker-compose.lemonade-external.yml \
     -f extensions/services/litellm/compose.yaml \
+    -f "$litellm_override_file" \
     up -d litellm >/dev/null
 
 wait_url "http://127.0.0.1:${litellm_port}/health/readiness" "LiteLLM readiness is reachable" 180 \
