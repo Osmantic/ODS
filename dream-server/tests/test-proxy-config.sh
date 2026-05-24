@@ -76,28 +76,39 @@ mkdir -p "$EXT_DIR"
 
 # Valid: compose present, proxy block valid -> fragment expected
 write_manifest "$EXT_DIR/alpha" "alpha" "8001" "proxy:
-  subdomain: alpha"
+  subdomain: alpha
+  exposure: user
+  auth: service"
 touch "$EXT_DIR/alpha/compose.yaml"
 
 # Valid + client_max_body
 write_manifest "$EXT_DIR/beta" "beta" "8002" "proxy:
   subdomain: beta
+  exposure: user
+  auth: service
   client_max_body: 75MB"
 touch "$EXT_DIR/beta/compose.yaml"
 
 # Compose disabled -> NO fragment
 write_manifest "$EXT_DIR/disabled" "disabled" "8003" "proxy:
-  subdomain: disabled"
+  subdomain: disabled
+  exposure: user
+  auth: service"
 touch "$EXT_DIR/disabled/compose.yaml.disabled"
 
-# Reserved subdomain -> NO fragment (skipped with warning)
+# Reserved subdomain -> NO fragment (skipped with warning) — checked
+# BEFORE the profile filter so the audit fires regardless of profile.
 write_manifest "$EXT_DIR/reserve" "reserve" "8004" "proxy:
-  subdomain: chat"
+  subdomain: chat
+  exposure: user
+  auth: service"
 touch "$EXT_DIR/reserve/compose.yaml"
 
 # Malformed subdomain -> NO fragment
 write_manifest "$EXT_DIR/bad" "bad" "8005" "proxy:
-  subdomain: Bad_Name"
+  subdomain: Bad_Name
+  exposure: user
+  auth: service"
 touch "$EXT_DIR/bad/compose.yaml"
 
 # No proxy block -> NO fragment (silent)

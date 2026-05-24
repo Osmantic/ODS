@@ -659,6 +659,33 @@ def validate_records(
                             path=record.manifest_path,
                         )
 
+                exposure = proxy.get("exposure")
+                if exposure is not None and exposure not in {"user", "developer-api", "internal"}:
+                    record.add_issue(
+                        "error",
+                        "proxy-exposure-invalid",
+                        "manifest.proxy.exposure must be one of: user, developer-api, internal",
+                        path=record.manifest_path,
+                    )
+
+                auth = proxy.get("auth")
+                if auth is not None and auth not in {"service", "dream-session", "none"}:
+                    record.add_issue(
+                        "error",
+                        "proxy-auth-invalid",
+                        "manifest.proxy.auth must be one of: service, dream-session, none",
+                        path=record.manifest_path,
+                    )
+
+                if exposure == "user" and auth == "none":
+                    record.add_issue(
+                        "warning",
+                        "proxy-user-route-unauthenticated",
+                        "manifest.proxy with exposure=user and auth=none will be rejected by the resolver "
+                        "unless DREAM_PROXY_ALLOW_UNAUTHENTICATED_USER=true is set",
+                        path=record.manifest_path,
+                    )
+
         env_vars = service.get("env_vars")
         if env_vars is not None and not isinstance(env_vars, list):
             record.add_issue(
