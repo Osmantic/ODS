@@ -157,6 +157,127 @@ unset DREAM_PROXY_EXCLUSIVE
 bash "$SCRIPT_DIR/scripts/resolve-proxy-config.sh" --script-dir "$TMPROOT" 2>&1 | grep -v '^WARN' >/dev/null || true
 assert_file_absent "$TMPROOT/docker-compose.proxy-exclusive.yml" "exclusive overlay cleaned up"
 
+# ============================================================================
+# Profile + auth-policy assertions
+# ============================================================================
+# Build a second fixture tree so profile-aware filtering is exercised in
+# isolation from the EXCLUSIVE overlay tests above.
+
+POLICY_ROOT="$(mktemp -d)"
+trap 'rm -rf "$TMPROOT" "$POLICY_ROOT"' EXIT
+POLICY_EXT_DIR="$POLICY_ROOT/extensions/services"
+mkdir -p "$POLICY_EXT_DIR"
+POLICY_SITES_D="$POLICY_ROOT/data/dream-proxy/sites.d"
+mkdir -p "$POLICY_SITES_D"
+
+# user/service — should appear under every profile
+write_manifest "$POLICY_EXT_DIR/userui" "userui" "9001" "proxy:
+  subdomain: userui
+  exposure: user
+  auth: service"
+touch "$POLICY_EXT_DIR/userui/compose.yaml"
+
+# developer-api/none — should appear under developer + all, not under user
+write_manifest "$POLICY_EXT_DIR/devapi" "devapi" "9002" "proxy:
+  subdomain: devapi
+  exposure: developer-api
+  auth: none"
+touch "$POLICY_EXT_DIR/devapi/compose.yaml"
+
+# internal/service — should appear only under all
+write_manifest "$POLICY_EXT_DIR/internal" "internal" "9003" "proxy:
+  subdomain: internal
+  exposure: internal
+  auth: service"
+touch "$POLICY_EXT_DIR/internal/compose.yaml"
+
+# user/dream-session — used to exercise forward_auth emission
+write_manifest "$POLICY_EXT_DIR/gated" "gated" "9004" "proxy:
+  subdomain: gated
+  exposure: user
+  auth: dream-session"
+touch "$POLICY_EXT_DIR/gated/compose.yaml"
+
+# Reserved subdomain — must still be rejected regardless of profile
+write_manifest "$POLICY_EXT_DIR/reserved2" "reserved2" "9005" "proxy:
+  subdomain: chat
+  exposure: developer-api
+  auth: none"
+touch "$POLICY_EXT_DIR/reserved2/compose.yaml"
+
+# Duplicate subdomain check — claim `userui` again, should be skipped
+write_manifest "$POLICY_EXT_DIR/zdup" "zdup" "9006" "proxy:
+  subdomain: userui
+  exposure: user
+  auth: service"
+touch "$POLICY_EXT_DIR/zdup/compose.yaml"
+
+echo "[policy] default profile (user) emits only exposure=user"
+unset DREAM_PROXY_EXCLUSIVE DREAM_PROXY_PROFILE DREAM_PROXY_ALLOW_UNAUTHENTICATED_USER
+rm -f "$POLICY_SITES_D"/*.caddy
+bash "$SCRIPT_DIR/scripts/resolve-proxy-config.sh" --script-dir "$POLICY_ROOT" 2>/dev/null || true
+assert_file_exists "$POLICY_SITES_D/userui.caddy"  "userui fragment under user profile"
+assert_file_absent "$POLICY_SITES_D/devapi.caddy"  "devapi fragment under user profile"
+assert_file_absent "$POLICY_SITES_D/internal.caddy" "internal fragment under user profile"
+assert_file_absent "$POLICY_SITES_D/reserved2.caddy" "reserved-subdomain fragment under user profile"
+assert_grep '^# Profile: user' "$POLICY_SITES_D/userui.caddy" "userui fragment header records profile"
+
+echo "[policy] developer profile adds developer-api routes"
+rm -f "$POLICY_SITES_D"/*.caddy
+DREAM_PROXY_PROFILE=developer bash "$SCRIPT_DIR/scripts/resolve-proxy-config.sh" --script-dir "$POLICY_ROOT" 2>/dev/null || true
+assert_file_exists "$POLICY_SITES_D/userui.caddy"  "userui fragment under developer profile"
+assert_file_exists "$POLICY_SITES_D/devapi.caddy"  "devapi fragment under developer profile"
+assert_file_absent "$POLICY_SITES_D/internal.caddy" "internal fragment still absent under developer profile"
+
+echo "[policy] all profile adds internal routes"
+rm -f "$POLICY_SITES_D"/*.caddy
+DREAM_PROXY_PROFILE=all bash "$SCRIPT_DIR/scripts/resolve-proxy-config.sh" --script-dir "$POLICY_ROOT" 2>/dev/null || true
+assert_file_exists "$POLICY_SITES_D/internal.caddy" "internal fragment under all profile"
+
+echo "[policy] exposure=user + auth=none is rejected by default"
+rm -f "$POLICY_SITES_D"/*.caddy
+# Drop a fixture that should trip the safety check.
+write_manifest "$POLICY_EXT_DIR/badauth" "badauth" "9007" "proxy:
+  subdomain: badauth
+  exposure: user
+  auth: none"
+touch "$POLICY_EXT_DIR/badauth/compose.yaml"
+if bash "$SCRIPT_DIR/scripts/resolve-proxy-config.sh" --script-dir "$POLICY_ROOT" >/dev/null 2>&1; then
+    fail "resolver should exit non-zero when exposure=user + auth=none without override"
+else
+    pass "resolver refuses exposure=user + auth=none without override"
+fi
+DREAM_PROXY_ALLOW_UNAUTHENTICATED_USER=true bash "$SCRIPT_DIR/scripts/resolve-proxy-config.sh" --script-dir "$POLICY_ROOT" 2>/dev/null || true
+assert_file_exists "$POLICY_SITES_D/badauth.caddy" "badauth emitted once override is set"
+# Remove the badauth fixture so the next assertions are clean.
+rm -rf "$POLICY_EXT_DIR/badauth"
+
+echo "[policy] auth=dream-session emits forward_auth pattern"
+rm -f "$POLICY_SITES_D"/*.caddy
+bash "$SCRIPT_DIR/scripts/resolve-proxy-config.sh" --script-dir "$POLICY_ROOT" 2>/dev/null || true
+assert_file_exists "$POLICY_SITES_D/gated.caddy" "gated (auth=dream-session) fragment emitted"
+assert_grep 'forward_auth' "$POLICY_SITES_D/gated.caddy" "gated fragment contains forward_auth"
+assert_grep '/api/auth/verify-session' "$POLICY_SITES_D/gated.caddy" "gated fragment hits verify-session"
+assert_grep '@health path /health /healthz' "$POLICY_SITES_D/gated.caddy" "gated fragment keeps /health public"
+assert_grep 'header_up -Sec-Websocket-Key' "$POLICY_SITES_D/gated.caddy" "gated fragment strips WS upgrade headers from auth sub-request"
+assert_grep 'redir \* /auth/required 303' "$POLICY_SITES_D/gated.caddy" "gated fragment bounces 401/403 to /auth/required"
+
+echo "[policy] duplicate / reserved subdomains rejected under any profile"
+rm -f "$POLICY_SITES_D"/*.caddy
+# `zdup` claims the same subdomain as `userui`; resolver should keep the
+# first and warn on the second regardless of profile.
+DREAM_PROXY_PROFILE=all bash "$SCRIPT_DIR/scripts/resolve-proxy-config.sh" --script-dir "$POLICY_ROOT" 2>/dev/null || true
+assert_file_exists "$POLICY_SITES_D/userui.caddy" "first claimant kept on duplicate subdomain"
+assert_file_absent "$POLICY_SITES_D/zdup.caddy"    "duplicate claimant skipped"
+assert_file_absent "$POLICY_SITES_D/reserved2.caddy" "reserved subdomain skipped even under profile=all"
+
+echo "[policy] EXCLUSIVE=true under user profile only strips emitted routes"
+rm -f "$POLICY_SITES_D"/*.caddy
+DREAM_PROXY_EXCLUSIVE=true bash "$SCRIPT_DIR/scripts/resolve-proxy-config.sh" --script-dir "$POLICY_ROOT" 2>/dev/null || true
+assert_grep '^  userui:' "$POLICY_ROOT/docker-compose.proxy-exclusive.yml" "userui present in proxy-exclusive overlay under user profile"
+assert_no_grep '^  devapi:' "$POLICY_ROOT/docker-compose.proxy-exclusive.yml" "devapi NOT in proxy-exclusive overlay under user profile"
+assert_no_grep '^  internal:' "$POLICY_ROOT/docker-compose.proxy-exclusive.yml" "internal NOT in proxy-exclusive overlay under user profile"
+
 echo ""
 echo "=========================================="
 echo "Results: $PASS passed, $FAIL failed"

@@ -459,6 +459,38 @@ class TestExternalLinks:
         data = resp.json()
         assert len(data) == 0
 
+    def test_proxy_url_omits_port_when_default(self, test_client, monkeypatch):
+        """DREAM_PROXY_PORT=80 (default) — proxy_url stays bare hostname."""
+        import config
+        monkeypatch.setenv("DREAM_PROXY_PORT", "80")
+        monkeypatch.setenv("DREAM_DEVICE_NAME", "dream")
+        monkeypatch.setattr(config, "SERVICES", {
+            "dream-proxy": {"name": "Dream Proxy", "port": 80, "external_port": 80, "health": "/", "host": "localhost"},
+            "n8n": {"name": "n8n", "port": 5678, "external_port": 5678, "health": "/healthz", "host": "localhost", "proxy_subdomain": "n8n"},
+        })
+        monkeypatch.setattr("main.SERVICES", config.SERVICES)
+
+        resp = test_client.get("/api/external-links", headers=test_client.auth_headers)
+        assert resp.status_code == 200
+        n8n = next(link for link in resp.json() if link["id"] == "n8n")
+        assert n8n["proxy_url"] == "http://n8n.dream.local"
+
+    def test_proxy_url_includes_port_when_overridden(self, test_client, monkeypatch):
+        """DREAM_PROXY_PORT=8080 — proxy_url must carry :8080 so the link works."""
+        import config
+        monkeypatch.setenv("DREAM_PROXY_PORT", "8080")
+        monkeypatch.setenv("DREAM_DEVICE_NAME", "dream")
+        monkeypatch.setattr(config, "SERVICES", {
+            "dream-proxy": {"name": "Dream Proxy", "port": 80, "external_port": 80, "health": "/", "host": "localhost"},
+            "n8n": {"name": "n8n", "port": 5678, "external_port": 5678, "health": "/healthz", "host": "localhost", "proxy_subdomain": "n8n"},
+        })
+        monkeypatch.setattr("main.SERVICES", config.SERVICES)
+
+        resp = test_client.get("/api/external-links", headers=test_client.auth_headers)
+        assert resp.status_code == 200
+        n8n = next(link for link in resp.json() if link["id"] == "n8n")
+        assert n8n["proxy_url"] == "http://n8n.dream.local:8080"
+
 
 # --- /api/storage ---
 
