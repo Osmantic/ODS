@@ -4,6 +4,24 @@ model_list:
       model: anthropic/claude-sonnet-4-5-20250514
       api_key: os.environ/ANTHROPIC_API_KEY
 
+  - model_name: cloud
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5-20250514
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: private-cloud
+    litellm_params:
+      model: openai/${CLOUD_LLM_MODEL}
+      api_base: os.environ/CLOUD_LLM_BASE_URL
+      api_key: os.environ/CLOUD_LLM_API_KEY
+
+  # Back-compat alias for early private-cloud/LM Studio testers.
+  - model_name: local-lan
+    litellm_params:
+      model: openai/${CLOUD_LLM_MODEL}
+      api_base: os.environ/CLOUD_LLM_BASE_URL
+      api_key: os.environ/CLOUD_LLM_API_KEY
+
   - model_name: gpt4o
     litellm_params:
       model: openai/gpt-4o

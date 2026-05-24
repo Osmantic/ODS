@@ -250,6 +250,57 @@ if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
     export LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_API_KEY
 fi
 
+_normalize_openai_base_url() {
+    local url="${1:-}"
+    url="${url%/}"
+    [[ -z "$url" ]] && return 0
+    case "$url" in
+        */v1|*/api/v1) printf '%s\n' "$url" ;;
+        *) printf '%s/v1\n' "$url" ;;
+    esac
+}
+
+if [[ "${DREAM_MODE:-local}" == "cloud" ]]; then
+    # Cloud mode is also used as "private cloud": Dream Server runs in a VM/WSL
+    # while an OpenAI-compatible server such as LM Studio runs on the host/LAN.
+    # Capture that upstream explicitly so users do not have to hand-edit .env.
+    CLOUD_LLM_BASE_URL="${CLOUD_LLM_BASE_URL:-${OPENAI_BASE_URL:-${OPENAI_API_BASE_URL:-}}}"
+    if [[ -z "$CLOUD_LLM_BASE_URL" && -n "${LLM_API_URL:-}" ]]; then
+        case "$LLM_API_URL" in
+            http://litellm:*|http://litellm/*|http://llama-server:*|http://llama-server/*) ;;
+            *) CLOUD_LLM_BASE_URL="$LLM_API_URL" ;;
+        esac
+    fi
+    CLOUD_LLM_BASE_URL="$(_normalize_openai_base_url "$CLOUD_LLM_BASE_URL")"
+    CLOUD_LLM_MODEL="${CLOUD_LLM_MODEL:-${LLM_MODEL:-qwen3.5-9b}}"
+    CLOUD_LLM_API_KEY="${CLOUD_LLM_API_KEY:-${OPENAI_API_KEY:-}}"
+    if [[ -n "$CLOUD_LLM_BASE_URL" && -z "$CLOUD_LLM_API_KEY" ]]; then
+        CLOUD_LLM_API_KEY="sk-local"
+    fi
+
+    if [[ "$INTERACTIVE" == "true" && "$DRY_RUN" != "true" ]]; then
+        echo ""
+        echo -e "${BGRN}Cloud / private-cloud LLM upstream${NC}"
+        echo -e "  ${DIM}Optional. Leave blank for hosted cloud providers; set this for LM Studio on the host/LAN.${NC}"
+        _cloud_base_prompt="${CLOUD_LLM_BASE_URL:-none}"
+        read -r -p "  OpenAI-compatible base URL [${_cloud_base_prompt}]: " _cloud_base < /dev/tty
+        [[ -n "$_cloud_base" ]] && CLOUD_LLM_BASE_URL="$(_normalize_openai_base_url "$_cloud_base")"
+        if [[ -n "$CLOUD_LLM_BASE_URL" ]]; then
+            read -r -p "  Private-cloud model id [${CLOUD_LLM_MODEL}]: " _cloud_model < /dev/tty
+            [[ -n "$_cloud_model" ]] && CLOUD_LLM_MODEL="$_cloud_model"
+            _cloud_key_prompt="not set"
+            [[ -n "$CLOUD_LLM_API_KEY" ]] && _cloud_key_prompt="set, press Enter to keep"
+            read -r -s -p "  Private-cloud API key [${_cloud_key_prompt}]: " _cloud_key < /dev/tty
+            echo
+            [[ -n "$_cloud_key" ]] && CLOUD_LLM_API_KEY="$_cloud_key"
+            [[ -z "$CLOUD_LLM_API_KEY" ]] && CLOUD_LLM_API_KEY="sk-local"
+        fi
+        unset _cloud_base _cloud_model _cloud_key _cloud_key_prompt _cloud_base_prompt
+    fi
+
+    export CLOUD_LLM_BASE_URL CLOUD_LLM_MODEL CLOUD_LLM_API_KEY
+fi
+
 # OpenClaw deprecation back-compat: preserve OpenClaw on UPGRADES of installs
 # that previously had it enabled. The earlier heuristic — "does the compose
 # file exist on disk?" — was wrong: extensions/services/openclaw/compose.yaml

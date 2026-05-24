@@ -39,9 +39,19 @@ echo "=============================="
 echo ""
 
 # Resolve ports from registry + env overrides
-LLM_PORT="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-${SERVICE_PORTS[llama-server]:-11434}}}"
-LLM_HEALTH="${SERVICE_HEALTH[llama-server]:-/health}"
-LLM_CONTAINER="${SERVICE_CONTAINERS[llama-server]:-dream-llama-server}"
+if [[ "${DREAM_MODE:-local}" == "cloud" ]]; then
+    LLM_SERVICE_ID="litellm"
+    LLM_LABEL="LiteLLM gateway"
+    LLM_PORT="${SERVICE_PORTS[litellm]:-${LITELLM_PORT:-4000}}"
+    LLM_HEALTH="${SERVICE_HEALTH[litellm]:-/health/readiness}"
+    LLM_CONTAINER="${SERVICE_CONTAINERS[litellm]:-dream-litellm}"
+else
+    LLM_SERVICE_ID="llama-server"
+    LLM_LABEL="llama-server API"
+    LLM_PORT="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-${SERVICE_PORTS[llama-server]:-11434}}}"
+    LLM_HEALTH="${SERVICE_HEALTH[llama-server]:-/health}"
+    LLM_CONTAINER="${SERVICE_CONTAINERS[llama-server]:-dream-llama-server}"
+fi
 WEBUI_PORT="${SERVICE_PORTS[open-webui]:-3000}"
 WEBUI_HEALTH="${SERVICE_HEALTH[open-webui]:-/}"
 
@@ -65,16 +75,20 @@ else
     exit 1
 fi
 
-# Check llama-server health
+# Check inference health
 CURL_HEALTH_FLAGS=(--connect-timeout 3 --max-time 10)
 
-echo -n "llama-server API (port $LLM_PORT)... "
+echo -n "$LLM_LABEL (port $LLM_PORT)... "
 if curl -sf "${CURL_HEALTH_FLAGS[@]}" "http://127.0.0.1:${LLM_PORT}${LLM_HEALTH}" >/dev/null 2>&1; then
     echo -e "${GREEN}✓ healthy${NC}"
 else
     echo -e "${YELLOW}⚠ starting up${NC}"
-    echo "  The model is still loading. Wait 1-2 minutes and retry."
-    echo "  Monitor: docker compose logs -f llama-server"
+    if [[ "${DREAM_MODE:-local}" == "cloud" ]]; then
+        echo "  The LiteLLM gateway is not ready yet. Wait 1-2 minutes and retry."
+    else
+        echo "  The model is still loading. Wait 1-2 minutes and retry."
+    fi
+    echo "  Monitor: docker compose logs -f $LLM_SERVICE_ID"
 fi
 
 # Check WebUI
@@ -87,7 +101,9 @@ fi
 
 # Check GPU if available
 echo -n "GPU availability... "
-if docker exec "$LLM_CONTAINER" nvidia-smi >/dev/null 2>&1; then
+if [[ "${DREAM_MODE:-local}" == "cloud" ]]; then
+    echo -e "${YELLOW}⚠ skipped (cloud mode)${NC}"
+elif docker exec "$LLM_CONTAINER" nvidia-smi >/dev/null 2>&1; then
     GPU_MEM=$(docker exec "$LLM_CONTAINER" nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | sed -n '1p' | tr -d ' ')
     echo -e "${GREEN}✓ detected (${GPU_MEM}MB free)${NC}"
 else

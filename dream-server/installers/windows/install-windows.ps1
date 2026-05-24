@@ -111,6 +111,57 @@ $noBootstrapFlag = $NoBootstrap.IsPresent
 $installDir     = $script:DS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
 
+function Normalize-OpenAIBaseUrl {
+    param([string]$Url)
+    if ([string]::IsNullOrWhiteSpace($Url)) { return "" }
+    $trimmed = $Url.TrimEnd("/")
+    if ($trimmed.EndsWith("/v1") -or $trimmed.EndsWith("/api/v1")) { return $trimmed }
+    return "$trimmed/v1"
+}
+
+if ($cloudMode) {
+    $cloudBase = [Environment]::GetEnvironmentVariable("CLOUD_LLM_BASE_URL")
+    if ([string]::IsNullOrWhiteSpace($cloudBase)) { $cloudBase = [Environment]::GetEnvironmentVariable("OPENAI_BASE_URL") }
+    if ([string]::IsNullOrWhiteSpace($cloudBase)) { $cloudBase = [Environment]::GetEnvironmentVariable("OPENAI_API_BASE_URL") }
+    if ([string]::IsNullOrWhiteSpace($cloudBase)) {
+        $candidate = [Environment]::GetEnvironmentVariable("LLM_API_URL")
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate -notmatch "^http://(litellm|llama-server)(:|/)") {
+            $cloudBase = $candidate
+        }
+    }
+    $cloudBase = Normalize-OpenAIBaseUrl $cloudBase
+    $cloudModel = [Environment]::GetEnvironmentVariable("CLOUD_LLM_MODEL")
+    if ([string]::IsNullOrWhiteSpace($cloudModel)) { $cloudModel = [Environment]::GetEnvironmentVariable("LLM_MODEL") }
+    if ([string]::IsNullOrWhiteSpace($cloudModel)) { $cloudModel = "qwen3.5-9b" }
+    $cloudKey = [Environment]::GetEnvironmentVariable("CLOUD_LLM_API_KEY")
+    if ([string]::IsNullOrWhiteSpace($cloudKey)) { $cloudKey = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY") }
+    if (-not [string]::IsNullOrWhiteSpace($cloudBase) -and [string]::IsNullOrWhiteSpace($cloudKey)) { $cloudKey = "sk-local" }
+
+    if (-not $nonInteractive -and -not $dryRun) {
+        Write-Host ""
+        Write-Host "Cloud / private-cloud LLM upstream"
+        Write-Host "  Optional. Leave blank for hosted cloud providers; set this for LM Studio on the host/LAN."
+        $basePrompt = if ([string]::IsNullOrWhiteSpace($cloudBase)) { "none" } else { $cloudBase }
+        $inputBase = Read-Host "  OpenAI-compatible base URL [$basePrompt]"
+        if (-not [string]::IsNullOrWhiteSpace($inputBase)) { $cloudBase = Normalize-OpenAIBaseUrl $inputBase }
+        if (-not [string]::IsNullOrWhiteSpace($cloudBase)) {
+            $inputModel = Read-Host "  Private-cloud model id [$cloudModel]"
+            if (-not [string]::IsNullOrWhiteSpace($inputModel)) { $cloudModel = $inputModel }
+            $keyPrompt = if ([string]::IsNullOrWhiteSpace($cloudKey)) { "not set" } else { "set, press Enter to keep" }
+            $secureKey = Read-Host "  Private-cloud API key [$keyPrompt]" -AsSecureString
+            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
+            try { $inputKey = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+            finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+            if (-not [string]::IsNullOrWhiteSpace($inputKey)) { $cloudKey = $inputKey }
+            if ([string]::IsNullOrWhiteSpace($cloudKey)) { $cloudKey = "sk-local" }
+        }
+    }
+
+    [Environment]::SetEnvironmentVariable("CLOUD_LLM_BASE_URL", $cloudBase, "Process")
+    [Environment]::SetEnvironmentVariable("CLOUD_LLM_MODEL", $cloudModel, "Process")
+    [Environment]::SetEnvironmentVariable("CLOUD_LLM_API_KEY", $cloudKey, "Process")
+}
+
 # ── Phase dispatcher ──────────────────────────────────────────────────────────
 function Get-UsableWindowsBash {
     <#

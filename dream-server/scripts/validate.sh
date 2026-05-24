@@ -24,8 +24,18 @@ load_env_file "$PROJECT_DIR/.env"
 sr_resolve_ports
 
 # Resolve core ports from registry (honoring any env overrides)
-LLM_PORT="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-${SERVICE_PORTS[llama-server]:-11434}}}"
-LLM_HEALTH="${SERVICE_HEALTH[llama-server]:-/health}"
+DREAM_MODE="${DREAM_MODE:-local}"
+if [[ "$DREAM_MODE" == "cloud" ]]; then
+    LLM_PORT="${LITELLM_PORT:-${SERVICE_PORTS[litellm]:-4000}}"
+    LLM_HEALTH="/health/readiness"
+    LLM_SERVICE="litellm"
+    LLM_AUTH_HEADER=(-H "Authorization: Bearer ${LITELLM_KEY:-}")
+else
+    LLM_PORT="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-${SERVICE_PORTS[llama-server]:-11434}}}"
+    LLM_HEALTH="${SERVICE_HEALTH[llama-server]:-/health}"
+    LLM_SERVICE="llama-server"
+    LLM_AUTH_HEADER=()
+fi
 WEBUI_PORT="${WEBUI_PORT:-${SERVICE_PORTS[open-webui]:-3000}}"
 WEBUI_HEALTH="${WEBUI_HEALTH:-${SERVICE_HEALTH[open-webui]:-/}}"
 
@@ -36,6 +46,7 @@ if [[ -x "$PROJECT_DIR/scripts/resolve-compose-stack.sh" ]]; then
     # validation runs against the wrong stack on multi-GPU machines.
     COMPOSE_FLAGS=$("$PROJECT_DIR/scripts/resolve-compose-stack.sh" \
         --script-dir "$PROJECT_DIR" --tier "${TIER:-1}" --gpu-backend "${GPU_BACKEND:-nvidia}" \
+        --dream-mode "$DREAM_MODE" \
         --gpu-count "${GPU_COUNT:-1}")
 fi
 
@@ -64,14 +75,14 @@ check() {
 
 echo "1. Container Status"
 echo "───────────────────"
-check "llama-server running" "docker compose $COMPOSE_FLAGS ps llama-server 2>/dev/null | grep -qE 'Up|running'"
+check "$LLM_SERVICE running" "docker compose $COMPOSE_FLAGS ps $LLM_SERVICE 2>/dev/null | grep -qE 'Up|running'"
 check "Open WebUI running" "docker compose $COMPOSE_FLAGS ps open-webui 2>/dev/null | grep -qE 'Up|running'"
 
 echo ""
 echo "2. Health Endpoints"
 echo "───────────────────"
-check "llama-server health" "curl -sf --max-time 10 http://127.0.0.1:${LLM_PORT}${LLM_HEALTH}"
-check "llama-server models" "curl -sf --max-time 10 http://127.0.0.1:${LLM_PORT}/v1/models | grep -q model"
+check "$LLM_SERVICE health" "curl -sf --max-time 10 http://127.0.0.1:${LLM_PORT}${LLM_HEALTH}"
+check "$LLM_SERVICE models" "curl -sf --max-time 10 -H 'Authorization: Bearer ${LITELLM_KEY:-}' http://127.0.0.1:${LLM_PORT}/v1/models | grep -q model"
 check "WebUI reachable" "curl -sf --max-time 10 http://127.0.0.1:${WEBUI_PORT}${WEBUI_HEALTH} -o /dev/null"
 
 echo ""
@@ -80,8 +91,9 @@ echo "─────────────────"
 printf "  %-30s " "Chat completion..."
 RESPONSE=$(curl -sf --max-time 30 "http://127.0.0.1:${LLM_PORT}/v1/chat/completions" \
     -H "Content-Type: application/json" \
+    "${LLM_AUTH_HEADER[@]}" \
     -d '{
-        "model": "'"$(curl -sf --max-time 10 "http://127.0.0.1:${LLM_PORT}/v1/models" | jq -r '.data[0].id // "local"')"'",
+        "model": "'"$(curl -sf --max-time 10 "${LLM_AUTH_HEADER[@]}" "http://127.0.0.1:${LLM_PORT}/v1/models" | jq -r '.data[0].id // "default"')"'",
         "messages": [{"role": "user", "content": "Say OK"}],
         "max_tokens": 10
     }' 2>/dev/null) || RESPONSE=""
@@ -142,7 +154,7 @@ else
     echo ""
     echo "   Troubleshooting:"
     echo "   - Check logs:  docker compose logs -f"
-    echo "   - LLM logs:    docker compose logs -f llama-server"
+    echo "   - LLM logs:    docker compose logs -f ${LLM_SERVICE}"
     echo "   - Restart:     docker compose restart"
     echo ""
     exit 1

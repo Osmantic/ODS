@@ -122,6 +122,16 @@ function New-DreamEnv {
         return $Default
     }
 
+    function Normalize-OpenAIBaseUrl {
+        param([string]$Url)
+        if ([string]::IsNullOrWhiteSpace($Url)) { return "" }
+        $trimmed = $Url.TrimEnd("/")
+        if ($trimmed.EndsWith("/v1") -or $trimmed.EndsWith("/api/v1")) {
+            return $trimmed
+        }
+        return "$trimmed/v1"
+    }
+
     function Select-AutoCpuValue {
         param(
             [string]$Key,
@@ -279,6 +289,28 @@ function New-DreamEnv {
     } else {
         "http://llama-server:8080"
     })
+    $cloudLlmBaseUrl = ""
+    $cloudLlmApiKey = ""
+    $cloudLlmModel = ""
+    if ($DreamMode -eq "cloud") {
+        $cloudBaseDefault = [Environment]::GetEnvironmentVariable("CLOUD_LLM_BASE_URL")
+        if ([string]::IsNullOrWhiteSpace($cloudBaseDefault)) { $cloudBaseDefault = [Environment]::GetEnvironmentVariable("OPENAI_BASE_URL") }
+        if ([string]::IsNullOrWhiteSpace($cloudBaseDefault)) { $cloudBaseDefault = [Environment]::GetEnvironmentVariable("OPENAI_API_BASE_URL") }
+        if ([string]::IsNullOrWhiteSpace($cloudBaseDefault)) {
+            $candidateLlmUrl = [Environment]::GetEnvironmentVariable("LLM_API_URL")
+            if (-not [string]::IsNullOrWhiteSpace($candidateLlmUrl) -and
+                $candidateLlmUrl -notmatch "^http://(litellm|llama-server)(:|/)") {
+                $cloudBaseDefault = $candidateLlmUrl
+            }
+        }
+        $cloudLlmBaseUrl = Normalize-OpenAIBaseUrl (Get-EnvOrProcessOrDefault "CLOUD_LLM_BASE_URL" $cloudBaseDefault)
+        $cloudKeyDefault = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY")
+        if ([string]::IsNullOrWhiteSpace($cloudKeyDefault)) { $cloudKeyDefault = "" }
+        $cloudLlmApiKey = Get-EnvOrProcessOrDefault "CLOUD_LLM_API_KEY" $cloudKeyDefault
+        if (-not [string]::IsNullOrWhiteSpace($cloudLlmBaseUrl) -and [string]::IsNullOrWhiteSpace($cloudLlmApiKey)) { $cloudLlmApiKey = "sk-local" }
+        $cloudLlmModel = Get-EnvOrProcessOrDefault "CLOUD_LLM_MODEL" "$(if ([Environment]::GetEnvironmentVariable("LLM_MODEL")) { [Environment]::GetEnvironmentVariable("LLM_MODEL") } else { $TierConfig.LlmModel })"
+        if ([string]::IsNullOrWhiteSpace($cloudLlmModel)) { $cloudLlmModel = "qwen3.5-9b" }
+    }
 
     # Timezone -- convert Windows timezone ID to IANA for Docker containers
     $tz = $(try {
@@ -354,6 +386,9 @@ ANTHROPIC_API_KEY=$(Get-EnvOrNew "ANTHROPIC_API_KEY" "")
 OPENAI_API_KEY=$(Get-EnvOrNew "OPENAI_API_KEY" "")
 TOGETHER_API_KEY=$(Get-EnvOrNew "TOGETHER_API_KEY" "")
 MINIMAX_API_KEY=$(Get-EnvOrNew "MINIMAX_API_KEY" "")
+CLOUD_LLM_BASE_URL=$cloudLlmBaseUrl
+CLOUD_LLM_API_KEY=$cloudLlmApiKey
+CLOUD_LLM_MODEL=$cloudLlmModel
 
 #=== LLM Settings (llama-server) ===
 MODEL_PROFILE=$(Get-EnvOrNew "MODEL_PROFILE" "$(if ($TierConfig.ModelProfileRequested) { $TierConfig.ModelProfileRequested } else { "qwen" })")
@@ -418,8 +453,8 @@ OPENCLAW_PORT=$openclawPort
 SEARXNG_PORT=$searxngPort
 
 #=== Hermes Agent ===
-HERMES_LLM_BASE_URL=$llmApiUrl$llmApiBasePath
-HERMES_LLM_API_KEY=sk-dream-hermes-local
+HERMES_LLM_BASE_URL=$(if ($DreamMode -eq "cloud") { "http://litellm:4000/v1" } else { "$llmApiUrl$llmApiBasePath" })
+HERMES_LLM_API_KEY=$(if ($DreamMode -eq "cloud") { $litellmKey } else { "sk-dream-hermes-local" })
 HERMES_LANGUAGE=en
 HERMES_PROXY_PORT=$hermesProxyPort
 HERMES_PROXY_UPSTREAM=dream-hermes:9119

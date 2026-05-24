@@ -306,6 +306,31 @@ class TestReadinessPayload:
         assert result["canUseVoice"] is False
         assert any(check["id"] == "voice" and check["status"] == "disabled" for check in result["checks"])
 
+    def test_cloud_chat_readiness_uses_litellm_not_llama(self, monkeypatch):
+        from models import BootstrapStatus, ServiceStatus
+
+        monkeypatch.setattr("main.DREAM_MODE", "cloud")
+        statuses = [
+            ServiceStatus(id="litellm", name="LiteLLM", port=4000, external_port=4000, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status="healthy"),
+        ]
+
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="private-cloud",
+            context_size=None,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=None,
+            stt_model_name="Systran/faster-whisper-base",
+        )
+
+        assert result["ready"] is True
+        assert result["canChat"] is True
+        chat = next(check for check in result["checks"] if check["id"] == "chat")
+        assert chat["ready"] is True
+        assert "litellm" in chat["detail"]
+
     def test_missing_model_blocks_chat(self):
         from models import BootstrapStatus, ServiceStatus
 

@@ -37,6 +37,10 @@ def _read_env_from_file(key: str) -> str:
     return ""
 
 
+DREAM_MODE = os.environ.get("DREAM_MODE") or _read_env_from_file("DREAM_MODE") or "local"
+LLM_BACKEND = os.environ.get("LLM_BACKEND") or _read_env_from_file("LLM_BACKEND")
+
+
 # --- Manifest Loading ---
 
 
@@ -169,7 +173,6 @@ if not SERVICES:
 
 # Lemonade serves at /api/v1 instead of llama.cpp's /v1. Override the
 # health path so the dashboard poll loop hits the correct endpoint.
-LLM_BACKEND = os.environ.get("LLM_BACKEND", "")
 if LLM_BACKEND == "lemonade" and "llama-server" in SERVICES:
     SERVICES["llama-server"]["health"] = "/api/v1/health"
     logger.info("Lemonade backend detected — overriding llama-server health to /api/v1/health")
@@ -281,7 +284,9 @@ CORE_SERVICE_IDS = _load_core_service_ids()
 
 # Always-on services defined in docker-compose.base.yml — never manageable via API.
 # Distinct from CORE_SERVICE_IDS (the full built-in service allowlist).
-ALWAYS_ON_SERVICES: frozenset = frozenset({"llama-server", "open-webui", "dashboard", "dashboard-api"})
+_always_on_services = {"open-webui", "dashboard", "dashboard-api"}
+_always_on_services.add("litellm" if DREAM_MODE == "cloud" else "llama-server")
+ALWAYS_ON_SERVICES: frozenset = frozenset(_always_on_services)
 
 
 def load_extension_catalog() -> list[dict]:

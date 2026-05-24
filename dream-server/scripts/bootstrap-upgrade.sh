@@ -360,9 +360,12 @@ if [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=dream-llama-server --f
 
     # Read GPU backend from .env (needed for health endpoint and restart strategy)
     _gpu_backend=""
+    _dream_mode=""
     if [[ -f "$ENV_FILE" ]]; then
         _gpu_backend=$(grep -E '^GPU_BACKEND=' "$ENV_FILE" | cut -d= -f2 | tr -d '"\047\r')
+        _dream_mode=$(grep -E '^DREAM_MODE=' "$ENV_FILE" | cut -d= -f2 | tr -d '"\047\r')
     fi
+    [[ -n "$_dream_mode" ]] || _dream_mode="local"
 
     # Detect compose files
     COMPOSE_ARGS=()
@@ -378,6 +381,7 @@ if [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=dream-llama-server --f
             --script-dir "$INSTALL_DIR" \
             --tier "$_tier" \
             --gpu-backend "${_gpu_backend:-cpu}" \
+            --dream-mode "$_dream_mode" \
             --env 2>/dev/null || true)
         _resolved_flags=$(printf '%s\n' "$_resolved_env" | sed -n 's/^COMPOSE_FLAGS="\([^"]*\)".*/\1/p')
         if [[ -n "$_resolved_flags" ]]; then

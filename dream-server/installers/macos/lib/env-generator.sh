@@ -54,6 +54,16 @@ read_env_or_process_default() {
     fi
 }
 
+normalize_openai_base_url() {
+    local url="${1:-}"
+    url="${url%/}"
+    [[ -z "$url" ]] && return 0
+    case "$url" in
+        */v1|*/api/v1) printf '%s\n' "$url" ;;
+        *) printf '%s/v1\n' "$url" ;;
+    esac
+}
+
 # Read SearXNG secret_key from an existing settings.yml file.
 # Arguments:
 #   1) settings_path: full path to settings.yml
@@ -341,9 +351,26 @@ generate_dream_env() {
     local llm_api_url="http://host.docker.internal:8080"
     local hermes_llm_base_url="http://host.docker.internal:8080/v1"
     local hermes_llm_api_key="sk-dream-hermes-local"
+    local cloud_llm_base_url=""
+    local cloud_llm_api_key=""
+    local cloud_llm_model=""
     if [[ "${CLOUD_MODE:-false}" == "true" ]]; then
         dream_mode="cloud"
-        llm_api_url="${LLM_API_URL:-http://litellm:4000}"
+        llm_api_url="http://litellm:4000"
+        cloud_llm_base_url="$(read_env_or_process_default "$env_path" "CLOUD_LLM_BASE_URL" "${CLOUD_LLM_BASE_URL:-${OPENAI_BASE_URL:-${OPENAI_API_BASE_URL:-}}}")"
+        if [[ -z "$cloud_llm_base_url" && -n "${LLM_API_URL:-}" ]]; then
+            case "$LLM_API_URL" in
+                http://litellm:*|http://litellm/*|http://llama-server:*|http://llama-server/*) ;;
+                *) cloud_llm_base_url="$LLM_API_URL" ;;
+            esac
+        fi
+        cloud_llm_base_url="$(normalize_openai_base_url "${cloud_llm_base_url:-}")"
+        cloud_llm_api_key="$(read_env_or_process_default "$env_path" "CLOUD_LLM_API_KEY" "${CLOUD_LLM_API_KEY:-${OPENAI_API_KEY:-}}")"
+        if [[ -n "$cloud_llm_base_url" && -z "$cloud_llm_api_key" ]]; then
+            cloud_llm_api_key="sk-local"
+        fi
+        cloud_llm_model="$(read_env_or_process_default "$env_path" "CLOUD_LLM_MODEL" "${CLOUD_LLM_MODEL:-${LLM_MODEL:-qwen3.5-9b}}")"
+        [[ -z "$cloud_llm_model" ]] && cloud_llm_model="qwen3.5-9b"
         hermes_llm_base_url="${HERMES_LLM_BASE_URL:-http://litellm:4000/v1}"
         hermes_llm_api_key="${HERMES_LLM_API_KEY:-$litellm_key}"
     fi
@@ -405,6 +432,9 @@ ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 TOGETHER_API_KEY=
 MINIMAX_API_KEY=
+CLOUD_LLM_BASE_URL=${cloud_llm_base_url}
+CLOUD_LLM_API_KEY=${cloud_llm_api_key}
+CLOUD_LLM_MODEL=${cloud_llm_model}
 
 #=== LLM Settings (llama-server -- native Metal) ===
 MODEL_PROFILE=${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}

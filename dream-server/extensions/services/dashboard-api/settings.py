@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from fastapi import HTTPException
 
-from config import AGENT_URL
+from config import AGENT_URL, DREAM_MODE
 
 # ── Regex constants ────────────────────────────────────────────────────────────
 
@@ -247,6 +247,10 @@ def _serialize_form_values(
 
 
 def _match_apply_service(key: str) -> Optional[str]:
+    if key.startswith("CLOUD_LLM_"):
+        return "litellm"
+    if DREAM_MODE == "cloud" and key in {"LLM_MODEL", "LLM_API_URL", "CTX_SIZE", "MAX_CONTEXT"}:
+        return "litellm"
     if key in _LLAMA_APPLY_KEYS or key.startswith(("LLAMA_", "GGUF_")):
         return "llama-server"
     if (

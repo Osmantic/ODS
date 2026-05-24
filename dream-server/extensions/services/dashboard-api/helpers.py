@@ -15,7 +15,7 @@ from typing import Optional
 import aiohttp
 import httpx
 
-from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, AGENT_URL, DREAM_AGENT_KEY
+from config import SERVICES, INSTALL_DIR, DATA_DIR, DREAM_MODE, LLM_BACKEND, AGENT_URL, DREAM_AGENT_KEY
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
 
 
@@ -70,7 +70,7 @@ async def _get_aio_session() -> aiohttp.ClientSession:
     return _aio_session
 
 
-# Shared httpx client for llama-server requests (connection pooling)
+# Shared httpx client for inference service requests (connection pooling)
 _httpx_client: Optional[httpx.AsyncClient] = None
 
 
@@ -88,6 +88,39 @@ def _service_status_from_config(service_id: str, config: dict, status: str) -> S
         external_port=config.get("external_port", config["port"]),
         status=status, response_time_ms=None,
     )
+
+
+def _read_install_env_values() -> dict[str, str]:
+    env_path = Path(INSTALL_DIR) / ".env"
+    values: dict[str, str] = {}
+    if not env_path.exists():
+        return values
+    try:
+        with open(env_path, encoding="utf-8") as f:
+            for line in f:
+                if "=" not in line or line.lstrip().startswith("#"):
+                    continue
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip().strip('"\'')
+    except OSError as e:
+        logger.warning("Failed to read .env from %s: %s", env_path, e)
+    return values
+
+
+def _env_value(key: str, env_values: Optional[dict[str, str]] = None, default: str = "") -> str:
+    if key in os.environ:
+        return os.environ[key]
+    if env_values is None:
+        env_values = _read_install_env_values()
+    return env_values.get(key, default)
+
+
+def _is_cloud_mode(env_values: Optional[dict[str, str]] = None) -> bool:
+    return (_env_value("DREAM_MODE", env_values, DREAM_MODE or "local") or "local") == "cloud"
+
+
+def _inference_service_id(env_values: Optional[dict[str, str]] = None) -> str:
+    return "litellm" if _is_cloud_mode(env_values) else "llama-server"
 
 
 async def _check_tailscale_health(service_id: str, config: dict) -> ServiceStatus:
@@ -279,14 +312,18 @@ def get_model_performance_samples() -> list[dict]:
 # --- LLM Metrics ---
 
 async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
-    """Get inference metrics from llama-server Prometheus /metrics endpoint.
+    """Get inference metrics from the local llama-server Prometheus endpoint.
 
     Accepts an optional *model_hint* so callers that already resolved the
     loaded model name can avoid a redundant HTTP round-trip.
     """
+    env_values = _read_install_env_values()
+    if _inference_service_id(env_values) != "llama-server":
+        return {"tokens_per_second": 0, "lifetime_tokens": _get_lifetime_tokens()}
     try:
-        host = SERVICES["llama-server"]["host"]
-        port = SERVICES["llama-server"]["port"]
+        service = SERVICES["llama-server"]
+        host = service["host"]
+        port = service["port"]
         metrics_port = int(os.environ.get("LLAMA_METRICS_PORT", port))
         model_name = model_hint if model_hint is not None else (await get_loaded_model() or "")
         url = f"http://{host}:{metrics_port}/metrics"
@@ -322,7 +359,13 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
 
 
 async def get_loaded_model() -> Optional[str]:
-    """Query llama-server for actually loaded model name."""
+    """Query the configured inference service for the active model name."""
+    env_values = _read_install_env_values()
+    if _inference_service_id(env_values) == "litellm":
+        if _env_value("CLOUD_LLM_BASE_URL", env_values):
+            return _env_value("CLOUD_LLM_MODEL", env_values) or _env_value("LLM_MODEL", env_values) or "private-cloud"
+        return _env_value("LLM_MODEL", env_values) or "default"
+
     try:
         host = SERVICES["llama-server"]["host"]
         port = SERVICES["llama-server"]["port"]
@@ -351,11 +394,19 @@ async def get_loaded_model() -> Optional[str]:
 
 
 async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[int]:
-    """Query llama-server /props for the actual n_ctx.
+    """Query or infer the active inference context size.
 
     Accepts an optional *model_hint* to skip the redundant
     ``get_loaded_model()`` call when the caller already has it.
     """
+    env_values = _read_install_env_values()
+    if _inference_service_id(env_values) == "litellm":
+        raw = _env_value("MAX_CONTEXT", env_values) or _env_value("CTX_SIZE", env_values)
+        try:
+            return int(raw) if raw else None
+        except ValueError:
+            return None
+
     try:
         host = SERVICES["llama-server"]["host"]
         port = SERVICES["llama-server"]["port"]
@@ -525,18 +576,15 @@ def get_disk_usage() -> DiskUsage:
 
 def get_model_info() -> Optional[ModelInfo]:
     """Get current model info from .env config."""
-    env_path = Path(INSTALL_DIR) / ".env"
-    if env_path.exists():
+    env_values = _read_install_env_values()
+    if env_values:
         try:
-            env_values = {}
-            with open(env_path) as f:
-                for line in f:
-                    if "=" not in line or line.lstrip().startswith("#"):
-                        continue
-                    key, value = line.split("=", 1)
-                    env_values[key.strip()] = value.strip().strip('"\'')
-
-            model_name = env_values.get("LLM_MODEL")
+            if _is_cloud_mode(env_values) and env_values.get("CLOUD_LLM_BASE_URL"):
+                model_name = env_values.get("CLOUD_LLM_MODEL") or env_values.get("LLM_MODEL")
+            elif _is_cloud_mode(env_values):
+                model_name = env_values.get("LLM_MODEL") or "default"
+            else:
+                model_name = env_values.get("LLM_MODEL")
             if model_name:
                 size_gb, quant = 15.0, None
                 context = int(env_values.get("MAX_CONTEXT") or env_values.get("CTX_SIZE") or 32768)

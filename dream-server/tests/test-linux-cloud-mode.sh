@@ -81,6 +81,15 @@ else
     fail "cloud health path must skip local llama-server"
 fi
 
+if grep -Fq 'LLM_SERVICE_ID="litellm"' scripts/dream-preflight.sh \
+    && grep -Fq 'LLM_CONTAINER="${SERVICE_CONTAINERS[litellm]:-dream-litellm}"' scripts/dream-preflight.sh \
+    && grep -Fq 'skipped (cloud mode)' scripts/dream-preflight.sh \
+    && ! grep -Fq 'echo -n "llama-server API' scripts/dream-preflight.sh; then
+    pass "companion preflight checks LiteLLM instead of llama-server in cloud"
+else
+    fail "scripts/dream-preflight.sh must be cloud-aware and avoid local llama-server checks"
+fi
+
 "$PY" - "$ROOT_DIR" <<'PY'
 from pathlib import Path
 import sys
@@ -99,5 +108,57 @@ if model_config < hermes_block < soul_block:
 print("[FAIL] SOUL.md render must run for cloud installs too", file=sys.stderr)
 sys.exit(1)
 PY
+
+"$PY" - "$ROOT_DIR" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+phase11 = (root / "installers/phases/11-services.sh").read_text(encoding="utf-8")
+macos = (root / "installers/macos/install-macos.sh").read_text(encoding="utf-8")
+for label, text in {"linux": phase11, "macos": macos}.items():
+    if '_hermes_model="${LLM_MODEL:-default}"' in text:
+        print(f"[FAIL] {label} cloud Hermes config must not send raw LLM_MODEL to LiteLLM", file=sys.stderr)
+        sys.exit(1)
+    if '_hermes_model="private-cloud"' not in text or '_hermes_model="default"' not in text:
+        print(f"[FAIL] {label} cloud Hermes config must choose explicit LiteLLM route names", file=sys.stderr)
+        sys.exit(1)
+print("[PASS] cloud Hermes model routes use LiteLLM route names")
+PY
+
+"$PY" - "$ROOT_DIR" <<'PY'
+from pathlib import Path
+import sys
+import yaml
+
+root = Path(sys.argv[1])
+cfg = yaml.safe_load((root / "config/litellm/cloud.yaml").read_text(encoding="utf-8"))
+routes = {item["model_name"]: item["litellm_params"] for item in cfg["model_list"]}
+default_model = routes["default"]["model"]
+private_cloud = routes["private-cloud"]
+local_lan = routes["local-lan"]
+if "${CLOUD_LLM_MODEL}" in default_model or routes["default"].get("api_base") == "os.environ/CLOUD_LLM_BASE_URL":
+    print("[FAIL] hosted cloud default must not point at private-cloud CLOUD_LLM_*", file=sys.stderr)
+    sys.exit(1)
+if not default_model.startswith(("anthropic/", "openai/")):
+    print("[FAIL] hosted cloud default must stay on a hosted provider route", file=sys.stderr)
+    sys.exit(1)
+if private_cloud.get("model") != "openai/${CLOUD_LLM_MODEL}" or private_cloud.get("api_base") != "os.environ/CLOUD_LLM_BASE_URL":
+    print("[FAIL] private-cloud LM Studio route must use CLOUD_LLM_*", file=sys.stderr)
+    sys.exit(1)
+if local_lan != private_cloud:
+    print("[FAIL] local-lan must remain a back-compat alias for private-cloud", file=sys.stderr)
+    sys.exit(1)
+print("[PASS] hosted-cloud default and private-cloud route stay separate")
+PY
+
+if grep -Fq 'API key [${CLOUD_LLM_API_KEY}]' install-core.sh; then
+    fail "interactive cloud API key prompt must not echo the secret default"
+fi
+if grep -Fq 'read -r -s -p "  Private-cloud API key' install-core.sh; then
+    pass "interactive private-cloud API key prompt is silent"
+else
+    fail "interactive private-cloud API key prompt must be silent"
+fi
 
 echo "[PASS] linux cloud mode contracts"

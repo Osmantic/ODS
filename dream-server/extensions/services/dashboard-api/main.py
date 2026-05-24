@@ -36,7 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # --- Local modules ---
 from config import (
     SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS,
-    AGENT_HOST, AGENT_PORT, AGENT_URL, DREAM_AGENT_KEY,
+    AGENT_HOST, AGENT_PORT, AGENT_URL, DREAM_AGENT_KEY, DREAM_MODE,
     _detect_container_default_gateway, _running_inside_container,
     _read_env_from_file,
 )
@@ -233,6 +233,10 @@ def _service_is_healthy(statuses: list[ServiceStatus], service_id: str) -> bool:
     return bool(service and service.status == "healthy")
 
 
+def _chat_inference_service_id() -> str:
+    return "litellm" if DREAM_MODE == "cloud" else "llama-server"
+
+
 def _readiness_check(
     *,
     check_id: str,
@@ -268,14 +272,19 @@ def _build_readiness_payload(
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
 
-    llama_healthy = _service_is_healthy(service_statuses, "llama-server")
-    chat_ready = bool(llama_healthy and loaded_model and context_size)
+    inference_service = _chat_inference_service_id()
+    inference_healthy = _service_is_healthy(service_statuses, inference_service)
+    context_required = inference_service == "llama-server"
+    chat_ready = bool(inference_healthy and loaded_model and (context_size or not context_required))
     if chat_ready:
-        chat_detail = f"{loaded_model} loaded with {context_size} context"
+        if context_size:
+            chat_detail = f"{loaded_model} available via {inference_service} with {context_size} context"
+        else:
+            chat_detail = f"{loaded_model} available via {inference_service}"
     elif bootstrap_info.active:
         chat_detail = "Full model is still downloading; bootstrap mode may be limited"
-    elif not llama_healthy:
-        chat_detail = "llama-server is not healthy"
+    elif not inference_healthy:
+        chat_detail = f"{inference_service} is not healthy"
     elif not loaded_model:
         chat_detail = "No loaded model reported by the inference server"
     else:
@@ -287,7 +296,7 @@ def _build_readiness_payload(
         ready=chat_ready,
         status="ready" if chat_ready else "blocked",
         detail=chat_detail,
-        repair="dream restart llama-server" if not chat_ready and not bootstrap_info.active else None,
+        repair=f"dream restart {inference_service}" if not chat_ready and not bootstrap_info.active else None,
     ))
 
     webui_ready = _service_is_healthy(service_statuses, "open-webui")

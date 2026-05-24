@@ -81,6 +81,22 @@ class TestGetModelInfo:
         assert info is not None
         assert info.name == "Qwen2.5-7B-Instruct"
 
+    def test_cloud_private_model_prefers_cloud_llm_model(self, install_dir):
+        env_file = install_dir / ".env"
+        env_file.write_text(
+            "DREAM_MODE=cloud\n"
+            "LLM_MODEL=default\n"
+            "CLOUD_LLM_BASE_URL=http://192.168.159.1:1234/v1\n"
+            "CLOUD_LLM_MODEL=qwen3.5-9b\n"
+            "MAX_CONTEXT=262144\n",
+            encoding="utf-8",
+        )
+
+        info = get_model_info()
+        assert info is not None
+        assert info.name == "qwen3.5-9b"
+        assert info.context_length == 262144
+
 
 # --- get_bootstrap_status ---
 
@@ -537,6 +553,18 @@ class TestGetLlamaMetrics:
 class TestGetLoadedModel:
 
     @pytest.mark.asyncio
+    async def test_cloud_private_returns_configured_cloud_model(self, install_dir):
+        env_file = install_dir / ".env"
+        env_file.write_text(
+            "DREAM_MODE=cloud\n"
+            "CLOUD_LLM_BASE_URL=http://192.168.159.1:1234/v1\n"
+            "CLOUD_LLM_MODEL=qwen3.5-9b\n",
+            encoding="utf-8",
+        )
+
+        assert await get_loaded_model() == "qwen3.5-9b"
+
+    @pytest.mark.asyncio
     async def test_returns_model_with_loaded_status(self, monkeypatch):
         fake_services = {
             "llama-server": {"host": "localhost", "port": 8080, "health": "/health", "name": "llama-server"},
@@ -607,6 +635,17 @@ class TestGetLoadedModel:
 
 
 class TestGetLlamaContextSize:
+
+    @pytest.mark.asyncio
+    async def test_cloud_context_comes_from_env(self, install_dir):
+        env_file = install_dir / ".env"
+        env_file.write_text(
+            "DREAM_MODE=cloud\n"
+            "MAX_CONTEXT=262144\n",
+            encoding="utf-8",
+        )
+
+        assert await get_llama_context_size(model_hint="qwen3.5-9b") == 262144
 
     @pytest.mark.asyncio
     async def test_returns_n_ctx(self, monkeypatch):

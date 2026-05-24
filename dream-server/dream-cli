@@ -2803,12 +2803,16 @@ cmd_mode() {
         local current=$(grep "^DREAM_MODE=" .env 2>/dev/null | cut -d= -f2 || true)
         current="${current:-local}"
         local api_url=$(grep "^LLM_API_URL=" .env 2>/dev/null | cut -d= -f2 || true)
+        local cloud_url=$(grep "^CLOUD_LLM_BASE_URL=" .env 2>/dev/null | cut -d= -f2 || true)
+        local cloud_model=$(grep "^CLOUD_LLM_MODEL=" .env 2>/dev/null | cut -d= -f2 || true)
         local model=$(grep "^LLM_MODEL=" .env 2>/dev/null | cut -d= -f2 || true)
         local tier=$(grep "^TIER=" .env 2>/dev/null | cut -d= -f2 || true)
         echo -e "${BLUE}━━━ Dream Server Mode ━━━${NC}"
         echo ""
         echo -e "Current mode: ${GREEN}${current}${NC}"
         [[ -n "$api_url" ]] && echo "LLM_API_URL: $api_url"
+        [[ "$current" == "cloud" && -n "$cloud_url" ]] && echo "Cloud upstream: $cloud_url"
+        [[ "$current" == "cloud" && -n "$cloud_model" ]] && echo "Cloud model: $cloud_model"
         [[ -n "$model" ]] && echo "Model: $model"
         [[ -n "$tier" ]] && echo "Tier: $tier"
         echo ""
@@ -2870,8 +2874,9 @@ cmd_mode() {
         local has_keys=false
         grep -q "^ANTHROPIC_API_KEY=." .env 2>/dev/null && has_keys=true
         grep -q "^OPENAI_API_KEY=." .env 2>/dev/null && has_keys=true
+        grep -q "^CLOUD_LLM_BASE_URL=." .env 2>/dev/null && has_keys=true
         if [[ "$has_keys" == "false" ]]; then
-            warn "No API keys found in .env — add ANTHROPIC_API_KEY or OPENAI_API_KEY"
+            warn "No cloud upstream found in .env — set CLOUD_LLM_BASE_URL/CLOUD_LLM_MODEL or add ANTHROPIC_API_KEY/OPENAI_API_KEY"
         fi
     fi
 
