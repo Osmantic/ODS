@@ -274,6 +274,16 @@
       "path": "extensions/services/brave-search/compose.yaml",
       "value": "dream-brave-search:local",
       "reason": "Local extension image built from the adjacent Dockerfile."
+    },
+    {
+      "path": "docker-compose.cluster.yml",
+      "value": "dream-llama-rpc:cuda",
+      "reason": "Local controller image for LAN cluster mode (NVIDIA), built from images/llama-rpc/Dockerfile.cuda by installer phase 08 when LAN cluster is enabled."
+    },
+    {
+      "path": "docker-compose.cluster-amd.yml",
+      "value": "dream-llama-rpc:rocm",
+      "reason": "Local controller image for LAN cluster mode (AMD/ROCm), built from images/llama-rpc/Dockerfile.rocm by installer phase 08 when LAN cluster is enabled."
     }
   ],
   "allow_variable_refs": [
@@ -332,6 +342,18 @@
       "value": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda}",
       "default": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda",
       "reason": "Whisper CUDA image can be overridden by operators, but the shipped default is locked."
+    },
+    {
+      "path": "docker-compose.cluster.yml",
+      "value": "${CLUSTER_CONTROLLER_IMAGE:-dream-llama-rpc:cuda}",
+      "default": "dream-llama-rpc:cuda",
+      "reason": "Cluster controller image can be overridden via CLUSTER_CONTROLLER_IMAGE; the default resolves to the locally-built dream-llama-rpc:cuda (allow_local_images)."
+    },
+    {
+      "path": "docker-compose.cluster-amd.yml",
+      "value": "${CLUSTER_CONTROLLER_IMAGE:-dream-llama-rpc:rocm}",
+      "default": "dream-llama-rpc:rocm",
+      "reason": "Cluster controller image can be overridden via CLUSTER_CONTROLLER_IMAGE; the default resolves to the locally-built dream-llama-rpc:rocm (allow_local_images)."
     }
   ]
 }
