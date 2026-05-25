@@ -103,6 +103,13 @@ def main() -> int:
         ROOT / "installers/macos/lib/constants.sh",
         r'^DS_VERSION="([^"]+)"',
     )
+    add_regex_check(
+        checks,
+        errors,
+        "ARCHITECTURE.md version",
+        ROOT.parent / "ARCHITECTURE.md",
+        r"^> Version ([0-9]+\.[0-9]+\.[0-9]+)\s+\|",
+    )
 
     version_file = optional_version_file()
     if version_file is not None:

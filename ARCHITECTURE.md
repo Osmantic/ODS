@@ -1,6 +1,6 @@
 # Dream Server Architecture
 
-> Version 2.4.0 | Fully local AI stack deployed on user hardware with a single command
+> Version 2.5.0 | Fully local AI stack deployed on user hardware with a single command
 
 ## Overview
 
