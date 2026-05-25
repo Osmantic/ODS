@@ -23,19 +23,39 @@ changes.
 
 Fleet phases currently include:
 
+- zero-prereq bootstrap checks from clean distro containers that do not assume
+  Git, jq, Python, Docker, or Compose are already installed;
 - regression replay for previously fixed fleet bugs;
 - a constrained Apple Silicon smoke gate before parallel installs;
 - read-only preflight snapshots for OS, RAM, disk, Docker, firewall, ports, and
   prior install state;
 - non-interactive fresh installs from the public bootstrap path;
+- cloud-mode contract checks for local, cloud, hybrid, and external-backend
+  compose/config behavior;
 - core HTTP verification for dashboard-api, dashboard UI, llama-server, and
   Hermes proxy;
 - dashboard model and extension flows;
 - Hermes magic-link auth and seeded chat checks;
 - Playwright dashboard UI checks;
-- agent capability probes for chat, web search, files, code, skills, and model
-  identity;
-- opt-in lifecycle checks for reinstall, restart, and doctor behavior.
+- agent capability probes for chat, web search, files, code, skills, loaded-model
+  identity, context, and Dream Talk/owner-portal surfaces where enabled;
+- lifecycle checks for idempotent reinstall, `dream restart`, and
+  `dream doctor`;
+- release-confidence reporting that rolls the run up into zero-prereq,
+  install, product, capability, lifecycle, and user-facing gates.
+
+`--phase all` is the faster development sweep. It covers the main install and
+post-install product surfaces but intentionally avoids the slowest release-only
+gates. The `/dream-fleet-test` skill and `--phase release` path are the
+release-grade sweep: they add zero-prereq bootstrap and lifecycle checks so a
+green result means the installer, product, capability, and recovery paths all
+passed or were explicitly accounted for.
+
+Use the release-grade sweep after operational code changes: installer phases,
+bootstrap, compose stack generation, service wiring, dashboard/API behavior,
+Hermes, model routing, GPU detection, lifecycle commands, or any runtime path
+that could affect a user's install or running stack. Docs-only and cosmetic
+changes can usually rely on CI plus focused documentation checks.
 
 External Lemonade SDK compatibility has a focused fleet smoke:
 
@@ -58,7 +78,7 @@ tests/fleet-external-lemonade-e2e.sh --real
 
 | Method | Speed | GPU Testing | Kernel Testing | Best For |
 |--------|-------|-------------|----------------|----------|
-| **Fleet harness** | 15-75 min | Yes | Yes | Release readiness on real heterogeneous hardware |
+| **Fleet harness** | 15-75 min | Yes | Yes | Release readiness and User Green confidence on real heterogeneous hardware |
 | **Fleet distro lab** | 5-20 min | No | Container: no / VM: yes | Multi-distro installer and Docker lifecycle coverage on tower2 |
 | **Distrobox** | Instant (2s) | Yes | No | Daily dev, package manager validation |
 | **Ventoy USB** | 5-10 min boot | Yes | Yes | Weekly full-stack validation |
@@ -95,6 +115,11 @@ install work, so distro-lab dry-runs do not compete with full fleet installs
 for Docker/build I/O on the same host. Use `--lock-timeout SECONDS` when a CI
 or automation should fail instead of waiting, and reserve `--no-host-lock` for
 local debugging when you know no full fleet install is running.
+
+Release-grade `/dream-fleet-test` invocations should run the distro lab
+alongside the hardware fleet. The hardware fleet proves GPU and product
+behavior; the distro lab proves the same installer logic still handles broad
+Linux package-manager and Docker-daemon surfaces.
 
 Run a focused subset while debugging:
 

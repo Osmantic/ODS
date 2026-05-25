@@ -88,7 +88,7 @@ After install, open **http://localhost:3000** and start chatting.
 >
 > **Tested Linux distros:** Ubuntu 24.04/22.04, Debian 12, Linux Mint 21.3, Fedora 41+, Rocky Linux 9, Arch Linux, Manjaro, CachyOS, and openSUSE Tumbleweed. Other distros using apt, dnf, pacman, or zypper should also work — [open an issue](https://github.com/Light-Heart-Labs/DreamServer/issues) if yours doesn't.
 >
-> **Testing surface:** CI and tower2 Docker containers cover broad distro installer logic; tower2 Incus VMs cover systemd + Docker daemon behavior on Ubuntu, Fedora/Rocky, Arch, and openSUSE; the real hardware fleet remains the release gate for NVIDIA/AMD/Apple GPU runtime, dashboard, Hermes, UI, and capability validation.
+> **Release validation:** CI checks installer syntax and distro detection; zero-prereq bootstrap checks exercise the public `curl` path on clean Linux containers; the distro lab covers 10 Linux containers plus systemd-capable Incus VMs; the release fleet runs real NVIDIA, AMD, ARM Linux, and Apple Silicon installs through dashboard, Hermes, UI, capability, restart, reinstall, and `dream doctor` gates. See [Validation Matrix](dream-server/docs/VALIDATION-MATRIX.md) for what a green run proves.
 >
 > **Windows:** Requires Docker Desktop with WSL2 backend. NVIDIA GPUs use Docker GPU passthrough; AMD Strix Halo runs through the platform-specific accelerated path documented in the Windows installer and support matrix.
 >
