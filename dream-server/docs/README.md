@@ -21,7 +21,8 @@ at [`../../README.md`](../../README.md).
 | Add or harden a service | [EXTENSIONS.md](EXTENSIONS.md) | [../extensions/CATALOG.md](../extensions/CATALOG.md), [../extensions/schema/README.md](../extensions/schema/README.md) |
 | Build a custom edition or fork | [FORKABILITY.md](FORKABILITY.md) | [BUILD-ON-DREAM-SERVER.md](BUILD-ON-DREAM-SERVER.md), [OFFLINE_AND_MIRRORING.md](OFFLINE_AND_MIRRORING.md), [VALIDATION_REPRODUCIBILITY.md](VALIDATION_REPRODUCIBILITY.md) |
 | Review a PR | [../CONTRIBUTING.md](../CONTRIBUTING.md) | [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md), [TESTING.md](TESTING.md), [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md), [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) |
-| Maintain a release or fork | [MAINTAINER_RUNBOOK.md](MAINTAINER_RUNBOOK.md) | [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md), [INSTALLER_PHASE_CONTRACTS.md](INSTALLER_PHASE_CONTRACTS.md), [COMPOSE_RESOLVER_CONTRACTS.md](COMPOSE_RESOLVER_CONTRACTS.md) |
+| Maintain a release or fork | [MAINTAINER_RUNBOOK.md](MAINTAINER_RUNBOOK.md) | [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md), [INSTALLER_PHASE_CONTRACTS.md](INSTALLER_PHASE_CONTRACTS.md), [COMPOSE_RESOLVER_CONTRACTS.md](COMPOSE_RESOLVER_CONTRACTS.md), [BRANCH_HYGIENE.md](BRANCH_HYGIENE.md) |
+| Review automation guardrails | [AI_WORKFLOW_GUARDRAILS.md](AI_WORKFLOW_GUARDRAILS.md) | [../CONTRIBUTING.md](../CONTRIBUTING.md), [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md) |
 
 ## Current Truths
 
@@ -140,6 +141,8 @@ at [`../../README.md`](../../README.md).
 |-----|----------|-------------|
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Contributors | How to contribute |
 | [MAINTAINER_RUNBOOK.md](MAINTAINER_RUNBOOK.md) | Maintainers / fork operators | Release, rollback, validation, and operator continuity runbook |
+| [AI_WORKFLOW_GUARDRAILS.md](AI_WORKFLOW_GUARDRAILS.md) | Maintainers / reviewers | Safety model for AI-assisted GitHub workflows, protected paths, and human review boundaries |
+| [BRANCH_HYGIENE.md](BRANCH_HYGIENE.md) | Maintainers | Branch naming, stale branch dry-run audits, and cleanup policy |
 | [../SECURITY.md](../SECURITY.md) | Everyone | Security guide and disclosure |
 | [../../SECURITY_AUDIT.md](../../SECURITY_AUDIT.md) | Maintainers / reviewers | Historical security audit with current remediation status and receipts |
 | [../CHANGELOG.md](../CHANGELOG.md) | Everyone | Version history |
