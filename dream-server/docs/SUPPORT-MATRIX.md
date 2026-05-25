@@ -6,12 +6,13 @@ Last updated: 2026-05-25
 
 **Linux, Windows, and macOS are fully supported. Intel Arc is experimental.**
 
-For the layered evidence behind these claims, see
-[VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) and [TESTING.md](TESTING.md). The
-matrix is sanitized so it can be public without exposing private lab hostnames,
-LAN addresses, or paths. Support status means the project has an intended
-installer/runtime path for that platform; release evidence should still name the
-current run, enabled hardware classes, and any deferred or skipped phases.
+For the release gate behind these claims, see
+[RELEASE_VALIDATION.md](RELEASE_VALIDATION.md), [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md),
+and [TESTING.md](TESTING.md). The validation docs are sanitized so they can be
+public without exposing private lab hostnames, LAN addresses, or paths. Support
+status means the project has an intended installer/runtime path for that
+platform; release evidence should still name the current run, enabled hardware
+classes, and any deferred or skipped phases.
 
 | Platform | Status | What you get today |
 |----------|--------|-------------------|

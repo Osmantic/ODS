@@ -29,6 +29,12 @@ Dream Server installs and wires together everything you need to run AI locally, 
 
 No cloud required. No subscriptions required. Your prompts and data stay on your machine unless you choose otherwise. Cloud and hybrid API modes are optional when you want them.
 
+**Release validation:** Operational changes are checked with a release-grade
+fleet and distro lab: zero-prereq bootstrap, fresh installs, product flows,
+full-model capabilities, lifecycle recovery, and the final User Green gate. See
+[Release Validation](dream-server/docs/RELEASE_VALIDATION.md) for what a green
+run proves.
+
 ## Get Started
 
 Linux and macOS:
@@ -88,7 +94,11 @@ After install, open **http://localhost:3000** and start chatting.
 >
 > **Tested Linux distros:** Ubuntu 24.04/22.04, Debian 12, Linux Mint 21.3, Fedora 41+, Rocky Linux 9, Arch Linux, Manjaro, CachyOS, and openSUSE Tumbleweed. Other distros using apt, dnf, pacman, or zypper should also work — [open an issue](https://github.com/Light-Heart-Labs/DreamServer/issues) if yours doesn't.
 >
-> **Release validation:** CI checks installer syntax and distro detection; zero-prereq bootstrap checks exercise the public `curl` path on clean Linux containers; the distro lab covers 10 Linux containers plus systemd-capable Incus VMs; the release fleet runs real NVIDIA, AMD, ARM Linux, and Apple Silicon installs through dashboard, Hermes, UI, capability, restart, reinstall, and `dream doctor` gates. See [Validation Matrix](dream-server/docs/VALIDATION-MATRIX.md) for what a green run proves.
+> **Release validation:** Operational changes run through a release-grade gate
+> that covers zero-prereq bootstrap, clean installs, product behavior,
+> full-model capabilities, lifecycle recovery, and User Green. See
+> [Release Validation](dream-server/docs/RELEASE_VALIDATION.md) and the
+> [Validation Matrix](dream-server/docs/VALIDATION-MATRIX.md).
 >
 > **Windows:** Requires Docker Desktop with WSL2 backend. NVIDIA GPUs use Docker GPU passthrough; AMD Strix Halo runs through the platform-specific accelerated path documented in the Windows installer and support matrix.
 >
@@ -400,6 +410,7 @@ Other tools get you part of the way. Dream Server gets you the whole way.
 | [Build On Dream Server](dream-server/docs/BUILD-ON-DREAM-SERVER.md) | Forking, custom editions, extension templates, and downstream validation |
 | [Headless Setup](dream-server/docs/HEADLESS-SETUP.md) | QR onboarding, first-boot setup, AP mode, mDNS, and local agent access |
 | [Support Matrix](dream-server/docs/SUPPORT-MATRIX.md) | Current platform and GPU support status |
+| [Release Validation](dream-server/docs/RELEASE_VALIDATION.md) | User Green gates and the release-grade fleet/distro validation policy |
 | [Validation Matrix](dream-server/docs/VALIDATION-MATRIX.md) | Sanitized CI, distro lab, and real-hardware fleet release-readiness evidence |
 | [Model Management](dream-server/docs/MODEL-MANAGEMENT.md) | Dashboard model downloads, switching, and manual GGUF workflows |
 | [Hardware Guide](dream-server/docs/HARDWARE-GUIDE.md) | What to buy, tier recommendations |
