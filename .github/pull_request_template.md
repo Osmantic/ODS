@@ -2,6 +2,10 @@
 
 <!-- What changed, and why? -->
 
+## AI Assistance
+
+<!-- If AI tools helped draft code, docs, tests, reviews, or triage, say what they did. Use "None" when not applicable. The human author remains accountable for reading the diff, choosing the validation, and responding to review. -->
+
 ## Changed Surface
 
 <!-- Check every surface this PR can affect. -->

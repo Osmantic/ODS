@@ -22,6 +22,24 @@ the agentic CI surface without reading every workflow from scratch.
 - AI output is never release evidence by itself. Use
   [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) for release gates.
 
+## Contributor Expectations
+
+AI-assisted PRs are welcome when they are reviewable, tested, and owned by a
+human contributor. PR authors should disclose whether AI helped draft code,
+docs, tests, or analysis, and should summarize what the human author verified.
+
+Human reviewers should treat AI-assisted changes like any other changes, with
+extra attention to:
+
+- whether the diff is smaller than the problem it claims to solve;
+- whether high-risk surfaces are called out explicitly;
+- whether validation matches the changed surface;
+- whether generated prose introduced stale claims or duplicate docs;
+- whether secrets, private hostnames, raw fleet logs, or support bundles were
+  included in prompts, commits, or PR bodies.
+
+The merge decision belongs to maintainers, not automation.
+
 ## Workflow Classes
 
 | Class | Examples | Allowed behavior | Required guardrails |

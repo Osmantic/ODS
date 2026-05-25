@@ -35,6 +35,29 @@ change needs release-grade validation before a release. Docs-only changes do not
 need the fleet; operational changes should not rely on "looks small" as the
 validation argument.
 
+## AI-Assisted Contributions
+
+AI tools are welcome for drafting, review, test ideas, documentation, and
+triage. They do not replace human authorship or maintainer judgment. If AI
+helped with a PR, say what it helped with in the pull request template.
+
+Human contributors are responsible for:
+
+- reading the final diff;
+- understanding the changed surface;
+- removing secrets, local logs, private hostnames, and raw support bundles;
+- choosing validation from
+  [dream-server/docs/HIGH_RISK_CHANGE_MAP.md](dream-server/docs/HIGH_RISK_CHANGE_MAP.md);
+- responding to review comments with project context, not tool output alone.
+
+High-risk surfaces such as installer phases, `dream-cli`, Compose generation,
+auth, proxy, model routing, host mutation, and GitHub workflows still require
+human review and appropriate validation before release.
+
+See
+**[dream-server/docs/AI_WORKFLOW_GUARDRAILS.md](dream-server/docs/AI_WORKFLOW_GUARDRAILS.md)**
+for the repository automation policy.
+
 ## Full Contributor Guide
 
 For current priorities, validation checklists, PR expectations, and style guidelines, see the detailed guide:
