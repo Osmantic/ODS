@@ -572,6 +572,82 @@ class TestInstallExtension:
     # test_install_writes_pending_change removed — v3 uses host agent, no pending changes file
 
 
+    def test_install_allows_library_host_gateway_extra_host(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """Bundled library extensions may use the host-gateway bridge."""
+        compose = (
+            "services:\n"
+            "  svc:\n"
+            "    image: test:latest\n"
+            "    extra_hosts:\n"
+            "      - host.docker.internal:host-gateway\n"
+        )
+        lib_dir = _setup_library_ext(tmp_path, "host-gateway-ext",
+                                     compose_content=compose)
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=lib_dir)
+
+        resp = test_client.post(
+            "/api/extensions/host-gateway-ext/install",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["action"] == "installed"
+
+    def test_install_rejects_untrusted_extra_hosts(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """User-installed extension compose files cannot add host aliases."""
+        compose = (
+            "services:\n"
+            "  svc:\n"
+            "    image: test:latest\n"
+            "    extra_hosts:\n"
+            "      - host.docker.internal:host-gateway\n"
+        )
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "host-gateway-ext"
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "compose.yaml.disabled").write_text(compose)
+        (ext_dir / "manifest.yaml").write_text(yaml.dump({
+            "schema_version": "dream.services.v1",
+            "service": {"id": "host-gateway-ext", "name": "host-gateway-ext"},
+        }))
+        _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
+
+        resp = test_client.post(
+            "/api/extensions/host-gateway-ext/enable",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 400
+        assert "extra_hosts" in resp.json()["detail"]
+
+    def test_install_rejects_unapproved_library_extra_hosts(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """Trusted library status only permits the known host-gateway mapping."""
+        compose = (
+            "services:\n"
+            "  svc:\n"
+            "    image: test:latest\n"
+            "    extra_hosts:\n"
+            "      - metadata.google.internal:169.254.169.254\n"
+        )
+        lib_dir = _setup_library_ext(tmp_path, "bad-host-ext",
+                                     compose_content=compose)
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=lib_dir)
+
+        resp = test_client.post(
+            "/api/extensions/bad-host-ext/install",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 400
+        assert "unsupported extra_hosts" in resp.json()["detail"]
+
+
 # --- Enable endpoint ---
 
 

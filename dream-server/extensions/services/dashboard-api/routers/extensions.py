@@ -330,6 +330,8 @@ def _scan_compose_content(
     skip_root_user_check: bool = False,
 ) -> None:
     """Reject compose files containing dangerous directives."""
+    allowed_trusted_extra_hosts = {"host.docker.internal:host-gateway"}
+
     try:
         data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError) as e:
@@ -432,11 +434,24 @@ def _scan_compose_content(
                 status_code=400,
                 detail=f"Service '{svc_name}' uses a local build — only pre-built images are allowed for user extensions",
             )
-        if svc_def.get("extra_hosts"):
+        extra_hosts = svc_def.get("extra_hosts")
+        if extra_hosts and not trusted:
             raise HTTPException(
                 status_code=400,
                 detail=f"Extension rejected: extra_hosts in {svc_name}",
             )
+        if extra_hosts and trusted:
+            if not isinstance(extra_hosts, list):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Extension rejected: unsupported extra_hosts in {svc_name}",
+                )
+            for entry in extra_hosts:
+                if not isinstance(entry, str) or entry.strip() not in allowed_trusted_extra_hosts:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Extension rejected: unsupported extra_hosts in {svc_name}",
+                    )
         if svc_def.get("sysctls"):
             raise HTTPException(
                 status_code=400,
