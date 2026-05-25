@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir pytest pytest-timeout requests
+
+WORKDIR /app
+
+COPY run-tests.sh  /app/run-tests.sh
+COPY conftest.py   /app/tests/conftest.py
+COPY test_real_rpc.py /app/tests/
+
+RUN chmod +x /app/run-tests.sh

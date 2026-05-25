@@ -7,7 +7,7 @@
 #
 # Expects: DRY_RUN, GPU_BACKEND, ENABLE_VOICE, ENABLE_WORKFLOWS,
 #           ENABLE_RAG, ENABLE_EMBEDDINGS, ENABLE_HERMES, ENABLE_OPENCLAW,
-#           DOCKER_CMD, LOG_FILE, BGRN, AMB, NC,
+#           ENABLE_CLUSTER, DOCKER_CMD, LOG_FILE, BGRN, AMB, NC, SCRIPT_DIR,
 #           show_phase(), bootline(), signal(), ai(), ai_ok(), ai_warn(),
 #           pull_with_progress()
 # Provides: (Docker images pulled locally)
@@ -138,5 +138,89 @@ else
         ai_ok "All $pull_total modules downloaded"
     else
         ai_warn "$pull_failed of $pull_total modules failed — services may not start fully"
+    fi
+
+    # Build cluster images if LAN cluster mode was selected
+    if [[ "${ENABLE_CLUSTER:-}" == "true" ]]; then
+        dream_progress 65 "images" "Building LAN cluster images"
+        echo ""
+        bootline
+        echo -e "${BGRN}CLUSTER IMAGE BUILD${NC}"
+        echo -e "${AMB}Compiling llama.cpp with RPC support — this takes a while on first build.${NC}"
+        bootline
+        echo ""
+
+        _rpc_dir="$SCRIPT_DIR/images/llama-rpc"
+
+        # Stage the supervisor from its canonical location into the build
+        # context so Docker's COPY can see it. The mirror in images/llama-rpc/
+        # is intentionally absent from git (see .gitignore) — Docker COPY
+        # can't read outside its build context, so the file has to be staged
+        # here at build time. If the canonical is missing we fail loudly
+        # rather than silently building a partial image.
+        _supervisor_src="$SCRIPT_DIR/scripts/dream-cluster-supervisor.py"
+        _supervisor_dst="$_rpc_dir/dream-cluster-supervisor.py"
+        if [[ ! -f "$_supervisor_src" ]]; then
+            error "Canonical supervisor missing: $_supervisor_src — cannot build cluster images."
+        fi
+        install -m 0644 "$_supervisor_src" "$_supervisor_dst"
+
+        if [[ "$GPU_BACKEND" == "amd" ]]; then
+            _ctrl_dockerfile="Dockerfile.rocm"
+            _ctrl_tag="dream-llama-rpc:rocm"
+            _worker_dockerfile="Dockerfile.rpc-rocm"
+            _worker_tag="dream-rpc-server:rocm"
+        elif [[ "$GPU_BACKEND" == "nvidia" ]]; then
+            _ctrl_dockerfile="Dockerfile.cuda"
+            _ctrl_tag="dream-llama-rpc:cuda"
+            _worker_dockerfile="Dockerfile.rpc-cuda"
+            _worker_tag="dream-rpc-server:cuda"
+        else
+            _ctrl_dockerfile="Dockerfile.cpu"
+            _ctrl_tag="dream-llama-rpc:cpu"
+            _worker_dockerfile="Dockerfile.rpc-cpu"
+            _worker_tag="dream-rpc-server:cpu"
+        fi
+
+        # On build failure, dump the last ~30 lines of the build log inline
+        # so operators don't have to go hunting for $LOG_FILE — the most
+        # common cause (network/git-clone) shows up right at the tail.
+        _dump_build_tail() {
+            local _title="$1"
+            ai_warn "$_title"
+            if [[ -f "$LOG_FILE" ]]; then
+                tail -n 30 "$LOG_FILE" | sed 's/^/    /'
+                ai "  Full log: $LOG_FILE"
+            else
+                ai "  (no log file at $LOG_FILE — run with DRY_RUN=false to see output)"
+            fi
+        }
+
+        # Stream build output to BOTH terminal and log file. Image builds
+        # can take 15+ minutes (llama.cpp + CUDA/ROCm stages); silent
+        # redirect hides real-time progress and makes the installer look
+        # hung. --progress=plain keeps the output scrollback-friendly
+        # instead of BuildKit's TTY-compact renderer. `set -o pipefail`
+        # is already on (install-core.sh), so the pipeline's exit status
+        # reflects docker build's, not tee's.
+        ai "Building controller image ($_ctrl_tag)..."
+        if docker build --progress=plain -f "$_rpc_dir/$_ctrl_dockerfile" -t "$_ctrl_tag" "$_rpc_dir" 2>&1 | tee -a "$LOG_FILE"; then
+            ai_ok "Controller image built: $_ctrl_tag"
+        else
+            _dump_build_tail "Controller image build failed — last 30 lines of build log:"
+            ai "  Retry manually: docker build --progress=plain -f $_rpc_dir/$_ctrl_dockerfile -t $_ctrl_tag $_rpc_dir"
+        fi
+
+        ai "Building worker image ($_worker_tag)..."
+        if docker build --progress=plain -f "$_rpc_dir/$_worker_dockerfile" -t "$_worker_tag" "$_rpc_dir" 2>&1 | tee -a "$LOG_FILE"; then
+            ai_ok "Worker image built: $_worker_tag"
+        else
+            _dump_build_tail "Worker image build failed — last 30 lines of build log:"
+            ai "  Retry manually: docker build --progress=plain -f $_rpc_dir/$_worker_dockerfile -t $_worker_tag $_rpc_dir"
+        fi
+
+        unset -f _dump_build_tail
+
+        unset _rpc_dir _ctrl_dockerfile _ctrl_tag _worker_dockerfile _worker_tag
     fi
 fi

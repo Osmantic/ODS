@@ -1,0 +1,38 @@
+[Unit]
+Description=DreamServer Cluster Worker Agent
+After=docker.service
+# Circuit breaker at the unit level. Pairs with the agent's own retry logic
+# and the supervisor's crash fuse — systemd gives up after 10 restarts in
+# 5 minutes so a permanently-broken config (missing image, wrong token,
+# unreachable controller) stops thrashing instead of looping forever.
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+ExecStart=__PYTHON3__ __INSTALL_DIR__/scripts/cluster_worker_agent.py --config __INSTALL_DIR__/config/cluster-agent.json --pid-file __INSTALL_DIR__/data/cluster-agent.pid__TOKEN_FILE_FLAG__
+WorkingDirectory=__INSTALL_DIR__
+Environment=DREAM_HOME=__INSTALL_DIR__
+Environment=HOME=__HOME__
+Environment=CLUSTER_INTERFACE=__INTERFACE__
+Restart=on-failure
+RestartSec=5
+
+# Hardening — minimal privilege surface for a daemon that only needs
+# to read config, write state/logs under INSTALL_DIR, and talk to the
+# docker socket. The agent does NOT load kernel modules, tune sysctls,
+# manipulate cgroups, or use realtime scheduling.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=__INSTALL_DIR__
+
+[Install]
+WantedBy=default.target

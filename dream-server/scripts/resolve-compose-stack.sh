@@ -90,6 +90,7 @@ lemonade_external = (
         and os.environ.get("AMD_INFERENCE_MANAGED", "").lower() == "false"
     )
 )
+cluster_enabled = os.environ.get("CLUSTER_ENABLED", "false").lower() == "true"
 
 IS_DARWIN = platform.system() == "Darwin"
 APPLE_OVERLAY = "installers/macos/docker-compose.macos.yml" if IS_DARWIN else "docker-compose.apple.yml"
@@ -175,6 +176,15 @@ if gpu_count > 1:
     multigpu_file = f"docker-compose.multigpu-{gpu_backend}.yml"
     if (script_dir / multigpu_file).exists():
         resolved.append(multigpu_file)
+
+# LAN cluster overlay (replaces llama-server image with RPC-enabled build)
+if cluster_enabled:
+    if gpu_backend == "amd":
+        cluster_file = "docker-compose.cluster-amd.yml"
+    else:
+        cluster_file = "docker-compose.cluster.yml"
+    if (script_dir / cluster_file).exists():
+        resolved.append(cluster_file)
 
 # PyYAML is a hard requirement — extensions and overlays are YAML and must be
 # parsed for the compose security scan. Silent fallback used to hide install

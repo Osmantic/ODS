@@ -13,7 +13,8 @@
 #           show_phase(), show_install_menu(), chapter(), bootline(),
 #           success(), log(), warn(), error(), signal()
 # Provides: ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_EMBEDDINGS,
-#           ENABLE_HERMES, ENABLE_OPENCLAW, OPENCLAW_CONFIG, GPU_ASSIGNMENT_JSON,
+#           ENABLE_HERMES, ENABLE_OPENCLAW, ENABLE_CLUSTER, OPENCLAW_CONFIG,
+#           GPU_ASSIGNMENT_JSON,
 #           LLAMA_SERVER_GPU_UUIDS, WHISPER_GPU_UUID, COMFYUI_GPU_UUID,
 #           EMBEDDINGS_GPU_UUID, LLAMA_ARG_SPLIT_MODE, LLAMA_ARG_TENSOR_SPLIT
 #
@@ -68,6 +69,10 @@ if $INTERACTIVE && ! $DRY_RUN; then
         read -p "  Enable Langfuse (LLM observability + telemetry, ~500MB)? [y/N] " -r < /dev/tty
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then ENABLE_LANGFUSE=true; else ENABLE_LANGFUSE=false; fi
+
+        read -p "  Enable LAN cluster mode (pool GPUs across machines)? [y/N] " -r < /dev/tty
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then ENABLE_CLUSTER=true; else ENABLE_CLUSTER=false; fi
 
         # Warn if ComfyUI enabled on low-tier hardware
         if [[ "$ENABLE_COMFYUI" == "true" ]]; then

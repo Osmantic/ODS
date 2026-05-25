@@ -1,0 +1,35 @@
+# Dream Server — Controller image (ROCm + RPC)
+# Builds llama-server and rpc-server with RPC and HIP support.
+# Bypasses Lemonade entirely for cluster mode — runs llama-server directly.
+# Pin to the same llama.cpp tag across all cluster images.
+# LOCKSTEP: when bumping, update all 6 Dockerfiles in this directory —
+#   grep -l 'LLAMA_CPP_TAG=' images/llama-rpc/Dockerfile.*
+# RPC wire protocol has broken between llama.cpp builds before, so a
+# controller on b8672 talking to a worker on b8900 will crash at first
+# tensor transfer. Bump together, rebuild together.
+# FIXME: non-root USER — deferred (see Dockerfile.cpu).
+ARG LLAMA_CPP_TAG=b8672
+ARG AMDGPU_TARGETS="gfx1100;gfx1030;gfx942;gfx90a"
+
+FROM rocm/dev-ubuntu-24.04:7.0 AS build
+ARG LLAMA_CPP_TAG
+ARG AMDGPU_TARGETS
+RUN apt-get update && apt-get install -y --no-install-recommends cmake git curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 -b "${LLAMA_CPP_TAG}" https://github.com/ggerganov/llama.cpp /llama.cpp
+WORKDIR /llama.cpp
+RUN cmake -B build \
+      -DGGML_RPC=ON \
+      -DGGML_HIP=ON \
+      -DAMDGPU_TARGETS="${AMDGPU_TARGETS}" \
+      -DCMAKE_INSTALL_PREFIX=/opt/llama \
+    && cmake --build build -j"$(nproc)" \
+    && cmake --install build
+
+FROM rocm/runtime-ubuntu-24.04:7.0
+RUN apt-get update && apt-get install -y --no-install-recommends curl python3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /opt/llama /usr/local
+RUN ldconfig
+COPY dream-cluster-supervisor.py /usr/local/bin/dream-cluster-supervisor.py
+ENTRYPOINT ["llama-server"]

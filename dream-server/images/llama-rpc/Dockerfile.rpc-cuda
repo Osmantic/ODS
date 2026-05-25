@@ -1,0 +1,28 @@
+# Dream Server — Worker image (CUDA + RPC, minimal)
+# Only rpc-server binary, no llama-server. Used on worker nodes.
+# Pin to the same llama.cpp tag across all cluster images.
+# LOCKSTEP: when bumping, update all 6 Dockerfiles in this directory —
+#   grep -l 'LLAMA_CPP_TAG=' images/llama-rpc/Dockerfile.*
+# RPC wire protocol has broken between llama.cpp builds before, so a
+# controller on b8672 talking to a worker on b8900 will crash at first
+# tensor transfer. Bump together, rebuild together.
+# FIXME: non-root USER — deferred (see Dockerfile.cpu).
+ARG LLAMA_CPP_TAG=b8672
+
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS build
+ARG LLAMA_CPP_TAG
+RUN apt-get update && apt-get install -y --no-install-recommends cmake git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 -b "${LLAMA_CPP_TAG}" https://github.com/ggerganov/llama.cpp /llama.cpp
+WORKDIR /llama.cpp
+RUN cmake -B build -DGGML_RPC=ON -DGGML_CUDA=ON -DCMAKE_INSTALL_PREFIX=/opt/llama \
+    && cmake --build build -j"$(nproc)" \
+    && cmake --install build
+
+FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
+COPY --from=build /opt/llama /usr/local
+RUN ldconfig
+ENTRYPOINT ["rpc-server"]
+# -c enables tensor caching at ~/.cache/llama.cpp/rpc (first load over network, then local)
+# --host 0.0.0.0 required for cross-machine access (RPC has no auth — use trusted networks)
+CMD ["-p", "50052", "-c", "--host", "0.0.0.0"]

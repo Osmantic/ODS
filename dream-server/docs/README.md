@@ -124,6 +124,7 @@ at [`../../README.md`](../../README.md).
 | [KNOWN-GOOD-VERSIONS.md](KNOWN-GOOD-VERSIONS.md) | Operators | Tested image/version combos |
 | [PLATFORM-TRUTH-TABLE.md](PLATFORM-TRUTH-TABLE.md) | Developers | Platform feature matrix |
 | [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) | Operators / release reviewers | Sanitized CI, distro lab, and real-hardware fleet release-readiness evidence |
+| [LAN-CLUSTER-GUIDE.md](LAN-CLUSTER-GUIDE.md) | Operators | Pool GPUs across LAN machines with llama.cpp RPC (controller + workers) |
 
 ## Project
 

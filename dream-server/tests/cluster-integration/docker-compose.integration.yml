@@ -1,0 +1,121 @@
+name: dream-cluster-integration
+
+# Real llama.cpp rpc-server + llama-server integration test.
+# Builds the production images and runs actual inference across two
+# RPC workers. Proof of communication: -ngl 99 forces all layers onto
+# RPC devices, so a successful /completion response means tensors were
+# distributed, computed remotely, and results returned.
+
+networks:
+  rpc-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.20.0/24
+
+services:
+  rpc1:
+    build:
+      context: ../../images/llama-rpc
+      dockerfile: Dockerfile.rpc-cpu
+    image: dream-rpc-server:cpu
+    container_name: dream-int-rpc1
+    hostname: rpc1
+    networks:
+      rpc-net:
+        ipv4_address: 172.30.20.21
+    stop_grace_period: 2s
+    # Rpc-server has no HTTP endpoint — probe TCP liveness via bash's
+    # /dev/tcp. Must invoke bash explicitly: CMD-SHELL goes through
+    # /bin/sh, which on Ubuntu 24.04 is dash, and dash does not support
+    # /dev/tcp (errors with "Directory nonexistent").
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/50052"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 3s
+
+  rpc2:
+    build:
+      context: ../../images/llama-rpc
+      dockerfile: Dockerfile.rpc-cpu
+    image: dream-rpc-server:cpu
+    container_name: dream-int-rpc2
+    hostname: rpc2
+    networks:
+      rpc-net:
+        ipv4_address: 172.30.20.22
+    stop_grace_period: 2s
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/50052"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 3s
+
+  llama:
+    build:
+      context: ../../images/llama-rpc
+      dockerfile: Dockerfile.cpu
+    image: dream-llama-server:cpu
+    container_name: dream-int-llama
+    hostname: llama
+    networks:
+      rpc-net:
+        ipv4_address: 172.30.20.10
+    depends_on:
+      rpc1:
+        condition: service_healthy
+      rpc2:
+        condition: service_healthy
+    # Model is fetched onto the host by run.sh and bind-mounted at /models.
+    # We can't use -hfr/-hff here because the prod cluster image is built
+    # without OpenSSL (see images/llama-rpc/Dockerfile.cpu), matching how
+    # real installs run — models are mounted, never downloaded in-container.
+    # -ngl 99: force all layers onto RPC devices — if RPC is broken, load fails.
+    # -c 512: small context — this is a protocol test, not a benchmark.
+    volumes:
+      # :z relabels the host dir so SELinux-enforcing hosts (Fedora, RHEL)
+      # let the container read it. No-op on Debian/Ubuntu hosts.
+      - ./.model-cache:/models:ro,z
+    command:
+      - "--model"
+      - "/models/qwen2.5-0.5b-instruct-q2_k.gguf"
+      - "--rpc"
+      - "rpc1:50052,rpc2:50052"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "512"
+      - "--no-warmup"
+    stop_grace_period: 5s
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1:8080/health | grep -q '\"status\":\"ok\"'"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
+
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-runner
+    image: dream-int-test-runner:latest
+    container_name: dream-int-test-runner
+    hostname: test-runner
+    networks:
+      rpc-net:
+        ipv4_address: 172.30.20.100
+    depends_on:
+      llama:
+        condition: service_healthy
+    environment:
+      LLAMA_URL: "http://llama:8080"
+      PYTHONUNBUFFERED: "1"
+    working_dir: /app/tests
+    command: /app/run-tests.sh

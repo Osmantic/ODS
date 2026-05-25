@@ -63,6 +63,7 @@ from routers import (
     talk,
     tailscale,
     usage,
+    cluster as cluster_router,
 )
 from settings import (
     _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text, _read_env_map_from_path,
@@ -934,6 +935,7 @@ async def _lifespan(app: FastAPI):
     asyncio.create_task(collect_metrics())
     asyncio.create_task(_poll_service_health())
     asyncio.create_task(gpu_router.poll_gpu_history())
+    asyncio.create_task(cluster_router.poll_cluster_health())
     try:
         yield
     finally:
@@ -1002,6 +1004,7 @@ app.include_router(oauth_passthrough.router)
 app.include_router(talk.router)
 app.include_router(tailscale.router)
 app.include_router(usage.router)
+app.include_router(cluster_router.router)
 
 
 # ================================================================
@@ -1207,7 +1210,8 @@ async def status(api_key: str = Depends(verify_api_key)):
         timestamp=datetime.now(timezone.utc).isoformat(),
         gpu=gpu_info, services=service_statuses,
         disk=disk_info, model=model_info,
-        bootstrap=bootstrap_info, uptime_seconds=uptime
+        bootstrap=bootstrap_info, uptime_seconds=uptime,
+        cluster_enabled=os.environ.get("CLUSTER_ENABLED", "").lower() == "true",
     )
 
 
@@ -1215,10 +1219,13 @@ async def status(api_key: str = Depends(verify_api_key)):
 async def api_status(api_key: str = Depends(verify_api_key)):
     """Dashboard-compatible status endpoint.
 
-    Catches transient I/O failures from sub-calls (GPU, health checks,
-    llama metrics …) and returns a safe fallback. Programming errors
-    (AttributeError, KeyError, TypeError) propagate so they surface in
-    tests instead of being masked.
+    The fallback response covers transient runtime failures in sub-calls
+    (GPU probe, service health checks, llama metrics) so the dashboard
+    doesn't flash "0/17" on a brief driver stall. The catch is narrowed
+    to the I/O families those sub-calls raise — programming errors
+    (TypeError, AttributeError, KeyError on internal dicts, …)
+    intentionally propagate so CLAUDE.md's Let-It-Crash rule still
+    catches real bugs.
     """
     try:
         return await _build_api_status()
@@ -1235,6 +1242,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
             "inference": {"tokensPerSecond": 0, "lifetimeTokens": 0,
                           "loadedModel": None, "contextSize": None},
             "manifest_errors": MANIFEST_ERRORS,
+            "cluster_enabled": False,
         }
 
 
@@ -1346,6 +1354,7 @@ async def _build_api_status() -> dict:
             "contextSize": context_size or (model_data["contextLength"] if model_data else None),
         },
         "manifest_errors": MANIFEST_ERRORS,
+        "cluster_enabled": os.environ.get("CLUSTER_ENABLED", "").lower() == "true",
     }
     return result
 

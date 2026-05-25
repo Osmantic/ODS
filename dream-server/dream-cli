@@ -507,6 +507,8 @@ _regenerate_compose_flags() {
         # --gpu-count gates the multigpu-{backend}.yml overlay; without it,
         # toggling any extension would silently strip multi-GPU plumbing
         # from the persisted cache.
+        # Re-load .env so vars written by _env_set are exported to the resolver subprocess
+        load_env
         "$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
             --script-dir "$INSTALL_DIR" --tier "${TIER:-1}" --gpu-backend "${GPU_BACKEND:-nvidia}" \
             --gpu-count "${GPU_COUNT:-1}" --dream-mode "${DREAM_MODE:-local}" \
@@ -1101,10 +1103,14 @@ cmd_restart() {
         _dream_cli_refresh_soul || true
     fi
 
+    # --force-recreate so cluster-mode image-tag swaps (dream-llama-rpc:<backend>
+    # vs the standard llama-server image) are picked up. Otherwise compose sees
+    # the existing container as "config-equivalent" and skips recreation,
+    # leaving the cluster overlay's image override silently unapplied.
     if [[ -z "$resolved_service" ]]; then
-        _compose_run_with_summary "Restarting all services" "${flags[@]}" up -d
+        _compose_run_with_summary "Restarting all services" "${flags[@]}" up -d --force-recreate
     else
-        _compose_run_with_summary "Restarting $resolved_service" "${flags[@]}" up -d "$resolved_service"
+        _compose_run_with_summary "Restarting $resolved_service" "${flags[@]}" up -d --force-recreate "$resolved_service"
     fi
 
     # Refresh SOUL.md after compose has ensured Hermes is running, so the
@@ -3174,6 +3180,1450 @@ cmd_agent() {
 }
 
 #=============================================================================
+# cmd_cluster — LAN cluster management
+#=============================================================================
+
+_cluster_config_file() { echo "$INSTALL_DIR/config/cluster.json"; }
+
+# Detect the local AMD GPU's display name + VRAM in MiB by reading sysfs.
+# Sets globals: _detected_gpu_name, _detected_vram_mb (both empty if no AMD
+# GPU found; first matching card wins).
+#
+# Why a helper: this exact loop appeared 3× across _cluster_enable,
+# _cluster_add, _cluster_status_worker — extraction at 3+ uses per
+# CLAUDE.md. The earlier inlined copies used `cat ... 2>/dev/null || echo
+# "0"`, which silently turned a sysfs read failure into vram_mb=0; the
+# `[[ -f ... ]]` gate above the read makes that impossible in practice
+# but the silent-catch pattern itself violates CLAUDE.md §Error Handling.
+_cluster_detect_local_amd_gpu() {
+    _detected_gpu_name=""
+    _detected_vram_mb=""
+    local card_dir vendor product_name vram_bytes
+    for card_dir in /sys/class/drm/card*/device; do
+        [[ -f "$card_dir/vendor" ]] || continue
+        vendor=$(< "$card_dir/vendor")
+        [[ "$vendor" == "0x1002" ]] || continue
+        if [[ -f "$card_dir/product_name" ]]; then
+            product_name=$(< "$card_dir/product_name")
+        else
+            product_name="AMD Radeon"
+        fi
+        if [[ -f "$card_dir/mem_info_vram_total" ]]; then
+            vram_bytes=$(< "$card_dir/mem_info_vram_total")
+        else
+            vram_bytes=0
+        fi
+        # Validate before arithmetic — sysfs is normally trustworthy but a
+        # non-integer here would crash the shell under set -e and surface
+        # a real driver bug instead of silently storing 0.
+        if [[ "$vram_bytes" =~ ^[0-9]+$ ]]; then
+            _detected_vram_mb=$((vram_bytes / 1048576))
+        else
+            _detected_vram_mb=0
+        fi
+        _detected_gpu_name="$product_name"
+        return 0
+    done
+    return 1
+}
+
+_cluster_save_state() {
+    # Atomic write to mirror the Python helpers' os.open(O_EXCL|0o600) →
+    # os.replace pattern. mktemp creates the temp file 0600 by default in
+    # the same directory, then mv is atomic (rename(2)) so concurrent
+    # readers see either the prior contents or the new contents — never a
+    # half-written file. Critical because cluster.json holds the shared
+    # cluster token.
+    local cfg cfg_dir tmp
+    cfg=$(_cluster_config_file)
+    cfg_dir=$(dirname "$cfg")
+    mkdir -p "$cfg_dir"
+    tmp=$(mktemp "${cfg_dir}/cluster.json.XXXXXX")
+    chmod 0600 "$tmp"
+    if ! printf '%s' "$1" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mv -f "$tmp" "$cfg"
+}
+
+_cluster_enable() {
+    check_install
+    load_env
+
+    # LAN cluster requires llama.cpp's RPC backend, which is only built into
+    # the Linux (CPU/CUDA/ROCm) images in images/llama-rpc/. There is no
+    # docker-compose.cluster-apple.yml and no Apple-targeted RPC image —
+    # on macOS the llama.cpp backend is MPS/Metal via a native binary, not
+    # a container. Reject early with a clear message so operators don't burn
+    # time on a setup that will fail at `dream cluster setup`.
+    if [[ "$(uname -s)" == "Darwin" ]] || [[ "${GPU_BACKEND:-}" == "apple" ]]; then
+        error "LAN cluster mode is not supported on Apple Silicon."
+        echo "  The cluster overlay requires the Linux rpc-server container" >&2
+        echo "  image, which is not built for macOS. Run the controller on a" >&2
+        echo "  Linux host (NVIDIA or AMD) and join Apple workers via" >&2
+        echo "  llama.cpp's native RPC build if you need heterogeneous setups." >&2
+        return 1
+    fi
+
+    local cfg
+    cfg=$(_cluster_config_file)
+    if [[ -f "$cfg" ]] && [[ "$(python3 - "$cfg" <<'PY' 2>/dev/null
+import json, sys
+print(json.load(open(sys.argv[1])).get("enabled", False))
+PY
+)" == "True" ]]; then
+        warn "Cluster mode is already enabled."
+        log "Run 'dream cluster status' to see current state."
+        return 0
+    fi
+
+    # Plaintext-RPC acknowledgement. llama.cpp's RPC protocol sends model
+    # weights and tensor data unencrypted and unauthenticated — operators
+    # must explicitly acknowledge before we enable it. --yes/-y and the
+    # DREAM_CLUSTER_ASSUME_YES env var let CI / scripted installs skip.
+    local assume_yes=false
+    for arg in "$@"; do
+        case "$arg" in
+            -y|--yes) assume_yes=true ;;
+        esac
+    done
+    [[ "${DREAM_CLUSTER_ASSUME_YES:-}" == "1" ]] && assume_yes=true
+
+    if [[ "$assume_yes" != "true" ]]; then
+        echo ""
+        echo -e "${YELLOW}⚠ Security Warning${NC}"
+        echo "  llama.cpp RPC has NO encryption and NO authentication."
+        echo "  All tensor data (and your model weights on first load)"
+        echo "  flow in plaintext over your LAN. Only enable cluster mode on"
+        echo "  a trusted local network; for anything else use WireGuard/Tailscale."
+        echo ""
+        if [[ -t 0 ]]; then
+            read -p "  Continue enabling cluster mode? [y/N] " -r < /dev/tty
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log "Cluster enable aborted."
+                return 1
+            fi
+        else
+            error "Non-interactive shell — pass --yes (or set DREAM_CLUSTER_ASSUME_YES=1) to acknowledge the plaintext-RPC warning."
+        fi
+    fi
+
+    local token
+    token="dream_$(openssl rand -hex 16)"
+
+    # Detect controller GPU info
+    local gpu_name="CPU only" vram_mb=0 gpu_backend="${GPU_BACKEND:-nvidia}"
+    if [[ "$gpu_backend" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
+        gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -n '1p' | xargs)
+        vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | sed -n '1p' | xargs)
+    elif [[ "$gpu_backend" == "amd" ]]; then
+        if _cluster_detect_local_amd_gpu; then
+            gpu_name="$_detected_gpu_name"
+            vram_mb="$_detected_vram_mb"
+        fi
+    fi
+
+    # Network interface selection
+    local controller_ip=""
+    local all_ips
+    all_ips=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^$' | grep -v ':') || true
+
+    # Check for --interface flag
+    local iface_flag=""
+    for arg in "$@"; do
+        case "$arg" in
+            --interface=*) iface_flag="${arg#--interface=}" ;;
+        esac
+    done
+
+    if [[ -n "$iface_flag" ]]; then
+        controller_ip="$iface_flag"
+    elif [[ $(echo "$all_ips" | wc -l) -gt 1 ]]; then
+        echo ""
+        echo -e "  ${CYAN}Multiple network interfaces detected:${NC}"
+        echo ""
+        local i=1
+        while IFS= read -r ip; do
+            echo "    ${i}) ${ip}"
+            i=$((i + 1))
+        done <<< "$all_ips"
+        echo ""
+        local count=$((i - 1))
+        read -p "  Which interface should the cluster use? [1-${count}]: " -r < /dev/tty
+        local choice="${REPLY:-1}"
+        controller_ip=$(echo "$all_ips" | sed -n "${choice}p")
+        if [[ -z "$controller_ip" ]]; then
+            controller_ip=$(echo "$all_ips" | sed -n '1p')
+        fi
+    else
+        controller_ip=$(echo "$all_ips" | sed -n '1p')
+    fi
+    [[ -z "$controller_ip" ]] && controller_ip="<your-ip>"
+
+    # Write cluster state. Variables pass through sys.argv so a GPU name
+    # (or any other field) containing a quote/newline cannot break out of
+    # the literal and inject Python.
+    local state
+    state=$(python3 - "$token" "$controller_ip" "$gpu_backend" "$gpu_name" "$vram_mb" <<'PY'
+import json, sys
+token, controller_ip, gpu_backend, gpu_name, vram_mb_s = sys.argv[1:6]
+state = {
+    "enabled": True,
+    "token": token,
+    "controller": {
+        "ip": controller_ip,
+        "gpu_backend": gpu_backend,
+        "gpus": [{"name": gpu_name, "vram_mb": int(vram_mb_s or 0)}],
+    },
+    "nodes": [],
+}
+print(json.dumps(state, indent=2))
+PY
+)
+    _cluster_save_state "$state"
+
+    # Determine controller image tag based on GPU backend
+    local image_tag="dream-llama-rpc:cuda"
+    if [[ "$gpu_backend" == "amd" ]]; then
+        image_tag="dream-llama-rpc:rocm"
+    elif [[ "$gpu_backend" == "cpu" ]]; then
+        image_tag="dream-llama-rpc:cpu"
+    fi
+
+    # Write env vars
+    _env_set "CLUSTER_ENABLED" "true"
+    _env_set "CLUSTER_TOKEN" "$token"
+    _env_set "CLUSTER_WORKERS" ""
+    _env_set "CLUSTER_TENSOR_SPLIT" ""
+    _env_set "CLUSTER_CONTROLLER_IMAGE" "$image_tag"
+    _env_set "CLUSTER_INTERFACE" "$controller_ip"
+
+    # .env now carries the cluster token in cleartext; restrict to the
+    # install user. Any other user on the box can otherwise read it via
+    # the project directory permissions.
+    chmod 0600 "$INSTALL_DIR/.env" || warn "chmod 0600 $INSTALL_DIR/.env failed"
+
+    # Regenerate compose flags to pick up cluster overlay
+    _regenerate_compose_flags
+
+    local _ctrl_dockerfile="Dockerfile.cuda"
+    case "$gpu_backend" in
+        amd) _ctrl_dockerfile="Dockerfile.rocm" ;;
+        cpu) _ctrl_dockerfile="Dockerfile.cpu" ;;
+    esac
+
+    if ! docker image inspect "$image_tag" &>/dev/null; then
+        warn "Cluster controller image ($image_tag) not found."
+        echo "  This image is built during installation when LAN cluster mode is enabled."
+        echo "  Re-run the installer with cluster mode enabled, or build manually:"
+        echo "    docker build -f $INSTALL_DIR/images/llama-rpc/$_ctrl_dockerfile -t $image_tag $INSTALL_DIR/images/llama-rpc/"
+        echo ""
+        warn "Cluster config was saved, but the image needs to be built before restarting."
+    fi
+
+    echo ""
+    echo -e "${GREEN}━━━ LAN Cluster Enabled ━━━${NC}"
+    echo ""
+    echo -e "  Controller: ${BLUE}${controller_ip}${NC}"
+    if [[ "$vram_mb" -gt 0 ]]; then
+        echo -e "  GPU:        ${gpu_name} (${vram_mb} MB)"
+    else
+        echo -e "  GPU:        ${gpu_name}"
+    fi
+    echo -e "  Token:      ${token}"
+    echo ""
+    echo -e "${YELLOW}⚠ Security Warning${NC}"
+    echo "  llama.cpp RPC has NO encryption and NO authentication."
+    echo "  All tensor data flows in plaintext over the network."
+    echo "  Only run on trusted local networks."
+    echo "  For untrusted networks, use WireGuard or Tailscale tunnel IPs."
+    echo ""
+    echo -e "${CYAN}Next steps:${NC}"
+    echo "  1. Start the setup listener on this machine:"
+    echo "       dream cluster setup"
+    echo ""
+    echo "  2. On each worker machine (with DreamServer installed), run one of:"
+    echo ""
+    echo "     Agent flow (recommended — auto-restarts rpc-server if it crashes):"
+    echo "       CLUSTER_TOKEN='${token}' dream cluster agent start --controller ${controller_ip}"
+    echo ""
+    echo "     Manual join (one-shot, no monitoring):"
+    echo "       CLUSTER_TOKEN='${token}' dream cluster join ${controller_ip}"
+    echo ""
+    echo "     Or with the token in a mode-0600 file (preferred for systemd —"
+    echo "     the secret never lands in cluster-agent.json):"
+    echo "       echo '${token}' > /etc/dream-cluster.token && chmod 600 /etc/dream-cluster.token"
+    echo "       dream cluster agent start --token-file /etc/dream-cluster.token --controller ${controller_ip}"
+    echo ""
+    echo "     (Either CLUSTER_TOKEN env or --token-file is preferred over"
+    echo "      --token, which is visible to other local users via 'ps aux'.)"
+    echo ""
+    echo "  3. Accept each worker on this terminal, then Ctrl+C to finish."
+    echo ""
+}
+
+_cluster_disable() {
+    check_install
+    load_env
+
+    _env_set "CLUSTER_ENABLED" "false"
+    _env_set "CLUSTER_WORKERS" ""
+    _env_set "CLUSTER_TENSOR_SPLIT" ""
+
+    local cfg
+    cfg=$(_cluster_config_file)
+    if [[ -f "$cfg" ]]; then
+        # Atomic 0600 write — mirror AgentState._save() in cluster_worker_agent.py.
+        # cluster.json holds the shared cluster token, so a half-written
+        # version is both a security leak risk and a corruption risk.
+        python3 - "$cfg" <<'PY'
+import json, os, sys
+cfg = sys.argv[1]
+with open(cfg) as f:
+    state = json.load(f)
+state["enabled"] = False
+tmp = cfg + ".tmp"
+if os.path.exists(tmp):
+    os.unlink(tmp)
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f, indent=2)
+except BaseException:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    raise
+os.replace(tmp, cfg)
+PY
+    fi
+
+    _regenerate_compose_flags
+
+    success "Cluster mode disabled."
+    warn "Run 'dream restart llama-server' to apply."
+}
+
+_cluster_setup() {
+    check_install
+    load_env
+
+    local cfg
+    cfg=$(_cluster_config_file)
+    if [[ ! -f "$cfg" ]] || [[ "${CLUSTER_ENABLED:-false}" != "true" ]]; then
+        error "Cluster mode is not enabled. Run 'dream cluster enable' first."
+    fi
+
+    local token
+    token=$(python3 - "$cfg" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1])).get("token", ""))
+PY
+)
+    if [[ -z "$token" ]]; then
+        error "No cluster token found. Run 'dream cluster enable' to generate one."
+    fi
+
+    local setup_port=50051
+
+    local controller_ip="${CLUSTER_INTERFACE:-}"
+    [[ -z "$controller_ip" ]] && controller_ip=$(python3 - "$cfg" <<'PY' 2>/dev/null
+import json, sys
+print(json.load(open(sys.argv[1])).get("controller", {}).get("ip", ""))
+PY
+)
+    [[ -z "$controller_ip" ]] && controller_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+
+    echo ""
+    echo -e "${BLUE}━━━ Cluster Setup ━━━${NC}"
+    echo ""
+    echo "  Controller: ${controller_ip}"
+    echo "  Token:      ${token}"
+    echo ""
+    echo "  On each worker machine, run one of:"
+    echo ""
+    echo "    ${GREEN}Agent flow (recommended):${NC}"
+    echo "      dream cluster agent start --token ${token} --controller ${controller_ip}"
+    echo ""
+    echo "    ${CYAN}Manual join:${NC}"
+    echo "      dream cluster join ${controller_ip} --token ${token}"
+    echo ""
+    echo "  Waiting for workers to connect..."
+    echo "  Press Ctrl+C when all workers have joined."
+    echo ""
+
+    # Run the setup listener — pass token via env so it doesn't leak via `ps`
+    CLUSTER_TOKEN="$token" python3 "$INSTALL_DIR/scripts/cluster-setup-listener.py" \
+        --port "$setup_port" \
+        --config "$cfg"
+    local exit_code=$?
+
+    if [[ $exit_code -eq 0 ]]; then
+        # Workers were added, rebuild env
+        _cluster_rebuild_env
+
+        echo ""
+        read -p "  Restart llama-server now to apply? [Y/n] " -r < /dev/tty
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            cmd_restart "llama-server"
+        else
+            warn "Run 'dream restart llama-server' when ready."
+        fi
+    else
+        log "No workers were added."
+    fi
+}
+
+_cluster_join() {
+    check_install
+    load_env
+
+    local controller_ip="" token="" setup_port=50051 rpc_port=50052 discover=false interface=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --token) token="${2:-}"; shift 2 ;;
+            --port) setup_port="${2:-50051}"; shift 2 ;;
+            --rpc-port) rpc_port="${2:-50052}"; shift 2 ;;
+            --discover) discover=true; shift ;;
+            --interface) interface="${2:-}"; shift 2 ;;
+            -*) shift ;;
+            *) [[ -z "$controller_ip" ]] && controller_ip="$1"; shift ;;
+        esac
+    done
+
+    # CLUSTER_TOKEN env is the documented, less-leaky path ('Next steps' in
+    # `cluster enable` points operators at it). CLI --token still works but
+    # is visible via `ps aux` to other local users.
+    if [[ -z "$token" ]] && [[ -n "${CLUSTER_TOKEN:-}" ]]; then
+        token="$CLUSTER_TOKEN"
+    fi
+
+    if [[ -z "$token" ]]; then
+        error "Token is required. Usage: dream cluster join [<CONTROLLER_IP> | --discover] --token TOKEN (or export CLUSTER_TOKEN)"
+    fi
+
+    if [[ "$discover" == "true" ]] && [[ -z "$controller_ip" ]]; then
+        log "Searching for controller on the LAN..."
+        local discover_result
+        discover_result=$(python3 "$INSTALL_DIR/scripts/cluster_discovery.py" discover 30 ${interface:+"$interface"} 2>&1)
+        if [[ $? -ne 0 ]]; then
+            error "Auto-discovery failed: ${discover_result}. Specify the controller IP manually."
+        fi
+        # Output: "Found controller: IP:PORT"
+        controller_ip=$(echo "$discover_result" | grep "Found controller" | sed 's/.*: \(.*\):\(.*\)/\1/')
+        setup_port=$(echo "$discover_result" | grep "Found controller" | sed 's/.*: \(.*\):\(.*\)/\2/')
+        success "Found controller at ${controller_ip}:${setup_port}"
+    fi
+
+    if [[ -z "$controller_ip" ]]; then
+        error "Usage: dream cluster join <CONTROLLER_IP> --token TOKEN [--discover]"
+    fi
+
+    local gpu_backend="${GPU_BACKEND:-nvidia}"
+
+    # Check that the worker image was built at install time
+    local image_tag="dream-rpc-server:cuda"
+    local _worker_dockerfile="Dockerfile.rpc-cuda"
+    case "$gpu_backend" in
+        amd) image_tag="dream-rpc-server:rocm"; _worker_dockerfile="Dockerfile.rpc-rocm" ;;
+        cpu) image_tag="dream-rpc-server:cpu"; _worker_dockerfile="Dockerfile.rpc-cpu" ;;
+    esac
+
+    if ! docker image inspect "$image_tag" &>/dev/null; then
+        error "Worker image ($image_tag) not found. Re-run the installer with cluster mode enabled, or build manually: docker build -f $INSTALL_DIR/images/llama-rpc/$_worker_dockerfile -t $image_tag $INSTALL_DIR/images/llama-rpc/"
+    fi
+
+    # Detect GPU info for the controller to display
+    local gpu_json="[]"
+    if [[ "$gpu_backend" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
+        gpu_json=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>/dev/null \
+            | python3 -c "
+import sys, json
+gpus = []
+for line in sys.stdin:
+    parts = [p.strip() for p in line.strip().split(',')]
+    if len(parts) >= 2:
+        gpus.append({'name': parts[0], 'vram_mb': int(parts[1])})
+print(json.dumps(gpus))
+" 2>/dev/null) || gpu_json="[]"
+    elif [[ "$gpu_backend" == "amd" ]]; then
+        gpu_json=$(python3 -c "
+import os, json
+gpus = []
+for card in sorted(os.listdir('/sys/class/drm/')):
+    dev = f'/sys/class/drm/{card}/device'
+    vendor_f = f'{dev}/vendor'
+    if not os.path.isfile(vendor_f):
+        continue
+    with open(vendor_f) as f:
+        if f.read().strip() != '0x1002':
+            continue
+    name = 'AMD Radeon'
+    name_f = f'{dev}/product_name'
+    if os.path.isfile(name_f):
+        with open(name_f) as f:
+            name = f.read().strip()
+    vram = 0
+    vram_f = f'{dev}/mem_info_vram_total'
+    if os.path.isfile(vram_f):
+        with open(vram_f) as f:
+            vram = int(f.read().strip()) // 1048576
+    gpus.append({'name': name, 'vram_mb': vram})
+print(json.dumps(gpus))
+" 2>/dev/null) || gpu_json="[]"
+    fi
+
+    echo ""
+    log "Connecting to controller at ${controller_ip}:${setup_port}..."
+
+    # Connect to the setup listener and request to join — pass token via env
+    # so the shared secret doesn't leak via `ps` on the worker.
+    if ! CLUSTER_TOKEN="$token" python3 "$INSTALL_DIR/scripts/cluster-join-client.py" \
+        --controller-ip "$controller_ip" \
+        --port "$setup_port" \
+        --gpu-backend "$gpu_backend" \
+        --rpc-port "$rpc_port" \
+        --gpu-json "$gpu_json"; then
+        error "Join request was rejected or failed. Check the token and try again."
+    fi
+
+    success "Controller accepted this worker."
+
+    # Stop existing rpc-server container if running. The container existed
+    # at the ps check, so stop/rm failures here are unexpected (wedged
+    # dockerd, container-runtime bug) — surface rather than silence.
+    if docker ps -q -f name=dream-rpc-server | grep -q .; then
+        log "Stopping existing rpc-server container..."
+        docker stop dream-rpc-server >/dev/null || warn "docker stop failed on existing rpc-server"
+        docker rm dream-rpc-server >/dev/null || warn "docker rm failed on existing rpc-server"
+    fi
+
+    # Start the rpc-server container
+    log "Starting rpc-server on port ${rpc_port}..."
+    local docker_gpu_flags=""
+    case "$gpu_backend" in
+        nvidia) docker_gpu_flags="--gpus all" ;;
+        amd)    docker_gpu_flags="--device /dev/dri --device /dev/kfd --group-add ${VIDEO_GID:-44} --group-add ${RENDER_GID:-992}" ;;
+        cpu)    docker_gpu_flags="" ;;
+    esac
+
+    # If --interface was given, narrow the host-side publish to that IP so
+    # rpc-server is not reachable from every network the host is attached to
+    # (Tailscale, virbr0, Docker bridges). llama.cpp RPC has no auth or
+    # encryption — exposing 50052 to all interfaces is a real footgun on
+    # multi-homed hosts. The agent path (cluster_worker_agent.start_rpc_server)
+    # already does this; mirror it here so manual `dream cluster join` is
+    # consistent. Empty interface keeps the prior all-interfaces default
+    # (single-NIC homes don't need to opt in).
+    local _publish="${rpc_port}:50052"
+    [[ -n "$interface" ]] && _publish="${interface}:${rpc_port}:50052"
+
+    # shellcheck disable=SC2086
+    docker run -d \
+        --name dream-rpc-server \
+        --restart unless-stopped \
+        -p "$_publish" \
+        $docker_gpu_flags \
+        "$image_tag" \
+        -p 50052 -c --host 0.0.0.0 \
+        || error "Failed to start rpc-server container."
+
+    echo ""
+    echo -e "${GREEN}━━━ Worker Active ━━━${NC}"
+    echo ""
+    echo "  rpc-server is running on port ${rpc_port}."
+    echo "  This machine is now part of the cluster."
+    echo ""
+}
+
+_cluster_leave() {
+    check_install
+
+    log "Stopping rpc-server container..."
+    if docker ps -q -f name=dream-rpc-server | grep -q .; then
+        # Mirror _cluster_join's pattern (line ~2950): stop/rm failures are
+        # unexpected (wedged dockerd, runtime bug) — surface them with
+        # warn() rather than swallowing stderr and printing a misleading
+        # "stopped and removed" success line.
+        local stop_ok=true rm_ok=true
+        docker stop dream-rpc-server >/dev/null || { warn "docker stop failed on dream-rpc-server"; stop_ok=false; }
+        docker rm dream-rpc-server >/dev/null || { warn "docker rm failed on dream-rpc-server"; rm_ok=false; }
+        if [[ "$stop_ok" == "true" && "$rm_ok" == "true" ]]; then
+            success "rpc-server stopped and removed."
+        else
+            warn "rpc-server may not have been fully cleaned up; check 'docker ps -a | grep dream-rpc-server'."
+        fi
+    else
+        warn "No rpc-server container found."
+    fi
+
+    echo ""
+    warn "Remember to remove this worker on the controller:"
+    local my_ip
+    my_ip=$(hostname -I 2>/dev/null | awk '{print $1}') || my_ip="<this-machine-ip>"
+    echo "  dream cluster remove ${my_ip}"
+    echo "  dream restart llama-server"
+    echo ""
+}
+
+_cluster_add() {
+    check_install
+    load_env
+
+    local worker_ip="${1:-}"
+    if [[ -z "$worker_ip" ]]; then
+        error "Usage: dream cluster add <WORKER_IP> [--port PORT]"
+    fi
+    local rpc_port=50052
+    shift
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --port) rpc_port="${2:-50052}"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    log "Testing connectivity to ${worker_ip}:${rpc_port}..."
+
+    # TCP connectivity check
+    if ! timeout 5 bash -c "echo >/dev/tcp/${worker_ip}/${rpc_port}" 2>/dev/null; then
+        error "Cannot reach ${worker_ip}:${rpc_port}. Check that rpc-server is running and firewall allows TCP port ${rpc_port}."
+    fi
+    success "Worker ${worker_ip}:${rpc_port} is reachable."
+
+    # Get controller VRAM for tensor-split calculation
+    local controller_vram_mb=0
+    local gpu_backend="${GPU_BACKEND:-nvidia}"
+    if [[ "$gpu_backend" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
+        controller_vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | sed -n '1p' | xargs)
+    elif [[ "$gpu_backend" == "amd" ]]; then
+        if _cluster_detect_local_amd_gpu; then
+            controller_vram_mb="$_detected_vram_mb"
+        fi
+    fi
+
+    # Probe the worker's agent status endpoint to learn its GPU inventory.
+    # Falls back to "unknown"/[] if the agent isn't reachable (e.g. operator
+    # is adding a pre-existing rpc-server with no dream agent running).
+    local agent_port="${CLUSTER_AGENT_PORT:-50054}"
+    local worker_gpu_backend="unknown"
+    local worker_gpus_json="[]"
+    local agent_response curl_rc=0
+    agent_response=$(curl -sf --max-time 5 "http://${worker_ip}:${agent_port}/health") || curl_rc=$?
+    if [[ $curl_rc -eq 0 && -n "$agent_response" ]]; then
+        # Treat the /health response as untrusted input — even though the
+        # operator picked this IP, an attacker on :50054 (or a future
+        # agent bug) could send arbitrary fields. Mirror the listener's
+        # _validate_join_payload allowlist: backend ∈ {cpu,nvidia,amd},
+        # gpus is a list of {name,vram_mb} with control chars stripped
+        # from name. Single python3 invocation (the prior code spawned
+        # three) so we don't fan out subprocesses just to extract two
+        # fields. Crash on malformed JSON — that's a real worker bug the
+        # operator needs to see.
+        local parsed
+        parsed=$(python3 - "$agent_response" <<'PY'
+import json, sys
+
+VALID = {"cpu", "nvidia", "amd"}
+payload = json.loads(sys.argv[1])
+agent = payload.get("agent", {}) or {}
+backend = agent.get("gpu_backend") or "unknown"
+if backend not in VALID:
+    backend = "unknown"
+raw_gpus = agent.get("gpus", []) or []
+clean = []
+if isinstance(raw_gpus, list):
+    for g in raw_gpus:
+        if not isinstance(g, dict):
+            continue
+        name = str(g.get("name", "Unknown"))[:128]
+        # Strip C0/C1 controls so a hostile agent can't smuggle ANSI
+        # escapes into the dashboard's GPU column.
+        name = "".join(c for c in name if 0x20 <= ord(c) < 0x7F or 0xA0 <= ord(c)) or "Unknown"
+        try:
+            vram = int(g.get("vram_mb", 0))
+        except (TypeError, ValueError):
+            vram = 0
+        clean.append({"name": name, "vram_mb": max(0, vram)})
+print(f"{backend}\t{json.dumps(clean)}")
+PY
+)
+        worker_gpu_backend="${parsed%%$'\t'*}"
+        worker_gpus_json="${parsed#*$'\t'}"
+        local _gpu_count
+        _gpu_count=$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$worker_gpus_json")
+        success "Worker agent reports backend=${worker_gpu_backend}, ${_gpu_count} GPU(s)"
+    else
+        warn "Worker agent not reachable at ${worker_ip}:${agent_port} (curl exit=${curl_rc}) — storing backend=unknown."
+        warn "  The agent's /health binds 127.0.0.1 by default. To auto-fill GPU info via 'dream cluster add', restart the worker agent with --status-bind 0.0.0.0 (or set CLUSTER_INTERFACE on the worker), then re-run this command. Or run 'dream cluster join' from the worker side — the join handshake carries GPU info without exposing /health to the LAN."
+    fi
+
+    # Update cluster state
+    local cfg
+    cfg=$(_cluster_config_file)
+    if [[ ! -f "$cfg" ]]; then
+        warn "Cluster not enabled. Run 'dream cluster enable' first."
+        return 1
+    fi
+
+    python3 - "$cfg" "$worker_ip" "$rpc_port" "$agent_port" "$worker_gpu_backend" "$worker_gpus_json" <<'PY'
+import json, os, sys, time
+
+cfg, worker_ip, rpc_port_s, agent_port_s, gpu_backend, gpus_json = sys.argv[1:7]
+rpc_port = int(rpc_port_s)
+agent_port = int(agent_port_s)
+gpus = json.loads(gpus_json)
+
+with open(cfg) as f:
+    state = json.load(f)
+
+for node in state["nodes"]:
+    if node["ip"] == worker_ip and node.get("rpc_port", 50052) == rpc_port:
+        print(f"Worker {worker_ip}:{rpc_port} is already in the cluster.")
+        sys.exit(0)
+
+state["nodes"].append({
+    "ip": worker_ip,
+    "rpc_port": rpc_port,
+    "agent_port": agent_port,
+    "gpu_backend": gpu_backend,
+    "gpus": gpus,
+    "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "status": "online",
+})
+
+# Atomic 0600 write — mirror AgentState._save() in cluster_worker_agent.py.
+tmp = cfg + ".tmp"
+if os.path.exists(tmp):
+    os.unlink(tmp)
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f, indent=2)
+except BaseException:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    raise
+os.replace(tmp, cfg)
+PY
+
+    # Rebuild CLUSTER_WORKERS and CLUSTER_TENSOR_SPLIT from state
+    _cluster_rebuild_env
+
+    success "Worker ${worker_ip}:${rpc_port} added to cluster."
+    echo ""
+    log "Tensor split and worker list updated in .env"
+    warn "Run 'dream restart llama-server' to apply."
+}
+
+_cluster_remove() {
+    check_install
+    load_env
+
+    local worker_ip="${1:-}"
+    if [[ -z "$worker_ip" ]]; then
+        error "Usage: dream cluster remove <WORKER_IP>"
+    fi
+
+    local cfg
+    cfg=$(_cluster_config_file)
+    [[ -f "$cfg" ]] || error "No cluster config found. Run 'dream cluster enable' first."
+
+    python3 - "$cfg" "$worker_ip" <<'PY' || { warn "Worker $worker_ip not found in cluster."; return 1; }
+import json, os, sys
+cfg, worker_ip = sys.argv[1], sys.argv[2]
+with open(cfg) as f:
+    state = json.load(f)
+before = len(state["nodes"])
+state["nodes"] = [n for n in state["nodes"] if n["ip"] != worker_ip]
+if before == len(state["nodes"]):
+    print(f"Worker {worker_ip} not found in cluster.")
+    sys.exit(1)
+# Atomic 0600 write — mirror AgentState._save() in cluster_worker_agent.py.
+tmp = cfg + ".tmp"
+if os.path.exists(tmp):
+    os.unlink(tmp)
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f, indent=2)
+except BaseException:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    raise
+os.replace(tmp, cfg)
+PY
+
+    _cluster_rebuild_env
+
+    success "Worker ${worker_ip} removed from cluster."
+    warn "Run 'dream restart llama-server' to apply."
+}
+
+_cluster_rebuild_env() {
+    # Rebuild CLUSTER_WORKERS and CLUSTER_TENSOR_SPLIT from cluster.json
+    local cfg
+    cfg=$(_cluster_config_file)
+    [[ -f "$cfg" ]] || return
+
+    local result
+    result=$(python3 - "$cfg" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    state = json.load(f)
+workers = ",".join(f"{n['ip']}:{n.get('rpc_port', 50052)}" for n in state["nodes"])
+# Simple equal-weight tensor split: controller + N workers
+count = len(state["nodes"]) + 1
+split = ",".join(["1"] * count) if state["nodes"] else ""
+print(f"{workers}|{split}")
+PY
+)
+
+    local workers split
+    workers="${result%%|*}"
+    split="${result##*|}"
+
+    _env_set "CLUSTER_WORKERS" "$workers"
+    _env_set "CLUSTER_TENSOR_SPLIT" "$split"
+    _regenerate_compose_flags
+}
+
+_cluster_status() {
+    check_install
+    load_env
+
+    local cfg
+    cfg=$(_cluster_config_file)
+
+    # Worker mode: no cluster.json, but rpc-server container may be running
+    if [[ ! -f "$cfg" ]] || [[ "${CLUSTER_ENABLED:-false}" != "true" ]]; then
+        # Check if this is a worker node
+        if docker ps -q -f name=dream-rpc-server 2>/dev/null | grep -q .; then
+            _cluster_status_worker
+        else
+            echo -e "${BLUE}━━━ LAN Cluster Status ━━━${NC}"
+            echo ""
+            echo "  Cluster mode is not enabled."
+            echo "  Run 'dream cluster enable' to set up as controller,"
+            echo "  or 'dream cluster join <IP> --token <TOKEN>' to join as worker."
+            echo ""
+        fi
+        return 0
+    fi
+
+    local state
+    state=$(cat "$cfg")
+
+    local gpu_backend="${GPU_BACKEND:-nvidia}"
+
+    # Gather controller info
+    local ctrl_gpu ctrl_vram_mb
+    ctrl_gpu=$(echo "$state" | python3 -c "import json,sys; c=json.load(sys.stdin).get('controller',{}); gpus=c.get('gpus',[]); print(gpus[0]['name'] if gpus else 'CPU only')")
+    ctrl_vram_mb=$(echo "$state" | python3 -c "import json,sys; c=json.load(sys.stdin).get('controller',{}); gpus=c.get('gpus',[]); print(gpus[0].get('vram_mb',0) if gpus else 0)")
+    local ctrl_vram_display
+    if [[ "$ctrl_vram_mb" -gt 0 ]]; then
+        ctrl_vram_display="$(python3 -c "print(round($ctrl_vram_mb / 1024, 1))") GB"
+    else
+        ctrl_vram_display="---"
+    fi
+
+    # Gather node info
+    local node_count
+    node_count=$(echo "$state" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('nodes',[])))")
+    local total_nodes=$((node_count + 1))
+
+    echo ""
+    echo -e "${BLUE}━━━ LAN Cluster Status ━━━${NC}"
+    echo ""
+    echo -e "  Nodes: ${total_nodes}  |  Workers: ${node_count}  |  Backend: ${gpu_backend}"
+    echo ""
+
+    # Controller row
+    printf "  %-18s %-20s %-10s %-8s %s\n" "Node" "GPU" "VRAM" "Status" "Ping"
+    printf "  %-18s %-20s %-10s %-8s %s\n" "──────────────────" "────────────────────" "──────────" "────────" "────"
+    printf "  %-18s %-20s %-10s ${GREEN}%-8s${NC} %s\n" "controller" "$ctrl_gpu" "$ctrl_vram_display" "online" "---"
+
+    # Worker rows
+    echo "$state" | python3 -c "
+import json, sys, socket, time
+
+state = json.load(sys.stdin)
+for node in state.get('nodes', []):
+    ip = node['ip']
+    port = node.get('rpc_port', 50052)
+    gpu_backend = node.get('gpu_backend', 'unknown')
+    gpu_name = 'CPU only' if gpu_backend == 'cpu' else 'Unknown'
+    vram_display = '---'
+    gpus = node.get('gpus', [])
+    if gpus:
+        gpu_name = gpus[0].get('name', gpu_name)
+        vram_mb = gpus[0].get('vram_mb', 0)
+        if vram_mb > 0:
+            vram_display = f'{round(vram_mb / 1024, 1)} GB'
+
+    # TCP ping
+    status = 'offline'
+    ping_ms = '---'
+    try:
+        t0 = time.monotonic()
+        sock = socket.create_connection((ip, port), timeout=3)
+        sock.close()
+        elapsed = (time.monotonic() - t0) * 1000
+        status = 'online'
+        ping_ms = f'{elapsed:.0f}ms'
+    except (socket.timeout, ConnectionRefusedError, OSError):
+        pass
+
+    color = '\033[0;32m' if status == 'online' else '\033[0;31m'
+    nc = '\033[0m'
+    host = f'{ip}:{port}'
+    print(f'  {host:<18s} {gpu_name:<20s} {vram_display:<10s} {color}{status:<8s}{nc} {ping_ms}')
+"
+
+    echo ""
+    local workers="${CLUSTER_WORKERS:-}"
+    local split="${CLUSTER_TENSOR_SPLIT:-}"
+    if [[ -n "$workers" ]]; then
+        echo "  Workers:      ${workers}"
+        echo "  Tensor Split: ${split:-auto}"
+    else
+        echo "  No workers configured. Run 'dream cluster setup' to add workers."
+    fi
+    echo ""
+}
+
+_cluster_status_worker() {
+    local gpu_backend="${GPU_BACKEND:-nvidia}"
+
+    # Get rpc-server container info
+    local container_status rpc_port
+    container_status=$(docker inspect dream-rpc-server --format '{{.State.Status}}' 2>/dev/null || echo "not found")
+    rpc_port=$(docker inspect dream-rpc-server --format '{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "50052/tcp"}}{{(index $conf 0).HostPort}}{{end}}{{end}}' 2>/dev/null || echo "?")
+
+    # Detect local GPU
+    local gpu_name="CPU only" vram_mb=0
+    if [[ "$gpu_backend" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
+        gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | sed -n '1p' | xargs)
+        vram_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | sed -n '1p' | xargs)
+    elif [[ "$gpu_backend" == "amd" ]]; then
+        if _cluster_detect_local_amd_gpu; then
+            gpu_name="$_detected_gpu_name"
+            vram_mb="$_detected_vram_mb"
+        fi
+    fi
+
+    local vram_display="---"
+    if [[ "$vram_mb" -gt 0 ]]; then
+        vram_display="$(python3 -c "print(round($vram_mb / 1024, 1))") GB"
+    fi
+
+    local my_ip
+    my_ip=$(hostname -I 2>/dev/null | awk '{print $1}') || my_ip="unknown"
+
+    local status_color="${GREEN}" status_text="running"
+    if [[ "$container_status" != "running" ]]; then
+        status_color="${RED}"
+        status_text="$container_status"
+    fi
+
+    echo ""
+    echo -e "${BLUE}━━━ LAN Cluster Status (Worker) ━━━${NC}"
+    echo ""
+    echo -e "  Role:     worker"
+    echo -e "  IP:       ${my_ip}"
+    echo -e "  RPC port: ${rpc_port}"
+    echo -e "  Backend:  ${gpu_backend}"
+    echo -e "  GPU:      ${gpu_name}"
+    echo -e "  VRAM:     ${vram_display}"
+    echo -e "  Status:   ${status_color}${status_text}${NC}"
+    echo ""
+}
+
+_cluster_test() {
+    check_install
+    load_env
+
+    local workers="${CLUSTER_WORKERS:-}"
+    if [[ -z "$workers" ]]; then
+        warn "No workers configured. Run 'dream cluster add <WORKER_IP>' first."
+        return 1
+    fi
+
+    echo -e "${BLUE}━━━ LAN Cluster Connectivity Test ━━━${NC}"
+    echo ""
+
+    local all_ok=true
+    IFS=',' read -ra worker_list <<< "$workers"
+    for addr in "${worker_list[@]}"; do
+        addr=$(echo "$addr" | xargs)
+        local host="${addr%%:*}"
+        local port="${addr##*:}"
+
+        printf "  %-25s " "$addr"
+
+        # 10-sample TCP ping
+        local sum=0 count=0 min=999999 max=0
+        for _ in $(seq 1 10); do
+            local t0 t1 elapsed
+            t0=$(python3 -c "import time; print(time.monotonic())")
+            if timeout 3 bash -c "echo >/dev/tcp/${host}/${port}" 2>/dev/null; then
+                t1=$(python3 -c "import time; print(time.monotonic())")
+                elapsed=$(python3 -c "print(round(($t1 - $t0) * 1000, 1))")
+                sum=$(python3 -c "print($sum + $elapsed)")
+                count=$((count + 1))
+                [[ $(python3 -c "print(1 if $elapsed < $min else 0)") == "1" ]] && min=$elapsed
+                [[ $(python3 -c "print(1 if $elapsed > $max else 0)") == "1" ]] && max=$elapsed
+            fi
+        done
+
+        if [[ $count -eq 0 ]]; then
+            echo -e "${RED}UNREACHABLE${NC}  (0/10 succeeded)"
+            all_ok=false
+        else
+            local avg
+            avg=$(python3 -c "print(round($sum / $count, 1))")
+            echo -e "${GREEN}OK${NC}  ${count}/10  min=${min}ms  avg=${avg}ms  max=${max}ms"
+        fi
+    done
+
+    echo ""
+    if [[ "$all_ok" == "true" ]]; then
+        success "All workers reachable."
+    else
+        warn "Some workers are unreachable. Check firewalls and rpc-server containers."
+    fi
+}
+
+_cluster_agent() {
+    check_install
+    # load_env fails if .env is missing (fresh install before `dream cluster
+    # enable`); every sub-action below handles that state explicitly, so
+    # surface the failure as a warning instead of silencing it.
+    load_env || warn "load_env failed — continuing without .env (token/interface must come from CLI or env)"
+
+    local action="${1:-status}"
+    # Drop the action arg from the remaining list. `shift` only fails when
+    # $# is 0, in which case there's nothing to shift; no need to silence.
+    if [[ $# -gt 0 ]]; then shift; fi
+
+    local config_file="$INSTALL_DIR/config/cluster-agent.json"
+    local pid_file="$INSTALL_DIR/data/cluster-agent.pid"
+    local log_file="$INSTALL_DIR/data/cluster-agent.log"
+    local agent_script="$INSTALL_DIR/scripts/cluster_worker_agent.py"
+    local status_port=50054
+
+    # Parse --token, --token-file, --interface, --controller on first start
+    local token="" token_file="" interface="" controller=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --token) token="${2:-}"; shift 2 ;;
+            --token-file) token_file="${2:-}"; shift 2 ;;
+            --port) status_port="${2:-50054}"; shift 2 ;;
+            --interface) interface="${2:-}"; shift 2 ;;
+            --controller) controller="${2:-}"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # --token and --token-file are mutually exclusive — let it crash loud
+    # rather than silently pick one. Docs (LAN-CLUSTER-GUIDE.md) point
+    # operators at --token-file precisely because it avoids leaking the
+    # secret via `ps aux`; mixing them defeats the point.
+    if [[ -n "$token" && -n "$token_file" ]]; then
+        error "--token and --token-file are mutually exclusive"
+    fi
+
+    # Resolve --token-file to an absolute path so systemd's ExecStart and
+    # the nohup invocation both find it regardless of the daemon's cwd.
+    # Validate now so the operator gets the failure at start time rather
+    # than at the first restart inside systemd.
+    if [[ -n "$token_file" ]]; then
+        if [[ ! -f "$token_file" ]]; then
+            error "--token-file '$token_file' not found"
+        fi
+        # readlink -f for absolute path; fall back to realpath on busybox.
+        local _tf_abs
+        if _tf_abs=$(readlink -f "$token_file" 2>/dev/null) && [[ -n "$_tf_abs" ]]; then
+            token_file="$_tf_abs"
+        elif _tf_abs=$(realpath "$token_file" 2>/dev/null) && [[ -n "$_tf_abs" ]]; then
+            token_file="$_tf_abs"
+        fi
+        # Mirror the agent's mode check (cluster_worker_agent.py:_resolve_token).
+        # Warn but don't fail — the agent will still load the file; we just
+        # surface the same advisory at start time so operators see it before
+        # systemd swallows it into the journal.
+        local _tf_mode
+        if _tf_mode=$(stat -c '%a' "$token_file" 2>/dev/null) || \
+           _tf_mode=$(stat -f '%Lp' "$token_file" 2>/dev/null); then
+            if [[ -n "$_tf_mode" ]] && (( 8#$_tf_mode & 8#077 )); then
+                warn "--token-file '$token_file' has mode $_tf_mode (group/world readable); chmod 600 to restrict"
+            fi
+        fi
+    fi
+
+    # CLUSTER_TOKEN env is the documented path ('dream cluster enable' hints
+    # at it in 'Next steps'). CLI --token still works but leaks via `ps aux`.
+    if [[ -z "$token" ]] && [[ -z "$token_file" ]] && [[ -n "${CLUSTER_TOKEN:-}" ]]; then
+        token="$CLUSTER_TOKEN"
+    fi
+
+    # Use CLUSTER_INTERFACE from env if --interface not specified
+    [[ -z "$interface" ]] && interface="${CLUSTER_INTERFACE:-}"
+
+    case "$action" in
+        start)
+            if ! command -v python3 &>/dev/null; then
+                error "python3 not found in PATH"
+            fi
+
+            # Initialize config if token or token-file provided. token_file
+            # is stored as a path (NOT contents) so the secret never lands
+            # in cluster-agent.json — the Python agent re-reads the file at
+            # each start. token (string) keeps the existing inline behavior.
+            if [[ -n "$token" ]] || [[ -n "$token_file" ]]; then
+                local gpu_backend="${GPU_BACKEND:-}"
+                [[ -z "$gpu_backend" ]] && gpu_backend=$(python3 -c "
+import subprocess, os
+if subprocess.run(['nvidia-smi'], capture_output=True).returncode == 0: print('nvidia')
+elif os.path.exists('/dev/kfd'): print('amd')
+else: print('cpu')
+")
+                mkdir -p "$(dirname "$config_file")"
+                # Create the config file with mode 0600 before writing so
+                # the token is never briefly world-readable. AgentState
+                # later preserves 0600 via O_EXCL + os.replace.
+                python3 - "$config_file" "$token" "$token_file" "$controller" "$gpu_backend" "$interface" <<'PY'
+import json, os, sys
+config_file, token, token_file, controller, gpu_backend, interface = sys.argv[1:7]
+cfg = {
+    "controller_ip": controller,
+    "setup_port": 50051,
+    "rpc_port": 50052,
+    "gpu_backend": gpu_backend,
+    "interface": interface,
+    "status": "idle",
+}
+# token_file wins — never persist both in the config, so the secret only
+# exists at the path the operator chose. The agent's _resolve_token reads
+# the file fresh on every start.
+if token_file:
+    cfg["token_file"] = token_file
+else:
+    cfg["token"] = token
+tmp = config_file + ".tmp"
+if os.path.exists(tmp):
+    os.unlink(tmp)
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+# Mirror the BaseException cleanup of the other three cluster.json writers
+# (_cluster_disable / _cluster_add / _cluster_remove). Without this, a
+# crash during json.dump (disk full, SIGKILL, surrogate-char in token)
+# leaves the .tmp around; the next agent-start hits FileExistsError on
+# the O_EXCL above instead of succeeding cleanly via the recovery branch.
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(cfg, f, indent=2)
+except BaseException:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    raise
+os.replace(tmp, config_file)
+PY
+                log "Agent config initialized (backend: ${gpu_backend})"
+            fi
+
+            if [[ ! -f "$config_file" ]]; then
+                error "No agent config. Run: dream cluster agent start --token TOKEN  (or --token-file PATH)"
+            fi
+
+            # On subsequent starts (no flags), recover token_file from the
+            # persisted config so systemd / nohup re-receive --token-file.
+            # Without this, restarting via `dream cluster agent start` after
+            # the first init would drop back to the no-flag invocation and
+            # the agent would fall through to the empty-state branch.
+            if [[ -z "$token" ]] && [[ -z "$token_file" ]] && [[ -f "$config_file" ]]; then
+                local _persisted
+                _persisted=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('token_file','') or '')" "$config_file" 2>/dev/null || true)
+                if [[ -n "$_persisted" ]]; then
+                    token_file="$_persisted"
+                fi
+            fi
+
+            # Detect daemon type
+            local daemon_type="none"
+            if systemctl --user status >/dev/null 2>&1; then
+                daemon_type="systemd"
+            fi
+
+            case "$daemon_type" in
+                systemd)
+                    # Install unit if not present. Re-render if the
+                    # interface arg changed so the new value is picked up.
+                    local unit_dir="${HOME}/.config/systemd/user"
+                    local unit_file="${unit_dir}/dream-cluster-agent.service"
+                    local python3_path
+                    python3_path=$(command -v python3)
+                    mkdir -p "$unit_dir"
+                    # Render ` --token-file <abspath>` (with leading space)
+                    # so the placeholder collapses cleanly when no token-file
+                    # is in play. Quoted in the unit because the path may
+                    # contain spaces.
+                    local _token_file_flag=""
+                    if [[ -n "$token_file" ]]; then
+                        _token_file_flag=" --token-file \"${token_file}\""
+                    fi
+                    local _unit_stale=true
+                    if [[ -f "$unit_file" ]]; then
+                        # Unit is stale if either CLUSTER_INTERFACE OR the
+                        # rendered --token-file flag changed. Both go into
+                        # ExecStart/Environment so a drift in either should
+                        # trigger a re-render + daemon-reload.
+                        if grep -Fq "Environment=CLUSTER_INTERFACE=${interface}" "$unit_file" \
+                           && grep -Fq "${_token_file_flag}" "$unit_file"; then
+                            _unit_stale=false
+                        fi
+                    fi
+                    if [[ "$_unit_stale" == "true" ]]; then
+                        sed -e "s|__PYTHON3__|${python3_path}|g" \
+                            -e "s|__INSTALL_DIR__|${INSTALL_DIR}|g" \
+                            -e "s|__HOME__|${HOME}|g" \
+                            -e "s|__INTERFACE__|${interface}|g" \
+                            -e "s|__TOKEN_FILE_FLAG__|${_token_file_flag}|g" \
+                            "$INSTALL_DIR/scripts/systemd/dream-cluster-agent.service" > "$unit_file"
+                        systemctl --user daemon-reload
+                    fi
+                    # Mirror the stop branch — let systemd's stderr surface
+                        # so a failed unit (bad ExecStart, denied namespace,
+                        # failed daemon-reload) doesn't get hidden behind a
+                        # generic "Agent start failed" line. Operators need
+                        # the underlying error to debug.
+                    if systemctl --user start dream-cluster-agent.service; then
+                        echo ""
+                        success "Cluster agent started (systemd)"
+                        echo ""
+                        if [[ -n "$controller" ]]; then
+                            echo "  Controller: ${controller}:50051"
+                        else
+                            echo "  Controller: auto-discover (UDP broadcast)"
+                        fi
+                        echo "  Backend:    ${gpu_backend}"
+                        echo "  RPC port:   50052"
+                        echo ""
+                        echo "  The agent will connect, join, and start rpc-server."
+                        echo "  Make sure 'dream cluster setup' is running on the controller."
+                        echo "  Check progress: journalctl --user -u dream-cluster-agent -f"
+                        echo ""
+                    else
+                        warn "Agent start failed — see systemctl --user status dream-cluster-agent.service for details"
+                    fi
+                    ;;
+                *)
+                    # Fallback: nohup
+                    if [[ -f "$pid_file" ]]; then
+                        # Best-effort cleanup of a prior agent. kill -0
+                        # tests the PID without signaling so we only emit
+                        # the warn() when an actually-live process refuses
+                        # SIGTERM — a stale PID file is the common case
+                        # and shouldn't print noise.
+                        local _stale_pid
+                        _stale_pid=$(< "$pid_file")
+                        if [[ -n "$_stale_pid" ]] && kill -0 "$_stale_pid" 2>/dev/null; then
+                            kill "$_stale_pid" || warn "could not signal prior agent PID $_stale_pid"
+                        fi
+                        rm -f "$pid_file"
+                    fi
+                    nohup python3 "$agent_script" \
+                        --config "$config_file" \
+                        --status-port "$status_port" \
+                        --pid-file "$pid_file" \
+                        ${interface:+--interface "$interface"} \
+                        ${controller:+--controller "$controller"} \
+                        ${token_file:+--token-file "$token_file"} \
+                        >> "$log_file" 2>&1 &disown
+                    local _pid=$!
+                    echo ""
+                    success "Cluster agent started (PID ${_pid})"
+                    echo ""
+                    if [[ -n "$controller" ]]; then
+                        echo "  Controller: ${controller}:50051"
+                    else
+                        echo "  Controller: auto-discover (UDP broadcast)"
+                    fi
+                    echo "  Backend:    ${gpu_backend}"
+                    echo "  RPC port:   50052"
+                    echo "  Logs:       ${log_file}"
+                    echo ""
+                    echo "  The agent will connect, join, and start rpc-server."
+                    echo "  Make sure 'dream cluster setup' is running on the controller."
+                    echo "  Check progress: dream cluster agent logs"
+                    echo ""
+                    ;;
+            esac
+            ;;
+
+        stop)
+            local daemon_type="none"
+            if systemctl --user status >/dev/null 2>&1; then
+                daemon_type="systemd"
+            fi
+
+            case "$daemon_type" in
+                systemd)
+                    if systemctl --user stop dream-cluster-agent.service; then
+                        success "Cluster agent stopped"
+                    else
+                        warn "Agent not running"
+                    fi
+                    ;;
+                *)
+                    if [[ -f "$pid_file" ]]; then
+                        local _agent_pid
+                        _agent_pid=$(< "$pid_file")
+                        if [[ -n "$_agent_pid" ]] && kill -0 "$_agent_pid" 2>/dev/null; then
+                            if kill "$_agent_pid"; then
+                                success "Cluster agent stopped"
+                            else
+                                warn "Could not signal agent PID $_agent_pid"
+                            fi
+                        else
+                            warn "Agent process not found (stale PID file)"
+                        fi
+                        rm -f "$pid_file"
+                    else
+                        warn "Agent not running (no PID file)"
+                    fi
+                    ;;
+            esac
+            ;;
+
+        status)
+            if curl -sf --max-time 2 "http://127.0.0.1:${status_port}/health" 2>/dev/null; then
+                echo ""
+            else
+                warn "Cluster agent: not responding (port ${status_port})"
+                if [[ -f "$config_file" ]]; then
+                    echo "  Config: $(python3 - "$config_file" <<'PY' 2>/dev/null
+import json, sys
+s = json.load(open(sys.argv[1]))
+print(f"status={s.get('status','?')} controller={s.get('controller_ip','?')} backend={s.get('gpu_backend','?')}")
+PY
+)"
+                fi
+            fi
+            ;;
+
+        logs)
+            if [[ -f "$log_file" ]]; then
+                tail -f "$log_file"
+            else
+                warn "No log file at $log_file"
+            fi
+            ;;
+
+        *)
+            log "Usage: dream cluster agent [start|stop|status|logs] [--token TOKEN] [--controller IP] [--interface IP]"
+            ;;
+    esac
+}
+
+_cluster_help() {
+    cat << EOF
+${BLUE}dream cluster${NC} -- Pool GPUs across machines for distributed inference
+
+${CYAN}Usage:${NC}
+  dream cluster [subcommand]
+
+${CYAN}Controller commands (run on the machine that hosts llama-server):${NC}
+  enable              Enable cluster mode, detect GPU, generate token
+  setup               Wait for workers to connect (interactive)
+  disable             Disable cluster mode, clear worker config
+  status              Show cluster nodes, connectivity, and VRAM pool
+  add <IP> [--port N] Manually register a worker (default RPC port: 50052)
+  remove <IP>         Unregister a worker
+  test                TCP ping test to all workers (10 samples each)
+
+${CYAN}Worker commands (run on each GPU machine joining the cluster):${NC}
+  agent start         Start the worker agent (recommended — monitors + auto-restarts)
+    --token T         Cluster token from controller (required on first start)
+    --controller IP   Controller IP (required if UDP discovery unavailable)
+    --interface IP    Bind discovery to a specific network interface
+  agent stop          Stop the worker agent
+  agent status        Show agent state
+  agent logs          Tail agent log
+  join <IP> --token T One-shot join: connect to controller, start rpc-server
+    --discover        Auto-discover controller via UDP broadcast instead of IP
+    --interface IP    Bind discovery to a specific network interface
+  leave               Stop rpc-server and leave the cluster
+
+${CYAN}Agent flow (recommended):${NC}
+  The agent is a long-lived process that discovers the controller, joins the
+  cluster, starts rpc-server, and monitors it. If rpc-server crashes, the
+  agent restarts it automatically. Use this for production setups.
+
+  Controller:
+    dream cluster enable                                        # generates token
+    dream cluster setup                                         # waits for workers
+
+  Each worker:
+    dream cluster agent start --token <TOKEN> --controller <IP>      # connects directly
+    dream cluster agent start --token <TOKEN>                        # or auto-discover
+    dream cluster agent start --token-file <PATH> --controller <IP>  # token from mode-0600 file (safer for systemd)
+
+  Accept each worker on the controller, then Ctrl+C to finish.
+
+${CYAN}Manual flow (one-shot, no monitoring):${NC}
+  Controller:
+    dream cluster enable
+    dream cluster setup
+
+  Each worker:
+    dream cluster join <CONTROLLER_IP> --token <TOKEN>
+
+  Accept each worker, Ctrl+C to finish. rpc-server runs but is not monitored.
+
+${CYAN}Auto-discovery:${NC}
+  Uses UDP broadcast on port 50053. Works on most home LANs but NOT on
+  networks that block broadcast (cloud VPCs, WiFi with AP isolation,
+  cross-subnet). Use --controller IP to connect directly when discovery
+  fails.
+
+${CYAN}Examples:${NC}
+  dream cluster enable                                                        # Enable on controller
+  dream cluster setup                                                         # Wait for workers
+  dream cluster agent start --token dream_abc123 --controller 192.168.1.100   # Worker agent (direct)
+  dream cluster agent start --token dream_abc123                              # Worker agent (discover)
+  dream cluster agent status                                                  # Check agent state
+  dream cluster agent stop                                                    # Stop agent
+  dream cluster join 192.168.1.100 --token dream_abc123                       # Manual join
+  dream cluster status                                                        # See all nodes
+  dream cluster test                                                          # Latency test
+  dream cluster leave                                                         # Worker leaves cluster
+  dream cluster remove 192.168.1.101                                          # Remove worker
+  dream cluster disable                                                       # Turn off cluster
+EOF
+}
+
+cmd_cluster() {
+    local subcommand="${1:-status}"
+    if [[ $# -gt 0 ]]; then shift; fi
+
+    case "$subcommand" in
+        status|s)           _cluster_status "$@" ;;
+        enable)             _cluster_enable "$@" ;;
+        setup)              _cluster_setup "$@" ;;
+        disable)            _cluster_disable "$@" ;;
+        join|j)             _cluster_join "$@" ;;
+        leave)              _cluster_leave "$@" ;;
+        add|a)              _cluster_add "$@" ;;
+        remove|rm)          _cluster_remove "$@" ;;
+        test|t)             _cluster_test "$@" ;;
+        agent)              _cluster_agent "$@" ;;
+        help|--help|-h)     _cluster_help ;;
+        *)  error "Unknown cluster subcommand: '${subcommand}'. Run 'dream cluster help'" ;;
+    esac
+}
+
+#=============================================================================
 # cmd_gpu — Multi-GPU inspection and management
 #=============================================================================
 
@@ -4338,6 +5788,8 @@ ${BLUE}Dream Server CLI v${VERSION}${NC}
 Usage: dream <command> [options]
 
 ${CYAN}Commands:${NC}
+  cluster [enable|join|add|status|test|leave|remove|disable]
+                      LAN cluster management (multi-node inference)
   gpu [status|topology|assignment|validate|reassign]
                       Inspect and manage multi-GPU configuration
   status [--json]     Show service health and GPU status (--json = machine-readable)
@@ -4469,6 +5921,7 @@ EOF
 # Main
 #=============================================================================
 case "${1:-help}" in
+    cluster|cl)  shift; cmd_cluster "$@" ;;
     gpu|g)       shift; cmd_gpu "$@" ;;
     status|s)    shift; cmd_status "$@" ;;
     status-json) cmd_status_json ;;

@@ -3,8 +3,19 @@
 from typing import Annotated, Any, Optional
 
 from pydantic import BaseModel, Field
+from pydantic.networks import IPvAnyAddress
 
 from config import GPU_BACKEND
+
+# Defense-in-depth: these models serialize cluster state to the dashboard
+# (never parse untrusted request bodies — join payloads are parsed by the
+# setup listener with its own validators). Constraints here are belt-and-
+# braces so a future refactor that feeds user-supplied data through these
+# models, or a corrupted cluster.json slipping past the router's skip
+# logic, fails at the model boundary instead of reaching the UI.
+_ALLOWED_GPU_BACKENDS = frozenset({"cpu", "nvidia", "amd", "apple", ""})
+_TENSOR_SPLIT_PATTERN = r"^[\d,./:\-\s]*$"
+_WORKER_LIST_PATTERN = r"^[\d.,:\s\-]*$"
 
 
 class GPUInfo(BaseModel):
@@ -52,6 +63,35 @@ class BootstrapStatus(BaseModel):
     eta_seconds: Optional[int] = None
 
 
+class ClusterGPU(BaseModel):
+    name: str = Field(..., max_length=128)
+    vram_mb: int = Field(..., ge=0, le=10_000_000)
+
+
+class ClusterNode(BaseModel):
+    ip: IPvAnyAddress
+    rpc_port: int = Field(50052, ge=1, le=65535)
+    gpu_backend: str = Field(..., max_length=16)
+    gpus: list[ClusterGPU]
+    status: str = Field(..., max_length=16)  # "online", "offline"
+    ping_ms: Optional[float] = Field(None, ge=0)
+    added_at: Optional[str] = Field(None, max_length=64)
+
+
+class ClusterController(BaseModel):
+    ip: IPvAnyAddress
+    gpu_backend: str = Field(..., max_length=16)
+    gpus: list[ClusterGPU]
+
+
+class ClusterStatus(BaseModel):
+    enabled: bool
+    controller: Optional[ClusterController] = None
+    nodes: list[ClusterNode] = []
+    tensor_split: Optional[str] = Field(None, max_length=256, pattern=_TENSOR_SPLIT_PATTERN)
+    worker_list: Optional[str] = Field(None, max_length=1024, pattern=_WORKER_LIST_PATTERN)
+
+
 class FullStatus(BaseModel):
     timestamp: str
     gpu: Optional[GPUInfo] = None
@@ -60,6 +100,7 @@ class FullStatus(BaseModel):
     model: Optional[ModelInfo] = None
     bootstrap: BootstrapStatus
     uptime_seconds: int
+    cluster_enabled: bool = False
 
 
 PortNumber = Annotated[int, Field(ge=1, le=65535)]

@@ -1,0 +1,30 @@
+# Dream Server — Controller image (CPU + RPC)
+# Builds llama-server and rpc-server with RPC support, no GPU acceleration.
+# Pin to the same llama.cpp tag across all cluster images.
+# LOCKSTEP: when bumping, update all 6 Dockerfiles in this directory —
+#   grep -l 'LLAMA_CPP_TAG=' images/llama-rpc/Dockerfile.*
+# RPC wire protocol has broken between llama.cpp builds before, so a
+# controller on b8672 talking to a worker on b8900 will crash at first
+# tensor transfer. Bump together, rebuild together.
+# FIXME: non-root USER — adds meaningful defense-in-depth but needs
+#   coordinated changes to HOME, cache dir, and (for ROCm) render GID
+#   plumbing. Tracked separately.
+ARG LLAMA_CPP_TAG=b8672
+
+FROM ubuntu:24.04 AS build
+ARG LLAMA_CPP_TAG
+RUN apt-get update && apt-get install -y --no-install-recommends cmake make git curl g++ ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 -b "${LLAMA_CPP_TAG}" https://github.com/ggerganov/llama.cpp /llama.cpp
+WORKDIR /llama.cpp
+RUN cmake -B build -DGGML_RPC=ON -DCMAKE_INSTALL_PREFIX=/opt/llama \
+    && cmake --build build -j"$(nproc)" \
+    && cmake --install build
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends curl python3 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /opt/llama /usr/local
+RUN ldconfig
+COPY dream-cluster-supervisor.py /usr/local/bin/dream-cluster-supervisor.py
+ENTRYPOINT ["llama-server"]
