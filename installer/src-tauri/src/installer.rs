@@ -1,12 +1,17 @@
 use crate::state::{InstallPhase, InstallState};
 use serde::Serialize;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 const REPO_URL: &str = "https://github.com/Light-Heart-Labs/DreamServer.git";
+const DEFAULT_INSTALL_REF: &str = "v2.5.0";
+
+fn install_ref() -> &'static str {
+    option_env!("DREAMSERVER_INSTALL_REF").unwrap_or(DEFAULT_INSTALL_REF)
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProgressEvent {
@@ -26,25 +31,7 @@ pub fn run_install(
     // Phase 1: Clone the repo
     update_progress(&state, "Downloading DreamServer", 5);
 
-    if !install_dir.join("dream-server").exists() {
-        let clone = Command::new("git")
-            .args([
-                "clone",
-                "--depth",
-                "1",
-                REPO_URL,
-                &install_dir.to_string_lossy(),
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| format!("Failed to clone repository: {}", e))?;
-
-        if !clone.status.success() {
-            let err = String::from_utf8_lossy(&clone.stderr);
-            return Err(format!("Git clone failed: {}", err));
-        }
-    }
+    ensure_checkout(&install_dir)?;
 
     update_progress(&state, "Configuring installation", 15);
 
@@ -176,6 +163,97 @@ pub fn run_install(
             Err(format!("Installation failed:\n{}", detail))
         }
     }
+}
+
+fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
+    if install_dir.join("dream-server").exists() {
+        return validate_checkout(install_dir);
+    }
+
+    if install_dir.exists()
+        && install_dir
+            .read_dir()
+            .map_err(|e| e.to_string())?
+            .next()
+            .is_some()
+    {
+        return Err(format!(
+            "{} already exists but is not a DreamServer checkout. Choose an empty directory or the existing DreamServer install directory.",
+            install_dir.display()
+        ));
+    }
+
+    let clone = Command::new("git")
+        .args(["clone", "--depth", "1", "--branch", install_ref(), REPO_URL])
+        .arg(install_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Failed to clone repository: {}", e))?;
+
+    if !clone.status.success() {
+        let err = String::from_utf8_lossy(&clone.stderr);
+        return Err(format!("Git clone failed: {}", err));
+    }
+
+    validate_checkout(install_dir)
+}
+
+fn validate_checkout(install_dir: &Path) -> Result<(), String> {
+    if !install_dir.join(".git").exists() {
+        return Err(format!(
+            "{} contains a dream-server directory but is not a git checkout. Refusing to run installer scripts from an unverified directory.",
+            install_dir.display()
+        ));
+    }
+
+    let is_work_tree = run_git(install_dir, &["rev-parse", "--is-inside-work-tree"])?;
+    if is_work_tree.trim() != "true" {
+        return Err(format!(
+            "{} is not a valid git worktree.",
+            install_dir.display()
+        ));
+    }
+
+    let origin = run_git(install_dir, &["remote", "get-url", "origin"])?;
+    if normalize_repo_url(&origin) != normalize_repo_url(REPO_URL) {
+        return Err(format!(
+            "{} is not a DreamServer checkout from {}.",
+            install_dir.display(),
+            REPO_URL
+        ));
+    }
+
+    Ok(())
+}
+
+fn run_git(install_dir: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(install_dir)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+fn normalize_repo_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    let https = if let Some(rest) = trimmed.strip_prefix("git@github.com:") {
+        format!("https://github.com/{rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("ssh://git@github.com/") {
+        format!("https://github.com/{rest}")
+    } else {
+        trimmed.to_string()
+    };
+    https.trim_end_matches(".git").to_ascii_lowercase()
 }
 
 /// Parse a progress line from the installer.

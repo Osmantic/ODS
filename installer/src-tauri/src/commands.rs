@@ -1,7 +1,9 @@
-use crate::{docker, gpu, installer, platform};
 use crate::state::{GpuInfo, InstallPhase, InstallState};
+use crate::{docker, gpu, installer, platform};
 use serde::Serialize;
 use std::sync::Mutex;
+
+const ALLOWED_FEATURES: &[&str] = &["voice", "workflows", "rag", "image_gen", "all"];
 
 // ---- System Check ----
 
@@ -18,7 +20,11 @@ pub fn check_system() -> SystemCheckResult {
     let requirements = platform::check_requirements(&system);
     let docker = docker::check();
 
-    SystemCheckResult { system, requirements, docker }
+    SystemCheckResult {
+        system,
+        requirements,
+        docker,
+    }
 }
 
 // ---- Prerequisites ----
@@ -154,6 +160,8 @@ pub async fn start_install(
     features: Vec<String>,
     install_dir: Option<String>,
 ) -> Result<String, String> {
+    validate_install_request(tier, &features)?;
+
     let dir = install_dir
         .map(std::path::PathBuf::from)
         .unwrap_or_else(installer::default_install_dir);
@@ -169,12 +177,24 @@ pub async fn start_install(
     let state_clone = state.clone();
 
     // Run installation in a blocking thread
-    tokio::task::spawn_blocking(move || {
-        installer::run_install(state_clone, dir, tier, features)
-    })
-    .await
-    .map_err(|e| format!("Install task failed: {}", e))?
-    .map(|_| "Installation complete!".to_string())
+    tokio::task::spawn_blocking(move || installer::run_install(state_clone, dir, tier, features))
+        .await
+        .map_err(|e| format!("Install task failed: {}", e))?
+        .map(|_| "Installation complete!".to_string())
+}
+
+fn validate_install_request(tier: u8, features: &[String]) -> Result<(), String> {
+    if tier > 4 {
+        return Err(format!("Unsupported install tier: {}", tier));
+    }
+
+    for feature in features {
+        if !ALLOWED_FEATURES.contains(&feature.as_str()) {
+            return Err(format!("Unsupported feature: {}", feature));
+        }
+    }
+
+    Ok(())
 }
 
 // ---- Progress ----

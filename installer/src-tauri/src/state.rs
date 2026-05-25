@@ -72,8 +72,21 @@ impl InstallState {
 
     pub fn save(&self) -> Result<(), String> {
         let path = Self::state_path();
+        let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        fs::write(path, json).map_err(|e| e.to_string())
+        fs::write(&tmp, json).map_err(|e| e.to_string())?;
+        match fs::rename(&tmp, &path) {
+            Ok(()) => Ok(()),
+            Err(err) if path.exists() => {
+                fs::remove_file(&path).map_err(|remove_err| remove_err.to_string())?;
+                fs::rename(&tmp, &path).map_err(|rename_err| {
+                    format!(
+                        "Failed to replace installer state after rename error ({err}): {rename_err}"
+                    )
+                })
+            }
+            Err(err) => Err(err.to_string()),
+        }
     }
 }
 
