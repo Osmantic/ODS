@@ -26,6 +26,11 @@ Docs-only, comment-only, and narrow test-only changes usually use focused
 validation instead. Dependency or runtime wiring changes should use the
 release-grade gate even when the code diff is small.
 
+PRs should state their changed surface and validation level explicitly. Use
+[HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md) to decide whether focused
+checks are enough or whether the candidate needs release-grade fleet validation
+before it is treated as releasable.
+
 ## User Green
 
 `User Green` is the top-level release-readiness result. It is not a marketing

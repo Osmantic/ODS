@@ -10,6 +10,11 @@ at [`../../README.md`](../../README.md).
 
 ## Start Here By Job
 
+Use this table as the "you are here" map. Dream Server has many deep-dive
+docs because the project covers install, compose, model routing, agents,
+security, and release validation. Most contributors only need the row that
+matches the work in front of them.
+
 | I want to... | Read this first | Then use |
 |--------------|-----------------|----------|
 | Install the default path | [../QUICKSTART.md](../QUICKSTART.md) | [INSTALLER_TRUST.md](INSTALLER_TRUST.md), [SUPPORT-MATRIX.md](SUPPORT-MATRIX.md), [POST-INSTALL-CHECKLIST.md](POST-INSTALL-CHECKLIST.md) |
@@ -22,6 +27,22 @@ at [`../../README.md`](../../README.md).
 | Build a custom edition or fork | [FORKABILITY.md](FORKABILITY.md) | [BUILD-ON-DREAM-SERVER.md](BUILD-ON-DREAM-SERVER.md), [OFFLINE_AND_MIRRORING.md](OFFLINE_AND_MIRRORING.md), [VALIDATION_REPRODUCIBILITY.md](VALIDATION_REPRODUCIBILITY.md) |
 | Review a PR | [../CONTRIBUTING.md](../CONTRIBUTING.md) | [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md), [TESTING.md](TESTING.md), [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md), [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) |
 | Maintain a release or fork | [MAINTAINER_RUNBOOK.md](MAINTAINER_RUNBOOK.md) | [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md), [INSTALLER_PHASE_CONTRACTS.md](INSTALLER_PHASE_CONTRACTS.md), [COMPOSE_RESOLVER_CONTRACTS.md](COMPOSE_RESOLVER_CONTRACTS.md) |
+
+## Choosing Validation
+
+The shortest useful rule is: docs-only changes get docs checks; operational
+changes get the validation surface they can affect.
+
+| Change type | Start with | Escalate when |
+|-------------|------------|---------------|
+| Docs, comments, examples | `git diff --check`, markdown/link sanity | The docs change makes or changes a support claim |
+| UI-only dashboard work | Dashboard tests, lint, and build | It changes setup, auth, service control, or model workflows |
+| Service manifest or extension metadata | Extension audit and catalog validation | It changes compose, ports, health, dependencies, or defaults |
+| Installer, compose, CLI, auth, proxy, model routing | Focused tests plus release-grade validation | Always consider this operational code |
+| Dependency/runtime wiring | Package tests and service smoke | The package affects installer, dashboard-api, services, or container startup |
+
+Use [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md) for the full policy and
+[RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) for the User Green release gate.
 
 ## Current Truths
 

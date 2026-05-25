@@ -29,6 +29,12 @@ mutation surfaces, use
 **[dream-server/docs/HIGH_RISK_CHANGE_MAP.md](dream-server/docs/HIGH_RISK_CHANGE_MAP.md)**
 to choose the right validation before opening a PR.
 
+Every PR should make its changed surface obvious. The pull request template asks
+contributors to classify the risk, list the checks they ran, and say whether the
+change needs release-grade validation before a release. Docs-only changes do not
+need the fleet; operational changes should not rely on "looks small" as the
+validation argument.
+
 ## Full Contributor Guide
 
 For current priorities, validation checklists, PR expectations, and style guidelines, see the detailed guide:
