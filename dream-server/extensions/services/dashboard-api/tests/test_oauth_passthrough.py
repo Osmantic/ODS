@@ -5,6 +5,8 @@ having to copy-paste a code."""
 from __future__ import annotations
 
 import json
+import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -22,6 +24,7 @@ def oauth_client(monkeypatch):
     monkeypatch.setenv("DREAM_PERSONA_DIR", tmp)
     client = TestClient(main_module.app)
     client.tmp = Path(tmp)
+    client.auth_headers = {"Authorization": "Bearer test-key-12345"}
     return client
 
 
@@ -48,6 +51,17 @@ def test_oauth_callback_writes_pending_file_and_returns_success_html(oauth_clien
     assert payload["code"] == "fake-code-abc123"
     assert payload["state"] == "google-workspace"
     assert isinstance(payload["captured_at"], int)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file mode bits are not reliable on Windows")
+def test_oauth_callback_file_is_owner_only(oauth_client):
+    resp = oauth_client.get(
+        "/api/oauth/callback",
+        params={"code": "fake-code-abc123", "state": "google-workspace"},
+    )
+    assert resp.status_code == 200
+    callback = oauth_client.tmp / "oauth_callback.json"
+    assert stat.S_IMODE(callback.stat().st_mode) == 0o600
 
 
 def test_oauth_callback_handles_provider_error(oauth_client):
@@ -89,7 +103,10 @@ def test_oauth_callback_defaults_state_to_google_workspace(oauth_client):
 def test_oauth_pending_endpoint_returns_false_when_no_callback(oauth_client):
     """The pending endpoint is a debugging helper for the agent / operator.
     Returns ``{"pending": false}`` when nothing's waiting."""
-    resp = oauth_client.get("/api/oauth/pending")
+    unauth = oauth_client.get("/api/oauth/pending")
+    assert unauth.status_code == 401
+
+    resp = oauth_client.get("/api/oauth/pending", headers=oauth_client.auth_headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body == {"pending": False}
@@ -103,7 +120,7 @@ def test_oauth_pending_endpoint_returns_true_after_callback(oauth_client):
         "/api/oauth/callback",
         params={"code": "fresh-code", "state": "google-workspace"},
     )
-    resp = oauth_client.get("/api/oauth/pending")
+    resp = oauth_client.get("/api/oauth/pending", headers=oauth_client.auth_headers)
     body = resp.json()
     assert body["pending"] is True
     assert body["state"] == "google-workspace"

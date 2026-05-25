@@ -2,6 +2,7 @@
 
 import contextlib
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -38,6 +39,17 @@ def _make_service_status(sid, status="healthy"):
     return ServiceStatus(
         id=sid, name=sid, port=8080, external_port=8080, status=status,
     )
+
+
+def can_create_symlinks(tmp_path: Path) -> bool:
+    target = tmp_path / "symlink-target"
+    link = tmp_path / "symlink-probe"
+    target.write_text("probe", encoding="utf-8")
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        return False
+    return link.is_symlink()
 
 
 def _patch_extensions_config(monkeypatch, catalog, services=None,
@@ -2397,6 +2409,8 @@ class TestSymlinkHandling:
 
     def test_copytree_safe_skips_symlinks(self, tmp_path):
         """_copytree_safe skips symlinks in source directory."""
+        if os.name == "nt" and not can_create_symlinks(tmp_path):
+            pytest.skip("Windows symlink creation requires Developer Mode or administrator privileges")
         from routers.extensions import _copytree_safe
 
         src = tmp_path / "src"
@@ -2414,6 +2428,8 @@ class TestSymlinkHandling:
         self, test_client, monkeypatch, tmp_path,
     ):
         """Enable stopped ext rejects a compose.yaml that is a symlink."""
+        if os.name == "nt" and not can_create_symlinks(tmp_path):
+            pytest.skip("Windows symlink creation requires Developer Mode or administrator privileges")
         user_dir = tmp_path / "user"
         ext_dir = user_dir / "my-ext"
         ext_dir.mkdir(parents=True)
@@ -2434,6 +2450,8 @@ class TestSymlinkHandling:
         self, test_client, monkeypatch, tmp_path,
     ):
         """Enable rejects a compose.yaml.disabled that is a symlink."""
+        if os.name == "nt" and not can_create_symlinks(tmp_path):
+            pytest.skip("Windows symlink creation requires Developer Mode or administrator privileges")
         user_dir = tmp_path / "user"
         ext_dir = user_dir / "my-ext"
         ext_dir.mkdir(parents=True)

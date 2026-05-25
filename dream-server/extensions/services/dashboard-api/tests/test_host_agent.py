@@ -3,6 +3,7 @@
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import time
@@ -28,6 +29,17 @@ validate_core_recreate_ids = _mod.validate_core_recreate_ids
 invalidate_compose_cache = _mod.invalidate_compose_cache
 _post_install_core_recreate = _mod._post_install_core_recreate
 _split_nmcli_terse = _mod._split_nmcli_terse
+
+
+def can_create_symlinks(tmp_path: Path) -> bool:
+    target = tmp_path / "symlink-target"
+    link = tmp_path / "symlink-probe"
+    target.mkdir()
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        return False
+    return link.is_symlink()
 
 
 class TestResolveAgentBindAddr:
@@ -631,9 +643,10 @@ class TestSyncExtensionConfigWire:
             target = install_dir / "config" / "fakesvc"
             assert (target / "settings.yaml").read_text(encoding="utf-8") == "server: ok\n"
             # .sh files become executable
-            import stat as _s
-            mode = (target / "entrypoint.sh").stat().st_mode
-            assert mode & _s.S_IXUSR
+            if os.name != "nt":
+                import stat as _s
+                mode = (target / "entrypoint.sh").stat().st_mode
+                assert mode & _s.S_IXUSR
         finally:
             server.shutdown()
             server.server_close()
@@ -738,6 +751,8 @@ class TestSyncExtensionConfigWire:
         """Symlinks (file or directory, top-level or nested) must be rejected
         outright. _copytree_safe strips symlinks at install time so legitimate
         user extensions never have any; one here implies tampering."""
+        if os.name == "nt" and not can_create_symlinks(tmp_path):
+            pytest.skip("Windows symlink creation requires Developer Mode or administrator privileges")
         import threading
         from http.server import HTTPServer
 
@@ -783,6 +798,8 @@ class TestSyncExtensionConfigWire:
 
     def test_rejects_symlinked_file_in_config_tree(self, tmp_path, monkeypatch):
         """Symlinked files (not just directories) are also rejected."""
+        if os.name == "nt" and not can_create_symlinks(tmp_path):
+            pytest.skip("Windows symlink creation requires Developer Mode or administrator privileges")
         import threading
         from http.server import HTTPServer
 
@@ -820,6 +837,8 @@ class TestSyncExtensionConfigWire:
     def test_rejects_when_config_dir_itself_is_symlink(self, tmp_path, monkeypatch):
         """Top-level `config/` itself a symlink — covers the upfront
         ext_config.is_symlink() guard, separate from the dirs+files walk."""
+        if os.name == "nt" and not can_create_symlinks(tmp_path):
+            pytest.skip("Windows symlink creation requires Developer Mode or administrator privileges")
         import threading
         from http.server import HTTPServer
 
