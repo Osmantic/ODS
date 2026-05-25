@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "gsap": "^3.12.7",
-    "lucide-react": "^0.441.0",
+    "lucide-react": "^1.16.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
