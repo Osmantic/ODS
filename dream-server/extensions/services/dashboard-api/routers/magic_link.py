@@ -56,6 +56,8 @@ import os
 import secrets
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -65,6 +67,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 import session_signer
+from config import SERVICES
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -478,7 +481,47 @@ def _cookie_domain(url_mode: str = "auto") -> Optional[str]:
     return f"{_device_name()}.local"
 
 
+def _dream_proxy_lan_ready() -> tuple[bool, str]:
+    """Return whether owner-card LAN URLs can actually be served."""
+    service = SERVICES.get("dream-proxy")
+    if not service:
+        return (
+            False,
+            "Dream Talk owner cards require dream-proxy. Enable LAN web access before generating an owner card.",
+        )
+
+    host = service.get("host") or "dream-proxy"
+    port = int(service.get("port") or 80)
+    health = str(service.get("health") or "/health")
+    if not health.startswith("/"):
+        health = f"/{health}"
+    url = f"http://{host}:{port}{health}"
+    try:
+        with urllib.request.urlopen(url, timeout=1.0) as resp:
+            status = getattr(resp, "status", 0)
+            if 200 <= status < 400:
+                return True, ""
+            return False, f"dream-proxy health returned HTTP {status}"
+    except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        return False, f"dream-proxy is enabled but not reachable: {exc}"
+
+
+def _owner_card_requires_lan_proxy(payload: GenerateRequest) -> bool:
+    return payload.token_type == "owner" and not _use_public_url(payload.url_mode)
+
+
 # --- Endpoints ---
+
+
+@router.get("/api/auth/magic-link/owner-card/status", dependencies=[Depends(verify_api_key)])
+def owner_card_status() -> dict:
+    """Report whether LAN owner-card URLs can be generated safely."""
+    ready, reason = _dream_proxy_lan_ready()
+    return {
+        "ready": ready,
+        "requires": "dream-proxy",
+        "reason": "" if ready else reason,
+    }
 
 
 @router.post("/api/auth/magic-link/generate", dependencies=[Depends(verify_api_key)])
@@ -489,6 +532,10 @@ def generate_magic_link(payload: GenerateRequest, request: Request) -> GenerateR
             status_code=400,
             detail="url_mode=public requires DREAM_PUBLIC_URL to be configured",
         )
+    if _owner_card_requires_lan_proxy(payload):
+        ready, reason = _dream_proxy_lan_ready()
+        if not ready:
+            raise HTTPException(status_code=409, detail=reason)
     token = secrets.token_urlsafe(32)
     token_hash = _hash_token(token)
     created_at = datetime.now(timezone.utc)

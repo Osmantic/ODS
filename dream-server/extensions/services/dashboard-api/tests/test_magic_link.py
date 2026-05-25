@@ -44,6 +44,7 @@ def magic_link_module(tmp_path, monkeypatch):
 
     # Reset in-memory rate-limit table between tests.
     ml._RATE_LIMIT_BUCKETS.clear()
+    monkeypatch.setattr(ml, "_dream_proxy_lan_ready", lambda: (True, ""))
 
     # The main app already imported the router at module load — re-include the
     # reloaded one so the TestClient routes to fresh module state.
@@ -85,6 +86,11 @@ def test_revoke_requires_auth(magic_link_client):
 
 def test_qr_requires_auth(magic_link_client):
     resp = magic_link_client.get("/api/auth/magic-link/qr?url=http://example/")
+    assert resp.status_code == 401
+
+
+def test_owner_card_status_requires_auth(magic_link_client):
+    resp = magic_link_client.get("/api/auth/magic-link/owner-card/status")
     assert resp.status_code == 401
 
 
@@ -278,6 +284,23 @@ def test_generate_owner_token_defaults_to_revoke_only_hermes_lan(magic_link_clie
     assert data["url"].startswith("http://auth.dream.local/magic-link/")
 
 
+def test_generate_owner_lan_requires_dream_proxy(magic_link_client, magic_link_module, monkeypatch):
+    monkeypatch.setattr(
+        magic_link_module,
+        "_dream_proxy_lan_ready",
+        lambda: (False, "Dream Talk owner cards require dream-proxy"),
+    )
+
+    resp = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner"},
+        headers=magic_link_client.auth_headers,
+    )
+
+    assert resp.status_code == 409
+    assert "dream-proxy" in resp.json()["detail"]
+
+
 def test_generate_owner_rejects_expiry(magic_link_client):
     resp = magic_link_client.post(
         "/api/auth/magic-link/generate",
@@ -298,6 +321,48 @@ def test_owner_public_url_mode_uses_public_url_when_requested(magic_link_client,
     data = resp.json()
     assert data["url_mode"] == "public"
     assert data["url"].startswith("https://dream.example/auth/magic-link/")
+
+
+def test_owner_public_url_mode_does_not_require_dream_proxy(
+    magic_link_client, magic_link_module, monkeypatch,
+):
+    monkeypatch.setenv("DREAM_PUBLIC_URL", "https://dream.example")
+    monkeypatch.setattr(
+        magic_link_module,
+        "_dream_proxy_lan_ready",
+        lambda: (False, "Dream Talk owner cards require dream-proxy"),
+    )
+
+    resp = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner", "url_mode": "public"},
+        headers=magic_link_client.auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["url"].startswith("https://dream.example/auth/magic-link/")
+
+
+def test_owner_card_status_reports_proxy_state(
+    magic_link_client, magic_link_module, monkeypatch,
+):
+    monkeypatch.setattr(
+        magic_link_module,
+        "_dream_proxy_lan_ready",
+        lambda: (False, "dream-proxy is not enabled"),
+    )
+
+    resp = magic_link_client.get(
+        "/api/auth/magic-link/owner-card/status",
+        headers=magic_link_client.auth_headers,
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "ready": False,
+        "requires": "dream-proxy",
+        "reason": "dream-proxy is not enabled",
+    }
 
 
 def test_public_url_mode_requires_public_url(magic_link_client):

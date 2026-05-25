@@ -9,6 +9,7 @@ const response = (body, status = 200) => ({
 })
 
 const future = new Date(Date.now() + 3_600_000).toISOString()
+const ownerCardReady = { ready: true, requires: 'dream-proxy', reason: '' }
 
 describe('Invites', () => {
   afterEach(() => {
@@ -36,6 +37,9 @@ describe('Invites', () => {
             note: 'factory card',
           }] : [],
         })
+      }
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardReady)
       }
       if (url === '/api/auth/magic-link/abc12345' && options.method === 'DELETE') {
         return response({ revoked: true })
@@ -66,6 +70,9 @@ describe('Invites', () => {
     const fetchMock = vi.fn(async (url, options = {}) => {
       if (url === '/api/auth/magic-link/list') {
         return response({ tokens: [] })
+      }
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardReady)
       }
       if (url === '/api/auth/magic-link/generate' && options.method === 'POST') {
         return response({
@@ -112,6 +119,9 @@ describe('Invites', () => {
       if (url === '/api/auth/magic-link/list') {
         return response({ tokens: [] })
       }
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardReady)
+      }
       if (url === '/api/auth/magic-link/generate' && options.method === 'POST') {
         return response({
           token: 'plain-secret-token',
@@ -155,6 +165,7 @@ describe('Invites', () => {
     Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false })
     const fetchMock = vi.fn(async (url) => {
       if (url === '/api/auth/magic-link/list') return response({ tokens: [] })
+      if (url === '/api/auth/magic-link/owner-card/status') return response(ownerCardReady)
       throw new Error(`unexpected request: ${url}`)
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -165,5 +176,26 @@ describe('Invites', () => {
     expect(screen.getByText(/Mobile browsers usually block live microphone access/i)).toBeInTheDocument()
 
     if (descriptor) Object.defineProperty(window, 'isSecureContext', descriptor)
+  })
+
+  test('warns and disables owner card creation when dream-proxy is unavailable', async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (url === '/api/auth/magic-link/list') return response({ tokens: [] })
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response({
+          ready: false,
+          requires: 'dream-proxy',
+          reason: 'Dream Talk owner cards require dream-proxy.',
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<Invites />)
+
+    expect(await screen.findByText(/Dream Talk owner cards require dream-proxy/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Print owner card' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Create owner card' })).toBeDisabled()
   })
 })

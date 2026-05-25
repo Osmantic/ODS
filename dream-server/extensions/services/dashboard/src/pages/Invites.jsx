@@ -78,16 +78,32 @@ export default function Invites() {
   const [showGuestCreate, setShowGuestCreate] = useState(false)
   const [generated, setGenerated] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [ownerCardStatus, setOwnerCardStatus] = useState(null)
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
     try {
-      const resp = await fetchJson('/api/auth/magic-link/list')
+      const [resp, ownerStatusResp] = await Promise.all([
+        fetchJson('/api/auth/magic-link/list'),
+        fetchJson('/api/auth/magic-link/owner-card/status'),
+      ])
       if (!resp.ok) throw new Error(`list failed: ${resp.status}`)
       const data = await resp.json()
+      if (ownerStatusResp.ok) {
+        setOwnerCardStatus(await ownerStatusResp.json())
+      } else {
+        setOwnerCardStatus({
+          ready: false,
+          reason: `Owner-card status unavailable (${ownerStatusResp.status})`,
+        })
+      }
       setTokens(data.tokens || [])
       setError(null)
     } catch (err) {
+      setOwnerCardStatus(current => current || {
+        ready: false,
+        reason: 'Owner-card status unavailable.',
+      })
       setError(err.message)
     } finally {
       setLoading(false)
@@ -126,6 +142,7 @@ export default function Invites() {
 
   const ownerTokens = tokens.filter(isOwnerToken)
   const guestTokens = tokens.filter(t => !isOwnerToken(t))
+  const ownerCardUnavailable = ownerCardStatus?.ready === false
 
   return (
     <div className="p-8">
@@ -170,15 +187,26 @@ export default function Invites() {
           </div>
           <button
             onClick={() => setShowOwnerCreate(true)}
-            className="inline-flex items-center justify-center gap-2 bg-theme-accent text-white px-4 py-2 rounded-lg hover:opacity-90 transition-opacity"
+            disabled={ownerCardUnavailable}
+            className="inline-flex items-center justify-center gap-2 bg-theme-accent text-white px-4 py-2 rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             <Printer size={18} />
             Print owner card
           </button>
         </div>
 
+        {ownerCardUnavailable && (
+          <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100 flex items-start gap-2">
+            <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+            <span>{ownerCardStatus.reason || 'Enable Dream proxy before generating owner cards.'}</span>
+          </div>
+        )}
+
         {ownerTokens.length === 0 ? (
-          <EmptyOwnerState onCreate={() => setShowOwnerCreate(true)} />
+          <EmptyOwnerState
+            onCreate={() => setShowOwnerCreate(true)}
+            disabled={ownerCardUnavailable}
+          />
         ) : (
           <div className="mt-5 space-y-3">
             {ownerTokens.map(t => (
@@ -221,6 +249,7 @@ export default function Invites() {
 
       {showOwnerCreate && (
         <CreateOwnerModal
+          ownerCardStatus={ownerCardStatus}
           onClose={() => setShowOwnerCreate(false)}
           onCreated={(record) => {
             setShowOwnerCreate(false)
@@ -272,7 +301,7 @@ function VoiceReadiness() {
   )
 }
 
-function EmptyOwnerState({ onCreate }) {
+function EmptyOwnerState({ onCreate, disabled }) {
   return (
     <div className="mt-5 rounded-xl border border-dashed border-theme-border p-6 text-center">
       <ShieldCheck size={32} className="mx-auto mb-3 text-theme-text-muted" />
@@ -282,7 +311,8 @@ function EmptyOwnerState({ onCreate }) {
       </p>
       <button
         onClick={onCreate}
-        className="inline-flex items-center gap-2 bg-theme-accent text-white px-4 py-2 rounded-lg hover:opacity-90 transition-opacity"
+        disabled={disabled}
+        className="inline-flex items-center gap-2 bg-theme-accent text-white px-4 py-2 rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
       >
         <Printer size={18} />
         Create owner card
@@ -355,15 +385,20 @@ function TokenRow({ token, onRevoke }) {
   )
 }
 
-function CreateOwnerModal({ onClose, onCreated }) {
+function CreateOwnerModal({ ownerCardStatus, onClose, onCreated }) {
   const [username, setUsername] = useState('')
   const [note, setNote] = useState('Factory owner card')
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
+  const ownerCardUnavailable = ownerCardStatus?.ready === false
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setFormError(null)
+    if (ownerCardUnavailable) {
+      setFormError(ownerCardStatus.reason || 'Enable Dream proxy before generating owner cards.')
+      return
+    }
     const trimmed = username.trim()
     if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) {
       setFormError('Username may only contain letters, numbers, dot, dash, and underscore.')
@@ -407,8 +442,19 @@ function CreateOwnerModal({ onClose, onCreated }) {
             Owner cards are reusable until revoked and redirect to Dream Talk.
           </span>
         </label>
+        {ownerCardUnavailable && (
+          <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100 flex items-start gap-2">
+            <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+            <span>{ownerCardStatus.reason || 'Enable Dream proxy before generating owner cards.'}</span>
+          </div>
+        )}
         <FormError message={formError} />
-        <ModalActions onCancel={onClose} submitting={submitting} submitLabel="Generate owner QR" disabled={!username.trim()} />
+        <ModalActions
+          onCancel={onClose}
+          submitting={submitting}
+          submitLabel="Generate owner QR"
+          disabled={!username.trim() || ownerCardUnavailable}
+        />
       </form>
     </Modal>
   )
