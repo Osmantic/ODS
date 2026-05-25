@@ -7,6 +7,7 @@ service:
   container_name: dream-gaia
   host_env: GAIA_HOST
   default_host: gaia
+  container_uid: 10001
   port: 4200
   external_port_env: GAIA_PORT
   external_port_default: 7822
@@ -18,6 +19,7 @@ service:
   gpu_backends: [all]
   compose_file: compose.yaml
   category: optional
+  setup_hook: hooks/post_install.sh
   depends_on: []
   description: "Experimental AMD GAIA Agent UI recipe for local agent workflows."
   env_vars:

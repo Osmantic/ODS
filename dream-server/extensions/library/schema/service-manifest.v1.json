@@ -23,6 +23,11 @@
           "type": "string",
           "description": "Docker container name for dream shell"
         },
+        "container_uid": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Numeric UID the container process runs as when it is not visible from compose.user. Used by the host agent to prepare bind-mounted data directories."
+        },
         "host_env": { "type": "string" },
         "default_host": { "type": "string" },
         "port": { "type": "integer", "minimum": 0, "maximum": 65535 },

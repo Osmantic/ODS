@@ -1844,6 +1844,30 @@ class TestPrecreateDataDirs:
             encoding="utf-8",
         )
 
+    def _write_compose_with_user(
+        self, ext_dir: Path, volumes: list[str], user: str,
+    ):
+        vol_yaml = "\n".join(f"      - {v}" for v in volumes)
+        ext_dir.mkdir(parents=True, exist_ok=True)
+        (ext_dir / "compose.yaml").write_text(
+            "services:\n"
+            "  svc:\n"
+            "    image: test:latest\n"
+            f"    user: \"{user}\"\n"
+            "    volumes:\n" + vol_yaml + "\n",
+            encoding="utf-8",
+        )
+
+    def _write_manifest(self, ext_dir: Path, service_id: str, container_uid: int):
+        (ext_dir / "manifest.yaml").write_text(
+            "schema_version: dream.services.v1\n"
+            "service:\n"
+            f"  id: {service_id}\n"
+            f"  name: {service_id}\n"
+            f"  container_uid: {container_uid}\n",
+            encoding="utf-8",
+        )
+
     def test_creates_dirs_for_builtin_ext_via_find_ext_dir(self, tmp_path, monkeypatch):
         """Defect 1/2: built-in extensions resolved via _find_ext_dir, not USER_EXTENSIONS_DIR."""
         pytest.importorskip("yaml")
@@ -1889,6 +1913,78 @@ class TestPrecreateDataDirs:
         # INSTALL_DIR (the Compose project directory).
         assert (install_dir / "upload").is_dir()
         assert (install_dir / "data" / "state").is_dir()
+
+    def test_manifest_container_uid_fallback_chowns_when_root(
+        self, tmp_path, monkeypatch,
+    ):
+        """Manifest container_uid covers images that set USER in Dockerfile."""
+        pytest.importorskip("yaml")
+        user_root = tmp_path / "user"
+        builtin_root = tmp_path / "builtin"
+        install_dir = tmp_path / "install"
+        user_root.mkdir()
+        builtin_root.mkdir()
+        install_dir.mkdir()
+        ext_dir = user_root / "svc-u"
+        self._write_compose(ext_dir, ["./data/gaia:/home/gaia/.gaia"])
+        self._write_manifest(ext_dir, "svc-u", 10001)
+        chowns = []
+
+        monkeypatch.setattr(_mod, "EXTENSIONS_DIR", builtin_root)
+        monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", user_root)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_fs_type", lambda path: None)
+        monkeypatch.setattr(_mod.os, "getuid", lambda: 0, raising=False)
+        monkeypatch.setattr(
+            _mod.os,
+            "chown",
+            lambda path, uid, gid: chowns.append((Path(path), uid, gid)),
+            raising=False,
+        )
+
+        _mod._precreate_data_dirs("svc-u")
+
+        data_dir = install_dir / "data" / "gaia"
+        assert data_dir.is_dir()
+        assert chowns == [(data_dir, 10001, 10001)]
+
+    def test_compose_user_takes_precedence_over_manifest_uid(
+        self, tmp_path, monkeypatch,
+    ):
+        """Explicit compose user remains the source of truth when present."""
+        pytest.importorskip("yaml")
+        user_root = tmp_path / "user"
+        builtin_root = tmp_path / "builtin"
+        install_dir = tmp_path / "install"
+        user_root.mkdir()
+        builtin_root.mkdir()
+        install_dir.mkdir()
+        ext_dir = user_root / "svc-u"
+        self._write_compose_with_user(
+            ext_dir,
+            ["./data/gaia:/home/gaia/.gaia"],
+            "12345:12345",
+        )
+        self._write_manifest(ext_dir, "svc-u", 10001)
+        chowns = []
+
+        monkeypatch.setattr(_mod, "EXTENSIONS_DIR", builtin_root)
+        monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", user_root)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_fs_type", lambda path: None)
+        monkeypatch.setattr(_mod.os, "getuid", lambda: 0, raising=False)
+        monkeypatch.setattr(
+            _mod.os,
+            "chown",
+            lambda path, uid, gid: chowns.append((Path(path), uid, gid)),
+            raising=False,
+        )
+
+        _mod._precreate_data_dirs("svc-u")
+
+        data_dir = install_dir / "data" / "gaia"
+        assert data_dir.is_dir()
+        assert chowns == [(data_dir, 12345, 12345)]
 
     def test_skips_named_volumes(self, tmp_path, monkeypatch):
         """Named volumes (no '/') must not trigger filesystem creation."""

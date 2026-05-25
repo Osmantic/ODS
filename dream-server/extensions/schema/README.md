@@ -49,6 +49,7 @@ Identifies the service and how the registry and compose resolver use it.
 | `name`                | string  | yes      | Human-readable name (e.g. "Open WebUI (Chat)"). |
 | `aliases`             | array   | no       | Shorthand ids for CLI (e.g. `[webui, ui]`). |
 | `container_name`      | string  | no       | Docker container name (e.g. `dream-webui`). |
+| `container_uid`       | integer | no       | Numeric UID the container process runs as when compose does not declare `user`. The host agent uses this to prepare bind-mounted data directories. |
 | `host_env`            | string  | no       | Env var for host override. |
 | `default_host`        | string  | no       | Default hostname inside the stack. |
 | `port`                | integer | yes      | Internal port (0–65535). |

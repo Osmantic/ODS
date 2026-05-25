@@ -263,3 +263,21 @@ class TestLangfuseManifestHook:
             "The langfuse postgres uid 70 install fix ships this file; "
             "if removed, langfuse silently regresses to broken Linux behavior."
         )
+
+
+class TestGaiaManifestHook:
+    """Structural guard for GAIA's native Linux bind-mount uid alignment."""
+
+    def _ext_dir(self) -> Path:
+        return Path(__file__).resolve().parents[3] / "library" / "services" / "gaia"
+
+    def test_gaia_manifest_declares_post_install_hook(self):
+        ext_dir = self._ext_dir()
+        manifest = yaml.safe_load((ext_dir / "manifest.yaml").read_text())
+        service = manifest.get("service", {})
+        assert service.get("container_uid") == 10001
+        assert service.get("setup_hook") == "hooks/post_install.sh"
+
+    def test_gaia_post_install_hook_file_exists(self):
+        hook_path = self._ext_dir() / "hooks" / "post_install.sh"
+        assert hook_path.is_file()

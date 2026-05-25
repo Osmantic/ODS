@@ -299,6 +299,16 @@ def _precreate_data_dirs(service_id: str):
         return
     if not isinstance(data, dict):
         return
+    manifest_uid = None
+    manifest = _read_manifest(ext_dir)
+    if isinstance(manifest, dict):
+        service_def = manifest.get("service", {})
+        if isinstance(service_def, dict):
+            container_uid = service_def.get("container_uid")
+            if isinstance(container_uid, int):
+                manifest_uid = container_uid
+            elif isinstance(container_uid, str) and container_uid.isdigit():
+                manifest_uid = int(container_uid)
     for svc_name, svc_def in data.get("services", {}).items():
         if not isinstance(svc_def, dict):
             continue
@@ -311,6 +321,8 @@ def _precreate_data_dirs(service_id: str):
                 uid = int(m.group(1))
             elif user_str.isdigit():
                 uid = int(user_str)
+        if uid is None:
+            uid = manifest_uid
         volumes = svc_def.get("volumes", [])
         if not isinstance(volumes, list):
             continue

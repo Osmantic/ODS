@@ -6,6 +6,7 @@ services:
       args:
         GAIA_AGENT_UI_VERSION: ${GAIA_AGENT_UI_VERSION:-0.19.0}
     container_name: dream-gaia
+    user: "10001:10001"
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
