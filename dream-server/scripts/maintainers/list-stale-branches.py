@@ -16,11 +16,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-DEFAULT_EXCLUDE_PREFIXES = (
+DEFAULT_EXCLUDE_EXACT = {
     "origin/HEAD",
     "origin/main",
     "origin/master",
     "origin/develop",
+}
+
+DEFAULT_EXCLUDE_PREFIXES = (
     "origin/release/",
     "origin/support/",
 )
@@ -101,7 +104,7 @@ def main() -> int:
 
     candidates: list[tuple[int, str, str, str]] = []
     for date, ref, sha in remote_branches():
-        if ref.startswith(DEFAULT_EXCLUDE_PREFIXES):
+        if ref in DEFAULT_EXCLUDE_EXACT or ref.startswith(DEFAULT_EXCLUDE_PREFIXES):
             continue
         short = ref.removeprefix("origin/")
         if short in heads:
