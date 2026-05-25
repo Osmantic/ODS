@@ -1,5 +1,5 @@
 fastapi>=0.100.0,<0.120.0
-httpx>=0.24.0,<0.29.0
+httpx>=0.28.1,<0.29.0
 uvicorn>=0.23.0,<0.30.0
 cachetools>=5.0.0,<6.0.0
 # Upstream WebSocket client for the transparent ws:// passthrough lane.
