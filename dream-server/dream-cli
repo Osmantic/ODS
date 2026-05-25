@@ -1878,6 +1878,21 @@ if amd_runtime.get('available'):
 elif amd_runtime.get('reason') and amd_runtime.get('reason') != 'not_amd':
     print(f"  {YELLOW}⚠{NC} AMD runtime: {amd_runtime.get('reason')}")
 
+inference_contract = runtime.get('inference_contract') or {}
+if inference_contract:
+    counts = inference_contract.get('issue_counts') or {}
+    blockers = counts.get('blockers', 0)
+    warnings = counts.get('warnings', 0)
+    symbol = GREEN + '✓' + NC if blockers == 0 and warnings == 0 else (RED + '✗' + NC if blockers else YELLOW + '⚠' + NC)
+    print(
+        f"  {symbol} Inference contract: "
+        f"mode={inference_contract.get('dream_mode', 'unknown')}, "
+        f"owner={inference_contract.get('expected_inference_owner', 'unknown')}, "
+        f"gateway={inference_contract.get('expected_gateway', 'unknown')}"
+    )
+    for issue in (inference_contract.get('issues') or [])[:3]:
+        print(f"    {YELLOW if issue.get('severity') == 'warn' else RED}⚠{NC} {issue.get('id')}: {issue.get('detail')}")
+
 print()
 
 # Voice checks

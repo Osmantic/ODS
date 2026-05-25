@@ -26,6 +26,10 @@ REPORT_FILE="${1:-/tmp/dream-doctor-report.json}"
 
 CAP_FILE="/tmp/dream-doctor-capabilities.json"
 PREFLIGHT_FILE="/tmp/dream-doctor-preflight.json"
+DOCTOR_BASH_CMD="${BASH:-}"
+if [[ -z "$DOCTOR_BASH_CMD" || ! -x "$DOCTOR_BASH_CMD" ]]; then
+    DOCTOR_BASH_CMD="$(command -v bash 2>/dev/null || printf '%s\n' bash)"
+fi
 
 # Source service registry and safe env helpers
 if [[ -f "$ROOT_DIR/lib/service-registry.sh" ]]; then
@@ -74,7 +78,7 @@ fi
 DISK_GB="$(df -k "$HOME" 2>/dev/null | tail -1 | awk '{print int($4/1024/1024)}' || echo 0)"
 
 if [[ -x "$SCRIPT_DIR/scripts/build-capability-profile.sh" ]]; then
-    CAP_ENV="$("$SCRIPT_DIR/scripts/build-capability-profile.sh" --output "$CAP_FILE" --env)"
+    CAP_ENV="$("$DOCTOR_BASH_CMD" "$SCRIPT_DIR/scripts/build-capability-profile.sh" --output "$CAP_FILE" --env)"
     load_env_from_output <<< "$CAP_ENV"
 else
     echo "scripts/build-capability-profile.sh not found/executable" >&2
@@ -82,7 +86,7 @@ else
 fi
 
 if [[ -x "$SCRIPT_DIR/scripts/preflight-engine.sh" ]]; then
-    PREFLIGHT_ENV="$("$SCRIPT_DIR/scripts/preflight-engine.sh" \
+    PREFLIGHT_ENV="$("$DOCTOR_BASH_CMD" "$SCRIPT_DIR/scripts/preflight-engine.sh" \
         --report "$PREFLIGHT_FILE" \
         --tier "${CAP_RECOMMENDED_TIER:-T1}" \
         --ram-gb "$RAM_GB" \
@@ -333,6 +337,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import sys
 from datetime import datetime, timezone
 from urllib import error, request
@@ -554,6 +559,63 @@ def _parse_kv_lines(text):
     return values
 
 
+def _truthy(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_file_values():
+    env_path = root_dir / ".env"
+    if not env_path.exists():
+        return {}
+    return _parse_kv_lines(_read_text(env_path))
+
+
+def _compose_files_from_flags(flags_text):
+    if not flags_text.strip():
+        return []
+    try:
+        tokens = shlex.split(flags_text)
+    except ValueError:
+        tokens = flags_text.split()
+    files = []
+    idx = 0
+    while idx < len(tokens):
+        token = tokens[idx]
+        if token in {"-f", "--file"} and idx + 1 < len(tokens):
+            files.append(tokens[idx + 1])
+            idx += 2
+            continue
+        if token.startswith("--file="):
+            files.append(token.split("=", 1)[1])
+        idx += 1
+    return files
+
+
+def _has_compose_file(files, expected):
+    return any(pathlib.PurePosixPath(item).name == expected or item == expected for item in files)
+
+
+def _looks_like_litellm_route(value):
+    lowered = (value or "").lower()
+    return "litellm" in lowered or ":4000" in lowered
+
+
+def _looks_like_local_llama_route(value):
+    lowered = (value or "").lower()
+    if not lowered:
+        return False
+    return (
+        "llama-server" in lowered
+        or "dream-llama-server" in lowered
+        or "localhost:8080" in lowered
+        or "127.0.0.1:8080" in lowered
+        or "host.docker.internal:8080" in lowered
+        or "localhost:11434" in lowered
+        or "127.0.0.1:11434" in lowered
+        or "host.docker.internal:11434" in lowered
+    )
+
+
 def _source(path):
     try:
         return path.relative_to(root_dir).as_posix()
@@ -574,6 +636,247 @@ def _diagnosis(diag_id, severity, confidence, title, evidence, impact, next_step
         "evidence": evidence,
         "impact": impact,
         "next_steps": next_steps,
+    }
+
+
+def _inference_issue(issue_id, severity, source, detail):
+    return {
+        "id": issue_id,
+        "severity": severity,
+        "source": source,
+        "detail": detail,
+    }
+
+
+def _collect_inference_contract():
+    env_values = _env_file_values()
+
+    def env_get(name, default=""):
+        return env_values.get(name) or _clean_env(name, default)
+
+    flags_path = root_dir / ".compose-flags"
+    flags_text = _read_text(flags_path, max_chars=20_000) if flags_path.exists() else ""
+    compose_flags_exists = flags_path.exists()
+    compose_files = _compose_files_from_flags(flags_text)
+
+    dream_mode = (env_get("DREAM_MODE", "local") or "local").strip().lower()
+    gpu_backend = (env_get("GPU_BACKEND", "") or "").strip().lower()
+    llm_backend = env_get("LLM_BACKEND", "")
+    llm_api_url = env_get("LLM_API_URL", "")
+    hermes_base_url = env_get("HERMES_LLM_BASE_URL", "")
+    lemonade_external = (
+        _truthy(env_get("LEMONADE_EXTERNAL"))
+        or env_get("AMD_INFERENCE_RUNTIME_MODE").strip().lower() == "external-lemonade"
+        or (
+            env_get("AMD_INFERENCE_RUNTIME").strip().lower() == "lemonade"
+            and env_get("AMD_INFERENCE_MANAGED").strip().lower() == "false"
+        )
+    )
+
+    cloud_overlay = _has_compose_file(compose_files, "docker-compose.cloud.yml")
+    lemonade_external_overlay = _has_compose_file(compose_files, "docker-compose.lemonade-external.yml")
+    local_inference_overlay = any(
+        _has_compose_file(compose_files, name)
+        for name in (
+            "docker-compose.nvidia.yml",
+            "docker-compose.amd.yml",
+            "docker-compose.cpu.yml",
+            "docker-compose.arc.yml",
+            "docker-compose.intel.yml",
+            "docker-compose.apple.yml",
+            "docker-compose.macos.yml",
+        )
+    )
+
+    external_inference = dream_mode == "cloud" or lemonade_external
+    expected_owner = "external" if external_inference else "dreamserver"
+    expected_gateway = (
+        "litellm"
+        if external_inference or dream_mode == "lemonade" or gpu_backend == "amd"
+        else "llama-server"
+    )
+
+    issues = []
+    if dream_mode not in {"local", "cloud", "hybrid", "lemonade"}:
+        issues.append(
+            _inference_issue(
+                "DS-RUNTIME-MODE-UNKNOWN",
+                "blocker",
+                ".env",
+                f"DREAM_MODE={dream_mode!r} is not one of local/cloud/hybrid/lemonade.",
+            )
+        )
+
+    if dream_mode == "cloud":
+        if compose_flags_exists and not cloud_overlay:
+            issues.append(
+                _inference_issue(
+                    "DS-RUNTIME-CLOUD-OVERLAY-MISSING",
+                    "blocker",
+                    ".compose-flags",
+                    "DREAM_MODE=cloud but docker-compose.cloud.yml is not in the resolved compose stack.",
+                )
+            )
+        if _looks_like_local_llama_route(llm_api_url):
+            issues.append(
+                _inference_issue(
+                    "DS-RUNTIME-CLOUD-LLM-LOCAL-ROUTE",
+                    "blocker",
+                    ".env",
+                    f"DREAM_MODE=cloud but LLM_API_URL points at local llama-server ({llm_api_url}).",
+                )
+            )
+        if _looks_like_local_llama_route(hermes_base_url):
+            issues.append(
+                _inference_issue(
+                    "DS-RUNTIME-CLOUD-HERMES-LOCAL-ROUTE",
+                    "blocker",
+                    ".env",
+                    f"DREAM_MODE=cloud but HERMES_LLM_BASE_URL points at local llama-server ({hermes_base_url}).",
+                )
+            )
+        if llm_api_url and not _looks_like_litellm_route(llm_api_url):
+            issues.append(
+                _inference_issue(
+                    "DS-RUNTIME-CLOUD-GATEWAY-BYPASS",
+                    "warn",
+                    ".env",
+                    f"DREAM_MODE=cloud normally routes Dream services through LiteLLM, but LLM_API_URL={llm_api_url}.",
+                )
+            )
+
+    if lemonade_external:
+        if compose_flags_exists and not cloud_overlay:
+            issues.append(
+                _inference_issue(
+                    "DS-RUNTIME-EXTERNAL-LEMONADE-CLOUD-OVERLAY-MISSING",
+                    "blocker",
+                    ".compose-flags",
+                    "External Lemonade needs the cloud overlay so DreamServer does not start a managed llama-server.",
+                )
+            )
+        if compose_flags_exists and not lemonade_external_overlay:
+            issues.append(
+                _inference_issue(
+                    "DS-RUNTIME-EXTERNAL-LEMONADE-OVERLAY-MISSING",
+                    "warn",
+                    ".compose-flags",
+                    "External Lemonade mode is active but docker-compose.lemonade-external.yml is not in the compose stack.",
+                )
+            )
+        if _looks_like_local_llama_route(llm_api_url):
+            issues.append(
+                _inference_issue(
+                    "DS-RUNTIME-EXTERNAL-LEMONADE-LOCAL-ROUTE",
+                    "blocker",
+                    ".env",
+                    f"External Lemonade is configured, but LLM_API_URL points at local llama-server ({llm_api_url}).",
+                )
+            )
+
+    if dream_mode == "local" and not lemonade_external:
+        if compose_flags_exists and cloud_overlay:
+            issues.append(
+                _inference_issue(
+                    "DS-RUNTIME-LOCAL-CLOUD-OVERLAY",
+                    "warn",
+                    ".compose-flags",
+                    "DREAM_MODE=local but docker-compose.cloud.yml is still in the compose stack.",
+                )
+            )
+        if _looks_like_litellm_route(llm_api_url) and gpu_backend != "amd":
+            issues.append(
+                _inference_issue(
+                    "DS-RUNTIME-LOCAL-LITELLM-ROUTE",
+                    "warn",
+                    ".env",
+                    f"DREAM_MODE=local on non-AMD usually routes directly to llama-server, but LLM_API_URL={llm_api_url}.",
+                )
+            )
+
+    diagnoses = []
+    issue_titles = {
+        "DS-RUNTIME-MODE-UNKNOWN": "Runtime mode is not recognized",
+        "DS-RUNTIME-CLOUD-OVERLAY-MISSING": "Cloud mode is missing the cloud compose overlay",
+        "DS-RUNTIME-CLOUD-LLM-LOCAL-ROUTE": "Cloud mode still routes chat clients to local llama-server",
+        "DS-RUNTIME-CLOUD-HERMES-LOCAL-ROUTE": "Cloud mode still routes Hermes to local llama-server",
+        "DS-RUNTIME-CLOUD-GATEWAY-BYPASS": "Cloud mode bypasses the LiteLLM gateway",
+        "DS-RUNTIME-EXTERNAL-LEMONADE-CLOUD-OVERLAY-MISSING": "External Lemonade is missing the cloud compose overlay",
+        "DS-RUNTIME-EXTERNAL-LEMONADE-OVERLAY-MISSING": "External Lemonade is missing its compose overlay",
+        "DS-RUNTIME-EXTERNAL-LEMONADE-LOCAL-ROUTE": "External Lemonade still routes clients to local llama-server",
+        "DS-RUNTIME-LOCAL-CLOUD-OVERLAY": "Local mode still has the cloud compose overlay",
+        "DS-RUNTIME-LOCAL-LITELLM-ROUTE": "Local mode routes through LiteLLM unexpectedly",
+    }
+    next_steps = {
+        "DS-RUNTIME-CLOUD-OVERLAY-MISSING": [
+            "Regenerate compose flags with DREAM_MODE=cloud and include docker-compose.cloud.yml.",
+            "Run `dream restart` after correcting .env/.compose-flags.",
+        ],
+        "DS-RUNTIME-CLOUD-LLM-LOCAL-ROUTE": [
+            "Set LLM_API_URL to the LiteLLM service URL used by the stack, usually http://litellm:4000.",
+            "Do not point cloud mode at llama-server unless DreamServer is intentionally managing local inference.",
+        ],
+        "DS-RUNTIME-CLOUD-HERMES-LOCAL-ROUTE": [
+            "Set HERMES_LLM_BASE_URL to http://litellm:4000/v1 for cloud mode.",
+            "Restart Hermes after updating the generated config/template.",
+        ],
+        "DS-RUNTIME-CLOUD-GATEWAY-BYPASS": [
+            "Route Dream services through LiteLLM so hosted, private-cloud, and auth behavior stay consistent.",
+        ],
+        "DS-RUNTIME-EXTERNAL-LEMONADE-CLOUD-OVERLAY-MISSING": [
+            "Regenerate compose flags for external Lemonade so the managed llama-server is profiled out.",
+        ],
+        "DS-RUNTIME-EXTERNAL-LEMONADE-OVERLAY-MISSING": [
+            "Include docker-compose.lemonade-external.yml when LEMONADE_EXTERNAL=true.",
+        ],
+        "DS-RUNTIME-EXTERNAL-LEMONADE-LOCAL-ROUTE": [
+            "Route external Lemonade clients through LiteLLM, usually http://litellm:4000.",
+        ],
+        "DS-RUNTIME-LOCAL-CLOUD-OVERLAY": [
+            "Regenerate compose flags for local mode so local inference starts normally.",
+        ],
+        "DS-RUNTIME-LOCAL-LITELLM-ROUTE": [
+            "If this is not an AMD/Lemonade install, set LLM_API_URL back to http://llama-server:8080.",
+        ],
+        "DS-RUNTIME-MODE-UNKNOWN": [
+            "Set DREAM_MODE to local, cloud, hybrid, or lemonade.",
+        ],
+    }
+    for issue in issues:
+        diagnoses.append(
+            _diagnosis(
+                issue["id"],
+                issue["severity"],
+                "high" if issue["severity"] == "blocker" else "medium",
+                issue_titles.get(issue["id"], "Inference runtime contract mismatch"),
+                [_evidence(issue["source"], issue["detail"])],
+                "Dream services can report healthy while chat, agents, or model routing target the wrong inference owner.",
+                next_steps.get(issue["id"], ["Regenerate .env/.compose-flags with the installer and restart DreamServer."]),
+            )
+        )
+
+    return {
+        "dream_mode": dream_mode,
+        "gpu_backend": gpu_backend,
+        "llm_backend": llm_backend,
+        "expected_inference_owner": expected_owner,
+        "expected_gateway": expected_gateway,
+        "external_lemonade": lemonade_external,
+        "llm_api_url": llm_api_url,
+        "hermes_llm_base_url": hermes_base_url,
+        "compose_files": compose_files,
+        "signals": {
+            "compose_flags_exists": compose_flags_exists,
+            "cloud_overlay": cloud_overlay,
+            "lemonade_external_overlay": lemonade_external_overlay,
+            "local_inference_overlay": local_inference_overlay,
+        },
+        "issues": issues,
+        "issue_counts": {
+            "blockers": sum(1 for item in issues if item["severity"] == "blocker"),
+            "warnings": sum(1 for item in issues if item["severity"] == "warn"),
+        },
+        "diagnoses": diagnoses,
     }
 
 
@@ -825,7 +1128,10 @@ def _collect_install_diagnoses(artifacts):
 
 
 install_artifacts = _collect_install_artifacts()
-diagnoses = _collect_install_diagnoses(install_artifacts)
+inference_contract = _collect_inference_contract()
+diagnoses = _collect_install_diagnoses(install_artifacts) + inference_contract.get("diagnoses", [])
+inference_contract_public = dict(inference_contract)
+inference_contract_public.pop("diagnoses", None)
 
 report = {
     "version": "1",
@@ -861,6 +1167,7 @@ report = {
             else "pass",
         },
         "amd_runtime": amd_runtime,
+        "inference_contract": inference_contract_public,
     },
     "extensions": ext_diagnostics,
     "summary": {
@@ -872,7 +1179,10 @@ report = {
             + (1 if tts_http == "false" else 0)
             + (1 if hermes_slash_worker_count_num > hermes_slash_worker_max_count_num else 0)
             + len(amd_runtime.get("warnings", []))
+            + inference_contract.get("issue_counts", {}).get("warnings", 0)
         ),
+        "runtime_contract_blockers": inference_contract.get("issue_counts", {}).get("blockers", 0),
+        "runtime_contract_warnings": inference_contract.get("issue_counts", {}).get("warnings", 0),
         "diagnoses_total": len(diagnoses),
         "diagnoses_blockers": sum(1 for d in diagnoses if d.get("severity") == "blocker"),
         "diagnoses_warnings": sum(1 for d in diagnoses if d.get("severity") == "warn"),

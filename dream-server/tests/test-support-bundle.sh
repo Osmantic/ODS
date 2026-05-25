@@ -35,6 +35,9 @@ TMP_DIR="$(mktemp -d)"
 ENV_PATH="$ROOT_DIR/.env"
 ENV_BACKUP=""
 HAD_ENV=false
+BASH_WRAPPER_LOG="$TMP_DIR/bash-wrapper.log"
+REAL_BASH="$(command -v bash)"
+BASH_WRAPPER="$TMP_DIR/bash-wrapper"
 
 cleanup() {
     if [[ "$HAD_ENV" == "true" && -n "$ENV_BACKUP" && -f "$ENV_BACKUP" ]]; then
@@ -71,22 +74,38 @@ else
     fail "--help output is missing expected text"
 fi
 
+cat > "$BASH_WRAPPER" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$BASH_WRAPPER_LOG"
+exec "$REAL_BASH" "\$@"
+EOF
+chmod +x "$BASH_WRAPPER"
+
 SECRET_VALUE="support-bundle-super-secret"
 cat > "$ENV_PATH" <<EOF
 DASHBOARD_API_KEY=$SECRET_VALUE
 OPENAI_API_KEY=$SECRET_VALUE
 NORMAL_VALUE=visible-value
+DREAM_MODE=cloud
 GPU_BACKEND=cpu
 GPU_COUNT=1
+LLM_API_URL=http://litellm:4000
+HERMES_LLM_BASE_URL=http://litellm:4000/v1
 EOF
 
 OUTPUT_DIR="$TMP_DIR/out"
 RESULT_JSON="$TMP_DIR/result.json"
 
-if DREAM_SUPPORT_BUNDLE_DISABLE_DOCKER=1 bash "$SUPPORT_SCRIPT" --output "$OUTPUT_DIR" --no-logs --json > "$RESULT_JSON"; then
+if DREAM_SUPPORT_BUNDLE_BASH="$BASH_WRAPPER" DREAM_SUPPORT_BUNDLE_DISABLE_DOCKER=1 bash "$SUPPORT_SCRIPT" --output "$OUTPUT_DIR" --no-logs --json > "$RESULT_JSON"; then
     pass "support bundle command succeeds with Docker disabled"
 else
     fail "support bundle command failed with Docker disabled"
+fi
+
+if grep -q 'scripts/dream-doctor.sh' "$BASH_WRAPPER_LOG" && grep -q 'scripts/resolve-compose-stack.sh' "$BASH_WRAPPER_LOG"; then
+    pass "support bundle uses selected Bash for nested project scripts"
+else
+    fail "support bundle did not use selected Bash for nested project scripts"
 fi
 
 if python3 -m json.tool "$RESULT_JSON" >/dev/null; then
@@ -172,12 +191,17 @@ import sys
 evidence = json.load(open(sys.argv[1], encoding="utf-8"))
 assert evidence["version"] == "1"
 assert "platform" in evidence
+assert isinstance(evidence["platform"]["wsl"], bool)
 assert "backend" in evidence
+assert "inference_contract" in evidence
 assert "compose" in evidence
 assert "config_hashes" in evidence
 assert evidence["env_keys"]["DASHBOARD_API_KEY"]["redacted"] is True
 assert evidence["env_keys"]["DASHBOARD_API_KEY"]["value"] is None
 assert evidence["env_keys"]["NORMAL_VALUE"]["value"] == "visible-value"
+assert "docker-compose.cloud.yml" in evidence["compose"]["files"]
+assert "docker-compose.cpu.yml" not in evidence["compose"]["files"]
+assert evidence["inference_contract"]["issue_counts"]["blockers"] == 0
 PY
 then
     pass "evidence.json records redacted env and support metadata"

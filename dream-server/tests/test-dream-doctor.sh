@@ -162,6 +162,14 @@ if command -v jq >/dev/null 2>&1; then
         pass "dream-doctor.sh runtime section has correct boolean fields"
     fi
 
+    jq_exit=0
+    jq -e '.runtime.inference_contract | type == "object"' "$TEMP_REPORT" >/dev/null || jq_exit=$?
+    if [[ $jq_exit -eq 0 ]]; then
+        pass "dream-doctor.sh runtime includes inference contract diagnostics"
+    else
+        fail "dream-doctor.sh runtime missing inference contract diagnostics"
+    fi
+
     amd_fields_ok=true
     for field in available runtime location runtimeMode managedByDreamServer selectedBackend supportedBackends health warnings; do
         jq_exit=0
@@ -178,7 +186,7 @@ fi
 
 # 9. summary section has expected numeric fields
 if command -v jq >/dev/null 2>&1; then
-    summary_fields=("preflight_blockers" "preflight_warnings")
+    summary_fields=("preflight_blockers" "preflight_warnings" "runtime_contract_blockers" "runtime_contract_warnings")
     summary_ok=true
 
     for field in "${summary_fields[@]}"; do

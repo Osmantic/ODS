@@ -104,7 +104,10 @@ trap cleanup EXIT
 
 mkdir -p "$LOGS_DIR"
 cat > "$ENV_PATH" <<'ENV'
+DREAM_MODE=cloud
 GPU_BACKEND=nvidia
+LLM_API_URL=http://llama-server:8080
+HERMES_LLM_BASE_URL=http://llama-server:8080/v1
 LLM_MODEL=qwen-test
 GGUF_FILE=qwen-test.gguf
 ENV
@@ -149,7 +152,10 @@ for id in \
     DS-DOCKER-IMAGE-UNRESOLVED \
     DS-COMPOSE-ZERO-CONTAINERS \
     DS-PYTHON-PYYAML-MISSING \
-    DS-WINDOWS-FILE-SHARING-PROBE-IMAGE
+    DS-WINDOWS-FILE-SHARING-PROBE-IMAGE \
+    DS-RUNTIME-CLOUD-OVERLAY-MISSING \
+    DS-RUNTIME-CLOUD-LLM-LOCAL-ROUTE \
+    DS-RUNTIME-CLOUD-HERMES-LOCAL-ROUTE
 do
     if jq -e --arg id "$id" '.diagnoses[] | select(.id == $id)' "$REPORT" >/dev/null; then
         pass "diagnosis present: $id"
@@ -170,10 +176,16 @@ else
     fail "Alpine probe diagnosis missing installer log evidence"
 fi
 
-if jq -e '.summary.diagnoses_blockers >= 4 and .summary.diagnoses_warnings >= 1' "$REPORT" >/dev/null; then
+if jq -e '.summary.diagnoses_blockers >= 7 and .summary.diagnoses_warnings >= 1' "$REPORT" >/dev/null; then
     pass "summary counts diagnosis blockers"
 else
     fail "summary does not count diagnosis blockers"
+fi
+
+if jq -e '.runtime.inference_contract.issue_counts.blockers >= 3 and .summary.runtime_contract_blockers >= 3' "$REPORT" >/dev/null; then
+    pass "runtime inference contract counts cloud/local mismatch blockers"
+else
+    fail "runtime inference contract missing cloud/local mismatch blockers"
 fi
 
 if jq -e '.autofix_hints[] | select(contains("known-good DreamServer version"))' "$REPORT" >/dev/null; then
