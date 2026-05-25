@@ -28,7 +28,11 @@
         "port": { "type": "integer", "minimum": 0, "maximum": 65535 },
         "external_port_env": { "type": "string" },
         "external_port_default": { "type": "integer", "minimum": 0, "maximum": 65535 },
-        "health": { "type": "string", "minLength": 0 },
+        "health": {
+          "type": "string",
+          "minLength": 0,
+          "description": "HTTP health path. Use an empty string for non-HTTP or one-shot services whose readiness is represented by container state/startup_check."
+        },
         "type": { "type": "string", "enum": ["docker", "host-systemd"] },
         "gpu_backends": {
           "type": "array",

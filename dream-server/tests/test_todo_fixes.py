@@ -1,123 +1,94 @@
 #!/usr/bin/env python3
-"""
-Test suite for the fixed Whisper VAD patch and sample code validation.
-Ensures the fixes work correctly and prevent regressions.
-"""
+"""Regression tests for the Whisper VAD patcher embedded in the entrypoint."""
 
-import ast
-import sys
+from __future__ import annotations
 
-def test_vad_patch_single_line():
-    """Test VAD patch on single-line transcribe call."""
-    test_code = '''
-def transcribe_audio(file):
+from pathlib import Path
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+ENTRYPOINT = ROOT_DIR / "extensions" / "services" / "whisper" / "docker-entrypoint.sh"
+
+
+def load_vad_patcher() -> dict[str, object]:
+    source = ENTRYPOINT.read_text(encoding="utf-8")
+    marker_start = "cat > /tmp/vad_patcher.py << 'PYTHON_EOF'"
+    marker_end = "PYTHON_EOF"
+    assert marker_start in source
+    embedded = source.split(marker_start, 1)[1].split(marker_end, 1)[0].strip()
+    patcher_source = embedded.split('if __name__ == "__main__":', 1)[0]
+    namespace: dict[str, object] = {}
+    exec(patcher_source, namespace)
+    return namespace
+
+
+def patch_source(source: str) -> tuple[str, bool]:
+    patcher = load_vad_patcher()["patch_transcribe_call"]
+    return patcher(source)  # type: ignore[no-any-return]
+
+
+def test_vad_patch_single_line_transcribe_call() -> None:
+    patched, modified = patch_source(
+        """
+def transcribe_audio(model, file):
     result = model.transcribe(file)
     return result
-'''
+""".strip()
+    )
 
-    # Test the patch logic (simplified version)
-    lines = test_code.strip().splitlines()
-    for i, line in enumerate(lines):
-        if 'transcribe(' in line and line.strip().endswith(')'):
-            lines[i] = line.replace(')', ', vad_filter=True, vad_parameters={"threshold": 0.5})')
-
-    result = '\n'.join(lines)
-    assert 'vad_filter=True' in result
-    assert 'vad_parameters=' in result
-    print("✓ Single-line VAD patch test passed")
+    assert modified is True
+    assert 'model.transcribe(file, vad_filter=True, vad_parameters={"threshold": 0.5})' in patched
 
 
-def test_vad_patch_multi_line():
-    """Test VAD patch on multi-line transcribe call."""
-    test_code = '''
-def transcribe_audio(file):
+def test_vad_patch_multiline_transcribe_call() -> None:
+    patched, modified = patch_source(
+        """
+def transcribe_audio(model, file):
     result = model.transcribe(
         file,
         language="en"
     )
     return result
-'''
+""".strip()
+    )
 
-    # This would be handled by the AST-based patcher
-    # For now, just verify the concept works
-    assert 'transcribe(' in test_code
-    print("✓ Multi-line VAD patch test structure verified")
-
-
-def test_sample_code_validation():
-    """Test that sample code validation functions work correctly."""
-
-    # Test validate_api_response
-    valid_response = {"response": "Hello", "status": "ok"}
-    invalid_response = {"status": "ok"}  # missing 'response'
-
-    # Simulate validation logic
-    required_fields = ["response"]
-
-    def validate_response(data, fields):
-        return all(field in data for field in fields)
-
-    assert validate_response(valid_response, required_fields)
-    assert not validate_response(invalid_response, required_fields)
-    print("✓ API response validation test passed")
-
-    # Test error handling
-    def safe_json_parse(text):
-        try:
-            import json
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return None
-
-    assert safe_json_parse('{"valid": "json"}') is not None
-    assert safe_json_parse('invalid json') is None
-    print("✓ JSON parsing error handling test passed")
+    assert modified is True
+    assert "vad_filter=True" in patched
+    assert 'vad_parameters={"threshold": 0.5}' in patched
 
 
-def test_ast_parsing():
-    """Test that AST parsing works for Python code analysis."""
-    test_code = '''
-def example():
-    result = model.transcribe(file)
-    return result
-'''
+def test_vad_patch_is_idempotent_when_kwargs_already_exist() -> None:
+    source = """
+def transcribe_audio(model, file):
+    return model.transcribe(file, vad_filter=True)
+""".strip()
 
-    try:
-        tree = ast.parse(test_code)
-        transcribe_calls = []
+    patched, modified = patch_source(source)
 
-        for node in ast.walk(tree):
-            if (isinstance(node, ast.Call) and
-                isinstance(node.func, ast.Attribute) and
-                node.func.attr == 'transcribe'):
-                transcribe_calls.append(node.lineno)
-
-        assert len(transcribe_calls) == 1
-        print("✓ AST parsing test passed")
-
-    except SyntaxError:
-        assert False, "AST parsing failed on valid Python code"
+    assert modified is False
+    assert patched == source
 
 
-def main():
-    """Run all tests."""
-    print("Running tests for TODO fixes...")
-    print("=" * 50)
+def test_vad_patch_uses_rightmost_paren_for_nested_single_line_call() -> None:
+    patched, modified = patch_source(
+        """
+def transcribe_audio(model, path):
+    return model.transcribe(load_audio(path))
+""".strip()
+    )
 
-    try:
-        test_vad_patch_single_line()
-        test_vad_patch_multi_line()
-        test_sample_code_validation()
-        test_ast_parsing()
-
-        print("=" * 50)
-        print("✓ All tests passed!")
-        return 0
-
-    except Exception as e:
-        print(f"✗ Test failed: {e}")
-        return 1
+    assert modified is True
+    assert "load_audio(path))" not in patched
+    assert 'load_audio(path), vad_filter=True, vad_parameters={"threshold": 0.5})' in patched
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    tests = [
+        test_vad_patch_single_line_transcribe_call,
+        test_vad_patch_multiline_transcribe_call,
+        test_vad_patch_is_idempotent_when_kwargs_already_exist,
+        test_vad_patch_uses_rightmost_paren_for_nested_single_line_call,
+    ]
+    for test in tests:
+        test()
+    print("[PASS] Whisper VAD patch regressions")

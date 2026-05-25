@@ -54,7 +54,7 @@ Identifies the service and how the registry and compose resolver use it.
 | `port`                | integer | yes      | Internal port (0–65535). |
 | `external_port_env`   | string  | no       | Env var for external port (e.g. `WEBUI_PORT`). |
 | `external_port_default` | integer | no     | Default external port; used by registry and health checks. |
-| `health`              | string  | yes      | Health path (e.g. `/health`, `/`). No leading slash is normalized by consumers. |
+| `health`              | string  | yes      | Health path (e.g. `/health`, `/`). Use `""` only for non-HTTP or one-shot services whose readiness is represented by container state/startup checks. |
 | `type`                | string  | no       | `docker` or `host-systemd`. |
 | `startup_check`       | boolean | no       | When `false`, the host agent skips the post-install running-state poll and treats `docker compose up`'s clean exit as success. Set this on one-shot CLI / setup-only extensions whose containers intentionally exit after init (e.g. `aider`). Default: `true`. |
 | `startup_timeout`     | integer | no       | Seconds the host agent polls for the container to reach the `running` state before declaring install failed. Override the 15-second default for extensions with heavy initialization (postgres, clickhouse, JVM-based services). |

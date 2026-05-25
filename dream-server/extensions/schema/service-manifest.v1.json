@@ -61,7 +61,11 @@
           "type": "boolean",
           "description": "True for Docker network_mode: host services that do not declare Docker-mapped ports or HTTP health paths."
         },
-        "health": { "type": "string", "minLength": 1 },
+        "health": {
+          "type": "string",
+          "minLength": 0,
+          "description": "HTTP health path. Use an empty string for non-HTTP or one-shot services whose readiness is represented by container state/startup_check."
+        },
         "health_timeout": {
           "type": "integer",
           "minimum": 1,
