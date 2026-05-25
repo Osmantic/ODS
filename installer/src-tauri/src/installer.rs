@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 const REPO_URL: &str = "https://github.com/Light-Heart-Labs/DreamServer.git";
 
@@ -71,6 +72,7 @@ pub fn run_install(
     update_progress(&state, "Running installer", 20);
 
     let install_script = dream_server_dir.join("install.sh");
+    let install_ps1 = install_dir.join("install.ps1");
 
     // Make sure the script is executable
     #[cfg(not(target_os = "windows"))]
@@ -80,17 +82,37 @@ pub fn run_install(
             .output();
     }
 
-    // On Windows, run through WSL/bash
     let mut child = if cfg!(target_os = "windows") {
-        Command::new("bash")
-            .arg(&install_script)
-            .args(&args)
-            .current_dir(&dream_server_dir)
+        let mut ps_args = vec![
+            "-NoProfile".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-File".to_string(),
+            install_ps1.to_string_lossy().to_string(),
+            "-NonInteractive".to_string(),
+            "-Tier".to_string(),
+            tier.to_string(),
+        ];
+
+        for feature in &features {
+            match feature.as_str() {
+                "voice" => ps_args.push("-Voice".into()),
+                "workflows" => ps_args.push("-Workflows".into()),
+                "rag" => ps_args.push("-Rag".into()),
+                "image_gen" => ps_args.push("-Comfyui".into()),
+                "all" => ps_args.push("-All".into()),
+                _ => {}
+            }
+        }
+
+        Command::new("powershell.exe")
+            .args(&ps_args)
+            .current_dir(&install_dir)
             .env("DREAM_INSTALLER_GUI", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("Failed to start installer: {}", e))?
+            .map_err(|e| format!("Failed to start Windows installer: {}", e))?
     } else {
         Command::new(&install_script)
             .args(&args)
@@ -101,6 +123,16 @@ pub fn run_install(
             .spawn()
             .map_err(|e| format!("Failed to start installer: {}", e))?
     };
+
+    let stderr_handle = child.stderr.take().map(|stderr| {
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            reader
+                .lines()
+                .map_while(Result::ok)
+                .collect::<Vec<String>>()
+        })
+    });
 
     // Parse stdout for progress updates
     if let Some(stdout) = child.stdout.take() {
@@ -117,6 +149,9 @@ pub fn run_install(
     let output = child
         .wait()
         .map_err(|e| format!("Installer process error: {}", e))?;
+    let stderr_lines = stderr_handle
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
 
     if output.success() {
         update_progress(&state, "Installation complete!", 100);
@@ -125,7 +160,21 @@ pub fn run_install(
         let _ = s.save();
         Ok(())
     } else {
-        Err("Installation failed. Check logs for details.".into())
+        let detail = stderr_lines
+            .iter()
+            .rev()
+            .take(10)
+            .cloned()
+            .collect::<Vec<String>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<String>>()
+            .join("\n");
+        if detail.is_empty() {
+            Err("Installation failed. Check logs for details.".into())
+        } else {
+            Err(format!("Installation failed:\n{}", detail))
+        }
     }
 }
 

@@ -10,7 +10,6 @@ mod state;
 
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             commands::check_system,
             commands::check_prerequisites,

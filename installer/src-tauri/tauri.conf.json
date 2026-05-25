@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     }
   },
   "bundle": {
@@ -33,10 +33,5 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
-  },
-  "plugins": {
-    "shell": {
-      "open": true
-    }
   }
 }
