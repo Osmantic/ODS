@@ -7,6 +7,10 @@ release receipts instead of depending on mutable upstream state at install time.
 This is not a promise that every upstream service, model, or image license
 permits redistribution. Mirror only what you are allowed to mirror.
 
+For the difference between `main`, tagged releases, pinned commits, and
+downstream fork channels, start with
+[RELEASE_CHANNELS.md](RELEASE_CHANNELS.md).
+
 ## What To Preserve
 
 For a durable downstream release, preserve:

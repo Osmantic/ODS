@@ -24,7 +24,7 @@ matches the work in front of them.
 | Change installer behavior | [INSTALLER-ARCHITECTURE.md](INSTALLER-ARCHITECTURE.md) | [BACKEND-CONTRACT.md](BACKEND-CONTRACT.md), [PREFLIGHT-ENGINE.md](PREFLIGHT-ENGINE.md) |
 | Change model routing | [MODEL-MANAGEMENT.md](MODEL-MANAGEMENT.md) | [MODE-SWITCH.md](MODE-SWITCH.md), [BACKEND-CONTRACT.md](BACKEND-CONTRACT.md) |
 | Add or harden a service | [EXTENSIONS.md](EXTENSIONS.md) | [../extensions/CATALOG.md](../extensions/CATALOG.md), [../extensions/schema/README.md](../extensions/schema/README.md) |
-| Build a custom edition or fork | [FORKABILITY.md](FORKABILITY.md) | [BUILD-ON-DREAM-SERVER.md](BUILD-ON-DREAM-SERVER.md), [OFFLINE_AND_MIRRORING.md](OFFLINE_AND_MIRRORING.md), [VALIDATION_REPRODUCIBILITY.md](VALIDATION_REPRODUCIBILITY.md) |
+| Build a custom edition or fork | [FORKABILITY.md](FORKABILITY.md) | [RELEASE_CHANNELS.md](RELEASE_CHANNELS.md), [BUILD-ON-DREAM-SERVER.md](BUILD-ON-DREAM-SERVER.md), [OFFLINE_AND_MIRRORING.md](OFFLINE_AND_MIRRORING.md), [VALIDATION_REPRODUCIBILITY.md](VALIDATION_REPRODUCIBILITY.md) |
 | Review a PR | [../CONTRIBUTING.md](../CONTRIBUTING.md) | [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md), [TESTING.md](TESTING.md), [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md), [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) |
 | Maintain a release or fork | [MAINTAINER_RUNBOOK.md](MAINTAINER_RUNBOOK.md) | [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md), [INSTALLER_PHASE_CONTRACTS.md](INSTALLER_PHASE_CONTRACTS.md), [COMPOSE_RESOLVER_CONTRACTS.md](COMPOSE_RESOLVER_CONTRACTS.md), [BRANCH_HYGIENE.md](BRANCH_HYGIENE.md) |
 | Review automation guardrails | [AI_WORKFLOW_GUARDRAILS.md](AI_WORKFLOW_GUARDRAILS.md) | [../CONTRIBUTING.md](../CONTRIBUTING.md), [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md) |
@@ -100,6 +100,7 @@ canonical source and treat older recipes as context.
 |-----|----------|-------------|
 | [BUILD-ON-DREAM-SERVER.md](BUILD-ON-DREAM-SERVER.md) | Downstream builders | Forking, custom editions, source-of-truth map, extension compatibility, and validation checklist |
 | [FORKABILITY.md](FORKABILITY.md) | Downstream builders / fork operators | Fork posture, independent operation, safe extension points, and upstream relationship |
+| [RELEASE_CHANNELS.md](RELEASE_CHANNELS.md) | Downstream builders / operators | When to track `main`, pin a tag, pin a commit, or operate a downstream fork |
 | [OFFLINE_AND_MIRRORING.md](OFFLINE_AND_MIRRORING.md) | Fork operators / appliance builders | Pinning, mirroring, and preserving release artifacts for offline or independent operation |
 | [VALIDATION_REPRODUCIBILITY.md](VALIDATION_REPRODUCIBILITY.md) | Fork operators / release reviewers | How to reproduce upstream validation layers on local hardware and record receipts |
 | [EXTENSIONS.md](EXTENSIONS.md) | Builders | Add Docker services, manifests, dashboard plugins |

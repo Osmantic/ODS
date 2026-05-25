@@ -40,8 +40,20 @@ large fork.
 
 ## Recommended Fork Strategy
 
-Use upstream `main` or a release tag as the source of truth, then keep your
-customization layer small and explicit.
+Pick a source ref deliberately. `main` is the active development channel. Tagged
+releases are the stable default for forks, appliances, and lab images. If you
+need a commit between tags, record the exact commit and its validation receipt.
+See [RELEASE_CHANNELS.md](RELEASE_CHANNELS.md) for the channel policy.
+
+Most downstreams should choose one of two patterns:
+
+- **Fork-and-pin:** start from a tagged release or audited commit, apply a small
+  downstream layer, and update only on a cadence you control.
+- **Fork-and-mirror:** operate your own mirror of the repository and allowed
+  artifacts, then merge selected upstream tags or commits after local
+  validation.
+
+In both cases, keep your customization layer small and explicit.
 
 Recommended downstream layout:
 
