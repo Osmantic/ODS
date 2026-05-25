@@ -59,6 +59,12 @@ def _set_key(lines: list[str], block: tuple[int, int], key: str, value: str, ind
     return block[0], block[1] + 1
 
 
+def _has_key(lines: list[str], block: tuple[int, int], key: str, indent: int) -> bool:
+    prefix = " " * indent
+    pattern = re.compile(rf"^{prefix}{re.escape(key)}:\s*.*$")
+    return any(pattern.match(lines[idx]) for idx in range(block[0] + 1, block[1]))
+
+
 def _ensure_model(lines: list[str], model: str | None, base_url: str | None, context_length: int | None, api_key: str | None = None) -> None:
     block = _top_level_block(lines, "model")
     if block is None:
@@ -83,6 +89,42 @@ def _ensure_model(lines: list[str], model: str | None, base_url: str | None, con
         block = _set_key(lines, block, "api_key", f'"{api_key}"', 2)
     if context_length:
         _set_key(lines, block, "context_length", str(context_length), 2)
+
+
+def _ensure_provider_timeout(lines: list[str], provider: str = "custom", timeout_seconds: int = 180) -> None:
+    """Add Dream's local-provider timeout default without clobbering operators.
+
+    Hermes can spend a long time in local prefill before the first token on
+    35B-class models. Existing configs from older Dream installs are missing
+    providers.custom.request_timeout_seconds, so add it on migration. If the
+    operator already tuned the provider timeout, leave their value untouched.
+    """
+
+    block = _top_level_block(lines, "providers")
+    if block is None:
+        auxiliary = _top_level_block(lines, "auxiliary")
+        model = _top_level_block(lines, "model")
+        insert_at = auxiliary[0] if auxiliary else (model[1] if model else len(lines))
+        payload = [
+            "providers:",
+            f"  {provider}:",
+            f"    request_timeout_seconds: {timeout_seconds}",
+            "",
+        ]
+        lines[insert_at:insert_at] = payload
+        return
+
+    provider_block = _child_block(lines, block, provider, 2)
+    if provider_block is None:
+        insert_at = block[1]
+        lines[insert_at:insert_at] = [
+            f"  {provider}:",
+            f"    request_timeout_seconds: {timeout_seconds}",
+        ]
+        return
+
+    if not _has_key(lines, provider_block, "request_timeout_seconds", 4):
+        _set_key(lines, provider_block, "request_timeout_seconds", str(timeout_seconds), 4)
 
 
 def _ensure_auxiliary(lines: list[str], context_length: int | None) -> None:
@@ -200,6 +242,7 @@ def patch_config(path: Path, model: str | None, base_url: str | None, context_le
     lines = original.splitlines()
 
     _ensure_model(lines, model, base_url, context_length, api_key)
+    _ensure_provider_timeout(lines)
     _ensure_auxiliary(lines, context_length)
     _ensure_whatsapp_bridge(lines)
     _ensure_compression(lines)

@@ -146,6 +146,9 @@ pass "Hermes patcher updates base_url"
 grep -q '^  context_length: 65536$' "$tmp_hermes" \
     || fail "Hermes patcher updates model.context_length"
 pass "Hermes patcher updates model.context_length"
+grep -q '^    request_timeout_seconds: 180$' "$tmp_hermes" \
+    || fail "Hermes patcher writes local provider request timeout"
+pass "Hermes patcher writes local provider request timeout"
 grep -q '^    context_length: 65536$' "$tmp_hermes" \
     || fail "Hermes patcher writes auxiliary compression context"
 pass "Hermes patcher writes auxiliary compression context"
@@ -170,6 +173,9 @@ platforms:
     enabled: true
     extra:
       bridge_port: 3456
+providers:
+  custom:
+    request_timeout_seconds: 360
 compression:
   threshold: 0.75
 HERMES_CUSTOM_EOF
@@ -182,6 +188,9 @@ pass "Hermes patcher preserves user-enabled WhatsApp"
 grep -q '^      bridge_port: 3456$' "$tmp_hermes_custom" \
     || fail "Hermes patcher preserves custom WhatsApp bridge port"
 pass "Hermes patcher preserves custom WhatsApp bridge port"
+grep -q '^    request_timeout_seconds: 360$' "$tmp_hermes_custom" \
+    || fail "Hermes patcher preserves custom provider request timeout"
+pass "Hermes patcher preserves custom provider request timeout"
 
 echo ""
 echo "Results: $PASS passed"

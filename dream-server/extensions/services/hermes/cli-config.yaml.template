@@ -49,6 +49,19 @@ model:
   context_length: 131072
 
 # =============================================================================
+# Provider overrides — local inference needs a generous first-token budget
+# =============================================================================
+# Local OpenAI-compatible backends can spend tens of seconds in prompt
+# processing before the first token, especially on AMD iGPUs with 35B-class
+# models and Dream Talk's full tool/persona prompt. The provider-level request
+# timeout is the supported Hermes knob for that path; without it, some client
+# paths fall back to shorter transport defaults and turn a slow local prefill
+# into retries plus a stuck "session busy" state.
+providers:
+  custom:
+    request_timeout_seconds: 180
+
+# =============================================================================
 # Auxiliary models — compression, etc.
 # =============================================================================
 # Hermes runs a separate "compression" model when the conversation history
