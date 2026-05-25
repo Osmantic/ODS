@@ -4075,6 +4075,11 @@ cmd_repair() {
 
     local target="${1:-voice}"
     case "$target" in
+        hermes-workers|slash-workers)
+            local script="$INSTALL_DIR/scripts/prune-hermes-slash-workers.sh"
+            [[ -x "$script" ]] || error "Hermes slash worker repair script not found or not executable: $script"
+            "$script" --force
+            ;;
         voice|stt|tts)
             local flags_str
             flags_str=$(get_compose_flags)
@@ -4135,7 +4140,7 @@ cmd_repair() {
             success "Voice repair complete"
             ;;
         *)
-            log "Usage: dream repair voice"
+            log "Usage: dream repair [voice|hermes-workers]"
             log_error "Unknown repair target: $target"
             return 1
             ;;
@@ -4372,7 +4377,8 @@ ${CYAN}Commands:${NC}
   chat "<message>"    Quick chat with the LLM
   benchmark           Run a quick performance test
   doctor [report|--json]   Run diagnostics (--json writes JSON to stdout)
-  repair|fix [voice]  Repair voice services and cache the STT model
+  repair|fix [voice|hermes-workers]
+                      Repair voice services or prune leaked Hermes slash workers
   template [action]   Apply pre-built service templates (list|preview|apply)
   audit [extensions]  Audit extension manifests and compose contracts
   agent [action]      Manage dream host agent (status|start|stop|restart|logs)
@@ -4458,6 +4464,7 @@ ${CYAN}Examples:${NC}
   dream agent status              # Check host agent health
   dream agent restart             # Restart host agent
   dream repair voice              # Start voice services and cache STT model
+  dream repair hermes-workers     # Prune leaked Hermes slash_worker children
 
 ${CYAN}Environment:${NC}
   DREAM_HOME          Installation directory (default: ~/dream-server)

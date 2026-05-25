@@ -298,6 +298,22 @@ collect_extension_diagnostics() {
     fi
 }
 
+# Hermes slash workers are spawned by upstream Hermes for /slash commands. A
+# leak in that worker lifecycle can create many long-lived child processes and
+# starve local models of RAM. Doctor only reports; cleanup remains explicit via
+# `dream repair hermes-workers`.
+HERMES_SLASH_WORKER_MAX_COUNT="${HERMES_SLASH_WORKER_MAX_COUNT:-8}"
+HERMES_SLASH_WORKER_COUNT="0"
+if [[ "$DOCKER_DAEMON" == "true" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'dream-hermes'; then
+    _hermes_worker_count="$(
+        docker exec dream-hermes sh -c \
+            "(ps -eo args= 2>/dev/null || ps -ef 2>/dev/null) | grep '[t]ui_gateway[.]slash_worker' | wc -l" \
+            2>/dev/null || echo 0
+    )"
+    HERMES_SLASH_WORKER_COUNT="$(echo "$_hermes_worker_count" | tr -dc '0-9')"
+    [[ -n "$HERMES_SLASH_WORKER_COUNT" ]] || HERMES_SLASH_WORKER_COUNT="0"
+fi
+
 # Collect extension diagnostics if service registry loaded
 EXT_DIAGNOSTICS="[]"
 if [[ "${#SERVICE_IDS[@]}" -gt 0 ]]; then
@@ -312,7 +328,7 @@ elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
 
-"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$ROOT_DIR" <<'PY'
+"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ROOT_DIR" <<'PY'
 import json
 import os
 import pathlib
@@ -321,12 +337,22 @@ import sys
 from datetime import datetime, timezone
 from urllib import error, request
 
-cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, root_dir_arg = sys.argv[1:]
+cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, root_dir_arg = sys.argv[1:]
 
 cap = json.load(open(cap_file, "r", encoding="utf-8"))
 pre = json.load(open(preflight_file, "r", encoding="utf-8"))
 ext_diagnostics = json.loads(ext_diagnostics_json)
 root_dir = pathlib.Path(root_dir_arg).resolve()
+
+def _int_value(raw, default=0):
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+hermes_slash_worker_count_num = _int_value(hermes_slash_worker_count)
+hermes_slash_worker_max_count_num = max(1, _int_value(hermes_slash_worker_max_count, 8))
 
 def _clean_env(name, default=""):
     return os.environ.get(name, default).strip()
@@ -827,6 +853,13 @@ report = {
             "status": dgx_spark_arch_status,
             "message": dgx_spark_arch_message,
         },
+        "hermes_slash_workers": {
+            "count": hermes_slash_worker_count_num,
+            "max_count": hermes_slash_worker_max_count_num,
+            "status": "warn"
+            if hermes_slash_worker_count_num > hermes_slash_worker_max_count_num
+            else "pass",
+        },
         "amd_runtime": amd_runtime,
     },
     "extensions": ext_diagnostics,
@@ -837,6 +870,7 @@ report = {
             (1 if dgx_spark_arch_status == "warn" else 0)
             + (1 if stt_cached in {"false", "service_down"} else 0)
             + (1 if tts_http == "false" else 0)
+            + (1 if hermes_slash_worker_count_num > hermes_slash_worker_max_count_num else 0)
             + len(amd_runtime.get("warnings", []))
         ),
         "diagnoses_total": len(diagnoses),
@@ -882,6 +916,12 @@ elif stt_cached == "service_down":
 
 if tts_http == "false":
     fix_hints.append("Kokoro TTS is not responding. Run: dream repair voice")
+
+if hermes_slash_worker_count_num > hermes_slash_worker_max_count_num:
+    fix_hints.append(
+        f"Hermes has {hermes_slash_worker_count_num} slash_worker children "
+        f"(policy max {hermes_slash_worker_max_count_num}). Run: dream repair hermes-workers"
+    )
 
 if dgx_spark_arch_status == "warn":
     fix_hints.append(
@@ -972,6 +1012,14 @@ if amd_runtime.get("available"):
     )
 elif amd_runtime.get("reason") and amd_runtime.get("reason") != "not_amd":
     print(f"  AMD Runtime:   {amd_runtime.get('reason')}")
+
+hermes_workers = data.get("runtime", {}).get("hermes_slash_workers", {})
+if hermes_workers.get("status") == "warn":
+    print(
+        "  Hermes:        "
+        f"{hermes_workers.get('count')} slash_worker processes "
+        f"(policy max {hermes_workers.get('max_count')})"
+    )
 
 diagnoses = data.get("diagnoses") or []
 if diagnoses:

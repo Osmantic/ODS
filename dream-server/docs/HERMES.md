@@ -171,6 +171,38 @@ docker logs -f dream-hermes
 
 First start does a ~30s skills sync; subsequent starts are fast.
 
+### Chat slows down after many Dream Talk or Hermes sessions
+
+Some upstream Hermes builds can leave `tui_gateway.slash_worker` child
+processes running after sessions that use `/slash` commands such as
+`/no_think`. Each worker can hold model memory, so a long day of owner-card or
+fleet-test sessions may create memory pressure even though the main Hermes
+container looks healthy.
+
+Check with:
+
+```bash
+dream doctor
+docker exec dream-hermes sh -c "ps -eo pid=,etimes=,args= | grep '[t]ui_gateway[.]slash_worker'"
+```
+
+Clean up workers that exceed the age/count policy:
+
+```bash
+dream repair hermes-workers
+```
+
+Policy knobs:
+
+```bash
+HERMES_SLASH_WORKER_MAX_COUNT=8
+HERMES_SLASH_WORKER_MAX_AGE_SECONDS=3600
+```
+
+`dream doctor` reports high worker counts. `dream repair hermes-workers` is
+explicit and manual; Dream Server does not run an automatic process killer for
+active Hermes sessions.
+
 ### Hermes can't reach the LLM
 
 Inside the container, `llama-server:8080` should resolve to the llama-server container. Test with:
