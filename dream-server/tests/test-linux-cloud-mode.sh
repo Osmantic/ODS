@@ -45,6 +45,19 @@ contains "$flags" "extensions/services/litellm/compose.yaml" "cloud mode include
 rejects "$flags" "docker-compose.cpu.yml" "cloud mode does not include CPU llama-server overlay"
 rejects "$flags" "compose.local.yaml" "cloud mode does not include local dependency overlays"
 
+lemonade_flags="$(LEMONADE_EXTERNAL=true AMD_INFERENCE_RUNTIME=lemonade AMD_INFERENCE_MANAGED=false DREAM_PYTHON_CMD="$PY" ./scripts/resolve-compose-stack.sh \
+    --script-dir "$ROOT_DIR" \
+    --tier CLOUD \
+    --gpu-backend cpu \
+    --gpu-count 0 \
+    --dream-mode lemonade)"
+lemonade_flags="${lemonade_flags//\\//}"
+
+contains "$lemonade_flags" "docker-compose.base.yml" "external Lemonade keeps base stack"
+contains "$lemonade_flags" "docker-compose.cloud.yml" "external Lemonade profiles managed llama-server out"
+contains "$lemonade_flags" "docker-compose.lemonade-external.yml" "external Lemonade layers dedicated overlay"
+rejects "$lemonade_flags" "docker-compose.cpu.yml" "external Lemonade does not include CPU llama-server overlay"
+
 if grep -q 'profiles:' docker-compose.cloud.yml && grep -q 'local-inference' docker-compose.cloud.yml; then
     pass "cloud overlay profiles local llama-server out of default startup"
 else

@@ -68,10 +68,29 @@ detect_python() {
     fi
 }
 
+detect_bash() {
+    local candidate
+    for candidate in \
+        "${DREAM_SUPPORT_BUNDLE_BASH:-}" \
+        /opt/homebrew/bin/bash \
+        /usr/local/bin/bash \
+        "$(command -v bash 2>/dev/null || true)" \
+        /bin/bash
+    do
+        [[ -n "$candidate" && -x "$candidate" ]] || continue
+        if "$candidate" -c '[[ ${BASH_VERSINFO[0]:-0} -ge 4 ]]' >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    command -v bash 2>/dev/null || printf '%s\n' /bin/bash
+}
+
 PYTHON_CMD="$(detect_python)" || {
     echo "ERROR: python3 or python is required to build a redacted support bundle" >&2
     exit 1
 }
+BASH_CMD="$(detect_bash)"
 
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
@@ -151,7 +170,7 @@ collect_shell() {
     set +e
     (
         cd "$ROOT_DIR" || exit 1
-        bash -lc "$command"
+        "$BASH_CMD" -lc "$command"
     ) > "$abs_path" 2>&1
     exit_code=$?
     set -e
@@ -280,10 +299,21 @@ PY
 }
 
 collect_system_info() {
+    write_file "system/bash.txt" <<EOF
+selected_bash=$BASH_CMD
+selected_bash_version=$("$BASH_CMD" -c 'printf "%s\n" "${BASH_VERSION:-unknown}"' 2>/dev/null || printf 'unknown\n')
+EOF
     collect_shell "system/platform.txt" "platform-summary" '
         printf "generated_at_utc="; date -u +"%Y-%m-%dT%H:%M:%SZ"
         printf "root_dir=%s\n" "$PWD"
         uname -a 2>/dev/null || true
+        if [[ -r /proc/sys/kernel/osrelease ]] && grep -qi microsoft /proc/sys/kernel/osrelease; then
+            echo "wsl=true"
+        elif [[ -r /proc/version ]] && grep -qi microsoft /proc/version; then
+            echo "wsl=true"
+        else
+            echo "wsl=false"
+        fi
         if [[ -f /etc/os-release ]]; then
             echo ""
             cat /etc/os-release
@@ -330,7 +360,7 @@ collect_config() {
 
 collect_diagnostics() {
     if [[ -f "$ROOT_DIR/scripts/dream-doctor.sh" ]]; then
-        collect_shell "diagnostics/dream-doctor.log" "dream-doctor" "$(shell_quote "$ROOT_DIR/scripts/dream-doctor.sh") $(shell_quote "$BUNDLE_DIR/diagnostics/dream-doctor.json")"
+        collect_shell "diagnostics/dream-doctor.log" "dream-doctor" "$(shell_quote "$BASH_CMD") $(shell_quote "$ROOT_DIR/scripts/dream-doctor.sh") $(shell_quote "$BUNDLE_DIR/diagnostics/dream-doctor.json")"
         redact_file "$BUNDLE_DIR/diagnostics/dream-doctor.json"
     else
         write_file "diagnostics/dream-doctor.log" <<< "scripts/dream-doctor.sh not found"
@@ -349,6 +379,10 @@ collect_compose_validation() {
     local gpu_backend
     local tier
     local gpu_count
+    local dream_mode
+    local lemonade_external
+    local amd_runtime
+    local amd_managed
     local flags_file="$BUNDLE_DIR/validation/compose-flags.txt"
     local flags_err="$BUNDLE_DIR/validation/compose-flags.err"
     local flags
@@ -357,6 +391,10 @@ collect_compose_validation() {
     gpu_backend="$(read_env_value GPU_BACKEND nvidia)"
     tier="$(read_env_value TIER 1)"
     gpu_count="$(read_env_value GPU_COUNT 1)"
+    dream_mode="$(read_env_value DREAM_MODE local)"
+    lemonade_external="$(read_env_value LEMONADE_EXTERNAL false)"
+    amd_runtime="$(read_env_value AMD_INFERENCE_RUNTIME "")"
+    amd_managed="$(read_env_value AMD_INFERENCE_MANAGED "")"
 
     if [[ ! -f "$ROOT_DIR/scripts/resolve-compose-stack.sh" ]]; then
         write_file "validation/compose-config.txt" <<< "scripts/resolve-compose-stack.sh not found"
@@ -367,11 +405,15 @@ collect_compose_validation() {
     set +e
     flags="$(
         cd "$ROOT_DIR" && \
-        scripts/resolve-compose-stack.sh \
+        LEMONADE_EXTERNAL="$lemonade_external" \
+        AMD_INFERENCE_RUNTIME="$amd_runtime" \
+        AMD_INFERENCE_MANAGED="$amd_managed" \
+        "$BASH_CMD" scripts/resolve-compose-stack.sh \
             --script-dir "$ROOT_DIR" \
             --tier "$tier" \
             --gpu-backend "$gpu_backend" \
             --gpu-count "$gpu_count" \
+            --dream-mode "$dream_mode" \
             --skip-broken \
             2> "$flags_err"
     )"
@@ -382,6 +424,10 @@ collect_compose_validation() {
         printf 'GPU_BACKEND=%s\n' "$gpu_backend"
         printf 'TIER=%s\n' "$tier"
         printf 'GPU_COUNT=%s\n' "$gpu_count"
+        printf 'DREAM_MODE=%s\n' "$dream_mode"
+        printf 'LEMONADE_EXTERNAL=%s\n' "$lemonade_external"
+        printf 'AMD_INFERENCE_RUNTIME=%s\n' "$amd_runtime"
+        printf 'AMD_INFERENCE_MANAGED=%s\n' "$amd_managed"
         printf 'COMPOSE_FLAGS=%s\n' "$flags"
         if [[ -s "$flags_err" ]]; then
             echo ""
@@ -406,7 +452,7 @@ collect_compose_validation() {
     fi
 
     local cmd
-    cmd="$(shell_quote "$ROOT_DIR/scripts/validate-compose-stack.sh") --compose-flags $(shell_quote "$flags")"
+    cmd="$(shell_quote "$BASH_CMD") $(shell_quote "$ROOT_DIR/scripts/validate-compose-stack.sh") --compose-flags $(shell_quote "$flags")"
     if [[ -f "$ROOT_DIR/.env" ]]; then
         cmd="${cmd} --env-file $(shell_quote "$ROOT_DIR/.env")"
     fi
@@ -531,6 +577,7 @@ import hashlib
 import json
 import platform
 import re
+import shlex
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -593,6 +640,16 @@ def command_statuses():
     return commands
 
 
+def is_wsl():
+    for candidate in (Path("/proc/sys/kernel/osrelease"), Path("/proc/version")):
+        try:
+            if "microsoft" in candidate.read_text(encoding="utf-8", errors="replace").lower():
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def parse_compose_flags():
     path = bundle_dir / "validation" / "compose-flags.txt"
     result = {"raw": "", "files": []}
@@ -603,8 +660,22 @@ def parse_compose_flags():
         if line.startswith("COMPOSE_FLAGS="):
             raw = line.split("=", 1)[1].strip()
             result["raw"] = raw
-            parts = raw.split()
-            result["files"] = [parts[i + 1] for i, part in enumerate(parts[:-1]) if part == "-f"]
+            try:
+                parts = shlex.split(raw)
+            except ValueError:
+                parts = raw.split()
+            files = []
+            idx = 0
+            while idx < len(parts):
+                part = parts[idx]
+                if part in {"-f", "--file"} and idx + 1 < len(parts):
+                    files.append(parts[idx + 1])
+                    idx += 2
+                    continue
+                if part.startswith("--file="):
+                    files.append(part.split("=", 1)[1])
+                idx += 1
+            result["files"] = files
             break
     return result
 
@@ -642,6 +713,7 @@ evidence = {
         "release": platform.release(),
         "machine": platform.machine(),
         "python": platform.python_version(),
+        "wsl": is_wsl(),
     },
     "dream": {
         "version": manifest.get("dream_version") or manifest.get("release", {}).get("version"),
@@ -654,6 +726,7 @@ evidence = {
         "llm_backend": env.get("LLM_BACKEND"),
         "llm_model": env.get("LLM_MODEL"),
     },
+    "inference_contract": doctor.get("runtime", {}).get("inference_contract", {}),
     "env_keys": public_env_keys,
     "compose": parse_compose_flags(),
     "doctor_summary": doctor.get("summary", {}),

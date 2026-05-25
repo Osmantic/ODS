@@ -45,6 +45,7 @@ Runtime Environment:
   ✓ Docker Compose
   ✗ Dashboard HTTP
   ✗ WebUI HTTP
+  ✓ Inference contract: mode=local, owner=dreamserver, gateway=llama-server
   ⚠ DGX Spark llama-server CUDA arch: DGX Spark detected, but llama-server reports CUDA archs '500,610,700,750,800,860,890,1200' without sm_121.
 
 Preflight Checks:
@@ -87,6 +88,10 @@ dream doctor --json > report.json
   - `impact`: why the issue matters
   - `next_steps`: concrete recovery actions
 - **runtime**: Docker/Compose/UI reachability checks
+- **runtime.inference_contract**: A compact routing contract for the active
+  inference mode. It records `DREAM_MODE`, expected inference owner
+  (`dreamserver` vs `external`), expected gateway (`llama-server` vs
+  `litellm`), key LLM URLs, resolved compose files, and stable mismatch IDs.
 - **runtime.amd_runtime**: Explicit AMD inference runtime diagnostics from
   installer-written env state. Reports runtime (`lemonade` or `llama-server`),
   host/container location, selected backend, supported backends, DreamServer
@@ -124,6 +129,45 @@ Current install diagnoses include:
 These diagnoses are additive. Existing `autofix_hints`, `runtime`, and
 `preflight` fields remain available for scripts that already consume Doctor
 JSON.
+
+## Inference Contract Diagnoses
+
+DreamServer supports several deployment shapes, but support cases often fail
+when the install metadata and runtime routing disagree. For example, cloud mode
+should not start or target DreamServer's managed `llama-server`, and external
+Lemonade should route Dream services through LiteLLM while leaving Lemonade
+itself host-managed.
+
+Dream Doctor records those expectations under `runtime.inference_contract` and
+adds diagnoses when the evidence contradicts the selected mode:
+
+- `DS-RUNTIME-MODE-UNKNOWN`: `.env` contains an unrecognized `DREAM_MODE`.
+- `DS-RUNTIME-CLOUD-OVERLAY-MISSING`: `DREAM_MODE=cloud` but cached
+  `.compose-flags` does not include `docker-compose.cloud.yml`.
+- `DS-RUNTIME-CLOUD-LLM-LOCAL-ROUTE`: cloud mode still has `LLM_API_URL`
+  pointing at local `llama-server`.
+- `DS-RUNTIME-CLOUD-HERMES-LOCAL-ROUTE`: cloud mode still has Hermes pointing
+  at local `llama-server`.
+- `DS-RUNTIME-CLOUD-GATEWAY-BYPASS`: cloud mode points Dream services somewhere
+  other than the LiteLLM gateway.
+- `DS-RUNTIME-EXTERNAL-LEMONADE-CLOUD-OVERLAY-MISSING`: external Lemonade is
+  active while cached `.compose-flags` lacks the cloud overlay that profiles
+  out managed local inference.
+- `DS-RUNTIME-EXTERNAL-LEMONADE-OVERLAY-MISSING`: external Lemonade is active
+  while cached `.compose-flags` lacks `docker-compose.lemonade-external.yml`.
+- `DS-RUNTIME-EXTERNAL-LEMONADE-LOCAL-ROUTE`: external Lemonade still routes
+  clients to local `llama-server`.
+- `DS-RUNTIME-LOCAL-CLOUD-OVERLAY`: local mode still has the cloud overlay in
+  cached `.compose-flags`.
+- `DS-RUNTIME-LOCAL-LITELLM-ROUTE`: non-AMD local mode unexpectedly routes
+  through LiteLLM.
+
+The support bundle embeds the same contract evidence in
+`manifest/evidence.json`. Its Compose validation resolves the stack with the
+recorded `DREAM_MODE`, external Lemonade flags, and AMD runtime ownership so
+Linux, WSL, and macOS support cases show the stack the install actually
+intended to run. Bundle metadata also records whether the Linux host appears to
+be WSL and which Bash executable was selected for nested diagnostics.
 
 ## Exit Codes
 
