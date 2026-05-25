@@ -58,8 +58,10 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse
+
+from security import verify_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +176,10 @@ async def oauth_callback(
     try:
         tmp = target.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            logger.debug("oauth callback could not chmod temp file %s", tmp, exc_info=True)
         tmp.replace(target)
     except OSError as exc:
         logger.exception("oauth callback failed to write %s: %s", target, exc)
@@ -187,7 +193,7 @@ async def oauth_callback(
 
 
 @router.get("/api/oauth/pending")
-async def oauth_pending():
+async def oauth_pending(api_key: str = Depends(verify_api_key)):
     """Convenience endpoint the agent or operator can poll to find out
     whether an OAuth callback has arrived but not yet been consumed. The
     agent normally reads the file directly via its filesystem tools, but
