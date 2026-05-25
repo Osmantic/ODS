@@ -15,14 +15,14 @@ The repo has two layers:
 
 Within `dream-server/`:
 
-- **`install-core.sh`** — thin orchestrator (~184 lines) that sources libs then runs phases in order
+- **`install-core.sh`** — thin orchestrator that sources libs then runs phases in order
 - **`installers/lib/`** — pure function libraries (constants, logging, UI, GPU detection, tier mapping, packaging, compose selection)
 - **`installers/phases/`** — 13 sequential install steps (`01-preflight` through `13-summary`), each sourced by install-core
 - **`installers/macos/`**, **`installers/windows/`** — platform-specific installer variants
 - **`extensions/services/`** — 24 bundled service manifests, each a directory with `manifest.yaml` + optional `compose.yaml` and GPU overlays
 - **`extensions/library/`** — optional extension catalog, templates, workflows, and manifest schema used by the dashboard Extensions page
 - **`docker-compose.base.yml`** — core service definitions; `docker-compose.{amd,nvidia,apple}.yml` are GPU overlays
-- **`dream-cli`** — main CLI tool (~45K lines Bash) for managing the stack
+- **`dream-cli`** — main Bash CLI for managing the stack; keep changes narrow and follow `docs/DREAM_CLI_DECOMPOSITION.md` for behavior-preserving split work
 - **`config/`** — backend configs (`backends/amd.json`, `nvidia.json`, etc.), GPU database, LiteLLM config, hardware classes
 - **`extensions/services/dashboard-api/`** — Python FastAPI backend (with `routers/`, `tests/`)
 - **`extensions/services/dashboard/`** — React + Vite + Tailwind frontend (`src/`)
