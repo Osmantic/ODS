@@ -8,7 +8,7 @@ Security best practices for running Dream Server.
 
 1. **Run `./install.sh`** — generates secure random secrets automatically
 2. **Never use default passwords** — if you see "changeme", change it
-3. **Bind to localhost only** — exposed by default for a reason
+3. **Keep the default localhost binding** — opt into LAN exposure only when you understand the firewall and authentication tradeoffs
 
 ---
 

@@ -141,14 +141,14 @@ Core services cannot be installed, enabled, disabled, or uninstalled via these e
 
 ## Authentication
 
-When `DASHBOARD_API_KEY` is set in `.env`, all authenticated endpoints require the key:
+Protected endpoints always require Bearer authentication. When `DASHBOARD_API_KEY` is set in `.env`, use that key:
 
 ```bash
 curl http://localhost:3002/api/status \
   -H "Authorization: Bearer YOUR_KEY"
 ```
 
-When `DASHBOARD_API_KEY` is empty (default), all endpoints are accessible without authentication.
+When `DASHBOARD_API_KEY` is empty, dashboard-api generates a random key at startup, writes it to `/data/dashboard-api-key.txt` with mode `0600`, and still requires Bearer authentication for protected endpoints.
 
 ## Architecture
 
