@@ -43,6 +43,9 @@ bash tests/contracts/test-port-contracts.sh
 echo "[contract] Windows AMD local compose readiness"
 bash tests/contracts/test-windows-amd-local-compose.sh
 
+echo "[contract] external Lemonade compose overlay readiness"
+bash tests/contracts/test-external-lemonade-contracts.sh
+
 echo "[contract] bootstrap hot-swap force-recreate"
 bash tests/test-bootstrap-upgrade-hotswap-contract.sh
 

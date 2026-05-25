@@ -11,6 +11,7 @@ import time
 import httpx
 import secrets
 import hashlib
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Depends, HTTPException, Security, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -93,7 +94,15 @@ async def verify_api_key(credentials: HTTPAuthorizationCredentials | None = Secu
     return credentials.credentials
 
 
-app = FastAPI(title="API Privacy Shield", version="0.2.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        await http_client.aclose()
+
+
+app = FastAPI(title="API Privacy Shield", version="0.2.0", lifespan=lifespan)
 
 # Configuration from environment
 TARGET_API_BASE = os.getenv("TARGET_API_URL", "http://llama-server:8080/v1")
@@ -506,12 +515,6 @@ async def proxy_websocket(client_ws: WebSocket, path: str):
             await client_ws.close(code=1011)
         except RuntimeError:
             pass
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    """Cleanup on shutdown."""
-    await http_client.aclose()
 
 
 if __name__ == "__main__":

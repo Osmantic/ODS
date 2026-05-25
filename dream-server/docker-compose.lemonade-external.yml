@@ -3,6 +3,19 @@
 # Use when Lemonade is already installed and running on the host. This overlay
 # keeps Dream Server's managed llama-server disabled and routes Dream services
 # through LiteLLM, which calls the existing Lemonade service.
+#
+# This file is intentionally not standalone. It is selected by
+# scripts/resolve-compose-stack.sh together with:
+#
+#   docker-compose.base.yml
+#   docker-compose.cloud.yml
+#   extensions/services/litellm/compose.yaml
+#   docker-compose.lemonade-external.yml
+#
+# Validate the resolved stack with:
+#
+#   LEMONADE_EXTERNAL=true DREAM_MODE=lemonade \
+#     ./scripts/resolve-compose-stack.sh --dream-mode lemonade --gpu-backend amd --tier SH_LARGE
 
 services:
   litellm:
