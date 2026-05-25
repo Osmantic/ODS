@@ -103,6 +103,23 @@ for every installer artifact. That is the next stronger trust model. Until then,
 users who need strict provenance should install from a reviewed tag or internal
 fork and record the exact commit or release tag they deployed.
 
+## Provenance Roadmap
+
+The current installer trust model is source-visible and ref-pinnable. The next
+steps toward a stronger binary and release provenance chain are:
+
+1. Publish checksums for release installer artifacts and document how to verify
+   them before running installers.
+2. Sign release artifacts and tags with maintainer-controlled signing keys.
+3. Publish SBOMs for release artifacts and core container images.
+4. Record build provenance for desktop installer artifacts.
+5. Document the exact validation receipt tied to each release candidate.
+6. Keep the inspect-first and manual source install paths available even after
+   signed artifacts exist.
+
+These are roadmap items, not current guarantees. Release notes should clearly
+say which provenance pieces are present for a given release.
+
 ## Related Validation
 
 - [Release Validation](RELEASE_VALIDATION.md) explains the User Green gates.

@@ -26,7 +26,7 @@ obvious to contributors, fork operators, and auditors.
 | Installer libraries | Medium/High | Shared by multiple phases and platform paths | Focused unit/contract tests plus install smoke when behavior changes |
 | Windows installer | High | Separate shell/runtime semantics and Docker Desktop assumptions | PowerShell lint/tests, Windows smoke, fleet Windows lane when available |
 | macOS installer | High | Native Metal llama-server plus Docker services | macOS smoke, lifecycle, model swap when applicable |
-| `dream-cli` | High | User lifecycle, config, restart, backup, mode, and extension control | CLI smoke, `dream restart`, `dream doctor`, lifecycle lane |
+| `dream-cli` | High | User lifecycle, config, restart, backup, mode, and extension control | CLI smoke, `dream restart`, `dream doctor`, lifecycle lane; use [DREAM_CLI_DECOMPOSITION.md](DREAM_CLI_DECOMPOSITION.md) for behavior-preserving split work |
 | Compose resolver | High | Determines actual runtime stack | Resolver tests, compose matrix, distro smoke, fleet if operational |
 | Base or hardware compose overlays | High | Can break every install in a hardware class | Compose matrix plus matching real-hardware lane |
 | Dashboard UI | Medium | Operator workflows and setup visibility | `npm test`, `npm run lint`, `npm run build`, Playwright smoke for visible flows |

@@ -70,6 +70,7 @@ at [`../../README.md`](../../README.md).
 | [../extensions/templates/README.md](../extensions/templates/README.md) | Builders | Starter manifest, compose, GPU overlay, and dashboard plugin templates |
 | [../extensions/CATALOG.md](../extensions/CATALOG.md) | Builders / reviewers | Current bundled service manifest catalog |
 | [INSTALLER-ARCHITECTURE.md](INSTALLER-ARCHITECTURE.md) | Modders | Installer module map, mod recipes, header convention |
+| [DREAM_CLI_DECOMPOSITION.md](DREAM_CLI_DECOMPOSITION.md) | Maintainers / CLI contributors | Behavior-preserving plan for splitting the large Bash operator CLI without a risky rewrite |
 | [INTEGRATION-GUIDE.md](INTEGRATION-GUIDE.md) | Developers | Connect apps via OpenAI SDK, LangChain, n8n |
 | [BACKEND-CONTRACT.md](BACKEND-CONTRACT.md) | Developers | Backend runtime contract JSON schema |
 | [INSTALLER_PHASE_CONTRACTS.md](INSTALLER_PHASE_CONTRACTS.md) | Maintainers / installer reviewers | Phase ownership, inputs, outputs, idempotency, and validation expectations |
