@@ -33,7 +33,7 @@ COMMANDS = {
     "rollback": ("cmd_rollback", "rollback"),
     "logs": ("cmd_logs", "logs <service>"),
     "restart": ("cmd_restart", "restart [service]"),
-    "repair": ("cmd_repair", "repair|fix [voice]"),
+    "repair": ("cmd_repair", "repair|fix [voice"),
     "start": ("cmd_start", "start [service]"),
     "stop": ("cmd_stop", "stop [service]"),
     "update": ("cmd_update", "update [--force]"),
