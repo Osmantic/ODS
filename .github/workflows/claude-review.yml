@@ -111,7 +111,7 @@ jobs:
         if: |
           steps.fork_check.outputs.is_fork != 'true' &&
           (steps.pr_size.outputs.skip_review == 'false' || contains(github.event.pull_request.labels.*.name, 'force-review'))
-        uses: anthropics/claude-code-action@9db782c3a17ef2bfc274cd17411bc3e0a5ba1345 # v1
+        uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251 # v1
         with:
           claude_args: |
             code-review --comment \
@@ -325,7 +325,7 @@ jobs:
 
       - name: Run Claude Code Review with write permissions
         id: review
-        uses: anthropics/claude-code-action@9db782c3a17ef2bfc274cd17411bc3e0a5ba1345 # v1
+        uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251 # v1
         with:
           claude_args: |
             code-review \
