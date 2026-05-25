@@ -178,6 +178,20 @@ class TestGetBootstrapStatus:
         status = get_bootstrap_status()
         assert status.active is True
 
+    def test_active_during_swapping_even_if_file_exists(self, data_dir):
+        models_dir = data_dir / "models"
+        models_dir.mkdir(exist_ok=True)
+        (models_dir / "swapping.gguf").write_bytes(b"\x00" * 1024)
+
+        status_file = data_dir / "bootstrap-status.json"
+        status_file.write_text(json.dumps({
+            "status": "swapping", "model": "swapping.gguf",
+            "percent": 100, "bytesDownloaded": 1024, "bytesTotal": 1024,
+        }))
+
+        status = get_bootstrap_status()
+        assert status.active is True
+
     def test_path_traversal_rejected(self, data_dir):
         status_file = data_dir / "bootstrap-status.json"
         status_file.write_text(json.dumps({

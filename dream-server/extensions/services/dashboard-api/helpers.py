@@ -608,11 +608,12 @@ def get_bootstrap_status() -> BootstrapStatus:
         # Reconcile with the filesystem: if the target model file is already
         # present on disk, the download is effectively done regardless of what
         # the status record says (covers stale "downloading" entries left by a
-        # crash or a parallel download path). Skip during "verifying" because
-        # the file has been renamed into place but SHA256 hasn't finished yet —
-        # returning inactive here would hide a subsequent verification failure.
+        # crash or a parallel download path). Skip during "verifying" and
+        # "swapping" because the file has been renamed into place but SHA256,
+        # config updates, and the llama-server hot-swap may not have finished
+        # yet — returning inactive here would hide a subsequent failure.
         model_name = data.get("model")
-        if model_name and status != "verifying":
+        if model_name and status not in ("verifying", "swapping"):
             models_dir = Path(DATA_DIR) / "models"
             model_path = (models_dir / model_name).resolve()
             if model_path.is_relative_to(models_dir.resolve()):

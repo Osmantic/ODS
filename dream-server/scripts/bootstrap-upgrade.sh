@@ -217,7 +217,7 @@ write_status "starting" "" 0 "$TOTAL_BYTES" 0 "calculating..."
 
 if [[ -f "$MODELS_DIR/$FULL_GGUF_FILE" ]]; then
     log "Full model already exists on disk, skipping download"
-    write_status "complete"
+    write_status "verifying" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""
 else
     # Start background download monitor
     monitor_download "$MODELS_DIR/$FULL_GGUF_FILE.part" "$TOTAL_BYTES" &
@@ -272,7 +272,7 @@ else
         fi
     fi
 
-    write_status "complete"
+    write_status "verifying" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""
     log "Download complete: $FULL_GGUF_FILE"
 fi
 
@@ -296,10 +296,10 @@ if [[ -n "$FULL_GGUF_SHA256" ]]; then
         fi
         log "SHA256 verified"
     fi
-    write_status "complete"
 fi
 
 # ── Phase 3: Update .env ──
+write_status "swapping" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""
 log "Updating .env..."
 if [[ -f "$ENV_FILE" ]]; then
     # Update GGUF_FILE
@@ -1025,4 +1025,5 @@ elif [[ -f "$HOME/Library/LaunchAgents/com.dreamserver.host-agent.plist" ]]; the
         log "WARNING: Could not restart host agent (non-fatal)"
 fi
 
+write_status "complete" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""
 log "Bootstrap upgrade complete."

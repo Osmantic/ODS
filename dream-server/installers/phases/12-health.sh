@@ -149,13 +149,20 @@ else
     _model_download_active=false
     if [[ -f "$_bootstrap_status_file" ]]; then
         _bs_status="$(grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' "$_bootstrap_status_file" 2>/dev/null | head -1 | cut -d'"' -f4)"
-        if [[ "$_bs_status" == "downloading" || "$_bs_status" == "starting" || "$_bs_status" == "swapping" ]]; then
+        case "$_bs_status" in
+            starting|downloading|verifying|swapping)
+                _model_download_active=true
+                ;;
+        esac
+    fi
+    if [[ "$_model_download_active" != "true" ]] && command -v bg_task_status >/dev/null 2>&1; then
+        if bg_task_status "full-model-download" >/dev/null 2>&1; then
             _model_download_active=true
         fi
     fi
 
     if [[ "$_model_download_active" == "true" ]]; then
-        ai_ok "Full model upgrade in progress — bootstrap model is serving, skipping blocking health wait"
+        ai_ok "Full model upgrade in progress — skipping blocking LLM health wait"
         ai "  Monitor progress: tail -f ${INSTALL_DIR}/logs/model-upgrade.log"
     else
         dream_progress 86 "health" "Waiting for LLM engine"
