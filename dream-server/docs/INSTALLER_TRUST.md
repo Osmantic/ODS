@@ -108,5 +108,9 @@ fork and record the exact commit or release tag they deployed.
 - [Release Validation](RELEASE_VALIDATION.md) explains the User Green gates.
 - [Validation Matrix](VALIDATION-MATRIX.md) summarizes the hardware, distro,
   capability, and lifecycle evidence.
+- [Forkability](FORKABILITY.md) explains how downstream operators can fork,
+  pin, and independently operate Dream Server.
+- [Offline And Mirroring](OFFLINE_AND_MIRRORING.md) covers preserving release
+  refs, images, model artifacts, and validation receipts.
 - [Security](../SECURITY.md) documents localhost defaults, LAN tradeoffs, and
   disclosure guidance.

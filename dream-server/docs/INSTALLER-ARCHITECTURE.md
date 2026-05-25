@@ -5,6 +5,9 @@ shared service registry, and 13 ordered phases. This guide is the map for
 understanding, changing, and reviewing install behavior without missing a
 parallel Linux/macOS/Windows or upgrade-time writer.
 
+For the per-phase ownership and validation contract, see
+[INSTALLER_PHASE_CONTRACTS.md](INSTALLER_PHASE_CONTRACTS.md).
+
 ## Directory Tree
 
 ```
@@ -190,3 +193,5 @@ bash tests/integration-test.sh
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — Contributor validation checklist
 - [EXTENSIONS.md](EXTENSIONS.md) — Adding Docker services (not installer mods)
 - [BACKEND-CONTRACT.md](BACKEND-CONTRACT.md) — Backend runtime contract format
+- [INSTALLER_PHASE_CONTRACTS.md](INSTALLER_PHASE_CONTRACTS.md) - Phase
+  ownership, idempotency, and validation expectations

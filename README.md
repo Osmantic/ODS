@@ -411,16 +411,23 @@ Other tools get you part of the way. Dream Server gets you the whole way.
 | [Quickstart](dream-server/QUICKSTART.md) | Step-by-step install guide with troubleshooting |
 | [Docs Index](dream-server/docs/README.md) | Maintained map for operators, contributors, and reviewers |
 | [Build On Dream Server](dream-server/docs/BUILD-ON-DREAM-SERVER.md) | Forking, custom editions, extension templates, and downstream validation |
+| [Forkability](dream-server/docs/FORKABILITY.md) | How to fork, audit, customize, and independently operate Dream Server |
+| [Maintainer Runbook](dream-server/docs/MAINTAINER_RUNBOOK.md) | Release, rollback, validation, and handoff guidance for maintainers and fork operators |
+| [High-Risk Change Map](dream-server/docs/HIGH_RISK_CHANGE_MAP.md) | Which changes require focused checks, fleet validation, or release-grade gates |
 | [Headless Setup](dream-server/docs/HEADLESS-SETUP.md) | QR onboarding, first-boot setup, AP mode, mDNS, and local agent access |
 | [Support Matrix](dream-server/docs/SUPPORT-MATRIX.md) | Current platform and GPU support status |
 | [Release Validation](dream-server/docs/RELEASE_VALIDATION.md) | User Green gates and the release-grade fleet/distro validation policy |
 | [Validation Matrix](dream-server/docs/VALIDATION-MATRIX.md) | Sanitized CI, distro lab, and real-hardware fleet release-readiness evidence |
+| [Validation Reproducibility](dream-server/docs/VALIDATION_REPRODUCIBILITY.md) | How forks and operators can reproduce the validation story on their own hardware |
+| [Offline And Mirroring](dream-server/docs/OFFLINE_AND_MIRRORING.md) | Pinning, mirroring, and preserving release artifacts for independent operation |
 | [Installer Trust](dream-server/docs/INSTALLER_TRUST.md) | Inspect-first install paths, ref pinning, and current provenance limits |
 | [Model Management](dream-server/docs/MODEL-MANAGEMENT.md) | Dashboard model downloads, switching, and manual GGUF workflows |
 | [Hardware Guide](dream-server/docs/HARDWARE-GUIDE.md) | What to buy, tier recommendations |
 | [FAQ](dream-server/FAQ.md) | Common questions and configuration |
 | [Extensions](dream-server/docs/EXTENSIONS.md) | How to add custom services |
 | [Installer Architecture](dream-server/docs/INSTALLER-ARCHITECTURE.md) | Modular installer deep dive |
+| [Installer Phase Contracts](dream-server/docs/INSTALLER_PHASE_CONTRACTS.md) | Phase ownership, idempotency, failure modes, and validation expectations |
+| [Compose Resolver Contracts](dream-server/docs/COMPOSE_RESOLVER_CONTRACTS.md) | Rules for compose layers, extensions, backends, ports, and mode overlays |
 | [Changelog](dream-server/CHANGELOG.md) | Version history and release notes |
 | [Contributing](CONTRIBUTING.md) | How to contribute |
 

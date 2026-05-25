@@ -3,6 +3,12 @@
 This guide is for people who want to fork Dream Server, ship a custom edition,
 build a hardware appliance, or add services without fighting the upstream repo.
 
+For the higher-level independent operation posture, start with
+[FORKABILITY.md](FORKABILITY.md). For offline, mirrored, or appliance-style
+distribution, see [OFFLINE_AND_MIRRORING.md](OFFLINE_AND_MIRRORING.md). For
+validation receipts in a fork, see
+[VALIDATION_REPRODUCIBILITY.md](VALIDATION_REPRODUCIBILITY.md).
+
 Dream Server is designed to be extended through isolated service directories,
 compose overlays, versioned manifests, and installer libraries. The safest path
 is to keep custom work in those extension points and avoid patching generated
