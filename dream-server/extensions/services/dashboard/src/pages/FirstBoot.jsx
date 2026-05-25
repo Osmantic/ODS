@@ -86,6 +86,7 @@ export default function FirstBoot({ onComplete }) {
   const [finishing, setFinishing] = useState(false)
   const [finishError, setFinishError] = useState(null)
   const [invite, setInvite] = useState(null)
+  const [ownerCardStatus, setOwnerCardStatus] = useState(null)
 
   // Persist progress whenever the user moves forward.
   useEffect(() => {
@@ -94,29 +95,68 @@ export default function FirstBoot({ onComplete }) {
 
   const next = () => setStep(s => Math.min(s + 1, TOTAL_STEPS))
   const prev = () => setStep(s => Math.max(s - 1, 1))
+  const ownerCardStatusLoading = ownerCardStatus === null
+  const ownerCardUnavailable = ownerCardStatus?.ready === false
+  const ownerCardUnavailableReason = ownerCardStatus?.reason || 'Enable Dream proxy before generating owner cards.'
+
+  useEffect(() => {
+    let cancelled = false
+    const loadOwnerCardStatus = async () => {
+      try {
+        const resp = await fetch('/api/auth/magic-link/owner-card/status')
+        if (!resp.ok) {
+          if (!cancelled) {
+            setOwnerCardStatus({
+              ready: false,
+              reason: `Owner-card status unavailable (${resp.status})`,
+            })
+          }
+          return
+        }
+        const data = await resp.json()
+        if (!cancelled) setOwnerCardStatus(data)
+      } catch {
+        if (!cancelled) {
+          setOwnerCardStatus({
+            ready: false,
+            reason: 'Owner-card status unavailable.',
+          })
+        }
+      }
+    }
+    loadOwnerCardStatus()
+    return () => { cancelled = true }
+  }, [])
 
   const finish = async () => {
-    setFinishing(true)
     setFinishError(null)
+    if (ownerCardStatusLoading) {
+      setFinishError('Checking owner-card readiness. Try again in a moment.')
+      return
+    }
+    setFinishing(true)
     try {
-      // Generate the owner magic-link for the named user. Reuses the same
-      // backend the Setup / Owner page consumes.
-      const genResp = await fetch('/api/auth/magic-link/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          target_username: username,
-          token_type: 'owner',
-          scope: 'hermes',
-          url_mode: 'lan',
-          note: `First-boot owner card (${deviceName.trim() || 'dream'})`,
-        }),
-      })
-      if (!genResp.ok) {
-        const body = await genResp.json().catch(() => ({}))
-        throw new Error(body.detail || `generate failed: ${genResp.status}`)
+      let inviteData = null
+      if (!ownerCardUnavailable) {
+        // Generate the owner magic-link for the named user. Reuses the same
+        // backend the Setup / Owner page consumes.
+        const genResp = await fetch('/api/auth/magic-link/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target_username: username,
+            token_type: 'owner',
+            scope: 'hermes',
+            url_mode: 'lan',
+            note: `First-boot owner card (${deviceName.trim() || 'dream'})`,
+          }),
+        })
+        if (!genResp.ok) {
+          const body = await genResp.json().catch(() => ({}))
+          throw new Error(body.detail || `generate failed: ${genResp.status}`)
+        }
+        inviteData = await genResp.json()
       }
-      const inviteData = await genResp.json()
 
       // Flip the server-side sentinel so this device is "configured".
       // Check the response; an earlier draft fired the request and
@@ -127,8 +167,11 @@ export default function FirstBoot({ onComplete }) {
       const completeResp = await fetch('/api/setup/complete', { method: 'POST' })
       if (!completeResp.ok) {
         const body = await completeResp.json().catch(() => ({}))
+        const fallback = inviteData
+          ? `Failed to mark setup complete (${completeResp.status}). Your owner card was generated; ask the admin to re-run setup.`
+          : `Failed to mark setup complete (${completeResp.status}).`
         throw new Error(
-          body.detail || `Failed to mark setup complete (${completeResp.status}). Your owner card was generated; ask the admin to re-run setup.`,
+          body.detail || fallback,
         )
       }
 
@@ -154,11 +197,15 @@ export default function FirstBoot({ onComplete }) {
         console.warn('[dream-session] admin-session network failure:', err)
       }
 
-      setInvite(inviteData)
       clearProgress()
-      // Stay on the success screen until the user taps "Open dashboard".
-      // Calling onComplete() immediately would route them away before they
-      // can copy the QR. onComplete fires on the final tap.
+      if (inviteData) {
+        setInvite(inviteData)
+        // Stay on the success screen until the user taps "Open dashboard".
+        // Calling onComplete() immediately would route them away before they
+        // can copy the QR. onComplete fires on the final tap.
+      } else {
+        onComplete?.()
+      }
     } catch (err) {
       setFinishError(err.message)
     } finally {
@@ -215,6 +262,8 @@ export default function FirstBoot({ onComplete }) {
                   onFinish={finish}
                   finishing={finishing}
                   error={finishError}
+                  ownerCardStatus={ownerCardStatus}
+                  ownerCardStatusLoading={ownerCardStatusLoading}
                 />
               )}
             </>
@@ -423,8 +472,19 @@ function StackStep({ stack, setStack, onNext, onBack }) {
 // Step 4 - Confirm & finish
 // ---------------------------------------------------------------------------
 
-function ConfirmStep({ deviceName, username, stack, onBack, onFinish, finishing, error }) {
+function ConfirmStep({
+  deviceName,
+  username,
+  stack,
+  onBack,
+  onFinish,
+  finishing,
+  error,
+  ownerCardStatus,
+  ownerCardStatusLoading,
+}) {
   const stackTitle = STACK_OPTIONS.find(s => s.id === stack)?.title || stack
+  const ownerCardUnavailable = ownerCardStatus?.ready === false
   return (
     <div>
       <h1 className="text-3xl font-bold text-theme-text mb-6">Ready?</h1>
@@ -437,6 +497,23 @@ function ConfirmStep({ deviceName, username, stack, onBack, onFinish, finishing,
         <Row label="First user" value={username.trim()} />
         <Row label="Stack" value={stackTitle} hint="enable extras from Extensions" />
       </dl>
+
+      {ownerCardStatusLoading && (
+        <div className="mb-6 p-4 bg-theme-card border border-theme-border rounded-xl text-theme-text-muted text-sm flex items-start gap-2">
+          <Loader2 size={18} className="animate-spin flex-shrink-0 mt-0.5" />
+          <span>Checking owner-card readiness...</span>
+        </div>
+      )}
+
+      {ownerCardUnavailable && (
+        <div className="mb-6 p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-100 text-sm flex items-start gap-2">
+          <AlertCircle size={18} className="flex-shrink-0 mt-0.5" />
+          <span>
+            {ownerCardStatus.reason || 'Enable Dream proxy before generating owner cards.'}
+            {' '}Finish setup now, then print an owner card from Settings / Setup / Owner after LAN access is enabled.
+          </span>
+        </div>
+      )}
 
       {error && (
         <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm flex items-start gap-2">
@@ -455,7 +532,7 @@ function ConfirmStep({ deviceName, username, stack, onBack, onFinish, finishing,
         </button>
         <button
           onClick={onFinish}
-          disabled={finishing}
+          disabled={finishing || ownerCardStatusLoading}
           className="flex-1 flex items-center justify-center gap-2 bg-theme-accent text-white py-4 rounded-xl text-base font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
         >
           {finishing && <Loader2 size={18} className="animate-spin" />}

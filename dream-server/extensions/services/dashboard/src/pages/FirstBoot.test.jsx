@@ -8,7 +8,9 @@ const response = (body, status = 200) => ({
   json: async () => body,
 })
 
-function finishWizard() {
+const ownerCardReady = { ready: true, requires: 'dream-proxy', reason: '' }
+
+async function finishWizard() {
   fireEvent.change(screen.getByDisplayValue('dream'), { target: { value: 'spark' } })
   fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
 
@@ -16,7 +18,9 @@ function finishWizard() {
   fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
 
   fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
-  fireEvent.click(screen.getByRole('button', { name: /^finish$/i }))
+  const finishButton = screen.getByRole('button', { name: /^finish$/i })
+  await waitFor(() => expect(finishButton).toBeEnabled())
+  fireEvent.click(finishButton)
 }
 
 describe('FirstBoot', () => {
@@ -32,6 +36,9 @@ describe('FirstBoot', () => {
   test('generates the owner card, marks setup complete, and shows the QR', async () => {
     const onComplete = vi.fn()
     const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardReady)
+      }
       if (url === '/api/auth/magic-link/generate' && options.method === 'POST') {
         return response({
           url: 'http://auth.spark.local/magic-link/first-token',
@@ -55,7 +62,7 @@ describe('FirstBoot', () => {
 
     render(<FirstBoot onComplete={onComplete} />)
 
-    finishWizard()
+    await finishWizard()
 
     expect(await screen.findByRole('heading', { name: /you're set/i })).toBeInTheDocument()
     const generateCall = fetchMock.mock.calls.find(([url]) => url === '/api/auth/magic-link/generate')
@@ -76,6 +83,9 @@ describe('FirstBoot', () => {
 
   test('does not show success when setup completion fails', async () => {
     const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardReady)
+      }
       if (url === '/api/auth/magic-link/generate' && options.method === 'POST') {
         return response({
           url: 'http://auth.spark.local/magic-link/first-token',
@@ -96,9 +106,42 @@ describe('FirstBoot', () => {
 
     render(<FirstBoot onComplete={vi.fn()} />)
 
-    finishWizard()
+    await finishWizard()
 
     await waitFor(() => expect(screen.getByText(/sentinel write failed/i)).toBeInTheDocument())
     expect(screen.queryByRole('heading', { name: /you're set/i })).not.toBeInTheDocument()
+  })
+
+  test('finishes setup without an owner card when LAN access is unavailable', async () => {
+    const onComplete = vi.fn()
+    const fetchMock = vi.fn(async (url) => {
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response({
+          ready: false,
+          requires: 'dream-proxy',
+          reason: 'Dream Talk owner cards require dream-proxy.',
+        })
+      }
+      if (url === '/api/setup/complete') {
+        return response({ success: true })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<FirstBoot onComplete={onComplete} />)
+
+    fireEvent.change(screen.getByDisplayValue('dream'), { target: { value: 'spark' } })
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+    fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: 'sam' } })
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+
+    expect(await screen.findByText(/owner cards require dream-proxy/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^finish$/i }))
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1))
+    expect(fetchMock).toHaveBeenCalledWith('/api/setup/complete', { method: 'POST' })
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/auth/magic-link/generate', expect.anything())
   })
 })
