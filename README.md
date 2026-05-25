@@ -35,6 +35,16 @@ full-model capabilities, lifecycle recovery, and the final User Green gate. See
 [Release Validation](dream-server/docs/RELEASE_VALIDATION.md) for what a green
 run proves.
 
+**Repo layout:** the repository root holds the public README, installers,
+security policy, GitHub workflows, and project coordination docs. The
+`dream-server/` directory is the product runtime: services, installer phases,
+compose overlays, dashboard, CLI, tests, and operator docs.
+
+**Stable consumption:** `main` moves quickly. For forks, appliances, labs, or
+production-like installs, pin a tagged release or audited commit and keep your
+own validation receipt. See [Installer Trust](dream-server/docs/INSTALLER_TRUST.md)
+and [Forkability](dream-server/docs/FORKABILITY.md).
+
 ## Get Started
 
 Linux and macOS:
