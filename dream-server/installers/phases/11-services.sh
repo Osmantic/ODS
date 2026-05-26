@@ -986,6 +986,18 @@ except Exception:
             . "$SCRIPT_DIR/installers/lib/background-tasks.sh"
         fi
 
+        _bootstrap_upgrade_args="$INSTALL_DIR/data/bootstrap-upgrade.args"
+        {
+            printf '%s\n' "$FULL_GGUF_FILE"
+            printf '%s\n' "$FULL_GGUF_URL"
+            printf '%s\n' "$FULL_GGUF_SHA256"
+            printf '%s\n' "$FULL_LLM_MODEL"
+            printf '%s\n' "$FULL_MAX_CONTEXT"
+            printf '%s\n' "$BOOTSTRAP_GGUF_FILE"
+        } > "$_bootstrap_upgrade_args.tmp" && mv "$_bootstrap_upgrade_args.tmp" "$_bootstrap_upgrade_args" || \
+            warn "Could not persist bootstrap-upgrade retry metadata"
+        chmod 600 "$_bootstrap_upgrade_args" 2>/dev/null || true
+
         # Start the long-lived downloader from a child shell that closes inherited
         # non-stdio FDs first. Otherwise caller-owned advisory locks (FD 9, FD
         # 200, etc.) can stay held until the model download exits.

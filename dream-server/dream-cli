@@ -1124,6 +1124,48 @@ cmd_restart() {
     if [[ "$refresh_soul" == "true" ]]; then
         _dream_cli_refresh_soul || true
     fi
+
+    if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
+        _dream_cli_maybe_resume_bootstrap_upgrade || true
+    fi
+}
+
+_dream_cli_maybe_resume_bootstrap_upgrade() {
+    local status_file="$INSTALL_DIR/data/bootstrap-status.json"
+    local args_file="$INSTALL_DIR/data/bootstrap-upgrade.args"
+    [[ -f "$status_file" && -f "$args_file" && -f "$INSTALL_DIR/scripts/bootstrap-upgrade.sh" ]] || return 0
+
+    local bs_status
+    bs_status=$(grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' "$status_file" | sed -n '1p' | sed 's/.*"status"[[:space:]]*:[[:space:]]*"//' | sed 's/"//' || true)
+    [[ "$bs_status" == "failed" ]] || return 0
+
+    if command -v pgrep >/dev/null 2>&1 && pgrep -f "bootstrap-upgrade.sh.*$INSTALL_DIR" >/dev/null 2>&1; then
+        log "  Model Upgrade: retry already running"
+        return 0
+    fi
+
+    local full_gguf_file full_gguf_url full_gguf_sha256 full_llm_model full_max_context bootstrap_gguf_file
+    full_gguf_file=$(sed -n '1p' "$args_file")
+    full_gguf_url=$(sed -n '2p' "$args_file")
+    full_gguf_sha256=$(sed -n '3p' "$args_file")
+    full_llm_model=$(sed -n '4p' "$args_file")
+    full_max_context=$(sed -n '5p' "$args_file")
+    bootstrap_gguf_file=$(sed -n '6p' "$args_file")
+
+    if [[ -z "$full_gguf_file" || -z "$full_gguf_url" || -z "$full_llm_model" || -z "$full_max_context" || -z "$bootstrap_gguf_file" ]]; then
+        warn "Bootstrap model upgrade failed previously, but retry metadata is incomplete."
+        return 0
+    fi
+
+    mkdir -p "$INSTALL_DIR/logs"
+    nohup bash "$INSTALL_DIR/scripts/bootstrap-upgrade.sh" \
+        "$INSTALL_DIR" "$full_gguf_file" "$full_gguf_url" \
+        "$full_gguf_sha256" "$full_llm_model" "$full_max_context" \
+        "$bootstrap_gguf_file" \
+        > "$INSTALL_DIR/logs/model-upgrade.log" 2>&1 &
+
+    log "  Model Upgrade: previous download failed; retrying in background ($full_llm_model)"
+    log "  Check progress: tail -f $INSTALL_DIR/logs/model-upgrade.log"
 }
 
 # Refresh data/hermes/SOUL.md from the static template + detected install

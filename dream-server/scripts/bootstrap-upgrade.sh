@@ -17,8 +17,9 @@
 # canonical $BOOTSTRAP_GGUF_FILE from installers/lib/bootstrap-model.sh so the
 # Phase 4b cleanup step removes the actual bootstrap model after hot-swap.
 #
-# On failure: logs the error and exits. The bootstrap model continues
-# running — the user can retry via re-running the installer.
+# On failure: logs the error, preserves any .part download for resume, and
+# exits. The bootstrap model continues running; `dream restart` or re-running
+# the installer retries the full-model upgrade.
 # ============================================================================
 
 set -uo pipefail
@@ -78,6 +79,28 @@ write_status() {
 }
 STATUSEOF
     mv "$STATUS_FILE.tmp" "$STATUS_FILE"
+}
+
+status_percent() {
+    local downloaded="${1:-0}" total="${2:-0}"
+    if [[ "$total" -le 0 ]]; then
+        echo ""
+        return
+    fi
+    local display_bytes="$downloaded"
+    [[ "$display_bytes" -lt 0 ]] && display_bytes=0
+    [[ "$display_bytes" -gt "$total" ]] && display_bytes="$total"
+    awk "BEGIN { printf \"%.1f\", ($display_bytes / $total) * 100 }"
+}
+
+write_failed_download_status() {
+    local part_file="${1:-}" total="${2:-0}" message="${3:-}"
+    local downloaded=0 percent=""
+    if [[ -n "$part_file" && -f "$part_file" ]]; then
+        downloaded=$(file_size "$part_file")
+    fi
+    percent=$(status_percent "$downloaded" "$total")
+    write_status "failed" "$percent" "$downloaded" "$total" 0 "$message"
 }
 
 sync_windows_opencode_config() {
@@ -141,9 +164,11 @@ monitor_download() {
         local percent="null"
         local eta=""
         if [[ $total_bytes -gt 0 ]]; then
-            percent=$(awk "BEGIN { printf \"%.1f\", ($current_bytes / $total_bytes) * 100 }")
+            local progress_bytes="$current_bytes"
+            [[ "$progress_bytes" -gt "$total_bytes" ]] && progress_bytes="$total_bytes"
+            percent=$(status_percent "$current_bytes" "$total_bytes")
             if [[ $speed -gt 0 ]]; then
-                local remaining=$(( total_bytes - current_bytes ))
+                local remaining=$(( total_bytes - progress_bytes ))
                 local eta_secs=$(( remaining / speed ))
                 local eta_min=$(( eta_secs / 60 ))
                 local eta_sec=$(( eta_secs % 60 ))
@@ -222,18 +247,22 @@ else
     # Start background download monitor
     monitor_download "$MODELS_DIR/$FULL_GGUF_FILE.part" "$TOTAL_BYTES" &
     _monitor_pid=$!
-    trap 'kill $_monitor_pid 2>/dev/null || true; write_status "failed"; exit 1' EXIT TERM INT
-
-    # Download with resume support, retry up to 3 times. curl success is not
-    # enough: finalizing the .part file can fail on macOS if the file vanished
-    # or the target path is unavailable, and this script intentionally does
-    # not use set -e.
-    _dl_success=false
     _part_path="$MODELS_DIR/$FULL_GGUF_FILE.part"
     _final_path="$MODELS_DIR/$FULL_GGUF_FILE"
-    for _attempt in 1 2 3; do
-        [[ $_attempt -gt 1 ]] && log "Retry attempt $_attempt of 3..." && sleep 5
+    trap 'kill $_monitor_pid 2>/dev/null || true; write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Download interrupted; partial file preserved for resume."; exit 1' EXIT TERM INT
+
+    # Download with resume support. curl success is not enough: finalizing the
+    # .part file can fail on macOS if the file vanished or the target path is
+    # unavailable, and this script intentionally does not use set -e.
+    _dl_success=false
+    _download_attempts="${DREAM_BOOTSTRAP_DOWNLOAD_ATTEMPTS:-6}"
+    case "$_download_attempts" in
+        ''|*[!0-9]*|0) _download_attempts=6 ;;
+    esac
+    for ((_attempt=1; _attempt<=_download_attempts; _attempt++)); do
+        [[ $_attempt -gt 1 ]] && log "Retry attempt $_attempt of $_download_attempts..." && sleep 5
         if curl -fSL -C - --connect-timeout 30 --max-time 3600 \
+                --retry 10 --retry-delay 5 --retry-connrefused --retry-all-errors \
                 -o "$_part_path" "$FULL_GGUF_URL" 2>&1; then
             if [[ ! -s "$_part_path" ]]; then
                 log "Download attempt $_attempt reported success but produced no partial file: $_part_path"
@@ -253,21 +282,20 @@ else
     trap - EXIT TERM INT
 
     if [[ "$_dl_success" != "true" ]]; then
-        rm -f "$MODELS_DIR/$FULL_GGUF_FILE.part"
-        write_status "failed"
-        fail "Download failed after 3 attempts. Bootstrap model will continue running."
+        write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Download failed after $_download_attempts attempts; partial file preserved for resume."
+        fail "Download failed after $_download_attempts attempts. Preserved partial file for resume: $_part_path. Bootstrap model will continue running."
     fi
 
     if [[ ! -s "$MODELS_DIR/$FULL_GGUF_FILE" ]]; then
-        write_status "failed"
+        write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Downloaded model missing or empty after finalization."
         fail "Downloaded model is missing or empty after finalization: $MODELS_DIR/$FULL_GGUF_FILE. Bootstrap model will continue running."
     fi
 
     if [[ "$TOTAL_BYTES" -gt 0 ]]; then
         ACTUAL_BYTES=$(file_size "$MODELS_DIR/$FULL_GGUF_FILE")
         if [[ "$ACTUAL_BYTES" -lt "$TOTAL_BYTES" ]]; then
-            rm -f "$MODELS_DIR/$FULL_GGUF_FILE"
-            write_status "failed"
+            mv "$MODELS_DIR/$FULL_GGUF_FILE" "$_part_path" 2>/dev/null || rm -f "$MODELS_DIR/$FULL_GGUF_FILE"
+            write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Downloaded model is smaller than expected; partial file preserved for resume."
             fail "Downloaded model is smaller than expected (got $ACTUAL_BYTES, expected $TOTAL_BYTES). Bootstrap model will continue running."
         fi
     fi

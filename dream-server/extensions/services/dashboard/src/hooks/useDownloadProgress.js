@@ -20,7 +20,8 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
       if (data.status === 'downloading' || data.status === 'verifying') {
         const downloaded = data.bytesDownloaded || 0
         const total = data.bytesTotal || 0
-        const percent = total > 0 ? (downloaded / total) * 100 : 0
+        const rawPercent = total > 0 ? (downloaded / total) * 100 : 0
+        const percent = Math.min(100, Math.max(0, rawPercent))
 
         setIsDownloading(true)
         setProgress({

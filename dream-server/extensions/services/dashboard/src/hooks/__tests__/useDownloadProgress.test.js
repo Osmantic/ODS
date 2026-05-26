@@ -31,6 +31,25 @@ describe('useDownloadProgress', () => {
     expect(result.current.progress.model).toBe('test-model')
   })
 
+  test('clamps progress percentage at 100 when downloaded bytes exceed total', async () => {
+    fetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        status: 'downloading',
+        model: 'test-model',
+        bytesDownloaded: 12e9,
+        bytesTotal: 10e9,
+      })
+    })
+
+    const { result } = renderHook(() => useDownloadProgress())
+
+    await waitFor(() => {
+      expect(result.current.isDownloading).toBe(true)
+    })
+    expect(result.current.progress.percent).toBe(100)
+  })
+
   test('clears progress when status is complete', async () => {
     fetch.mockResolvedValue({
       ok: true,
