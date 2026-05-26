@@ -22,7 +22,6 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { FeatureDiscoveryBanner } from '../components/FeatureDiscovery'
 
 // Helper to build external service URLs from current host
 const getExternalUrl = (port, path = '') => {
@@ -782,9 +781,6 @@ export default function Dashboard({ status, loading }) {
           {status?.version && <span>v{status.version}</span>}
         </div>
       </div>
-
-      {/* Feature Discovery Banner */}
-      <FeatureDiscoveryBanner />
 
       {/* Feature Cards */}
       <div className="liquid-metal-sequence-grid liquid-metal-sequence-grid--features grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2.5 mb-10">

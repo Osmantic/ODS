@@ -216,8 +216,17 @@ async def feature_enable_instructions(
     comfyui_url = _svc_url("comfyui")
     opencode_url = _svc_url("opencode")
     hermes_url = _svc_url("hermes-proxy")
+    dream_proxy_url = _svc_url("dream-proxy")
 
     instructions = {
+        "lan-web": {
+            "steps": [
+                "Enable the dream-proxy extension from Extensions, or run: dream enable dream-proxy",
+                "Start or restart Dream Server so dream-proxy listens on port 80",
+                "Use the LAN hostnames such as dashboard.<device>.local, chat.<device>.local, and talk.<device>.local",
+            ],
+            "links": [{"label": "Open LAN entry", "url": dream_proxy_url}] if dream_proxy_url else [],
+        },
         "chat": {"steps": ["Chat is already enabled if llama-server is running", "Open the Dashboard and click 'Chat' to start"], "links": [{"label": "Open Chat", "url": webui_url}]},
         "voice": {"steps": [f"Ensure Whisper (STT) is running on port {_svc_port('whisper')}", f"Ensure Kokoro (TTS) is running on port {_svc_port('tts')}", "Open Open WebUI and use its voice controls"], "links": [{"label": "Open Chat", "url": webui_url}]},
         "documents": {"steps": ["Ensure Qdrant vector database is running", "Open Open WebUI and use its document/RAG controls"], "links": [{"label": "Open Chat", "url": webui_url}]},

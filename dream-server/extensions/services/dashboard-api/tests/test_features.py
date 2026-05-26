@@ -274,6 +274,35 @@ class TestFeatureEnableInstructions:
             "url": "http://dashboard.dream.local:3000",
         }
 
+    def test_lan_web_instructions_are_explicit_about_dream_proxy(self, test_client, monkeypatch):
+        test_features = [
+            {"id": "lan-web", "name": "LAN web entry", "description": "LAN entry",
+             "icon": "Globe", "category": "networking",
+             "setup_time": "Ready", "priority": 1,
+             "requirements": {"vram_gb": 0, "services": [], "services_any": []},
+             "enabled_services_all": ["dream-proxy"], "enabled_services_any": []}
+        ]
+        monkeypatch.setattr("routers.features.FEATURES", test_features)
+        monkeypatch.setattr(
+            "routers.features.SERVICES",
+            {"dream-proxy": {"external_port": 80}},
+        )
+
+        resp = test_client.get(
+            "/api/features/lan-web/enable",
+            headers={**test_client.auth_headers, "host": "dashboard.dream.local:3001"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        steps = " ".join(data["instructions"]["steps"])
+        assert "dream-proxy" in steps
+        assert "port 80" in steps
+        assert data["instructions"]["links"][0] == {
+            "label": "Open LAN entry",
+            "url": "http://dashboard.dream.local:80",
+        }
+
     def test_404_for_unknown_feature(self, test_client, monkeypatch):
         monkeypatch.setattr("routers.features.FEATURES", [])
 

@@ -33,6 +33,7 @@ const baseStatus = {
 
 let mockResources
 let mockFeatures
+let mockFeatureSuggestions
 let restartCalls
 let restartDeferred
 
@@ -53,7 +54,11 @@ function installFetchMock() {
     if (String(url).includes('/api/features')) {
       return {
         ok: true,
-        json: async () => ({ features: mockFeatures }),
+        json: async () => ({
+          features: mockFeatures,
+          suggestions: mockFeatureSuggestions,
+          summary: { progress: 0 },
+        }),
       }
     }
     if (String(url).includes('/api/services/') && String(url).endsWith('/restart')) {
@@ -85,6 +90,7 @@ async function renderDashboard(status = baseStatus) {
 describe('Dashboard system overview', () => {
   beforeEach(() => {
     mockFeatures = []
+    mockFeatureSuggestions = []
     mockResources = {
       services: services.map(service => ({
         id: service.name.toLowerCase().replace(/\([^)]*\)/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
@@ -114,6 +120,21 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('TOKENS GENERATED')).toBeInTheDocument()
     expect(screen.getByText('Live Throughput')).toBeInTheDocument()
     expect(screen.getByText('Accumulated Output')).toBeInTheDocument()
+  })
+
+  it('does not render feature discovery suggestions as a dashboard home banner', async () => {
+    mockFeatureSuggestions = [{
+      featureId: 'lan-web',
+      name: 'LAN web entry',
+      message: 'Your hardware can run LAN web entry. Enable it?',
+      action: 'Enable LAN web entry',
+      setupTime: 'Ready',
+    }]
+
+    await renderDashboard()
+
+    expect(screen.queryByText(/Your hardware can run LAN web entry/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Enable LAN web entry/i })).not.toBeInTheDocument()
   })
 
   it('renders the services table with real tab counts and default expansion state', async () => {
