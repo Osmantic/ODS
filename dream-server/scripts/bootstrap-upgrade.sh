@@ -18,8 +18,8 @@
 # Phase 4b cleanup step removes the actual bootstrap model after hot-swap.
 #
 # On failure: logs the error, preserves any .part download for resume, and
-# exits. The bootstrap model continues running; `dream restart` or re-running
-# the installer retries the full-model upgrade.
+# exits. The bootstrap model continues running; `dream start`, `dream restart`,
+# or re-running the installer retries the full-model upgrade.
 # ============================================================================
 
 set -uo pipefail
