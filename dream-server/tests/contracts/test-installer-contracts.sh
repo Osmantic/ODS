@@ -101,6 +101,19 @@ else
   echo "[SKIP] docker compose unavailable"
 fi
 
+echo "[contract] dashboard nginx re-resolves dashboard-api after lifecycle churn"
+dashboard_nginx="extensions/services/dashboard/nginx.conf"
+grep -qF 'resolver 127.0.0.11' "$dashboard_nginx" \
+  || { echo "[FAIL] dashboard nginx must use Docker DNS resolver"; exit 1; }
+grep -qF 'set $dashboard_api_upstream dashboard-api:3002;' "$dashboard_nginx" \
+  || { echo "[FAIL] dashboard nginx must proxy through a variable upstream"; exit 1; }
+grep -qF 'proxy_pass http://$dashboard_api_upstream;' "$dashboard_nginx" \
+  || { echo "[FAIL] dashboard nginx /api locations must use the dynamic upstream"; exit 1; }
+if grep -qF 'proxy_pass http://dashboard-api:3002;' "$dashboard_nginx"; then
+  echo "[FAIL] dashboard nginx must not pin dashboard-api at config-load time"
+  exit 1
+fi
+
 echo "[contract] bundled service CPU limits are env-driven"
 grep -qF "cpus: '\${TTS_CPU_LIMIT:-1.0}'" extensions/services/tts/compose.yaml \
   || { echo "[FAIL] Kokoro TTS CPU limit must be env-driven with safe fallback"; exit 1; }
