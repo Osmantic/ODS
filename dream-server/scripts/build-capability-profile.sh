@@ -109,6 +109,13 @@ if gpu_type == "amd" and memory_type == "unified":
 elif gpu_type == "nvidia":
     llm_backend = "nvidia"
     overlays = ["docker-compose.base.yml", "docker-compose.nvidia.yml"]
+elif gpu_type == "jetson":
+    # Jetson is Tegra (arm64 + iGPU + unified memory). The dedicated overlay
+    # docker-compose.jetson.yml lands in milestone 1 phase 3; until then fall
+    # back to the cpu overlay so the installer pipeline stays valid on Jetson
+    # hosts without claiming a runtime path that doesn't exist yet.
+    llm_backend = "jetson"
+    overlays = ["docker-compose.base.yml", "docker-compose.cpu.yml"]
 elif gpu_type == "apple":
     llm_backend = "apple"
     overlays = ["docker-compose.base.yml", "docker-compose.amd.yml"]

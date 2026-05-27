@@ -300,6 +300,51 @@ detect_amd() {
     fi
 }
 
+# Detect NVIDIA Jetson (Tegra SoC)
+# Returns: <model_name>|<l4t_release>|<ram_mb>   (pipe-delimited) or empty
+# Test hooks: DREAM_NV_TEGRA_RELEASE, DREAM_DEVICE_TREE_COMPATIBLE,
+#             DREAM_DEVICE_TREE_MODEL, DREAM_GPU0_SYSFS, DREAM_UNAME_M
+detect_jetson() {
+    local tegra_release="${DREAM_NV_TEGRA_RELEASE:-/etc/nv_tegra_release}"
+    local dt_compat="${DREAM_DEVICE_TREE_COMPATIBLE:-/proc/device-tree/compatible}"
+    local dt_model="${DREAM_DEVICE_TREE_MODEL:-/proc/device-tree/model}"
+    local gpu0_sysfs="${DREAM_GPU0_SYSFS:-/sys/devices/gpu.0}"
+    local uname_m="${DREAM_UNAME_M:-$(uname -m)}"
+
+    [[ "$uname_m" == "aarch64" ]] || return 1
+
+    local is_jetson=false
+    if [[ -f "$tegra_release" ]]; then
+        is_jetson=true
+    elif [[ -f "$dt_compat" ]] && tr -d '\0' < "$dt_compat" 2>/dev/null | grep -q "nvidia,tegra"; then
+        is_jetson=true
+    elif [[ -d "$gpu0_sysfs" ]]; then
+        is_jetson=true
+    fi
+    $is_jetson || return 1
+
+    local model="NVIDIA Jetson (Tegra)"
+    if [[ -f "$dt_model" ]]; then
+        local raw
+        raw=$(tr -d '\0' < "$dt_model" 2>/dev/null) || raw=""
+        [[ -n "$raw" ]] && model="$raw"
+    fi
+
+    local l4t=""
+    if [[ -f "$tegra_release" ]]; then
+        local major minor
+        major=$(grep -oE 'R[0-9]+' "$tegra_release" 2>/dev/null | head -1)
+        minor=$(grep -oE 'REVISION: [0-9.]+' "$tegra_release" 2>/dev/null | head -1 | awk '{print $2}')
+        [[ -n "$major" && -n "$minor" ]] && l4t="${major}.${minor}"
+    fi
+
+    local ram_kb ram_mb=0
+    ram_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+    [[ -n "$ram_kb" && "$ram_kb" -gt 0 ]] && ram_mb=$(( ram_kb / 1024 ))
+
+    echo "${model}|${l4t}|${ram_mb}"
+}
+
 # Detect Apple Silicon
 detect_apple() {
     if [[ "$(detect_os)" == "macos" ]]; then
@@ -530,9 +575,27 @@ main() {
     cores=$(clamp_int "$cores" 1 1024)
     ram=$(clamp_int "$ram" 1 4096)
 
-    # Try NVIDIA first
+    # Try Jetson first — Tegra iGPUs don't show up as PCIe NVIDIA cards in
+    # sysfs and nvidia-smi is unreliable on JetPack, so detect via L4T release
+    # file / device-tree signature before the discrete-NVIDIA branch below.
+    local jetson_out=""
+    jetson_out=$(detect_jetson || true)
+    if [[ -n "$jetson_out" ]]; then
+        local _jetson_l4t _jetson_ram_mb
+        IFS='|' read -r gpu_name _jetson_l4t _jetson_ram_mb <<< "$jetson_out"
+        gpu_vram_mb=$(as_int "$_jetson_ram_mb")
+        gpu_count=1
+        gpu_type="jetson"
+        gpu_architecture="tegra"
+        memory_type="unified"
+        device_id="$_jetson_l4t"
+    fi
+
+    # Try NVIDIA next
     local nvidia_out=""
-    nvidia_out=$(detect_nvidia || true)
+    if [[ -z "$gpu_name" ]]; then
+        nvidia_out=$(detect_nvidia || true)
+    fi
     if [[ -n "$nvidia_out" ]]; then
         gpu_name=$(echo "$nvidia_out" | awk -F',' '{gsub(/^[ \t]+|[ \t]+$/,"",$1); print $1}' | xargs || true)
         gpu_vram_mb=$(parse_nvidia_vram_mb "$nvidia_out")

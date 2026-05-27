@@ -128,10 +128,11 @@ else
 
     if [[ "${CAP_PROFILE_LOADED:-false}" == "true" ]]; then
         case "${CAP_LLM_BACKEND:-}" in
-            amd)   GPU_BACKEND="amd" ;;
-            intel) GPU_BACKEND="intel" ;;
-            cpu)   GPU_BACKEND="cpu" ;;
-            apple) GPU_BACKEND="apple" ;;
+            amd)    GPU_BACKEND="amd" ;;
+            intel)  GPU_BACKEND="intel" ;;
+            cpu)    GPU_BACKEND="cpu" ;;
+            apple)  GPU_BACKEND="apple" ;;
+            jetson) GPU_BACKEND="jetson" ;;
             *) GPU_BACKEND="nvidia" ;;
         esac
         [[ -n "${CAP_GPU_MEMORY_TYPE:-}" ]] && GPU_MEMORY_TYPE="${CAP_GPU_MEMORY_TYPE}"

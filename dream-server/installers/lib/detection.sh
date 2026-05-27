@@ -13,6 +13,7 @@
 # Provides: detect_gpu(), load_capability_profile(),
 #           normalize_profile_tier(), tier_rank(), load_backend_contract(),
 #           fix_nvidia_secure_boot(), MIN_DRIVER_VERSION
+#           Side-effect var on Jetson: JETSON_L4T_RELEASE (e.g. "R36.4.0")
 #
 # Modder notes:
 #   Add new GPU vendors or APU detection logic here.
@@ -276,6 +277,60 @@ detect_gpu() {
     GPU_BACKEND="cpu"  # default to CPU-only fallback
     GPU_MEMORY_TYPE="none"
     GPU_DEVICE_ID=""
+
+    # Try NVIDIA Jetson (Tegra SoC) first — Tegra iGPUs do not appear as PCIe
+    # devices under /sys/class/drm with vendor 0x10de, and nvidia-smi (only in
+    # JetPack 5+) reports the GPU partially or not at all. Detect via L4T
+    # release file or device-tree signature so this never falls into the
+    # discrete-NVIDIA branch below. Test hooks: DREAM_NV_TEGRA_RELEASE,
+    # DREAM_DEVICE_TREE_COMPATIBLE, DREAM_DEVICE_TREE_MODEL, DREAM_GPU0_SYSFS,
+    # DREAM_UNAME_M.
+    local _tegra_release="${DREAM_NV_TEGRA_RELEASE:-/etc/nv_tegra_release}"
+    local _dt_compat="${DREAM_DEVICE_TREE_COMPATIBLE:-/proc/device-tree/compatible}"
+    local _dt_model="${DREAM_DEVICE_TREE_MODEL:-/proc/device-tree/model}"
+    local _gpu0_sysfs="${DREAM_GPU0_SYSFS:-/sys/devices/gpu.0}"
+    local _uname_m="${DREAM_UNAME_M:-$(uname -m)}"
+    local _is_jetson=false
+    if [[ "$_uname_m" == "aarch64" ]]; then
+        if [[ -f "$_tegra_release" ]]; then
+            _is_jetson=true
+        elif [[ -f "$_dt_compat" ]] && tr -d '\0' < "$_dt_compat" 2>/dev/null | grep -q "nvidia,tegra"; then
+            _is_jetson=true
+        elif [[ -d "$_gpu0_sysfs" ]]; then
+            _is_jetson=true
+        fi
+    fi
+    if $_is_jetson; then
+        GPU_BACKEND="jetson"
+        GPU_MEMORY_TYPE="unified"
+        GPU_COUNT=1
+        if [[ -f "$_dt_model" ]]; then
+            GPU_NAME="$(tr -d '\0' < "$_dt_model" 2>/dev/null)"
+        fi
+        [[ -z "${GPU_NAME:-}" ]] && GPU_NAME="NVIDIA Jetson (Tegra)"
+        # Parse L4T release (e.g. "R36 (release), REVISION: 4.0, ..." -> "R36.4.0")
+        # Used by later phases to pin a JetPack-compatible llama-server image.
+        JETSON_L4T_RELEASE=""
+        if [[ -f "$_tegra_release" ]]; then
+            local _major _minor
+            _major=$(grep -oE 'R[0-9]+' "$_tegra_release" 2>/dev/null | head -1)
+            _minor=$(grep -oE 'REVISION: [0-9.]+' "$_tegra_release" 2>/dev/null | head -1 | awk '{print $2}')
+            [[ -n "$_major" && -n "$_minor" ]] && JETSON_L4T_RELEASE="${_major}.${_minor}"
+        fi
+        GPU_DEVICE_ID="$JETSON_L4T_RELEASE"
+        # Unified memory: GPU shares system RAM. Use total RAM as VRAM budget,
+        # mirroring the Grace Blackwell (GB10/GB200) unified-memory branch below.
+        local _ram_kb
+        _ram_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+        if [[ -n "$_ram_kb" && "$_ram_kb" -gt 0 ]]; then
+            GPU_VRAM=$((_ram_kb / 1024))
+        else
+            GPU_VRAM=0
+            warn "Jetson detected but could not read /proc/meminfo for VRAM budget"
+        fi
+        log "GPU: $GPU_NAME (Jetson L4T ${JETSON_L4T_RELEASE:-unknown}, ${GPU_VRAM}MB unified memory)"
+        return 0
+    fi
 
     # Try NVIDIA first — validate hardware via sysfs vendor ID (0x10de)
     # before trusting nvidia-smi, which may be installed without NVIDIA hardware
