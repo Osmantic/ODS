@@ -32,6 +32,12 @@ if [[ "$GPU_BACKEND" == "amd" ]]; then
     [[ "$ENABLE_COMFYUI" == "true" ]] && PULL_LIST+=("ignatberesnev/comfyui-gfx1151:v0.2|COMFYUI — image generation engine (gfx1151)")
 elif [[ "$GPU_BACKEND" == "cpu" ]]; then
     PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b8248}|LLAMA-SERVER — downloading the brain (CPU)")
+elif [[ "$GPU_BACKEND" == "jetson" ]]; then
+    # Jetson (Tegra SoC, Orin Nano = sm_87). The discrete-CUDA ggml images
+    # (server-cuda-b9014) are NOT compiled for sm_87 and will fail to load
+    # kernels on Tegra. Use the Jetson-tuned llama.cpp image instead —
+    # matches the default in docker-compose.jetson.yml.
+    PULL_LIST+=("${LLAMA_SERVER_IMAGE:-dustynv/llama_cpp:r36.4.0}|LLAMA-SERVER — downloading the brain (Jetson CUDA)")
 else
     PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014}|LLAMA-SERVER — downloading the brain (NVIDIA CUDA)")
 fi
@@ -60,7 +66,7 @@ fi
 if $DRY_RUN; then
     ai "[DRY RUN] I would download ${#PULL_LIST[@]} modules."
 else
-    if [[ "${DREAM_MODE:-local}" != "cloud" && ( "$GPU_BACKEND" == "nvidia" || "$GPU_BACKEND" == "cpu" || "$GPU_BACKEND" == "intel" || "$GPU_BACKEND" == "sycl" ) ]]; then
+    if [[ "${DREAM_MODE:-local}" != "cloud" && ( "$GPU_BACKEND" == "nvidia" || "$GPU_BACKEND" == "cpu" || "$GPU_BACKEND" == "intel" || "$GPU_BACKEND" == "sycl" || "$GPU_BACKEND" == "jetson" ) ]]; then
         _llama_image=""
         _llama_label=""
         _llama_index=-1
