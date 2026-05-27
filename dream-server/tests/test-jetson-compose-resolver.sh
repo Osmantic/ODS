@@ -95,9 +95,23 @@ else
     pass "comfyui correctly excluded on Jetson"
 fi
 
-# --- Case 4: Non-Jetson backends still get their own overlay --------------
+# --- Case 4: Tier wins over clobbered gpu_backend (regression for #1482) --
+# The capability-profile pipeline can overwrite GPU_BACKEND from "jetson" to
+# "cpu" when the hardware classifier doesn't have a Jetson entry yet. Tier
+# alone must keep us on the jetson overlay so the user doesn't end up
+# running a CPU stack on Jetson hardware by accident.
 echo ""
-echo "=== Case 4: nvidia backend regression check ==="
+echo "=== Case 4: tier JETSON_ORIN_NANO wins over clobbered gpu_backend=cpu ==="
+OUT=$(bash "$RESOLVER" --tier JETSON_ORIN_NANO --gpu-backend cpu --env 2>&1)
+if grep -q '^COMPOSE_PRIMARY_FILE="docker-compose.jetson.yml"$' <<< "$OUT"; then
+    pass "tier JETSON_ORIN_NANO + backend=cpu still picks jetson overlay"
+else
+    fail "tier JETSON_ORIN_NANO + backend=cpu wrongly picked: $(grep COMPOSE_PRIMARY_FILE <<< "$OUT")"
+fi
+
+# --- Case 5: Non-Jetson backends still get their own overlay --------------
+echo ""
+echo "=== Case 5: nvidia backend regression check ==="
 OUT=$(bash "$RESOLVER" --tier 1 --gpu-backend nvidia --env 2>&1)
 if grep -q '^COMPOSE_PRIMARY_FILE="docker-compose.nvidia.yml"$' <<< "$OUT"; then
     pass "nvidia path unchanged — picks discrete nvidia overlay"

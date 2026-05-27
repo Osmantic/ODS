@@ -127,6 +127,20 @@ elif tier in {"AP_ULTRA", "AP_PRO", "AP_BASE"}:
     elif existing(["docker-compose.base.yml"]):
         resolved = ["docker-compose.base.yml"]
         primary = "docker-compose.base.yml"
+elif gpu_backend == "jetson" or tier == "JETSON_ORIN_NANO":
+    # NVIDIA Jetson (Tegra SoC) — must be matched BEFORE the cpu branch.
+    # The capability-profile pipeline can clobber GPU_BACKEND to "cpu" when
+    # the hardware classifier doesn't yet have a Jetson entry, so we rely on
+    # the tier name as the authoritative signal. Separate from discrete-nvidia
+    # because the Tegra container runtime and sm_87-targeted llama.cpp image
+    # are different from the discrete-CUDA path. See docker-compose.jetson.yml
+    # and the milestone tracked in issue #195.
+    if existing(["docker-compose.base.yml", "docker-compose.jetson.yml"]):
+        resolved = ["docker-compose.base.yml", "docker-compose.jetson.yml"]
+        primary = "docker-compose.jetson.yml"
+    elif existing(["docker-compose.base.yml"]):
+        resolved = ["docker-compose.base.yml"]
+        primary = "docker-compose.base.yml"
 elif gpu_backend == "cpu":
     if existing(["docker-compose.base.yml", "docker-compose.cpu.yml"]):
         resolved = ["docker-compose.base.yml", "docker-compose.cpu.yml"]
@@ -149,17 +163,6 @@ elif gpu_backend == "amd":
     if existing(["docker-compose.base.yml", "docker-compose.amd.yml"]):
         resolved = ["docker-compose.base.yml", "docker-compose.amd.yml"]
         primary = "docker-compose.amd.yml"
-elif gpu_backend == "jetson" or tier == "JETSON_ORIN_NANO":
-    # NVIDIA Jetson (Tegra SoC) — separate from the discrete-nvidia branch
-    # because the Tegra container runtime and sm_87-targeted llama.cpp image
-    # are different from the discrete-CUDA path. See docker-compose.jetson.yml
-    # and the milestone tracked in issue #195.
-    if existing(["docker-compose.base.yml", "docker-compose.jetson.yml"]):
-        resolved = ["docker-compose.base.yml", "docker-compose.jetson.yml"]
-        primary = "docker-compose.jetson.yml"
-    elif existing(["docker-compose.base.yml"]):
-        resolved = ["docker-compose.base.yml"]
-        primary = "docker-compose.base.yml"
 elif gpu_backend in ("intel", "sycl") or tier in ("ARC", "ARC_LITE"):
     if existing(["docker-compose.base.yml", "docker-compose.arc.yml"]):
         resolved = ["docker-compose.base.yml", "docker-compose.arc.yml"]
