@@ -131,7 +131,7 @@ try:
             error(f"Invalid dependency: {dep}")
 
     for backend in service.get("gpu_backends", []):
-        if backend not in ["amd", "nvidia", "apple", "cpu", "all"]:
+        if backend not in ["amd", "nvidia", "apple", "cpu", "all", "jetson", "none"]:
             error(f"Invalid gpu_backend: {backend}")
 
     # Check compose_file exists

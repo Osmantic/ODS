@@ -1,0 +1,45 @@
+# Dream Server — NVIDIA Jetson (Tegra) Overlay
+#
+# Differences from docker-compose.nvidia.yml:
+#   * Image: dustynv/llama_cpp builds target Jetson compute capability (sm_87
+#     for Orin Nano / Ampere). The stock ghcr.io/ggml-org/llama.cpp:server-cuda-*
+#     images are built for sm_75/80/86/89/90 and will not load models on Jetson.
+#   * GPU passthrough via `runtime: nvidia` (Tegra container runtime), not
+#     `deploy.resources.reservations.devices`. Required for Jetson — the
+#     reservations syntax is the discrete-GPU pattern and is unreliable on L4T.
+#   * Memory limit defaults sized for 8 GB unified memory; override via .env
+#     for larger Orin variants once they're validated.
+#
+# Prerequisites on the host:
+#   * JetPack 6.x flashed (L4T R36.x)
+#   * nvidia-container-toolkit configured as the default runtime in
+#     /etc/docker/daemon.json (the JetPack installer sets this up; verify with
+#     `docker info | grep -i runtime`)
+#
+# Use with:
+#   docker compose -f docker-compose.base.yml -f docker-compose.jetson.yml up -d
+
+services:
+  llama-server:
+    image: ${LLAMA_SERVER_IMAGE:-dustynv/llama_cpp:r36.4.0}
+    # Tegra container runtime — required on Jetson. Override via .env only if
+    # you have a custom Docker daemon configuration.
+    runtime: ${JETSON_RUNTIME:-nvidia}
+    environment:
+      # Expose all Jetson iGPU capabilities to the container. NVIDIA_VISIBLE_DEVICES
+      # is recognized by the Tegra runtime even though Jetson has only one iGPU.
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        limits:
+          cpus: '${LLAMA_CPU_LIMIT:-6.0}'
+          memory: ${LLAMA_SERVER_MEMORY_LIMIT:-6G}
+
+  open-webui:
+    environment:
+      AUDIO_STT_MODEL: "${AUDIO_STT_MODEL:-deepdml/faster-whisper-large-v3-turbo-ct2}"
+      # ComfyUI image generation is disabled on Jetson in this milestone — no
+      # validated arm64 + sm_87 path yet. Override to "true" only after
+      # ComfyUI's Jetson story is solved (tracked in a follow-up to #195).
+      ENABLE_IMAGE_GENERATION: "${ENABLE_IMAGE_GENERATION:-false}"

@@ -17,7 +17,7 @@ service:
   ui_path: /
   health_timeout: 15
   type: docker
-  gpu_backends: [amd, nvidia]
+  gpu_backends: [amd, nvidia, jetson]
   category: core
   depends_on: []
 
@@ -36,7 +36,7 @@ features:
     launch:
       type: service
       service: open-webui
-    gpu_backends: [amd, nvidia]
+    gpu_backends: [amd, nvidia, jetson]
 
   - id: documents
     name: Document Q&A
@@ -54,4 +54,4 @@ features:
     launch:
       type: service
       service: open-webui
-    gpu_backends: [amd, nvidia]
+    gpu_backends: [amd, nvidia, jetson]

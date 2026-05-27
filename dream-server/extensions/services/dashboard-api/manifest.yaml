@@ -15,6 +15,6 @@ service:
   health: /health
   ui_path: /health
   type: docker
-  gpu_backends: [amd, nvidia]
+  gpu_backends: [amd, nvidia, jetson]
   category: core
   depends_on: []
