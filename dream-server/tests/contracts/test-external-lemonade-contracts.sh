@@ -52,6 +52,14 @@ grep -q '_phase12_verify_external_lemonade_completion' installers/phases/12-heal
 grep -q '/v1/chat/completions' installers/phases/12-health.sh \
   || { echo "[FAIL] phase 12 completion check must call the LiteLLM chat route"; exit 1; }
 
+echo "[contract] external Lemonade preflight checks LiteLLM instead of managed llama-server"
+grep -q 'is_external_lemonade()' dream-preflight.sh \
+  || { echo "[FAIL] dream-preflight must detect external Lemonade mode"; exit 1; }
+grep -q 'LiteLLM external Lemonade gateway' dream-preflight.sh \
+  || { echo "[FAIL] dream-preflight must label the external Lemonade LiteLLM route"; exit 1; }
+grep -q 'dream-litellm' dream-preflight.sh \
+  || { echo "[FAIL] dream-preflight must check dream-litellm for external Lemonade"; exit 1; }
+
 echo "[contract] resolver selects cloud + external overlay instead of managed AMD overlay"
 resolved="$(LEMONADE_EXTERNAL=true DREAM_MODE=lemonade \
   ./scripts/resolve-compose-stack.sh --script-dir "$ROOT_DIR" --dream-mode lemonade --gpu-backend amd --tier SH_LARGE --env)"

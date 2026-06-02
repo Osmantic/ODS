@@ -120,9 +120,18 @@ else
     fail "Does not probe actual Docker port mapping"
 fi
 
+# 11. External Lemonade mode checks LiteLLM, not a managed llama-server container
+if grep -q 'is_external_lemonade()' "$PREFLIGHT" \
+   && grep -q 'LiteLLM external Lemonade gateway' "$PREFLIGHT" \
+   && grep -q 'dream-litellm' "$PREFLIGHT"; then
+    pass "External Lemonade preflight checks LiteLLM gateway"
+else
+    fail "External Lemonade preflight must not require managed dream-llama-server"
+fi
+
 # ── Runtime smoke test (no Docker required) ─────────────────────────────────
 
-# 11. Script runs to completion without unbound variable or syntax errors
+# 12. Script runs to completion without unbound variable or syntax errors
 #     (Services won't be up, so we expect exit 1 — that is correct behavior)
 set +e
 err_output=$(
@@ -141,7 +150,7 @@ else
     pass "Script runs without shell errors (exit $run_exit is expected)"
 fi
 
-# 12. Exit code is 0 or 1; never an unexpected crash code
+# 13. Exit code is 0 or 1; never an unexpected crash code
 if [[ "$run_exit" -eq 0 ]] || [[ "$run_exit" -eq 1 ]]; then
     pass "Exit code is valid (0=pass, 1=fail): $run_exit"
 else

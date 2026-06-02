@@ -68,6 +68,13 @@ detect_backend() {
 
 BACKEND=$(detect_backend)
 
+is_external_lemonade() {
+    local external="${LEMONADE_EXTERNAL:-false}"
+    local managed="${AMD_INFERENCE_MANAGED:-}"
+    local mode="${DREAM_MODE:-local}"
+    [[ "${external,,}" == "true" ]] || [[ "${mode,,}" == "lemonade" && "${managed,,}" == "false" ]]
+}
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -185,16 +192,26 @@ log ""
 # OLLAMA_PORT=11434 to .env automatically — it will be picked up via the
 # ${OLLAMA_PORT:-...} expansion below, so the fallback should be 8080.
 log "[4/8] Checking LLM endpoint..."
-LLM_PORT="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-8080}}"
-# Also probe the actual mapped port in case docker remapped it
-EXTERNAL_PORT=$(docker port dream-llama-server 8080/tcp 2>/dev/null | head -1 | cut -d: -f2 || echo "$LLM_PORT")
-LLM_ENDPOINTS=("http://${SERVICE_HOST}:${EXTERNAL_PORT}" "http://127.0.0.1:${EXTERNAL_PORT}" "http://127.0.0.1:${LLM_PORT}")
-LLM_SERVICE_NAME="llama-server"
-LLM_START_CMD="docker compose up -d llama-server"
+if is_external_lemonade; then
+    LLM_PORT="${LITELLM_PORT:-4000}"
+    LLM_ENDPOINTS=("http://${SERVICE_HOST}:${LLM_PORT}/health/readiness" "http://127.0.0.1:${LLM_PORT}/health/readiness" "http://127.0.0.1:${LLM_PORT}/v1/models")
+    LLM_SERVICE_NAME="LiteLLM external Lemonade gateway"
+    LLM_CONTAINER_MATCH="dream-litellm"
+    LLM_START_CMD="docker compose up -d litellm"
+else
+    LLM_PORT="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-8080}}"
+    # Also probe the actual mapped port in case docker remapped it
+    EXTERNAL_PORT="$(docker port dream-llama-server 8080/tcp 2>/dev/null | head -1 | cut -d: -f2 || true)"
+    [[ -n "$EXTERNAL_PORT" ]] || EXTERNAL_PORT="$LLM_PORT"
+    LLM_ENDPOINTS=("http://${SERVICE_HOST}:${EXTERNAL_PORT}/health" "http://${SERVICE_HOST}:${EXTERNAL_PORT}/v1/models" "http://127.0.0.1:${EXTERNAL_PORT}/health" "http://127.0.0.1:${EXTERNAL_PORT}/v1/models" "http://127.0.0.1:${LLM_PORT}/health" "http://127.0.0.1:${LLM_PORT}/v1/models")
+    LLM_SERVICE_NAME="llama-server"
+    LLM_CONTAINER_MATCH="dream-llama-server"
+    LLM_START_CMD="docker compose up -d llama-server"
+fi
 
 LLM_FOUND=false
 for ENDPOINT in "${LLM_ENDPOINTS[@]}"; do
-    if curl -sf "$ENDPOINT/health" &> /dev/null || curl -sf "$ENDPOINT/v1/models" &> /dev/null; then
+    if curl -sf "$ENDPOINT" &> /dev/null; then
         pass "LLM endpoint ($LLM_SERVICE_NAME) responding at $ENDPOINT"
         LLM_FOUND=true
         break
@@ -203,7 +220,7 @@ done
 
 if [ "$LLM_FOUND" = false ]; then
     # Check if container is running but model still loading
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qi "${LLM_SERVICE_NAME}"; then
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qi "${LLM_CONTAINER_MATCH}"; then
         warn "$LLM_SERVICE_NAME container running but not responding yet (model may still be loading)"
     else
         fail "No LLM endpoint found — checked: ${LLM_ENDPOINTS[*]}"
