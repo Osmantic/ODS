@@ -317,6 +317,48 @@ function Test-DreamComposeServiceAvailable {
     }
 }
 
+function Write-DreamMissingComposeServiceHint {
+    param(
+        [string[]]$ComposeFlags,
+        [Parameter(Mandatory = $true)][string]$Service
+    )
+
+    Write-AIError "Service '$Service' is not in the active Dream Server compose stack."
+
+    $serviceDir = Join-Path (Join-Path (Join-Path $InstallDir "extensions") "services") $Service
+    $composePath = Join-Path $serviceDir "compose.yaml"
+    $disabledComposePath = Join-Path $serviceDir "compose.yaml.disabled"
+
+    if (Test-Path $disabledComposePath) {
+        Write-AI "The $Service extension appears disabled in this runtime tree."
+    } elseif (Test-Path $composePath) {
+        Write-AI "The $Service extension exists, but the active .compose-flags stack does not include it."
+        Write-AI "This can happen after a reinstall with different feature choices or a stale compose cache."
+    } else {
+        Write-AI "No compose fragment for '$Service' was found under extensions/services."
+    }
+
+    if ($Service -eq "n8n" -or $Service -eq "workflows") {
+        Write-AI "n8n is optional. Install with -Workflows or -All if you want workflow automation."
+    }
+
+    Write-AI "Active compose services:"
+    try {
+        $services = & docker compose @ComposeFlags config --services 2>$null
+        if ($services) {
+            $services | ForEach-Object { Write-AI "  $_" }
+        } else {
+            Write-AI "  (none returned by docker compose config --services)"
+        }
+    } catch {
+        Write-AI "  Could not inspect compose services. Run the diagnostic command below manually."
+    }
+
+    Write-AI "Diagnostic command:"
+    Write-AI "  `$flags = (Get-Content .compose-flags -Raw).Trim() -split '\s+'"
+    Write-AI "  docker compose @flags config --services"
+}
+
 function Set-DreamEnvValue {
     <#
     .SYNOPSIS
@@ -781,6 +823,10 @@ function Invoke-Start {
         $flags = Get-ComposeFlags
         $hermesInStack = Test-DreamComposeServiceAvailable -ComposeFlags $flags -Service "hermes"
         if ($Service) {
+            if (-not (Test-DreamComposeServiceAvailable -ComposeFlags $flags -Service $Service)) {
+                Write-DreamMissingComposeServiceHint -ComposeFlags $flags -Service $Service
+                exit 1
+            }
             Write-AI "Starting $Service..."
             if ($Service -eq "hermes" -and $hermesInStack) {
                 Invoke-HermesSoulRefresh
@@ -826,6 +872,10 @@ function Invoke-Stop {
     try {
         $flags = Get-ComposeFlags
         if ($Service) {
+            if (-not (Test-DreamComposeServiceAvailable -ComposeFlags $flags -Service $Service)) {
+                Write-DreamMissingComposeServiceHint -ComposeFlags $flags -Service $Service
+                exit 1
+            }
             Write-AI "Stopping $Service..."
             $composeExit = Invoke-DreamDockerCompose -InstallDir $InstallDir -ComposeFlags $flags `
                 -ComposeArgs @("stop", $Service)
@@ -871,6 +921,10 @@ function Invoke-Restart {
         $flags = Get-ComposeFlags
         $hermesInStack = Test-DreamComposeServiceAvailable -ComposeFlags $flags -Service "hermes"
         if ($Service) {
+            if (-not (Test-DreamComposeServiceAvailable -ComposeFlags $flags -Service $Service)) {
+                Write-DreamMissingComposeServiceHint -ComposeFlags $flags -Service $Service
+                exit 1
+            }
             Write-AI "Restarting $Service..."
             if ($Service -eq "hermes" -and $hermesInStack) {
                 Invoke-HermesSoulRefresh
@@ -928,6 +982,10 @@ function Invoke-Logs {
     Push-Location $InstallDir
     try {
         $flags = Get-ComposeFlags
+        if (-not (Test-DreamComposeServiceAvailable -ComposeFlags $flags -Service $Service)) {
+            Write-DreamMissingComposeServiceHint -ComposeFlags $flags -Service $Service
+            exit 1
+        }
         & docker compose @flags logs -f --tail $Lines $Service
     } finally {
         Pop-Location
