@@ -112,6 +112,17 @@ function New-DreamEnv {
         return $Default
     }
 
+    function Get-ExistingTokenSpyApiKey {
+        $tokenSpyKeyFile = Join-Path $InstallDir "data\token-spy\token-spy-api-key.txt"
+        if (Test-Path $tokenSpyKeyFile) {
+            $value = (Get-Content -Raw -Path $tokenSpyKeyFile -ErrorAction SilentlyContinue)
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                return $value.Trim()
+            }
+        }
+        return ""
+    }
+
     function Select-AutoCpuValue {
         param(
             [string]$Key,
@@ -192,6 +203,11 @@ function New-DreamEnv {
     # the magic-link gate effectively breaks.
     $dreamSessionSecret = Get-EnvOrNew "DREAM_SESSION_SECRET" (New-SecureHex -Bytes 32)
     $shieldApiKey    = Get-EnvOrNew "SHIELD_API_KEY"     (New-SecureHex -Bytes 32)
+    $tokenSpyApiKeyDefault = Get-ExistingTokenSpyApiKey
+    if ([string]::IsNullOrWhiteSpace($tokenSpyApiKeyDefault)) {
+        $tokenSpyApiKeyDefault = New-SecureHex -Bytes 32
+    }
+    $tokenSpyApiKey = Get-EnvOrNew "TOKEN_SPY_API_KEY" $tokenSpyApiKeyDefault
     $openclawToken   = Get-EnvOrNew "OPENCLAW_TOKEN"     (New-SecureHex -Bytes 24)
     $searxngSecret   = Get-EnvOrNew "SEARXNG_SECRET"     (New-SecureHex -Bytes 32)
     $difySecretKey    = Get-EnvOrNew "DIFY_SECRET_KEY"           (New-SecureHex -Bytes 32)
@@ -419,6 +435,7 @@ LIVEKIT_API_SECRET=$livekitSecret
 OPENCLAW_TOKEN=$openclawToken
 OPENCODE_SERVER_PASSWORD=$opencodePassword
 OPENCODE_PORT=3003
+TOKEN_SPY_API_KEY=$tokenSpyApiKey
 SEARXNG_SECRET=$searxngSecret
 DIFY_SECRET_KEY=$difySecretKey
 

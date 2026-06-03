@@ -90,13 +90,21 @@ def test_token_spy_key_wiring() -> None:
     token_spy_compose = (ROOT / "extensions/services/token-spy/compose.yaml").read_text(encoding="utf-8")
     dashboard_compose = (ROOT / "docker-compose.base.yml").read_text(encoding="utf-8")
     phase06 = (ROOT / "installers/phases/06-directories.sh").read_text(encoding="utf-8")
+    windows_env = (ROOT / "installers/windows/lib/env-generator.ps1").read_text(encoding="utf-8")
+    macos_env = (ROOT / "installers/macos/lib/env-generator.sh").read_text(encoding="utf-8")
     schema = (ROOT / ".env.schema.json").read_text(encoding="utf-8")
 
     required = {
         "token-spy compose": "TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY:-}" in token_spy_compose,
         "dashboard-api compose": "TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY:-}" in dashboard_compose,
-        "installer generation": "TOKEN_SPY_API_KEY=$(_env_get TOKEN_SPY_API_KEY" in phase06,
-        "installer output": "TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY}" in phase06,
+        "linux installer generation": "TOKEN_SPY_API_KEY=$(_env_get TOKEN_SPY_API_KEY" in phase06,
+        "linux installer output": "TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY}" in phase06,
+        "windows installer generation": "Get-EnvOrNew \"TOKEN_SPY_API_KEY\"" in windows_env,
+        "windows preserves token-spy key file": "token-spy-api-key.txt" in windows_env,
+        "windows installer output": "TOKEN_SPY_API_KEY=$tokenSpyApiKey" in windows_env,
+        "macos installer generation": "read_token_spy_api_key" in macos_env,
+        "macos preserves token-spy key file": "token-spy-api-key.txt" in macos_env,
+        "macos installer output": "TOKEN_SPY_API_KEY=${token_spy_api_key}" in macos_env,
         "env schema": '"TOKEN_SPY_API_KEY"' in schema,
     }
     missing = [name for name, ok in required.items() if not ok]
