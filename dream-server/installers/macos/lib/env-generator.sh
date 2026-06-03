@@ -39,6 +39,13 @@ read_env_value() {
     grep -E "^${key}=" "$env_path" 2>/dev/null | sed -n '1p' | cut -d'=' -f2- | tr -d '\r' || true
 }
 
+read_token_spy_api_key() {
+    local install_dir="$1"
+    local token_spy_key_path="${install_dir}/data/token-spy/token-spy-api-key.txt"
+    [[ -f "$token_spy_key_path" ]] || { echo ""; return 0; }
+    tr -d '\r\n' < "$token_spy_key_path" 2>/dev/null || true
+}
+
 # Read SearXNG secret_key from an existing settings.yml file.
 # Arguments:
 #   1) settings_path: full path to settings.yml
@@ -225,6 +232,17 @@ generate_dream_env() {
         if [[ -z "$(read_env_value "$env_path" "SHIELD_API_KEY")" ]]; then
             upsert_env_value "$env_path" "SHIELD_API_KEY" "$(new_secure_hex 32)"
         fi
+        # Upsert TOKEN_SPY_API_KEY when missing so dashboard-api and the
+        # Token Spy UI share the same login key. Preserve Token Spy's existing
+        # fallback key file on upgrades where the container created one first.
+        if [[ -z "$(read_env_value "$env_path" "TOKEN_SPY_API_KEY")" ]]; then
+            local _token_spy_api_key
+            _token_spy_api_key="$(read_token_spy_api_key "$install_dir")"
+            if [[ -z "$_token_spy_api_key" ]]; then
+                _token_spy_api_key="$(new_secure_hex 32)"
+            fi
+            upsert_env_value "$env_path" "TOKEN_SPY_API_KEY" "$_token_spy_api_key"
+        fi
         # Upsert DREAM_SESSION_SECRET when missing — HMAC key for the
         # dream-session cookie minted by magic-link redemption. Without
         # this, dashboard-api refuses to issue cookies (and the magic-link
@@ -279,6 +297,11 @@ generate_dream_env() {
     dream_session_secret=$(new_secure_hex 32)
     local shield_api_key
     shield_api_key=$(new_secure_hex 32)
+    local token_spy_api_key
+    token_spy_api_key="$(read_token_spy_api_key "$install_dir")"
+    if [[ -z "$token_spy_api_key" ]]; then
+        token_spy_api_key=$(new_secure_hex 32)
+    fi
     tts_cpu_limit="$(select_env_service_cpu_limit "$env_path" "TTS_CPU_LIMIT" "8.0" "$docker_available_cpus")"
     tts_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "TTS_CPU_RESERVATION" "2.0" "$tts_cpu_limit")"
     whisper_cpu_limit="$(select_env_service_cpu_limit "$env_path" "WHISPER_CPU_LIMIT" "4.0" "$docker_available_cpus")"
@@ -445,6 +468,7 @@ LIVEKIT_API_KEY=${livekit_api_key}
 LIVEKIT_API_SECRET=${livekit_secret}
 OPENCLAW_TOKEN=${openclaw_token}
 QDRANT_API_KEY=${qdrant_api_key}
+TOKEN_SPY_API_KEY=${token_spy_api_key}
 SEARXNG_SECRET=${searxng_secret}
 
 #=== OpenCode Settings ===
