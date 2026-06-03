@@ -57,6 +57,88 @@ get_current_version() {
     fi
 }
 
+env_file_value() {
+    local key="$1"
+    [[ -f "${INSTALL_DIR}/.env" ]] || return 0
+    awk -F= -v key="$key" '
+        $1 == key {
+            value = substr($0, index($0, "=") + 1)
+            gsub(/\r$/, "", value)
+            gsub(/^["'\'']|["'\'']$/, "", value)
+            print value
+            exit
+        }
+    ' "${INSTALL_DIR}/.env" 2>/dev/null || true
+}
+
+compose_flags_files_exist() {
+    local flags="$1"
+    local prev="" tok
+    for tok in $flags; do
+        if [[ "$prev" == "-f" ]]; then
+            if [[ "$tok" = /* ]]; then
+                [[ -f "$tok" ]] || return 1
+            else
+                [[ -f "${INSTALL_DIR}/${tok}" ]] || return 1
+            fi
+        fi
+        prev="$tok"
+    done
+    return 0
+}
+
+resolve_compose_flags() {
+    local cached=""
+    if [[ -f "${INSTALL_DIR}/.compose-flags" ]]; then
+        cached="$(tr '\n' ' ' < "${INSTALL_DIR}/.compose-flags" | xargs 2>/dev/null || true)"
+        if [[ -n "$cached" ]] && compose_flags_files_exist "$cached"; then
+            echo "$cached"
+            return 0
+        fi
+        log_warn "Cached compose flags are missing or stale; trying dynamic compose resolution." >&2
+    fi
+
+    local gpu_backend tier gpu_count dream_mode
+    gpu_backend="$(env_file_value GPU_BACKEND)"
+    tier="$(env_file_value TIER)"
+    gpu_count="$(env_file_value GPU_COUNT)"
+    dream_mode="$(env_file_value DREAM_MODE)"
+
+    local resolved=""
+    if [[ -x "${INSTALL_DIR}/scripts/resolve-compose-stack.sh" ]]; then
+        resolved=$(bash "${INSTALL_DIR}/scripts/resolve-compose-stack.sh" \
+            --script-dir "$INSTALL_DIR" \
+            --tier "${tier:-1}" \
+            --gpu-backend "${gpu_backend:-nvidia}" \
+            --gpu-count "${gpu_count:-1}" \
+            --dream-mode "${dream_mode:-local}" | tail -1) || resolved=""
+        if [[ -n "$resolved" ]] && compose_flags_files_exist "$resolved"; then
+            echo "$resolved"
+            return 0
+        fi
+    fi
+
+    if [[ -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
+        echo "-f docker-compose.yml"
+        return 0
+    fi
+
+    if [[ -f "${INSTALL_DIR}/docker-compose.base.yml" ]]; then
+        local fallback="-f docker-compose.base.yml"
+        case "${gpu_backend:-}" in
+            nvidia|amd|cpu|apple|intel|sycl)
+                if [[ -f "${INSTALL_DIR}/docker-compose.${gpu_backend}.yml" ]]; then
+                    fallback="$fallback -f docker-compose.${gpu_backend}.yml"
+                fi
+                ;;
+        esac
+        echo "$fallback"
+        return 0
+    fi
+
+    return 1
+}
+
 # Semver compare: returns 0 if equal, 1 if v1 > v2, 2 if v1 < v2
 semver_compare() {
     local v1="${1#v}"
@@ -512,39 +594,17 @@ cmd_update() {
     local snap_dir
     snap_dir=$(snapshot_pre_update "$timestamp")
 
-    # Read GPU config from .env for compose resolution
-    local _update_gpu_backend _update_tier _update_gpu_count
-    _update_gpu_backend=$(grep '^GPU_BACKEND=' "${INSTALL_DIR}/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
-    _update_tier=$(grep '^TIER=' "${INSTALL_DIR}/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
-    _update_gpu_count=$(grep '^GPU_COUNT=' "${INSTALL_DIR}/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
-
     # Resolve compose flags once — used in restart and rollback paths.
-    # --gpu-count gates the multigpu-{backend}.yml overlay; without it,
-    # restarts after update would silently drop multi-GPU plumbing.
     local compose_flags=""
-    if [[ -x "${INSTALL_DIR}/scripts/resolve-compose-stack.sh" ]]; then
-        compose_flags=$(bash "${INSTALL_DIR}/scripts/resolve-compose-stack.sh" \
-            --script-dir "$INSTALL_DIR" \
-            --tier "${_update_tier:-1}" \
-            --gpu-backend "${_update_gpu_backend:-nvidia}" \
-            --gpu-count "${_update_gpu_count:-1}" | tail -1)
-    fi
-    if [[ -n "${compose_flags}" ]]; then
-        local all_exist=true
-        for flag_file in $(echo "$compose_flags" | grep -o -- '-f [^ ]*' | cut -d' ' -f2); do
-            if [[ ! -f "${INSTALL_DIR}/${flag_file}" ]]; then
-                log_warn "Compose file not found: ${flag_file} — falling back to docker-compose.yml"
-                all_exist=false
-                break
-            fi
-        done
-        [[ "$all_exist" == "true" ]] || compose_flags=""
-    fi
+    compose_flags=$(resolve_compose_flags 2>/dev/null || true)
 
     # ── Step 2: pull latest changes ───────────────────────────────────────────
     log_info "Pulling latest changes..."
     if [[ ! -d "${INSTALL_DIR}/.git" ]]; then
-        log_error "Not a git repository. Manual update required."
+        log_error "This install directory is not a git repository, so dream-update.sh cannot pull source code."
+        log_info "Install path: ${INSTALL_DIR}"
+        log_info "For routine runtime/image updates, run: cd \"${INSTALL_DIR}\" && ./dream-cli update"
+        log_info "For source-code updates, reinstall or restore this directory as a git-backed DreamServer checkout."
         return 1
     fi
     cd "$INSTALL_DIR"
@@ -768,22 +828,40 @@ cmd_health() {
     
     # Check containers
     cd "$INSTALL_DIR"
-    local compose_cmd="docker compose"
-    if ! $compose_cmd version &>/dev/null; then
-        compose_cmd="docker-compose"
+    local -a compose_cmd
+    if docker compose version &>/dev/null; then
+        compose_cmd=(docker compose)
+    elif command -v docker-compose >/dev/null 2>&1; then
+        compose_cmd=(docker-compose)
+    else
+        log_error "Docker Compose is not available"
+        return 1
+    fi
+
+    local compose_flags=""
+    local -a compose_args=()
+    compose_flags=$(resolve_compose_flags 2>/dev/null || true)
+    if [[ -n "$compose_flags" ]]; then
+        read -ra compose_args <<< "$compose_flags"
     fi
     
     local services
-    services=$($compose_cmd ps --services 2>/dev/null || echo "")
+    services=$("${compose_cmd[@]}" "${compose_args[@]}" ps --services 2>/dev/null || echo "")
     
     if [[ -z "$services" ]]; then
-        log_warn "No services defined in docker-compose"
-        return 0
+        if [[ -n "$compose_flags" ]]; then
+            log_warn "No services found for resolved compose stack: ${compose_flags}"
+        else
+            log_warn "No compose stack could be resolved for this install"
+        fi
+        return 1
     fi
     
     for service in $services; do
         local status
-        status=$($compose_cmd ps --format json "$service" 2>/dev/null | jq -r '.[0].State // .State // "unknown"' 2>/dev/null || echo "unknown")
+        status=$("${compose_cmd[@]}" "${compose_args[@]}" ps --format json "$service" 2>/dev/null \
+            | jq -r 'if type == "array" then (.[0].State // "unknown") else (.State // "unknown") end' 2>/dev/null \
+            || echo "unknown")
         
         if [[ "$status" == "running" ]]; then
             log_ok "Service ${service}: running"
@@ -794,7 +872,9 @@ cmd_health() {
     done
     
     # Check dashboard API health endpoint
-    local dashboard_api_port="${DASHBOARD_API_PORT:-3002}"
+    local dashboard_api_port="${DASHBOARD_API_PORT:-}"
+    [[ -n "$dashboard_api_port" ]] || dashboard_api_port="$(env_file_value DASHBOARD_API_PORT)"
+    dashboard_api_port="${dashboard_api_port:-3002}"
     if curl -sf "http://127.0.0.1:${dashboard_api_port}/health" &>/dev/null; then
         log_ok "Dashboard API: healthy"
     elif curl -sf "http://127.0.0.1:${dashboard_api_port}/api/status" &>/dev/null; then
@@ -804,7 +884,10 @@ cmd_health() {
     fi
     
     # Check llama-server health
-    local llama_server_port="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-11434}}"
+    local llama_server_port="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-}}"
+    [[ -n "$llama_server_port" ]] || llama_server_port="$(env_file_value OLLAMA_PORT)"
+    [[ -n "$llama_server_port" ]] || llama_server_port="$(env_file_value LLAMA_SERVER_PORT)"
+    llama_server_port="${llama_server_port:-8080}"
     if curl -sf "http://127.0.0.1:${llama_server_port}/v1/models" &>/dev/null; then
         log_ok "llama-server: healthy"
     else
@@ -851,7 +934,7 @@ Environment Variables:
   UPDATE_CHANNEL      stable|beta|nightly (default: stable)
   MAX_BACKUPS         Number of snapshots/backups to retain (default: 10)
   HEALTH_TIMEOUT      Seconds to wait for healthy services (default: 120)
-  DASHBOARD_PORT      Dashboard API port (default: 3002)
+  DASHBOARD_API_PORT  Dashboard API port (default: 3002)
   OLLAMA_PORT         llama-server port (default: 8080)
 
 Examples:
