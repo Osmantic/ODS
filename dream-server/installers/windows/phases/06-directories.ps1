@@ -271,25 +271,16 @@ function Invoke-HermesSoulRefresh {
     $_rendered = $false
 
     if (Test-Path $_builder) {
-        $_pythonCandidates = @(
-            @{ Command = "python"; Args = @() },
-            @{ Command = "python3"; Args = @() },
-            @{ Command = "py"; Args = @("-3") }
-        )
-
-        foreach ($_candidate in $_pythonCandidates) {
-            $_cmd = Get-Command $_candidate.Command -ErrorAction SilentlyContinue
-            if (-not $_cmd -or -not $_cmd.Source) { continue }
-
+        $_python = Resolve-DreamWindowsPython
+        if ($_python) {
             try {
-                & $_cmd.Source @($_candidate.Args) $_builder "--template" $_template "--env" $_envPath "--output" $_output *>> $script:DS_LOG_FILE
+                & $_python.Source @($_python.PythonArgs) $_builder "--template" $_template "--env" $_envPath "--output" $_output *>> $script:DS_LOG_FILE
                 if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $_output -PathType Leaf)) {
                     $_rendered = $true
-                    break
                 }
             } catch {
                 $_msg = $_.Exception.Message
-                Add-Content -Path $script:DS_LOG_FILE -Value "Hermes SOUL.md render failed with $($_candidate.Command): $_msg"
+                Add-Content -Path $script:DS_LOG_FILE -Value "Hermes SOUL.md render failed with $($_python.Label): $_msg"
             }
         }
     }
@@ -396,12 +387,7 @@ if (-not (Test-Path $_modelsIni)) {
 # primarily a CI gate. A warning is shown but installation continues.
 $_schemaJson = Join-Path $installDir ".env.schema.json"
 if (Test-Path $_schemaJson) {
-    # Locate Python (python3 preferred, python fallback)
-    $_pyCmd = $null
-    foreach ($_pyTry in @("python3", "python")) {
-        $_pyFound = Get-Command $_pyTry -ErrorAction SilentlyContinue
-        if ($_pyFound) { $_pyCmd = $_pyTry; break }
-    }
+    $_pyCmd = Resolve-DreamWindowsPython
 
     if ($_pyCmd) {
         $_validateScript = Join-Path $installDir "scripts\validate-env.sh"
@@ -410,7 +396,7 @@ if (Test-Path $_schemaJson) {
             $_envPath = Join-Path $installDir ".env"
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "SilentlyContinue"
-            $_pyOut = & $_pyCmd -c @"
+            $_pyOut = & $_pyCmd.Source @($_pyCmd.PythonArgs) -c @"
 import json, sys, re
 env_path = r'$($_envPath -replace "\\", "\\")'
 schema_path = r'$($_schemaJson -replace "\\", "\\")'
@@ -440,7 +426,7 @@ except Exception as e:
             }
         }
     } else {
-        Write-AIWarn ".env schema validation skipped (Python not found -- install Python 3 for validation)"
+        Write-AIWarn ".env schema validation skipped (Python 3.8+ not found -- install Python 3 for validation)"
     }
 } else {
     Write-AIWarn ".env.schema.json not found -- skipping schema validation"

@@ -199,10 +199,9 @@ if ($_npmCmd) {
 # ── Dream Host Agent (extension lifecycle management) ────────────────────────
 $_agentScript = Join-Path (Join-Path $installDir "bin") "dream-host-agent.py"
 if (Test-Path $_agentScript) {
-    $_python3 = Get-Command python3 -ErrorAction SilentlyContinue
-    if (-not $_python3) { $_python3 = Get-Command python -ErrorAction SilentlyContinue }
+    $_python = Resolve-DreamWindowsPython
 
-    if ($_python3) {
+    if ($_python) {
         # Kill existing agent on reinstall (matches Linux force-restart pattern)
         if (Test-Path $script:DREAM_AGENT_PID_FILE) {
             $_oldPid = $null
@@ -227,14 +226,15 @@ if (Test-Path $_agentScript) {
             "'" + ($Value -replace "'", "''") + "'"
         }
         $_dockerPathLiteral = & $_psQuote "$_dockerBin;"
-        $_pythonLiteral = & $_psQuote $_python3.Source
+        $_pythonLiteral = & $_psQuote $_python.Source
+        $_pythonArgsLiteral = ConvertTo-DreamPowerShellArrayExpression @($_python.PythonArgs)
         $_agentScriptLiteral = & $_psQuote $_agentScript
         $_pidFileLiteral = & $_psQuote $script:DREAM_AGENT_PID_FILE
         $_installDirLiteral = & $_psQuote $installDir
         $_logFileLiteral = & $_psQuote $script:DREAM_AGENT_LOG_FILE
         $_agentCommand = @"
 `$env:PATH = $_dockerPathLiteral + `$env:PATH
-`$agentArgs = @($_agentScriptLiteral, '--port', '$($script:DREAM_AGENT_PORT)', '--pid-file', $_pidFileLiteral, '--install-dir', $_installDirLiteral)
+`$agentArgs = $_pythonArgsLiteral + @($_agentScriptLiteral, '--port', '$($script:DREAM_AGENT_PORT)', '--pid-file', $_pidFileLiteral, '--install-dir', $_installDirLiteral)
 Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirectory $_installDirLiteral -WindowStyle Hidden -RedirectStandardError $_logFileLiteral
 "@
         $_encodedAgentCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_agentCommand))
@@ -283,7 +283,7 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
             }
         }
     } else {
-        Write-AIWarn "Python not found -- Dream host agent not started"
+        Write-AIWarn "Python 3.8+ not found -- Dream host agent not started"
         Write-AI "  Install Python 3 and re-run the installer, or start manually: .\dream.ps1 agent start"
     }
 } else {
