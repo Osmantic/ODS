@@ -77,3 +77,44 @@ function Get-DreamAmdLemonadeRuntime {
 
     return $lemonade
 }
+
+function Resolve-DreamLemonadeExe {
+    <#
+    .SYNOPSIS
+        Resolve the native Windows Lemonade executable across both MSI roots.
+
+    .DESCRIPTION
+        Lemonade's minimal MSI can land under either Program Files root depending
+        on package architecture and Windows installer behavior. Probe both before
+        falling back to the configured default path so AMD installs do not miss a
+        valid Lemonade runtime and silently downgrade to Vulkan llama-server.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$ExecutableName = "lemonade-server.exe"
+    )
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    $existingVar = Get-Variable -Name LEMONADE_EXE -Scope Script -ErrorAction SilentlyContinue
+    if ($existingVar -and -not [string]::IsNullOrWhiteSpace([string]$existingVar.Value)) {
+        $candidates.Add([string]$existingVar.Value)
+    }
+
+    $roots = @(
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)}
+    )
+    foreach ($root in $roots) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $candidates.Add((Join-Path (Join-Path (Join-Path $root "Lemonade Server") "bin") $ExecutableName))
+    }
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
