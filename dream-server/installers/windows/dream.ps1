@@ -40,9 +40,13 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "constants.ps1")
 . (Join-Path $LibDir "ui.ps1")
 . (Join-Path $LibDir "compose-diagnostics.ps1")
+. (Join-Path $LibDir "backend-contract.ps1")
 . (Join-Path $LibDir "detection.ps1")
 . (Join-Path $LibDir "llm-endpoint.ps1")
 . (Join-Path $LibDir "install-report.ps1")
+
+$_resolvedLemonadeExe = Resolve-DreamLemonadeExe
+if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
 
 # ── Resolve install directory ──
 $InstallDir = $script:DS_INSTALL_DIR

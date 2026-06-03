@@ -142,7 +142,8 @@ if ($enableRecommended) {
     $_portsToCheck["Token Spy (usage monitor)"] = 3005
 }
 if ($enableVoice) {
-    $_portsToCheck["Whisper (STT)"] = 9000
+    $_whisperPortToCheck = $(if ($gpuInfo.Backend -eq "amd" -and -not $cloudMode) { 9100 } else { 9000 })
+    $_portsToCheck["Whisper (STT)"] = $_whisperPortToCheck
     $_portsToCheck["Kokoro (TTS)"]  = 8880
 }
 if ($enableWorkflows) {

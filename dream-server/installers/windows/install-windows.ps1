@@ -197,6 +197,8 @@ if ($gpuInfo.Backend -eq "amd") {
     $script:LEMONADE_MSI_FILE = [string]$amdLemonadeRuntime.windows_msi_file
     $script:LEMONADE_MSI_URL = "https://github.com/lemonade-sdk/lemonade/releases/download/v$($script:LEMONADE_VERSION)/$($script:LEMONADE_MSI_FILE)"
     $script:LEMONADE_EXE = Join-Path (Join-Path $script:LEMONADE_INSTALL_DIR "bin") ([string]$amdLemonadeRuntime.windows_executable)
+    $_resolvedLemonadeExe = Resolve-DreamLemonadeExe -ExecutableName ([string]$amdLemonadeRuntime.windows_executable)
+    if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
     $script:LEMONADE_PORT = [int]$amdLemonadeRuntime.api_port
     $script:LEMONADE_HEALTH_URL = "http://localhost:$($script:LEMONADE_PORT)$($amdLemonadeRuntime.health_path)"
 }
@@ -353,6 +355,8 @@ if ($dryRun) {
                     if ($dlOk) {
                         $msiArgs = "/i `"$msiPath`" /quiet /norestart ALLUSERS=1"
                         Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -NoNewWindow
+                        $_resolvedLemonadeExe = Resolve-DreamLemonadeExe -ExecutableName ([string]$amdLemonadeRuntime.windows_executable)
+                        if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
                         if (Test-Path $script:LEMONADE_EXE) {
                             Write-AISuccess "AMD Lemonade Server installed"
                             $useLemonade = $true
@@ -774,11 +778,17 @@ if ($dryRun) {
             param([string]$Image)
             if ([string]::IsNullOrWhiteSpace($Image)) { return $false }
 
-            & docker image inspect $Image *> $null
-            if ($LASTEXITCODE -eq 0) { return $true }
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "SilentlyContinue"
+            try {
+                & docker image inspect $Image *> $null
+                if ($LASTEXITCODE -eq 0) { return $true }
 
-            & docker manifest inspect $Image *> $null
-            return ($LASTEXITCODE -eq 0)
+                & docker manifest inspect $Image *> $null
+                return ($LASTEXITCODE -eq 0)
+            } finally {
+                $ErrorActionPreference = $prevEAP
+            }
         }
 
         function Resolve-DreamDockerImageOrFallback {
@@ -1081,14 +1091,18 @@ switch ($opencodeSync.Status) {
     }
 }
 
+$windowsEnvMap = Get-WindowsDreamEnvMap -InstallDir $installDir
 $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $installDir `
-    -EnvMap (Get-WindowsDreamEnvMap -InstallDir $installDir) `
+    -EnvMap $windowsEnvMap `
     -UseLemonade:$useLemonade -GpuBackend $gpuInfo.Backend -CloudMode:$cloudMode
 $healthChecks = @(
     @{ Name = $llmEndpoint.Name; Url = $llmEndpoint.HealthUrl }
     @{ Name = "Chat UI (Open WebUI)"; Url = "http://localhost:3000" }
 )
-if ($enableVoice)     { $healthChecks += @{ Name = "Whisper (STT)";    Url = "http://localhost:9000/health" } }
+if ($enableVoice)     {
+    $healthWhisperPort = if ($windowsEnvMap.ContainsKey("WHISPER_PORT") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["WHISPER_PORT"])) { $windowsEnvMap["WHISPER_PORT"] } else { "9000" }
+    $healthChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$healthWhisperPort/health" }
+}
 if ($enableWorkflows) { $healthChecks += @{ Name = "n8n (Workflows)";   Url = "http://localhost:5678/healthz" } }
 
 Write-AI "Running health checks..."

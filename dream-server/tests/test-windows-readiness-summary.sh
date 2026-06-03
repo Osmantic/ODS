@@ -38,6 +38,8 @@ check 'function Write-DreamInstallReadinessSummary' "$SUMMARY_LIB" "summary writ
 check 'Test-DreamReadinessHttp' "$SUMMARY_LIB" "summary probes HTTP endpoints"
 check 'Get-DreamReadinessContainerState' "$SUMMARY_LIB" "summary reads Docker container state"
 check 'Write-DreamInstallReadinessSummary -Checks $readinessChecks' "$INSTALL_PS1" "installer prints readiness summary"
+check '$windowsEnvMap = Get-WindowsDreamEnvMap -InstallDir $installDir' "$INSTALL_PS1" "installer caches Windows env map for health checks"
+check '$healthWhisperPort' "$INSTALL_PS1" "installer health check uses configured Whisper port"
 
 if command -v pwsh >/dev/null 2>&1; then
     OUTPUT="$(SUMMARY_LIB="$SUMMARY_LIB" pwsh -NoProfile -Command '

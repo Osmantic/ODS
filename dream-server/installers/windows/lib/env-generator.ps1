@@ -112,6 +112,18 @@ function New-DreamEnv {
         return $Default
     }
 
+    # Lemonade's native Windows router reserves host port 9000 for websockets.
+    # Keep Whisper's container port unchanged, but move its host port out of the
+    # way on managed AMD/Lemonade installs. Existing .env choices still win.
+    $whisperPortDefault = "9000"
+    if ($GpuBackend -eq "amd" -and $AmdInferenceRuntime -eq "lemonade" -and $AmdInferenceLocation -eq "host") {
+        $whisperPortDefault = "9100"
+    }
+    $whisperPort = Get-EnvOrNew "WHISPER_PORT" $whisperPortDefault
+    if ($whisperPortDefault -eq "9100" -and $whisperPort -eq "9000") {
+        $whisperPort = "9100"
+    }
+
     function Get-ExistingTokenSpyApiKey {
         $tokenSpyKeyFile = Join-Path $InstallDir "data\token-spy\token-spy-api-key.txt"
         if (Test-Path $tokenSpyKeyFile) {
@@ -402,7 +414,7 @@ COMFYUI_CPU_RESERVATION=$comfyuiCpuReservation
 #=== Ports ===
 OLLAMA_PORT=11434
 WEBUI_PORT=3000
-WHISPER_PORT=9000
+WHISPER_PORT=$whisperPort
 TTS_PORT=8880
 N8N_PORT=5678
 QDRANT_PORT=6333

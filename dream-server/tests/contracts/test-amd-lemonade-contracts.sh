@@ -265,13 +265,105 @@ if command -v pwsh >/dev/null 2>&1; then
             throw "Expected missing root to fail"
         }
         . (Join-Path $env:ROOT_DIR "installers/windows/lib/constants.ps1")
+
+        $probeRoot = Join-Path $env:TEMP "dream-lemonade-resolver-contract"
+        Remove-Item -LiteralPath $probeRoot -Recurse -Force -ErrorAction SilentlyContinue
+        $programFiles = Join-Path $probeRoot "Program Files"
+        $programFilesX86 = Join-Path $probeRoot "Program Files (x86)"
+        ${env:ProgramFiles} = $programFiles
+        ${env:ProgramFiles(x86)} = $programFilesX86
+        $script:LEMONADE_EXE = Join-Path (Join-Path (Join-Path $programFiles "Lemonade Server") "bin") "lemonade-server.exe"
+        $x86Exe = Join-Path (Join-Path (Join-Path $programFilesX86 "Lemonade Server") "bin") "lemonade-server.exe"
+        New-Item -ItemType Directory -Path (Split-Path $x86Exe) -Force | Out-Null
+        Set-Content -LiteralPath $x86Exe -Value "stub" -NoNewline
+        $resolved = Resolve-DreamLemonadeExe
+        if ($resolved -ne $x86Exe) {
+            throw "Expected Program Files (x86) Lemonade path, got: $resolved"
+        }
     '; then
-        pass "backend-contract.ps1: reads explicit root and constants.ps1 stays standalone"
+        pass "backend-contract.ps1: reads explicit root, stays standalone, resolves x86 Lemonade installs"
     else
         fail "backend-contract.ps1: PowerShell contract failed"
     fi
 else
     pass "backend-contract.ps1: runtime test skipped (pwsh unavailable)"
+fi
+
+# ---------------------------------------------------------------------------
+# 17. Windows AMD managed Lemonade avoids host port 9000 collision with Whisper
+# ---------------------------------------------------------------------------
+echo "[contract] Windows AMD managed Lemonade avoids Whisper port 9000"
+if grep -q 'Lemonade.*reserves host port 9000' installers/windows/lib/env-generator.ps1 \
+    && grep -q 'WHISPER_PORT=$whisperPort' installers/windows/lib/env-generator.ps1 \
+    && grep -q '9100' installers/windows/phases/04-requirements.ps1; then
+    pass "Windows AMD/Lemonade defaults Whisper to alternate host port"
+else
+    fail "Windows AMD/Lemonade must avoid Lemonade websocket port collision"
+fi
+
+if command -v pwsh >/dev/null 2>&1; then
+    _ps_tmp="${TMPDIR:-/tmp}"
+    if ROOT_DIR="$ROOT_DIR" TEMP="$_ps_tmp" USERPROFILE="$_ps_tmp" pwsh -NoProfile -Command '
+        $ErrorActionPreference = "Stop"
+        function Write-AIWarn { param([string]$Message) Write-Host "WARN: $Message" }
+        . (Join-Path $env:ROOT_DIR "installers/windows/lib/detection.ps1")
+        . (Join-Path $env:ROOT_DIR "installers/windows/lib/env-generator.ps1")
+        $installDir = Join-Path $env:TEMP "dream-env-generator-amd-lemonade-contract"
+        Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+        $tier = @{
+            TierName = "Strix Halo"
+            LlmModel = "test-model"
+            GgufFile = "test.gguf"
+            MaxContext = 4096
+        }
+        New-DreamEnv -InstallDir $installDir -TierConfig $tier -Tier "SH" -GpuBackend "amd" -AmdInferenceRuntime "lemonade" -AmdInferenceLocation "host" | Out-Null
+        $envText = Get-Content -LiteralPath (Join-Path $installDir ".env") -Raw
+        if ($envText -notmatch "(?m)^WHISPER_PORT=9100$") {
+            throw "Expected WHISPER_PORT=9100 for Windows AMD managed Lemonade"
+        }
+
+        Set-Content -LiteralPath (Join-Path $installDir ".env") -Value "WHISPER_PORT=9000`n" -NoNewline
+        New-DreamEnv -InstallDir $installDir -TierConfig $tier -Tier "SH" -GpuBackend "amd" -AmdInferenceRuntime "lemonade" -AmdInferenceLocation "host" | Out-Null
+        $envText = Get-Content -LiteralPath (Join-Path $installDir ".env") -Raw
+        if ($envText -notmatch "(?m)^WHISPER_PORT=9100$") {
+            throw "Expected unsafe WHISPER_PORT=9000 to be remapped for Lemonade"
+        }
+
+        Set-Content -LiteralPath (Join-Path $installDir ".env") -Value "WHISPER_PORT=9200`n" -NoNewline
+        New-DreamEnv -InstallDir $installDir -TierConfig $tier -Tier "SH" -GpuBackend "amd" -AmdInferenceRuntime "lemonade" -AmdInferenceLocation "host" | Out-Null
+        $envText = Get-Content -LiteralPath (Join-Path $installDir ".env") -Raw
+        if ($envText -notmatch "(?m)^WHISPER_PORT=9200$") {
+            throw "Expected existing WHISPER_PORT override to be preserved"
+        }
+    '; then
+        pass "env-generator.ps1: AMD Lemonade uses 9100 and preserves explicit overrides"
+    else
+        fail "env-generator.ps1: AMD Lemonade Whisper port contract failed"
+    fi
+else
+    pass "env-generator.ps1: runtime port test skipped (pwsh unavailable)"
+fi
+
+if grep -q 'backend-contract.ps1' installers/windows/dream.ps1 \
+    && grep -q 'Resolve-DreamLemonadeExe' installers/windows/dream.ps1; then
+    pass "dream.ps1 resolves Lemonade across both Program Files roots"
+else
+    fail "dream.ps1 must use Lemonade resolver for installed CLI commands"
+fi
+
+# ---------------------------------------------------------------------------
+# 18. Windows image validation treats missing local images as probe misses
+# ---------------------------------------------------------------------------
+echo "[contract] Windows Docker image validation is stderr-safe"
+if grep -A16 'function Test-DreamDockerImageAvailable' installers/windows/install-windows.ps1 \
+    | grep -q 'SilentlyContinue' \
+    && grep -A20 'function Test-DreamDockerImageAvailable' installers/windows/install-windows.ps1 \
+        | grep -q 'finally' \
+    && grep -q 'docker manifest inspect' installers/windows/install-windows.ps1; then
+    pass "install-windows.ps1: image availability probes restore ErrorActionPreference"
+else
+    fail "install-windows.ps1: Docker image probes must not abort on missing local images"
 fi
 
 # ---------------------------------------------------------------------------
