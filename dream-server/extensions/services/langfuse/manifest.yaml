@@ -20,6 +20,11 @@ service:
   category: optional
   setup_hook: hooks/post_install.sh
 
+proxy:
+  subdomain: langfuse
+  exposure: user
+  auth: service
+
 features:
   - id: observability
     name: LLM Observability

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -20,6 +21,16 @@ VALID_CATEGORIES = {"core", "recommended", "optional"}
 VALID_TYPES = {"docker", "host-systemd"}
 VALID_GPU_BACKENDS = {"amd", "nvidia", "apple", "all", "none"}
 MANIFEST_NAMES = ("manifest.yaml", "manifest.yml", "manifest.json")
+# Subdomains owned by the hand-written core dream-proxy Caddyfile. Extensions
+# must not claim these or the generated fragment would shadow the hand-written
+# block at Caddy parse time.
+RESERVED_PROXY_SUBDOMAINS = {
+    "chat", "dashboard", "auth", "api", "hermes", "talk", "root", "www",
+}
+# Hostname-charset constraint for proxy subdomains. Matches the
+# DREAM_DEVICE_NAME regex in dream-mdns.py so the assembled
+# `<sub>.<device>.local` is always a valid DNS label.
+_PROXY_SUBDOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
 OVERLAY_SUFFIXES = {
     "amd": ("compose.amd.yaml", "compose.amd.yml"),
     "nvidia": ("compose.nvidia.yaml", "compose.nvidia.yml"),
@@ -426,6 +437,7 @@ def validate_records(
     alias_owners: dict[str, set[str]] = {}
     feature_owners: dict[str, set[str]] = {}
     id_owners: dict[str, set[str]] = {}
+    proxy_subdomain_owners: dict[str, set[str]] = {}
 
     for ref in reference_records:
         id_owners.setdefault(ref.service_id, set()).add(ref.directory_name)
@@ -436,6 +448,11 @@ def validate_records(
                 feature_id = str(feature.get("id") or "")
                 if feature_id:
                     feature_owners.setdefault(feature_id, set()).add(ref.service_id)
+        proxy = ref.manifest.get("proxy")
+        if isinstance(proxy, dict):
+            sub = str(proxy.get("subdomain") or "").strip().lower()
+            if sub:
+                proxy_subdomain_owners.setdefault(sub, set()).add(ref.service_id)
 
     for service_id, directories in sorted(id_owners.items()):
         if len(directories) > 1:
@@ -565,6 +582,109 @@ def validate_records(
                     f"depends_on references unknown service '{dep}'",
                     path=record.manifest_path,
                 )
+
+        proxy = manifest.get("proxy")
+        if proxy is not None:
+            if not isinstance(proxy, dict):
+                record.add_issue(
+                    "error",
+                    "proxy-shape-invalid",
+                    "manifest.proxy must be a mapping when present",
+                    path=record.manifest_path,
+                )
+            else:
+                sub_raw = proxy.get("subdomain")
+                sub = str(sub_raw or "").strip().lower()
+                if not sub:
+                    record.add_issue(
+                        "error",
+                        "proxy-subdomain-missing",
+                        "manifest.proxy.subdomain is required when manifest.proxy is set",
+                        path=record.manifest_path,
+                    )
+                else:
+                    if not _PROXY_SUBDOMAIN_RE.match(sub):
+                        record.add_issue(
+                            "error",
+                            "proxy-subdomain-invalid",
+                            f"manifest.proxy.subdomain '{sub}' must be a DNS-safe label "
+                            "(lowercase alnum + hyphen, 1-32 chars, no leading/trailing hyphen)",
+                            path=record.manifest_path,
+                        )
+                    if sub in RESERVED_PROXY_SUBDOMAINS:
+                        record.add_issue(
+                            "error",
+                            "proxy-subdomain-reserved",
+                            f"manifest.proxy.subdomain '{sub}' is reserved by the core dream-proxy Caddyfile",
+                            path=record.manifest_path,
+                        )
+                    owners = proxy_subdomain_owners.get(sub, set())
+                    if owners - {record.service_id}:
+                        other = sorted(owners - {record.service_id})[0]
+                        record.add_issue(
+                            "error",
+                            "proxy-subdomain-collision",
+                            f"manifest.proxy.subdomain '{sub}' is also claimed by service '{other}'",
+                            path=record.manifest_path,
+                        )
+
+                upstream_port_raw = proxy.get("upstream_port")
+                if upstream_port_raw is not None and parse_positive_int(upstream_port_raw) is None:
+                    record.add_issue(
+                        "error",
+                        "proxy-upstream-port-invalid",
+                        "manifest.proxy.upstream_port must be a positive integer when set",
+                        path=record.manifest_path,
+                    )
+
+                health_path = proxy.get("health_path")
+                if health_path is not None:
+                    if not isinstance(health_path, str) or not health_path.startswith("/"):
+                        record.add_issue(
+                            "error",
+                            "proxy-health-path-invalid",
+                            "manifest.proxy.health_path must be a string starting with '/'",
+                            path=record.manifest_path,
+                        )
+
+                client_max_body = proxy.get("client_max_body")
+                if client_max_body is not None:
+                    if not isinstance(client_max_body, str) or not re.match(
+                        r"^\d+(?:\.\d+)?\s*(?:[KMG]B?)?$", client_max_body.strip(), re.IGNORECASE,
+                    ):
+                        record.add_issue(
+                            "error",
+                            "proxy-client-max-body-invalid",
+                            "manifest.proxy.client_max_body must look like '50MB', '200MB', '1GB' (Caddy size syntax)",
+                            path=record.manifest_path,
+                        )
+
+                exposure = proxy.get("exposure")
+                if exposure is not None and exposure not in {"user", "developer-api", "internal"}:
+                    record.add_issue(
+                        "error",
+                        "proxy-exposure-invalid",
+                        "manifest.proxy.exposure must be one of: user, developer-api, internal",
+                        path=record.manifest_path,
+                    )
+
+                auth = proxy.get("auth")
+                if auth is not None and auth not in {"service", "dream-session", "none"}:
+                    record.add_issue(
+                        "error",
+                        "proxy-auth-invalid",
+                        "manifest.proxy.auth must be one of: service, dream-session, none",
+                        path=record.manifest_path,
+                    )
+
+                if exposure == "user" and auth == "none":
+                    record.add_issue(
+                        "warning",
+                        "proxy-user-route-unauthenticated",
+                        "manifest.proxy with exposure=user and auth=none will be rejected by the resolver "
+                        "unless DREAM_PROXY_ALLOW_UNAUTHENTICATED_USER=true is set",
+                        path=record.manifest_path,
+                    )
 
         env_vars = service.get("env_vars")
         if env_vars is not None and not isinstance(env_vars, list):

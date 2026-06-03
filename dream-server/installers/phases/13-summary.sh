@@ -117,23 +117,87 @@ fi
 
 
 # Additional service info
-bootline
-echo -e "${BGRN}ALL SERVICES${NC}"
-bootline
-# Core services always shown
-echo "  • Chat UI:       http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
-echo "  • Dashboard:     http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
-echo "  • Perplexica:    http://localhost:${SERVICE_PORTS[perplexica]:-3004}"
-echo "  • ComfyUI:       http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
-echo "  • LLM API:       http://localhost:${SERVICE_PORTS[llama-server]:-11434}/v1  (llama-server)"
-[[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes (auth): http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}  (magic-link gated; not direct :9119)"
-[[ "$ENABLE_OPENCLAW" == "true" ]] && echo "  • OpenClaw:      http://localhost:${SERVICE_PORTS[openclaw]:-7860}"
-systemctl --user is-active opencode-web &>/dev/null && echo "  • OpenCode:      http://localhost:3003"
-[[ "$ENABLE_VOICE" == "true" ]] && echo "  • Whisper STT:   http://localhost:${SERVICE_PORTS[whisper]:-9000}"
-[[ "$ENABLE_VOICE" == "true" ]] && echo "  • TTS (Kokoro):  http://localhost:${SERVICE_PORTS[tts]:-8880}"
-[[ "$ENABLE_WORKFLOWS" == "true" ]] && echo "  • n8n:           http://localhost:${SERVICE_PORTS[n8n]:-5678}"
-[[ "$ENABLE_RAG" == "true" ]] && echo "  • Qdrant:        http://localhost:${SERVICE_PORTS[qdrant]:-6333}"
-echo ""
+# Detect whether the dream-proxy extension is active so we can show
+# proxy hostnames as primary URLs. The proxy makes per-service .local
+# subdomains the friendly entry point; raw localhost ports become a
+# developer-facing fallback (and disappear entirely when
+# DREAM_PROXY_EXCLUSIVE=true since the bindings are gone).
+_proxy_active="false"
+if [[ "${ENABLE_DREAM_PROXY:-false}" == "true" ]]; then
+    _proxy_active="true"
+fi
+_proxy_exclusive=$(grep -E "^DREAM_PROXY_EXCLUSIVE=" "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr '[:upper:]' '[:lower:]')
+case "$_proxy_exclusive" in
+    1|true|yes|on) _proxy_exclusive="true" ;;
+    *) _proxy_exclusive="false" ;;
+esac
+_device=$(grep -E "^DREAM_DEVICE_NAME=" "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"')
+[[ -z "$_device" ]] && _device="dream"
+
+# DREAM_PROXY_PORT defaults to 80. Render `:8080` only when overridden;
+# without this the summary printed `http://chat.<device>.local` even when
+# the proxy was on a non-default port, sending users to port 80.
+_proxy_port=$(grep -E "^DREAM_PROXY_PORT=" "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"')
+[[ -z "$_proxy_port" ]] && _proxy_port=80
+_proxy_port_suffix=""
+[[ "$_proxy_port" != "80" ]] && _proxy_port_suffix=":${_proxy_port}"
+
+# DREAM_PROXY_PROFILE gates which URLs we advertise. `user` (default)
+# only lists routes that the resolver actually emits; `developer` adds
+# the raw-API routes (llm/embed/stt/tts/qdrant) the resolver now ships
+# under the developer profile.
+_proxy_profile=$(grep -E "^DREAM_PROXY_PROFILE=" "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr '[:upper:]' '[:lower:]')
+case "$_proxy_profile" in
+    user|developer|all) ;;
+    *) _proxy_profile="user" ;;
+esac
+
+if [[ "$_proxy_active" == "true" ]]; then
+    bootline
+    echo -e "${BGRN}PROXY URLS${NC}  ${AMB}(http://<sub>.${_device}.local${_proxy_port_suffix}, profile=${_proxy_profile})${NC}"
+    bootline
+    # exposure=user (always shown when proxy is active):
+    echo "  • Chat:          http://chat.${_device}.local${_proxy_port_suffix}"
+    echo "  • Dashboard:     http://dashboard.${_device}.local${_proxy_port_suffix}"
+    echo "  • Admin API:     http://api.${_device}.local${_proxy_port_suffix}"
+    [[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes:        http://hermes.${_device}.local${_proxy_port_suffix}  (magic-link gated)"
+    echo "  • ComfyUI:       http://comfy.${_device}.local${_proxy_port_suffix}"
+    [[ "$ENABLE_WORKFLOWS" == "true" ]] && echo "  • n8n:           http://n8n.${_device}.local${_proxy_port_suffix}"
+    [[ "$ENABLE_OPENCLAW" == "true" ]] && echo "  • OpenClaw:      http://openclaw.${_device}.local${_proxy_port_suffix}"
+
+    # exposure=developer-api (only when DREAM_PROXY_PROFILE=developer|all):
+    if [[ "$_proxy_profile" == "developer" || "$_proxy_profile" == "all" ]]; then
+        echo "  • LLM API:       http://llm.${_device}.local${_proxy_port_suffix}/v1"
+        [[ "$ENABLE_VOICE" == "true" ]] && echo "  • Whisper STT:   http://stt.${_device}.local${_proxy_port_suffix}"
+        [[ "$ENABLE_VOICE" == "true" ]] && echo "  • TTS (Kokoro):  http://tts.${_device}.local${_proxy_port_suffix}"
+        [[ "$ENABLE_RAG" == "true" ]] && echo "  • Qdrant:        http://qdrant.${_device}.local${_proxy_port_suffix}"
+    fi
+    echo ""
+fi
+
+if [[ "$_proxy_exclusive" != "true" ]]; then
+    bootline
+    if [[ "$_proxy_active" == "true" ]]; then
+        echo -e "${BGRN}DIRECT PORTS${NC}  ${AMB}(developers — bypass proxy)${NC}"
+    else
+        echo -e "${BGRN}ALL SERVICES${NC}"
+    fi
+    bootline
+    # Core services always shown
+    echo "  • Chat UI:       http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
+    echo "  • Dashboard:     http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
+    echo "  • Perplexica:    http://localhost:${SERVICE_PORTS[perplexica]:-3004}"
+    echo "  • ComfyUI:       http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
+    echo "  • LLM API:       http://localhost:${SERVICE_PORTS[llama-server]:-11434}/v1  (llama-server)"
+    [[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes (auth): http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}  (magic-link gated; not direct :9119)"
+    [[ "$ENABLE_OPENCLAW" == "true" ]] && echo "  • OpenClaw:      http://localhost:${SERVICE_PORTS[openclaw]:-7860}"
+    systemctl --user is-active opencode-web &>/dev/null && echo "  • OpenCode:      http://localhost:3003"
+    [[ "$ENABLE_VOICE" == "true" ]] && echo "  • Whisper STT:   http://localhost:${SERVICE_PORTS[whisper]:-9000}"
+    [[ "$ENABLE_VOICE" == "true" ]] && echo "  • TTS (Kokoro):  http://localhost:${SERVICE_PORTS[tts]:-8880}"
+    [[ "$ENABLE_WORKFLOWS" == "true" ]] && echo "  • n8n:           http://localhost:${SERVICE_PORTS[n8n]:-5678}"
+    [[ "$ENABLE_RAG" == "true" ]] && echo "  • Qdrant:        http://localhost:${SERVICE_PORTS[qdrant]:-6333}"
+    echo ""
+fi
 
 # Configuration summary
 bootline

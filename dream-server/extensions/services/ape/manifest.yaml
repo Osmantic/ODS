@@ -26,6 +26,14 @@ service:
     audit log of every decision. Drop-in governance layer for OpenClaw
     and any OpenAI-compatible agent framework.
 
+proxy:
+  subdomain: ape
+  # APE is API-only (/verify, /approve, /audit, /policy, /metrics) — no
+  # UI to expose. APE_API_KEY gates every endpoint. Developer-tier so it
+  # doesn't auto-LAN under the default profile.
+  exposure: developer-api
+  auth: service
+
 features:
   - id: agent-governance
     name: Agent Governance

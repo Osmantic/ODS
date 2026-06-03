@@ -43,11 +43,13 @@ REQUIRED_SUBDOMAINS = {
 
 
 def _extract_subdomain_routes_keys() -> set[str]:
-    """Parse dream-mdns.py and return the set of subdomain names it announces.
+    """Parse dream-mdns.py and return the set of core subdomain names it announces.
 
     We walk the AST instead of executing the script (which would need
-    zeroconf + a network interface). Looks for the `subdomain_routes`
-    assignment and pulls the first element of each tuple.
+    zeroconf + a network interface). Looks for the `core_subdomain_routes`
+    assignment (the hand-written tuple of required hostnames; extension
+    routes are loaded dynamically from manifests and are not in scope of
+    this contract).
     """
     source = MDNS_SCRIPT.read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -56,7 +58,7 @@ def _extract_subdomain_routes_keys() -> set[str]:
         if not isinstance(node, ast.Assign):
             continue
         targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
-        if "subdomain_routes" not in targets:
+        if "core_subdomain_routes" not in targets:
             continue
         value = node.value
         if not isinstance(value, ast.Tuple):
@@ -74,7 +76,7 @@ def test_announcer_publishes_all_required_subdomains() -> None:
     missing = REQUIRED_SUBDOMAINS - found
     assert not missing, (
         f"bin/dream-mdns.py is missing required subdomains: {sorted(missing)}. "
-        "If you added a new public host, add it here AND in subdomain_routes. "
+        "If you added a new public host, add it here AND in core_subdomain_routes. "
         "If you removed a host on purpose, update REQUIRED_SUBDOMAINS in this test."
     )
 
@@ -89,7 +91,7 @@ def test_announcer_does_not_advertise_unknown_subdomains() -> None:
     assert not extra, (
         f"bin/dream-mdns.py publishes subdomains not listed in REQUIRED_SUBDOMAINS: "
         f"{sorted(extra)}. Add them to the set above (and confirm Caddy + magic_link "
-        "agree) or remove them from subdomain_routes."
+        "agree) or remove them from core_subdomain_routes."
     )
 
 

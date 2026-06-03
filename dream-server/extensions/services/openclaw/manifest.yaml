@@ -31,3 +31,8 @@ service:
       required: true
       secret: true
       description: OpenClaw gateway token
+
+proxy:
+  subdomain: openclaw
+  exposure: user
+  auth: service

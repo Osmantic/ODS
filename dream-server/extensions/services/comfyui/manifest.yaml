@@ -21,6 +21,17 @@ service:
   category: optional
   depends_on: []
 
+proxy:
+  subdomain: comfy
+  exposure: user
+  # ComfyUI ships with no built-in auth — gate the route via the shared
+  # dream-session cookie so a LAN drive-by can't run image gen, browse
+  # outputs, or install custom nodes (which execute arbitrary Python).
+  auth: dream-session
+  # Workflow JSON + reference image uploads can be tens of megabytes; bump
+  # the limit so ComfyUI's drag-drop import doesn't 413 at the proxy.
+  client_max_body: 200MB
+
 features:
   - id: images
     name: Image Generation

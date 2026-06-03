@@ -145,3 +145,15 @@ http://hermes.{$DREAM_DEVICE_NAME:dream}.local {
 http://{$DREAM_DEVICE_NAME:dream}.local {
 	redir http://chat.{$DREAM_DEVICE_NAME:dream}.local{uri} 302
 }
+
+# ---------------------------------------------------------------------
+# Generated per-extension routes — one site block per service that
+# declares a `proxy:` block in its manifest. scripts/resolve-proxy-config.sh
+# writes these fragments into ./data/dream-proxy/sites.d/ (bind-mounted to
+# /etc/caddy/sites.d/ in this container). Each fragment owns one
+# subdomain like `comfy.<device>.local` -> comfyui:8188.
+#
+# The import glob silently no-ops if sites.d is empty, so the proxy still
+# comes up cleanly on a fresh install before the resolver has been run.
+# ---------------------------------------------------------------------
+import /etc/caddy/sites.d/*.caddy

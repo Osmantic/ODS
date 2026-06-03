@@ -24,3 +24,10 @@ service:
       required: true
       secret: true
       description: LiteLLM master API key
+
+proxy:
+  subdomain: litellm
+  # Gateway admin/proxy: own master key gates calls, but still treat as
+  # developer-tier so it doesn't land on the LAN by default.
+  exposure: developer-api
+  auth: service

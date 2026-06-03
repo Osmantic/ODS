@@ -29,6 +29,13 @@ service:
       default: "8585"
       description: External port the proxy listens on
 
+proxy:
+  subdomain: brave
+  # API key-bearing search proxy: leaving it on the LAN by default would
+  # let any host on the network burn through the key. Developer opt-in.
+  exposure: developer-api
+  auth: none
+
 features:
   - id: brave-web-search
     name: Web Search (Brave)

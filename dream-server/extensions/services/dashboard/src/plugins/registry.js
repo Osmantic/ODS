@@ -61,12 +61,20 @@ export function getSidebarExternalLinks(context = {}) {
   }
   return deduped.map(link => {
     const healthy = link.alwaysHealthy ? true : isServiceHealthy(status, link.healthNeedles || [])
+    // Prefer the dream-proxy hostname when the dashboard-api has supplied
+    // one (`proxy_url` is set by /api/external-links iff the dream-proxy
+    // extension is enabled and the service's manifest declares a
+    // proxy.subdomain). Falls back to the per-port URL otherwise so
+    // installs without the proxy keep working as before.
+    const baseUrl = link.proxy_url
+      ? link.proxy_url
+      : (typeof getExternalUrl === 'function' ? getExternalUrl(link.port) : `http://localhost:${link.port}`)
     return {
       key: link.id,
       label: link.label,
       icon: typeof link.icon === 'string' ? (ICON_MAP[link.icon] || ExternalLink) : (link.icon || ExternalLink),
       healthy,
-      url: (typeof getExternalUrl === 'function' ? getExternalUrl(link.port) : `http://localhost:${link.port}`) + (link.ui_path && link.ui_path !== '/' ? link.ui_path : ''),
+      url: baseUrl + (link.ui_path && link.ui_path !== '/' ? link.ui_path : ''),
     }
   })
 }

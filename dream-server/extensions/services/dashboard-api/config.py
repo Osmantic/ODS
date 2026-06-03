@@ -119,6 +119,17 @@ def load_extension_manifests(
                 else:
                     external_port = int(ext_port_default)
 
+                # Optional proxy routing — services that declare a `proxy:`
+                # block in their manifest get a `<sub>.<device>.local` hostname
+                # when dream-proxy is enabled. We only carry the subdomain
+                # forward; the rest of the proxy block (client_max_body, etc.)
+                # belongs to scripts/resolve-proxy-config.sh and the Caddyfile
+                # fragments it generates, not to the dashboard surface.
+                proxy_block = manifest.get("proxy")
+                proxy_subdomain = ""
+                if isinstance(proxy_block, dict):
+                    proxy_subdomain = str(proxy_block.get("subdomain") or "").strip().lower()
+
                 services[service_id] = {
                     "host": host,
                     "port": int(service.get("port", 0)),
@@ -133,6 +144,7 @@ def load_extension_manifests(
                     "setup_hook": service.get("setup_hook", ""),
                     "hooks": service.get("hooks", {}),
                     "gpu_backends": service.get("gpu_backends", []),
+                    "proxy_subdomain": proxy_subdomain,
                     **({"type": service["type"]} if "type" in service else {}),
                     **({"health_port": int(service["health_port"])} if "health_port" in service else {}),
                 }

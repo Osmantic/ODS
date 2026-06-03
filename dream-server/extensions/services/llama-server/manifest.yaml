@@ -21,6 +21,13 @@ service:
   category: core
   depends_on: []
 
+proxy:
+  subdomain: llm
+  # Raw OpenAI-shaped inference API, no built-in auth. Stays off the LAN
+  # under the default `user` profile.
+  exposure: developer-api
+  auth: none
+
 features:
   - id: chat
     name: AI Chat
