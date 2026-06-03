@@ -36,38 +36,33 @@ if $INTERACTIVE && ! $DRY_RUN; then
 
     # Only show individual feature prompts for Custom installs
     if [[ "${INSTALL_CHOICE:-1}" == "3" ]]; then
+        _phase03_prompt_bool() {
+            local var_name="$1" prompt="$2" current="${!1:-false}" reply label
+            if [[ "$current" == "true" ]]; then
+                label="[Y/n]"
+            else
+                label="[y/N]"
+            fi
+            read -p "  ${prompt} ${label} " -r reply < /dev/tty
+            echo
+            case "$reply" in
+                [Yy]*) printf -v "$var_name" '%s' "true" ;;
+                [Nn]*) printf -v "$var_name" '%s' "false" ;;
+            esac
+        }
+
         # Explicitly set each flag from the user's answer — do NOT rely on
         # the pre-existing default. Previously these read 'reply || flag=true',
         # which only *set* the flag to true when the answer wasn't N and
         # never set it to false; combined with all defaults being true from
         # install-core.sh, pressing 'n' was a no-op.
-        read -p "  Enable voice (Whisper STT + Kokoro TTS)? [Y/n] " -r < /dev/tty
-        echo
-        if [[ $REPLY =~ ^[Nn]$ ]]; then ENABLE_VOICE=false; else ENABLE_VOICE=true; fi
-
-        read -p "  Enable n8n workflow automation? [Y/n] " -r < /dev/tty
-        echo
-        if [[ $REPLY =~ ^[Nn]$ ]]; then ENABLE_WORKFLOWS=false; else ENABLE_WORKFLOWS=true; fi
-
-        read -p "  Enable Qdrant vector database (for RAG)? [Y/n] " -r < /dev/tty
-        echo
-        if [[ $REPLY =~ ^[Nn]$ ]]; then ENABLE_RAG=false; else ENABLE_RAG=true; fi
-
-        read -p "  Enable Hermes Agent (default AI agent framework)? [Y/n] " -r < /dev/tty
-        echo
-        if [[ $REPLY =~ ^[Nn]$ ]]; then ENABLE_HERMES=false; else ENABLE_HERMES=true; fi
-
-        read -p "  Enable OpenClaw AI agent framework (DEPRECATED — Hermes replaces it)? [y/N] " -r < /dev/tty
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then ENABLE_OPENCLAW=true; else ENABLE_OPENCLAW=false; fi
-
-        read -p "  Enable image generation (ComfyUI + SDXL Lightning, ~6.5GB)? [Y/n] " -r < /dev/tty
-        echo
-        if [[ $REPLY =~ ^[Nn]$ ]]; then ENABLE_COMFYUI=false; else ENABLE_COMFYUI=true; fi
-
-        read -p "  Enable Langfuse (LLM observability + telemetry, ~500MB)? [y/N] " -r < /dev/tty
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then ENABLE_LANGFUSE=true; else ENABLE_LANGFUSE=false; fi
+        _phase03_prompt_bool ENABLE_VOICE "Enable voice (Whisper STT + Kokoro TTS)?"
+        _phase03_prompt_bool ENABLE_WORKFLOWS "Enable n8n workflow automation?"
+        _phase03_prompt_bool ENABLE_RAG "Enable Qdrant vector database (for RAG)?"
+        _phase03_prompt_bool ENABLE_HERMES "Enable Hermes Agent (default AI agent framework)?"
+        _phase03_prompt_bool ENABLE_OPENCLAW "Enable OpenClaw AI agent framework (DEPRECATED - Hermes replaces it)?"
+        _phase03_prompt_bool ENABLE_COMFYUI "Enable image generation (ComfyUI + SDXL Lightning, ~6.5GB)?"
+        _phase03_prompt_bool ENABLE_LANGFUSE "Enable Langfuse (LLM observability + telemetry, ~500MB)?"
 
         # Warn if ComfyUI enabled on low-tier hardware
         if [[ "$ENABLE_COMFYUI" == "true" ]]; then

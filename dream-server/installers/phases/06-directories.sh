@@ -292,13 +292,29 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         [[ -n "$py" ]] || py="python3"
         if command -v "$py" >/dev/null 2>&1; then
             printf '%s' "$json" | "$py" -c 'import json,sys
+IMAGE_MARKERS = (
+    "flux", "stable-diffusion", "sdxl", "sd-", "diffusion",
+    "dall-e", "image", "img2img", "txt2img", "comfy", "kolors",
+)
+
+def looks_non_chat(model_id):
+    lowered = (model_id or "").lower()
+    return any(marker in lowered for marker in IMAGE_MARKERS)
+
 try:
     data=json.load(sys.stdin).get("data", [])
+    fallback = ""
     for item in data:
         model_id=item.get("id") if isinstance(item, dict) else None
         if model_id:
+            fallback = fallback or model_id
+            if looks_non_chat(model_id):
+                continue
             print(model_id)
             raise SystemExit(0)
+    if fallback:
+        print(fallback)
+        raise SystemExit(0)
 except Exception:
     pass
 raise SystemExit(1)' 2>/dev/null && return 0
@@ -503,8 +519,13 @@ raise SystemExit(1)' 2>/dev/null && return 0
     COMFYUI_CPU_LIMIT=$(_select_service_cpu_limit COMFYUI_CPU_LIMIT "16.0" "$_docker_available_cpus")
     COMFYUI_CPU_RESERVATION=$(_select_service_cpu_reservation COMFYUI_CPU_RESERVATION "2.0" "$COMFYUI_CPU_LIMIT")
 
-    # Network binding (--lan sets 0.0.0.0; default is localhost-only)
-    BIND_ADDRESS=$(_env_get BIND_ADDRESS "${BIND_ADDRESS:-127.0.0.1}")
+    # Network binding (--lan or exported BIND_ADDRESS wins over a stale .env;
+    # otherwise preserve the existing .env value and default to localhost-only).
+    if [[ "${BIND_ADDRESS_EXPLICIT:-false}" == "true" && -n "${BIND_ADDRESS:-}" ]]; then
+        BIND_ADDRESS="${BIND_ADDRESS}"
+    else
+        BIND_ADDRESS=$(_env_get BIND_ADDRESS "${BIND_ADDRESS:-127.0.0.1}")
+    fi
 
     # Host LAN IP — only meaningful when BIND_ADDRESS=0.0.0.0. Some services
     # (e.g. openclaw) need to know the host's LAN address so the Control UI

@@ -124,6 +124,8 @@ LEMONADE_BASE_URL="${LEMONADE_BASE_URL:-}"
 LEMONADE_API_KEY="${LEMONADE_API_KEY:-}"
 OFFLINE_MODE=false   # M1 integration: fully air-gapped operation
 NO_BOOTSTRAP=false  # Skip bootstrap fast-start, download full model in foreground
+BIND_ADDRESS_EXPLICIT=false
+[[ -n "${BIND_ADDRESS:-}" ]] && BIND_ADDRESS_EXPLICIT=true
 BIND_ADDRESS="${BIND_ADDRESS:-127.0.0.1}"
 SUMMARY_JSON_FILE="${SUMMARY_JSON_FILE:-}"
 
@@ -236,7 +238,7 @@ while [[ $# -gt 0 ]]; do
         --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_DREAM_PROXY=true; shift ;;
         --non-interactive) INTERACTIVE=false; shift ;;
         --offline) OFFLINE_MODE=true; shift ;;
-        --lan) BIND_ADDRESS="0.0.0.0"; shift ;;
+        --lan) BIND_ADDRESS="0.0.0.0"; BIND_ADDRESS_EXPLICIT=true; shift ;;
         --no-bootstrap) NO_BOOTSTRAP=true; shift ;;
         --summary-json) SUMMARY_JSON_FILE="$2"; shift 2 ;;
         -h|--help) usage ;;

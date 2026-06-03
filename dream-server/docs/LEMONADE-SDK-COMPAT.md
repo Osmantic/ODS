@@ -88,7 +88,8 @@ service.
 ## Model Selection
 
 Dream Server auto-detects the first model id returned by Lemonade's
-`/api/v1/models` endpoint and writes it to `LEMONADE_MODEL`.
+`/api/v1/models` endpoint that does not look like an image-generation model
+and writes it to `LEMONADE_MODEL`.
 
 Set `LEMONADE_MODEL` only if you want Dream Server to use a specific served
 model:
@@ -104,10 +105,15 @@ example:
 curl http://localhost:13305/api/v1/models
 ```
 
+Use a text/chat model for `LEMONADE_MODEL`. Image models such as Flux, SDXL, or
+Stable Diffusion can appear in Lemonade's model list, but they are not valid for
+Dream Server's chat/completions route.
+
 Phase 12 verifies the selected model with a real chat completion through
 LiteLLM. If Lemonade is reachable from the host but not from Docker containers,
-or if the selected model id is wrong, the installer fails there with a recovery
-hint instead of finishing with a broken chat path.
+if the selected model id is wrong, or if the selected model is an image/non-chat
+model, the installer fails there with a recovery hint instead of finishing with
+a broken chat path.
 
 ## Linux Docker Networking
 

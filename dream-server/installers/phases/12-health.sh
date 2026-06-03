@@ -123,6 +123,19 @@ _phase12_external_lemonade() {
     [[ "${external,,}" == "true" ]] || [[ "${mode,,}" == "lemonade" && "${managed,,}" == "false" ]]
 }
 
+_phase12_model_looks_non_chat() {
+    local model_lc="${1,,}"
+    [[ "$model_lc" == *flux* ]] \
+        || [[ "$model_lc" == *stable-diffusion* ]] \
+        || [[ "$model_lc" == *sdxl* ]] \
+        || [[ "$model_lc" == *diffusion* ]] \
+        || [[ "$model_lc" == *dall-e* ]] \
+        || [[ "$model_lc" == *image* ]] \
+        || [[ "$model_lc" == *img2img* ]] \
+        || [[ "$model_lc" == *txt2img* ]] \
+        || [[ "$model_lc" == *comfy* ]]
+}
+
 _phase12_verify_external_lemonade_completion() {
     local litellm_port="${SERVICE_PORTS[litellm]:-4000}"
     local litellm_key="${LITELLM_KEY:-$(_phase12_env_get LITELLM_KEY "")}"
@@ -152,6 +165,11 @@ _phase12_verify_external_lemonade_completion() {
 
     printf "  ${RED}ERR${NC} External Lemonade returned no assistant content\n"
     ai_warn "LiteLLM reached external Lemonade but did not receive non-empty assistant content (model: ${model})."
+    if _phase12_model_looks_non_chat "$model"; then
+        ai_warn "The selected Lemonade model looks like an image/non-chat model. DreamServer needs a text/chat model for the LLM route."
+    fi
+    ai_warn "Run: curl ${LEMONADE_BASE_URL:-$(_phase12_env_get LEMONADE_BASE_URL http://127.0.0.1:13305)}${LEMONADE_API_BASE_PATH:-$(_phase12_env_get LEMONADE_API_BASE_PATH /api/v1)}/models"
+    ai_warn "Then rerun with LEMONADE_MODEL=<chat-model-id> ./install.sh --use-existing-lemonade ..."
     printf '%s\n' "$response" >> "$LOG_FILE"
     return 1
 }
