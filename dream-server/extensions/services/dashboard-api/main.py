@@ -1385,7 +1385,7 @@ async def get_external_links(api_key: str = Depends(verify_api_key)):
     links = []
     for sid, cfg in SERVICES.items():
         ext_port = cfg.get("external_port", cfg.get("port", 0))
-        if not ext_port or sid == "dashboard-api":
+        if not ext_port or sid == "dashboard-api" or cfg.get("external_link") is False:
             continue
         links.append({
             "id": sid, "label": cfg.get("name", sid), "port": ext_port,

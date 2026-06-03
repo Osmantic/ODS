@@ -82,6 +82,10 @@
           "pattern": "^/.*",
           "description": "Path to the service UI (e.g. /dashboard, /)"
         },
+        "external_link": {
+          "type": "boolean",
+          "description": "When false, omit this service from dashboard external quicklinks while keeping it in health/status APIs."
+        },
         "type": { "type": "string", "enum": ["docker", "host-systemd"] },
         "startup_check": {
           "type": "boolean",

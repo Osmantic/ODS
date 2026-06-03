@@ -8,6 +8,8 @@ LiteLLM is a unified API gateway that provides a single OpenAI-compatible endpoi
 
 LiteLLM runs at `http://localhost:4000` and is the recommended integration point for custom applications, scripts, and n8n workflows that need a stable, mode-independent API endpoint.
 
+Dream Server does not expose LiteLLM as a normal dashboard quicklink. The upstream LiteLLM Admin UI lives at `/ui/`, but that surface expects a proxy-admin UI setup and database-backed management flow. Dream Server's default LiteLLM container is provisioned as an API gateway, so use the OpenAI-compatible `/v1/*` endpoints with `LITELLM_KEY` instead of treating `/ui/` as the supported login path.
+
 ## Features
 
 - **Single endpoint for all modes**: Same `POST /v1/chat/completions` URL regardless of backend

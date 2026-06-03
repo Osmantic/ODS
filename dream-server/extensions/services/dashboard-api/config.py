@@ -126,6 +126,7 @@ def load_extension_manifests(
                     "health": service.get("health", "/health"),
                     "name": service.get("name", service_id),
                     "ui_path": service.get("ui_path", "/"),
+                    "external_link": bool(service.get("external_link", True)),
                     "container_name": service.get("container_name", f"dream-{service_id}"),
                     "depends_on": service.get("depends_on", []),
                     "category": service.get("category", "optional"),

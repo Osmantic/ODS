@@ -459,6 +459,35 @@ class TestExternalLinks:
         data = resp.json()
         assert len(data) == 0
 
+    def test_excludes_api_only_services(self, test_client, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "SERVICES", {
+            "litellm": {
+                "name": "LiteLLM (API Gateway)",
+                "port": 4000,
+                "external_port": 4000,
+                "health": "/health/readiness",
+                "host": "localhost",
+                "ui_path": "/ui/",
+                "external_link": False,
+            },
+            "open-webui": {
+                "name": "Open WebUI",
+                "port": 3000,
+                "external_port": 3000,
+                "health": "/health",
+                "host": "localhost",
+            },
+        })
+        monkeypatch.setattr("main.SERVICES", config.SERVICES)
+
+        resp = test_client.get("/api/external-links", headers=test_client.auth_headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        link_ids = [link["id"] for link in data]
+        assert "open-webui" in link_ids
+        assert "litellm" not in link_ids
+
 
 # --- /api/storage ---
 
