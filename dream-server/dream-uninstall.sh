@@ -20,6 +20,34 @@ log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+resolve_compose_flags() {
+    local flags=""
+
+    if [[ -f "$INSTALL_DIR/.compose-flags" ]]; then
+        flags="$(tr '\n' ' ' < "$INSTALL_DIR/.compose-flags" | xargs 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$flags" && -x "$INSTALL_DIR/scripts/resolve-compose-stack.sh" ]]; then
+        flags="$("$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
+            --script-dir "$INSTALL_DIR" \
+            --tier "${TIER:-1}" \
+            --gpu-backend "${GPU_BACKEND:-nvidia}" \
+            --gpu-count "${GPU_COUNT:-1}" \
+            --dream-mode "${DREAM_MODE:-local}" 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$flags" && -f "$INSTALL_DIR/docker-compose.base.yml" ]]; then
+        flags="-f docker-compose.base.yml"
+        case "${GPU_BACKEND:-}" in
+            amd|nvidia|intel|apple|arc|cpu)
+                [[ -f "$INSTALL_DIR/docker-compose.${GPU_BACKEND}.yml" ]] && flags="$flags -f docker-compose.${GPU_BACKEND}.yml"
+                ;;
+        esac
+    fi
+
+    printf '%s\n' "$flags"
+}
+
 KEEP_MODELS=false
 KEEP_DATA=false
 FORCE=false
@@ -76,6 +104,13 @@ $KEEP_MODELS && log_info "Keeping models (--keep-models)"
 $KEEP_DATA && log_info "Keeping user data (--keep-data)"
 echo ""
 
+if [[ -f "$INSTALL_DIR/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$INSTALL_DIR/.env" 2>/dev/null || true
+    set +a
+fi
+
 if [[ "$FORCE" != "true" ]]; then
     echo -e "${YELLOW}This will permanently remove Dream Server and its components.${NC}"
     read -rp "Are you sure? Type 'yes' to confirm: " confirm
@@ -90,8 +125,23 @@ fi
 log_info "Stopping Docker containers..."
 cd "$INSTALL_DIR" 2>/dev/null || true
 if command -v docker &>/dev/null; then
-    # Try docker compose first, fall back to finding dream containers
-    docker compose down --remove-orphans 2>/dev/null || true
+    # Use DreamServer's resolved compose stack. The repo does not ship a
+    # top-level docker-compose.yml, so bare `docker compose down` can fail with
+    # "no configuration file provided" even from the correct install dir.
+    compose_flags="$(resolve_compose_flags)"
+    compose_down_args=(down)
+    if [[ "$KEEP_DATA" != "true" ]]; then
+        compose_down_args+=(-v)
+    fi
+    compose_down_args+=(--remove-orphans)
+
+    if [[ -n "$compose_flags" ]]; then
+        read -ra compose_args <<< "$compose_flags"
+        docker compose "${compose_args[@]}" "${compose_down_args[@]}" 2>/dev/null || \
+            log_warn "docker compose cleanup failed; falling back to container/volume discovery"
+    else
+        log_warn "No compose files resolved; falling back to container/volume discovery"
+    fi
 
     # Remove any remaining dream-* containers
     dream_containers=$(docker ps -a --filter "name=dream-" --format "{{.Names}}" 2>/dev/null || true)
@@ -100,11 +150,15 @@ if command -v docker &>/dev/null; then
         echo "$dream_containers" | xargs docker rm -f 2>/dev/null || true
     fi
 
-    # Remove dream-specific Docker volumes
-    dream_volumes=$(docker volume ls --filter "name=dream" --format "{{.Name}}" 2>/dev/null || true)
-    if [[ -n "$dream_volumes" ]]; then
-        log_info "Removing Docker volumes..."
-        echo "$dream_volumes" | xargs docker volume rm 2>/dev/null || true
+    # Remove dream-specific Docker volumes unless data preservation was requested.
+    if [[ "$KEEP_DATA" == "true" ]]; then
+        log_info "Keeping Docker volumes (--keep-data)"
+    else
+        dream_volumes=$(docker volume ls --filter "name=dream" --format "{{.Name}}" 2>/dev/null || true)
+        if [[ -n "$dream_volumes" ]]; then
+            log_info "Removing Docker volumes..."
+            echo "$dream_volumes" | xargs docker volume rm 2>/dev/null || true
+        fi
     fi
 
     log_ok "Docker cleanup complete"

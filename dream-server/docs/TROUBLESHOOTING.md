@@ -214,8 +214,7 @@ docker network inspect dream-network
 
 ```bash
 cd ~/dream-server  # or wherever you installed
-docker compose down -v  # -v removes volumes
-rm -rf data/
+./dream-uninstall.sh --force
 ./install.sh
 ```
 

@@ -250,7 +250,8 @@ Then: `docker compose up -d`
 ```powershell
 # Stop and remove containers
 cd $env:USERPROFILE\dream-server
-docker compose down -v
+$composeFlags = (Get-Content .compose-flags -Raw).Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
+docker compose @composeFlags down -v --remove-orphans
 
 # Remove installation directory
 Remove-Item -Recurse -Force "$env:USERPROFILE\dream-server"

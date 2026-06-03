@@ -187,11 +187,18 @@ docker compose logs llama-server
 
 ### How do I uninstall?
 ```bash
-docker compose down -v  # Stop and remove containers + volumes
-rm -rf ~/dream-server    # Remove installation directory (optional)
+cd ~/dream-server
+./dream-uninstall.sh --force
 ```
 
-This removes Docker containers and volumes. Add `-v` to also remove downloaded models and data.
+This uses Dream Server's saved `.compose-flags` stack, removes the matching containers and volumes, and then removes the install directory. Use `--keep-data` or `--keep-models` if you want to preserve local state.
+
+If you need to run Docker Compose manually, do not use bare `docker compose down`: Dream Server does not use a top-level `docker-compose.yml`. Use the saved flags instead:
+
+```bash
+cd ~/dream-server
+docker compose $(cat .compose-flags) down -v --remove-orphans
+```
 
 ---
 
@@ -302,13 +309,12 @@ docker compose logs > dream-server.log 2>&1
 
 ### How do I restart everything?
 ```bash
-docker compose down
-docker compose up -d
+dream restart
 ```
 
 Or restart specific services:
 ```bash
-docker compose restart llama-server
+dream restart llama-server
 ```
 
 ### "Connection refused" to API
@@ -388,7 +394,8 @@ docker volume prune
 
 Or remove everything (destructive):
 ```bash
-docker compose down -v
+cd ~/dream-server
+docker compose $(cat .compose-flags) down -v --remove-orphans
 ```
 
 ---
