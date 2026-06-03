@@ -80,15 +80,42 @@ jobs:
       - name: Install checkout prerequisites (distro-aware)
         working-directory: /
         run: |
+          retry() {
+            attempt=1
+            max=3
+            delay=15
+            until "$@"; do
+              status=$?
+              if [ "$attempt" -ge "$max" ]; then
+                return "$status"
+              fi
+              echo "Command failed (attempt ${attempt}/${max}): $*"
+              echo "Retrying in ${delay}s..."
+              sleep "$delay"
+              attempt=$((attempt + 1))
+            done
+          }
+
+          prepare_pacman_keyrings() {
+            command -v pacman-key >/dev/null 2>&1 || return 0
+            pacman-key --init || true
+            for ring in archlinux manjaro cachyos; do
+              if [ -f "/usr/share/pacman/keyrings/${ring}.gpg" ]; then
+                pacman-key --populate "$ring" || true
+              fi
+            done
+          }
+
           if command -v apt-get &>/dev/null; then
             apt-get update -qq && apt-get install -y -qq ca-certificates git curl
           elif command -v dnf &>/dev/null; then
             dnf install -y -q ca-certificates git curl-minimal
           elif command -v pacman &>/dev/null; then
-            pacman -Syu --noconfirm --needed ca-certificates git curl
+            prepare_pacman_keyrings
+            retry pacman -Syyu --noconfirm --needed ca-certificates git curl
           elif command -v zypper &>/dev/null; then
-            zypper --non-interactive refresh
-            zypper --non-interactive install ca-certificates git curl
+            retry zypper --non-interactive --gpg-auto-import-keys refresh
+            retry zypper --non-interactive install -y ca-certificates git curl
           fi
 
       - name: Checkout

@@ -28,6 +28,48 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
     fi
 fi
 
+_pkg_run() {
+    if [[ -n "$_SUDO" ]]; then
+        "$_SUDO" "$@"
+    else
+        "$@"
+    fi
+}
+
+_pkg_retry() {
+    local max="${PKG_RETRY_ATTEMPTS:-3}"
+    local delay="${PKG_RETRY_DELAY:-15}"
+    local attempt=1 status=0
+
+    while (( attempt <= max )); do
+        if _pkg_run "$@"; then
+            return 0
+        fi
+        status=$?
+        if (( attempt >= max )); then
+            return "$status"
+        fi
+        warn "Package command failed (attempt ${attempt}/${max}): $*; retrying in ${delay}s"
+        sleep "$delay"
+        attempt=$(( attempt + 1 ))
+    done
+
+    return "$status"
+}
+
+_pkg_prepare_pacman_keyrings() {
+    command -v pacman-key >/dev/null 2>&1 || return 0
+
+    _pkg_run pacman-key --init 2>>"$LOG_FILE" || true
+
+    local ring
+    for ring in archlinux manjaro cachyos; do
+        if [[ -f "/usr/share/pacman/keyrings/${ring}.gpg" ]]; then
+            _pkg_run pacman-key --populate "$ring" 2>>"$LOG_FILE" || true
+        fi
+    done
+}
+
 # Detect the system's package manager from /etc/os-release
 # Sets: PKG_MANAGER, DISTRO_ID, DISTRO_ID_LIKE
 detect_pkg_manager() {
@@ -88,12 +130,12 @@ detect_pkg_manager() {
 # Update the package index
 pkg_update() {
     case "$PKG_MANAGER" in
-        apt)    $_SUDO apt-get update -qq 2>>"$LOG_FILE" ;;
-        dnf)    $_SUDO dnf check-update -q 2>>"$LOG_FILE" || true ;;  # returns 100 if updates available
-        pacman) $_SUDO pacman -Syu --noconfirm 2>>"$LOG_FILE" ;;      # full sync+upgrade (partial -Sy is unsafe)
-        zypper) $_SUDO zypper --non-interactive refresh 2>>"$LOG_FILE" ;;
-        xbps)   $_SUDO xbps-install -S 2>>"$LOG_FILE" ;;
-        apk)    $_SUDO apk update 2>>"$LOG_FILE" ;;
+        apt)    _pkg_run apt-get update -qq 2>>"$LOG_FILE" ;;
+        dnf)    _pkg_run dnf check-update -q 2>>"$LOG_FILE" || true ;;  # returns 100 if updates available
+        pacman) _pkg_prepare_pacman_keyrings; _pkg_retry pacman -Syyu --noconfirm 2>>"$LOG_FILE" ;;  # full sync+upgrade (partial -Sy is unsafe)
+        zypper) _pkg_retry zypper --non-interactive --gpg-auto-import-keys refresh 2>>"$LOG_FILE" ;;
+        xbps)   _pkg_run xbps-install -S 2>>"$LOG_FILE" ;;
+        apk)    _pkg_run apk update 2>>"$LOG_FILE" ;;
         *)      warn "Cannot update package index: unknown package manager '$PKG_MANAGER'" ;;
     esac
 }
@@ -114,12 +156,12 @@ pkg_install() {
 
     log "Installing packages (${PKG_MANAGER}): ${pkgs[*]}"
     case "$PKG_MANAGER" in
-        apt)    $_SUDO apt-get install -y -qq "${pkgs[@]}" 2>>"$LOG_FILE" ;;
-        dnf)    $_SUDO dnf install -y -q "${pkgs[@]}" 2>>"$LOG_FILE" ;;
-        pacman) $_SUDO pacman -S --noconfirm --needed "${pkgs[@]}" 2>>"$LOG_FILE" ;;
-        zypper) $_SUDO zypper --non-interactive install "${pkgs[@]}" 2>>"$LOG_FILE" ;;
-        xbps)   $_SUDO xbps-install -y "${pkgs[@]}" 2>>"$LOG_FILE" ;;
-        apk)    $_SUDO apk add --no-progress "${pkgs[@]}" 2>>"$LOG_FILE" ;;
+        apt)    _pkg_run apt-get install -y -qq "${pkgs[@]}" 2>>"$LOG_FILE" ;;
+        dnf)    _pkg_run dnf install -y -q "${pkgs[@]}" 2>>"$LOG_FILE" ;;
+        pacman) _pkg_prepare_pacman_keyrings; _pkg_retry pacman -S --noconfirm --needed "${pkgs[@]}" 2>>"$LOG_FILE" ;;
+        zypper) _pkg_retry zypper --non-interactive install -y "${pkgs[@]}" 2>>"$LOG_FILE" ;;
+        xbps)   _pkg_run xbps-install -y "${pkgs[@]}" 2>>"$LOG_FILE" ;;
+        apk)    _pkg_run apk add --no-progress "${pkgs[@]}" 2>>"$LOG_FILE" ;;
         *)      warn "Cannot install packages: unknown package manager '$PKG_MANAGER'. Install manually: ${pkgs[*]}" ; return 1 ;;
     esac
 }
