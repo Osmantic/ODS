@@ -33,6 +33,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-litellm-amd-auth-enforced.sh
 	@bash tests/contracts/test-windows-strix-tier-map.sh
 	@bash tests/contracts/test-windows-llm-model-readiness.sh
+	@bash tests/contracts/test-windows-lemonade-swap-wait.sh
 	@echo ""
 	@echo "=== Overlay/plist contracts ==="
 	@bash tests/contracts/test-overlay-map-coherence.sh

@@ -233,9 +233,16 @@ restart_windows_lemonade_with_full_model() {
     }
 
     log "Waiting for native Windows Lemonade to serve extra.$FULL_GGUF_FILE ..."
-    local model_id
+    local model_id _swap_attempts
     model_id="extra.${FULL_GGUF_FILE//\"/\\\"}"
-    for _i in $(seq 1 12); do
+    # A freshly-swapped full model can take several minutes to register in
+    # --extra-models-dir and then load on the first completion. The old 12x10s
+    # (~2 min) budget timed out before a 22 GB MoE (Qwen3.6-35B-A3B) was even
+    # listed, so the swap reverted to bootstrap (#1517). Use the same longer
+    # budget as the llama.cpp warm-up path; override with DREAM_LEMONADE_SWAP_ATTEMPTS.
+    _swap_attempts="${DREAM_LEMONADE_SWAP_ATTEMPTS:-60}"
+    case "$_swap_attempts" in ''|*[!0-9]*|0) _swap_attempts=60 ;; esac
+    for _i in $(seq 1 "$_swap_attempts"); do
         if curl -sf --max-time 5 "http://127.0.0.1:${lemonade_port}/api/v1/models" 2>/dev/null \
             | grep -q "\"id\"[[:space:]]*:[[:space:]]*\"${model_id}\""; then
             if curl -sf --max-time 240 -X POST \
@@ -246,14 +253,14 @@ restart_windows_lemonade_with_full_model() {
                 log "SUCCESS: native Windows Lemonade completed with ${model_id}"
                 return 0
             fi
-            log "Windows Lemonade lists ${model_id}, but completion is not ready yet (attempt $_i/12)."
+            log "Windows Lemonade lists ${model_id}, but completion is not ready yet (attempt $_i/${_swap_attempts})."
         else
-            log "Waiting for Windows Lemonade to register ${model_id} (attempt $_i/12)."
+            log "Waiting for Windows Lemonade to register ${model_id} (attempt $_i/${_swap_attempts})."
         fi
         sleep 10
     done
 
-    log "WARNING: native Windows Lemonade did not complete with ${model_id}; keeping bootstrap model for recovery."
+    log "WARNING: native Windows Lemonade did not complete with ${model_id} after ${_swap_attempts} attempts; keeping bootstrap model for recovery."
     return 1
 }
 
@@ -558,12 +565,23 @@ fi
 if [[ "$_windows_lemonade_swap_applies" == "true" ]]; then
     if restart_windows_lemonade_with_full_model; then
         if ! patch_hermes_model_after_swap; then
-            write_status "failed"
+            # The full model downloaded, verified, and loaded; only the Hermes
+            # config patch failed. Report the real byte counts and the actual
+            # cause, not a bare write_status "failed" that zeroes the byte fields
+            # and reads as a 0-byte download failure (#1517).
+            write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+                "Full model downloaded and loaded, but the Hermes config patch failed after swap. Re-run to retry."
             exit 1
         fi
         HOT_SWAP_VERIFIED=true
     else
-        write_status "failed"
+        # The model downloaded and verified (byte counts are real); the native
+        # Windows Lemonade swap did not register/load it within the wait window,
+        # so the bootstrap model is kept. Report the real bytes + cause instead
+        # of a bare write_status "failed" that zeroes bytesDownloaded/bytesTotal
+        # and misreads as a 0-byte download failure (#1517).
+        write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+            "Model downloaded and verified, but native Windows Lemonade did not load it after swap (registration timeout). Bootstrap model kept; re-run to retry the swap."
         exit 1
     fi
 elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=dream-llama-server --format '{{.Names}}' 2>/dev/null | grep -q dream-llama-server; then
