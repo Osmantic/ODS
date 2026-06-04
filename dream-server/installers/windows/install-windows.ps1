@@ -763,6 +763,48 @@ if ($dryRun) {
             Write-AI "Saved compose launch record to $recordPath"
         }
 
+        function Assert-DreamWindowsManagedContainers {
+            param(
+                [string]$InstallDir,
+                [string[]]$ComposeFlags,
+                [string[]]$RequiredServices
+            )
+
+            Push-Location $InstallDir
+            try {
+                $managedIds = @(& docker compose @ComposeFlags ps -q 2>$null |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                if ($managedIds.Count -eq 0) {
+                    Write-AIError "Docker Compose did not create any managed Windows containers."
+                    Write-AI "  Native inference may be healthy, but Dream Server also needs the dashboard/chat container stack."
+                    Write-AI "  Inspect with: docker compose $($ComposeFlags -join ' ') ps -a"
+                    return $false
+                }
+
+                $missingServices = New-Object System.Collections.Generic.List[string]
+                foreach ($service in $RequiredServices) {
+                    $serviceIds = @(& docker compose @ComposeFlags ps -q $service 2>$null |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                    if ($serviceIds.Count -eq 0) {
+                        [void]$missingServices.Add($service)
+                    }
+                }
+
+                if ($missingServices.Count -gt 0) {
+                    Write-AIError "Docker Compose did not start required Windows service(s): $($missingServices -join ', ')"
+                    Write-AI "  Native inference may be healthy, but Dream Server is not ready without these containers."
+                    Write-AI "  Inspect with: docker compose $($ComposeFlags -join ' ') ps -a"
+                    return $false
+                }
+
+                Write-AISuccess "Compose-managed Windows stack running ($($managedIds.Count) container(s))"
+                return $true
+            }
+            finally {
+                Pop-Location
+            }
+        }
+
         # ── Start Docker services ─────────────────────────────────────────────
         Write-Chapter "STARTING SERVICES"
 
@@ -977,6 +1019,16 @@ if ($dryRun) {
             exit 1
         }
         Write-AISuccess "Docker services started"
+        if (-not (Assert-DreamWindowsManagedContainers -InstallDir $installDir -ComposeFlags $composeFlags `
+                    -RequiredServices @("dashboard", "dashboard-api", "open-webui"))) {
+            Write-DreamComposeDiagnostics -InstallDir $installDir -ComposeFlags $composeFlags `
+                -ComposeArgs @("ps", "-a") `
+                -ComposeLogPath $_composeLog `
+                -Phase "install-windows.ps1 managed container assertion" `
+                -NextStep "Fix the missing Windows container stack shown above, then re-run .\install-windows.ps1." `
+                -SaveReport
+            exit 1
+        }
 
         if ($enableHermes -and (Get-Command Invoke-HermesSoulRefresh -ErrorAction SilentlyContinue)) {
             Invoke-HermesSoulRefresh -InstallRoot $installDir -SyncContainer
@@ -1352,10 +1404,10 @@ if ($allHealthy) {
     Write-SuccessCard
 } else {
     Write-Host ""
-    Write-AIWarn "Some services may still be starting. Check status with:"
+    Write-AIWarn "Install finished, but one or more services are not ready yet. Check status with:"
     Write-Host "  .\dream.ps1 status" -ForegroundColor Cyan
+    Write-AIWarn "Dream Server is not being marked fully healthy until readiness recovers."
     Write-Host ""
-    Write-SuccessCard
 }
 
 # ── Pre-mark setup wizard complete ────────────────────────────────────────────

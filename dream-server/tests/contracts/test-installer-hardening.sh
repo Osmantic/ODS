@@ -297,5 +297,8 @@ assert_contains "scripts/bootstrap-upgrade.sh" 'write_status "swapping"' "Bootst
 assert_contains "installers/macos/install-macos.sh" 'compose-launch\.txt' "macOS installer missing compose launch record"
 assert_contains "installers/macos/install-macos.sh" 'ps -q' "macOS installer does not count compose-managed containers"
 assert_contains "installers/macos/install-macos.sh" 'docker compose up completed but created no managed containers' "macOS installer does not fail loud on zero managed containers"
+assert_contains "installers/windows/install-windows.ps1" 'Assert-DreamWindowsManagedContainers' "Windows installer does not assert compose-managed containers"
+assert_contains "installers/windows/install-windows.ps1" 'Docker Compose did not create any managed Windows containers' "Windows installer does not fail loud on zero managed containers"
+assert_contains "installers/windows/install-windows.ps1" 'dashboard", "dashboard-api", "open-webui' "Windows installer does not require core container services"
 
 echo "[PASS] installer hardening contracts"

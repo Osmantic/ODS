@@ -40,6 +40,10 @@ check 'Get-DreamReadinessContainerState' "$SUMMARY_LIB" "summary reads Docker co
 check 'Write-DreamInstallReadinessSummary -Checks $readinessChecks' "$INSTALL_PS1" "installer prints readiness summary"
 check '$windowsEnvMap = Get-WindowsDreamEnvMap -InstallDir $installDir' "$INSTALL_PS1" "installer caches Windows env map for health checks"
 check '$healthWhisperPort' "$INSTALL_PS1" "installer health check uses configured Whisper port"
+check 'Assert-DreamWindowsManagedContainers' "$INSTALL_PS1" "installer asserts compose-managed containers exist"
+check 'Docker Compose did not create any managed Windows containers' "$INSTALL_PS1" "installer fails loud on zero Windows containers"
+check '-RequiredServices @("dashboard", "dashboard-api", "open-webui")' "$INSTALL_PS1" "installer requires core Windows container services"
+check 'Dream Server is not being marked fully healthy until readiness recovers.' "$INSTALL_PS1" "installer avoids success card wording on degraded readiness"
 
 if command -v pwsh >/dev/null 2>&1; then
     OUTPUT="$(SUMMARY_LIB="$SUMMARY_LIB" pwsh -NoProfile -Command '
