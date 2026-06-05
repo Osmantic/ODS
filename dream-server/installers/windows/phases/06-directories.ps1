@@ -330,13 +330,17 @@ if ($enableHermes) {
     } else {
         $tierConfig.LlmModel
     })
-    $_hermesBaseUrl = $(if ($gpuInfo.Backend -eq "amd") {
-        "http://host.docker.internal:8080/api/v1"
-    } elseif ($cloudMode) {
-        "http://litellm:4000/v1"
-    } else {
-        "http://llama-server:8080/v1"
-    })
+    $_hermesBaseUrl = ""
+    if ($_envLines.ContainsKey("HERMES_LLM_BASE_URL")) {
+        $_hermesBaseUrl = $_envLines["HERMES_LLM_BASE_URL"].Trim().Trim('"').Trim("'")
+    }
+    if ([string]::IsNullOrWhiteSpace($_hermesBaseUrl)) {
+        $_hermesBaseUrl = $(if ($cloudMode -or $gpuInfo.Backend -eq "amd") {
+            "http://litellm:4000/v1"
+        } else {
+            "http://llama-server:8080/v1"
+        })
+    }
     $_hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
     $_hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
     if (-not (Test-Path $_hermesTemplate)) {

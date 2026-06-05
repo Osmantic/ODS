@@ -152,11 +152,27 @@ fi
 # ---------------------------------------------------------------------------
 if grep -q 'patch_hermes_yaml_with_sed' "$SCRIPT" \
    && grep -Fq 'grep -Fq "  default: \"${model}\""' "$SCRIPT" \
+   && grep -Fq 'grep -Fq "  base_url: \"${base_url}\""' "$SCRIPT" \
    && grep -q 'ERROR: Could not patch ${tpl} after full-model swap.' "$SCRIPT" \
    && grep -q 'return 1' "$SCRIPT"; then
-    pass "post-swap Hermes patch is dependency-free, verified, and fail-loud"
+    pass "post-swap Hermes patch is dependency-free, verifies model/base_url, and is fail-loud"
 else
-    fail "post-swap Hermes patch must avoid Python alias failures and return non-zero if YAML patching fails"
+    fail "post-swap Hermes patch must avoid Python alias failures and verify model/base_url before success"
+fi
+
+# ---------------------------------------------------------------------------
+# 10. Full-model swap must preserve the install-time Hermes provider route.
+#     On Windows AMD/Lemonade, HERMES_LLM_BASE_URL is the LiteLLM route; if
+#     swap patching only updates model/context, the persisted Hermes config can
+#     keep direct native Lemonade and override the fixed env value.
+# ---------------------------------------------------------------------------
+if grep -q 'hermes_base_url="$(read_env_value HERMES_LLM_BASE_URL)"' "$SCRIPT" \
+   && grep -q 'patch_hermes_yaml_with_sed "$tpl" "$new_model" "$FULL_MAX_CONTEXT" "$hermes_base_url"' "$SCRIPT" \
+   && grep -q 'hermes_base_url_sed="$(printf' "$SCRIPT" \
+   && grep -q 'base_url: \\"${hermes_base_url_sed}\\"' "$SCRIPT"; then
+    pass "post-swap Hermes patch preserves HERMES_LLM_BASE_URL in template and live config"
+else
+    fail "post-swap Hermes patch must carry HERMES_LLM_BASE_URL into persisted Hermes config"
 fi
 
 echo "------------------------------------------------------------"

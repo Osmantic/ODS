@@ -80,7 +80,22 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. The root Windows install.ps1 entrypoint must propagate failures from the
+# 6. Windows Hermes YAML patching must use the generated HERMES_LLM_BASE_URL.
+#    Windows AMD/Lemonade env generation routes Hermes through LiteLLM, and
+#    Hermes model.base_url wins over OPENAI_BASE_URL, so recomputing AMD as
+#    host.docker.internal:8080/api/v1 here silently undoes the env fix.
+# ---------------------------------------------------------------------------
+if grep -q 'HERMES_LLM_BASE_URL' "$PHASE" \
+   && grep -q 'HERMES_LLM_BASE_URL' "$MONO" \
+   && ! grep -A12 '\$_hermesBaseUrl = \$' "$PHASE" | grep -q 'host.docker.internal:8080/api/v1' \
+   && ! grep -A12 '\$hermesBaseUrl = \$' "$MONO" | grep -q 'host.docker.internal:8080/api/v1'; then
+    pass "Windows Hermes config patching follows generated HERMES_LLM_BASE_URL"
+else
+    fail "Windows Hermes config patching must not recompute AMD Hermes base_url as direct Lemonade"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. The root Windows install.ps1 entrypoint must propagate failures from the
 #    delegated Windows installer. The fleet harness and public docs call the
 #    root script, so fail-loud checks are useless if the wrapper always exits 0.
 # ---------------------------------------------------------------------------
