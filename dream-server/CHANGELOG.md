@@ -16,15 +16,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Validation
 - Fleet test run on 2026-05-26 at commit `cff3b21` passed regressions,
   zero-prereq bootstrap, installs, verify, cloud-mode, dashboard, Hermes, UI,
-  lifecycle, and distro lab validation across tower2, Strix Halo, Spark, and
-  M5 MacBook Pro.
+  lifecycle, and distro lab validation across Linux NVIDIA, AMD Strix Halo,
+  Linux ARM NVIDIA, and Apple Silicon targets.
 - The new `dream-proxy-owner-card-readiness-1474` regression fixture passed on
   Strix Halo from both already-enabled and disabled states, proving owner-card
   status returns `ready: true` without restarting `dashboard-api`.
-- Capability reruns confirmed initial Strix Halo and M5 MacBook Pro failures
-  were model/timing flakes; full-model capability probes passed on Strix Halo
-  and M5 MacBook Pro while tower2 and Spark correctly deferred on bootstrap
-  models.
+- Capability reruns confirmed initial AMD Strix Halo and high-memory Apple
+  Silicon failures were model/timing flakes; full-model capability probes passed
+  on those targets while Linux NVIDIA and Linux ARM NVIDIA targets correctly
+  deferred on bootstrap models.
 - Distro lab passed 10/10 Docker lanes and 5/5 Incus VM lanes.
 
 ## [2.5.2] - 2026-05-26
@@ -40,7 +40,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Validation
 - Fleet test run on 2026-05-26 at commit `c1df395` passed User Green: true
   fresh install, product, full-model capabilities, lifecycle, and UI validation
-  across tower2, Strix Halo, Spark, and M5 MacBook Pro.
+  across Linux NVIDIA, AMD Strix Halo, Linux ARM NVIDIA, and Apple Silicon
+  targets.
 - Full-model capability probes passed on all 4 enabled hosts, including chat,
   search, files, code, 76 Hermes skills, Dream Talk SSE streaming, session
   pooling, SOUL.md context, and install-context grounding.
@@ -105,9 +106,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Validation
 - Fleet test run 11 on 2026-05-26 passed true fresh install, lifecycle, product,
-  and core capability validation on tower2, Strix Halo, Spark, and M5 MacBook
-  Pro after Docker images, volumes, build cache, and stale model files were
-  removed.
+  and core capability validation on Linux NVIDIA, AMD Strix Halo, Linux ARM
+  NVIDIA, and Apple Silicon targets after Docker images, volumes, build cache,
+  and stale model files were removed.
 - Full target-model core capabilities passed on all 4 hardware platforms; Dream
   Talk capability probes passed where the Talk surface was enabled, with
   unavailable Talk surfaces correctly skipped.
@@ -121,7 +122,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Multi-distro release validation covering Ubuntu 24.04/22.04, Debian 12,
   Linux Mint 21.3, Fedora 41, Rocky Linux 9, Arch, Manjaro, CachyOS, and
   openSUSE Tumbleweed in CI/container form.
-- tower2 Incus VM distro lab for real systemd, network, Docker daemon, Docker
+- Private Incus VM distro lab for real systemd, network, Docker daemon, Docker
   Compose, and installer dry-run coverage on Ubuntu 24.04, Fedora 42, Rocky 9,
   Arch current, and openSUSE Tumbleweed.
 - Sanitized validation matrix documenting the layered CI, distro lab, and
@@ -168,18 +169,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   support bundles, and secret scanning.
 
 ### Validation
-- Full fleet pass on 2026-05-21 in
-  `/home/michael/dream-fleet-test/runs/2026-05-21T15-48-27Z`.
-- Hardware fleet: tower2, Strix Halo, Spark, Mac mini, and M5 MacBook Pro all
-  passed install, 7/7 verify, Hermes seeded echo, UI checks, and applicable
-  capability probes.
+- Full fleet pass on 2026-05-21 for the v2.5.0 release candidate.
+- Hardware fleet: Linux NVIDIA, AMD Strix Halo, Linux ARM NVIDIA, constrained
+  Apple Silicon, and high-memory Apple Silicon targets all passed install, 7/7
+  verify, Hermes seeded echo, UI checks, and applicable capability probes.
 - Regressions: 9/9 fixtures green, 0 bugs detected, 0 PRs opened.
 - Distro lab: Docker matrix passed 10/10 distros; Incus VM matrix passed 5/5
   VMs with real systemd + Docker and clean installer dry-runs.
-- Known follow-up: concurrent `fleet-multi-distro.sh` and a heavy
-  `dream-fleet-test` install on the same host can create I/O contention. Prefer
-  serialization or a future `--parallel-limit` flag when running both surfaces
-  together.
+- Known follow-up: concurrent distro-lab and hardware-fleet installs on the
+  same host can create I/O contention. Prefer serialization or a future
+  `--parallel-limit` flag when running both surfaces together.
 
 ## [2.4.0] - 2026-03-24
 

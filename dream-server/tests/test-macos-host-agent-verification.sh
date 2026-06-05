@@ -7,8 +7,8 @@
 #      while the agent is actually down.
 #
 # Without both, dashboard-api hits "Host agent unreachable" on every model and
-# extension action even though the installer reports success (observed on
-# m5-mbp during the 2026-05-23 fleet test).
+# extension action even though the installer reports success (observed on an
+# Apple Silicon fleet target during the 2026-05-23 fleet test).
 
 set -euo pipefail
 

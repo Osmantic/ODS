@@ -3,7 +3,7 @@
 # when a single distro's `docker pull` fails. A bare `docker pull` under the
 # script's `set -euo pipefail` exits the loop on the first registry hiccup
 # (transient IPv6 failure, mirror outage, etc.) and silently skips every
-# distro that comes later in TARGETS. On Tower2 on 2026-05-23 an IPv6
+# distro that comes later in TARGETS. During a fleet run on 2026-05-23, an IPv6
 # `network is unreachable` on archlinux skipped manjaro, cachyos, and
 # opensuse — a class of failures the matrix exists to surface.
 #

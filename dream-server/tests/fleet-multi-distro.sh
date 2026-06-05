@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Dream Server fleet multi-distro runner.
 #
-# This is the noninteractive distro gate intended for fleet hosts such as
-# tower2. It uses Docker directly instead of Distrobox so it can run from SSH,
-# cron, or a fleet harness without pre-created per-distro containers.
+# This is the noninteractive distro gate intended for fleet hosts. It uses
+# Docker directly instead of Distrobox so it can run from SSH, cron, or a fleet
+# harness without pre-created per-distro containers.
 
 set -euo pipefail
 

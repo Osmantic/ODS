@@ -65,9 +65,8 @@ each host where the phase is applicable.
 | Release confidence report | The run is summarized into product, capability, lifecycle, and user-facing gates | Every release-grade run |
 
 `--phase all` is intended for a faster full-product development sweep. The
-release-grade path used by `/dream-fleet-test` and `--phase release` adds
-zero-prereq bootstrap and lifecycle gates so a green release run means more than
-"fresh install worked once."
+private release-grade path adds zero-prereq bootstrap and lifecycle gates so a
+green release run means more than "fresh install worked once."
 
 Run the release-grade fleet after operational code changes: installer phases,
 bootstrap, compose stack generation, service wiring, dashboard/API behavior,

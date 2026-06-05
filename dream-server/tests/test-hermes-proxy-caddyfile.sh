@@ -32,7 +32,7 @@ if grep -Eq '^[[:space:]]*redir[[:space:]]+/auth/required[[:space:]]+303([[:spac
 fi
 
 # Health matcher must cover BOTH /health and /healthz. The Docker healthcheck
-# uses /health; k8s and dream-fleet-test verify probes use /healthz. Anything
+# uses /health; Kubernetes-style and fleet verify probes use /healthz. Anything
 # left out of the matcher falls through to forward_auth and gets bounced to
 # /auth/required (303) — health monitors then mark the proxy unhealthy.
 grep -Eq '^[[:space:]]*@health[[:space:]]+path([[:space:]]+/[A-Za-z]+)*[[:space:]]+/healthz([[:space:]]|$)' "$CADDYFILE" \

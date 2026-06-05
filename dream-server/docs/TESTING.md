@@ -46,10 +46,9 @@ Fleet phases currently include:
 
 `--phase all` is the faster development sweep. It covers the main install and
 post-install product surfaces but intentionally avoids the slowest release-only
-gates. The `/dream-fleet-test` skill and `--phase release` path are the
-release-grade sweep: they add zero-prereq bootstrap and lifecycle checks so a
-green result means the installer, product, capability, and recovery paths all
-passed or were explicitly accounted for.
+gates. The private release-grade sweep adds zero-prereq bootstrap and lifecycle
+checks so a green result means the installer, product, capability, and recovery
+paths all passed or were explicitly accounted for.
 
 Use the release-grade sweep after operational code changes: installer phases,
 bootstrap, compose stack generation, service wiring, dashboard/API behavior,
@@ -79,15 +78,15 @@ tests/fleet-external-lemonade-e2e.sh --real
 | Method | Speed | GPU Testing | Kernel Testing | Best For |
 |--------|-------|-------------|----------------|----------|
 | **Fleet harness** | 15-75 min | Yes | Yes | Release readiness and User Green confidence on real heterogeneous hardware |
-| **Fleet distro lab** | 5-20 min | No | Container: no / VM: yes | Multi-distro installer and Docker lifecycle coverage on tower2 |
+| **Fleet distro lab** | 5-20 min | No | Container: no / VM: yes | Multi-distro installer and Docker lifecycle coverage on a private lab host |
 | **Distrobox** | Instant (2s) | Yes | No | Daily dev, package manager validation |
 | **Ventoy USB** | 5-10 min boot | Yes | Yes | Weekly full-stack validation |
 | **CI Matrix** | Automatic | No | No | Every PR, syntax + detection checks |
 
-## Fleet Distro Lab (tower2)
+## Fleet Distro Lab
 
 The fleet distro lab is the repeatable middle rung between CI containers and
-full hardware fleet runs. `tower2` is provisioned with:
+full hardware fleet runs. The private lab host is provisioned with:
 
 - Docker for fast disposable distro containers;
 - Distrobox for interactive distro debugging;
@@ -110,16 +109,16 @@ tests/fleet-multi-distro.sh --pull
 
 The Docker and Incus distro runners take a shared host lock by default:
 `/tmp/dream-fleet-heavy.lock`, or `DREAM_FLEET_HOST_LOCK` when set. The
-`/dream-fleet-test` harness uses the same lock when launching heavy tower2
-install work, so distro-lab dry-runs do not compete with full fleet installs
-for Docker/build I/O on the same host. Use `--lock-timeout SECONDS` when a CI
-or automation should fail instead of waiting, and reserve `--no-host-lock` for
+private release automation uses the same lock when launching heavy install
+work, so distro-lab dry-runs do not compete with full fleet installs for
+Docker/build I/O on the same host. Use `--lock-timeout SECONDS` when a CI or
+automation should fail instead of waiting, and reserve `--no-host-lock` for
 local debugging when you know no full fleet install is running.
 
-Release-grade `/dream-fleet-test` invocations should run the distro lab
-alongside the hardware fleet. The hardware fleet proves GPU and product
-behavior; the distro lab proves the same installer logic still handles broad
-Linux package-manager and Docker-daemon surfaces.
+Release-grade fleet runs should run the distro lab alongside the hardware
+fleet. The hardware fleet proves GPU and product behavior; the distro lab proves
+the same installer logic still handles broad Linux package-manager and
+Docker-daemon surfaces.
 
 Run a focused subset while debugging:
 
