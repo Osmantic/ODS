@@ -153,6 +153,31 @@ discard_active_model_config_snapshot() {
     fi
 }
 
+BOOTSTRAP_SWAP_BACKUP_PATH=""
+
+move_bootstrap_model_aside_for_windows_swap() {
+    [[ -f "$BOOTSTRAP_PATH" ]] || return 0
+
+    BOOTSTRAP_SWAP_BACKUP_PATH="${BOOTSTRAP_PATH}.dream-swap-backup"
+    rm -f "$BOOTSTRAP_SWAP_BACKUP_PATH"
+    mv "$BOOTSTRAP_PATH" "$BOOTSTRAP_SWAP_BACKUP_PATH" || return 1
+    log "Moved bootstrap model aside before Windows Lemonade full-model restart: $(basename "$BOOTSTRAP_PATH")"
+}
+
+restore_bootstrap_model_after_windows_swap_failure() {
+    [[ -n "$BOOTSTRAP_SWAP_BACKUP_PATH" && -f "$BOOTSTRAP_SWAP_BACKUP_PATH" ]] || return 0
+
+    mv "$BOOTSTRAP_SWAP_BACKUP_PATH" "$BOOTSTRAP_PATH" || return 1
+    log "Restored bootstrap model after Windows Lemonade swap failure: $(basename "$BOOTSTRAP_PATH")"
+}
+
+discard_bootstrap_model_backup_after_windows_swap() {
+    [[ -n "$BOOTSTRAP_SWAP_BACKUP_PATH" && -f "$BOOTSTRAP_SWAP_BACKUP_PATH" ]] || return 0
+
+    rm -f "$BOOTSTRAP_SWAP_BACKUP_PATH"
+    log "Removed bootstrap model after verified Windows Lemonade full-model serving: $(basename "$BOOTSTRAP_PATH")"
+}
+
 sync_windows_opencode_config() {
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*) ;;
@@ -215,10 +240,17 @@ windows_ps_command() {
 restart_windows_lemonade_with_full_model() {
     is_windows_bash || return 1
 
-    local runtime llm_backend
+    local runtime llm_backend managed runtime_mode lemonade_external
     runtime="$(read_env_value AMD_INFERENCE_RUNTIME | tr '[:upper:]' '[:lower:]')"
     llm_backend="$(read_env_value LLM_BACKEND | tr '[:upper:]' '[:lower:]')"
     [[ "$runtime" == "lemonade" || "$llm_backend" == "lemonade" ]] || return 1
+    managed="$(read_env_value AMD_INFERENCE_MANAGED | tr '[:upper:]' '[:lower:]')"
+    runtime_mode="$(read_env_value AMD_INFERENCE_RUNTIME_MODE | tr '[:upper:]' '[:lower:]')"
+    lemonade_external="$(read_env_value LEMONADE_EXTERNAL | tr '[:upper:]' '[:lower:]')"
+    if [[ "$managed" == "false" || "$runtime_mode" == "external-lemonade" || "$lemonade_external" == "true" ]]; then
+        log "Skipping native Windows Lemonade restart because the runtime is externally managed."
+        return 1
+    fi
 
     local ps_cmd
     ps_cmd="$(windows_ps_command)"
@@ -241,19 +273,6 @@ restart_windows_lemonade_with_full_model() {
     DREAM_WIN_LEMONADE_PORT="$lemonade_port" \
     "$ps_cmd" -NoProfile -ExecutionPolicy Bypass -Command '
         $ErrorActionPreference = "Stop"
-        $pidPath = $env:DREAM_WIN_PID_FILE
-        if (Test-Path $pidPath) {
-            $rawPid = (Get-Content -LiteralPath $pidPath -Raw).Trim()
-            if ($rawPid -match "^\d+$") {
-                Stop-Process -Id ([int]$rawPid) -Force -ErrorAction SilentlyContinue
-                for ($i = 0; $i -lt 20; $i++) {
-                    $old = Get-Process -Id ([int]$rawPid) -ErrorAction SilentlyContinue
-                    if (-not $old) { break }
-                    Start-Sleep -Milliseconds 500
-                }
-            }
-            Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
-        }
 
         $roots = @()
         if ($env:ProgramFiles) { $roots += $env:ProgramFiles }
@@ -266,6 +285,66 @@ restart_windows_lemonade_with_full_model() {
         }
         if (-not $exe) { throw "lemonade-server.exe not found under Program Files roots" }
 
+        function Stop-DreamProcessId {
+            param([int]$ProcessId)
+            Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+            for ($i = 0; $i -lt 30; $i++) {
+                $old = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+                if (-not $old) { return }
+                Start-Sleep -Milliseconds 500
+            }
+        }
+
+        $pidPath = $env:DREAM_WIN_PID_FILE
+        if (Test-Path $pidPath) {
+            $rawPid = (Get-Content -LiteralPath $pidPath -Raw).Trim()
+            if ($rawPid -match "^\d+$") {
+                Stop-DreamProcessId -ProcessId ([int]$rawPid)
+            }
+            Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+        }
+
+        # Lemonade also has a process-wide router singleton. If the saved PID
+        # is stale or points at a child that has already exited, Start-Process
+        # can report success while the new router immediately exits with
+        # "Another instance of lemonade-router is already running"; the swap
+        # then polls the old bootstrap instance forever. Clear the configured
+        # listener and any Lemonade Server child processes before launching the
+        # full-model instance.
+        $port = [int]$env:DREAM_WIN_LEMONADE_PORT
+        $deadline = (Get-Date).AddSeconds(20)
+        do {
+            $listeners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            foreach ($listener in $listeners) {
+                if ($listener.OwningProcess -gt 0) {
+                    Stop-DreamProcessId -ProcessId ([int]$listener.OwningProcess)
+                }
+            }
+            if ($listeners.Count -eq 0) { break }
+            Start-Sleep -Milliseconds 500
+        } while ((Get-Date) -lt $deadline)
+
+        $binDir = Split-Path -Parent $exe
+        $userProfile = [Environment]::GetFolderPath("UserProfile")
+        $lemonadeCacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
+        $dreamModelsDir = $env:DREAM_WIN_MODELS_DIR
+        $lemonadeChildren = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase)) -or
+            ($lemonadeCacheBin -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($lemonadeCacheBin, [StringComparison]::OrdinalIgnoreCase)) -or
+            ($dreamModelsDir -and $_.CommandLine -and $_.CommandLine.IndexOf($dreamModelsDir, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+        })
+        foreach ($child in $lemonadeChildren) {
+            Stop-DreamProcessId -ProcessId ([int]$child.ProcessId)
+        }
+
+        $stillListening = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+        if ($stillListening.Count -gt 0) {
+            throw "port $port is still occupied after stopping the previous Lemonade instance"
+        }
+
+        $logPath = Join-Path $env:TEMP "lemonade-server.log"
+        Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
+
         $args = @(
             "serve",
             "--port", $env:DREAM_WIN_LEMONADE_PORT,
@@ -277,6 +356,20 @@ restart_windows_lemonade_with_full_model() {
         $proc = Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden -PassThru
         New-Item -ItemType Directory -Path (Split-Path -Parent $pidPath) -Force | Out-Null
         Set-Content -LiteralPath $pidPath -Value $proc.Id
+
+        Start-Sleep -Seconds 2
+        $started = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
+        if (-not $started) {
+            try {
+                $health = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/api/v1/models" -f $port) -TimeoutSec 3 -UseBasicParsing
+                if ([int]$health.StatusCode -eq 200) { return }
+            } catch { }
+            $tail = ""
+            if (Test-Path $logPath) {
+                $tail = (Get-Content -LiteralPath $logPath -Tail 8 -ErrorAction SilentlyContinue) -join " "
+            }
+            throw "lemonade-server exited immediately after restart. $tail"
+        }
     ' >/dev/null 2>&1 || {
         log "WARNING: native Windows Lemonade restart failed."
         return 1
@@ -314,8 +407,27 @@ restart_windows_lemonade_with_full_model() {
     return 1
 }
 
+patch_hermes_yaml_with_sed() {
+    local path="$1" model="$2" context_length="$3"
+    [[ -f "$path" ]] || return 1
+
+    if sed -i.bak \
+        -e "s|^  default: \".*\"[[:space:]]*$|  default: \"${model}\"|" \
+        -e "s|^  context_length: .*|  context_length: ${context_length}|" \
+        -e "s|^    context_length: .*|    context_length: ${context_length}|" \
+        "$path" 2>&1; then
+        rm -f "${path}.bak"
+    else
+        [[ -f "${path}.bak" ]] && mv "${path}.bak" "$path"
+        return 1
+    fi
+
+    grep -Fq "  default: \"${model}\"" "$path" \
+        && grep -Fq "  context_length: ${context_length}" "$path"
+}
+
 patch_hermes_model_after_swap() {
-    local gpu_backend llm_backend old_model new_model tpl patcher py_cmd
+    local gpu_backend llm_backend old_model new_model tpl
     gpu_backend="$(read_env_value GPU_BACKEND | tr '[:upper:]' '[:lower:]')"
     llm_backend="$(read_env_value LLM_BACKEND | tr '[:upper:]' '[:lower:]')"
     old_model="$BOOTSTRAP_GGUF_FILE"
@@ -328,20 +440,10 @@ patch_hermes_model_after_swap() {
     log "Patching Hermes config after full-model swap: ${old_model} -> ${new_model}"
 
     tpl="$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template"
-    patcher="$INSTALL_DIR/scripts/patch-hermes-config.py"
-    py_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
     if [[ -f "$tpl" ]]; then
-        if [[ -n "$py_cmd" && -f "$patcher" ]]; then
-            "$py_cmd" "$patcher" "$tpl" --model "$new_model" --context-length "$FULL_MAX_CONTEXT" 2>&1 || \
-                log "WARNING: Could not patch ${tpl} with patch-hermes-config.py"
-        elif sed -i.bak \
-            -e "s|^  default: \"${old_model}\"|  default: \"${new_model}\"|" \
-            -e "s|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|" \
-            -e "s|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|" \
-            "$tpl" 2>&1; then
-            rm -f "${tpl}.bak"
-        else
-            log "WARNING: Could not patch ${tpl}"
+        if ! patch_hermes_yaml_with_sed "$tpl" "$new_model" "$FULL_MAX_CONTEXT"; then
+            log "ERROR: Could not patch ${tpl} after full-model swap."
+            return 1
         fi
     fi
 
@@ -623,6 +725,13 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 if [[ "$_windows_lemonade_swap_applies" == "true" ]]; then
+    if ! move_bootstrap_model_aside_for_windows_swap; then
+        restore_active_model_config || log "WARNING: could not restore active model config; inspect $ENV_FILE and $MODELS_INI"
+        write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+            "Full model downloaded and verified, but Dream Server could not move the bootstrap model aside before the Windows Lemonade swap. Previous active model config restored; re-run to retry."
+        exit 1
+    fi
+
     if restart_windows_lemonade_with_full_model; then
         if ! patch_hermes_model_after_swap; then
             # The full model downloaded, verified, and loaded; only the Hermes
@@ -631,12 +740,14 @@ if [[ "$_windows_lemonade_swap_applies" == "true" ]]; then
             # and reads as a 0-byte download failure (#1517).
             log "Restoring previous active model config after Hermes patch failure..."
             restore_active_model_config || log "WARNING: could not restore active model config; inspect $ENV_FILE and $MODELS_INI"
+            restore_bootstrap_model_after_windows_swap_failure || log "WARNING: could not restore bootstrap model; inspect $BOOTSTRAP_PATH"
             write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
                 "Full model downloaded and loaded, but the Hermes config patch failed after swap. Previous active model config restored; re-run to retry."
             exit 1
         fi
         HOT_SWAP_VERIFIED=true
         discard_active_model_config_snapshot
+        discard_bootstrap_model_backup_after_windows_swap
     else
         # The model downloaded and verified (byte counts are real); the native
         # Windows Lemonade swap did not register/load it within the wait window,
@@ -645,6 +756,7 @@ if [[ "$_windows_lemonade_swap_applies" == "true" ]]; then
         # and misreads as a 0-byte download failure (#1517).
         log "Restoring previous active model config after Windows Lemonade swap timeout..."
         restore_active_model_config || log "WARNING: could not restore active model config; inspect $ENV_FILE and $MODELS_INI"
+        restore_bootstrap_model_after_windows_swap_failure || log "WARNING: could not restore bootstrap model; inspect $BOOTSTRAP_PATH"
         write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
             "Model downloaded and verified, but native Windows Lemonade did not load it after swap (registration timeout). Previous active model config restored and bootstrap model kept; re-run to retry the swap."
         exit 1

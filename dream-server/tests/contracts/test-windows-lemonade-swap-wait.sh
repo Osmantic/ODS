@@ -20,6 +20,29 @@
 #      script updates .env/models.ini before restarting native Lemonade; if the
 #      full model cannot be proven, it must restore the previous active config
 #      so the bootstrap model remains the last-known-good runtime.
+#
+#   4. The swap must stop the existing native Lemonade router/listener before
+#      launching the replacement. Otherwise Lemonade exits with "Another
+#      instance of lemonade-router is already running", while probes keep
+#      hitting the stale bootstrap process forever.
+#
+#   5. The restart helper must refuse to stop externally-managed Lemonade
+#      runtimes, and it must accept daemon-style launches where the parent
+#      process exits after leaving a healthy listener behind.
+#
+#   6. The post-swap Hermes patch must be dependency-free and fail-loud.
+#      Windows Git Bash can resolve `python` to the Microsoft Store alias,
+#      causing the Python patcher path to fail even though `command -v python`
+#      returns something. The swap must patch with shell tools, verify the
+#      YAML, and return non-zero if the patch does not land.
+#
+#   7. The Windows swap must move the bootstrap GGUF aside before launching
+#      the full-model Lemonade process. Lemonade registers files present at
+#      launch, so deleting the bootstrap after launch leaves stale bootstrap
+#      model metadata that naïve clients/probes can select.
+#
+#   8. Native Lemonade cleanup must also stop the per-user cached llama.cpp
+#      child process; it does not live under the Program Files Lemonade bin dir.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -77,10 +100,13 @@ fi
 # ---------------------------------------------------------------------------
 if grep -q 'snapshot_active_model_config' "$SCRIPT" \
    && grep -q 'restore_active_model_config' "$SCRIPT" \
+   && grep -q 'move_bootstrap_model_aside_for_windows_swap' "$SCRIPT" \
+   && grep -q 'restore_bootstrap_model_after_windows_swap_failure' "$SCRIPT" \
+   && grep -q 'discard_bootstrap_model_backup_after_windows_swap' "$SCRIPT" \
    && grep -q 'Restoring previous active model config after Windows Lemonade swap timeout' "$SCRIPT"; then
-    pass "Windows Lemonade swap snapshots active config and restores it on timeout"
+    pass "Windows Lemonade swap snapshots config and protects bootstrap model recovery"
 else
-    fail "Windows Lemonade swap failure must restore the previous active .env/models.ini config"
+    fail "Windows Lemonade swap failure must restore previous config and bootstrap model backup"
 fi
 
 # ---------------------------------------------------------------------------
@@ -90,6 +116,47 @@ if grep -q 'Previous active model config restored and bootstrap model kept' "$SC
     pass "swap-timeout status tells the operator the previous active config was restored"
 else
     fail "swap-timeout status should explicitly say the previous active config was restored"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. Native Windows Lemonade restart must clear the old router/listener before
+#    launching the replacement process.
+# ---------------------------------------------------------------------------
+if grep -q 'Get-NetTCPConnection -LocalPort' "$SCRIPT" \
+   && grep -q 'lemonade-router is already running' "$SCRIPT" \
+   && grep -q 'lemonade-server exited immediately after restart' "$SCRIPT" \
+   && grep -q 'lemonadeCacheBin' "$SCRIPT" \
+   && grep -q 'DREAM_WIN_MODELS_DIR' "$SCRIPT"; then
+    pass "Windows Lemonade restart clears stale listeners, cached llama.cpp children, and singleton-router failures"
+else
+    fail "Windows Lemonade restart must stop stale listeners/cache children and detect singleton-router launch failures"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. The restart helper must stay scoped to Dream-managed native Windows
+#    Lemonade and avoid false-failing daemon-style launches.
+# ---------------------------------------------------------------------------
+if grep -q 'AMD_INFERENCE_MANAGED' "$SCRIPT" \
+   && grep -q 'AMD_INFERENCE_RUNTIME_MODE' "$SCRIPT" \
+   && grep -q 'LEMONADE_EXTERNAL' "$SCRIPT" \
+   && grep -q 'externally managed' "$SCRIPT" \
+   && grep -q '/api/v1/models' "$SCRIPT"; then
+    pass "Windows Lemonade restart is scoped to managed runtimes and allows healthy daemonized launches"
+else
+    fail "Windows Lemonade restart must avoid external runtimes and accept healthy daemonized launches"
+fi
+
+# ---------------------------------------------------------------------------
+# 9. Post-swap Hermes patching must not depend on Python being callable from
+#    Git Bash, and it must verify the YAML before returning success.
+# ---------------------------------------------------------------------------
+if grep -q 'patch_hermes_yaml_with_sed' "$SCRIPT" \
+   && grep -Fq 'grep -Fq "  default: \"${model}\""' "$SCRIPT" \
+   && grep -q 'ERROR: Could not patch ${tpl} after full-model swap.' "$SCRIPT" \
+   && grep -q 'return 1' "$SCRIPT"; then
+    pass "post-swap Hermes patch is dependency-free, verified, and fail-loud"
+else
+    fail "post-swap Hermes patch must avoid Python alias failures and return non-zero if YAML patching fails"
 fi
 
 echo "------------------------------------------------------------"

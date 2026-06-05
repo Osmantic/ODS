@@ -39,5 +39,15 @@ if (-not (Test-Path $DreamServerInstaller)) {
     exit 1
 }
 
-# Forward all bound parameters to the real installer
+# Forward all bound parameters to the real installer.
+# A successful PowerShell script can leave a stale $LASTEXITCODE from a handled
+# native command, so only use $LASTEXITCODE when the delegated installer fails.
+$global:LASTEXITCODE = 0
 & $DreamServerInstaller @PSBoundParameters
+$installerSucceeded = $?
+if ($installerSucceeded) {
+    exit 0
+}
+
+$installerExit = if ($null -ne $global:LASTEXITCODE -and [int]$global:LASTEXITCODE -ne 0) { [int]$global:LASTEXITCODE } else { 1 }
+exit $installerExit

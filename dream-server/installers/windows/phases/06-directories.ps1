@@ -208,13 +208,14 @@ function Update-HermesConfigFile {
         [int]$ContextLength
     )
 
-    if (-not (Test-Path $Path)) { return }
+    if (-not (Test-Path $Path)) { return $false }
 
-    $content = Get-Content $Path -Raw
-    $content = $content -replace '(?m)^  default: ".*"$', "  default: `"$Model`""
-    $content = $content -replace '(?m)^  base_url: ".*"$', "  base_url: `"$BaseUrl`""
-    $content = $content -replace '(?m)^  context_length: .+$', "  context_length: $ContextLength"
-    $content = $content -replace '(?m)^    context_length: .+$', "    context_length: $ContextLength"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $content = [System.IO.File]::ReadAllText($Path, $utf8NoBom)
+    $content = $content -replace '(?m)^  default: ".*"\r?$', "  default: `"$Model`""
+    $content = $content -replace '(?m)^  base_url: ".*"\r?$', "  base_url: `"$BaseUrl`""
+    $content = $content -replace '(?m)^  context_length: .+\r?$', "  context_length: $ContextLength"
+    $content = $content -replace '(?m)^    context_length: .+\r?$', "    context_length: $ContextLength"
 
     if ($content -notmatch '(?m)^auxiliary:\s*$') {
         if ($content -match '(?m)^terminal:\s*$') {
@@ -247,7 +248,11 @@ function Update-HermesConfigFile {
         }
     }
 
-    Write-Utf8NoBom -Path $Path -Content $content
+    [System.IO.File]::WriteAllText($Path, $content, $utf8NoBom)
+    $verified = [System.IO.File]::ReadAllText($Path, $utf8NoBom)
+    if (-not $verified.Contains("  default: `"$Model`"")) { return $false }
+    if (-not $verified.Contains("  base_url: `"$BaseUrl`"")) { return $false }
+    return $true
 }
 
 function Invoke-HermesSoulRefresh {
@@ -334,8 +339,19 @@ if ($enableHermes) {
     })
     $_hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
     $_hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
-    Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
-    Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
+    if (-not (Test-Path $_hermesTemplate)) {
+        Write-AIError "Missing Hermes config template at $_hermesTemplate"
+        exit 1
+    }
+    if (-not (Test-Path $_hermesLive)) {
+        Copy-Item -Path $_hermesTemplate -Destination $_hermesLive -Force
+    }
+    $_patchedHermesTemplate = Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
+    $_patchedHermesLive = Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
+    if (-not ($_patchedHermesTemplate -and $_patchedHermesLive)) {
+        Write-AIError "Failed to patch Hermes config for Windows runtime (model=$_hermesModel, base_url=$_hermesBaseUrl)"
+        exit 1
+    }
     Invoke-HermesSoulRefresh -InstallRoot $installDir
     Write-AISuccess "Patched Hermes config (model=$_hermesModel, context=$($tierConfig.MaxContext))"
 }
