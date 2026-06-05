@@ -42,6 +42,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "compose-diagnostics.ps1")
 . (Join-Path $LibDir "backend-contract.ps1")
 . (Join-Path $LibDir "detection.ps1")
+. (Join-Path $LibDir "python-resolver.ps1")
 . (Join-Path $LibDir "llm-endpoint.ps1")
 . (Join-Path $LibDir "install-report.ps1")
 
@@ -169,23 +170,15 @@ function Invoke-HermesSoulRefresh {
     New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
     $rendered = $false
     if (Test-Path $builder) {
-        $pythonCandidates = @(
-            @{ Command = "python"; Args = @() },
-            @{ Command = "python3"; Args = @() },
-            @{ Command = "py"; Args = @("-3") }
-        )
-
-        foreach ($candidate in $pythonCandidates) {
-            $cmd = Get-Command $candidate.Command -ErrorAction SilentlyContinue
-            if (-not $cmd -or -not $cmd.Source) { continue }
+        $python = Resolve-DreamWindowsPython
+        if ($python) {
             try {
-                & $cmd.Source @($candidate.Args) $builder "--template" $template "--env" $envPath "--output" $output *>> $script:DS_LOG_FILE
+                & $python.Source @($python.PythonArgs) $builder "--template" $template "--env" $envPath "--output" $output *>> $script:DS_LOG_FILE
                 if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $output -PathType Leaf)) {
                     $rendered = $true
-                    break
                 }
             } catch {
-                Add-Content -Path $script:DS_LOG_FILE -Value "Hermes SOUL.md refresh failed with $($candidate.Command): $($_.Exception.Message)"
+                Add-Content -Path $script:DS_LOG_FILE -Value "Hermes SOUL.md refresh failed with $($python.Label): $($_.Exception.Message)"
             }
         }
     }
@@ -1284,11 +1277,11 @@ function Invoke-Agent {
                 }
             } catch { }
 
-            # Find Python
-            $_python3 = Get-Command python3 -ErrorAction SilentlyContinue
-            if (-not $_python3) { $_python3 = Get-Command python -ErrorAction SilentlyContinue }
-            if (-not $_python3) {
-                Write-AIError "Python not found in PATH -- install Python 3 and try again"
+            # Find a runnable Python 3 interpreter. This probes execution so
+            # Windows Store aliases do not count as usable Python.
+            $_python = Resolve-DreamWindowsPython
+            if (-not $_python) {
+                Write-AIError "Python 3.8+ not found -- install Python 3 or set DREAM_PYTHON to python.exe"
                 return
             }
             if (-not (Test-Path $agentScript)) {
@@ -1318,14 +1311,15 @@ function Invoke-Agent {
                 "'" + ($Value -replace "'", "''") + "'"
             }
             $_dockerPathLiteral = & $_psQuote "$_dockerBin;"
-            $_pythonLiteral = & $_psQuote $_python3.Source
+            $_pythonLiteral = & $_psQuote $_python.Source
+            $_pythonArgsLiteral = ConvertTo-DreamPowerShellArrayExpression @($_python.PythonArgs)
             $_agentScriptLiteral = & $_psQuote $agentScript
             $_pidFileLiteral = & $_psQuote $pidFile
             $_installDirLiteral = & $_psQuote $InstallDir
             $_logFileLiteral = & $_psQuote $logFile
             $_agentCommand = @"
 `$env:PATH = $_dockerPathLiteral + `$env:PATH
-`$agentArgs = @($_agentScriptLiteral, '--port', '$port', '--pid-file', $_pidFileLiteral, '--install-dir', $_installDirLiteral)
+`$agentArgs = $_pythonArgsLiteral + @($_agentScriptLiteral, '--port', '$port', '--pid-file', $_pidFileLiteral, '--install-dir', $_installDirLiteral)
 Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirectory $_installDirLiteral -WindowStyle Hidden -RedirectStandardError $_logFileLiteral
 "@
             $_encodedAgentCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_agentCommand))

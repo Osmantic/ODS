@@ -106,6 +106,24 @@ jobs:
             done
           }
 
+          prepare_zypper_repos() {
+            repo_dir=/etc/zypp/repos.d
+            [ -d "$repo_dir" ] || return 0
+
+            # GitHub-hosted runners can intermittently time out on the default
+            # cdn.opensuse.org redirect while refreshing or preloading
+            # Tumbleweed metadata/packages. Prefer a direct US mirror over
+            # HTTPS for CI, while keeping the same official openSUSE repos.
+            for repo_file in "$repo_dir"/*.repo; do
+              [ -f "$repo_file" ] || continue
+              sed -i \
+                -e 's#http://download.opensuse.org/#https://mirror.umd.edu/opensuse/#g' \
+                -e 's#https://download.opensuse.org/#https://mirror.umd.edu/opensuse/#g' \
+                "$repo_file"
+            done
+            zypper --non-interactive clean --metadata || true
+          }
+
           if command -v apt-get &>/dev/null; then
             apt-get update -qq && apt-get install -y -qq ca-certificates git curl
           elif command -v dnf &>/dev/null; then
@@ -114,8 +132,9 @@ jobs:
             prepare_pacman_keyrings
             retry pacman -Syyu --noconfirm --needed ca-certificates git curl
           elif command -v zypper &>/dev/null; then
+            prepare_zypper_repos
             retry zypper --non-interactive --gpg-auto-import-keys refresh
-            retry zypper --non-interactive install -y ca-certificates git curl
+            retry zypper --non-interactive install -y --no-recommends --download-as-needed ca-certificates git-core curl
           fi
 
       - name: Checkout
