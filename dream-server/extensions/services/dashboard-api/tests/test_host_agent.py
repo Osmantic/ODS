@@ -93,7 +93,7 @@ class TestResolveComposeFlags:
         )
         monkeypatch.setenv("DREAM_PYTHON_CMD", "python3")
         git_bash = r"C:\Program Files\Git\bin\bash.exe"
-        monkeypatch.setattr(_mod, "_find_update_bash", lambda: git_bash)
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: git_bash)
         monkeypatch.setattr(_mod, "_ensure_windows_resolver_pyyaml", lambda python_cmd: None)
 
         calls = []
@@ -185,6 +185,7 @@ class TestResolveComposeFlags:
         monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
         monkeypatch.setattr(_mod.shutil, "which", lambda name: r"C:\Windows\System32\bash.exe")
         monkeypatch.setattr(_mod, "_update_usable_bash", None)
+        monkeypatch.setattr(_mod, "_usable_bash", None)
         calls = []
 
         def fake_run(cmd, **kwargs):
@@ -196,7 +197,8 @@ class TestResolveComposeFlags:
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
 
         assert _mod._find_update_bash() == r"C:\Program Files\Git\bin\bash.exe"
-        assert calls[0][0] == r"C:\Program Files\Git\bin\bash.exe"
+        assert calls[0][0] == r"C:\Windows\System32\bash.exe"
+        assert calls[-1][0] == r"C:\Program Files\Git\bin\bash.exe"
 
 
 # --- _split_nmcli_terse — parser for nmcli -t (terse) output ---
@@ -446,7 +448,7 @@ class TestValidateCoreRecreateIds:
         assert "not eligible" in error.lower()
 
 
-class TestResolveComposeFlags:
+class TestResolveComposeFlagsCache:
 
     def test_prefers_saved_compose_flags_file(self, tmp_path, monkeypatch):
         install_dir = tmp_path / "dream-server"
