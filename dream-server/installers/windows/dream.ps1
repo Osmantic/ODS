@@ -985,6 +985,24 @@ function Invoke-Start {
 
 function Invoke-Stop {
     param([string]$Service)
+
+    if (-not $Service) {
+        if (-not (Test-Path $InstallDir)) {
+            Write-AIError "Dream Server not found at $InstallDir. Set DREAM_HOME or run installer first."
+            exit 1
+        }
+        Push-Location $InstallDir
+        try {
+            # Native helpers do not depend on Docker and may hold install files or ports.
+            if ((Get-NativeInferenceBackend) -ne "none") {
+                Stop-NativeInferenceServer
+            }
+            Invoke-Agent -Action "stop"
+        } finally {
+            Pop-Location
+        }
+    }
+
     Test-Install
     Push-Location $InstallDir
     try {
@@ -1013,14 +1031,6 @@ function Invoke-Stop {
                 Write-DreamComposeDiagnostics -InstallDir $InstallDir -ComposeFlags $flags -Phase "dream.ps1 stop (all)"
                 exit 1
             }
-
-            # Stop native inference server (AMD path)
-            if ((Get-NativeInferenceBackend) -ne "none") {
-                Stop-NativeInferenceServer
-            }
-
-            # Stop host agent
-            Invoke-Agent -Action "stop"
 
             Write-AISuccess "All services stopped"
         }
