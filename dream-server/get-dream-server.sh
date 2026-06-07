@@ -192,7 +192,7 @@ if [[ -d "$INSTALL_DIR" ]]; then
         echo ""
         echo "  To start:     cd $INSTALL_DIR && docker compose up -d"
         echo "  To reinstall: rm -rf $INSTALL_DIR && re-run this script"
-        echo "  To update:    cd $INSTALL_DIR && git pull && ./install.sh --force"
+        echo "  To update:    cd $INSTALL_DIR && ./dream-cli update"
         echo ""
         exit 0
     else

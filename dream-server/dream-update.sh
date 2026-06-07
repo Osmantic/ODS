@@ -139,6 +139,37 @@ resolve_compose_flags() {
     return 1
 }
 
+is_git_checkout() {
+    command -v git >/dev/null 2>&1 || return 1
+    git -C "${INSTALL_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+
+    local prefix top
+    top=$(git -C "${INSTALL_DIR}" rev-parse --show-toplevel 2>/dev/null || return 1)
+    prefix=$(git -C "${INSTALL_DIR}" rev-parse --show-prefix 2>/dev/null || return 1)
+    git -C "${top}" ls-files --error-unmatch "${prefix}dream-update.sh" >/dev/null 2>&1
+}
+
+runtime_update_guidance() {
+    log_info "For routine runtime/image updates, run: cd \"${INSTALL_DIR}\" && ./dream-cli update"
+    log_info "For source-code updates, reinstall or run this command from a git-backed DreamServer source checkout."
+}
+
+ensure_source_checkout_for_update() {
+    if ! command -v git >/dev/null 2>&1; then
+        log_error "git is required for dream-update.sh source-code updates."
+        runtime_update_guidance
+        return 1
+    fi
+
+    if ! is_git_checkout; then
+        log_error "dream-update.sh update only works from a git-backed DreamServer source checkout."
+        log_info "Install path: ${INSTALL_DIR}"
+        runtime_update_guidance
+        log_info "No files, services, or rollback snapshots were changed."
+        return 1
+    fi
+}
+
 # Semver compare: returns 0 if equal, 1 if v1 > v2, 2 if v1 < v2
 semver_compare() {
     local v1="${1#v}"
@@ -446,7 +477,10 @@ cmd_check() {
         2)
             log_info "Update available: ${current_version} → ${latest_version}"
             echo ""
-            echo "Run 'dream-update.sh update' to update."
+            echo "Run 'dream update' or './dream-cli update' for normal runtime updates."
+            if is_git_checkout; then
+                echo "Source checkout detected: run 'dream-update.sh update' only when you intend to pull source code."
+            fi
             ;;
     esac
     
@@ -588,6 +622,10 @@ cmd_update() {
     local current_version
     current_version=$(get_current_version)
 
+    if ! ensure_source_checkout_for_update; then
+        return 1
+    fi
+
     # ── Step 1: rollback snapshot ─────────────────────────────────────────────
     local timestamp
     timestamp=$(date +%Y%m%d-%H%M%S)
@@ -600,13 +638,6 @@ cmd_update() {
 
     # ── Step 2: pull latest changes ───────────────────────────────────────────
     log_info "Pulling latest changes..."
-    if [[ ! -d "${INSTALL_DIR}/.git" ]]; then
-        log_error "This install directory is not a git repository, so dream-update.sh cannot pull source code."
-        log_info "Install path: ${INSTALL_DIR}"
-        log_info "For routine runtime/image updates, run: cd \"${INSTALL_DIR}\" && ./dream-cli update"
-        log_info "For source-code updates, reinstall or restore this directory as a git-backed DreamServer checkout."
-        return 1
-    fi
     cd "$INSTALL_DIR"
     git fetch origin
     if ! git pull origin main && ! git pull origin master; then
@@ -917,8 +948,8 @@ Commands:
   check          Check for available updates
   status         Show current version, update status, and rollback info
   backup [name]  Create a named general backup of current configuration
-  update         Pull latest, run migrations, restart, health-check;
-                 auto-restores rollback snapshot on any failure
+  update         Source-checkout only: pull latest source, run migrations,
+                 restart, health-check, and auto-restore on failure
   rollback [id]  Restore from a rollback snapshot or general backup
                  (default: most recent pre-update snapshot)
   changelog [v]  Show changelog (optional: specific version)
@@ -941,7 +972,8 @@ Examples:
   dream-update.sh check
   dream-update.sh status
   dream-update.sh backup pre-experiment
-  dream-update.sh update
+  dream update                    # normal runtime/image update
+  dream-update.sh update          # source checkout only
   dream-update.sh rollback
   dream-update.sh rollback 20260317-120000
   dream-update.sh changelog v1.1.0

@@ -8,6 +8,7 @@ fail() { echo "[FAIL] $*"; exit 1; }
 pass() { echo "[PASS] $*"; }
 
 command -v jq >/dev/null 2>&1 || fail "jq is required"
+command -v git >/dev/null 2>&1 || fail "git is required"
 [[ -f "$UPDATE_SCRIPT" ]] || fail "dream-update.sh not found"
 
 TMP_DIR="$(mktemp -d)"
@@ -88,6 +89,9 @@ chmod +x "$BIN_DIR/docker"
 
 cat > "$BIN_DIR/curl" <<'SH'
 #!/usr/bin/env bash
+if [[ "$*" == *"api.github.com/repos/"*"releases/latest"* ]]; then
+    printf '%s\n' '{"tag_name":"v9.9.9"}'
+fi
 exit 0
 SH
 chmod +x "$BIN_DIR/curl"
@@ -105,16 +109,55 @@ if grep -q "No services defined in docker-compose" "$TMP_DIR/health.out"; then
 fi
 pass "dream-update health uses saved compose flags in runtime installs"
 
+cat > "$INSTALL_DIR/.version" <<'EOF'
+{"version":"1.0.0"}
+EOF
+PATH="$BIN_DIR:$PATH" bash "$INSTALL_DIR/dream-update.sh" check > "$TMP_DIR/check.out" 2>&1 \
+    || { cat "$TMP_DIR/check.out"; fail "check should pass with mocked release API"; }
+grep -q "dream update" "$TMP_DIR/check.out" \
+    || { cat "$TMP_DIR/check.out"; fail "check did not recommend runtime update command"; }
+if grep -q "Run 'dream-update.sh update' to update" "$TMP_DIR/check.out"; then
+    cat "$TMP_DIR/check.out"
+    fail "check still recommends direct source updater for runtime installs"
+fi
+pass "dream-update check recommends runtime update command"
+
+SOURCE_BIN_DIR="$TMP_DIR/source-bin"
+SOURCE_PARENT="$TMP_DIR/source-parent"
+SOURCE_INSTALL="$SOURCE_PARENT/dream-server"
+mkdir -p "$SOURCE_BIN_DIR" "$SOURCE_INSTALL"
+cp "$UPDATE_SCRIPT" "$SOURCE_INSTALL/dream-update.sh"
+chmod +x "$SOURCE_INSTALL/dream-update.sh"
+cat > "$SOURCE_BIN_DIR/curl" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == *"api.github.com/repos/"*"releases/latest"* ]]; then
+    printf '%s\n' '{"tag_name":"v9.9.9"}'
+fi
+exit 0
+SH
+chmod +x "$SOURCE_BIN_DIR/curl"
+git -C "$SOURCE_PARENT" init -q
+git -C "$SOURCE_PARENT" add dream-server/dream-update.sh
+PATH="$SOURCE_BIN_DIR:$PATH" bash "$SOURCE_INSTALL/dream-update.sh" check > "$TMP_DIR/source-check.out" 2>&1 \
+    || { cat "$TMP_DIR/source-check.out"; fail "check should pass in nested source checkout"; }
+grep -q "Source checkout detected" "$TMP_DIR/source-check.out" \
+    || { cat "$TMP_DIR/source-check.out"; fail "nested source checkout was not recognized"; }
+pass "dream-update recognizes nested source checkout layout"
+
+: > "$DOCKER_LOG"
 set +e
 PATH="$BIN_DIR:$PATH" bash "$INSTALL_DIR/dream-update.sh" update > "$TMP_DIR/update.out" 2>&1
 update_exit=$?
 set -e
 
 [[ "$update_exit" -ne 0 ]] || fail "update without .git should fail"
-grep -q "not a git repository" "$TMP_DIR/update.out" \
+grep -q "git-backed DreamServer source checkout" "$TMP_DIR/update.out" \
     || { cat "$TMP_DIR/update.out"; fail "missing non-git install diagnosis"; }
 grep -q "./dream-cli update" "$TMP_DIR/update.out" \
     || { cat "$TMP_DIR/update.out"; fail "missing runtime update guidance"; }
-grep -q "git-backed DreamServer checkout" "$TMP_DIR/update.out" \
-    || { cat "$TMP_DIR/update.out"; fail "missing source update guidance"; }
-pass "dream-update explains non-git runtime update path"
+if find "$INSTALL_DIR/data/backups" -mindepth 1 -maxdepth 1 -type d -name 'pre-update-*' 2>/dev/null | grep -q .; then
+    find "$INSTALL_DIR/data/backups" -mindepth 1 -maxdepth 1 -type d -name 'pre-update-*'
+    fail "non-git update created a rollback snapshot before preflight"
+fi
+[[ ! -s "$DOCKER_LOG" ]] || { cat "$DOCKER_LOG"; fail "non-git update invoked Docker"; }
+pass "dream-update fails cleanly before mutating non-git runtime installs"
