@@ -8,7 +8,7 @@ assert_contains() {
   local file="$1"
   local pattern="$2"
   local msg="$3"
-  if ! grep -qE "$pattern" "$file"; then
+  if ! grep -qE -- "$pattern" "$file"; then
     echo "[FAIL] $msg"
     echo "---- output ----"
     cat "$file"
@@ -21,7 +21,7 @@ assert_not_contains() {
   local file="$1"
   local pattern="$2"
   local msg="$3"
-  if grep -qE "$pattern" "$file"; then
+  if grep -qE -- "$pattern" "$file"; then
     echo "[FAIL] $msg"
     echo "---- output ----"
     cat "$file"
@@ -173,6 +173,12 @@ assert_contains "$win_installer" 'Invoke-DownloadWithRetry -Url \$tierConfig\.Gg
 assert_not_contains "$win_installer" '\$dlOk = Show-ProgressDownload -Url \$tierConfig\.GgufUrl' "Windows installer bootstrap model path should not bypass retry wrapper"
 assert_contains "$win_installer" 'New-ScheduledTaskAction -Execute \$script:LEMONADE_EXE' "Windows installer should launch Lemonade through Task Scheduler"
 assert_contains "$win_installer" 'DreamServerLemonadeRuntime' "Windows installer should use a stable Lemonade scheduled task name"
+assert_contains "$win_installer" 'Invoke-WindowsSttModelDownloadTrigger' "Windows installer should trigger STT preload through a bounded helper"
+assert_contains "$win_installer" '--max-time 30 -X POST' "Windows installer STT preload should use a bounded curl trigger"
+assert_contains "$win_installer" 'Wait-WindowsSttModelCached -ModelUrl' "Windows installer should poll STT cache readiness after triggering download"
+assert_not_contains "$win_installer" 'Invoke-WebRequest -Method POST -Uri "\$whisperUrl/v1/models/\$sttModelEncoded" -TimeoutSec 600' "Windows installer should not block on the long STT preload POST"
+assert_contains "installers/windows/dream.ps1" 'Invoke-DreamSttModelDownloadTrigger' "dream.ps1 repair voice should trigger STT preload through a bounded helper"
+assert_not_contains "installers/windows/dream.ps1" 'Invoke-WebRequest -Method POST -Uri \$voice\.SttModelUrl -TimeoutSec 3600' "dream.ps1 repair voice should not block on the long STT preload POST"
 
 echo "[contract] Windows Lemonade dashboard activation uses native runtime health"
 host_agent="bin/dream-host-agent.py"

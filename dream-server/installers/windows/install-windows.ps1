@@ -1238,6 +1238,53 @@ if (-not $cloudMode) {
 # Speaches does NOT auto-download on transcription requests — it returns 404.
 # Trigger the download explicitly, verify it completed, surface recovery
 # instructions on failure. Mirrors Linux Phase 12 and macOS install-macos.sh.
+function Test-WindowsSttModelCached {
+    param([Parameter(Mandatory=$true)][string]$ModelUrl)
+
+    try {
+        $check = Invoke-WebRequest -Uri $ModelUrl -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+        return ($check.StatusCode -eq 200)
+    } catch {
+        return $false
+    }
+}
+
+function Invoke-WindowsSttModelDownloadTrigger {
+    param([Parameter(Mandatory=$true)][string]$ModelUrl)
+
+    # Speaches keeps downloading after the request is accepted. Use a bounded
+    # client so a slow Hugging Face transfer cannot take down the installer host.
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+        & $curl.Source --fail --silent --show-error --max-time 30 -X POST $ModelUrl | Out-Null
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 28) { return $true }
+        Write-AIWarn "STT model download trigger returned curl exit $LASTEXITCODE; verifying cache before failing."
+        return $false
+    }
+
+    try {
+        Invoke-WebRequest -Method POST -Uri $ModelUrl -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        Write-AIWarn "STT model download trigger failed; verifying cache before failing."
+        return $false
+    }
+}
+
+function Wait-WindowsSttModelCached {
+    param(
+        [Parameter(Mandatory=$true)][string]$ModelUrl,
+        [int]$TimeoutSeconds = 900
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-WindowsSttModelCached -ModelUrl $ModelUrl) { return $true }
+        Start-Sleep -Seconds 5
+    }
+    return (Test-WindowsSttModelCached -ModelUrl $ModelUrl)
+}
+
 $sttModelReady = (-not $enableVoice)
 $sttModelNameForReadiness = ""
 $sttModelCacheUrl = ""
@@ -1273,7 +1320,7 @@ if ($enableVoice) {
     }
     $sttModelEncoded = $sttModel -replace "/", "%2F"
     $whisperUrl = "http://localhost:$whisperPort"
-    $sttRecoveryCmd = "Invoke-WebRequest -Method POST -Uri '$whisperUrl/v1/models/$sttModelEncoded' -TimeoutSec 3600"
+    $sttRecoveryCmd = "curl.exe --max-time 30 -X POST '$whisperUrl/v1/models/$sttModelEncoded'"
     $sttModelNameForReadiness = $sttModel
     $sttModelCacheUrl = "$whisperUrl/v1/models/$sttModelEncoded"
 
@@ -1294,11 +1341,7 @@ if ($enableVoice) {
         Write-Host "    $sttRecoveryCmd" -ForegroundColor DarkGray
     } else {
         # Step 2: skip if already cached.
-        $alreadyCached = $false
-        try {
-            $check = Invoke-WebRequest -Uri "$whisperUrl/v1/models/$sttModelEncoded" -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
-            if ($check.StatusCode -eq 200) { $alreadyCached = $true }
-        } catch { }
+        $alreadyCached = Test-WindowsSttModelCached -ModelUrl $sttModelCacheUrl
 
         if ($alreadyCached) {
             $sttModelReady = $true
@@ -1306,18 +1349,10 @@ if ($enableVoice) {
         } else {
             # Step 3: POST to trigger download.
             Write-AI "Downloading STT model ($sttModel)..."
-            try {
-                Invoke-WebRequest -Method POST -Uri "$whisperUrl/v1/models/$sttModelEncoded" -TimeoutSec 600 -UseBasicParsing -ErrorAction Stop | Out-Null
-            } catch {
-                # Fall through to verification step regardless — POST can succeed or partial-fail.
-            }
+            Invoke-WindowsSttModelDownloadTrigger -ModelUrl $sttModelCacheUrl | Out-Null
 
             # Step 4: verify the model is actually cached.
-            $verified = $false
-            try {
-                $verify = Invoke-WebRequest -Uri "$whisperUrl/v1/models/$sttModelEncoded" -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
-                if ($verify.StatusCode -eq 200) { $verified = $true }
-            } catch { }
+            $verified = Wait-WindowsSttModelCached -ModelUrl $sttModelCacheUrl -TimeoutSeconds 900
 
             if ($verified) {
                 $sttModelReady = $true

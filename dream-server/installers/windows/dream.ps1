@@ -240,7 +240,7 @@ function Get-DreamVoiceDiagnosis {
         SttModel         = $sttModel
         SttModelCached   = $false
         SttModelUrl      = $modelUrl
-        RecoveryCommand  = "Invoke-WebRequest -Method POST -Uri '$modelUrl' -TimeoutSec 3600"
+        RecoveryCommand  = "curl.exe --max-time 30 -X POST '$modelUrl'"
         TtsPort          = $ttsPort
         TtsUrl           = $ttsUrl
         TtsHealthy       = $false
@@ -271,6 +271,51 @@ function Get-DreamVoiceDiagnosis {
     } catch { }
 
     return $result
+}
+
+function Invoke-DreamSttModelDownloadTrigger {
+    param([Parameter(Mandatory=$true)][string]$ModelUrl)
+
+    # Speaches keeps downloading after it accepts the request. Keep the caller
+    # bounded so slow Hugging Face transfers do not wedge dream.ps1 or install.
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+        & $curl.Source --fail --silent --show-error --max-time 30 -X POST $ModelUrl | Out-Null
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 28) { return $true }
+        Write-AIWarn "STT model download trigger returned curl exit $LASTEXITCODE; verifying cache before failing."
+        return $false
+    }
+
+    try {
+        Invoke-WebRequest -Method POST -Uri $ModelUrl -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        Write-AIWarn "STT model download trigger failed; verifying cache before failing."
+        return $false
+    }
+}
+
+function Wait-DreamSttModelCached {
+    param(
+        [Parameter(Mandatory=$true)][string]$ModelUrl,
+        [int]$TimeoutSeconds = 900
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $check = Invoke-WebRequest -Uri $ModelUrl -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+            if ($check.StatusCode -eq 200) { return $true }
+        } catch { }
+        Start-Sleep -Seconds 5
+    }
+
+    try {
+        $check = Invoke-WebRequest -Uri $ModelUrl -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+        return ($check.StatusCode -eq 200)
+    } catch {
+        return $false
+    }
 }
 
 function Test-DreamSttModelCache {
@@ -1272,11 +1317,8 @@ function Invoke-RepairVoice {
         }
         if (-not $voice.SttModelCached) {
             Write-AI "Downloading STT model ($($voice.SttModel))..."
-            try {
-                Invoke-WebRequest -Method POST -Uri $voice.SttModelUrl -TimeoutSec 3600 -UseBasicParsing -ErrorAction Stop | Out-Null
-            } catch {
-                Write-AIWarn "STT model download request failed; verifying cache before failing."
-            }
+            Invoke-DreamSttModelDownloadTrigger -ModelUrl $voice.SttModelUrl | Out-Null
+            Wait-DreamSttModelCached -ModelUrl $voice.SttModelUrl -TimeoutSeconds 900 | Out-Null
         }
 
         $voice = Get-DreamVoiceDiagnosis
