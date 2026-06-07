@@ -212,14 +212,33 @@ def resolve_compose_flags() -> list:
     # --gpu-count gates the multigpu-{backend}.yml overlay; without it,
     # the host agent would resolve a single-GPU stack on multi-GPU hosts.
     env = os.environ.copy()
+    bash = "bash"
     if platform.system() == "Windows":
-        env.setdefault("DREAM_PYTHON_CMD", _to_bash_path(Path(sys.executable)))
-    result = subprocess.run(
-        ["bash", _to_bash_path(script), "--script-dir", _to_bash_path(INSTALL_DIR),
-         "--tier", TIER, "--gpu-backend", GPU_BACKEND, "--gpu-count", GPU_COUNT],
-        capture_output=True, text=True, check=True,
-        cwd=str(INSTALL_DIR), timeout=30, env=env,
-    )
+        env["DREAM_PYTHON_CMD"] = _to_bash_path(Path(sys.executable))
+        bash = _find_update_bash()
+        if not bash:
+            raise RuntimeError(
+                "Git Bash is required for compose resolution on Windows, "
+                "but no usable bash.exe was found.",
+            )
+    cmd = [
+        bash, _to_bash_path(script),
+        "--script-dir", _to_bash_path(INSTALL_DIR),
+        "--tier", TIER,
+        "--gpu-backend", GPU_BACKEND,
+        "--gpu-count", GPU_COUNT,
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True, text=True, check=True,
+            cwd=str(INSTALL_DIR), timeout=30, env=env,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise RuntimeError(
+            f"resolve-compose-stack.sh failed: {detail[:1000]}",
+        ) from exc
     return result.stdout.strip().split()
 
 
@@ -1103,21 +1122,32 @@ def _find_update_bash() -> str | None:
     if _update_usable_bash is False:
         return None
 
-    bash = shutil.which("bash")
-    if not bash:
-        _update_usable_bash = False
-        return None
-    try:
-        result = subprocess.run(
-            [bash, "-lc", "printf ok"],
-            capture_output=True, text=True, timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        _update_usable_bash = False
-        return None
-    if result.returncode == 0 and result.stdout == "ok":
-        _update_usable_bash = bash
-        return bash
+    candidates: list[str] = []
+    if platform.system() == "Windows":
+        candidates.extend([
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+        ])
+    path_bash = shutil.which("bash")
+    if path_bash:
+        candidates.append(path_bash)
+
+    seen: set[str] = set()
+    for bash in candidates:
+        key = bash.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            result = subprocess.run(
+                [bash, "-lc", "printf ok"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0 and result.stdout == "ok":
+            _update_usable_bash = bash
+            return bash
     _update_usable_bash = False
     return None
 
