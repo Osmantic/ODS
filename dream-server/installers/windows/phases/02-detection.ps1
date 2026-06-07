@@ -153,6 +153,13 @@ $_tierDisk = Test-DiskSpace -Path $installDir -RequiredGB $_neededGB
 if (-not $_tierDisk.Sufficient) {
     Write-AIWarn "Tier $selectedTier needs ~${_neededGB} GB (${_modelGB} GB model + 15 GB Docker images)."
     Write-AIWarn "Only $($_tierDisk.FreeGB) GB free on $($_tierDisk.Drive)."
+    Write-AI "  Install target checked: $installDir"
+    $_installDirHint = "<path-with-enough-space>\dream-server"
+    if ($sourceRoot -match "^([A-Za-z]):") {
+        $_installDirHint = "$($Matches[1].ToUpperInvariant()):\dream-server"
+    }
+    Write-AI "  To use a different drive/path, rerun from the source checkout with:"
+    Write-AI "  .\install.ps1 -InstallDir $_installDirHint"
     if (-not $force) {
         Write-AIError "Insufficient disk space. Free up space and re-run, or use --Force to override."
         exit 1

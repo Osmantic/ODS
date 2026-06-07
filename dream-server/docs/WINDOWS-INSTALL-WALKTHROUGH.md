@@ -90,7 +90,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 The installer will:
 - Detect your GPU and pick the right model tier
 - Check prerequisites (WSL2, Docker, NVIDIA/AMD runtime path)
-- Create the installation directory at `$env:USERPROFILE\dream-server`
+- Create the runtime directory at `$env:USERPROFILE\dream-server` by default,
+  or at the path passed to `-InstallDir`
 - Download and start all services
 
 ### Important: repo checkout vs runtime directory
@@ -101,10 +102,22 @@ by default, or in `$env:DREAM_HOME` if you set that variable before install.
 The runtime directory is where the installer writes `.env`, generated secrets,
 model files, logs, data directories, and compose state.
 
+Running the installer from another drive does not change the runtime target. If
+you cloned the repo on another drive because `C:` is low on space, pass any
+NTFS/ReFS target path with enough space explicitly:
+
+```powershell
+$installDir = "D:\Apps\dream-server"
+.\install.ps1 -InstallDir $installDir
+```
+
 After installation, run management commands from the runtime directory:
 
 ```powershell
-cd $env:USERPROFILE\dream-server
+$installDir = "$env:USERPROFILE\dream-server"
+# If you installed with -InstallDir, use that same path instead:
+# $installDir = "D:\Apps\dream-server"
+cd $installDir
 .\dream.ps1 status
 .\dream.ps1 logs llama-server
 ```
@@ -115,7 +128,7 @@ place. Manual Compose commands are supported, but run them from the runtime
 directory:
 
 ```powershell
-cd $env:USERPROFILE\dream-server
+cd $installDir
 docker compose ps
 docker compose logs -f
 ```
@@ -146,6 +159,10 @@ background.
 
 # Wait for the full model instead of using bootstrap fast-start
 .\install.ps1 -NoBootstrap
+
+# Install runtime files on a specific drive/path
+$installDir = "D:\Apps\dream-server"
+.\install.ps1 -InstallDir $installDir
 ```
 
 ---
@@ -156,7 +173,9 @@ background.
 
 ```powershell
 # In PowerShell
-cd $env:USERPROFILE\dream-server
+$installDir = "$env:USERPROFILE\dream-server"
+# If you installed with -InstallDir, use that same path instead.
+cd $installDir
 docker compose ps
 ```
 
@@ -182,7 +201,9 @@ Visit: **http://localhost:3000**
 ## Step 6: Run Diagnostics
 
 ```powershell
-cd $env:USERPROFILE\dream-server
+$installDir = "$env:USERPROFILE\dream-server"
+# If you installed with -InstallDir, use that same path instead.
+cd $installDir
 .\dream.ps1 report
 ```
 
@@ -212,11 +233,15 @@ Then restart Docker Desktop.
 **Fix:** Ensure Docker Desktop WSL2 backend is enabled. Restart Docker Desktop after enabling.
 
 ### "Port 3000 already in use"
-**Fix:** Edit `$env:USERPROFILE\dream-server\.env`:
+**Fix:** Edit `$installDir\.env`:
 ```
 WEBUI_PORT=3001
 ```
-Then: `docker compose up -d`
+Then:
+```powershell
+cd $installDir
+docker compose up -d
+```
 
 ### Model download stuck
 **Fix:** Check disk space. Cancel with Ctrl+C, then restart installer — it resumes downloads.
@@ -227,13 +252,13 @@ Then: `docker compose up -d`
 
 | Task | Command |
 |------|---------|
-| Stop Dream Server | `cd $env:USERPROFILE\dream-server; .\dream.ps1 stop` |
-| Start Dream Server | `cd $env:USERPROFILE\dream-server; .\dream.ps1 start` |
-| View logs | `cd $env:USERPROFILE\dream-server; .\dream.ps1 logs` |
-| Update | `cd $env:USERPROFILE\dream-server; .\dream.ps1 update` |
+| Stop Dream Server | `cd $installDir; .\dream.ps1 stop` |
+| Start Dream Server | `cd $installDir; .\dream.ps1 start` |
+| View logs | `cd $installDir; .\dream.ps1 logs` |
+| Update | `cd $installDir; .\dream.ps1 update` |
 | Enable voice | Add `-Voice` flag or edit `.env` |
 | Enable workflows | Add `-Workflows` flag |
-| Support report | `cd $env:USERPROFILE\dream-server; .\dream.ps1 report` |
+| Support report | `cd $installDir; .\dream.ps1 report` |
 
 ---
 
@@ -249,12 +274,14 @@ Then: `docker compose up -d`
 
 ```powershell
 # Stop and remove containers
-cd $env:USERPROFILE\dream-server
+$installDir = "$env:USERPROFILE\dream-server"
+# If you installed with -InstallDir, use that same path instead.
+cd $installDir
 $composeFlags = (Get-Content .compose-flags -Raw).Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
 docker compose @composeFlags down -v --remove-orphans
 
 # Remove installation directory
-Remove-Item -Recurse -Force "$env:USERPROFILE\dream-server"
+Remove-Item -Recurse -Force $installDir
 ```
 
 ---

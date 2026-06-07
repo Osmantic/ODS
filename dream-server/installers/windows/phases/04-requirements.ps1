@@ -115,6 +115,13 @@ $_minDiskGB = switch ($selectedTier) {
 $_diskCheck = Test-DiskSpace -Path $installDir -RequiredGB $_minDiskGB
 if (-not $_diskCheck.Sufficient) {
     Write-AIWarn "Disk: $($_diskCheck.FreeGB) GB free, ${_minDiskGB} GB required for Tier $selectedTier."
+    Write-AI "  Install target checked: $installDir"
+    $_installDirHint = "<path-with-enough-space>\dream-server"
+    if ($sourceRoot -match "^([A-Za-z]):") {
+        $_installDirHint = "$($Matches[1].ToUpperInvariant()):\dream-server"
+    }
+    Write-AI "  To use a different drive, rerun from the source checkout with:"
+    Write-AI "  .\install.ps1 -InstallDir $_installDirHint"
     $requirementsMet = $false
 } else {
     Write-AISuccess "Disk: $($_diskCheck.FreeGB) GB free OK (>= ${_minDiskGB} GB for Tier $selectedTier)"

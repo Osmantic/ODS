@@ -29,11 +29,19 @@ Windows runtime is created under `$env:USERPROFILE\dream-server` by default
 contains `.env`, generated secrets, model files, logs, data, and the compose
 state.
 
+If your `C:` drive is tight, choose the runtime location explicitly. Running
+the installer from `G:\DreamServer` does not automatically install the runtime
+on `G:`. Pass any NTFS/ReFS path with enough space:
+
+```powershell
+$installDir = "D:\Apps\dream-server"
+.\install.ps1 -InstallDir $installDir
+```
+
 Do not run raw `docker compose` commands from the cloned repository after
 installing; Compose will not find the generated `.env` there and relative
 volumes will point at the wrong data directory. Use `.\dream.ps1` from the
-runtime directory, or `cd $env:USERPROFILE\dream-server` before running manual
-Compose commands.
+runtime directory, or `cd $installDir` before running manual Compose commands.
 
 Do not run as Administrator for the normal install. The Windows preflight warns
 about this because user-level paths such as `.opencode`, `.env`, and `data/`
@@ -48,7 +56,10 @@ can become admin-owned and awkward to manage afterward.
 Manage Dream Server using `dream.ps1` from your runtime directory:
 
 ```powershell
-cd $env:USERPROFILE\dream-server
+$installDir = "$env:USERPROFILE\dream-server"
+# If you installed with -InstallDir, use that same path instead:
+# $installDir = "D:\Apps\dream-server"
+cd $installDir
 
 .\dream.ps1 status              # Health checks + GPU status
 .\dream.ps1 start               # Start all services
@@ -105,6 +116,7 @@ The installer automatically uses bootstrap mode when applicable — a small mode
 | `-All` | Full stack enabled, except deprecated OpenClaw unless `-OpenClaw` is also passed |
 | `-Cloud` | Use cloud LLM provider instead of local |
 | `-DryRun` | Simulate install without making changes |
+| `-InstallDir <path>` | Install runtime files on a specific drive/path |
 
 ---
 
@@ -157,10 +169,10 @@ selected by the installer; Docker services reach it through
 
 | What | Where |
 |------|-------|
-| Install directory | `$env:USERPROFILE\dream-server` by default; override with `DREAM_HOME` |
-| Config | `.env` file in install directory |
-| Models | `$env:USERPROFILE\dream-server\data\models\` |
-| Logs | `.\dream.ps1 logs <service>` or `docker compose logs` from the install directory |
+| Install directory | `$env:USERPROFILE\dream-server` by default; override with `-InstallDir` or `DREAM_HOME` |
+| Config | `$installDir\.env` |
+| Models | `$installDir\data\models\` |
+| Logs | `.\dream.ps1 logs <service>` or `docker compose logs` after `cd $installDir` |
 | Data | Docker volumes (auto-managed) |
 
 ---
@@ -168,7 +180,9 @@ selected by the installer; Docker services reach it through
 ## Updating
 
 ```powershell
-cd $env:USERPROFILE\dream-server
+$installDir = "$env:USERPROFILE\dream-server"
+# If you installed with -InstallDir, use that same path instead.
+cd $installDir
 .\dream.ps1 update
 ```
 

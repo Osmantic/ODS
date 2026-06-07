@@ -34,6 +34,7 @@
 #   .\install-windows.ps1 --Hermes         # Enable Hermes Agent
 #   .\install-windows.ps1 -NoHermes        # Disable Hermes Agent
 #   .\install-windows.ps1 -NoBootstrap     # Wait for full model before launch
+#   .\install-windows.ps1 -InstallDir <path>
 #   .\install-windows.ps1 --NonInteractive # Headless install (defaults)
 #
 # ============================================================================
@@ -60,6 +61,7 @@ param(
     [switch]$Langfuse,
     [switch]$NoLangfuse,
     [switch]$NoBootstrap,
+    [string]$InstallDir = "",
     [string]$SummaryJsonPath = ""
 )
 
@@ -69,6 +71,10 @@ $ErrorActionPreference = "Stop"
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 # NOTE: Nested Join-Path required -- PS 5.1 only accepts 2 arguments
 $SourceRoot = (Resolve-Path (Join-Path (Join-Path $ScriptDir "..") "..")).Path
+
+if (-not [string]::IsNullOrWhiteSpace($InstallDir)) {
+    $env:DREAM_HOME = [System.IO.Path]::GetFullPath($InstallDir)
+}
 
 # ── Source libraries ──────────────────────────────────────────────────────────
 $LibDir = Join-Path $ScriptDir "lib"

@@ -69,6 +69,19 @@ try {
     Write-AIWarn "Could not determine Windows build -- continuing"
 }
 
+# ── Install target visibility ────────────────────────────────────────────────
+Write-InfoBox "Source checkout:" "$sourceRoot"
+Write-InfoBox "Install target:" "$installDir"
+$_sourceDrive = ""
+$_installDrive = ""
+if ($sourceRoot -match "^([A-Za-z]):") { $_sourceDrive = $Matches[1].ToUpperInvariant() }
+if ($installDir -match "^([A-Za-z]):") { $_installDrive = $Matches[1].ToUpperInvariant() }
+if ($_sourceDrive -and $_installDrive -and $_sourceDrive -ne $_installDrive) {
+    Write-AIWarn "Source checkout is on ${_sourceDrive}: but the runtime install target is on ${_installDrive}:."
+    Write-AI "  To install the runtime on another drive, rerun with:"
+    Write-AI "  .\install.ps1 -InstallDir ${_sourceDrive}:\dream-server"
+}
+
 # ── Docker Desktop ───────────────────────────────────────────────────────────
 $preflight_docker = Test-DockerDesktop
 
@@ -243,7 +256,13 @@ $_disk = Test-DiskSpace -Path $installDir -RequiredGB 20
 Write-InfoBox "Disk free:" "$($_disk.FreeGB) GB on $($_disk.Drive)"
 if (-not $_disk.Sufficient) {
     Write-AIError "At least 20 GB free space is required. Found $($_disk.FreeGB) GB."
-    Write-AI "  Free up space on $($_disk.Drive) and re-run."
+    Write-AI "  Install target checked: $installDir"
+    $_installDirHint = "<path-with-enough-space>\dream-server"
+    if ($sourceRoot -match "^([A-Za-z]):") {
+        $_installDirHint = "$($Matches[1].ToUpperInvariant()):\dream-server"
+    }
+    Write-AI "  Free up space on $($_disk.Drive), or rerun from the source checkout with:"
+    Write-AI "  .\install.ps1 -InstallDir $_installDirHint"
     exit 1
 }
 Write-AISuccess "Disk space OK ($($_disk.FreeGB) GB free)"
