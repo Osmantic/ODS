@@ -89,7 +89,7 @@ class TestResolveComposeFlags:
         monkeypatch.setattr(
             _mod.sys,
             "executable",
-            r"C:\Users\conta\AppData\Local\Programs\Python\Python313\python.exe",
+            r"C:\Users\dreamer\AppData\Local\Programs\Python\Python313\python.exe",
         )
         monkeypatch.setenv("DREAM_PYTHON_CMD", "python3")
         git_bash = r"C:\Program Files\Git\bin\bash.exe"
@@ -114,12 +114,12 @@ class TestResolveComposeFlags:
         assert calls[0][0][0] == git_bash
         env = calls[0][1]["env"]
         assert env["DREAM_PYTHON_CMD"] == (
-            "/c/Users/conta/AppData/Local/Programs/Python/Python313/python.exe"
+            "/c/Users/dreamer/AppData/Local/Programs/Python/Python313/python.exe"
         )
 
     def test_windows_installs_pyyaml_for_resolver_python(self, monkeypatch):
         monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
-        python_cmd = r"C:\Users\conta\AppData\Local\Programs\Python\Python312\python.exe"
+        python_cmd = r"C:\Users\dreamer\AppData\Local\Programs\Python\Python312\python.exe"
         calls = []
         import_attempts = {"count": 0}
 
@@ -157,7 +157,7 @@ class TestResolveComposeFlags:
 
     def test_windows_pyyaml_check_verifies_running_process_import(self, monkeypatch):
         monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
-        python_cmd = r"C:\Users\conta\AppData\Local\Programs\Python\Python312\python.exe"
+        python_cmd = r"C:\Users\dreamer\AppData\Local\Programs\Python\Python312\python.exe"
         calls = []
 
         def fake_run(cmd, **kwargs):
