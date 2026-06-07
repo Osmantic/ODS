@@ -177,6 +177,10 @@ assert_contains "$win_installer" 'Invoke-WindowsSttModelDownloadTrigger' "Window
 assert_contains "$win_installer" '--max-time 30 -X POST' "Windows installer STT preload should use a bounded curl trigger"
 assert_contains "$win_installer" 'Wait-WindowsSttModelCached -ModelUrl' "Windows installer should poll STT cache readiness after triggering download"
 assert_not_contains "$win_installer" 'Invoke-WebRequest -Method POST -Uri "\$whisperUrl/v1/models/\$sttModelEncoded" -TimeoutSec 600' "Windows installer should not block on the long STT preload POST"
+assert_contains "$win_installer" 'nohup bash "\$bashScript"' "Windows installer should detach the full-model upgrade from the installer process tree"
+assert_contains "$win_installer" '< /dev/null &' "Windows installer full-model upgrade should close stdin and background the launcher"
+assert_contains "$win_installer" 'model-upgrade.pid' "Windows installer should record the background model-upgrade PID"
+assert_contains "$win_installer" '-RedirectStandardOutput \$upgradeLaunchLog' "Windows installer should only redirect the short upgrade launcher output"
 assert_contains "installers/windows/dream.ps1" 'Invoke-DreamSttModelDownloadTrigger' "dream.ps1 repair voice should trigger STT preload through a bounded helper"
 assert_not_contains "installers/windows/dream.ps1" 'Invoke-WebRequest -Method POST -Uri \$voice\.SttModelUrl -TimeoutSec 3600' "dream.ps1 repair voice should not block on the long STT preload POST"
 

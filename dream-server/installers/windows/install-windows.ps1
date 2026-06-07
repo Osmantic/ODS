@@ -1074,15 +1074,27 @@ if ($dryRun) {
                 # Convert Windows path to Git Bash Unix-style
                 $bashInstallDir = ($installDir -replace "\\", "/" -replace "^([A-Za-z]):", '/$1').ToLower()
                 $bashScript = ($upgradeScript -replace "\\", "/" -replace "^([A-Za-z]):", '/$1').ToLower()
+                $bashUpgradeLog = ($upgradeLog -replace "\\", "/" -replace "^([A-Za-z]):", '/$1').ToLower()
+                $bashUpgradeErrLog = ($upgradeErrLog -replace "\\", "/" -replace "^([A-Za-z]):", '/$1').ToLower()
+                $upgradePidFile = Join-Path $logDir "model-upgrade.pid"
+                $upgradeLaunchLog = Join-Path $logDir "model-upgrade-launch.log"
+                $upgradeLaunchErrLog = Join-Path $logDir "model-upgrade-launch-err.log"
+                $bashUpgradePidFile = ($upgradePidFile -replace "\\", "/" -replace "^([A-Za-z]):", '/$1').ToLower()
 
                 # Write a temp wrapper script to avoid Windows/PowerShell quoting
                 # issues. Empty arguments (e.g., SHA256 for some tiers) get lost
-                # during command-line parsing -- embedding them in a script file
-                # with bash double-quotes preserves them correctly.
+                # during command-line parsing. The wrapper exits immediately after
+                # nohup detaches the long download, so installer automation is not
+                # held open by the background curl/process handles.
                 $wrapperScript = Join-Path $logDir "bootstrap-run.sh"
                 $wrapperContent = @"
 #!/bin/bash
-exec bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($fullTierConfig.GgufUrl)" "$($fullTierConfig.GgufSha256)" "$($fullTierConfig.LlmModel)" "$($fullTierConfig.MaxContext)"
+set -uo pipefail
+mkdir -p "`$(dirname "$bashUpgradeLog")"
+nohup bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($fullTierConfig.GgufUrl)" "$($fullTierConfig.GgufSha256)" "$($fullTierConfig.LlmModel)" "$($fullTierConfig.MaxContext)" > "$bashUpgradeLog" 2> "$bashUpgradeErrLog" < /dev/null &
+pid=`$!
+echo "`$pid" > "$bashUpgradePidFile"
+disown "`$pid" 2>/dev/null || true
 "@
                 [System.IO.File]::WriteAllText($wrapperScript, $wrapperContent.Replace("`r`n", "`n"), (New-Object System.Text.UTF8Encoding($false)))
 
@@ -1090,17 +1102,19 @@ exec bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($full
                 if ($bashPath) {
                     $upgradeProc = Start-Process -FilePath $bashPath -ArgumentList $wrapperScript `
                         -WindowStyle Hidden `
-                        -RedirectStandardOutput $upgradeLog `
-                        -RedirectStandardError $upgradeErrLog `
+                        -RedirectStandardOutput $upgradeLaunchLog `
+                        -RedirectStandardError $upgradeLaunchErrLog `
+                        -Wait `
                         -PassThru
 
-                    Start-Sleep -Seconds 2
-                    $upgradeProc.Refresh()
-
-                    if ($upgradeProc.HasExited) {
-                        Write-AIWarn "Background full-model download exited immediately (exit code: $($upgradeProc.ExitCode))."
+                    if ($upgradeProc.ExitCode -ne 0) {
+                        Write-AIWarn "Background full-model download launcher failed (exit code: $($upgradeProc.ExitCode))."
                         Write-AI "  Retry manually with: & '$bashPath' '$wrapperScript'"
-                        Write-AI "  Error log: $upgradeErrLog"
+                        Write-AI "  Launcher error log: $upgradeLaunchErrLog"
+                    } elseif (-not (Test-Path -LiteralPath $upgradePidFile)) {
+                        Write-AIWarn "Background full-model download launcher did not write a PID file."
+                        Write-AI "  Retry manually with: & '$bashPath' '$wrapperScript'"
+                        Write-AI "  Launcher log: $upgradeLaunchLog"
                     } else {
                         Write-AI "Full model ($($fullTierConfig.LlmModel)) downloading in background."
                         Write-AI "Check progress: Get-Content '$upgradeLog' -Tail 10"
