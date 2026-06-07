@@ -112,7 +112,10 @@ release_upgrade_lock() {
 }
 
 acquire_upgrade_lock() {
-    local lock_dir="$INSTALL_DIR/data/bootstrap-upgrade.lock"
+    local tmp_root="${TMPDIR:-/tmp}"
+    local lock_key
+    lock_key="$(printf '%s\0%s' "$INSTALL_DIR" "$FULL_GGUF_FILE" | cksum | awk '{print $1}')"
+    local lock_dir="$tmp_root/dream-bootstrap-upgrade-${lock_key}.lock"
     local pid_file="$lock_dir/pid"
     local existing_pid=""
 
@@ -753,8 +756,10 @@ if [[ "$_dl_success" != "true" ]]; then
         fi
 
         if [[ ! -f "$_final_path" ]]; then
-            if curl -fSL -C - --connect-timeout 30 --max-time 3600 \
-                    --retry 10 --retry-delay 5 --retry-connrefused --retry-all-errors \
+            # Let this script own retry/resume. curl's internal retry path can
+            # restart the transfer from byte zero after a long connection reset,
+            # truncating an otherwise good multi-GB .part file.
+            if curl -fSL -C - --connect-timeout 30 --speed-time 300 --speed-limit 1024 \
                     -o "$_part_path" "$FULL_GGUF_URL" 2>&1; then
                 if [[ ! -s "$_part_path" ]]; then
                     log "Download attempt $_attempt reported success but produced no partial file: $_part_path"

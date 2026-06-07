@@ -43,6 +43,14 @@ for arg in "$@"; do
 done
 
 [[ -n "$out" ]] || exit 2
+for arg in "$@"; do
+    case "$arg" in
+        --retry|--retry-all-errors|--max-time)
+            echo "unexpected curl internal retry/global timeout flag: $arg" >&2
+            exit 64
+            ;;
+    esac
+done
 mkdir -p "$(dirname "$out")"
 printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' >> "$out"
 exit 56
@@ -65,6 +73,15 @@ EOF
 
 printf 'bootstrap model\n' > "$install_dir/data/models/Bootstrap.gguf"
 printf '999999\n' > "$install_dir/data/.llama-server.pid"
+
+if grep -Eq -- '--retry|--retry-all-errors|--max-time[[:space:]]+3600' "$TARGET"; then
+    fail "bootstrap-upgrade long GGUF curl should rely on script-level retry/resume, not curl internal retry"
+fi
+grep -q 'dream-bootstrap-upgrade-' "$TARGET" \
+    || fail "bootstrap-upgrade lock must live outside install data so reinstall cannot erase it"
+if grep -q 'local lock_dir="$INSTALL_DIR/data/bootstrap-upgrade.lock"' "$TARGET"; then
+    fail "bootstrap-upgrade lock must not live under install data"
+fi
 
 set +e
 PATH="$fakebin:$PATH" DREAM_BOOTSTRAP_DOWNLOAD_ATTEMPTS=2 bash "$TARGET" \
