@@ -489,13 +489,24 @@ restart_windows_lemonade_with_full_model() {
 }
 
 patch_hermes_yaml_with_sed() {
-    local path="$1" model="$2" context_length="$3"
+    local path="$1" model="$2" context_length="$3" base_url="${4:-}"
     [[ -f "$path" ]] || return 1
 
+    local model_sed base_url_sed
+    model_sed="$(printf '%s' "$model" | sed 's/[\\&|]/\\&/g')"
+    base_url_sed="$(printf '%s' "$base_url" | sed 's/[\\&|]/\\&/g')"
+
+    local sed_args=(
+        -e "s|^  default: \".*\"[[:space:]]*$|  default: \"${model_sed}\"|"
+        -e "s|^  context_length: .*|  context_length: ${context_length}|"
+        -e "s|^    context_length: .*|    context_length: ${context_length}|"
+    )
+    if [[ -n "$base_url" ]]; then
+        sed_args+=(-e "s|^  base_url: \".*\"[[:space:]]*$|  base_url: \"${base_url_sed}\"|")
+    fi
+
     if sed -i.bak \
-        -e "s|^  default: \".*\"[[:space:]]*$|  default: \"${model}\"|" \
-        -e "s|^  context_length: .*|  context_length: ${context_length}|" \
-        -e "s|^    context_length: .*|    context_length: ${context_length}|" \
+        "${sed_args[@]}" \
         "$path" 2>&1; then
         rm -f "${path}.bak"
     else
@@ -504,13 +515,15 @@ patch_hermes_yaml_with_sed() {
     fi
 
     grep -Fq "  default: \"${model}\"" "$path" \
-        && grep -Fq "  context_length: ${context_length}" "$path"
+        && grep -Fq "  context_length: ${context_length}" "$path" \
+        && { [[ -z "$base_url" ]] || grep -Fq "  base_url: \"${base_url}\"" "$path"; }
 }
 
 patch_hermes_model_after_swap() {
-    local gpu_backend llm_backend old_model new_model tpl
+    local gpu_backend llm_backend hermes_base_url old_model new_model tpl
     gpu_backend="$(read_env_value GPU_BACKEND | tr '[:upper:]' '[:lower:]')"
     llm_backend="$(read_env_value LLM_BACKEND | tr '[:upper:]' '[:lower:]')"
+    hermes_base_url="$(read_env_value HERMES_LLM_BASE_URL)"
     old_model="$BOOTSTRAP_GGUF_FILE"
     new_model="$FULL_GGUF_FILE"
     if [[ "$gpu_backend" == "amd" || "$llm_backend" == "lemonade" ]]; then
@@ -522,15 +535,24 @@ patch_hermes_model_after_swap() {
 
     tpl="$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template"
     if [[ -f "$tpl" ]]; then
-        if ! patch_hermes_yaml_with_sed "$tpl" "$new_model" "$FULL_MAX_CONTEXT"; then
+        if ! patch_hermes_yaml_with_sed "$tpl" "$new_model" "$FULL_MAX_CONTEXT" "$hermes_base_url"; then
             log "ERROR: Could not patch ${tpl} after full-model swap."
             return 1
         fi
     fi
 
     if [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=dream-hermes --format '{{.Names}}' 2>/dev/null | grep -q dream-hermes; then
+        local live_patch old_model_sed new_model_sed hermes_base_url_sed
+        old_model_sed="$(printf '%s' "$old_model" | sed 's/[\\&|]/\\&/g')"
+        new_model_sed="$(printf '%s' "$new_model" | sed 's/[\\&|]/\\&/g')"
+        hermes_base_url_sed="$(printf '%s' "$hermes_base_url" | sed 's/[\\&|]/\\&/g')"
+        live_patch="sed -i -e 's|^  default: \"${old_model_sed}\"|  default: \"${new_model_sed}\"|' -e 's|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|' -e 's|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|'"
+        if [[ -n "$hermes_base_url" ]]; then
+            live_patch="${live_patch} -e 's|^  base_url: \".*\"|  base_url: \"${hermes_base_url_sed}\"|'"
+        fi
+        live_patch="${live_patch} /opt/data/config.yaml"
         $DOCKER_CMD exec dream-hermes sh -c \
-            "sed -i -e 's|^  default: \"${old_model}\"|  default: \"${new_model}\"|' -e 's|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|' -e 's|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|' /opt/data/config.yaml" 2>&1 || {
+            "$live_patch" 2>&1 || {
                 log "ERROR: Could not patch Hermes live config after full-model swap."
                 return 1
             }

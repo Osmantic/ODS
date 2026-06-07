@@ -152,6 +152,55 @@ def _ensure_windows_resolver_pyyaml(python_cmd: str) -> None:
             "PyYAML install completed but this host-agent process still cannot import yaml"
         )
 
+
+def _find_usable_bash() -> str | None:
+    """Return a Bash executable that can run shell scripts on this host."""
+    global _usable_bash
+    if isinstance(_usable_bash, str):
+        return _usable_bash
+    if _usable_bash is False:
+        return None
+
+    candidates: list[str] = []
+    found = shutil.which("bash")
+    if found:
+        candidates.append(found)
+
+    if platform.system() == "Windows":
+        candidates.extend([
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
+        ])
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            candidates.extend([
+                str(Path(local_appdata) / "Programs" / "Git" / "bin" / "bash.exe"),
+                str(Path(local_appdata) / "Programs" / "Git" / "usr" / "bin" / "bash.exe"),
+            ])
+
+    seen: set[str] = set()
+    for bash in candidates:
+        if not bash or bash in seen:
+            continue
+        seen.add(bash)
+        if not Path(bash).exists() and shutil.which(bash) is None:
+            continue
+        try:
+            result = subprocess.run(
+                [bash, "-lc", "printf ok"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0 and result.stdout == "ok":
+            _usable_bash = bash
+            return bash
+
+    _usable_bash = False
+    return None
+
 # Model download state — only one download at a time
 _model_download_lock = threading.Lock()
 _model_download_thread: threading.Thread | None = None
@@ -164,6 +213,7 @@ _update_lock = threading.Lock()
 _update_status_lock = threading.Lock()
 _update_thread: threading.Thread | None = None
 _update_usable_bash: str | bool | None = None
+_usable_bash: str | bool | None = None
 
 
 def load_env(env_path: Path) -> dict:
@@ -269,21 +319,21 @@ def resolve_compose_flags() -> list:
             return raw.split()
 
     script = INSTALL_DIR / "scripts" / "resolve-compose-stack.sh"
+    # Contract note: every resolver launch below must include --gpu-count.
     if not script.exists():
         raise RuntimeError(f"resolve-compose-stack.sh not found at {script}")
+    bash = _find_usable_bash()
+    if not bash:
+        raise RuntimeError(
+            "Compose resolution requires a usable Bash runtime. "
+            "Install Git Bash or run Dream Server through WSL/Linux."
+        )
     # --gpu-count gates the multigpu-{backend}.yml overlay; without it,
     # the host agent would resolve a single-GPU stack on multi-GPU hosts.
     env = os.environ.copy()
-    bash = "bash"
     if platform.system() == "Windows":
         _ensure_windows_resolver_pyyaml(sys.executable)
         env["DREAM_PYTHON_CMD"] = _to_bash_path(Path(sys.executable))
-        bash = _find_update_bash()
-        if not bash:
-            raise RuntimeError(
-                "Git Bash is required for compose resolution on Windows, "
-                "but no usable bash.exe was found.",
-            )
     cmd = [
         bash, _to_bash_path(script),
         "--script-dir", _to_bash_path(INSTALL_DIR),
@@ -660,9 +710,14 @@ def _run_post_install_hook(service_id: str, ext_dir: Path) -> tuple[bool, str]:
         "GPU_BACKEND": GPU_BACKEND,
         "HOOK_NAME": "post_install",
     }
+    bash = _find_usable_bash()
+    if not bash:
+        msg = "post_install hook requires a usable Bash runtime. Install Git Bash or run Dream Server through WSL/Linux."
+        _write_progress(service_id, "error", "Setup failed", error=msg)
+        return (False, msg)
     try:
         result = subprocess.run(
-            ["bash", str(hook_path), str(INSTALL_DIR), GPU_BACKEND],
+            [bash, str(hook_path), str(INSTALL_DIR), GPU_BACKEND],
             cwd=str(ext_dir), env=hook_env,
             capture_output=True, text=True,
             timeout=SUBPROCESS_TIMEOUT_START,
@@ -1185,34 +1240,9 @@ def _find_update_bash() -> str | None:
     if _update_usable_bash is False:
         return None
 
-    candidates: list[str] = []
-    if platform.system() == "Windows":
-        candidates.extend([
-            r"C:\Program Files\Git\bin\bash.exe",
-            r"C:\Program Files\Git\usr\bin\bash.exe",
-        ])
-    path_bash = shutil.which("bash")
-    if path_bash:
-        candidates.append(path_bash)
-
-    seen: set[str] = set()
-    for bash in candidates:
-        key = bash.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        try:
-            result = subprocess.run(
-                [bash, "-lc", "printf ok"],
-                capture_output=True, text=True, timeout=5,
-            )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if result.returncode == 0 and result.stdout == "ok":
-            _update_usable_bash = bash
-            return bash
-    _update_usable_bash = False
-    return None
+    bash = _find_usable_bash()
+    _update_usable_bash = bash if bash else False
+    return bash
 
 
 def _update_command(script_path: Path, *args: str) -> list[str]:
@@ -2712,19 +2742,34 @@ class AgentHandler(BaseHTTPRequestHandler):
             "GPU_BACKEND": GPU_BACKEND,
             "HOOK_NAME": hook_name,
         }
+        bash = _find_usable_bash()
+        if not bash:
+            json_response(self, 500, {
+                "error": f"Cannot run hook: {hook_name} hook requires a usable Bash runtime. Install Git Bash or run Dream Server through WSL/Linux."
+            })
+            return
 
         logger.info("Running %s hook for %s: %s", hook_name, service_id, hook_path)
         try:
+            popen_kwargs = {
+                "cwd": str(ext_dir),
+                "env": hook_env,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+            }
+            if platform.system() != "Windows":
+                popen_kwargs["preexec_fn"] = os.setsid
             proc = subprocess.Popen(
-                ["bash", str(hook_path), str(INSTALL_DIR), GPU_BACKEND],
-                cwd=str(ext_dir), env=hook_env,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                preexec_fn=os.setsid,
+                [bash, str(hook_path), str(INSTALL_DIR), GPU_BACKEND],
+                **popen_kwargs,
             )
             try:
                 stdout, stderr = proc.communicate(timeout=HOOK_TIMEOUT)
             except subprocess.TimeoutExpired:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                if platform.system() == "Windows":
+                    proc.kill()
+                else:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 proc.wait()
                 json_response(self, 500, {"error": f"{hook_name} hook timed out ({HOOK_TIMEOUT}s)"})
                 return

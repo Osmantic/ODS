@@ -55,7 +55,7 @@ ROOT_DIR="$SCRIPT_DIR"
 PYTHON_CMD="python3"
 if [[ -f "$ROOT_DIR/lib/python-cmd.sh" ]]; then
     . "$ROOT_DIR/lib/python-cmd.sh"
-    PYTHON_CMD="$(ds_detect_python_cmd)"
+    PYTHON_CMD="$(ds_detect_python_cmd_with_module yaml 2>/dev/null || ds_detect_python_cmd)"
 elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi

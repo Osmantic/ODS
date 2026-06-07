@@ -385,6 +385,39 @@ class TestToBashPath:
         assert _to_bash_path(Path(r"C:\Users\Gabriel\dream-server")) == "/c/Users/Gabriel/dream-server"
 
 
+class TestFindUsableBash:
+
+    def test_windows_skips_unusable_path_bash_and_uses_git_bash(self, monkeypatch):
+        bad_bash = r"C:\Windows\System32\bash.exe"
+        git_bash = r"C:\Program Files\Git\bin\bash.exe"
+        seen = []
+
+        monkeypatch.setattr(_mod, "_usable_bash", None)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(_mod.shutil, "which", lambda name: bad_bash if name == "bash" else None)
+
+        real_exists = _mod.Path.exists
+
+        def fake_exists(path):
+            if str(path) in {bad_bash, git_bash}:
+                return True
+            return real_exists(path)
+
+        def fake_run(cmd, *args, **kwargs):
+            seen.append(cmd[0])
+            if cmd[0] == bad_bash:
+                return subprocess.CompletedProcess(cmd, 127, "", "WSL execvpe(/bin/bash) failed")
+            if cmd[0] == git_bash:
+                return subprocess.CompletedProcess(cmd, 0, "ok", "")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        monkeypatch.setattr(_mod.Path, "exists", fake_exists)
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        assert _mod._find_usable_bash() == git_bash
+        assert seen[:2] == [bad_bash, git_bash]
+
+
 class TestValidateCoreRecreateIds:
 
     def test_accepts_allowed_core_service(self, monkeypatch):
@@ -2283,6 +2316,7 @@ class TestEnableRetry:
         monkeypatch.setattr(_mod, "EXTENSIONS_DIR", builtin_root)
         monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", user_root)
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "_usable_bash", "bash")
 
         # Drop the per-service lock so retries across tests don't deadlock.
         _mod._service_locks.pop("fakesvc", None)
@@ -2326,7 +2360,7 @@ class TestEnableRetry:
         assert handler.parse_response()["status"] == "retrying"
         # post_install hook was invoked via bash against setup.sh
         assert any(
-            len(c) >= 2 and c[0] == "bash" and c[1].endswith("setup.sh")
+            len(c) >= 2 and c[0] == _mod._usable_bash and c[1].endswith("setup.sh")
             for c in hook_cmds
         ), f"expected setup.sh bash invocation, saw {hook_cmds}"
         # docker compose start was called after the hook

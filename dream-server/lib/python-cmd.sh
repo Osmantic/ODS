@@ -34,6 +34,47 @@ _ds_python_runnable() {
     "$candidate" -c 'import sys; sys.exit(0)' >/dev/null 2>&1
 }
 
+_ds_python_has_module() {
+    local candidate="$1" module="$2"
+    _ds_python_runnable "$candidate" || return 1
+    "$candidate" - "$module" <<'PY' >/dev/null 2>&1
+import importlib
+import sys
+
+importlib.import_module(sys.argv[1])
+PY
+}
+
+_ds_windows_path_to_unix() {
+    local path="$1" drive rest
+    path="${path//\\//}"
+    if [[ "$path" =~ ^([A-Za-z]):/(.*)$ ]]; then
+        drive="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
+        rest="${BASH_REMATCH[2]}"
+        printf '/%s/%s' "$drive" "$rest"
+    else
+        printf '%s' "$path"
+    fi
+}
+
+_ds_python_windows_candidates() {
+    local local_appdata=""
+    if [[ -n "${LOCALAPPDATA:-}" ]]; then
+        local_appdata="$(_ds_windows_path_to_unix "$LOCALAPPDATA")"
+    elif [[ -n "${USERPROFILE:-}" ]]; then
+        local_appdata="$(_ds_windows_path_to_unix "$USERPROFILE")/AppData/Local"
+    fi
+    [[ -n "$local_appdata" ]] || return 0
+
+    local candidate
+    for candidate in \
+        "$local_appdata"/Programs/Python/Python*/python.exe \
+        "$local_appdata"/Python/bin/python.exe
+    do
+        [[ -e "$candidate" ]] && printf '%s\n' "$candidate"
+    done
+}
+
 # Prints the python command name to stdout.
 # Order:
 #  1) python3 (must be runnable)
@@ -75,5 +116,45 @@ ds_detect_python_cmd() {
     fi
 
     echo "ERROR: Neither python3 nor python is available/runnable." >&2
+    return 1
+}
+
+# Prints a Python command that can import the requested module.
+# This is intentionally separate from ds_detect_python_cmd: generic scripts
+# should still prefer python3, while YAML/JSON-schema helpers need the
+# interpreter that actually has their dependency installed. On Windows Git
+# Bash, python3 can resolve to a Microsoft Store/App Installer Python without
+# PyYAML while python has the module, so "runnable" is not enough.
+ds_detect_python_cmd_with_module() {
+    local module="$1"
+    [[ -n "$module" ]] || return 1
+
+    if [[ -n "${DREAM_PYTHON_CMD:-}" ]] && _ds_python_has_module "$DREAM_PYTHON_CMD" "$module"; then
+        printf '%s' "$DREAM_PYTHON_CMD"
+        return 0
+    fi
+
+    if [[ "${DREAM_PYTHON_PREFER_SYSTEM:-}" == "1" && -x /usr/bin/python3 ]]; then
+        if _ds_python_has_module /usr/bin/python3 "$module"; then
+            printf '%s' "/usr/bin/python3"
+            return 0
+        fi
+    fi
+
+    local candidate
+    for candidate in python3 python; do
+        if _ds_python_has_module "$candidate" "$module"; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+
+    while IFS= read -r candidate; do
+        if _ds_python_has_module "$candidate" "$module"; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done < <(_ds_python_windows_candidates)
+
     return 1
 }

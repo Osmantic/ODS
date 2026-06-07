@@ -49,9 +49,10 @@ echo "unexpected fake python invocation: $*" >&2
 exit 99
 PYEOF
 chmod +x "$fake_py"
+cp "$fake_py" "$tmpdir/python"
 
 missing_yaml_err="$tmpdir/missing-yaml.err"
-if DREAM_PYTHON_CMD="$fake_py" scripts/resolve-compose-stack.sh --script-dir "$ROOT_DIR" >"$tmpdir/missing-yaml.out" 2>"$missing_yaml_err"; then
+if PATH="$tmpdir:$PATH" USERPROFILE="" LOCALAPPDATA="" DREAM_PYTHON_CMD="$fake_py" scripts/resolve-compose-stack.sh --script-dir "$ROOT_DIR" >"$tmpdir/missing-yaml.out" 2>"$missing_yaml_err"; then
   echo "[FAIL] resolver should fail when selected Python cannot import yaml"
   exit 1
 fi
@@ -231,6 +232,41 @@ assert_contains "$phase06" 'export INSTALL_PHASE="06-directories/\$\{step\}"' "p
 for step in create-directories copy-source copy-extensions-library generate-env validate-env generate-searxng-config; do
   assert_contains "$phase06" "_phase06_step \"$step\"" "phase 06 missing substep: $step"
 done
+
+echo "[contract] Windows phase 06 stages the extension library"
+win_phase06="installers/windows/phases/06-directories.ps1"
+assert_contains "$win_phase06" 'extensions\\library\\services' "Windows phase 06 does not search the source extension library"
+assert_contains "$win_phase06" 'data\\extensions-library' "Windows phase 06 does not stage data/extensions-library"
+assert_contains "$win_phase06" 'Extensions library copied to data/extensions-library' "Windows phase 06 does not report extension library copy success"
+
+echo "[contract] Python resolver can select a module-capable fallback"
+pybin="$tmpdir/python-module-fallback"
+mkdir -p "$pybin"
+cat > "$pybin/python3" <<'PY3'
+#!/usr/bin/env bash
+# Runnable, but cannot import yaml.
+if [[ "${1:-}" == "-c" ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == "-" && "${2:-}" == "yaml" ]]; then
+  exit 1
+fi
+exit 0
+PY3
+cat > "$pybin/python" <<'PY'
+#!/usr/bin/env bash
+exit 0
+PY
+chmod +x "$pybin/python3" "$pybin/python"
+module_py="$(PATH="$pybin:$PATH" bash -c '
+  set -euo pipefail
+  source lib/python-cmd.sh
+  ds_detect_python_cmd_with_module yaml
+')"
+if [[ "$module_py" != "python" ]]; then
+  echo "[FAIL] Python resolver did not fall back to module-capable python (got: $module_py)"
+  exit 1
+fi
 
 echo "[contract] ds_sudo uses sudo -n in non-interactive mode"
 fakebin="$tmpdir/fakebin"
