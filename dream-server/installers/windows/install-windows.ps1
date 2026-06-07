@@ -310,7 +310,7 @@ if ($dryRun) {
                     $tierConfig.LlmModel
                 })
                 $hermesBaseUrl = $(if ($gpuInfo.Backend -eq "amd") {
-                    "http://host.docker.internal:8080/api/v1"
+                    "http://litellm:4000/v1"
                 } elseif ($cloudMode) {
                     "http://litellm:4000/v1"
                 } else {
@@ -325,8 +325,8 @@ if ($dryRun) {
                 if (-not (Test-Path $hermesLive)) {
                     Copy-Item -Path $hermesTemplate -Destination $hermesLive -Force
                 }
-                $patchedHermesTemplate = Update-HermesConfigFile -Path $hermesTemplate -Model $hermesModel -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
-                $patchedHermesLive = Update-HermesConfigFile -Path $hermesLive -Model $hermesModel -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext)
+                $patchedHermesTemplate = Update-HermesConfigFile -Path $hermesTemplate -Model $hermesModel -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -LemonadeCompact:($gpuInfo.Backend -eq "amd")
+                $patchedHermesLive = Update-HermesConfigFile -Path $hermesLive -Model $hermesModel -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -LemonadeCompact:($gpuInfo.Backend -eq "amd")
                 if (-not ($patchedHermesTemplate -and $patchedHermesLive)) {
                     Write-AIError "Failed to patch Hermes config for Windows runtime (model=$hermesModel, base_url=$hermesBaseUrl)"
                     exit 1
@@ -405,21 +405,32 @@ if ($dryRun) {
                 # Model loads automatically on first chat request -- no /api/v1/load needed
                 Write-AI "Starting Lemonade server..."
                 $modelsDir = Join-Path (Join-Path $installDir "data") "models"
-                $lemonadeArgs = @(
-                    "serve",
-                    "--port", "$($script:LEMONADE_PORT)",
-                    "--host", $bindAddr,
-                    "--no-tray",
-                    "--llamacpp", "vulkan",
-                    "--extra-models-dir", $modelsDir
-                )
-
+                $taskName = "DreamServerLemonadeRuntime"
+                try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch { }
+                try { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+                foreach ($listener in @(Get-NetTCPConnection -LocalPort $script:LEMONADE_PORT -State Listen -ErrorAction SilentlyContinue)) {
+                    if ($listener.OwningProcess -gt 0) {
+                        Stop-Process -Id ([int]$listener.OwningProcess) -Force -ErrorAction SilentlyContinue
+                    }
+                }
                 $pidDir = Split-Path $script:INFERENCE_PID_FILE
                 New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
 
-                $proc = Start-Process -FilePath $script:LEMONADE_EXE `
-                    -ArgumentList $lemonadeArgs -WindowStyle Hidden -PassThru
-                Set-Content -Path $script:INFERENCE_PID_FILE -Value $proc.Id
+                $argString = "serve --port $($script:LEMONADE_PORT) --host $bindAddr --no-tray --llamacpp vulkan --extra-models-dir `"$modelsDir`""
+                $action = New-ScheduledTaskAction -Execute $script:LEMONADE_EXE -Argument $argString -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE)
+                $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
+                $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+                Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+                Start-ScheduledTask -TaskName $taskName
+                Start-Sleep -Seconds 5
+                $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                    Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase) } |
+                    Sort-Object ProcessId -Descending |
+                    Select-Object -First 1
+                if (-not $proc) {
+                    throw "Lemonade scheduled task started but no lemonade-server.exe process was found"
+                }
+                Set-Content -Path $script:INFERENCE_PID_FILE -Value $proc.ProcessId
 
                 Write-AI "Waiting for Lemonade server to start..."
                 $maxWait = 60; $waited = 0; $healthy = $false
@@ -434,7 +445,7 @@ if ($dryRun) {
                     if ($waited % 10 -eq 0) { Write-AI "  Still starting... ($waited s)" }
                 }
                 if ($healthy) {
-                    Write-AISuccess "Lemonade server healthy (PID $($proc.Id))"
+                    Write-AISuccess "Lemonade server healthy (PID $($proc.ProcessId))"
                     if ($gpuInfo.HasNpu) {
                         Write-AISuccess "NPU hybrid mode available (NPU prefill + GPU decode)"
                     }

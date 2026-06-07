@@ -405,6 +405,61 @@ class TestGetRawGpusApple:
         assert gpu_mod._get_raw_gpus("apple") is None
 
 
+class TestGetRawGpusAmdHostRuntime:
+    def test_native_amd_sysfs_result_wins(self, monkeypatch):
+        """Native AMD metrics remain preferred when available."""
+        import routers.gpu as gpu_mod
+        from models import IndividualGPU
+
+        native = [IndividualGPU(
+            index=0,
+            uuid="card0",
+            name="AMD Radeon",
+            memory_used_mb=1024,
+            memory_total_mb=16384,
+            memory_percent=6.25,
+            utilization_percent=25,
+            temperature_c=55,
+            power_w=120.0,
+            assigned_services=[],
+        )]
+        monkeypatch.setattr(gpu_mod, "get_gpu_info_amd_detailed", lambda: native)
+
+        assert gpu_mod._get_raw_gpus("amd") == native
+
+    def test_windows_host_lemonade_falls_back_without_sysfs(self, monkeypatch):
+        """Windows-hosted Lemonade has no AMD sysfs inside Docker Desktop."""
+        import routers.gpu as gpu_mod
+
+        monkeypatch.setattr(gpu_mod, "get_gpu_info_amd_detailed", lambda: None)
+        monkeypatch.setenv("AMD_INFERENCE_RUNTIME", "lemonade")
+        monkeypatch.setenv("AMD_INFERENCE_LOCATION", "host")
+        monkeypatch.setenv("AMD_INFERENCE_RUNTIME_MODE", "windows-legacy-lemonade")
+        monkeypatch.setenv("AMD_INFERENCE_BACKEND", "vulkan")
+        monkeypatch.setenv("GPU_COUNT", "1")
+        monkeypatch.setenv("HOST_RAM_GB", "96")
+
+        result = gpu_mod._get_raw_gpus("amd")
+
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].uuid == "amd-host-runtime-0"
+        assert result[0].name == "AMD Lemonade host runtime (vulkan)"
+        assert result[0].memory_total_mb == 96 * 1024
+        assert result[0].assigned_services == ["llama-server"]
+
+    def test_non_windows_amd_without_sysfs_still_returns_none(self, monkeypatch):
+        """Linux/container AMD installs still fail loud when no GPU is visible."""
+        import routers.gpu as gpu_mod
+
+        monkeypatch.setattr(gpu_mod, "get_gpu_info_amd_detailed", lambda: None)
+        monkeypatch.setenv("AMD_INFERENCE_RUNTIME", "lemonade")
+        monkeypatch.setenv("AMD_INFERENCE_LOCATION", "container")
+        monkeypatch.setenv("AMD_INFERENCE_RUNTIME_MODE", "linux-container")
+
+        assert gpu_mod._get_raw_gpus("amd") is None
+
+
 class TestGpuDetailedEndpointApple:
     def test_endpoint_returns_apple_aggregate(self, monkeypatch, test_client):
         """/api/gpu/detailed with GPU_BACKEND=apple returns 200 with single-GPU aggregate."""

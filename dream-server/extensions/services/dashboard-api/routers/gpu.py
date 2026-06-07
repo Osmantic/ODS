@@ -68,11 +68,66 @@ def _get_raw_gpus(gpu_backend: str) -> Optional[list[IndividualGPU]]:
             return None
         return [_apple_info_to_individual(info)]
     if gpu_backend == "amd":
-        return get_gpu_info_amd_detailed()
+        result = get_gpu_info_amd_detailed()
+        if result:
+            return result
+        return _amd_host_runtime_fallback_gpus()
     result = get_gpu_info_nvidia_detailed()
     if result:
         return result
     return get_gpu_info_amd_detailed()
+
+
+def _env_int(name: str, default: int = 0) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _amd_host_runtime_fallback_gpus() -> Optional[list[IndividualGPU]]:
+    """Represent a healthy host-backed AMD runtime when container GPU sysfs is absent.
+
+    Windows Docker Desktop installs route inference through a host Lemonade or
+    llama-server process. In that mode dashboard-api cannot read AMD DRM sysfs
+    from inside the Linux container, but the runtime is still configured and
+    usable. Return a conservative capability/status object instead of 503.
+    """
+    runtime = _clean_env("AMD_INFERENCE_RUNTIME").lower()
+    location = _clean_env("AMD_INFERENCE_LOCATION").lower()
+    runtime_mode = _clean_env("AMD_INFERENCE_RUNTIME_MODE").lower()
+    if runtime not in {"lemonade", "llama-server"} or location != "host":
+        return None
+    if not runtime_mode.startswith("windows"):
+        return None
+
+    count = max(1, _env_int("GPU_COUNT", 1))
+    host_ram_gb = max(0, _env_int("HOST_RAM_GB", 0))
+    memory_total_mb = host_ram_gb * 1024
+    backend = _clean_env("AMD_INFERENCE_BACKEND").lower() or "unknown"
+    runtime_label = "Lemonade" if runtime == "lemonade" else "llama-server"
+    name = f"AMD {runtime_label} host runtime"
+    if backend not in {"", "unknown"}:
+        name = f"{name} ({backend})"
+
+    return [
+        IndividualGPU(
+            index=idx,
+            uuid=f"amd-host-runtime-{idx}",
+            name=name,
+            memory_used_mb=0,
+            memory_total_mb=memory_total_mb,
+            memory_percent=0.0,
+            utilization_percent=0,
+            temperature_c=0,
+            power_w=None,
+            assigned_services=["llama-server"],
+        )
+        for idx in range(count)
+    ]
 
 
 def _build_aggregate(gpus: list[IndividualGPU], backend: str) -> GPUInfo:

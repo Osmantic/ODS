@@ -359,6 +359,9 @@ function New-DreamEnv {
 BIND_ADDRESS=$(Get-EnvOrNew "BIND_ADDRESS" "$(if ($EnableLan) { "0.0.0.0" } else { "127.0.0.1" })")
 # Docker Desktop containers reach loopback-only host services through this name.
 DREAM_AGENT_HOST=$(Get-EnvOrNew "DREAM_AGENT_HOST" "host.docker.internal")
+# The dashboard-api container must call the host agent over Docker Desktop's
+# host gateway. Bearer auth still protects every host-agent endpoint.
+DREAM_AGENT_BIND=$(Get-EnvOrNew "DREAM_AGENT_BIND" "0.0.0.0")
 
 #=== LLM Backend Mode ===
 DREAM_MODE=$effectiveDreamMode

@@ -101,6 +101,117 @@ def _read_active_model() -> Optional[str]:
     return None
 
 
+def _strip_llm_api_suffix(base_url: str) -> str:
+    base = base_url.strip().rstrip("/")
+    for suffix in ("/api/v1", "/v1", "/api"):
+        if base.endswith(suffix):
+            return base[: -len(suffix)].rstrip("/")
+    return base
+
+
+def _configured_llm_base_url(host: str, port: int) -> str:
+    for key in ("LLM_URL", "LLM_API_URL", "OLLAMA_URL"):
+        value = read_env_value(key, INSTALL_DIR)
+        if value:
+            return _strip_llm_api_suffix(value)
+    return f"http://{host}:{port}"
+
+
+def _model_name_tokens(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    token = Path(str(value).strip()).name
+    if not token:
+        return set()
+    tokens = {token.lower()}
+    if token.lower().startswith("extra."):
+        tokens.add(token[6:].lower())
+    return tokens
+
+
+def _catalog_model_tokens(model: dict) -> set[str]:
+    tokens: set[str] = set()
+    for key in ("id", "gguf_file", "llm_model_name"):
+        tokens.update(_model_name_tokens(model.get(key)))
+    gguf_file = model.get("gguf_file")
+    if gguf_file:
+        tokens.update(_model_name_tokens(f"extra.{gguf_file}"))
+    return tokens
+
+
+def _fetch_loaded_model_sync() -> str | None:
+    service = SERVICES.get("llama-server", {})
+    host = service.get("host", "llama-server")
+    port = int(service.get("port", 8080))
+    api_prefix = "/api/v1" if LLM_BACKEND == "lemonade" else "/v1"
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_fetch_llama_loaded_model(host, port, api_prefix))
+    except (httpx.HTTPError, OSError, RuntimeError, ValueError):
+        return None
+    finally:
+        loop.close()
+
+
+async def _probe_loaded_lemonade_model(model_name: str) -> bool:
+    service = SERVICES.get("llama-server", {})
+    host = service.get("host", "llama-server")
+    port = int(service.get("port", 8080))
+    base_url = _configured_llm_base_url(host, port)
+    headers = {}
+    api_key = read_env_value("LEMONADE_API_KEY", INSTALL_DIR) or "lemonade"
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+        "temperature": 0,
+        "stream": False,
+    }
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(f"{base_url}/api/v1/chat/completions", json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data.get("error"), dict):
+            return False
+        return bool(data.get("choices"))
+
+
+def _loaded_model_backend_ready_sync(loaded_model: str | None) -> bool:
+    if not loaded_model:
+        return False
+    if LLM_BACKEND != "lemonade":
+        return True
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_probe_loaded_lemonade_model(loaded_model))
+    except (httpx.HTTPError, OSError, RuntimeError, ValueError):
+        return False
+    finally:
+        loop.close()
+
+
+def _already_active_model(model_id: str, model: dict) -> tuple[bool, str | None]:
+    gguf_file = model.get("gguf_file")
+    if not gguf_file:
+        return False, None
+    if _read_active_model() != gguf_file:
+        return False, None
+    if read_env_value("LLM_MODEL", INSTALL_DIR) not in {model.get("llm_model_name"), model_id}:
+        return False, None
+    if not (Path(DATA_DIR) / "models" / gguf_file).exists():
+        return False, None
+
+    loaded_model = _fetch_loaded_model_sync()
+    if (
+        _model_name_tokens(loaded_model) & _catalog_model_tokens(model)
+        and _loaded_model_backend_ready_sync(loaded_model)
+    ):
+        return True, loaded_model
+    return False, loaded_model
+
+
 async def _await_or_default(coro, default, label: str, timeout_seconds: float = 2.0):
     try:
         return await asyncio.wait_for(coro, timeout=timeout_seconds)
@@ -302,9 +413,20 @@ async def _fetch_llama_counters(host: str, port: int, model_name: str) -> dict:
 
 
 async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> str | None:
+    base_url = _configured_llm_base_url(host, port)
     async with httpx.AsyncClient(timeout=10.0) as client:
+        if api_prefix == "/api/v1":
+            try:
+                resp = await client.get(f"{base_url}{api_prefix}/health")
+                resp.raise_for_status()
+                loaded = resp.json().get("model_loaded")
+                if loaded:
+                    return loaded
+            except (httpx.HTTPError, ValueError):
+                pass
+
         try:
-            resp = await client.get(f"http://{host}:{port}{api_prefix}/models")
+            resp = await client.get(f"{base_url}{api_prefix}/models")
             resp.raise_for_status()
             data = resp.json().get("data") or []
             for model in data:
@@ -317,7 +439,7 @@ async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> st
             pass
 
         try:
-            resp = await client.get(f"http://{host}:{port}/props")
+            resp = await client.get(f"{base_url}/props")
             resp.raise_for_status()
             props = resp.json()
             if props.get("model_alias"):
@@ -505,6 +627,10 @@ def load_model(model_id: str, api_key: str = Depends(verify_api_key)):
     model = _find_model_in_library(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library")
+
+    already_active, loaded_model = _already_active_model(model_id, model)
+    if already_active:
+        return {"status": "already_active", "model_id": model_id, "loadedModel": loaded_model}
 
     # Long timeout — model loading can take minutes
     result = _call_agent_model("/v1/model/activate", {"model_id": model_id}, timeout=600)

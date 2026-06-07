@@ -3,12 +3,104 @@
 from __future__ import annotations
 
 import importlib
+import asyncio
 import json
 import sys
 import types
 from unittest.mock import AsyncMock
 
 from models import GPUInfo
+
+
+def test_fetch_loaded_model_uses_configured_llm_url(monkeypatch):
+    """Windows Lemonade exposes the runtime through LLM_URL, not llama-server DNS."""
+    import routers.models as models_router
+
+    seen_urls: list[str] = []
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"model_loaded": "extra.Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"}
+
+    class _Client:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            seen_urls.append(url)
+            return _Response()
+
+    monkeypatch.setenv("LLM_URL", "http://host.docker.internal:8080/api/v1")
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", _Client)
+
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(
+            models_router._fetch_llama_loaded_model("llama-server", 8080, "/api/v1")
+        )
+    finally:
+        loop.close()
+
+    assert result == "extra.Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    assert seen_urls == ["http://host.docker.internal:8080/api/v1/health"]
+
+
+def test_fetch_loaded_model_falls_back_to_models_when_lemonade_health_empty(monkeypatch):
+    import routers.models as models_router
+
+    seen_urls: list[str] = []
+
+    class _Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class _Client:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            seen_urls.append(url)
+            if url.endswith("/health"):
+                return _Response({"status": "ok", "model_loaded": None})
+            return _Response({"data": [{"id": "extra.Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"}]})
+
+    monkeypatch.setenv("LLM_URL", "http://host.docker.internal:8080")
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", _Client)
+
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(
+            models_router._fetch_llama_loaded_model("llama-server", 8080, "/api/v1")
+        )
+    finally:
+        loop.close()
+
+    assert result == "extra.Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    assert seen_urls == [
+        "http://host.docker.internal:8080/api/v1/health",
+        "http://host.docker.internal:8080/api/v1/models",
+    ]
 
 
 def test_get_gpu_vram_returns_none_on_nvml_error(monkeypatch):
@@ -221,3 +313,118 @@ def test_benchmark_endpoint_rejects_not_loaded_model(test_client, monkeypatch, t
 
     assert resp.status_code == 409
     assert "Load the model" in resp.json()["detail"]
+
+
+def test_load_model_noops_when_requested_model_already_loaded(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, [{
+        "id": "qwen3.5-9b-q4",
+        "name": "Qwen 3.5 9B",
+        "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+        "size_mb": 5760,
+        "vram_required_gb": 8,
+        "context_length": 32768,
+        "quantization": "Q4_K_M",
+        "specialty": "General",
+        "description": "Balanced default.",
+        "llm_model_name": "qwen3.5-9b",
+    }])
+    (data_dir / "models" / "Qwen3.5-9B-Q4_K_M.gguf").write_text("model", encoding="utf-8")
+    (install_dir / ".env").write_text(
+        "LLM_MODEL=qwen3.5-9b\n"
+        "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: "extra.Qwen3.5-9B-Q4_K_M.gguf")
+    monkeypatch.setattr(models_router, "_loaded_model_backend_ready_sync", lambda loaded: True)
+
+    def fail_agent_call(*_args, **_kwargs):
+        raise AssertionError("already-active model should not call host-agent activate")
+
+    monkeypatch.setattr(models_router, "_call_agent_model", fail_agent_call)
+
+    resp = test_client.post("/api/models/qwen3.5-9b-q4/load", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "status": "already_active",
+        "model_id": "qwen3.5-9b-q4",
+        "loadedModel": "extra.Qwen3.5-9B-Q4_K_M.gguf",
+    }
+
+
+def test_load_model_delegates_when_live_backend_reports_different_model(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, [{
+        "id": "qwen3.5-9b-q4",
+        "name": "Qwen 3.5 9B",
+        "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+        "size_mb": 5760,
+        "vram_required_gb": 8,
+        "context_length": 32768,
+        "quantization": "Q4_K_M",
+        "specialty": "General",
+        "description": "Balanced default.",
+        "llm_model_name": "qwen3.5-9b",
+    }])
+    (data_dir / "models" / "Qwen3.5-9B-Q4_K_M.gguf").write_text("model", encoding="utf-8")
+    (install_dir / ".env").write_text(
+        "LLM_MODEL=qwen3.5-9b\n"
+        "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: "other-model.gguf")
+    monkeypatch.setattr(
+        models_router,
+        "_call_agent_model",
+        lambda path, body, timeout=30: {"status": "activated", "path": path, "body": body, "timeout": timeout},
+    )
+
+    resp = test_client.post("/api/models/qwen3.5-9b-q4/load", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "status": "activated",
+        "path": "/v1/model/activate",
+        "body": {"model_id": "qwen3.5-9b-q4"},
+        "timeout": 600,
+    }
+
+
+def test_load_model_delegates_when_loaded_backend_is_not_ready(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, [{
+        "id": "qwen3.5-9b-q4",
+        "name": "Qwen 3.5 9B",
+        "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+        "size_mb": 5760,
+        "vram_required_gb": 8,
+        "context_length": 32768,
+        "quantization": "Q4_K_M",
+        "specialty": "General",
+        "description": "Balanced default.",
+        "llm_model_name": "qwen3.5-9b",
+    }])
+    (data_dir / "models" / "Qwen3.5-9B-Q4_K_M.gguf").write_text("model", encoding="utf-8")
+    (install_dir / ".env").write_text(
+        "LLM_MODEL=qwen3.5-9b\n"
+        "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: "extra.Qwen3.5-9B-Q4_K_M.gguf")
+    monkeypatch.setattr(models_router, "_loaded_model_backend_ready_sync", lambda loaded: False)
+    monkeypatch.setattr(
+        models_router,
+        "_call_agent_model",
+        lambda path, body, timeout=30: {"status": "activated", "path": path, "body": body, "timeout": timeout},
+    )
+
+    resp = test_client.post("/api/models/qwen3.5-9b-q4/load", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "status": "activated",
+        "path": "/v1/model/activate",
+        "body": {"model_id": "qwen3.5-9b-q4"},
+        "timeout": 600,
+    }

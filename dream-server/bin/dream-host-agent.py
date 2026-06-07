@@ -3292,6 +3292,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             # Read current env BEFORE modification — needed for gpu_backend guard
             env_pre = load_env(env_path)
             gpu_backend = env_pre.get("GPU_BACKEND", "nvidia")
+            windows_host_lemonade = _is_windows_host_lemonade(env_pre)
             runtime_profile = _select_runtime_profile(model, env_pre)
             runtime_env = {}
             if runtime_profile:
@@ -3405,8 +3406,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                 hermes_live_exists = hermes_live_config.exists()
             except PermissionError:
                 hermes_live_exists = None
-            hermes_live_patched = _patch_hermes_model_config(hermes_live_config, hermes_model_name)
-            hermes_template_patched = _patch_hermes_model_config(hermes_template_config, hermes_model_name)
+            hermes_base_url = "http://litellm:4000/v1" if windows_host_lemonade else None
+            hermes_live_patched = _patch_hermes_model_config(hermes_live_config, hermes_model_name, base_url=hermes_base_url)
+            hermes_template_patched = _patch_hermes_model_config(hermes_template_config, hermes_model_name, base_url=hermes_base_url)
             # Restart Hermes only when its persisted live config changed, or
             # when no persisted config exists and a patched template can seed
             # the next start. If live config is container-owned and unreadable,
@@ -3430,7 +3432,9 @@ class AgentHandler(BaseHTTPRequestHandler):
             env = load_env(env_path)
             _in_container = bool(os.environ.get("DREAM_HOST_INSTALL_DIR"))
 
-            if gpu_backend == "apple":
+            if windows_host_lemonade:
+                _restart_windows_lemonade(env)
+            elif gpu_backend == "apple":
                 # macOS: manage native llama-server process via PID file
                 pid_file = INSTALL_DIR / "data" / ".llama-server.pid"
                 llama_bin = INSTALL_DIR / "bin" / "llama-server"
@@ -3486,7 +3490,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             # - On the host (native systemd or macOS): use 127.0.0.1 + OLLAMA_PORT.
             #   (Use 127.0.0.1, not localhost — localhost resolves to ::1 on
             #   IPv6-enabled hosts but Docker binds to 127.0.0.1 only.)
-            if os.environ.get("DREAM_HOST_INSTALL_DIR"):
+            if windows_host_lemonade:
+                llama_host = "127.0.0.1"
+                llama_port = env.get("AMD_INFERENCE_PORT", "8080")
+            elif os.environ.get("DREAM_HOST_INSTALL_DIR"):
                 llama_host = "dream-llama-server"
                 llama_port = "8080"
             else:
@@ -3559,7 +3566,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                 logger.warning("Model activation failed — rolling back")
                 restore_backups()
                 rollback_env = load_env(env_path)
-                if gpu_backend == "apple":
+                rollback_windows_host_lemonade = _is_windows_host_lemonade(rollback_env)
+                if rollback_windows_host_lemonade:
+                    _restart_windows_lemonade(rollback_env)
+                elif gpu_backend == "apple":
                     # Stop newly launched native process, re-launch with old params
                     if pid_file.exists():
                         try:
@@ -3700,6 +3710,113 @@ def _send_lemonade_warmup(host: str, port: str, gguf_file: str, attempt: int) ->
     return False
 
 
+def _is_windows_host_lemonade(env: dict) -> bool:
+    runtime = env.get("AMD_INFERENCE_RUNTIME", "").lower()
+    backend = env.get("LLM_BACKEND", "").lower()
+    location = env.get("AMD_INFERENCE_LOCATION", "").lower()
+    return (
+        platform.system().lower() == "windows"
+        and env.get("GPU_BACKEND", "").lower() == "amd"
+        and (runtime == "lemonade" or backend == "lemonade")
+        and location == "host"
+    )
+
+
+def _restart_windows_lemonade(env: dict):
+    """Start managed Windows Lemonade through Task Scheduler.
+
+    Windows OpenSSH can end plain Start-Process children when the SSH logon
+    session exits. Task Scheduler gives the native Lemonade runtime an
+    independent lifecycle, which keeps fleet/dashboard activation stable.
+    """
+    exe = None
+    for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+        if not root:
+            continue
+        candidate = Path(root) / "Lemonade Server" / "bin" / "lemonade-server.exe"
+        if candidate.exists():
+            exe = candidate
+            break
+    if exe is None:
+        raise RuntimeError("lemonade-server.exe not found under Program Files")
+
+    ps_env = os.environ.copy()
+    ps_env.update({
+        "DREAM_WIN_LEMONADE_EXE": str(exe),
+        "DREAM_WIN_MODELS_DIR": str(INSTALL_DIR / "data" / "models"),
+        "DREAM_WIN_PID_FILE": str(INSTALL_DIR / "data" / "llama-server.pid"),
+        "DREAM_WIN_LEMONADE_PORT": env.get("AMD_INFERENCE_PORT", "8080") or "8080",
+        "DREAM_WIN_BIND_ADDR": env.get("BIND_ADDRESS", "127.0.0.1") or "127.0.0.1",
+        "DREAM_WIN_LEMONADE_TASK": "DreamServerLemonadeRuntime",
+    })
+    script = r'''
+$ErrorActionPreference = "Stop"
+$exe = $env:DREAM_WIN_LEMONADE_EXE
+$modelsDir = $env:DREAM_WIN_MODELS_DIR
+$pidPath = $env:DREAM_WIN_PID_FILE
+$port = [int]$env:DREAM_WIN_LEMONADE_PORT
+$bindAddr = $env:DREAM_WIN_BIND_ADDR
+$taskName = $env:DREAM_WIN_LEMONADE_TASK
+
+function Stop-DreamProcessId {
+    param([int]$ProcId)
+    Stop-Process -Id $ProcId -Force -ErrorAction SilentlyContinue
+    for ($i = 0; $i -lt 30; $i++) {
+        if (-not (Get-Process -Id $ProcId -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Milliseconds 500
+    }
+}
+
+$existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch {}
+if (Test-Path $pidPath) {
+    $rawPid = (Get-Content -LiteralPath $pidPath -Raw).Trim()
+    if ($rawPid -match '^\d+$') { Stop-DreamProcessId -ProcId ([int]$rawPid) }
+    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+}
+foreach ($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
+    if ($listener.OwningProcess -gt 0) { Stop-DreamProcessId -ProcId ([int]$listener.OwningProcess) }
+}
+$binDir = Split-Path -Parent $exe
+$userProfile = [Environment]::GetFolderPath("UserProfile")
+$cacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
+foreach ($child in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase)) -or
+    ($cacheBin -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($cacheBin, [StringComparison]::OrdinalIgnoreCase)) -or
+    ($_.CommandLine -and $_.CommandLine.IndexOf($modelsDir, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+})) {
+    Stop-DreamProcessId -ProcId ([int]$child.ProcessId)
+}
+
+if (-not $existingTask) {
+    $argString = "serve --port $port --host $bindAddr --no-tray --llamacpp vulkan --extra-models-dir `"$modelsDir`""
+    $action = New-ScheduledTaskAction -Execute $exe -Argument $argString -WorkingDirectory (Split-Path -Parent $exe)
+    $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
+    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+}
+Start-ScheduledTask -TaskName $taskName
+Start-Sleep -Seconds 5
+$proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($exe, [StringComparison]::OrdinalIgnoreCase) } |
+    Sort-Object ProcessId -Descending |
+    Select-Object -First 1
+if (-not $proc) { throw "Lemonade scheduled task started but no lemonade-server.exe process was found" }
+New-Item -ItemType Directory -Path (Split-Path -Parent $pidPath) -Force | Out-Null
+Set-Content -LiteralPath $pidPath -Value $proc.ProcessId
+'''
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=ps_env,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Windows Lemonade restart failed: {(result.stderr or result.stdout).strip()[:500]}")
+    logger.info("Windows Lemonade scheduled task started")
+
+
 def _render_runtime_config(
     install_dir: Path,
     surface: str,
@@ -3800,8 +3917,8 @@ def _write_lemonade_config(install_dir: Path, gguf_file: str):
     logger.info("Wrote lemonade.yaml for model: extra.%s", gguf_file)
 
 
-def _patch_hermes_model_config(path: Path, model_name: str) -> bool:
-    """Patch `model.default` in a Hermes config/template YAML file.
+def _patch_hermes_model_config(path: Path, model_name: str, base_url: str | None = None) -> bool:
+    """Patch `model.default` and optionally `model.base_url` in Hermes config.
 
     Hermes copies the template once into data/hermes/config.yaml and then uses
     the persisted copy as source of truth. Patch both when present so current
@@ -3841,6 +3958,12 @@ def _patch_hermes_model_config(path: Path, model_name: str) -> bool:
         if in_model_block and re.match(r"^\s+default:\s*", line):
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f'{indent}default: "{model_name}"'
+            new_lines.append(new_line)
+            changed = changed or new_line != line
+            continue
+        if base_url and in_model_block and re.match(r"^\s+base_url:\s*", line):
+            indent = line[:len(line) - len(line.lstrip())]
+            new_line = f'{indent}base_url: "{base_url}"'
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue

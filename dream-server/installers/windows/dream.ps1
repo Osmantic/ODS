@@ -47,6 +47,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 
 $_resolvedLemonadeExe = Resolve-DreamLemonadeExe
 if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
+$script:LEMONADE_TASK_NAME = "DreamServerLemonadeRuntime"
 
 # ── Resolve install directory ──
 $InstallDir = $script:DS_INSTALL_DIR
@@ -168,6 +169,13 @@ function Invoke-HermesSoulRefresh {
 
     New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
     $rendered = $false
+    $profileArgs = @()
+    try {
+        $envMap = Read-DreamEnv
+        if ($envMap["LLM_BACKEND"] -eq "lemonade" -and $envMap["AMD_INFERENCE_RUNTIME"] -eq "lemonade") {
+            $profileArgs = @("--profile", "local-lemonade")
+        }
+    } catch { }
     if (Test-Path $builder) {
         $pythonCandidates = @(
             @{ Command = "python"; Args = @() },
@@ -179,7 +187,7 @@ function Invoke-HermesSoulRefresh {
             $cmd = Get-Command $candidate.Command -ErrorAction SilentlyContinue
             if (-not $cmd -or -not $cmd.Source) { continue }
             try {
-                & $cmd.Source @($candidate.Args) $builder "--template" $template "--env" $envPath "--output" $output *>> $script:DS_LOG_FILE
+                & $cmd.Source @($candidate.Args) $builder "--template" $template "--env" $envPath "--output" $output @profileArgs *>> $script:DS_LOG_FILE
                 if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $output -PathType Leaf)) {
                     $rendered = $true
                     break
@@ -577,6 +585,76 @@ function Get-NativeInferenceStatus {
     return $result
 }
 
+function Stop-DreamNativeProcessId {
+    param([int]$ProcessId)
+
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    for ($i = 0; $i -lt 30; $i++) {
+        $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if (-not $proc) { return }
+        Start-Sleep -Milliseconds 500
+    }
+}
+
+function Stop-DreamLemonadeRuntime {
+    try { Stop-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -ErrorAction SilentlyContinue } catch { }
+    try { Unregister-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+
+    if (Test-Path $script:INFERENCE_PID_FILE) {
+        $rawPid = (Get-Content -LiteralPath $script:INFERENCE_PID_FILE -Raw).Trim()
+        if ($rawPid -match '^\d+$') {
+            Stop-DreamNativeProcessId -ProcessId ([int]$rawPid)
+        }
+        Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
+    }
+
+    foreach ($listener in @(Get-NetTCPConnection -LocalPort $script:LEMONADE_PORT -State Listen -ErrorAction SilentlyContinue)) {
+        if ($listener.OwningProcess -gt 0) {
+            Stop-DreamNativeProcessId -ProcessId ([int]$listener.OwningProcess)
+        }
+    }
+
+    $binDir = Split-Path -Parent $script:LEMONADE_EXE
+    $userProfile = [Environment]::GetFolderPath("UserProfile")
+    $cacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
+    $modelsDir = Join-Path (Join-Path $InstallDir "data") "models"
+    foreach ($child in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase)) -or
+        ($cacheBin -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($cacheBin, [StringComparison]::OrdinalIgnoreCase)) -or
+        ($_.CommandLine -and $_.CommandLine.IndexOf($modelsDir, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    })) {
+        Stop-DreamNativeProcessId -ProcessId ([int]$child.ProcessId)
+    }
+}
+
+function Start-DreamLemonadeRuntime {
+    param([string]$BindAddress)
+
+    $modelsDir = Join-Path (Join-Path $InstallDir "data") "models"
+    Stop-DreamLemonadeRuntime
+
+    $argString = "serve --port $($script:LEMONADE_PORT) --host $BindAddress --no-tray --llamacpp vulkan --extra-models-dir `"$modelsDir`""
+    $action = New-ScheduledTaskAction -Execute $script:LEMONADE_EXE -Argument $argString -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE)
+    $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
+    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+    Start-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME
+
+    Start-Sleep -Seconds 5
+    $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase) } |
+        Sort-Object ProcessId -Descending |
+        Select-Object -First 1
+    if (-not $proc) {
+        throw "Lemonade scheduled task started but no lemonade-server.exe process was found"
+    }
+
+    $pidDir = Split-Path $script:INFERENCE_PID_FILE
+    New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
+    Set-Content -Path $script:INFERENCE_PID_FILE -Value $proc.ProcessId
+    return [int]$proc.ProcessId
+}
+
 # Backward-compat alias
 function Get-NativeLlamaStatus { return Get-NativeInferenceStatus }
 
@@ -599,23 +677,8 @@ function Start-NativeInferenceServer {
     if ([string]::IsNullOrWhiteSpace($bindAddr)) { $bindAddr = "127.0.0.1" }
 
     if ($backend -eq "lemonade") {
-        $modelsDir = Join-Path (Join-Path $InstallDir "data") "models"
-        $lemonadeArgs = @(
-            "serve",
-            "--port", "$($script:LEMONADE_PORT)",
-            "--host", $bindAddr,
-            "--no-tray",
-            "--llamacpp", "vulkan",
-            "--extra-models-dir", $modelsDir
-        )
-        $pidDir = Split-Path $script:INFERENCE_PID_FILE
-        New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
-
-        $proc = Start-Process -FilePath $script:LEMONADE_EXE `
-            -ArgumentList $lemonadeArgs -WindowStyle Hidden -PassThru
-        Set-Content -Path $script:INFERENCE_PID_FILE -Value $proc.Id
-
-        Write-AISuccess "Lemonade server started (PID $($proc.Id))"
+        $procId = Start-DreamLemonadeRuntime -BindAddress $bindAddr
+        Write-AISuccess "Lemonade server started (PID $procId)"
         Write-AI "Waiting for health..."
 
         $maxWait = 60; $waited = 0
@@ -693,6 +756,12 @@ function Start-NativeLlamaServer { Start-NativeInferenceServer }
 
 function Stop-NativeInferenceServer {
     $status = Get-NativeInferenceStatus
+    if ($status.Backend -eq "lemonade") {
+        Stop-DreamLemonadeRuntime
+        Write-AISuccess "Native lemonade stopped"
+        return
+    }
+
     if (-not $status.Running) {
         Write-AI "Native inference server not running"
         return
@@ -901,7 +970,7 @@ function Invoke-Stop {
             }
 
             # Stop native inference server (AMD path)
-            if (Test-Path $script:INFERENCE_PID_FILE) {
+            if ((Get-NativeInferenceBackend) -ne "none") {
                 Stop-NativeInferenceServer
             }
 
@@ -947,7 +1016,7 @@ function Invoke-Restart {
             }
         } else {
             # For AMD, also restart native inference server
-            if (Test-Path $script:INFERENCE_PID_FILE) {
+            if ((Get-NativeInferenceBackend) -ne "none") {
                 Stop-NativeInferenceServer
                 Start-NativeInferenceServer
             }
@@ -1250,6 +1319,86 @@ function Invoke-Repair {
     }
 }
 
+function Test-DreamHostAgentPythonCandidate {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$PrefixArgs = @()
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path $FilePath)) {
+        return $false
+    }
+    if ($FilePath -match '\\WindowsApps\\python3?\.exe$') {
+        return $false
+    }
+
+    try {
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        $version = & $FilePath @PrefixArgs --version 2>&1
+        $exitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        return ($exitCode -eq 0 -and (($version | Out-String) -match 'Python 3\.'))
+    } catch {
+        $ErrorActionPreference = $prevEAP
+        return $false
+    }
+}
+
+function New-DreamHostAgentPythonCandidate {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$PrefixArgs = @()
+    )
+
+    [pscustomobject]@{
+        FilePath   = $FilePath
+        PrefixArgs = @($PrefixArgs)
+    }
+}
+
+function Resolve-DreamHostAgentPython {
+    $seen = @{}
+    $candidateFiles = New-Object System.Collections.Generic.List[string]
+
+    foreach ($root in @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python"),
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)}
+    )) {
+        if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path $root)) { continue }
+        Get-ChildItem -Path $root -Directory -Filter "Python*" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $exe = Join-Path $_.FullName "python.exe"
+                if (Test-Path $exe) { $candidateFiles.Add($exe) }
+            }
+    }
+
+    foreach ($name in @("python3", "python")) {
+        $cmd = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+        if ($cmd -and $cmd.Source) {
+            $candidateFiles.Add($cmd.Source)
+        }
+    }
+
+    foreach ($file in $candidateFiles) {
+        $key = $file.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        if (Test-DreamHostAgentPythonCandidate -FilePath $file) {
+            return (New-DreamHostAgentPythonCandidate -FilePath $file)
+        }
+    }
+
+    $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+    if ($pyLauncher -and $pyLauncher.Source -and
+        (Test-DreamHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))) {
+        return (New-DreamHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))
+    }
+
+    return $null
+}
+
 function Invoke-Agent {
     param([string]$Action = "status")
 
@@ -1285,10 +1434,9 @@ function Invoke-Agent {
             } catch { }
 
             # Find Python
-            $_python3 = Get-Command python3 -ErrorAction SilentlyContinue
-            if (-not $_python3) { $_python3 = Get-Command python -ErrorAction SilentlyContinue }
+            $_python3 = Resolve-DreamHostAgentPython
             if (-not $_python3) {
-                Write-AIError "Python not found in PATH -- install Python 3 and try again"
+                Write-AIError "Python 3 not found (ignoring Microsoft Store aliases) -- install Python 3.12 and try again"
                 return
             }
             if (-not (Test-Path $agentScript)) {
@@ -1308,30 +1456,41 @@ function Invoke-Agent {
             $pidDir = Split-Path $pidFile
             New-Item -ItemType Directory -Path $pidDir -Force -ErrorAction SilentlyContinue | Out-Null
 
-            # Start agent through a hidden PowerShell host so manual starts do
-            # not leave a visible cmd.exe window. Prepend Docker to PATH so the
-            # agent can find docker.exe (Docker Desktop may not be in the
-            # system PATH yet after fresh install).
+            # Start the agent through Task Scheduler so SSH-launched restarts
+            # survive the non-interactive PowerShell session ending.
             $_dockerBin = "C:\Program Files\Docker\Docker\resources\bin"
             $_psQuote = {
                 param([string]$Value)
                 "'" + ($Value -replace "'", "''") + "'"
             }
             $_dockerPathLiteral = & $_psQuote "$_dockerBin;"
-            $_pythonLiteral = & $_psQuote $_python3.Source
+            $_pythonLiteral = & $_psQuote $_python3.FilePath
+            $_pythonPrefixArgsLiteral = "@(" + (($_python3.PrefixArgs | ForEach-Object { & $_psQuote $_ }) -join ", ") + ")"
             $_agentScriptLiteral = & $_psQuote $agentScript
             $_pidFileLiteral = & $_psQuote $pidFile
             $_installDirLiteral = & $_psQuote $InstallDir
             $_logFileLiteral = & $_psQuote $logFile
             $_agentCommand = @"
 `$env:PATH = $_dockerPathLiteral + `$env:PATH
-`$agentArgs = @($_agentScriptLiteral, '--port', '$port', '--pid-file', $_pidFileLiteral, '--install-dir', $_installDirLiteral)
-Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirectory $_installDirLiteral -WindowStyle Hidden -RedirectStandardError $_logFileLiteral
+`$agentArgs = $_pythonPrefixArgsLiteral + @($_agentScriptLiteral, '--port', '$port', '--pid-file', $_pidFileLiteral, '--install-dir', $_installDirLiteral)
+Set-Location $_installDirLiteral
+Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirectory $_installDirLiteral -WindowStyle Hidden -RedirectStandardError $_logFileLiteral -Wait
 "@
             $_encodedAgentCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_agentCommand))
-            Start-Process -FilePath "powershell.exe" `
-                -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-EncodedCommand", $_encodedAgentCommand `
-                -WindowStyle Hidden -WorkingDirectory $InstallDir
+            try { Stop-ScheduledTask -TaskName $script:DREAM_AGENT_TASK_NAME -ErrorAction SilentlyContinue } catch { }
+            $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" `
+                -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $_encodedAgentCommand" `
+                -WorkingDirectory $InstallDir
+            $taskTrigger = New-ScheduledTaskTrigger -AtLogOn
+            $taskSettings = New-ScheduledTaskSettingsSet `
+                -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+            $taskPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+            Register-ScheduledTask -TaskName $script:DREAM_AGENT_TASK_NAME `
+                -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -Principal $taskPrincipal `
+                -Description "DreamServer Host Agent -- manages extensions and bridges dashboard to host" `
+                -Force | Out-Null
+            Start-ScheduledTask -TaskName $script:DREAM_AGENT_TASK_NAME
 
             Start-Sleep -Seconds 3
             try {
@@ -1347,6 +1506,7 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
             }
         }
         "stop" {
+            try { Stop-ScheduledTask -TaskName $script:DREAM_AGENT_TASK_NAME -ErrorAction SilentlyContinue } catch { }
             if (Test-Path $pidFile) {
                 try {
                     $_pid = [int](Get-Content $pidFile -Raw).Trim()
@@ -1358,6 +1518,11 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
                 Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
             } else {
                 Write-AI "Host agent not running (no PID file)"
+            }
+            foreach ($_listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
+                if ($_listener.OwningProcess -gt 0) {
+                    Stop-Process -Id ([int]$_listener.OwningProcess) -Force -ErrorAction SilentlyContinue
+                }
             }
         }
         "restart" {

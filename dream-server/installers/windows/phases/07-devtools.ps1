@@ -196,11 +196,113 @@ if ($_npmCmd) {
     }
 }
 
+function Test-DreamHostAgentPythonCandidate {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$PrefixArgs = @()
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path $FilePath)) {
+        return $false
+    }
+
+    # Windows can expose python.exe/python3.exe aliases that only print the
+    # Microsoft Store install hint. They are CommandInfo objects, but not a
+    # runnable Python interpreter for dream-host-agent.
+    if ($FilePath -match '\\WindowsApps\\python3?\.exe$') {
+        return $false
+    }
+
+    try {
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        $version = & $FilePath @PrefixArgs --version 2>&1
+        $exitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        return ($exitCode -eq 0 -and (($version | Out-String) -match 'Python 3\.'))
+    } catch {
+        $ErrorActionPreference = $prevEAP
+        return $false
+    }
+}
+
+function New-DreamHostAgentPythonCandidate {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$PrefixArgs = @()
+    )
+
+    [pscustomobject]@{
+        FilePath   = $FilePath
+        PrefixArgs = @($PrefixArgs)
+    }
+}
+
+function Resolve-DreamHostAgentPython {
+    $seen = @{}
+    $candidateFiles = New-Object System.Collections.Generic.List[string]
+
+    foreach ($root in @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python"),
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)}
+    )) {
+        if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path $root)) { continue }
+        Get-ChildItem -Path $root -Directory -Filter "Python*" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $exe = Join-Path $_.FullName "python.exe"
+                if (Test-Path $exe) { $candidateFiles.Add($exe) }
+            }
+    }
+
+    foreach ($name in @("python3", "python")) {
+        $cmd = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+        if ($cmd -and $cmd.Source) {
+            $candidateFiles.Add($cmd.Source)
+        }
+    }
+
+    foreach ($file in $candidateFiles) {
+        $key = $file.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        if (Test-DreamHostAgentPythonCandidate -FilePath $file) {
+            return (New-DreamHostAgentPythonCandidate -FilePath $file)
+        }
+    }
+
+    $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+    if ($pyLauncher -and $pyLauncher.Source -and
+        (Test-DreamHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))) {
+        return (New-DreamHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))
+    }
+
+    return $null
+}
+
+function Install-DreamHostAgentPython {
+    $winget = Get-Command winget -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        Write-AIWarn "Python 3 not found and winget is unavailable -- Dream host agent cannot start."
+        return $null
+    }
+
+    Write-AIWarn "Python 3 not found. Installing Python 3.12 via winget for Dream host agent..."
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    & winget install --exact --id Python.Python.3.12 --silent --disable-interactivity --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
+    $ErrorActionPreference = $prevEAP
+
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+                [System.Environment]::GetEnvironmentVariable("PATH", "User")
+    return (Resolve-DreamHostAgentPython)
+}
+
 # ── Dream Host Agent (extension lifecycle management) ────────────────────────
 $_agentScript = Join-Path (Join-Path $installDir "bin") "dream-host-agent.py"
 if (Test-Path $_agentScript) {
-    $_python3 = Get-Command python3 -ErrorAction SilentlyContinue
-    if (-not $_python3) { $_python3 = Get-Command python -ErrorAction SilentlyContinue }
+    $_python3 = Resolve-DreamHostAgentPython
+    if (-not $_python3) { $_python3 = Install-DreamHostAgentPython }
 
     if ($_python3) {
         # Kill existing agent on reinstall (matches Linux force-restart pattern)
@@ -217,48 +319,32 @@ if (Test-Path $_agentScript) {
         $pidDir = Split-Path $script:DREAM_AGENT_PID_FILE
         New-Item -ItemType Directory -Path $pidDir -Force -ErrorAction SilentlyContinue | Out-Null
 
-        # Start agent through a hidden PowerShell host so login persistence does
-        # not leave a visible cmd.exe window on the desktop. Prepend Docker to
-        # PATH so the agent can find docker.exe (Docker Desktop may not be in
-        # the system PATH yet after fresh install).
+        # Run the agent through Task Scheduler immediately so SSH-launched
+        # installs keep the host agent alive after the session exits. Prepend
+        # Docker to PATH so the agent can find docker.exe (Docker Desktop may
+        # not be in the system PATH yet after fresh install).
         $_dockerBin = "C:\Program Files\Docker\Docker\resources\bin"
         $_psQuote = {
             param([string]$Value)
             "'" + ($Value -replace "'", "''") + "'"
         }
         $_dockerPathLiteral = & $_psQuote "$_dockerBin;"
-        $_pythonLiteral = & $_psQuote $_python3.Source
+        $_pythonLiteral = & $_psQuote $_python3.FilePath
+        $_pythonPrefixArgsLiteral = "@(" + (($_python3.PrefixArgs | ForEach-Object { & $_psQuote $_ }) -join ", ") + ")"
         $_agentScriptLiteral = & $_psQuote $_agentScript
         $_pidFileLiteral = & $_psQuote $script:DREAM_AGENT_PID_FILE
         $_installDirLiteral = & $_psQuote $installDir
         $_logFileLiteral = & $_psQuote $script:DREAM_AGENT_LOG_FILE
         $_agentCommand = @"
 `$env:PATH = $_dockerPathLiteral + `$env:PATH
-`$agentArgs = @($_agentScriptLiteral, '--port', '$($script:DREAM_AGENT_PORT)', '--pid-file', $_pidFileLiteral, '--install-dir', $_installDirLiteral)
-Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirectory $_installDirLiteral -WindowStyle Hidden -RedirectStandardError $_logFileLiteral
+`$agentArgs = $_pythonPrefixArgsLiteral + @($_agentScriptLiteral, '--port', '$($script:DREAM_AGENT_PORT)', '--pid-file', $_pidFileLiteral, '--install-dir', $_installDirLiteral)
+Set-Location $_installDirLiteral
+Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirectory $_installDirLiteral -WindowStyle Hidden -RedirectStandardError $_logFileLiteral -Wait
 "@
         $_encodedAgentCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_agentCommand))
-        Start-Process -FilePath "powershell.exe" `
-            -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-EncodedCommand", $_encodedAgentCommand `
-            -WindowStyle Hidden -WorkingDirectory $installDir
-
-        # Brief health check
-        Start-Sleep -Seconds 3
-        try {
-            $resp = Invoke-WebRequest -Uri $script:DREAM_AGENT_HEALTH_URL `
-                -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue
-            if ($resp.StatusCode -eq 200) {
-                Write-AISuccess "Dream host agent started (port $($script:DREAM_AGENT_PORT))"
-            } else {
-                Write-AIWarn "Dream host agent started but health check returned $($resp.StatusCode)"
-            }
-        } catch {
-            Write-AIWarn "Dream host agent started but not yet responding -- check: .\dream.ps1 agent status"
-        }
 
         # Register Windows Scheduled Task for login persistence
-        Unregister-ScheduledTask -TaskName $script:DREAM_AGENT_TASK_NAME `
-            -Confirm:$false -ErrorAction SilentlyContinue
+        try { Stop-ScheduledTask -TaskName $script:DREAM_AGENT_TASK_NAME -ErrorAction SilentlyContinue } catch { }
 
         $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" `
             -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $_encodedAgentCommand" `
@@ -267,14 +353,29 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
         $taskSettings = New-ScheduledTaskSettingsSet `
             -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
             -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+        $taskPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
         $taskError = $null
         try {
             Register-ScheduledTask -TaskName $script:DREAM_AGENT_TASK_NAME `
-                -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings `
+                -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -Principal $taskPrincipal `
                 -Description "DreamServer Host Agent -- manages extensions and bridges dashboard to host" `
-                -ErrorAction Stop | Out-Null
-            Write-AISuccess "Host agent registered to start at login (Task: $($script:DREAM_AGENT_TASK_NAME))"
+                -Force -ErrorAction Stop | Out-Null
+            Start-ScheduledTask -TaskName $script:DREAM_AGENT_TASK_NAME
+            Write-AISuccess "Host agent scheduled and started (Task: $($script:DREAM_AGENT_TASK_NAME))"
+
+            Start-Sleep -Seconds 3
+            try {
+                $resp = Invoke-WebRequest -Uri $script:DREAM_AGENT_HEALTH_URL `
+                    -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue
+                if ($resp.StatusCode -eq 200) {
+                    Write-AISuccess "Dream host agent started (port $($script:DREAM_AGENT_PORT))"
+                } else {
+                    Write-AIWarn "Dream host agent started but health check returned $($resp.StatusCode)"
+                }
+            } catch {
+                Write-AIWarn "Dream host agent started but not yet responding -- check: .\dream.ps1 agent status"
+            }
         } catch {
             $taskError = $_
             Write-AIWarn "Could not register login task -- start manually: .\dream.ps1 agent start"
@@ -283,8 +384,8 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
             }
         }
     } else {
-        Write-AIWarn "Python not found -- Dream host agent not started"
-        Write-AI "  Install Python 3 and re-run the installer, or start manually: .\dream.ps1 agent start"
+        Write-AIWarn "Python 3 unavailable -- Dream host agent not started"
+        Write-AI "  Install Python 3.12 and re-run the installer, or start manually: .\dream.ps1 agent start"
     }
 } else {
     Write-AI "Dream host agent script not found -- skipping"

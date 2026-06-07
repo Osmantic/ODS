@@ -325,7 +325,60 @@ def build_context_block(env_path: Path) -> str:
     return "\n".join(lines)
 
 
-def build_soul(template_path: Path, env_path: Path, output_path: Path) -> bool:
+def build_compact_soul(env_path: Path) -> str:
+    """Render a short local profile for backends with tight prompt/schema limits."""
+    env = _read_env(env_path)
+    repo_root = env_path.resolve().parent
+    running = _running_services(repo_root)
+
+    device = env.get("DREAM_DEVICE_NAME") or socket.gethostname() or "this machine"
+    gpu = _humanize_gpu(env)
+    model = _loaded_model() or env.get("LLM_MODEL") or env.get("GGUF_FILE") or "the locally-served model"
+    ctx_size = env.get("CTX_SIZE") or env.get("MAX_CONTEXT") or "?"
+    service_names: list[str] = []
+    for sid in sorted(running):
+        if sid in {"llama-server", "hermes", "hermes-proxy", "dashboard",
+                   "dashboard-api", "dream-proxy", "litellm"}:
+            continue
+        label = _SERVICE_CAPABILITIES.get(sid, (sid, ""))[0]
+        service_names.append(label)
+    service_line = ", ".join(service_names) if service_names else "core local chat services"
+
+    return "\n".join([
+        "# Dream - compact local profile",
+        "",
+        "You are Dream, the resident assistant on this Dream Server install. "
+        "Keep answers brief, natural, and accurate. Use tools when the task needs them.",
+        "",
+        "## Install facts",
+        f"- Host: `{device}`",
+        f"- GPU/backend: {gpu}",
+        f"- Local model: `{model}` (context window: {ctx_size})",
+        f"- Dashboard: `http://{device}.local`",
+        f"- Dream Talk: `http://talk.{device}.local`",
+        f"- Open WebUI: `http://chat.{device}.local`",
+        f"- Running services/extensions: {service_line}",
+        "",
+        "## Direct tools",
+        "- Use `web_search` for current or external facts.",
+        "- Use `web_extract` for specific URLs.",
+        "- Use file tools for reading, writing, and searching workspace files.",
+        "- Use `execute_code` for calculations, snippets, and small scripts.",
+        "",
+        "When asked about this environment, answer from these install facts. "
+        "Do not invent services that are not listed. If the operator asks for "
+        "image/video generation, workflows, model downloads, or extensions, point "
+        "them to the Dream Server dashboard unless that service is listed above.",
+        "",
+    ])
+
+
+def build_soul(
+    template_path: Path,
+    env_path: Path,
+    output_path: Path,
+    profile: str = "full",
+) -> bool:
     """Render the assembled SOUL.md. Returns True if the file actually
     changed (so callers can decide whether to bounce Hermes)."""
     template = template_path.read_text(encoding="utf-8")
@@ -338,6 +391,9 @@ def build_soul(template_path: Path, env_path: Path, output_path: Path) -> bool:
         # operators upgrading from an older template still get the
         # installation-context behaviour.
         assembled = template.rstrip() + "\n\n" + context + "\n"
+
+    if profile == "local-lemonade":
+        assembled = build_compact_soul(env_path)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     # Self-heal a pathological state: Docker's bind-mount engine auto-creates
@@ -391,10 +447,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print the assembled file to stdout instead of writing it.",
     )
+    parser.add_argument(
+        "--profile",
+        choices=["full", "local-lemonade"],
+        default="full",
+        help="Prompt profile to render. local-lemonade keeps Windows AMD prompts compact.",
+    )
     args = parser.parse_args(argv)
 
     if args.check:
-        ctx = build_context_block(args.env)
+        ctx = build_compact_soul(args.env) if args.profile == "local-lemonade" else build_context_block(args.env)
         sys.stdout.write(ctx)
         sys.stdout.write("\n")
         return 0
@@ -403,7 +465,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: template not found at {args.template}", file=sys.stderr)
         return 2
 
-    changed = build_soul(args.template, args.env, args.output)
+    changed = build_soul(args.template, args.env, args.output, profile=args.profile)
     print("changed" if changed else "unchanged")
     return 0
 
