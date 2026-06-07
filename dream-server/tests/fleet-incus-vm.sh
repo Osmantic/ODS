@@ -384,6 +384,24 @@ enable_docker() {
     docker compose version || info "Docker Compose plugin is not installed by the distro package"
 }
 
+reboot_if_kernel_modules_changed() {
+    local running_kernel
+    running_kernel="$(uname -r)"
+    if [[ -d "/usr/lib/modules/$running_kernel" ]]; then
+        return 0
+    fi
+
+    local marker="/var/tmp/dream-fleet-incus-kernel-reboot-requested"
+    if [[ -f "$marker" ]]; then
+        fail "kernel modules for running kernel $running_kernel are still unavailable after reboot"
+    fi
+
+    info "kernel modules for running kernel $running_kernel are unavailable after package updates; rebooting before Docker"
+    touch "$marker"
+    systemctl reboot --no-block
+    exit 75
+}
+
 extract_source() {
     rm -rf "$SRC_DIR"
     mkdir -p "$SRC_DIR"
@@ -452,6 +470,7 @@ info "os-release: $(tr '\n' ' ' < /etc/os-release)"
 wait_for_systemd
 wait_for_network
 install_dependencies
+reboot_if_kernel_modules_changed
 enable_docker
 extract_source
 check_package_detection
@@ -483,6 +502,47 @@ wait_for_exec() {
     done
 }
 
+vm_boot_id() {
+    local vm="$1"
+    incus exec "$vm" -- cat /proc/sys/kernel/random/boot_id 2>/dev/null || true
+}
+
+wait_for_reboot() {
+    local vm="$1" old_boot_id="$2"
+    local deadline=$((SECONDS + WAIT_TIMEOUT))
+    local new_boot_id=""
+
+    sleep 5
+    while ((SECONDS < deadline)); do
+        new_boot_id="$(vm_boot_id "$vm")"
+        if [[ -n "$new_boot_id" && "$new_boot_id" != "$old_boot_id" ]]; then
+            wait_for_exec "$vm"
+            return 0
+        fi
+        sleep 5
+    done
+
+    incus info "$vm" || true
+    fail "$vm did not complete requested reboot"
+}
+
+run_vm_check() {
+    local vm="$1" lane="$2" installer_mode="$3"
+    local boot_id rc
+    boot_id="$(vm_boot_id "$vm")"
+    if incus exec "$vm" -- /tmp/fleet-incus-vm-check.sh "$lane" "${EXPECTED_PKG[$lane]}" "$installer_mode"; then
+        return 0
+    fi
+    rc=$?
+    if [[ "$rc" -eq 75 ]]; then
+        log "=== ${LABELS[$lane]} requested reboot after package updates ==="
+        wait_for_reboot "$vm" "$boot_id"
+        incus exec "$vm" -- /tmp/fleet-incus-vm-check.sh "$lane" "${EXPECTED_PKG[$lane]}" "$installer_mode"
+        return $?
+    fi
+    return "$rc"
+}
+
 run_lane() {
     local lane="$1"
     local vm="${PREFIX}-${lane}-${RUN_ID}"
@@ -507,7 +567,7 @@ run_lane() {
     incus file push "$PAYLOAD" "$vm/tmp/dream-server-src.tgz"
     incus file push "$VM_CHECK" "$vm/tmp/fleet-incus-vm-check.sh"
     incus exec "$vm" -- chmod +x /tmp/fleet-incus-vm-check.sh
-    incus exec "$vm" -- /tmp/fleet-incus-vm-check.sh "$lane" "${EXPECTED_PKG[$lane]}" "$installer_mode"
+    run_vm_check "$vm" "$lane" "$installer_mode"
 
     if [[ "$KEEP_VMS" != "true" ]]; then
         incus delete -f "$vm" >/dev/null
