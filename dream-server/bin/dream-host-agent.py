@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import collections
+import importlib
 import json
 import logging
 import os
@@ -102,11 +103,21 @@ def _python_can_import(python_cmd: str, module: str) -> bool:
     return result.returncode == 0
 
 
+def _process_can_import(module: str) -> bool:
+    """Return whether this already-running host-agent process can import module."""
+    importlib.invalidate_caches()
+    try:
+        importlib.import_module(module)
+    except ImportError:
+        return False
+    return True
+
+
 def _ensure_windows_resolver_pyyaml(python_cmd: str) -> None:
-    """Ensure the Windows host Python used by Git Bash can import PyYAML."""
+    """Ensure the Windows host Python and this process can import PyYAML."""
     if platform.system() != "Windows":
         return
-    if _python_can_import(python_cmd, "yaml"):
+    if _python_can_import(python_cmd, "yaml") and _process_can_import("yaml"):
         return
 
     logger.warning(
@@ -135,6 +146,10 @@ def _ensure_windows_resolver_pyyaml(python_cmd: str) -> None:
     if not _python_can_import(python_cmd, "yaml"):
         raise RuntimeError(
             "PyYAML install completed but the Windows resolver Python still cannot import yaml"
+        )
+    if not _process_can_import("yaml"):
+        raise RuntimeError(
+            "PyYAML install completed but this host-agent process still cannot import yaml"
         )
 
 # Model download state — only one download at a time
@@ -3846,6 +3861,20 @@ function Stop-DreamProcessId {
         if (-not (Get-Process -Id $ProcId -ErrorAction SilentlyContinue)) { return }
         Start-Sleep -Milliseconds 500
     }
+    & taskkill.exe /PID $ProcId /T /F | Out-Null
+    for ($i = 0; $i -lt 30; $i++) {
+        if (-not (Get-Process -Id $ProcId -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "Could not stop process $ProcId"
+}
+
+function Get-DreamLemonadeProcesses {
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase)) -or
+        ($cacheBin -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($cacheBin, [StringComparison]::OrdinalIgnoreCase)) -or
+        ($_.CommandLine -and $_.CommandLine.IndexOf($modelsDir, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    }
 }
 
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -3861,12 +3890,13 @@ foreach ($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -Err
 $binDir = Split-Path -Parent $exe
 $userProfile = [Environment]::GetFolderPath("UserProfile")
 $cacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
-foreach ($child in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-    ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase)) -or
-    ($cacheBin -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($cacheBin, [StringComparison]::OrdinalIgnoreCase)) -or
-    ($_.CommandLine -and $_.CommandLine.IndexOf($modelsDir, [StringComparison]::OrdinalIgnoreCase) -ge 0)
-})) {
+foreach ($child in @(Get-DreamLemonadeProcesses)) {
     Stop-DreamProcessId -ProcId ([int]$child.ProcessId)
+}
+$remaining = @(Get-DreamLemonadeProcesses)
+if ($remaining.Count -gt 0) {
+    $ids = ($remaining | ForEach-Object { "$($_.ProcessId):$($_.Name)" }) -join ", "
+    throw "Could not stop existing Lemonade processes: $ids"
 }
 
 if (-not $existingTask) {
@@ -3877,12 +3907,20 @@ if (-not $existingTask) {
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
 }
 Start-ScheduledTask -TaskName $taskName
-Start-Sleep -Seconds 5
-$proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($exe, [StringComparison]::OrdinalIgnoreCase) } |
-    Sort-Object ProcessId -Descending |
-    Select-Object -First 1
-if (-not $proc) { throw "Lemonade scheduled task started but no lemonade-server.exe process was found" }
+$proc = $null
+for ($i = 0; $i -lt 45; $i++) {
+    Start-Sleep -Seconds 1
+    $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($exe, [StringComparison]::OrdinalIgnoreCase) } |
+        Sort-Object ProcessId -Descending |
+        Select-Object -First 1
+    if ($proc) { break }
+}
+if (-not $proc) {
+    $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+    $taskResult = if ($taskInfo) { $taskInfo.LastTaskResult } else { "unknown" }
+    throw "Lemonade scheduled task started but no lemonade-server.exe process was found (task result: $taskResult)"
+}
 New-Item -ItemType Directory -Path (Split-Path -Parent $pidPath) -Force | Out-Null
 Set-Content -LiteralPath $pidPath -Value $proc.ProcessId
 '''

@@ -138,6 +138,14 @@ class TestResolveComposeFlags:
             raise AssertionError(f"unexpected command: {cmd}")
 
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        process_attempts = {"count": 0}
+
+        def fake_process_can_import(module):
+            assert module == "yaml"
+            process_attempts["count"] += 1
+            return True
+
+        monkeypatch.setattr(_mod, "_process_can_import", fake_process_can_import)
 
         _mod._ensure_windows_resolver_pyyaml(python_cmd)
 
@@ -145,6 +153,33 @@ class TestResolveComposeFlags:
         assert "--user" in calls[1]
         assert "PyYAML" in calls[1]
         assert import_attempts["count"] == 2
+        assert process_attempts["count"] == 1
+
+    def test_windows_pyyaml_check_verifies_running_process_import(self, monkeypatch):
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+        python_cmd = r"C:\Users\conta\AppData\Local\Programs\Python\Python312\python.exe"
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd == [python_cmd, "-c", "import yaml"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            if cmd[:4] == [python_cmd, "-m", "pip", "install"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        process_results = iter([False, True])
+
+        def fake_process_can_import(module):
+            assert module == "yaml"
+            return next(process_results)
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(_mod, "_process_can_import", fake_process_can_import)
+
+        _mod._ensure_windows_resolver_pyyaml(python_cmd)
+
+        assert [python_cmd, "-m", "pip", "install"] == calls[1][:4]
 
     def test_windows_bash_discovery_skips_unusable_path_bash(self, monkeypatch):
         monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")

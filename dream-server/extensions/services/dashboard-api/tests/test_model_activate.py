@@ -277,7 +277,7 @@ class TestLaunchNativeLlamaServer:
 
 class TestRestartWindowsLemonade:
 
-    def test_reuses_existing_scheduled_task_before_registering(self, monkeypatch, tmp_path):
+    def test_reuses_existing_task_and_polls_for_started_process(self, monkeypatch, tmp_path):
         program_files = tmp_path / "Program Files"
         lemonade_exe = program_files / "Lemonade Server" / "bin" / "lemonade-server.exe"
         lemonade_exe.parent.mkdir(parents=True)
@@ -304,7 +304,12 @@ class TestRestartWindowsLemonade:
         script = captured["script"]
         assert "$existingTask = Get-ScheduledTask -TaskName $taskName" in script
         assert "if (-not $existingTask)" in script
+        assert "Register-ScheduledTask -TaskName $taskName" in script
+        assert "-Force | Out-Null" in script
         assert "Unregister-ScheduledTask" not in script
+        assert "taskkill.exe /PID $ProcId /T /F" in script
+        assert "for ($i = 0; $i -lt 45; $i++)" in script
+        assert "task result: $taskResult" in script
         assert "Start-ScheduledTask -TaskName $taskName" in script
         assert captured["env"]["DREAM_WIN_LEMONADE_TASK"] == "DreamServerLemonadeRuntime"
 
