@@ -168,6 +168,14 @@ assert_not_contains "$macos_installer" 'pip install --user .*pyyaml|pip install 
 assert_contains "$macos_installer" 'export DREAM_PYTHON_CMD' "macOS installer does not export selected Python"
 assert_contains "$macos_installer" '_ds_python_cmd_cached=' "macOS installer does not refresh python resolver cache"
 
+echo "[contract] macOS bootstrap model download tolerates slow resumable transfers"
+macos_ui="installers/macos/lib/ui.sh"
+assert_contains "$macos_ui" 'curl -C - -L --progress-bar' "macOS bootstrap model download should preserve curl resume support"
+assert_contains "$macos_ui" 'DREAM_DOWNLOAD_CONNECT_TIMEOUT:-30' "macOS bootstrap model download should allow configurable connect timeout"
+assert_contains "$macos_ui" 'DREAM_DOWNLOAD_LOW_SPEED_TIME:-300' "macOS bootstrap model download should tolerate slow but active transfers"
+assert_contains "$macos_ui" 'DREAM_DOWNLOAD_LOW_SPEED_LIMIT:-1024' "macOS bootstrap model download should use a lenient low-speed threshold"
+assert_not_contains "$macos_ui" '--speed-time 30 --speed-limit 10240' "macOS bootstrap model download should not abort active slow transfers after 30 seconds"
+
 echo "[contract] Windows bootstrap model download uses retry wrapper"
 win_installer="installers/windows/install-windows.ps1"
 assert_contains "$win_installer" 'Invoke-DownloadWithRetry -Url \$tierConfig\.GgufUrl' "Windows installer should retry/resume transient GGUF download failures"

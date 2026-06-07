@@ -76,6 +76,9 @@ download_with_progress() {
     local max_retries="${4:-3}"
 
     local part_file="${destination}.part"
+    local connect_timeout="${DREAM_DOWNLOAD_CONNECT_TIMEOUT:-30}"
+    local low_speed_time="${DREAM_DOWNLOAD_LOW_SPEED_TIME:-300}"
+    local low_speed_limit="${DREAM_DOWNLOAD_LOW_SPEED_LIMIT:-1024}"
     local attempt=1
 
     while [[ $attempt -le $max_retries ]]; do
@@ -88,8 +91,8 @@ download_with_progress() {
         fi
 
         if curl -C - -L --progress-bar \
-            --connect-timeout 10 \
-            --speed-time 30 --speed-limit 10240 \
+            --connect-timeout "$connect_timeout" \
+            --speed-time "$low_speed_time" --speed-limit "$low_speed_limit" \
             -o "$part_file" "$url"; then
             mv "$part_file" "$destination"
             ai_ok "${label} complete"
