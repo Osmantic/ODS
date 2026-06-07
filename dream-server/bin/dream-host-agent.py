@@ -211,11 +211,14 @@ def resolve_compose_flags() -> list:
         raise RuntimeError(f"resolve-compose-stack.sh not found at {script}")
     # --gpu-count gates the multigpu-{backend}.yml overlay; without it,
     # the host agent would resolve a single-GPU stack on multi-GPU hosts.
+    env = os.environ.copy()
+    if platform.system() == "Windows":
+        env.setdefault("DREAM_PYTHON_CMD", _to_bash_path(Path(sys.executable)))
     result = subprocess.run(
         ["bash", _to_bash_path(script), "--script-dir", _to_bash_path(INSTALL_DIR),
          "--tier", TIER, "--gpu-backend", GPU_BACKEND, "--gpu-count", GPU_COUNT],
         capture_output=True, text=True, check=True,
-        cwd=str(INSTALL_DIR), timeout=30,
+        cwd=str(INSTALL_DIR), timeout=30, env=env,
     )
     return result.stdout.strip().split()
 

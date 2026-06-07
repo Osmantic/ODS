@@ -74,6 +74,45 @@ class TestResolveAgentBindAddr:
         assert _resolve_agent_bind_addr({}, "Linux") == "127.0.0.1"
 
 
+class TestResolveComposeFlags:
+
+    def test_windows_passes_host_python_to_bash_resolver(self, tmp_path, monkeypatch):
+        install_dir = tmp_path / "dream-server"
+        scripts_dir = install_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "resolve-compose-stack.sh").write_text("#!/usr/bin/env bash\n")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "TIER", "1")
+        monkeypatch.setattr(_mod, "GPU_BACKEND", "nvidia")
+        monkeypatch.setattr(_mod, "GPU_COUNT", "1")
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(
+            _mod.sys,
+            "executable",
+            r"C:\Users\conta\AppData\Local\Programs\Python\Python313\python.exe",
+        )
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout="-f docker-compose.base.yml\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        assert resolve_compose_flags() == ["-f", "docker-compose.base.yml"]
+        assert calls
+        env = calls[0][1]["env"]
+        assert env["DREAM_PYTHON_CMD"] == (
+            "/c/Users/conta/AppData/Local/Programs/Python/Python313/python.exe"
+        )
+
+
 # --- _split_nmcli_terse — parser for nmcli -t (terse) output ---
 
 
