@@ -41,9 +41,10 @@ MODELS_INI="$INSTALL_DIR/config/llama-server/models.ini"
 LOG_TAG="[BOOTSTRAP-UPGRADE]"
 
 log()  { echo "$LOG_TAG $(date '+%H:%M:%S') $*"; }
-fail() { log "ERROR: $*"; exit 1; }
+fail() { log "ERROR: $*"; release_upgrade_lock; exit 1; }
 
 STATUS_FILE="$INSTALL_DIR/data/bootstrap-status.json"
+UPGRADE_LOCK_DIR=""
 
 # Cross-platform file size (GNU stat on Linux/WSL2, BSD stat on macOS)
 # IMPORTANT: Try GNU stat -c %s FIRST (Linux). stat -f on Linux returns filesystem
@@ -101,6 +102,83 @@ write_failed_download_status() {
     fi
     percent=$(status_percent "$downloaded" "$total")
     write_status "failed" "$percent" "$downloaded" "$total" 0 "$message"
+}
+
+release_upgrade_lock() {
+    if [[ -n "${UPGRADE_LOCK_DIR:-}" && -d "$UPGRADE_LOCK_DIR" ]]; then
+        rm -rf "$UPGRADE_LOCK_DIR"
+    fi
+    UPGRADE_LOCK_DIR=""
+}
+
+acquire_upgrade_lock() {
+    local lock_dir="$INSTALL_DIR/data/bootstrap-upgrade.lock"
+    local pid_file="$lock_dir/pid"
+    local existing_pid=""
+
+    mkdir -p "$(dirname "$lock_dir")"
+    while ! mkdir "$lock_dir" 2>/dev/null; do
+        existing_pid=""
+        if [[ -f "$pid_file" ]]; then
+            existing_pid="$(tr -dc '0-9' < "$pid_file" 2>/dev/null || true)"
+        fi
+
+        if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
+            log "Another bootstrap model upgrade is already running (pid $existing_pid); leaving it in control."
+            if [[ ! -f "$STATUS_FILE" ]]; then
+                write_status "downloading" "" 0 0 0 "Another bootstrap model upgrade is already running."
+            fi
+            exit 0
+        fi
+
+        log "Removing stale bootstrap model upgrade lock: $lock_dir"
+        rm -rf "$lock_dir"
+    done
+
+    UPGRADE_LOCK_DIR="$lock_dir"
+    printf '%s\n' "$$" > "$pid_file"
+    trap 'release_upgrade_lock' EXIT
+}
+
+model_sha256() {
+    local path="$1"
+    if command -v sha256sum &>/dev/null; then
+        sha256sum "$path" 2>/dev/null | awk '{print $1}'
+    elif command -v shasum &>/dev/null; then
+        shasum -a 256 "$path" 2>/dev/null | awk '{print $1}'
+    else
+        return 2
+    fi
+}
+
+verify_model_integrity() {
+    local path="$1" actual_hash
+    [[ -n "$FULL_GGUF_SHA256" ]] || return 0
+
+    actual_hash="$(model_sha256 "$path")"
+    case "$?" in
+        0) ;;
+        2)
+            log "WARNING: No checksum tool available — skipping SHA256 verification"
+            return 0
+            ;;
+        *)
+            log "Could not compute SHA256 for $path"
+            return 1
+            ;;
+    esac
+
+    if [[ -z "$actual_hash" ]]; then
+        log "Could not compute SHA256 for $path"
+        return 1
+    fi
+    if [[ "$actual_hash" != "$FULL_GGUF_SHA256" ]]; then
+        log "SHA256 mismatch (expected: $FULL_GGUF_SHA256, got: $actual_hash)."
+        return 1
+    fi
+
+    log "SHA256 verified"
+    return 0
 }
 
 ACTIVE_CONFIG_SNAPSHOT_DIR=""
@@ -561,6 +639,7 @@ log "Target: $MODELS_DIR/$FULL_GGUF_FILE"
 
 # ── Phase 1: Download the full model ──
 mkdir -p "$MODELS_DIR"
+acquire_upgrade_lock
 
 # Get total file size for progress calculation
 TOTAL_BYTES=$(get_remote_size "$FULL_GGUF_URL")
@@ -570,89 +649,121 @@ log "Expected file size: $TOTAL_BYTES bytes"
 # Write initial status
 write_status "starting" "" 0 "$TOTAL_BYTES" 0 "calculating..."
 
-if [[ -f "$MODELS_DIR/$FULL_GGUF_FILE" ]]; then
-    log "Full model already exists on disk, skipping download"
-    write_status "verifying" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""
-else
-    # Start background download monitor
-    monitor_download "$MODELS_DIR/$FULL_GGUF_FILE.part" "$TOTAL_BYTES" &
+_part_path="$MODELS_DIR/$FULL_GGUF_FILE.part"
+_final_path="$MODELS_DIR/$FULL_GGUF_FILE"
+_dl_success=false
+_download_attempts="${DREAM_BOOTSTRAP_DOWNLOAD_ATTEMPTS:-6}"
+case "$_download_attempts" in
+    ''|*[!0-9]*|0) _download_attempts=6 ;;
+esac
+
+if [[ -f "$_final_path" ]]; then
+    log "Full model already exists on disk; verifying before reuse"
+    if verify_model_integrity "$_final_path"; then
+        _dl_success=true
+        write_status "verifying" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""
+    else
+        log "Existing full model failed integrity; deleting and retrying from a clean file."
+        rm -f "$_final_path"
+    fi
+fi
+
+if [[ -f "$_part_path" && "$TOTAL_BYTES" -gt 0 ]]; then
+    _part_bytes="$(file_size "$_part_path")"
+    if [[ "$_part_bytes" -gt "$TOTAL_BYTES" ]]; then
+        log "Existing partial is larger than the remote file (got $_part_bytes, expected $TOTAL_BYTES); deleting corrupt resume state."
+        rm -f "$_part_path"
+    fi
+fi
+
+if [[ "$_dl_success" != "true" ]]; then
+    monitor_download "$_part_path" "$TOTAL_BYTES" &
     _monitor_pid=$!
-    _part_path="$MODELS_DIR/$FULL_GGUF_FILE.part"
-    _final_path="$MODELS_DIR/$FULL_GGUF_FILE"
-    trap 'kill $_monitor_pid 2>/dev/null || true; write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Download interrupted; partial file preserved for resume."; exit 1' EXIT TERM INT
+    trap 'kill $_monitor_pid 2>/dev/null || true; write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Download interrupted; partial file preserved for resume."; release_upgrade_lock; exit 1' TERM INT
 
     # Download with resume support. curl success is not enough: finalizing the
-    # .part file can fail on macOS if the file vanished or the target path is
-    # unavailable, and this script intentionally does not use set -e.
-    _dl_success=false
-    _download_attempts="${DREAM_BOOTSTRAP_DOWNLOAD_ATTEMPTS:-6}"
-    case "$_download_attempts" in
-        ''|*[!0-9]*|0) _download_attempts=6 ;;
-    esac
+    # .part file can fail, and checksum verification can expose a corrupt
+    # resume. Keep retries inside the script so the detached upgrade can
+    # recover without leaving the user on the bootstrap model.
     for ((_attempt=1; _attempt<=_download_attempts; _attempt++)); do
         [[ $_attempt -gt 1 ]] && log "Retry attempt $_attempt of $_download_attempts..." && sleep 5
-        if curl -fSL -C - --connect-timeout 30 --max-time 3600 \
-                --retry 10 --retry-delay 5 --retry-connrefused --retry-all-errors \
-                -o "$_part_path" "$FULL_GGUF_URL" 2>&1; then
-            if [[ ! -s "$_part_path" ]]; then
-                log "Download attempt $_attempt reported success but produced no partial file: $_part_path"
-            elif mv "$_part_path" "$_final_path"; then
-                _dl_success=true
-                break
-            else
-                log "Download attempt $_attempt failed while finalizing $_part_path -> $_final_path"
+
+        if [[ -f "$_part_path" && "$TOTAL_BYTES" -gt 0 ]]; then
+            _part_bytes="$(file_size "$_part_path")"
+            if [[ "$_part_bytes" -gt "$TOTAL_BYTES" ]]; then
+                log "Partial file grew larger than expected before attempt $_attempt (got $_part_bytes, expected $TOTAL_BYTES); deleting corrupt resume state."
+                rm -f "$_part_path"
+            elif [[ "$_part_bytes" -eq "$TOTAL_BYTES" ]]; then
+                log "Partial file already has the expected size; promoting it for integrity verification."
+                if ! mv "$_part_path" "$_final_path"; then
+                    log "Download attempt $_attempt failed while finalizing $_part_path -> $_final_path"
+                fi
             fi
-        else
-            log "Download attempt $_attempt failed"
         fi
+
+        if [[ ! -f "$_final_path" ]]; then
+            if curl -fSL -C - --connect-timeout 30 --max-time 3600 \
+                    --retry 10 --retry-delay 5 --retry-connrefused --retry-all-errors \
+                    -o "$_part_path" "$FULL_GGUF_URL" 2>&1; then
+                if [[ ! -s "$_part_path" ]]; then
+                    log "Download attempt $_attempt reported success but produced no partial file: $_part_path"
+                elif mv "$_part_path" "$_final_path"; then
+                    :
+                else
+                    log "Download attempt $_attempt failed while finalizing $_part_path -> $_final_path"
+                fi
+            else
+                log "Download attempt $_attempt failed"
+            fi
+        fi
+
+        if [[ ! -s "$_final_path" ]]; then
+            continue
+        fi
+
+        if [[ "$TOTAL_BYTES" -gt 0 ]]; then
+            ACTUAL_BYTES=$(file_size "$_final_path")
+            if [[ "$ACTUAL_BYTES" -lt "$TOTAL_BYTES" ]]; then
+                mv "$_final_path" "$_part_path" 2>/dev/null || rm -f "$_final_path"
+                log "Downloaded model is smaller than expected (got $ACTUAL_BYTES, expected $TOTAL_BYTES); preserving as partial for retry."
+                continue
+            fi
+            if [[ "$ACTUAL_BYTES" -gt "$TOTAL_BYTES" ]]; then
+                rm -f "$_final_path" "$_part_path"
+                log "Downloaded model is larger than expected (got $ACTUAL_BYTES, expected $TOTAL_BYTES); deleting corrupt file and retrying from scratch."
+                continue
+            fi
+        fi
+
+        write_status "verifying" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""
+        log "Download complete: $FULL_GGUF_FILE"
+        if verify_model_integrity "$_final_path"; then
+            _dl_success=true
+            break
+        fi
+
+        rm -f "$_final_path" "$_part_path"
+        log "Integrity verification failed on attempt $_attempt; retrying from a clean download."
     done
 
-    # Stop background monitor
     kill $_monitor_pid 2>/dev/null || true
-    trap - EXIT TERM INT
+    trap - TERM INT
 
     if [[ "$_dl_success" != "true" ]]; then
         write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Download failed after $_download_attempts attempts; partial file preserved for resume."
         fail "Download failed after $_download_attempts attempts. Preserved partial file for resume: $_part_path. Bootstrap model will continue running."
     fi
-
-    if [[ ! -s "$MODELS_DIR/$FULL_GGUF_FILE" ]]; then
-        write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Downloaded model missing or empty after finalization."
-        fail "Downloaded model is missing or empty after finalization: $MODELS_DIR/$FULL_GGUF_FILE. Bootstrap model will continue running."
-    fi
-
-    if [[ "$TOTAL_BYTES" -gt 0 ]]; then
-        ACTUAL_BYTES=$(file_size "$MODELS_DIR/$FULL_GGUF_FILE")
-        if [[ "$ACTUAL_BYTES" -lt "$TOTAL_BYTES" ]]; then
-            mv "$MODELS_DIR/$FULL_GGUF_FILE" "$_part_path" 2>/dev/null || rm -f "$MODELS_DIR/$FULL_GGUF_FILE"
-            write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Downloaded model is smaller than expected; partial file preserved for resume."
-            fail "Downloaded model is smaller than expected (got $ACTUAL_BYTES, expected $TOTAL_BYTES). Bootstrap model will continue running."
-        fi
-    fi
-
-    write_status "verifying" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""
-    log "Download complete: $FULL_GGUF_FILE"
 fi
 
 # ── Phase 2: Verify integrity (if SHA256 provided) ──
 if [[ -n "$FULL_GGUF_SHA256" ]]; then
     write_status "verifying" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""
     log "Verifying SHA256..."
-    if command -v sha256sum &>/dev/null; then
-        ACTUAL_HASH=$(sha256sum "$MODELS_DIR/$FULL_GGUF_FILE" 2>/dev/null | awk '{print $1}')
-    elif command -v shasum &>/dev/null; then
-        ACTUAL_HASH=$(shasum -a 256 "$MODELS_DIR/$FULL_GGUF_FILE" 2>/dev/null | awk '{print $1}')
-    else
-        log "WARNING: No checksum tool available — skipping SHA256 verification"
-        ACTUAL_HASH=""
-    fi
-    if [[ -n "$ACTUAL_HASH" ]]; then
-        if [[ "$ACTUAL_HASH" != "$FULL_GGUF_SHA256" ]]; then
-            rm -f "$MODELS_DIR/$FULL_GGUF_FILE"
-            write_status "failed"
-            fail "SHA256 mismatch (expected: $FULL_GGUF_SHA256, got: $ACTUAL_HASH). Deleted corrupt file."
-        fi
-        log "SHA256 verified"
+    if ! verify_model_integrity "$MODELS_DIR/$FULL_GGUF_FILE"; then
+        rm -f "$MODELS_DIR/$FULL_GGUF_FILE"
+        write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+            "Downloaded model failed SHA256 after retries. Corrupt file deleted; bootstrap model left running."
+        fail "SHA256 mismatch after retries. Deleted corrupt file."
     fi
 fi
 
