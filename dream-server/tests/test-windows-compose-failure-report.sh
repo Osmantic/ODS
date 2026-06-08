@@ -62,9 +62,13 @@ check 'HERMES_AGENT_IMAGE_FALLBACK' "$INSTALL_PS1" "installer supports Hermes im
 check 'Validating Hermes Agent image tag before startup' "$INSTALL_PS1" "installer validates Hermes image before compose up"
 check 'ImageEnvName = "LLAMA_SERVER_IMAGE"' "$INSTALL_PS1" "image validation labels override env var"
 check '$_probeImage = "alpine:3.20"' "$PRE_SCRIPT" "preflight uses pinned Alpine probe image"
+check '$_inspectExit = $LASTEXITCODE' "$PRE_SCRIPT" "preflight captures inspect exit before deciding to pull"
 check 'docker pull $_probeImage' "$PRE_SCRIPT" "preflight pulls missing probe image before bind-mount test"
 check 'Docker could not download $_probeImage' "$PRE_SCRIPT" "preflight reports Alpine pull failure separately"
+check 'throw "Docker probe image download failed"' "$PRE_SCRIPT" "preflight image download failure terminates installer"
+check 'throw "Docker bind-mount probe failed"' "$PRE_SCRIPT" "preflight unexpected bind-mount failure terminates installer"
 check 'The probe image ($_probeImage) is already available; this is a file-sharing path issue.' "$PRE_SCRIPT" "preflight separates file sharing from image availability"
+check 'throw "Docker Desktop cannot bind-mount $installDir"' "$PRE_SCRIPT" "preflight file-sharing failure terminates installer"
 check 'throw "Docker daemon is not responding"' "$DOCKER_PHASE" "Docker daemon prerequisite failure is terminating"
 check 'throw "Docker Compose not found"' "$DOCKER_PHASE" "Docker Compose prerequisite failure is terminating"
 

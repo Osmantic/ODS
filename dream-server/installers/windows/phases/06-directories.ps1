@@ -77,6 +77,17 @@ foreach ($_d in $_dirs) {
 }
 Write-AISuccess "Created directory structure under $installDir"
 
+# Docker/PowerShell partial installs can leave directories where install-root
+# dotfiles must be regular files. Remove those malformed paths before robocopy
+# and .env generation, otherwise later reads fail with "access denied".
+foreach ($_expectedFileName in @(".env", ".env.example", ".env.schema.json")) {
+    $_expectedFilePath = Join-Path $installDir $_expectedFileName
+    if (Test-Path -LiteralPath $_expectedFilePath -PathType Container) {
+        Remove-Item -LiteralPath $_expectedFilePath -Recurse -Force
+        Write-AIWarn "Removed malformed $_expectedFileName directory from a previous partial install."
+    }
+}
+
 # ── Copy source tree (skip if running in-place) ───────────────────────────────
 if ($sourceRoot -ne $installDir) {
     Write-AI "Copying source files to $installDir..."

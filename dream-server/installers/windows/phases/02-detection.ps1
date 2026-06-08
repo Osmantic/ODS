@@ -93,7 +93,7 @@ if ($cloudMode) {
 
 if (-not $env:MODEL_PROFILE) {
     $existingEnvPath = Join-Path $installDir ".env"
-    if (Test-Path $existingEnvPath) {
+    if (Test-Path -LiteralPath $existingEnvPath -PathType Leaf) {
         $existingProfile = Get-Content $existingEnvPath |
             Where-Object { $_ -match '^MODEL_PROFILE=' } |
             Select-Object -First 1
@@ -102,6 +102,9 @@ if (-not $env:MODEL_PROFILE) {
         } else {
             $env:MODEL_PROFILE = "qwen"
         }
+    } elseif (Test-Path -LiteralPath $existingEnvPath -PathType Container) {
+        Write-AIWarn "Ignoring malformed .env directory from a previous partial install."
+        $env:MODEL_PROFILE = "qwen"
     } else {
         $env:MODEL_PROFILE = "qwen"
     }

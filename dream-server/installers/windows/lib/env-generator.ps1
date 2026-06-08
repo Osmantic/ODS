@@ -511,6 +511,10 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
     # Those are Linux-only for AMD ROCm container device access
 
     $envPath = Join-Path $InstallDir ".env"
+    if (Test-Path -LiteralPath $envPath -PathType Container) {
+        Remove-Item -LiteralPath $envPath -Recurse -Force
+        Write-AIWarn "Removed malformed .env directory from a previous partial install."
+    }
     Write-Utf8NoBom -Path $envPath -Content $envContent
 
     if ($windowsAmdLemonade) {

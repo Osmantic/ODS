@@ -184,11 +184,18 @@ $_shareOk = $true
 $_shareErr = ""
 $_probeImage = "alpine:3.20"
 try {
+    $_prevProbeEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     & docker image inspect $_probeImage *> $null
-    if ($LASTEXITCODE -ne 0) {
+    $_inspectExit = $LASTEXITCODE
+    $ErrorActionPreference = $_prevProbeEap
+    if ($_inspectExit -ne 0) {
         Write-AI "Downloading Docker bind-mount probe image ($_probeImage)..."
+        $_prevPullEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         $_pullOut = & docker pull $_probeImage 2>&1
         $_pullExit = $LASTEXITCODE
+        $ErrorActionPreference = $_prevPullEap
         if ($_pullExit -ne 0) {
             Write-AIError "Docker could not download $_probeImage, which is required for the file-sharing probe."
             Write-AI "  Start Docker Desktop, confirm it has internet access, then run:"
@@ -198,13 +205,16 @@ try {
                 Write-AI "  Pull output:"
                 ($_pullOut -join "`n") -split "`n" | ForEach-Object { Write-Host "    $_" }
             }
-            exit 1
+            throw "Docker probe image download failed"
         }
     }
 
     # PowerShell -v argument needs careful quoting for paths with spaces.
+    $_prevRunEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     $_probeOut = & docker run --rm -v "${_fsProbe}:/check:ro" $_probeImage true 2>&1
     $_probeExit = $LASTEXITCODE
+    $ErrorActionPreference = $_prevRunEap
     $_probeText = ($_probeOut -join "`n")
     if ($_probeExit -ne 0 -and $_probeText -match "not shared from the host|Mounts denied|file sharing|filesharing") {
         $_shareOk = $false
@@ -218,9 +228,18 @@ try {
             Write-AI "  Probe output:"
             $_probeText -split "`n" | ForEach-Object { Write-Host "    $_" }
         }
-        exit 1
+        throw "Docker bind-mount probe failed"
     }
 } catch {
+    if ($_prevProbeEap) { $ErrorActionPreference = $_prevProbeEap }
+    if ($_prevPullEap) { $ErrorActionPreference = $_prevPullEap }
+    if ($_prevRunEap) { $ErrorActionPreference = $_prevRunEap }
+    if ($_.Exception.Message -in @(
+        "Docker probe image download failed",
+        "Docker bind-mount probe failed"
+    )) {
+        throw
+    }
     $_shareOk = $false
     $_shareErr = $_.Exception.Message
 }
@@ -233,7 +252,7 @@ if (-not $_shareOk) {
         Write-AI "  Probe output:"
         $_shareErr -split "`n" | ForEach-Object { Write-Host "    $_" }
     }
-    exit 1
+    throw "Docker Desktop cannot bind-mount $installDir"
 }
 Write-AISuccess "Docker Desktop file sharing OK"
 
