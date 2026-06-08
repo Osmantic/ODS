@@ -14,6 +14,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PHASE02="$ROOT_DIR/installers/windows/phases/02-detection.ps1"
 PHASE06="$ROOT_DIR/installers/windows/phases/06-directories.ps1"
 ENVGEN="$ROOT_DIR/installers/windows/lib/env-generator.ps1"
+LLM_ENDPOINT="$ROOT_DIR/installers/windows/lib/llm-endpoint.ps1"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -40,6 +41,7 @@ echo ""
 [[ -f "$PHASE02" ]] && pass "Windows detection phase exists" || fail "Windows detection phase missing"
 [[ -f "$PHASE06" ]] && pass "Windows directories phase exists" || fail "Windows directories phase missing"
 [[ -f "$ENVGEN" ]] && pass "Windows env generator exists" || fail "Windows env generator missing"
+[[ -f "$LLM_ENDPOINT" ]] && pass "Windows LLM endpoint helper exists" || fail "Windows LLM endpoint helper missing"
 
 check 'Test-Path -LiteralPath $existingEnvPath -PathType Leaf' "$PHASE02" "phase 2 only reads .env when it is a file"
 check 'Test-Path -LiteralPath $existingEnvPath -PathType Container' "$PHASE02" "phase 2 detects malformed .env directory"
@@ -52,6 +54,10 @@ check 'Remove-Item -LiteralPath $_expectedFilePath -Recurse -Force' "$PHASE06" "
 check 'Test-Path -LiteralPath $envPath -PathType Container' "$ENVGEN" "env generator detects malformed .env directory"
 check 'Remove-Item -LiteralPath $envPath -Recurse -Force' "$ENVGEN" "env generator removes malformed .env directory before writing"
 check 'Write-Utf8NoBom -Path $envPath -Content $envContent' "$ENVGEN" "env generator writes .env after recovery"
+
+check 'Test-Path -LiteralPath $Path -PathType Leaf' "$LLM_ENDPOINT" "shared env parser only reads .env when it is a file"
+check 'Get-Content -LiteralPath $Path -ErrorAction Stop' "$LLM_ENDPOINT" "shared env parser reads .env defensively"
+check 'return @{}' "$LLM_ENDPOINT" "shared env parser fails closed for unreadable .env paths"
 
 echo ""
 echo "Result: $PASS passed, $FAIL failed"

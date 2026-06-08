@@ -24,16 +24,20 @@ function Get-WindowsDreamEnvMap {
     }
 
     $result = @{}
-    if (-not (Test-Path $Path)) { return $result }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $result }
 
-    Get-Content $Path | ForEach-Object {
-        $line = $_.Trim()
-        if ($line -match "^#" -or $line -eq "") { return }
-        if ($line -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
-            $key = $Matches[1]
-            $val = $Matches[2].Trim('"').Trim("'")
-            $result[$key] = $val
+    try {
+        Get-Content -LiteralPath $Path -ErrorAction Stop | ForEach-Object {
+            $line = $_.Trim()
+            if ($line -match "^#" -or $line -eq "") { return }
+            if ($line -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
+                $key = $Matches[1]
+                $val = $Matches[2].Trim('"').Trim("'")
+                $result[$key] = $val
+            }
         }
+    } catch {
+        return @{}
     }
 
     return $result
