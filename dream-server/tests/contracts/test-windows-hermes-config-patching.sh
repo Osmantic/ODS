@@ -99,14 +99,30 @@ fi
 #    delegated Windows installer. The fleet harness and public docs call the
 #    root script, so fail-loud checks are useless if the wrapper always exits 0.
 # ---------------------------------------------------------------------------
-if grep -q '\$global:LASTEXITCODE = 0' "$ROOT_INSTALLER" \
-   && grep -q '& \$DreamServerInstaller @PSBoundParameters' "$ROOT_INSTALLER" \
-   && grep -q 'if (\$installerSucceeded) {' "$ROOT_INSTALLER" \
-   && grep -q 'exit 0' "$ROOT_INSTALLER" \
-   && grep -q 'exit \$installerExit' "$ROOT_INSTALLER"; then
-    pass "Root Windows installer exits 0 on success and propagates delegated failure codes"
+root_wrapper_block="$(awk '
+    /\$global:LASTEXITCODE = 0/ { in_block=1 }
+    in_block { print }
+    in_block && /exit 1/ { exit }
+' "$ROOT_INSTALLER")"
+delegated_line="$(grep -nF '& $DreamServerInstaller @PSBoundParameters' <<<"$root_wrapper_block" | head -n1 | cut -d: -f1 || true)"
+exit_capture_line="$(grep -nF '$installerExit = if ($null -ne $global:LASTEXITCODE' <<<"$root_wrapper_block" | head -n1 | cut -d: -f1 || true)"
+nonzero_line="$(grep -nF 'if ($installerExit -ne 0) {' <<<"$root_wrapper_block" | head -n1 | cut -d: -f1 || true)"
+success_line="$(grep -nF 'if ($installerSucceeded) {' <<<"$root_wrapper_block" | head -n1 | cut -d: -f1 || true)"
+
+if [[ -n "$delegated_line" && -n "$exit_capture_line" && -n "$nonzero_line" && -n "$success_line" \
+      && "$delegated_line" -lt "$exit_capture_line" \
+      && "$exit_capture_line" -lt "$nonzero_line" \
+      && "$nonzero_line" -lt "$success_line" ]]; then
+    pass "Root Windows installer checks delegated exit codes before success"
 else
-    fail "Root install.ps1 must exit 0 on success and preserve delegated Windows installer failures"
+    fail "Root install.ps1 must preserve delegated nonzero exits before trusting PowerShell success"
+fi
+
+if grep -q '\$global:LASTEXITCODE = 0' "$MONO" \
+   && tail -n 5 "$MONO" | grep -q 'exit 0'; then
+    pass "Delegated Windows installer clears native exit code on success"
+else
+    fail "install-windows.ps1 must clear LASTEXITCODE and exit 0 on the success path"
 fi
 
 echo "------------------------------------------------------------"

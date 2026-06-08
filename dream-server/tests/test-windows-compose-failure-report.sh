@@ -12,6 +12,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIAG_LIB="$ROOT_DIR/installers/windows/lib/compose-diagnostics.ps1"
 INSTALL_PS1="$ROOT_DIR/installers/windows/install-windows.ps1"
 PRE_SCRIPT="$ROOT_DIR/installers/windows/phases/01-preflight.ps1"
+DOCKER_PHASE="$ROOT_DIR/installers/windows/phases/05-docker.ps1"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -38,6 +39,7 @@ echo ""
 [[ -f "$DIAG_LIB" ]] && pass "compose diagnostics library exists" || fail "compose diagnostics library missing"
 [[ -f "$INSTALL_PS1" ]] && pass "Windows installer exists" || fail "Windows installer missing"
 [[ -f "$PRE_SCRIPT" ]] && pass "Windows preflight phase exists" || fail "Windows preflight phase missing"
+[[ -f "$DOCKER_PHASE" ]] && pass "Windows Docker phase exists" || fail "Windows Docker phase missing"
 
 check 'function Write-DreamComposeFailureReport' "$DIAG_LIB" "report writer function exists"
 check 'install-report-$stamp.txt' "$DIAG_LIB" "report uses install-report timestamp path"
@@ -63,6 +65,8 @@ check '$_probeImage = "alpine:3.20"' "$PRE_SCRIPT" "preflight uses pinned Alpine
 check 'docker pull $_probeImage' "$PRE_SCRIPT" "preflight pulls missing probe image before bind-mount test"
 check 'Docker could not download $_probeImage' "$PRE_SCRIPT" "preflight reports Alpine pull failure separately"
 check 'The probe image ($_probeImage) is already available; this is a file-sharing path issue.' "$PRE_SCRIPT" "preflight separates file sharing from image availability"
+check 'throw "Docker daemon is not responding"' "$DOCKER_PHASE" "Docker daemon prerequisite failure is terminating"
+check 'throw "Docker Compose not found"' "$DOCKER_PHASE" "Docker Compose prerequisite failure is terminating"
 
 if grep -q "Write-DreamComposeDiagnostics .*SaveReport" "$ROOT_DIR/installers/windows/dream.ps1"; then
     fail "dream.ps1 command failures should not create install reports by default"

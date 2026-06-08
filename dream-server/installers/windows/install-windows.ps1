@@ -1589,3 +1589,6 @@ if ($SummaryJsonPath) {
     Write-Utf8NoBom -Path $SummaryJsonPath -Content ($summary | ConvertTo-Json -Depth 3)
     Write-AI "Summary written to $SummaryJsonPath"
 }
+
+$global:LASTEXITCODE = 0
+exit 0

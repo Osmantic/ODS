@@ -43,7 +43,7 @@ if ($dryRun) {
         Write-AI "  Make sure Docker Desktop is running and the WSL2 backend is active."
         Write-AI "  Start Docker Desktop from the Start Menu, wait for it to fully initialize,"
         Write-AI "  then re-run this installer."
-        exit 1
+        throw "Docker daemon is not responding"
     }
     Write-AISuccess "Docker daemon healthy"
 
@@ -70,7 +70,7 @@ if ($dryRun) {
         Write-AIError "Docker Compose not found (tried: 'docker compose' and 'docker-compose')."
         Write-AI "  Install Docker Desktop, which bundles Compose v2:"
         Write-AI "  https://docs.docker.com/desktop/install/windows-install/"
-        exit 1
+        throw "Docker Compose not found"
     }
     Write-AISuccess "Docker Compose available: $dockerComposeCmd"
 

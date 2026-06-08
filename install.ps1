@@ -45,9 +45,11 @@ if (-not (Test-Path $DreamServerInstaller)) {
 $global:LASTEXITCODE = 0
 & $DreamServerInstaller @PSBoundParameters
 $installerSucceeded = $?
+$installerExit = if ($null -ne $global:LASTEXITCODE) { [int]$global:LASTEXITCODE } else { 0 }
+if ($installerExit -ne 0) {
+    exit $installerExit
+}
 if ($installerSucceeded) {
     exit 0
 }
-
-$installerExit = if ($null -ne $global:LASTEXITCODE -and [int]$global:LASTEXITCODE -ne 0) { [int]$global:LASTEXITCODE } else { 1 }
-exit $installerExit
+exit 1
