@@ -77,6 +77,11 @@
           "maximum": 300,
           "description": "Health check timeout in seconds (default: 10)"
         },
+        "health_type": {
+          "type": "string",
+          "enum": ["http", "tcp", "none"],
+          "description": "Health check type. http = HTTP probe (default), tcp = TCP port check, none = no network probe (CLI/one-shot services only)"
+        },
         "ui_path": {
           "type": "string",
           "pattern": "^/.*",

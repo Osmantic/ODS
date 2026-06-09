@@ -11,6 +11,7 @@ service:
   external_port_env: ''
   external_port_default: 0
   health: ""
+  health_type: none
   type: docker
   startup_check: false  # one-shot CLI tool; container exits 0 by design
   gpu_backends: [amd, nvidia, apple]

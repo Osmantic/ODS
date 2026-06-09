@@ -11,6 +11,8 @@ service:
   external_port_env: PIPER_PORT
   external_port_default: 10200
   health: ""
+  health_type: tcp
+  health_timeout: 5
   type: docker
   gpu_backends: [amd, nvidia, apple]
   compose_file: compose.yaml

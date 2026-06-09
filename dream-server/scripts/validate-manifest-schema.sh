@@ -121,6 +121,22 @@ try:
     if service.get("health") and not service["health"].startswith("/"):
         warn(f"health should start with '/': {service['health']}")
 
+    # Validate health_type
+    health_type = service.get("health_type", "http")
+    if health_type not in ("http", "tcp", "none"):
+        error(f"Invalid health_type: '{health_type}'. Must be one of: http, tcp, none")
+    else:
+        info(f"service.health_type: {health_type}")
+
+    # Validate none constraint: health_type=none should only be used with port=0 and startup_check=false
+    if health_type == "none":
+        port = service.get("port", 0)
+        startup_check = service.get("startup_check", True)
+        if port != 0:
+            error(f"health_type=none requires port=0 (got port={port})")
+        if startup_check != False:
+            error(f"health_type=none requires startup_check=false (got startup_check={startup_check})")
+
     # Validate lists
     for alias in service.get("aliases", []):
         if not re.match(r'^[a-z0-9_-]+$', str(alias)):

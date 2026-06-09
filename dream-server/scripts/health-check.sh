@@ -163,7 +163,23 @@ test_service() {
     local port="$default_port"
     [[ -n "$port_env" ]] && port="${!port_env:-$default_port}"
 
-    # Skip check for CLI tools (health_type=none)
+    # Check container state first (if docker available) — for ALL health types
+    local container_state
+    container_state=$(check_container_state "$sid")
+    if [[ -n "$container_state" && "$container_state" != "running" ]]; then
+        # For health_type=none, container state is the only signal we have
+        if [[ "$health_type" == "none" ]]; then
+            result_set "$sid" "fail"
+            ANY_FAIL=true
+            return 1
+        fi
+        # For http/tcp, fail early — no point probing a stopped container
+        result_set "$sid" "fail"
+        ANY_FAIL=true
+        return 1
+    fi
+
+    # Skip network probe for CLI/one-shot services (health_type=none)
     if [[ "$health_type" == "none" ]]; then
         result_set "$sid" "skipped"
         return 0
@@ -171,18 +187,10 @@ test_service() {
 
     [[ -z "$health" || "$port" == "0" ]] && return 1
 
-    # Check container state first (if docker available)
-    local container_state
-    container_state=$(check_container_state "$sid")
-    if [[ -n "$container_state" && "$container_state" != "running" ]]; then
-        result_set "$sid" "fail"
-        ANY_FAIL=true
-        return 1
-    fi
-
-    # TCP health check — just verify the port accepts connections
+    # TCP health check with timeout — verify the port accepts connections
     if [[ "$health_type" == "tcp" ]]; then
-        if (echo >/dev/tcp/127.0.0.1/"$port") >/dev/null 2>&1; then
+        local tcp_timeout="${timeout:-5}"
+        if timeout "$tcp_timeout" bash -c "echo >/dev/tcp/127.0.0.1/\"$port\"" 2>/dev/null; then
             result_set "$sid" "ok"
             return 0
         fi

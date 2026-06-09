@@ -102,6 +102,7 @@ def extract_entry(manifest: dict) -> dict | None:
         "port": service.get("port", 0),
         "external_port_default": service.get("external_port_default", 0),
         "health_endpoint": service.get("health", ""),
+        "health_type": service.get("health_type", "http"),
         "env_vars": strip_secrets(env_vars),
         "tags": manifest.get("tags") or service.get("tags", []),
         "features": manifest.get("features") or service.get("features", []),
@@ -111,6 +112,8 @@ def extract_entry(manifest: dict) -> dict | None:
         entry["startup_check"] = service.get("startup_check")
     if "startup_timeout" in service:
         entry["startup_timeout"] = service.get("startup_timeout")
+    if "health_timeout" in service:
+        entry["health_timeout"] = service.get("health_timeout")
 
     return entry
 

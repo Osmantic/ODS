@@ -500,13 +500,79 @@ def validate_records(
             record.add_issue("error", "service-port-invalid", "service.port must be a positive integer", path=record.manifest_path)
 
         health = str(service.get("health") or "")
-        if not health.startswith("/") and not host_network:
+        health_type = str(service.get("health_type") or "http")
+        valid_health_types = ("http", "tcp", "none")
+        if health_type not in valid_health_types:
             record.add_issue(
                 "error",
-                "service-health-invalid",
-                "service.health must start with '/'",
+                "service-health-type-invalid",
+                f"service.health_type must be one of {valid_health_types}, got '{health_type}'",
                 path=record.manifest_path,
             )
+
+        if health_type == "none":
+            # health_type=none should only be used with port=0 and startup_check=false
+            if port and port > 0:
+                record.add_issue(
+                    "error",
+                    "service-health-type-none-port",
+                    "service.health_type=none requires port=0 (CLI/one-shot service)",
+                    path=record.manifest_path,
+                )
+            startup_check = service.get("startup_check")
+            if startup_check is not False:
+                record.add_issue(
+                    "error",
+                    "service-health-type-none-startup-check",
+                    "service.health_type=none requires startup_check=false",
+                    path=record.manifest_path,
+                )
+            # health endpoint should be empty for none type
+            if health and health != "":
+                record.add_issue(
+                    "warning",
+                    "service-health-type-none-health",
+                    "service.health should be empty when health_type=none",
+                    path=record.manifest_path,
+                )
+        elif health_type == "tcp":
+            # tcp type needs a valid port
+            if not port or port <= 0:
+                record.add_issue(
+                    "error",
+                    "service-health-type-tcp-port",
+                    "service.health_type=tcp requires a valid port",
+                    path=record.manifest_path,
+                )
+            # health endpoint should be empty for tcp type
+            if health and health != "":
+                record.add_issue(
+                    "warning",
+                    "service-health-type-tcp-health",
+                    "service.health should be empty when health_type=tcp (port check only)",
+                    path=record.manifest_path,
+                )
+        else:
+            # http type (default)
+            if not health.startswith("/") and not host_network:
+                record.add_issue(
+                    "error",
+                    "service-health-invalid",
+                    "service.health must be a non-empty path starting with '/' for health_type=http",
+                    path=record.manifest_path,
+                )
+
+        # Validate health_timeout if present
+        health_timeout = service.get("health_timeout")
+        if health_timeout is not None:
+            ht = parse_positive_int(health_timeout)
+            if ht is None or ht <= 0 or ht > 300:
+                record.add_issue(
+                    "error",
+                    "service-health-timeout-invalid",
+                    "service.health_timeout must be an integer between 1 and 300",
+                    path=record.manifest_path,
+                )
 
         ext_port_default = service.get("external_port_default")
         if ext_port_default not in (None, "") and parse_non_negative_int(ext_port_default) is None:

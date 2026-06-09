@@ -39,6 +39,11 @@
           "description": "HTTP health path. Use an empty string for non-HTTP or one-shot services whose readiness is represented by container state/startup_check."
         },
         "type": { "type": "string", "enum": ["docker", "host-systemd"] },
+        "health_type": {
+          "type": "string",
+          "enum": ["http", "tcp", "none"],
+          "description": "Health check type. http = HTTP probe (default), tcp = TCP port check, none = no network probe (CLI/one-shot services only)"
+        },
         "gpu_backends": {
           "type": "array",
           "items": { "type": "string", "enum": ["amd", "nvidia", "apple", "all", "none"] },

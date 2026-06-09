@@ -85,6 +85,8 @@ def scan_user_extension_services(
                 "port": int(port),
                 "external_port": int(svc.get("external_port_default", port)),
                 "health": health,
+                "health_type": svc.get("health_type", "http"),
+                "health_timeout": int(svc.get("health_timeout", 10)),
                 "name": name,
                 # Optional: extensions whose health endpoint lives on a
                 # secondary port (e.g. milvus 9091) need an explicit

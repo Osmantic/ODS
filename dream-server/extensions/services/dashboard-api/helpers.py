@@ -417,6 +417,34 @@ async def check_service_health(
         return _service_status_from_config(service_id, config, "not_deployed")
 
     host = config.get('host', 'localhost')
+    health_type = config.get('health_type', 'http')
+
+    # health_type=none: no network probe, report skipped
+    if health_type == 'none':
+        return _service_status_from_config(service_id, config, "skipped")
+
+    # health_type=tcp: check TCP port instead of HTTP
+    if health_type == 'tcp':
+        health_port = config.get('health_port', config['port'])
+        tcp_timeout = config.get('health_timeout', 5)
+        try:
+            start = asyncio.get_event_loop().time()
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, int(health_port)),
+                timeout=tcp_timeout
+            )
+            writer.close()
+            await writer.wait_closed()
+            response_time = (asyncio.get_event_loop().time() - start) * 1000
+            return ServiceStatus(
+                id=service_id, name=config["name"], port=config["port"],
+                external_port=config.get("external_port", config["port"]),
+                status="healthy", response_time_ms=round(response_time, 1)
+            )
+        except (asyncio.TimeoutError, OSError):
+            return _service_status_from_config(service_id, config, "down")
+
+    # health_type=http (default): HTTP health check
     health_port = config.get('health_port', config['port'])
     url = f"http://{host}:{health_port}{config['health']}"
     status = "unknown"

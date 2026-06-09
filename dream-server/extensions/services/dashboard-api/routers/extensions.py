@@ -165,6 +165,17 @@ def _is_one_shot_extension(ext: dict) -> bool:
     return ext.get("port") == 0
 
 
+def _get_health_type(ext: dict, user_cfg: dict | None = None) -> str:
+    """Return the health_type for an extension.
+
+    Prefer the runtime user config (which may have been regenerated), fall back
+    to the catalog entry, then default to http.
+    """
+    if user_cfg:
+        return user_cfg.get("health_type", "http")
+    return ext.get("health_type", "http")
+
+
 def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     """Compute the runtime status of an extension."""
     ext_id = ext["id"]
@@ -207,6 +218,13 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     # Core service loaded from manifests
     if ext_id in SERVICES:
         svc = services_by_id.get(ext_id)
+        health_type = _get_health_type(ext)
+        if health_type == "none":
+            # health_type=none: no network probe, rely on container state
+            # If we have a service status and it's "skipped", treat as enabled
+            if svc and svc.status in ("skipped", "healthy"):
+                return "enabled"
+            return "disabled"
         if svc and svc.status == "healthy":
             return "enabled"
         return "disabled"
@@ -221,6 +239,11 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             if one_shot:
                 return "cli_installed"
             svc = services_by_id.get(ext_id)
+            health_type = _get_health_type(ext)
+            if health_type == "none":
+                if svc and svc.status in ("skipped", "healthy"):
+                    return "enabled"
+                return "disabled"
             if svc and svc.status == "healthy":
                 return "enabled"
             # HTTP 4xx/5xx from the health endpoint is the clearest "container
