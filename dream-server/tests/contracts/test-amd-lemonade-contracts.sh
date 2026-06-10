@@ -135,6 +135,33 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 8b. AMD/Lemonade model routing preserves the selected GGUF
+# ---------------------------------------------------------------------------
+echo "[contract] AMD Lemonade routes selected GGUF through extra_models_dir"
+if grep -q -- '--extra-models-dir' docker-compose.amd.yml \
+    && grep -q -- '/models' docker-compose.amd.yml; then
+    pass "docker-compose.amd.yml: Lemonade imports Dream-managed GGUFs from /models"
+else
+    fail "docker-compose.amd.yml must expose Dream-managed GGUFs through Lemonade --extra-models-dir /models"
+fi
+if python3 scripts/render-runtime-configs.py \
+        --surface litellm-lemonade \
+        --dream-mode lemonade \
+        --gpu-backend amd \
+        --gguf-file contract-selected.gguf \
+        --lemonade-api-base http://llama-server:8080/api/v1 \
+    | grep -q 'openai/extra.contract-selected.gguf'; then
+    pass "LiteLLM Lemonade config maps default/wildcard to extra.\${GGUF_FILE}"
+else
+    fail "LiteLLM Lemonade config must map selected GGUF to openai/extra.\${GGUF_FILE}"
+fi
+if grep -q '_prewarm_model="extra.${GGUF_FILE}"' installers/phases/12-health.sh; then
+    pass "Phase 12 prewarms AMD Lemonade using extra.\${GGUF_FILE}"
+else
+    fail "Phase 12 must prewarm AMD Lemonade with extra.\${GGUF_FILE}"
+fi
+
+# ---------------------------------------------------------------------------
 # 9. Service registry health override exists
 # ---------------------------------------------------------------------------
 echo "[contract] Service registry AMD health override"
