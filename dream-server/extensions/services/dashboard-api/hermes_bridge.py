@@ -424,12 +424,16 @@ async def _submit_on_connection(
             # (empty/thinking-only/tool-terminated output under load).
             # See: https://github.com/Light-Heart-Labs/DreamServer/issues/1497
             final_text = payload.get("text") if isinstance(payload.get("text"), str) else ""
+            empty_turn = False
             if not final_text.strip():
                 # Fall back to the accumulated delta chunks. If those are also
-                # empty (thinking-only or tool-terminated turn), log a warning
-                # and resolve with "" rather than raising or crashing.
+                # empty (thinking-only or tool-terminated turn), log a warning,
+                # resolve with "", and tag the event with warning="empty_turn"
+                # so the UI and probes can distinguish this case from a normal
+                # empty-string reply.
                 final_text = "".join(chunks)
                 if not final_text.strip():
+                    empty_turn = True
                     logger.warning(
                         "hermes-bridge: message.complete received with no text and no deltas "
                         "(thinking-only or tool-terminated turn — resolving as empty string)"
@@ -439,8 +443,10 @@ async def _submit_on_connection(
                 "type": "complete",
                 "session_id": conn.session_id,
                 "text": final_text.strip(),
-                "status": str(payload.get("status") or "ok"),
-                "warning": payload.get("warning") if isinstance(payload.get("warning"), str) else None,
+                "status": "ok" if empty_turn else str(payload.get("status") or "ok"),
+                "warning": "empty_turn" if empty_turn else (
+                    payload.get("warning") if isinstance(payload.get("warning"), str) else None
+                ),
             }
             return
         elif event_type == "error":

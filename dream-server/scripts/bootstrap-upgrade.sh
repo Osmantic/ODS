@@ -1380,12 +1380,17 @@ LITELLM_UPGRADE_EOF
                 sleep 2
             done
             if $_hermes_ready; then
-                if $DOCKER_CMD exec dream-hermes timeout 90 \
-                    /opt/hermes/.venv/bin/hermes -z "ping" --yolo \
-                    >/dev/null 2>&1; then
-                    log "Hermes system prompt cached — first user prompt will be fast."
-                else
+                # Workaround: upstream Hermes may crash with KeyError: 'final_response'
+                # on thinking-only turns. Capture output so the crash is logged, not silent.
+                # See: https://github.com/Light-Heart-Labs/DreamServer/issues/1497
+                HERMES_WARMUP_OUT=$($DOCKER_CMD exec dream-hermes timeout 90 \
+                    /opt/hermes/.venv/bin/hermes -z "ping" --yolo 2>&1) || true
+                if echo "$HERMES_WARMUP_OUT" | grep -qE "KeyError|Traceback"; then
+                    log "WARNING: hermes warm-up hit upstream KeyError bug (issue #1497) — continuing"
+                elif [ -z "$HERMES_WARMUP_OUT" ]; then
                     log "WARNING: Hermes warm-up timed out (>90s). First user prompt will incur the full 14K-token prefill."
+                else
+                    log "Hermes system prompt cached — first user prompt will be fast."
                 fi
             else
                 log "WARNING: Hermes did not respond on /api/status within 60s; skipping system-prompt warm-up."
