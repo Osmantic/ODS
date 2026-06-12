@@ -167,13 +167,23 @@ if command -v docker &>/dev/null && ! $DRY_RUN; then
         ai "Downgrading to Docker 29.2.1 for AMD GPU compatibility..."
         # Detect package format
         if command -v apt-get &>/dev/null; then
-            _distro_codename=$(. /etc/os-release 2>/dev/null && echo "$VERSION_CODENAME" || echo "noble")
-            ds_sudo apt-get install -y --allow-downgrades \
-                docker-ce=5:29.2.1-1~ubuntu."$(. /etc/os-release && echo "$VERSION_ID")"~"$_distro_codename" \
-                docker-ce-cli=5:29.2.1-1~ubuntu."$(. /etc/os-release && echo "$VERSION_ID")"~"$_distro_codename" \
-                >> "$LOG_FILE" 2>&1 && \
-                ai_ok "Docker downgraded to 29.2.1 (AMD GPU fix)" || \
-                ai_warn "Could not downgrade Docker. GPU containers may fail. Manual fix: sudo apt install docker-ce=5:29.2.1-1~ubuntu.24.04~noble"
+            # Docker CE's apt version string embeds the distro id + codename,
+            # e.g. 5:29.2.1-1~ubuntu.24.04~noble or 5:29.2.1-1~debian.13~trixie.
+            # Resolve the exact installable 29.2.1 version from the configured
+            # repo rather than hand-constructing it — hardcoding "~ubuntu" broke
+            # the downgrade on Debian/derivatives (Debian trixie, AMD boxes).
+            _docker_2921=$(apt-cache madison docker-ce 2>/dev/null \
+                | awk '$3 ~ /(^|:)29\.2\.1/ {print $3; exit}')
+            if [[ -n "$_docker_2921" ]]; then
+                ds_sudo apt-get install -y --allow-downgrades \
+                    docker-ce="$_docker_2921" docker-ce-cli="$_docker_2921" \
+                    >> "$LOG_FILE" 2>&1 && \
+                    ai_ok "Docker downgraded to 29.2.1 (AMD GPU fix)" || \
+                    ai_warn "Could not downgrade Docker. GPU containers may fail. Manual fix: sudo apt install docker-ce=$_docker_2921"
+            else
+                ai_warn "Docker 29.2.1 not found in apt repos; cannot downgrade. AMD GPU containers may fail with /dev/dri passthrough errors."
+                ai "  Manual fix: ensure Docker's apt repo is configured (get.docker.com), then 'apt-cache madison docker-ce' to find the 29.2.1 version string."
+            fi
         elif command -v dnf &>/dev/null; then
             ds_sudo dnf downgrade -y docker-ce-29.2.1 docker-ce-cli-29.2.1 >> "$LOG_FILE" 2>&1 && \
                 ai_ok "Docker downgraded to 29.2.1 (AMD GPU fix)" || \
