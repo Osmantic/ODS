@@ -647,10 +647,10 @@ monitor_download() {
 
         local percent="null"
         local eta=""
+        local progress_bytes="$current_bytes"
         if [[ $total_bytes -gt 0 ]]; then
-            local progress_bytes="$current_bytes"
             [[ "$progress_bytes" -gt "$total_bytes" ]] && progress_bytes="$total_bytes"
-            percent=$(status_percent "$current_bytes" "$total_bytes")
+            percent=$(status_percent "$progress_bytes" "$total_bytes")
             if [[ $speed -gt 0 ]]; then
                 local remaining=$(( total_bytes - progress_bytes ))
                 local eta_secs=$(( remaining / speed ))

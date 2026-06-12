@@ -27,6 +27,10 @@ cat > "$fakebin/curl" <<'EOF'
 #!/usr/bin/env bash
 case " $* " in
   *" -sI "*)
+    if [[ "${DREAM_FAKE_NO_CONTENT_LENGTH:-0}" == "1" ]]; then
+      printf 'HTTP/2 200\r\n\r\n'
+      exit 0
+    fi
     printf 'HTTP/2 200\r\ncontent-length: 100\r\n\r\n'
     exit 0
     ;;
@@ -113,5 +117,33 @@ grep -q '"percent": 100.0' "$install_dir/data/bootstrap-status.json" \
     || fail "failed bootstrap-status percent must be capped at 100"
 grep -Eqi 'preserved.*partial file.*resume|partial file.*preserved.*resume' "$tmp/bootstrap.log" \
     || fail "bootstrap-upgrade should tell operators the partial file was preserved"
+
+unknown_install_dir="$tmp/install-unknown-size"
+mkdir -p "$unknown_install_dir/data/models" "$unknown_install_dir/config/llama-server" "$unknown_install_dir/bin"
+cp "$install_dir/.env" "$unknown_install_dir/.env"
+printf 'bootstrap model\n' > "$unknown_install_dir/data/models/Bootstrap.gguf"
+printf '999999\n' > "$unknown_install_dir/data/.llama-server.pid"
+
+set +e
+PATH="$fakebin:$PATH" DREAM_FAKE_NO_CONTENT_LENGTH=1 DREAM_BOOTSTRAP_DOWNLOAD_ATTEMPTS=1 bash "$TARGET" \
+    "$unknown_install_dir" \
+    "Full.gguf" \
+    "https://example.invalid/Full.gguf" \
+    "" \
+    "full-model" \
+    "32768" \
+    "Bootstrap.gguf" \
+    > "$tmp/bootstrap-unknown-size.log" 2>&1
+unknown_rc=$?
+set -e
+
+[[ $unknown_rc -ne 0 ]] || fail "bootstrap-upgrade unknown-size download must exit non-zero after curl failure"
+if grep -q 'progress_bytes: unbound variable' "$tmp/bootstrap-unknown-size.log"; then
+    fail "bootstrap-upgrade monitor must not trip set -u when remote size is unknown"
+fi
+grep -q '"bytesTotal": 0' "$unknown_install_dir/data/bootstrap-status.json" \
+    || fail "unknown-size bootstrap-status must preserve bytesTotal=0"
+grep -Eq '"bytesDownloaded": [1-9][0-9]*' "$unknown_install_dir/data/bootstrap-status.json" \
+    || fail "unknown-size bootstrap-status must preserve downloaded byte count"
 
 pass "failed download preserves resumable partial and status progress"
