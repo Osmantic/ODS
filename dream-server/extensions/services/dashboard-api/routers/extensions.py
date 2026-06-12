@@ -913,10 +913,12 @@ async def extensions_catalog(
             services_by_id[sid] = result
 
     # Extensions without health endpoints — assume running if scanned
-    # (presence in user_svc_configs means compose.yaml + manifest exist)
+    # (presence in user_svc_configs means compose.yaml + manifest exist).
+    # Do NOT fabricate healthy status for TCP extensions — they must be
+    # probedabove and should not appear healthy without a successful probe.
     from models import ServiceStatus
     for sid, cfg in user_svc_configs.items():
-        if not cfg.get("health") and sid not in services_by_id:
+        if not cfg.get("health") and cfg.get("health_type") != "tcp" and sid not in services_by_id:
             services_by_id[sid] = ServiceStatus(
                 id=sid, name=cfg.get("name", sid),
                 port=cfg.get("port", 0),
@@ -1054,7 +1056,9 @@ async def extension_detail(
 
     # Same short per-probe timeout as the catalog fan-out — one slow user
     # extension must not block the detail view.
-    checkable = {sid: cfg for sid, cfg in user_svc_configs.items() if cfg.get("health")}
+    # Include extensions with a health endpoint OR health_type=tcp (port probe).
+    checkable = {sid: cfg for sid, cfg in user_svc_configs.items()
+                 if cfg.get("health") or cfg.get("health_type") == "tcp"}
     user_health_tasks = [
         check_service_health(sid, cfg, timeout=_CATALOG_HEALTH_TIMEOUT)
         for sid, cfg in checkable.items()
@@ -1066,7 +1070,11 @@ async def extension_detail(
 
     from models import ServiceStatus
     for sid, cfg in user_svc_configs.items():
-        if not cfg.get("health") and sid not in services_by_id:
+        # Do not fabricate healthy status for TCP extensions that were
+        # not probed — they should be probed above. Only synthesize
+        # healthy for extensions with no health endpoint and no tcp
+        # health_type (i.e. manifest-only extensions without compose).
+        if not cfg.get("health") and cfg.get("health_type") != "tcp" and sid not in services_by_id:
             services_by_id[sid] = ServiceStatus(
                 id=sid, name=cfg.get("name", sid),
                 port=cfg.get("port", 0),
