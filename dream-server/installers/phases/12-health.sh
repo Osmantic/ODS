@@ -274,8 +274,10 @@ fi
 dream_progress 89 "health" "Waiting for Chat UI"
 _check_health "Open WebUI" "http://127.0.0.1:${SERVICE_PORTS[open-webui]:-3000}${SERVICE_HEALTH[open-webui]:-/}" 150 10 "$(sr_container open-webui)"
 # Perplexica: 150 attempts * adaptive backoff = up to ~20 minutes
-dream_progress 91 "health" "Waiting for Research engine"
-_check_health "Perplexica" "http://127.0.0.1:${SERVICE_PORTS[perplexica]:-3004}${SERVICE_HEALTH[perplexica]:-/}" 150 10 "$(sr_container perplexica)"
+if [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]]; then
+    dream_progress 91 "health" "Waiting for Research engine"
+    _check_health "Perplexica" "http://127.0.0.1:${SERVICE_PORTS[perplexica]:-3004}${SERVICE_HEALTH[perplexica]:-/}" 150 10 "$(sr_container perplexica)"
+fi
 # ComfyUI: 150 attempts * adaptive backoff = up to ~20 minutes (FLUX model loading is slow)
 if [[ "$ENABLE_COMFYUI" == "true" ]]; then
     dream_progress 93 "health" "Waiting for Image generation"
