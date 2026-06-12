@@ -129,9 +129,27 @@ else
     fail "External Lemonade preflight must not require managed dream-llama-server"
 fi
 
+# 12. Extension health checks honor .env port overrides
+# Linux AMD/Lemonade reserves host port 9000 for Lemonade, so the installer may
+# write WHISPER_PORT=9100. Root preflight must follow that configured port
+# instead of probing a stale hard-coded default.
+if grep -q 'WHISPER_PORT_RESOLVED="${WHISPER_PORT:-9000}"' "$PREFLIGHT" \
+   && grep -q 'TTS_PORT_RESOLVED="${TTS_PORT:-8880}"' "$PREFLIGHT" \
+   && grep -q 'EMBEDDINGS_PORT_RESOLVED="${EMBEDDINGS_PORT:-8090}"' "$PREFLIGHT"; then
+    pass "Extension health checks honor configured port overrides"
+else
+    fail "Extension health checks must honor WHISPER_PORT/TTS_PORT/EMBEDDINGS_PORT"
+fi
+
+if grep -q 'WHISPER_ENDPOINTS=("http://${SERVICE_HOST}:9000"' "$PREFLIGHT"; then
+    fail "Whisper preflight still hard-codes host port 9000"
+else
+    pass "Whisper preflight no longer hard-codes host port 9000"
+fi
+
 # ── Runtime smoke test (no Docker required) ─────────────────────────────────
 
-# 12. Script runs to completion without unbound variable or syntax errors
+# 13. Script runs to completion without unbound variable or syntax errors
 #     (Services won't be up, so we expect exit 1 — that is correct behavior)
 set +e
 err_output=$(
@@ -150,7 +168,7 @@ else
     pass "Script runs without shell errors (exit $run_exit is expected)"
 fi
 
-# 13. Exit code is 0 or 1; never an unexpected crash code
+# 14. Exit code is 0 or 1; never an unexpected crash code
 if [[ "$run_exit" -eq 0 ]] || [[ "$run_exit" -eq 1 ]]; then
     pass "Exit code is valid (0=pass, 1=fail): $run_exit"
 else

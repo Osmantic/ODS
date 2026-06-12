@@ -242,6 +242,26 @@ if $OLLAMA_RUNNING; then
     fi
 fi
 
+_phase04_lemonade_uses_host_9000() {
+    [[ "${LEMONADE_EXTERNAL:-false}" =~ ^([Tt][Rr][Uu][Ee]|1|yes|on)$ ]] && return 0
+    [[ "${AMD_INFERENCE_RUNTIME:-}" =~ ^([Ll][Ee][Mm][Oo][Nn][Aa][Dd][Ee])$ ]] && return 0
+    [[ "${GPU_BACKEND:-}" == "amd" && "${DREAM_MODE:-local}" != "cloud" ]] && return 0
+    return 1
+}
+
+if [[ "${ENABLE_VOICE:-false}" == "true" ]] && _phase04_lemonade_uses_host_9000; then
+    _whisper_port_for_check="${WHISPER_PORT:-${SERVICE_PORTS[whisper]:-9000}}"
+    if [[ "$_whisper_port_for_check" == "9000" ]]; then
+        # Lemonade's native router can reserve host port 9000 on AMD systems.
+        # Keep Whisper's container port unchanged, but check/use 9100 on the host
+        # unless the user explicitly selected another non-9000 port.
+        WHISPER_PORT=9100
+        SERVICE_PORTS[whisper]=9100
+        log "AMD/Lemonade detected; reserving host port 9000 for Lemonade and checking Whisper on 9100"
+    fi
+    unset _whisper_port_for_check
+fi
+
 # Port conflict detection with detailed process information
 PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-8080} ${SERVICE_PORTS[open-webui]:-3000}"
 [[ "$ENABLE_VOICE" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[whisper]:-9000} ${SERVICE_PORTS[tts]:-8880}"

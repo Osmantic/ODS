@@ -598,6 +598,27 @@ raise SystemExit(1)' 2>/dev/null && return 0
     fi
     AUDIO_STT_MODEL=$(_env_get AUDIO_STT_MODEL "${AUDIO_STT_MODEL:-$_default_stt_model}")
 
+    _phase06_lemonade_uses_host_9000() {
+        [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]] && return 0
+        [[ "${AMD_INFERENCE_RUNTIME:-}" =~ ^([Ll][Ee][Mm][Oo][Nn][Aa][Dd][Ee])$ ]] && return 0
+        [[ "${GPU_BACKEND:-}" == "amd" && "${DREAM_MODE:-local}" != "cloud" ]] && return 0
+        return 1
+    }
+
+    WHISPER_PORT_VALUE="$(_env_get_explicit_first WHISPER_PORT "9000")"
+    if _phase06_lemonade_uses_host_9000 && [[ "$WHISPER_PORT_VALUE" == "9000" ]]; then
+        # Lemonade's native Linux/Windows router can reserve host port 9000
+        # for websocket traffic. Match the Windows policy: keep Whisper's
+        # container port at 8000, but bind the host side on 9100 unless the
+        # user already selected another non-9000 port.
+        WHISPER_PORT_VALUE="9100"
+        ai_ok "AMD/Lemonade detected; Whisper reassigned to host port ${WHISPER_PORT_VALUE}"
+    fi
+    WHISPER_PORT="$WHISPER_PORT_VALUE"
+    if declare -p SERVICE_PORTS >/dev/null 2>&1; then
+        SERVICE_PORTS[whisper]="$WHISPER_PORT_VALUE"
+    fi
+
     # Preserve user-supplied cloud API keys
     ANTHROPIC_API_KEY=$(_env_get ANTHROPIC_API_KEY "${ANTHROPIC_API_KEY:-}")
     OPENAI_API_KEY=$(_env_get OPENAI_API_KEY "${OPENAI_API_KEY:-}")
@@ -776,7 +797,7 @@ OLLAMA_PORT=11434
 WEBUI_PORT=3000
 SEARXNG_PORT=8888
 PERPLEXICA_PORT=3004
-WHISPER_PORT=${WHISPER_PORT:-9000}
+WHISPER_PORT=${WHISPER_PORT_VALUE}
 TTS_PORT=8880
 N8N_PORT=5678
 QDRANT_PORT=6333

@@ -402,6 +402,26 @@ else
     pass "env-generator.ps1: runtime port test skipped (pwsh unavailable)"
 fi
 
+# ---------------------------------------------------------------------------
+# 17b. Linux AMD/Lemonade avoids host port 9000 collision with Whisper
+# ---------------------------------------------------------------------------
+echo "[contract] Linux AMD/Lemonade avoids Whisper port 9000"
+if grep -q 'AMD/Lemonade detected; reserving host port 9000' installers/phases/04-requirements.sh \
+    && grep -q 'AMD/Lemonade detected; Whisper reassigned to host port' installers/phases/06-directories.sh \
+    && grep -q 'WHISPER_PORT_VALUE="9100"' installers/phases/06-directories.sh \
+    && grep -q 'WHISPER_PORT=${WHISPER_PORT_VALUE}' installers/phases/06-directories.sh; then
+    pass "Linux AMD/Lemonade defaults Whisper to alternate host port"
+else
+    fail "Linux AMD/Lemonade must avoid Lemonade host port 9000 collision"
+fi
+
+if grep -q 'SERVICE_PORTS\[whisper\]=9100' installers/phases/04-requirements.sh \
+    && grep -q 'SERVICE_PORTS\[whisper\]="\$WHISPER_PORT_VALUE"' installers/phases/06-directories.sh; then
+    pass "Linux installer aligns Whisper port checks with generated .env"
+else
+    fail "Linux installer must align Whisper port checks/health with generated .env"
+fi
+
 if grep -q 'backend-contract.ps1' installers/windows/dream.ps1 \
     && grep -q 'Resolve-DreamLemonadeExe' installers/windows/dream.ps1; then
     pass "dream.ps1 resolves Lemonade across both Program Files roots"
