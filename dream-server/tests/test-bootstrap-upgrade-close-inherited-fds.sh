@@ -88,7 +88,15 @@ assert_runtime_lock_release() {
 
 assert_fd_close_spawn "$ROOT_DIR/installers/phases/11-services.sh"   "linux/wsl phase 11"
 assert_fd_close_spawn "$ROOT_DIR/installers/macos/install-macos.sh" "macos installer"
-assert_runtime_lock_release 9
-assert_runtime_lock_release 200
+
+# flock(1) is util-linux and does not exist on macOS. The static spawn-site
+# checks above cover the product contract on every platform; the runtime
+# lock-release simulation only runs where flock is available.
+if command -v flock >/dev/null 2>&1; then
+    assert_runtime_lock_release 9
+    assert_runtime_lock_release 200
+else
+    echo "[SKIP] runtime lock-release checks: flock(1) not available on this platform"
+fi
 
 echo "[OK] all bootstrap-upgrade spawn sites close inherited non-stdio FDs"

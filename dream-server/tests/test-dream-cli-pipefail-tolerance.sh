@@ -3,6 +3,22 @@
 
 set -euo pipefail
 
+# dream-cli requires Bash 4+; macOS ships Bash 3.2, so running this suite
+# there makes every case fail with a misleading exit 1 from the CLI's own
+# version guard. Re-exec under Homebrew bash when available (mirrors
+# scripts/health-check.sh); otherwise skip — without Bash 4+ there is no
+# meaningful dream-cli behavior to test on this host.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    for _modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+        if [ -x "$_modern_bash" ] && [ "$("$_modern_bash" -c 'echo "${BASH_VERSINFO[0]}"')" -ge 4 ]; then
+            exec "$_modern_bash" "$0" "$@"
+        fi
+    done
+    echo "[SKIP] dream-cli requires Bash 4+; this host only has Bash ${BASH_VERSION} (brew install bash)"
+    echo "Result: 0 passed, 0 failed, 1 skipped"
+    exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DREAM_CLI="$ROOT_DIR/dream-cli"
@@ -24,9 +40,13 @@ fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
 skip() { echo "[SKIP] $1"; SKIP=$((SKIP + 1)); }
 
 run_dream() {
+    # Invoke through "$BASH" (the interpreter running this test) instead of
+    # the #!/usr/bin/env bash shebang: on macOS, env can resolve to the
+    # system Bash 3.2 even when this suite runs under a modern bash. Same
+    # pattern as test-validate-env.sh and test-dream-config-secret-mask.sh.
     local output rc
     set +e
-    output=$(DREAM_HOME="$INSTALL_DIR" NO_COLOR=1 "$DREAM_CLI" "$@" 2>&1)
+    output=$(DREAM_HOME="$INSTALL_DIR" NO_COLOR=1 "$BASH" "$DREAM_CLI" "$@" 2>&1)
     rc=$?
     set -e
     printf '%s\n' "$rc"

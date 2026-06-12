@@ -19,6 +19,21 @@
 
 set -euo pipefail
 
+# dream-cli requires Bash 4+; macOS ships Bash 3.2, so "$BASH" "$DREAM_CLI"
+# below would hit the CLI's version guard and report 9 misleading failures.
+# Re-exec under Homebrew bash when available (mirrors scripts/health-check.sh);
+# otherwise skip — without Bash 4+ dream-cli cannot run on this host at all.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    for _modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+        if [ -x "$_modern_bash" ] && [ "$("$_modern_bash" -c 'echo "${BASH_VERSINFO[0]}"')" -ge 4 ]; then
+            exec "$_modern_bash" "$0" "$@"
+        fi
+    done
+    echo "[SKIP] dream-cli requires Bash 4+; this host only has Bash ${BASH_VERSION} (brew install bash)"
+    echo "Result: 0 passed, 0 failed (skipped: no Bash 4+ on host)"
+    exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DREAM_CLI="$ROOT_DIR/dream-cli"
