@@ -61,6 +61,9 @@ test: ## Run unit and contract tests
 	@echo "=== macOS dream-host-agent bootstrap verification ==="
 	@bash tests/test-macos-host-agent-verification.sh
 	@echo ""
+	@echo "=== macOS MLX engine contracts ==="
+	@bash tests/contracts/test-macos-mlx-contracts.sh
+	@echo ""
 	@echo "=== fleet-multi-distro keep-going on docker pull failure ==="
 	@bash tests/test-fleet-multi-distro-keep-going.sh
 
