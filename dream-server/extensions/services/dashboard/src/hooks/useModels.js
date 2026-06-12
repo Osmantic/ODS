@@ -124,9 +124,19 @@ export function useModels() {
 
   useEffect(() => {
     fetchModels()
-    // Refresh every 30 seconds
-    const interval = setInterval(fetchModels, 30000)
-    return () => clearInterval(interval)
+    // Refresh every 30 seconds — but skip ticks while the tab is hidden so
+    // an idle dashboard doesn't keep polling for nobody (#1490).
+    const tick = () => { if (!document.hidden) fetchModels() }
+    const interval = setInterval(tick, 30000)
+
+    // Resume immediately when the tab becomes visible again
+    const onVisibility = () => { if (!document.hidden) fetchModels() }
+    document.addEventListener('visibilitychange', onVisibility)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [fetchModels])
 
   const downloadModel = async (modelId) => {

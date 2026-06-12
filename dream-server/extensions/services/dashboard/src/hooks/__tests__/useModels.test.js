@@ -1,6 +1,12 @@
 import { renderHook, waitFor, act } from '@testing-library/react'
 import { useModels } from '../useModels'
 
+// Shadow jsdom's Document.prototype.hidden getter on the instance; deleting
+// the own property in afterEach restores the prototype behavior.
+const setDocumentHidden = (hidden) => {
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
+}
+
 describe('useModels', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn())
@@ -8,6 +14,7 @@ describe('useModels', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    delete document.hidden
   })
 
   test('fetches models on mount', async () => {
@@ -120,6 +127,35 @@ describe('useModels', () => {
     expect(benchmarkCall).toBeTruthy()
     expect(benchmarkCall[0]).toContain('qwen3.5-9b-q4')
     expect(benchmarkCall[1].body).toContain('max_tokens')
+  })
+
+  test('pauses 30s polling while the tab is hidden and refreshes on visibilitychange', async () => {
+    fetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ models: [], gpu: null, currentModel: null })
+    })
+
+    vi.useFakeTimers()
+    try {
+      renderHook(() => useModels())
+      await act(async () => {})
+      expect(fetch).toHaveBeenCalledTimes(1)
+
+      setDocumentHidden(true)
+      await act(async () => { await vi.advanceTimersByTimeAsync(90000) })
+      expect(fetch).toHaveBeenCalledTimes(1)
+
+      setDocumentHidden(false)
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      expect(fetch).toHaveBeenCalledTimes(2)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+      expect(fetch).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   test('deleteModel aborts when user cancels confirm', async () => {

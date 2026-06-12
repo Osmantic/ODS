@@ -606,10 +606,15 @@ export default function Dashboard({ status, loading }) {
     }
 
     fetchFeatures()
-    const timer = setInterval(fetchFeatures, 15000)
+    // Skip ticks while the tab is hidden; refresh immediately on return (#1490)
+    const tick = () => { if (!document.hidden) fetchFeatures() }
+    const timer = setInterval(tick, 15000)
+    const onVisibility = () => { if (!document.hidden) fetchFeatures() }
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       mounted = false
       clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [])
 
@@ -628,10 +633,17 @@ export default function Dashboard({ status, loading }) {
     }
 
     fetchServiceResources()
-    const timer = setInterval(fetchServiceResources, 10000)
+    // /api/services/resources runs `docker stats` + /data disk walks
+    // server-side (TTL-cached 20s/60s) — the most expensive poller on this
+    // page. Skip ticks while the tab is hidden; refresh on return (#1490).
+    const tick = () => { if (!document.hidden) fetchServiceResources() }
+    const timer = setInterval(tick, 10000)
+    const onVisibility = () => { if (!document.hidden) fetchServiceResources() }
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       mounted = false
       clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [])
 

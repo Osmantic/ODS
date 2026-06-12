@@ -318,10 +318,15 @@ function useUsageReport(range, reloadToken = 0) {
     }
 
     load()
-    const intervalId = window.setInterval(() => load({ silent: true }), 10000)
+    // Skip ticks while the tab is hidden; refresh immediately on return (#1490)
+    const tick = () => { if (!document.hidden) load({ silent: true }) }
+    const intervalId = window.setInterval(tick, 10000)
+    const onVisibility = () => { if (!document.hidden) load({ silent: true }) }
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       cancelled = true
       window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [range, reloadToken])
 

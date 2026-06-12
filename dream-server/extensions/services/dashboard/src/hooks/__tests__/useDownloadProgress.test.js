@@ -1,5 +1,11 @@
-import { renderHook, waitFor } from '@testing-library/react'
+import { renderHook, waitFor, act } from '@testing-library/react'
 import { useDownloadProgress } from '../useDownloadProgress'
+
+// Shadow jsdom's Document.prototype.hidden getter on the instance; deleting
+// the own property in afterEach restores the prototype behavior.
+const setDocumentHidden = (hidden) => {
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
+}
 
 describe('useDownloadProgress', () => {
   beforeEach(() => {
@@ -8,6 +14,7 @@ describe('useDownloadProgress', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    delete document.hidden
   })
 
   test('sets isDownloading when status is downloading', async () => {
@@ -73,6 +80,35 @@ describe('useDownloadProgress', () => {
       model: 'test-model',
       updatedAt: '2026-05-16T12:00:00Z'
     })
+  })
+
+  test('pauses idle polling while the tab is hidden and refreshes on visibilitychange', async () => {
+    fetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ status: 'idle' })
+    })
+
+    vi.useFakeTimers()
+    try {
+      renderHook(() => useDownloadProgress())
+      await act(async () => {})
+      expect(fetch).toHaveBeenCalledTimes(1)
+
+      setDocumentHidden(true)
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+      expect(fetch).toHaveBeenCalledTimes(1)
+
+      setDocumentHidden(false)
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      expect(fetch).toHaveBeenCalledTimes(2)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+      expect(fetch).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   test('formatBytes formats GB/MB/KB correctly', () => {

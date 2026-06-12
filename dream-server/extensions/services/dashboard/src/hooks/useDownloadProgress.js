@@ -63,10 +63,21 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
   useEffect(() => {
     fetchProgress()
 
-    // Poll frequently only while downloading; otherwise check every 10s
+    // Poll frequently only while downloading; otherwise check every 10s.
+    // Skip ticks while the tab is hidden — nobody sees the progress bar and
+    // the visibility handler below catches state up on return (#1490).
     const activeInterval = isDownloading ? pollIntervalMs : 10000
-    const interval = setInterval(fetchProgress, activeInterval)
-    return () => clearInterval(interval)
+    const tick = () => { if (!document.hidden) fetchProgress() }
+    const interval = setInterval(tick, activeInterval)
+
+    // Resume immediately when the tab becomes visible again
+    const onVisibility = () => { if (!document.hidden) fetchProgress() }
+    document.addEventListener('visibilitychange', onVisibility)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [fetchProgress, pollIntervalMs, isDownloading])
 
   // Format helpers
