@@ -86,6 +86,45 @@ _docker_install_dnf_rhel_family() {
 # Track whether docker group membership is active in this shell
 DOCKER_NEEDS_SUDO=false
 
+_docker_read_server_version() {
+    local version=""
+
+    if version="$(docker version --format '{{.Server.Version}}' 2>/dev/null)" && [[ -n "$version" ]]; then
+        printf '%s\n' "$version"
+        return 0
+    fi
+
+    # Fresh Linux installs often add the user to the docker group, but that
+    # membership is not active until the next login shell. The AMD downgrade
+    # must still see Docker 29.3.x in that first installer run.
+    if command -v sudo >/dev/null 2>&1; then
+        if version="$(ds_sudo docker version --format '{{.Server.Version}}' 2>/dev/null)" && [[ -n "$version" ]]; then
+            printf '%s\n' "$version"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+_docker_server_version_for_amd_downgrade() {
+    if _docker_read_server_version; then
+        return 0
+    fi
+
+    # get.docker.com usually starts the daemon, but derivative distros and
+    # first-boot images can leave it stopped until systemd is nudged.
+    if command -v systemctl >/dev/null 2>&1; then
+        ds_sudo systemctl start docker 2>>"${LOG_FILE:-/dev/null}" || true
+        sleep 2
+        if _docker_read_server_version; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 if [[ "$SKIP_DOCKER" == "true" ]]; then
     log "Skipping Docker installation (--skip-docker)"
 elif command -v docker &> /dev/null; then
@@ -161,7 +200,7 @@ fi
 # Pin to 29.2.x until this is resolved upstream.
 # See: https://github.com/moby/moby/issues — device passthrough regression in 29.3.0
 if command -v docker &>/dev/null && ! $DRY_RUN; then
-    _docker_ver=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo "0.0.0")
+    _docker_ver="$(_docker_server_version_for_amd_downgrade || echo "0.0.0")"
     if [[ "$_docker_ver" == 29.3.* ]] && [[ "${GPU_BACKEND:-}" == "amd" ]]; then
         ai_warn "Docker $_docker_ver has a known bug with AMD GPU device passthrough."
         ai "Downgrading to Docker 29.2.1 for AMD GPU compatibility..."

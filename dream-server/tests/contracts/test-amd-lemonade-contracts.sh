@@ -424,6 +424,89 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 19. AMD Docker 29.3 downgrade is Debian-aware and sudo-aware
+# ---------------------------------------------------------------------------
+echo "[contract] AMD Docker downgrade handles Debian and inactive docker group"
+docker_phase="installers/phases/05-docker.sh"
+if grep -q 'apt-cache madison docker-ce' "$docker_phase"; then
+    pass "05-docker.sh: apt downgrade resolves the installable Docker CE version"
+else
+    fail "05-docker.sh: apt downgrade must resolve Docker CE 29.2.1 via apt-cache madison"
+fi
+if grep -q 'docker-ce=5:29\.2\.1-1~ubuntu' "$docker_phase" \
+    || grep -q 'docker-ce-cli=5:29\.2\.1-1~ubuntu' "$docker_phase"; then
+    fail "05-docker.sh: apt downgrade must not hardcode Ubuntu package versions"
+else
+    pass "05-docker.sh: apt downgrade no longer hardcodes Ubuntu package versions"
+fi
+if awk '/_docker_read_server_version\(\)/,/^}/' "$docker_phase" \
+    | grep -q 'ds_sudo docker version'; then
+    pass "05-docker.sh: Docker server version probe falls back through ds_sudo"
+else
+    fail "05-docker.sh: AMD downgrade must detect Docker 29.3 when docker group membership is not active"
+fi
+if awk '/_docker_server_version_for_amd_downgrade\(\)/,/^}/' "$docker_phase" \
+    | grep -q 'systemctl start docker'; then
+    pass "05-docker.sh: AMD downgrade starts docker before giving up on version detection"
+else
+    fail "05-docker.sh: AMD downgrade must retry after starting docker on systemd hosts"
+fi
+if awk '/Docker 29\.3\.x has a bug/,/fi$/' "$docker_phase" \
+    | grep -q '_docker_server_version_for_amd_downgrade'; then
+    pass "05-docker.sh: AMD downgrade uses the sudo-aware version probe"
+else
+    fail "05-docker.sh: AMD downgrade still uses a bare docker version probe"
+fi
+_amd_docker_probe_tmp="$(mktemp -d)"
+mkdir -p "$_amd_docker_probe_tmp/bin"
+cat > "$_amd_docker_probe_tmp/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "version" && "${2:-}" == "--format" ]]; then
+    if [[ "${DREAM_FAKE_DOCKER_SUDO:-}" == "1" ]]; then
+        echo "29.3.0"
+        exit 0
+    fi
+    exit 1
+fi
+exit 99
+EOF
+cat > "$_amd_docker_probe_tmp/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+DREAM_FAKE_DOCKER_SUDO=1 "$@"
+EOF
+chmod +x "$_amd_docker_probe_tmp/bin/docker" "$_amd_docker_probe_tmp/bin/sudo"
+_docker_probe_func="$(awk '
+    /_docker_read_server_version\(\)/,/^}/ {print}
+    /_docker_server_version_for_amd_downgrade\(\)/,/^}/ {print}
+' "$docker_phase")"
+if _probe_output="$(
+    PATH="$_amd_docker_probe_tmp/bin:$PATH" bash -c '
+        set -euo pipefail
+        ds_sudo() { DREAM_FAKE_DOCKER_SUDO=1 "$@"; }
+        eval "$1"
+        _docker_server_version_for_amd_downgrade
+    ' bash "$_docker_probe_func"
+)"; then
+    if [[ "$_probe_output" == "29.3.0" ]]; then
+        pass "05-docker.sh: sudo fallback detects Docker 29.3 when bare docker is denied"
+    else
+        fail "05-docker.sh: sudo fallback returned unexpected Docker version: $_probe_output"
+    fi
+else
+    fail "05-docker.sh: sudo fallback did not recover Docker server version"
+fi
+rm -rf "$_amd_docker_probe_tmp"
+unset _amd_docker_probe_tmp _docker_probe_func _probe_output
+_sample_debian_madison=$'   docker-ce | 5:29.3.0-1~debian.13~trixie | https://download.docker.com/linux/debian trixie/stable amd64 Packages\n   docker-ce | 5:29.2.1-1~debian.13~trixie | https://download.docker.com/linux/debian trixie/stable amd64 Packages'
+_resolved_debian_2921="$(awk '$3 ~ /(^|:)29\.2\.1/ {print $3; exit}' <<<"$_sample_debian_madison")"
+if [[ "$_resolved_debian_2921" == "5:29.2.1-1~debian.13~trixie" ]]; then
+    pass "apt-cache madison parser resolves Debian trixie Docker CE 29.2.1"
+else
+    fail "apt-cache madison parser did not resolve the Debian trixie Docker CE 29.2.1 version"
+fi
+unset _sample_debian_madison _resolved_debian_2921 docker_phase
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
