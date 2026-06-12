@@ -796,6 +796,21 @@ class TestGetBootstrapStatusEdgeCases:
         assert abs(status.downloaded_gb - 2.0) < 0.01
         assert status.speed_mbps is not None
 
+    def test_oversized_progress_is_clamped_for_active_download(self, data_dir):
+        status_file = data_dir / "bootstrap-status.json"
+        status_file.write_text(json.dumps({
+            "status": "downloading",
+            "model": "Full.gguf",
+            "percent": 143.2,
+            "bytesDownloaded": 150,
+            "bytesTotal": 100,
+        }))
+        status = get_bootstrap_status()
+        assert status.active is True
+        assert status.percent == 100.0
+        assert status.downloaded_gb == 100 / (1024**3)
+        assert status.total_gb == 100 / (1024**3)
+
 
 # --- get_uptime platform branches ---
 

@@ -662,7 +662,7 @@ monitor_download() {
             fi
         fi
 
-        write_status "downloading" "$percent" "$current_bytes" "$total_bytes" "$speed" "$eta"
+        write_status "downloading" "$percent" "$progress_bytes" "$total_bytes" "$speed" "$eta"
         prev_bytes=$current_bytes
         prev_time=$now
     done

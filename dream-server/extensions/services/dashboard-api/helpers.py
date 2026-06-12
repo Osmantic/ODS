@@ -643,9 +643,11 @@ def get_bootstrap_status() -> BootstrapStatus:
         percent = None
         if percent_raw is not None:
             try:
-                percent = float(percent_raw)
+                percent = max(0.0, min(100.0, float(percent_raw)))
             except (ValueError, TypeError):
                 pass
+        if bytes_total and bytes_downloaded:
+            bytes_downloaded = max(0, min(bytes_downloaded, bytes_total))
 
         return BootstrapStatus(
             active=True, model_name=data.get("model"), percent=percent,

@@ -82,6 +82,8 @@ grep -q 'dream-bootstrap-upgrade-' "$TARGET" \
 if grep -q 'local lock_dir="$INSTALL_DIR/data/bootstrap-upgrade.lock"' "$TARGET"; then
     fail "bootstrap-upgrade lock must not live under install data"
 fi
+grep -q 'write_status "downloading" "$percent" "$progress_bytes" "$total_bytes"' "$TARGET" \
+    || fail "active bootstrap-status must write clamped progress bytes so UI progress cannot exceed 100%"
 
 set +e
 PATH="$fakebin:$PATH" DREAM_BOOTSTRAP_DOWNLOAD_ATTEMPTS=2 bash "$TARGET" \
