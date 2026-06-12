@@ -74,6 +74,26 @@ if ($dryRun) {
     }
     Write-AISuccess "Docker Compose available: $dockerComposeCmd"
 
+    # A reinstall can begin while Docker Desktop is still starting. If old Dream
+    # containers come back after the install tree was removed, file bind mounts
+    # may recreate missing host-side files as directories. Remove stale Dream
+    # containers while Docker is definitely available, before Phase 06 rewrites
+    # the bind-mounted install tree.
+    try {
+        $_dreamContainerNames = @(& docker ps -a --format "{{.Names}}" 2>$null | Where-Object { $_ -like "dream-*" })
+        if ($_dreamContainerNames.Count -gt 0) {
+            Write-AI "Stopping existing Dream containers before reinstall..."
+            $null = & docker rm -f @_dreamContainerNames 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-AISuccess "Stopped existing Dream containers"
+            } else {
+                Write-AIWarn "Could not remove all existing Dream containers; continuing with file-path repair."
+            }
+        }
+    } catch {
+        Write-AIWarn "Could not inspect existing Dream containers: $($_.Exception.Message)"
+    }
+
     # ── Compose file syntax validation ────────────────────────────────────────
     # Quick config check on the base compose file to catch syntax errors early.
     $_baseCompose = Join-Path $sourceRoot "docker-compose.base.yml"

@@ -77,10 +77,19 @@ foreach ($_d in $_dirs) {
 }
 Write-AISuccess "Created directory structure under $installDir"
 
-# Docker/PowerShell partial installs can leave directories where install-root
-# dotfiles must be regular files. Remove those malformed paths before robocopy
-# and .env generation, otherwise later reads fail with "access denied".
-foreach ($_expectedFileName in @(".env", ".env.example", ".env.schema.json")) {
+# Docker/PowerShell partial installs and stale Docker bind mounts can leave
+# directories where install-owned regular files must exist. Remove those
+# malformed paths before robocopy and config generation, otherwise later reads
+# fail with "access denied".
+$_expectedRegularFiles = @(
+    ".env",
+    ".env.example",
+    ".env.schema.json",
+    "extensions\services\hermes\cli-config.yaml.template",
+    "extensions\services\hermes\SOUL.md.template",
+    "data\persona\SOUL.md"
+)
+foreach ($_expectedFileName in $_expectedRegularFiles) {
     $_expectedFilePath = Join-Path $installDir $_expectedFileName
     if (Test-Path -LiteralPath $_expectedFilePath -PathType Container) {
         Remove-Item -LiteralPath $_expectedFilePath -Recurse -Force
