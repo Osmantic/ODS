@@ -5,25 +5,25 @@
 services:
   llama-server:
     image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014}
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     deploy:
       resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
         limits:
           cpus: '${LLAMA_CPU_LIMIT:-6.0}'
           memory: ${LLAMA_SERVER_MEMORY_LIMIT:-6G}
 
   dashboard-api:
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=utility
     deploy:
       resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [utility]
+        limits:
+          memory: ${DASHBOARD_API_MEMORY_LIMIT:-512M}
 
   open-webui:
     environment:
