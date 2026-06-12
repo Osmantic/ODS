@@ -169,7 +169,7 @@ def test_get_n8n_workflows_success(test_client, monkeypatch):
 
     with patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(wf_mod.get_n8n_workflows())
+        result = asyncio.run(wf_mod.get_n8n_workflows())
 
     assert len(result) == 1
     assert result[0]["name"] == "My Workflow"
@@ -186,7 +186,7 @@ def test_get_n8n_workflows_failure(test_client, monkeypatch):
 
     with patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(wf_mod.get_n8n_workflows())
+        result = asyncio.run(wf_mod.get_n8n_workflows())
 
     assert result == []
 
@@ -211,7 +211,7 @@ def test_check_workflow_dependencies_all_healthy(test_client, monkeypatch):
     monkeypatch.setattr("helpers.check_service_health", mock_health)
 
     import asyncio
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         wf_mod.check_workflow_dependencies(["llama-server"])
     )
     # "llama-server" should be checked directly (no alias mapping)
@@ -233,7 +233,7 @@ def test_check_workflow_dependencies_with_alias(test_client, monkeypatch):
     monkeypatch.setattr("helpers.check_service_health", mock_fn)
 
     import asyncio
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         wf_mod.check_workflow_dependencies(["ollama"])
     )
     assert result["ollama"] is True
@@ -256,7 +256,7 @@ def test_check_workflow_dependencies_unhealthy(test_client, monkeypatch):
     monkeypatch.setattr("helpers.check_service_health", mock_fn)
 
     import asyncio
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         wf_mod.check_workflow_dependencies(["ollama"])
     )
     assert result["ollama"] is False
@@ -267,7 +267,7 @@ def test_check_workflow_dependencies_unknown_dep(test_client, monkeypatch):
     import routers.workflows as wf_mod
 
     import asyncio
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         wf_mod.check_workflow_dependencies(["totally-unknown-service-xyz"])
     )
     assert result["totally-unknown-service-xyz"] is True
@@ -282,7 +282,7 @@ def test_check_workflow_dependencies_uses_cache(test_client, monkeypatch):
 
     cache = {"llama-server": True}
     import asyncio
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         wf_mod.check_workflow_dependencies(["ollama"], health_cache=cache)
     )
     assert result["ollama"] is True
@@ -313,7 +313,7 @@ def test_check_n8n_available_success(test_client):
 
     with patch("helpers._get_aio_session", side_effect=fake_get_session):
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(wf_mod.check_n8n_available())
+        result = asyncio.run(wf_mod.check_n8n_available())
 
     assert result is True
 
@@ -330,7 +330,7 @@ def test_check_n8n_available_failure(test_client):
 
     with patch("helpers._get_aio_session", side_effect=fake_get_session):
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(wf_mod.check_n8n_available())
+        result = asyncio.run(wf_mod.check_n8n_available())
 
     assert result is False
 

@@ -306,7 +306,7 @@ class TestGpuHistoryBuffer:
         saved = list(gpu_mod._GPU_HISTORY)
         gpu_mod._GPU_HISTORY.clear()
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 gpu_mod.gpu_history()
             )
             assert result == {"timestamps": [], "gpus": {}}
@@ -328,7 +328,7 @@ class TestGpuHistoryBuffer:
                         "1": {"utilization": 30 + i, "memory_percent": 40.0, "temperature": 70, "power_w": 300.0},
                     },
                 })
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 gpu_mod.gpu_history()
             )
             assert len(result["timestamps"]) == 3

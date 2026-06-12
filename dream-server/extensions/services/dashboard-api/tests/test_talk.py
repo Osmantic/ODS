@@ -448,10 +448,16 @@ def test_hermes_bridge_transparent_retry_on_send_reset(monkeypatch):
     hermes_bridge._CONNECTION_POOL.clear()
     hermes_bridge._SWEEPER_TASK = None
 
+    # aiohttp.ClientConnectionResetError only exists in aiohttp >= 3.10;
+    # requirements.txt allows >= 3.9, where send_str on a closing transport
+    # raises the builtin ConnectionResetError instead. The bridge catches
+    # both, so the test must raise whichever this aiohttp actually has.
+    reset_error = getattr(aiohttp, "ClientConnectionResetError", ConnectionResetError)
+
     class DeadOnSendWS:
         closed = False
         async def send_str(self, _):
-            raise aiohttp.ClientConnectionResetError("Cannot write to closing transport")
+            raise reset_error("Cannot write to closing transport")
         async def close(self):
             self.closed = True
 
