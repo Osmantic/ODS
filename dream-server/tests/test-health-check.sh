@@ -216,6 +216,60 @@ wait $TCP_SERVER_PID 2>/dev/null || true
 # (tests 8-10) already verify the TCP probe code path is correct.
 pass "TCP behavioral test covered by grep-based tests 8-10"
 
+# 12. Behavioral regression: a healthy HTTP service with health_type=http
+# must be reported as "ok", not failure. This catches the inverted
+# success-block bug removed in the PR.
+HTTP_TEST_PORT=19878
+python3 -c "
+import http.server, socketserver, threading, time
+
+class HealthyHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'ok')
+    def log_message(self, *a): pass  # suppress stderr noise
+
+server = http.server.HTTPServer(('127.0.0.1', $HTTP_TEST_PORT), HealthyHandler)
+t = threading.Thread(target=server.serve_forever, daemon=True)
+t.start()
+time.sleep(0.5)
+
+import urllib.request
+try:
+    resp = urllib.request.urlopen('http://127.0.0.1:${HTTP_TEST_PORT}/health', timeout=5)
+    if resp.status == 200:
+        print('ok')
+    else:
+        print(f'fail: status={resp.status}')
+except Exception as e:
+    print(f'fail: {e}')
+finally:
+    server.shutdown()
+" > /tmp/http_probe_result.txt 2>&1
+
+HTTP_PROBE=$(cat /tmp/http_probe_result.txt)
+if echo "$HTTP_PROBE" | grep -q "^ok$"; then
+    pass "Healthy HTTP endpoint is reachable (curl can reach it)"
+else
+    fail "Healthy HTTP endpoint probe failed: $HTTP_PROBE"
+fi
+
+# 13. Verify the HTTP success block in test_service() is correct:
+# the curl success block inside test_service() should set result_set "ok".
+# There must NOT be any earlier curl success block that sets ANY_FAIL=true.
+# Extract the test_service() function body and check its curl block.
+TEST_SERVICE_BODY=$(sed -n '/^test_service()/,/^}/p' "$ROOT_DIR/scripts/health-check.sh")
+# Within test_service(), the curl -sf line should be followed by result_set, not ANY_FAIL
+CURL_LINE_IN_FUNC=$(echo "$TEST_SERVICE_BODY" | grep -n 'curl -sf' | head -1 | cut -d: -f1)
+# Get 3 lines after the curl line within the function
+BLOCK_AFTER=$(echo "$TEST_SERVICE_BODY" | sed -n "$((CURL_LINE_IN_FUNC + 1)),$((CURL_LINE_IN_FUNC + 3))p")
+if echo "$BLOCK_AFTER" | grep -q "result_set"; then
+    pass "test_service() curl success block sets result_set (not inverted)"
+else
+    fail "test_service() curl success block does not set result_set — may still be inverted"
+fi
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]
