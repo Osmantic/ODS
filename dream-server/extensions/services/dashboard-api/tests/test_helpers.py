@@ -706,7 +706,50 @@ class TestServicesCache:
         assert get_cached_services() is None
         fake = [ServiceStatus(id="s", name="S", port=80, external_port=80, status="healthy")]
         set_services_cache(fake)
-        assert get_cached_services() is fake
+        assert get_cached_services() == fake
+
+    def test_optional_host_systemd_down_is_cached_as_not_deployed(self, monkeypatch):
+        import helpers
+        monkeypatch.setattr(helpers, "_services_cache", None)
+        monkeypatch.setattr(helpers, "SERVICES", {
+            "opencode": {
+                "name": "OpenCode (IDE)",
+                "port": 3003,
+                "external_port": 3003,
+                "health": "/",
+                "host": "localhost",
+                "type": "host-systemd",
+                "category": "optional",
+            },
+            "dashboard-api": {
+                "name": "Dashboard API",
+                "port": 3002,
+                "external_port": 3002,
+                "health": "/health",
+                "host": "localhost",
+            },
+        })
+
+        set_services_cache([
+            ServiceStatus(
+                id="opencode",
+                name="OpenCode (IDE)",
+                port=3003,
+                external_port=3003,
+                status="down",
+            ),
+            ServiceStatus(
+                id="dashboard-api",
+                name="Dashboard API",
+                port=3002,
+                external_port=3002,
+                status="down",
+            ),
+        ])
+
+        cached = {service.id: service for service in get_cached_services()}
+        assert cached["opencode"].status == "not_deployed"
+        assert cached["dashboard-api"].status == "down"
 
 
 # --- _get_lifetime_tokens ---

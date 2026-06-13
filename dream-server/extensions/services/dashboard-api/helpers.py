@@ -418,10 +418,29 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
 _services_cache: Optional[list] = None  # list[ServiceStatus], set by poll loop
 
 
+def _normalize_cached_service_status(status: ServiceStatus) -> ServiceStatus:
+    """Avoid treating absent optional host-managed tools as broken services."""
+    config = SERVICES.get(status.id, {})
+    if (
+        status.status == "down"
+        and config.get("type") == "host-systemd"
+        and not config.get("required", False)
+    ):
+        return ServiceStatus(
+            id=status.id,
+            name=status.name,
+            port=status.port,
+            external_port=status.external_port,
+            status="not_deployed",
+            response_time_ms=status.response_time_ms,
+        )
+    return status
+
+
 def set_services_cache(statuses: list) -> None:
     """Store latest health check results (called by background poll)."""
     global _services_cache
-    _services_cache = statuses
+    _services_cache = [_normalize_cached_service_status(status) for status in statuses]
 
 
 def get_cached_services() -> Optional[list]:
