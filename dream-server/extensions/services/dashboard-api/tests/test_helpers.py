@@ -729,14 +729,56 @@ class TestGetLifetimeTokens:
 class TestCheckServiceHealthSystemd:
 
     @pytest.mark.asyncio
-    async def test_host_systemd_returns_healthy(self):
+    async def test_host_systemd_returns_healthy_when_host_agent_proves_port(self, monkeypatch):
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"reachable": True, "response_time_ms": 12.3}
+
+        class FakeClient:
+            async def get(self, url, *, params=None, headers=None):
+                assert url.endswith("/v1/host/port")
+                assert params == {"host": "127.0.0.1", "port": 3003}
+                return FakeResponse()
+
+        async def fake_client():
+            return FakeClient()
+
+        monkeypatch.setattr("helpers._get_httpx_client", fake_client)
+
         config = {
             "name": "opencode", "port": 3003, "external_port": 3003,
             "health": "/health", "host": "localhost", "type": "host-systemd",
         }
         result = await check_service_health("opencode", config)
         assert result.status == "healthy"
-        assert result.response_time_ms is None
+        assert result.response_time_ms == 12.3
+
+    @pytest.mark.asyncio
+    async def test_host_systemd_returns_not_deployed_when_host_port_closed(self, monkeypatch):
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"reachable": False, "response_time_ms": 2.0}
+
+        class FakeClient:
+            async def get(self, url, *, params=None, headers=None):
+                return FakeResponse()
+
+        async def fake_client():
+            return FakeClient()
+
+        monkeypatch.setattr("helpers._get_httpx_client", fake_client)
+
+        config = {
+            "name": "opencode", "port": 3003, "external_port": 3003,
+            "health": "/health", "host": "localhost", "type": "host-systemd",
+        }
+        result = await check_service_health("opencode", config)
+        assert result.status == "not_deployed"
+        assert result.response_time_ms == 2.0
 
 
 # --- get_model_info error branch ---

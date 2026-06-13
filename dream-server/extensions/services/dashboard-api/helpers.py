@@ -114,6 +114,44 @@ async def _check_tailscale_health(service_id: str, config: dict) -> ServiceStatu
     return _service_status_from_config(service_id, config, "unhealthy")
 
 
+async def _check_host_systemd_health(service_id: str, config: dict) -> ServiceStatus:
+    """Check a host-managed service through the authenticated host-agent.
+
+    Host-systemd services such as OpenCode usually bind to host loopback. From
+    inside Docker, probing ``localhost`` checks the dashboard-api container
+    instead of the real host, so ask the host-agent to prove the local port is
+    open. If the proof is unavailable, fail closed so the dashboard does not
+    launch users into a dead localhost URL.
+    """
+    port = int(config.get("health_port") or config.get("external_port") or config.get("port") or 0)
+    if port <= 0:
+        return _service_status_from_config(service_id, config, "not_deployed")
+
+    headers = {"Authorization": f"Bearer {DREAM_AGENT_KEY}"} if DREAM_AGENT_KEY else {}
+    try:
+        client = await _get_httpx_client()
+        resp = await client.get(
+            f"{AGENT_URL}/v1/host/port",
+            params={"host": "127.0.0.1", "port": port},
+            headers=headers,
+        )
+        if resp.status_code >= 400:
+            return _service_status_from_config(service_id, config, "down")
+        payload = resp.json()
+    except (httpx.HTTPError, httpx.TimeoutException, ValueError, OSError):
+        return _service_status_from_config(service_id, config, "down")
+
+    status = "healthy" if payload.get("reachable") else "not_deployed"
+    return ServiceStatus(
+        id=service_id,
+        name=config["name"],
+        port=config["port"],
+        external_port=config.get("external_port", config["port"]),
+        status=status,
+        response_time_ms=payload.get("response_time_ms"),
+    )
+
+
 # --- Token Tracking ---
 
 _TOKEN_FILE = Path(DATA_DIR) / "token_counter.json"
@@ -406,10 +444,7 @@ async def check_service_health(
     stall the entire Extensions page.
     """
     if config.get("type") == "host-systemd":
-        # Host-systemd services bind to 127.0.0.1 and are unreachable from
-        # inside Docker.  The installer manages them via systemd (auto-restart
-        # on failure), so treat them as healthy when configured.
-        return _service_status_from_config(service_id, config, "healthy")
+        return await _check_host_systemd_health(service_id, config)
 
     if config.get("host_network") and int(config.get("port") or 0) <= 0:
         if service_id == "tailscale":

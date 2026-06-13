@@ -23,6 +23,7 @@ import re
 import secrets
 import shutil
 import signal
+import socket
 import stat as stat_mod
 import subprocess
 import sys
@@ -32,6 +33,7 @@ from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingMixIn
+from urllib.parse import parse_qs, urlparse
 
 VERSION = "1.0.0"
 DREAM_VERSION = VERSION
@@ -1275,26 +1277,74 @@ class AgentHandler(BaseHTTPRequestHandler):
         logger.info(fmt, *args)
 
     def do_GET(self):
-        if self.path == "/health":
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/health":
             json_response(self, 200, {"status": "ok", "version": VERSION})
-        elif self.path == "/v1/service/stats":
+        elif path == "/v1/service/stats":
             self._handle_service_stats()
-        elif self.path == "/v1/model/list":
+        elif path == "/v1/model/list":
             self._handle_model_list()
-        elif self.path == "/v1/model/status":
+        elif path == "/v1/model/status":
             self._handle_model_status()
-        elif self.path == "/v1/network/wifi-scan":
+        elif path == "/v1/network/wifi-scan":
             self._handle_network_wifi_scan()
-        elif self.path == "/v1/network/status":
+        elif path == "/v1/network/status":
             self._handle_network_status()
-        elif self.path == "/v1/tailscale/status":
+        elif path == "/v1/tailscale/status":
             self._handle_tailscale_status()
-        elif self.path == "/v1/ap-mode/status":
+        elif path == "/v1/ap-mode/status":
             self._handle_ap_mode_status()
-        elif self.path == "/v1/update/status":
+        elif path == "/v1/update/status":
             self._handle_update_status()
+        elif path == "/v1/host/port":
+            self._handle_host_port_status(parse_qs(parsed.query))
         else:
             json_response(self, 404, {"error": "Not found"})
+
+    def _handle_host_port_status(self, query: dict[str, list[str]]):
+        """Return whether a host-local TCP port is reachable.
+
+        Dashboard-api runs in Docker, so it cannot reliably probe services that
+        intentionally bind to the host loopback interface (for example
+        OpenCode). Keep this endpoint local-only to avoid turning the host-agent
+        into a network scanner.
+        """
+        if not check_auth(self):
+            return
+
+        host = (query.get("host") or ["127.0.0.1"])[0]
+        if host not in {"127.0.0.1", "localhost", "::1"}:
+            json_response(self, 400, {"error": "host must be loopback"})
+            return
+
+        try:
+            port = int((query.get("port") or [""])[0])
+        except ValueError:
+            json_response(self, 400, {"error": "port must be an integer"})
+            return
+        if port < 1 or port > 65535:
+            json_response(self, 400, {"error": "port out of range"})
+            return
+
+        started = time.monotonic()
+        reachable = False
+        error = ""
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                reachable = True
+        except OSError as exc:
+            error = str(exc)
+
+        payload = {
+            "host": host,
+            "port": port,
+            "reachable": reachable,
+            "response_time_ms": round((time.monotonic() - started) * 1000, 1),
+        }
+        if error:
+            payload["error"] = error[:200]
+        json_response(self, 200, payload)
 
     def _write_tailscale_status_payload(self, payload: dict, source: str):
         """Distill `tailscale status --json` into the dashboard response."""
