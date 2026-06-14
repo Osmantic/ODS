@@ -54,6 +54,8 @@ for key in LEMONADE_EMBEDDING_MODEL LEMONADE_RERANK_MODEL LEMONADE_STT_MODEL LEM
     || { echo "[FAIL] Linux phase 06 must preserve $key"; exit 1; }
   grep -q "Get-EnvOrNew \"$key\"" installers/windows/lib/env-generator.ps1 \
     || { echo "[FAIL] Windows env generator must preserve $key"; exit 1; }
+  grep -q "$key" installers/macos/lib/env-generator.sh \
+    || { echo "[FAIL] macOS env generator must preserve $key"; exit 1; }
 done
 
 echo "[contract] active Lemonade probe has a cold-load-safe dashboard timeout"
