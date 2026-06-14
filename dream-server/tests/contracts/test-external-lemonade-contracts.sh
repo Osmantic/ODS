@@ -32,6 +32,10 @@ grep -q 'openai/Qwen3-0.6B-GGUF' <<<"$rendered" \
 grep -q 'host.docker.internal:13305/api/v1' <<<"$rendered" \
   || { echo "[FAIL] renderer must use supplied Lemonade API base"; exit 1; }
 
+echo "[contract] external Lemonade Dream Talk timeout is long enough for full models"
+grep -q 'DREAM_TALK_HERMES_TIMEOUT=${DREAM_TALK_HERMES_TIMEOUT:-900}' docker-compose.lemonade-external.yml \
+  || { echo "[FAIL] external Lemonade overlay must set DREAM_TALK_HERMES_TIMEOUT=900"; exit 1; }
+
 echo "[contract] installer discovers external Lemonade model and avoids stale fallbacks"
 grep -q '_phase06_discover_lemonade_model' installers/phases/06-directories.sh \
   || { echo "[FAIL] phase 06 must discover the model served by external Lemonade"; exit 1; }

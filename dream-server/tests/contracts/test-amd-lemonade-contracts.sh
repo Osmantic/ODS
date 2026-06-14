@@ -101,6 +101,15 @@ else
     fail "Linux Lemonade Hermes config must pass --request-timeout-seconds 900 at install and after bootstrap swap"
 fi
 
+echo "[contract] Lemonade Dream Talk keeps the same long-model timeout"
+if grep -q 'DREAM_TALK_HERMES_TIMEOUT=${DREAM_TALK_HERMES_TIMEOUT:-900}' docker-compose.amd.yml \
+   && grep -q 'DREAM_TALK_HERMES_TIMEOUT=${DREAM_TALK_HERMES_TIMEOUT:-900}' docker-compose.lemonade-external.yml \
+   && grep -q 'DREAM_TALK_HERMES_TIMEOUT=${DREAM_TALK_HERMES_TIMEOUT:-900}' installers/windows/docker-compose.windows-amd.yml; then
+    pass "Lemonade Dream Talk Hermes timeout is upgraded to 900s"
+else
+    fail "Lemonade Dream Talk must set DREAM_TALK_HERMES_TIMEOUT=900 in AMD, external, and Windows AMD overlays"
+fi
+
 # ---------------------------------------------------------------------------
 # 6. Dockerfile.amd installs libatomic1
 # ---------------------------------------------------------------------------

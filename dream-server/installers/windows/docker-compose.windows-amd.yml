@@ -25,6 +25,7 @@ services:
       - AMD_INFERENCE_SUPPORTED_BACKENDS=${AMD_INFERENCE_SUPPORTED_BACKENDS:-}
       - AMD_INFERENCE_RUNTIME_MODE=${AMD_INFERENCE_RUNTIME_MODE:-unknown}
       - AMD_INFERENCE_MANAGED=${AMD_INFERENCE_MANAGED:-false}
+      - DREAM_TALK_HERMES_TIMEOUT=${DREAM_TALK_HERMES_TIMEOUT:-900}
       # The base compose default points Dream Talk image attachments at the
       # in-network llama-server service. On Windows AMD, inference runs on the
       # host instead, so route vision calls through host.docker.internal using

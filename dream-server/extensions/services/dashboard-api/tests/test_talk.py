@@ -972,3 +972,16 @@ def test_talk_message_stream_sets_unbuffered_headers(talk_client, monkeypatch):
     assert resp.status_code == 200
     assert resp.headers.get("x-accel-buffering") == "no"
     assert "no-cache" in resp.headers.get("cache-control", "").lower()
+
+
+def test_dream_talk_hermes_timeout_is_env_configurable(monkeypatch):
+    """Lemonade-backed full models can take longer than the generic Talk
+    default before producing the first useful event. The compose overlays
+    set this env var for those modes; the bridge must honor it."""
+    import hermes_bridge
+
+    monkeypatch.setenv("DREAM_TALK_HERMES_TIMEOUT", "900")
+    assert hermes_bridge._request_timeout() == 900
+
+    monkeypatch.setenv("DREAM_TALK_HERMES_TIMEOUT", "5")
+    assert hermes_bridge._request_timeout() == 10

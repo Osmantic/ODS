@@ -15,6 +15,8 @@ done
 
 grep -q 'DREAM_TALK_VISION_URL=.*host.docker.internal' installers/windows/docker-compose.windows-amd.yml \
   || { echo "[FAIL] Windows AMD overlay must route Dream Talk vision calls to the host runtime"; exit 1; }
+grep -q 'DREAM_TALK_HERMES_TIMEOUT=${DREAM_TALK_HERMES_TIMEOUT:-900}' installers/windows/docker-compose.windows-amd.yml \
+  || { echo "[FAIL] Windows AMD overlay must give Dream Talk a long Hermes timeout for host inference"; exit 1; }
 grep -q 'config.*litellm' installers/windows/install-windows.ps1 \
   || { echo "[FAIL] Windows llama-server fallback must update LiteLLM local config"; exit 1; }
 grep -q 'host.docker.internal:.*v1' installers/windows/install-windows.ps1 \
@@ -52,6 +54,8 @@ grep -q 'http://host.docker.internal:8080/health' <<<"$rendered" \
   || { echo "[FAIL] llama-server readiness probe must use native Windows port 8080"; exit 1; }
 grep -q 'DREAM_TALK_VISION_URL: http://host.docker.internal:8080/api/v1' <<<"$rendered" \
   || { echo "[FAIL] Dream Talk vision URL must use the Windows AMD host runtime API path"; exit 1; }
+grep -q 'DREAM_TALK_HERMES_TIMEOUT: "900"' <<<"$rendered" \
+  || { echo "[FAIL] Windows AMD Dream Talk Hermes timeout must render as 900s"; exit 1; }
 if grep -q 'host.docker.internal:11434' <<<"$rendered"; then
   echo "[FAIL] Windows AMD local overlay must not inherit OLLAMA_PORT=11434"
   exit 1
