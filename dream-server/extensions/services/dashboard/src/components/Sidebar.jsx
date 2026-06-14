@@ -142,6 +142,7 @@ export default function Sidebar({ status, collapsed, onToggle }) {
             <li key={path}>
               <NavLink
                 to={path}
+                end
                 title={collapsed ? label : undefined}
                 className={({ isActive }) =>
                   `flex items-center ${collapsed ? 'justify-center' : ''} gap-3 px-3 py-2.5 rounded-lg transition-colors ${
