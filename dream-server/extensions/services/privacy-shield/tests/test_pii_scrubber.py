@@ -221,3 +221,11 @@ class TestStats:
         stats = detector.get_stats()
         assert stats["unique_pii_count"] == 0
         assert stats["pii_types"] == []
+
+    def test_stats_reports_multiword_type(self, detector):
+        # Regression: a multi-word PII type (ip_address) must be reported in
+        # full, not truncated to "ip" by a naive token.split('_')[1].
+        detector.scrub("Server IP 192.168.1.100")
+        types = detector.get_stats()["pii_types"]
+        assert "ip_address" in types
+        assert "ip" not in types

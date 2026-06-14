@@ -130,7 +130,11 @@ class PIIDetector:
         return {
             'unique_pii_count': len(self.pii_map),
             'pii_types': list(set(
-                token.split('_')[1] for token in self.pii_map.keys()
+                # A type may itself contain underscores (ip_address, credit_card),
+                # so take everything between the prefix and the trailing _<hash>
+                # rather than split('_')[1], which would yield "ip" / "credit".
+                token[len(self.token_prefix):-len(self.token_suffix)].rsplit('_', 1)[0]
+                for token in self.pii_map.keys()
             ))
         }
 
