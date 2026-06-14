@@ -23,7 +23,7 @@ describe('useGPUDetailed', () => {
     }
 
     fetch.mockImplementation(url => {
-      if (url === '/api/gpu/amd-runtime') return runtimeResponse
+      if (url === '/api/providers/lemonade') return runtimeResponse
       return Promise.resolve({
         ok: true,
         json: () => Promise.resolve(payloads[url]),
@@ -54,8 +54,8 @@ describe('useGPUDetailed', () => {
       '/api/gpu/detailed': { gpu_count: 1, backend: 'amd', gpus: [] },
       '/api/gpu/history': { timestamps: [], gpus: {} },
       '/api/gpu/topology': null,
-      '/api/gpu/amd-runtime': { providerProbeMode: 'passive', providerStatus: 'unverified' },
-      '/api/gpu/amd-runtime/probe': { providerProbeMode: 'active', providerStatus: 'ready' },
+      '/api/providers/lemonade': { providerProbeMode: 'passive', providerStatus: 'unverified' },
+      '/api/providers/lemonade/probe': { providerProbeMode: 'active', providerStatus: 'ready' },
     }
     fetch.mockImplementation((url, options = {}) => Promise.resolve({
       ok: true,
@@ -70,7 +70,7 @@ describe('useGPUDetailed', () => {
     await result.current.runRuntimeProbe()
     await waitFor(() => expect(result.current.runtime?.providerProbeMode).toBe('active'))
 
-    expect(fetch).toHaveBeenCalledWith('/api/gpu/amd-runtime/probe', {
+    expect(fetch).toHaveBeenCalledWith('/api/providers/lemonade/probe', {
       method: 'POST',
       headers: { 'X-Requested-With': 'DreamServerDashboard' },
     })
@@ -82,8 +82,8 @@ describe('useGPUDetailed', () => {
       resolvePassive = resolve
     })
     fetch.mockImplementation(url => {
-      if (url === '/api/gpu/amd-runtime') return passiveResponse
-      if (url === '/api/gpu/amd-runtime/probe') {
+      if (url === '/api/providers/lemonade') return passiveResponse
+      if (url === '/api/providers/lemonade/probe') {
         return Promise.resolve({
           ok: true,
           status: 200,

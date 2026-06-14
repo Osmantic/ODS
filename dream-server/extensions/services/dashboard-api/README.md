@@ -41,11 +41,10 @@ Environment variables (set in `.env`):
 
 ## API Endpoints
 
-The Lemonade provider contract is hardware-vendor neutral even though the
-current dashboard route is named `amd-runtime`; that route was introduced by the
-AMD/Lemonade installer surface. When `runtime=lemonade` and
-`runtimeMode=external-lemonade`, interpret provider readiness as a Lemonade API
-contract, not as proof that Lemonade only works on AMD hardware.
+The Lemonade provider contract is hardware-vendor neutral. Use the canonical
+`/api/providers/lemonade` route for new integrations. The historical
+`/api/gpu/amd-runtime` route remains a compatibility alias from the original
+AMD/Lemonade installer surface.
 
 ### Core
 
@@ -59,8 +58,10 @@ contract, not as proof that Lemonade only works on AMD hardware.
 | `GET` | `/bootstrap` | Yes | Model bootstrap/download status |
 | `GET` | `/status` | Yes | Full system status (all above combined) |
 | `GET` | `/api/status` | Yes | Dashboard-formatted status with inference metrics |
-| `GET` | `/api/gpu/amd-runtime` | Yes | Passive AMD runtime diagnostics plus external Lemonade provider capability contract |
-| `POST` | `/api/gpu/amd-runtime/probe` | Yes + `X-Requested-With: DreamServerDashboard` | Explicit active Lemonade capability probe; may load models and restores the selected chat model before exit |
+| `GET` | `/api/providers/lemonade` | Yes | Passive Lemonade provider capability contract |
+| `POST` | `/api/providers/lemonade/probe` | Yes + `X-Requested-With: DreamServerDashboard` | Explicit active Lemonade capability probe; may load models and restores the selected chat model before exit |
+| `GET` | `/api/gpu/amd-runtime` | Yes | Compatibility alias for passive Lemonade provider diagnostics |
+| `POST` | `/api/gpu/amd-runtime/probe` | Yes + `X-Requested-With: DreamServerDashboard` | Compatibility alias for the active Lemonade provider probe |
 | `GET` | `/api/host-agent/diagnostics` | Yes | Host-agent URL, gateway, auth, and live probe diagnostics |
 
 ### Preflight

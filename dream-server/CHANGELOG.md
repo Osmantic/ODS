@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   AMD-specific installer and dashboard surfaces, so external Lemonade guidance
   also applies to non-AMD machines when their Lemonade service already exposes
   the expected OpenAI-compatible API.
+- The dashboard now exposes the Lemonade provider contract through the
+  canonical `/api/providers/lemonade` route while preserving
+  `/api/gpu/amd-runtime` as a compatibility alias for the original AMD rollout.
 
 ### Fixed
 - External Lemonade installs that only define legacy `LLM_MODEL` retain a

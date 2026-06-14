@@ -31,9 +31,10 @@ should depend on the Lemonade API contract and provider env, while code that
 sizes models, checks drivers, or configures acceleration should depend on the
 detected hardware/backend.
 
-Existing `AMD_INFERENCE_*` env names and the `/api/gpu/amd-runtime` dashboard
-route are compatibility surfaces from the AMD Lemonade rollout; they may report
-an external Lemonade provider on non-AMD machines when `LEMONADE_EXTERNAL=true`.
+Use `/api/providers/lemonade` for new dashboard/provider integrations. Existing
+`AMD_INFERENCE_*` env names and the `/api/gpu/amd-runtime` dashboard route are
+compatibility surfaces from the AMD Lemonade rollout; they may report an
+external Lemonade provider on non-AMD machines when `LEMONADE_EXTERNAL=true`.
 
 macOS is not promoted to a new Lemonade install path by this contract. Lemonade
 upstream supports macOS/Metal, but Dream Server's current supported macOS path

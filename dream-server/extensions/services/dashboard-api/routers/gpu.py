@@ -601,14 +601,36 @@ async def _amd_runtime_status(*, active_provider_probe: bool = False, force_prov
 
 
 @router.get(
+    "/api/providers/lemonade",
+    response_model=AmdRuntimeStatus,
+    response_model_exclude_none=True,
+    dependencies=[Depends(verify_api_key)],
+)
+async def lemonade_provider():
+    """Return passive Lemonade provider diagnostics without triggering inference."""
+    return await _amd_runtime_status()
+
+
+@router.post(
+    "/api/providers/lemonade/probe",
+    response_model=AmdRuntimeStatus,
+    response_model_exclude_none=True,
+    dependencies=[Depends(verify_api_key), Depends(_verify_active_provider_probe_request)],
+)
+async def probe_lemonade_provider():
+    """Run an explicit active Lemonade capability probe and refresh the diagnostic cache."""
+    return await _amd_runtime_status(active_provider_probe=True, force_provider_probe=True)
+
+
+@router.get(
     "/api/gpu/amd-runtime",
     response_model=AmdRuntimeStatus,
     response_model_exclude_none=True,
     dependencies=[Depends(verify_api_key)],
 )
 async def amd_runtime():
-    """Return passive AMD runtime or external Lemonade diagnostics without inference."""
-    return await _amd_runtime_status()
+    """Compatibility alias for the passive Lemonade provider diagnostics route."""
+    return await lemonade_provider()
 
 
 @router.post(
@@ -618,8 +640,8 @@ async def amd_runtime():
     dependencies=[Depends(verify_api_key), Depends(_verify_active_provider_probe_request)],
 )
 async def probe_amd_runtime():
-    """Run an explicit active Lemonade capability probe and refresh the diagnostic cache."""
-    return await _amd_runtime_status(active_provider_probe=True, force_provider_probe=True)
+    """Compatibility alias for the active Lemonade provider probe route."""
+    return await probe_lemonade_provider()
 
 
 @router.get("/api/gpu/history", dependencies=[Depends(verify_api_key)])

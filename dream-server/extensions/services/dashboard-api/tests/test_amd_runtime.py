@@ -542,7 +542,7 @@ async def test_active_external_lemonade_probe_omits_stale_count_when_catalog_ref
 def test_amd_runtime_not_amd(monkeypatch, test_client):
     monkeypatch.setenv("GPU_BACKEND", "nvidia")
 
-    response = test_client.get("/api/gpu/amd-runtime", headers=test_client.auth_headers)
+    response = test_client.get("/api/providers/lemonade", headers=test_client.auth_headers)
 
     assert response.status_code == 200
     assert response.json() == {
@@ -561,6 +561,17 @@ def test_amd_runtime_not_amd(monkeypatch, test_client):
     }
 
 
+def test_amd_runtime_route_remains_compat_alias(monkeypatch, test_client):
+    monkeypatch.setenv("GPU_BACKEND", "nvidia")
+
+    canonical = test_client.get("/api/providers/lemonade", headers=test_client.auth_headers)
+    legacy = test_client.get("/api/gpu/amd-runtime", headers=test_client.auth_headers)
+
+    assert canonical.status_code == 200
+    assert legacy.status_code == 200
+    assert legacy.json() == canonical.json()
+
+
 def test_external_lemonade_provider_contract_is_not_amd_only(monkeypatch, test_client):
     monkeypatch.setenv("GPU_BACKEND", "nvidia")
     monkeypatch.setenv("DREAM_MODE", "lemonade")
@@ -576,7 +587,7 @@ def test_external_lemonade_provider_contract_is_not_amd_only(monkeypatch, test_c
     monkeypatch.setenv("LEMONADE_CONTAINER_BASE_URL", "http://host.docker.internal:13305")
     _patch_external_probe(monkeypatch, version="10.7.0")
 
-    response = test_client.get("/api/gpu/amd-runtime", headers=test_client.auth_headers)
+    response = test_client.get("/api/providers/lemonade", headers=test_client.auth_headers)
 
     assert response.status_code == 200
     payload = response.json()
@@ -766,9 +777,13 @@ def test_amd_runtime_active_probe_is_explicit_post(monkeypatch, test_client):
 
     monkeypatch.setattr(gpu_router, "_probe_external_lemonade", _fake_probe)
 
-    passive = test_client.get("/api/gpu/amd-runtime", headers=test_client.auth_headers)
-    blocked = test_client.post("/api/gpu/amd-runtime/probe", headers=test_client.auth_headers)
+    passive = test_client.get("/api/providers/lemonade", headers=test_client.auth_headers)
+    blocked = test_client.post("/api/providers/lemonade/probe", headers=test_client.auth_headers)
     active = test_client.post(
+        "/api/providers/lemonade/probe",
+        headers={**test_client.auth_headers, "X-Requested-With": "DreamServerDashboard"},
+    )
+    legacy_active = test_client.post(
         "/api/gpu/amd-runtime/probe",
         headers={**test_client.auth_headers, "X-Requested-With": "DreamServerDashboard"},
     )
@@ -776,10 +791,13 @@ def test_amd_runtime_active_probe_is_explicit_post(monkeypatch, test_client):
     assert passive.status_code == 200
     assert blocked.status_code == 403
     assert active.status_code == 200
+    assert legacy_active.status_code == 200
     assert passive.json()["providerProbeMode"] == "passive"
     assert active.json()["providerProbeMode"] == "active"
+    assert legacy_active.json()["providerProbeMode"] == "active"
     assert calls == [
         {"active": False, "force": False},
+        {"active": True, "force": True},
         {"active": True, "force": True},
     ]
 

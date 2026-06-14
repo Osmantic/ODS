@@ -30,7 +30,7 @@ export function useGPUDetailed() {
       setRuntimeProbeError(null)
     }
     try {
-      const response = await fetch(active ? '/api/gpu/amd-runtime/probe' : '/api/gpu/amd-runtime', {
+      const response = await fetch(active ? '/api/providers/lemonade/probe' : '/api/providers/lemonade', {
         method: active ? 'POST' : 'GET',
         ...(active ? { headers: { 'X-Requested-With': 'DreamServerDashboard' } } : {}),
       })

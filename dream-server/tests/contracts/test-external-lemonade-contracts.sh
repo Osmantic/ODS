@@ -59,15 +59,23 @@ for key in LEMONADE_EMBEDDING_MODEL LEMONADE_RERANK_MODEL LEMONADE_STT_MODEL LEM
 done
 
 echo "[contract] active Lemonade probe has a cold-load-safe dashboard timeout"
-grep -q 'location = /api/gpu/amd-runtime/probe' extensions/services/dashboard/nginx.conf \
-  || { echo "[FAIL] dashboard nginx must give the explicit active probe a dedicated location"; exit 1; }
-grep -A15 'location = /api/gpu/amd-runtime/probe' extensions/services/dashboard/nginx.conf \
+grep -q 'location = /api/providers/lemonade/probe' extensions/services/dashboard/nginx.conf \
+  || { echo "[FAIL] dashboard nginx must give the canonical active provider probe a dedicated location"; exit 1; }
+grep -A15 'location = /api/providers/lemonade/probe' extensions/services/dashboard/nginx.conf \
   | grep -q 'proxy_read_timeout 900s' \
   || { echo "[FAIL] active probe nginx location must allow cold model loads"; exit 1; }
+grep -q 'location = /api/gpu/amd-runtime/probe' extensions/services/dashboard/nginx.conf \
+  || { echo "[FAIL] dashboard nginx must preserve the legacy AMD active-probe route"; exit 1; }
+grep -q '/api/providers/lemonade/probe' extensions/services/dashboard/src/hooks/useGPUDetailed.js \
+  || { echo "[FAIL] dashboard active probe must use the canonical Lemonade provider route"; exit 1; }
 grep -q 'X-Requested-With.*DreamServerDashboard' extensions/services/dashboard/src/hooks/useGPUDetailed.js \
   || { echo "[FAIL] dashboard active probe must send the anti-CSRF request header"; exit 1; }
 grep -q 'Depends(_verify_active_provider_probe_request)' extensions/services/dashboard-api/routers/gpu.py \
   || { echo "[FAIL] dashboard API active probe must require the anti-CSRF request header"; exit 1; }
+grep -q '"/api/providers/lemonade"' extensions/services/dashboard-api/routers/gpu.py \
+  || { echo "[FAIL] dashboard API must expose the canonical Lemonade provider route"; exit 1; }
+grep -q '"/api/gpu/amd-runtime"' extensions/services/dashboard-api/routers/gpu.py \
+  || { echo "[FAIL] dashboard API must preserve the legacy AMD runtime route"; exit 1; }
 
 echo "[contract] explicit LAN binding overrides stale env during reinstall"
 grep -q 'BIND_ADDRESS_EXPLICIT' install-core.sh \

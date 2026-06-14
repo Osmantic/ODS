@@ -208,8 +208,10 @@ OpenAI-compatible gateway.
 
 ## Diagnostics
 
-`dream doctor` and the dashboard `/api/gpu/amd-runtime` endpoint report external
-Lemonade as the same provider contract even when the machine itself is not AMD:
+`dream doctor` and the dashboard `/api/providers/lemonade` endpoint report
+external Lemonade as the same provider contract even when the machine itself is
+not AMD. The older `/api/gpu/amd-runtime` endpoint remains a compatibility
+alias for clients from the original AMD/Lemonade rollout:
 
 ```text
 runtime: lemonade
