@@ -43,6 +43,18 @@ plist_block="$(awk '
     in_block && /^AGENT_PLIST_EOF/ { exit }
 ' "$TARGET" | grep -v '^[[:space:]]*#')"
 
+host_agent_section="$(awk '
+    /^# ── Dream Host Agent/ { in_block=1 }
+    in_block { print }
+    in_block && /^# ={20,}/ { exit }
+' "$TARGET" | grep -v '^[[:space:]]*#')"
+
+grep -qF 'if $DRY_RUN; then' <<<"$host_agent_section" \
+    || fail "dry-run must skip host-agent LaunchAgent mutation"
+grep -qF 'ai "[DRY RUN] Would install Dream host agent LaunchAgent"' <<<"$host_agent_section" \
+    || fail "dry-run must report host-agent LaunchAgent without installing it"
+pass "host-agent LaunchAgent is skipped during dry-run"
+
 grep -qF '<string>--install-dir</string>' <<<"$plist_block" \
     || fail "host-agent LaunchAgent must pass --install-dir explicitly"
 grep -qF '<string>${INSTALL_DIR}</string>' <<<"$plist_block" \

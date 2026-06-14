@@ -1,10 +1,14 @@
 # Lemonade SDK Compatibility
 
 Dream Server's Linux installer can wrap an existing Lemonade SDK install instead
-of starting its own managed Lemonade runtime. This is intended for AMD Linux
+of starting its own managed Lemonade runtime. This was added for AMD Linux
 systems where Lemonade is already installed, configured, and serving models.
-The longer-term contract for making Lemonade a supported provider mode across
-platforms is defined in [Engine Provider Modes](ENGINE-PROVIDER-MODES.md).
+
+macOS can now use the same unmanaged wrapper pattern when Lemonade is already
+running and serving the OpenAI-compatible API. Dream Server's default macOS path
+remains host-native `llama-server` with Metal acceleration; the
+external-Lemonade path is explicit and does not install, start, stop, or upgrade
+Lemonade on macOS.
 
 ## Install Around Existing Lemonade
 
@@ -83,15 +87,52 @@ the installer supports it. Today, a Kokoro/TTS conflict on port `8880` should be
 handled with `--no-voice`. The port conflict is from the optional Dream service,
 not from Lemonade itself.
 
-Windows AMD installs already use a separate host-managed Lemonade path. These
-flags are for Linux installs that should attach to a pre-existing Lemonade SDK
-service.
+Windows AMD installs already use a separate host-managed Lemonade path. macOS
+Apple Silicon keeps native Metal `llama-server` as the default, but accepts
+these external-Lemonade flags when the operator wants Dream Server to attach to
+a pre-existing Lemonade SDK service instead.
+
+## macOS Existing Lemonade
+
+On macOS, `--use-existing-lemonade` changes only the LLM provider route:
+
+- Dream Server skips native `llama-server` startup and model download;
+- Docker services use LiteLLM as the app-facing gateway;
+- LiteLLM calls the existing Lemonade API through
+  `host.docker.internal:<port>/api/v1` when Lemonade is bound to localhost;
+- Hermes, OpenCode, Perplexica, and Open WebUI use the selected
+  `LEMONADE_MODEL` through LiteLLM;
+- voice, workflows, RAG, and other Dream-owned services remain independent
+  feature choices.
+
+For a headless or minimal macOS wrapper install:
+
+```bash
+LEMONADE_MODEL=<chat-model-id> \
+  ./install.sh --use-existing-lemonade \
+  --lemonade-url http://localhost:13305 \
+  --no-voice --no-comfyui
+```
+
+If Lemonade requires a bearer token:
+
+```bash
+LEMONADE_MODEL=<chat-model-id> \
+  ./install.sh --use-existing-lemonade \
+  --lemonade-url http://localhost:13305 \
+  --lemonade-api-key "$LEMONADE_API_KEY"
+```
+
+The installer auto-detects `localhost:13305` and `localhost:8000` when possible
+and queries `/models` to select the first chat-like downloaded model. Set
+`LEMONADE_MODEL` explicitly for repeatable installs or whenever the Lemonade
+catalog includes image, audio, embedding, rerank, or broken experimental models.
 
 ## Model Selection
 
 Dream Server auto-detects the first model id returned by Lemonade's
-`/api/v1/models` endpoint that does not look like an image-generation model
-and writes it to `LEMONADE_MODEL`.
+`/api/v1/models` endpoint that does not look like a specialized non-chat model
+(image, audio, embedding, or reranking) and writes it to `LEMONADE_MODEL`.
 
 Set `LEMONADE_MODEL` only if you want Dream Server to use a specific served
 model:
@@ -124,7 +165,7 @@ only to `127.0.0.1`. Dream Server converts a host URL such as
 `http://localhost:13305` into the container-side URL
 `http://host.docker.internal:13305`, but Lemonade must be reachable there.
 
-On a trusted host, configure Lemonade to bind beyond loopback:
+On a trusted Linux host, configure Lemonade to bind beyond loopback:
 
 ```bash
 lemonade config set host=0.0.0.0
@@ -158,8 +199,10 @@ OpenAI-compatible gateway.
 
 ## Diagnostics
 
-`dream doctor` and the dashboard AMD runtime endpoint report external Lemonade
-as:
+`dream doctor` and the dashboard `/api/providers/lemonade` endpoint report
+external Lemonade as the same provider contract even when the machine itself is
+not AMD. The older `/api/gpu/amd-runtime` endpoint remains a compatibility
+alias for clients from the original AMD/Lemonade rollout:
 
 ```text
 runtime: lemonade

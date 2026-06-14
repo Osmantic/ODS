@@ -647,7 +647,7 @@ function Stop-DreamOpenCodeRuntime {
     $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
     $byPid = @{}
     foreach ($proc in $processes) {
-        if ($proc.ProcessId -ne $null) {
+        if ($null -ne $proc.ProcessId) {
             $byPid[[int]$proc.ProcessId] = $proc
         }
     }

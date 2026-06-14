@@ -52,6 +52,44 @@ grep -q '_env_get_explicit_first LEMONADE_MODEL' installers/phases/06-directorie
 grep -q '_env_get_explicit_first LEMONADE_BASE_URL' installers/phases/06-directories.sh \
   || { echo "[FAIL] explicit LEMONADE_BASE_URL/--lemonade-url must override stale .env values during reinstall"; exit 1; }
 
+echo "[contract] macOS external Lemonade uses the provider route instead of native llama-server"
+grep -Fq -- '--use-existing-lemonade' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must accept --use-existing-lemonade"; exit 1; }
+grep -Fq -- '--lemonade-url' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must accept --lemonade-url"; exit 1; }
+grep -Fq '_prepare_macos_external_lemonade' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must normalize and discover external Lemonade"; exit 1; }
+grep -Fq '_render_macos_external_lemonade_litellm_config' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must render LiteLLM config for external Lemonade"; exit 1; }
+grep -Fq '_verify_macos_external_lemonade_completion' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must verify a real external Lemonade completion"; exit 1; }
+grep -Fq '_require_arg "$1" "${2:-}"' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must fail clearly when Lemonade flags are missing values"; exit 1; }
+grep -Fq 'true|1|yes|on) LEMONADE_EXTERNAL=true' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must normalize truthy LEMONADE_EXTERNAL values"; exit 1; }
+grep -Fq 'true|1|yes|on) lemonade_external_value="true"' installers/macos/lib/env-generator.sh \
+  || { echo "[FAIL] macOS env generator must normalize truthy LEMONADE_EXTERNAL values"; exit 1; }
+grep -Fq 'docker-compose.cloud.yml" "-f" "docker-compose.lemonade-external.yml' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS external Lemonade must use cloud + external Lemonade overlays"; exit 1; }
+grep -Fq 'if ! $CLOUD_MODE && ! _macos_external_lemonade_active' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS external Lemonade must not start native llama-server"; exit 1; }
+grep -Fq 'VOICE_EXPLICIT' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must track explicit feature opt-outs"; exit 1; }
+grep -Fq '$VOICE_EXPLICIT || ENABLE_VOICE=true' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS --all must not override explicit --no-voice"; exit 1; }
+grep -Fq 'LEMONADE_EXTERNAL=${lemonade_external_value}' installers/macos/lib/env-generator.sh \
+  || { echo "[FAIL] macOS env generator must write LEMONADE_EXTERNAL"; exit 1; }
+grep -Fq 'DREAM_MODE=${dream_mode_value}' installers/macos/lib/env-generator.sh \
+  || { echo "[FAIL] macOS env generator must switch DREAM_MODE for external Lemonade"; exit 1; }
+grep -Fq 'LLM_BACKEND=${llm_backend_value}' installers/macos/lib/env-generator.sh \
+  || { echo "[FAIL] macOS env generator must switch LLM_BACKEND for external Lemonade"; exit 1; }
+grep -Fq 'HERMES_LLM_BASE_URL=${hermes_llm_base_url}' installers/macos/lib/env-generator.sh \
+  || { echo "[FAIL] macOS env generator must route Hermes through the selected provider"; exit 1; }
+grep -Fq 'AMD_INFERENCE_RUNTIME_MODE=$(if [[ "$lemonade_external_value" == "true" ]]; then echo "external-lemonade"; fi)' installers/macos/lib/env-generator.sh \
+  || { echo "[FAIL] macOS env generator must mark unmanaged external Lemonade runtime mode"; exit 1; }
+grep -Fq 'litellm_lemonade_api_key="${LEMONADE_API_KEY:-$(read_env_value "$env_path" "LITELLM_LEMONADE_API_KEY")}"' installers/macos/lib/env-generator.sh \
+  || { echo "[FAIL] macOS explicit Lemonade API key must override stale LITELLM_LEMONADE_API_KEY during reinstall"; exit 1; }
+
 echo "[contract] explicit LAN binding overrides stale env during reinstall"
 grep -q 'BIND_ADDRESS_EXPLICIT' install-core.sh \
   || { echo "[FAIL] install-core must track explicit --lan/BIND_ADDRESS"; exit 1; }
@@ -88,23 +126,48 @@ grep -q 'DS-RUNTIME-EXTERNAL-LEMONADE-UNAUTHENTICATED-HOST-ROUTE' scripts/dream-
 grep -q 'sk-dream-lemonade-' scripts/dream-doctor.sh \
   || { echo "[FAIL] dream-doctor must distinguish installer-generated LiteLLM provider keys from user Lemonade API keys"; exit 1; }
 
-echo "[contract] resolver selects cloud + external overlay instead of managed AMD overlay"
-resolved="$(LEMONADE_EXTERNAL=true DREAM_MODE=lemonade \
-  ./scripts/resolve-compose-stack.sh --script-dir "$ROOT_DIR" --dream-mode lemonade --gpu-backend amd --tier SH_LARGE --env)"
-grep -q 'docker-compose.cloud.yml' <<<"$resolved" \
-  || { echo "[FAIL] external Lemonade must include cloud overlay to disable managed llama-server"; exit 1; }
-grep -q 'docker-compose.lemonade-external.yml' <<<"$resolved" \
-  || { echo "[FAIL] external Lemonade overlay missing from resolved stack"; exit 1; }
-if grep -q 'docker-compose.amd.yml' <<<"$resolved"; then
-  echo "[FAIL] external Lemonade must not include managed AMD overlay"
-  exit 1
-fi
-if grep -q 'compose.local.yaml' <<<"$resolved"; then
-  echo "[FAIL] external Lemonade must not include local llama-server dependency overlays"
-  exit 1
-fi
-grep -Eq 'extensions[\\/]+services[\\/]+litellm[\\/]+compose.yaml' <<<"$resolved" \
-  || { echo "[FAIL] external Lemonade must keep LiteLLM gateway enabled"; exit 1; }
+echo "[contract] resolver selects cloud + external overlay instead of managed hardware overlays"
+for backend in amd nvidia cpu; do
+  resolved="$(LEMONADE_EXTERNAL=true DREAM_MODE=lemonade \
+    ./scripts/resolve-compose-stack.sh --script-dir "$ROOT_DIR" --dream-mode lemonade --gpu-backend "$backend" --tier 2 --env)"
+  grep -q 'docker-compose.cloud.yml' <<<"$resolved" \
+    || { echo "[FAIL] external Lemonade must include cloud overlay to disable managed llama-server for $backend"; exit 1; }
+  grep -q 'docker-compose.lemonade-external.yml' <<<"$resolved" \
+    || { echo "[FAIL] external Lemonade overlay missing from resolved stack for $backend"; exit 1; }
+  if grep -q 'docker-compose.amd.yml' <<<"$resolved"; then
+    echo "[FAIL] external Lemonade must not include managed AMD overlay for $backend"
+    exit 1
+  fi
+  if grep -q 'docker-compose.nvidia.yml' <<<"$resolved"; then
+    echo "[FAIL] external Lemonade must not include managed NVIDIA overlay for $backend"
+    exit 1
+  fi
+  if grep -q 'docker-compose.cpu.yml' <<<"$resolved"; then
+    echo "[FAIL] external Lemonade must not include managed CPU overlay for $backend"
+    exit 1
+  fi
+  if grep -q 'compose.local.yaml' <<<"$resolved"; then
+    echo "[FAIL] external Lemonade must not include local llama-server dependency overlays for $backend"
+    exit 1
+  fi
+  grep -Eq 'extensions[\\/]+services[\\/]+litellm[\\/]+compose.yaml' <<<"$resolved" \
+    || { echo "[FAIL] external Lemonade must keep LiteLLM gateway enabled for $backend"; exit 1; }
+done
+
+echo "[contract] external Lemonade mode survives CPU fallback"
+fallback_mode="$(LEMONADE_EXTERNAL=true DREAM_MODE=lemonade bash -c '
+  set -euo pipefail
+  SCRIPT_DIR="'"$ROOT_DIR"'"
+  ai_warn() { :; }
+  ai() { :; }
+  warn() { :; }
+  log() { :; }
+  . installers/lib/detection.sh
+  apply_cpu_gpu_fallback "contract fallback"
+  printf "%s:%s\n" "$DREAM_MODE" "$GPU_BACKEND"
+')"
+[[ "$fallback_mode" == "lemonade:cpu" ]] \
+  || { echo "[FAIL] external Lemonade CPU fallback must preserve DREAM_MODE=lemonade, got $fallback_mode"; exit 1; }
 
 echo "[contract] external Lemonade resolved compose config is valid"
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then

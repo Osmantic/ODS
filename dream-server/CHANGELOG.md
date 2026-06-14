@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- macOS now has an explicit existing-Lemonade wrapper path: `./install.sh
+  --use-existing-lemonade` keeps the default native Metal `llama-server` path
+  intact, but can route Dream services through LiteLLM to an already-running
+  host Lemonade API.
+
 ## [2.5.3] - 2026-05-26
 
 ### Fixed

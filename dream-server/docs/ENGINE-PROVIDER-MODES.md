@@ -22,6 +22,12 @@ The Lemonade provider may be either Dream-managed on platforms where that is
 already supported, or external/unmanaged when Dream Server adopts an existing
 host-native Lemonade service. The env shape must make that ownership explicit.
 
+macOS keeps native host `llama-server` with Metal acceleration as the default
+install path. Existing host-native Lemonade is a supported alternate provider
+wrapper on macOS when the operator explicitly passes `--use-existing-lemonade`;
+Dream Server must still keep Lemonade unmanaged, route Dream services through
+LiteLLM, and prove a real chat completion before reporting the install ready.
+
 ## Required Env Shape
 
 Provider mode code should converge on these names:
@@ -39,6 +45,12 @@ Provider mode code should converge on these names:
 
 Installers may retain legacy variables during migration, but new behavior should
 read and write the canonical names above.
+
+Existing external-Lemonade installs that only set `LLM_MODEL` retain a
+compatibility path when that exact id is present in Lemonade's model catalog and
+is a text/chat model. The dashboard reports a migration warning in that case.
+Operators should copy the value to `LEMONADE_MODEL`; stale tier-model values and
+specialized model ids are intentionally not accepted as implicit chat targets.
 
 ## Provider Capability Contract
 
@@ -58,6 +70,16 @@ profile is reachable through the configured provider:
 Unsupported selected capabilities must fail the install or readiness gate unless
 the user explicitly chose a profile where that capability is optional. A skipped
 selected capability is not a green install.
+
+Normal dashboard polling must remain passive: it may read health, model catalog,
+loaded-model state, and stats, but it must not trigger inference or model
+downloads. A passive check may mark a route ready only when the provider reports
+the configured model as loaded with the expected capability type. Real chat,
+embedding, rerank, STT, and TTS proofs run only through an explicit authenticated
+active-probe action because those requests may load or switch provider models.
+The active probe must finish by restoring and proving the selected chat model,
+refreshing health and model-catalog state, and reporting any final-state failure
+as degraded or blocked rather than leaving a false-ready result.
 
 ## Adapter Boundary
 
@@ -86,6 +108,9 @@ Provider modes must fail closed on network exposure:
   must be configured or the user must pass an explicit unsafe override.
 - All Dream-owned clients must pass the configured provider key before key
   enforcement is enabled by default.
+- Browser-triggered active probes must require a non-simple same-origin request
+  header in addition to API authentication so another site cannot trigger model
+  loads through the dashboard's nginx-injected credential.
 - Readiness must distinguish "provider unreachable", "auth rejected", "model
   missing", and "capability unsupported".
 

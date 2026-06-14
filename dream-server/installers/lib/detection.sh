@@ -244,7 +244,10 @@ apply_cpu_gpu_fallback() {
     GPU_MEMORY_TYPE="none"
     GPU_DEVICE_ID=""
     HAS_NPU=false
-    [[ "${DREAM_MODE:-local}" == "lemonade" ]] && DREAM_MODE="local"
+    case "${LEMONADE_EXTERNAL:-}" in
+        true|1|yes|on) ;;
+        *) [[ "${DREAM_MODE:-local}" == "lemonade" ]] && DREAM_MODE="local" ;;
+    esac
     BACKEND_ID="cpu"
     CAP_LLM_BACKEND="cpu"
     CAP_GPU_VENDOR="cpu"

@@ -170,9 +170,42 @@ generate_dream_env() {
     local detected_cpu_limit detected_cpu_reservation
     local tts_cpu_limit tts_cpu_reservation whisper_cpu_limit whisper_cpu_reservation
     local hermes_cpu_limit hermes_cpu_reservation comfyui_cpu_limit comfyui_cpu_reservation
+    local lemonade_external_value lemonade_base_url_value lemonade_container_base_url_value
+    local lemonade_api_base_path_value lemonade_model_value lemonade_port_value
+    local dream_mode_value llm_backend_value llm_api_url llm_api_base_path_value
+    local hermes_llm_base_url hermes_llm_api_key litellm_lemonade_api_key
     read -r cpu_limit_raw cpu_reservation_raw docker_available_cpus <<< "$(calculate_llama_cpu_budget "apple")"
     detected_cpu_limit="${cpu_limit_raw}.0"
     detected_cpu_reservation="${cpu_reservation_raw}.0"
+    lemonade_external_value="${LEMONADE_EXTERNAL:-false}"
+    case "${lemonade_external_value,,}" in
+        true|1|yes|on) lemonade_external_value="true" ;;
+        *) lemonade_external_value="false" ;;
+    esac
+    lemonade_base_url_value="${LEMONADE_BASE_URL:-}"
+    lemonade_container_base_url_value="${LEMONADE_CONTAINER_BASE_URL:-}"
+    lemonade_api_base_path_value="${LEMONADE_API_BASE_PATH:-/api/v1}"
+    lemonade_api_base_path_value="/${lemonade_api_base_path_value#/}"
+    lemonade_model_value="${LEMONADE_MODEL:-}"
+    lemonade_port_value="${AMD_INFERENCE_PORT:-13305}"
+    if [[ -n "$lemonade_base_url_value" && "$lemonade_base_url_value" =~ ^https?://[^/:]+:([0-9]+)(/|$) ]]; then
+        lemonade_port_value="${BASH_REMATCH[1]}"
+    fi
+    if [[ "$lemonade_external_value" == "true" ]]; then
+        dream_mode_value="lemonade"
+        llm_backend_value="lemonade"
+        llm_api_url="http://litellm:4000"
+        llm_api_base_path_value="$lemonade_api_base_path_value"
+        hermes_llm_base_url="http://litellm:4000/v1"
+        hermes_llm_api_key="\${LITELLM_KEY}"
+    else
+        dream_mode_value="local"
+        llm_backend_value="llama-server"
+        llm_api_url="http://host.docker.internal:8080"
+        llm_api_base_path_value="/v1"
+        hermes_llm_base_url="http://host.docker.internal:8080/v1"
+        hermes_llm_api_key="sk-dream-hermes-local"
+    fi
 
     # Idempotency: preserve existing .env (and secrets) unless --force was provided.
     if [[ -f "$env_path" ]] && [[ "$force_overwrite" != "true" ]]; then
@@ -275,6 +308,30 @@ generate_dream_env() {
                 upsert_env_value "$env_path" "HOST_LAN_IP" "$_host_lan_ip"
             fi
         fi
+        if [[ "$lemonade_external_value" == "true" ]]; then
+            litellm_lemonade_api_key="${LEMONADE_API_KEY:-$(read_env_value "$env_path" "LITELLM_LEMONADE_API_KEY")}"
+            upsert_env_value "$env_path" "DREAM_MODE" "lemonade"
+            upsert_env_value "$env_path" "LLM_BACKEND" "lemonade"
+            upsert_env_value "$env_path" "LLM_API_URL" "$llm_api_url"
+            upsert_env_value "$env_path" "LLM_API_BASE_PATH" "$llm_api_base_path_value"
+            upsert_env_value "$env_path" "LEMONADE_EXTERNAL" "true"
+            upsert_env_value "$env_path" "LEMONADE_BASE_URL" "$lemonade_base_url_value"
+            upsert_env_value "$env_path" "LEMONADE_CONTAINER_BASE_URL" "$lemonade_container_base_url_value"
+            upsert_env_value "$env_path" "LEMONADE_API_BASE_PATH" "$lemonade_api_base_path_value"
+            upsert_env_value "$env_path" "LEMONADE_MODEL" "$lemonade_model_value"
+            upsert_env_value "$env_path" "LITELLM_LEMONADE_API_KEY" "$litellm_lemonade_api_key"
+            upsert_env_value "$env_path" "AMD_INFERENCE_RUNTIME" "lemonade"
+            upsert_env_value "$env_path" "AMD_INFERENCE_BACKEND" "${AMD_INFERENCE_BACKEND:-auto}"
+            upsert_env_value "$env_path" "AMD_INFERENCE_LOCATION" "host"
+            upsert_env_value "$env_path" "AMD_INFERENCE_PORT" "$lemonade_port_value"
+            upsert_env_value "$env_path" "AMD_INFERENCE_SUPPORTED_BACKENDS" "${AMD_INFERENCE_SUPPORTED_BACKENDS:-metal,auto}"
+            upsert_env_value "$env_path" "AMD_INFERENCE_RUNTIME_MODE" "external-lemonade"
+            upsert_env_value "$env_path" "AMD_INFERENCE_MANAGED" "false"
+            upsert_env_value "$env_path" "HERMES_LLM_BASE_URL" "$hermes_llm_base_url"
+            upsert_env_value "$env_path" "HERMES_LLM_API_KEY" "$(read_env_value "$env_path" "LITELLM_KEY")"
+        else
+            [[ -z "$(read_env_value "$env_path" "LLM_BACKEND")" ]] && upsert_env_value "$env_path" "LLM_BACKEND" "llama-server"
+        fi
         return 0
     fi
 
@@ -285,6 +342,8 @@ generate_dream_env() {
     n8n_pass=$(new_secure_base64 16)
     local litellm_key
     litellm_key="sk-dream-$(new_secure_hex 16)"
+    litellm_lemonade_api_key="${LEMONADE_API_KEY:-}"
+    [[ "$lemonade_external_value" == "true" ]] && hermes_llm_api_key="$litellm_key"
     local livekit_secret
     livekit_secret=$(new_secure_base64 32)
     local livekit_api_key
@@ -345,9 +404,6 @@ generate_dream_env() {
     langfuse_init_project_id=$(new_secure_hex 16)
     local langfuse_init_user_password
     langfuse_init_user_password=$(new_secure_hex 16)
-    # macOS: llama-server runs natively, containers reach it via host.docker.internal
-    local llm_api_url="http://host.docker.internal:8080"
-
     # Host LAN IP — only populated when the operator has pre-set
     # BIND_ADDRESS=0.0.0.0 in the environment (macOS has no --lan flag).
     # Used by openclaw to extend allowedOrigins for LAN clients.
@@ -381,8 +437,23 @@ DREAM_DEVICE_NAME=${device_name}
 DREAM_AGENT_HOST=${DREAM_AGENT_HOST:-host.docker.internal}
 
 #=== LLM Backend Mode ===
-DREAM_MODE=local
+DREAM_MODE=${dream_mode_value}
+LLM_BACKEND=${llm_backend_value}
 LLM_API_URL=${llm_api_url}
+LLM_API_BASE_PATH=${llm_api_base_path_value}
+LEMONADE_EXTERNAL=${lemonade_external_value}
+LEMONADE_BASE_URL=${lemonade_base_url_value}
+LEMONADE_CONTAINER_BASE_URL=${lemonade_container_base_url_value}
+LEMONADE_API_BASE_PATH=${lemonade_api_base_path_value}
+LEMONADE_MODEL=${lemonade_model_value}
+LITELLM_LEMONADE_API_KEY=${litellm_lemonade_api_key}
+AMD_INFERENCE_RUNTIME=$(if [[ "$lemonade_external_value" == "true" ]]; then echo "lemonade"; fi)
+AMD_INFERENCE_BACKEND=$(if [[ "$lemonade_external_value" == "true" ]]; then echo "${AMD_INFERENCE_BACKEND:-auto}"; fi)
+AMD_INFERENCE_LOCATION=$(if [[ "$lemonade_external_value" == "true" ]]; then echo "host"; fi)
+AMD_INFERENCE_PORT=$(if [[ "$lemonade_external_value" == "true" ]]; then echo "$lemonade_port_value"; fi)
+AMD_INFERENCE_SUPPORTED_BACKENDS=$(if [[ "$lemonade_external_value" == "true" ]]; then echo "${AMD_INFERENCE_SUPPORTED_BACKENDS:-metal,auto}"; fi)
+AMD_INFERENCE_RUNTIME_MODE=$(if [[ "$lemonade_external_value" == "true" ]]; then echo "external-lemonade"; fi)
+AMD_INFERENCE_MANAGED=$(if [[ "$lemonade_external_value" == "true" ]]; then echo "false"; fi)
 
 #=== Cloud API Keys ===
 ANTHROPIC_API_KEY=
@@ -390,7 +461,10 @@ OPENAI_API_KEY=
 TOGETHER_API_KEY=
 MINIMAX_API_KEY=
 
-#=== LLM Settings (llama-server -- native Metal) ===
+#=== Local Model Settings ===
+# Used by the native Metal llama-server path. In external Lemonade mode these
+# values remain as local fallback metadata while LEMONADE_MODEL controls the
+# app-facing chat route through LiteLLM.
 MODEL_PROFILE=${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}
 # Effective model profile for this hardware: ${MODEL_PROFILE_EFFECTIVE:-qwen}
 LLM_MODEL=${LLM_MODEL}
@@ -447,9 +521,11 @@ OPENCLAW_PORT=7860
 LANGFUSE_PORT=3006
 
 #=== Hermes Agent ===
-# macOS runs llama-server natively with Metal; containers reach it via host.docker.internal.
-HERMES_LLM_BASE_URL=http://host.docker.internal:8080/v1
-HERMES_LLM_API_KEY=sk-dream-hermes-local
+# macOS local mode runs llama-server natively with Metal. External Lemonade mode
+# routes Hermes through LiteLLM so the selected Lemonade model and auth are
+# centralized in config/litellm/lemonade.yaml.
+HERMES_LLM_BASE_URL=${hermes_llm_base_url}
+HERMES_LLM_API_KEY=${hermes_llm_api_key}
 HERMES_LANGUAGE=en
 HERMES_PROXY_PORT=9120
 HERMES_PROXY_UPSTREAM=dream-hermes:9119

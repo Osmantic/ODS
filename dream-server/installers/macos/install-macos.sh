@@ -4,9 +4,10 @@
 # ============================================================================
 # Standalone macOS Apple Silicon installer. Does not modify any existing files.
 #
-# macOS: llama-server runs natively with Metal on the host (port 8080).
+# macOS default: llama-server runs natively with Metal on the host (port 8080).
 #        Everything else runs in Docker. Containers reach llama-server via
-#        host.docker.internal.
+#        host.docker.internal. With --use-existing-lemonade, Dream Server keeps
+#        Lemonade unmanaged and routes app traffic through LiteLLM instead.
 #
 # Usage:
 #   ./install-macos.sh                  # Interactive install
@@ -15,6 +16,8 @@
 #   ./install-macos.sh --all            # Enable all optional services
 #   ./install-macos.sh --non-interactive # Headless install (defaults)
 #   ./install-macos.sh --no-bootstrap   # Wait for the full model before launch
+#   ./install-macos.sh --use-existing-lemonade
+#                                         # Use an existing Lemonade server
 #
 # ============================================================================
 
@@ -87,6 +90,11 @@ ENABLE_PERPLEXICA=false
 ENABLE_PRIVACY_SHIELD=false
 ENABLE_DREAM_PROXY=false
 ENABLE_TAILSCALE=false
+VOICE_EXPLICIT=false
+WORKFLOWS_EXPLICIT=false
+RAG_EXPLICIT=false
+RECOMMENDED_EXPLICIT=false
+HERMES_EXPLICIT=false
 # Langfuse defaults OFF because its clickhouse + postgres + minio stack adds
 # ~500MB baseline memory. Enable via --langfuse, --all, or post-install
 # `dream enable langfuse`. --no-langfuse honored as explicit override so a
@@ -96,42 +104,65 @@ NO_LANGFUSE_EXPLICIT=false
 OPENCLAW_EXPLICIT=false
 ALL_FEATURES=false
 CLOUD_MODE=false
+LEMONADE_EXTERNAL="${LEMONADE_EXTERNAL:-false}"
+LEMONADE_BASE_URL="${LEMONADE_BASE_URL:-}"
+LEMONADE_CONTAINER_BASE_URL="${LEMONADE_CONTAINER_BASE_URL:-}"
+LEMONADE_API_BASE_PATH="${LEMONADE_API_BASE_PATH:-/api/v1}"
+LEMONADE_API_KEY="${LEMONADE_API_KEY:-}"
+LEMONADE_MODEL="${LEMONADE_MODEL:-}"
 NO_BOOTSTRAP=false
 HERMES_CONTEXT_SIZE=131072
+
+_require_arg() {
+    local flag="$1"
+    local value="${2:-}"
+    if [[ -z "$value" || "$value" == --* ]]; then
+        echo "Missing value for ${flag}" >&2
+        exit 1
+    fi
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)       DRY_RUN=true; shift ;;
         --force)         FORCE=true; shift ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
-        --tier)          TIER_OVERRIDE="${2:-}"; shift 2 ;;
-        --voice)         ENABLE_VOICE=true; shift ;;
-        --workflows)     ENABLE_WORKFLOWS=true; shift ;;
-        --rag)           ENABLE_RAG=true; shift ;;
-        --recommended)   ENABLE_RECOMMENDED=true; shift ;;
-        --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
-        --hermes)        ENABLE_HERMES=true; shift ;;
-        --no-hermes)     ENABLE_HERMES=false; shift ;;
+        --tier)          _require_arg "$1" "${2:-}"; TIER_OVERRIDE="$2"; shift 2 ;;
+        --voice)         ENABLE_VOICE=true; VOICE_EXPLICIT=true; shift ;;
+        --no-voice)      ENABLE_VOICE=false; VOICE_EXPLICIT=true; shift ;;
+        --workflows)     ENABLE_WORKFLOWS=true; WORKFLOWS_EXPLICIT=true; shift ;;
+        --no-workflows)  ENABLE_WORKFLOWS=false; WORKFLOWS_EXPLICIT=true; shift ;;
+        --rag)           ENABLE_RAG=true; RAG_EXPLICIT=true; shift ;;
+        --no-rag)        ENABLE_RAG=false; RAG_EXPLICIT=true; shift ;;
+        --recommended)   ENABLE_RECOMMENDED=true; RECOMMENDED_EXPLICIT=true; shift ;;
+        --no-recommended) ENABLE_RECOMMENDED=false; RECOMMENDED_EXPLICIT=true; shift ;;
+        --hermes)        ENABLE_HERMES=true; HERMES_EXPLICIT=true; shift ;;
+        --no-hermes)     ENABLE_HERMES=false; HERMES_EXPLICIT=true; shift ;;
         --openclaw)      ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
         --no-openclaw)   ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
         --langfuse)      ENABLE_LANGFUSE=true; shift ;;
         --no-langfuse)   ENABLE_LANGFUSE=false; NO_LANGFUSE_EXPLICIT=true; shift ;;
+        --comfyui)       shift ;;
+        --no-comfyui)    shift ;;
         --all)           ALL_FEATURES=true; shift ;;
         --cloud)         CLOUD_MODE=true; shift ;;
+        --use-existing-lemonade) LEMONADE_EXTERNAL=true; shift ;;
+        --lemonade-url)  _require_arg "$1" "${2:-}"; LEMONADE_EXTERNAL=true; LEMONADE_BASE_URL="$2"; shift 2 ;;
+        --lemonade-api-key) _require_arg "$1" "${2:-}"; LEMONADE_API_KEY="$2"; shift 2 ;;
         --no-bootstrap)  NO_BOOTSTRAP=true; shift ;;
         *)               echo "Unknown option: $1"; exit 1 ;;
     esac
 done
 
 if $ALL_FEATURES; then
-    ENABLE_VOICE=true
-    ENABLE_WORKFLOWS=true
-    ENABLE_RAG=true
-    ENABLE_RECOMMENDED=true
+    $VOICE_EXPLICIT || ENABLE_VOICE=true
+    $WORKFLOWS_EXPLICIT || ENABLE_WORKFLOWS=true
+    $RAG_EXPLICIT || ENABLE_RAG=true
+    $RECOMMENDED_EXPLICIT || ENABLE_RECOMMENDED=true
     # --all enables the new default Hermes Agent. OpenClaw stays opt-in via
     # --openclaw during the deprecation release; will be removed entirely
     # in the next release.
-    ENABLE_HERMES=true
+    $HERMES_EXPLICIT || ENABLE_HERMES=true
     $OPENCLAW_EXPLICIT || ENABLE_OPENCLAW=false
     ENABLE_APE=true
     ENABLE_PERPLEXICA=true
@@ -139,6 +170,19 @@ if $ALL_FEATURES; then
     ENABLE_DREAM_PROXY=true
     # --all enables Langfuse unless the user explicitly passed --no-langfuse.
     $NO_LANGFUSE_EXPLICIT || ENABLE_LANGFUSE=true
+fi
+
+case "${LEMONADE_EXTERNAL,,}" in
+    true|1|yes|on) LEMONADE_EXTERNAL=true ;;
+    *) LEMONADE_EXTERNAL=false ;;
+esac
+
+if [[ "$LEMONADE_EXTERNAL" == "true" ]]; then
+    CLOUD_MODE=false
+    ENABLE_RECOMMENDED=true
+    NO_BOOTSTRAP=true
+    export LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_CONTAINER_BASE_URL
+    export LEMONADE_API_BASE_PATH LEMONADE_API_KEY LEMONADE_MODEL
 fi
 
 # ── Locate script directory and source tree root ──
@@ -240,6 +284,265 @@ _find_opencode_bin() {
         return 0
     fi
 
+    return 1
+}
+
+_macos_external_lemonade_active() {
+    [[ "${LEMONADE_EXTERNAL:-false}" =~ ^([Tt][Rr][Uu][Ee]|1|yes|on)$ ]]
+}
+
+_strip_lemonade_api_suffix() {
+    local base="${1:-}"
+    base="${base%/}"
+    local suffix
+    for suffix in "/api/v1" "/v1" "/api"; do
+        if [[ "${base,,}" == *"${suffix}" ]]; then
+            base="${base:0:${#base}-${#suffix}}"
+            break
+        fi
+    done
+    printf '%s\n' "${base%/}"
+}
+
+_lemonade_api_url() {
+    local base="$(_strip_lemonade_api_suffix "${1:-}")"
+    local api_path="${2:-/api/v1}"
+    api_path="/${api_path#/}"
+    printf '%s%s\n' "$base" "$api_path"
+}
+
+_macos_detect_lemonade_url() {
+    local candidate api_path
+    local curl_args=(-fsS --max-time 3)
+    api_path="${LEMONADE_API_BASE_PATH:-/api/v1}"
+    [[ -n "${LEMONADE_API_KEY:-}" ]] && curl_args+=(-H "Authorization: Bearer ${LEMONADE_API_KEY}")
+    for candidate in \
+        "${LEMONADE_BASE_URL:-}" \
+        "http://localhost:13305" \
+        "http://127.0.0.1:13305" \
+        "http://localhost:8000" \
+        "http://127.0.0.1:8000"
+    do
+        [[ -n "$candidate" ]] || continue
+        candidate="$(_strip_lemonade_api_suffix "$candidate")"
+        if curl "${curl_args[@]}" "$(_lemonade_api_url "$candidate" "$api_path")/health" >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_macos_discover_lemonade_model() {
+    local api_base="$1"
+    local tmp_json pycmd
+    local curl_args=(-fsS --max-time 10)
+    tmp_json="$(mktemp /tmp/dream-macos-lemonade-models.XXXXXX.json)"
+    [[ -n "${LEMONADE_API_KEY:-}" ]] && curl_args+=(-H "Authorization: Bearer ${LEMONADE_API_KEY}")
+    if ! curl "${curl_args[@]}" "${api_base%/}/models" -o "$tmp_json" 2>/dev/null; then
+        rm -f "$tmp_json"
+        return 1
+    fi
+    pycmd="${DREAM_PYTHON_CMD:-}"
+    [[ -n "$pycmd" ]] || pycmd="$(command -v python3 2>/dev/null || true)"
+    [[ -n "$pycmd" ]] || pycmd="$(command -v python 2>/dev/null || true)"
+    if [[ -z "$pycmd" ]]; then
+        rm -f "$tmp_json"
+        return 1
+    fi
+    "$pycmd" - "$tmp_json" <<'PY'
+import json
+import sys
+
+special_labels = {"embeddings", "reranking", "transcription", "image", "edit", "tts"}
+special_markers = ("whisper", "moonshine", "kokoro", "embedding", "embed-", "rerank", "stable-diffusion", "sdxl", "flux", "image")
+special_recipes = {"sd-cpp", "whisper", "whispercpp", "kokoro", "kokoros"}
+
+try:
+    payload = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+
+items = payload.get("data") if isinstance(payload, dict) else payload
+if not isinstance(items, list):
+    sys.exit(1)
+
+for item in items:
+    if not isinstance(item, dict):
+        continue
+    model_id = str(item.get("id") or item.get("name") or item.get("model") or "").strip()
+    if not model_id:
+        continue
+    labels = {str(label).strip().lower() for label in item.get("labels", []) if str(label).strip()} if isinstance(item.get("labels"), list) else set()
+    recipe = str(item.get("recipe") or "").lower()
+    if labels & special_labels or recipe in special_recipes or any(marker in model_id.lower() for marker in special_markers):
+        continue
+    if item.get("downloaded") is False:
+        continue
+    print(model_id)
+    sys.exit(0)
+
+sys.exit(1)
+PY
+    local rc=$?
+    rm -f "$tmp_json"
+    return "$rc"
+}
+
+_prepare_macos_external_lemonade() {
+    _macos_external_lemonade_active || return 0
+
+    LEMONADE_API_BASE_PATH="/${LEMONADE_API_BASE_PATH#/}"
+    if [[ -z "${LEMONADE_BASE_URL:-}" ]]; then
+        if LEMONADE_BASE_URL="$(_macos_detect_lemonade_url)"; then
+            ai_ok "Detected existing Lemonade server at ${LEMONADE_BASE_URL}"
+        else
+            LEMONADE_BASE_URL="http://localhost:13305"
+            ai_warn "Could not auto-detect existing Lemonade; using ${LEMONADE_BASE_URL}. Pass --lemonade-url if your server uses another port."
+        fi
+    fi
+    LEMONADE_BASE_URL="$(_strip_lemonade_api_suffix "$LEMONADE_BASE_URL")"
+
+    if [[ -z "${LEMONADE_CONTAINER_BASE_URL:-}" ]]; then
+        case "$LEMONADE_BASE_URL" in
+            http://localhost:*) LEMONADE_CONTAINER_BASE_URL="${LEMONADE_BASE_URL/http:\/\/localhost:/http:\/\/host.docker.internal:}" ;;
+            http://127.0.0.1:*) LEMONADE_CONTAINER_BASE_URL="${LEMONADE_BASE_URL/http:\/\/127.0.0.1:/http:\/\/host.docker.internal:}" ;;
+            http://[::1]:*) LEMONADE_CONTAINER_BASE_URL="${LEMONADE_BASE_URL/http:\/\/[::1]:/http:\/\/host.docker.internal:}" ;;
+            *) LEMONADE_CONTAINER_BASE_URL="$LEMONADE_BASE_URL" ;;
+        esac
+    fi
+    LEMONADE_CONTAINER_BASE_URL="$(_strip_lemonade_api_suffix "$LEMONADE_CONTAINER_BASE_URL")"
+
+    if [[ -z "${LEMONADE_MODEL:-}" ]]; then
+        local _api_base
+        _api_base="$(_lemonade_api_url "$LEMONADE_BASE_URL" "$LEMONADE_API_BASE_PATH")"
+        if LEMONADE_MODEL="$(_macos_discover_lemonade_model "$_api_base")"; then
+            ai_ok "Detected existing Lemonade chat model: ${LEMONADE_MODEL}"
+        else
+            ai_warn "Could not auto-detect a chat-capable Lemonade model from ${_api_base}/models."
+            ai_warn "Set LEMONADE_MODEL=<chat-model-id> before rerunning if install verification fails."
+        fi
+    fi
+
+    export LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_CONTAINER_BASE_URL
+    export LEMONADE_API_BASE_PATH LEMONADE_API_KEY LEMONADE_MODEL
+}
+
+_read_install_env() {
+    local key="$1"
+    grep -m1 "^${key}=" "${INSTALL_DIR}/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d '\r' || true
+}
+
+_render_macos_external_lemonade_litellm_config() {
+    _macos_external_lemonade_active || return 0
+    local renderer="${INSTALL_DIR}/scripts/render-runtime-configs.py"
+    local pycmd="${DREAM_PYTHON_CMD:-python3}"
+    local litellm_key lemonade_key model api_base
+    litellm_key="$(_read_install_env LITELLM_LEMONADE_API_KEY)"
+    lemonade_key="$(_read_install_env LEMONADE_API_KEY)"
+    model="$(_read_install_env LEMONADE_MODEL)"
+    api_base="$(_lemonade_api_url "$(_read_install_env LEMONADE_CONTAINER_BASE_URL)" "$(_read_install_env LEMONADE_API_BASE_PATH)")"
+    [[ -n "$litellm_key" ]] || litellm_key="$lemonade_key"
+    [[ -n "$model" ]] || model="${LEMONADE_MODEL:-}"
+    [[ -n "$api_base" ]] || api_base="$(_lemonade_api_url "${LEMONADE_CONTAINER_BASE_URL:-http://host.docker.internal:13305}" "${LEMONADE_API_BASE_PATH:-/api/v1}")"
+
+    if [[ -f "$renderer" ]] && command -v "$pycmd" >/dev/null 2>&1; then
+        "$pycmd" "$renderer" \
+            --surface litellm-lemonade \
+            --dream-mode lemonade \
+            --gpu-backend apple \
+            --gguf-file "${GGUF_FILE:-}" \
+            --lemonade-model-id "$model" \
+            --lemonade-api-base "$api_base" \
+            --litellm-key "$litellm_key" \
+            --output-root "$INSTALL_DIR" \
+            --write >> "$DS_LOG_FILE" 2>&1 && {
+                ai_ok "Generated LiteLLM config for external Lemonade (model: ${model:-default})"
+                return 0
+            }
+        ai_warn "Runtime config renderer failed for external Lemonade; falling back to inline LiteLLM config."
+    fi
+
+    mkdir -p "$INSTALL_DIR/config/litellm"
+    cat > "$INSTALL_DIR/config/litellm/lemonade.yaml" << LITELLM_EOF
+model_list:
+  - model_name: default
+    litellm_params:
+      model: openai/${model:-default}
+      api_base: ${api_base}
+      api_key: ${litellm_key}
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+  - model_name: "*"
+    litellm_params:
+      model: openai/${model:-default}
+      api_base: ${api_base}
+      api_key: ${litellm_key}
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  request_timeout: 120
+  stream_timeout: 60
+LITELLM_EOF
+    ai_ok "Generated LiteLLM config for external Lemonade (model: ${model:-default})"
+}
+
+_verify_macos_external_lemonade_completion() {
+    _macos_external_lemonade_active || return 0
+    local litellm_key model response_file pycmd
+    litellm_key="$(_read_install_env LITELLM_KEY)"
+    model="$(_read_install_env LEMONADE_MODEL)"
+    [[ -n "$model" ]] || model="default"
+    response_file="$(mktemp /tmp/dream-macos-lemonade-completion.XXXXXX.json)"
+    if ! curl -fsS --max-time 180 \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${litellm_key}" \
+        -d "{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}" \
+        "http://127.0.0.1:${LITELLM_PORT:-4000}/v1/chat/completions" \
+        -o "$response_file" 2>>"$DS_LOG_FILE"; then
+        rm -f "$response_file"
+        ai_err "LiteLLM could not complete through external Lemonade (model: ${model})."
+        ai "Run: curl $(_lemonade_api_url "${LEMONADE_BASE_URL:-http://localhost:13305}" "${LEMONADE_API_BASE_PATH:-/api/v1}")/models"
+        ai "Then rerun with: LEMONADE_MODEL=<chat-model-id> ./install.sh --use-existing-lemonade ..."
+        return 1
+    fi
+    pycmd="${DREAM_PYTHON_CMD:-python3}"
+    if "$pycmd" - "$response_file" <<'PY'
+import json
+import sys
+
+try:
+    payload = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+for choice in payload.get("choices", []):
+    message = choice.get("message", {}) if isinstance(choice, dict) else {}
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str) and content.strip():
+        sys.exit(0)
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and str(block.get("text") or "").strip():
+                sys.exit(0)
+    if isinstance(choice.get("text") if isinstance(choice, dict) else None, str) and choice["text"].strip():
+        sys.exit(0)
+sys.exit(1)
+PY
+    then
+        rm -f "$response_file"
+        ai_ok "External Lemonade completion verified through LiteLLM"
+        return 0
+    fi
+    rm -f "$response_file"
+    ai_err "External Lemonade returned no assistant content through LiteLLM (model: ${model})."
+    ai "Run: curl $(_lemonade_api_url "${LEMONADE_BASE_URL:-http://localhost:13305}" "${LEMONADE_API_BASE_PATH:-/api/v1}")/models"
+    ai "Then rerun with: LEMONADE_MODEL=<chat-model-id> ./install.sh --use-existing-lemonade ..."
     return 1
 }
 
@@ -560,9 +863,15 @@ ai_ok "Disk space OK"
 # Dream-owned venv and point shared Python helpers at that interpreter.
 _ensure_macos_pyyaml
 
+_prepare_macos_external_lemonade
+
 # Ollama conflict detection
-check_ollama_conflict
-if $OLLAMA_RUNNING; then
+if ! _macos_external_lemonade_active; then
+    check_ollama_conflict
+else
+    OLLAMA_RUNNING=false
+fi
+if ! _macos_external_lemonade_active && $OLLAMA_RUNNING; then
     ai_warn "Ollama is running (PID ${OLLAMA_PID}) and may conflict with Dream Server."
     ai "  Both use port 11434/8080. Ollama will shadow llama-server."
     if ! $NON_INTERACTIVE; then
@@ -584,7 +893,10 @@ if $OLLAMA_RUNNING; then
 fi
 
 # Port conflict checks — dynamically read from extension manifests
-_conflict_ports=(8080 11434)  # llama-server (native) + Ollama default (host conflict, no manifest)
+_conflict_ports=()
+if ! _macos_external_lemonade_active; then
+    _conflict_ports+=(8080 11434)  # llama-server (native) + Ollama default (host conflict, no manifest)
+fi
 for _manifest in "${SOURCE_ROOT}/extensions/services/"*/manifest.yaml; do
     [[ -f "$_manifest" ]] || continue
     _port=$(grep 'external_port_default:' "$_manifest" 2>/dev/null | awk '{print $2}' | tr -d '"') || true
@@ -651,7 +963,7 @@ if [[ -z "${MODEL_PROFILE:-}" ]]; then
 fi
 
 resolve_tier_config "$SELECTED_TIER"
-if [[ "${DREAM_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_TIER" != "CLOUD" ]]; then
+if [[ "${DREAM_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_TIER" != "CLOUD" ]] && ! _macos_external_lemonade_active; then
     _selector_script="${SOURCE_ROOT}/scripts/select-model.py"
     _selector_catalog="${SOURCE_ROOT}/config/model-library.json"
     if [[ -f "$_selector_script" && -f "$_selector_catalog" ]]; then
@@ -698,12 +1010,18 @@ ai_ok "Selected tier: ${SELECTED_TIER} (${TIER_NAME})"
 info_box "Model:" "${LLM_MODEL}"
 info_box "GGUF:" "${GGUF_FILE}"
 info_box "Context:" "${MAX_CONTEXT}"
+if _macos_external_lemonade_active; then
+    info_box "LLM Runtime:" "external Lemonade (${LEMONADE_BASE_URL})"
+    [[ -n "${LEMONADE_MODEL:-}" ]] && info_box "Lemonade Model:" "${LEMONADE_MODEL}"
+fi
 
 # Re-check disk space for model + Docker images. Prefer the catalog selector's
 # exact model size when available; it can choose entries that do not fit the
 # older tier-map filename heuristics.
 _model_size_mb="${LLM_MODEL_SIZE_MB:-0}"
-if [[ "$_model_size_mb" =~ ^[0-9]+$ && "$_model_size_mb" -gt 0 ]]; then
+if _macos_external_lemonade_active; then
+    NEEDED_GB=15
+elif [[ "$_model_size_mb" =~ ^[0-9]+$ && "$_model_size_mb" -gt 0 ]]; then
     _model_gb=$(( (_model_size_mb + 1023) / 1024 ))
     NEEDED_GB=$(( _model_gb + 15 ))
 elif [[ "$GGUF_FILE" =~ 80B|Coder-Next ]]; then
@@ -796,7 +1114,11 @@ fi
 
 if $ENABLE_HERMES && ! $CLOUD_MODE; then
     if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
-        ai_warn "Hermes enabled: increasing macOS llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (128K)."
+        if _macos_external_lemonade_active; then
+            ai_warn "Hermes enabled: increasing macOS provider context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (128K)."
+        else
+            ai_warn "Hermes enabled: increasing macOS llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (128K)."
+        fi
         MAX_CONTEXT="$HERMES_CONTEXT_SIZE"
     fi
 fi
@@ -831,6 +1153,7 @@ if $DRY_RUN; then
     ai "[DRY RUN] Would create: ${INSTALL_DIR}"
     ai "[DRY RUN] Would copy source files"
     ai "[DRY RUN] Would generate .env with secrets"
+    _macos_external_lemonade_active && ai "[DRY RUN] Would configure external Lemonade runtime (${LEMONADE_BASE_URL})"
     ai "[DRY RUN] Would generate SearXNG config"
     $ENABLE_HERMES && ai "[DRY RUN] Would configure Hermes Agent (data: ${INSTALL_DIR}/data/hermes)"
     $ENABLE_OPENCLAW && ai "[DRY RUN] Would configure OpenClaw"
@@ -931,10 +1254,15 @@ else
     else
         ai_ok "Generated .env with secure secrets"
     fi
+    _render_macos_external_lemonade_litellm_config
     if $ENABLE_HERMES && ! $CLOUD_MODE; then
         upsert_env_value "${INSTALL_DIR}/.env" "MAX_CONTEXT" "$MAX_CONTEXT"
         upsert_env_value "${INSTALL_DIR}/.env" "CTX_SIZE" "$MAX_CONTEXT"
-        ai_ok "Set macOS llama context to ${MAX_CONTEXT} for Hermes"
+        if _macos_external_lemonade_active; then
+            ai_ok "Set macOS provider context to ${MAX_CONTEXT} for Hermes"
+        else
+            ai_ok "Set macOS llama context to ${MAX_CONTEXT} for Hermes"
+        fi
     fi
 
     # Generate SearXNG config
@@ -973,9 +1301,15 @@ fi
 show_phase 5 6 "LAUNCH" "2-30 minutes (model download)"
 
 if $DRY_RUN; then
-    [[ -n "$GGUF_URL" ]] && ai "[DRY RUN] Would download: ${GGUF_FILE}"
-    ai "[DRY RUN] Would download llama-server (Metal build)"
-    ai "[DRY RUN] Would start native llama-server on port 8080"
+    if _macos_external_lemonade_active; then
+        ai "[DRY RUN] Would skip native llama-server and route through external Lemonade via LiteLLM"
+    elif $CLOUD_MODE; then
+        ai "[DRY RUN] Would skip native llama-server and route through cloud APIs via LiteLLM"
+    else
+        [[ -n "$GGUF_URL" ]] && ai "[DRY RUN] Would download: ${GGUF_FILE}"
+        ai "[DRY RUN] Would download llama-server (Metal build)"
+        ai "[DRY RUN] Would start native llama-server on port 8080"
+    fi
     ai "[DRY RUN] Would run: docker compose up -d"
 else
     # Change to install directory for docker compose
@@ -983,7 +1317,7 @@ else
 
     # ── Bootstrap fast-start ──────────────────────────────────────────────
     _BOOTSTRAP_ACTIVE=false
-    if bootstrap_needed "$SELECTED_TIER" "$INSTALL_DIR" "$GGUF_FILE"; then
+    if ! _macos_external_lemonade_active && bootstrap_needed "$SELECTED_TIER" "$INSTALL_DIR" "$GGUF_FILE"; then
         _BOOTSTRAP_ACTIVE=true
         FULL_GGUF_FILE="$GGUF_FILE"
         FULL_GGUF_URL="$GGUF_URL"
@@ -1001,7 +1335,7 @@ else
     fi
 
     # ── Download GGUF model (if not cloud-only) ──
-    if [[ -n "$GGUF_URL" ]] && ! $CLOUD_MODE; then
+    if [[ -n "$GGUF_URL" ]] && ! $CLOUD_MODE && ! _macos_external_lemonade_active; then
         MODEL_PATH="${INSTALL_DIR}/data/models/${GGUF_FILE}"
 
         if [[ -f "$MODEL_PATH" ]]; then
@@ -1064,36 +1398,43 @@ else
     if ! $CLOUD_MODE; then
         _hermes_tpl="${INSTALL_DIR}/extensions/services/hermes/cli-config.yaml.template"
         if [[ -f "$_hermes_tpl" ]]; then
-            _hermes_base_url="http://host.docker.internal:${OLLAMA_PORT:-8080}/v1"
+            if _macos_external_lemonade_active; then
+                _hermes_base_url="http://litellm:4000/v1"
+                _hermes_model="${LEMONADE_MODEL:-$(_read_install_env LEMONADE_MODEL)}"
+                [[ -n "$_hermes_model" ]] || _hermes_model="default"
+            else
+                _hermes_base_url="http://host.docker.internal:${OLLAMA_PORT:-8080}/v1"
+                _hermes_model="$GGUF_FILE"
+            fi
             _hermes_patcher="${INSTALL_DIR}/scripts/patch-hermes-config.py"
             if [[ -f "$_hermes_patcher" ]]; then
                 python3 "$_hermes_patcher" "$_hermes_tpl" \
-                    --model "$GGUF_FILE" \
+                    --model "$_hermes_model" \
                     --base-url "$_hermes_base_url" \
                     --context-length "$MAX_CONTEXT" >>"$DS_LOG_FILE" 2>&1 || \
                     ai_warn "Hermes template patch failed — hand-edit ${_hermes_tpl} if prompts hang."
                 _hermes_live="${INSTALL_DIR}/data/hermes/config.yaml"
                 if [[ -f "$_hermes_live" ]]; then
                     python3 "$_hermes_patcher" "$_hermes_live" \
-                        --model "$GGUF_FILE" \
+                        --model "$_hermes_model" \
                         --base-url "$_hermes_base_url" \
                         --context-length "$MAX_CONTEXT" >>"$DS_LOG_FILE" 2>&1 || \
                         ai_warn "Hermes live config patch failed — hand-edit ${_hermes_live} and restart Hermes if prompts hang."
                 fi
             else
                 sed -i '' \
-                    -e "s|^  default: \"qwen3.5-9b\"|  default: \"${GGUF_FILE}\"|" \
+                    -e "s|^  default: \"qwen3.5-9b\"|  default: \"${_hermes_model}\"|" \
                     -e "s|^  base_url: \"http://llama-server:8080/v1\"|  base_url: \"${_hermes_base_url}\"|" \
                     -e "s|^  context_length: .*|  context_length: ${MAX_CONTEXT}|" \
                     -e "s|^    context_length: .*|    context_length: ${MAX_CONTEXT}|" \
                     "$_hermes_tpl"
             fi
-            if grep -q "host.docker.internal" "$_hermes_tpl" && \
-               grep -q "^  default: \"${GGUF_FILE}\"$" "$_hermes_tpl" && \
+            if grep -q "$_hermes_base_url" "$_hermes_tpl" && \
+               grep -q "^  default: \"${_hermes_model}\"$" "$_hermes_tpl" && \
                grep -q "^  context_length: ${MAX_CONTEXT}$" "$_hermes_tpl"; then
-                ai_ok "Patched Hermes config for macOS (model=${GGUF_FILE}, context=${MAX_CONTEXT}, base_url=host.docker.internal)"
+                ai_ok "Patched Hermes config for macOS (model=${_hermes_model}, context=${MAX_CONTEXT}, base_url=${_hermes_base_url})"
             else
-                ai_warn "Hermes template patch incomplete — Hermes may fail to reach llama-server. Hand-edit ${_hermes_tpl} if prompts hang."
+                ai_warn "Hermes template patch incomplete — Hermes may fail to reach the selected provider. Hand-edit ${_hermes_tpl} if prompts hang."
             fi
 
             # Render data/persona/SOUL.md = static persona + dynamic install
@@ -1114,7 +1455,7 @@ else
     fi
 
     # ── Download and start native llama-server (Metal) ──
-    if ! $CLOUD_MODE; then
+    if ! $CLOUD_MODE && ! _macos_external_lemonade_active; then
         chapter "NATIVE LLAMA-SERVER (METAL)"
 
         # Download llama.cpp Metal build
@@ -1315,9 +1656,11 @@ else
     # ── Assemble Docker Compose flags ──
     COMPOSE_FLAGS=("-f" "docker-compose.base.yml")
 
-    if $CLOUD_MODE; then
+    if _macos_external_lemonade_active; then
+        COMPOSE_FLAGS+=("-f" "docker-compose.cloud.yml" "-f" "docker-compose.lemonade-external.yml")
+    elif $CLOUD_MODE; then
         # Cloud mode: disable llama-server container
-        COMPOSE_FLAGS+=("-f" "installers/macos/docker-compose.macos.yml")
+        COMPOSE_FLAGS+=("-f" "docker-compose.cloud.yml")
     else
         # Normal macOS mode: native llama-server
         COMPOSE_FLAGS+=("-f" "installers/macos/docker-compose.macos.yml")
@@ -1326,7 +1669,7 @@ else
     # Discover enabled extension compose fragments via manifests
     EXT_DIR="${INSTALL_DIR}/extensions/services"
     CURRENT_BACKEND="apple"
-    $CLOUD_MODE && CURRENT_BACKEND="none"
+    { $CLOUD_MODE || _macos_external_lemonade_active; } && CURRENT_BACKEND="none"
     if ! $ENABLE_HERMES && ! $ENABLE_OPENCLAW; then
         ENABLE_APE=false
     fi
@@ -1632,21 +1975,34 @@ else
     if [[ -n "$OPENCODE_BIN" && -x "$OPENCODE_BIN" ]]; then
         mkdir -p "$OPENCODE_CONFIG_DIR"
         if [[ ! -f "$OPENCODE_CONFIG_DIR/opencode.json" ]]; then
+            _opencode_provider="llama-server"
+            _opencode_provider_name="llama-server (local)"
+            _opencode_model="$LLM_MODEL"
+            _opencode_base_url="http://127.0.0.1:8080/v1"
+            _opencode_api_key="no-key"
+            if _macos_external_lemonade_active; then
+                _opencode_provider="litellm"
+                _opencode_provider_name="LiteLLM (external Lemonade)"
+                _opencode_model="${LEMONADE_MODEL:-$(_read_install_env LEMONADE_MODEL)}"
+                [[ -n "$_opencode_model" ]] || _opencode_model="default"
+                _opencode_base_url="http://127.0.0.1:${LITELLM_PORT:-4000}/v1"
+                _opencode_api_key="$(_read_install_env LITELLM_KEY)"
+            fi
             cat > "$OPENCODE_CONFIG_DIR/opencode.json" <<OPENCODE_EOF
 {
   "\$schema": "https://opencode.ai/config.json",
-  "model": "llama-server/${LLM_MODEL}",
+  "model": "${_opencode_provider}/${_opencode_model}",
   "provider": {
-    "llama-server": {
+    "${_opencode_provider}": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "llama-server (local)",
+      "name": "${_opencode_provider_name}",
       "options": {
-        "baseURL": "http://127.0.0.1:8080/v1",
-        "apiKey": "no-key"
+        "baseURL": "${_opencode_base_url}",
+        "apiKey": "${_opencode_api_key}"
       },
       "models": {
-        "${LLM_MODEL}": {
-          "name": "${LLM_MODEL}",
+        "${_opencode_model}": {
+          "name": "${_opencode_model}",
           "limit": {
             "context": ${MAX_CONTEXT:-32768},
             "output": 32768
@@ -1657,7 +2013,7 @@ else
   }
 }
 OPENCODE_EOF
-            ai_ok "OpenCode configured for local llama-server (model: ${LLM_MODEL})"
+            ai_ok "OpenCode configured for ${_opencode_provider_name} (model: ${_opencode_model})"
         else
             ai_ok "OpenCode config already exists"
         fi
@@ -1724,6 +2080,9 @@ PLIST_EOF
 fi
 
 # ── Dream Host Agent (extension lifecycle management) ──
+if $DRY_RUN; then
+    ai "[DRY RUN] Would install Dream host agent LaunchAgent"
+else
 AGENT_PYTHON="$(command -v python3)"
 if [[ -f "${INSTALL_DIR}/bin/dream-host-agent.py" ]] && [[ -n "$AGENT_PYTHON" ]]; then
     # See opencode-web block above for the xpcproxy sandbox rationale behind
@@ -1815,6 +2174,7 @@ else
     [[ ! -f "${INSTALL_DIR}/bin/dream-host-agent.py" ]] && ai_warn "Host agent script not found, skipping"
     [[ -z "$AGENT_PYTHON" ]] && ai_warn "python3 not found, host agent not installed"
 fi
+fi
 
 # ============================================================================
 # PHASE 6 -- VERIFICATION
@@ -1822,8 +2182,12 @@ fi
 show_phase 6 6 "VERIFICATION" "30 seconds"
 
 if $DRY_RUN; then
+    _dry_run_llm_model="${LLM_MODEL}"
+    if _macos_external_lemonade_active; then
+        _dry_run_llm_model="${LEMONADE_MODEL:-default}"
+    fi
     ai "[DRY RUN] Would health-check all services"
-    ai "[DRY RUN] Would auto-configure Perplexica for ${LLM_MODEL}"
+    ai "[DRY RUN] Would auto-configure Perplexica for ${_dry_run_llm_model}"
     ai "[DRY RUN] Install validation complete"
     ai_ok "Dry run finished -- no changes made"
     exit 0
@@ -1840,9 +2204,15 @@ ALL_HEALTHY=true
 # runs natively on macOS via Metal; OpenCode is a LaunchAgent). Docker
 # services wait on `docker inspect ... .State.Health.Status == healthy`;
 # host-native services fall back to an HTTP probe on 127.0.0.1.
-HEALTH_NAMES=("LLM (llama-server)" "Chat UI (Open WebUI)")
-HEALTH_URLS=("http://127.0.0.1:8080/health" "http://127.0.0.1:3000")
-HEALTH_CONTAINERS=("" "dream-webui")
+if _macos_external_lemonade_active; then
+    HEALTH_NAMES=("LLM Gateway (external Lemonade via LiteLLM)" "Chat UI (Open WebUI)")
+    HEALTH_URLS=("http://127.0.0.1:${LITELLM_PORT:-4000}/health/readiness" "http://127.0.0.1:3000")
+    HEALTH_CONTAINERS=("dream-litellm" "dream-webui")
+else
+    HEALTH_NAMES=("LLM (llama-server)" "Chat UI (Open WebUI)")
+    HEALTH_URLS=("http://127.0.0.1:8080/health" "http://127.0.0.1:3000")
+    HEALTH_CONTAINERS=("" "dream-webui")
+fi
 $ENABLE_VOICE && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:9000/health") && HEALTH_CONTAINERS+=("dream-whisper")
 $ENABLE_WORKFLOWS && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:5678/healthz") && HEALTH_CONTAINERS+=("dream-n8n")
 [[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
@@ -1887,6 +2257,8 @@ for ((idx=0; idx<${#HEALTH_NAMES[@]}; idx++)); do
         ALL_HEALTHY=false
     fi
 done
+
+_verify_macos_external_lemonade_completion
 
 # ── Pre-download the Whisper STT model ──
 # Speaches does NOT auto-download on transcription requests — it returns 404.
@@ -1944,8 +2316,13 @@ fi
 
 # ── Auto-configure Perplexica ──
 ai "Configuring Perplexica..."
-if configure_perplexica 3004 "$LLM_MODEL"; then
-    ai_ok "Perplexica configured (model: ${LLM_MODEL})"
+_perplexica_model="${LLM_MODEL}"
+if _macos_external_lemonade_active; then
+    _perplexica_model="${LEMONADE_MODEL:-$(_read_install_env LEMONADE_MODEL)}"
+    [[ -n "$_perplexica_model" ]] || _perplexica_model="default"
+fi
+if configure_perplexica 3004 "$_perplexica_model"; then
+    ai_ok "Perplexica configured (model: ${_perplexica_model})"
 else
     ai_warn "Perplexica auto-config skipped -- complete setup at http://localhost:3004"
 fi
@@ -1977,7 +2354,11 @@ fi
 {
     printf 'Dashboard|http://127.0.0.1:3001|dream-dashboard|http://localhost:3001\n'
     printf 'Chat UI (Open WebUI)|http://127.0.0.1:3000|dream-webui|http://localhost:3000\n'
-    printf 'llama-server|http://127.0.0.1:8080/health||http://localhost:8080/v1\n'
+    if _macos_external_lemonade_active; then
+        printf 'External Lemonade|%s||%s\n' "$(_lemonade_api_url "${LEMONADE_BASE_URL:-http://localhost:13305}" "${LEMONADE_API_BASE_PATH:-/api/v1}")/health" "$(_lemonade_api_url "${LEMONADE_BASE_URL:-http://localhost:13305}" "${LEMONADE_API_BASE_PATH:-/api/v1}")"
+    else
+        printf 'llama-server|http://127.0.0.1:8080/health||http://localhost:8080/v1\n'
+    fi
     printf 'Dashboard API|http://127.0.0.1:3002/health|dream-dashboard-api|http://localhost:3002\n'
     printf 'LiteLLM|http://127.0.0.1:4000/health/readiness|dream-litellm|http://localhost:4000\n'
     printf 'Perplexica|http://127.0.0.1:3004|dream-perplexica|http://localhost:3004\n'
