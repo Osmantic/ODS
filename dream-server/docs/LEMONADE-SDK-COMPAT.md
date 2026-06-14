@@ -28,6 +28,12 @@ This keeps the docs honest for AMD systems while also giving non-AMD Lemonade
 operators the same configuration and validation path when their Lemonade service
 already works.
 
+macOS needs a separate note. Upstream Lemonade supports macOS with a Metal
+llama.cpp backend, but Dream Server's supported macOS installer already uses a
+host-native `llama-server` with Metal acceleration. This PR does not replace
+that macOS path or claim a validated macOS external-Lemonade install; treat
+macOS Lemonade as a follow-up smoke target for the provider contract.
+
 ## Install Around Existing Lemonade
 
 Start Lemonade first, then install Dream Server with:
@@ -105,9 +111,10 @@ the installer supports it. Today, a Kokoro/TTS conflict on port `8880` should be
 handled with `--no-voice`. The port conflict is from the optional Dream service,
 not from Lemonade itself.
 
-Windows AMD installs already use a separate host-managed Lemonade path. These
-flags are for Linux installs that should attach to a pre-existing Lemonade SDK
-service.
+Windows AMD installs already use a separate host-managed Lemonade path. The
+macOS Apple Silicon installer also has a separate native Metal path and does
+not currently accept these external-Lemonade flags. These flags are for Linux
+installs that should attach to a pre-existing Lemonade SDK service.
 
 ## Model Selection
 
