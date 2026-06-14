@@ -15,7 +15,7 @@
 # Validate the resolved stack with:
 #
 #   LEMONADE_EXTERNAL=true DREAM_MODE=lemonade \
-#     ./scripts/resolve-compose-stack.sh --dream-mode lemonade --gpu-backend amd --tier SH_LARGE
+#     ./scripts/resolve-compose-stack.sh --dream-mode lemonade --gpu-backend nvidia --tier 2
 
 services:
   litellm:

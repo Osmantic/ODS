@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- External Lemonade active probes now allow up to 120 seconds per provider
+  request by default, refresh the final health and model catalog, and finish by
+  proving the selected chat model so specialized capability checks do not leave
+  the provider switched away from Dream Server's primary chat route.
+- Lemonade compatibility docs now separate the Lemonade provider contract from
+  AMD-specific installer and dashboard surfaces, so external Lemonade guidance
+  also applies to non-AMD machines when their Lemonade service already exposes
+  the expected OpenAI-compatible API.
+
+### Fixed
+- External Lemonade installs that only define legacy `LLM_MODEL` retain a
+  validated migration fallback when that exact catalog entry is chat-capable.
+  The dashboard warns operators whether it used or safely ignored the legacy
+  value and directs them to canonical `LEMONADE_MODEL`; stale or specialized
+  model ids remain rejected.
+- The side-effecting dashboard active-probe endpoint now requires an explicit
+  non-simple request header in addition to API authentication, preventing
+  cross-site form submissions from triggering model loads through nginx's
+  injected dashboard credential.
+- Active Lemonade results no longer report stale model counts or a false-ready
+  provider when final health/catalog refreshes fail.
+
 ## [2.5.3] - 2026-05-26
 
 ### Fixed

@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
 from config import INSTALL_DIR
 from security import verify_api_key
@@ -53,6 +53,7 @@ _external_lemonade_probe_locks: weakref.WeakKeyDictionary = weakref.WeakKeyDicti
 _env_file_cache: dict = {"path": None, "signature": None, "values": {}}
 _GPU_DETAILED_TTL = 3.0
 _GPU_TOPOLOGY_TTL = 300.0
+_ACTIVE_PROVIDER_PROBE_HEADER = "DreamServerDashboard"
 
 
 def _external_lemonade_probe_lock() -> asyncio.Lock:
@@ -63,6 +64,14 @@ def _external_lemonade_probe_lock() -> asyncio.Lock:
         lock = asyncio.Lock()
         _external_lemonade_probe_locks[loop] = lock
     return lock
+
+
+def _verify_active_provider_probe_request(
+    x_requested_with: Optional[str] = Header(default=None, alias="X-Requested-With"),
+) -> None:
+    """Require a non-simple browser header before running a side-effecting probe."""
+    if x_requested_with != _ACTIVE_PROVIDER_PROBE_HEADER:
+        raise HTTPException(status_code=403, detail="Active provider probe requires an explicit dashboard request.")
 
 
 # ============================================================================
@@ -460,9 +469,10 @@ async def gpu_topology():
 
 
 async def _amd_runtime_status(*, active_provider_probe: bool = False, force_provider_probe: bool = False):
-    """AMD runtime contract and health from explicit installer-provided env."""
+    """AMD runtime or external Lemonade provider contract from installer env."""
     gpu_backend = _clean_env("GPU_BACKEND").lower() or "nvidia"
-    if gpu_backend != "amd":
+    external_lemonade = _external_lemonade_active()
+    if gpu_backend != "amd" and not external_lemonade:
         return AmdRuntimeStatus(
             available=False,
             reason="not_amd",
@@ -541,7 +551,7 @@ async def _amd_runtime_status(*, active_provider_probe: bool = False, force_prov
     provider_status: Optional[str] = None
     provider_probe_mode: Optional[str] = None
     provider_capabilities: Optional[list[dict[str, object]]] = None
-    if runtime == "lemonade" and _external_lemonade_active():
+    if runtime == "lemonade" and external_lemonade:
         (
             health,
             version,
@@ -597,7 +607,7 @@ async def _amd_runtime_status(*, active_provider_probe: bool = False, force_prov
     dependencies=[Depends(verify_api_key)],
 )
 async def amd_runtime():
-    """Return passive AMD runtime diagnostics without triggering inference."""
+    """Return passive AMD runtime or external Lemonade diagnostics without inference."""
     return await _amd_runtime_status()
 
 
@@ -605,7 +615,7 @@ async def amd_runtime():
     "/api/gpu/amd-runtime/probe",
     response_model=AmdRuntimeStatus,
     response_model_exclude_none=True,
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Depends(verify_api_key), Depends(_verify_active_provider_probe_request)],
 )
 async def probe_amd_runtime():
     """Run an explicit active Lemonade capability probe and refresh the diagnostic cache."""

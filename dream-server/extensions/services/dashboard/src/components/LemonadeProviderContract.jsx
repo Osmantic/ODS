@@ -43,6 +43,15 @@ const PROVIDER_STYLE = {
   unverified: 'border-sky-500/30 bg-sky-500/10 text-sky-300',
 }
 
+const WARNING_LABEL = {
+  chat_model_legacy_llm_model: 'Using legacy LLM_MODEL. Copy this model id to LEMONADE_MODEL.',
+  chat_model_legacy_llm_model_ignored: 'Ignored legacy LLM_MODEL because it is not a chat-capable Lemonade catalog id. Set LEMONADE_MODEL explicitly.',
+}
+
+function warningLabel(warning) {
+  return WARNING_LABEL[warning] || warning.replaceAll('_', ' ')
+}
+
 function CapabilityRow({ capability }) {
   const style = STATUS_STYLE[capability.status] || STATUS_STYLE.failed
   const Icon = style.icon
@@ -78,6 +87,7 @@ export function LemonadeProviderContract({ runtime, onRunActiveProbe, activeProb
 
   const status = runtime.providerStatus || 'blocked'
   const loadedModels = runtime.loadedModels || []
+  const warnings = runtime.warnings || []
   const loadedSummary = loadedModels.length
     ? `${loadedModels.length} loaded model${loadedModels.length === 1 ? '' : 's'}`
     : runtime.loadedModel || 'No loaded model'
@@ -118,6 +128,17 @@ export function LemonadeProviderContract({ runtime, onRunActiveProbe, activeProb
 
       {activeProbeError && (
         <p className="mt-3 text-xs text-red-300" role="alert">{activeProbeError}</p>
+      )}
+
+      {warnings.length > 0 && (
+        <div className="mt-3 border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2 text-amber-200">
+          {warnings.map(warning => (
+            <p key={warning} className="flex items-start gap-2 text-[11px] leading-4">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+              <span>{warningLabel(warning)}</span>
+            </p>
+          ))}
+        </div>
       )}
 
       <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">

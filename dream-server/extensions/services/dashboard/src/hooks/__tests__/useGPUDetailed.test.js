@@ -70,7 +70,10 @@ describe('useGPUDetailed', () => {
     await result.current.runRuntimeProbe()
     await waitFor(() => expect(result.current.runtime?.providerProbeMode).toBe('active'))
 
-    expect(fetch).toHaveBeenCalledWith('/api/gpu/amd-runtime/probe', { method: 'POST' })
+    expect(fetch).toHaveBeenCalledWith('/api/gpu/amd-runtime/probe', {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'DreamServerDashboard' },
+    })
   })
 
   test('does not let an older passive response overwrite a completed active probe', async () => {

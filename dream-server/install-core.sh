@@ -142,7 +142,7 @@ Options:
     --tier N          Force specific tier (1-4) instead of auto-detect
     --cloud           Cloud mode: skip GPU detection, use LiteLLM + cloud APIs
     --use-existing-lemonade
-                      Use an already-running Lemonade SDK server as the AMD LLM runtime
+                      Use an already-running Lemonade SDK server as the LLM runtime
     --lemonade-url U  Lemonade server URL for --use-existing-lemonade
                       (auto-detects localhost:13305, then localhost:8000 when omitted)
     --lemonade-api-key K

@@ -1,4 +1,4 @@
-"""Tests for the AMD runtime diagnostic endpoint."""
+"""Tests for AMD runtime and external Lemonade diagnostic endpoint."""
 
 import asyncio
 
@@ -213,7 +213,7 @@ async def test_passive_external_lemonade_probe_never_triggers_inference(monkeypa
 
     assert calls == ["health", "models", "stats"]
     assert loaded_model == "Whisper-Tiny"
-    assert warnings == []
+    assert warnings == ["chat_model_legacy_llm_model_ignored"]
     assert probe_mode == "passive"
     assert loaded_models == [
         {
@@ -226,6 +226,50 @@ async def test_passive_external_lemonade_probe_never_triggers_inference(monkeypa
     assert _provider_capability(capabilities, "chat")["detail"] == "Qwen3-0.6B-GGUF"
     assert _provider_capability(capabilities, "chat")["status"] == "ok"
     assert _provider_capability(capabilities, "gateway_chat")["status"] == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_external_lemonade_probe_accepts_validated_legacy_llm_model_with_migration_warning(monkeypatch):
+    class FakeLemonadeClient:
+        def __init__(self, settings):
+            self.settings = settings
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc_info):
+            return None
+
+        async def health(self):
+            return {
+                "status": "ok",
+                "version": "10.7.0",
+                "all_models_loaded": [{"model_name": "legacy-chat", "type": "llm"}],
+            }
+
+        async def models(self):
+            return [{"id": "legacy-chat", "labels": ["reasoning"]}]
+
+        async def stats(self):
+            return {}
+
+    monkeypatch.setattr(gpu_router, "LemonadeClient", FakeLemonadeClient)
+    monkeypatch.setenv("LEMONADE_MODEL", "")
+    monkeypatch.setenv("LLM_MODEL", "legacy-chat")
+    monkeypatch.setenv("LLM_BACKEND", "")
+
+    result = await gpu_router._probe_external_lemonade_uncached(
+        "http://host.docker.internal:13305/api/v1",
+        "/api/v1",
+    )
+
+    assert result.warnings == ["chat_model_legacy_llm_model"]
+    assert _provider_capability(result.capabilities, "chat") == {
+        "name": "chat",
+        "status": "ok",
+        "required": True,
+        "detail": "legacy-chat",
+    }
 
 
 @pytest.mark.asyncio
@@ -329,6 +373,7 @@ async def test_external_lemonade_probe_rejects_semantically_invalid_health_paylo
 @pytest.mark.asyncio
 async def test_active_external_lemonade_probe_refreshes_loaded_models_after_inference(monkeypatch):
     health_calls = 0
+    model_calls = 0
 
     class FakeLemonadeClient:
         def __init__(self, settings):
@@ -354,7 +399,12 @@ async def test_active_external_lemonade_probe_refreshes_loaded_models_after_infe
             return {"status": "ok", "version": "10.7.0", "all_models_loaded": loaded}
 
         async def models(self):
-            return [{"id": "Qwen3-0.6B-GGUF", "downloaded": True}]
+            nonlocal model_calls
+            model_calls += 1
+            models = [{"id": "Qwen3-0.6B-GGUF", "downloaded": True}]
+            if model_calls > 1:
+                models.append({"id": "Whisper-Tiny", "downloaded": True, "labels": ["transcription"]})
+            return models
 
         async def stats(self):
             return {}
@@ -373,6 +423,9 @@ async def test_active_external_lemonade_probe_refreshes_loaded_models_after_infe
     )
 
     assert health_calls == 2
+    assert model_calls == 2
+    assert result.model_count == 2
+    assert _provider_capability(result.capabilities, "models")["detail"] == "2"
     assert result.loaded_model == "Qwen3-0.6B-GGUF"
     assert result.loaded_models == [
         {
@@ -382,6 +435,108 @@ async def test_active_external_lemonade_probe_refreshes_loaded_models_after_infe
             "backendUrl": "http://127.0.0.1:8000",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_active_external_lemonade_probe_degrades_when_final_health_is_unhealthy(monkeypatch):
+    health_calls = 0
+
+    class FakeLemonadeClient:
+        def __init__(self, settings):
+            self.settings = settings
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc_info):
+            return None
+
+        async def health(self):
+            nonlocal health_calls
+            health_calls += 1
+            if health_calls == 1:
+                return {"status": "ok", "version": "10.7.0", "model_loaded": "chat-model"}
+            return {"status": "starting", "version": "10.7.0"}
+
+        async def models(self):
+            return [{"id": "chat-model"}]
+
+        async def stats(self):
+            return {}
+
+        async def chat_completion(self, *_args, **_kwargs):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(gpu_router, "LemonadeClient", FakeLemonadeClient)
+    monkeypatch.setenv("LEMONADE_MODEL", "chat-model")
+    monkeypatch.setenv("LLM_BACKEND", "")
+
+    result = await gpu_router._probe_external_lemonade_uncached(
+        "http://host.docker.internal:13305/api/v1",
+        "/api/v1",
+        active=True,
+    )
+
+    assert result.health == "unhealthy"
+    assert result.warnings == ["health_refresh_unhealthy"]
+    assert _provider_capability(result.capabilities, "health_refresh") == {
+        "name": "health_refresh",
+        "status": "failed",
+        "required": False,
+        "detail": "starting",
+    }
+    assert provider_capability_summary(result.capabilities) == (True, "degraded")
+
+
+@pytest.mark.asyncio
+async def test_active_external_lemonade_probe_omits_stale_count_when_catalog_refresh_fails(monkeypatch):
+    model_calls = 0
+
+    class FakeLemonadeClient:
+        def __init__(self, settings):
+            self.settings = settings
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc_info):
+            return None
+
+        async def health(self):
+            return {"status": "ok", "version": "10.7.0", "model_loaded": "chat-model"}
+
+        async def models(self):
+            nonlocal model_calls
+            model_calls += 1
+            if model_calls > 1:
+                raise LemonadeClientError("provider_error", "catalog unavailable", status_code=500)
+            return [{"id": "chat-model"}]
+
+        async def stats(self):
+            return {}
+
+        async def chat_completion(self, *_args, **_kwargs):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(gpu_router, "LemonadeClient", FakeLemonadeClient)
+    monkeypatch.setenv("LEMONADE_MODEL", "chat-model")
+    monkeypatch.setenv("LLM_BACKEND", "")
+
+    result = await gpu_router._probe_external_lemonade_uncached(
+        "http://host.docker.internal:13305/api/v1",
+        "/api/v1",
+        active=True,
+    )
+
+    assert result.model_count is None
+    assert result.warnings == ["models_refresh_provider_error"]
+    assert _provider_capability(result.capabilities, "models_refresh") == {
+        "name": "models_refresh",
+        "status": "failed",
+        "required": False,
+        "detail": "provider_error",
+    }
+    assert provider_capability_summary(result.capabilities) == (True, "degraded")
 
 
 def test_amd_runtime_not_amd(monkeypatch, test_client):
@@ -404,6 +559,38 @@ def test_amd_runtime_not_amd(monkeypatch, test_client):
         "capabilities": [],
         "warnings": [],
     }
+
+
+def test_external_lemonade_provider_contract_is_not_amd_only(monkeypatch, test_client):
+    monkeypatch.setenv("GPU_BACKEND", "nvidia")
+    monkeypatch.setenv("DREAM_MODE", "lemonade")
+    monkeypatch.setenv("LLM_BACKEND", "lemonade")
+    monkeypatch.setenv("LEMONADE_EXTERNAL", "true")
+    monkeypatch.setenv("AMD_INFERENCE_RUNTIME", "lemonade")
+    monkeypatch.setenv("AMD_INFERENCE_BACKEND", "auto")
+    monkeypatch.setenv("AMD_INFERENCE_LOCATION", "host")
+    monkeypatch.setenv("AMD_INFERENCE_PORT", "13305")
+    monkeypatch.setenv("AMD_INFERENCE_SUPPORTED_BACKENDS", "auto")
+    monkeypatch.setenv("AMD_INFERENCE_RUNTIME_MODE", "external-lemonade")
+    monkeypatch.setenv("AMD_INFERENCE_MANAGED", "false")
+    monkeypatch.setenv("LEMONADE_CONTAINER_BASE_URL", "http://host.docker.internal:13305")
+    _patch_external_probe(monkeypatch, version="10.7.0")
+
+    response = test_client.get("/api/gpu/amd-runtime", headers=test_client.auth_headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is True
+    assert payload.get("reason") is None
+    assert payload["runtime"] == "lemonade"
+    assert payload["location"] == "host"
+    assert payload["runtimeMode"] == "external-lemonade"
+    assert payload["managedByDreamServer"] is False
+    assert payload["selectedBackend"] == "auto"
+    assert payload["supportedBackends"] == ["auto"]
+    assert payload["providerStatus"] == "ready"
+    assert payload["providerProbeMode"] == "passive"
+    assert payload["warnings"] == []
 
 
 def test_amd_runtime_linux_container_lemonade(monkeypatch, test_client):
@@ -580,9 +767,14 @@ def test_amd_runtime_active_probe_is_explicit_post(monkeypatch, test_client):
     monkeypatch.setattr(gpu_router, "_probe_external_lemonade", _fake_probe)
 
     passive = test_client.get("/api/gpu/amd-runtime", headers=test_client.auth_headers)
-    active = test_client.post("/api/gpu/amd-runtime/probe", headers=test_client.auth_headers)
+    blocked = test_client.post("/api/gpu/amd-runtime/probe", headers=test_client.auth_headers)
+    active = test_client.post(
+        "/api/gpu/amd-runtime/probe",
+        headers={**test_client.auth_headers, "X-Requested-With": "DreamServerDashboard"},
+    )
 
     assert passive.status_code == 200
+    assert blocked.status_code == 403
     assert active.status_code == 200
     assert passive.json()["providerProbeMode"] == "passive"
     assert active.json()["providerProbeMode"] == "active"
@@ -861,6 +1053,7 @@ async def test_external_lemonade_probe_checks_models_stats_and_chat(monkeypatch)
     assert calls[3][0:2] == ("chat", "Qwen3-0.6B-GGUF")
     assert calls[3][3]["max_tokens"] == 1
     assert calls[4] == "health"
+    assert calls[5] == "models"
 
 
 @pytest.mark.asyncio
@@ -1021,8 +1214,8 @@ async def test_external_lemonade_probe_checks_litellm_gateway_chat(monkeypatch):
         "detail": "default",
     }
     assert chat_roots == [
-        ("http://host.docker.internal:13305/api/v1", "", "Qwen3-0.6B-GGUF"),
         ("http://litellm:4000/v1", "sk-dream", "default"),
+        ("http://host.docker.internal:13305/api/v1", "", "Qwen3-0.6B-GGUF"),
     ]
 
 
@@ -1115,3 +1308,4 @@ async def test_external_lemonade_probe_checks_selected_provider_capabilities(mon
     assert any(call[0:2] == ("rerank", "rerank-model") for call in calls)
     assert any(call[0:2] == ("stt", "stt-model") and call[2] > 44 for call in calls)
     assert ("tts", "tts-model", "ping", {"voice": "af_heart"}) in calls
+    assert [call[0] for call in calls] == ["embeddings", "rerank", "stt", "tts", "chat"]

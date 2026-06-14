@@ -32,6 +32,7 @@ export function useGPUDetailed() {
     try {
       const response = await fetch(active ? '/api/gpu/amd-runtime/probe' : '/api/gpu/amd-runtime', {
         method: active ? 'POST' : 'GET',
+        ...(active ? { headers: { 'X-Requested-With': 'DreamServerDashboard' } } : {}),
       })
       if (!response.ok) throw new Error(`Runtime probe failed (${response.status})`)
       const payload = await response.json()

@@ -22,6 +22,19 @@ The Lemonade provider may be either Dream-managed on platforms where that is
 already supported, or external/unmanaged when Dream Server adopts an existing
 host-native Lemonade service. The env shape must make that ownership explicit.
 
+Provider choice and hardware vendor are separate decisions. `GPU_BACKEND=amd`
+can select AMD-specific installer defaults and dashboard discovery surfaces, but
+it must not make Lemonade synonymous with AMD. Lemonade is the OpenAI-compatible
+engine boundary; AMD, NVIDIA, CPU, NPU, ROCm, Vulkan, or another backend is how
+the Lemonade service runs on a particular machine. Code that talks to Lemonade
+should depend on the Lemonade API contract and provider env, while code that
+sizes models, checks drivers, or configures acceleration should depend on the
+detected hardware/backend.
+
+Existing `AMD_INFERENCE_*` env names and the `/api/gpu/amd-runtime` dashboard
+route are compatibility surfaces from the AMD Lemonade rollout; they may report
+an external Lemonade provider on non-AMD machines when `LEMONADE_EXTERNAL=true`.
+
 ## Required Env Shape
 
 Provider mode code should converge on these names:
@@ -39,6 +52,12 @@ Provider mode code should converge on these names:
 
 Installers may retain legacy variables during migration, but new behavior should
 read and write the canonical names above.
+
+Existing external-Lemonade installs that only set `LLM_MODEL` retain a
+compatibility path when that exact id is present in Lemonade's model catalog and
+is a text/chat model. The dashboard reports a migration warning in that case.
+Operators should copy the value to `LEMONADE_MODEL`; stale tier-model values and
+specialized model ids are intentionally not accepted as implicit chat targets.
 
 ## Provider Capability Contract
 
@@ -65,6 +84,9 @@ downloads. A passive check may mark a route ready only when the provider reports
 the configured model as loaded with the expected capability type. Real chat,
 embedding, rerank, STT, and TTS proofs run only through an explicit authenticated
 active-probe action because those requests may load or switch provider models.
+The active probe must finish by restoring and proving the selected chat model,
+refreshing health and model-catalog state, and reporting any final-state failure
+as degraded or blocked rather than leaving a false-ready result.
 
 ## Adapter Boundary
 
@@ -93,6 +115,9 @@ Provider modes must fail closed on network exposure:
   must be configured or the user must pass an explicit unsafe override.
 - All Dream-owned clients must pass the configured provider key before key
   enforcement is enabled by default.
+- Browser-triggered active probes must require a non-simple same-origin request
+  header in addition to API authentication so another site cannot trigger model
+  loads through the dashboard's nginx-injected credential.
 - Readiness must distinguish "provider unreachable", "auth rejected", "model
   missing", and "capability unsupported".
 

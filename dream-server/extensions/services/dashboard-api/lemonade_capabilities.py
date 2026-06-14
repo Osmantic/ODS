@@ -23,7 +23,7 @@ class ExternalLemonadeProbeResult(NamedTuple):
     loaded_models: list[CapabilityPayload]
 
 DEFAULT_EXTERNAL_LEMONADE_PROBE_TTL = 120.0
-DEFAULT_EXTERNAL_LEMONADE_ACTIVE_PROBE_TIMEOUT = 30.0
+DEFAULT_EXTERNAL_LEMONADE_ACTIVE_PROBE_TIMEOUT = 120.0
 SPECIALIZED_MODEL_LABELS = frozenset({"embeddings", "reranking", "transcription", "image", "edit", "tts"})
 SPECIALIZED_MODEL_ID_MARKERS = (
     "whisper",
@@ -210,6 +210,16 @@ def _model_is_chat_capable(entry: dict) -> bool:
     )
 
 
+def _legacy_lemonade_chat_model(env_get: EnvReader, model_entries: list[dict]) -> Optional[str]:
+    legacy_model = _model_env(env_get, "LLM_MODEL")
+    if not legacy_model:
+        return None
+    legacy_entry = _model_entry(model_entries, legacy_model)
+    if legacy_entry is None or not _model_is_chat_capable(legacy_entry):
+        return None
+    return legacy_model
+
+
 def _select_lemonade_probe_model(
     env_get: EnvReader,
     model_entries: list[dict],
@@ -218,6 +228,9 @@ def _select_lemonade_probe_model(
     explicit_model = env_get("LEMONADE_MODEL")
     if explicit_model and explicit_model not in {"*", "default"}:
         return explicit_model
+    legacy_model = _legacy_lemonade_chat_model(env_get, model_entries)
+    if legacy_model:
+        return legacy_model
     if loaded_model:
         loaded_entry = _model_entry(model_entries, loaded_model)
         if loaded_entry is None or _model_is_chat_capable(loaded_entry):
@@ -336,6 +349,22 @@ def _capability_status(
     if hint:
         result["recoveryHint"] = hint[:240]
     return result
+
+
+def _replace_capability(
+    capabilities: list[CapabilityPayload],
+    name: str,
+    status: str,
+    detail: Optional[str] = None,
+    *,
+    required: bool = False,
+) -> None:
+    replacement = _capability_status(name, status, detail, required=required)
+    for index, capability in enumerate(capabilities):
+        if capability.get("name") == name:
+            capabilities[index] = replacement
+            return
+    capabilities.append(replacement)
 
 
 def _silence_wav_bytes() -> bytes:
@@ -896,37 +925,14 @@ async def probe_external_lemonade_uncached(
                 warnings.append(_external_lemonade_warning("stats", exc))
 
         probe_model = _select_lemonade_probe_model(env_get, models, loaded_model)
-        if active and probe_model:
-            try:
-                completion = await client.chat_completion(
-                    probe_model,
-                    [{"role": "user", "content": "ping"}],
-                    max_tokens=1,
-                    stream=False,
-                    extra_body={"temperature": 0},
-                )
-                if _chat_completion_ready(completion):
-                    provider_capabilities.append(_capability_status("chat", "ok", probe_model, required=True))
-                else:
-                    warnings.append("chat_invalid_response")
-                    provider_capabilities.append(_capability_status("chat", "failed", "invalid_response", required=True))
-            except LemonadeClientError as exc:
-                warnings.append(_external_lemonade_warning("chat", exc))
-                provider_capabilities.append(_capability_status("chat", "failed", exc.kind, required=True))
-        elif active:
-            warnings.append("chat_model_missing")
-            provider_capabilities.append(_capability_status("chat", "failed", "model_missing", required=True))
-        else:
-            provider_capabilities.append(
-                _passive_model_capability(
-                    "chat",
-                    probe_model,
-                    models,
-                    loaded_models,
-                    warnings,
-                    models_verified=models_verified,
-                )
-            )
+        canonical_model = _model_env(env_get, "LEMONADE_MODEL")
+        legacy_configured_model = _model_env(env_get, "LLM_MODEL")
+        if not canonical_model and legacy_configured_model:
+            legacy_model = _legacy_lemonade_chat_model(env_get, models)
+            if legacy_model and probe_model == legacy_model:
+                warnings.append("chat_model_legacy_llm_model")
+            else:
+                warnings.append("chat_model_legacy_llm_model_ignored")
 
         if active:
             await _probe_selected_lemonade_capabilities(
@@ -939,6 +945,32 @@ async def probe_external_lemonade_uncached(
                 probe_model,
                 client_cls,
             )
+            # Run direct chat last so probes that load specialized models do not
+            # leave the provider switched away from Dream's primary chat model.
+            if probe_model:
+                try:
+                    completion = await client.chat_completion(
+                        probe_model,
+                        [{"role": "user", "content": "ping"}],
+                        max_tokens=1,
+                        stream=False,
+                        extra_body={"temperature": 0},
+                    )
+                    if _chat_completion_ready(completion):
+                        provider_capabilities.append(_capability_status("chat", "ok", probe_model, required=True))
+                    else:
+                        warnings.append("chat_invalid_response")
+                        provider_capabilities.append(
+                            _capability_status("chat", "failed", "invalid_response", required=True)
+                        )
+                except LemonadeClientError as exc:
+                    warnings.append(_external_lemonade_warning("chat", exc))
+                    provider_capabilities.append(_capability_status("chat", "failed", exc.kind, required=True))
+            else:
+                warnings.append("chat_model_missing")
+                provider_capabilities.append(_capability_status("chat", "failed", "model_missing", required=True))
+
+            final_health = "reachable"
             try:
                 refreshed_health = await client.health()
                 refreshed_status = _health_status(refreshed_health)
@@ -952,9 +984,38 @@ async def probe_external_lemonade_uncached(
                         loaded_models = _loaded_models_from_health(refreshed_health)
                 else:
                     warnings.append("health_refresh_unhealthy")
+                    final_health = "unhealthy"
+                    provider_capabilities.append(_capability_status("health_refresh", "failed", refreshed_status))
             except LemonadeClientError as exc:
                 warnings.append(_external_lemonade_warning("health_refresh", exc))
+                final_health = "unreachable" if exc.kind in {"provider_unreachable", "timeout"} else "unhealthy"
+                provider_capabilities.append(_capability_status("health_refresh", "failed", exc.kind))
+
+            try:
+                refreshed_models = await client.models()
+                models = refreshed_models
+                model_count = len(refreshed_models)
+                if model_count > 0:
+                    _replace_capability(provider_capabilities, "models", "ok", str(model_count), required=True)
+                else:
+                    warnings.append("models_refresh_empty")
+                    _replace_capability(provider_capabilities, "models", "failed", "empty", required=True)
+            except LemonadeClientError as exc:
+                warnings.append(_external_lemonade_warning("models_refresh", exc))
+                model_count = None
+                provider_capabilities.append(_capability_status("models_refresh", "failed", exc.kind))
         else:
+            final_health = "reachable"
+            provider_capabilities.append(
+                _passive_model_capability(
+                    "chat",
+                    probe_model,
+                    models,
+                    loaded_models,
+                    warnings,
+                    models_verified=models_verified,
+                )
+            )
             _describe_selected_lemonade_capabilities(
                 provider_capabilities,
                 warnings,
@@ -968,7 +1029,7 @@ async def probe_external_lemonade_uncached(
             )
 
     return ExternalLemonadeProbeResult(
-        "reachable",
+        final_health,
         version,
         warnings,
         loaded_model,

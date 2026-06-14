@@ -1,10 +1,32 @@
 # Lemonade SDK Compatibility
 
 Dream Server's Linux installer can wrap an existing Lemonade SDK install instead
-of starting its own managed Lemonade runtime. This is intended for AMD Linux
-systems where Lemonade is already installed, configured, and serving models.
-The longer-term contract for making Lemonade a supported provider mode across
-platforms is defined in [Engine Provider Modes](ENGINE-PROVIDER-MODES.md).
+of starting its own managed Lemonade runtime. This entry point was added for the
+AMD Lemonade integration path, but the external-Lemonade contract is not
+AMD-only: if Lemonade is already installed, configured, and serving compatible
+OpenAI-style endpoints on NVIDIA, CPU, or another Lemonade-supported backend,
+Dream Server should treat it as the same provider boundary. Hardware support is
+still limited by the upstream Lemonade runtime and Dream Server's installer and
+preflight coverage for that target. The longer-term contract for making
+Lemonade a supported provider mode across platforms is defined in
+[Engine Provider Modes](ENGINE-PROVIDER-MODES.md).
+
+## Provider and Hardware Scope
+
+Treat Lemonade as the inference provider and the GPU vendor as a deployment
+detail. AMD, NVIDIA, CPU, NPU, ROCm, Vulkan, or other backend choices determine
+how Lemonade itself runs; Dream Server's integration verifies the provider
+surface it receives:
+
+- the configured Lemonade base URL is reachable from Dream containers;
+- `LEMONADE_MODEL` names a chat-capable model in Lemonade's catalog;
+- LiteLLM can complete through Lemonade for Dream's app-facing chat route;
+- optional selected capabilities are either proven through Lemonade or clearly
+  left to Dream-owned services such as Whisper, Kokoro, or embeddings.
+
+This keeps the docs honest for AMD systems while also giving non-AMD Lemonade
+operators the same configuration and validation path when their Lemonade service
+already works.
 
 ## Install Around Existing Lemonade
 
@@ -90,8 +112,8 @@ service.
 ## Model Selection
 
 Dream Server auto-detects the first model id returned by Lemonade's
-`/api/v1/models` endpoint that does not look like an image-generation model
-and writes it to `LEMONADE_MODEL`.
+`/api/v1/models` endpoint that does not look like a specialized non-chat model
+(image, audio, embedding, or reranking) and writes it to `LEMONADE_MODEL`.
 
 Set `LEMONADE_MODEL` only if you want Dream Server to use a specific served
 model:
@@ -110,6 +132,27 @@ curl http://localhost:13305/api/v1/models
 Use a text/chat model for `LEMONADE_MODEL`. Image models such as Flux, SDXL, or
 Stable Diffusion can appear in Lemonade's model list, but they are not valid for
 Dream Server's chat/completions route.
+
+### Migrating Older `LLM_MODEL`-Only Installs
+
+`LEMONADE_MODEL` is the canonical provider model setting. For compatibility,
+Dream Server temporarily accepts `LLM_MODEL` as the external Lemonade chat
+target only when that exact id exists in `/api/v1/models` and is identified as
+a text/chat model. The dashboard emits `chat_model_legacy_llm_model` while this
+fallback is active, or `chat_model_legacy_llm_model_ignored` when the legacy
+value cannot be accepted safely.
+
+Migrate the existing value explicitly:
+
+```dotenv
+LLM_MODEL=Qwen3-0.6B-GGUF
+LEMONADE_MODEL=Qwen3-0.6B-GGUF
+```
+
+Then rerun the active provider probe. Dream Server intentionally ignores
+`LLM_MODEL` when it is absent from Lemonade's catalog or identifies an image,
+audio, embedding, or reranking model; this prevents stale tier defaults from
+silently replacing the provider's real chat model.
 
 Phase 12 verifies the selected model with a real chat completion through
 LiteLLM. If Lemonade is reachable from the host but not from Docker containers,
@@ -158,8 +201,8 @@ OpenAI-compatible gateway.
 
 ## Diagnostics
 
-`dream doctor` and the dashboard AMD runtime endpoint report external Lemonade
-as:
+`dream doctor` and the dashboard `/api/gpu/amd-runtime` endpoint report external
+Lemonade as the same provider contract even when the machine itself is not AMD:
 
 ```text
 runtime: lemonade

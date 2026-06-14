@@ -60,8 +60,12 @@ echo "[contract] active Lemonade probe has a cold-load-safe dashboard timeout"
 grep -q 'location = /api/gpu/amd-runtime/probe' extensions/services/dashboard/nginx.conf \
   || { echo "[FAIL] dashboard nginx must give the explicit active probe a dedicated location"; exit 1; }
 grep -A15 'location = /api/gpu/amd-runtime/probe' extensions/services/dashboard/nginx.conf \
-  | grep -q 'proxy_read_timeout 600s' \
+  | grep -q 'proxy_read_timeout 900s' \
   || { echo "[FAIL] active probe nginx location must allow cold model loads"; exit 1; }
+grep -q 'X-Requested-With.*DreamServerDashboard' extensions/services/dashboard/src/hooks/useGPUDetailed.js \
+  || { echo "[FAIL] dashboard active probe must send the anti-CSRF request header"; exit 1; }
+grep -q 'Depends(_verify_active_provider_probe_request)' extensions/services/dashboard-api/routers/gpu.py \
+  || { echo "[FAIL] dashboard API active probe must require the anti-CSRF request header"; exit 1; }
 
 echo "[contract] explicit LAN binding overrides stale env during reinstall"
 grep -q 'BIND_ADDRESS_EXPLICIT' install-core.sh \
@@ -99,23 +103,48 @@ grep -q 'DS-RUNTIME-EXTERNAL-LEMONADE-UNAUTHENTICATED-HOST-ROUTE' scripts/dream-
 grep -q 'sk-dream-lemonade-' scripts/dream-doctor.sh \
   || { echo "[FAIL] dream-doctor must distinguish installer-generated LiteLLM provider keys from user Lemonade API keys"; exit 1; }
 
-echo "[contract] resolver selects cloud + external overlay instead of managed AMD overlay"
-resolved="$(LEMONADE_EXTERNAL=true DREAM_MODE=lemonade \
-  ./scripts/resolve-compose-stack.sh --script-dir "$ROOT_DIR" --dream-mode lemonade --gpu-backend amd --tier SH_LARGE --env)"
-grep -q 'docker-compose.cloud.yml' <<<"$resolved" \
-  || { echo "[FAIL] external Lemonade must include cloud overlay to disable managed llama-server"; exit 1; }
-grep -q 'docker-compose.lemonade-external.yml' <<<"$resolved" \
-  || { echo "[FAIL] external Lemonade overlay missing from resolved stack"; exit 1; }
-if grep -q 'docker-compose.amd.yml' <<<"$resolved"; then
-  echo "[FAIL] external Lemonade must not include managed AMD overlay"
-  exit 1
-fi
-if grep -q 'compose.local.yaml' <<<"$resolved"; then
-  echo "[FAIL] external Lemonade must not include local llama-server dependency overlays"
-  exit 1
-fi
-grep -Eq 'extensions[\\/]+services[\\/]+litellm[\\/]+compose.yaml' <<<"$resolved" \
-  || { echo "[FAIL] external Lemonade must keep LiteLLM gateway enabled"; exit 1; }
+echo "[contract] resolver selects cloud + external overlay instead of managed hardware overlays"
+for backend in amd nvidia cpu; do
+  resolved="$(LEMONADE_EXTERNAL=true DREAM_MODE=lemonade \
+    ./scripts/resolve-compose-stack.sh --script-dir "$ROOT_DIR" --dream-mode lemonade --gpu-backend "$backend" --tier 2 --env)"
+  grep -q 'docker-compose.cloud.yml' <<<"$resolved" \
+    || { echo "[FAIL] external Lemonade must include cloud overlay to disable managed llama-server for $backend"; exit 1; }
+  grep -q 'docker-compose.lemonade-external.yml' <<<"$resolved" \
+    || { echo "[FAIL] external Lemonade overlay missing from resolved stack for $backend"; exit 1; }
+  if grep -q 'docker-compose.amd.yml' <<<"$resolved"; then
+    echo "[FAIL] external Lemonade must not include managed AMD overlay for $backend"
+    exit 1
+  fi
+  if grep -q 'docker-compose.nvidia.yml' <<<"$resolved"; then
+    echo "[FAIL] external Lemonade must not include managed NVIDIA overlay for $backend"
+    exit 1
+  fi
+  if grep -q 'docker-compose.cpu.yml' <<<"$resolved"; then
+    echo "[FAIL] external Lemonade must not include managed CPU overlay for $backend"
+    exit 1
+  fi
+  if grep -q 'compose.local.yaml' <<<"$resolved"; then
+    echo "[FAIL] external Lemonade must not include local llama-server dependency overlays for $backend"
+    exit 1
+  fi
+  grep -Eq 'extensions[\\/]+services[\\/]+litellm[\\/]+compose.yaml' <<<"$resolved" \
+    || { echo "[FAIL] external Lemonade must keep LiteLLM gateway enabled for $backend"; exit 1; }
+done
+
+echo "[contract] external Lemonade mode survives CPU fallback"
+fallback_mode="$(LEMONADE_EXTERNAL=true DREAM_MODE=lemonade bash -c '
+  set -euo pipefail
+  SCRIPT_DIR="'"$ROOT_DIR"'"
+  ai_warn() { :; }
+  ai() { :; }
+  warn() { :; }
+  log() { :; }
+  . installers/lib/detection.sh
+  apply_cpu_gpu_fallback "contract fallback"
+  printf "%s:%s\n" "$DREAM_MODE" "$GPU_BACKEND"
+')"
+[[ "$fallback_mode" == "lemonade:cpu" ]] \
+  || { echo "[FAIL] external Lemonade CPU fallback must preserve DREAM_MODE=lemonade, got $fallback_mode"; exit 1; }
 
 echo "[contract] external Lemonade resolved compose config is valid"
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then

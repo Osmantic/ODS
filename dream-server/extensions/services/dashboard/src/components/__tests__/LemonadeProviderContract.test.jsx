@@ -61,4 +61,36 @@ describe('LemonadeProviderContract', () => {
     fireEvent.click(screen.getByRole('button', { name: /run active lemonade capability probe/i }))
     expect(onRunActiveProbe).toHaveBeenCalledOnce()
   })
+
+  test('shows the legacy Lemonade model migration warning', () => {
+    render(
+      <LemonadeProviderContract
+        runtime={{
+          providerStatus: 'ready',
+          warnings: ['chat_model_legacy_llm_model'],
+          providerCapabilities: [
+            { name: 'chat', status: 'ok', required: true, detail: 'legacy-chat' },
+          ],
+        }}
+      />,
+    )
+
+    expect(screen.getByText('Using legacy LLM_MODEL. Copy this model id to LEMONADE_MODEL.')).toBeInTheDocument()
+  })
+
+  test('explains when an unsafe legacy Lemonade model is ignored', () => {
+    render(
+      <LemonadeProviderContract
+        runtime={{
+          providerStatus: 'ready',
+          warnings: ['chat_model_legacy_llm_model_ignored'],
+          providerCapabilities: [
+            { name: 'chat', status: 'ok', required: true, detail: 'catalog-chat' },
+          ],
+        }}
+      />,
+    )
+
+    expect(screen.getByText(/Ignored legacy LLM_MODEL because it is not a chat-capable/)).toBeInTheDocument()
+  })
 })
