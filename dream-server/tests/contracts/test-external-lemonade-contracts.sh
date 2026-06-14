@@ -11,7 +11,7 @@ echo "[contract] external Lemonade compose overlay exists"
   || { echo "[FAIL] docker-compose.lemonade-external.yml missing"; exit 1; }
 
 echo "[contract] schema documents external Lemonade env"
-for key in LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_CONTAINER_BASE_URL LEMONADE_API_BASE_PATH LEMONADE_MODEL; do
+for key in LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_CONTAINER_BASE_URL LEMONADE_API_BASE_PATH LEMONADE_MODEL LEMONADE_EMBEDDING_MODEL LEMONADE_RERANK_MODEL LEMONADE_STT_MODEL LEMONADE_TTS_MODEL DASHBOARD_LEMONADE_PROBE_TTL DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT; do
   grep -q "\"$key\"" .env.schema.json \
     || { echo "[FAIL] .env.schema.json missing $key"; exit 1; }
   grep -q "^$key=" .env.example \
@@ -35,8 +35,8 @@ grep -q 'host.docker.internal:13305/api/v1' <<<"$rendered" \
 echo "[contract] installer discovers external Lemonade model and avoids stale fallbacks"
 grep -q '_phase06_discover_lemonade_model' installers/phases/06-directories.sh \
   || { echo "[FAIL] phase 06 must discover the model served by external Lemonade"; exit 1; }
-grep -q 'IMAGE_MARKERS' installers/phases/06-directories.sh \
-  || { echo "[FAIL] phase 06 must avoid auto-selecting obvious image models for the chat route"; exit 1; }
+grep -q 'NON_CHAT_MARKERS' installers/phases/06-directories.sh \
+  || { echo "[FAIL] phase 06 must avoid auto-selecting specialized models for the chat route"; exit 1; }
 if grep -q 'LLM_MODEL_VALUE' installers/phases/06-directories.sh; then
   echo "[FAIL] phase 06 must not reference undefined LLM_MODEL_VALUE"
   exit 1
@@ -47,6 +47,21 @@ grep -q '_env_get_explicit_first LEMONADE_MODEL' installers/phases/06-directorie
   || { echo "[FAIL] explicit LEMONADE_MODEL must override stale .env values during reinstall"; exit 1; }
 grep -q '_env_get_explicit_first LEMONADE_BASE_URL' installers/phases/06-directories.sh \
   || { echo "[FAIL] explicit LEMONADE_BASE_URL/--lemonade-url must override stale .env values during reinstall"; exit 1; }
+
+echo "[contract] installers preserve Lemonade capability probe configuration"
+for key in LEMONADE_EMBEDDING_MODEL LEMONADE_RERANK_MODEL LEMONADE_STT_MODEL LEMONADE_TTS_MODEL DASHBOARD_LEMONADE_PROBE_TTL DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT; do
+  grep -q "_env_get $key" installers/phases/06-directories.sh \
+    || { echo "[FAIL] Linux phase 06 must preserve $key"; exit 1; }
+  grep -q "Get-EnvOrNew \"$key\"" installers/windows/lib/env-generator.ps1 \
+    || { echo "[FAIL] Windows env generator must preserve $key"; exit 1; }
+done
+
+echo "[contract] active Lemonade probe has a cold-load-safe dashboard timeout"
+grep -q 'location = /api/gpu/amd-runtime/probe' extensions/services/dashboard/nginx.conf \
+  || { echo "[FAIL] dashboard nginx must give the explicit active probe a dedicated location"; exit 1; }
+grep -A15 'location = /api/gpu/amd-runtime/probe' extensions/services/dashboard/nginx.conf \
+  | grep -q 'proxy_read_timeout 600s' \
+  || { echo "[FAIL] active probe nginx location must allow cold model loads"; exit 1; }
 
 echo "[contract] explicit LAN binding overrides stale env during reinstall"
 grep -q 'BIND_ADDRESS_EXPLICIT' install-core.sh \

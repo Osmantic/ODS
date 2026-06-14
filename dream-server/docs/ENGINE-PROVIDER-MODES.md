@@ -59,6 +59,13 @@ Unsupported selected capabilities must fail the install or readiness gate unless
 the user explicitly chose a profile where that capability is optional. A skipped
 selected capability is not a green install.
 
+Normal dashboard polling must remain passive: it may read health, model catalog,
+loaded-model state, and stats, but it must not trigger inference or model
+downloads. A passive check may mark a route ready only when the provider reports
+the configured model as loaded with the expected capability type. Real chat,
+embedding, rerank, STT, and TTS proofs run only through an explicit authenticated
+active-probe action because those requests may load or switch provider models.
+
 ## Adapter Boundary
 
 Dream Server should not spread provider-specific HTTP details across installer

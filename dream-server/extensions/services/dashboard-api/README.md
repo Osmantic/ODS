@@ -33,6 +33,8 @@ Environment variables (set in `.env`):
 | `GPU_BACKEND` | `nvidia` | GPU backend: `nvidia` or `amd` |
 | `OLLAMA_URL` | `http://llama-server:8080` | LLM backend URL |
 | `LLM_MODEL` | `qwen3:30b-a3b` | Active model name shown in dashboard |
+| `DASHBOARD_LEMONADE_PROBE_TTL` | `120` | Cache time in seconds for external Lemonade capability probes |
+| `DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT` | `30` | Per-request timeout for explicitly triggered active Lemonade probes |
 | `KOKORO_URL` | `http://tts:8880` | Kokoro TTS URL |
 | `N8N_URL` | `http://n8n:5678` | n8n workflow URL |
 | `OPENCLAW_TOKEN` | *(empty)* | OpenClaw agent auth token |
@@ -51,6 +53,8 @@ Environment variables (set in `.env`):
 | `GET` | `/bootstrap` | Yes | Model bootstrap/download status |
 | `GET` | `/status` | Yes | Full system status (all above combined) |
 | `GET` | `/api/status` | Yes | Dashboard-formatted status with inference metrics |
+| `GET` | `/api/gpu/amd-runtime` | Yes | Passive AMD runtime and external Lemonade provider capability contract |
+| `POST` | `/api/gpu/amd-runtime/probe` | Yes | Explicit active Lemonade capability probe; may load or switch models |
 | `GET` | `/api/host-agent/diagnostics` | Yes | Host-agent URL, gateway, auth, and live probe diagnostics |
 
 ### Preflight

@@ -1,6 +1,6 @@
 """Pydantic response models for Dream Server Dashboard API."""
 
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -133,6 +133,22 @@ class MultiGPUStatus(BaseModel):
     aggregate: GPUInfo
 
 
+class ProviderCapabilityStatus(BaseModel):
+    name: str
+    status: Literal["ok", "failed", "skipped", "unsupported", "unverified"]
+    required: bool = False
+    detail: Optional[str] = None
+    recoveryHint: Optional[str] = None
+
+
+class ProviderLoadedModel(BaseModel):
+    modelName: str
+    type: str
+    device: Optional[str] = None
+    recipe: Optional[str] = None
+    backendUrl: Optional[str] = None
+
+
 class AmdRuntimeStatus(BaseModel):
     available: bool
     reason: Optional[str] = None
@@ -148,7 +164,12 @@ class AmdRuntimeStatus(BaseModel):
     health: Optional[str] = None
     version: str = "unknown"
     loadedModel: Optional[str] = None
+    loadedModels: Optional[list[ProviderLoadedModel]] = None
     modelCount: Optional[int] = None
+    providerReady: Optional[bool] = None
+    providerStatus: Optional[Literal["ready", "degraded", "blocked", "unverified"]] = None
+    providerProbeMode: Optional[Literal["passive", "active"]] = None
+    providerCapabilities: Optional[list[ProviderCapabilityStatus]] = None
     capabilities: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 

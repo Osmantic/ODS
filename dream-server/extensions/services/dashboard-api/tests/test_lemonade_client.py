@@ -123,3 +123,82 @@ async def test_http_status_errors_are_classified():
     assert exc.value.status_code == 401
     assert "missing bearer" in str(exc.value)
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_models_ignores_malformed_non_object_entries():
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": ["bad", {"id": "model-a"}, None]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = LemonadeClient(client=client)
+
+    assert await adapter.models() == [{"id": "model-a"}]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_speech_http_status_errors_are_classified():
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={"error": {"message": "speech endpoint missing"}},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = LemonadeClient(client=client)
+
+    with pytest.raises(LemonadeClientError) as exc:
+        await adapter.speech("tts-model", "ping")
+
+    assert exc.value.kind == "not_found"
+    assert exc.value.status_code == 404
+    assert "speech endpoint missing" in str(exc.value)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_speech_rejects_json_success_payloads():
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"error": {"message": "backend returned no audio"}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = LemonadeClient(client=client)
+
+    with pytest.raises(LemonadeClientError) as exc:
+        await adapter.speech("tts-model", "ping")
+
+    assert exc.value.kind == "invalid_response"
+    assert "backend returned no audio" in str(exc.value)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_speech_rejects_text_success_payloads():
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>upstream error</html>", headers={"content-type": "text/html"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = LemonadeClient(client=client)
+
+    with pytest.raises(LemonadeClientError) as exc:
+        await adapter.speech("tts-model", "ping")
+
+    assert exc.value.kind == "invalid_response"
+    assert "text instead of audio" in str(exc.value)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_transcribe_request_errors_are_classified():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = LemonadeClient(client=client)
+
+    with pytest.raises(LemonadeClientError) as exc:
+        await adapter.transcribe_wav("stt-model", b"RIFF")
+
+    assert exc.value.kind == "provider_unreachable"
+    await client.aclose()
