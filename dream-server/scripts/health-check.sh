@@ -156,13 +156,24 @@ test_service() {
     local port_env="${SERVICE_PORT_ENVS[$sid]}"
     local default_port="${SERVICE_PORTS[$sid]}"
     local health="${SERVICE_HEALTH[$sid]}"
+    local health_type="${SERVICE_HEALTH_TYPES[$sid]:-http}"
     local timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-$TIMEOUT}"
 
     # Resolve port
     local port="$default_port"
     [[ -n "$port_env" ]] && port="${!port_env:-$default_port}"
 
-    [[ -z "$health" || "$port" == "0" ]] && return 1
+    if [[ "$health_type" == "none" ]]; then
+        result_set "$sid" "ok"
+        return 0
+    fi
+
+    if [[ "$health_type" == "http" ]] && [[ -z "$health" || "$port" == "0" ]]; then
+        return 1
+    fi
+    if [[ "$health_type" == "tcp" ]] && [[ "$port" == "0" ]]; then
+        return 1
+    fi
 
     # Check container state first (if docker available)
     local container_state
@@ -173,10 +184,20 @@ test_service() {
         return 1
     fi
 
-    if curl -sf --max-time "$timeout" "http://127.0.0.1:${port}${health}" >/dev/null 2>&1; then
-        result_set "$sid" "ok"
-        return 0
+    if [[ "$health_type" == "tcp" ]]; then
+        # TCP connection test using Python socket
+        if python3 -c "import socket; s = socket.create_connection(('127.0.0.1', $port), timeout=$timeout); s.close()" 2>/dev/null; then
+            result_set "$sid" "ok"
+            return 0
+        fi
+    else
+        # HTTP GET test
+        if curl -sf --max-time "$timeout" "http://127.0.0.1:${port}${health}" >/dev/null 2>&1; then
+            result_set "$sid" "ok"
+            return 0
+        fi
     fi
+
     result_set "$sid" "fail"
     ANY_FAIL=true
     return 1
