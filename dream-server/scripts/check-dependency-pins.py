@@ -176,6 +176,18 @@ def _has_tag_or_digest(value: str) -> bool:
     return _has_digest(value) or _image_tag(value) is not None
 
 
+def _is_ephemeral_sha_tag(value: str) -> bool:
+    """Return True if the image tag looks like an ephemeral CI sha-<commit> tag.
+
+    Upstream registries routinely prune these tags, so pinning to them makes
+    releases unreproducible.  See issue #1544.
+    """
+    tag = _image_tag(value)
+    if tag is None:
+        return False
+    return bool(re.match(r'^sha-[0-9a-f]{7,}$', tag))
+
+
 def _is_variable_ref(value: str) -> bool:
     return "$" in value
 
@@ -280,6 +292,16 @@ def validate_refs(refs: Iterable[ImageRef], lock: dict[str, object], root: Path 
         if _image_tag(ref.value) == "latest" and not _has_digest(ref.value):
             if (ref.path, ref.value) not in latest_allow:
                 errors.append(f"{location}: latest tag requires allow_latest: {ref.value}")
+
+        # Reject ephemeral sha-<commit> tags on third-party images (issue #1544).
+        # These tags are pruned by upstream registries without notice, breaking
+        # installs that pin to them.  Pin to retained vYYYY.M.D / semver tags
+        # or a full @sha256: digest instead.
+        if _is_ephemeral_sha_tag(ref.value) and (ref.path, ref.value) not in local_allow:
+            errors.append(
+                f"{location}: ephemeral sha-<commit> tag will be pruned by upstream "
+                f"— pin to a retained version tag or @sha256: digest instead: {ref.value}"
+            )
 
         if (ref.path, ref.value) not in entry_keys and (ref.path, ref.value) not in latest_allow:
             errors.append(f"{location}: image ref is not recorded in dependency-lock.json: {ref.value}")

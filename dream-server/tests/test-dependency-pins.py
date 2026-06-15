@@ -71,11 +71,38 @@ def test_variable_refs_must_be_documented() -> None:
     assert any("variable image ref is not documented" in error for error in errors)
 
 
+def test_ephemeral_sha_tag_is_rejected() -> None:
+    """Ephemeral sha-<commit> tags must be rejected (issue #1544)."""
+    module = load_module()
+    lock = {
+        "entries": [
+            {
+                "id": "test.sha-pin",
+                "path": "compose.yaml",
+                "value": "nousresearch/hermes-agent:sha-dd0923bb89ed2dd56f82cb63656a1323f6f42e6f",
+            }
+        ],
+        "allow_latest": [],
+        "allow_local_images": [],
+        "allow_variable_refs": [],
+    }
+    ref = module.ImageRef(
+        path="compose.yaml",
+        line=6,
+        raw="nousresearch/hermes-agent:sha-dd0923bb89ed2dd56f82cb63656a1323f6f42e6f",
+        value="nousresearch/hermes-agent:sha-dd0923bb89ed2dd56f82cb63656a1323f6f42e6f",
+        source="compose image",
+    )
+    errors = module.validate_refs([ref], lock)
+    assert any("ephemeral sha-<commit> tag" in error for error in errors)
+
+
 def main() -> int:
     tests = [
         test_repo_dependency_lock_passes,
         test_unallowlisted_latest_is_rejected,
         test_variable_refs_must_be_documented,
+        test_ephemeral_sha_tag_is_rejected,
     ]
     for test in tests:
         test()
