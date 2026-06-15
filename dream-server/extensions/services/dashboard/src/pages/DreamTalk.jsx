@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import {
   AlertCircle, CheckCircle2, Loader2, Mic, Paperclip, RefreshCw,
-  Send, Volume2, VolumeX,
+  Send, Volume2, VolumeX, BookOpen,
 } from 'lucide-react'
 
 // Hermes likes to format with markdown (bold, lists, code). Rendering it as
@@ -68,6 +68,7 @@ export default function DreamTalk() {
   })
 
   const [pendingAttachment, setPendingAttachment] = useState(null)
+  const [useKnowledge, setUseKnowledge] = useState(false)
   // {file: File, previewUrl: string|null, kind: 'image'|'text', name: string}
   // Held in state between picking a file and sending — lets the user add a
   // caption in the textarea before submitting.
@@ -383,6 +384,7 @@ export default function DreamTalk() {
         const form = new FormData()
         form.set('file', attachment.file, attachment.name)
         form.set('text', clean)
+        form.set('use_knowledge', String(useKnowledge))
         resp = await fetch('/api/talk/attachment', {
           method: 'POST',
           // Don't set Content-Type — fetch fills in multipart/form-data
@@ -397,7 +399,7 @@ export default function DreamTalk() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
           credentials: 'same-origin',
-          body: JSON.stringify({ text: clean }),
+          body: JSON.stringify({ text: clean, use_knowledge: useKnowledge }),
           signal: controller.signal,
         })
       }
@@ -712,6 +714,16 @@ export default function DreamTalk() {
               title="Attach image or file"
             >
               <Paperclip size={19} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setUseKnowledge(prev => !prev)}
+              disabled={sending || status === 'expired'}
+              className={`grid h-11 w-11 shrink-0 place-items-center rounded-full transition-colors disabled:opacity-40 ${useKnowledge ? 'bg-theme-accent/20 text-theme-accent' : 'text-zinc-500 hover:bg-zinc-100'}`}
+              aria-label={useKnowledge ? 'Disable Knowledge Base search' : 'Search Knowledge Base'}
+              title="Search Knowledge Base"
+            >
+              <BookOpen size={19} />
             </button>
             <textarea
               value={input}

@@ -556,6 +556,15 @@ async def talk_message(payload: dict[str, Any], request: Request) -> dict[str, A
     """
     session_key, _expires_at = _require_session(request)
     text = _extract_message_text(payload)
+    use_knowledge = payload.get("use_knowledge", False)
+    if use_knowledge:
+        try:
+            from routers.knowledge import search_knowledge_base
+            context = await search_knowledge_base(text)
+            if context:
+                text = f"Context from Knowledge Base:\n{context}\n\nUser Message:\n{text}"
+        except Exception as e:
+            logger.error("Failed to inject knowledge base context: %s", e)
     return await _send_to_hermes(session_key, text)
 
 
@@ -578,6 +587,16 @@ async def talk_message_stream(payload: dict[str, Any], request: Request) -> Stre
     """
     session_key, _expires_at = _require_session(request)
     text = _extract_message_text(payload)
+    use_knowledge = payload.get("use_knowledge", False)
+    if use_knowledge:
+        try:
+            from routers.knowledge import search_knowledge_base
+            context = await search_knowledge_base(text)
+            if context:
+                text = f"Context from Knowledge Base:\n{context}\n\nUser Message:\n{text}"
+        except Exception as e:
+            logger.error("Failed to inject knowledge base context: %s", e)
+            
     headers = {
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
