@@ -275,6 +275,16 @@ generate_dream_env() {
                 upsert_env_value "$env_path" "HOST_LAN_IP" "$_host_lan_ip"
             fi
         fi
+        # Keep neutral Lemonade provider-probe knobs in parity with Linux and
+        # Windows. macOS still defaults to native Metal llama-server, but these
+        # keys are harmless when empty and preserve operator experiments with an
+        # external Lemonade provider.
+        [[ -z "$(read_env_value "$env_path" "LEMONADE_EMBEDDING_MODEL")" ]] && upsert_env_value "$env_path" "LEMONADE_EMBEDDING_MODEL" ""
+        [[ -z "$(read_env_value "$env_path" "LEMONADE_RERANK_MODEL")" ]] && upsert_env_value "$env_path" "LEMONADE_RERANK_MODEL" ""
+        [[ -z "$(read_env_value "$env_path" "LEMONADE_STT_MODEL")" ]] && upsert_env_value "$env_path" "LEMONADE_STT_MODEL" ""
+        [[ -z "$(read_env_value "$env_path" "LEMONADE_TTS_MODEL")" ]] && upsert_env_value "$env_path" "LEMONADE_TTS_MODEL" ""
+        [[ -z "$(read_env_value "$env_path" "DASHBOARD_LEMONADE_PROBE_TTL")" ]] && upsert_env_value "$env_path" "DASHBOARD_LEMONADE_PROBE_TTL" "120"
+        [[ -z "$(read_env_value "$env_path" "DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT")" ]] && upsert_env_value "$env_path" "DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT" "120"
         return 0
     fi
 
@@ -383,6 +393,12 @@ DREAM_AGENT_HOST=${DREAM_AGENT_HOST:-host.docker.internal}
 #=== LLM Backend Mode ===
 DREAM_MODE=local
 LLM_API_URL=${llm_api_url}
+LEMONADE_EMBEDDING_MODEL=
+LEMONADE_RERANK_MODEL=
+LEMONADE_STT_MODEL=
+LEMONADE_TTS_MODEL=
+DASHBOARD_LEMONADE_PROBE_TTL=120
+DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT=120
 
 #=== Cloud API Keys ===
 ANTHROPIC_API_KEY=

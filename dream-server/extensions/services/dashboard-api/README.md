@@ -33,11 +33,18 @@ Environment variables (set in `.env`):
 | `GPU_BACKEND` | `nvidia` | GPU backend: `nvidia` or `amd` |
 | `OLLAMA_URL` | `http://llama-server:8080` | LLM backend URL |
 | `LLM_MODEL` | `qwen3:30b-a3b` | Active model name shown in dashboard |
+| `DASHBOARD_LEMONADE_PROBE_TTL` | `120` | Cache time in seconds for external Lemonade capability probes |
+| `DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT` | `120` | Per-request timeout for explicitly triggered active Lemonade probes and cold model loads |
 | `KOKORO_URL` | `http://tts:8880` | Kokoro TTS URL |
 | `N8N_URL` | `http://n8n:5678` | n8n workflow URL |
 | `OPENCLAW_TOKEN` | *(empty)* | OpenClaw agent auth token |
 
 ## API Endpoints
+
+The Lemonade provider contract is hardware-vendor neutral. Use the canonical
+`/api/providers/lemonade` route for new integrations. The historical
+`/api/gpu/amd-runtime` route remains a compatibility alias from the original
+AMD/Lemonade installer surface.
 
 ### Core
 
@@ -51,6 +58,10 @@ Environment variables (set in `.env`):
 | `GET` | `/bootstrap` | Yes | Model bootstrap/download status |
 | `GET` | `/status` | Yes | Full system status (all above combined) |
 | `GET` | `/api/status` | Yes | Dashboard-formatted status with inference metrics |
+| `GET` | `/api/providers/lemonade` | Yes | Passive Lemonade provider capability contract |
+| `POST` | `/api/providers/lemonade/probe` | Yes + `X-Requested-With: DreamServerDashboard` | Explicit active Lemonade capability probe; may load models and restores the selected chat model before exit |
+| `GET` | `/api/gpu/amd-runtime` | Yes | Compatibility alias for passive Lemonade provider diagnostics |
+| `POST` | `/api/gpu/amd-runtime/probe` | Yes + `X-Requested-With: DreamServerDashboard` | Compatibility alias for the active Lemonade provider probe |
 | `GET` | `/api/host-agent/diagnostics` | Yes | Host-agent URL, gateway, auth, and live probe diagnostics |
 
 ### Preflight

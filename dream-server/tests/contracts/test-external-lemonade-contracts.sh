@@ -11,7 +11,7 @@ echo "[contract] external Lemonade compose overlay exists"
   || { echo "[FAIL] docker-compose.lemonade-external.yml missing"; exit 1; }
 
 echo "[contract] schema documents external Lemonade env"
-for key in LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_CONTAINER_BASE_URL LEMONADE_API_BASE_PATH LEMONADE_MODEL; do
+for key in LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_CONTAINER_BASE_URL LEMONADE_API_BASE_PATH LEMONADE_MODEL LEMONADE_EMBEDDING_MODEL LEMONADE_RERANK_MODEL LEMONADE_STT_MODEL LEMONADE_TTS_MODEL DASHBOARD_LEMONADE_PROBE_TTL DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT; do
   grep -q "\"$key\"" .env.schema.json \
     || { echo "[FAIL] .env.schema.json missing $key"; exit 1; }
   grep -q "^$key=" .env.example \
@@ -39,8 +39,8 @@ grep -q 'DREAM_TALK_HERMES_TIMEOUT=${DREAM_TALK_HERMES_TIMEOUT:-900}' docker-com
 echo "[contract] installer discovers external Lemonade model and avoids stale fallbacks"
 grep -q '_phase06_discover_lemonade_model' installers/phases/06-directories.sh \
   || { echo "[FAIL] phase 06 must discover the model served by external Lemonade"; exit 1; }
-grep -q 'IMAGE_MARKERS' installers/phases/06-directories.sh \
-  || { echo "[FAIL] phase 06 must avoid auto-selecting obvious image models for the chat route"; exit 1; }
+grep -q 'NON_CHAT_MARKERS' installers/phases/06-directories.sh \
+  || { echo "[FAIL] phase 06 must avoid auto-selecting specialized models for the chat route"; exit 1; }
 if grep -q 'LLM_MODEL_VALUE' installers/phases/06-directories.sh; then
   echo "[FAIL] phase 06 must not reference undefined LLM_MODEL_VALUE"
   exit 1
@@ -51,6 +51,35 @@ grep -q '_env_get_explicit_first LEMONADE_MODEL' installers/phases/06-directorie
   || { echo "[FAIL] explicit LEMONADE_MODEL must override stale .env values during reinstall"; exit 1; }
 grep -q '_env_get_explicit_first LEMONADE_BASE_URL' installers/phases/06-directories.sh \
   || { echo "[FAIL] explicit LEMONADE_BASE_URL/--lemonade-url must override stale .env values during reinstall"; exit 1; }
+
+echo "[contract] installers preserve Lemonade capability probe configuration"
+for key in LEMONADE_EMBEDDING_MODEL LEMONADE_RERANK_MODEL LEMONADE_STT_MODEL LEMONADE_TTS_MODEL DASHBOARD_LEMONADE_PROBE_TTL DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT; do
+  grep -q "_env_get $key" installers/phases/06-directories.sh \
+    || { echo "[FAIL] Linux phase 06 must preserve $key"; exit 1; }
+  grep -q "Get-EnvOrNew \"$key\"" installers/windows/lib/env-generator.ps1 \
+    || { echo "[FAIL] Windows env generator must preserve $key"; exit 1; }
+  grep -q "$key" installers/macos/lib/env-generator.sh \
+    || { echo "[FAIL] macOS env generator must preserve $key"; exit 1; }
+done
+
+echo "[contract] active Lemonade probe has a cold-load-safe dashboard timeout"
+grep -q 'location = /api/providers/lemonade/probe' extensions/services/dashboard/nginx.conf \
+  || { echo "[FAIL] dashboard nginx must give the canonical active provider probe a dedicated location"; exit 1; }
+grep -A15 'location = /api/providers/lemonade/probe' extensions/services/dashboard/nginx.conf \
+  | grep -q 'proxy_read_timeout 900s' \
+  || { echo "[FAIL] active probe nginx location must allow cold model loads"; exit 1; }
+grep -q 'location = /api/gpu/amd-runtime/probe' extensions/services/dashboard/nginx.conf \
+  || { echo "[FAIL] dashboard nginx must preserve the legacy AMD active-probe route"; exit 1; }
+grep -q '/api/providers/lemonade/probe' extensions/services/dashboard/src/hooks/useGPUDetailed.js \
+  || { echo "[FAIL] dashboard active probe must use the canonical Lemonade provider route"; exit 1; }
+grep -q 'X-Requested-With.*DreamServerDashboard' extensions/services/dashboard/src/hooks/useGPUDetailed.js \
+  || { echo "[FAIL] dashboard active probe must send the anti-CSRF request header"; exit 1; }
+grep -q 'Depends(_verify_active_provider_probe_request)' extensions/services/dashboard-api/routers/gpu.py \
+  || { echo "[FAIL] dashboard API active probe must require the anti-CSRF request header"; exit 1; }
+grep -q '"/api/providers/lemonade"' extensions/services/dashboard-api/routers/gpu.py \
+  || { echo "[FAIL] dashboard API must expose the canonical Lemonade provider route"; exit 1; }
+grep -q '"/api/gpu/amd-runtime"' extensions/services/dashboard-api/routers/gpu.py \
+  || { echo "[FAIL] dashboard API must preserve the legacy AMD runtime route"; exit 1; }
 
 echo "[contract] explicit LAN binding overrides stale env during reinstall"
 grep -q 'BIND_ADDRESS_EXPLICIT' install-core.sh \
@@ -88,23 +117,48 @@ grep -q 'DS-RUNTIME-EXTERNAL-LEMONADE-UNAUTHENTICATED-HOST-ROUTE' scripts/dream-
 grep -q 'sk-dream-lemonade-' scripts/dream-doctor.sh \
   || { echo "[FAIL] dream-doctor must distinguish installer-generated LiteLLM provider keys from user Lemonade API keys"; exit 1; }
 
-echo "[contract] resolver selects cloud + external overlay instead of managed AMD overlay"
-resolved="$(LEMONADE_EXTERNAL=true DREAM_MODE=lemonade \
-  ./scripts/resolve-compose-stack.sh --script-dir "$ROOT_DIR" --dream-mode lemonade --gpu-backend amd --tier SH_LARGE --env)"
-grep -q 'docker-compose.cloud.yml' <<<"$resolved" \
-  || { echo "[FAIL] external Lemonade must include cloud overlay to disable managed llama-server"; exit 1; }
-grep -q 'docker-compose.lemonade-external.yml' <<<"$resolved" \
-  || { echo "[FAIL] external Lemonade overlay missing from resolved stack"; exit 1; }
-if grep -q 'docker-compose.amd.yml' <<<"$resolved"; then
-  echo "[FAIL] external Lemonade must not include managed AMD overlay"
-  exit 1
-fi
-if grep -q 'compose.local.yaml' <<<"$resolved"; then
-  echo "[FAIL] external Lemonade must not include local llama-server dependency overlays"
-  exit 1
-fi
-grep -Eq 'extensions[\\/]+services[\\/]+litellm[\\/]+compose.yaml' <<<"$resolved" \
-  || { echo "[FAIL] external Lemonade must keep LiteLLM gateway enabled"; exit 1; }
+echo "[contract] resolver selects cloud + external overlay instead of managed hardware overlays"
+for backend in amd nvidia cpu; do
+  resolved="$(LEMONADE_EXTERNAL=true DREAM_MODE=lemonade \
+    ./scripts/resolve-compose-stack.sh --script-dir "$ROOT_DIR" --dream-mode lemonade --gpu-backend "$backend" --tier 2 --env)"
+  grep -q 'docker-compose.cloud.yml' <<<"$resolved" \
+    || { echo "[FAIL] external Lemonade must include cloud overlay to disable managed llama-server for $backend"; exit 1; }
+  grep -q 'docker-compose.lemonade-external.yml' <<<"$resolved" \
+    || { echo "[FAIL] external Lemonade overlay missing from resolved stack for $backend"; exit 1; }
+  if grep -q 'docker-compose.amd.yml' <<<"$resolved"; then
+    echo "[FAIL] external Lemonade must not include managed AMD overlay for $backend"
+    exit 1
+  fi
+  if grep -q 'docker-compose.nvidia.yml' <<<"$resolved"; then
+    echo "[FAIL] external Lemonade must not include managed NVIDIA overlay for $backend"
+    exit 1
+  fi
+  if grep -q 'docker-compose.cpu.yml' <<<"$resolved"; then
+    echo "[FAIL] external Lemonade must not include managed CPU overlay for $backend"
+    exit 1
+  fi
+  if grep -q 'compose.local.yaml' <<<"$resolved"; then
+    echo "[FAIL] external Lemonade must not include local llama-server dependency overlays for $backend"
+    exit 1
+  fi
+  grep -Eq 'extensions[\\/]+services[\\/]+litellm[\\/]+compose.yaml' <<<"$resolved" \
+    || { echo "[FAIL] external Lemonade must keep LiteLLM gateway enabled for $backend"; exit 1; }
+done
+
+echo "[contract] external Lemonade mode survives CPU fallback"
+fallback_mode="$(LEMONADE_EXTERNAL=true DREAM_MODE=lemonade bash -c '
+  set -euo pipefail
+  SCRIPT_DIR="'"$ROOT_DIR"'"
+  ai_warn() { :; }
+  ai() { :; }
+  warn() { :; }
+  log() { :; }
+  . installers/lib/detection.sh
+  apply_cpu_gpu_fallback "contract fallback"
+  printf "%s:%s\n" "$DREAM_MODE" "$GPU_BACKEND"
+')"
+[[ "$fallback_mode" == "lemonade:cpu" ]] \
+  || { echo "[FAIL] external Lemonade CPU fallback must preserve DREAM_MODE=lemonade, got $fallback_mode"; exit 1; }
 
 echo "[contract] external Lemonade resolved compose config is valid"
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then

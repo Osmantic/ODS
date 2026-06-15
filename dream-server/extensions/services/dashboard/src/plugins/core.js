@@ -37,8 +37,8 @@ export const coreRoutes = [
     icon: Activity,
     component: GPUMonitor,
     getProps: () => ({}),
-    // Route is always registered; sidebar entry only appears on multi-GPU systems
-    sidebar: ({ status }) => (status?.gpu?.gpu_count || 1) > 1,
+    // AMD users need the runtime/provider contract even on single-GPU systems.
+    sidebar: ({ status }) => (status?.gpu?.gpu_count || 1) > 1 || status?.gpu?.backend === 'amd',
     order: 1,
   },
   {

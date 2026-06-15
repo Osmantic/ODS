@@ -7,12 +7,15 @@ import os
 import time
 import urllib.error
 import urllib.request
+import weakref
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
+from config import INSTALL_DIR
 from security import verify_api_key
 
 from gpu import (
@@ -24,7 +27,15 @@ from gpu import (
 )
 from models import GPUInfo, IndividualGPU, MultiGPUStatus
 from models import AmdRuntimeStatus
-from lemonade_client import LemonadeClient, LemonadeClientError, LemonadeSettings, normalize_base_url
+from lemonade_capabilities import (
+    ExternalLemonadeProbeResult,
+    external_lemonade_probe_cache_key,
+    external_lemonade_probe_ttl,
+    probe_external_lemonade_uncached,
+    provider_capability_summary,
+)
+from lemonade_client import LemonadeClient
+from settings import _parse_env_text
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +48,30 @@ _HISTORY_POLL_INTERVAL = 5.0
 # Simple per-endpoint TTL caches
 _detailed_cache: dict = {"expires": 0.0, "value": None}
 _topology_cache: dict = {"expires": 0.0, "value": None}
+_external_lemonade_probe_cache: dict = {"expires": 0.0, "updated": 0.0, "key": None, "value": None}
+_external_lemonade_probe_locks: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_env_file_cache: dict = {"path": None, "signature": None, "values": {}}
 _GPU_DETAILED_TTL = 3.0
 _GPU_TOPOLOGY_TTL = 300.0
+_ACTIVE_PROVIDER_PROBE_HEADER = "DreamServerDashboard"
+
+
+def _external_lemonade_probe_lock() -> asyncio.Lock:
+    """Return a single-flight lock scoped to the current event loop."""
+    loop = asyncio.get_running_loop()
+    lock = _external_lemonade_probe_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _external_lemonade_probe_locks[loop] = lock
+    return lock
+
+
+def _verify_active_provider_probe_request(
+    x_requested_with: Optional[str] = Header(default=None, alias="X-Requested-With"),
+) -> None:
+    """Require a non-simple browser header before running a side-effecting probe."""
+    if x_requested_with != _ACTIVE_PROVIDER_PROBE_HEADER:
+        raise HTTPException(status_code=403, detail="Active provider probe requires an explicit dashboard request.")
 
 
 # ============================================================================
@@ -79,8 +112,41 @@ def _get_raw_gpus(gpu_backend: str) -> Optional[list[IndividualGPU]]:
     return get_gpu_info_amd_detailed()
 
 
+def _read_env_file_values() -> dict[str, str]:
+    env_path = Path(INSTALL_DIR) / ".env"
+    try:
+        stat = env_path.stat()
+    except OSError:
+        _env_file_cache["path"] = str(env_path)
+        _env_file_cache["signature"] = None
+        _env_file_cache["values"] = {}
+        return {}
+
+    cache_path = str(env_path)
+    signature = (stat.st_mtime_ns, stat.st_size)
+    if _env_file_cache["path"] == cache_path and _env_file_cache["signature"] == signature:
+        return dict(_env_file_cache["values"])
+
+    try:
+        values, _issues = _parse_env_text(env_path.read_text(encoding="utf-8"))
+    except OSError:
+        values = {}
+
+    _env_file_cache["path"] = cache_path
+    _env_file_cache["signature"] = signature
+    _env_file_cache["values"] = dict(values)
+    return values
+
+
+def _clean_env(name: str) -> str:
+    raw = os.environ.get(name)
+    if raw is not None:
+        return raw.strip()
+    return _read_env_file_values().get(name, "").strip()
+
+
 def _env_int(name: str, default: int = 0) -> int:
-    raw = os.environ.get(name, "").strip()
+    raw = _clean_env(name)
     if not raw:
         return default
     try:
@@ -173,10 +239,6 @@ def _build_aggregate(gpus: list[IndividualGPU], backend: str) -> GPUInfo:
     )
 
 
-def _clean_env(name: str) -> str:
-    return os.environ.get(name, "").strip()
-
-
 def _join_url(base_url: str, path: str) -> str:
     base = base_url.rstrip("/")
     suffix = path if path.startswith("/") else f"/{path}"
@@ -233,8 +295,9 @@ def _runtime_base_url(runtime: str, location: str, port: int) -> str:
         external_base = _clean_env("LEMONADE_CONTAINER_BASE_URL") or _clean_env("LEMONADE_BASE_URL")
         if external_base:
             external_base = external_base.rstrip("/")
+            external_base_lower = external_base.lower()
             for suffix in ("/api/v1", "/v1", "/api"):
-                if external_base.endswith(suffix):
+                if external_base_lower.endswith(suffix):
                     external_base = external_base[: -len(suffix)]
                     break
             return external_base
@@ -252,6 +315,8 @@ def _runtime_base_url(runtime: str, location: str, port: int) -> str:
 
 def _runtime_api_path(runtime: str) -> str:
     configured = _clean_env("LLM_API_BASE_PATH")
+    if runtime == "lemonade":
+        configured = _clean_env("LEMONADE_API_BASE_PATH") or configured
     if configured:
         return configured
     if runtime == "lemonade":
@@ -290,45 +355,62 @@ def _probe_amd_health(health_url: str) -> tuple[str, str, Optional[str]]:
     return "unhealthy", version, f"health_http_{status}"
 
 
-def _external_lemonade_warning(prefix: str, exc: LemonadeClientError) -> str:
-    if exc.kind == "provider_unreachable":
-        return f"{prefix}_unreachable"
-    return f"{prefix}_{exc.kind}"
-
-
-def _loaded_model_from_health(payload: dict) -> Optional[str]:
-    for key in ("model_loaded", "loaded_model", "active_model", "model"):
-        value = payload.get(key)
-        if value:
-            return str(value)
-    return None
-
-
-async def _probe_external_lemonade(api_base: str, api_path: str) -> tuple[str, str, list[str], Optional[str], Optional[int]]:
-    settings = LemonadeSettings(
-        base_url=normalize_base_url(api_base, api_path),
-        api_base_path=api_path,
-        api_key=_clean_env("LEMONADE_API_KEY") or _clean_env("LITELLM_LEMONADE_API_KEY"),
-        timeout=2.0,
+async def _probe_external_lemonade_uncached(
+    api_base: str,
+    api_path: str,
+    *,
+    active: bool = False,
+) -> ExternalLemonadeProbeResult:
+    return await probe_external_lemonade_uncached(
+        api_base,
+        api_path,
+        _clean_env,
+        active=active,
+        client_cls=LemonadeClient,
     )
-    warnings: list[str] = []
 
-    async with LemonadeClient(settings=settings) as client:
-        try:
-            health_payload = await client.health()
-        except LemonadeClientError as exc:
-            status = "unreachable" if exc.kind in {"provider_unreachable", "timeout"} else "unhealthy"
-            return status, "unknown", [_external_lemonade_warning("health", exc)], None, None
 
-        version = str(health_payload.get("version") or "unknown")
-        loaded_model = _loaded_model_from_health(health_payload)
-        model_count: Optional[int] = None
-        try:
-            model_count = len(await client.models())
-        except LemonadeClientError as exc:
-            warnings.append(_external_lemonade_warning("models", exc))
+async def _probe_external_lemonade(
+    api_base: str,
+    api_path: str,
+    *,
+    active: bool = False,
+    force: bool = False,
+) -> ExternalLemonadeProbeResult:
+    request_started = time.monotonic()
+    now = request_started
+    cache_key = external_lemonade_probe_cache_key(api_base, api_path, _clean_env)
+    if not force and (
+        now < _external_lemonade_probe_cache["expires"]
+        and _external_lemonade_probe_cache["key"] == cache_key
+        and _external_lemonade_probe_cache["value"] is not None
+    ):
+        return _external_lemonade_probe_cache["value"]
 
-    return "reachable", version, warnings, loaded_model, model_count
+    async with _external_lemonade_probe_lock():
+        now = time.monotonic()
+        cache_key = external_lemonade_probe_cache_key(api_base, api_path, _clean_env)
+        cached_value = _external_lemonade_probe_cache["value"]
+        refreshed_while_waiting = (
+            force
+            and _external_lemonade_probe_cache["updated"] >= request_started
+            and cached_value is not None
+            and cached_value.probe_mode == "active"
+        )
+        if (not force or refreshed_while_waiting) and (
+            now < _external_lemonade_probe_cache["expires"]
+            and _external_lemonade_probe_cache["key"] == cache_key
+            and _external_lemonade_probe_cache["value"] is not None
+        ):
+            return _external_lemonade_probe_cache["value"]
+
+        result = await _probe_external_lemonade_uncached(api_base, api_path, active=active)
+        completed_at = time.monotonic()
+        _external_lemonade_probe_cache["expires"] = completed_at + external_lemonade_probe_ttl(_clean_env)
+        _external_lemonade_probe_cache["updated"] = completed_at
+        _external_lemonade_probe_cache["key"] = cache_key
+        _external_lemonade_probe_cache["value"] = result
+        return result
 
 
 # ============================================================================
@@ -386,16 +468,11 @@ async def gpu_topology():
     return topo
 
 
-@router.get(
-    "/api/gpu/amd-runtime",
-    response_model=AmdRuntimeStatus,
-    response_model_exclude_none=True,
-    dependencies=[Depends(verify_api_key)],
-)
-async def amd_runtime():
-    """AMD runtime contract and health from explicit installer-provided env."""
+async def _amd_runtime_status(*, active_provider_probe: bool = False, force_provider_probe: bool = False):
+    """AMD runtime or external Lemonade provider contract from installer env."""
     gpu_backend = _clean_env("GPU_BACKEND").lower() or "nvidia"
-    if gpu_backend != "amd":
+    external_lemonade = _external_lemonade_active()
+    if gpu_backend != "amd" and not external_lemonade:
         return AmdRuntimeStatus(
             available=False,
             reason="not_amd",
@@ -468,9 +545,29 @@ async def amd_runtime():
     api_base = _join_url(base_url, api_path)
     health_url = _join_url(base_url, _runtime_health_path(runtime, api_path))
     loaded_model: Optional[str] = None
+    loaded_models: Optional[list[dict[str, object]]] = None
     model_count: Optional[int] = None
-    if runtime == "lemonade" and _external_lemonade_active():
-        health, version, probe_warnings, loaded_model, model_count = await _probe_external_lemonade(api_base, api_path)
+    provider_ready: Optional[bool] = None
+    provider_status: Optional[str] = None
+    provider_probe_mode: Optional[str] = None
+    provider_capabilities: Optional[list[dict[str, object]]] = None
+    if runtime == "lemonade" and external_lemonade:
+        (
+            health,
+            version,
+            probe_warnings,
+            loaded_model,
+            model_count,
+            provider_capabilities,
+            provider_probe_mode,
+            loaded_models,
+        ) = await _probe_external_lemonade(
+            api_base,
+            api_path,
+            active=active_provider_probe,
+            force=force_provider_probe,
+        )
+        provider_ready, provider_status = provider_capability_summary(provider_capabilities)
         warnings.extend(probe_warnings)
     else:
         health, version, health_warning = await asyncio.to_thread(_probe_amd_health, health_url)
@@ -492,10 +589,59 @@ async def amd_runtime():
         health=health,
         version=version,
         loadedModel=loaded_model,
+        loadedModels=loaded_models,
         modelCount=model_count,
+        providerReady=provider_ready,
+        providerStatus=provider_status,
+        providerProbeMode=provider_probe_mode,
+        providerCapabilities=provider_capabilities,
         capabilities=supported_backends,
         warnings=warnings,
     )
+
+
+@router.get(
+    "/api/providers/lemonade",
+    response_model=AmdRuntimeStatus,
+    response_model_exclude_none=True,
+    dependencies=[Depends(verify_api_key)],
+)
+async def lemonade_provider():
+    """Return passive Lemonade provider diagnostics without triggering inference."""
+    return await _amd_runtime_status()
+
+
+@router.post(
+    "/api/providers/lemonade/probe",
+    response_model=AmdRuntimeStatus,
+    response_model_exclude_none=True,
+    dependencies=[Depends(verify_api_key), Depends(_verify_active_provider_probe_request)],
+)
+async def probe_lemonade_provider():
+    """Run an explicit active Lemonade capability probe and refresh the diagnostic cache."""
+    return await _amd_runtime_status(active_provider_probe=True, force_provider_probe=True)
+
+
+@router.get(
+    "/api/gpu/amd-runtime",
+    response_model=AmdRuntimeStatus,
+    response_model_exclude_none=True,
+    dependencies=[Depends(verify_api_key)],
+)
+async def amd_runtime():
+    """Compatibility alias for the passive Lemonade provider diagnostics route."""
+    return await lemonade_provider()
+
+
+@router.post(
+    "/api/gpu/amd-runtime/probe",
+    response_model=AmdRuntimeStatus,
+    response_model_exclude_none=True,
+    dependencies=[Depends(verify_api_key), Depends(_verify_active_provider_probe_request)],
+)
+async def probe_amd_runtime():
+    """Compatibility alias for the active Lemonade provider probe route."""
+    return await probe_lemonade_provider()
 
 
 @router.get("/api/gpu/history", dependencies=[Depends(verify_api_key)])

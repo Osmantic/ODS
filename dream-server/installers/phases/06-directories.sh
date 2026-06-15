@@ -302,37 +302,49 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         [[ -n "$py" ]] || py="python3"
         if command -v "$py" >/dev/null 2>&1; then
             printf '%s' "$json" | "$py" -c 'import json,sys
-IMAGE_MARKERS = (
+NON_CHAT_MARKERS = (
     "flux", "stable-diffusion", "sdxl", "sd-", "diffusion",
     "dall-e", "image", "img2img", "txt2img", "comfy", "kolors",
+    "whisper", "moonshine", "kokoro", "embedding", "embed-", "rerank",
 )
+SPECIALIZED_LABELS = {"embeddings", "reranking", "transcription", "image", "edit", "tts"}
 
-def looks_non_chat(model_id):
+def looks_non_chat(item):
+    model_id = item.get("id") if isinstance(item, dict) else None
     lowered = (model_id or "").lower()
-    return any(marker in lowered for marker in IMAGE_MARKERS)
+    raw_labels = item.get("labels", []) if isinstance(item, dict) else []
+    labels = {str(label).lower() for label in raw_labels} if isinstance(raw_labels, list) else set()
+    return bool(labels & SPECIALIZED_LABELS) or any(marker in lowered for marker in NON_CHAT_MARKERS)
 
 try:
     data=json.load(sys.stdin).get("data", [])
-    fallback = ""
     for item in data:
         model_id=item.get("id") if isinstance(item, dict) else None
         if model_id:
-            fallback = fallback or model_id
-            if looks_non_chat(model_id):
+            if looks_non_chat(item):
                 continue
             print(model_id)
             raise SystemExit(0)
-    if fallback:
-        print(fallback)
-        raise SystemExit(0)
 except Exception:
     pass
 raise SystemExit(1)' 2>/dev/null && return 0
         fi
-        printf '%s' "$json" \
-            | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
-            | head -n 1 \
-            | sed 's/.*"id"[[:space:]]*:[[:space:]]*"//; s/".*//'
+        local model_id model_lc
+        while IFS= read -r model_id; do
+            model_lc="${model_id,,}"
+            case "$model_lc" in
+                *flux*|*stable-diffusion*|*sdxl*|*diffusion*|*dall-e*|*image*|*img2img*|*txt2img*|*comfy*|*kolors*|*whisper*|*moonshine*|*kokoro*|*embedding*|*embed-*|*rerank*)
+                    continue
+                    ;;
+            esac
+            printf '%s\n' "$model_id"
+            return 0
+        done < <(
+            printf '%s' "$json" \
+                | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
+                | sed 's/.*"id"[[:space:]]*:[[:space:]]*"//; s/".*//'
+        )
+        return 1
     }
 
     _phase06_discover_lemonade_model() {
@@ -413,6 +425,12 @@ raise SystemExit(1)' 2>/dev/null && return 0
         fi
         LEMONADE_MODEL="$LEMONADE_MODEL_VALUE"
     fi
+    LEMONADE_EMBEDDING_MODEL_VALUE=$(_env_get LEMONADE_EMBEDDING_MODEL "${LEMONADE_EMBEDDING_MODEL:-}")
+    LEMONADE_RERANK_MODEL_VALUE=$(_env_get LEMONADE_RERANK_MODEL "${LEMONADE_RERANK_MODEL:-}")
+    LEMONADE_STT_MODEL_VALUE=$(_env_get LEMONADE_STT_MODEL "${LEMONADE_STT_MODEL:-}")
+    LEMONADE_TTS_MODEL_VALUE=$(_env_get LEMONADE_TTS_MODEL "${LEMONADE_TTS_MODEL:-}")
+    DASHBOARD_LEMONADE_PROBE_TTL_VALUE=$(_env_get DASHBOARD_LEMONADE_PROBE_TTL "${DASHBOARD_LEMONADE_PROBE_TTL:-120}")
+    DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT_VALUE=$(_env_get DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT "${DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT:-120}")
     LIVEKIT_SECRET=$(_env_get LIVEKIT_API_SECRET "$(openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64)")
     DASHBOARD_API_KEY=$(_env_get DASHBOARD_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
     DREAM_AGENT_KEY=$(_env_get DREAM_AGENT_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
@@ -673,6 +691,12 @@ LEMONADE_BASE_URL=${LEMONADE_BASE_URL_VALUE}
 LEMONADE_CONTAINER_BASE_URL=${LEMONADE_CONTAINER_BASE_URL_VALUE}
 LEMONADE_API_BASE_PATH=${LEMONADE_API_BASE_PATH_VALUE}
 LEMONADE_MODEL=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${LEMONADE_MODEL_VALUE:-}"; else echo "${LEMONADE_MODEL:-}"; fi)
+LEMONADE_EMBEDDING_MODEL=${LEMONADE_EMBEDDING_MODEL_VALUE}
+LEMONADE_RERANK_MODEL=${LEMONADE_RERANK_MODEL_VALUE}
+LEMONADE_STT_MODEL=${LEMONADE_STT_MODEL_VALUE}
+LEMONADE_TTS_MODEL=${LEMONADE_TTS_MODEL_VALUE}
+DASHBOARD_LEMONADE_PROBE_TTL=${DASHBOARD_LEMONADE_PROBE_TTL_VALUE}
+DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT=${DASHBOARD_LEMONADE_ACTIVE_PROBE_TIMEOUT_VALUE}
 
 #=== Cloud API Keys ===
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

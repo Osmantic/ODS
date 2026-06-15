@@ -5,6 +5,7 @@ import { GPUCard } from '../components/GPUCard'
 import { GPUChart } from '../components/GPUChart'
 import { TopologyView } from '../components/TopologyView'
 import { AssignmentTable } from '../components/AssignmentTable'
+import { LemonadeProviderContract } from '../components/LemonadeProviderContract'
 
 // Aggregate bar shared between aggregate section
 const AggBar = memo(function AggBar({ label, value, percent }) {
@@ -23,7 +24,17 @@ const AggBar = memo(function AggBar({ label, value, percent }) {
 })
 
 export default function GPUMonitor() {
-  const { detailed, history, topology, loading, error } = useGPUDetailed()
+  const {
+    detailed,
+    history,
+    topology,
+    runtime,
+    runtimeProbeRunning,
+    runtimeProbeError,
+    runRuntimeProbe,
+    loading,
+    error,
+  } = useGPUDetailed()
   const [activeTab, setActiveTab] = useState('overview') // 'overview' | 'history'
 
   if (loading) {
@@ -114,6 +125,13 @@ export default function GPUMonitor() {
           )}
         </div>
       )}
+
+      <LemonadeProviderContract
+        runtime={runtime}
+        onRunActiveProbe={runRuntimeProbe}
+        activeProbeRunning={runtimeProbeRunning}
+        activeProbeError={runtimeProbeError}
+      />
 
       {/* Tab bar */}
       <div className="flex gap-1 mb-6 bg-zinc-900/50 border border-zinc-800 rounded-lg p-1 w-fit">
