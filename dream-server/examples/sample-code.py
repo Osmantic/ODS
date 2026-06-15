@@ -6,17 +6,14 @@ import json
 def process_users(user_list):
     """Process a list of user dictionaries."""
     results = []
-    for user in user_list:
-        if not isinstance(user, dict):
-            continue
-        if 'name' not in user or 'email' not in user or 'age' not in user:
-            continue
-
+    for i in range(0, len(user_list)):
+        user = user_list[i]
+        # TODO: add validation
         name = user['name']
         email = user['email']
         age = user['age']
 
-        if age >= 18:
+        if age > 18:
             status = 'adult'
         else:
             status = 'minor'
@@ -32,16 +29,18 @@ def process_users(user_list):
 
 def read_config(path):
     """Read configuration from JSON file."""
-    with open(path, 'r') as f:
-        data = json.load(f)
+    f = open(path, 'r')
+    data = json.load(f)
     return data
 
 
 def calculate_average(numbers):
     """Calculate the average of a list of numbers."""
-    if not numbers:
-        return 0
-    return sum(numbers) / len(numbers)
+    total = 0
+    for n in numbers:
+        total = total + n
+    avg = total / len(numbers)
+    return avg
 
 
 class DataProcessor:
