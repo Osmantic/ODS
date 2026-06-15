@@ -92,6 +92,12 @@ def error(msg): errors.append(msg); print(f"ERROR: {service_name}: {msg}", file=
 def warn(msg): warnings.append(msg); print(f"WARNING: {service_name}: {msg}", file=sys.stderr)
 def info(msg): verbose == "true" and print(f"INFO: {service_name}: {msg}")
 
+def has_text(value):
+    return isinstance(value, str) and len(value) > 0
+
+def is_int(value):
+    return type(value) is int
+
 try:
     manifest = yaml.safe_load(open(manifest_path))
     if not isinstance(manifest, dict): error("Not a valid YAML mapping"); sys.exit(1)
@@ -106,26 +112,33 @@ try:
 
     # Required fields. host_network services use compose/native health checks and
     # do not expose a Docker-mapped HTTP health path.
+    host_network = service.get("host_network", False)
+    if "host_network" in service and not isinstance(host_network, bool):
+        error("Invalid type for service.host_network")
+
     required_fields = {"id": str, "name": str, "port": int, "type": str, "category": str}
-    if not service.get("host_network", False):
+    if host_network is not True:
         required_fields["health"] = str
 
     for field, typ in required_fields.items():
         val = service.get(field)
         if val is None: error(f"Missing service.{field}")
-        elif not isinstance(val, typ): error(f"Invalid type for service.{field}")
+        elif typ is int and not is_int(val): error(f"Invalid type for service.{field}")
+        elif typ is not int and not isinstance(val, typ): error(f"Invalid type for service.{field}")
         else: info(f"service.{field}: OK")
 
     # Validate formats
     if service.get("id") and not re.match(r'^[a-z0-9][a-z0-9-]*$', service["id"]):
         error(f"Invalid service.id format: {service['id']}")
+    if "name" in service and not has_text(service.get("name")):
+        error("Invalid service.name")
     if service.get("category") not in ["core", "recommended", "optional", None]:
         error(f"Invalid category: {service.get('category')}")
     if service.get("type") not in ["docker", "host-systemd", None]:
         error(f"Invalid type: {service.get('type')}")
     
     port = service.get("port", 0)
-    if isinstance(port, int) and not (0 <= port <= 65535):
+    if is_int(port) and not (0 <= port <= 65535):
         error(f"Invalid port: {port}")
 
     if service.get("health") and not service["health"].startswith("/"):
@@ -152,6 +165,17 @@ try:
             continue
         if "key" not in env_var:
             error("env_vars entry missing key")
+        elif not isinstance(env_var["key"], str):
+            error("Invalid env_vars key")
+        for bool_field in ["required", "secret"]:
+            if bool_field in env_var and not isinstance(env_var[bool_field], bool):
+                error(f"Invalid env_vars {bool_field}")
+        for str_field in ["description", "default"]:
+            if str_field in env_var and not isinstance(env_var[str_field], str):
+                error(f"Invalid env_vars {str_field}")
+        extra_keys = set(env_var) - {"key", "required", "secret", "description", "default"}
+        for key in sorted(extra_keys):
+            error(f"Invalid env_vars property: {key}")
 
     for feature in manifest.get("features", []) or []:
         if not isinstance(feature, dict):
@@ -162,12 +186,21 @@ try:
                 error(f"Missing feature.{field}")
         if feature.get("id") and not re.match(r'^[a-z0-9][a-z0-9-]*$', str(feature["id"])):
             error(f"Invalid feature.id format: {feature['id']}")
+        for field in ["name", "description", "icon", "category"]:
+            if field in feature and not has_text(feature.get(field)):
+                error(f"Invalid feature.{field}")
+        if "requirements" in feature and not isinstance(feature.get("requirements"), dict):
+            error("Invalid feature.requirements")
         priority = feature.get("priority")
-        if priority is not None and (not isinstance(priority, int) or priority < 1):
+        if priority is not None and (not is_int(priority) or priority < 1):
             error(f"Invalid feature.priority: {priority}")
         for backend in feature.get("gpu_backends", []):
             if backend not in ["amd", "nvidia", "apple", "cpu", "none", "all"]:
                 error(f"Invalid feature gpu_backend: {backend}")
+
+    for tag in manifest.get("tags", []) or []:
+        if not isinstance(tag, str) or not re.match(r'^[a-z0-9][a-z0-9-]*$', tag):
+            error(f"Invalid tag: {tag}")
 
     # Check compose_file exists
     if service.get("compose_file"):
