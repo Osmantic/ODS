@@ -163,11 +163,6 @@ test_service() {
     local port="$default_port"
     [[ -n "$port_env" ]] && port="${!port_env:-$default_port}"
 
-    if [[ "$health_type" == "none" ]]; then
-        result_set "$sid" "ok"
-        return 0
-    fi
-
     if [[ "$health_type" == "http" ]] && [[ -z "$health" || "$port" == "0" ]]; then
         return 1
     fi
@@ -175,7 +170,8 @@ test_service() {
         return 1
     fi
 
-    # Check container state first (if docker available)
+    # Check container state first (if docker available) — even for "none"
+    # services, a stopped/missing container should not report healthy.
     local container_state
     container_state=$(check_container_state "$sid")
     if [[ -n "$container_state" && "$container_state" != "running" ]]; then
@@ -184,9 +180,25 @@ test_service() {
         return 1
     fi
 
+    # CLI/no-health services: container is running (or not managed), report ok
+    if [[ "$health_type" == "none" ]]; then
+        result_set "$sid" "ok"
+        return 0
+    fi
+
+    # Validate port and timeout are numeric before use
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || ! [[ "$timeout" =~ ^[0-9]+$ ]]; then
+        result_set "$sid" "fail"
+        ANY_FAIL=true
+        return 1
+    fi
+
     if [[ "$health_type" == "tcp" ]]; then
-        # TCP connection test using Python socket
-        if python3 -c "import socket; s = socket.create_connection(('127.0.0.1', $port), timeout=$timeout); s.close()" 2>/dev/null; then
+        # TCP connection test — values passed via environment to avoid
+        # interpolating unvalidated data into Python source
+        if DS_PORT="$port" DS_TIMEOUT="$timeout" python3 -c \
+            'import os,socket; s = socket.create_connection(("127.0.0.1", int(os.environ["DS_PORT"])), timeout=int(os.environ["DS_TIMEOUT"])); s.close()' \
+            2>/dev/null; then
             result_set "$sid" "ok"
             return 0
         fi
