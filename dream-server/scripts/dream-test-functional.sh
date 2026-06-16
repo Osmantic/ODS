@@ -231,7 +231,7 @@ test_whisper_functional() {
         return 0
     fi
     
-    if [[ ! -f "$test_audio" ]] || [[ $(stat -c%s "$test_audio" 2>/dev/null) -lt 1000 ]]; then
+    if [[ ! -f "$test_audio" ]] || [[ "$(stat -c%s "$test_audio" 2>/dev/null || stat -f%z "$test_audio" 2>/dev/null || echo 0)" -lt 1000 ]]; then
         warn "Test audio generation failed"
         return 0
     fi

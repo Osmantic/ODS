@@ -465,6 +465,7 @@ def main():
         services = {}
         for s in enabled_services:
             services[s] = ServiceAssignment(gpus=[gpu])
+        services.setdefault("llama_server", ServiceAssignment(gpus=[gpu]))
         services["llama_server"].parallelism = parallelism
         result = AssignmentResult(strategy="single", services=services)
         print(json.dumps(build_output(result), indent=2))

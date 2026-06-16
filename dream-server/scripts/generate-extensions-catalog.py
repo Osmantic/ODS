@@ -6,6 +6,7 @@ extracts catalog-relevant fields, and writes a sorted JSON catalog
 to dream-server/config/extensions-catalog.json.
 """
 
+from __future__ import annotations
 import argparse
 import json
 import re

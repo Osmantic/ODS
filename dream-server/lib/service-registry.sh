@@ -5,7 +5,7 @@
 EXTENSIONS_DIR="${SCRIPT_DIR:-$(pwd)}/extensions/services"
 _SR_LOADED=false
 _SR_FAILED=false
-_SR_CACHE="/tmp/dream-service-registry.$$.sh"
+_SR_CACHE="$(mktemp "${TMPDIR:-/tmp}/dream-service-registry.XXXXXX")" || _SR_CACHE=""
 
 # Caching for compose flags (session-level)
 _SR_COMPOSE_FLAGS_CACHE=""
