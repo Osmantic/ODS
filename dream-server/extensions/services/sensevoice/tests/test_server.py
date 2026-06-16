@@ -62,3 +62,34 @@ def test_missing_file_returns_400():
     # file=None (rather than a 422 for an empty body).
     resp = client.post("/v1/audio/transcriptions", data={"language": "auto"})
     assert resp.status_code == 400
+
+
+def test_oversized_upload_returns_413(monkeypatch):
+    # Shrink the limit so a small payload trips it; the model must never be
+    # invoked because the size check happens before transcription.
+    monkeypatch.setattr(server, "MAX_AUDIO_BYTES", 8)
+
+    def _boom():
+        raise AssertionError("get_model must not be called for oversized uploads")
+
+    monkeypatch.setattr(server, "get_model", _boom)
+    resp = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("big.wav", b"way more than eight bytes", "audio/wav")},
+    )
+    assert resp.status_code == 413
+
+
+def test_openai_compat_params_are_accepted_and_ignored(monkeypatch):
+    class FakeModel:
+        def generate(self, **kwargs):
+            return [{"text": "<|en|><|NEUTRAL|><|Speech|><|woitn|>ok"}]
+
+    monkeypatch.setattr(server, "get_model", lambda: FakeModel())
+    resp = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("clip.wav", b"RIFFfakeaudio", "audio/wav")},
+        data={"model": "whisper-1", "response_format": "json", "temperature": "0.2"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"text": "ok"}

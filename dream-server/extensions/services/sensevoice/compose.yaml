@@ -1,7 +1,7 @@
 services:
   sensevoice:
     build:
-      context: .
+      context: ./extensions/services/sensevoice
       dockerfile: Dockerfile
     image: dream-sensevoice:local
     container_name: dream-sensevoice
@@ -11,7 +11,7 @@ services:
     environment:
       - SENSEVOICE_DEVICE=cpu
     volumes:
-      - ./data/sensevoice:/root/.cache/modelscope:z
+      - ./data/sensevoice:/app/cache:z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${SENSEVOICE_PORT:-9100}:8000"
     deploy:

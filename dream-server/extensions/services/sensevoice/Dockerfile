@@ -11,7 +11,12 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY server.py /app/server.py
 
-ENV MODELSCOPE_CACHE=/root/.cache/modelscope
+ENV HOME=/app \
+    MODELSCOPE_CACHE=/app/cache
+RUN adduser --system --no-create-home --uid 1000 sensevoice \
+    && mkdir -p /app/cache \
+    && chown -R sensevoice:nogroup /app
+USER sensevoice
 
 EXPOSE 8000
 

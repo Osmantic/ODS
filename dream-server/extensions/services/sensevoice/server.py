@@ -17,6 +17,9 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 MODEL_ID = "iic/SenseVoiceSmall"
 VAD_MODEL_ID = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
 
+MAX_AUDIO_BYTES = int(os.environ.get("SENSEVOICE_MAX_AUDIO_BYTES", 25 * 1024 * 1024))
+_READ_CHUNK_BYTES = 1024 * 1024
+
 app = FastAPI(title="Dream SenseVoice STT")
 
 _model = None
@@ -57,13 +60,27 @@ def health():
 async def transcriptions(
     file: Optional[UploadFile] = File(default=None),
     language: str = Form(default="auto"),
+    model: Optional[str] = Form(default=None),
+    response_format: Optional[str] = Form(default=None),
+    temperature: Optional[str] = Form(default=None),
 ):
     if file is None:
         raise HTTPException(status_code=400, detail="no audio file provided")
 
     suffix = os.path.splitext(file.filename or "")[1] or ".wav"
     with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
-        tmp.write(await file.read())
+        total = 0
+        while True:
+            chunk = await file.read(_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_AUDIO_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"audio upload exceeds {MAX_AUDIO_BYTES} byte limit",
+                )
+            tmp.write(chunk)
         tmp.flush()
         result = get_model().generate(
             input=tmp.name,
