@@ -1,0 +1,55 @@
+schema_version: dream.services.v1
+
+compatibility:
+  dream_min: "2.0.0"
+
+service:
+  id: x402-gateway
+  name: x402 Gateway
+  aliases: [x402, paid-api, payments]
+  container_name: dream-x402-gateway
+  default_host: x402-gateway
+  port: 4020
+  external_port_env: X402_GATEWAY_PORT
+  external_port_default: 4020
+  health: /health
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: [llama-server]
+  description: >
+    Optional HTTP 402 payment gateway for Dream Server routes. The gateway
+    protects only explicit allowlisted routes from config/x402/config.json and
+    proxies paid requests to existing Dream services.
+
+  env_vars:
+    - key: X402_GATEWAY_PORT
+      required: false
+      default: "4020"
+      description: Host port the x402 gateway listens on
+    - key: X402_GATEWAY_BIND
+      required: false
+      default: "127.0.0.1"
+      description: Bind address for the gateway host port
+    - key: X402_CONFIG_PATH
+      required: false
+      default: "/config/config.json"
+      description: Path to the x402 gateway JSON config inside the container
+
+features:
+  - id: x402-paid-routes
+    name: Paid HTTP routes
+    description: x402 payment protection for explicit Dream Server HTTP routes
+    icon: BadgeDollarSign
+    category: networking
+    requirements:
+      services: [x402-gateway]
+      vram_gb: 0
+    enabled_services_all: [x402-gateway]
+    setup_time: ~2 minutes
+    priority: 55
+    launch:
+      type: service
+      service: x402-gateway
+    gpu_backends: [all]

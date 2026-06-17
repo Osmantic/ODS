@@ -1,0 +1,44 @@
+services:
+  x402-gateway:
+    build:
+      context: ./extensions/services/x402-gateway
+      dockerfile: Dockerfile
+    image: dream-x402-gateway:local
+    container_name: dream-x402-gateway
+    restart: unless-stopped
+    depends_on:
+      - llama-server
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - X402_CONFIG_PATH=/config/config.json
+      - X402_AUDIT_LOG=/data/audit.jsonl
+      - X402_GATEWAY_PORT_INTERNAL=4020
+    volumes:
+      - ./config/x402:/config:ro,z
+      - ./data/x402:/data:z
+    ports:
+      - "${X402_GATEWAY_BIND:-127.0.0.1}:${X402_GATEWAY_PORT:-4020}:4020"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: ${X402_GATEWAY_MEMORY_LIMIT:-256M}
+        reservations:
+          cpus: '0.05'
+          memory: 64M
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4020/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
