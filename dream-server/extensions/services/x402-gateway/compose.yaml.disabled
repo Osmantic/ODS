@@ -14,6 +14,8 @@ services:
       - X402_CONFIG_PATH=/config/config.json
       - X402_AUDIT_LOG=/data/audit.jsonl
       - X402_GATEWAY_PORT_INTERNAL=4020
+      - CDP_API_KEY_ID=${CDP_API_KEY_ID:-}
+      - CDP_API_KEY_SECRET=${CDP_API_KEY_SECRET:-}
     volumes:
       - ./config/x402:/config:ro,z
       - ./data/x402:/data:z

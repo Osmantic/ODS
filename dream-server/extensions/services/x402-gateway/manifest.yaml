@@ -36,6 +36,14 @@ service:
       required: false
       default: "/config/config.json"
       description: Path to the x402 gateway JSON config inside the container
+    - key: CDP_API_KEY_ID
+      required: false
+      secret: true
+      description: CDP API key ID for the Coinbase x402 facilitator on mainnet
+    - key: CDP_API_KEY_SECRET
+      required: false
+      secret: true
+      description: Base64 CDP Ed25519 API key secret for facilitator auth
 
 features:
   - id: x402-paid-routes

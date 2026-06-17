@@ -6,6 +6,13 @@
     "recipient": "0xYourDreamServerWallet",
     "facilitatorUrl": "https://x402.org/facilitator"
   },
+  "facilitator": {
+    "url": "https://x402.org/facilitator",
+    "provider": "x402.org",
+    "auth": {
+      "type": "none"
+    }
+  },
   "policy": {
     "mode": "allowlist",
     "unprotectedByDefault": true,

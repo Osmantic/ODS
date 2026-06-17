@@ -14,6 +14,18 @@ class SellerConfig(BaseModel):
     facilitatorUrl: HttpUrl = Field(default="https://x402.org/facilitator")
 
 
+class FacilitatorAuthConfig(BaseModel):
+    type: Literal["none", "cdp_api_key"] = "none"
+    apiKeyIdEnv: str = "CDP_API_KEY_ID"
+    apiKeySecretEnv: str = "CDP_API_KEY_SECRET"
+
+
+class FacilitatorConfig(BaseModel):
+    url: HttpUrl = Field(default="https://x402.org/facilitator")
+    provider: Literal["x402.org", "cdp", "custom"] = "x402.org"
+    auth: FacilitatorAuthConfig = Field(default_factory=FacilitatorAuthConfig)
+
+
 class PolicyConfig(BaseModel):
     mode: Literal["allowlist"] = "allowlist"
     unprotectedByDefault: bool = True
@@ -75,6 +87,7 @@ class RouteRule(BaseModel):
 class GatewayConfig(BaseModel):
     enabled: bool = True
     seller: SellerConfig
+    facilitator: FacilitatorConfig | None = None
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     rules: list[RouteRule] = Field(default_factory=list)
@@ -90,6 +103,11 @@ class GatewayConfig(BaseModel):
                     raise ValueError(f"duplicate route rule for {method} {rule.path}")
                 seen.add(key)
         return value
+
+    def facilitator_url(self) -> str:
+        if self.facilitator:
+            return str(self.facilitator.url)
+        return str(self.seller.facilitatorUrl)
 
 
 def load_config(path: str | Path) -> GatewayConfig:

@@ -25,6 +25,37 @@ Edit:
 - `seller.network` — `eip155:84532` for Base Sepolia testing, `eip155:8453` for Base mainnet
 - `rules` — exact gateway routes to protect
 
+For no-signup testnet usage, keep:
+
+```json
+"facilitator": {
+  "url": "https://x402.org/facilitator",
+  "provider": "x402.org",
+  "auth": { "type": "none" }
+}
+```
+
+For Base mainnet with the CDP facilitator, set:
+
+```json
+"facilitator": {
+  "url": "https://api.cdp.coinbase.com/platform/v2/x402",
+  "provider": "cdp",
+  "auth": {
+    "type": "cdp_api_key",
+    "apiKeyIdEnv": "CDP_API_KEY_ID",
+    "apiKeySecretEnv": "CDP_API_KEY_SECRET"
+  }
+}
+```
+
+and add the CDP credentials to `.env`:
+
+```bash
+CDP_API_KEY_ID=<your-cdp-key-id>
+CDP_API_KEY_SECRET=<your-base64-cdp-ed25519-secret>
+```
+
 The default example protects:
 
 ```text
