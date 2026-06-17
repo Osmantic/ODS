@@ -844,6 +844,7 @@ else
     mkdir -p "${INSTALL_DIR}/config/llama-server"
     mkdir -p "${INSTALL_DIR}/data/open-webui"
     mkdir -p "${INSTALL_DIR}/data/whisper"
+    mkdir -p "${INSTALL_DIR}/data/sensevoice"
     mkdir -p "${INSTALL_DIR}/data/tts"
     mkdir -p "${INSTALL_DIR}/data/n8n"
     mkdir -p "${INSTALL_DIR}/data/qdrant"
