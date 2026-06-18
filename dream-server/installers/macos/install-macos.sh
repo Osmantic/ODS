@@ -1416,6 +1416,7 @@ else
             case "$SVC_NAME" in
                 litellm|searxng|token-spy) $ENABLE_RECOMMENDED || SKIP=true ;;
                 whisper|tts)   $ENABLE_VOICE || SKIP=true ;;
+                sensevoice)    [[ "${ENABLE_SENSEVOICE:-false}" == "true" ]] || SKIP=true ;;
                 n8n)           $ENABLE_WORKFLOWS || SKIP=true ;;
                 qdrant|embeddings) $ENABLE_RAG || SKIP=true ;;
                 hermes|hermes-proxy) $ENABLE_HERMES || SKIP=true ;;
