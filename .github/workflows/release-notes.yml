@@ -28,7 +28,7 @@ jobs:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
 
@@ -61,7 +61,7 @@ jobs:
           echo "Previous release: $PREV_TAG"
 
       - name: Generate Release Notes
-        uses: anthropics/claude-code-action@9db782c3a17ef2bfc274cd17411bc3e0a5ba1345 # v1
+        uses: anthropics/claude-code-action@806af32823ef69c8ef357086c573a902af641307 # v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

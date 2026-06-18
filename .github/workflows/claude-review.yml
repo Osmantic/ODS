@@ -76,7 +76,7 @@ jobs:
 
       - name: Checkout code
         if: steps.fork_check.outputs.is_fork != 'true'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
 
@@ -111,7 +111,7 @@ jobs:
         if: |
           steps.fork_check.outputs.is_fork != 'true' &&
           (steps.pr_size.outputs.skip_review == 'false' || contains(github.event.pull_request.labels.*.name, 'force-review'))
-        uses: anthropics/claude-code-action@9db782c3a17ef2bfc274cd17411bc3e0a5ba1345 # v1
+        uses: anthropics/claude-code-action@806af32823ef69c8ef357086c573a902af641307 # v1
         with:
           claude_args: |
             code-review --comment \
@@ -161,7 +161,7 @@ jobs:
           fi
 
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
 
@@ -259,7 +259,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
 
@@ -318,14 +318,14 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Claude Code Review with write permissions
         id: review
-        uses: anthropics/claude-code-action@9db782c3a17ef2bfc274cd17411bc3e0a5ba1345 # v1
+        uses: anthropics/claude-code-action@806af32823ef69c8ef357086c573a902af641307 # v1
         with:
           claude_args: |
             code-review \
