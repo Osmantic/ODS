@@ -750,6 +750,12 @@ MODELS_INI_EOF
     _candidate_build_services=(dashboard dashboard-api ape token-spy privacy-shield)
     [[ "$ENABLE_COMFYUI" == "true" ]] && _candidate_build_services+=(comfyui)
     [[ "$GPU_BACKEND" == "amd" ]] && _candidate_build_services+=(llama-server)
+    # SenseVoice ships build: + image:dream-sensevoice:local. If enabled at
+    # installer time its compose fragment stays active, so the image MUST be
+    # built here — compose-up runs with --no-build and would abort on the missing
+    # image otherwise. The config --services intersection below is the real gate;
+    # the flag keeps the candidate list honest about intent.
+    [[ "${ENABLE_SENSEVOICE:-false}" == "true" ]] && _candidate_build_services+=(sensevoice)
     if ! _enabled_compose_services="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --services 2>>"$LOG_FILE")"; then
         ai_bad "Could not resolve compose services before local image builds."
         ai "Inspect compose config with: $(_phase11_compose_command_text) config --services"

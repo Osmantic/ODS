@@ -1490,6 +1490,10 @@ else
     # look broken.
     ai "Rebuilding local-built images (no-cache)..."
     _macos_candidate_build_services=(dashboard dashboard-api ape token-spy privacy-shield)
+    # SenseVoice enabled at installer time needs its image built before the
+    # --no-build compose-up; the config --services intersection below still
+    # gates whether it actually builds.
+    [[ "${ENABLE_SENSEVOICE:-false}" == "true" ]] && _macos_candidate_build_services+=(sensevoice)
     if ! _macos_enabled_services="$(docker compose "${COMPOSE_FLAGS[@]}" config --services 2>>"$DS_LOG_FILE")"; then
         ai_err "Could not resolve macOS compose services for local image rebuilds."
         ai "Inspect compose config with: cd '$INSTALL_DIR' && docker compose ${COMPOSE_FLAGS[*]} config --services"
