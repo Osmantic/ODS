@@ -1592,6 +1592,22 @@ else
             --exclude='.target-model' \
             --exclude='.target-quantization' \
             --exclude='.offline-mode' \
+            --exclude='tests/' \
+            --exclude='docs/' \
+            --exclude='examples/' \
+            --exclude='.github/' \
+            --exclude='CHANGELOG.md' \
+            --exclude='CODE_OF_CONDUCT.md' \
+            --exclude='CONTRIBUTING.md' \
+            --exclude='EDGE-QUICKSTART.md' \
+            --exclude='FAQ.md' \
+            --exclude='QUICKSTART.md' \
+            --exclude='SECURITY.md' \
+            --exclude='README.md' \
+            --exclude='.shellcheckrc' \
+            --exclude='PSScriptAnalyzerSettings.psd1' \
+            --exclude='test-stack.sh' \
+            --exclude='.gitignore' \
             "$SOURCE_ROOT/" "$INSTALL_DIR/"
         ai_ok "Source files installed"
     else

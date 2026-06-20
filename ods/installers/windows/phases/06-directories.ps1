@@ -142,8 +142,14 @@ if ($sourceRoot -ne $installDir) {
         "/E",                                  # Copy subdirectories including empty ones
         "/NFL", "/NDL", "/NJH", "/NJS",        # Suppress file/dir/job headers (clean output)
         "/XD", ".git", "data", "logs", "models", "node_modules", "dist",
+               "tests", "docs", "examples", ".github",
         "/XF", ".env", "*.log", ".current-mode", ".profiles",
-               ".target-model", ".target-quantization", ".offline-mode"
+               ".target-model", ".target-quantization", ".offline-mode",
+               "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md",
+               "EDGE-QUICKSTART.md", "FAQ.md", "QUICKSTART.md",
+               "SECURITY.md", "README.md",
+               ".shellcheckrc", "PSScriptAnalyzerSettings.psd1",
+               "test-stack.sh", ".gitignore"
     )
     & robocopy @robocopyArgs | Out-Null
     if ($LASTEXITCODE -gt 7) {
