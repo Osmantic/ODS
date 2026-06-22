@@ -675,7 +675,7 @@ class TestGpuEndpoint:
 
     def test_gpu_no_cache_no_gpu(self, test_client, monkeypatch):
         import main
-        main._cache._store.pop("gpu_info", None)
+        main._cache.invalidate("gpu_info")
         monkeypatch.setattr("main.get_gpu_info", lambda: None)
         resp = test_client.get("/gpu", headers=test_client.auth_headers)
         assert resp.status_code == 503

@@ -122,8 +122,8 @@ class TestServiceResources:
     def _clear_resource_cache():
         """Remove cached resource entries so each test gets fresh data."""
         from main import _cache
-        _cache._store.pop("service_resources_containers", None)
-        _cache._store.pop("service_resources_disk", None)
+        _cache.invalidate("service_resources_containers")
+        _cache.invalidate("service_resources_disk")
 
     def test_requires_auth(self, test_client):
         """GET /api/services/resources without auth header returns 401."""

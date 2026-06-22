@@ -87,7 +87,7 @@ def settings_env_fixture(tmp_path, monkeypatch):
 
     from main import _cache
 
-    _cache._store.clear()
+    _cache.clear()
 
     return {
         "install_root": install_root,
