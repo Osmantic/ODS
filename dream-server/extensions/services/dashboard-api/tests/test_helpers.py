@@ -15,7 +15,7 @@ from helpers import (
     check_service_health, get_all_services,
     get_llama_metrics, get_loaded_model, get_llama_context_size,
     get_disk_usage, dir_size_gb, invalidate_dir_size_cache, clear_dir_size_cache,
-    _get_aio_session, set_services_cache, get_cached_services,
+    _get_aio_session, _get_httpx_client, set_services_cache, get_cached_services,
     _get_lifetime_tokens,
 )
 from models import BootstrapStatus, ServiceStatus, DiskUsage
@@ -693,6 +693,49 @@ class TestGetAioSession:
         s2 = await _get_aio_session()
         assert s1 is s2
         await s1.close()
+
+
+class TestSessionRaceSafety:
+    """Verify that concurrent _get_aio_session / _get_httpx_client calls
+    don't create duplicate sessions (i.e. the asyncio.Lock guard works)."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_aio_session_returns_same_instance(self, monkeypatch):
+        """Multiple concurrent calls should all get the same session."""
+        import helpers
+        monkeypatch.setattr(helpers, "_aio_session", None)
+        sessions = await asyncio.gather(
+            _get_aio_session(),
+            _get_aio_session(),
+            _get_aio_session(),
+        )
+        assert all(s is sessions[0] for s in sessions)
+        await sessions[0].close()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_httpx_client_returns_same_instance(self, monkeypatch):
+        """Multiple concurrent calls should all get the same httpx client."""
+        import helpers
+        monkeypatch.setattr(helpers, "_httpx_client", None)
+        clients = await asyncio.gather(
+            _get_httpx_client(),
+            _get_httpx_client(),
+            _get_httpx_client(),
+        )
+        assert all(c is clients[0] for c in clients)
+        await clients[0].aclose()
+
+    @pytest.mark.asyncio
+    async def test_aio_session_recreated_after_close(self, monkeypatch):
+        """After closing the session, next call should create a new one."""
+        import helpers
+        monkeypatch.setattr(helpers, "_aio_session", None)
+        s1 = await _get_aio_session()
+        await s1.close()
+        s2 = await _get_aio_session()
+        assert s2 is not s1
+        assert not s2.closed
+        await s2.close()
 
 
 # --- set_services_cache / get_cached_services ---
