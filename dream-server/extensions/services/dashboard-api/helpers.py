@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 # poll cycle and prevents file-descriptor exhaustion.
 
 _aio_session: Optional[aiohttp.ClientSession] = None
+_session_lock = asyncio.Lock()
 _HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=30)
 # Short timeout for the catalog fan-out: one slow probe must not stall the
 # whole Extensions page (frontend aborts after 8 s).
@@ -62,12 +63,15 @@ _CATALOG_HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=5)
 async def _get_aio_session() -> aiohttp.ClientSession:
     """Return (and lazily create) a module-level aiohttp session."""
     global _aio_session
-    if _aio_session is None or _aio_session.closed:
-        _aio_session = aiohttp.ClientSession(
-            timeout=_HEALTH_TIMEOUT,
-            connector=aiohttp.TCPConnector(family=socket.AF_INET),
-        )
-    return _aio_session
+    if _aio_session is not None and not _aio_session.closed:
+        return _aio_session
+    async with _session_lock:
+        if _aio_session is None or _aio_session.closed:
+            _aio_session = aiohttp.ClientSession(
+                timeout=_HEALTH_TIMEOUT,
+                connector=aiohttp.TCPConnector(family=socket.AF_INET),
+            )
+        return _aio_session
 
 
 # Shared httpx client for llama-server requests (connection pooling)
@@ -77,9 +81,12 @@ _httpx_client: Optional[httpx.AsyncClient] = None
 async def _get_httpx_client() -> httpx.AsyncClient:
     """Return (and lazily create) a module-level httpx async client."""
     global _httpx_client
-    if _httpx_client is None or _httpx_client.is_closed:
-        _httpx_client = httpx.AsyncClient(timeout=5.0)
-    return _httpx_client
+    if _httpx_client is not None and not _httpx_client.is_closed:
+        return _httpx_client
+    async with _session_lock:
+        if _httpx_client is None or _httpx_client.is_closed:
+            _httpx_client = httpx.AsyncClient(timeout=5.0)
+        return _httpx_client
 
 
 def _service_status_from_config(service_id: str, config: dict, status: str) -> ServiceStatus:
