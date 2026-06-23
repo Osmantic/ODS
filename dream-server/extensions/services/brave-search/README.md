@@ -66,9 +66,9 @@ Error responses:
 
 Returns `{ "ok": true }`. Used by the dashboard healthcheck.
 
-## What this is *not*
+### `GET /search?format=json&q=<query>&count=<n>`
 
-This is not a drop-in replacement for `searxng`'s API surface. Perplexica (and any other consumer that speaks searxng's specific JSON format) cannot point `SEARXNG_API_URL` at this service and have it work — the response shapes differ. A future, separately scoped effort could add a searxng-API-compatible mode for that use case. For now, this service exists for users and scripts that want a small, stable search interface backed by an index that doesn't fall over under load.
+Opt-in SearXNG compatibility route. Returns results in the standard SearXNG JSON structure (`content`, `engine`, `score`, `category`), mapping Brave's native `snippet` to the expected `content` field. Consumers like Perplexica can point `SEARXNG_API_URL` to this service using this endpoint format.
 
 ## Files
 
