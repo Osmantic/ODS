@@ -100,6 +100,14 @@ class TTLCache:
     def set(self, key: str, value: object, ttl: float):
         self._store[key] = (time.monotonic() + ttl, value)
 
+    def invalidate(self, key: str) -> None:
+        """Remove a single cached entry (no-op if missing or expired)."""
+        self._store.pop(key, None)
+
+    def clear(self) -> None:
+        """Drop every cached entry."""
+        self._store.clear()
+
 
 _cache = TTLCache()
 
@@ -803,7 +811,7 @@ def _render_env_from_values(values: dict[str, str]) -> str:
 
 def _clear_settings_caches():
     for key in ("settings_summary", "settings_env", "status"):
-        _cache._store.pop(key, None)
+        _cache.invalidate(key)
 
 
 def _call_agent_core_recreate(service_ids: list[str]) -> dict[str, Any]:

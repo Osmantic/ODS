@@ -218,5 +218,5 @@ async def restart_service(service_id: str, api_key: str = Depends(verify_api_key
     )
 
     from main import _cache  # noqa: PLC0415 — deferred import to avoid circular dependency
-    _cache._store.pop("service_resources_containers", None)
+    _cache.invalidate("service_resources_containers")
     return result

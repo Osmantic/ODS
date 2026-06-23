@@ -40,6 +40,14 @@ class _DirSizeCache:
     def set(self, path: Path, value: float):
         self._store[str(path.resolve())] = (time.monotonic() + self._ttl, value)
 
+    def invalidate(self, key: str) -> None:
+        """Remove a single cached entry (no-op if missing or expired)."""
+        self._store.pop(key, None)
+
+    def clear(self) -> None:
+        """Drop every cached entry."""
+        self._store.clear()
+
 
 _dir_size_cache = _DirSizeCache()
 
@@ -562,12 +570,12 @@ def dir_size_gb(path: Path) -> float:
 
 def invalidate_dir_size_cache(path: Path):
     """Remove cached size for a specific path after it has been modified."""
-    _dir_size_cache._store.pop(str(path.resolve()), None)
+    _dir_size_cache.invalidate(str(path.resolve()))
 
 
 def clear_dir_size_cache():
     """Clear the entire dir_size_gb cache (e.g. after bulk operations)."""
-    _dir_size_cache._store.clear()
+    _dir_size_cache.clear()
 
 
 def get_disk_usage() -> DiskUsage:

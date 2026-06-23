@@ -531,6 +531,39 @@ class TestTTLCache:
         cache = TTLCache()
         assert cache.get("nope") is None
 
+    def test_invalidate_removes_key(self):
+        cache = TTLCache()
+        cache.set("a", 1, ttl=10)
+        cache.set("b", 2, ttl=10)
+        cache.invalidate("a")
+        assert cache.get("a") is None
+        assert cache.get("b") == 2
+
+    def test_invalidate_nonexistent_key_is_noop(self):
+        cache = TTLCache()
+        cache.invalidate("missing")  # should not raise
+
+    def test_clear_removes_all_keys(self):
+        cache = TTLCache()
+        cache.set("x", 10, ttl=10)
+        cache.set("y", 20, ttl=10)
+        cache.set("z", 30, ttl=10)
+        cache.clear()
+        assert cache.get("x") is None
+        assert cache.get("y") is None
+        assert cache.get("z") is None
+
+    def test_clear_on_empty_cache_is_noop(self):
+        cache = TTLCache()
+        cache.clear()  # should not raise
+
+    def test_set_after_invalidate(self):
+        cache = TTLCache()
+        cache.set("k", "old", ttl=10)
+        cache.invalidate("k")
+        cache.set("k", "new", ttl=10)
+        assert cache.get("k") == "new"
+
 
 # --- /api/preflight/docker edge cases ---
 
@@ -675,7 +708,7 @@ class TestGpuEndpoint:
 
     def test_gpu_no_cache_no_gpu(self, test_client, monkeypatch):
         import main
-        main._cache._store.pop("gpu_info", None)
+        main._cache.invalidate("gpu_info")
         monkeypatch.setattr("main.get_gpu_info", lambda: None)
         resp = test_client.get("/gpu", headers=test_client.auth_headers)
         assert resp.status_code == 503

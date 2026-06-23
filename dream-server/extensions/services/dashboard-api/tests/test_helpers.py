@@ -1056,3 +1056,33 @@ class TestDirSizeGb:
         invalidate_dir_size_cache(d)
         assert dir_size_gb(d) == 0.0
         assert calls["count"] == 1
+
+    def test_clear_dir_size_cache_forces_refresh_all(self, tmp_path, monkeypatch):
+        """clear_dir_size_cache() should drop every cached path."""
+        clear_dir_size_cache()
+        d1 = tmp_path / "one"
+        d1.mkdir()
+        (d1 / "a.bin").write_bytes(b"\x00" * 1024)
+        d2 = tmp_path / "two"
+        d2.mkdir()
+        (d2 / "b.bin").write_bytes(b"\x00" * 1024)
+
+        assert dir_size_gb(d1) == 0.0
+        assert dir_size_gb(d2) == 0.0
+
+        original_rglob = Path.rglob
+        calls = {"count": 0}
+
+        def _tracking_rglob(self, pattern):
+            calls["count"] += 1
+            return original_rglob(self, pattern)
+
+        monkeypatch.setattr(Path, "rglob", _tracking_rglob)
+        assert dir_size_gb(d1) == 0.0
+        assert dir_size_gb(d2) == 0.0
+        assert calls["count"] == 0
+
+        clear_dir_size_cache()
+        assert dir_size_gb(d1) == 0.0
+        assert dir_size_gb(d2) == 0.0
+        assert calls["count"] == 2
