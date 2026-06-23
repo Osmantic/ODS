@@ -231,7 +231,7 @@ def _tts_model() -> str:
 
 
 def _tts_voice() -> str:
-    return os.environ.get("AUDIO_TTS_VOICE") or "af_heart"
+    return os.environ.get("AUDIO_TTS_VOICE") or os.environ.get("TTS_VOICE") or "af_heart"
 
 
 async def _transcribe_bytes(data: bytes, filename: str, content_type: str) -> str:

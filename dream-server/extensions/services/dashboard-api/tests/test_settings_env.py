@@ -366,17 +366,42 @@ def test_settings_apply_plan_maps_hermes_env_keys():
         "HERMES_LANGUAGE": "en",
         "HERMES_PROXY_PORT": "9120",
         "DREAM_AUTH_UPSTREAM": "dream-dashboard-api:3002",
+        "WHATSAPP_ENABLED": "false",
+        "SEARXNG_URL": "http://searxng:8080",
     }
     updated = {
         "HERMES_LANGUAGE": "pt",
         "HERMES_PROXY_PORT": "9121",
         "DREAM_AUTH_UPSTREAM": "dashboard-api:3002",
+        "WHATSAPP_ENABLED": "true",
+        "SEARXNG_URL": "http://search:8080",
     }
 
     plan = _compute_env_apply_plan(previous, updated)
 
     assert plan["status"] == "ready"
     assert plan["services"] == ["hermes", "hermes-proxy"]
+    assert plan["manualKeys"] == []
+
+
+def test_settings_apply_plan_maps_agent_and_proxy_env_keys():
+    from settings import _compute_env_apply_plan
+
+    previous = {
+        "APE_STRICT_MODE": "false",
+        "DREAM_PROXY_PORT": "80",
+        "OPENCLAW_DANGEROUSLY_DISABLE_DEVICE_AUTH": "",
+    }
+    updated = {
+        "APE_STRICT_MODE": "true",
+        "DREAM_PROXY_PORT": "8080",
+        "OPENCLAW_DANGEROUSLY_DISABLE_DEVICE_AUTH": "true",
+    }
+
+    plan = _compute_env_apply_plan(previous, updated)
+
+    assert plan["status"] == "ready"
+    assert plan["services"] == ["ape", "dream-proxy", "openclaw"]
     assert plan["manualKeys"] == []
 
 
@@ -487,6 +512,8 @@ def test_render_env_preserves_commented_key_absent_from_values(commented_example
         "OPENAI_API_KEY",
         "TOGETHER_API_KEY",
         "LIVEKIT_API_KEY",
+        "AUDIO_STT_OPENAI_API_KEY",
+        "AUDIO_TTS_OPENAI_API_KEY",
     ],
 )
 def test_production_schema_marks_provider_api_keys_secret(key):
@@ -503,3 +530,20 @@ def test_production_schema_marks_provider_api_keys_secret(key):
     entry = schema["properties"].get(key)
     assert entry is not None, f"schema missing entry for {key}"
     assert entry.get("secret") is True, f"{key} must have 'secret': true in .env.schema.json"
+
+
+def test_env_example_keys_are_present_in_schema():
+    """Every documented .env.example key should be editable in Settings."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[4]
+    schema = json.loads((root / ".env.schema.json").read_text(encoding="utf-8"))
+    example = (root / ".env.example").read_text(encoding="utf-8")
+    documented_keys = {
+        match.group(1)
+        for match in re.finditer(r"^\s*#?\s*([A-Z][A-Z0-9_]+)=", example, flags=re.MULTILINE)
+    }
+    schema_keys = set(schema.get("properties", {}))
+
+    assert documented_keys - schema_keys == set()
