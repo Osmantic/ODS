@@ -45,6 +45,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== Bind address sweep ==="
 	@bash tests/test-bind-address-sweep.sh
+	@bash tests/test-n8n-cookie-policy.sh
 	@echo ""
 	@echo "=== dream-cli pipefail tolerance ==="
 	@bash tests/test-dream-cli-pipefail-tolerance.sh

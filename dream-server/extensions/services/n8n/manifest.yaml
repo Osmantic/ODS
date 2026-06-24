@@ -29,6 +29,12 @@ service:
       required: true
       secret: true
       description: n8n admin password
+    - key: N8N_SECURE_COOKIE
+      required: false
+      description: Session-cookie policy (auto, true, or false); auto disables Secure only for loopback HTTP
+    - key: N8N_PROXY_HOPS
+      required: false
+      description: Number of trusted reverse proxies in front of n8n
 
 features:
   - id: workflows

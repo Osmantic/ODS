@@ -6,6 +6,7 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     security_opt:
       - no-new-privileges:true
+    entrypoint: ["tini", "--", "/opt/dream/n8n-entrypoint.sh"]
     environment:
       - N8N_DEFAULT_ADMIN_EMAIL=${N8N_USER:?N8N_USER must be set in .env}
       - N8N_DEFAULT_ADMIN_PASSWORD=${N8N_PASS:?N8N_PASS must be set in .env}
@@ -13,8 +14,13 @@ services:
       - N8N_PORT=5678
       - N8N_PROTOCOL=http
       - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678}
+      - N8N_PROXY_HOPS=${N8N_PROXY_HOPS:-0}
+      - DREAM_BIND_ADDRESS=${BIND_ADDRESS:-127.0.0.1}
+      - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-auto}
       - GENERIC_TIMEZONE=${TIMEZONE:-UTC}
     volumes:
+      - ./extensions/services/n8n/n8n-cookie-policy.sh:/opt/dream/n8n-cookie-policy.sh:ro,z
+      - ./extensions/services/n8n/n8n-entrypoint.sh:/opt/dream/n8n-entrypoint.sh:ro,z
       - ./data/n8n:/home/node/.n8n:z
       - ./config/n8n:/home/node/workflows:z
     ports:

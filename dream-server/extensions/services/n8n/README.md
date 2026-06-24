@@ -27,8 +27,15 @@ Environment variables (set in `.env`):
 | `N8N_PORT` | `5678` | External port (maps to internal 5678) |
 | `N8N_AUTH` | `true` | Deprecated: n8n v2.x has built-in user management |
 | `N8N_HOST` | `localhost` | Hostname used in generated URLs |
-| `N8N_WEBHOOK_URL` | `http://localhost:5678` | Public webhook base URL (set to your LAN IP for external access) |
+| `N8N_WEBHOOK_URL` | `http://localhost:5678` | Public webhook base URL; use the HTTPS ingress URL for remote access |
+| `N8N_SECURE_COOKIE` | `auto` | Uses a non-`Secure` session cookie only for loopback HTTP; keeps `Secure` for HTTPS and network binds |
+| `N8N_PROXY_HOPS` | `0` | Number of trusted reverse proxies in front of n8n |
 | `TIMEZONE` | `UTC` | Timezone for scheduled workflows |
+
+`N8N_SECURE_COOKIE=auto` lets Safari use a local, loopback-only Dream Server
+without weakening remote sessions. An explicit `true` or `false` overrides the
+automatic policy. Do not set it to `false` when n8n is reachable from another
+machine.
 
 ## API
 
@@ -93,8 +100,14 @@ docker compose logs n8n
 - Credentials are read on first start; to change them, update `.env` and recreate the container: `docker compose up -d --force-recreate n8n`
 
 **Webhooks not receiving external traffic:**
-- Set `N8N_WEBHOOK_URL` to your machine's LAN IP (e.g. `http://192.168.1.100:5678`)
-- Ensure port 5678 is accessible on your firewall
+- Put n8n behind an HTTPS reverse proxy and set `N8N_WEBHOOK_URL` to its public URL (e.g. `https://n8n.example.com`)
+- Set `N8N_PROXY_HOPS` to the number of trusted proxies and ensure the proxy forwards the standard `X-Forwarded-*` headers
+
+**Secure-cookie warning in the browser:**
+- Restart or recreate n8n after upgrading so the automatic cookie policy is applied
+- Loopback HTTP (`localhost`, `127.0.0.1`, or `::1`) automatically uses a local-compatible cookie
+- Remote access must use HTTPS; keep `N8N_SECURE_COOKIE=true` and set `N8N_WEBHOOK_URL` to the public HTTPS URL
+- Behind one reverse proxy, set `N8N_PROXY_HOPS=1` and forward `X-Forwarded-For`, `X-Forwarded-Host`, and `X-Forwarded-Proto`
 
 **Workflow import failing via dashboard:**
 - Confirm n8n is healthy: `curl http://localhost:5678/healthz`

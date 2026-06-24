@@ -54,6 +54,9 @@ jobs:
       - name: Health Check Tests
         run: bash tests/test-health-check.sh
 
+      - name: n8n Cookie Policy Tests
+        run: bash tests/test-n8n-cookie-policy.sh
+
       - name: Dream Doctor Tests
         run: bash tests/test-dream-doctor.sh
 
