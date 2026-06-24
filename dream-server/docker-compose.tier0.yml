@@ -17,6 +17,9 @@ services:
           memory: 4G
         reservations:
           memory: 512M
+    healthcheck:
+      start_period: 360s
+      timeout: 30s
 
   dashboard:
     deploy:
@@ -33,6 +36,9 @@ services:
           memory: 512M
         reservations:
           memory: 128M
+    healthcheck:
+      start_period: 30s
+      timeout: 15s
 
   open-webui:
     deploy:
@@ -41,3 +47,6 @@ services:
           memory: 1G
         reservations:
           memory: 256M
+    healthcheck:
+      start_period: 120s
+      timeout: 30s

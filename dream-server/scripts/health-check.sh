@@ -96,11 +96,15 @@ _now_ms() {
 test_llm() {
     local start
     start=$(_now_ms)
+    # Lemonade (AMD) uses /api/v1 as base path; llama-server uses /v1.
+    # Read LLM_API_BASE_PATH from .env so the health check matches the
+    # backend that is actually running.
+    local base_path="${LLM_API_BASE_PATH:-/v1}"
     local response
     response=$(curl -sf --max-time $TIMEOUT \
         -H "Content-Type: application/json" \
         -d '{"model":"default","prompt":"Hi","max_tokens":1}' \
-        "http://${LLM_HOST}:${LLM_PORT}/v1/completions" 2>/dev/null)
+        "http://${LLM_HOST}:${LLM_PORT}${base_path}/completions" 2>/dev/null)
     local end
     end=$(_now_ms)
 

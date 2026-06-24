@@ -53,11 +53,17 @@ if [ ! -d "$SESSIONS_DIR" ]; then
     exit 0
 fi
 
-# ── Extract active session IDs (portable: no grep -P) ─────────
-ACTIVE_IDS_EXIT=0
-ACTIVE_IDS=$(grep -oE '"sessionId"[[:space:]]*:[[:space:]]*"[^"]+"' "$SESSIONS_JSON" 2>&1 | sed -E 's/.*"sessionId"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/') || ACTIVE_IDS_EXIT=$?
-if [[ $ACTIVE_IDS_EXIT -ne 0 ]]; then
-    ACTIVE_IDS=""
+# ── Extract active session IDs (prefer jq; fall back to grep) ──
+ACTIVE_IDS=""
+if command -v jq &>/dev/null; then
+    ACTIVE_IDS=$(jq -r '[.. | objects | .sessionId? // empty] | unique | .[]' "$SESSIONS_JSON" 2>/dev/null) || ACTIVE_IDS=""
+else
+    # Fallback for systems without jq — fragile with minified/nested JSON
+    ACTIVE_IDS_EXIT=0
+    ACTIVE_IDS=$(grep -oE '"sessionId"[[:space:]]*:[[:space:]]*"[^"]+"' "$SESSIONS_JSON" 2>&1 | sed -E 's/.*"sessionId"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/') || ACTIVE_IDS_EXIT=$?
+    if [[ $ACTIVE_IDS_EXIT -ne 0 ]]; then
+        ACTIVE_IDS=""
+    fi
 fi
 
 echo "[$(date)] Session cleanup starting"

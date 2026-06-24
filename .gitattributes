@@ -4,6 +4,17 @@
 # and fails with "no such file or directory").
 *.sh text eol=lf
 *.bash text eol=lf
+dream-server/dream-cli text eol=lf
+dream-server/dream-backup.sh text eol=lf
+dream-server/dream-preflight.sh text eol=lf
+dream-server/dream-restore.sh text eol=lf
+dream-server/dream-uninstall.sh text eol=lf
+dream-server/dream-update.sh text eol=lf
+dream-server/install-core.sh text eol=lf
+dream-server/install.sh text eol=lf
+dream-server/get-dream-server.sh text eol=lf
+dream-server/test-install.sh text eol=lf
+dream-server/test-stack.sh text eol=lf
 Dockerfile* text eol=lf
 docker-entrypoint* text eol=lf
 *.yaml text eol=lf

@@ -322,10 +322,16 @@ if $DOCKER_CMD inspect dream-perplexica &>/dev/null; then
 
     if [[ "$PERPLEXICA_SETUP" == "needed" ]]; then
         ai "Configuring Perplexica for ${LLM_MODEL}..."
-        # Query current config to get provider UUIDs, then set model + preferences via API
+        # Query current config to get provider UUIDs, then set model + preferences via API.
+        # Pass values as environment variables to avoid shell/Python injection
+        # when model names or API keys contain quotes or special characters.
         curl -sf "${PERPLEXICA_URL}/api/config" 2>/dev/null | \
+        _PERPLEXICA_URL="${PERPLEXICA_URL}" \
+        _PERPLEXICA_MODEL="${LLM_MODEL}" \
+        _PERPLEXICA_API_KEY="${LITELLM_KEY:-no-key}" \
+        _PERPLEXICA_BASE_URL="${LLM_API_URL:-http://llama-server:8080}/v1" \
         "$PYTHON_CMD" -c "
-import sys, json, urllib.request
+import os, sys, json, urllib.request
 
 config = json.load(sys.stdin)['values']
 providers = config.get('modelProviders', [])
@@ -336,8 +342,10 @@ if not openai_prov:
     print('no-openai-provider')
     sys.exit(1)
 
-url = '${PERPLEXICA_URL}/api/config'
-model = '${LLM_MODEL}'
+url = os.environ['_PERPLEXICA_URL'] + '/api/config'
+model = os.environ['_PERPLEXICA_MODEL']
+api_key = os.environ['_PERPLEXICA_API_KEY']
+base_url = os.environ['_PERPLEXICA_BASE_URL']
 
 def post(key, value):
     data = json.dumps({'key': key, 'value': value}).encode()
@@ -347,8 +355,8 @@ def post(key, value):
 # Seed the chat model into the OpenAI provider and set auth config
 openai_prov['chatModels'] = [{'key': model, 'name': model}]
 openai_prov['config'] = {
-    'apiKey': '${LITELLM_KEY:-no-key}',
-    'baseURL': '${LLM_API_URL:-http://llama-server:8080}/v1'
+    'apiKey': api_key,
+    'baseURL': base_url
 }
 post('modelProviders', providers)
 

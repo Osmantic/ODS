@@ -36,19 +36,34 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# Model definitions by tier
+# Model definitions by tier — GGUF files from model-library.json
+# These match the Qwen profile defaults in installers/lib/tier-map.sh
 declare -A TIER_MODELS
-TIER_MODELS[nano]="Qwen/Qwen2.5-1.5B-Instruct"
-TIER_MODELS[edge]="Qwen/Qwen2.5-7B-Instruct"
-TIER_MODELS[pro]="Qwen/Qwen2.5-32B-Instruct-AWQ"
-TIER_MODELS[cluster]="Qwen/Qwen2.5-72B-Instruct-AWQ"
+TIER_MODELS[nano]="qwen3.5-2b-q4"
+TIER_MODELS[edge]="qwen3.5-9b-q4"
+TIER_MODELS[pro]="qwen3.5-27b-q4"
+TIER_MODELS[cluster]="deepseek-r1-70b-q4"
 
-# Approximate sizes (for progress estimates)
+# GGUF download URLs (from model-library.json gguf_url fields)
+declare -A TIER_GGUF_URLS
+TIER_GGUF_URLS[nano]="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
+TIER_GGUF_URLS[edge]="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+TIER_GGUF_URLS[pro]="https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-Q4_K_M.gguf"
+TIER_GGUF_URLS[cluster]="https://huggingface.co/unsloth/DeepSeek-R1-Distill-Llama-70B-GGUF/resolve/main/DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf"
+
+# GGUF filenames (from model-library.json gguf_file fields)
+declare -A TIER_GGUF_FILES
+TIER_GGUF_FILES[nano]="Qwen3.5-2B-Q4_K_M.gguf"
+TIER_GGUF_FILES[edge]="Qwen3.5-9B-Q4_K_M.gguf"
+TIER_GGUF_FILES[pro]="Qwen3.5-27B-Q4_K_M.gguf"
+TIER_GGUF_FILES[cluster]="DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf"
+
+# Approximate sizes in GB (from model-library.json size_mb fields)
 declare -A MODEL_SIZES_GB
-MODEL_SIZES_GB[nano]="3"
-MODEL_SIZES_GB[edge]="14"
-MODEL_SIZES_GB[pro]="18"
-MODEL_SIZES_GB[cluster]="40"
+MODEL_SIZES_GB[nano]="2"
+MODEL_SIZES_GB[edge]="6"
+MODEL_SIZES_GB[pro]="17"
+MODEL_SIZES_GB[cluster]="43"
 
 # Optional components
 STT_MODEL="Systran/faster-whisper-large-v3"
@@ -78,22 +93,8 @@ error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 check_dependencies() {
     local missing=()
 
-    local pycmd="python3"
-    if command -v python3 &>/dev/null && python3 -c "import sys; sys.exit(0)" &>/dev/null; then
-        pycmd="python3"
-    elif command -v python &>/dev/null && python -c "import sys; sys.exit(0)" &>/dev/null; then
-        pycmd="python"
-    else
-        missing+=("python (or python3)")
-    fi
-
-    local pipcmd=""
-    if command -v pip3 &>/dev/null; then
-        pipcmd="pip3"
-    elif command -v pip &>/dev/null; then
-        pipcmd="pip"
-    else
-        missing+=("pip")
+    if ! command -v curl &>/dev/null && ! command -v wget &>/dev/null; then
+        missing+=("curl or wget")
     fi
 
     if [[ ${#missing[@]} -gt 0 ]]; then
@@ -101,14 +102,6 @@ check_dependencies() {
         echo "Please install them first."
         exit 1
     fi
-
-    # Ensure huggingface_hub is installed
-    if ! "$pycmd" -c "import huggingface_hub" 2>/dev/null; then
-        log "Installing huggingface_hub..."
-        "$pipcmd" install -q huggingface_hub
-    fi
-
-    export DREAM_PYTHON_CMD="$pycmd"
 }
 
 #=============================================================================
@@ -153,56 +146,72 @@ recommend_tier() {
 # Model Download
 #=============================================================================
 
-download_model() {
-    local model="$1"
-    local label="$2"
-    
-    log "Downloading $label: $model"
-    
-    "${DREAM_PYTHON_CMD:-python3}" << EOF
-from huggingface_hub import snapshot_download
-import sys
+# Models directory — where the installer expects GGUF files
+MODELS_DIR="${MODELS_DIR:-$HOME/dream-server/data/models}"
 
-try:
-    path = snapshot_download(
-        repo_id="$model",
-        resume_download=True,
-        local_files_only=False
-    )
-    print(f"Downloaded to: {path}")
-except Exception as e:
-    print(f"Error: {e}", file=sys.stderr)
-    sys.exit(1)
-EOF
-    
-    if [[ $? -eq 0 ]]; then
-        success "Downloaded $label"
+download_gguf() {
+    local url="$1" filename="$2" label="$3"
+
+    mkdir -p "$MODELS_DIR"
+    local target="$MODELS_DIR/$filename"
+
+    if [[ -f "$target" ]]; then
+        local existing_size
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+            existing_size=$(stat -f%z "$target" 2>/dev/null || echo 0)
+        else
+            existing_size=$(stat -c%s "$target" 2>/dev/null || echo 0)
+        fi
+        if [[ "$existing_size" -gt 1048576 ]]; then
+            success "$label already downloaded ($filename)"
+            return 0
+        fi
+    fi
+
+    log "Downloading $label: $filename"
+    log "  URL: $url"
+    log "  Destination: $target"
+
+    local part_file="${target}.part"
+
+    if command -v curl &>/dev/null; then
+        curl -L -# -C - -o "$part_file" "$url"
+    elif command -v wget &>/dev/null; then
+        wget -c -O "$part_file" "$url"
+    else
+        error "Neither curl nor wget found"
+        return 1
+    fi
+
+    if [[ $? -eq 0 ]] && [[ -f "$part_file" ]]; then
+        mv "$part_file" "$target"
+        success "Downloaded $label ($filename)"
         return 0
     else
         error "Failed to download $label"
+        rm -f "$part_file"
         return 1
     fi
 }
 
-verify_model() {
-    local model="$1"
-    
-    "${DREAM_PYTHON_CMD:-python3}" << EOF
-from huggingface_hub import try_to_load_from_cache, get_hf_file_metadata
-import sys
+verify_gguf() {
+    local filename="$1" label="$2"
+    local target="$MODELS_DIR/$filename"
 
-# Check if model is cached
-try:
-    from huggingface_hub import snapshot_download
-    path = snapshot_download(
-        repo_id="$model",
-        local_files_only=True
-    )
-    print(f"✓ Cached: {path}")
-except Exception:
-    print(f"✗ Not cached: $model")
-    sys.exit(1)
-EOF
+    if [[ -f "$target" ]]; then
+        local size_mb
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+            size_mb=$(( $(stat -f%z "$target" 2>/dev/null || echo 0) / 1048576 ))
+        else
+            size_mb=$(( $(stat -c%s "$target" 2>/dev/null || echo 0) / 1048576 ))
+        fi
+        if [[ "$size_mb" -gt 1 ]]; then
+            echo -e "  ${GREEN}✓${NC} $label: $filename (${size_mb}MB)"
+            return 0
+        fi
+    fi
+    echo -e "  ${RED}✗${NC} $label: $filename (not found)"
+    return 1
 }
 
 #=============================================================================
@@ -210,53 +219,42 @@ EOF
 #=============================================================================
 
 list_models() {
-    echo -e "\n${BOLD}Available Models by Tier:${NC}\n"
-    
-    echo -e "${CYAN}Tier     │ Model                              │ Size${NC}"
-    echo "─────────┼────────────────────────────────────┼──────"
-    
+    echo -e "\n${BOLD}Available Models by Tier (Qwen profile defaults):${NC}\n"
+
+    echo -e "${CYAN}Tier     │ Model                              │ GGUF File                              │ Size${NC}"
+    echo "─────────┼────────────────────────────────────┼──────────────────────────────────────────┼──────"
+
     for tier in nano edge pro cluster; do
         local model="${TIER_MODELS[$tier]}"
+        local filename="${TIER_GGUF_FILES[$tier]}"
         local size="${MODEL_SIZES_GB[$tier]}"
-        printf "%-8s │ %-34s │ ~%sGB\n" "$tier" "$model" "$size"
+        printf "%-8s │ %-34s │ %-38s │ ~%sGB\n" "$tier" "$model" "$filename" "$size"
     done
-    
+
     echo ""
     echo -e "${BOLD}Optional Components:${NC}"
     echo "  STT (Whisper): $STT_MODEL (~3GB)"
     echo "  TTS (Kokoro):  $TTS_MODEL (~0.2GB)"
+    echo ""
+    echo "Models are downloaded to: $MODELS_DIR"
 }
 
 verify_cache() {
-    echo -e "\n${BOLD}Verifying cached models...${NC}\n"
-    
+    echo -e "\n${BOLD}Verifying cached GGUF models in $MODELS_DIR...${NC}\n"
+
     local found=0
     local missing=0
-    
+
     for tier in nano edge pro cluster; do
-        local tier_model="${TIER_MODELS[$tier]}"
-        if verify_model "$tier_model" 2>/dev/null; then
+        local filename="${TIER_GGUF_FILES[$tier]}"
+        local model="${TIER_MODELS[$tier]}"
+        if verify_gguf "$filename" "$model" 2>/dev/null; then
             ((found++)) || true
         else
-            echo -e "  ${RED}✗${NC} $tier: Not cached"
             ((missing++)) || true
         fi
     done
 
-    # Check optional
-    echo ""
-    if verify_model "$STT_MODEL" 2>/dev/null; then
-        ((found++)) || true
-    else
-        echo -e "  ${YELLOW}○${NC} STT (Whisper): Not cached (optional)"
-    fi
-
-    if verify_model "$TTS_MODEL" 2>/dev/null; then
-        ((found++)) || true
-    else
-        echo -e "  ${YELLOW}○${NC} TTS (Kokoro): Not cached (optional)"
-    fi
-    
     echo ""
     echo "Found: $found cached | Missing: $missing required"
 }
@@ -264,47 +262,65 @@ verify_cache() {
 download_tier() {
     local tier="$1"
     local include_voice="${2:-false}"
-    
+
     if [[ -z "${TIER_MODELS[$tier]:-}" ]]; then
         error "Unknown tier: $tier"
         echo "Available tiers: nano, edge, pro, cluster"
         exit 1
     fi
-    
+
     local model="${TIER_MODELS[$tier]}"
+    local url="${TIER_GGUF_URLS[$tier]}"
+    local filename="${TIER_GGUF_FILES[$tier]}"
     local size="${MODEL_SIZES_GB[$tier]}"
-    
-    echo -e "\n${BOLD}Downloading ${tier} tier models${NC}"
-    echo -e "LLM: $model (~${size}GB)"
+
+    echo -e "\n${BOLD}Downloading ${tier} tier model${NC}"
+    echo -e "  Model:    $model"
+    echo -e "  File:     $filename"
+    echo -e "  Size:     ~${size}GB"
+    echo -e "  Dest:     $MODELS_DIR/$filename"
     echo ""
-    
+
     # Estimate time
     local est_minutes
     est_minutes=$((size * 2))  # ~0.5GB/min on average connection
     warn "Estimated download time: ${est_minutes}-$((est_minutes * 2)) minutes (depends on connection)"
     echo ""
-    
+
     read -p "Continue? [Y/n] " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Nn]$ ]]; then
         echo "Cancelled."
         exit 0
     fi
-    
-    # Download LLM
-    download_model "$model" "LLM ($tier tier)" || exit 1
-    
-    # Download voice components if requested
+
+    # Download GGUF
+    download_gguf "$url" "$filename" "LLM ($tier tier)" || exit 1
+
+    # Download voice components if requested (via huggingface_hub)
     if [[ "$include_voice" == "true" ]]; then
         echo ""
-        download_model "$STT_MODEL" "STT (Whisper)" || warn "STT download failed (optional)"
-        download_model "$TTS_MODEL" "TTS (Kokoro)" || warn "TTS download failed (optional)"
+        if ! command -v python3 &>/dev/null; then
+            warn "python3 not found — skipping voice model downloads"
+        else
+            python3 << VOICE_EOF
+from huggingface_hub import snapshot_download
+import sys
+
+for repo, label in [("$STT_MODEL", "STT (Whisper)"), ("$TTS_MODEL", "TTS (Kokoro)")]:
+    try:
+        path = snapshot_download(repo_id=repo, resume_download=True)
+        print(f"✓ {label} downloaded to: {path}")
+    except Exception as e:
+        print(f"✗ {label} failed: {e}", file=sys.stderr)
+VOICE_EOF
+        fi
     fi
-    
+
     echo ""
     success "Pre-download complete!"
     echo ""
-    echo "You can now run install.sh — it will use the cached models."
+    echo "You can now run install.sh — it will find the model in $MODELS_DIR."
     echo "  ./install.sh"
 }
 
