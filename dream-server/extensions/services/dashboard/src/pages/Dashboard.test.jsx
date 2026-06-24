@@ -239,7 +239,16 @@ describe('Dashboard system overview', () => {
         icon: 'MessageSquare',
         status: 'enabled',
         launch: { type: 'service', service: 'hermes-proxy' },
-        requirements: { servicesAll: ['llama-server'], servicesMissing: [] },
+        requirements: { servicesAll: ['hermes', 'hermes-proxy', 'dashboard-api'], servicesAny: ['llama-server', 'litellm'], servicesMissing: [] },
+      },
+      {
+        id: 'hermes-sso',
+        name: 'Hermes Single Sign-On',
+        description: 'Manage Hermes access',
+        icon: 'MessageSquare',
+        status: 'enabled',
+        launch: { type: 'internal', path: '/invites' },
+        requirements: { servicesAll: ['hermes', 'hermes-proxy', 'dashboard-api'], servicesMissing: [] },
       },
       {
         id: 'remote-access',
@@ -265,6 +274,7 @@ describe('Dashboard system overview', () => {
 
     expect(await screen.findByRole('link', { name: /AI Chat/ })).toHaveAttribute('href', 'http://localhost:3000')
     expect(screen.getByRole('link', { name: /Hermes Agent/ })).toHaveAttribute('href', 'http://localhost:9120')
+    expect(screen.getByRole('link', { name: /Hermes Single Sign-On/ })).toHaveAttribute('href', '/invites')
     expect(screen.queryByRole('link', { name: /Remote Access/ })).not.toBeInTheDocument()
     expect(screen.getByText('Remote Access')).toBeInTheDocument()
   })
@@ -286,6 +296,14 @@ describe('Dashboard system overview', () => {
         icon: 'MessageSquare',
         status: 'enabled',
         requirements: { servicesAll: ['llama-server'], servicesMissing: [] },
+      },
+      {
+        id: 'hermes-sso',
+        name: 'Hermes Single Sign-On',
+        description: 'Manage Hermes access',
+        icon: 'MessageSquare',
+        status: 'enabled',
+        requirements: { servicesAll: ['hermes', 'dashboard-api'], servicesMissing: [] },
       },
       {
         id: 'usage-api',
@@ -312,6 +330,7 @@ describe('Dashboard system overview', () => {
 
     expect(await screen.findByRole('link', { name: /AI Chat/ })).toHaveAttribute('href', 'http://localhost:3000')
     expect(screen.getByRole('link', { name: /Hermes Agent/ })).toHaveAttribute('href', 'http://localhost:9120')
+    expect(screen.getByRole('link', { name: /Hermes Single Sign-On/ })).toHaveAttribute('href', '/invites')
     expect(screen.queryByRole('link', { name: /Usage API/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /AI Chat/ })).not.toHaveAttribute('href', 'http://localhost:11434')
     expect(screen.queryByRole('link', { name: /Hermes Agent/ })).not.toHaveAttribute('href', 'http://localhost:11434')

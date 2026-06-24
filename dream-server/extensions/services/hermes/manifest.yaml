@@ -73,9 +73,11 @@ features:
     icon: Bot
     category: productivity
     requirements:
-      services: [llama-server]
+      services: [hermes, hermes-proxy, dashboard-api]
+      services_any: [llama-server, litellm]
       vram_gb: 0
-    enabled_services_all: [hermes]
+    enabled_services_all: [hermes, hermes-proxy, dashboard-api]
+    enabled_services_any: [llama-server, litellm]
     setup_time: ~1 minute (image pull)
     priority: 5
     launch:

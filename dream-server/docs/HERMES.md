@@ -2,7 +2,7 @@
 
 Dream Server ships **Hermes Agent** — the [Nous Research open-source agent](https://github.com/nousresearch/hermes-agent) packaged as a Dream Server service. Hermes is a self-improving generalist agent with persistent memory, autonomous skill creation, and 70+ tools built in.
 
-When enabled, Hermes runs in a container alongside the rest of the stack, serves its own browser dashboard on internal port 9119, and talks to the local LLM via an OpenAI-compatible API. End users should enter through `hermes-proxy` on port 9120; direct host access to 9119 is intentionally not bound in the default stack.
+When enabled, Hermes runs in a container alongside the rest of the stack, serves its own browser dashboard on internal port 9119, and talks to the selected model provider through an OpenAI-compatible API. End users should enter through `hermes-proxy` on port 9120; direct host access to 9119 is intentionally not bound in the default stack.
 
 ## What you get
 
@@ -17,6 +17,15 @@ Hermes ships its own complete web UI — Dream Server is just packaging it. Afte
 - **Models** — pick which LLM Hermes uses (defaults to your llama-server)
 - **Config / Env** — Hermes's own settings
 - **Logs / Analytics** — operational visibility
+
+### Dashboard feature cards
+
+The Dream Server dashboard exposes two separate Hermes entry points:
+
+- **Hermes Agent** opens the authenticated Hermes runtime through `hermes-proxy` on port 9120. It must never link to a raw inference endpoint such as llama-server or LiteLLM.
+- **Hermes Single Sign-On** opens the dashboard's **Setup / Owner** page at `/invites`, where operators manage owner cards and temporary support magic links. It is an access-management surface, not a second link to the Hermes runtime.
+
+Hermes readiness is provider-neutral. A healthy local `llama-server` or a healthy LiteLLM route can satisfy the inference dependency, so the same feature contract works for local, cloud, and external-provider installations on Linux, macOS, Windows, and WSL.
 
 ## Architecture
 

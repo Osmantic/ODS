@@ -52,16 +52,16 @@ service:
 features:
   - id: hermes-sso
     name: Hermes Single Sign-On
-    description: Magic-link SSO gating in front of Hermes Agent
+    description: Manage owner cards and support magic links for authenticated Hermes access
     icon: Shield
     category: privacy
     requirements:
-      services: [hermes, dashboard-api]
+      services: [hermes, hermes-proxy, dashboard-api]
       vram_gb: 0
-    enabled_services_all: [hermes-proxy]
+    enabled_services_all: [hermes, hermes-proxy, dashboard-api]
     setup_time: Ready
     priority: 5
     launch:
-      type: service
-      service: hermes-proxy
+      type: internal
+      path: /invites
     gpu_backends: [all]

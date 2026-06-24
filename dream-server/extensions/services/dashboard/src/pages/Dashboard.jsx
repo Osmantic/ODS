@@ -64,7 +64,7 @@ const FEATURE_LAUNCH_FALLBACKS = {
   voice: { type: 'service', service: 'open-webui' },
   documents: { type: 'service', service: 'open-webui' },
   'hermes-agent': { type: 'service', service: 'hermes-proxy' },
-  'hermes-sso': { type: 'service', service: 'hermes-proxy' },
+  'hermes-sso': { type: 'internal', path: '/invites' },
   images: { type: 'service', service: 'comfyui' },
   workflows: { type: 'service', service: 'n8n' },
   coding: { type: 'service', service: 'opencode' },

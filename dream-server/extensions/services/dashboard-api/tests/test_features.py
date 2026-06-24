@@ -223,6 +223,83 @@ class TestCalculateFeatureStatusGeneral:
         assert result["status"] == "available"
 
 
+class TestHermesFeatureContracts:
+    @staticmethod
+    def _service(service_id, status="healthy"):
+        from models import ServiceStatus
+        return ServiceStatus(
+            id=service_id,
+            name=service_id,
+            port=9120 if service_id == "hermes-proxy" else 0,
+            external_port=9120 if service_id == "hermes-proxy" else 0,
+            status=status,
+        )
+
+    @staticmethod
+    def _feature(feature_id):
+        from pathlib import Path
+
+        import yaml
+
+        services_dir = Path(__file__).resolve().parents[2]
+        manifest_name = "hermes-proxy" if feature_id == "hermes-sso" else "hermes"
+        manifest = yaml.safe_load((services_dir / manifest_name / "manifest.yaml").read_text())
+        return next(feature for feature in manifest["features"] if feature["id"] == feature_id)
+
+    def test_agent_uses_authenticated_proxy_and_accepts_local_provider(self):
+        services = [
+            self._service("hermes"),
+            self._service("hermes-proxy"),
+            self._service("dashboard-api"),
+            self._service("llama-server"),
+        ]
+
+        result = calculate_feature_status(self._feature("hermes-agent"), services, None)
+
+        assert result["status"] == "enabled"
+        assert result["launch"] == {"type": "service", "service": "hermes-proxy"}
+        assert result["requirements"]["servicesAny"] == ["llama-server", "litellm"]
+
+    def test_agent_accepts_litellm_without_llama_server(self):
+        services = [
+            self._service("hermes"),
+            self._service("hermes-proxy"),
+            self._service("dashboard-api"),
+            self._service("litellm"),
+        ]
+
+        result = calculate_feature_status(self._feature("hermes-agent"), services, None)
+
+        assert result["status"] == "enabled"
+        assert result["requirements"]["servicesOk"] is True
+
+    def test_agent_is_not_ready_without_auth_proxy(self):
+        services = [
+            self._service("hermes"),
+            self._service("dashboard-api"),
+            self._service("litellm"),
+        ]
+
+        result = calculate_feature_status(self._feature("hermes-agent"), services, None)
+
+        assert result["status"] == "services_needed"
+        assert result["enabled"] is False
+        assert "hermes-proxy" in result["requirements"]["servicesMissing"]
+
+    def test_sso_opens_access_management_and_requires_complete_chain(self):
+        services = [
+            self._service("hermes"),
+            self._service("hermes-proxy"),
+            self._service("dashboard-api"),
+        ]
+
+        result = calculate_feature_status(self._feature("hermes-sso"), services, None)
+
+        assert result["status"] == "enabled"
+        assert result["launch"] == {"type": "internal", "path": "/invites"}
+        assert result["enabledServicesAll"] == ["hermes", "hermes-proxy", "dashboard-api"]
+
+
 # --- /api/features/{feature_id}/enable ---
 
 
@@ -302,6 +379,26 @@ class TestFeatureEnableInstructions:
             "label": "Open LAN entry",
             "url": "http://dashboard.dream.local:80",
         }
+
+    def test_hermes_sso_instructions_open_access_management(self, test_client, monkeypatch):
+        test_features = [
+            {"id": "hermes-sso", "name": "Hermes Single Sign-On",
+             "description": "Manage Hermes access", "icon": "Shield",
+             "category": "privacy", "setup_time": "Ready", "priority": 5,
+             "requirements": {"vram_gb": 0, "services": ["hermes", "hermes-proxy", "dashboard-api"]},
+             "enabled_services_all": ["hermes", "hermes-proxy", "dashboard-api"]}
+        ]
+        monkeypatch.setattr("routers.features.FEATURES", test_features)
+
+        resp = test_client.get(
+            "/api/features/hermes-sso/enable",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        instructions = resp.json()["instructions"]
+        assert instructions["links"] == [{"label": "Manage Hermes access", "url": "/invites"}]
+        assert "owner cards" in " ".join(instructions["steps"]).lower()
 
     def test_404_for_unknown_feature(self, test_client, monkeypatch):
         monkeypatch.setattr("routers.features.FEATURES", [])

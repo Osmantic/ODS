@@ -234,7 +234,13 @@ async def feature_enable_instructions(
         "images": {"steps": [f"Ensure ComfyUI is running on port {_svc_port('comfyui')}", "Open ComfyUI to build and run image workflows"], "links": [{"label": "Open ComfyUI", "url": comfyui_url}]},
         "coding": {"steps": [f"Ensure OpenCode is running on port {_svc_port('opencode')}", "Open OpenCode for the browser-based coding assistant"], "links": [{"label": "Open OpenCode", "url": opencode_url}]},
         "hermes-agent": {"steps": [f"Ensure Hermes proxy is running on port {_svc_port('hermes-proxy')}", "Open Hermes for advanced agent access"], "links": [{"label": "Open Hermes", "url": hermes_url}]},
-        "hermes-sso": {"steps": [f"Ensure Hermes proxy is running on port {_svc_port('hermes-proxy')}", "Open Hermes through Dream SSO"], "links": [{"label": "Open Hermes", "url": hermes_url}]},
+        "hermes-sso": {
+            "steps": [
+                "Ensure Hermes, Hermes proxy, and Dashboard API are running",
+                "Open Setup / Owner to manage owner cards and temporary support invites",
+            ],
+            "links": [{"label": "Manage Hermes access", "url": "/invites"}],
+        },
         "observability": {"steps": [f"Langfuse is running on port {_svc_port('langfuse')}", "Open Langfuse to view LLM traces and evaluations", "LiteLLM automatically sends traces — no additional configuration needed"], "links": [{"label": "Open Langfuse", "url": _svc_url("langfuse")}]},
     }
 

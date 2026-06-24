@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Dashboard Hermes readiness now accepts either llama-server or LiteLLM and
+  requires the complete authenticated runtime chain. Hermes Single Sign-On now
+  opens owner and support access management instead of duplicating the Agent
+  runtime link.
+
 ## [2.5.3] - 2026-05-26
 
 ### Fixed
