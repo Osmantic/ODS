@@ -247,6 +247,9 @@ class TestFeatureEnableInstructions:
         assert data["featureId"] == "chat"
         assert "instructions" in data
         assert "steps" in data["instructions"]
+        steps = " ".join(data["instructions"]["steps"])
+        assert "configured model provider" in steps
+        assert "llama-server is running" not in steps
 
     def test_instruction_links_use_request_host(self, test_client, monkeypatch):
         test_features = [
@@ -311,3 +314,203 @@ class TestFeatureEnableInstructions:
             headers=test_client.auth_headers,
         )
         assert resp.status_code == 404
+
+
+class TestFeatureStatusSafetyContracts:
+    @staticmethod
+    def _feature(services, services_any=None, enabled_all=None, enabled_any=None):
+        return {
+            "id": "test-feature",
+            "name": "Test Feature",
+            "requirements": {
+                "vram_gb": 0,
+                "services": services,
+                "services_any": services_any or [],
+            },
+            "enabled_services_all": enabled_all if enabled_all is not None else services,
+            "enabled_services_any": enabled_any if enabled_any is not None else (services_any or []),
+        }
+
+    @staticmethod
+    def _service(service_id):
+        from models import ServiceStatus
+
+        return ServiceStatus(
+            id=service_id,
+            name=service_id,
+            port=8080,
+            external_port=8080,
+            status="healthy",
+        )
+
+    def test_enabled_service_does_not_mask_missing_runtime_requirement(self):
+        feature = self._feature(
+            services=["runtime-dependency"],
+            enabled_all=["feature-service"],
+        )
+        services = [self._service("feature-service")]
+
+        result = calculate_feature_status(feature, services, None)
+
+        assert result["status"] == "services_needed"
+        assert result["enabled"] is False
+        assert result["requirements"]["servicesAllMissing"] == ["runtime-dependency"]
+
+    def test_missing_launch_is_not_inferred_from_runtime_services(self):
+        feature = self._feature(
+            services=["raw-api"],
+            enabled_all=["raw-api"],
+        )
+        services = [self._service("raw-api")]
+
+        result = calculate_feature_status(feature, services, None)
+
+        assert result["status"] == "enabled"
+        assert result["launch"] is None
+
+    def test_missing_services_preserve_all_and_any_groups(self):
+        feature = self._feature(
+            services=["web-ui"],
+            services_any=["llama-server", "litellm"],
+            enabled_all=["web-ui"],
+            enabled_any=["llama-server", "litellm"],
+        )
+
+        result = calculate_feature_status(feature, [], None)
+
+        assert result["requirements"]["servicesAllMissing"] == ["web-ui"]
+        assert result["requirements"]["servicesAnyMissing"] == [
+            "llama-server",
+            "litellm",
+        ]
+
+
+class TestDashboardFeatureContracts:
+    @staticmethod
+    def _gpu():
+        from models import GPUInfo
+
+        return GPUInfo(
+            name="Test GPU",
+            memory_used_mb=1024,
+            memory_total_mb=24576,
+            memory_percent=4.2,
+            utilization_percent=0,
+            temperature_c=40,
+            gpu_backend="nvidia",
+        )
+
+    @staticmethod
+    def _service(service_id, status="healthy"):
+        from models import ServiceStatus
+
+        return ServiceStatus(
+            id=service_id,
+            name=service_id,
+            port=3000,
+            external_port=3000,
+            status=status,
+        )
+
+    @staticmethod
+    def _feature(manifest_name, feature_id):
+        from pathlib import Path
+
+        import yaml
+
+        services_dir = Path(__file__).resolve().parents[2]
+        manifest = yaml.safe_load(
+            (services_dir / manifest_name / "manifest.yaml").read_text()
+        )
+        return next(
+            feature for feature in manifest["features"]
+            if feature["id"] == feature_id
+        )
+
+    def test_chat_accepts_litellm_and_opens_web_ui(self):
+        services = [
+            self._service("open-webui"),
+            self._service("litellm"),
+        ]
+
+        result = calculate_feature_status(
+            self._feature("llama-server", "chat"), services, self._gpu()
+        )
+
+        assert result["status"] == "enabled"
+        assert result["launch"] == {"type": "service", "service": "open-webui"}
+        assert result["requirements"]["servicesAny"] == ["llama-server", "litellm"]
+
+    def test_chat_is_not_ready_without_web_ui(self):
+        services = [self._service("litellm")]
+
+        result = calculate_feature_status(
+            self._feature("llama-server", "chat"), services, self._gpu()
+        )
+
+        assert result["status"] == "services_needed"
+        assert "open-webui" in result["requirements"]["servicesAllMissing"]
+
+    def test_local_route_is_not_masked_by_unselected_litellm(self):
+        services = [
+            self._service("open-webui"),
+            self._service("litellm"),
+        ]
+
+        with patch.dict(os.environ, {"OLLAMA_URL": "http://llama-server:8080"}):
+            result = calculate_feature_status(
+                self._feature("llama-server", "chat"), services, self._gpu()
+            )
+
+        assert result["status"] == "services_needed"
+        assert result["requirements"]["servicesAnySelected"] == ["llama-server"]
+
+    def test_litellm_route_is_not_masked_by_unselected_llama_server(self):
+        services = [
+            self._service("open-webui"),
+            self._service("llama-server"),
+        ]
+
+        with patch.dict(os.environ, {"OLLAMA_URL": "http://litellm:4000"}):
+            result = calculate_feature_status(
+                self._feature("llama-server", "chat"), services, self._gpu()
+            )
+
+        assert result["status"] == "services_needed"
+        assert result["requirements"]["servicesAnySelected"] == ["litellm"]
+
+    def test_documents_require_web_ui_vector_store_and_one_provider(self):
+        services = [
+            self._service("open-webui"),
+            self._service("qdrant"),
+            self._service("llama-server"),
+        ]
+
+        result = calculate_feature_status(
+            self._feature("llama-server", "documents"), services, None
+        )
+
+        assert result["status"] == "enabled"
+        assert result["requirements"]["servicesAll"] == ["open-webui", "qdrant"]
+
+    def test_voice_requires_its_user_facing_web_ui(self):
+        services = [
+            self._service("whisper"),
+            self._service("tts"),
+        ]
+
+        result = calculate_feature_status(
+            self._feature("whisper", "voice"), services, self._gpu()
+        )
+
+        assert result["status"] == "services_needed"
+        assert result["launch"] == {"type": "service", "service": "open-webui"}
+        assert "open-webui" in result["requirements"]["servicesAllMissing"]
+
+    def test_governance_is_not_ready_until_ape_is_healthy(self):
+        result = calculate_feature_status(
+            self._feature("ape", "agent-governance"), [], None
+        )
+
+        assert result["status"] == "services_needed"
+        assert result["launch"] == {"type": "none"}

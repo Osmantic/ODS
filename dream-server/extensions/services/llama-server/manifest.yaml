@@ -24,13 +24,15 @@ service:
 features:
   - id: chat
     name: AI Chat
-    description: Chat with your local AI model
+    description: Chat with your configured AI model
     icon: MessageSquare
     category: core
     requirements:
-      services_any: [llama-server]
+      services: [open-webui]
+      services_any: [llama-server, litellm]
       vram_gb: 4
-    enabled_services_any: [llama-server]
+    enabled_services_all: [open-webui]
+    enabled_services_any: [llama-server, litellm]
     setup_time: Ready
     priority: 1
     launch:
@@ -44,11 +46,12 @@ features:
     icon: FileText
     category: productivity
     requirements:
-      services: [qdrant]
-      services_any: [llama-server]
+      services: [open-webui, qdrant]
+      services_any: [llama-server, litellm]
       vram_gb: 4
       disk_gb: 1
-    enabled_services_all: [qdrant]
+    enabled_services_all: [open-webui, qdrant]
+    enabled_services_any: [llama-server, litellm]
     setup_time: ~2 minutes
     priority: 3
     launch:

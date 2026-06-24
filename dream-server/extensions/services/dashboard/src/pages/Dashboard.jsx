@@ -1,5 +1,7 @@
 import {
   Activity,
+  BarChart2,
+  Bot,
   Cpu,
   HardDrive,
   Thermometer,
@@ -11,6 +13,7 @@ import {
   MessageSquare,
   Mic,
   FileText,
+  Globe,
   Workflow,
   Image,
   Code,
@@ -18,7 +21,10 @@ import {
   ChevronDown,
   CircleHelp,
   MoreHorizontal,
+  Package,
   Search,
+  Shield,
+  Sparkles,
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -45,12 +51,19 @@ function computeHealth(services) {
 }
 
 const FEATURE_ICONS = {
+  BarChart2,
+  Bot,
+  Globe,
   MessageSquare,
   Mic,
   FileText,
   Workflow,
   Image,
   Code,
+  Package,
+  Search,
+  Shield,
+  Sparkles,
 }
 
 const SERVICE_LINK_ALIASES = {
@@ -74,20 +87,6 @@ const FEATURE_LAUNCH_FALLBACKS = {
   'agent-governance': { type: 'none' },
   'brave-web-search': { type: 'none' },
 }
-
-const NON_USER_FACING_LINK_SERVICES = new Set([
-  'dashboard-api',
-  'embeddings',
-  'hermes',
-  'litellm',
-  'llama-server',
-  'privacy-shield',
-  'qdrant',
-  'searxng',
-  'token-spy',
-  'tts',
-  'whisper',
-])
 
 function serviceMatchesTarget(service, target) {
   const targetKey = normalizeServiceKey(target)
@@ -117,21 +116,7 @@ function pickFeatureLink(feature, services) {
     return launchService ? getExternalUrl(launchService.port, launch.path) : null
   }
 
-  const req = feature?.requirements || {}
-  const enabledWanted = [
-    ...(feature?.enabledServicesAll || []),
-    ...(feature?.enabledServicesAny || []),
-  ]
-  const requirementWanted = [
-    ...(req.servicesAll || req.services || []),
-    ...(req.servicesAny || req.services_any || []),
-  ]
-  const wanted = enabledWanted.length ? enabledWanted : requirementWanted
-  const firstHealthy = wanted
-    .filter(serviceId => !NON_USER_FACING_LINK_SERVICES.has(normalizeServiceKey(serviceId)))
-    .map(serviceId => findHealthyService(services, serviceId))
-    .find(Boolean)
-  return firstHealthy ? getExternalUrl(firstHealthy.port) : null
+  return null
 }
 
 function normalizeFeatureStatus(featureStatus) {
@@ -146,6 +131,23 @@ function normalizeFeatureStatus(featureStatus) {
     default:
       return 'disabled'
   }
+}
+
+function formatFeatureServicesHint(requirements = {}) {
+  const allServices = requirements.servicesAll || requirements.services || []
+  const anyServices = requirements.servicesAnySelected || requirements.servicesAny || requirements.services_any || []
+  const missing = new Set(requirements.servicesMissing || [])
+  const allMissing = requirements.servicesAllMissing || allServices.filter(service => missing.has(service))
+  const anyMissing = requirements.servicesAnyMissing || anyServices.filter(service => missing.has(service))
+  const parts = [...allMissing]
+
+  if (anyServices.length > 0 && anyMissing.length === anyServices.length) {
+    parts.push(anyServices.length > 1 ? `one of ${anyServices.join(' or ')}` : anyServices[0])
+  }
+
+  if (parts.length > 0) return `Needs: ${parts.join('; ')}`
+  if (missing.size > 0) return `Needs services: ${[...missing].join(', ')}`
+  return undefined
 }
 
 // Format large token counts: 1234 → "1.2k", 1500000 → "1.5M", 1500000000 → "1.5B"
@@ -807,7 +809,7 @@ export default function Dashboard({ status, loading }) {
               status={normalizeFeatureStatus(feature.status)}
               hint={
                 feature.status === 'services_needed'
-                  ? `Needs services: ${(feature.requirements?.servicesMissing || []).join(', ')}`
+                  ? formatFeatureServicesHint(feature.requirements)
                   : feature.status === 'insufficient_vram'
                     ? `Needs ${feature.requirements?.vramGb || 0}GB VRAM`
                     : undefined

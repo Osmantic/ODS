@@ -136,10 +136,18 @@ features:
       vram_gb: 0                           # Minimum VRAM. 0 = no GPU needed.
       # disk_gb: 10                        # Minimum free disk (optional)
 
-    # Services that must be enabled (compose.yaml present) for this feature to
-    # appear at all. Different from "requirements" which checks runtime health.
+    # Healthy services that constitute the feature itself. Runtime requirements
+    # above must also be healthy before the feature is reported as enabled.
     enabled_services_all: [my-service]
     # enabled_services_any: [svc-a, svc-b]
+
+    # Explicit user-facing action. Never point this at a raw/internal API.
+    launch:
+      type: service                        # service | internal | none
+      service: my-service                  # Healthy service with a browser UI
+      # path: /optional-ui-path
+    # For a Dashboard route: { type: internal, path: /settings }
+    # For status-only features: { type: none }
 
     setup_time: ~2 minutes                 # Shown to users during onboarding
     priority: 100                          # Lower = listed first in dashboard

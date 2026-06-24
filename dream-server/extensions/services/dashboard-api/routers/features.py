@@ -3,6 +3,7 @@
 import logging
 import os
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -14,6 +15,22 @@ from security import verify_api_key
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["features"])
+
+LLM_PROVIDER_SERVICES = {"llama-server", "litellm"}
+
+
+def _select_configured_services(candidates: list[str]) -> list[str]:
+    """Narrow known LLM alternatives to the provider configured for this stack."""
+    if set(candidates) != LLM_PROVIDER_SERVICES:
+        return candidates
+
+    endpoint = os.environ.get("OLLAMA_URL") or os.environ.get("LLM_URL") or ""
+    hostname = (urlparse(endpoint).hostname or "").lower()
+    if hostname == "litellm":
+        return ["litellm"]
+    if hostname in {"llama-server", "host.docker.internal", "localhost", "127.0.0.1"}:
+        return ["llama-server"]
+    return candidates
 
 
 def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[GPUInfo]) -> dict:
@@ -37,6 +54,7 @@ def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[G
 
     required_services = req.get("services", [])
     required_services_any = req.get("services_any", [])
+    selected_services_any = _select_configured_services(required_services_any)
     all_required = list(dict.fromkeys(required_services + required_services_any))
     services_available = []
     services_missing = []
@@ -49,18 +67,25 @@ def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[G
             services_missing.append(svc_id)
 
     services_all_ok = all(svc in services_available for svc in required_services)
-    services_any_ok = (not required_services_any) or any(svc in services_available for svc in required_services_any)
+    services_any_ok = (not selected_services_any) or any(svc in services_available for svc in selected_services_any)
     services_ok = services_all_ok and services_any_ok
+    services_all_missing = [svc for svc in required_services if svc not in services_available]
+    services_any_missing = [svc for svc in selected_services_any if svc not in services_available]
 
     enabled_all = feature.get("enabled_services_all", required_services)
     enabled_any = feature.get("enabled_services_any", required_services_any)
+    selected_enabled_any = _select_configured_services(enabled_any)
     enabled_all_ok = all(
         any(s.id == svc and s.status == "healthy" for s in services) for svc in enabled_all
     )
-    enabled_any_ok = (not enabled_any) or any(
-        any(s.id == svc and s.status == "healthy" for s in services) for svc in enabled_any
+    enabled_any_ok = (not selected_enabled_any) or any(
+        any(s.id == svc and s.status == "healthy" for s in services) for svc in selected_enabled_any
     )
-    is_enabled = enabled_all_ok and enabled_any_ok
+    # A feature is only operational when both its own services and all runtime
+    # requirements are healthy. Keeping these checks separate in the response
+    # still lets the UI explain whether the feature itself or a dependency is
+    # unavailable without reporting a partial stack as enabled.
+    is_enabled = enabled_all_ok and enabled_any_ok and services_ok
 
     # A running feature already occupies VRAM — report it as fitting
     # when total VRAM meets the requirement, not just free VRAM.
@@ -75,13 +100,6 @@ def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[G
         status = "services_needed"
     else:
         status = "available"
-
-    launch = feature.get("launch")
-    if launch is None:
-        if enabled_all:
-            launch = {"type": "service", "service": enabled_all[0]}
-        elif enabled_any:
-            launch = {"type": "service", "service": enabled_any[0]}
 
     return {
         "id": feature["id"],
@@ -98,13 +116,19 @@ def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[G
             "services": all_required,
             "servicesAll": required_services,
             "servicesAny": required_services_any,
+            "servicesAnySelected": selected_services_any,
             "servicesAvailable": services_available,
             "servicesMissing": services_missing,
+            "servicesAllMissing": services_all_missing,
+            "servicesAnyMissing": services_any_missing,
             "servicesOk": services_ok,
         },
         "enabledServicesAll": enabled_all,
         "enabledServicesAny": enabled_any,
-        "launch": launch,
+        # Never infer a user-facing URL from a runtime dependency. Extension
+        # manifests must opt into a service/internal launch target explicitly;
+        # omission is a safe, non-interactive feature card.
+        "launch": feature.get("launch"),
         "setupTime": feature.get("setup_time", "Unknown"),
         "priority": feature.get("priority", 99)
     }
@@ -136,11 +160,20 @@ async def api_features(api_key: str = Depends(verify_api_key)):
                 "action": f"Enable {f['name']}", "setupTime": f["setupTime"]
             })
         elif f["status"] == "services_needed":
-            missing = ", ".join(f["requirements"]["servicesMissing"])
+            requirements = f["requirements"]
+            missing_parts = list(requirements["servicesAllMissing"])
+            if requirements["servicesAny"] and not any(
+                svc in requirements["servicesAvailable"]
+                for svc in requirements["servicesAnySelected"]
+            ):
+                selected = requirements["servicesAnySelected"]
+                label = f"one of {' or '.join(selected)}" if len(selected) > 1 else selected[0]
+                missing_parts.append(label)
+            missing = ", ".join(missing_parts)
             suggestions.append({
                 "featureId": f["id"], "name": f["name"],
                 "message": f"{f['name']} needs {missing} to be running.",
-                "action": f"Start {missing}", "setupTime": f["setupTime"], "blocked": True
+                "action": "Start required services", "setupTime": f["setupTime"], "blocked": True
             })
 
     gpu_vram_gb = (gpu_info.memory_total_mb / 1024) if gpu_info else 0
@@ -227,7 +260,7 @@ async def feature_enable_instructions(
             ],
             "links": [{"label": "Open LAN entry", "url": dream_proxy_url}] if dream_proxy_url else [],
         },
-        "chat": {"steps": ["Chat is already enabled if llama-server is running", "Open the Dashboard and click 'Chat' to start"], "links": [{"label": "Open Chat", "url": webui_url}]},
+        "chat": {"steps": ["Ensure Open WebUI and the configured model provider are running", "Open Chat to start a conversation"], "links": [{"label": "Open Chat", "url": webui_url}]},
         "voice": {"steps": [f"Ensure Whisper (STT) is running on port {_svc_port('whisper')}", f"Ensure Kokoro (TTS) is running on port {_svc_port('tts')}", "Open Open WebUI and use its voice controls"], "links": [{"label": "Open Chat", "url": webui_url}]},
         "documents": {"steps": ["Ensure Qdrant vector database is running", "Open Open WebUI and use its document/RAG controls"], "links": [{"label": "Open Chat", "url": webui_url}]},
         "workflows": {"steps": [f"Ensure n8n is running on port {_svc_port('n8n')}", "Open n8n to see and manage available automations"], "links": [{"label": "n8n Dashboard", "url": n8n_url}]},

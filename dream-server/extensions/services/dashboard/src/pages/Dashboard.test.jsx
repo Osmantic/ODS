@@ -295,6 +295,14 @@ describe('Dashboard system overview', () => {
         status: 'enabled',
         requirements: { servicesAll: ['token-spy'], servicesMissing: [] },
       },
+      {
+        id: 'undeclared-ui',
+        name: 'Undeclared UI',
+        description: 'Extension without a launch contract',
+        icon: 'Package',
+        status: 'enabled',
+        requirements: { servicesAll: ['open-webui'], servicesMissing: [] },
+      },
     ]
 
     const statusWithRawBackends = {
@@ -313,6 +321,7 @@ describe('Dashboard system overview', () => {
     expect(await screen.findByRole('link', { name: /AI Chat/ })).toHaveAttribute('href', 'http://localhost:3000')
     expect(screen.getByRole('link', { name: /Hermes Agent/ })).toHaveAttribute('href', 'http://localhost:9120')
     expect(screen.queryByRole('link', { name: /Usage API/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Undeclared UI/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /AI Chat/ })).not.toHaveAttribute('href', 'http://localhost:11434')
     expect(screen.queryByRole('link', { name: /Hermes Agent/ })).not.toHaveAttribute('href', 'http://localhost:11434')
   })
@@ -458,5 +467,72 @@ describe('Dashboard system overview', () => {
     const delta = screen.getByText('↓ 50.0%')
     expect(delta).toBeInTheDocument()
     expect(delta.className).toContain('text-red-400')
+  })
+
+  it('routes every non-Hermes interactive feature to its declared UI service', async () => {
+    const contracts = [
+      { id: 'chat', name: 'AI Chat', icon: 'MessageSquare', service: 'open-webui', port: 3000 },
+      { id: 'voice', name: 'Voice Assistant', icon: 'Mic', service: 'open-webui', port: 3000 },
+      { id: 'documents', name: 'Document Q&A', icon: 'FileText', service: 'open-webui', port: 3000 },
+      { id: 'workflows', name: 'Workflow Automation', icon: 'Workflow', service: 'n8n', port: 5678 },
+      { id: 'images', name: 'Image Generation', icon: 'Image', service: 'comfyui', port: 8188 },
+      { id: 'coding', name: 'Coding Assistant', icon: 'Code', service: 'opencode', port: 3003 },
+      { id: 'observability', name: 'LLM Observability', icon: 'BarChart2', service: 'langfuse', port: 3006 },
+      { id: 'lan-web', name: 'LAN web entry', icon: 'Globe', service: 'dream-proxy', port: 80 },
+    ]
+    mockFeatures = contracts.map(contract => ({
+      id: contract.id,
+      name: contract.name,
+      description: `${contract.name} feature`,
+      icon: contract.icon,
+      status: 'enabled',
+      launch: { type: 'service', service: contract.service },
+      requirements: { servicesMissing: [] },
+    }))
+    const status = {
+      ...baseStatus,
+      services: Array.from(new Map(contracts.map(contract => [
+        contract.service,
+        {
+          id: contract.service,
+          name: contract.service,
+          status: 'healthy',
+          port: contract.port,
+          uptime: 14400,
+        },
+      ])).values()),
+    }
+
+    await renderDashboard(status)
+
+    for (const contract of contracts) {
+      expect(screen.getByRole('link', { name: new RegExp(contract.name) }))
+        .toHaveAttribute('href', `http://localhost:${contract.port}`)
+    }
+  })
+
+  it('explains all-of and any-of requirements without requiring both providers', async () => {
+    mockFeatures = [
+      {
+        id: 'chat',
+        name: 'AI Chat',
+        description: 'Chat with the configured model',
+        icon: 'MessageSquare',
+        status: 'services_needed',
+        launch: { type: 'service', service: 'open-webui' },
+        requirements: {
+          servicesAll: ['open-webui'],
+          servicesAny: ['llama-server', 'litellm'],
+          servicesMissing: ['open-webui', 'llama-server', 'litellm'],
+          servicesAllMissing: ['open-webui'],
+          servicesAnyMissing: ['llama-server', 'litellm'],
+        },
+      },
+    ]
+
+    await renderDashboard({ ...baseStatus, services: [] })
+
+    expect(screen.getByText('Needs: open-webui; one of llama-server or litellm')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /AI Chat/ })).not.toBeInTheDocument()
   })
 })
