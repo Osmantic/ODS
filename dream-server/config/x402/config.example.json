@@ -1,0 +1,43 @@
+{
+  "enabled": true,
+  "seller": {
+    "network": "eip155:84532",
+    "asset": "USDC",
+    "recipient": "0xYourDreamServerWallet",
+    "facilitatorUrl": "https://x402.org/facilitator"
+  },
+  "facilitator": {
+    "url": "https://x402.org/facilitator",
+    "provider": "x402.org",
+    "auth": {
+      "type": "none"
+    }
+  },
+  "policy": {
+    "mode": "allowlist",
+    "unprotectedByDefault": true,
+    "devBypass": false
+  },
+  "audit": {
+    "logPayments": true,
+    "logUnpaidAttempts": true
+  },
+  "rules": [
+    {
+      "name": "Paid local inference",
+      "kind": "http_route",
+      "path": "/llama/v1/chat/completions",
+      "methods": ["POST"],
+      "upstream": "http://llama-server:8080/v1/chat/completions",
+      "price": {
+        "amount": "0.01",
+        "currency": "USDC"
+      },
+      "metadata": {
+        "title": "Dream Server local inference",
+        "description": "Paid access to the local llama.cpp OpenAI-compatible chat endpoint",
+        "mimeType": "application/json"
+      }
+    }
+  ]
+}

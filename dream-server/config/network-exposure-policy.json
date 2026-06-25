@@ -145,6 +145,12 @@
       "lan_exposure": "operator-controlled",
       "auth_required": false,
       "notes": "Speech-to-text model API; audio may be sensitive."
+    },
+    "x402-gateway": {
+      "risk": "paid-api-gateway",
+      "lan_exposure": "operator-controlled",
+      "auth_required": true,
+      "notes": "Optional payment gateway for explicitly allowlisted Dream Server routes; keep localhost/private unless deliberately publishing paid API access."
     }
   }
 }

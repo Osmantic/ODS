@@ -220,6 +220,12 @@
       "value": "python:3.12-slim"
     },
     {
+      "id": "x402-gateway.python",
+      "type": "image",
+      "path": "extensions/services/x402-gateway/Dockerfile",
+      "value": "python:3.12-slim"
+    },
+    {
       "id": "tts.kokoro",
       "type": "image",
       "path": "extensions/services/tts/compose.yaml",
@@ -274,6 +280,11 @@
       "path": "extensions/services/brave-search/compose.yaml",
       "value": "dream-brave-search:local",
       "reason": "Local extension image built from the adjacent Dockerfile."
+    },
+    {
+      "path": "extensions/services/x402-gateway/compose.yaml.disabled",
+      "value": "dream-x402-gateway:local",
+      "reason": "Local optional x402 gateway image built from extensions/services/x402-gateway/Dockerfile when the extension is enabled."
     }
   ],
   "allow_variable_refs": [

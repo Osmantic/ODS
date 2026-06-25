@@ -294,6 +294,7 @@ sr_list_enabled() {
         local cf="${SERVICE_COMPOSE[$sid]}"
         [[ -n "$cf" && -f "$cf" ]] && echo "$sid"
     done
+    return 0
 }
 
 # Get display name for a service ID
