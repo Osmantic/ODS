@@ -1,10 +1,10 @@
 # Dream Server Dashboard API Dependencies
-fastapi>=0.109.0,<0.120.0
-uvicorn[standard]>=0.27.0,<0.30.0
-aiohttp>=3.9.0,<4.0.0
-httpx>=0.27.0,<0.29.0
-pydantic>=2.5.0,<3.0.0
-python-multipart>=0.0.9,<1.0.0
-PyYAML>=6.0,<7.0.0
+fastapi>=0.138.0,<0.139.0
+uvicorn[standard]>=0.49.0,<0.50.0
+aiohttp>=3.14.1,<4.0.0
+httpx>=0.28.1,<0.29.0
+pydantic>=2.13.4,<3.0.0
+python-multipart>=0.0.32,<1.0.0
+PyYAML>=6.0.3,<7.0.0
 # QR code generation for magic-link invites (Pillow optional, but improves output)
-qrcode[pil]>=7.4.0,<9.0.0
+qrcode[pil]>=8.2,<9.0.0
