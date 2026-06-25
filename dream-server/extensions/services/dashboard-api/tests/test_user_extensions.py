@@ -46,9 +46,12 @@ class TestScanUserExtensions:
         """Extension with compose.yaml + manifest returns correct config."""
         user_dir = tmp_path / "user"
         ext_dir = user_dir / "my-ext"
-        _write_manifest(ext_dir, _make_manifest("my-ext", port=9090,
-                                                 health="/api/health",
-                                                 name="My Extension"))
+        manifest = _make_manifest("my-ext", port=9090,
+                                  health="/api/health",
+                                  name="My Extension")
+        manifest["service"]["ui_path"] = "/docs/"
+        manifest["service"]["external_link"] = False
+        _write_manifest(ext_dir, manifest)
         (ext_dir / "compose.yaml").write_text("services:\n  my-ext:\n    image: test\n")
 
         result = scan_user_extension_services(user_dir)
@@ -58,6 +61,8 @@ class TestScanUserExtensions:
         assert cfg["port"] == 9090
         assert cfg["health"] == "/api/health"
         assert cfg["name"] == "My Extension"
+        assert cfg["ui_path"] == "/docs/"
+        assert cfg["external_link"] is False
 
     def test_scan_disabled_extension_skipped(self, tmp_path):
         """Extension with compose.yaml.disabled only is skipped."""

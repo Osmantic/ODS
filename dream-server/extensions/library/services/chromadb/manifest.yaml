@@ -11,6 +11,7 @@ service:
   external_port_env: CHROMADB_PORT
   external_port_default: 8000
   health: /api/v2/heartbeat
+  ui_path: /docs/
   type: docker
   gpu_backends: [amd, nvidia, apple]
   compose_file: compose.yaml

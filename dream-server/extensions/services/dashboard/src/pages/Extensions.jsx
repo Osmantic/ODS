@@ -15,6 +15,17 @@ export { getTemplateStatus }
 // API/backend services with no user-facing web UI — show badge instead of port link.
 const HEADLESS_EXTENSIONS = new Set(['embeddings', 'tts', 'whisper', 'privacy-shield'])
 
+const extensionPort = (ext) => ext.external_port_default || ext.port || 0
+
+const extensionUiPath = (ext) => {
+  const path = ext.ui_path || '/'
+  return path && path !== '/' ? path : ''
+}
+
+const extensionUrl = (ext) => `http://${window.location.hostname}:${extensionPort(ext)}${extensionUiPath(ext)}`
+
+const hasExternalUi = (ext) => ext.external_link !== false && !HEADLESS_EXTENSIONS.has(ext.id)
+
 // Auth: nginx injects "Authorization: Bearer ${DASHBOARD_API_KEY}" via
 // proxy_set_header for all /api/ requests (see nginx.conf).  All fetches
 // use relative URLs so they route through the nginx proxy which adds the
@@ -822,22 +833,22 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
         </div>
         <div className="flex items-center gap-2">
           <DependencyBadges dependsOn={ext.depends_on} dependencyStatus={ext.dependency_status} />
-          {status === 'enabled' && (ext.external_port_default || ext.port) && (ext.external_port_default || ext.port) !== 0 ? (
-            HEADLESS_EXTENSIONS.has(ext.id) ? (
+          {status === 'enabled' && extensionPort(ext) !== 0 ? (
+            !hasExternalUi(ext) ? (
               <span className="px-2 py-1 text-[9px] font-mono uppercase tracking-[0.12em] text-theme-text-muted/45">
                 API service
               </span>
             ) : (
               <a
-                href={`http://${window.location.hostname}:${ext.external_port_default || ext.port}`}
+                href={extensionUrl(ext)}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={e => e.stopPropagation()}
                 className="flex items-center gap-1 px-2 py-1.5 text-[10px] font-mono text-theme-text-secondary hover:text-theme-text hover:bg-theme-surface-hover/40 rounded-lg transition-colors"
-                title={`Open on port ${ext.external_port_default || ext.port}`}
+                title={`Open ${ext.name} on port ${extensionPort(ext)}${extensionUiPath(ext)}`}
               >
                 <ExternalLink size={11} />
-                :{ext.external_port_default || ext.port}
+                :{extensionPort(ext)}
               </a>
             )
           ) : null}

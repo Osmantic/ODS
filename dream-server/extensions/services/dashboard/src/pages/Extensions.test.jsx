@@ -258,4 +258,63 @@ describe('Extensions page — unhealthy + install derivations', () => {
     // L760-769: Check Logs button rendered when isUserExt && isUnhealthy.
     expect(screen.getByRole('button', { name: /Check Logs/i })).toBeInTheDocument()
   })
+
+  it('opens extension web links at their manifest ui_path', async () => {
+    installFetchMock({
+      extensions: [
+        {
+          id: 'chromadb',
+          name: 'ChromaDB',
+          status: 'enabled',
+          source: 'user',
+          installable: false,
+          port: 8000,
+          external_port_default: 8000,
+          ui_path: '/docs/',
+          external_link: true,
+          features: [baseFeature],
+          description: 'Vector database',
+        },
+      ],
+      summary: baseSummary({ installed: 1 }),
+      gpu_backend: 'apple',
+      agent_available: true,
+    })
+
+    render(<Extensions />)
+    await screen.findByText('ChromaDB')
+
+    expect(screen.getByRole('link', { name: ':8000' })).toHaveAttribute(
+      'href',
+      'http://localhost:8000/docs/',
+    )
+  })
+
+  it('does not render a port link when manifest disables external_link', async () => {
+    installFetchMock({
+      extensions: [
+        {
+          id: 'api-only',
+          name: 'API Only',
+          status: 'enabled',
+          source: 'user',
+          installable: false,
+          port: 7777,
+          external_port_default: 7777,
+          external_link: false,
+          features: [baseFeature],
+          description: 'Backend-only service',
+        },
+      ],
+      summary: baseSummary({ installed: 1 }),
+      gpu_backend: 'apple',
+      agent_available: true,
+    })
+
+    render(<Extensions />)
+    await screen.findByText('API Only')
+
+    expect(screen.getByText('API service')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: ':7777' })).toBeNull()
+  })
 })
