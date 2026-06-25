@@ -8,18 +8,20 @@
 //   → 502 invalid_upstream_json
 //   → 504 upstream_timeout
 //
+// GET /search?format=json&q=<query>&count=<n>
+//   → 200 { query, number_of_results, results: [{title, url, content, engine, score, category}] }
+//
 // GET /health
 //   → 200 { ok: true }
 //
 // Wraps api.search.brave.com behind a small, stable JSON shape suitable for
-// dream-server services and scripts. See README.md for design notes and the
-// rationale for not exposing a searxng-compatible surface.
+// dream-server services and scripts, including an opt-in SearXNG compatibility route.
 
 import http from "node:http";
 
 const PORT = Number(process.env.BRAVE_SEARCH_PORT_INTERNAL ?? 8585);
 const API_KEY = process.env.BRAVE_SEARCH_API_KEY;
-const BRAVE_URL = "https://api.search.brave.com/res/v1/web/search";
+const BRAVE_URL = process.env.BRAVE_SEARCH_UPSTREAM_URL ?? "https://api.search.brave.com/res/v1/web/search";
 const REQUEST_TIMEOUT_MS = 8_000;
 
 if (!API_KEY) {
@@ -58,7 +60,10 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method !== "GET" || parsed.pathname !== "/v1/search") {
+  const isV1 = parsed.pathname === "/v1/search";
+  const isSearxng = parsed.pathname === "/search" && parsed.searchParams.get("format") === "json";
+
+  if (req.method !== "GET" || (!isV1 && !isSearxng)) {
     send(res, 404, { error: "not_found" });
     return;
   }
@@ -112,7 +117,23 @@ const server = http.createServer(async (req, res) => {
     }))
     .filter((r) => r.url.length > 0);
 
-  send(res, 200, { query, results });
+  if (isSearxng) {
+    const searxngResults = results.map(r => ({
+      title: r.title,
+      url: r.url,
+      content: r.snippet,
+      engine: "brave",
+      score: 1,
+      category: "general"
+    }));
+    send(res, 200, {
+      query,
+      number_of_results: searxngResults.length,
+      results: searxngResults
+    });
+  } else {
+    send(res, 200, { query, results });
+  }
 });
 
 server.listen(PORT, () => {

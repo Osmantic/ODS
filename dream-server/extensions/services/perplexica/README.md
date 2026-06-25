@@ -36,7 +36,7 @@ Environment variables (set in `.env`):
 
 > **LLM API key:** Perplexica uses `LITELLM_KEY` automatically when LiteLLM auth is enabled, then falls back to `OPENAI_API_KEY`, then `no-key` for direct llama-server installs that do not require authentication. No changes needed for local use.
 
-> **SearXNG URL:** Perplexica connects to SearXNG internally at `http://searxng:8080`. This is fixed in `compose.yaml` and does not need to be changed.
+> **SearXNG URL:** Perplexica connects to SearXNG internally at `http://searxng:8080` by default. This can be overridden by setting `SEARXNG_API_URL` in `.env` (for example, `SEARXNG_API_URL=http://brave-search:8585` to use the brave-search extension).
 
 > **Model name:** Perplexica stores its own `defaultChatModel` in its app
 > settings volume. The installer seeds it on first boot, and the bootstrap
@@ -106,8 +106,9 @@ docker compose logs dream-perplexica
 ```
 
 **No search results / "Search failed" errors:**
-- Verify SearXNG is reachable from within the Docker network
-- Test: `docker compose exec perplexica wget -qO- http://searxng:8080/healthz`
+- Verify your configured search backend is reachable from within the Docker network
+- Test the default SearXNG: `docker compose exec perplexica wget -qO- http://searxng:8080/healthz`
+- Test Brave Search (if overridden): `docker compose exec perplexica wget -qO- http://brave-search:8585/health`
 
 **LLM not responding:**
 - Confirm llama-server is running: `docker compose ps dream-llama-server`

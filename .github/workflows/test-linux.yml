@@ -111,6 +111,9 @@ jobs:
       - name: Perplexica Entrypoint Contract Tests
         run: python3 tests/test-perplexica-entrypoint.py
 
+      - name: Brave Search Proxy Contract Tests
+        run: node extensions/services/brave-search/test_contract.mjs
+
       - name: CPU-Only Path Tests
         run: bash tests/test-cpu-only-path.sh
 
