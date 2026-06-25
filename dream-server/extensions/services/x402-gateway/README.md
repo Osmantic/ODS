@@ -77,22 +77,55 @@ dream start x402-gateway
 
 ## Test
 
-Health:
+Free vendor/control checks:
 
 ```bash
-curl http://127.0.0.1:4020/health
+curl http://127.0.0.1:4020/v1/health
+curl http://127.0.0.1:4020/v1/health/ready
+curl http://127.0.0.1:4020/v1/vendor
+curl http://127.0.0.1:4020/v1/limits
+curl http://127.0.0.1:4020/v1/capabilities
 ```
 
-An unpaid protected request should return `402 Payment Required`:
+An unpaid protected capability request should return `402 Payment Required`:
 
 ```bash
-curl -i http://127.0.0.1:4020/llama/v1/chat/completions \
+curl -i http://127.0.0.1:4020/v1/capabilities/local_chat \
   -H 'content-type: application/json' \
-  -d '{"model":"local","messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"local","messages":[{"role":"user","content":"hello"}],"stream":true}'
 ```
+
+## Vendor contract
+
+The gateway exposes the Dream Server vendor contract as free control-plane
+endpoints and paid execution endpoints.
+
+Required free vendor endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /v1/health` | Fast liveness check for the API process. |
+| `GET /v1/health/ready` | Readiness check for capability registry, payment rules, and usage metering. |
+| `GET /v1/vendor` | Provider identity and protocol metadata. |
+| `GET /v1/limits` | Node-level request size, streaming, timeout, and rate-limit metadata. |
+| `GET /v1/capabilities` | Advertised paid capabilities, pricing, risk level, schemas, and examples. |
+
+Default paid capability endpoints:
+
+| Endpoint | Capability |
+| --- | --- |
+| `POST /v1/capabilities/local_chat` | General local LLM chat completion. |
+| `POST /v1/capabilities/coding_help` | Code explanation, generation, and debugging help. |
+| `POST /v1/capabilities/coding_review` | Review pasted code or diffs and return findings. |
+
+Health, readiness, vendor, limits, and capabilities endpoints are not charged.
+Payment is enforced before protected capability routes are proxied upstream.
+Streaming is advertised per capability and forwarded to the configured upstream
+when the backend supports streaming responses.
 
 ## Design
 
 V1 is route-only and allowlist-only. There is no wildcard charging mode, no
-database, and no MCP/tool interception yet. That keeps paid access explicit and
-leaves Dream Server's local/private behavior unchanged.
+database, and no MCP/tool interception yet. The free vendor contract lets buyers
+check who the node is, whether it is ready, what it sells, and what limits apply
+before paying for explicit capability routes.

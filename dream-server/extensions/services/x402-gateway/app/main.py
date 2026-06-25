@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from x402.http.middleware.fastapi import PaymentMiddlewareASGI
 
 from .audit import AuditLog
-from .config import GatewayConfig, load_config
+from .config import CapabilityConfig, GatewayConfig, RouteRule, load_config
 from .gateway import proxy_request
 from .payments import build_resource_server, build_x402_routes
 from .policy import RoutePolicy
@@ -33,11 +33,33 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         await app.state.http.aclose()
 
     @app.get("/health")
+    async def legacy_health() -> dict[str, object]:
+        return _health_payload(loaded)
+
+    @app.get("/v1/health")
     async def health() -> dict[str, object]:
+        return _health_payload(loaded)
+
+    @app.get("/v1/health/ready")
+    async def ready() -> dict[str, object]:
+        return _readiness_payload(loaded)
+
+    @app.get("/v1/vendor")
+    async def vendor() -> dict[str, object]:
+        return loaded.vendor.model_dump(mode="json")
+
+    @app.get("/v1/limits")
+    async def limits() -> dict[str, object]:
+        return loaded.limits.model_dump(mode="json")
+
+    @app.get("/v1/capabilities")
+    async def capabilities() -> dict[str, object]:
         return {
-            "ok": True,
-            "enabled": loaded.enabled,
-            "rules": len(loaded.rules),
+            "provider": loaded.vendor.model_dump(mode="json"),
+            "capabilities": [
+                capability.model_dump(mode="json")
+                for capability in _capabilities(loaded)
+            ],
         }
 
     if loaded.enabled and not loaded.policy.devBypass:
@@ -58,6 +80,47 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             )
 
     return app
+
+
+def _health_payload(config: GatewayConfig) -> dict[str, object]:
+    return {
+        "status": "ok",
+        "service": "dream-server-x402-gateway",
+        "version": config.vendor.version,
+        "protocolVersion": config.vendor.protocolVersion,
+        "enabled": config.enabled,
+        "rules": len(config.rules),
+    }
+
+
+def _readiness_payload(config: GatewayConfig) -> dict[str, object]:
+    checks = {
+        "api": "ok",
+        "capability_registry": "ok" if _capabilities(config) else "down",
+        "payment_gateway": "ok" if config.enabled else "disabled",
+        "payment_rules": "ok" if config.rules else "down",
+        "usage_metering": "ok" if config.audit.logPayments else "disabled",
+    }
+    status = "ok" if all(value in {"ok", "disabled"} for value in checks.values()) else "degraded"
+    return {"status": status, "checks": checks}
+
+
+def _capabilities(config: GatewayConfig) -> list[CapabilityConfig]:
+    if config.capabilities:
+        return config.capabilities
+    return [_capability_from_rule(rule) for rule in config.rules]
+
+
+def _capability_from_rule(rule: RouteRule) -> CapabilityConfig:
+    capability_id = rule.name.lower().replace(" ", "_").replace("-", "_")
+    return CapabilityConfig(
+        id=capability_id,
+        description=rule.metadata.description or rule.name,
+        path=rule.path,
+        streaming=True,
+        riskLevel="medium",
+        pricing=rule.price,
+    )
 
 
 def _handler_for_rule(path: str) -> Callable[[Request], object]:

@@ -40,6 +40,7 @@ class AuditConfig(BaseModel):
 class PriceConfig(BaseModel):
     amount: str
     currency: str = "USDC"
+    mode: Literal["per_request"] = "per_request"
 
     @field_validator("amount")
     @classmethod
@@ -84,12 +85,94 @@ class RouteRule(BaseModel):
         return methods
 
 
+class VendorOperatorConfig(BaseModel):
+    displayName: str = "Dream Server operator"
+
+
+class VendorConfig(BaseModel):
+    id: str = "dream-server-local-node"
+    name: str = "Dream Server local node"
+    description: str = "Local AI capability vendor node"
+    protocolVersion: str = "dream-server-v1"
+    version: str = "0.1.0"
+    operator: VendorOperatorConfig = Field(default_factory=VendorOperatorConfig)
+
+
+class TimeoutLimits(BaseModel):
+    defaultSeconds: int = 60
+    maxSeconds: int = 300
+
+
+class RateLimits(BaseModel):
+    requestsPerMinute: int = 10
+    concurrentRequests: int = 2
+
+
+class LimitsConfig(BaseModel):
+    maxPromptChars: int = 50000
+    maxContextItems: int = 20
+    maxFileBytes: int = 200000
+    maxOutputTokens: int = 4096
+    supportsStreaming: bool = True
+    supportsFiles: bool = False
+    timeouts: TimeoutLimits = Field(default_factory=TimeoutLimits)
+    rateLimits: RateLimits = Field(default_factory=RateLimits)
+
+
+class CapabilityLimits(BaseModel):
+    maxPromptChars: int = 50000
+    maxOutputTokens: int = 4096
+
+
+def default_capability_input_schema() -> dict[str, object]:
+    return {
+        "prompt": "string",
+        "context": "object",
+        "stream": "boolean",
+        "max_tokens": "optional number",
+    }
+
+
+def default_capability_output_schema() -> dict[str, object]:
+    return {
+        "output": "string",
+        "request_id": "string",
+        "usage": {
+            "input_tokens": "number",
+            "output_tokens": "number",
+        },
+    }
+
+
+class CapabilityConfig(BaseModel):
+    id: str
+    description: str
+    path: str
+    streaming: bool = True
+    riskLevel: Literal["low", "medium", "high"] = "medium"
+    pricing: PriceConfig
+    limits: CapabilityLimits = Field(default_factory=CapabilityLimits)
+    inputSchema: dict[str, object] = Field(default_factory=default_capability_input_schema)
+    outputSchema: dict[str, object] = Field(default_factory=default_capability_output_schema)
+    examples: list[dict[str, object]] = Field(default_factory=list)
+
+    @field_validator("path")
+    @classmethod
+    def capability_path_must_be_absolute(cls, value: str) -> str:
+        if not value.startswith("/"):
+            raise ValueError("capability path must start with /")
+        return value
+
+
 class GatewayConfig(BaseModel):
     enabled: bool = True
     seller: SellerConfig
     facilitator: FacilitatorConfig | None = None
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
+    vendor: VendorConfig = Field(default_factory=VendorConfig)
+    limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    capabilities: list[CapabilityConfig] = Field(default_factory=list)
     rules: list[RouteRule] = Field(default_factory=list)
 
     @field_validator("rules")
@@ -102,6 +185,16 @@ class GatewayConfig(BaseModel):
                 if key in seen:
                     raise ValueError(f"duplicate route rule for {method} {rule.path}")
                 seen.add(key)
+        return value
+
+    @field_validator("capabilities")
+    @classmethod
+    def require_unique_capabilities(cls, value: list[CapabilityConfig]) -> list[CapabilityConfig]:
+        seen: set[str] = set()
+        for capability in value:
+            if capability.id in seen:
+                raise ValueError(f"duplicate capability id {capability.id}")
+            seen.add(capability.id)
         return value
 
     def facilitator_url(self) -> str:

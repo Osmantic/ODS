@@ -22,20 +22,161 @@
     "logPayments": true,
     "logUnpaidAttempts": true
   },
+  "vendor": {
+    "id": "dream-server-local-node",
+    "name": "Dream Server local node",
+    "description": "Local AI capability vendor node for chat, coding help, and coding review",
+    "protocolVersion": "dream-server-v1",
+    "version": "0.1.0",
+    "operator": {
+      "displayName": "Dream Server operator"
+    }
+  },
+  "limits": {
+    "maxPromptChars": 50000,
+    "maxContextItems": 20,
+    "maxFileBytes": 200000,
+    "maxOutputTokens": 4096,
+    "supportsStreaming": true,
+    "supportsFiles": false,
+    "timeouts": {
+      "defaultSeconds": 60,
+      "maxSeconds": 300
+    },
+    "rateLimits": {
+      "requestsPerMinute": 10,
+      "concurrentRequests": 2
+    }
+  },
+  "capabilities": [
+    {
+      "id": "local_chat",
+      "description": "General local LLM chat completion through Dream Server.",
+      "path": "/v1/capabilities/local_chat",
+      "streaming": true,
+      "riskLevel": "low",
+      "pricing": {
+        "mode": "per_request",
+        "amount": "0.001",
+        "currency": "USDC"
+      },
+      "limits": {
+        "maxPromptChars": 50000,
+        "maxOutputTokens": 4096
+      },
+      "examples": [
+        {
+          "prompt": "Explain local AI in one paragraph.",
+          "stream": true
+        }
+      ]
+    },
+    {
+      "id": "coding_help",
+      "description": "Explain, generate, or debug pasted code snippets.",
+      "path": "/v1/capabilities/coding_help",
+      "streaming": true,
+      "riskLevel": "medium",
+      "pricing": {
+        "mode": "per_request",
+        "amount": "0.003",
+        "currency": "USDC"
+      },
+      "limits": {
+        "maxPromptChars": 80000,
+        "maxOutputTokens": 4096
+      },
+      "examples": [
+        {
+          "prompt": "Explain why this Rust borrow checker error happens.",
+          "context": {
+            "language": "rust"
+          },
+          "stream": true
+        }
+      ]
+    },
+    {
+      "id": "coding_review",
+      "description": "Review pasted code or diffs and return structured findings.",
+      "path": "/v1/capabilities/coding_review",
+      "streaming": true,
+      "riskLevel": "medium",
+      "pricing": {
+        "mode": "per_request",
+        "amount": "0.005",
+        "currency": "USDC"
+      },
+      "limits": {
+        "maxPromptChars": 80000,
+        "maxOutputTokens": 4096
+      },
+      "outputSchema": {
+        "summary": "string",
+        "findings": "array",
+        "risk": "low | medium | high"
+      },
+      "examples": [
+        {
+          "prompt": "Review this diff for correctness and regressions.",
+          "context": {
+            "language": "python",
+            "diff": "diff --git ..."
+          },
+          "stream": false
+        }
+      ]
+    }
+  ],
   "rules": [
     {
-      "name": "Paid local inference",
+      "name": "local_chat",
       "kind": "http_route",
-      "path": "/llama/v1/chat/completions",
+      "path": "/v1/capabilities/local_chat",
       "methods": ["POST"],
       "upstream": "http://llama-server:8080/v1/chat/completions",
       "price": {
-        "amount": "0.01",
+        "mode": "per_request",
+        "amount": "0.001",
         "currency": "USDC"
       },
       "metadata": {
-        "title": "Dream Server local inference",
-        "description": "Paid access to the local llama.cpp OpenAI-compatible chat endpoint",
+        "title": "Dream Server local chat",
+        "description": "Paid local chat capability backed by Dream Server llama-server",
+        "mimeType": "application/json"
+      }
+    },
+    {
+      "name": "coding_help",
+      "kind": "http_route",
+      "path": "/v1/capabilities/coding_help",
+      "methods": ["POST"],
+      "upstream": "http://llama-server:8080/v1/chat/completions",
+      "price": {
+        "mode": "per_request",
+        "amount": "0.003",
+        "currency": "USDC"
+      },
+      "metadata": {
+        "title": "Dream Server coding help",
+        "description": "Paid coding explanation, generation, and debugging help backed by local inference",
+        "mimeType": "application/json"
+      }
+    },
+    {
+      "name": "coding_review",
+      "kind": "http_route",
+      "path": "/v1/capabilities/coding_review",
+      "methods": ["POST"],
+      "upstream": "http://llama-server:8080/v1/chat/completions",
+      "price": {
+        "mode": "per_request",
+        "amount": "0.005",
+        "currency": "USDC"
+      },
+      "metadata": {
+        "title": "Dream Server coding review",
+        "description": "Paid review of pasted code or diffs backed by local inference",
         "mimeType": "application/json"
       }
     }
