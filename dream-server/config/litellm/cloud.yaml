@@ -16,6 +16,12 @@ model_list:
 
   - model_name: minimax
     litellm_params:
+      model: openai/MiniMax-M3
+      api_base: https://api.minimax.io/v1
+      api_key: os.environ/MINIMAX_API_KEY
+
+  - model_name: minimax-legacy
+    litellm_params:
       model: openai/MiniMax-M2.7
       api_base: https://api.minimax.io/v1
       api_key: os.environ/MINIMAX_API_KEY

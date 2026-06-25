@@ -44,7 +44,8 @@ model_list:
   - model_name: default       # → anthropic/claude-sonnet-4-5-20250514
   - model_name: gpt4o         # → openai/gpt-4o
   - model_name: fast          # → anthropic/claude-haiku-4-5-20251001
-  - model_name: minimax       # → MiniMax-M2.7 via minimax API
+  - model_name: minimax       # → MiniMax-M3 via minimax API (default)
+  - model_name: minimax-legacy # → MiniMax-M2.7 (legacy)
   - model_name: minimax-fast  # → MiniMax-M2.7-highspeed
 ```
 
