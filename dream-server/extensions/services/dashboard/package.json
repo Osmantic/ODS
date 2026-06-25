@@ -13,12 +13,12 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "gsap": "^3.12.7",
-    "lucide-react": "^0.441.0",
+    "gsap": "^3.15.0",
+    "lucide-react": "^0.577.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
-    "react-router-dom": "^6.26.0"
+    "react-router-dom": "^6.30.4"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
@@ -26,12 +26,12 @@
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@vitejs/plugin-react": "^5.2.0",
-    "autoprefixer": "^10.4.20",
+    "autoprefixer": "^10.5.2",
     "eslint": "^9.9.0",
-    "jsdom": "^29.0.0",
+    "jsdom": "^29.1.1",
     "postcss": "^8.5.15",
     "tailwindcss": "^3.4.10",
-    "vite": "^7.3.3",
-    "vitest": "^4.1.7"
+    "vite": "^7.3.6",
+    "vitest": "^4.1.9"
   }
 }
