@@ -95,26 +95,61 @@ hr() {
     printf '%s' "${out// /$c}"
 }
 
+# Print a file's octal permission bits portably (GNU stat vs BSD/macOS stat).
+_file_mode() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
+}
+
+# Atomically replace a file with a freshly written temp, preserving its mode.
+# .env holds secrets and the installer creates it 0600; a naive
+# "cmd > file.tmp; mv" creates the temp under the caller's ambient umask
+# (commonly 0644) and briefly leaves secrets in a world-readable file before
+# the rename. The caller writes new content into a same-directory mktemp (which
+# is 0600 from creation, so secrets are never world-readable in transit); this
+# restores the original file's permission bits and renames atomically on the
+# same filesystem. Owner is preserved implicitly since dream-cli runs as the
+# user that owns .env.
+_commit_replace() {
+    local tmp="$1" file="$2" mode=600
+    if [[ -f "$file" ]]; then
+        mode=$(_file_mode "$file") || mode=600
+        [[ -n "$mode" ]] || mode=600
+    fi
+    chmod "$mode" "$tmp"
+    mv "$tmp" "$file"
+}
+
 # Update or add a key=value in .env
 _env_set() {
-    local key="$1" val="$2" file="$INSTALL_DIR/.env"
+    local key="$1" val="$2" file="$INSTALL_DIR/.env" tmp
     if grep -q "^${key}=" "$file" 2>/dev/null; then
         # Use awk to avoid sed delimiter collisions with values containing | / or =
-        # Write to a temp file then atomically rename to avoid .env corruption
-        # if the process is killed between truncation and write completion.
-        awk -v k="$key" -v v="$val" '{
+        # Write to a same-directory temp and only commit when awk succeeds, so a
+        # killed process never leaves a corrupt or world-readable .env behind.
+        tmp=$(mktemp "${file}.XXXXXX") || return 1
+        if awk -v k="$key" -v v="$val" '{
             if (index($0, k "=") == 1) print k "=" v; else print
-        }' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+        }' "$file" > "$tmp"; then
+            _commit_replace "$tmp" "$file"
+        else
+            rm -f "$tmp"
+            return 1
+        fi
     else
         echo "${key}=${val}" >> "$file"
     fi
 }
 
 _env_unset() {
-    local key="$1" file="$INSTALL_DIR/.env"
+    local key="$1" file="$INSTALL_DIR/.env" tmp
     [[ -f "$file" ]] || return 0
-    awk -v k="$key" 'index($0, k "=") != 1 { print }' "$file" > "${file}.tmp" \
-        && mv "${file}.tmp" "$file"
+    tmp=$(mktemp "${file}.XXXXXX") || return 1
+    if awk -v k="$key" 'index($0, k "=") != 1 { print }' "$file" > "$tmp"; then
+        _commit_replace "$tmp" "$file"
+    else
+        rm -f "$tmp"
+        return 1
+    fi
 }
 
 _env_get_raw() {

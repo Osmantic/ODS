@@ -56,7 +56,14 @@ fi
 # ── Extract active session IDs (prefer jq; fall back to grep) ──
 ACTIVE_IDS=""
 if command -v jq &>/dev/null; then
-    ACTIVE_IDS=$(jq -r '[.. | objects | .sessionId? // empty] | unique | .[]' "$SESSIONS_JSON" 2>/dev/null) || ACTIVE_IDS=""
+    ACTIVE_IDS_EXIT=0
+    ACTIVE_IDS=$(jq -r '[.. | objects | .sessionId? // empty] | unique | .[]' "$SESSIONS_JSON" 2>&1) || ACTIVE_IDS_EXIT=$?
+    if [[ $ACTIVE_IDS_EXIT -ne 0 ]]; then
+        # Invalid/unreadable JSON: surface the failure instead of hiding it, then
+        # fall back to "no active sessions" so the run does not abort under set -e.
+        echo "[$(date)] WARNING: jq could not parse $SESSIONS_JSON (exit $ACTIVE_IDS_EXIT); treating all sessions as inactive" >&2
+        ACTIVE_IDS=""
+    fi
 else
     # Fallback for systems without jq — fragile with minified/nested JSON
     ACTIVE_IDS_EXIT=0

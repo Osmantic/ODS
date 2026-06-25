@@ -181,6 +181,7 @@ unknown=()
 type_errors=()
 enum_errors=()
 range_errors=()
+length_errors=()
 duplicate_errors=()
 
 mapfile -t required_keys < <(jq -r '.required[]?' "$SCHEMA_FILE")
@@ -272,6 +273,17 @@ for key in "${schema_keys[@]}"; do
       fi
     fi
 
+    # Minimum-length validation for strings. Rejects unset placeholders such as
+    # CHANGEME so secrets must be replaced with real values before the stack runs.
+    if [[ "$expected_type" == "string" ]]; then
+      if jq -e --arg k "$key" '.properties[$k].minLength? != null' "$SCHEMA_FILE" >/dev/null 2>&1; then
+        minlen="$(jq -r --arg k "$key" '.properties[$k].minLength' "$SCHEMA_FILE")"
+        if (( ${#val} < minlen )); then
+          length_errors+=("$key: value length ${#val} is < minLength $minlen (line ${ENV_LINE[$key]:-?})")
+        fi
+      fi
+    fi
+
 done
 
 # -----------------------------
@@ -316,6 +328,14 @@ if (( ${#range_errors[@]} > 0 )); then
     had_errors=true
     log_error "Range validation errors:"
     for err in "${range_errors[@]}"; do
+        echo "  - $err"
+    done
+fi
+
+if (( ${#length_errors[@]} > 0 )); then
+    had_errors=true
+    log_error "Length validation errors (replace placeholder/default values):"
+    for err in "${length_errors[@]}"; do
         echo "  - $err"
     done
 fi
