@@ -33,8 +33,8 @@ features:
     icon: Shield
     category: privacy
     requirements:
-      services: []
-    enabled_services_any: [ape]
+      services: [ape]
+    enabled_services_all: [ape]
     setup_time: Ready
     priority: 10
     launch:

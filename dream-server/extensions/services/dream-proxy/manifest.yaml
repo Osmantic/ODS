@@ -66,9 +66,9 @@ features:
     icon: Globe
     category: networking
     requirements:
-      services: [dashboard]
+      services: [dashboard, dream-proxy]
       vram_gb: 0
-    enabled_services_all: [dream-proxy]
+    enabled_services_all: [dashboard, dream-proxy]
     setup_time: Ready
     priority: 1
     launch:

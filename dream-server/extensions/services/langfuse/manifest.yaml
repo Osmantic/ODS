@@ -30,7 +30,7 @@ features:
       services: [langfuse]
       services_any: [litellm]
     enabled_services_all: [langfuse]
-    enabled_services_any: []
+    enabled_services_any: [litellm]
     setup_time: ~2 minutes
     priority: 10
     launch:
