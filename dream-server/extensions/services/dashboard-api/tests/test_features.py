@@ -377,7 +377,33 @@ class TestFeatureEnableInstructions:
         assert "port 80" in steps
         assert data["instructions"]["links"][0] == {
             "label": "Open LAN entry",
-            "url": "http://dashboard.dream.local:80",
+            "url": "http://dream.local",
+        }
+
+    def test_lan_web_instructions_keep_loopback_entry_usable(self, test_client, monkeypatch):
+        test_features = [
+            {"id": "lan-web", "name": "LAN web entry", "description": "LAN entry",
+             "icon": "Globe", "category": "networking",
+             "setup_time": "Ready", "priority": 1,
+             "requirements": {"vram_gb": 0, "services": [], "services_any": []},
+             "enabled_services_all": ["dream-proxy"], "enabled_services_any": []}
+        ]
+        monkeypatch.setattr("routers.features.FEATURES", test_features)
+        monkeypatch.setattr(
+            "routers.features.SERVICES",
+            {"dream-proxy": {"external_port": 80}},
+        )
+
+        resp = test_client.get(
+            "/api/features/lan-web/enable",
+            headers={**test_client.auth_headers, "host": "127.0.0.1:3001"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["instructions"]["links"][0] == {
+            "label": "Open LAN entry",
+            "url": "http://127.0.0.1",
         }
 
     def test_hermes_sso_instructions_open_access_management(self, test_client, monkeypatch):

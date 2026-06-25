@@ -15,6 +15,40 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["features"])
 
+LAN_ROUTE_SUBDOMAINS = {"api", "auth", "chat", "dashboard", "hermes", "talk"}
+
+
+def _strip_lan_route_subdomain(hostname: str) -> str:
+    """Return the parent <device>.local host for known dream-proxy subdomains."""
+    parts = (hostname or "localhost").split(".")
+    if len(parts) >= 3 and parts[-1] == "local" and parts[0] in LAN_ROUTE_SUBDOMAINS:
+        return ".".join(parts[1:])
+    return hostname or "localhost"
+
+
+def _format_host_for_url(hostname: str) -> str:
+    if ":" in hostname and not hostname.startswith("["):
+        return f"[{hostname}]"
+    return hostname
+
+
+def _hostname_from_host_header(host_header: str) -> str:
+    host = (host_header or "localhost").strip()
+    if host.startswith("["):
+        end = host.find("]")
+        return host[1:end] if end != -1 else host.strip("[]")
+    return host.rsplit(":", 1)[0] if ":" in host else host
+
+
+def _dream_proxy_entry_url(request: Request, port: int) -> str:
+    forwarded_host = request.headers.get("x-forwarded-host")
+    host_header = forwarded_host or request.headers.get("host") or "localhost"
+    hostname = _hostname_from_host_header(host_header)
+    hostname = _strip_lan_route_subdomain(hostname)
+    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
+    port_suffix = "" if int(port or 80) == 80 else f":{port}"
+    return f"{scheme}://{_format_host_for_url(hostname)}{port_suffix}"
+
 
 def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[GPUInfo]) -> dict:
     """Calculate whether a feature can be enabled and its status."""
@@ -216,14 +250,15 @@ async def feature_enable_instructions(
     comfyui_url = _svc_url("comfyui")
     opencode_url = _svc_url("opencode")
     hermes_url = _svc_url("hermes-proxy")
-    dream_proxy_url = _svc_url("dream-proxy")
+    dream_proxy_port = _svc_port("dream-proxy")
+    dream_proxy_url = _dream_proxy_entry_url(request, dream_proxy_port) if dream_proxy_port else ""
 
     instructions = {
         "lan-web": {
             "steps": [
                 "Enable the dream-proxy extension from Extensions, or run: dream enable dream-proxy",
                 "Start or restart Dream Server so dream-proxy listens on port 80",
-                "Use the LAN hostnames such as dashboard.<device>.local, chat.<device>.local, and talk.<device>.local",
+                "Use http://<device>.local when mDNS/DNS subdomains are available; direct IP or localhost access falls back to Chat",
             ],
             "links": [{"label": "Open LAN entry", "url": dream_proxy_url}] if dream_proxy_url else [],
         },

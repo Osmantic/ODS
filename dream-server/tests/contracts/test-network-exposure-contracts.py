@@ -122,6 +122,10 @@ def test_dream_proxy_routes_talk_portal() -> None:
 
     assert_true("talk.{$DREAM_DEVICE_NAME:dream}.local" in caddyfile, "dream-proxy must route talk.<device>.local")
     assert_true("reverse_proxy dashboard:3001" in caddyfile, "Dream Talk should be served by the dashboard container")
+    assert_true(
+        ":80 {" in caddyfile and "reverse_proxy open-webui:8080" in caddyfile,
+        "dream-proxy must serve Chat for direct IP/localhost LAN entry fallback",
+    )
 
 
 def test_dashboard_csp_allows_dream_talk_tts_blob_audio() -> None:

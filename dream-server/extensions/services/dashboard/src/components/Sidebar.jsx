@@ -7,12 +7,10 @@ import {
 } from 'lucide-react'
 import { getSidebarExternalLinks, getSidebarNavItems } from '../plugins/registry'
 import { useTheme } from '../contexts/ThemeContext'
+import { buildExternalServiceUrl } from '../utils/externalUrls'
 
-// Derive external service URLs from current host
-const getExternalUrl = (port) =>
-  typeof window !== 'undefined'
-    ? `http://${window.location.hostname}:${port}`
-    : `http://localhost:${port}`
+// Derive external service URLs from current host.
+const getExternalUrl = (port, path = '', serviceId) => buildExternalServiceUrl({ port, path, serviceId })
 
 export default function Sidebar({ status, collapsed, onToggle }) {
   const { theme, cycleTheme, labels } = useTheme() // eslint-disable-line no-unused-vars -- theme switcher temporarily hidden

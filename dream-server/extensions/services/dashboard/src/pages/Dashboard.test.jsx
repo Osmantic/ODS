@@ -259,6 +259,15 @@ describe('Dashboard system overview', () => {
         launch: { type: 'none' },
         requirements: { servicesMissing: [] },
       },
+      {
+        id: 'lan-web',
+        name: 'LAN web entry',
+        description: 'Single port-80 entry',
+        icon: 'Globe',
+        status: 'enabled',
+        launch: { type: 'service', service: 'dream-proxy' },
+        requirements: { servicesMissing: [] },
+      },
     ]
 
     const statusWithLaunchTargets = {
@@ -267,6 +276,7 @@ describe('Dashboard system overview', () => {
         { id: 'llama-server', name: 'llama-server (LLM Inference)', status: 'healthy', port: 11434, uptime: 14400 },
         { id: 'open-webui', name: 'Open WebUI (Chat)', status: 'healthy', port: 3000, uptime: 14400 },
         { id: 'hermes-proxy', name: 'Hermes Auth Proxy', status: 'healthy', port: 9120, uptime: 14400 },
+        { id: 'dream-proxy', name: 'Dream Server (Web)', status: 'healthy', port: 80, uptime: 14400 },
       ],
     }
 
@@ -275,6 +285,7 @@ describe('Dashboard system overview', () => {
     expect(await screen.findByRole('link', { name: /AI Chat/ })).toHaveAttribute('href', 'http://localhost:3000')
     expect(screen.getByRole('link', { name: /Hermes Agent/ })).toHaveAttribute('href', 'http://localhost:9120')
     expect(screen.getByRole('link', { name: /Hermes Single Sign-On/ })).toHaveAttribute('href', '/invites')
+    expect(screen.getByRole('link', { name: /LAN web entry/ })).toHaveAttribute('href', 'http://localhost')
     expect(screen.queryByRole('link', { name: /Remote Access/ })).not.toBeInTheDocument()
     expect(screen.getByText('Remote Access')).toBeInTheDocument()
   })

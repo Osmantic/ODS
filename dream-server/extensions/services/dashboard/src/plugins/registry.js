@@ -61,12 +61,18 @@ export function getSidebarExternalLinks(context = {}) {
   }
   return deduped.map(link => {
     const healthy = link.alwaysHealthy ? true : isServiceHealthy(status, link.healthNeedles || [])
+    const uiPath = link.ui_path && link.ui_path !== '/' ? link.ui_path : ''
+    const url = link.url || (
+      typeof getExternalUrl === 'function'
+        ? getExternalUrl(link.port, uiPath, link.id)
+        : `http://localhost:${link.port}${uiPath}`
+    )
     return {
       key: link.id,
       label: link.label,
       icon: typeof link.icon === 'string' ? (ICON_MAP[link.icon] || ExternalLink) : (link.icon || ExternalLink),
       healthy,
-      url: (typeof getExternalUrl === 'function' ? getExternalUrl(link.port) : `http://localhost:${link.port}`) + (link.ui_path && link.ui_path !== '/' ? link.ui_path : ''),
+      url,
     }
   })
 }

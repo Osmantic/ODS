@@ -57,7 +57,16 @@
 	handle @health {
 		respond "ok" 200
 	}
-	# Fall through to the host-matched blocks below.
+	# Fallback for direct IP / localhost access. Host-based .local routes below
+	# are preferred when DNS is available, but operators often click a LAN entry
+	# from localhost or type the server IP before mDNS is working. Serve Chat
+	# instead of returning an empty 200 response.
+	handle {
+		reverse_proxy open-webui:8080 {
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
 }
 
 # ---------------------------------------------------------------------
