@@ -150,19 +150,22 @@ grep -q 'MINIO_TELEMETRY_DISABLED.*1' extensions/services/langfuse/compose.yaml.
   grep -q 'MINIO_TELEMETRY_DISABLED.*1' extensions/services/langfuse/compose.yaml 2>/dev/null || \
   { echo "[FAIL] MinIO telemetry not disabled"; exit 1; }
 
-echo "[contract] ENABLE_RAG opt-out disables both qdrant and embeddings"
-# RAG = qdrant (vector store) + embeddings (TEI). Both compose files must
-# be gated on ENABLE_RAG in installers/phases/03-features.sh; otherwise
-# answering 'n' to the Custom-menu RAG prompt still leaves embeddings
-# being pulled and started.
+echo "[contract] RAG service flags gate qdrant and embeddings"
+# RAG = qdrant (vector store) + embeddings (TEI). Both default from
+# ENABLE_RAG, then host-specific guards can disable the concrete service
+# when an upstream image cannot run on that machine.
 features_phase="dream-server/installers/phases/03-features.sh"
 test -f "$features_phase" || features_phase="installers/phases/03-features.sh"
 test -f "$features_phase" || { echo "[FAIL] cannot locate 03-features.sh"; exit 1; }
-for svc in qdrant embeddings; do
-  grep -qE "_sync_extension_compose +\"\\\$\\{ENABLE_RAG:-\\}\" +$svc\\b" "$features_phase" \
-    || { echo "[FAIL] ENABLE_RAG opt-out missing sync for '$svc' in $features_phase"; exit 1; }
+grep -q 'ENABLE_QDRANT="${ENABLE_QDRANT:-${ENABLE_RAG:-false}}"' "$features_phase"   || { echo "[FAIL] ENABLE_QDRANT does not default from ENABLE_RAG in $features_phase"; exit 1; }
+grep -q 'ENABLE_EMBEDDINGS="${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}"' "$features_phase"   || { echo "[FAIL] ENABLE_EMBEDDINGS does not default from ENABLE_RAG in $features_phase"; exit 1; }
+grep -qE '_sync_extension_compose +"\$\{ENABLE_QDRANT:-\$\{ENABLE_RAG:-false\}\}" +qdrant\b' "$features_phase"   || { echo "[FAIL] Qdrant compose is not gated by ENABLE_QDRANT in $features_phase"; exit 1; }
+grep -qE '_sync_extension_compose +"\$\{ENABLE_EMBEDDINGS:-\$\{ENABLE_RAG:-false\}\}" +embeddings\b' "$features_phase"   || { echo "[FAIL] Embeddings compose is not gated by ENABLE_EMBEDDINGS in $features_phase"; exit 1; }
+grep -q 'getconf PAGE_SIZE' "$features_phase"   || { echo "[FAIL] Qdrant arm64 page-size guard missing from $features_phase"; exit 1; }
+for f in installers/phases/04-requirements.sh installers/phases/08-images.sh installers/phases/12-health.sh installers/phases/13-summary.sh; do
+  test -f "$f" || { echo "[FAIL] missing installer phase: $f"; exit 1; }
+  grep -q 'ENABLE_QDRANT:-${ENABLE_RAG:-false}' "$f"     || { echo "[FAIL] $f still gates Qdrant on ENABLE_RAG directly"; exit 1; }
 done
-
 echo "[contract] every resolve-compose-stack.sh invocation passes --gpu-count"
 # The resolver's --gpu-count flag gates the multigpu-{backend}.yml overlay.
 # A caller that omits it silently resolves to a single-GPU stack on multi-GPU
