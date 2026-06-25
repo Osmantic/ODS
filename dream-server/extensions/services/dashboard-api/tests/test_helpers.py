@@ -1056,3 +1056,32 @@ class TestDirSizeGb:
         invalidate_dir_size_cache(d)
         assert dir_size_gb(d) == 0.0
         assert calls["count"] == 1
+
+    def test_dangling_symlinks_are_skipped(self, tmp_path):
+        """A symlink whose target doesn't exist must not crash or contribute size."""
+        clear_dir_size_cache()
+        d = tmp_path / "dangling"
+        d.mkdir()
+        real = d / "real.bin"
+        real.write_bytes(b"\x00" * 1024)
+        dangling = d / "dangling.bin"
+        dangling.symlink_to(d / "nonexistent-target")
+        assert not dangling.exists()  # confirm it's dangling
+        assert dangling.is_symlink()  # but it is a symlink
+        result = dir_size_gb(d)
+        assert result == 0.0  # only real.bin counted (1024 bytes ≈ 0.0 GB)
+
+    def test_symlink_to_external_file_not_counted(self, tmp_path):
+        """A symlink pointing outside the scanned directory must not add size."""
+        clear_dir_size_cache()
+        external = tmp_path / "external"
+        external.mkdir()
+        ext_file = external / "big.bin"
+        ext_file.write_bytes(b"\x00" * (1024 * 1024 * 200))  # 200 MiB
+
+        d = tmp_path / "scanned"
+        d.mkdir()
+        link = d / "external_link.bin"
+        link.symlink_to(ext_file)
+        result = dir_size_gb(d)
+        assert result == 0.0  # symlink skipped, external file not counted
