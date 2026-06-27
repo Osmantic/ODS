@@ -28,9 +28,9 @@ helper_script="$ROOT_DIR/installers/lib/oauth-credentials.sh"
     source "$helper_script"
     mkdir -p "$tmpdir/extensions/services/hermes/credentials"
     echo '{"dummy": true}' > "$tmpdir/extensions/services/hermes/credentials/test-oauth.json"
-    
+
     copy_oauth_credentials "$tmpdir" >/dev/null 2>&1
-    
+
     if [[ ! -f "$tmpdir/data/hermes/test-oauth.json" ]]; then
         echo "[FAIL] Helper did not copy the JSON file into data/hermes"
         exit 1
@@ -43,12 +43,12 @@ helper_script="$ROOT_DIR/installers/lib/oauth-credentials.sh"
     source "$helper_script"
     mkdir -p "$tmpdir/extensions/services/hermes/credentials"
     echo '{"new": true}' > "$tmpdir/extensions/services/hermes/credentials/test-exist.json"
-    
+
     mkdir -p "$tmpdir/data/hermes"
     echo '{"existing": true}' > "$tmpdir/data/hermes/test-exist.json"
-    
+
     copy_oauth_credentials "$tmpdir" >/dev/null 2>&1
-    
+
     content=$(cat "$tmpdir/data/hermes/test-exist.json")
     if [[ "$content" != '{"existing": true}' ]]; then
         echo "[FAIL] Helper overwrote the existing destination file"
