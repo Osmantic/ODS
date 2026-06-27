@@ -56,7 +56,7 @@ export default function App() {
       {step !== "welcome" && step !== "error" && (
         <div className="h-1 bg-gray-800">
           <div
-            className="h-full bg-dream-500 transition-all duration-500"
+            className="h-full bg-ods-500 transition-all duration-500"
             style={{ width: `${progress}%` }}
           />
         </div>

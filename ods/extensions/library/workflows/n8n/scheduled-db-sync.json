@@ -1,0 +1,280 @@
+{
+  "name": "Scheduled DB Sync",
+  "active": true,
+  "meta": {
+    "instanceId": "ods"
+  },
+  "nodes": [
+    {
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "id": "fetch-source-a",
+      "name": "Fetch Source A",
+      "parameters": {
+        "url": "={{ $env.EXTERNAL_API_URL || 'http://localhost:3001' }}/api/data",
+        "method": "GET",
+        "options": {
+          "continueOnFail": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [450, 300]
+    },
+    {
+      "id": "handle-source-a-error",
+      "name": "Handle Source A Error",
+      "parameters": {
+        "jsCode": "// Handle source A fetch error\nconst error = $input.all()[0]?.error?.message || 'Unknown error';\nreturn [{\n  json: {\n    success: false,\n    error: `Source A fetch failed: ${error}`,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 500]
+    },
+    {
+      "id": "fetch-source-b",
+      "name": "Fetch Source B",
+      "parameters": {
+        "url": "={{ $env.INTERNAL_API_URL || 'http://localhost:3002' }}/api/data",
+        "method": "GET",
+        "options": {
+          "continueOnFail": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [650, 300]
+    },
+    {
+      "id": "handle-source-b-error",
+      "name": "Handle Source B Error",
+      "parameters": {
+        "jsCode": "// Handle source B fetch error\nconst error = $input.all()[0]?.error?.message || 'Unknown error';\nreturn [{\n  json: {\n    success: false,\n    error: `Source B fetch failed: ${error}`,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 500]
+    },
+    {
+      "id": "pagination-source-a",
+      "name": "Pagination Source A",
+      "parameters": {
+        "jsCode": "// Handle pagination for Source A\nconst data = $input.first().json || {};\nconst results = Array.isArray(data.results) ? data.results : (Array.isArray(data) ? data : [data]);\n\n// Check for pagination metadata\nconst nextCursor = data.next || data.nextCursor || data.next_page || null;\n\nreturn [{\n  json: {\n    source: 'A',\n    results: results,\n    count: results.length,\n    nextCursor: nextCursor || null,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "id": "pagination-source-b",
+      "name": "Pagination Source B",
+      "parameters": {
+        "jsCode": "// Handle pagination for Source B\nconst data = $input.first().json || {};\nconst results = Array.isArray(data.results) ? data.results : (Array.isArray(data) ? data : [data]);\n\n// Check for pagination metadata\nconst nextCursor = data.next || data.nextCursor || data.next_page || null;\n\nreturn [{\n  json: {\n    source: 'B',\n    results: results,\n    count: results.length,\n    nextCursor: nextCursor || null,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 500]
+    },
+    {
+      "id": "compare-data",
+      "name": "Compare Data",
+      "parameters": {
+        "jsCode": "// Compare data between Source A and Source B\nconst sourceA = $input.all().find(item => item.json.source === 'A')?.json || null;\nconst sourceB = $input.all().find(item => item.json.source === 'B')?.json || null;\n\nif (!sourceA || !sourceB) {\n  return [{\n    json: {\n      success: false,\n      error: 'Missing source data for comparison',\n      sourceA: sourceA,\n      sourceB: sourceB,\n      timestamp: new Date().toISOString()\n    }\n  }];\n}\n\n// Simple comparison logic - count mismatch check\nconst countDiff = sourceA.count - sourceB.count;\nconst hasDiff = countDiff !== 0;\n\nreturn [{\n  json: {\n    success: true,\n    sourceA: {\n      count: sourceA.count,\n      nextCursor: sourceA.nextCursor\n    },\n    sourceB: {\n      count: sourceB.count,\n      nextCursor: sourceB.nextCursor\n    },\n    comparison: {\n      countDifference: countDiff,\n      hasDifferences: hasDiff\n    },\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 300]
+    },
+    {
+      "id": "store-sync-result",
+      "name": "Store Sync Result",
+      "parameters": {
+        "url": "={{ 'http://' + ($env.ODS_URL || 'http://localhost:3002') + '/api/sync/results' }}",
+        "method": "POST",
+        "headers": {
+          "list": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "body": {
+          "sourceA_count": "={{ $json.sourceA.count }}",
+          "sourceB_count": "={{ $json.sourceB.count }}",
+          "count_difference": "={{ $json.comparison.countDifference }}",
+          "has_differences": "={{ $json.comparison.hasDifferences }}",
+          "timestamp": "={{ $json.timestamp }}",
+          "sync_type": "scheduled"
+        },
+        "options": {
+          "continueOnFail": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1250, 300]
+    },
+    {
+      "id": "sync-error",
+      "name": "Sync Error",
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1050, 500]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Source A",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Source A": {
+      "main": [
+        [
+          {
+            "node": "Fetch Source B",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Handle Source A Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Source B": {
+      "main": [
+        [
+          {
+            "node": "Pagination Source A",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Handle Source B Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Source A Error": {
+      "main": [
+        [
+          {
+            "node": "Sync Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Source B Error": {
+      "main": [
+        [
+          {
+            "node": "Sync Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pagination Source A": {
+      "main": [
+        [
+          {
+            "node": "Pagination Source B",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pagination Source B": {
+      "main": [
+        [
+          {
+            "node": "Compare Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare Data": {
+      "main": [
+        [
+          {
+            "node": "Store Sync Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Sync Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Sync Result": {
+      "main": [
+        [
+          {
+            "node": "Sync Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

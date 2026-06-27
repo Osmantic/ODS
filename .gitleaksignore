@@ -5,24 +5,24 @@
 # Example: abc123def456...
 
 # Test fixtures in privacy-shield PII scrubber tests (not real secrets)
-bc47367431025198fcbea19a54abcde8c30847fd:dream-server/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:125
-bc47367431025198fcbea19a54abcde8c30847fd:dream-server/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:131
-bc47367431025198fcbea19a54abcde8c30847fd:dream-server/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:181
+bc47367431025198fcbea19a54abcde8c30847fd:ods/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:125
+bc47367431025198fcbea19a54abcde8c30847fd:ods/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:131
+bc47367431025198fcbea19a54abcde8c30847fd:ods/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:181
 
 # Documentation examples (placeholder API keys in curl commands)
-4ba4a3779264f44b247af06fbad391c1f4d38269:dream-server/extensions/services/litellm/README.md:curl-auth-header:89
-9a1e87ce94083fb9696ec1df6c926ec77397b38e:dream-server/extensions/library/workflows/comfyui/README.md:curl-auth-header:32
-9a1e87ce94083fb9696ec1df6c926ec77397b38e:dream-server/extensions/library/workflows/comfyui/README.md:curl-auth-header:64
-9a1e87ce94083fb9696ec1df6c926ec77397b38e:dream-server/extensions/library/workflows/langflow/README.md:curl-auth-header:30
-9a1e87ce94083fb9696ec1df6c926ec77397b38e:dream-server/extensions/library/workflows/flowise/README.md:curl-auth-header:30
-1f9e6dae1a91ff274dac2f580996ae9f8d60f414:dream-server/extensions/library/workflows/flowise/README.md:curl-auth-header:30
-1f9e6dae1a91ff274dac2f580996ae9f8d60f414:dream-server/extensions/library/workflows/comfyui/README.md:curl-auth-header:32
-1f9e6dae1a91ff274dac2f580996ae9f8d60f414:dream-server/extensions/library/workflows/comfyui/README.md:curl-auth-header:64
-1f9e6dae1a91ff274dac2f580996ae9f8d60f414:dream-server/extensions/library/workflows/langflow/README.md:curl-auth-header:30
+4ba4a3779264f44b247af06fbad391c1f4d38269:ods/extensions/services/litellm/README.md:curl-auth-header:89
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:ods/extensions/library/workflows/comfyui/README.md:curl-auth-header:32
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:ods/extensions/library/workflows/comfyui/README.md:curl-auth-header:64
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:ods/extensions/library/workflows/langflow/README.md:curl-auth-header:30
+9a1e87ce94083fb9696ec1df6c926ec77397b38e:ods/extensions/library/workflows/flowise/README.md:curl-auth-header:30
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:ods/extensions/library/workflows/flowise/README.md:curl-auth-header:30
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:ods/extensions/library/workflows/comfyui/README.md:curl-auth-header:32
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:ods/extensions/library/workflows/comfyui/README.md:curl-auth-header:64
+1f9e6dae1a91ff274dac2f580996ae9f8d60f414:ods/extensions/library/workflows/langflow/README.md:curl-auth-header:30
 
 # Example code in privacy shield implementation (test patterns)
-6a5047fd3f7cc0369416d14289740b8c3f02dd06:dream-server/privacy-shield-offline/pii_scrubber.py:generic-api-key:146
-6a5047fd3f7cc0369416d14289740b8c3f02dd06:dream-server/privacy-shield/pii_scrubber.py:generic-api-key:149
+6a5047fd3f7cc0369416d14289740b8c3f02dd06:ods/privacy-shield-offline/pii_scrubber.py:generic-api-key:146
+6a5047fd3f7cc0369416d14289740b8c3f02dd06:ods/privacy-shield/pii_scrubber.py:generic-api-key:149
 
 # Security audit documentation (example vulnerabilities for demonstration)
 ce863df7a784f4d2406bf2c151e9c5c497b3d085:SECURITY_AUDIT.md:generic-api-key:31
@@ -46,8 +46,8 @@ a3b26dbd450fd0dc5d0651ffa6f21fe20acb1195:archive/cookbook/voice-agent-framework/
 a3b26dbd450fd0dc5d0651ffa6f21fe20acb1195:archive/cookbook/voice-agent-framework/core/hvac-token-server.py:generic-api-key:20
 
 # Installer-generated placeholder values (replaced during installation)
-9539512e06bef98b9276e339ef3cb2d6273e8f1f:dream-server/installers/macos/lib/env-generator.sh:generic-api-key:80
-5c5151fe050ac570fb022ccb99d86bda93dfedb2:dream-server/installers/windows/lib/env-generator.ps1:generic-api-key:115
+9539512e06bef98b9276e339ef3cb2d6273e8f1f:ods/installers/macos/lib/env-generator.sh:generic-api-key:80
+5c5151fe050ac570fb022ccb99d86bda93dfedb2:ods/installers/windows/lib/env-generator.ps1:generic-api-key:115
 
 # Configuration examples (default/placeholder values)
-48a1d87d3d155359fb23d7a65d1db55b036b7508:dream-server/config/searxng/settings.yml:generic-api-key:3
+48a1d87d3d155359fb23d7a65d1db55b036b7508:ods/config/searxng/settings.yml:generic-api-key:3

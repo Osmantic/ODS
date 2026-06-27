@@ -1,0 +1,77 @@
+schema_version: ods.services.v1
+
+service:
+  id: baserow
+  name: Baserow
+  aliases: [database, airtable, nocodb]
+  container_name: ods-baserow
+  host_env: BASEROW_HOST
+  default_host: baserow
+  port: 80
+  external_port_env: BASEROW_PORT
+  external_port_default: 3007
+  health: /api/_health/
+  type: docker
+  gpu_backends: [all]
+  category: optional
+  compose_file: compose.yaml
+  depends_on: []
+  description: |
+    Open-source no-code database tool and Airtable alternative.
+    Create databases, tables, and views with a spreadsheet-like interface.
+    Self-hosted with no storage restrictions. MIT licensed.
+  
+    
+  tags:
+    - database
+    - nocode
+    - airtable
+    - spreadsheet
+    - collaboration
+    - productivity
+
+features:
+  - id: database
+    name: No-Code Database
+    description: No-code database with spreadsheet interface
+    icon: Database
+    category: productivity
+    requirements:
+      services: [baserow]
+      vram_gb: 0
+    enabled_services_all: [baserow]
+    setup_time: ~1 minute
+    priority: 16
+  - id: views
+    name: Multiple Views
+    description: Grid, gallery, form, and calendar views
+    icon: LayoutGrid
+    category: productivity
+    requirements:
+      services: [baserow]
+      vram_gb: 0
+    enabled_services_all: [baserow]
+    setup_time: ~1 minute
+    priority: 17
+  - id: api
+    name: REST API
+    description: Headless REST API for all data
+    icon: Globe
+    category: productivity
+    requirements:
+      services: [baserow]
+      vram_gb: 0
+    enabled_services_all: [baserow]
+    setup_time: ~1 minute
+    priority: 18
+  - id: collaboration
+    name: Collaboration
+    description: Real-time collaboration and permissions
+    icon: Users
+    category: productivity
+    requirements:
+      services: [baserow]
+      vram_gb: 0
+    enabled_services_all: [baserow]
+    setup_time: ~1 minute
+    priority: 19

@@ -93,7 +93,7 @@ Examples of workstream decomposition:
 |-----------|---------------------|
 | New extension | Manifest + compose, Backend integration, Dashboard UI, Tests, Docs |
 | Installer fix | Root cause analysis, Fix in lib/phases, BATS tests, Smoke test update |
-| CLI feature | dream-cli implementation, Shell tests, Documentation |
+| CLI feature | ods-cli implementation, Shell tests, Documentation |
 | Dashboard feature | API router, Frontend component, API tests, E2E flow |
 | Refactor | Architecture design, Migration, Test updates, Cleanup |
 
@@ -612,7 +612,7 @@ Run `git status` to verify the working tree state. Confirm all expected files we
 
 #### 9.2 Lint and Format
 
-Run `cd dream-server && make lint` to verify shell syntax and Python compile checks. For dashboard changes, also run `cd dream-server/extensions/services/dashboard && npm run lint`.
+Run `cd ods && make lint` to verify shell syntax and Python compile checks. For dashboard changes, also run `cd ods/extensions/services/dashboard && npm run lint`.
 
 If issues are found, fix them.
 
@@ -620,8 +620,8 @@ If issues are found, fix them.
 
 If any agent reported running tests (`tests_run > 0`), run the relevant test suites to verify the full suite passes:
 
-- **Shell tests**: `cd dream-server && make test && make bats`
-- **Python tests**: `cd dream-server/extensions/services/dashboard-api && pytest tests/ -v`
+- **Shell tests**: `cd ods && make test && make bats`
+- **Python tests**: `cd ods/extensions/services/dashboard-api && pytest tests/ -v`
 
 Report results.
 

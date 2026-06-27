@@ -49,15 +49,15 @@ Shell doesn't have line-level coverage tools. Instead, perform structural analys
 
 ```bash
 # List all installer lib modules
-ls dream-server/installers/lib/*.sh
+ls ods/installers/lib/*.sh
 
 # List all BATS test files
-ls dream-server/tests/bats-tests/*.bats
+ls ods/tests/bats-tests/*.bats
 
 # Cross-reference: which libs lack BATS tests?
-for lib in dream-server/installers/lib/*.sh; do
+for lib in ods/installers/lib/*.sh; do
   name=$(basename "$lib" .sh)
-  if [ ! -f "dream-server/tests/bats-tests/${name}.bats" ]; then
+  if [ ! -f "ods/tests/bats-tests/${name}.bats" ]; then
     echo "MISSING: $name"
   fi
 done
@@ -66,14 +66,14 @@ done
 Also check scripts and phases:
 ```bash
 # Scripts with tests vs without
-ls dream-server/scripts/*.sh
-ls dream-server/tests/test-*.sh
+ls ods/scripts/*.sh
+ls ods/tests/test-*.sh
 ```
 
 #### 1.2 Python Coverage Report
 
 ```bash
-cd dream-server/extensions/services/dashboard-api && pytest --cov=. --cov-report=term-missing -q --tb=no 2>&1 | tail -40
+cd ods/extensions/services/dashboard-api && pytest --cov=. --cov-report=term-missing -q --tb=no 2>&1 | tail -40
 ```
 
 #### 1.3 If `--module` Provided
@@ -195,7 +195,7 @@ Read the source file and identify:
 
 #### 3.2 Write Shell (BATS) Tests
 
-Follow DreamServer BATS conventions strictly:
+Follow ODS BATS conventions strictly:
 
 ```bash
 #!/usr/bin/env bats
@@ -245,7 +245,7 @@ setup() {
 
 #### 3.3 Write Python (pytest) Tests
 
-Follow DreamServer pytest conventions:
+Follow ODS pytest conventions:
 
 ```python
 """Tests for <module>."""
@@ -284,12 +284,12 @@ class TestEndpointName:
 
 **Shell:**
 ```bash
-cd dream-server && bats tests/bats-tests/<module>.bats
+cd ods && bats tests/bats-tests/<module>.bats
 ```
 
 **Python:**
 ```bash
-cd dream-server/extensions/services/dashboard-api && pytest tests/test_<module>.py -v --tb=short
+cd ods/extensions/services/dashboard-api && pytest tests/test_<module>.py -v --tb=short
 ```
 
 #### 4.2 Fix Failures
@@ -306,18 +306,18 @@ After all new tests pass individually:
 
 **Shell:**
 ```bash
-cd dream-server && make test && make bats
+cd ods && make test && make bats
 ```
 
 **Python:**
 ```bash
-cd dream-server/extensions/services/dashboard-api && pytest tests/ -v --tb=short
+cd ods/extensions/services/dashboard-api && pytest tests/ -v --tb=short
 ```
 
 #### 4.4 Run Linting
 
 ```bash
-cd dream-server && make lint
+cd ods && make lint
 ```
 
 ---
@@ -329,9 +329,9 @@ cd dream-server && make lint
 **Shell (structural):**
 ```bash
 # Re-check which modules now have tests
-for lib in dream-server/installers/lib/*.sh; do
+for lib in ods/installers/lib/*.sh; do
   name=$(basename "$lib" .sh)
-  if [ -f "dream-server/tests/bats-tests/${name}.bats" ]; then
+  if [ -f "ods/tests/bats-tests/${name}.bats" ]; then
     echo "COVERED: $name"
   else
     echo "MISSING: $name"
@@ -341,7 +341,7 @@ done
 
 **Python:**
 ```bash
-cd dream-server/extensions/services/dashboard-api && pytest --cov=. --cov-report=term-missing -q --tb=no 2>&1 | tail -40
+cd ods/extensions/services/dashboard-api && pytest --cov=. --cov-report=term-missing -q --tb=no 2>&1 | tail -40
 ```
 
 #### 5.2 Compare Before/After
@@ -426,9 +426,9 @@ Present final results:
 - ...
 
 ### Verification Commands
-cd dream-server && make test && make bats                              # Shell tests
-cd dream-server/extensions/services/dashboard-api && pytest tests/ -v  # Python tests
-cd dream-server && make gate                                           # Full gate
+cd ods && make test && make bats                              # Shell tests
+cd ods/extensions/services/dashboard-api && pytest tests/ -v  # Python tests
+cd ods && make gate                                           # Full gate
 ```
 
 ---
@@ -481,4 +481,4 @@ cd dream-server && make gate                                           # Full ga
 - Python coverage = pytest-cov line-level coverage
 - BATS tests load `bats-support` and `bats-assert` from `tests/bats/`
 - Never mock Pydantic validation — let ValidationError propagate per Let It Crash
-- DreamServer CLAUDE.md forbids `2>/dev/null` — never suppress errors in tests
+- ODS CLAUDE.md forbids `2>/dev/null` — never suppress errors in tests

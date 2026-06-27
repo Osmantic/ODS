@@ -4,15 +4,15 @@ on:
   push:
     branches: [main]
     paths:
-      - 'dream-server/extensions/library/services/*/manifest.yaml'
-      - 'dream-server/scripts/generate-extensions-catalog.py'
-      - 'dream-server/config/extensions-catalog.json'
+      - 'ods/extensions/library/services/*/manifest.yaml'
+      - 'ods/scripts/generate-extensions-catalog.py'
+      - 'ods/config/extensions-catalog.json'
   pull_request:
     branches: [main]
     paths:
-      - 'dream-server/extensions/library/services/*/manifest.yaml'
-      - 'dream-server/scripts/generate-extensions-catalog.py'
-      - 'dream-server/config/extensions-catalog.json'
+      - 'ods/extensions/library/services/*/manifest.yaml'
+      - 'ods/scripts/generate-extensions-catalog.py'
+      - 'ods/config/extensions-catalog.json'
 
 permissions:
   contents: read
@@ -34,13 +34,13 @@ jobs:
 
       - name: Regenerate catalog and diff
         run: |
-          cp dream-server/config/extensions-catalog.json /tmp/catalog-before.json
-          python dream-server/scripts/generate-extensions-catalog.py
+          cp ods/config/extensions-catalog.json /tmp/catalog-before.json
+          python ods/scripts/generate-extensions-catalog.py
           # Compare ignoring generated_at timestamp (changes every run)
           jq 'del(.generated_at)' /tmp/catalog-before.json > /tmp/a.json
-          jq 'del(.generated_at)' dream-server/config/extensions-catalog.json > /tmp/b.json
+          jq 'del(.generated_at)' ods/config/extensions-catalog.json > /tmp/b.json
           if ! diff -q /tmp/a.json /tmp/b.json >/dev/null 2>&1; then
             diff /tmp/a.json /tmp/b.json || true
-            echo "::error::extensions-catalog.json is out of date. Run: python dream-server/scripts/generate-extensions-catalog.py"
+            echo "::error::extensions-catalog.json is out of date. Run: python ods/scripts/generate-extensions-catalog.py"
             exit 1
           fi

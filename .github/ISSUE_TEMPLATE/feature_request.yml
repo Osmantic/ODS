@@ -1,18 +1,18 @@
 name: Feature Request
-description: Suggest a new feature or improvement for Dream Server
+description: Suggest a new feature or improvement for ODS
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Have an idea that would make Dream Server better? We'd love to hear it.
+        Have an idea that would make ODS better? We'd love to hear it.
 
   - type: textarea
     id: description
     attributes:
       label: Description
       description: A clear description of the feature you'd like.
-      placeholder: What should Dream Server do?
+      placeholder: What should ODS do?
     validations:
       required: true
 

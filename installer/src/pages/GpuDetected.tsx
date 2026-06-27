@@ -54,7 +54,7 @@ export default function GpuDetected({ onNext }: Props) {
 
       {/* GPU Card */}
       <div className="bg-gray-900 rounded-xl p-6 mb-6 w-full max-w-md text-center">
-        <p className="text-xs text-dream-400 uppercase tracking-wider mb-2">
+        <p className="text-xs text-ods-400 uppercase tracking-wider mb-2">
           {VENDOR_LABELS[gpu.vendor] || gpu.vendor}
         </p>
         <p className="text-xl font-semibold text-white mb-1">{gpu.name}</p>
@@ -87,7 +87,7 @@ export default function GpuDetected({ onNext }: Props) {
                 onClick={() => setSelectedTier(t)}
                 className={`px-4 py-2 rounded-lg text-sm transition-colors ${
                   selectedTier === t
-                    ? "bg-dream-600 text-white"
+                    ? "bg-ods-600 text-white"
                     : "bg-gray-800 text-gray-400 hover:bg-gray-700"
                 }`}
               >
@@ -100,7 +100,7 @@ export default function GpuDetected({ onNext }: Props) {
 
       {!hasGpu && (
         <p className="text-sm text-gray-500 mb-6 text-center max-w-sm">
-          No dedicated GPU detected. DreamServer will use cloud AI providers
+          No dedicated GPU detected. ODS will use cloud AI providers
           instead of local inference.
         </p>
       )}

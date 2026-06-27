@@ -1,0 +1,40 @@
+services:
+  label-studio:
+    image: heartexlabs/label-studio:1.22.0
+    container_name: ods-label-studio
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+      - LABEL_STUDIO_DATA_ROOT=/label-studio/data
+      - LABEL_STUDIO_STATIC_ASSETS_ROOT=/label-studio/www
+      - LABEL_STUDIO_UPLOAD_DIR=/label-studio/upload
+      - LABEL_STUDIO_MEDIA_ROOT=/label-studio/media
+    volumes:
+      - ./data/label-studio:/label-studio/data:rw
+      - ./upload:/label-studio/upload:rw
+      - ./media:/label-studio/media:rw
+      - ./www:/label-studio/www:rw
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${LABEL_STUDIO_PORT:-8086}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+networks:
+  ods-network:
+    external: true

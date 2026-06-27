@@ -1,0 +1,92 @@
+# =============================================================================
+# ODS — Compose Fragment Template
+# =============================================================================
+#
+# This file is merged into the compose stack via:
+#   docker compose -f docker-compose.base.yml -f docker-compose.<gpu>.yml \
+#                  -f extensions/services/my-service/compose.yaml
+#
+# RULES:
+#   - The top-level key MUST be "services:" (standard Compose format)
+#   - The service name MUST match the "id" in your manifest.yaml
+#   - Use ${VAR:-default} syntax for user-configurable values
+#   - Join the shared network: ods-network (defined in base.yml)
+#   - Mount data under ./data/<service-name>/ (relative to project root)
+#   - Always set restart, security_opt, and a healthcheck
+#
+# GPU OVERLAYS:
+#   If your service needs GPU access, create compose.amd.yaml / compose.nvidia.yaml
+#   alongside this file. The compose resolver picks them up automatically.
+#   There are TWO patterns — pick the one that fits your service:
+#
+#   Pattern 1 — CPU-base with GPU tag swap (compose-gpu-swap.yaml)
+#     Use when your service works on CPU but runs faster on GPU.
+#     This file (compose.yaml) carries the full definition with a CPU image.
+#     The GPU overlay only swaps the image tag and adds device access.
+#     Example: whisper (speech-to-text runs on CPU, accelerated by CUDA).
+#
+#   Pattern 2 — Empty base with full GPU overlay (compose-gpu-only.yaml)
+#     Use when your service ONLY makes sense on a GPU (no CPU fallback).
+#     This file (compose.yaml) is just `services: {}` (empty stub).
+#     Each GPU overlay contains the complete service definition.
+#     Example: comfyui (image generation requires a GPU).
+#
+#   See the template files for detailed, commented examples:
+#     extensions/templates/compose-gpu-swap.yaml   (Pattern 1)
+#     extensions/templates/compose-gpu-only.yaml   (Pattern 2)
+#
+# =============================================================================
+
+services:
+  my-service:
+    # Pin to a specific version tag — avoid :latest for reproducibility
+    image: myorg/my-service:1.0.0
+    container_name: ods-my-service
+
+    restart: unless-stopped
+
+    # Drop privileges
+    user: "${UID:-1000}:${GID:-1000}"
+    security_opt:
+      - no-new-privileges:true
+
+    environment:
+      - MY_SETTING=${MY_SETTING:-default_value}
+
+    volumes:
+      # Persistent data — survives container rebuilds
+      - ./data/my-service:/app/data
+
+    ports:
+      # External port (user-facing) : Internal port (container)
+      - "127.0.0.1:${MY_SERVICE_PORT:-1234}:1234"
+
+    networks:
+      - ods-network
+
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:1234/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+# If you reference volumes or networks defined in docker-compose.base.yml,
+# you don't need to redeclare them here. Only declare NEW named volumes:
+#
+# volumes:
+#   my-service-data:
+#     driver: local
+
+networks:
+  ods-network:
+    external: true

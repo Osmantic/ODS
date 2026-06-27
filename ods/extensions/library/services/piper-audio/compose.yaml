@@ -1,0 +1,43 @@
+services:
+  piper-audio:
+    image: lscr.io/linuxserver/piper:1.6.3
+    container_name: ods-piper-audio
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PIPER_PORT:-10200}:10200"
+    volumes:
+      - ./data/piper:/config/piper
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - PIPER_VOICE=${PIPER_VOICE:-en_US-lessac-medium}
+      - PIPER_LENGTH=${PIPER_LENGTH:-1.0}
+      - PIPER_NOISE=${PIPER_NOISE:-0.667}
+      - PIPER_NOISEW=${PIPER_NOISEW:-0.333}
+      - PIPER_SPEAKER=${PIPER_SPEAKER:-0}
+      - PIPER_PROCS=${PIPER_PROCS:-1}
+      - LLM_API_URL=${LLM_API_URL:-http://localhost:8000}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "echo '{\"type\": \"describe\"}' | nc -w 1 127.0.0.1 10200 | grep -q piper"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - ods-network
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network
