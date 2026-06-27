@@ -338,6 +338,14 @@
       "value": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda}",
       "default": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda",
       "reason": "Whisper CUDA image can be overridden by operators, but the shipped default is locked."
+    },
+    {
+      "id": "minio",
+      "type": "image",
+      "path": "extensions/services/minio/compose.yaml",
+      "value": "${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2026-06-11T22-08-49Z}",
+      "default": "quay.io/minio/minio:RELEASE.2026-06-11T22-08-49Z",
+      "reason": "MinIO S3 storage image is overrideable for hotfix testing while the shipped default stays locked."
     }
   ]
 }

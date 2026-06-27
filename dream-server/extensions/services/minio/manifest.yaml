@@ -1,0 +1,56 @@
+schema_version: dream.services.v1
+
+compatibility:
+  dream_min: "2.0.0"
+
+service:
+  id: minio
+  name: MinIO (S3 Storage)
+  aliases: [s3, storage]
+  container_name: dream-minio
+  host_env: MINIO_HOST
+  default_host: minio
+  port: 9000
+  external_port_env: MINIO_PORT
+  external_port_default: 9002
+  health: /minio/health/live
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  env_vars:
+    - key: MINIO_ROOT_USER
+      required: true
+      secret: true
+      description: MinIO root user (access key)
+    - key: MINIO_ROOT_PASSWORD
+      required: true
+      secret: true
+      description: MinIO root password (secret key)
+    - key: MINIO_PORT
+      required: false
+      default: "9002"
+      description: External port for S3 API
+    - key: MINIO_CONSOLE_PORT
+      required: false
+      default: "9003"
+      description: External port for web console
+
+features:
+  - id: object-storage
+    name: Object Storage
+    description: S3-compatible object storage for models, datasets, and backups
+    icon: Database
+    category: system
+    requirements:
+      services: [minio]
+      disk_gb: 10
+    enabled_services_all: [minio]
+    setup_time: ~1 minute
+    priority: 50
+    launch:
+      type: service
+      service: minio
+    gpu_backends: [all]

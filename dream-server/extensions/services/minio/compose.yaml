@@ -1,0 +1,36 @@
+services:
+  minio:
+    image: quay.io/minio/minio:RELEASE.2026-06-11T22-08-49Z
+    container_name: dream-minio
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MinIO root user required — set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MinIO root password required — set MINIO_ROOT_PASSWORD in .env}
+      MINIO_VOLUMES: "/data"
+    command: server --console-address ":9001"
+    volumes:
+      - ./data/minio:/data:z
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MINIO_PORT:-9002}:9000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9003}:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
