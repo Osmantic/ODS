@@ -1,0 +1,125 @@
+name: Test Windows
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  powershell-syntax:
+    name: PowerShell syntax
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Validate all PowerShell scripts parse correctly
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bad = @()
+          Get-ChildItem -Recurse -Filter "*.ps1" -Path "." |
+            Where-Object { $_.FullName -notmatch 'node_modules|\.git' } |
+            ForEach-Object {
+              $result = $null
+              $errors = $null
+              $parsed = $null
+              try {
+                $parsed = [System.Management.Automation.Language.Parser]::ParseFile(
+                  $_.FullName, [ref]$result, [ref]$errors
+                )
+                if ($errors -and $errors.Count -gt 0) {
+                  $bad += $_.FullName
+                  Write-Host "::warning file=$($_.Name),line=1::Parse error in $($_.Name)"
+                }
+              } catch {
+                $bad += $_.FullName
+                Write-Host "::error file=$($_.Name)::Failed to parse $_"
+              }
+            }
+          if ($bad.Count -gt 0) {
+            Write-Host "::error::$($bad.Count) PowerShell file(s) failed to parse"
+            exit 1
+          }
+          Write-Host "All PowerShell scripts parse successfully."
+
+  installer-structure:
+    name: Installer structure
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: dream-server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Validate Windows installer structure
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $errors = @()
+
+          # Expected files
+          $expected = @(
+            "installers/windows/install-windows.ps1",
+            "installers/windows/dream.ps1",
+            "installers/windows/lib/constants.ps1",
+            "installers/windows/lib/detection.ps1",
+            "installers/windows/lib/tier-map.ps1",
+            "installers/windows/lib/ui.ps1",
+            "installers/windows/lib/service-plan.ps1",
+            "installers/windows/lib/env-generator.ps1",
+            "installers/windows/lib/install-report.ps1",
+            "installers/windows/lib/compose-diagnostics.ps1",
+            "installers/windows/lib/readiness-summary.ps1",
+            "installers/windows/lib/backend-contract.ps1",
+            "installers/windows/lib/llm-endpoint.ps1",
+            "installers/windows/lib/opencode-config.ps1",
+            "installers/windows/lib/detection.ps1"
+          )
+          foreach ($f in $expected) {
+            if (-not (Test-Path "../$f")) { $errors += "Missing: $f" }
+          }
+
+          # Phase numbering must be contiguous and start at 01
+          $phases = Get-ChildItem "installers/windows/phases/*.ps1" | Sort-Object Name
+          if ($phases.Count -lt 5) { $errors += "Too few installer phases: $($phases.Count)" }
+          $prev = 0
+          foreach ($p in $phases) {
+            $num = [int]($p.Name -replace '^(\d+)-.*', '$1')
+            if ($num -ne $prev + 1) { $errors += "Non-contiguous phase numbering: $($p.Name)" }
+            $prev = $num
+          }
+
+          if ($errors.Count -gt 0) {
+            foreach ($e in $errors) { Write-Host "::error::$e" }
+            exit 1
+          }
+          Write-Host "Windows installer structure validated ($($phases.Count) phases, $($expected.Count) lib files)."
+
+  run-windows-tests:
+    name: Windows test suite
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: dream-server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Run Windows-specific tests (Bash-based, on Windows runner)
+        run: |
+          set -euo pipefail
+          bash tests/test-windows-report-command.sh
+          bash tests/test-windows-compose-failure-report.sh
+          bash tests/test-windows-missing-service-hints.sh
+          bash tests/test-windows-readiness-summary.sh
+          bash tests/test-windows-service-plan.sh
+          bash tests/test-windows-installer-flags.sh
+          bash tests/test-windows-env-dotfile-recovery.sh
+          echo "All Windows tests passed on Windows runner."
