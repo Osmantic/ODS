@@ -47,7 +47,5 @@ copy_oauth_credentials() {
                 fi
             done
         fi
-    else
-        $log_warn "Bundled OAuth credentials directory is missing: $creds_dir"
     fi
 }

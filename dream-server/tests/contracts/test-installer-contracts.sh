@@ -426,4 +426,7 @@ fi
 echo "[contract] Hermes context defaults are installer-wide"
 bash tests/test-installer-context-parity.sh
 
+echo "[contract] OAuth credential provisioning helper"
+bash tests/contracts/test-oauth-provisioning.sh
+
 echo "[PASS] installer contracts"

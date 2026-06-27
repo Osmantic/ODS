@@ -554,8 +554,6 @@ if ($enableHermes) {
                 }
             }
         }
-    } else {
-        Write-AIWarn "Bundled OAuth credentials directory is missing: $_credsDir"
     }
 }
 
