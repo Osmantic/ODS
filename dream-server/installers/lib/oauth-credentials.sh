@@ -34,10 +34,25 @@ copy_oauth_credentials() {
                 [[ -f "$cred" ]] || continue
                 local fname
                 fname="$(basename "$cred")"
-                if [[ ! -f "$hermes_data/$fname" ]]; then
-                    cp "$cred" "$hermes_data/$fname" 2>/dev/null || sudo -n cp "$cred" "$hermes_data/$fname" 2>/dev/null || true
-                    if [[ -f "$hermes_data/$fname" ]]; then
-                        sudo -n chown 10000:10000 "$hermes_data/$fname" 2>/dev/null || true
+                local target="$hermes_data/$fname"
+
+                # Sudo-aware file existence check
+                local exists=false
+                if [[ -f "$target" ]] || sudo -n test -f "$target" 2>/dev/null; then
+                    exists=true
+                fi
+
+                if ! $exists; then
+                    cp -n "$cred" "$target" 2>/dev/null || sudo -n cp -n "$cred" "$target" 2>/dev/null || true
+
+                    # Verify successful copy using sudo-aware logic
+                    local verify_exists=false
+                    if [[ -f "$target" ]] || sudo -n test -f "$target" 2>/dev/null; then
+                        verify_exists=true
+                    fi
+
+                    if $verify_exists; then
+                        sudo -n chown 10000:10000 "$target" 2>/dev/null || true
                         $log_success "Copied OAuth credential: $fname"
                     else
                         $log_warn "Failed to copy OAuth credential: $fname"
