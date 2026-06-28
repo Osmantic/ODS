@@ -1,8 +1,8 @@
 [package]
-name = "dreamserver-installer"
+name = "ods-installer"
 version = "0.1.0"
 edition = "2021"
-description = "DreamServer One-Click Installer"
+description = "ODS One-Click Installer"
 
 [dependencies]
 tauri = { version = "2", features = [] }

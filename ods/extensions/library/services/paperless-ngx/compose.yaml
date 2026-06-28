@@ -1,0 +1,100 @@
+services:
+  paperless-ngx:
+    image: ghcr.io/paperless-ngx/paperless-ngx:2.14.0
+    container_name: ods-paperless
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - PAPERLESS_PORT=8000
+      - PAPERLESS_HOST=${PAPERLESS_HOST:-paperless}
+      - PAPERLESS_DBHOST=${PAPERLESS_DBHOST:-paperless-postgres}
+      - PAPERLESS_DBPORT=${PAPERLESS_DBPORT:-5432}
+      - PAPERLESS_REDIS=${PAPERLESS_REDIS:-redis://paperless-redis:6379}
+      - "PAPERLESS_SECRET_KEY=${PAPERLESS_SECRET_KEY:?PAPERLESS_SECRET_KEY must be set – generate with: python3 -c \"import secrets; print(secrets.token_urlsafe(50))\"}"
+      - PAPERLESS_URL=http://${PAPERLESS_HOST:-paperless}:${PAPERLESS_PORT:-7807}
+    volumes:
+      - ./data/paperless/data:/usr/src/paperless/data
+      - ./data/paperless/export:/usr/src/paperless/export
+      - ./data/paperless/media:/usr/src/paperless/media
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PAPERLESS_PORT:-7807}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/accounts/login/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    depends_on:
+      paperless-postgres:
+        condition: service_healthy
+      paperless-redis:
+        condition: service_healthy
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+  paperless-postgres:
+    image: docker.io/library/postgres:16-alpine
+    container_name: ods-paperless-postgres
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - POSTGRES_DB=paperless
+      - POSTGRES_USER=paperless
+      - POSTGRES_PASSWORD=${PAPERLESS_DB_PASSWORD:-paperless}
+    volumes:
+      - ./data/paperless/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperless -d paperless"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+
+  paperless-redis:
+    image: docker.io/library/redis:7-alpine
+    container_name: ods-paperless-redis
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./data/paperless/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+        reservations:
+          cpus: '0.1'
+          memory: 256M
+
+networks:
+  ods-network:
+    external: true

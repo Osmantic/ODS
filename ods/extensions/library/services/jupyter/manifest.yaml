@@ -1,0 +1,39 @@
+schema_version: ods.services.v1
+
+service:
+  id: jupyter
+  name: Jupyter
+  aliases: [jupyter-notebook, notebook]
+  container_name: ods-jupyter
+  host_env: JUPYTER_HOST
+  default_host: jupyter
+  port: 8888
+  external_port_env: JUPYTER_PORT
+  external_port_default: 8889
+  health: /tree
+  type: docker
+  gpu_backends: [amd, nvidia]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  setup_hook: setup.sh
+  description: "Interactive notebook environment for data science and machine learning with local LLM kernel support."
+  env_vars:
+    - key: JUPYTER_TOKEN
+      required: true
+      secret: true
+      description: Access token for Jupyter
+
+features:
+  - id: data-science
+    name: Data Science Environment
+    description: Interactive data science and coding notebooks
+    icon: BookOpen
+    category: development
+    requirements:
+      services: [jupyter]
+      vram_gb: 4
+    enabled_services_all: [jupyter]
+    setup_time: ~2 minutes
+    priority: 13
+    gpu_backends: [amd, nvidia]

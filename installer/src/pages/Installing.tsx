@@ -70,7 +70,7 @@ export default function Installing({
 
   return (
     <div className="flex flex-col items-center justify-center h-full px-8">
-      <h2 className="text-2xl font-bold mb-2">Installing DreamServer</h2>
+      <h2 className="text-2xl font-bold mb-2">Installing ODS</h2>
       <p className="text-gray-400 mb-10 text-center max-w-md">
         This will take a few minutes. Container images and AI models are being
         downloaded.
@@ -80,7 +80,7 @@ export default function Installing({
       <div className="w-full max-w-md mb-4">
         <div className="h-3 bg-gray-800 rounded-full overflow-hidden">
           <div
-            className="h-full bg-gradient-to-r from-dream-600 to-dream-400 rounded-full transition-all duration-700"
+            className="h-full bg-gradient-to-r from-ods-600 to-ods-400 rounded-full transition-all duration-700"
             style={{ width: `${progress.percent}%` }}
           />
         </div>
@@ -103,9 +103,9 @@ export default function Installing({
               key={phase}
               className={`w-2 h-2 rounded-full transition-colors ${
                 done
-                  ? "bg-dream-500"
+                  ? "bg-ods-500"
                   : active
-                    ? "bg-dream-400 animate-pulse"
+                    ? "bg-ods-400 animate-pulse"
                     : "bg-gray-700"
               }`}
               title={PHASE_LABELS[phase]}

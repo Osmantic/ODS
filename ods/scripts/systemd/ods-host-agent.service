@@ -1,0 +1,18 @@
+[Unit]
+Description=ODS Host Agent
+After=docker.service
+
+[Service]
+Type=simple
+User=__INSTALL_USER__
+SupplementaryGroups=docker
+ExecStart=__PYTHON3__ __INSTALL_DIR__/bin/ods-host-agent.py
+WorkingDirectory=__INSTALL_DIR__
+Environment=ODS_HOME=__INSTALL_DIR__
+Environment=HOME=__HOME__
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

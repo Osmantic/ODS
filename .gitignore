@@ -43,25 +43,25 @@ token-spy/*.db
 token-spy/*.sqlite
 
 # ============================================
-# Dream Server runtime/build artifacts
+# ODS runtime/build artifacts
 # ============================================
-dream-server/.env
-dream-server/.env.*
-!dream-server/.env.example
-dream-server/data/
-dream-server/models/
-dream-server/config/openclaw/workspace/
-dream-server/**/node_modules/
-dream-server/**/dist/
-dream-server/**/.coverage
-dream-server/preflight-*.log
-dream-server/.current-mode
-dream-server/.profiles
-dream-server/.claude/
-dream-server/.pytest_cache/
-dream-server/tests/__pycache__/
-dream-server/internal/
-dream-server/.cache/
+ods/.env
+ods/.env.*
+!ods/.env.example
+ods/data/
+ods/models/
+ods/config/openclaw/workspace/
+ods/**/node_modules/
+ods/**/dist/
+ods/**/.coverage
+ods/preflight-*.log
+ods/.current-mode
+ods/.profiles
+ods/.claude/
+ods/.pytest_cache/
+ods/tests/__pycache__/
+ods/internal/
+ods/.cache/
 
 # ============================================
 # Archived / deprecated code (pre-v2.0)

@@ -10,13 +10,13 @@ Enforce the classic **Red -> Green -> Refactor** cycle. Tests are written FIRST,
 
 > "TDD TDD TDD" - the repetition is intentional. This skill enforces discipline.
 
-DreamServer has two test ecosystems: **Shell (BATS + bash assert)** and **Python (pytest)**. This skill handles both.
+ODS has two test ecosystems: **Shell (BATS + bash assert)** and **Python (pytest)**. This skill handles both.
 
 ## Arguments
 
 - `$ARGUMENTS` - Feature description and options:
   - First part: Feature description in quotes or as text
-  - `--shell` - Write shell/BATS test (default for installers/, scripts/, dream-cli)
+  - `--shell` - Write shell/BATS test (default for installers/, scripts/, ods-cli)
   - `--python` - Write Python/pytest test (default for dashboard-api/)
   - `--file <path>` - Explicit test file path
 
@@ -54,7 +54,7 @@ Before writing anything:
 | Installer libraries | `tests/bats-tests/<lib>.bats` | `installers/lib/<lib>.sh` |
 | Installer phases | `tests/bats-tests/<phase>.bats` | `installers/phases/<phase>.sh` |
 | Scripts | `tests/test-<script>.sh` | `scripts/<script>.sh` |
-| CLI features | `tests/test-<feature>.sh` | `dream-cli` |
+| CLI features | `tests/test-<feature>.sh` | `ods-cli` |
 | Compose selection | `tests/bats-tests/compose-select.bats` | `installers/lib/compose-select.sh` |
 
 #### Python Test Locations (pytest)
@@ -88,12 +88,12 @@ Before writing anything:
 
    For Shell/BATS:
    ```bash
-   ls dream-server/tests/bats-tests/
+   ls ods/tests/bats-tests/
    ```
 
    For Python:
    ```bash
-   ls dream-server/extensions/services/dashboard-api/tests/
+   ls ods/extensions/services/dashboard-api/tests/
    ```
 
 ---
@@ -163,12 +163,12 @@ class TestFeatureName:
 
 **For Shell/BATS:**
 ```bash
-cd dream-server && bats tests/bats-tests/<module>.bats
+cd ods && bats tests/bats-tests/<module>.bats
 ```
 
 **For Python:**
 ```bash
-cd dream-server/extensions/services/dashboard-api && pytest tests/test_<module>.py -v -k "test_function_name"
+cd ods/extensions/services/dashboard-api && pytest tests/test_<module>.py -v -k "test_function_name"
 ```
 
 **STOP AND CHECK**:
@@ -221,12 +221,12 @@ resolve_something() {
 
 **For Shell/BATS:**
 ```bash
-cd dream-server && bats tests/bats-tests/<module>.bats
+cd ods && bats tests/bats-tests/<module>.bats
 ```
 
 **For Python:**
 ```bash
-cd dream-server/extensions/services/dashboard-api && pytest tests/test_<module>.py -v -k "test_function_name"
+cd ods/extensions/services/dashboard-api && pytest tests/test_<module>.py -v -k "test_function_name"
 ```
 
 **STOP AND CHECK**:
@@ -264,12 +264,12 @@ Make small improvements:
 
 **For Shell/BATS:**
 ```bash
-cd dream-server && bats tests/bats-tests/<module>.bats
+cd ods && bats tests/bats-tests/<module>.bats
 ```
 
 **For Python:**
 ```bash
-cd dream-server/extensions/services/dashboard-api && pytest tests/test_<module>.py -v
+cd ods/extensions/services/dashboard-api && pytest tests/test_<module>.py -v
 ```
 
 **If test fails after refactoring**:
@@ -279,22 +279,22 @@ cd dream-server/extensions/services/dashboard-api && pytest tests/test_<module>.
 
 **For Shell:**
 ```bash
-cd dream-server && bash -n <modified-file> && make lint
+cd ods && bash -n <modified-file> && make lint
 ```
 
 **For Python:**
 ```bash
-cd dream-server && python3 -m py_compile extensions/services/dashboard-api/<modified-file>
+cd ods && python3 -m py_compile extensions/services/dashboard-api/<modified-file>
 ```
 
 #### Step 3.5: Run Full Test Suite
 
 ```bash
 # Shell: ensure no regressions
-cd dream-server && make test && make bats
+cd ods && make test && make bats
 
 # Python: ensure no regressions
-cd dream-server/extensions/services/dashboard-api && pytest tests/ -v
+cd ods/extensions/services/dashboard-api && pytest tests/ -v
 ```
 
 ---
@@ -403,7 +403,7 @@ resolve_tier_config() {
 }
 ```
 
-Run: `cd dream-server && bats tests/bats-tests/tier-map.bats --filter "tier 0"`
+Run: `cd ods && bats tests/bats-tests/tier-map.bats --filter "tier 0"`
 Result: FAILS (tier 0 falls through with no error) - Good!
 
 **Phase 2 - GREEN**:
@@ -418,7 +418,7 @@ resolve_tier_config() {
 }
 ```
 
-Run: `cd dream-server && bats tests/bats-tests/tier-map.bats --filter "tier 0"`
+Run: `cd ods && bats tests/bats-tests/tier-map.bats --filter "tier 0"`
 Result: PASSES - Good!
 
 **Phase 3 - REFACTOR**:
@@ -430,11 +430,11 @@ Result: PASSES - Good!
 
 ---
 
-## DreamServer-Specific Patterns
+## ODS-Specific Patterns
 
 ### BATS Test Setup
 
-All BATS tests in DreamServer follow this pattern:
+All BATS tests in ODS follow this pattern:
 
 ```bash
 load '../bats/bats-support/load'
@@ -486,14 +486,14 @@ def test_with_mocked_service(test_client, mock_aiohttp_session):
 
 ```bash
 # Shell quick commands
-cd dream-server && bats tests/bats-tests/<lib>.bats          # Run BATS test
-cd dream-server && make test && make bats                      # Run all shell tests
-cd dream-server && bash -n <file> && make lint                 # Lint shell
+cd ods && bats tests/bats-tests/<lib>.bats          # Run BATS test
+cd ods && make test && make bats                      # Run all shell tests
+cd ods && bash -n <file> && make lint                 # Lint shell
 
 # Python quick commands
-cd dream-server/extensions/services/dashboard-api && pytest tests/test_<module>.py -v -k "test_name"
-cd dream-server/extensions/services/dashboard-api && pytest tests/ -v   # Run all
-cd dream-server && make lint                                             # Lint all
+cd ods/extensions/services/dashboard-api && pytest tests/test_<module>.py -v -k "test_name"
+cd ods/extensions/services/dashboard-api && pytest tests/ -v   # Run all
+cd ods && make lint                                             # Lint all
 ```
 
 ---

@@ -69,13 +69,13 @@ jobs:
 
           AFFECTED_DOCS=""
 
-          # dream-server/installers/ -> README.md, CLAUDE.md
-          if echo "$CHANGED_FILES" | grep -qE '^dream-server/installers/'; then
+          # ods/installers/ -> README.md, CLAUDE.md
+          if echo "$CHANGED_FILES" | grep -qE '^ods/installers/'; then
             AFFECTED_DOCS="README.md,CLAUDE.md"
           fi
 
-          # dream-server/scripts/ -> README.md, CLAUDE.md
-          if echo "$CHANGED_FILES" | grep -qE '^dream-server/scripts/'; then
+          # ods/scripts/ -> README.md, CLAUDE.md
+          if echo "$CHANGED_FILES" | grep -qE '^ods/scripts/'; then
             for doc in "README.md" "CLAUDE.md"; do
               if ! echo "$AFFECTED_DOCS" | grep -q "$doc"; then
                 AFFECTED_DOCS="${AFFECTED_DOCS:+$AFFECTED_DOCS,}$doc"
@@ -83,8 +83,8 @@ jobs:
             done
           fi
 
-          # dream-server/extensions/services/dashboard-api/ -> README.md, CLAUDE.md
-          if echo "$CHANGED_FILES" | grep -qE '^dream-server/extensions/services/dashboard-api/'; then
+          # ods/extensions/services/dashboard-api/ -> README.md, CLAUDE.md
+          if echo "$CHANGED_FILES" | grep -qE '^ods/extensions/services/dashboard-api/'; then
             for doc in "README.md" "CLAUDE.md"; do
               if ! echo "$AFFECTED_DOCS" | grep -q "$doc"; then
                 AFFECTED_DOCS="${AFFECTED_DOCS:+$AFFECTED_DOCS,}$doc"
@@ -92,15 +92,15 @@ jobs:
             done
           fi
 
-          # dream-server/extensions/services/dashboard/ -> README.md
-          if echo "$CHANGED_FILES" | grep -qE '^dream-server/extensions/services/dashboard/'; then
+          # ods/extensions/services/dashboard/ -> README.md
+          if echo "$CHANGED_FILES" | grep -qE '^ods/extensions/services/dashboard/'; then
             if ! echo "$AFFECTED_DOCS" | grep -q "README.md"; then
               AFFECTED_DOCS="${AFFECTED_DOCS:+$AFFECTED_DOCS,}README.md"
             fi
           fi
 
-          # dream-server/config/ -> README.md, CLAUDE.md
-          if echo "$CHANGED_FILES" | grep -qE '^dream-server/config/'; then
+          # ods/config/ -> README.md, CLAUDE.md
+          if echo "$CHANGED_FILES" | grep -qE '^ods/config/'; then
             for doc in "README.md" "CLAUDE.md"; do
               if ! echo "$AFFECTED_DOCS" | grep -q "$doc"; then
                 AFFECTED_DOCS="${AFFECTED_DOCS:+$AFFECTED_DOCS,}$doc"
@@ -108,8 +108,8 @@ jobs:
             done
           fi
 
-          # dream-server/dream-cli -> README.md, CLAUDE.md
-          if echo "$CHANGED_FILES" | grep -qE '^dream-server/dream-cli$'; then
+          # ods/ods-cli -> README.md, CLAUDE.md
+          if echo "$CHANGED_FILES" | grep -qE '^ods/ods-cli$'; then
             for doc in "README.md" "CLAUDE.md"; do
               if ! echo "$AFFECTED_DOCS" | grep -q "$doc"; then
                 AFFECTED_DOCS="${AFFECTED_DOCS:+$AFFECTED_DOCS,}$doc"
@@ -117,22 +117,22 @@ jobs:
             done
           fi
 
-          # dream-server/docker-compose* -> README.md
-          if echo "$CHANGED_FILES" | grep -qE '^dream-server/docker-compose'; then
+          # ods/docker-compose* -> README.md
+          if echo "$CHANGED_FILES" | grep -qE '^ods/docker-compose'; then
             if ! echo "$AFFECTED_DOCS" | grep -q "README.md"; then
               AFFECTED_DOCS="${AFFECTED_DOCS:+$AFFECTED_DOCS,}README.md"
             fi
           fi
 
-          # dream-server/tests/ -> README.md
-          if echo "$CHANGED_FILES" | grep -qE '^dream-server/tests/'; then
+          # ods/tests/ -> README.md
+          if echo "$CHANGED_FILES" | grep -qE '^ods/tests/'; then
             if ! echo "$AFFECTED_DOCS" | grep -q "README.md"; then
               AFFECTED_DOCS="${AFFECTED_DOCS:+$AFFECTED_DOCS,}README.md"
             fi
           fi
 
           # .env* -> README.md, CLAUDE.md
-          if echo "$CHANGED_FILES" | grep -qE '^dream-server/\.env'; then
+          if echo "$CHANGED_FILES" | grep -qE '^ods/\.env'; then
             for doc in "README.md" "CLAUDE.md"; do
               if ! echo "$AFFECTED_DOCS" | grep -q "$doc"; then
                 AFFECTED_DOCS="${AFFECTED_DOCS:+$AFFECTED_DOCS,}$doc"
@@ -211,10 +211,10 @@ jobs:
           ALLOWED_FILES=(
             "README.md"
             "CLAUDE.md"
-            "dream-server/README.md"
-            "dream-server/docs/INSTALLER-ARCHITECTURE.md"
-            "dream-server/docs/EXTENSIONS.md"
-            "dream-server/docs/TESTING.md"
+            "ods/README.md"
+            "ods/docs/INSTALLER-ARCHITECTURE.md"
+            "ods/docs/EXTENSIONS.md"
+            "ods/docs/TESTING.md"
           )
 
           MODIFIED=$(git diff --name-only)

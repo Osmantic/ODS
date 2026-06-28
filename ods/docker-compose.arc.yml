@@ -1,0 +1,75 @@
+# ODS — Intel Arc GPU Overlay (oneAPI SYCL, build-from-source)
+#
+# Builds llama-server from source using Intel oneAPI Base Toolkit.
+# Use with: docker compose -f docker-compose.base.yml -f docker-compose.arc.yml up -d
+#
+# Supported hardware:
+#   ARC tier      — Arc A770 16 GB  (and future Arc B-series ≥12 GB)
+#   ARC_LITE tier — Arc A750 8 GB, A380 6 GB
+#
+# Build arguments (customise via .env or shell export):
+#   LLAMA_TAG       llama.cpp git tag (default: b8248)
+#   ONEAPI_VERSION  oneAPI Base Toolkit image tag (default: 2025.0.0-0-devel-ubuntu22.04)
+#   LLAMA_ARC_IMAGE Override to a pre-built image and skip the local build entirely
+#                   e.g. LLAMA_ARC_IMAGE=ghcr.io/ggml-org/llama.cpp:server-intel-b8248
+#
+# First-run note:
+#   The SYCL build compiles llama.cpp with Intel icx/icpx. Allow 10–20 min
+#   on first `docker compose up --build`. Subsequent starts use Docker cache.
+#
+# Host prerequisites (Ubuntu/Debian):
+#   apt install intel-opencl-icd intel-level-zero-gpu level-zero
+#   usermod -aG video,render $USER   # re-login after
+#   # Verify GPU: clinfo | grep -i "intel arc"
+
+services:
+  llama-server:
+    build:
+      context: ./images/llama-sycl
+      dockerfile: Dockerfile
+      args:
+        LLAMA_TAG: ${LLAMA_TAG:-b8248}
+        ONEAPI_VERSION: ${ONEAPI_VERSION:-2025.0.0-0-devel-ubuntu22.04}
+    # Set LLAMA_ARC_IMAGE in .env to skip the local build and pull a pre-built image.
+    image: ${LLAMA_ARC_IMAGE:-ods-llama-sycl:local}
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-992}"
+    environment:
+      # Level Zero selects the Intel Arc GPU; persistent cache avoids
+      # recompiling SYCL kernels on every container start (~30 s savings).
+      - ONEAPI_DEVICE_SELECTOR=level_zero:gpu
+      - SYCL_CACHE_PERSISTENT=1
+      # Enable Intel GPU System Management Interface for telemetry
+      - ZES_ENABLE_SYSMAN=1
+    command:
+      - --model
+      - /models/${GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --n-gpu-layers
+      - "${N_GPU_LAYERS:-99}"
+      - --ctx-size
+      - "${CTX_SIZE:-32768}"
+      - --metrics
+    deploy:
+      resources:
+        limits:
+          cpus: '${LLAMA_CPU_LIMIT:-16.0}'
+          memory: ${LLAMA_SERVER_MEMORY_LIMIT:-24G}
+        reservations:
+          cpus: '${LLAMA_CPU_RESERVATION:-2.0}'
+          memory: 4G
+
+  dashboard-api:
+    environment:
+      # Hard-code sycl so the dashboard uses Intel sysfs GPU detection
+      # regardless of .env state.
+      - GPU_BACKEND=sycl
+    volumes:
+      - /sys/class/drm:/sys/class/drm:ro
+      - /sys/class/hwmon:/sys/class/hwmon:ro

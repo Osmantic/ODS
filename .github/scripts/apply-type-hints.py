@@ -17,9 +17,9 @@ from pathlib import Path
 PROTECTED_PATTERNS = [
     ".github/workflows/",
     ".env",
-    "dream-server/installers/",
-    "dream-server/dream-cli",
-    "dream-server/config/",
+    "ods/installers/",
+    "ods/ods-cli",
+    "ods/config/",
 ]
 
 

@@ -1,0 +1,36 @@
+services:
+  localai:
+    image: localai/localai:v3.12.1@sha256:558efc7610e2ce43e702eaed4fcf456102a416471929d99819ef251fdbbf8b51
+    container_name: ods-localai
+    depends_on:
+      llama-server:
+        condition: service_healthy
+    networks:
+      - ods-network
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${LOCALAI_EXTERNAL_PORT:-7803}:8080"
+    volumes:
+      - ./data/localai/models:/models
+      - ./data/localai/builds:/builds
+    environment:
+      - MODELS_PATH=/models
+      - CONFIG_PATH=/builds
+      - LLM_API_URL=${LLM_API_URL:-http://llama-server:8080}
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  ods-network:
+    external: true

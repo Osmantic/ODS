@@ -1,0 +1,48 @@
+services:
+  continue:
+    # NOTE: Continue.dev has no official server Docker image.
+    # This service uses nginx:1.27-alpine to host a templated config.yaml
+    # that IDE clients (VS Code / JetBrains Continue extension) can fetch
+    # at http://<ods>:8890/config.yaml to auto-configure against
+    # the local LLM API.  It also exposes /health for ODS's health checks.
+    #
+    # To use:
+    #   1. Install the Continue extension in VS Code or JetBrains
+    #   2. Set "remoteConfigServerUrl" in ~/.continue/config.yaml to:
+    #      http://<ods-ip>:8890
+    #
+    # See: https://docs.continue.dev/reference
+    image: nginx:1.27-alpine
+    container_name: ods-continue
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - LLM_API_URL=${LLM_API_URL:-http://ods-llama-server:8080}
+      - CONTINUE_PORT=${CONTINUE_PORT:-8890}
+    volumes:
+      - ./data/continue:/usr/share/nginx/html:rw
+      - ./config/continue/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./config/continue/entrypoint.sh:/docker-entrypoint.d/50-continue-init.sh:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${CONTINUE_PORT:-8890}:8080"
+    networks:
+      - ods-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          cpus: '0.05'
+          memory: 32M
+
+networks:
+  ods-network:
+    external: true

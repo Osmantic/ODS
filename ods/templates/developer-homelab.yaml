@@ -1,0 +1,14 @@
+schema_version: ods.templates.v1
+template:
+  id: developer-homelab
+  name: Developer Homelab
+  description: "Complete self-hosted toolkit for indie developers — Git, database, automation, and AI assistant."
+  icon: Server
+  tags: [self-hosted, homelab, indie]
+  services: [gitea, aider, baserow, n8n, token-spy]
+  tier_minimum: T2
+  estimated_disk_gb: 12
+  service_notes:
+    aider: "CLI tool — run with 'docker compose run --rm aider'. Not a background service."
+    gitea: "Self-hosted Git (port 7830, SSH 2222)"
+    baserow: "No-code database"

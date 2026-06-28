@@ -16,7 +16,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        working-directory: dream-server
+        working-directory: ods
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -46,7 +46,7 @@ jobs:
           $scripts = @()
           $scripts += Get-ChildItem -Path installers -Filter *.ps1 -Recurse
 
-          # Also lint repo-root Windows entrypoint (outside dream-server/).
+          # Also lint repo-root Windows entrypoint (outside ods/).
           $rootInstaller = Join-Path ".." "install.ps1"
           if (Test-Path $rootInstaller) {
             $scripts += Get-Item $rootInstaller

@@ -1,0 +1,59 @@
+schema_version: ods.services.v1
+
+service:
+  id: audiocraft
+  name: AudioCraft
+  aliases: [musicgen, audio-gen, music]
+  container_name: ods-audiocraft
+  host_env: AUDIOCRAFT_HOST
+  default_host: audiocraft
+  port: 7860
+  external_port_env: AUDIOCRAFT_PORT
+  external_port_default: 7863
+  health: /
+  type: docker
+  gpu_backends: [nvidia]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  env_vars: []
+  description: |
+    Meta's AudioCraft is a generative AI for audio. Features MusicGen for
+    text-to-music generation and AudioGen for text-to-sound effects.
+    Create royalty-free music and sound effects from text descriptions.
+
+features:
+  - id: music-generation
+    name: Music Generation
+    description: Generate music from text descriptions with MusicGen
+    icon: Music
+    category: media
+    requirements:
+      services: [audiocraft]
+      vram_gb: 6
+    enabled_services_all: [audiocraft]
+    setup_time: ~3 minutes
+    priority: 7
+    gpu_backends: [nvidia]
+  
+  - id: audiocraft-sound-effects
+    name: Sound Effects
+    description: Generate sound effects from text with AudioGen
+    icon: Volume2
+    category: media
+    requirements:
+      services: [audiocraft]
+      vram_gb: 6
+    enabled_services_all: [audiocraft]
+    setup_time: ~3 minutes
+    priority: 6
+    gpu_backends: [nvidia]
+
+tags:
+  - audio-generation
+  - music
+  - sound-effects
+  - meta
+  - musicgen
+  - local
+  - gpu

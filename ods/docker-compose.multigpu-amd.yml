@@ -1,0 +1,51 @@
+# ODS — AMD Multi-GPU Overlay
+# Applied when GPU_COUNT > 1 and GPU_BACKEND = amd.
+# llama-server gets all of /dev/dri + ROCR_VISIBLE_DEVICES for multi-GPU inference.
+# Single-GPU services use ROCR_VISIBLE_DEVICES for GPU isolation.
+# Dashboard-api gets all GPUs for monitoring.
+#
+# Lemonade passthrough: Lemonade launches its inner llama-server via fork()+execv()
+# and constructs the CLI explicitly — LLAMA_ARG_* env vars are NOT guaranteed to be
+# read by the inner process. We pass --split-mode explicitly via --llamacpp-args
+# (Lemonade's official mechanism). --split-mode and --tensor-split are NOT in
+# Lemonade's blocked flag list (-m, --port, --ctx-size, -ngl, --jinja, --mmproj,
+# --embeddings, --reranking), so they pass through safely.
+#
+# Backend selection: Lemonade's llamacpp.backend field accepts only auto|vulkan|cpu
+# (the "rocm" literal was tightened out of the schema upstream). We set "auto" and
+# rely on LEMONADE_LLAMACPP_ROCM_BIN (inherited from docker-compose.amd.yml) to
+# point Lemonade at the custom ROCm llama-server binary.
+# Note: command fully replaces the base docker-compose.amd.yml command.
+
+services:
+  llama-server:
+    # devices and group_add inherited from docker-compose.amd.yml
+    command:
+      - serve
+      - --port
+      - "8080"
+      - --host
+      - "0.0.0.0"
+      - --no-tray
+      - --llamacpp
+      - "${LEMONADE_LLAMACPP:-auto}"
+      - --llamacpp-args
+      - "--metrics --host 0.0.0.0 --split-mode ${LLAMA_ARG_SPLIT_MODE:-layer}"
+      - --extra-models-dir
+      - /models
+    environment:
+      LEMONADE_LLAMACPP: "${LEMONADE_LLAMACPP:-auto}"
+      ROCR_VISIBLE_DEVICES: "${LLAMA_SERVER_GPU_INDICES:-}"
+      # Tensor split ratio (e.g. "0.5,0.5") — passed via env var because it may
+      # be empty (auto-split). Inherited by inner llama-server via fork()+execv().
+      LLAMA_ARG_TENSOR_SPLIT: "${LLAMA_ARG_TENSOR_SPLIT:-}"
+      HSA_OVERRIDE_GFX_VERSION: "${HSA_OVERRIDE_GFX_VERSION:-}"
+
+  dashboard-api:
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    environment:
+      GPU_COUNT: "${GPU_COUNT:-1}"
+      GPU_ASSIGNMENT_JSON_B64: "${GPU_ASSIGNMENT_JSON_B64:-}"
+    # volumes (sysfs mounts) inherited from docker-compose.amd.yml
