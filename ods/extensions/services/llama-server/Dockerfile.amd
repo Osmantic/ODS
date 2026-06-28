@@ -1,0 +1,98 @@
+# ==============================================================================
+# ODS — AMD ROCm llama.cpp + Lemonade Server
+# ==============================================================================
+# Multi-stage build: compile llama.cpp with full gfx1151 optimizations (rocWMMA,
+# MMQ kernel patch, fast-math intrinsics), then inject the binary into Lemonade.
+#
+# Build args (override via .env or docker compose build --build-arg):
+#   AMDGPU_TARGET  — GPU architecture (default: gfx1151 for Strix Halo)
+#   LLAMA_CPP_REF  — llama.cpp git ref to build (default: b8763)
+#   ROCM_VERSION   — ROCm SDK version for builder (default: 7.2)
+#   LEMONADE_SERVER_IMAGE — Lemonade runtime image tag
+#
+# The custom binary is placed at /opt/llama-custom/ and activated via the
+# LEMONADE_LLAMACPP_ROCM_BIN env var in docker-compose.amd.yml.
+# To fall back to Lemonade's bundled binary, remove that env var and restart.
+# ==============================================================================
+
+# ── Stage 1: Build llama.cpp with ROCm + rocWMMA + patches ──────────────────
+
+ARG ROCM_VERSION=7.2
+ARG LEMONADE_SERVER_IMAGE=ghcr.io/lemonade-sdk/lemonade-server:v10.2.0
+FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete AS builder
+
+ARG AMDGPU_TARGET=gfx1151
+ARG LLAMA_CPP_REF=b8763
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        cmake ninja-build git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clone llama.cpp
+RUN git clone --depth 1 --branch ${LLAMA_CPP_REF} \
+        https://github.com/ggml-org/llama.cpp.git /build/llama.cpp
+
+WORKDIR /build/llama.cpp
+
+# ── Apply halo-ai-core performance patches ──
+# MMQ kernel fix for RDNA 3.5 register pressure (ggml-org/llama.cpp#21284)
+# Reduces mmq tile size and warp count to fit gfx1151 register file → ~20% prefill gain
+# NOTE: These patches are validated against the pinned LLAMA_CPP_REF. When bumping
+# the ref, verify the sed targets still exist: grep -n 'mmq_x = ' ggml/src/ggml-cuda/mmq.cu
+RUN sed -i 's/mmq_x = 64/mmq_x = 48/g' ggml/src/ggml-cuda/mmq.cu 2>/dev/null || true && \
+    sed -i 's/mmq_y = 128/mmq_y = 64/g' ggml/src/ggml-cuda/mmq.cu 2>/dev/null || true && \
+    sed -i 's/nwarps = 8/nwarps = 4/g'  ggml/src/ggml-cuda/mmq.cu 2>/dev/null || true && \
+    if [ -f ggml/src/ggml-cuda/mmq.cu ] && ! grep -q 'mmq_x = 48' ggml/src/ggml-cuda/mmq.cu; then \
+        echo "WARNING: MMQ patch did not apply — upstream may have changed. Build continues without patch."; \
+    fi
+
+# Fast math intrinsics for MoE routing / SiLU — measurable speedup, negligible quality loss
+RUN sed -i 's/\([^_]\)expf(\([^)]*\))/\1__expf(\2)/g' \
+        ggml/src/ggml-cuda/fattn-common.cuh 2>/dev/null || true
+
+# ── Build with HIP + rocWMMA flash attention + hipBLASLt ──
+RUN cmake -B build -G Ninja \
+        -DGGML_HIP=ON \
+        -DGGML_HIP_ROCWMMA_FATTN=ON \
+        -DAMDGPU_TARGETS=${AMDGPU_TARGET} \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_HIP_COMPILER=/opt/rocm/bin/amdclang++ \
+    && cmake --build build --config Release -j$(nproc)
+
+# ── Collect binary + runtime dependencies into /opt/llama-dist/ ──
+# Note: newer llama.cpp puts all binaries AND shared libs in build/bin/, not build/lib/
+RUN mkdir -p /opt/llama-dist && \
+    cp build/bin/llama-server /opt/llama-dist/ && \
+    cp -a build/bin/lib*.so* /opt/llama-dist/ && \
+    ldd build/bin/llama-server \
+        | grep -E '/opt/rocm|libamdhip|libhsa|librocblas|libhipblas|librocm|librocsolver|libhipblaslt|librocroller|libroctx|libcomgr|libLLVM|libamd_comgr|librocprofiler|librocm_sysdeps' \
+        | awk '{print $3}' | sort -u \
+        | xargs -I{} cp -L {} /opt/llama-dist/ && \
+    mkdir -p /opt/llama-dist/rocblas/library && \
+    cp /opt/rocm/lib/rocblas/library/*${AMDGPU_TARGET}* /opt/llama-dist/rocblas/library/ && \
+    cp /opt/rocm/lib/rocblas/library/TensileLibrary_lazy_${AMDGPU_TARGET}.dat /opt/llama-dist/rocblas/library/ 2>/dev/null || true && \
+    mkdir -p /opt/llama-dist/hipblaslt/library && \
+    cp /opt/rocm/lib/hipblaslt/library/*${AMDGPU_TARGET}* /opt/llama-dist/hipblaslt/library/ && \
+    cp /opt/rocm/lib/hipblaslt/library/TensileLiteLibrary_lazy_Mapping.dat /opt/llama-dist/hipblaslt/library/ && \
+    cp /opt/rocm/lib/hipblaslt/library/hipblasltExtOpLibrary.dat /opt/llama-dist/hipblaslt/library/ && \
+    cp /opt/rocm/lib/hipblaslt/library/hipblasltTransform.hsaco /opt/llama-dist/hipblaslt/library/ 2>/dev/null || true
+
+
+# ── Stage 2: Lemonade runtime with custom binary ────────────────────────────
+
+FROM ${LEMONADE_SERVER_IMAGE}
+
+# ROCm llama-server binary requires libatomic1 which is missing from the
+# upstream Lemonade image. Without it, lemonade-server starts but inference
+# requests crash the llama-server subprocess with exit code 127.
+RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install custom llama-server with rocWMMA + patches
+COPY --from=builder /opt/llama-dist/ /opt/llama-custom/
+RUN chmod +x /opt/llama-custom/llama-server
+
+# Ensure runtime can find all shared libraries and Tensile kernels
+ENV LD_LIBRARY_PATH=/opt/llama-custom:${LD_LIBRARY_PATH:-}
+ENV ROCBLAS_TENSILE_LIBPATH=/opt/llama-custom/rocblas/library
+ENV HIPBLASLT_TENSILE_LIBPATH=/opt/llama-custom/hipblaslt/library

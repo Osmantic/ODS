@@ -17,7 +17,7 @@ pub fn detect() -> GpuInfo {
     }
 }
 
-/// Recommend a DreamServer tier based on detected GPU VRAM.
+/// Recommend a ODS tier based on detected GPU VRAM.
 pub fn recommend_tier(gpu: &GpuInfo) -> u8 {
     match gpu.vram_mb {
         0 => 0,                    // CPU-only / cloud

@@ -175,7 +175,7 @@ AskUserQuestion:
   header: "Focus"
   multiSelect: true
   options:
-    - label: "Shell scripts (installers/, scripts/, dream-cli)"
+    - label: "Shell scripts (installers/, scripts/, ods-cli)"
       description: "<N files, +X/-Y lines in shell scripts>"
     - label: "Python API (dashboard-api/)"
       description: "<N files, +X/-Y lines in dashboard-api/>"
@@ -196,7 +196,7 @@ Map files to review focus areas:
 | `*.sh` in `installers/lib/` | Installer Libraries | `set -euo pipefail`, pure functions, POSIX compat |
 | `*.sh` in `installers/phases/` | Installer Phases | Sequential correctness, error handling |
 | `*.sh` in `scripts/` | Operational Scripts | Safety, idempotency |
-| `dream-cli` | CLI Tool | Command handling, user-facing output |
+| `ods-cli` | CLI Tool | Command handling, user-facing output |
 | `*.py` in `dashboard-api/` | Python API | FastAPI patterns, security, SOLID |
 | `*.jsx`, `*.tsx` in `dashboard/src/` | Dashboard UI | React patterns, Tailwind usage |
 | `manifest.yaml` | Extension Manifests | Schema compliance, port conflicts |

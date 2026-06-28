@@ -1,0 +1,53 @@
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.81.3-stable
+    container_name: ods-litellm
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+      - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
+      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-false}
+    volumes:
+      - ./config/litellm/${ODS_MODE:-local}.yaml:/app/config.yaml:ro,z
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${LITELLM_PORT:-4000}:4000"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ "$$LANGFUSE_ENABLED" = "true" ]; then
+          python3 -c "
+        import yaml
+        with open('/app/config.yaml') as f:
+            cfg = yaml.safe_load(f)
+        cfg.setdefault('litellm_settings', {})['success_callback'] = ['langfuse']
+        with open('/tmp/config.yaml', 'w') as f:
+            yaml.dump(cfg, f, default_flow_style=False)
+        "
+          exec litellm --config /tmp/config.yaml --port 4000
+        else
+          exec litellm --config /app/config.yaml --port 4000
+        fi
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/readiness', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

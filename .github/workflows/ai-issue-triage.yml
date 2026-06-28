@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           sparse-checkout: |
-            dream-server/
+            ods/
             CLAUDE.md
           sparse-checkout-cone-mode: true
 
@@ -68,17 +68,17 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            You are an issue triage bot for the DreamServer project (fully local AI stack: LLM inference, chat, voice, agents, workflows, RAG, image generation, privacy tools).
+            You are an issue triage bot for the ODS project (fully local AI stack: LLM inference, chat, voice, agents, workflows, RAG, image generation, privacy tools).
 
             Architecture context:
-            - dream-server/installers/ = Bash installer libraries and phases
-            - dream-server/dream-cli = main CLI tool (~45K lines Bash)
-            - dream-server/extensions/services/dashboard-api/ = Python FastAPI backend
-            - dream-server/extensions/services/dashboard/ = React/Vite frontend
-            - dream-server/scripts/ = operational scripts
-            - dream-server/config/ = backend configs (GPU tiers, models)
-            - dream-server/tests/ = shell-based tests (BATS, contracts, smoke)
-            - dream-server/extensions/services/ = 17 service extensions with manifests
+            - ods/installers/ = Bash installer libraries and phases
+            - ods/ods-cli = main CLI tool (~45K lines Bash)
+            - ods/extensions/services/dashboard-api/ = Python FastAPI backend
+            - ods/extensions/services/dashboard/ = React/Vite frontend
+            - ods/scripts/ = operational scripts
+            - ods/config/ = backend configs (GPU tiers, models)
+            - ods/tests/ = shell-based tests (BATS, contracts, smoke)
+            - ods/extensions/services/ = 17 service extensions with manifests
 
             Analyze this new issue and apply appropriate labels:
 

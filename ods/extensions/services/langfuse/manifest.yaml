@@ -1,0 +1,39 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: langfuse
+  name: Langfuse (LLM Observability)
+  aliases: [observability, traces]
+  container_name: ods-langfuse-web
+  default_host: langfuse
+  port: 3000
+  external_port_env: LANGFUSE_PORT
+  external_port_default: 3006
+  health: /api/public/health
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  setup_hook: hooks/post_install.sh
+
+features:
+  - id: observability
+    name: LLM Observability
+    description: Full traces, evaluations, and prompt management for all LLM calls
+    icon: BarChart2
+    category: monitoring
+    requirements:
+      services: [langfuse]
+      services_any: [litellm]
+    enabled_services_all: [langfuse]
+    enabled_services_any: []
+    setup_time: ~2 minutes
+    priority: 10
+    launch:
+      type: service
+      service: langfuse
+    gpu_backends: [all]

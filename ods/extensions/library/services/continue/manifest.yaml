@@ -1,0 +1,37 @@
+schema_version: ods.services.v1
+
+service:
+  id: continue
+  name: Continue (AI Coding Assistant)
+  aliases: [continue-dev]
+  container_name: ods-continue
+  host_env: CONTINUE_HOST
+  default_host: continue
+  port: 8080
+  external_port_env: CONTINUE_PORT
+  external_port_default: 8890
+  # Serves /health + a pre-built config.yaml IDE clients can fetch
+  health: /health
+  type: docker
+  gpu_backends: [amd, nvidia, apple]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: [llama-server]
+  description: "Open-source AI coding assistant for VS Code and JetBrains with local LLM support."
+
+features:
+  - id: continue-coding
+    name: Continue Coding Assistant
+    description: >
+      AI-powered coding assistant for VS Code and JetBrains.
+      Installs the Continue extension in your IDE and points it at
+      ODS's local LLM — no cloud required.
+    icon: Code
+    category: development
+    requirements:
+      services_any: [continue, llama-server, ollama]
+      vram_gb: 4
+    enabled_services_any: [continue]
+    setup_time: Ready
+    priority: 5
+    gpu_backends: [amd, nvidia, apple]

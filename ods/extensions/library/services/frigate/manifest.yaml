@@ -1,0 +1,86 @@
+schema_version: ods.services.v1
+
+service:
+  id: frigate
+  name: Frigate
+  aliases: [nvr, camera, security]
+  container_name: ods-frigate
+  host_env: FRIGATE_HOST
+  default_host: frigate
+  port: 5000
+  external_port_env: FRIGATE_PORT
+  external_port_default: 8971
+  health: /api/version
+  type: docker
+  gpu_backends: [nvidia]
+  compose_file: compose.yaml
+  setup_hook: setup.sh
+  category: optional
+  depends_on: []
+  env_vars:
+    - key: FRIGATE_RTSP_PASSWORD
+      required: true
+      secret: true
+      description: RTSP password for camera streams
+  description: |
+    Frigate is an open-source NVR (Network Video Recorder) with realtime
+    local object detection for IP cameras. It uses AI to detect people,
+    vehicles, and other objects without sending video to the cloud.
+
+  tags:
+    - nvr
+    - camera
+    - security
+    - object-detection
+    - surveillance
+    - video
+
+features:
+  - id: object-detection
+    name: Object Detection
+    description: Real-time AI object detection on camera streams
+    icon: Eye
+    category: security
+    requirements:
+      services: [frigate]
+      vram_gb: 1
+    enabled_services_all: [frigate]
+    setup_time: ~2 minutes
+    priority: 16
+    gpu_backends: [nvidia]
+  - id: recording
+    name: Recording
+    description: Continuous or event-based video recording
+    icon: Video
+    category: security
+    requirements:
+      services: [frigate]
+      vram_gb: 0
+    enabled_services_all: [frigate]
+    setup_time: ~2 minutes
+    priority: 17
+    gpu_backends: [nvidia]
+  - id: notifications
+    name: Notifications
+    description: Alerts when objects are detected
+    icon: Bell
+    category: security
+    requirements:
+      services: [frigate]
+      vram_gb: 0
+    enabled_services_all: [frigate]
+    setup_time: ~2 minutes
+    priority: 18
+    gpu_backends: [nvidia]
+  - id: restreaming
+    name: Restreaming
+    description: RTSP/WebRTC restreaming of camera feeds
+    icon: Cast
+    category: security
+    requirements:
+      services: [frigate]
+      vram_gb: 0
+    enabled_services_all: [frigate]
+    setup_time: ~2 minutes
+    priority: 19
+    gpu_backends: [nvidia]

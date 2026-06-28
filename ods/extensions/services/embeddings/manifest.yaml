@@ -1,0 +1,22 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: embeddings
+  name: TEI (Embeddings)
+  aliases: [embed]
+  container_name: ods-embeddings
+  host_env: EMBEDDINGS_HOST
+  default_host: embeddings
+  port: 80
+  external_port_env: EMBEDDINGS_PORT
+  external_port_default: 8090
+  health: /health
+  ui_path: /info
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []

@@ -1,0 +1,58 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: tailscale
+  name: Tailscale (Remote Access)
+  aliases: [remote, vpn]
+  container_name: ods-tailscale
+  # `host_network: true` opts this service out of the audit's port-mapping +
+  # health-path requirements. Tailscale uses `network_mode: host` so its
+  # daemon shares the host's network namespace — there's no Docker-mapped
+  # port and no HTTP health endpoint, so those manifest fields don't apply.
+  # Liveness is checked via the compose healthcheck (`tailscale status
+  # --json`) instead. See scripts/audit-extensions.py.
+  host_network: true
+  port: 0
+  health_timeout: 30
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  env_vars:
+    - key: TS_AUTHKEY
+      required: false
+      secret: true
+      description: |
+        Tailscale auth key. Generate one at https://login.tailscale.com/admin/settings/keys
+        Recommend a reusable, ephemeral=false key per device. The container joins your
+        tailnet on first start, after which you can rotate or delete the key.
+    - key: TS_HOSTNAME
+      required: false
+      description: |
+        The hostname this device registers as on the tailnet. Defaults to
+        ${ODS_DEVICE_NAME}. Reachable as <hostname>.<tailnet>.ts.net once joined.
+    - key: TS_EXTRA_ARGS
+      required: false
+      description: |
+        Optional extra flags passed to `tailscale up`, for example
+        --advertise-tags=tag:ods when your tailnet ACL defines and authorizes that tag.
+
+features:
+  - id: remote-access
+    name: Remote Access
+    description: Reach ODS from any device, anywhere via Tailscale VPN.
+    icon: Globe
+    category: networking
+    requirements:
+      services: [tailscale]
+      vram_gb: 0
+    enabled_services_all: [tailscale]
+    setup_time: ~2 minutes
+    priority: 3
+    launch:
+      type: none
+    gpu_backends: [all]

@@ -1,0 +1,39 @@
+services:
+  audiocraft:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ods-audiocraft
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7860
+    volumes:
+      - ./data/audiocraft:/app/outputs:rw
+      - ./data/audiocraft/models:/root/.cache/audiocraft:rw
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${AUDIOCRAFT_PORT:-7863}:7860"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:7860/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 16G
+        reservations:
+          cpus: '1.0'
+          memory: 4G
+
+networks:
+  ods-network:
+    external: true
+

@@ -58,13 +58,13 @@ jobs:
           PROTECTED_PATTERNS=(
             ".github/workflows/*"
             ".env*"
-            "dream-server/installers/*"
-            "dream-server/dream-cli"
-            "dream-server/config/*"
+            "ods/installers/*"
+            "ods/ods-cli"
+            "ods/config/*"
           )
 
           # Generate Python file list
-          git ls-files 'dream-server/**/*.py' '.github/scripts/*.py' | while read -r file; do
+          git ls-files 'ods/**/*.py' '.github/scripts/*.py' | while read -r file; do
             PROTECTED=false
             for pattern in "${PROTECTED_PATTERNS[@]}"; do
               if [[ "$file" == $pattern ]]; then
@@ -79,13 +79,13 @@ jobs:
           done > /tmp/scannable_python.txt
 
           # Generate TypeScript file list (dashboard)
-          git ls-files 'dream-server/extensions/services/dashboard/src/**/*.ts' \
-                       'dream-server/extensions/services/dashboard/src/**/*.tsx' | while read -r file; do
+          git ls-files 'ods/extensions/services/dashboard/src/**/*.ts' \
+                       'ods/extensions/services/dashboard/src/**/*.tsx' | while read -r file; do
             echo "$file"
           done > /tmp/scannable_typescript.txt
 
           # Generate Shell file list
-          git ls-files 'dream-server/scripts/*.sh' 'dream-server/tests/**/*.sh' | while read -r file; do
+          git ls-files 'ods/scripts/*.sh' 'ods/tests/**/*.sh' | while read -r file; do
             PROTECTED=false
             for pattern in "${PROTECTED_PATTERNS[@]}"; do
               if [[ "$file" == $pattern ]]; then
@@ -257,9 +257,9 @@ jobs:
         run: |
           echo "## Security Scan Results" >> $GITHUB_STEP_SUMMARY
 
-          # Run Bandit on DreamServer Python files
-          bandit -r dream-server/extensions/services/dashboard-api \
-                    dream-server/scripts \
+          # Run Bandit on ODS Python files
+          bandit -r ods/extensions/services/dashboard-api \
+                    ods/scripts \
                     .github/scripts \
             --format json \
             --output /tmp/bandit-results.json \
@@ -910,7 +910,7 @@ jobs:
             ### Review Instructions
 
             1. Review changed files for correctness
-            2. Run tests: `cd dream-server && make test`
+            2. Run tests: `cd ods && make test`
             3. Approve and merge if tests pass
 
             ### Safety
@@ -1036,7 +1036,7 @@ jobs:
             ### Review Instructions
 
             1. Verify type hints are accurate for each function
-            2. Run tests: `cd dream-server && make test`
+            2. Run tests: `cd ods && make test`
             3. Approve and merge if checks pass
 
             ### Safety
@@ -1118,7 +1118,7 @@ jobs:
 
             1. Verify docstrings are accurate and helpful
             2. Check formatting follows Google style
-            3. Run tests: `cd dream-server && make test`
+            3. Run tests: `cd ods && make test`
             4. Approve and merge if documentation is clear
 
             ### Safety

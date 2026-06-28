@@ -1,0 +1,56 @@
+services:
+  ods-proxy:
+    # Pinned Caddy 2.x. Same image we use for the Hermes auth proxy — single
+    # static binary, ~50MB, native WS/SSE support, simple Caddyfile config.
+    image: caddy:2.11.3-alpine
+    container_name: ods-proxy
+    restart: unless-stopped
+    depends_on:
+      # All three are routed by Caddy; depends_on is for ordering, not
+      # health. Cold-start 502s are normal until the upstream comes up.
+      - dashboard
+      - dashboard-api
+      - open-webui
+    environment:
+      # Caddy substitutes {$ODS_DEVICE_NAME:ods} in the Caddyfile at
+      # server-start, building per-service hostnames (chat.<name>.local,
+      # auth.<name>.local, etc.). Falls back to "ods" if .env is missing
+      # the value, so the proxy still comes up on a fresh box.
+      - ODS_DEVICE_NAME=${ODS_DEVICE_NAME:-ods}
+    volumes:
+      - ./extensions/services/ods-proxy/Caddyfile:/etc/caddy/Caddyfile:ro,z
+      # Caddy persists its own state (certs, ACME data) — empty for the
+      # HTTP-only default but keeps Caddy quiet on restart.
+      - ./data/ods-proxy/caddy-data:/data:z
+      - ./data/ods-proxy/caddy-config:/config:z
+    ports:
+      # ODS_PROXY_BIND defaults to 0.0.0.0 (LAN-exposed) because the
+      # proxy IS the LAN-facing surface. This is an explicit exception to
+      # BIND_ADDRESS=127.0.0.1 — every other ODS service stays loopback
+      # so the proxy is the only thing the LAN can reach.
+      - "${ODS_PROXY_BIND:-0.0.0.0}:${ODS_PROXY_PORT:-80}:80"
+      # 443 is reserved for a future TLS upgrade — not bound by default
+      # because auto_https is off in the Caddyfile. When TLS lands, this
+      # port plus a corresponding `tls` directive will be enabled.
+      # - "${ODS_PROXY_BIND:-0.0.0.0}:${ODS_PROXY_TLS_PORT:-443}:443"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.05'
+          memory: 32M
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

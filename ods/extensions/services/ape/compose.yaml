@@ -1,0 +1,39 @@
+services:
+  ape:
+    build:
+      context: ./extensions/services/ape
+      dockerfile: Dockerfile
+    container_name: ods-ape
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - APE_POLICY_FILE=/config/policy.yaml
+      - APE_AUDIT_LOG=/data/ape/audit.jsonl
+      - APE_RATE_LIMIT_RPM=${APE_RATE_LIMIT_RPM:-60}
+      - APE_STRICT_MODE=${APE_STRICT_MODE:-false}
+      - APE_API_KEY=${APE_API_KEY:-}
+    volumes:
+      - ./config/ape:/config:ro,z
+      - ./data/ape:/data/ape:z
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${APE_PORT:-7890}:7890"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7890/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

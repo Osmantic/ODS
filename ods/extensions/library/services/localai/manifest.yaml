@@ -1,0 +1,71 @@
+schema_version: ods.services.v1
+
+service:
+  id: localai
+  name: LocalAI (OpenAI-compatible API)
+  aliases: [local-ai, localai]
+  container_name: ods-localai
+  host_env: LOCALAI_HOST
+  default_host: localai
+  port: 8080
+  external_port_env: LOCALAI_EXTERNAL_PORT
+  external_port_default: 7803
+  health: /healthz
+  type: docker
+  gpu_backends: [amd, nvidia]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: [llama-server]
+  description: "OpenAI-compatible API server for running open-source models locally."
+
+features:
+  - id: text-generation
+    name: Text Generation
+    description: Generate text with local LLMs via OpenAI-compatible API
+    icon: MessageSquare
+    category: ai
+    requirements:
+      services: [localai]
+      vram_gb: 4
+    enabled_services_all: [localai]
+    priority: 5
+  - id: localai-image-generation
+    name: Image Generation
+    description: Generate images with local diffusion models
+    icon: Image
+    category: ai
+    requirements:
+      services: [localai]
+      vram_gb: 8
+    enabled_services_all: [localai]
+    priority: 6
+  - id: audio-generation
+    name: Audio Generation
+    description: Generate audio with local models
+    icon: Music
+    category: ai
+    requirements:
+      services: [localai]
+      vram_gb: 4
+    enabled_services_all: [localai]
+    priority: 7
+  - id: video-generation
+    name: Video Generation
+    description: Generate video with local models
+    icon: Video
+    category: ai
+    requirements:
+      services: [localai]
+      vram_gb: 16
+    enabled_services_all: [localai]
+    priority: 8
+  - id: localai-voice-cloning
+    name: Voice Cloning
+    description: Clone voices for TTS with local models
+    icon: Mic
+    category: voice
+    requirements:
+      services: [localai]
+      vram_gb: 4
+    enabled_services_all: [localai]
+    priority: 9

@@ -1,0 +1,14 @@
+schema_version: ods.templates.v1
+template:
+  id: voice-assistant
+  name: Voice Assistant
+  description: "Voice-first AI assistant with local speech recognition, synthesis, and workflow automation."
+  icon: Mic
+  tags: [voice, automation, cpu-friendly]
+  services: [whisper, tts, piper-audio, open-interpreter, n8n]
+  tier_minimum: T2
+  estimated_disk_gb: 10
+  service_notes:
+    open-interpreter: "Requires OPEN_INTERPRETER_API_KEY to be set in .env before first start. Edit ods/.env to add your API key."
+    piper-audio: "Neural TTS — pairs with Kokoro (tts) for voice variety"
+    n8n: "Wire voice intents to external systems"

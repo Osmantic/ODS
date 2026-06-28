@@ -169,10 +169,10 @@ jobs:
         id: check
         run: |
           HIGH_STAKES_PATTERNS=(
-            "dream-server/installers/"
-            "dream-server/dream-cli"
-            "dream-server/config/"
-            "dream-server/extensions/services/dashboard-api/security.py"
+            "ods/installers/"
+            "ods/ods-cli"
+            "ods/config/"
+            "ods/extensions/services/dashboard-api/security.py"
             ".github/workflows/"
             ".env"
             "docker-compose"
@@ -274,9 +274,9 @@ jobs:
           BLOCKED_PATTERNS=(
             ".github/workflows/"
             ".github/actions/"
-            "dream-server/installers/"
-            "dream-server/dream-cli"
-            "dream-server/config/"
+            "ods/installers/"
+            "ods/ods-cli"
+            "ods/config/"
             "\.env"
             "\.env\."
             "\.key$"
@@ -476,9 +476,9 @@ jobs:
 
             **Security Policy**: Automated patch generation is disabled for:
             - Workflow files (.github/workflows/*)
-            - Installer code (dream-server/installers/*)
-            - CLI tool (dream-server/dream-cli)
-            - Configuration files (dream-server/config/*)
+            - Installer code (ods/installers/*)
+            - CLI tool (ods/ods-cli)
+            - Configuration files (ods/config/*)
             - Secrets and credentials
             - PRs from forks
 

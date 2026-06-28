@@ -45,7 +45,7 @@ updates:
           - "version-update:semver-major"
 
   - package-ecosystem: "npm"
-    directory: "/dream-server/extensions/services/dashboard"
+    directory: "/ods/extensions/services/dashboard"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 1
@@ -62,7 +62,7 @@ updates:
           - "version-update:semver-major"
 
   - package-ecosystem: "pip"
-    directory: "/dream-server/extensions/services/dashboard-api"
+    directory: "/ods/extensions/services/dashboard-api"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 1
@@ -72,7 +72,7 @@ updates:
           - "*"
 
   - package-ecosystem: "pip"
-    directory: "/dream-server/extensions/services/privacy-shield"
+    directory: "/ods/extensions/services/privacy-shield"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 1
@@ -82,7 +82,7 @@ updates:
           - "*"
 
   - package-ecosystem: "pip"
-    directory: "/dream-server/extensions/services/token-spy"
+    directory: "/ods/extensions/services/token-spy"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 1
@@ -92,7 +92,7 @@ updates:
           - "*"
 
   - package-ecosystem: "pip"
-    directory: "/dream-server/extensions/services/ape"
+    directory: "/ods/extensions/services/ape"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 1

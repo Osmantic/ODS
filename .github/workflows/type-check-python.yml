@@ -4,12 +4,12 @@ on:
   push:
     branches: [main]
     paths:
-      - "dream-server/**/*.py"
+      - "ods/**/*.py"
       - ".github/workflows/type-check-python.yml"
   pull_request:
     branches: [main]
     paths:
-      - "dream-server/**/*.py"
+      - "ods/**/*.py"
       - ".github/workflows/type-check-python.yml"
 
 permissions:
@@ -32,27 +32,27 @@ jobs:
 
       - name: Type check dashboard-api
         continue-on-error: true
-        working-directory: dream-server/extensions/services/dashboard-api
+        working-directory: ods/extensions/services/dashboard-api
         run: |
           pip install -r requirements.txt
           mypy . --ignore-missing-imports --no-strict-optional --check-untyped-defs
 
       - name: Type check token-spy
         continue-on-error: true
-        working-directory: dream-server/extensions/services/token-spy
+        working-directory: ods/extensions/services/token-spy
         run: |
           pip install -r requirements.txt
           mypy . --ignore-missing-imports --no-strict-optional --check-untyped-defs
 
       - name: Type check privacy-shield
         continue-on-error: true
-        working-directory: dream-server/extensions/services/privacy-shield
+        working-directory: ods/extensions/services/privacy-shield
         run: |
           pip install -r requirements.txt
           mypy . --ignore-missing-imports --no-strict-optional --check-untyped-defs
 
       - name: Type check scripts
         continue-on-error: true
-        working-directory: dream-server/scripts
+        working-directory: ods/scripts
         run: |
           mypy *.py --ignore-missing-imports --no-strict-optional --check-untyped-defs

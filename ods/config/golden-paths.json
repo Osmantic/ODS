@@ -1,0 +1,325 @@
+{
+  "version": 1,
+  "description": "Release-gating scenarios that must remain boring, observable, reversible, and secure.",
+  "scenarios": [
+    {
+      "id": "linux-nvidia",
+      "label": "Linux NVIDIA",
+      "status": "golden",
+      "platform": "linux",
+      "architecture": "x86_64",
+      "hardware": {
+        "gpu_backend": "nvidia",
+        "accelerator": "cuda",
+        "min_vram_gb": 8
+      },
+      "installer": {
+        "entrypoint": "install.sh",
+        "mode": "docker",
+        "ci_simulation": "linux_dryrun",
+        "dry_run_args": [
+          "--dry-run",
+          "--non-interactive",
+          "--skip-docker",
+          "--force"
+        ]
+      },
+      "expected": {
+        "ods_mode": "local",
+        "llm_backend": "llama-server",
+        "llm_host_port": 11434,
+        "llm_container_port": 8080,
+        "compose_files": [
+          "docker-compose.base.yml",
+          "docker-compose.nvidia.yml"
+        ],
+        "core_services": [
+          "llama-server",
+          "open-webui",
+          "dashboard",
+          "dashboard-api"
+        ],
+        "recommended_services": [
+          "litellm",
+          "searxng",
+          "token-spy",
+          "hermes",
+          "hermes-proxy"
+        ],
+        "model_route": {
+          "host_base_url": "http://127.0.0.1:11434/v1",
+          "container_base_url": "http://llama-server:8080/v1"
+        },
+        "generated_configs": [
+          {
+            "surface": "env",
+            "path": ".env"
+          },
+          {
+            "surface": "opencode",
+            "path": ".opencode/auth.json"
+          },
+          {
+            "surface": "hermes",
+            "path": "data/hermes/config.yaml"
+          },
+          {
+            "surface": "perplexica",
+            "path": "data/perplexica/settings.seed.json"
+          }
+        ],
+        "health_checks": [
+          {
+            "service": "llama-server",
+            "url": "http://127.0.0.1:11434/health"
+          },
+          {
+            "service": "open-webui",
+            "url": "http://127.0.0.1:3000/"
+          },
+          {
+            "service": "dashboard",
+            "url": "http://127.0.0.1:3001/"
+          },
+          {
+            "service": "dashboard-api",
+            "url": "http://127.0.0.1:3002/health"
+          }
+        ]
+      }
+    },
+    {
+      "id": "windows-wsl2-nvidia",
+      "label": "Windows WSL2 NVIDIA",
+      "status": "golden",
+      "platform": "windows-wsl2",
+      "architecture": "x86_64",
+      "hardware": {
+        "gpu_backend": "nvidia",
+        "accelerator": "cuda",
+        "min_vram_gb": 8
+      },
+      "installer": {
+        "entrypoint": "../install.ps1",
+        "mode": "docker-desktop-wsl2",
+        "ci_simulation": "windows_scenario_preflight",
+        "dry_run_args": [
+          "-DryRun",
+          "-NonInteractive"
+        ]
+      },
+      "expected": {
+        "ods_mode": "local",
+        "llm_backend": "llama-server",
+        "llm_host_port": 8080,
+        "llm_container_port": 8080,
+        "install_dir": "$env:USERPROFILE\\ods",
+        "compose_files": [
+          "docker-compose.base.yml",
+          "docker-compose.nvidia.yml"
+        ],
+        "core_services": [
+          "llama-server",
+          "open-webui",
+          "dashboard",
+          "dashboard-api"
+        ],
+        "recommended_services": [
+          "litellm",
+          "searxng",
+          "token-spy",
+          "hermes",
+          "hermes-proxy"
+        ],
+        "model_route": {
+          "host_base_url": "http://127.0.0.1:8080/v1",
+          "container_base_url": "http://llama-server:8080/v1"
+        },
+        "generated_configs": [
+          {
+            "surface": "env",
+            "path": ".env"
+          },
+          {
+            "surface": "opencode",
+            "path": ".opencode/auth.json"
+          },
+          {
+            "surface": "hermes",
+            "path": "data/hermes/config.yaml"
+          },
+          {
+            "surface": "perplexica",
+            "path": "data/perplexica/settings.seed.json"
+          }
+        ],
+        "health_checks": [
+          {
+            "service": "llama-server",
+            "url": "http://127.0.0.1:8080/health"
+          },
+          {
+            "service": "dashboard-api",
+            "url": "http://127.0.0.1:3002/health"
+          }
+        ]
+      }
+    },
+    {
+      "id": "windows-wsl2-amd-lemonade",
+      "label": "Windows WSL2 AMD Lemonade",
+      "status": "golden",
+      "platform": "windows-wsl2",
+      "architecture": "x86_64",
+      "hardware": {
+        "gpu_backend": "amd",
+        "accelerator": "lemonade",
+        "min_unified_memory_gb": 64
+      },
+      "installer": {
+        "entrypoint": "../install.ps1",
+        "mode": "docker-desktop-wsl2-host-inference",
+        "ci_simulation": "windows_scenario_preflight",
+        "dry_run_args": [
+          "-DryRun",
+          "-NonInteractive"
+        ]
+      },
+      "expected": {
+        "ods_mode": "lemonade",
+        "llm_backend": "lemonade",
+        "llm_host_port": 8080,
+        "llm_container_port": 4000,
+        "install_dir": "$env:USERPROFILE\\ods",
+        "compose_files": [
+          "docker-compose.base.yml",
+          "installers/windows/docker-compose.windows-amd.yml",
+          "installers/windows/docker-compose.windows-amd.local.yml"
+        ],
+        "core_services": [
+          "open-webui",
+          "dashboard",
+          "dashboard-api",
+          "litellm"
+        ],
+        "recommended_services": [
+          "searxng",
+          "token-spy",
+          "hermes",
+          "hermes-proxy"
+        ],
+        "model_route": {
+          "host_base_url": "http://127.0.0.1:8080/v1",
+          "container_base_url": "http://litellm:4000/v1"
+        },
+        "generated_configs": [
+          {
+            "surface": "env",
+            "path": ".env"
+          },
+          {
+            "surface": "litellm-lemonade",
+            "path": "config/litellm/lemonade.yaml"
+          },
+          {
+            "surface": "opencode",
+            "path": ".opencode/auth.json"
+          },
+          {
+            "surface": "hermes",
+            "path": "data/hermes/config.yaml"
+          },
+          {
+            "surface": "perplexica",
+            "path": "data/perplexica/settings.seed.json"
+          }
+        ],
+        "health_checks": [
+          {
+            "service": "litellm",
+            "url": "http://127.0.0.1:4000/health"
+          },
+          {
+            "service": "dashboard-api",
+            "url": "http://127.0.0.1:3002/health"
+          }
+        ]
+      }
+    },
+    {
+      "id": "apple-silicon",
+      "label": "Apple Silicon",
+      "status": "golden",
+      "platform": "macos",
+      "architecture": "arm64",
+      "hardware": {
+        "gpu_backend": "apple",
+        "accelerator": "metal",
+        "min_unified_memory_gb": 16
+      },
+      "installer": {
+        "entrypoint": "installers/macos.sh",
+        "mode": "native-metal-plus-docker-services",
+        "ci_simulation": "macos_installer_mvp",
+        "dry_run_args": [
+          "--no-delegate"
+        ]
+      },
+      "expected": {
+        "ods_mode": "local",
+        "llm_backend": "llama-server-metal",
+        "llm_host_port": 8080,
+        "llm_container_port": 8080,
+        "compose_files": [
+          "docker-compose.base.yml",
+          "docker-compose.apple.yml",
+          "installers/macos/docker-compose.macos.yml"
+        ],
+        "core_services": [
+          "open-webui",
+          "dashboard",
+          "dashboard-api"
+        ],
+        "recommended_services": [
+          "litellm",
+          "searxng",
+          "token-spy",
+          "hermes",
+          "hermes-proxy"
+        ],
+        "model_route": {
+          "host_base_url": "http://127.0.0.1:8080/v1",
+          "container_base_url": "http://host.docker.internal:8080/v1"
+        },
+        "generated_configs": [
+          {
+            "surface": "env",
+            "path": ".env"
+          },
+          {
+            "surface": "opencode",
+            "path": ".opencode/auth.json"
+          },
+          {
+            "surface": "hermes",
+            "path": "data/hermes/config.yaml"
+          },
+          {
+            "surface": "perplexica",
+            "path": "data/perplexica/settings.seed.json"
+          }
+        ],
+        "health_checks": [
+          {
+            "service": "llama-server",
+            "url": "http://127.0.0.1:8080/health"
+          },
+          {
+            "service": "dashboard-api",
+            "url": "http://127.0.0.1:3002/health"
+          }
+        ]
+      }
+    }
+  ]
+}

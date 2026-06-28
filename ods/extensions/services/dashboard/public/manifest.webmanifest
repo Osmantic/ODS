@@ -1,0 +1,32 @@
+{
+  "name": "ODS",
+  "short_name": "ODS",
+  "description": "Control center for your local ODS — chat, agents, models, settings.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#0f0f13",
+  "background_color": "#0f0f13",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/osmantic-os-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/osmantic-os-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/osmantic-os.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

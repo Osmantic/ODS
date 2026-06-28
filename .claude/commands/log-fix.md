@@ -16,7 +16,7 @@ Analyze logs from Docker containers, installer runs, and service health checks. 
   - `--time <duration>` - Time range: `1h`, `30m`, `1d`, `7d` (default: `1h`)
   - `--source <source>` - Log source: `docker`, `installer`, `api`, `all` (default: `all`)
   - `--level <level>` - Minimum severity: `ERROR`, `WARNING`, `all` (default: `ERROR`)
-  - `--service <name>` - Filter by service name (e.g., `dream-llama-server`, `dream-open-webui`, `dream-dashboard`)
+  - `--service <name>` - Filter by service name (e.g., `ods-llama-server`, `ods-open-webui`, `ods-dashboard`)
 
 ---
 
@@ -29,9 +29,9 @@ Detect all available log sources before analysis.
 ```bash
 # Find the resolved compose stack
 COMPOSE_FILES=""
-if [ -f "dream-server/docker-compose.base.yml" ]; then
-  COMPOSE_FILES="-f dream-server/docker-compose.base.yml"
-  for overlay in dream-server/docker-compose.{amd,nvidia,apple}.yml; do
+if [ -f "ods/docker-compose.base.yml" ]; then
+  COMPOSE_FILES="-f ods/docker-compose.base.yml"
+  for overlay in ods/docker-compose.{amd,nvidia,apple}.yml; do
     [ -f "$overlay" ] && COMPOSE_FILES="$COMPOSE_FILES -f $overlay"
   done
 fi
@@ -47,7 +47,7 @@ fi
 ### 0.2 Check Installer Logs
 
 ```bash
-INSTALL_LOG="$HOME/.dream-server/install.log"
+INSTALL_LOG="$HOME/.ods/install.log"
 if [ -f "$INSTALL_LOG" ]; then
   INSTALL_SIZE=$(du -h "$INSTALL_LOG" | cut -f1)
   INSTALL_LINES=$(wc -l < "$INSTALL_LOG")
@@ -78,7 +78,7 @@ curl -sf http://127.0.0.1:3000 && echo "Open WebUI: HEALTHY" || echo "Open WebUI
 | Source | Status | Location/Details |
 |--------|--------|------------------|
 | Docker | [RUNNING/STOPPED/NOT FOUND] | N services via compose stack |
-| Installer | [FOUND/NOT FOUND] | ~/.dream-server/install.log (N lines) |
+| Installer | [FOUND/NOT FOUND] | ~/.ods/install.log (N lines) |
 | LLM Server | [HEALTHY/UNREACHABLE] | 127.0.0.1:8080/health |
 | Dashboard API | [HEALTHY/UNREACHABLE] | 127.0.0.1:3001/health |
 | Open WebUI | [HEALTHY/UNREACHABLE] | 127.0.0.1:3000 |
@@ -116,14 +116,14 @@ docker compose $COMPOSE_FILES logs --since "${TIME_ARG:-1h}" --no-color "${SERVI
 
 ```bash
 # Recent errors from installer log
-grep -iE "(error|fail|fatal|abort)" "$HOME/.dream-server/install.log" | tail -50
+grep -iE "(error|fail|fatal|abort)" "$HOME/.ods/install.log" | tail -50
 ```
 
 ### 1.3 Dashboard API Logs
 
 ```bash
 # API container logs
-docker compose $COMPOSE_FILES logs --since "${TIME_ARG:-1h}" --no-color dream-dashboard-api 2>&1
+docker compose $COMPOSE_FILES logs --since "${TIME_ARG:-1h}" --no-color ods-dashboard-api 2>&1
 ```
 
 ---
@@ -175,8 +175,8 @@ Group by:
 
 | # | Count | Service/Component | Error Pattern | Priority |
 |---|-------|-------------------|---------------|----------|
-| 1 | 15 | dream-llama-server | CUDA out of memory | P0 |
-| 2 | 8 | dream-dashboard-api | Connection refused to LLM | P1 |
+| 1 | 15 | ods-llama-server | CUDA out of memory | P0 |
+| 2 | 8 | ods-dashboard-api | Connection refused to LLM | P1 |
 ```
 
 #### 2.5 Ask User Which Issues to Investigate
@@ -205,14 +205,14 @@ For each incident, perform deep analysis.
 
 ### 3.1 Component Mapping
 
-Map error sources to DreamServer code:
+Map error sources to ODS code:
 
 | Error Source | Code Location |
 |-------------|---------------|
 | Installer phase crash | `installers/phases/<NN>-<phase>.sh` |
 | Installer lib error | `installers/lib/<module>.sh` |
 | Script failure | `scripts/<script>.sh` |
-| CLI error | `dream-cli` |
+| CLI error | `ods-cli` |
 | Dashboard API error | `extensions/services/dashboard-api/routers/*.py` |
 | Dashboard API helper | `extensions/services/dashboard-api/helpers.py` |
 | Container config | `docker-compose.base.yml`, GPU overlays |
@@ -287,11 +287,11 @@ AskUserQuestion:
 
 | Fix Type | Validation Command |
 |----------|-------------------|
-| Installer lib (`.sh`) | `bash -n <file> && cd dream-server && make lint` |
-| Installer phase (`.sh`) | `bash -n <file> && cd dream-server && make lint` |
-| Script (`.sh`) | `bash -n <file> && cd dream-server && make lint` |
-| BATS test fix | `cd dream-server && bats tests/bats-tests/<module>.bats` |
-| Dashboard API (`.py`) | `cd dream-server/extensions/services/dashboard-api && pytest tests/ -v` |
+| Installer lib (`.sh`) | `bash -n <file> && cd ods && make lint` |
+| Installer phase (`.sh`) | `bash -n <file> && cd ods && make lint` |
+| Script (`.sh`) | `bash -n <file> && cd ods && make lint` |
+| BATS test fix | `cd ods && bats tests/bats-tests/<module>.bats` |
+| Dashboard API (`.py`) | `cd ods/extensions/services/dashboard-api && pytest tests/ -v` |
 | Docker compose | `docker compose $COMPOSE_FILES config` |
 | Config JSON | `python3 -c "import json; json.load(open('<file>'))"` |
 | Extension manifest | `python3 -c "import yaml; yaml.safe_load(open('<file>'))"` |
@@ -371,8 +371,8 @@ After all fixes, display summary.
 
 | # | Service/Component | Issue | Status | Action |
 |---|-------------------|-------|--------|--------|
-| 1 | dream-llama-server | CUDA OOM | FIXED | Reduced model tier |
-| 2 | dream-dashboard-api | Connection refused | SKIPPED | User skipped |
+| 1 | ods-llama-server | CUDA OOM | FIXED | Reduced model tier |
+| 2 | ods-dashboard-api | Connection refused | SKIPPED | User skipped |
 | 3 | installer phase 05 | Permission denied | FIXED | Fixed file perms |
 
 ### Files Modified
@@ -425,7 +425,7 @@ Next Steps:
 ```
 /log-fix --time 30m --source docker --level ERROR
 
-Found 5 errors. Top: "CUDA out of memory" (3x) in dream-llama-server
+Found 5 errors. Top: "CUDA out of memory" (3x) in ods-llama-server
 
 [Shows analysis — model too large for GPU tier]
 
@@ -440,7 +440,7 @@ Continue? [Y/n]
 ```
 /log-fix --source installer
 
-Installer log: ~/.dream-server/install.log (450 lines)
+Installer log: ~/.ods/install.log (450 lines)
 
 INSTALL_PHASE=05-docker failed: "permission denied: /var/run/docker.sock"
 
@@ -451,7 +451,7 @@ Root cause: User not in docker group.
 ### Service Health Check
 
 ```
-/log-fix --service dream-dashboard-api
+/log-fix --service ods-dashboard-api
 
 Dashboard API: UNREACHABLE at 127.0.0.1:3001
 
@@ -469,7 +469,7 @@ Root cause: Missing volume mount or build issue.
 | Scenario | Recovery |
 |----------|----------|
 | Docker not installed | Inform user, suggest install |
-| No compose files | Check if dream-server/ exists |
+| No compose files | Check if ods/ exists |
 | Container not running | Offer `docker compose up -d` |
 | Installer log empty | Check if installer has been run |
 | Health endpoint unreachable | Check if service is supposed to be running |
@@ -485,4 +485,4 @@ Root cause: Missing volume mount or build issue.
 - Never auto-commit — always ask permission
 - Suggest `/tdd` for bugs without test coverage
 - Suggest `/pr-check` before committing fixes
-- DreamServer binds to 127.0.0.1 by default for security
+- ODS binds to 127.0.0.1 by default for security

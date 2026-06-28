@@ -1,0 +1,22 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: perplexica
+  name: Perplexica (Deep Research)
+  aliases: []
+  container_name: ods-perplexica
+  host_env: PERPLEXICA_HOST
+  default_host: perplexica
+  port: 3000
+  external_port_env: PERPLEXICA_PORT
+  external_port_default: 3004
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: [searxng, llama-server]
