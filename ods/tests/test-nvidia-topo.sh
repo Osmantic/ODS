@@ -35,8 +35,8 @@ test_1gpu_pcie() {
     nvidia-smi() {
         if [[ "$1" == "topo" && "$2" == "-m" ]]; then
             cat "$FIXTURES_DIR/nvidia_smi_topo_matrix_1gpu_pcie.txt"
-        elif [[ "$*" == "--query-gpu=index,name,memory.total,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
-            echo "0, NVIDIA RTX 4090, 24564, 4, 16, GPU-12345678-1234-1234-1234-123456789012"
+        elif [[ "$*" == "--query-gpu=index,name,memory.total,memory.free,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
+            echo "0, NVIDIA RTX 4090, 24564, 24564, 4, 16, GPU-12345678-1234-1234-1234-123456789012"
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"
         elif [[ "$1" == "-q" ]]; then
@@ -68,11 +68,11 @@ test_4gpus_soc() {
     nvidia-smi() {
         if [[ "$1" == "topo" && "$2" == "-m" ]]; then
             cat "$FIXTURES_DIR/nvidia_smi_topo_matrix_4gpus_soc.txt"
-        elif [[ "$*" == "--query-gpu=index,name,memory.total,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
-            echo "0, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-00000000-0000-0000-0000-000000000000"
-            echo "1, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-11111111-1111-1111-1111-111111111111"
-            echo "2, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-22222222-2222-2222-2222-222222222222"
-            echo "3, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-33333333-3333-3333-3333-333333333333"
+        elif [[ "$*" == "--query-gpu=index,name,memory.total,memory.free,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
+            echo "0, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-00000000-0000-0000-0000-000000000000"
+            echo "1, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-11111111-1111-1111-1111-111111111111"
+            echo "2, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-22222222-2222-2222-2222-222222222222"
+            echo "3, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-33333333-3333-3333-3333-333333333333"
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"
         elif [[ "$1" == "-q" ]]; then
@@ -105,11 +105,11 @@ test_4gpus_sys_separated_nv_pairs() {
     nvidia-smi() {
         if [[ "$1" == "topo" && "$2" == "-m" ]]; then
             cat "$FIXTURES_DIR/nvidia_smi_topo_matrix_4gpus_sys_separated_nv_pairs.txt"
-        elif [[ "$*" == "--query-gpu=index,name,memory.total,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
-            echo "0, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-00000000-0000-0000-0000-000000000000"
-            echo "1, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-11111111-1111-1111-1111-111111111111"
-            echo "2, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-22222222-2222-2222-2222-222222222222"
-            echo "3, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-33333333-3333-3333-3333-333333333333"
+        elif [[ "$*" == "--query-gpu=index,name,memory.total,memory.free,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
+            echo "0, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-00000000-0000-0000-0000-000000000000"
+            echo "1, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-11111111-1111-1111-1111-111111111111"
+            echo "2, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-22222222-2222-2222-2222-222222222222"
+            echo "3, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-33333333-3333-3333-3333-333333333333"
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"
         elif [[ "$1" == "-q" ]]; then
@@ -141,12 +141,12 @@ test_5gpus_nv12_with_mlx5() {
     nvidia-smi() {
         if [[ "$1" == "topo" && "$2" == "-m" ]]; then
             cat "$FIXTURES_DIR/nvidia_smi_topo_matrix_5gpus_nv12_with_mlx5.txt"
-        elif [[ "$*" == "--query-gpu=index,name,memory.total,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
-            echo "0, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-00000000-0000-0000-0000-000000000000"
-            echo "1, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-11111111-1111-1111-1111-111111111111"
-            echo "2, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-22222222-2222-2222-2222-222222222222"
-            echo "3, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-33333333-3333-3333-3333-333333333333"
-            echo "4, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-44444444-4444-4444-4444-444444444444"
+        elif [[ "$*" == "--query-gpu=index,name,memory.total,memory.free,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
+            echo "0, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-00000000-0000-0000-0000-000000000000"
+            echo "1, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-11111111-1111-1111-1111-111111111111"
+            echo "2, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-22222222-2222-2222-2222-222222222222"
+            echo "3, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-33333333-3333-3333-3333-333333333333"
+            echo "4, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-44444444-4444-4444-4444-444444444444"
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"
         elif [[ "$1" == "-q" ]]; then
@@ -178,9 +178,9 @@ test_8gpus_nv12_full_mesh() {
     nvidia-smi() {
         if [[ "$1" == "topo" && "$2" == "-m" ]]; then
             cat "$FIXTURES_DIR/nvidia_smi_topo_matrix_8gpus_nv12_full_mesh.txt"
-        elif [[ "$*" == "--query-gpu=index,name,memory.total,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
+        elif [[ "$*" == "--query-gpu=index,name,memory.total,memory.free,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
             for i in {0..7}; do
-                echo "$i, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-${i}${i}${i}${i}${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}"
+                echo "$i, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-${i}${i}${i}${i}${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}"
             done
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"
@@ -214,9 +214,9 @@ test_8gpus_nv12_full_mesh_with_numa() {
     nvidia-smi() {
         if [[ "$1" == "topo" && "$2" == "-m" ]]; then
             cat "$FIXTURES_DIR/nvidia_smi_topo_matrix_8gpus_nv12_full_mesh_with_numa_id.txt"
-        elif [[ "$*" == "--query-gpu=index,name,memory.total,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
+        elif [[ "$*" == "--query-gpu=index,name,memory.total,memory.free,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
             for i in {0..7}; do
-                echo "$i, NVIDIA A100-SXM4-80GB, 81920, 4, 16, GPU-${i}${i}${i}${i}${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}"
+                echo "$i, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-${i}${i}${i}${i}${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}"
             done
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"
@@ -257,9 +257,9 @@ test_8gpus_nv1_nv2_partial_mesh() {
     nvidia-smi() {
         if [[ "$1" == "topo" && "$2" == "-m" ]]; then
             cat "$FIXTURES_DIR/nvidia_smi_topo_matrix_8gpus_nv1_nv2_partial_mesh.txt"
-        elif [[ "$*" == "--query-gpu=index,name,memory.total,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
+        elif [[ "$*" == "--query-gpu=index,name,memory.total,memory.free,pcie.link.gen.current,pcie.link.width.current,uuid --format=csv,noheader,nounits" ]]; then
             for i in {0..7}; do
-                echo "$i, NVIDIA V100-SXM2-32GB, 32768, 3, 16, GPU-${i}${i}${i}${i}${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}"
+                echo "$i, NVIDIA V100-SXM2-32GB, 32768, 32768, 3, 16, GPU-${i}${i}${i}${i}${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}-${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}"
             done
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"

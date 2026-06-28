@@ -141,6 +141,49 @@ class TestTwoGpuColoc:
         for name in ("whisper", "comfyui", "embeddings"):
             assert out["services"][name]["gpus"] == [self.GPU1]
 
+
+class TestTwoGpuBusyPeer:
+    GPU0 = "GPU-free"
+    GPU1 = "GPU-busy"
+
+    def test_llama_avoids_busy_peer_when_free_vram_is_reported(self, tmp_path):
+        topology = {
+            "vendor": "nvidia",
+            "gpu_count": 2,
+            "gpus": [
+                {
+                    "index": 0,
+                    "uuid": self.GPU0,
+                    "name": "NVIDIA RTX PRO 6000",
+                    "memory_gb": 95.6,
+                    "memory_free_gb": 81.0,
+                },
+                {
+                    "index": 1,
+                    "uuid": self.GPU1,
+                    "name": "NVIDIA RTX PRO 6000",
+                    "memory_gb": 95.6,
+                    "memory_free_gb": 4.5,
+                },
+            ],
+            "links": [
+                {
+                    "gpu_a": 0,
+                    "gpu_b": 1,
+                    "link_type": "NODE",
+                    "link_label": "SameNUMA-NoBridge",
+                    "rank": 20,
+                }
+            ],
+        }
+        path = tmp_path / "busy-peer.json"
+        path.write_text(json.dumps(topology), encoding="utf-8")
+
+        rc, out, stderr = run(str(path), 48500)
+        assert rc == 0, stderr
+        assert llama(out)["gpus"] == [self.GPU0]
+        assert parallelism(out)["mode"] == "none"
+
     def test_model_needs_both_gpus_llama_pipeline(self):
         _, out, _ = run(self.TOPO, 30000)
         p = parallelism(out)

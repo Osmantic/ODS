@@ -106,7 +106,7 @@ parse_nvidia_topo_matrix() {
 detect_nvidia_topo() {
   # Basic GPU list
   local gpu_list
-  gpu_list=$(nvidia-smi --query-gpu=index,name,memory.total,pcie.link.gen.current,pcie.link.width.current,uuid \
+  gpu_list=$(nvidia-smi --query-gpu=index,name,memory.total,memory.free,pcie.link.gen.current,pcie.link.width.current,uuid \
     --format=csv,noheader,nounits 2>/dev/null) || {
     err "nvidia-smi query failed"
     return 1
@@ -118,9 +118,10 @@ detect_nvidia_topo() {
     index: (.[0] | tonumber),
     name: .[1],
     memory_gb: ((.[2] | tonumber) / 1024 * 10 | round / 10),
-    pcie_gen: .[3],
-    pcie_width: .[4],
-    uuid: .[5]
+    memory_free_gb: ((.[3] | tonumber) / 1024 * 10 | round / 10),
+    pcie_gen: .[4],
+    pcie_width: .[5],
+    uuid: .[6]
   }]')
 
   local gpu_count

@@ -34,6 +34,7 @@ class GPU:
     uuid:        str
     name:        str
     memory_mb:   float
+    memory_total_mb: float
     memory_type: str = "discrete"  # "discrete" or "unified" (APU)
 
 @dataclass
@@ -75,11 +76,16 @@ class AssignmentResult:
 def parse_gpus(topology: dict) -> list:
     gpus = []
     for g in topology["gpus"]:
+        total_mb = float(g["memory_gb"]) * 1024
+        scheduling_mb = total_mb
+        if g.get("memory_free_gb") is not None:
+            scheduling_mb = max(float(g["memory_free_gb"]) * 1024, 0.0)
         gpus.append(GPU(
             index=g["index"],
             uuid=g["uuid"],
             name=g["name"],
-            memory_mb=g["memory_gb"] * 1024,
+            memory_mb=scheduling_mb,
+            memory_total_mb=total_mb,
             memory_type=g.get("memory_type", "discrete"),
         ))
     return gpus
@@ -166,9 +172,24 @@ def find_llama_subset(ordered_subsets: list, model_size_mb: float) -> Subset:
     Returns the first match (best topology, smallest size, most VRAM).
     """
     for subset in ordered_subsets:
-        if subset.total_vram_mb >= model_size_mb:
+        if subset.total_vram_mb >= model_size_mb and subset_can_host_equal_split(subset, model_size_mb):
             return subset
     return None
+
+
+def subset_can_host_equal_split(subset: Subset, model_size_mb: float) -> bool:
+    """Conservative fit check for llama.cpp layer/pipeline splits.
+
+    ODS emits equal tensor-split weights for non-heterogeneous pipeline splits.
+    A multi-GPU host with one mostly busy GPU can therefore have enough total
+    VRAM but still crash when llama.cpp allocates that GPU's share. Treat free
+    VRAM as the scheduling budget when topology provides it, and require every
+    selected GPU to be able to carry an equal share of the model file.
+    """
+    if not subset.gpus:
+        return False
+    required_per_gpu = model_size_mb / len(subset.gpus)
+    return all(g.memory_mb >= required_per_gpu for g in subset.gpus)
 
 
 def span_subsets(all_gpus: list, rank_matrix: dict, model_size_mb: float, ordered_subsets: list) -> Subset:
@@ -191,11 +212,11 @@ def span_subsets(all_gpus: list, rank_matrix: dict, model_size_mb: float, ordere
     for gpu in remaining:
         accumulated.append(gpu)
         candidate = compute_subset(accumulated, rank_matrix)
-        if candidate.total_vram_mb >= model_size_mb:
+        if candidate.total_vram_mb >= model_size_mb and subset_can_host_equal_split(candidate, model_size_mb):
             return candidate
 
     raise ValueError(
-        f"Model size {model_size_mb:.0f}MB exceeds total available VRAM "
+        f"Model size {model_size_mb:.0f}MB exceeds assignable free VRAM "
         f"({sum(g.memory_mb for g in all_gpus):.0f}MB across all GPUs)."
     )
 
@@ -451,7 +472,7 @@ def main():
         gpu = parse_gpus(topology)[0]
         if model_size_mb > gpu.memory_mb:
             print(
-                f"ERROR: Model size {model_size_mb:.0f}MB exceeds total available VRAM "
+                f"ERROR: Model size {model_size_mb:.0f}MB exceeds assignable free VRAM "
                 f"({gpu.memory_mb:.0f}MB across all GPUs).",
                 file=sys.stderr,
             )
