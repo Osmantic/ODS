@@ -1,9 +1,0 @@
-[Unit]
-Description=OpenClaw Session Cleanup
-After=network.target
-
-[Service]
-Type=oneshot
-Environment=SESSIONS_DIR=%h/dream-server/data/openclaw/home/agents/main/sessions
-Environment=MAX_SIZE=80000
-ExecStart=%h/dream-server/scripts/session-cleanup.sh

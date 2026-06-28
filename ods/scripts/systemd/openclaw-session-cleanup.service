@@ -1,0 +1,9 @@
+[Unit]
+Description=OpenClaw Session Cleanup
+After=network.target
+
+[Service]
+Type=oneshot
+Environment=SESSIONS_DIR=%h/ods/data/openclaw/home/agents/main/sessions
+Environment=MAX_SIZE=80000
+ExecStart=%h/ods/scripts/session-cleanup.sh

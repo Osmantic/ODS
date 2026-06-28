@@ -8,7 +8,7 @@
 
 ## Release Lane
 
-<!-- Pick the lane before review. See dream-server/docs/RELEASE_CHANNELS.md. -->
+<!-- Pick the lane before review. See ods/docs/RELEASE_CHANNELS.md. -->
 
 - [ ] Stable hotfix targeting `release/2.5.x`
 - [ ] Mainline change targeting `main`
@@ -37,7 +37,7 @@ Stable hotfix reason:
 
 ## Risk And Validation
 
-<!-- Use dream-server/docs/HIGH_RISK_CHANGE_MAP.md to pick the right level. -->
+<!-- Use ods/docs/HIGH_RISK_CHANGE_MAP.md to pick the right level. -->
 
 - Risk level: <!-- Low / Medium / High -->
 - Validation run:

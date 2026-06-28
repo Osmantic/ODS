@@ -25,7 +25,7 @@ export default function StatusIcon({ status }: StatusIconProps) {
     case "loading":
       return (
         <span className="inline-flex items-center justify-center w-6 h-6">
-          <span className="w-4 h-4 border-2 border-dream-400 border-t-transparent rounded-full animate-spin" />
+          <span className="w-4 h-4 border-2 border-ods-400 border-t-transparent rounded-full animate-spin" />
         </span>
       );
   }

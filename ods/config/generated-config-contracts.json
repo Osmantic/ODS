@@ -1,0 +1,249 @@
+{
+  "version": 1,
+  "description": "Generated runtime config surfaces whose writers must stay in sync across install, upgrade, and host-agent paths.",
+  "surfaces": [
+    {
+      "id": "env",
+      "label": ".env and core runtime environment",
+      "target_paths": [
+        ".env"
+      ],
+      "required_keys": [
+        "ODS_MODE",
+        "LLM_BACKEND",
+        "LLM_MODEL",
+        "GGUF_FILE",
+        "OLLAMA_PORT",
+        "WEBUI_PORT",
+        "DASHBOARD_PORT",
+        "DASHBOARD_API_PORT"
+      ],
+      "writers": [
+        {
+          "platform": "linux",
+          "path": "installers/phases/06-directories.sh"
+        },
+        {
+          "platform": "macos",
+          "path": "installers/macos/lib/env-generator.sh"
+        },
+        {
+          "platform": "windows",
+          "path": "installers/windows/lib/env-generator.ps1"
+        },
+        {
+          "platform": "runtime",
+          "path": "bin/ods-host-agent.py"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "schema-covers-runtime-mode",
+          "type": "json_path_enum_contains",
+          "path": ".env.schema.json",
+          "json_path": "properties.ODS_MODE.enum",
+          "values": [
+            "local",
+            "cloud",
+            "hybrid",
+            "lemonade"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode provider/auth config",
+      "target_paths": [
+        ".opencode/auth.json",
+        ".opencode/config.json"
+      ],
+      "writers": [
+        {
+          "platform": "linux",
+          "path": "installers/phases/07-devtools.sh"
+        },
+        {
+          "platform": "macos",
+          "path": "installers/macos/install-macos.sh"
+        },
+        {
+          "platform": "windows",
+          "path": "installers/windows/lib/opencode-config.ps1"
+        },
+        {
+          "platform": "windows-runtime",
+          "path": "scripts/update-windows-opencode-config.ps1"
+        },
+        {
+          "platform": "upgrade",
+          "path": "scripts/bootstrap-upgrade.sh"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "linux-lemonade-uses-litellm-key",
+          "type": "file_contains",
+          "path": "installers/phases/07-devtools.sh",
+          "needle": "LITELLM_KEY"
+        },
+        {
+          "id": "windows-writer-exists",
+          "type": "file_contains",
+          "path": "installers/windows/lib/opencode-config.ps1",
+          "needle": "OpenCode"
+        }
+      ]
+    },
+    {
+      "id": "litellm-lemonade",
+      "label": "LiteLLM Lemonade model routing",
+      "target_paths": [
+        "config/litellm/lemonade.yaml"
+      ],
+      "writers": [
+        {
+          "platform": "linux",
+          "path": "installers/phases/06-directories.sh"
+        },
+        {
+          "platform": "upgrade",
+          "path": "scripts/bootstrap-upgrade.sh"
+        },
+        {
+          "platform": "runtime",
+          "path": "bin/ods-host-agent.py"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "template-disables-thinking",
+          "type": "yaml_text_contains",
+          "path": "config/litellm/lemonade.yaml",
+          "needle": "enable_thinking: false"
+        },
+        {
+          "id": "host-agent-preserves-rotated-key",
+          "type": "file_contains",
+          "path": "bin/ods-host-agent.py",
+          "needle": "LITELLM_LEMONADE_API_KEY"
+        },
+        {
+          "id": "bootstrap-writes-extra-model-alias",
+          "type": "file_contains",
+          "path": "scripts/bootstrap-upgrade.sh",
+          "needle": "extra."
+        }
+      ]
+    },
+    {
+      "id": "perplexica",
+      "label": "Perplexica settings and default chat model",
+      "target_paths": [
+        "data/perplexica/settings.seed.json"
+      ],
+      "writers": [
+        {
+          "platform": "linux",
+          "path": "installers/phases/12-health.sh"
+        },
+        {
+          "platform": "linux",
+          "path": "installers/phases/13-summary.sh"
+        },
+        {
+          "platform": "macos",
+          "path": "installers/macos/lib/env-generator.sh"
+        },
+        {
+          "platform": "macos",
+          "path": "installers/macos/install-macos.sh"
+        },
+        {
+          "platform": "windows",
+          "path": "installers/windows/lib/env-generator.ps1"
+        },
+        {
+          "platform": "windows",
+          "path": "installers/windows/install-windows.ps1"
+        },
+        {
+          "platform": "upgrade",
+          "path": "scripts/bootstrap-upgrade.sh"
+        },
+        {
+          "platform": "repair",
+          "path": "scripts/repair/repair-perplexica.sh"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "repair-refreshes-default-model",
+          "type": "file_contains",
+          "path": "scripts/repair/repair-perplexica.sh",
+          "needle": "defaultChatModel"
+        },
+        {
+          "id": "bootstrap-refreshes-default-model",
+          "type": "file_contains",
+          "path": "scripts/bootstrap-upgrade.sh",
+          "needle": "defaultChatModel"
+        }
+      ]
+    },
+    {
+      "id": "hermes",
+      "label": "Hermes model and context config",
+      "target_paths": [
+        "data/hermes/config.yaml",
+        "extensions/services/hermes/cli-config.yaml.template"
+      ],
+      "writers": [
+        {
+          "platform": "linux",
+          "path": "installers/phases/11-services.sh"
+        },
+        {
+          "platform": "linux-helper",
+          "path": "scripts/patch-hermes-config.py"
+        },
+        {
+          "platform": "macos",
+          "path": "installers/macos/install-macos.sh"
+        },
+        {
+          "platform": "windows",
+          "path": "installers/windows/phases/06-directories.ps1"
+        },
+        {
+          "platform": "upgrade",
+          "path": "scripts/bootstrap-upgrade.sh"
+        },
+        {
+          "platform": "runtime",
+          "path": "bin/ods-host-agent.py"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "template-context-floor",
+          "type": "yaml_text_contains",
+          "path": "extensions/services/hermes/cli-config.yaml.template",
+          "needle": "context_length: 131072"
+        },
+        {
+          "id": "patcher-updates-model-name",
+          "type": "file_contains",
+          "path": "scripts/patch-hermes-config.py",
+          "needle": "patch_config"
+        },
+        {
+          "id": "host-agent-patches-hermes",
+          "type": "file_contains",
+          "path": "bin/ods-host-agent.py",
+          "needle": "_patch_hermes_model_config"
+        }
+      ]
+    }
+  ]
+}

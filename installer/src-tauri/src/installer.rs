@@ -6,11 +6,15 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-const REPO_URL: &str = "https://github.com/Light-Heart-Labs/DreamServer.git";
-const DEFAULT_INSTALL_REF: &str = "v2.5.0";
+const DEFAULT_REPO_URL: &str = "https://github.com/Light-Heart-Labs/ODS.git";
+const DEFAULT_INSTALL_REF: &str = "main";
+
+fn repo_url() -> &'static str {
+    option_env!("ODS_REPO_URL").unwrap_or(DEFAULT_REPO_URL)
+}
 
 fn install_ref() -> &'static str {
-    option_env!("DREAMSERVER_INSTALL_REF").unwrap_or(DEFAULT_INSTALL_REF)
+    option_env!("ODS_INSTALL_REF").unwrap_or(DEFAULT_INSTALL_REF)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -20,7 +24,7 @@ pub struct ProgressEvent {
     pub message: String,
 }
 
-/// Run the full DreamServer installation.
+/// Run the full ODS installation.
 /// This clones the repo and delegates to the existing install-core.sh.
 pub fn run_install(
     state: Arc<Mutex<InstallState>>,
@@ -29,14 +33,14 @@ pub fn run_install(
     features: Vec<String>,
 ) -> Result<(), String> {
     // Phase 1: Clone the repo
-    update_progress(&state, "Downloading DreamServer", 5);
+    update_progress(&state, "Downloading ODS", 5);
 
     ensure_checkout(&install_dir)?;
 
     update_progress(&state, "Configuring installation", 15);
 
     // Phase 2: Build installer arguments
-    let dream_server_dir = install_dir.join("dream-server");
+    let ods_dir = install_dir.join("ods");
     let mut args = vec!["--tier".to_string(), tier.to_string()];
 
     if features.contains(&"voice".to_string()) {
@@ -58,7 +62,7 @@ pub fn run_install(
     // Phase 3: Run the installer with progress parsing
     update_progress(&state, "Running installer", 20);
 
-    let install_script = dream_server_dir.join("install.sh");
+    let install_script = ods_dir.join("install.sh");
     let install_ps1 = install_dir.join("install.ps1");
 
     // Make sure the script is executable
@@ -95,7 +99,7 @@ pub fn run_install(
         Command::new("powershell.exe")
             .args(&ps_args)
             .current_dir(&install_dir)
-            .env("DREAM_INSTALLER_GUI", "1")
+            .env("ODS_INSTALLER_GUI", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -103,8 +107,8 @@ pub fn run_install(
     } else {
         Command::new(&install_script)
             .args(&args)
-            .current_dir(&dream_server_dir)
-            .env("DREAM_INSTALLER_GUI", "1")
+            .current_dir(&ods_dir)
+            .env("ODS_INSTALLER_GUI", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -166,7 +170,7 @@ pub fn run_install(
 }
 
 fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
-    if install_dir.join("dream-server").exists() {
+    if install_dir.join("ods").exists() {
         return validate_checkout(install_dir);
     }
 
@@ -178,13 +182,13 @@ fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
             .is_some()
     {
         return Err(format!(
-            "{} already exists but is not a DreamServer checkout. Choose an empty directory or the existing DreamServer install directory.",
+            "{} already exists but is not a ODS checkout. Choose an empty directory or the existing ODS install directory.",
             install_dir.display()
         ));
     }
 
     let clone = Command::new("git")
-        .args(["clone", "--depth", "1", "--branch", install_ref(), REPO_URL])
+        .args(["clone", "--depth", "1", "--branch", install_ref(), repo_url()])
         .arg(install_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -193,7 +197,11 @@ fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
 
     if !clone.status.success() {
         let err = String::from_utf8_lossy(&clone.stderr);
-        return Err(format!("Git clone failed: {}", err));
+        return Err(format!(
+            "Git clone failed for ODS ref '{}': {}",
+            install_ref(),
+            err
+        ));
     }
 
     validate_checkout(install_dir)
@@ -202,7 +210,7 @@ fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
 fn validate_checkout(install_dir: &Path) -> Result<(), String> {
     if !install_dir.join(".git").exists() {
         return Err(format!(
-            "{} contains a dream-server directory but is not a git checkout. Refusing to run installer scripts from an unverified directory.",
+            "{} contains a ods directory but is not a git checkout. Refusing to run installer scripts from an unverified directory.",
             install_dir.display()
         ));
     }
@@ -216,11 +224,11 @@ fn validate_checkout(install_dir: &Path) -> Result<(), String> {
     }
 
     let origin = run_git(install_dir, &["remote", "get-url", "origin"])?;
-    if normalize_repo_url(&origin) != normalize_repo_url(REPO_URL) {
+    if normalize_repo_url(&origin) != normalize_repo_url(repo_url()) {
         return Err(format!(
-            "{} is not a DreamServer checkout from {}.",
+            "{} is not a ODS checkout from {}.",
             install_dir.display(),
-            REPO_URL
+            repo_url()
         ));
     }
 
@@ -257,9 +265,9 @@ fn normalize_repo_url(url: &str) -> String {
 }
 
 /// Parse a progress line from the installer.
-/// Expected format: DREAM_PROGRESS:<percent>:<message>
+/// Expected format: ODS_PROGRESS:<percent>:<message>
 fn parse_progress_line(line: &str) -> Option<ProgressEvent> {
-    if let Some(rest) = line.strip_prefix("DREAM_PROGRESS:") {
+    if let Some(rest) = line.strip_prefix("ODS_PROGRESS:") {
         let parts: Vec<&str> = rest.splitn(3, ':').collect();
         if parts.len() >= 2 {
             let percent = parts[0].parse().unwrap_or(0);
@@ -314,16 +322,43 @@ pub fn default_install_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Public".into());
-        PathBuf::from(home).join("DreamServer")
+        PathBuf::from(home).join("ODS")
     }
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-        PathBuf::from(home).join("DreamServer")
+        PathBuf::from(home).join("ODS")
     }
     #[cfg(target_os = "linux")]
     {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-        PathBuf::from(home).join("DreamServer")
+        PathBuf::from(home).join("ODS")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_install_ref_uses_existing_ods_branch() {
+        assert_eq!(DEFAULT_INSTALL_REF, "main");
+    }
+
+    #[test]
+    fn default_repo_url_uses_canonical_ods_repo() {
+        assert_eq!(DEFAULT_REPO_URL, "https://github.com/Light-Heart-Labs/ODS.git");
+    }
+
+    #[test]
+    fn normalize_repo_url_accepts_common_github_forms() {
+        assert_eq!(
+            normalize_repo_url("git@github.com:Light-Heart-Labs/ODS.git"),
+            normalize_repo_url(DEFAULT_REPO_URL)
+        );
+        assert_eq!(
+            normalize_repo_url("ssh://git@github.com/Light-Heart-Labs/ODS.git/"),
+            normalize_repo_url(DEFAULT_REPO_URL)
+        );
     }
 }

@@ -1,0 +1,54 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: n8n
+  name: n8n (Workflows)
+  aliases: [workflows]
+  container_name: ods-n8n
+  host_env: N8N_HOST
+  default_host: n8n
+  port: 5678
+  external_port_env: N8N_PORT
+  external_port_default: 5678
+  health: /healthz
+  ui_path: /
+  health_timeout: 15  # n8n can take time to initialize database and workflows
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  env_vars:
+    - key: N8N_USER
+      required: true
+      description: n8n initial admin email address
+    - key: N8N_PASS
+      required: true
+      secret: true
+      description: n8n admin password
+    - key: N8N_SECURE_COOKIE
+      required: false
+      description: Session-cookie policy (auto, true, or false); auto disables Secure only for loopback HTTP
+    - key: N8N_PROXY_HOPS
+      required: false
+      description: Number of trusted reverse proxies in front of n8n
+
+features:
+  - id: workflows
+    name: Workflow Automation
+    description: Automate tasks with AI-powered workflows
+    icon: Workflow
+    category: productivity
+    requirements:
+      services: [n8n]
+      vram_gb: 0
+    enabled_services_all: [n8n]
+    setup_time: ~1 minute
+    priority: 4
+    launch:
+      type: service
+      service: n8n
+    gpu_backends: [all]

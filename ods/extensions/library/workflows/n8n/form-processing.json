@@ -1,0 +1,328 @@
+{
+  "name": "Form Processing with Validation",
+  "active": true,
+  "meta": {
+    "instanceId": "ods"
+  },
+  "nodes": [
+    {
+      "id": "form-webhook",
+      "name": "Form Webhook",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "form-submit",
+        "responseMode": "responseNode",
+        "options": {
+          "headerAuth": {
+            "name": "X-Webhook-Auth",
+            "value": "={{ $env.WEBHOOK_AUTH_TOKEN }}"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        250,
+        300
+      ],
+      "webhookId": "form-submit-webhook"
+    },
+    {
+      "id": "validate-form",
+      "name": "Validate Form",
+      "parameters": {
+        "jsCode": "// Comprehensive form validation\nconst input = $input.first().json || {};\nconst body = input.body || input;\n\n// Define required and optional fields\nconst requiredFields = $env.REQUIRED_FORM_FIELDS ? $env.REQUIRED_FORM_FIELDS.split(',') : ['name', 'email', 'message'];\nconst optionalFields = $env.OPTIONAL_FORM_FIELDS ? $env.OPTIONAL_FORM_FIELDS.split(',') : ['phone', 'company'];\nconst maxFieldLengths = {\n  name: 100,\n  email: 254,\n  message: 5000,\n  phone: 50,\n  company: 100\n};\n\nconst errors = [];\nconst validated = {};\n\n// Check required fields\nfor (const field of requiredFields) {\n  const value = body[field];\n  if (value === undefined || value === null || value === '') {\n    errors.push(`Missing required field: ${field}`);\n  } else {\n    validated[field] = value;\n  }\n}\n\n// Validate field lengths\nfor (const [field, value] of Object.entries(validated)) {\n  const maxLength = maxFieldLengths[field] || 1000;\n  if (typeof value === 'string' && value.length > maxLength) {\n    errors.push(`${field} exceeds maximum length of ${maxLength} characters`);\n  }\n}\n\n// Validate email format if present\nif (validated.email) {\n  const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n  if (!emailRegex.test(validated.email)) {\n    errors.push('Invalid email format');\n  }\n}\n\n// Validate phone if present (basic format) - only add if validation passes\nif (body.phone) {\n  const phoneRegex = /^[\\d\\s\\-\\+\\(\\)\\.]{7,50}$/;\n  const phoneValue = body.phone;\n  if (phoneValue.length > maxFieldLengths.phone) {\n    errors.push(`Phone exceeds maximum length of ${maxFieldLengths.phone} characters`);\n  } else if (!phoneRegex.test(phoneValue)) {\n    errors.push('Invalid phone format');\n  } else {\n    validated.phone = phoneValue;\n  }\n}\n\n// Add optional fields with length validation\nfor (const field of optionalFields) {\n  if (body[field] !== undefined && body[field] !== '') {\n    const maxLength = maxFieldLengths[field] || 1000;\n    if (typeof body[field] === 'string' && body[field].length > maxLength) {\n      errors.push(`${field} exceeds maximum length of ${maxLength} characters`);\n    } else {\n      validated[field] = body[field];\n    }\n  }\n}\n\n// Add metadata with cryptographically secure submission ID\nvalidated._submitted_at = new Date().toISOString();\n// Use crypto.randomUUID() for secure random ID generation (available in n8n code node v2)\nvalidated._submission_id = typeof require !== 'undefined' ? require('crypto').randomUUID() : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);\n\nif (errors.length > 0) {\n  return [{\n    json: {\n      valid: false,\n      errors: errors,\n      submission_id: validated._submission_id\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    valid: true,\n    data: validated,\n    submission_id: validated._submission_id\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "id": "check-validation",
+      "name": "Check Validation",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "type": "boolean"
+          },
+          "conditions": [
+            {
+              "id": "cond1",
+              "leftValue": "={{ $json.valid }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "rightValue": true
+              }
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "id": "send-error-response",
+      "name": "Send Error Response",
+      "parameters": {
+        "statusCode": 400,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, errors: $json.errors, submission_id: $json.submission_id }) }}"
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        650,
+        500
+      ]
+    },
+    {
+      "id": "process-llm",
+      "name": "Process with LLM",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.ODS_URL || 'http://localhost:3000'}}/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer ' + $env.ODS_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "={{$env.FORM_PROCESSING_MODEL || 'default'}}"
+            },
+            {
+              "name": "messages",
+              "value": "={{ JSON.stringify([{ role: 'system', content: 'You are a helpful assistant processing form submissions.' }, { role: 'user', content: 'Process this form submission: ' + JSON.stringify($json.data) }]) }}"
+            },
+            {
+              "name": "temperature",
+              "value": "={{ $env.LLM_TEMPERATURE || 0.7 }}"
+            },
+            {
+              "name": "max_tokens",
+              "value": "={{ $env.LLM_MAX_TOKENS || 500 }}"
+            }
+          ]
+        },
+        "options": {
+          "continueOnFail": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        850,
+        200
+      ]
+    },
+    {
+      "id": "handle-llm-response",
+      "name": "Handle LLM Response",
+      "parameters": {
+        "jsCode": "// Handle LLM response with error checking\nconst input = $input.first().json || {};\n\n// Check if previous node failed (continueOnFail: true)\nif (input.error) {\n  return [{\n    json: {\n      success: false,\n      llm_error: input.error,\n      fallback: 'Form data saved without LLM processing',\n      data: $('Validate Form').item.json.data || {}\n    }\n  }];\n}\n\nconst choice = input.choices?.[0];\nconst content = choice?.message?.content || 'No response';\n\nreturn [{\n  json: {\n    success: true,\n    llm_response: content,\n    model_used: input.model || 'unknown',\n    tokens_used: input.usage?.total_tokens || 0\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1050,
+        200
+      ]
+    },
+    {
+      "id": "store-result",
+      "name": "Store Result",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.FORM_STORAGE_URL || $env.INTERNAL_API_URL || 'http://localhost:8080'}}/api/v1/forms/submissions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{$env.FORM_STORAGE_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "submission",
+              "value": "={{ JSON.stringify({\n                id: $('Validate Form').item.json.submission_id,\n                data: $('Validate Form').item.json.data,\n                llm_result: $json.llm_response || null,\n                llm_error: $json.llm_error || null,\n                success: $json.success,\n                timestamp: new Date().toISOString()\n              }) }}"
+            }
+          ]
+        },
+        "options": {
+          "continueOnFail": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1250,
+        200
+      ]
+    },
+    {
+      "id": "prepare-success-response",
+      "name": "Prepare Success Response",
+      "parameters": {
+        "jsCode": "// Prepare success response\nconst llmResult = $input.all()[0]?.json || {};\nconst formData = $('Validate Form').item.json.data || {};\nconst submissionId = $('Validate Form').item.json.submission_id;\n\nreturn [{\n  json: {\n    success: true,\n    submission_id: submissionId,\n    message: 'Form submitted successfully',\n    llm_processed: llmResult.success || false,\n    summary: llmResult.llm_response || null\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1450,
+        200
+      ]
+    },
+    {
+      "id": "send-success-response",
+      "name": "Send Success Response",
+      "parameters": {
+        "statusCode": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}"
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1650,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "Form Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Form",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Form": {
+      "main": [
+        [
+          {
+            "node": "Check Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Validation": {
+      "main": [
+        [
+          {
+            "node": "Process with LLM",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process with LLM": {
+      "main": [
+        [
+          {
+            "node": "Handle LLM Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle LLM Response": {
+      "main": [
+        [
+          {
+            "node": "Store Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Result": {
+      "main": [
+        [
+          {
+            "node": "Prepare Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Success Response": {
+      "main": [
+        [
+          {
+            "node": "Send Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "={{$env.ERROR_WORKFLOW_ID}}",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true
+  },
+  "staticData": null,
+  "tags": [
+    "form",
+    "validation",
+    "llm"
+  ]
+}

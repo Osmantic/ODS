@@ -1,0 +1,35 @@
+services:
+  rvc:
+    image: aladdin1234/rvc-webui:0.1@sha256:7f8b4ca826d31d0ea50c56327d9fbfd1dacead37064a5f9745738b728a6271be
+    container_name: ods-rvc
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${RVC_PORT:-7809}:7865"
+    volumes:
+      - ./data/rvc/weights:/app/assets/weights
+      - ./data/rvc/opt:/app/opt
+      - ./data/rvc/dataset:/app/dataset
+      - ./data/rvc/logs:/app/logs
+    environment:
+      - RVC_API_KEY=${RVC_API_KEY:-}
+    shm_size: "1gb"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4.0'
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:7865"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    networks:
+      - ods-network
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network

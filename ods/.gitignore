@@ -1,0 +1,54 @@
+# Runtime / secrets
+.env
+.env.*
+!.env.example
+!.env.schema.json
+.current-mode
+.profiles
+.target-model
+.target-quantization
+.ods-mobile.env
+
+# Secret files (security)
+*.key
+*.pem
+secrets.*
+private.*
+credentials.*
+
+# Install-time data directories
+data/
+models/
+artifacts/
+logs/
+
+# User presets (ods preset save/load)
+presets/
+
+# Python cache
+**/__pycache__/
+*.pyc
+
+# OpenClaw workspace (runtime state)
+config/openclaw/workspace/
+
+# Dashboard build artifacts
+**/node_modules/
+**/dist/
+
+# Test coverage
+.coverage
+*.coverage
+
+# Preflight logs
+preflight-*.log
+
+# Internal dev
+internal/
+
+# BATS test framework (dev dependency, auto-installed by tests/run-bats.sh)
+tests/bats/
+
+# OS junk
+.DS_Store
+Thumbs.db

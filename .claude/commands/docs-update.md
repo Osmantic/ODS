@@ -1,10 +1,10 @@
 ---
-description: Review and update all DreamServer documentation based on recent git changes
+description: Review and update all ODS documentation based on recent git changes
 allowed-tools: AskUserQuestion, Bash, Read, Glob, Grep, Edit, Write
 argument-hint: [commits=20] [--dry-run] [--scope=all|readme|claude|extensions|dashboard-api]
 ---
 
-# DreamServer Documentation Review and Update
+# ODS Documentation Review and Update
 
 Review all project documentation against recent git changes with full project context. This command understands the installer architecture, extension system, GPU tier mapping, Docker compose layering, dashboard API, and dashboard UI.
 
@@ -34,15 +34,15 @@ Review all project documentation against recent git changes with full project co
 |----------|---------|-----------|
 | `README.md` | Main project documentation | readme |
 | `CLAUDE.md` | Claude Code instructions | claude |
-| `dream-server/README.md` | Core product documentation (if exists) | readme |
-| `dream-server/extensions/services/dashboard-api/README.md` | Dashboard API documentation | dashboard-api |
-| `dream-server/extensions/services/dashboard/README.md` | Dashboard UI documentation (if exists) | readme |
+| `ods/README.md` | Core product documentation (if exists) | readme |
+| `ods/extensions/services/dashboard-api/README.md` | Dashboard API documentation | dashboard-api |
+| `ods/extensions/services/dashboard/README.md` | Dashboard UI documentation (if exists) | readme |
 
 ## Excluded Files
 
 - `node_modules/`, `.venv/` - Dependencies
 - `data/` - Runtime data
-- `dream-server/token-spy/` - Dev tools
+- `ods/token-spy/` - Dev tools
 - `.git/` - Git internals
 
 ---
@@ -63,20 +63,20 @@ Use this mapping table to identify which docs need updating:
 
 | Code Pattern | Affected Documentation |
 |--------------|----------------------|
-| `dream-server/installers/lib/*.sh` | CLAUDE.md (installer architecture, key file paths) |
-| `dream-server/installers/phases/*.sh` | CLAUDE.md (installer architecture) |
-| `dream-server/scripts/*.sh` | CLAUDE.md (build commands, key file paths) |
-| `dream-server/dream-cli` | README.md, CLAUDE.md |
-| `dream-server/extensions/services/*/manifest.yaml` | CLAUDE.md (extension system) |
-| `dream-server/docker-compose*.yml` | README.md, CLAUDE.md (Docker compose layering) |
-| `dream-server/config/backends/*.json` | CLAUDE.md (GPU backend / tier system) |
-| `dream-server/extensions/services/dashboard-api/**` | CLAUDE.md, dashboard-api/README.md |
-| `dream-server/extensions/services/dashboard/**` | CLAUDE.md, README.md |
-| `dream-server/tests/**` | CLAUDE.md (build commands) |
-| `dream-server/Makefile` | CLAUDE.md (build commands) |
+| `ods/installers/lib/*.sh` | CLAUDE.md (installer architecture, key file paths) |
+| `ods/installers/phases/*.sh` | CLAUDE.md (installer architecture) |
+| `ods/scripts/*.sh` | CLAUDE.md (build commands, key file paths) |
+| `ods/ods-cli` | README.md, CLAUDE.md |
+| `ods/extensions/services/*/manifest.yaml` | CLAUDE.md (extension system) |
+| `ods/docker-compose*.yml` | README.md, CLAUDE.md (Docker compose layering) |
+| `ods/config/backends/*.json` | CLAUDE.md (GPU backend / tier system) |
+| `ods/extensions/services/dashboard-api/**` | CLAUDE.md, dashboard-api/README.md |
+| `ods/extensions/services/dashboard/**` | CLAUDE.md, README.md |
+| `ods/tests/**` | CLAUDE.md (build commands) |
+| `ods/Makefile` | CLAUDE.md (build commands) |
 | `.github/workflows/*` | CLAUDE.md (CI workflows) |
-| `dream-server/.env.example` | CLAUDE.md, README.md |
-| `dream-server/.env.schema.json` | CLAUDE.md |
+| `ods/.env.example` | CLAUDE.md, README.md |
+| `ods/.env.schema.json` | CLAUDE.md |
 | `install.sh`, `install.ps1` | README.md |
 
 ---
@@ -88,7 +88,7 @@ If `--scope` argument provided, filter affected docs:
 | Scope Arg | Files to Process |
 |-----------|-----------------|
 | `all` | All documentation files |
-| `readme` | README.md, dream-server/README.md |
+| `readme` | README.md, ods/README.md |
 | `claude` | CLAUDE.md only |
 | `extensions` | Extension manifests, CLAUDE.md (extension system section) |
 | `dashboard-api` | dashboard-api/README.md only |
@@ -103,32 +103,32 @@ For each affected document, validate against its source-of-truth files.
 
 **Source of truth files:**
 - `install.sh`, `install.ps1` - Install commands
-- `dream-server/dream-cli` - CLI commands and usage
-- `dream-server/docker-compose.base.yml` - Core service definitions
-- `dream-server/docker-compose.{amd,nvidia,apple}.yml` - GPU overlays
-- `dream-server/.env.example` - Environment variables
+- `ods/ods-cli` - CLI commands and usage
+- `ods/docker-compose.base.yml` - Core service definitions
+- `ods/docker-compose.{amd,nvidia,apple}.yml` - GPU overlays
+- `ods/.env.example` - Environment variables
 
 **Sections to validate:**
 1. **Installation commands** - Match actual install script paths and flags
 2. **System requirements** - OS support, GPU requirements
 3. **Service list** - All services deployed by the stack
-4. **CLI usage** - dream-cli commands
+4. **CLI usage** - ods-cli commands
 5. **Environment variables** - Match `.env.example`
 6. **Docker Compose commands** - Correct file references
 
 ### 3.2 CLAUDE.md Validation
 
 **Source of truth files:**
-- `dream-server/install-core.sh` - Installer orchestrator
-- `dream-server/installers/lib/*.sh` - Installer libraries
-- `dream-server/installers/phases/*.sh` - Installer phases
-- `dream-server/scripts/*.sh` - Operational scripts
-- `dream-server/Makefile` - Build targets
-- `dream-server/extensions/services/*/manifest.yaml` - Extension manifests
-- `dream-server/docker-compose*.yml` - Docker compose files
-- `dream-server/config/backends/*.json` - Backend configs
+- `ods/install-core.sh` - Installer orchestrator
+- `ods/installers/lib/*.sh` - Installer libraries
+- `ods/installers/phases/*.sh` - Installer phases
+- `ods/scripts/*.sh` - Operational scripts
+- `ods/Makefile` - Build targets
+- `ods/extensions/services/*/manifest.yaml` - Extension manifests
+- `ods/docker-compose*.yml` - Docker compose files
+- `ods/config/backends/*.json` - Backend configs
 - `.github/workflows/*.yml` - CI workflow files
-- `dream-server/.env.example`, `dream-server/.env.schema.json` - Env schema
+- `ods/.env.example`, `ods/.env.schema.json` - Env schema
 
 **Sections to validate:**
 1. **Repository Structure** - File paths and descriptions match reality
@@ -144,11 +144,11 @@ For each affected document, validate against its source-of-truth files.
 ### 3.3 dashboard-api/README.md Validation
 
 **Source of truth files:**
-- `dream-server/extensions/services/dashboard-api/main.py` - FastAPI app
-- `dream-server/extensions/services/dashboard-api/routers/*.py` - API routers
-- `dream-server/extensions/services/dashboard-api/security.py` - Auth
-- `dream-server/extensions/services/dashboard-api/helpers.py` - Utilities
-- `dream-server/extensions/services/dashboard-api/tests/` - Test structure
+- `ods/extensions/services/dashboard-api/main.py` - FastAPI app
+- `ods/extensions/services/dashboard-api/routers/*.py` - API routers
+- `ods/extensions/services/dashboard-api/security.py` - Auth
+- `ods/extensions/services/dashboard-api/helpers.py` - Utilities
+- `ods/extensions/services/dashboard-api/tests/` - Test structure
 
 **Sections to validate:**
 1. **Router list** - All routers documented
@@ -177,7 +177,7 @@ For each doc, extract all referenced file paths and verify they exist using Glob
 
 Verify documented commands are accurate:
 - `make lint`, `make test`, `make bats`, `make gate`, `make doctor`
-- `bash dream-cli <subcommand>`
+- `bash ods-cli <subcommand>`
 - `docker compose -f docker-compose.base.yml ...`
 - `cd extensions/services/dashboard && npm run dev`
 - `cd extensions/services/dashboard && npm run build`
@@ -314,14 +314,14 @@ AskUserQuestion:
 ### Verification Commands
 
 # Review all documentation changes
-git diff README.md CLAUDE.md dream-server/extensions/services/dashboard-api/README.md
+git diff README.md CLAUDE.md ods/extensions/services/dashboard-api/README.md
 
 # Commit all doc updates
-git add README.md CLAUDE.md dream-server/extensions/services/dashboard-api/README.md
+git add README.md CLAUDE.md ods/extensions/services/dashboard-api/README.md
 git commit -m "docs: update documentation for recent changes"
 
 # Revert all doc changes if needed
-git checkout README.md CLAUDE.md dream-server/extensions/services/dashboard-api/README.md
+git checkout README.md CLAUDE.md ods/extensions/services/dashboard-api/README.md
 ```
 
 ---

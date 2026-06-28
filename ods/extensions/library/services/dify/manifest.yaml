@@ -1,0 +1,59 @@
+schema_version: ods.services.v1
+
+service:
+  id: dify
+  name: Dify
+  aliases: [llm-app, agent]
+  container_name: ods-dify
+  host_env: DIFY_HOST
+  default_host: dify
+  port: 5001
+  external_port_env: DIFY_PORT
+  external_port_default: 8002
+  health: /health
+  type: docker
+  gpu_backends: [amd, nvidia]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  setup_hook: setup.sh
+  env_vars:
+    - key: DIFY_SECRET_KEY
+      required: true
+      secret: true
+      description: "Dify secret key for API access (generate with: openssl rand -hex 32)"
+    - key: DIFY_EXTERNAL_URL
+      required: false
+      secret: false
+      default: "http://localhost:8002"
+      description: "External URL for Dify - used in API responses and redirects"
+    - key: DIFY_OPENAI_API_BASE
+      required: false
+      secret: false
+      default: "http://llama-server:8080/v1"
+      description: "OpenAI-compatible API endpoint for LLM backend"
+    - key: DIFY_OPENAI_API_KEY
+      required: false
+      secret: true
+      default: "dummy-key"
+      description: "API key for OpenAI-compatible endpoint"
+    - key: DIFY_INIT_PASSWORD
+      required: false
+      secret: false
+      default: ""
+      description: Initial admin password (optional, set in .env)
+  description: "LLMOps platform for building AI workflows, RAG pipelines, and autonomous agents."
+
+features:
+  - id: agent-platform
+    name: AI Agent Platform
+    description: Build and deploy AI agents and workflows
+    icon: Bot
+    category: ai
+    requirements:
+      services: [dify]
+      vram_gb: 4
+    enabled_services_all: [dify]
+    setup_time: ~2 minutes
+    priority: 7
+    gpu_backends: [amd, nvidia]

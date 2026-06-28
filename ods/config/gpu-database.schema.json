@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ods.hardware.v1",
+  "title": "ODS GPU Database",
+  "description": "GPU knowledge base for hardware classification. Known GPUs with specs, bandwidth lookup table, and heuristic fallback classes.",
+  "type": "object",
+  "required": ["schema_version", "known_gpus", "known_gpu_bandwidth", "heuristic_classes", "defaults"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "ods.hardware.v1"
+    },
+    "_attribution": {
+      "type": "object",
+      "properties": {
+        "gpu_bandwidth_data": { "type": "string" },
+        "note": { "type": "string" }
+      }
+    },
+    "known_gpus": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/known_gpu" }
+    },
+    "known_gpu_bandwidth": {
+      "type": "object",
+      "properties": {
+        "nvidia": { "$ref": "#/$defs/bandwidth_map" },
+        "amd": { "$ref": "#/$defs/bandwidth_map" },
+        "apple": { "$ref": "#/$defs/bandwidth_map" }
+      },
+      "additionalProperties": { "$ref": "#/$defs/bandwidth_map" }
+    },
+    "heuristic_classes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/heuristic_class" }
+    },
+    "defaults": {
+      "type": "object",
+      "required": ["bandwidth_gbps"],
+      "properties": {
+        "bandwidth_gbps": {
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "known_gpu": {
+      "type": "object",
+      "required": ["id", "match", "specs", "recommended"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$",
+          "description": "Unique identifier for this known GPU entry"
+        },
+        "match": {
+          "type": "object",
+          "properties": {
+            "device_ids": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^0x[0-9a-fA-F]{4}$" },
+              "description": "PCI device IDs to match (exact)"
+            },
+            "name_patterns": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Substring patterns to match against GPU name (case-insensitive)"
+            }
+          },
+          "anyOf": [
+            { "required": ["device_ids"] },
+            { "required": ["name_patterns"] }
+          ]
+        },
+        "specs": {
+          "type": "object",
+          "required": ["label", "vendor", "architecture", "memory_type", "memory_mb", "bandwidth_gbps"],
+          "properties": {
+            "label": { "type": "string" },
+            "vendor": { "enum": ["nvidia", "amd", "apple", "intel"] },
+            "architecture": { "type": "string" },
+            "memory_type": { "enum": ["discrete", "unified"] },
+            "memory_mb": { "type": "integer", "minimum": 0 },
+            "memory_source": {
+              "enum": ["vram", "ram"],
+              "description": "Where to read actual memory from. 'ram' = use system RAM (for unified memory GPUs where reported VRAM is unreliable)"
+            },
+            "bandwidth_gbps": { "type": "number", "minimum": 0 },
+            "compute_units": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "recommended": {
+          "$ref": "#/$defs/recommendation"
+        }
+      }
+    },
+    "heuristic_class": {
+      "type": "object",
+      "required": ["id", "match", "recommended"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$"
+        },
+        "match": {
+          "type": "object",
+          "properties": {
+            "vendor": { "enum": ["nvidia", "amd", "apple", "intel", "none"] },
+            "memory_type": { "enum": ["discrete", "unified", "none"] },
+            "min_vram_mb": { "type": "integer", "minimum": 0 },
+            "max_vram_mb": { "type": "integer", "minimum": 0 },
+            "min_ram_mb": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "recommended": {
+          "$ref": "#/$defs/recommendation"
+        }
+      }
+    },
+    "recommendation": {
+      "type": "object",
+      "required": ["backend", "tier"],
+      "properties": {
+        "backend": { "enum": ["nvidia", "amd", "apple", "cpu"] },
+        "tier": {
+          "type": "string",
+          "pattern": "^(T[0-4]|SH_LARGE|SH_COMPACT|NV_ULTRA)$"
+        }
+      }
+    },
+    "bandwidth_map": {
+      "type": "object",
+      "additionalProperties": { "type": "number", "minimum": 0 },
+      "description": "Map of GPU model name to bandwidth in GB/s"
+    }
+  }
+}

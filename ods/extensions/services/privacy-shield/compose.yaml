@@ -1,0 +1,43 @@
+services:
+  privacy-shield:
+    build:
+      context: ./extensions/services/privacy-shield
+      dockerfile: Dockerfile
+    container_name: ods-privacy-shield
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - TARGET_API_URL=${LLM_API_URL:-http://llama-server:8080}/v1
+      - TARGET_API_KEY=${LITELLM_KEY:-${TARGET_API_KEY:-not-needed}}
+      - SHIELD_PORT=${SHIELD_PORT:-8085}
+      - SHIELD_API_KEY_PATH=${SHIELD_API_KEY_PATH:-/data/shield_api_key}
+      - SHIELD_API_KEY=${SHIELD_API_KEY:-}
+      - PII_CACHE_ENABLED=${PII_CACHE_ENABLED:-true}
+      - PII_CACHE_SIZE=${PII_CACHE_SIZE:-1000}
+      - PII_CACHE_TTL=${PII_CACHE_TTL:-300}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      - ./data/privacy-shield:/data:z
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${SHIELD_PORT:-8085}:8085"
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8085/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
