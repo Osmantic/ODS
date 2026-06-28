@@ -1,0 +1,20 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: dashboard-api
+  name: Dashboard API (System Status)
+  aliases: []
+  container_name: ods-dashboard-api
+  default_host: dashboard-api
+  port: 3002
+  external_port_env: DASHBOARD_API_PORT
+  external_port_default: 3002
+  health: /health
+  ui_path: /health
+  type: docker
+  gpu_backends: [amd, nvidia]
+  category: core
+  depends_on: []

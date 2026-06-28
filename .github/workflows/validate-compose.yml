@@ -4,18 +4,18 @@ on:
   push:
     branches: [main]
     paths:
-      - "dream-server/docker-compose*.yml"
-      - "dream-server/installers/**/*compose*.yml"
-      - "dream-server/extensions/services/**/compose*.yaml"
-      - "dream-server/scripts/resolve-compose-stack.sh"
+      - "ods/docker-compose*.yml"
+      - "ods/installers/**/*compose*.yml"
+      - "ods/extensions/services/**/compose*.yaml"
+      - "ods/scripts/resolve-compose-stack.sh"
       - ".github/workflows/validate-compose.yml"
   pull_request:
     branches: [main]
     paths:
-      - "dream-server/docker-compose*.yml"
-      - "dream-server/installers/**/*compose*.yml"
-      - "dream-server/extensions/services/**/compose*.yaml"
-      - "dream-server/scripts/resolve-compose-stack.sh"
+      - "ods/docker-compose*.yml"
+      - "ods/installers/**/*compose*.yml"
+      - "ods/extensions/services/**/compose*.yaml"
+      - "ods/scripts/resolve-compose-stack.sh"
       - ".github/workflows/validate-compose.yml"
 
 permissions:
@@ -32,17 +32,17 @@ jobs:
         env:
           WEBUI_SECRET: ci-placeholder
         run: |
-          echo "Validating dream-server/docker-compose.base.yml"
-          docker compose -f dream-server/docker-compose.base.yml config --quiet
+          echo "Validating ods/docker-compose.base.yml"
+          docker compose -f ods/docker-compose.base.yml config --quiet
 
       - name: Validate installer compose overlays (base + overlay)
         env:
           WEBUI_SECRET: ci-placeholder
         run: |
-          compose_files=$(find dream-server/installers -name '*compose*.yml' -type f 2>/dev/null || true)
+          compose_files=$(find ods/installers -name '*compose*.yml' -type f 2>/dev/null || true)
 
           if [ -z "$compose_files" ]; then
-            echo "No installer compose files found under dream-server/installers/"
+            echo "No installer compose files found under ods/installers/"
             exit 0
           fi
 
@@ -53,7 +53,7 @@ jobs:
           failed=0
           for f in $compose_files; do
             echo "Validating $f (merged with docker-compose.base.yml) ..."
-            if docker compose -f dream-server/docker-compose.base.yml -f "$f" config --quiet 2>&1; then
+            if docker compose -f ods/docker-compose.base.yml -f "$f" config --quiet 2>&1; then
               echo "  OK"
             else
               echo "  FAILED"
@@ -78,7 +78,7 @@ jobs:
           N8N_PASS: ci-placeholder
           LITELLM_KEY: ci-placeholder
           OPENCLAW_TOKEN: ci-placeholder
-        working-directory: dream-server
+        working-directory: ods
         run: |
           set -e
           failed=0
@@ -108,7 +108,7 @@ jobs:
           LLAMA_SERVER_GPU_UUIDS: "GPU-ci-a,GPU-ci-b"
           LLAMA_ARG_SPLIT_MODE: "layer"
           LLAMA_ARG_TENSOR_SPLIT: ""
-        working-directory: dream-server
+        working-directory: ods
         run: |
           set -e
           failed=0
@@ -131,7 +131,7 @@ jobs:
           exit "$failed"
 
       - name: Validate resolver output for AMD multi-GPU
-        working-directory: dream-server
+        working-directory: ods
         run: |
           set -e
           flags=$(bash scripts/resolve-compose-stack.sh \

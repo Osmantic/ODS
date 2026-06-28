@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: dream-server
+        working-directory: ods
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -71,10 +71,11 @@ jobs:
             container: opensuse/tumbleweed:latest
             expected_pkg: zypper
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     container: ${{ matrix.container }}
     defaults:
       run:
-        working-directory: dream-server
+        working-directory: ods
     name: "distro: ${{ matrix.distro }}"
     steps:
       - name: Install checkout prerequisites (distro-aware)
@@ -96,6 +97,16 @@ jobs:
             done
           }
 
+          bounded() {
+            seconds="$1"
+            shift
+            if command -v timeout >/dev/null 2>&1; then
+              timeout "$seconds" "$@"
+            else
+              "$@"
+            fi
+          }
+
           prepare_pacman_keyrings() {
             command -v pacman-key >/dev/null 2>&1 || return 0
             pacman-key --init || true
@@ -110,12 +121,12 @@ jobs:
             mkdir -p /etc/zypp/zypp.conf.d
             {
               printf '%s\n' '[main]'
-              printf '%s\n' 'download.transfer_timeout = 600'
-              printf '%s\n' 'download.connect_timeout = 120'
+              printf '%s\n' 'download.transfer_timeout = 180'
+              printf '%s\n' 'download.connect_timeout = 30'
               printf '%s\n' 'download.min_download_speed = 0'
               printf '%s\n' 'download.max_silent_tries = 3'
               printf '%s\n' 'download.max_concurrent_connections = 2'
-            } >/etc/zypp/zypp.conf.d/99-dreamserver-ci-network.conf
+            } >/etc/zypp/zypp.conf.d/99-ods-ci-network.conf
           }
 
           if command -v apt-get &>/dev/null; then
@@ -127,8 +138,8 @@ jobs:
             retry pacman -Syyu --noconfirm --needed ca-certificates git curl
           elif command -v zypper &>/dev/null; then
             configure_zypper_ci_network
-            retry zypper --non-interactive --gpg-auto-import-keys refresh
-            retry zypper --non-interactive install -y ca-certificates git curl
+            retry bounded 240 zypper --non-interactive --gpg-auto-import-keys refresh
+            retry bounded 240 zypper --non-interactive install -y ca-certificates git curl
           fi
 
       - name: Checkout
@@ -204,7 +215,7 @@ jobs:
     runs-on: macos-latest
     defaults:
       run:
-        working-directory: dream-server
+        working-directory: ods
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

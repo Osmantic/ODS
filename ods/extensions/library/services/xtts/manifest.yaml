@@ -1,0 +1,19 @@
+schema_version: ods.services.v1
+
+service:
+  id: xtts
+  name: XTTS (Coqui TTS)
+  aliases: [xtts, coqui, xtts-server]
+  container_name: ods-xtts
+  host_env: XTTS_HOST
+  default_host: xtts
+  port: 80
+  external_port_env: XTTS_PORT
+  external_port_default: 8100
+  health: /health
+  type: docker
+  gpu_backends: [amd, nvidia]
+  compose_file: compose.yaml
+  category: recommended
+  depends_on: []
+  description: "Coqui XTTS voice cloning and multilingual text-to-speech server."

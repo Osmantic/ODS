@@ -1,0 +1,318 @@
+# ODS — Core Service Definitions
+# Extension services live in extensions/services/*/compose.yaml
+# GPU overlays layered on top:
+#   docker compose -f docker-compose.base.yml -f docker-compose.amd.yml up -d
+#   docker compose -f docker-compose.base.yml -f docker-compose.nvidia.yml up -d
+
+name: ods
+
+# ============================================
+# Standardized Logging Policy
+# ============================================
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ============================================
+  # LLM Inference — llama-server (GPU-agnostic stub)
+  # Image and GPU config provided by overlay
+  # Serves OpenAI-compatible API on port 8080
+  # ============================================
+  llama-server:
+    image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014}
+    container_name: ods-llama-server
+    restart: unless-stopped
+    volumes:
+      - ./data/models:/models:z
+      - ./config/llama-server/models.ini:/config/models.ini:ro,z
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${OLLAMA_PORT:-8080}:8080"
+    command:
+      - --model
+      - /models/${GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --n-gpu-layers
+      - "999"
+      - --ctx-size
+      - "${CTX_SIZE:-16384}"
+      - --batch-size
+      - "${LLAMA_BATCH_SIZE:-2048}"
+      - --threads
+      - "${LLAMA_THREADS:-4}"
+      - --parallel
+      - "${LLAMA_PARALLEL:-1}"
+      - --metrics
+    environment:
+      - LLAMA_ARG_REASONING=${LLAMA_REASONING:-off}
+      - LLAMA_ARG_FLASH_ATTN=${LLAMA_ARG_FLASH_ATTN:-auto}
+      - LLAMA_ARG_CACHE_TYPE_K=${LLAMA_ARG_CACHE_TYPE_K:-f16}
+      - LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
+      # Optional MoE expert CPU offload. Do not default to an empty value:
+      # llama.cpp parses this as an integer and exits if it is blank.
+      - LLAMA_ARG_N_CPU_MOE
+      # Optional long-context runtime flags. Leave unset unless a model
+      # profile explicitly requires them.
+      - LLAMA_ARG_NO_CACHE_PROMPT
+      - LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS
+      # Optional speculative decoding for GGUFs with llama.cpp MTP support.
+      # Leave unset unless the selected model/runtime explicitly supports it.
+      - LLAMA_ARG_SPEC_TYPE
+      - LLAMA_ARG_SPEC_DRAFT_N_MAX
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      # 70B-class GGUFs cold-load in 60-120s; thermal throttling and first-touch
+      # page faults push Tier 4 past 180s. Override via LLAMA_START_PERIOD in .env.
+      start_period: ${LLAMA_START_PERIOD:-240s}
+
+  # ============================================
+  # Chat UI
+  # ============================================
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.7.2
+    container_name: ods-webui
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      ENABLE_OLLAMA_API: "false"
+      OPENAI_API_BASE_URL: "${LLM_API_URL:-http://llama-server:8080}/v1"
+      OPENAI_API_KEY: ""
+      # PWA / branding — surfaces as the app title, page title, and PWA install name.
+      # When a user adds ODS to their home screen, this is the label they see
+      # next to the ODS icon. Defaults to "ODS"; users can override per-install.
+      WEBUI_NAME: "${WEBUI_NAME:-ODS}"
+      # Public URL Open WebUI uses for share links, OAuth callbacks, and PWA
+      # install metadata. This value is persistent inside Open WebUI's config
+      # database (https://docs.openwebui.com/getting-started/env-configuration/#webui_url),
+      # so seeding a URL that doesn't actually resolve will bake bad share
+      # links into the install.
+      #
+      # Optional public URL Open WebUI uses for share links, OAuth callbacks,
+      # and PWA install metadata. Leave empty for traditional localhost usage.
+      # Headless/proxy installs should set WEBUI_URL to the real reachable chat
+      # origin, usually http://chat.${ODS_DEVICE_NAME:-ods}.local once
+      # ods-proxy and mDNS are enabled. Tailscale/Cloudflare/custom domains
+      # should set this to the tunnel URL instead.
+      WEBUI_URL: "${WEBUI_URL:-}"
+      WEBUI_AUTH: "${WEBUI_AUTH:-true}"
+      WEBUI_SECRET_KEY: "${WEBUI_SECRET:?WEBUI_SECRET must be set — run the installer or add it to .env}"
+      ENABLE_WEB_SEARCH: "true"
+      WEB_SEARCH_ENGINE: "searxng"
+      SEARXNG_QUERY_URL: "http://searxng:8080/search?q=<query>&format=json"
+      ENABLE_SEARCH_QUERY_GENERATION: "true"
+      WEB_SEARCH_RESULT_COUNT: "5"
+      # ── ComfyUI Image Generation (SDXL Lightning 4-step) ──
+      # Default OFF in base: ComfyUI ships only on GPU backends (amd/nvidia per
+      # comfyui/manifest.yaml). The amd and nvidia overlays re-assert this as
+      # ${...:-true} so image-gen is on for GPU users by default. CPU/Apple
+      # users would otherwise hit a missing-engine error from Open WebUI.
+      ENABLE_IMAGE_GENERATION: "${ENABLE_IMAGE_GENERATION:-false}"
+      IMAGE_GENERATION_ENGINE: "comfyui"
+      COMFYUI_BASE_URL: "http://comfyui:8188"
+      IMAGE_SIZE: "1024x1024"
+      IMAGE_STEPS: "4"
+      IMAGE_GENERATION_MODEL: "sdxl_lightning_4step.safetensors"
+      COMFYUI_WORKFLOW: >-
+        {"3":{"inputs":{"seed":42,"steps":4,"cfg":1.5,"sampler_name":"euler","scheduler":"sgm_uniform","denoise":1.0,"model":["4",0],"positive":["6",0],"negative":["7",0],"latent_image":["5",0]},"class_type":"KSampler"},
+        "4":{"inputs":{"ckpt_name":"sdxl_lightning_4step.safetensors"},"class_type":"CheckpointLoaderSimple"},
+        "5":{"inputs":{"width":1024,"height":1024,"batch_size":1},"class_type":"EmptyLatentImage"},
+        "6":{"inputs":{"text":"placeholder","clip":["4",1]},"class_type":"CLIPTextEncode"},
+        "7":{"inputs":{"text":"","clip":["4",1]},"class_type":"CLIPTextEncode"},
+        "8":{"inputs":{"samples":["3",0],"vae":["4",2]},"class_type":"VAEDecode"},
+        "9":{"inputs":{"filename_prefix":"openwebui","images":["8",0]},"class_type":"SaveImage"}}
+      COMFYUI_WORKFLOW_NODES: >-
+        [{"type":"prompt","key":"text","node_ids":["6"]},
+        {"type":"model","key":"ckpt_name","node_ids":["4"]},
+        {"type":"width","key":"width","node_ids":["5"]},
+        {"type":"height","key":"height","node_ids":["5"]},
+        {"type":"steps","key":"steps","node_ids":["3"]},
+        {"type":"seed","key":"seed","node_ids":["3"]},
+        {"type":"n","key":"batch_size","node_ids":["5"]}]
+      # ── Speech-to-Text (Whisper) ──
+      AUDIO_STT_ENGINE: "${AUDIO_STT_ENGINE:-openai}"
+      AUDIO_STT_OPENAI_API_BASE_URL: "${AUDIO_STT_OPENAI_API_BASE_URL:-http://whisper:8000/v1}"
+      AUDIO_STT_OPENAI_API_KEY: "${AUDIO_STT_OPENAI_API_KEY:-}"
+      AUDIO_STT_MODEL: "${AUDIO_STT_MODEL:-Systran/faster-whisper-base}"
+      # ── Text-to-Speech (Kokoro) ──
+      AUDIO_TTS_ENGINE: "${AUDIO_TTS_ENGINE:-openai}"
+      AUDIO_TTS_OPENAI_API_BASE_URL: "${AUDIO_TTS_OPENAI_API_BASE_URL:-http://tts:8880/v1}"
+      AUDIO_TTS_OPENAI_API_KEY: "${AUDIO_TTS_OPENAI_API_KEY:-}"
+      AUDIO_TTS_MODEL: "${AUDIO_TTS_MODEL:-kokoro}"
+      AUDIO_TTS_VOICE: "${AUDIO_TTS_VOICE:-af_heart}"
+      TZ: "${TIMEZONE:-UTC}"
+    volumes:
+      - ./data/open-webui:/app/backend/data:z
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${WEBUI_PORT:-3000}:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ============================================
+  # Dashboard API (System Status Backend)
+  # ============================================
+  dashboard-api:
+    build:
+      context: ./extensions/services/dashboard-api
+      dockerfile: Dockerfile
+    container_name: ods-dashboard-api
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_API_PORT:-3002}:3002"
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    environment:
+      - ODS_INSTALL_DIR=/ods
+      - ODS_DATA_DIR=/data
+      - ODS_EXTENSIONS_LIBRARY_DIR=/data/extensions-library
+      - ODS_AGENT_HOST=${ODS_AGENT_HOST:-}
+      - ODS_AGENT_PORT=${ODS_AGENT_PORT:-7710}
+      - GPU_BACKEND=${GPU_BACKEND:-nvidia}
+      - GPU_COUNT=${GPU_COUNT:-1}
+      - GPU_ASSIGNMENT_JSON_B64=${GPU_ASSIGNMENT_JSON_B64:-}
+      - LLAMA_ARG_SPLIT_MODE=${LLAMA_ARG_SPLIT_MODE:-}
+      - LLAMA_ARG_TENSOR_SPLIT=${LLAMA_ARG_TENSOR_SPLIT:-}
+      - HOST_RAM_GB=${HOST_RAM_GB:-0}
+      - OLLAMA_URL=${LLM_API_URL:-http://llama-server:8080}
+      - LLM_MODEL=${LLM_MODEL:-qwen3:30b-a3b}
+      - GGUF_FILE=${GGUF_FILE:-}
+      - KOKORO_URL=${KOKORO_URL:-http://tts:8880}
+      - N8N_URL=${N8N_URL:-http://n8n:5678}
+      - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-}
+      - ODS_AGENT_KEY=${ODS_AGENT_KEY:-}
+      - SHIELD_API_KEY=${SHIELD_API_KEY:-}
+      - OPENCLAW_TOKEN=${OPENCLAW_TOKEN:-}
+      - TOKEN_SPY_URL=${TOKEN_SPY_URL:-http://token-spy:8080}
+      - TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY:-}
+      # Signing secret for ods-session cookies. session_signer.py reads
+      # this at import time; if empty, issue() raises and verify() returns
+      # (False, "no-secret"). The installer generates a random value at
+      # phase 06; an unconfigured dev box without the secret will fail
+      # magic-link redemption loudly rather than mint unsignable cookies.
+      - ODS_SESSION_SECRET=${ODS_SESSION_SECRET:-}
+      # Device/public URL inputs used by magic-link generation. Keep these
+      # aligned with ods-proxy and ods-mdns so invite QR codes point at
+      # the actual LAN-facing auth/chat hosts for the unit.
+      - ODS_DEVICE_NAME=${ODS_DEVICE_NAME:-ods}
+      - ODS_PUBLIC_URL=${ODS_PUBLIC_URL:-}
+      # Cookie Domain scope. Set to <device>.local (no leading dot) so
+      # cookies are shared across chat / auth / hermes / dashboard
+      # subdomains routed by the ods-proxy. Empty = host-only (only
+      # the redemption host sees the cookie); functional for single-host
+      # setups but breaks subdomain SSO.
+      - ODS_COOKIE_DOMAIN=${ODS_COOKIE_DOMAIN:-}
+      # URLs consumed by scripts/ods-test-functional.sh (executed inside this
+      # container by /api/setup/test). The script's own `localhost:<port>`
+      # defaults are correct for host-side runs but unreachable from inside
+      # the container; explicitly point at docker network names here.
+      - LLM_URL=${LLM_URL:-${LLM_API_URL:-http://llama-server:8080}}
+      - TTS_URL=${TTS_URL:-http://tts:8880}
+      - EMBEDDING_URL=${EMBEDDING_URL:-http://embeddings:80}
+      - WHISPER_URL=${WHISPER_URL:-http://whisper:8000}
+      # ODS Talk's image-attachment endpoint calls the vision backend
+      # directly (bypassing litellm because litellm's wildcard model
+      # routing collapses our model id down to whatever's loaded).
+      # Defaults point at the Lemonade/llama-server OpenAI-compatible base URL
+      # on the internal docker network — no auth needed there. Operators with
+      # an external vision server set ODS_TALK_VISION_URL +
+      # ODS_TALK_VISION_KEY.
+      - ODS_TALK_VISION_URL=${ODS_TALK_VISION_URL:-http://llama-server:8080${LLM_API_BASE_PATH:-/v1}}
+      - ODS_TALK_VISION_KEY=${ODS_TALK_VISION_KEY:-}
+      # Local models can take several minutes to produce the first useful
+      # ODS Talk frame on cold sessions. Keep the dashboard-api bridge aligned
+      # with Hermes/LiteLLM long-model timeouts so Talk does not 502 while the
+      # underlying agent is still working.
+      - ODS_TALK_HERMES_TIMEOUT=${ODS_TALK_HERMES_TIMEOUT:-900}
+      # Model id of the vision-capable variant. Defaults to the user.*
+      # name we register on AMD install (Qwen3.6-35B-A3B + mmproj-F16).
+      - ODS_TALK_VISION_MODEL=${ODS_TALK_VISION_MODEL:-user.Qwen3.6-35B-A3B-Vision}
+    volumes:
+      - ./scripts:/ods/scripts:ro,z
+      - ./config:/ods/config:ro,z
+      - ./extensions:/ods/extensions:ro,z
+      - ./.env:/ods/.env:ro,z
+      - ./.env.example:/ods/.env.example:ro,z
+      - ./.env.schema.json:/ods/.env.schema.json:ro,z
+      - ./data:/data:z
+      - ./templates:/ods/templates:ro,z
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3002/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ============================================
+  # Dashboard UI (Control Center)
+  # ============================================
+  dashboard:
+    build:
+      context: ./extensions/services/dashboard
+      dockerfile: Dockerfile
+    container_name: ods-dashboard
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    environment:
+      - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-}
+    volumes:
+      - ./data:/data:ro,z
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-3001}:3001"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+    depends_on:
+      dashboard-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3001/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  default:
+    name: ods-network

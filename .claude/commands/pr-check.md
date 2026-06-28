@@ -21,7 +21,7 @@ Run all local CI checks before creating a PR. On failure, offer to fix issues in
 Before running checks, verify the Makefile exists:
 
 ```bash
-ls -la dream-server/Makefile
+ls -la ods/Makefile
 ```
 
 If the Makefile doesn't exist, inform the user and stop.
@@ -30,7 +30,7 @@ If the Makefile doesn't exist, inform the user and stop.
 
 Display to user before running:
 
-> **Running 8 DreamServer checks:**
+> **Running 8 ODS checks:**
 > 1. **Shell lint** - `bash -n` syntax check on all `.sh` files
 > 2. **Python compile** - `py_compile` check on dashboard-api modules
 > 3. **Tier map + contract tests** - Unit and contract test suite
@@ -45,13 +45,13 @@ Display to user before running:
 Run the full gate (covers checks 1-6):
 
 ```bash
-cd dream-server && make gate
+cd ods && make gate
 ```
 
 Then run dashboard checks:
 
 ```bash
-cd dream-server/extensions/services/dashboard && npm run lint && npm run build
+cd ods/extensions/services/dashboard && npm run lint && npm run build
 ```
 
 Then run secret scan:
@@ -159,7 +159,7 @@ AskUserQuestion:
 After applying any fix:
 
 ```bash
-cd dream-server && make gate
+cd ods && make gate
 ```
 
 Continue the fix loop until:

@@ -1,0 +1,41 @@
+services:
+  open-interpreter:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ods-open-interpreter
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - PORT=8080
+      - LLM_API_URL=${LLM_API_URL:-http://llama-server:8000}
+      - OPEN_INTERPRETER_API_KEY=${OPEN_INTERPRETER_API_KEY:?OPEN_INTERPRETER_API_KEY must be set}
+      - OPEN_INTERPRETER_AUTO_RUN=${OPEN_INTERPRETER_AUTO_RUN:-false}
+    volumes:
+      - ./data/open-interpreter:/app/data:rw
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${OPEN_INTERPRETER_PORT:-7805}:8080"
+    working_dir: /app
+    command: ["python", "server.py"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+networks:
+  ods-network:
+    external: true

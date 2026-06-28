@@ -1,0 +1,33 @@
+services:
+  searxng:
+    image: searxng/searxng:2026.3.8-a563127a2
+    container_name: ods-searxng
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:${SEARXNG_PORT:-8888}/
+      - SEARXNG_SECRET=${SEARXNG_SECRET:?SEARXNG_SECRET must be set – run the installer or add to .env}
+    volumes:
+      - ./config/searxng:/etc/searxng:rw,z
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${SEARXNG_PORT:-8888}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,31 @@
+services:
+  chromadb:
+    image: chromadb/chroma:1.5.3
+    container_name: ods-chromadb
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${CHROMADB_PORT:-8000}:8000"
+    volumes:
+      - ./data/chromadb:/chromadb
+    environment:
+      - CHROMA_DB_ANSI_COLOR_ENABLED=true
+      - LLM_API_URL=${LLM_API_URL:-http://localhost:8000}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v2/heartbeat')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - ods-network
+
+networks:
+  ods-network:
+    external: true

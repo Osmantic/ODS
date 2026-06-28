@@ -1,0 +1,32 @@
+schema_version: ods.services.v1
+
+service:
+  id: gitea
+  name: Gitea (Git Hosting)
+  aliases: [git]
+  container_name: ods-gitea
+  host_env: GITEA_HOST
+  default_host: gitea
+  port: 3000
+  external_port_env: GITEA_PORT
+  external_port_default: 7830
+  health: /api/healthz
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: "Lightweight self-hosted Git service for managing repositories and CI/CD."
+  env_vars:
+    - key: GITEA_HOST
+      description: "Hostname for Gitea server"
+      default: "localhost"
+    - key: GITEA_PORT
+      description: "External port for Gitea web interface"
+      default: "7830"
+    - key: GITEA_SSH_PORT
+      description: "External port for Gitea SSH access"
+      default: "2222"
+    - key: GITEA_APP_NAME
+      description: "Display name for the Gitea instance"
+      default: "ODS Git"

@@ -4,6 +4,7 @@
 # and fails with "no such file or directory").
 *.sh text eol=lf
 *.bash text eol=lf
+ods/ods-cli text eol=lf
 Dockerfile* text eol=lf
 docker-entrypoint* text eol=lf
 *.yaml text eol=lf
@@ -19,4 +20,4 @@ docker-entrypoint* text eol=lf
 # Captured tool-output fixtures preserve real upstream formatting
 # (column padding, trailing whitespace from rocm-smi/amd-smi/etc).
 # Don't let `git diff --check` flag intentional whitespace as an error.
-dream-server/tests/fixtures/amd/*.txt -whitespace
+ods/tests/fixtures/amd/*.txt -whitespace

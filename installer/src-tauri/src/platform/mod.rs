@@ -49,7 +49,7 @@ pub fn check_requirements(info: &SystemInfo) -> Vec<RequirementCheck> {
         found: format!("{:.1} GB", info.ram_gb),
         required: "8 GB minimum".into(),
         help: if info.ram_gb < 7.5 {
-            Some("DreamServer needs at least 8GB RAM. Close memory-heavy apps or consider cloud mode.".into())
+            Some("ODS needs at least 8GB RAM. Close memory-heavy apps or consider cloud mode.".into())
         } else {
             None
         },

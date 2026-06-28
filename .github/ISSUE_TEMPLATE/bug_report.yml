@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug in Dream Server
+description: Report a bug in ODS
 labels: ["bug"]
 body:
   - type: markdown

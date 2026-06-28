@@ -1,0 +1,54 @@
+# /etc/ods/ap-mode.conf — operator config for ODS's first-boot AP.
+#
+# This file is sourced as bash by scripts/ap-mode.sh. Keep it small,
+# keep it shell-safe (no spaces around =, no fancy quoting).
+#
+# Mode 0600 — contains the AP password.
+#
+# Prerequisites for AP-mode traffic to actually land somewhere:
+#   1. `ods-proxy` is enabled and listening on port 80
+#      (`ods enable ods-proxy` if not).
+#   2. `.env` has `BIND_ADDRESS=0.0.0.0` so the proxy fields traffic
+#      from the AP-side interface (192.168.7.1 by default).
+# Without those, the DNAT rules in ap-mode.sh redirect AP clients to
+# an empty port 80 and the captive portal looks broken.
+# See docs/AP-MODE.md for the full architecture diagram.
+#
+# ----------------------------------------------------------------------------
+# REQUIRED
+# ----------------------------------------------------------------------------
+
+# Network name broadcast by the AP. Convention: include a per-unit suffix
+# so two ODSs in the same room don't collide.
+ODS_AP_SSID="ODS-Setup-XXXX"
+
+# WPA2 password. Must be at least 8 characters. Recommend 12+ random
+# characters baked in per device. The script refuses this placeholder
+# value so images do not accidentally ship a known AP password.
+ODS_AP_PASSWORD="changeme-set-per-device"
+
+# ----------------------------------------------------------------------------
+# OPTIONAL — sensible defaults if you skip these
+# ----------------------------------------------------------------------------
+
+# Wireless interface that supports AP mode. `iw list | grep -A4 'Supported
+# interface modes' | grep AP` to verify. Default: wlan0.
+# ODS_AP_INTERFACE="wlan0"
+
+# Gateway IP that the AP advertises. Clients reach the wizard at this IP.
+# Pick a private range that doesn't clash with the LAN you might rejoin.
+# ODS_AP_GATEWAY_IP="192.168.7.1"
+#
+# Network size — CIDR prefix length is the canonical form (what `ip addr
+# add` actually expects). ODS_AP_NETMASK is still accepted as a
+# dotted-decimal mask for back-compat; ap-mode.sh auto-converts at
+# bring-up time. ODS_AP_PREFIX takes precedence — set ONLY ONE.
+# When neither is set, /24 (255.255.255.0) is the effective default.
+# ODS_AP_PREFIX="24"
+# ODS_AP_NETMASK="255.255.255.0"
+
+# DHCP lease range. Format: <start>,<end>,<lease-time>.
+# ODS_AP_DHCP_RANGE="192.168.7.10,192.168.7.50,1h"
+
+# 2.4 GHz channel. 1, 6, 11 are the non-overlapping options.
+# ODS_AP_CHANNEL="6"

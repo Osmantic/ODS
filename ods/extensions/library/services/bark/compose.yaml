@@ -1,0 +1,42 @@
+services:
+  bark:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ods-bark
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${BARK_PORT:-9200}:9200"
+    environment:
+      # Use small models (faster, less VRAM) — set to false for full quality
+      - SUNO_USE_SMALL_MODELS=${BARK_USE_SMALL_MODELS:-false}
+      # Offload to CPU between calls — reduces VRAM at the cost of speed
+      - SUNO_OFFLOAD_CPU=${BARK_OFFLOAD_CPU:-false}
+      - BARK_API_KEY=${BARK_API_KEY:-}
+    volumes:
+      # Bark model cache — persists ~5GB of downloaded models
+      - ./data/bark/models:/root/.cache/suno
+      # Audio output directory
+      - ./data/bark/output:/app/output
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9200/health')"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 180s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 16G
+        reservations:
+          cpus: '0.5'
+          memory: 4G
+
+networks:
+  ods-network:
+    external: true

@@ -1,0 +1,42 @@
+schema_version: ods.services.v1
+
+service:
+  id: label-studio
+  name: Label Studio
+  aliases: [data-labeling, annotation]
+  container_name: ods-label-studio
+  host_env: LABEL_STUDIO_HOST
+  default_host: label-studio
+  port: 8080
+  external_port_env: LABEL_STUDIO_PORT
+  external_port_default: 8086
+  health: /health
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  env_vars: []
+  description: |
+    Label Studio is an open source data labeling tool.
+    Label images, audio, text, time series, and more for ML model training.
+
+features:
+  - id: data-labeling
+    name: Data Labeling
+    description: Label data for machine learning models
+    icon: Tag
+    category: ml
+    requirements:
+      services: [label-studio]
+      vram_gb: 0
+    enabled_services_all: [label-studio]
+    setup_time: ~1 minute
+    priority: 15
+
+tags:
+  - labeling
+  - annotation
+  - ml
+  - data
+  - training

@@ -1,0 +1,15 @@
+schema_version: ods.templates.v1
+template:
+  id: llm-platform
+  name: LLM Platform
+  description: "Run your local LLM as a service for multiple apps and users with gateway, observability, and a chat UI."
+  icon: Network
+  tags: [platform, observability, teams]
+  services: [litellm, langfuse, token-spy, librechat, n8n]
+  tier_minimum: T2
+  estimated_disk_gb: 15
+  service_notes:
+    litellm: "LLM gateway — routes between models"
+    langfuse: "LLM observability — 7 containers, ~6GB"
+    librechat: "Chat UI — set OPENAI_REVERSE_PROXY=http://litellm:4000/v1 to use the gateway"
+    n8n: "Automation consumer for the LLM gateway"
