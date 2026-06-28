@@ -10,7 +10,7 @@
 #   Change ODS_VERSION for custom builds. Must match constants.sh VERSION.
 # ============================================================================
 
-$script:ODS_VERSION = "2.5.1"
+$script:ODS_VERSION = "2.5.3"
 
 # Install location (override via $env:ODS_HOME)
 # NOTE: $(if ...) syntax required for PS 5.1 compatibility (bare if-as-expression is PS 7+ only)

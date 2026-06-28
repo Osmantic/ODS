@@ -646,7 +646,7 @@ raise SystemExit(1)' 2>/dev/null && return 0
 # Tier: ${TIER} (${TIER_NAME})
 
 #=== ODS Version (used by ods-cli update for version-compat checks) ===
-ODS_VERSION=${VERSION:-2.5.1}
+ODS_VERSION=${VERSION:-2.5.3}
 
 #=== Network Binding ===
 # 127.0.0.1 = localhost only (secure default)

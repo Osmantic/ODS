@@ -30,13 +30,60 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 REPO_URL="${ODS_REPO_URL:-https://github.com/Light-Heart-Labs/ODS.git}"
-INSTALL_DIR="$ODS_BOOTSTRAP_ROOT/ods"
+INSTALL_DIR="${ODS_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/ods}"
+LEGACY_DREAMSERVER_DIR="${DREAMSERVER_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/dream-server}"
 ODS_REF="${ODS_REF:-${ODS_BOOTSTRAP_REF:-}}"
 
 log()     { echo -e "${CYAN}[ods]${NC} $1"; }
 success() { echo -e "${GREEN}[  ok ]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[warn ]${NC} $1"; }
 error()   { echo -e "${RED}[error]${NC} $1"; exit 1; }
+
+is_truthy() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|y|Y) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+refuse_legacy_dreamserver_install() {
+    is_truthy "${ODS_ALLOW_DREAMSERVER_PARALLEL:-}" && return 0
+
+    local findings=()
+    if [[ -d "$LEGACY_DREAMSERVER_DIR" ]] && {
+        [[ -f "$LEGACY_DREAMSERVER_DIR/.env" ]] ||
+        [[ -f "$LEGACY_DREAMSERVER_DIR/dream-cli" ]] ||
+        [[ -f "$LEGACY_DREAMSERVER_DIR/docker-compose.yml" ]] ||
+        [[ -d "$LEGACY_DREAMSERVER_DIR/data" ]]
+    }; then
+        findings+=("install directory: $LEGACY_DREAMSERVER_DIR")
+    fi
+
+    if command -v docker >/dev/null 2>&1; then
+        local legacy_containers legacy_volumes
+        legacy_containers=$(docker ps -a --filter "name=^/dream-" --format '{{.Names}}' 2>/dev/null || true)
+        legacy_volumes=$(docker volume ls --filter "name=dream" --format '{{.Name}}' 2>/dev/null || true)
+        [[ -n "$legacy_containers" ]] && findings+=("containers: $(echo "$legacy_containers" | tr '\n' ' ')")
+        [[ -n "$legacy_volumes" ]] && findings+=("volumes: $(echo "$legacy_volumes" | tr '\n' ' ')")
+    fi
+
+    if (( ${#findings[@]} > 0 )); then
+        echo ""
+        warn "Existing DreamServer install detected before first ODS install."
+        echo ""
+        echo "ODS uses the same default ports and service roles as DreamServer."
+        echo "Resolve the old install intentionally before installing ODS, or run in"
+        echo "parallel only after choosing separate ports and an explicit install dir."
+        echo ""
+        echo "Detected:"
+        printf '  - %s\n' "${findings[@]}"
+        echo ""
+        echo "To proceed after you have isolated the old stack:"
+        echo "  ODS_ALLOW_DREAMSERVER_PARALLEL=1 ODS_INSTALL_DIR=\"$INSTALL_DIR\" bash get-ods.sh"
+        echo ""
+        exit 1
+    fi
+}
 
 # ── Banner ──────────────────────────────────────
 echo ""
@@ -210,6 +257,8 @@ if [[ -d "$INSTALL_DIR" ]]; then
 fi
 
 # ── Clone repository ──────────────────────────────
+refuse_legacy_dreamserver_install
+
 log "Cloning ODS..."
 if [[ -n "$ODS_REF" ]]; then
     log "Using repository ref: $ODS_REF"

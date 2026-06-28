@@ -1711,6 +1711,9 @@ LITELLM_UPGRADE_EOF
     else
         log "WARNING: llama-server health check timed out. The model may still be loading."
         log "Check: docker logs ods-llama-server"
+        write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+            "Full model downloaded and verified, but Docker llama-server did not become healthy after the hot-swap. Bootstrap model kept; inspect docker logs ods-llama-server and re-run to retry."
+        exit 1
     fi
 elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
     # macOS native llama-server (Metal) — restart with new model

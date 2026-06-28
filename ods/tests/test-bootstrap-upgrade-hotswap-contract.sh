@@ -149,3 +149,14 @@ grep -qF 'write_status "failed"' <<<"$windows_failure_block" \
 grep -qF 'exit 1' <<<"$windows_failure_block" \
     || fail "Windows Lemonade hot-swap failure must exit non-zero"
 pass "Windows Lemonade hot-swap failure is honest"
+
+docker_timeout_block="$(awk '
+    /llama-server health check timed out/ { in_block=1 }
+    in_block { print }
+    in_block && /exit 1/ { exit }
+' "$TARGET" | grep -v '^[[:space:]]*#')"
+grep -qF 'write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES"' <<<"$docker_timeout_block" \
+    || fail "Docker hot-swap timeout must mark bootstrap status failed with real byte counts"
+grep -qF 'exit 1' <<<"$docker_timeout_block" \
+    || fail "Docker hot-swap timeout must exit non-zero"
+pass "Docker hot-swap timeout is honest"

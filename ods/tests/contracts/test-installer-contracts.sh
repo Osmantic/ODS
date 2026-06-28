@@ -49,6 +49,22 @@ bash tests/contracts/test-external-lemonade-contracts.sh
 echo "[contract] bootstrap hot-swap force-recreate"
 bash tests/test-bootstrap-upgrade-hotswap-contract.sh
 
+echo "[contract] ODS rename migration guardrails"
+grep -qF 'ODS_ALLOW_DREAMSERVER_PARALLEL' get-ods.sh \
+  || { echo "[FAIL] get-ods.sh must require an explicit override before parallel DreamServer installs"; exit 1; }
+grep -qF 'ODS_INSTALL_DIR' get-ods.sh \
+  || { echo "[FAIL] get-ods.sh must allow an explicit ODS install dir for isolated parallel testing"; exit 1; }
+grep -qF 'dream-server' get-ods.sh \
+  || { echo "[FAIL] get-ods.sh must detect legacy ~/dream-server installs"; exit 1; }
+grep -qF 'name=^/dream-' get-ods.sh \
+  || { echo "[FAIL] get-ods.sh must detect legacy DreamServer containers"; exit 1; }
+grep -qF 'ODS_ALLOW_DREAMSERVER_PARALLEL' installers/phases/01-preflight.sh \
+  || { echo "[FAIL] Linux installer preflight must gate legacy DreamServer coexistence"; exit 1; }
+grep -qF 'name=^/dream-' installers/phases/01-preflight.sh \
+  || { echo "[FAIL] Linux installer preflight must detect legacy DreamServer containers"; exit 1; }
+grep -qFx 'ods/ods-cli text eol=lf' ../.gitattributes \
+  || { echo "[FAIL] .gitattributes must force LF checkout for extensionless ods/ods-cli"; exit 1; }
+
 echo "[contract] bootstrap download finalization is non-destructive"
 bash tests/test-bootstrap-upgrade-download-finalization.sh
 

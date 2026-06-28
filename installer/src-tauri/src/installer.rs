@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 const REPO_URL: &str = "https://github.com/Light-Heart-Labs/ODS.git";
-const DEFAULT_INSTALL_REF: &str = "v2.5.0";
+const DEFAULT_INSTALL_REF: &str = "main";
 
 fn install_ref() -> &'static str {
     option_env!("ODS_INSTALL_REF").unwrap_or(DEFAULT_INSTALL_REF)
@@ -193,7 +193,11 @@ fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
 
     if !clone.status.success() {
         let err = String::from_utf8_lossy(&clone.stderr);
-        return Err(format!("Git clone failed: {}", err));
+        return Err(format!(
+            "Git clone failed for ODS ref '{}': {}",
+            install_ref(),
+            err
+        ));
     }
 
     validate_checkout(install_dir)
@@ -325,5 +329,27 @@ pub fn default_install_dir() -> PathBuf {
     {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
         PathBuf::from(home).join("ODS")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_install_ref_uses_existing_ods_branch() {
+        assert_eq!(DEFAULT_INSTALL_REF, "main");
+    }
+
+    #[test]
+    fn normalize_repo_url_accepts_common_github_forms() {
+        assert_eq!(
+            normalize_repo_url("git@github.com:Light-Heart-Labs/ODS.git"),
+            normalize_repo_url(REPO_URL)
+        );
+        assert_eq!(
+            normalize_repo_url("ssh://git@github.com/Light-Heart-Labs/ODS.git/"),
+            normalize_repo_url(REPO_URL)
+        );
     }
 }

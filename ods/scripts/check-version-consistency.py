@@ -106,6 +106,20 @@ def main() -> int:
     add_regex_check(
         checks,
         errors,
+        "installers/windows/lib/constants.ps1 ODS_VERSION",
+        ROOT / "installers/windows/lib/constants.ps1",
+        r'^\$script:ODS_VERSION\s*=\s*"([^"]+)"',
+    )
+    add_regex_check(
+        checks,
+        errors,
+        "installers/phases/06-directories.sh ODS_VERSION fallback",
+        ROOT / "installers/phases/06-directories.sh",
+        r"^ODS_VERSION=\$\{VERSION:-([^}]+)\}",
+    )
+    add_regex_check(
+        checks,
+        errors,
         "ARCHITECTURE.md version",
         ROOT.parent / "ARCHITECTURE.md",
         r"^> Version ([0-9]+\.[0-9]+\.[0-9]+)\s+\|",

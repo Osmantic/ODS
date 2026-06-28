@@ -4,6 +4,7 @@
 # and fails with "no such file or directory").
 *.sh text eol=lf
 *.bash text eol=lf
+ods/ods-cli text eol=lf
 Dockerfile* text eol=lf
 docker-entrypoint* text eol=lf
 *.yaml text eol=lf

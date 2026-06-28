@@ -96,6 +96,37 @@ if [[ ! -f "$SCRIPT_DIR/docker-compose.yml" ]] && [[ ! -f "$SCRIPT_DIR/docker-co
     error "No compose files found in $SCRIPT_DIR. Please run from the ods directory."
 fi
 
+_ods_truthy() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|y|Y) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+if [[ ! -d "$INSTALL_DIR" ]] && ! _ods_truthy "${ODS_ALLOW_DREAMSERVER_PARALLEL:-}"; then
+    _legacy_dreamserver_dir="${DREAMSERVER_INSTALL_DIR:-$HOME/dream-server}"
+    _legacy_dreamserver_findings=()
+    if [[ -d "$_legacy_dreamserver_dir" ]] && {
+        [[ -f "$_legacy_dreamserver_dir/.env" ]] ||
+        [[ -f "$_legacy_dreamserver_dir/dream-cli" ]] ||
+        [[ -f "$_legacy_dreamserver_dir/docker-compose.yml" ]] ||
+        [[ -d "$_legacy_dreamserver_dir/data" ]]
+    }; then
+        _legacy_dreamserver_findings+=("install directory: $_legacy_dreamserver_dir")
+    fi
+    if command -v docker >/dev/null 2>&1; then
+        _legacy_dreamserver_containers=$(docker ps -a --filter "name=^/dream-" --format '{{.Names}}' 2>/dev/null || true)
+        _legacy_dreamserver_volumes=$(docker volume ls --filter "name=dream" --format '{{.Name}}' 2>/dev/null || true)
+        [[ -n "$_legacy_dreamserver_containers" ]] && _legacy_dreamserver_findings+=("containers: $(echo "$_legacy_dreamserver_containers" | tr '\n' ' ')")
+        [[ -n "$_legacy_dreamserver_volumes" ]] && _legacy_dreamserver_findings+=("volumes: $(echo "$_legacy_dreamserver_volumes" | tr '\n' ' ')")
+    fi
+    if (( ${#_legacy_dreamserver_findings[@]} > 0 )); then
+        printf '%s\n' "${_legacy_dreamserver_findings[@]}" | sed 's/^/[legacy DreamServer] /' >&2
+        error "Existing DreamServer install detected before first ODS install. Stop, uninstall, or migrate the old DreamServer stack first. To run both intentionally, set ODS_ALLOW_DREAMSERVER_PARALLEL=1 and choose non-conflicting ports/install paths."
+    fi
+    unset _legacy_dreamserver_dir _legacy_dreamserver_findings _legacy_dreamserver_containers _legacy_dreamserver_volumes
+fi
+
 # Existing installation — update in place (secrets and data are preserved)
 if [[ -d "$INSTALL_DIR" ]]; then
     log "Existing installation found at $INSTALL_DIR — updating in place"

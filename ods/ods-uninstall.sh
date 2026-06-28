@@ -73,7 +73,7 @@ This will remove:
     - Docker containers, images, and volumes for ODS
     - Installation directory ($INSTALL_DIR)
     - Systemd user services (opencode-web, openclaw timers)
-    - CLI symlink (/usr/local/bin/ods-cli)
+    - CLI symlinks (/usr/local/bin/ods, ~/.local/bin/ods, legacy /usr/local/bin/ods-cli)
     - Backup directory (~/.ods)
 
 EOF
@@ -245,12 +245,26 @@ sudo rm -f /etc/systemd/system/ods-host-agent.service 2>/dev/null || true
 sudo systemctl daemon-reload 2>/dev/null || true
 log_ok "Systemd services removed"
 
-# 3. Remove CLI symlink
-if [[ -L "/usr/local/bin/ods-cli" ]]; then
-    log_info "Removing CLI symlink..."
-    sudo rm -f /usr/local/bin/ods-cli 2>/dev/null || rm -f /usr/local/bin/ods-cli 2>/dev/null || true
-    log_ok "CLI symlink removed"
+# 3. Remove CLI symlinks
+_removed_cli_symlink=false
+for _ods_cli_link in "/usr/local/bin/ods" "$HOME/.local/bin/ods" "/usr/local/bin/ods-cli"; do
+    if [[ -L "$_ods_cli_link" ]]; then
+        log_info "Removing CLI symlink: $_ods_cli_link"
+        case "$_ods_cli_link" in
+            /usr/local/bin/*)
+                sudo rm -f "$_ods_cli_link" 2>/dev/null || rm -f "$_ods_cli_link" 2>/dev/null || true
+                ;;
+            *)
+                rm -f "$_ods_cli_link" 2>/dev/null || true
+                ;;
+        esac
+        _removed_cli_symlink=true
+    fi
+done
+if $_removed_cli_symlink; then
+    log_ok "CLI symlinks removed"
 fi
+unset _removed_cli_symlink _ods_cli_link
 
 # 4. Remove desktop file
 DESKTOP_FILE="$HOME/.local/share/applications/ods.desktop"

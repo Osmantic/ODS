@@ -98,6 +98,8 @@ main() {
     local log_keep="$TMP_DIR/docker-keep.log"
     mkdir -p "$home_keep"
     make_install "$install_keep"
+    mkdir -p "$home_keep/.local/bin"
+    ln -s "$install_keep/ods-cli" "$home_keep/.local/bin/ods"
     DOCKER_LOG="$log_keep" run_uninstall "$install_keep" "$home_keep" "$stub_dir" --keep-data
 
     grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$log_keep" \
@@ -106,6 +108,9 @@ main() {
         fail "--keep-data must not remove compose volumes with -v"
     fi
     pass "uninstall uses saved compose flags and preserves volumes with --keep-data"
+    [[ ! -L "$home_keep/.local/bin/ods" ]] \
+        || fail "uninstall must remove the user-level ods CLI symlink"
+    pass "uninstall removes user-level ods CLI symlink"
 
     local install_purge="$TMP_DIR/install-purge"
     local home_purge="$TMP_DIR/home-purge"

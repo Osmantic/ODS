@@ -25,11 +25,11 @@ That script:
 - copies the runtime product files into `~/ods`;
 - runs `./install.sh` from that copied runtime tree.
 
-By default the bootstrap follows `main`. To pin a release tag or branch, set
-`ODS_REF` before running the script:
+By default the bootstrap follows `main`. To select a published release tag or
+another branch, set `ODS_REF` before running the script:
 
 ```bash
-ODS_REF=v2.5.0 bash get-ods.sh
+ODS_REF=main bash get-ods.sh
 ```
 
 ### Manual Source Install
@@ -38,7 +38,7 @@ For the most auditable path, clone a known ref yourself and run the installer
 from the checked-out source:
 
 ```bash
-git clone --depth 1 --branch v2.5.0 https://github.com/Light-Heart-Labs/ODS.git
+git clone --depth 1 --branch main https://github.com/Light-Heart-Labs/ODS.git
 cd ODS/ods
 ./install.sh
 ```
@@ -52,7 +52,7 @@ Windows users should install from a normal user PowerShell, not an elevated
 Administrator shell:
 
 ```powershell
-git clone --depth 1 --branch v2.5.0 https://github.com/Light-Heart-Labs/ODS.git
+git clone --depth 1 --branch main https://github.com/Light-Heart-Labs/ODS.git
 cd ODS\ods
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
@@ -75,13 +75,13 @@ inspect it first:
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/Light-Heart-Labs/ODS/main/ods/get-ods.sh
 less get-ods.sh
-ODS_REF=v2.5.0 bash get-ods.sh
+ODS_REF=main bash get-ods.sh
 ```
 
 On Windows, clone first and inspect `install.ps1` before running it:
 
 ```powershell
-git clone --depth 1 --branch v2.5.0 https://github.com/Light-Heart-Labs/ODS.git
+git clone --depth 1 --branch main https://github.com/Light-Heart-Labs/ODS.git
 cd ODS\ods
 notepad .\install.ps1
 .\install.ps1
