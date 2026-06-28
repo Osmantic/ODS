@@ -1,0 +1,10 @@
+# ShellCheck configuration for ODS
+# https://www.shellcheck.net/wiki/
+
+# Allow sourcing files that can't be resolved statically
+# (libs are sourced by install-core.sh at runtime)
+disable=SC1090
+disable=SC1091
+
+# Allow using $'...' in older bash (we target bash 4+)
+disable=SC3003

@@ -1,0 +1,35 @@
+services:
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1
+    platform: linux/amd64  # TEI has no arm64 image -- Rosetta 2 on Apple Silicon
+    container_name: ods-embeddings
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - MODEL_ID=${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}
+      - HF_HUB_DOWNLOAD_TIMEOUT=${HF_HUB_DOWNLOAD_TIMEOUT:-120}
+      - HF_HUB_ETAG_TIMEOUT=${HF_HUB_ETAG_TIMEOUT:-30}
+    volumes:
+      - ./data/embeddings:/data:z
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${EMBEDDINGS_PORT:-8090}:80"
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 600s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

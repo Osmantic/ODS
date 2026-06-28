@@ -1,0 +1,4599 @@
+#!/usr/bin/env bash
+# ods-cli - Command line interface for ODS
+# Mission: M5 (Clonable ODS Setup Server)
+# Version: 2.0.0 — Registry-driven service resolution
+
+set -euo pipefail
+
+# Require Bash 4+ (associative arrays used by service registry and ods-cli)
+if (( BASH_VERSINFO[0] < 4 )); then
+    echo -e "\033[0;31m✗\033[0m ods-cli requires Bash 4.0+ (you have $BASH_VERSION)" >&2
+    echo "  macOS ships Bash 3.2 due to licensing. Install a modern version:" >&2
+    echo "    brew install bash" >&2
+    echo "  Then re-run with:  /opt/homebrew/bin/bash $0 $*" >&2
+    exit 1
+fi
+
+#=============================================================================
+# Configuration
+#=============================================================================
+_source="${BASH_SOURCE[0]}"
+while [[ -L "$_source" ]]; do
+    _dir="$(cd "$(dirname "$_source")" && pwd)"
+    _source="$(readlink "$_source")"
+    [[ "$_source" != /* ]] && _source="$_dir/$_source"
+done
+SCRIPT_DIR="$(cd "$(dirname "$_source")" && pwd)"
+INSTALL_DIR="${ODS_HOME:-$HOME/ods}"
+VERSION="2.0.0"
+if [[ -f "$INSTALL_DIR/.env" ]]; then
+    _v=$(awk -F= '/^ODS_VERSION=/{gsub(/^["'"'"']|["'"'"']$/,"",$2); print $2; exit}' "$INSTALL_DIR/.env" 2>/dev/null) || true
+    [[ -n "${_v:-}" ]] && VERSION="$_v"
+fi
+
+# Colors — use ANSI-C quoting ($'\033') so the variables hold real ESC bytes
+# at assignment time. Single-quoted strings store the backslash literally,
+# which breaks unquoted heredocs (cmd_help) that never re-interpret escapes.
+# Guard on TTY + NO_COLOR so redirected / piped output stays clean.
+# Per no-color.org, NO_COLOR disables colors when it is present (set to any
+# value, including empty), so we check set-ness with ${NO_COLOR+x} — which
+# expands to "x" whenever NO_COLOR is set and to "" only when truly unset —
+# rather than ${NO_COLOR:-} which would treat NO_COLOR="" as unset.
+if [[ -t 1 ]] && [[ -z "${NO_COLOR+x}" ]]; then
+    RED=$'\033[0;31m'
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[1;33m'
+    BLUE=$'\033[0;34m'
+    CYAN=$'\033[0;36m'
+    NC=$'\033[0m'
+else
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    CYAN=''
+    NC=''
+fi
+
+#=============================================================================
+# Helpers
+#=============================================================================
+log() { echo -e "${CYAN}[ods]${NC} $1" >&2; }
+success() { echo -e "${GREEN}✓${NC} $1"; }
+warn() { echo -e "${YELLOW}⚠${NC} $1" >&2; }
+error() { echo -e "${RED}✗${NC} $1" >&2; exit 1; }
+log_error() { echo -e "${RED}✗${NC} $1" >&2; }
+
+# Map cmd_list status string to a colour. Returns an empty string for unknown
+# statuses so future state names don't break formatting.
+_status_color() {
+    case "$1" in
+        enabled|always-on) echo "$GREEN" ;;
+        disabled|stopped)  echo "$YELLOW" ;;
+        unhealthy|error)   echo "$RED" ;;
+        *)                 echo "" ;;
+    esac
+}
+
+_json_escape() {
+    local s="${1-}"
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\b'/\\b}
+    s=${s//$'\f'/\\f}
+    s=${s//$'\n'/\\n}
+    s=${s//$'\r'/\\r}
+    s=${s//$'\t'/\\t}
+    printf '%s' "$s"
+}
+
+# Print a separator of repeated characters filling the given width.
+# Usage: hr <width> [<char=─>]
+hr() {
+    local w="${1:-10}" c="${2:-─}" out=''
+    printf -v out '%*s' "$w" ''
+    printf '%s' "${out// /$c}"
+}
+
+# Update or add a key=value in .env
+_env_set() {
+    local key="$1" val="$2" file="$INSTALL_DIR/.env"
+    if grep -q "^${key}=" "$file" 2>/dev/null; then
+        # Use awk to avoid sed delimiter collisions with values containing | / or =
+        awk -v k="$key" -v v="$val" '{
+            if (index($0, k "=") == 1) print k "=" v; else print
+        }' "$file" > "${file}.tmp" && cat "${file}.tmp" > "$file" && rm -f "${file}.tmp"
+    else
+        echo "${key}=${val}" >> "$file"
+    fi
+}
+
+_env_unset() {
+    local key="$1" file="$INSTALL_DIR/.env"
+    [[ -f "$file" ]] || return 0
+    awk -v k="$key" 'index($0, k "=") != 1 { print }' "$file" > "${file}.tmp" \
+        && cat "${file}.tmp" > "$file" \
+        && rm -f "${file}.tmp"
+}
+
+_env_get_raw() {
+    local key="$1" file="$INSTALL_DIR/.env"
+    [[ -f "$file" ]] || { echo ""; return 0; }
+    grep -m1 "^${key}=" "$file" 2>/dev/null | cut -d= -f2- | tr -d '\r' || true
+}
+
+_get_host_logical_cpus() {
+    local cores
+    cores=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo "1")
+    if [[ "$cores" =~ ^[0-9]+$ ]] && [[ "$cores" -gt 0 ]]; then
+        echo "$cores"
+    else
+        echo "1"
+    fi
+}
+
+_get_docker_available_cpus() {
+    local cores=""
+    if command -v docker &>/dev/null; then
+        cores=$(docker info --format '{{.NCPU}}' 2>/dev/null || true)
+        cores="${cores//[!0-9]/}"
+    fi
+
+    if [[ "$cores" =~ ^[0-9]+$ ]] && [[ "$cores" -gt 0 ]]; then
+        echo "$cores"
+        return 0
+    fi
+
+    _get_host_logical_cpus
+}
+
+_calculate_llama_cpu_budget() {
+    local backend="${1:-cpu}"
+    local available="${2:-$(_get_docker_available_cpus)}"
+    local desired_limit=8
+    local desired_reservation=1
+
+    case "$backend" in
+        amd)
+            desired_limit=16
+            desired_reservation=4
+            ;;
+        nvidia|intel|sycl)
+            desired_limit=16
+            desired_reservation=2
+            ;;
+        apple)
+            desired_limit=8
+            desired_reservation=2
+            ;;
+    esac
+
+    if ! [[ "$available" =~ ^[0-9]+$ ]] || [[ "$available" -lt 1 ]]; then
+        available=1
+    fi
+
+    local limit="$desired_limit"
+    local reservation="$desired_reservation"
+    [[ "$available" -lt "$limit" ]] && limit="$available"
+    [[ "$reservation" -gt "$limit" ]] && reservation="$limit"
+
+    echo "$limit $reservation $available"
+}
+
+_select_auto_cpu_value() {
+    local existing="$1" detected="$2"
+    if [[ "$existing" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN { exit !($existing > 0 && $existing <= $detected) }"; then
+        echo "$existing"
+    else
+        echo "$detected"
+    fi
+}
+
+_cap_cpu_value() {
+    local desired="$1" ceiling="$2"
+    awk -v desired="$desired" -v ceiling="$ceiling" '
+        BEGIN {
+            if (ceiling <= 0) ceiling = 1
+            value = desired
+            if (value > ceiling) value = ceiling
+            if (value < 0.01) value = 0.01
+            printf "%.1f", value
+        }'
+}
+
+_ensure_service_cpu_pair() {
+    local available="$1" name="$2" desired_limit="$3" desired_reservation="$4"
+    local limit_key="${name}_CPU_LIMIT"
+    local reservation_key="${name}_CPU_RESERVATION"
+    local detected_limit detected_reservation current_limit current_reservation final_limit final_reservation
+
+    detected_limit="$(_cap_cpu_value "$desired_limit" "$available")"
+    current_limit="$(_env_get_raw "$limit_key")"
+    final_limit="$(_select_auto_cpu_value "$current_limit" "$detected_limit")"
+
+    detected_reservation="$(_cap_cpu_value "$desired_reservation" "$final_limit")"
+    current_reservation="$(_env_get_raw "$reservation_key")"
+    final_reservation="$(_select_auto_cpu_value "$current_reservation" "$detected_reservation")"
+    if awk "BEGIN { exit !($final_reservation > $final_limit) }"; then
+        final_reservation="$final_limit"
+    fi
+
+    if [[ "$current_limit" != "$final_limit" ]]; then
+        _env_set "$limit_key" "$final_limit"
+        SERVICE_CPU_BUDGET_CHANGED=true
+    fi
+    if [[ "$current_reservation" != "$final_reservation" ]]; then
+        _env_set "$reservation_key" "$final_reservation"
+        SERVICE_CPU_BUDGET_CHANGED=true
+    fi
+}
+
+ensure_llama_cpu_budget() {
+    local env_file="$INSTALL_DIR/.env"
+    [[ -f "$env_file" ]] || return 0
+
+    local backend
+    backend="$(_env_get_raw "GPU_BACKEND")"
+    backend=$(echo "${backend:-cpu}" | tr '[:upper:]' '[:lower:]')
+    [[ "$backend" == "none" ]] && backend="cpu"
+
+    local limit_raw reservation_raw available
+    read -r limit_raw reservation_raw available <<< "$(_calculate_llama_cpu_budget "$backend")"
+
+    local detected_limit="${limit_raw}.0"
+    local detected_reservation="${reservation_raw}.0"
+    local current_limit current_reservation final_limit final_reservation
+    current_limit="$(_env_get_raw "LLAMA_CPU_LIMIT")"
+    current_reservation="$(_env_get_raw "LLAMA_CPU_RESERVATION")"
+    final_limit="$(_select_auto_cpu_value "$current_limit" "$detected_limit")"
+    final_reservation="$(_select_auto_cpu_value "$current_reservation" "$detected_reservation")"
+
+    if awk "BEGIN { exit !($final_reservation > $final_limit) }"; then
+        final_reservation="$final_limit"
+    fi
+
+    local changed=false
+    if [[ "$current_limit" != "$final_limit" ]]; then
+        _env_set "LLAMA_CPU_LIMIT" "$final_limit"
+        changed=true
+    fi
+    if [[ "$current_reservation" != "$final_reservation" ]]; then
+        _env_set "LLAMA_CPU_RESERVATION" "$final_reservation"
+        changed=true
+    fi
+
+    if [[ "$changed" == "true" ]]; then
+        log "Auto-adjusted llama-server CPU budget: limit=${final_limit}, reservation=${final_reservation} (Docker CPUs: ${available})"
+    fi
+
+    SERVICE_CPU_BUDGET_CHANGED=false
+    _ensure_service_cpu_pair "$available" "TTS" "8.0" "2.0"
+    _ensure_service_cpu_pair "$available" "WHISPER" "4.0" "1.0"
+    _ensure_service_cpu_pair "$available" "HERMES" "4.0" "0.5"
+    _ensure_service_cpu_pair "$available" "COMFYUI" "16.0" "2.0"
+    if [[ "$SERVICE_CPU_BUDGET_CHANGED" == "true" ]]; then
+        log "Auto-adjusted bundled service CPU budgets (Docker CPUs: ${available})"
+    fi
+    unset SERVICE_CPU_BUDGET_CHANGED
+}
+
+check_install() {
+    if [[ ! -d "$INSTALL_DIR" ]]; then
+        error "ODS not found at $INSTALL_DIR. Set ODS_HOME or run installer first."
+    fi
+    if [[ ! -f "$INSTALL_DIR/docker-compose.base.yml" ]]; then
+        # Backward compat: check for monolithic docker-compose.yml
+        if [[ ! -f "$INSTALL_DIR/docker-compose.yml" ]]; then
+            error "docker-compose.base.yml not found in $INSTALL_DIR"
+        fi
+    fi
+}
+
+# Extract the major component of a semver string (e.g. "2.1.0" → "2").
+# Used only for counting major-version jumps; not for ordering comparisons.
+_semver_major() {
+    echo "${1%%.*}"
+}
+
+# Full 3-component semver less-than: returns 0 (true) if v1 < v2.
+# Strips any leading "v" and ignores pre-release suffixes.
+_semver_lt() {
+    local v1="${1#v}" v2="${2#v}"
+    local IFS='.'
+    local -a a=($v1) b=($v2)
+    local i
+    for i in 0 1 2; do
+        local n1="${a[$i]:-0}" n2="${b[$i]:-0}"
+        n1="${n1%%[!0-9]*}" n2="${n2%%[!0-9]*}"
+        if (( n1 < n2 )); then return 0; fi
+        if (( n1 > n2 )); then return 1; fi
+    done
+    return 1  # equal → not less-than
+}
+
+# Read a top-level or nested string field from a JSON file.
+# Usage: _manifest_field <file> <field>   e.g. _manifest_field manifest.json ods_version
+# Logs a warning to stderr on parse failure rather than silently returning empty.
+_manifest_field() {
+    local file="$1" field="$2" value=""
+    if [[ ! -f "$file" ]]; then
+        warn "_manifest_field: file not found: ${file}" >&2
+        return 1
+    fi
+    if command -v jq &>/dev/null; then
+        if ! value=$(jq -r --arg f "$field" '.[$f] // .release.version // empty' "$file"); then
+            warn "_manifest_field: jq failed to parse ${file}" >&2
+        fi
+    fi
+    if [[ -z "$value" ]] && command -v python3 &>/dev/null; then
+        # Pass file and field as argv to avoid shell-injection via string interpolation.
+        if ! value=$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    f = sys.argv[2]
+    print(d.get(f) or d.get("release", {}).get("version") or "")
+except Exception as e:
+    sys.stderr.write("_manifest_field: " + str(e) + "\n")
+' "$file" "$field"); then
+            warn "_manifest_field: python3 failed to parse ${file}" >&2
+        fi
+    fi
+    echo "$value"
+}
+
+# Version compatibility check for ods update.
+# Returns 0 (ok) or 1 (user aborted / hard-blocked).
+# Sets _COMPAT_INSTALLED_VER and _COMPAT_TARGET_VER as side-effects.
+#
+# Version source precedence (single source of truth policy):
+#   installed: ODS_VERSION in .env  >  .version file  >  manifest.json ods_version
+#   target:    manifest.json ods_version  (post-pull reflects the incoming release)
+_check_version_compat() {
+    local force="${1:-false}"
+
+    # 1. Installed version
+    # `|| true` preserves the tolerant fallback semantics required by
+    # the maintainer audit on PR #998: under `set -euo pipefail`,
+    # a fresh install whose .env lacks ODS_VERSION must fall back
+    # to .version / manifest.json (handled below), not exit out of
+    # the surrounding command. Landed on main via #1008.
+    _COMPAT_INSTALLED_VER=$(grep '^ODS_VERSION=' "$INSTALL_DIR/.env" 2>/dev/null \
+        | sed -n '1p' | cut -d= -f2 | tr -d '[:space:]' || true)
+    # Fall back to .version file (written by ods-update.sh / PR #349 convention)
+    if [[ -z "$_COMPAT_INSTALLED_VER" && -f "$INSTALL_DIR/.version" ]]; then
+        _COMPAT_INSTALLED_VER=$(jq -r '.version // empty' "$INSTALL_DIR/.version" 2>/dev/null \
+            || grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' \
+                "$INSTALL_DIR/.version" 2>/dev/null | cut -d'"' -f4 \
+            || true)
+    fi
+    if [[ -z "$_COMPAT_INSTALLED_VER" && -f "$INSTALL_DIR/manifest.json" ]]; then
+        _COMPAT_INSTALLED_VER=$(_manifest_field "$INSTALL_DIR/manifest.json" "ods_version")
+    fi
+    [[ -z "$_COMPAT_INSTALLED_VER" ]] && _COMPAT_INSTALLED_VER="$VERSION"
+
+    # 2. Target version — from manifest.json (reflects the incoming release after pull)
+    _COMPAT_TARGET_VER=""
+    if [[ -f "$INSTALL_DIR/manifest.json" ]]; then
+        _COMPAT_TARGET_VER=$(_manifest_field "$INSTALL_DIR/manifest.json" "ods_version")
+    fi
+
+    # 3. min_compatible_ods_version — read via _manifest_field to avoid 2>/dev/null + injection
+    local min_compat_ver=""
+    if [[ -f "$INSTALL_DIR/manifest.json" ]]; then
+        min_compat_ver=$(_manifest_field "$INSTALL_DIR/manifest.json" "min_compatible_ods_version")
+    fi
+
+    # Skip checks if we can't determine versions
+    if [[ -z "$_COMPAT_INSTALLED_VER" || -z "$_COMPAT_TARGET_VER" ]]; then
+        return 0
+    fi
+    # Skip if installed == target (no actual update)
+    [[ "$_COMPAT_INSTALLED_VER" == "$_COMPAT_TARGET_VER" ]] && return 0
+
+    local cur_major new_major
+    cur_major=$(_semver_major "$_COMPAT_INSTALLED_VER")
+    new_major=$(_semver_major "$_COMPAT_TARGET_VER")
+    # major_jump may be negative (downgrade); use arithmetic not regex for sign-aware logic
+    local major_jump=$(( new_major - cur_major ))
+
+    # 4. Downgrade detection — warn and confirm before proceeding
+    if (( major_jump < 0 )); then
+        echo ""
+        echo -e "${YELLOW}┌──────────────────────────────────────────────────────────┐${NC}"
+        echo -e "${YELLOW}│  Downgrade detected                                      │${NC}"
+        echo -e "${YELLOW}└──────────────────────────────────────────────────────────┘${NC}"
+        echo ""
+        warn "Installed : v${_COMPAT_INSTALLED_VER}  (major ${cur_major})"
+        warn "Target    : v${_COMPAT_TARGET_VER}  (major ${new_major})"
+        echo ""
+        log "Downgrading may corrupt data or break your installation."
+        log "Consider restoring a backup instead: ods rollback"
+        echo ""
+        if [[ "$force" == "true" ]]; then
+            warn "--force specified: proceeding with downgrade."
+        else
+            read -p "  Proceed with downgrade? [y/N] " -n 1 -r
+            echo ""
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log "Update cancelled."
+                return 1
+            fi
+        fi
+        echo ""
+    fi
+
+    # 5. Hard block: installed version is below min_compatible_ods_version.
+    #    Uses full 3-component comparison — major-only was insufficient
+    #    (e.g. 1.2.0 vs min 1.5.0 both have major 1 but 1.2.0 < 1.5.0).
+    if [[ -n "$min_compat_ver" ]] && _semver_lt "$_COMPAT_INSTALLED_VER" "$min_compat_ver"; then
+        echo ""
+        echo -e "${RED}╔══════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${RED}║  UPGRADE BLOCKED — installed version is too old          ║${NC}"
+        echo -e "${RED}╚══════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        warn "Installed : v${_COMPAT_INSTALLED_VER}"
+        warn "Target    : v${_COMPAT_TARGET_VER}"
+        warn "Minimum   : v${min_compat_ver} (min_compatible_ods_version)"
+        echo ""
+        log "Your installation is below the minimum supported upgrade version."
+        log "Upgrade incrementally: first update to v${min_compat_ver}, then re-run."
+        log "See CHANGELOG.md for migration steps."
+        echo ""
+        if [[ "$force" == "true" ]]; then
+            warn "--force specified: proceeding despite compatibility block. DATA LOSS RISK."
+        else
+            log "Use 'ods update --force' to override (not recommended)."
+            return 1
+        fi
+    fi
+
+    # 6. Warn: major version jump > 1
+    if (( major_jump > 1 )); then
+        echo ""
+        echo -e "${YELLOW}┌──────────────────────────────────────────────────────────┐${NC}"
+        echo -e "${YELLOW}│  Major version jump detected                             │${NC}"
+        echo -e "${YELLOW}└──────────────────────────────────────────────────────────┘${NC}"
+        echo ""
+        warn "Installed  : v${_COMPAT_INSTALLED_VER}  (major ${cur_major})"
+        warn "Target     : v${_COMPAT_TARGET_VER}  (major ${new_major})"
+        warn "Jump       : ${major_jump} major versions"
+        echo ""
+        log "Skipping more than 1 major version may introduce breaking changes."
+        log "Recommended: upgrade step-by-step (v${cur_major} → v$((cur_major+1)) → … → v${new_major})."
+        log "Review CHANGELOG.md for each major version before proceeding."
+        echo ""
+        if [[ "$force" == "true" ]]; then
+            warn "--force specified: skipping confirmation."
+        else
+            read -p "  Proceed with v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER} anyway? [y/N] " -n 1 -r
+            echo ""
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log "Update cancelled."
+                return 1
+            fi
+            warn "Proceeding — back up your data first: ods backup"
+        fi
+        echo ""
+    fi
+
+    return 0
+}
+
+#=============================================================================
+# Safe .env loading (no eval; use lib/safe-env.sh)
+#=============================================================================
+[[ -f "$SCRIPT_DIR/lib/safe-env.sh" ]] && . "$SCRIPT_DIR/lib/safe-env.sh"
+load_env() {
+    [[ -f "$INSTALL_DIR/.env" ]] || { warn ".env not found at $INSTALL_DIR — run installer first"; return 1; }
+    load_env_file "$INSTALL_DIR/.env"
+}
+
+#=============================================================================
+# Service Registry
+#=============================================================================
+. "$SCRIPT_DIR/lib/service-registry.sh"
+
+# Resolve a user-provided service name to a compose service ID
+resolve_service() {
+    local resolved
+    resolved=$(sr_resolve "$1")
+    echo "$resolved"
+}
+
+# Regenerate .compose-flags after enable/disable
+_regenerate_compose_flags() {
+    if [[ -x "$INSTALL_DIR/scripts/resolve-compose-stack.sh" ]]; then
+        # --gpu-count gates the multigpu-{backend}.yml overlay; without it,
+        # toggling any extension would silently strip multi-GPU plumbing
+        # from the persisted cache.
+        "$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
+            --script-dir "$INSTALL_DIR" --tier "${TIER:-1}" --gpu-backend "${GPU_BACKEND:-nvidia}" \
+            --gpu-count "${GPU_COUNT:-1}" --ods-mode "${ODS_MODE:-local}" \
+            > "$INSTALL_DIR/.compose-flags" 2>/dev/null || rm -f "$INSTALL_DIR/.compose-flags"
+    else
+        rm -f "$INSTALL_DIR/.compose-flags"
+    fi
+}
+
+# Run a lifecycle hook for a service (reads manifest directly via Python)
+_run_hook() {
+    local service_id="$1" hook_name="$2"
+    local ext_dir="$INSTALL_DIR/extensions/services/$service_id"
+    # Also check user-extensions
+    [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/data/user-extensions/$service_id"
+    [[ -d "$ext_dir" ]] || return 0
+
+    local hook_path
+    hook_path=$(python3 - "$ext_dir" "$hook_name" <<'PYEOF'
+import yaml, sys
+from pathlib import Path
+
+ext_dir = Path(sys.argv[1])
+hook_name = sys.argv[2]
+
+manifest_path = None
+for name in ("manifest.yaml", "manifest.yml"):
+    candidate = ext_dir / name
+    if candidate.exists():
+        manifest_path = candidate
+        break
+if manifest_path is None:
+    sys.exit(0)
+
+with open(manifest_path) as f:
+    m = yaml.safe_load(f)
+if not isinstance(m, dict):
+    sys.exit(0)
+service = m.get("service", {})
+if not isinstance(service, dict):
+    sys.exit(0)
+
+# Check hooks map first
+hooks = service.get("hooks", {})
+hook_script = ""
+if isinstance(hooks, dict):
+    hook_script = hooks.get(hook_name, "")
+
+# Fallback: setup_hook -> post_install only
+if not hook_script and hook_name == "post_install":
+    hook_script = service.get("setup_hook", "")
+
+if not hook_script:
+    sys.exit(0)
+
+# Validate path containment
+hook_path = (ext_dir / hook_script).resolve()
+try:
+    hook_path.relative_to(ext_dir.resolve())
+except ValueError:
+    print(f"ERROR: hook path escapes extension directory: {hook_script}", file=sys.stderr)
+    sys.exit(1)
+
+if not hook_path.is_file():
+    sys.exit(0)
+
+print(str(hook_path))
+PYEOF
+    ) || return 0
+
+    [[ -z "$hook_path" || ! -f "$hook_path" ]] && return 0
+
+    log "Running $hook_name hook for $service_id..."
+    SERVICE_ID="$service_id" \
+    SERVICE_PORT="${SERVICE_PORTS[$service_id]:-0}" \
+    SERVICE_DATA_DIR="$INSTALL_DIR/data/$service_id" \
+    ODS_VERSION="$VERSION" \
+    GPU_BACKEND="${GPU_BACKEND:-}" \
+    HOOK_NAME="$hook_name" \
+        bash "$hook_path" "$INSTALL_DIR" "${GPU_BACKEND:-}" \
+        || warn "$hook_name hook failed for $service_id (non-fatal)"
+}
+
+# Build full compose flags: base + GPU overlay + enabled extensions
+get_compose_flags() {
+    # Fast path: use saved flags from installer if available
+    if [[ -f "$INSTALL_DIR/.compose-flags" ]]; then
+        local cached
+        cached=$(< "$INSTALL_DIR/.compose-flags")
+        if [[ "$cached" == -f\ * ]]; then
+            # Validate that every referenced compose file still exists.
+            # Protects against renames across upgrades (e.g. multigpu.yml →
+            # multigpu-nvidia.yml) where the cache would otherwise hand docker
+            # compose a path that no longer resolves.
+            local stale=0 prev="" tok
+            for tok in $cached; do
+                if [[ "$prev" == "-f" ]]; then
+                    if [[ "$tok" = /* ]]; then
+                        [[ -f "$tok" ]] || { stale=1; break; }
+                    else
+                        [[ -f "$INSTALL_DIR/$tok" ]] || { stale=1; break; }
+                    fi
+                fi
+                prev="$tok"
+            done
+            local _ods_mode="${ODS_MODE:-local}"
+            local _lemonade_external="${LEMONADE_EXTERNAL:-false}"
+            local _amd_runtime="${AMD_INFERENCE_RUNTIME:-}"
+            local _amd_managed="${AMD_INFERENCE_MANAGED:-true}"
+            _lemonade_external="${_lemonade_external,,}"
+            _amd_runtime="${_amd_runtime,,}"
+            _amd_managed="${_amd_managed,,}"
+            local _external_lemonade_active="false"
+            if [[ "$_ods_mode" == "lemonade" ]]; then
+                if [[ "$_lemonade_external" =~ ^(1|true|yes|on)$ ]] || \
+                   { [[ "$_amd_runtime" == "lemonade" ]] && [[ "$_amd_managed" =~ ^(0|false|no|off)$ ]]; }; then
+                    _external_lemonade_active="true"
+                fi
+            fi
+            if [[ "$_ods_mode" == "cloud" ]] && \
+               { [[ "$cached" == *"docker-compose.cpu.yml"* ]] || [[ "$cached" == *"compose.local.yaml"* ]] || [[ "$cached" != *"docker-compose.cloud.yml"* ]]; }; then
+                stale=1
+            fi
+            if [[ "$_external_lemonade_active" == "true" ]] && \
+               { [[ "$cached" == *"compose.local.yaml"* ]] || [[ "$cached" == *"docker-compose.amd.yml"* ]] || [[ "$cached" != *"docker-compose.cloud.yml"* ]] || [[ "$cached" != *"docker-compose.lemonade-external.yml"* ]]; }; then
+                stale=1
+            fi
+            if [[ "$_ods_mode" != "cloud" ]] && [[ "$_external_lemonade_active" != "true" ]] && \
+               [[ "$cached" == *"docker-compose.cloud.yml"* ]]; then
+                stale=1
+            fi
+            if [[ "$stale" == "0" ]]; then
+                echo "$cached"
+                return
+            fi
+        fi
+        # Stale or corrupt — remove and fall through to dynamic resolution
+        rm -f "$INSTALL_DIR/.compose-flags"
+    fi
+    # Fallback: resolve dynamically
+    local base_flags
+    if [[ -x "$INSTALL_DIR/scripts/resolve-compose-stack.sh" ]]; then
+        # Resolver handles base + GPU overlay + extension compose files.
+        # --gpu-count gates the multigpu-{backend}.yml overlay — without it,
+        # this fallback path resolves to a single-GPU stack on multi-GPU hosts.
+        base_flags=$("$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
+            --script-dir "$INSTALL_DIR" --tier "${TIER:-1}" --gpu-backend "${GPU_BACKEND:-nvidia}" \
+            --gpu-count "${GPU_COUNT:-1}" --ods-mode "${ODS_MODE:-local}")
+        echo "$base_flags"
+    elif [[ -f "$INSTALL_DIR/docker-compose.base.yml" ]]; then
+        base_flags="-f docker-compose.base.yml"
+        local ext_flags
+        ext_flags=$(sr_compose_flags)
+        echo "$base_flags $ext_flags"
+    else
+        base_flags="-f docker-compose.yml"
+        local ext_flags
+        ext_flags=$(sr_compose_flags)
+        echo "$base_flags $ext_flags"
+    fi
+}
+
+# Run `docker compose <args...>` with a compact summary on success and a
+# surfaced error banner on failure.
+#
+# Usage:  _compose_run_with_summary <verb> <compose_args...>
+#   <verb>           Human-readable gerund phrase, e.g. "Restarting all services"
+#   <compose_args>   Everything that goes after `docker compose`, including
+#                    any `-f` flags resolved by get_compose_flags.
+#
+# Behavior:
+#   - Runs `docker compose --progress quiet <compose_args>`, capturing
+#     stdout+stderr to a mktemp log file.
+#   - On success: prints "<verb> — done" and removes the log file.
+#   - On failure: prints an error banner, surfaces up to 20 lines matching
+#                 /error|unhealthy|failed|dependency/, preserves the full
+#                 log file for inspection, and returns the compose exit
+#                 code so the caller (under `set -e`) aborts with it.
+#
+# The summary grep pipeline can legitimately produce zero matches if the
+# failing compose output has no error-keyword hits. `upstream/main` today
+# runs under `set -e` only (no `pipefail`), so grep's exit 1 is absorbed
+# by the pipeline's final-stage exit and the function continues to the
+# log-path surface below. When pipefail is eventually adopted (sibling
+# nounset/exit-code audit change), grep's no-match or a SIGPIPE from
+# `head -20` on >20 matches would abort this function before the caller
+# sees the compose log path or the compose exit code. `|| warn "..."`
+# is the project-blessed form (per CLAUDE.md) for "tolerate this specific
+# non-match and log why the summary is empty" — it costs nothing today
+# and keeps the function correct under future pipefail.
+_compose_run_with_summary() {
+    local _verb="$1"; shift
+    log "${_verb}..."
+    _check_docker_access
+
+    local _compose_log
+    _compose_log=$(mktemp)
+    trap 'rm -f "$_compose_log"' INT TERM
+
+    local _is_compose_up=false _arg
+    for _arg in "$@"; do
+        [[ "$_arg" == "up" ]] && _is_compose_up=true
+    done
+
+    local _rc=0
+    docker compose --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
+
+    if (( _rc != 0 )) && $_is_compose_up \
+       && grep -Eiq 'port is already allocated|Bind for .* failed: port is already allocated' "$_compose_log"; then
+        warn "Docker reported a port allocation race; waiting briefly and retrying once."
+        sleep "${ODS_COMPOSE_PORT_RETRY_DELAY:-10}"
+        : >"$_compose_log"
+        _rc=0
+        docker compose --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
+    fi
+
+    local _startup_max_attempts="${ODS_COMPOSE_STARTUP_RETRY_ATTEMPTS:-3}"
+    if ! [[ "$_startup_max_attempts" =~ ^[0-9]+$ ]] || (( _startup_max_attempts < 1 )); then
+        _startup_max_attempts=3
+    fi
+    local _startup_attempt=1
+    local _startup_retries=$(( _startup_max_attempts - 1 ))
+    while (( _rc != 0 )) && $_is_compose_up \
+       && (( _startup_attempt < _startup_max_attempts )) \
+       && grep -Eiq 'dependency failed to start|No such container|container .* (exited|is unhealthy)|service .* failed to start|failed to start.*container' "$_compose_log"; do
+        warn "Docker reported a transient service startup failure; waiting briefly and retrying (${_startup_attempt}/${_startup_retries})."
+        sleep "${ODS_COMPOSE_STARTUP_RETRY_DELAY:-15}"
+        : >"$_compose_log"
+        _rc=0
+        docker compose --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
+        _startup_attempt=$(( _startup_attempt + 1 ))
+    done
+
+    if (( _rc == 0 )); then
+        success "${_verb} — done"
+        rm -f "$_compose_log"
+        trap - INT TERM
+        return 0
+    fi
+
+    log_error "${_verb} failed:"
+    local _surfaced
+    _surfaced=$(grep -iE 'error|unhealthy|failed|dependency|permission denied|docker API|docker daemon|docker\.sock|/var/run/docker\.sock' "$_compose_log" \
+        | sed 's/^/  /' \
+        | head -20 || true)
+    if [[ -n "$_surfaced" ]]; then
+        printf '%s\n' "$_surfaced"
+    else
+        warn "(no error keywords matched in compose log)"
+    fi
+    if grep -qiE 'permission denied.*(docker API|docker daemon|docker\.sock|/var/run/docker\.sock)|/var/run/docker\.sock.*permission denied' "$_compose_log"; then
+        warn "Docker socket permission denied. Add your user to the docker group, then start a new login shell:"
+        warn "  sudo usermod -aG docker \"\$USER\""
+        warn "  newgrp docker   # or log out and back in"
+        warn "Then verify with: docker ps"
+    fi
+    echo ""
+    log "Full compose output: $_compose_log"
+    trap - INT TERM
+    return "$_rc"
+}
+
+#=============================================================================
+# Warn (don't exit) when the current user can't reach the Docker daemon on
+# Linux. Phase 05 of the installer sets DOCKER_CMD="sudo docker" for users
+# not in the docker group, but ods-cli calls bare `docker compose` and
+# can't see that. Without this check, --rebuild-images fails with an opaque
+# "permission denied while trying to connect to the Docker daemon socket"
+# and users have no idea what to do next. macOS Docker Desktop grants
+# socket access to the logged-in user, so the check is Linux-only.
+#=============================================================================
+_check_docker_access() {
+    [[ "$(uname -s)" == Linux* ]] || return 0
+    local _docker_ps_output
+    if _docker_ps_output=$(docker ps 2>&1); then
+        return 0
+    fi
+    if grep -qiE 'permission denied.*(docker API|docker daemon|docker\.sock|/var/run/docker\.sock)|/var/run/docker\.sock.*permission denied' <<<"$_docker_ps_output"; then
+        warn "Current user cannot reach the Docker daemon: Docker socket permission denied."
+        warn "Run: sudo usermod -aG docker \"\$USER\""
+        warn "Then run: newgrp docker  (or log out and back in) and retry."
+    else
+        warn "Current user cannot reach the Docker daemon. Start Docker and verify with: docker ps"
+    fi
+}
+
+#=============================================================================
+# Rebuild local-built images (opt-in via --rebuild-images on restart/start/update).
+# Always rebuilds: dashboard, dashboard-api, ape, token-spy, privacy-shield.
+# Conditionally rebuilds based on .env state:
+#   - comfyui     (ENABLE_COMFYUI=true)
+#   - llama-server (GPU_BACKEND=amd, e.g. AMD Lemonade)
+# Mirrors the conditional logic in installers/phases/11-services.sh. Unlike that
+# phase's image-inspect fast-path, --rebuild-images is an explicit opt-in so we
+# always rebuild every applicable service from source.
+#=============================================================================
+_ods_cli_rebuild_images() {
+    local flags=("$@")
+    local svcs=(dashboard dashboard-api ape token-spy privacy-shield)
+    # Mirror phases/11-services.sh conditional builds: ComfyUI when enabled
+    # and llama-server on AMD (Lemonade builds the binary in the container).
+    # Other GPU backends pull pre-built images.
+    [[ "${ENABLE_COMFYUI:-}" == "true" ]] && svcs+=(comfyui)
+    [[ "${GPU_BACKEND:-}" == "amd" ]] && svcs+=(llama-server)
+    _check_docker_access
+    log "Rebuilding local-built images (--rebuild-images)..."
+    if ! docker compose "${flags[@]}" build --no-cache "${svcs[@]}"; then
+        warn "One or more images failed to rebuild (continuing — see compose output above)"
+    fi
+}
+
+#=============================================================================
+# Commands
+#=============================================================================
+
+cmd_status() {
+    local json_mode="false"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json_mode="true"; shift ;;
+            *) error "Unknown argument to 'ods status': $1" ;;
+        esac
+    done
+
+    if [[ "$json_mode" == "true" ]]; then
+        # Subshell isolates cmd_status_json's RETURN trap so it can't leak
+        # into this caller's frame and re-fire with an unbound $tmp under set -u.
+        ( cmd_status_json )
+        return $?
+    fi
+
+    check_install
+    cd "$INSTALL_DIR"
+    load_env
+    sr_load
+
+    local flags_str
+    flags_str=$(get_compose_flags)
+    local -a flags
+    read -ra flags <<< "$flags_str"
+
+    echo -e "${BLUE}━━━ ODS Status ━━━${NC}"
+    echo ""
+
+    # Container status
+    docker compose "${flags[@]}" ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || docker-compose ps
+
+    echo ""
+
+    # Registry-driven health checks (parallel)
+    echo -e "${BLUE}━━━ Health Checks ━━━${NC}"
+
+    # Create temp directory for health check results
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap "rm -rf '$tmpdir'" RETURN
+
+    # Array to track background job PIDs
+    local -a pids=()
+
+    # Launch parallel health checks
+    for sid in "${SERVICE_IDS[@]}"; do
+        local health="${SERVICE_HEALTH[$sid]}"
+        local port_env="${SERVICE_PORT_ENVS[$sid]}"
+        local default_port="${SERVICE_PORTS[$sid]}"
+        local name="${SERVICE_NAMES[$sid]:-$sid}"
+        local cat="${SERVICE_CATEGORIES[$sid]}"
+
+        # Skip services with no health endpoint or port
+        [[ -z "$health" || "$default_port" == "0" ]] && continue
+
+        # Resolve port from env var or default
+        local port="$default_port"
+        if [[ -n "$port_env" ]]; then
+            port="${!port_env:-$default_port}"
+        fi
+
+        # For non-core services, only check if container is running
+        if [[ "$cat" != "core" ]]; then
+            if ! docker compose "${flags[@]}" ps --format "{{.Name}}" 2>/dev/null | grep -qE "ods-${sid}|${sid}"; then
+                continue  # Not running, skip silently
+            fi
+        fi
+
+        # Launch health check in background
+        (
+            url="http://127.0.0.1:${port}${health}"
+            timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}"
+            if curl -sf --max-time "$timeout" "$url" > /dev/null 2>&1; then
+                echo "healthy|$name" > "$tmpdir/$sid"
+            else
+                echo "unhealthy|$name" > "$tmpdir/$sid"
+            fi
+        ) &
+        pids+=($!)
+    done
+
+    # Wait for all health checks to complete
+    for pid in "${pids[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+
+    # Display results in SERVICE_IDS order
+    for sid in "${SERVICE_IDS[@]}"; do
+        if [[ -f "$tmpdir/$sid" ]]; then
+            local result
+            result=$(cat "$tmpdir/$sid")
+            local status="${result%%|*}"
+            local name="${result#*|}"
+
+            if [[ "$status" == "healthy" ]]; then
+                success "$name: healthy"
+            else
+                warn "$name: not responding"
+            fi
+        fi
+    done
+
+    echo ""
+
+    # GPU status if available
+    if command -v nvidia-smi &> /dev/null; then
+        echo -e "${BLUE}━━━ GPU Status ━━━${NC}"
+        nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits | \
+            awk -F', ' '{printf "  %s: %s%% GPU | %sMB/%sMB VRAM | %s°C\n", $1, $2, $3, $4, $5}' \
+            || warn "nvidia-smi failed"
+    fi
+
+    # Bootstrap status. This file may be mid-write, so missing fields should
+    # not abort `ods status` under pipefail.
+    local bootstrap_file="$INSTALL_DIR/data/bootstrap-status.json"
+    if [[ -f "$bootstrap_file" ]]; then
+        local bs_status
+        bs_status=$(grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' "$bootstrap_file" | sed -n '1p' | sed 's/.*"status"[[:space:]]*:[[:space:]]*"//' | sed 's/"//' || true)
+        if [[ "$bs_status" == "downloading" || "$bs_status" == "starting" || "$bs_status" == "verifying" ]]; then
+            local bs_model bs_percent
+            bs_model=$(grep -o '"model"[[:space:]]*:[[:space:]]*"[^"]*"' "$bootstrap_file" | sed -n '1p' | sed 's/.*"model"[[:space:]]*:[[:space:]]*"//' | sed 's/"//' || true)
+            bs_percent=$(grep -o '"percent"[[:space:]]*:[[:space:]]*[0-9.]*' "$bootstrap_file" | sed -n '1p' | sed 's/.*:[[:space:]]*//' || true)
+            log ""
+            log "  Model Upgrade: $bs_model (${bs_percent:-?}% downloaded)"
+        fi
+    fi
+}
+
+cmd_status_json() {
+    check_install
+    cd "$INSTALL_DIR"
+    sr_load
+    load_env
+
+    local flags_str
+    flags_str=$(get_compose_flags)
+    local -a flags
+    read -ra flags <<< "$flags_str"
+
+    # Capture running services for optional-service checks (best-effort)
+    local running_services=""
+    if docker compose "${flags[@]}" ps --format "{{.Service}}" >/dev/null 2>&1; then
+        running_services=$(docker compose "${flags[@]}" ps --format "{{.Service}}")
+    elif command -v docker-compose >/dev/null 2>&1; then
+        running_services=$(docker-compose ps --services --filter "status=running" 2>/dev/null || true)
+    fi
+
+    # Temp file to accumulate per-service JSON objects
+    local tmp
+    tmp=$(mktemp)
+    trap 'rm -f "$tmp"' RETURN
+
+    for sid in "${SERVICE_IDS[@]}"; do
+        local cat="${SERVICE_CATEGORIES[$sid]}"
+        local health="${SERVICE_HEALTH[$sid]}"
+        local port_env="${SERVICE_PORT_ENVS[$sid]}"
+        local default_port="${SERVICE_PORTS[$sid]}"
+        local name="${SERVICE_NAMES[$sid]:-$sid}"
+
+        # Skip services with no health endpoint or port configured
+        [[ -z "$health" || "$default_port" == "0" ]] && continue
+
+        # Resolve port from env var or default
+        local port="$default_port"
+        if [[ -n "$port_env" ]]; then
+            port="${!port_env:-$default_port}"
+        fi
+        local container_status="unknown"
+        local status="unknown"
+
+        # Determine container status (running/stopped) when we have ps output
+        if [[ -n "$running_services" ]]; then
+            if grep -qE "(^|[[:space:]])${sid}([[:space:]]|$)" <<<"$running_services"; then
+                container_status="running"
+            else
+                container_status="stopped"
+            fi
+        fi
+
+        # For non-core services that are clearly stopped, avoid HTTP probe
+        if [[ "$cat" != "core" && "$container_status" == "stopped" ]]; then
+            status="stopped"
+        else
+            local url="http://127.0.0.1:${port}${health}"
+            if curl -sf --max-time 5 "$url" > /dev/null 2>&1; then
+                status="healthy"
+            else
+                status="unhealthy"
+            fi
+        fi
+
+        jq -n \
+            --arg id "$sid" \
+            --arg name "$name" \
+            --arg category "$cat" \
+            --arg port "$port" \
+            --arg status "$status" \
+            --arg containerStatus "$container_status" \
+            '{id: $id, name: $name, category: $category, port: $port, status: $status, containerStatus: $containerStatus}' >> "$tmp"
+    done
+
+    # GPU summary (optional)
+    local gpu_summary_json="null"
+    if [[ "${GPU_BACKEND:-}" == "apple" ]]; then
+        # Apple Silicon: integrated GPU with unified memory. Surface the same
+        # fields as `ods gpu status` so consumers of status-json can render
+        # non-null GPU info on macOS.
+        local _chip _total_mem_gb _gpu_cores
+        _chip="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo 'Apple Silicon')"
+        _total_mem_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 / 1024 ))
+        if command -v jq >/dev/null 2>&1; then
+            _gpu_cores=$(system_profiler SPDisplaysDataType -json 2>/dev/null \
+                | jq -r '.SPDisplaysDataType[0].sppci_cores // "?"' 2>/dev/null)
+        else
+            _gpu_cores="?"
+        fi
+        gpu_summary_json=$(jq -n \
+            --arg backend "apple" \
+            --arg chip "$_chip" \
+            --argjson unified_memory_gb "$_total_mem_gb" \
+            --argjson gpu_cores "$([[ "$_gpu_cores" =~ ^[0-9]+$ ]] && printf '%s' "$_gpu_cores" || printf 'null')" \
+            '{backend: $backend, chip: $chip, unified_memory_gb: $unified_memory_gb, gpu_cores: $gpu_cores}')
+    elif command -v nvidia-smi >/dev/null 2>&1; then
+        # Represent each GPU line as raw strings in an array
+        gpu_summary_json=$(nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu \
+            --format=csv,noheader,nounits 2>/dev/null | jq -R -s 'split("\n") | map(select(length > 0))')
+    fi
+
+    # Aggregate into a single document
+    jq -s \
+        --arg installDir "$INSTALL_DIR" \
+        --arg composeFlags "$flags_str" \
+        --arg mode "${ODS_MODE:-local}" \
+        --arg tier "${TIER:-}" \
+        --arg currentModel "${LLM_MODEL:-}" \
+        --argjson gpu "$gpu_summary_json" \
+        '{installDir: $installDir,
+          composeFlags: $composeFlags,
+          mode: $mode,
+          tier: $tier,
+          currentModel: $currentModel,
+          gpu: $gpu,
+          services: .}' "$tmp"
+}
+
+cmd_logs() {
+    check_install
+    cd "$INSTALL_DIR"
+    load_env
+
+    local service="${1:-}"
+    local lines="${2:-100}"
+
+    if [[ -z "$service" ]]; then
+        log "Usage: ods logs <service> [lines]"
+        log "Run 'ods list' to see available services."
+        exit 1
+    fi
+
+    service=$(resolve_service "$service")
+    local flags_str
+    flags_str=$(get_compose_flags)
+    local -a flags
+    read -ra flags <<< "$flags_str"
+    docker compose "${flags[@]}" logs -f --tail "$lines" "$service"
+}
+
+cmd_restart() {
+    check_install
+    cd "$INSTALL_DIR"
+    load_env
+    ensure_llama_cpu_budget
+
+    # Parse flags vs positional service name
+    local rebuild_images="false"
+    local service=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --rebuild-images) rebuild_images="true"; shift ;;
+            --) shift; break ;;
+            -*) error "Unknown option: $1" ;;
+            *) service="$1"; shift ;;
+        esac
+    done
+
+    local flags_str
+    flags_str=$(get_compose_flags)
+    local -a flags
+    read -ra flags <<< "$flags_str"
+
+    [[ "$rebuild_images" == "true" ]] && _ods_cli_rebuild_images "${flags[@]}"
+
+    local resolved_service="$service"
+    if [[ -n "$resolved_service" ]]; then
+        resolved_service=$(resolve_service "$resolved_service")
+    fi
+
+    local refresh_soul="false"
+    if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
+        refresh_soul="true"
+        # Must run before compose as well as after it. If a previous failed
+        # compose created data/persona/SOUL.md as a directory, Docker will fail
+        # the Hermes file bind mount before the post-start refresh can repair it.
+        _ods_cli_refresh_soul || true
+    fi
+
+    if [[ -z "$resolved_service" ]]; then
+        _compose_run_with_summary "Restarting all services" "${flags[@]}" up -d
+    else
+        _compose_run_with_summary "Restarting $resolved_service" "${flags[@]}" up -d "$resolved_service"
+    fi
+
+    # Refresh SOUL.md after compose has ensured Hermes is running, so the
+    # generated install context can be copied into /opt/data/SOUL.md without
+    # needing the Docker Desktop-hostile nested bind mount.
+    if [[ "$refresh_soul" == "true" ]]; then
+        _ods_cli_refresh_soul || true
+    fi
+
+    if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
+        _ods_cli_maybe_resume_bootstrap_upgrade || true
+    fi
+}
+
+_ods_cli_maybe_resume_bootstrap_upgrade() {
+    local status_file="$INSTALL_DIR/data/bootstrap-status.json"
+    local args_file="$INSTALL_DIR/data/bootstrap-upgrade.args"
+    [[ -f "$status_file" && -f "$args_file" && -f "$INSTALL_DIR/scripts/bootstrap-upgrade.sh" ]] || return 0
+
+    local bs_status
+    bs_status=$(grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' "$status_file" | sed -n '1p' | sed 's/.*"status"[[:space:]]*:[[:space:]]*"//' | sed 's/"//' || true)
+    [[ "$bs_status" == "failed" ]] || return 0
+
+    if command -v pgrep >/dev/null 2>&1 && pgrep -f "bootstrap-upgrade.sh.*$INSTALL_DIR" >/dev/null 2>&1; then
+        log "  Model Upgrade: retry already running"
+        return 0
+    fi
+
+    local full_gguf_file full_gguf_url full_gguf_sha256 full_llm_model full_max_context bootstrap_gguf_file
+    full_gguf_file=$(sed -n '1p' "$args_file")
+    full_gguf_url=$(sed -n '2p' "$args_file")
+    full_gguf_sha256=$(sed -n '3p' "$args_file")
+    full_llm_model=$(sed -n '4p' "$args_file")
+    full_max_context=$(sed -n '5p' "$args_file")
+    bootstrap_gguf_file=$(sed -n '6p' "$args_file")
+
+    if [[ -z "$full_gguf_file" || -z "$full_gguf_url" || -z "$full_llm_model" || -z "$full_max_context" || -z "$bootstrap_gguf_file" ]]; then
+        warn "Bootstrap model upgrade failed previously, but retry metadata is incomplete."
+        return 0
+    fi
+
+    mkdir -p "$INSTALL_DIR/logs"
+    nohup bash "$INSTALL_DIR/scripts/bootstrap-upgrade.sh" \
+        "$INSTALL_DIR" "$full_gguf_file" "$full_gguf_url" \
+        "$full_gguf_sha256" "$full_llm_model" "$full_max_context" \
+        "$bootstrap_gguf_file" \
+        > "$INSTALL_DIR/logs/model-upgrade.log" 2>&1 &
+
+    log "  Model Upgrade: previous download failed; retrying in background ($full_llm_model)"
+    log "  Check progress: tail -f $INSTALL_DIR/logs/model-upgrade.log"
+}
+
+# Refresh data/hermes/SOUL.md from the static template + detected install
+# state. Idempotent. Called automatically by cmd_restart (when restarting
+# hermes or the whole stack) and invocable manually by an operator.
+_ods_cli_refresh_soul() {
+    local script="$INSTALL_DIR/scripts/build-installation-context.py"
+    [[ -x "$script" ]] || [[ -f "$script" ]] || return 0
+    local py
+    py=$(command -v python3 || command -v python || true)
+    [[ -n "$py" ]] || return 0
+    "$py" "$script" >/dev/null 2>&1 || return 1
+
+    # Push the updated assembled SOUL.md into the running container's
+    # data dir, where Hermes actually reads from at session.create
+    # time. The bind-mount target (/opt/hermes/docker/SOUL.md) is just
+    # the upstream-default that Hermes's entrypoint copies to
+    # /opt/data/SOUL.md ONLY on first start; the per-install file is
+    # what's read after that. macOS Docker Desktop's virtiofs refuses
+    # to bind-mount /opt/data/SOUL.md directly (nested-mount limit),
+    # so we use docker exec for the in-container copy — works on
+    # Linux + macOS uniformly. Container has to be running for this
+    # to matter; if it's not, the entrypoint will pick up the docker/
+    # default on next start anyway.
+    if command -v docker >/dev/null 2>&1; then
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ods-hermes$'; then
+            docker exec ods-hermes cp /opt/hermes/docker/SOUL.md /opt/data/SOUL.md \
+                >/dev/null 2>&1 || true
+        fi
+    fi
+    return 0
+}
+
+cmd_stop() {
+    check_install
+    cd "$INSTALL_DIR"
+    load_env
+
+    local service="${1:-}"
+    local flags_str
+    flags_str=$(get_compose_flags)
+    local -a flags
+    read -ra flags <<< "$flags_str"
+
+    if [[ -z "$service" ]]; then
+        _compose_run_with_summary "Stopping all services" "${flags[@]}" down
+    else
+        service=$(resolve_service "$service")
+        _compose_run_with_summary "Stopping $service" "${flags[@]}" stop "$service"
+    fi
+}
+
+cmd_start() {
+    check_install
+    cd "$INSTALL_DIR"
+    load_env
+    ensure_llama_cpu_budget
+    sr_load
+
+    # Parse flags vs positional service name
+    local rebuild_images="false"
+    local service=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --rebuild-images) rebuild_images="true"; shift ;;
+            --) shift; break ;;
+            -*) error "Unknown option: $1" ;;
+            *) service="$1"; shift ;;
+        esac
+    done
+
+    local flags_str
+    flags_str=$(get_compose_flags)
+    local -a flags
+    read -ra flags <<< "$flags_str"
+
+    [[ "$rebuild_images" == "true" ]] && _ods_cli_rebuild_images "${flags[@]}"
+
+    local resolved_service="$service"
+    if [[ -n "$resolved_service" ]]; then
+        resolved_service=$(resolve_service "$resolved_service")
+    fi
+
+    local refresh_soul="false"
+    if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
+        refresh_soul="true"
+        _ods_cli_refresh_soul || true
+    fi
+
+    if [[ -z "$resolved_service" ]]; then
+        _compose_run_with_summary "Starting all services" "${flags[@]}" up -d
+    else
+        _run_hook "$resolved_service" "pre_start"
+        _compose_run_with_summary "Starting $resolved_service" "${flags[@]}" up -d "$resolved_service"
+        _run_hook "$resolved_service" "post_start"
+    fi
+
+    if [[ "$refresh_soul" == "true" ]]; then
+        _ods_cli_refresh_soul || true
+    fi
+
+    if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
+        _ods_cli_maybe_resume_bootstrap_upgrade || true
+    fi
+}
+
+cmd_dry_run() {
+    check_install
+    cd "$INSTALL_DIR"
+    load_env
+
+    echo -e "${BLUE}━━━ ODS Update — Dry Run ━━━${NC}"
+    echo "Preview only. No changes will be applied."
+    echo ""
+
+    # ── version ──────────────────────────────────────────────────────────────
+    local cur_ver="0.0.0"
+    if [[ -f "$INSTALL_DIR/.env" ]]; then
+        local _v
+        _v=$(grep '^ODS_VERSION=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
+        [[ -n "$_v" ]] && cur_ver="$_v"
+    fi
+    if [[ "$cur_ver" == "0.0.0" && -f "$INSTALL_DIR/.version" ]]; then
+        local _vf
+        _vf=$(jq -r '.version // empty' "$INSTALL_DIR/.version" 2>/dev/null || true)
+        [[ -n "$_vf" ]] && cur_ver="$_vf"
+    fi
+
+    # Try dashboard API first; fall back to direct GitHub query.
+    local api_json=""
+    local dashboard_port="${DASHBOARD_PORT:-3002}"
+    local api_key=""
+    api_key=$(grep '^DASHBOARD_API_KEY=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
+    if [[ -n "$api_key" ]]; then
+        api_json=$(curl -sf --max-time 5 \
+            -H "X-API-Key: ${api_key}" \
+            "http://127.0.0.1:${dashboard_port}/api/update/dry-run" 2>/dev/null || true)
+    fi
+
+    local latest_ver="" changelog_url="" update_status=""
+    if [[ -n "$api_json" ]] && echo "$api_json" | jq -e '.current_version' >/dev/null 2>&1; then
+        latest_ver=$(echo "$api_json" | jq -r '.latest_version // empty')
+        changelog_url=$(echo "$api_json" | jq -r '.changelog_url // empty')
+        local api_available
+        api_available=$(echo "$api_json" | jq -r '.update_available // false')
+        [[ "$api_available" == "true" ]] && update_status="update available" || update_status="up to date"
+    else
+        # Direct GitHub fallback
+        local gh_resp
+        gh_resp=$(curl -sf --max-time 8 \
+            "https://api.github.com/repos/Light-Heart-Labs/ODS/releases/latest" 2>/dev/null || true)
+        if [[ -n "$gh_resp" ]] && command -v jq >/dev/null 2>&1; then
+            latest_ver=$(echo "$gh_resp" | jq -r '.tag_name // empty' 2>/dev/null | sed 's/^v//' || true)
+            changelog_url=$(echo "$gh_resp" | jq -r '.html_url // empty' 2>/dev/null || true)
+        fi
+        if [[ -n "$latest_ver" ]]; then
+            if _semver_lt "$cur_ver" "$latest_ver"; then
+                update_status="update available"
+            else
+                update_status="up to date"
+            fi
+        fi
+    fi
+
+    echo -e "${BLUE}━━━ Version ━━━${NC}"
+    echo "  Installed : v${cur_ver}"
+    if [[ -n "$latest_ver" ]]; then
+        echo "  Available : v${latest_ver}"
+        if [[ "$update_status" == "update available" ]]; then
+            echo -e "  Status    : ${YELLOW}${update_status}${NC}"
+        else
+            echo -e "  Status    : ${GREEN}${update_status}${NC}"
+        fi
+        [[ -n "$changelog_url" ]] && echo "  Changelog : ${changelog_url}"
+    else
+        echo "  Available : (could not reach GitHub)"
+    fi
+    echo ""
+
+    # ── image tags ────────────────────────────────────────────────────────────
+    echo -e "${BLUE}━━━ Image tags (would be pulled) ━━━${NC}"
+    local flags_str
+    flags_str=$(get_compose_flags)
+    local -a flags
+    read -ra flags <<< "$flags_str"
+
+    # Prefer API response; fall back to parsing compose files directly.
+    # Use process substitution so flags like images_shown update in this shell (not a pipe subshell).
+    local images_shown=false
+    if [[ -n "$api_json" ]] && echo "$api_json" | jq -e '.images | length > 0' >/dev/null 2>&1; then
+        local _img_line _any_api=false
+        while IFS= read -r _img_line || [[ -n "$_img_line" ]]; do
+            [[ -z "$_img_line" ]] && continue
+            echo "  ${_img_line}"
+            _any_api=true
+        done < <(echo "$api_json" | jq -r '.images[]' | sort -u)
+        [[ "$_any_api" == "true" ]] && images_shown=true
+    fi
+    if [[ "$images_shown" == "false" ]]; then
+        local _img_line _any_compose=false
+        while IFS= read -r _img_line || [[ -n "$_img_line" ]]; do
+            [[ -z "$_img_line" ]] && continue
+            echo "  ${_img_line}"
+            _any_compose=true
+        done < <(docker compose "${flags[@]}" config 2>/dev/null \
+            | grep -E '^\s+image:' | sed 's/.*image:\s*//' | sort -u)
+        [[ "$_any_compose" == "true" ]] && images_shown=true
+    fi
+    [[ "$images_shown" == "false" ]] && echo "  (could not resolve compose config)"
+
+    echo ""
+    echo -e "${BLUE}━━━ Running image digests ━━━${NC}"
+    docker compose "${flags[@]}" images 2>/dev/null \
+        | awk 'NR>1 {printf "  %-30s %s\n", $1, $4}' \
+        || echo "  (services not running)"
+    echo ""
+
+    # ── model / GGUF ─────────────────────────────────────────────────────────
+    echo -e "${BLUE}━━━ Model configuration (.env) ━━━${NC}"
+    local -a model_keys=(TIER LLM_MODEL GGUF_FILE CTX_SIZE GPU_BACKEND N_GPU_LAYERS)
+    local key
+    for key in "${model_keys[@]}"; do
+        local val
+        val=$(grep "^${key}=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
+        printf "  %-16s %s\n" "${key}:" "${val:-(not set)}"
+    done
+    echo ""
+
+    # ── .env keys the update path reads/writes ────────────────────────────────
+    echo -e "${BLUE}━━━ .env keys (read/write) ━━━${NC}"
+    local -a update_keys=(ODS_VERSION TIER LLM_MODEL GGUF_FILE CTX_SIZE GPU_BACKEND N_GPU_LAYERS)
+
+    if [[ -n "$api_json" ]] && echo "$api_json" | jq -e '.env_keys' >/dev/null 2>&1; then
+        echo "$api_json" | jq -r '.env_keys | to_entries[] | "  \(.key): \(.value)"' 2>/dev/null \
+            || true
+    else
+        for key in "${update_keys[@]}"; do
+            local val
+            val=$(grep "^${key}=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
+            printf "  %-16s %s\n" "${key}:" "${val:-(not set)}"
+        done
+    fi
+    echo ""
+
+    # ── summary ───────────────────────────────────────────────────────────────
+    echo "To apply this update:  ods update"
+    echo ""
+    warn "Dry run complete. Nothing was changed."
+}
+
+cmd_update() {
+    check_install
+    cd "$INSTALL_DIR"
+    load_env
+
+    # Parse flags
+    local dry_run="false"
+    local force_flag="false"
+    local rebuild_images="false"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run|-n) dry_run="true"; shift ;;
+            --force|-f) force_flag="true"; shift ;;
+            --rebuild-images) rebuild_images="true"; shift ;;
+            --*) error "Unknown option: $1" ;;
+            -*) error "Unknown option: $1" ;;
+            *) error "Unexpected argument: $1" ;;
+        esac
+    done
+
+    if [[ "$dry_run" == "true" ]]; then
+        cmd_dry_run
+        return 0
+    fi
+
+    ensure_llama_cpu_budget
+
+    # Upsert SHIELD_API_KEY when missing (pre-PR-#1069 upgrade path).
+    # Without it the dashboard Privacy Shield stats panel fails after
+    # update because dashboard-api can no longer authenticate its
+    # proxied /stats call. Mirrors the env-generator.sh upsert pattern.
+    if [[ -z "$(_env_get_raw "SHIELD_API_KEY")" ]]; then
+        _env_set "SHIELD_API_KEY" "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')"
+    fi
+
+    local flags_str
+    flags_str=$(get_compose_flags)
+    local -a flags
+    read -ra flags <<< "$flags_str"
+
+    # Version compatibility check — warn on major version jumps before touching anything
+    if ! _check_version_compat "$force_flag"; then
+        exit 0
+    fi
+
+    # Show what we're updating from/to (if versions were resolved)
+    if [[ -n "${_COMPAT_INSTALLED_VER:-}" && -n "${_COMPAT_TARGET_VER:-}" \
+          && "$_COMPAT_INSTALLED_VER" != "$_COMPAT_TARGET_VER" ]]; then
+        log "Updating: v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER}"
+    fi
+
+    # Pre-update snapshot — safety net before any images are pulled.
+    # Delegates to ods-update.sh (which writes to data/backups/ and includes
+    # extension configs) when available; falls back to ods-backup.sh.
+    local _snap_label="pre-update-$(date +%Y%m%d-%H%M%S)"
+    if [[ -x "$INSTALL_DIR/ods-update.sh" ]]; then
+        log "Creating pre-update snapshot (${_snap_label})..."
+        if ! bash "$INSTALL_DIR/ods-update.sh" backup "$_snap_label"; then
+            warn "Pre-update snapshot failed; proceeding without safety net."
+        fi
+    elif [[ -x "$INSTALL_DIR/ods-backup.sh" ]]; then
+        log "Creating pre-update backup (${_snap_label})..."
+        if ! "$INSTALL_DIR/ods-backup.sh" "$_snap_label"; then
+            warn "Pre-update backup failed; proceeding without safety net."
+        fi
+    else
+        warn "ods-update.sh and ods-backup.sh not found; skipping pre-update snapshot."
+    fi
+
+    if ! _compose_run_with_summary "Pulling latest images" "${flags[@]}" pull; then
+        error "Failed to pull latest images"
+    fi
+
+    [[ "$rebuild_images" == "true" ]] && _ods_cli_rebuild_images "${flags[@]}"
+
+    if ! _compose_run_with_summary "Recreating containers with new images" "${flags[@]}" up -d --force-recreate; then
+        error "Failed to recreate containers. Run 'ods rollback' to restore previous state."
+    fi
+
+    log "Waiting for services to stabilize..."
+    sleep 10
+
+    # Verify update was successful
+    log "Verifying update..."
+    local failed_services=0
+    local total_services=0
+
+    # Check each service health
+    while IFS= read -r service; do
+        [[ -z "$service" ]] && continue
+        ((total_services++))
+
+        local container
+        container=$(sr_container "$service" 2>/dev/null || echo "")
+        if [[ -n "$container" ]]; then
+            if ! docker ps --filter "name=$container" --filter "status=running" --format "{{.Names}}" | grep -q "^$container$"; then
+                warn "Service $service ($container) is not running"
+                ((failed_services++))
+            fi
+        fi
+    done < <(sr_list_enabled)
+
+    if [[ $failed_services -gt 0 ]]; then
+        log_error "Update verification failed: $failed_services/$total_services services are not running"
+        log_error "Run 'ods rollback' to restore previous state"
+        log_error "Or run 'ods status' to check service health"
+        exit 1
+    fi
+
+    # Persist the new installed version in .env so future runs know what's installed
+    if [[ -n "${_COMPAT_TARGET_VER:-}" ]]; then
+        _env_set "ODS_VERSION" "$_COMPAT_TARGET_VER"
+    fi
+
+    # Restart host agent so new endpoints / code changes take effect
+    log "Restarting host agent..."
+    cmd_agent restart || warn "Host agent restart failed (non-fatal)"
+
+    success "Update complete"
+
+    cmd_status
+}
+
+cmd_shell() {
+    check_install
+    cd "$INSTALL_DIR"
+
+    # Load the service registry so SERVICE_IDS is populated in our shell.
+    sr_load
+
+    # Resolve aliases (e.g. "llm" -> "llama-server").
+    local service
+    service=$(sr_resolve "${1:-llm}")
+
+    # Validate against registry before doing anything.
+    local _found=false
+    for _sid in "${SERVICE_IDS[@]}"; do
+        if [[ "$_sid" == "$service" ]]; then
+            _found=true
+            break
+        fi
+    done
+    if ! $_found; then
+        error "Unknown service: $service"
+    fi
+
+    local container
+    container=$(sr_container "$service")
+
+    # Distinguish "daemon down" from "container stopped" — the container-running
+    # check below uses `docker ps`, which also exits non-zero when the daemon
+    # is unreachable. Without this preflight a user whose Docker is stopped
+    # sees "Container X is not running" and tries `ods start`, which also
+    # fails, creating a confusing loop. The explicit check lets the error
+    # reflect the actual cause.
+    #
+    # `docker info` can hang for 20+ seconds when Docker Desktop is mid-boot
+    # (socket exists, daemon not yet accepting RPCs). `timeout` isn't stock
+    # macOS, but `perl alarm` is (perl ships with macOS ≥ 10.5 and every
+    # Linux/WSL2 distro we target). `alarm` is inherited across `exec`, so
+    # the docker process receives SIGALRM after 3s if it hasn't returned.
+    if ! perl -e 'alarm 3; exec "docker", "info"' >/dev/null 2>&1; then
+        error "Docker is not running (or not responding within 3s). Start Docker Desktop / dockerd and retry."
+    fi
+
+    # Confirm the container is running before trying to exec.
+    if ! docker ps 2>/dev/null --format '{{.Names}}' | grep -qx "$container"; then
+        error "Container $container is not running. Start it with: ods start $service"
+    fi
+
+    log "Opening shell in $container..."
+    # Distinguish "no bash binary" from "exec failed" by probing first.
+    if docker exec "$container" test -x /bin/bash >/dev/null 2>&1; then
+        docker exec -it "$container" /bin/bash
+    else
+        docker exec -it "$container" /bin/sh
+    fi
+}
+
+# File-scope helpers used by `ods config show` and `ods preset diff` to
+# mask secret values. `.env.schema.json` is the authoritative source; keys
+# marked `"secret": true` are treated as secrets. A keyword fallback covers
+# schema gaps (e.g. ANTHROPIC_API_KEY is currently secret:false) and the case
+# where the schema file or jq is unavailable. Callers must invoke
+# _cmd_config_load_secret_schema once (after check_install, so INSTALL_DIR is
+# set) before calling _cmd_config_is_secret.
+_cmd_config_secret_keys=()
+_cmd_config_schema_loaded=0
+
+_cmd_config_load_secret_schema() {
+    local _schema_path="$INSTALL_DIR/.env.schema.json"
+    _cmd_config_secret_keys=()
+    _cmd_config_schema_loaded=0
+    [[ -f "$_schema_path" ]] || return 0
+
+    # Prefer jq when available — fast, single-process, schema-typed.
+    if command -v jq >/dev/null 2>&1; then
+        mapfile -t _cmd_config_secret_keys < <(jq -r '.properties | to_entries[] | select(.value.secret == true) | .key' "$_schema_path" 2>/dev/null)
+        _cmd_config_schema_loaded=1
+        return 0
+    fi
+
+    # python3 fallback for environments without jq (Git Bash on Windows
+    # is the common one). The installer guarantees python3, so this
+    # path closes the gap where N8N_USER / LANGFUSE_INIT_USER_EMAIL etc.
+    # would otherwise leak through the keyword fallback.
+    if command -v python3 >/dev/null 2>&1; then
+        mapfile -t _cmd_config_secret_keys < <(python3 - "$_schema_path" <<'PYEOF' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+except (OSError, json.JSONDecodeError):
+    sys.exit(0)
+for key, spec in (data.get("properties") or {}).items():
+    if isinstance(spec, dict) and spec.get("secret") is True:
+        print(key)
+PYEOF
+)
+        _cmd_config_schema_loaded=1
+        return 0
+    fi
+
+    # Neither jq nor python3 — leave _cmd_config_schema_loaded=0 so
+    # _cmd_config_is_secret falls through to the keyword regex (which
+    # covers user/email keys explicitly to avoid leaks in this case).
+}
+
+_cmd_config_is_secret() {
+    local _k="$1" _s _kl
+    if (( _cmd_config_schema_loaded == 1 )); then
+        for _s in "${_cmd_config_secret_keys[@]}"; do
+            _s="${_s%$'\r'}"
+            [[ "$_k" == "$_s" ]] && return 0
+        done
+        # Fall through to keyword match — defense in depth against schema gaps
+        # and against malformed schemas where jq/python returns zero secret keys.
+    fi
+    _kl="${_k,,}"
+    # `*user*` and `*email*` cover N8N_USER, LANGFUSE_INIT_USER_EMAIL, etc.
+    # in environments where neither jq nor python3 was available to read
+    # `.env.schema.json` (Git Bash without jq). Risks light over-masking
+    # on operational keys like USER_HOME, but `cat .env` remains the
+    # escape hatch — `ods config show` defaults to over-mask on
+    # purpose.
+    case "$_kl" in
+        *secret*|*password*|*pass*|*token*|*key*|*salt*|*bearer*|*user*|*email*) return 0 ;;
+    esac
+    return 1
+}
+
+cmd_config() {
+    check_install
+
+    local action="${1:-show}"
+
+    case "$action" in
+        show)
+            echo -e "${BLUE}━━━ Configuration ━━━${NC}"
+            echo "Install dir: $INSTALL_DIR"
+            echo ""
+            echo -e "${CYAN}.env contents:${NC}"
+
+            _cmd_config_load_secret_schema
+
+            local _line _key
+            while IFS= read -r _line; do
+                [[ -z "$_line" || "$_line" =~ ^[[:space:]]*# ]] && continue
+                _key="${_line%%=*}"
+                if _cmd_config_is_secret "$_key"; then
+                    echo "  ${_key}=***"
+                else
+                    echo "  $_line"
+                fi
+            done < "$INSTALL_DIR/.env"
+            ;;
+        edit)
+            ${EDITOR:-nano} "$INSTALL_DIR/.env"
+            warn "Restart services for changes to take effect: ods restart"
+            ;;
+        validate)
+            cd "$INSTALL_DIR"
+            if [[ -x "$INSTALL_DIR/scripts/validate-env.sh" ]]; then
+                # Invoke through "$BASH" (the currently-running shell, guaranteed
+                # Bash 4+ by the version check at the top of this file). The
+                # target script uses associative arrays (declare -A), which
+                # crash under macOS's system /bin/bash (3.2).
+                "$BASH" "$INSTALL_DIR/scripts/validate-env.sh" "$INSTALL_DIR/.env" "$INSTALL_DIR/.env.schema.json"
+            else
+                warn "validate-env.sh not found at $INSTALL_DIR/scripts/validate-env.sh"
+                warn "Make sure you're on a recent ODS release."
+            fi
+            echo ""
+            if [[ -x "$INSTALL_DIR/scripts/validate-manifests.sh" ]]; then
+                log "Validating extension manifests and compatibility..."
+                if "$BASH" "$INSTALL_DIR/scripts/validate-manifests.sh"; then
+                    success "Extension manifests validated"
+                else
+                    warn "Extension manifest validation reported issues. See output above."
+                fi
+            else
+                warn "validate-manifests.sh not found at $INSTALL_DIR/scripts/validate-manifests.sh"
+            fi
+            ;;
+        *)
+            log "Usage: ods config [show|edit|validate]"
+            ;;
+    esac
+}
+
+cmd_chat() {
+    check_install
+    load_env  # B6 fix: use safe env loading function
+
+    local message="${1:-Hello}"
+    local model="${2:-}"
+
+    # Resolve llama-server port once, regardless of how the model is provided
+    local _llm_port="${SERVICE_PORTS[llama-server]:-11434}"
+    _llm_port="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-$_llm_port}}"
+
+    local _probe
+    _probe=$(curl --silent --show-error --fail --max-time 3 \
+        "http://127.0.0.1:${_llm_port}/v1/models" 2>&1) || {
+        error "llama-server not reachable at http://127.0.0.1:${_llm_port} - is 'ods status' showing it healthy?"
+    }
+
+    if [[ -z "$model" ]]; then
+        model=$(printf '%s' "$_probe" | jq -er '.data[0].id' 2>/dev/null || echo "local")
+    fi
+
+    log "Sending to $model..."
+
+    # Use jq to safely construct JSON payload (prevents injection)
+    local payload
+    payload=$(jq -n --arg model "$model" --arg msg "$message" \
+        '{model: $model, messages: [{role: "user", content: $msg}], max_tokens: 500}')
+
+    local _resp
+    _resp=$(curl --silent --show-error --max-time 30 \
+        "http://127.0.0.1:${_llm_port}/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -d "$payload" 2>&1) || {
+        error "LLM request failed: $_resp"
+    }
+
+    [[ -z "$_resp" ]] && error "LLM returned empty response"
+
+    local _content
+    _content=$(printf '%s' "$_resp" | jq -er '.choices[0].message.content') || {
+        local _err
+        _err=$(printf '%s' "$_resp" | jq -r '.error.message // "unknown error"' 2>/dev/null || true)
+        error "LLM error: ${_err:-unparseable response}"
+    }
+
+    printf '%s\n' "$_content"
+}
+
+cmd_benchmark() {
+    check_install
+    load_env  # B6 fix: use safe env loading function
+
+    log "Running quick benchmark..."
+
+    local start=$(date +%s)
+    local response
+    if ! response=$(cmd_chat "Say exactly: Hello World" 2>&1); then
+        error "Benchmark failed: LLM unreachable or error - see 'ods chat' for details"
+    fi
+    local end=$(date +%s)
+
+    local duration=$(( end - start ))
+
+    echo ""
+    echo -e "${BLUE}━━━ Benchmark Results ━━━${NC}"
+    echo "  Response time: ${duration}s"
+    echo "  Response: $response"
+
+    if [[ $duration -lt 2 ]]; then
+        success "Performance: Excellent (<2s)"
+    elif [[ $duration -lt 5 ]]; then
+        success "Performance: Good (<5s)"
+    else
+        warn "Performance: Slow (>5s) - check GPU/model"
+    fi
+}
+
+cmd_doctor() {
+    check_install
+    cd "$INSTALL_DIR"
+
+    local json_mode="false"
+    local report_file="/tmp/ods-doctor-report.json"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json)
+                json_mode="true"
+                shift
+                ;;
+            --report)
+                [[ -n "${2:-}" ]] || { echo "Error: --report requires a path argument" >&2; return 1; }
+                report_file="$2"
+                shift 2
+                ;;
+            *)
+                report_file="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ ! -x "$INSTALL_DIR/scripts/ods-doctor.sh" ]]; then
+        error "ods-doctor script not found at $INSTALL_DIR/scripts/ods-doctor.sh"
+    fi
+
+    # Run doctor script. If it fails to generate a report, show the script output
+    # to make failures actionable for operators.
+    local doctor_out
+    doctor_out=$(mktemp)
+    "$INSTALL_DIR/scripts/ods-doctor.sh" "$report_file" >"$doctor_out" 2>&1 || true
+
+    if [[ ! -f "$report_file" ]]; then
+        cat "$doctor_out" >&2
+        rm -f "$doctor_out"
+        error "Doctor report not generated at $report_file"
+    fi
+    rm -f "$doctor_out"
+
+    # JSON mode: just output the report
+    if [[ "$json_mode" == "true" ]]; then
+        cat "$report_file"
+        return 0
+    fi
+
+    # If python3 is unavailable, fall back to printing the JSON report.
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "python3 not found; printing raw JSON report (use --json to suppress this warning)"
+        cat "$report_file"
+        return 1
+    fi
+
+    # Parse and display operator-friendly output
+    echo -e "${BLUE}━━━ ODS Diagnostics ━━━${NC}"
+    echo ""
+
+    # Use Python to parse JSON and display results
+    python3 - "$report_file" <<'PY'
+import json
+import sys
+
+RED = '\033[0;31m'
+GREEN = '\033[0;32m'
+YELLOW = '\033[1;33m'
+BLUE = '\033[0;34m'
+CYAN = '\033[0;36m'
+NC = '\033[0m'
+
+report_file = sys.argv[1]
+try:
+    with open(report_file, 'r') as f:
+        report = json.load(f)
+except Exception as e:
+    print(f"{RED}✗{NC} Failed to parse report: {e}")
+    sys.exit(1)
+
+# Runtime checks
+runtime = report.get('runtime', {})
+print(f"{CYAN}Runtime Environment:{NC}")
+checks = [
+    ('Docker CLI', runtime.get('docker_cli', False)),
+    ('Docker Daemon', runtime.get('docker_daemon', False)),
+    ('Docker Compose', runtime.get('compose_cli', False)),
+    ('Dashboard HTTP', runtime.get('dashboard_http', False)),
+    ('WebUI HTTP', runtime.get('webui_http', False)),
+]
+
+has_failures = False
+for name, status in checks:
+    if status:
+        print(f"  {GREEN}✓{NC} {name}")
+    else:
+        print(f"  {RED}✗{NC} {name}")
+        has_failures = True
+
+dgx_check = runtime.get('dgx_spark_cuda_arch_check', {})
+dgx_status = dgx_check.get('status')
+dgx_message = dgx_check.get('message', '')
+if dgx_status == 'pass':
+    print(f"  {GREEN}✓{NC} DGX Spark llama-server CUDA arch")
+elif dgx_status == 'warn':
+    print(f"  {YELLOW}⚠{NC} DGX Spark llama-server CUDA arch: {dgx_message}")
+
+amd_runtime = runtime.get('amd_runtime', {})
+if amd_runtime.get('available'):
+    status = amd_runtime.get('health', 'unknown')
+    symbol = GREEN + '✓' + NC if status == 'reachable' else YELLOW + '⚠' + NC
+    print(
+        f"  {symbol} AMD runtime: "
+        f"{amd_runtime.get('runtime')} / {amd_runtime.get('selectedBackend')} / "
+        f"{amd_runtime.get('location')} / {status}"
+    )
+    for warning in amd_runtime.get('warnings', [])[:3]:
+        print(f"    {YELLOW}⚠{NC} {warning}")
+elif amd_runtime.get('reason') and amd_runtime.get('reason') != 'not_amd':
+    print(f"  {YELLOW}⚠{NC} AMD runtime: {amd_runtime.get('reason')}")
+
+inference_contract = runtime.get('inference_contract') or {}
+if inference_contract:
+    counts = inference_contract.get('issue_counts') or {}
+    blockers = counts.get('blockers', 0)
+    warnings = counts.get('warnings', 0)
+    symbol = GREEN + '✓' + NC if blockers == 0 and warnings == 0 else (RED + '✗' + NC if blockers else YELLOW + '⚠' + NC)
+    print(
+        f"  {symbol} Inference contract: "
+        f"mode={inference_contract.get('ods_mode', 'unknown')}, "
+        f"owner={inference_contract.get('expected_inference_owner', 'unknown')}, "
+        f"gateway={inference_contract.get('expected_gateway', 'unknown')}"
+    )
+    for issue in (inference_contract.get('issues') or [])[:3]:
+        print(f"    {YELLOW if issue.get('severity') == 'warn' else RED}⚠{NC} {issue.get('id')}: {issue.get('detail')}")
+
+print()
+
+# Voice checks
+stt_cached = runtime.get('stt_model_cached', 'unknown')
+stt_model = runtime.get('stt_model_name') or '<not configured>'
+tts_http = runtime.get('tts_http', 'unknown')
+if stt_cached != 'unknown' or tts_http != 'unknown':
+    print(f"{CYAN}Voice Readiness:{NC}")
+    if stt_cached == 'true':
+        print(f"  {GREEN}✓{NC} Whisper STT model cached: {stt_model}")
+    elif stt_cached == 'false':
+        print(f"  {YELLOW}⚠{NC} Whisper STT model missing: {stt_model}")
+        has_failures = True
+    elif stt_cached == 'service_down':
+        print(f"  {RED}✗{NC} Whisper STT service not responding")
+        has_failures = True
+    elif stt_cached == 'disabled':
+        print(f"  {YELLOW}?{NC} Whisper STT disabled")
+    else:
+        print(f"  {YELLOW}?{NC} Whisper STT model cache unknown")
+
+    if tts_http == 'true':
+        print(f"  {GREEN}✓{NC} Kokoro TTS responding")
+    elif tts_http == 'false':
+        print(f"  {RED}✗{NC} Kokoro TTS not responding")
+        has_failures = True
+    elif tts_http == 'disabled':
+        print(f"  {YELLOW}?{NC} Kokoro TTS disabled")
+    else:
+        print(f"  {YELLOW}?{NC} Kokoro TTS status unknown")
+    print()
+
+# Preflight checks
+preflight = report.get('preflight', {})
+pf_checks = preflight.get('checks', [])
+blockers = []
+warnings = []
+
+if pf_checks:
+    print(f"{CYAN}Preflight Checks:{NC}")
+    for check in pf_checks:
+        name = check.get('name', check.get('id', 'Unknown'))
+        status = check.get('status', 'unknown')
+        message = check.get('message', '')
+
+        if status == 'pass':
+            print(f"  {GREEN}✓{NC} {name}")
+        elif status == 'warn':
+            print(f"  {YELLOW}⚠{NC} {name}: {message}")
+            warnings.append((name, message))
+        elif status == 'blocker':
+            print(f"  {RED}✗{NC} {name}: {message}")
+            blockers.append((name, message))
+            has_failures = True
+        else:
+            print(f"  {YELLOW}?{NC} {name}: {message}")
+    print()
+
+# Evidence-ranked diagnoses
+diagnoses = report.get('diagnoses', [])
+if diagnoses:
+    print(f"{CYAN}Diagnoses:{NC}")
+    severity_colors = {
+        'blocker': RED,
+        'warn': YELLOW,
+        'info': CYAN,
+    }
+    for diagnosis in diagnoses[:5]:
+        severity = diagnosis.get('severity', 'info')
+        color = severity_colors.get(severity, CYAN)
+        diag_id = diagnosis.get('id', 'ODS-UNKNOWN')
+        confidence = diagnosis.get('confidence', 'unknown')
+        title = diagnosis.get('title', 'Unknown diagnosis')
+        print(f"  {color}{severity.upper()}{NC} {diag_id}: {title} ({confidence} confidence)")
+        evidence = diagnosis.get('evidence') or []
+        if evidence:
+            first = evidence[0]
+            print(f"    evidence: {first.get('source', 'unknown')} — {first.get('detail', '')}")
+        next_steps = diagnosis.get('next_steps') or []
+        if next_steps:
+            print(f"    next: {next_steps[0]}")
+        if severity == 'blocker':
+            has_failures = True
+    if len(diagnoses) > 5:
+        print(f"    ... {len(diagnoses) - 5} more diagnosis item(s) in the JSON report")
+    print()
+
+# Summary
+summary = report.get('summary', {})
+blocker_count = summary.get('preflight_blockers', 0)
+warning_count = summary.get('preflight_warnings', 0)
+runtime_warning_count = summary.get('runtime_warnings', 0)
+diagnosis_blocker_count = summary.get('diagnoses_blockers', 0)
+diagnosis_warning_count = summary.get('diagnoses_warnings', 0)
+runtime_ready = summary.get('runtime_ready', False)
+
+print(f"{CYAN}Summary:{NC}")
+if blocker_count > 0:
+    print(f"  {RED}✗{NC} {blocker_count} blocker(s) found")
+if warning_count > 0:
+    print(f"  {YELLOW}⚠{NC} {warning_count} warning(s) found")
+if runtime_warning_count > 0:
+    print(f"  {YELLOW}⚠{NC} {runtime_warning_count} runtime warning(s) found")
+if diagnosis_blocker_count > 0:
+    print(f"  {RED}✗{NC} {diagnosis_blocker_count} diagnosis blocker(s) found")
+if diagnosis_warning_count > 0:
+    print(f"  {YELLOW}⚠{NC} {diagnosis_warning_count} diagnosis warning(s) found")
+if blocker_count == 0 and warning_count == 0 and runtime_warning_count == 0 and diagnosis_blocker_count == 0 and diagnosis_warning_count == 0 and runtime_ready:
+    print(f"  {GREEN}✓{NC} All checks passed")
+
+print()
+
+# Autofix hints
+hints = report.get('autofix_hints', [])
+if hints:
+    print(f"{CYAN}Suggested Fixes:{NC}")
+    for i, hint in enumerate(hints[:6], 1):
+        print(f"  {i}. {hint}")
+    print()
+
+# Exit code: 1 if blockers or runtime failures, 0 otherwise
+if has_failures or blocker_count > 0:
+    sys.exit(1)
+else:
+    sys.exit(0)
+PY
+
+    return $?
+}
+
+cmd_audit() {
+    check_install
+    sr_load
+
+    local -a script_args=()
+    local scope="${1:-}"
+    if [[ "$scope" == "extensions" || "$scope" == "extension" ]]; then
+        shift
+    fi
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json|--strict)
+                script_args+=("$1")
+                shift
+                ;;
+            --help|-h)
+                python3 "$INSTALL_DIR/scripts/audit-extensions.py" --help
+                return 0
+                ;;
+            *)
+                script_args+=("$(resolve_service "$1")")
+                shift
+                ;;
+        esac
+    done
+
+    if [[ ! -f "$INSTALL_DIR/scripts/audit-extensions.py" ]]; then
+        error "audit-extensions.py not found at $INSTALL_DIR/scripts/audit-extensions.py"
+    fi
+
+    python3 "$INSTALL_DIR/scripts/audit-extensions.py" --project-dir "$INSTALL_DIR" "${script_args[@]}"
+}
+
+#=============================================================================
+# Extension Management Commands
+#=============================================================================
+
+# Track visited services during recursive enable to prevent circular deps
+declare -a _ENABLE_VISITED=()
+
+cmd_enable() {
+    check_install
+    sr_load
+    load_env 2>/dev/null || true
+
+    local input="${1:-}"
+    [[ -z "$input" ]] && { log "Usage: ods enable <service>"; exit 1; }
+
+    local service_id
+    service_id=$(sr_resolve "$input")
+
+    # Circular dependency guard
+    for _visited in "${_ENABLE_VISITED[@]}"; do
+        if [[ "$_visited" == "$service_id" ]]; then
+            warn "Circular dependency detected: $service_id already being enabled. Skipping."
+            return 0
+        fi
+    done
+    _ENABLE_VISITED+=("$service_id")
+
+    # Check built-in extensions first, then dashboard-installed user extensions
+    local ext_dir="$INSTALL_DIR/extensions/services/$service_id"
+    [[ ! -d "$ext_dir" ]] && ext_dir="$INSTALL_DIR/data/user-extensions/$service_id"
+    [[ -d "$ext_dir" ]] || error "Unknown service: $input"
+
+    local cf="$ext_dir/compose.yaml"
+    local disabled="$ext_dir/compose.yaml.disabled"
+
+    # Check it's not a core service
+    local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
+    [[ "$cat" == "core" ]] && { success "$service_id is a core service (always enabled)."; return 0; }
+
+    # Check GPU backend compatibility
+    local gpu_backends="${SERVICE_GPU_BACKENDS[$service_id]:-}"
+    if [[ -n "$gpu_backends" ]]; then
+        # Load current GPU_BACKEND from .env
+        local current_backend="${GPU_BACKEND:-nvidia}"
+        if [[ -f "$INSTALL_DIR/.env" ]]; then
+            local env_backend
+            env_backend=$(grep "^GPU_BACKEND=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || true)
+            if [[ -n "$env_backend" ]]; then
+                current_backend="$env_backend"
+            else
+                warn "Could not read GPU_BACKEND from .env, using default: nvidia"
+            fi
+        fi
+
+        # Handle "all" sentinel - services that work on any backend
+        if [[ " $gpu_backends " =~ " all " ]]; then
+            # Service works on all backends, skip compatibility check
+            :
+        # Apple Silicon exemption - all Docker services work on macOS regardless of gpu_backends
+        elif [[ "$current_backend" == "apple" ]]; then
+            # All Docker services run on macOS regardless of gpu_backends declaration
+            :
+        # Check if current backend is in the supported list
+        elif [[ ! " $gpu_backends " =~ " $current_backend " ]]; then
+            warn "$service_id may not work with GPU backend: $current_backend"
+            warn "  Supported backends: $gpu_backends"
+            warn "  Current backend: $current_backend"
+            read -p "  Continue anyway? [y/N] " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log "Cancelled."
+                return 1
+            fi
+        fi
+    fi
+
+    # Check inter-extension dependencies
+    local deps="${SERVICE_DEPENDS[$service_id]:-}"
+    if [[ -n "$deps" ]]; then
+        local missing=()
+        for dep in $deps; do
+            local dep_cf="$INSTALL_DIR/extensions/services/$dep/compose.yaml"
+            local dep_cat="${SERVICE_CATEGORIES[$dep]:-optional}"
+            # Core services are always available; check extension deps
+            if [[ "$dep_cat" != "core" && ! -f "$dep_cf" ]]; then
+                missing+=("$dep")
+            fi
+        done
+        if [[ ${#missing[@]} -gt 0 ]]; then
+            warn "$service_id depends on disabled services: ${missing[*]}"
+            read -p "  Enable them too? [Y/n] " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                for dep in "${missing[@]}"; do
+                    cmd_enable "$dep"
+                done
+            else
+                warn "Proceeding without dependencies — $service_id may not start correctly."
+            fi
+        fi
+    fi
+
+    if [[ -f "$cf" ]]; then
+        success "$service_id is already enabled."
+    elif [[ -f "$disabled" ]]; then
+        mv "$disabled" "$cf"
+        _regenerate_compose_flags
+        # Check if service needs a Docker build (has Dockerfile but no image)
+        if { [[ -f "$ext_dir/Dockerfile" ]] || [[ -f "$ext_dir/Dockerfile.rust" ]]; } && \
+           ! docker image inspect "ods-${service_id}:latest" &>/dev/null; then
+            success "$service_id enabled. Image needs building first:"
+            echo "  docker compose build $service_id && ods start $service_id"
+        else
+            success "$service_id enabled. Run 'ods start $service_id' to launch."
+        fi
+    else
+        error "$service_id has no compose fragment (core service? already enabled?)"
+    fi
+}
+
+cmd_disable() {
+    check_install
+    cd "$INSTALL_DIR"
+    load_env
+    sr_load
+    load_env 2>/dev/null || true
+
+    local input="${1:-}"
+    [[ -z "$input" ]] && { log "Usage: ods disable <service>"; exit 1; }
+
+    local service_id
+    service_id=$(sr_resolve "$input")
+    # Check built-in extensions first, then dashboard-installed user extensions
+    local ext_dir="$INSTALL_DIR/extensions/services/$service_id"
+    [[ ! -d "$ext_dir" ]] && ext_dir="$INSTALL_DIR/data/user-extensions/$service_id"
+    [[ -d "$ext_dir" ]] || error "Unknown service: $input"
+    local cf="$ext_dir/compose.yaml"
+
+    # Check it's not a core service
+    local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
+    [[ "$cat" == "core" ]] && error "Cannot disable core service: $service_id"
+
+    # Check for reverse dependents
+    local dependents=()
+    for sid in "${SERVICE_IDS[@]}"; do
+        [[ "$sid" == "$service_id" ]] && continue
+        local dep_cf="$INSTALL_DIR/extensions/services/$sid/compose.yaml"
+        [[ ! -f "$dep_cf" ]] && continue
+        local deps="${SERVICE_DEPENDS[$sid]:-}"
+        for dep in $deps; do
+            if [[ "$dep" == "$service_id" ]]; then
+                dependents+=("$sid")
+                break
+            fi
+        done
+    done
+    if [[ ${#dependents[@]} -gt 0 ]]; then
+        warn "These enabled extensions depend on $service_id: ${dependents[*]}"
+        read -p "  Continue anyway? [y/N] " -n 1 -r
+        echo
+        [[ ! $REPLY =~ ^[Yy]$ ]] && { log "Cancelled."; return 1; }
+    fi
+
+    # Stop if running, then rename
+    local flags_str
+    flags_str=$(get_compose_flags)
+    local -a flags
+    read -ra flags <<< "$flags_str"
+    docker compose "${flags[@]}" stop "$service_id" 2>/dev/null || true
+    [[ -f "$cf" ]] && mv "$cf" "${cf}.disabled"
+    _regenerate_compose_flags
+    local _data_dir="$INSTALL_DIR/data/$service_id"
+    if [[ -d "$_data_dir" ]]; then
+        local _data_size
+        _data_size=$(du -sh "$_data_dir" 2>/dev/null | cut -f1 || true)
+        success "$service_id disabled. Data preserved (${_data_size} in data/$service_id). Use 'ods purge $service_id' to delete."
+    else
+        success "$service_id disabled."
+    fi
+}
+
+cmd_purge() {
+    check_install
+    sr_load
+
+    if [[ $# -lt 1 ]]; then
+        error "Usage: ods purge <service>"
+    fi
+
+    local service_id
+    service_id=$(sr_resolve "$1")
+
+    # Validate against known service IDs
+    local _found=false
+    for _sid in "${SERVICE_IDS[@]}"; do
+        if [[ "$_sid" == "$service_id" ]]; then
+            _found=true
+            break
+        fi
+    done
+    if ! $_found; then
+        error "Unknown service: $service_id"
+    fi
+
+    # Block core services
+    local _cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
+    if [[ "$_cat" == "core" ]]; then
+        error "Cannot purge core service data: $service_id"
+    fi
+
+    # Check if service is still enabled (compose.yaml exists = enabled)
+    local _cf="$INSTALL_DIR/extensions/services/$service_id/compose.yaml"
+    if [[ -f "$_cf" ]]; then
+        error "$service_id is still enabled. Run 'ods disable $service_id' first."
+    fi
+
+    # Check if container is still running (disable may have failed to stop it)
+    local _container="${SERVICE_CONTAINERS[$service_id]:-ods-$service_id}"
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${_container}$"; then
+        error "$service_id container is still running. Run 'ods stop $service_id' first."
+    fi
+
+    # Check data directory exists
+    local _data_dir="$INSTALL_DIR/data/$service_id"
+    if [[ ! -d "$_data_dir" ]]; then
+        log "No data directory found for $service_id."
+        return 0
+    fi
+
+    # Show size and confirm
+    local _data_size
+    _data_size=$(du -sh "$_data_dir" 2>/dev/null | cut -f1 || true)
+    warn "This will permanently delete all data for $service_id (${_data_size})."
+    warn "Directory: $_data_dir"
+    log ""
+
+    local _confirm
+    read -p "  Type '$service_id' to confirm deletion: " -r _confirm
+    if [[ "$_confirm" != "$service_id" ]]; then
+        log "Purge cancelled."
+        return 0
+    fi
+
+    # Delete data — try direct rm first, fall back to docker for root-owned files
+    rm -rf "$_data_dir" 2>/dev/null || true
+    if [[ -d "$_data_dir" ]]; then
+        log "Some files are owned by root (created by Docker). Removing via container..."
+        if command -v docker &>/dev/null; then
+            docker run --rm -v "$_data_dir:/purge-target" alpine \
+                sh -c 'rm -rf /purge-target/* /purge-target/.[!.]* 2>/dev/null; true' 2>/dev/null \
+                || warn "Docker cleanup failed (non-fatal)"
+            rm -rf "$_data_dir" 2>/dev/null || true
+        fi
+        if [[ -d "$_data_dir" ]]; then
+            error "Could not fully remove $_data_dir. Try: sudo rm -rf $_data_dir"
+        fi
+    fi
+
+    success "Purged $service_id data (${_data_size} freed)."
+}
+
+cmd_list() {
+    local json_mode="false"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json_mode="true"; shift ;;
+            *) error "Unknown argument to 'ods list': $1" ;;
+        esac
+    done
+
+    sr_load
+    load_env 2>/dev/null || true
+    local active_flags
+    active_flags=$(get_compose_flags)
+
+    if [[ "$json_mode" == "true" ]]; then
+        # JSON output: array of {id, category, status}
+        local _first=1
+        printf '['
+        for sid in "${SERVICE_IDS[@]}"; do
+            local cat="${SERVICE_CATEGORIES[$sid]}"
+            local cf="${SERVICE_COMPOSE[$sid]}"
+            local status
+            if [[ "$cat" == "core" ]]; then
+                status="always-on"
+            elif [[ -n "$cf" && -f "$cf" && "$active_flags" == *"${cf#"$INSTALL_DIR/"}"* ]]; then
+                status="enabled"
+            else
+                status="disabled"
+            fi
+            (( _first == 1 )) || printf ','
+            printf '{"id":"%s","category":"%s","status":"%s"}' \
+                "$(_json_escape "$sid")" \
+                "$(_json_escape "$cat")" \
+                "$(_json_escape "$status")"
+            _first=0
+        done
+        printf ']\n'
+        return 0
+    fi
+
+    echo -e "${BLUE}━━━ Available Services ━━━${NC}"
+    printf "%-20s %-12s %-10s\n" "SERVICE" "CATEGORY" "STATUS"
+    printf "%-20s %-12s %-10s\n" "$(hr 20)" "$(hr 12)" "$(hr 10)"
+    for sid in "${SERVICE_IDS[@]}"; do
+        local cat="${SERVICE_CATEGORIES[$sid]}"
+        local cf="${SERVICE_COMPOSE[$sid]}"
+        local status
+        if [[ "$cat" == "core" ]]; then
+            status="always-on"
+        elif [[ -n "$cf" && -f "$cf" && "$active_flags" == *"${cf#"$INSTALL_DIR/"}"* ]]; then
+            status="enabled"
+        else
+            status="disabled"
+        fi
+        # Colour vars are blanked to "" off-TTY (lines 42-56), so no extra
+        # `[[ -t 1 ]]` guard is needed; padding stays consistent because ANSI
+        # escapes have zero display width.
+        local color
+        color=$(_status_color "$status")
+        printf "%-20s %-12s %s%-10s%s\n" "$sid" "$cat" "$color" "$status" "$NC"
+    done
+}
+
+#=============================================================================
+# Preset Commands
+#=============================================================================
+PRESETS_DIR="${INSTALL_DIR}/presets"
+
+# Validate preset compatibility with current system
+validate_preset_compatibility() {
+    local preset_dir="$1"
+    local preset_name="$(basename "$preset_dir")"
+
+    # Check required files
+    [[ -f "$preset_dir/meta.txt" ]] || { error "Invalid preset: missing meta.txt"; return 1; }
+    [[ -f "$preset_dir/extensions.list" ]] || { error "Invalid preset: missing extensions.list"; return 1; }
+    [[ -f "$preset_dir/env" ]] || { warn "Preset missing .env file (will not restore config)"; }
+
+    # Check if referenced extensions still exist
+    local missing_exts=()
+    while IFS=: read -r state sid; do
+        [[ -z "$sid" ]] && continue
+        local ext_dir="$INSTALL_DIR/extensions/services/$sid"
+        if [[ ! -d "$ext_dir" ]]; then
+            missing_exts+=("$sid")
+        fi
+    done < "$preset_dir/extensions.list"
+
+    if [[ ${#missing_exts[@]} -gt 0 ]]; then
+        log "⚠️  Preset references extensions that are no longer available:"
+        for ext in "${missing_exts[@]}"; do
+            log "   - $ext"
+        done
+        log "These extensions will be skipped during restore."
+    fi
+
+    return 0
+}
+
+cmd_preset() {
+    check_install
+    sr_load
+
+    local action="${1:-list}"
+    local name="${2:-}"
+
+    case "$action" in
+        save|s)
+            [[ -z "$name" ]] && { log "Usage: ods preset save <name>"; exit 1; }
+            local preset_dir="${PRESETS_DIR}/${name}"
+            mkdir -p "$preset_dir"
+
+            # Save .env (contains mode, model, and all config)
+            if [[ -f "$INSTALL_DIR/.env" ]]; then
+                cp "$INSTALL_DIR/.env" "$preset_dir/env"
+            fi
+
+            # Save enabled/disabled extension state
+            local state_file="$preset_dir/extensions.list"
+            : > "$state_file"
+            for sid in "${SERVICE_IDS[@]}"; do
+                local cat="${SERVICE_CATEGORIES[$sid]}"
+                [[ "$cat" == "core" ]] && continue
+                local cf="${SERVICE_COMPOSE[$sid]}"
+                if [[ -n "$cf" && -f "$cf" ]]; then
+                    echo "enabled:$sid" >> "$state_file"
+                else
+                    echo "disabled:$sid" >> "$state_file"
+                fi
+            done
+
+            # Save metadata
+            cat > "$preset_dir/meta.txt" <<META
+name=$name
+created=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+gpu_backend=${GPU_BACKEND:-unknown}
+tier=${TIER:-unknown}
+META
+
+            success "Preset '${name}' saved to presets/${name}/"
+            log "Contains: .env, mode, profiles, extension state"
+            ;;
+
+        load|l)
+            [[ -z "$name" ]] && { log "Usage: ods preset load <name>"; exit 1; }
+            local preset_dir="${PRESETS_DIR}/${name}"
+            [[ -d "$preset_dir" ]] || error "Preset not found: $name"
+
+            echo -e "${BLUE}━━━ Loading Preset: ${name} ━━━${NC}"
+
+            # Validate preset compatibility
+            if ! validate_preset_compatibility "$preset_dir"; then
+                return 1
+            fi
+
+            # Show what will be restored
+            if [[ -f "$preset_dir/meta.txt" ]]; then
+                echo ""
+                while IFS='=' read -r key value; do
+                    [[ -z "$key" || "$key" =~ ^# ]] && continue
+                    echo "  $key: $value"
+                done < "$preset_dir/meta.txt"
+                echo ""
+            fi
+
+            read -p "Restore this preset? This will overwrite current .env. [y/N] " -n 1 -r
+            echo ""
+            [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
+
+            # Restore .env (contains mode, model, and all config)
+            if [[ -f "$preset_dir/env" ]]; then
+                cp "$preset_dir/env" "$INSTALL_DIR/.env"
+                local restored_mode
+                restored_mode=$(grep "^ODS_MODE=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 || true)
+                success "Restored .env (mode: ${restored_mode:-local})"
+            fi
+
+            # Restore extension states
+            if [[ -f "$preset_dir/extensions.list" ]]; then
+                local enabled=0 disabled=0
+                while IFS=: read -r state sid; do
+                    local ext_dir="$INSTALL_DIR/extensions/services/$sid"
+                    [[ -d "$ext_dir" ]] || continue
+                    local cf="$ext_dir/compose.yaml"
+                    local cf_dis="$ext_dir/compose.yaml.disabled"
+
+                    if [[ "$state" == "enabled" ]]; then
+                        if [[ -f "$cf_dis" && ! -f "$cf" ]]; then
+                            mv "$cf_dis" "$cf"
+                            ((enabled++))
+                        fi
+                    elif [[ "$state" == "disabled" ]]; then
+                        if [[ -f "$cf" ]]; then
+                            mv "$cf" "$cf_dis"
+                            ((disabled++))
+                        fi
+                    fi
+                done < "$preset_dir/extensions.list"
+                success "Extensions: $enabled enabled, $disabled disabled"
+            fi
+
+            echo ""
+            success "Preset '${name}' loaded."
+            log "Run 'ods start' to apply changes."
+            ;;
+
+        list|ls)
+            echo -e "${BLUE}━━━ Saved Presets ━━━${NC}"
+            if [[ ! -d "$PRESETS_DIR" ]] || [[ -z "$(ls -A "$PRESETS_DIR" 2>/dev/null)" ]]; then
+                echo "  No presets saved yet."
+                echo ""
+                echo "  Create one with: ods preset save <name>"
+                return 0
+            fi
+
+            printf "  %-20s %-22s %-10s\n" "NAME" "CREATED" "BACKEND"
+            printf "  %-20s %-22s %-10s\n" "$(hr 20)" "$(hr 22)" "$(hr 10)"
+            for dir in "$PRESETS_DIR"/*/; do
+                [[ -d "$dir" ]] || continue
+                local pname
+                pname=$(basename "$dir")
+                local created="" backend=""
+                if [[ -f "$dir/meta.txt" ]]; then
+                    # A malformed meta.txt should not abort listing the rest
+                    # of the presets under pipefail.
+                    created=$(grep "^created=" "$dir/meta.txt" 2>/dev/null | cut -d= -f2 | cut -dT -f1 || true)
+                    backend=$(grep "^gpu_backend=" "$dir/meta.txt" 2>/dev/null | cut -d= -f2 || true)
+                fi
+                printf "  %-20s %-22s %-10s\n" "$pname" "${created:-unknown}" "${backend:-unknown}"
+            done
+            ;;
+
+        delete|rm)
+            [[ -z "$name" ]] && { log "Usage: ods preset delete <name>"; exit 1; }
+            local preset_dir="${PRESETS_DIR}/${name}"
+            [[ -d "$preset_dir" ]] || error "Preset not found: $name"
+
+            read -p "Delete preset '${name}'? [y/N] " -n 1 -r
+            echo ""
+            [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
+
+            rm -rf "$preset_dir"
+            success "Preset '${name}' deleted."
+            ;;
+
+        export|e)
+            [[ -z "$name" ]] && { log "Usage: ods preset export <name> <output.tar.gz>"; exit 1; }
+            local output="${3:-}"
+            [[ -z "$output" ]] && { log "Usage: ods preset export <name> <output.tar.gz>"; exit 1; }
+            local preset_dir="${PRESETS_DIR}/${name}"
+            [[ -d "$preset_dir" ]] || error "Preset not found: $name"
+
+            # Validate preset has required files
+            [[ -f "$preset_dir/meta.txt" ]] || error "Invalid preset: missing meta.txt"
+            [[ -f "$preset_dir/extensions.list" ]] || error "Invalid preset: missing extensions.list"
+
+            log "Exporting preset '${name}'..."
+
+            # Resolve relative output path before cd changes the working directory
+            if [[ "$output" != /* ]]; then
+                output="$(pwd)/$output"
+            fi
+
+            # Create archive (relative to presets dir to avoid absolute paths)
+            cd "$PRESETS_DIR"
+            if tar czf "$output" "$name" 2>/dev/null; then
+                local size
+                size=$(du -h "$output" 2>/dev/null | cut -f1 || true)
+                success "Preset exported to: $output ($size)"
+            else
+                error "Failed to create archive"
+            fi
+            cd "$INSTALL_DIR"
+            ;;
+
+        import|i)
+            local archive="${2:-}"
+            [[ -z "$archive" ]] && { log "Usage: ods preset import <preset.tar.gz>"; exit 1; }
+            [[ -f "$archive" ]] || error "Archive not found: $archive"
+
+            log "Validating archive..."
+
+            # Security: Check for path traversal
+            if tar tzf "$archive" 2>/dev/null | grep -qE '(^/|\.\./|\.\.\\)'; then
+                error "Archive contains unsafe paths (absolute or ../) — refusing to import"
+            fi
+
+            # Validate archive structure
+            local archive_name
+            archive_name=$(tar tzf "$archive" 2>/dev/null | sed -n '1p' | cut -d/ -f1)
+            [[ -z "$archive_name" ]] && error "Invalid archive structure"
+
+            # Check if preset already exists
+            if [[ -d "${PRESETS_DIR}/${archive_name}" ]]; then
+                warn "Preset '${archive_name}' already exists"
+                read -p "Overwrite? [y/N] " -n 1 -r
+                echo ""
+                [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
+                rm -rf "${PRESETS_DIR}/${archive_name}"
+            fi
+
+            # Extract archive
+            mkdir -p "$PRESETS_DIR"
+            cd "$PRESETS_DIR"
+            if tar xzf "$archive" 2>/dev/null; then
+                # Validate extracted preset
+                if [[ ! -f "${archive_name}/meta.txt" ]]; then
+                    rm -rf "${archive_name}"
+                    error "Invalid preset: missing meta.txt"
+                fi
+                if [[ ! -f "${archive_name}/extensions.list" ]]; then
+                    rm -rf "${archive_name}"
+                    error "Invalid preset: missing extensions.list"
+                fi
+
+                success "Preset '${archive_name}' imported successfully"
+                log "Use 'ods preset load ${archive_name}' to apply it"
+            else
+                error "Failed to extract archive"
+            fi
+            cd "$INSTALL_DIR"
+            ;;
+
+        diff|d)
+            local preset1="${2:-}"
+            local preset2="${3:-}"
+
+            # Validate arguments
+            if [[ -z "$preset1" ]] || [[ -z "$preset2" ]]; then
+                error "Usage: ods preset diff <preset1> <preset2>"
+            fi
+
+            local dir1="$PRESETS_DIR/$preset1"
+            local dir2="$PRESETS_DIR/$preset2"
+
+            # Check both presets exist
+            [[ -d "$dir1" ]] || error "Preset '$preset1' not found"
+            [[ -d "$dir2" ]] || error "Preset '$preset2' not found"
+
+            log "Comparing presets: ${CYAN}$preset1${NC} vs ${CYAN}$preset2${NC}"
+            echo ""
+
+            # Compare metadata
+            echo -e "${BLUE}━━━ Metadata ━━━${NC}"
+            if [[ -f "$dir1/meta.txt" ]] && [[ -f "$dir2/meta.txt" ]]; then
+                diff -u "$dir1/meta.txt" "$dir2/meta.txt" | tail -n +4 | sed "s/^-/$(printf "${RED}-${NC}")/" | sed "s/^+/$(printf "${GREEN}+${NC}")/" || true
+            fi
+            echo ""
+
+            # Compare extensions
+            echo -e "${BLUE}━━━ Service State ━━━${NC}"
+            if [[ -f "$dir1/extensions.list" ]] && [[ -f "$dir2/extensions.list" ]]; then
+                # Parse both files into associative arrays
+                declare -A ext1 ext2
+                while IFS=: read -r state sid; do
+                    [[ -n "$sid" ]] && ext1["$sid"]="$state"
+                done < "$dir1/extensions.list"
+                while IFS=: read -r state sid; do
+                    [[ -n "$sid" ]] && ext2["$sid"]="$state"
+                done < "$dir2/extensions.list"
+
+                # Find all unique service IDs
+                local all_sids=()
+                for sid in "${!ext1[@]}"; do all_sids+=("$sid"); done
+                for sid in "${!ext2[@]}"; do
+                    [[ -z "${ext1[$sid]:-}" ]] && all_sids+=("$sid")
+                done
+
+                # Sort and compare
+                local has_diff=false
+                for sid in $(printf '%s\n' "${all_sids[@]}" | sort); do
+                    local state1="${ext1[$sid]:-missing}"
+                    local state2="${ext2[$sid]:-missing}"
+
+                    if [[ "$state1" != "$state2" ]]; then
+                        has_diff=true
+                        if [[ "$state1" == "missing" ]]; then
+                            echo -e "  ${GREEN}+${NC} $sid: $state2"
+                        elif [[ "$state2" == "missing" ]]; then
+                            echo -e "  ${RED}-${NC} $sid: $state1"
+                        else
+                            echo -e "  ${YELLOW}~${NC} $sid: $state1 → $state2"
+                        fi
+                    fi
+                done
+
+                [[ "$has_diff" == "false" ]] && echo "  (no differences)"
+            fi
+            echo ""
+
+            # Compare environment variables
+            echo -e "${BLUE}━━━ Environment Variables ━━━${NC}"
+            if [[ -f "$dir1/env" ]] && [[ -f "$dir2/env" ]]; then
+                # Load secret schema so `_cmd_config_is_secret` below can consult
+                # .env.schema.json instead of the narrow regex the old version
+                # used (which missed _PASS, _SALT, email admin fields, etc.).
+                _cmd_config_load_secret_schema
+
+                # Parse both env files
+                declare -A env1 env2
+                while IFS='=' read -r key value; do
+                    [[ "$key" =~ ^[[:space:]]*# ]] && continue
+                    [[ -z "$key" ]] && continue
+                    env1["$key"]="$value"
+                done < "$dir1/env"
+                while IFS='=' read -r key value; do
+                    [[ "$key" =~ ^[[:space:]]*# ]] && continue
+                    [[ -z "$key" ]] && continue
+                    env2["$key"]="$value"
+                done < "$dir2/env"
+
+                # Find all unique keys
+                local all_keys=()
+                for key in "${!env1[@]}"; do all_keys+=("$key"); done
+                for key in "${!env2[@]}"; do
+                    [[ -z "${env1[$key]:-}" ]] && all_keys+=("$key")
+                done
+
+                # Sort and compare (mask secrets)
+                local has_diff=false
+                for key in $(printf '%s\n' "${all_keys[@]}" | sort); do
+                    local val1="${env1[$key]:-}"
+                    local val2="${env2[$key]:-}"
+
+                    # Check if values differ BEFORE masking
+                    if [[ "$val1" != "$val2" ]]; then
+                        has_diff=true
+
+                        # Mask sensitive values for display
+                        if _cmd_config_is_secret "$key"; then
+                            [[ -n "$val1" ]] && val1="***"
+                            [[ -n "$val2" ]] && val2="***"
+                        fi
+
+                        if [[ -z "$val1" ]]; then
+                            echo -e "  ${GREEN}+${NC} $key=$val2"
+                        elif [[ -z "$val2" ]]; then
+                            echo -e "  ${RED}-${NC} $key=$val1"
+                        else
+                            echo -e "  ${YELLOW}~${NC} $key: $val1 → $val2"
+                        fi
+                    fi
+                done
+
+                [[ "$has_diff" == "false" ]] && echo "  (no differences)"
+            fi
+            echo ""
+            ;;
+
+        *)
+            cat <<EOF
+Usage: ods preset <command> [args]
+
+Commands:
+  save <name>              Save current configuration as a preset
+  load <name>              Load a preset (restores .env and service state)
+  list                     List all saved presets
+  delete <name>            Delete a preset
+  export <name> <file>     Export preset to .tar.gz archive
+  import <file>            Import preset from .tar.gz archive
+  diff <preset1> <preset2> Compare two presets and show differences
+
+Examples:
+  ods preset save gaming
+  ods preset load gaming
+  ods preset diff gaming production
+  ods preset export gaming ~/gaming-preset.tar.gz
+EOF
+            ;;
+    esac
+}
+
+#=============================================================================
+# Mode Switch Commands (M1 Zero-Cloud Phase 3)
+#=============================================================================
+cmd_mode() {
+    check_install; cd "$INSTALL_DIR"
+    load_env || true
+    local mode="${1:-}"
+
+    if [[ -z "$mode" ]]; then
+        # Show current mode
+        local current=$(grep "^ODS_MODE=" .env 2>/dev/null | cut -d= -f2 || true)
+        current="${current:-local}"
+        local api_url=$(grep "^LLM_API_URL=" .env 2>/dev/null | cut -d= -f2 || true)
+        local model=$(grep "^LLM_MODEL=" .env 2>/dev/null | cut -d= -f2 || true)
+        local tier=$(grep "^TIER=" .env 2>/dev/null | cut -d= -f2 || true)
+        echo -e "${BLUE}━━━ ODS Mode ━━━${NC}"
+        echo ""
+        echo -e "Current mode: ${GREEN}${current}${NC}"
+        [[ -n "$api_url" ]] && echo "LLM_API_URL: $api_url"
+        [[ -n "$model" ]] && echo "Model: $model"
+        [[ -n "$tier" ]] && echo "Tier: $tier"
+        echo ""
+
+        case "$current" in
+            cloud)
+                echo "  LLM:  LiteLLM → Cloud APIs (Claude, GPT-4, etc.)"
+                echo "  Cost: ~\$0.003-0.06/1K tokens"
+                ;;
+            local)
+                echo "  LLM:  Local llama-server"
+                echo "  Cost: \$0 (electricity only)"
+                ;;
+            hybrid)
+                echo "  LLM:  Local llama-server → Cloud fallback on failure"
+                echo "  Cost: \$0 when local works, cloud rates on fallback"
+                ;;
+        esac
+
+        echo ""
+        echo -e "${CYAN}Available modes:${NC}"
+        echo "  local   — Local inference via llama-server (requires GPU/CPU)"
+        echo "  cloud   — Cloud APIs via LiteLLM (requires API keys)"
+        echo "  hybrid  — Local primary, cloud fallback"
+        echo ""
+        echo "Usage: ods mode <local|cloud|hybrid>"
+        return 0
+    fi
+
+    case "$mode" in
+        local|cloud|hybrid) ;;
+        *) error "Unknown mode: $mode. Use: local, cloud, hybrid" ;;
+    esac
+
+    # Update .env
+    _env_set "ODS_MODE" "$mode"
+
+    local api_url
+    if [[ "$mode" == "local" ]]; then
+        api_url="http://llama-server:8080"
+        _env_set "LLM_API_URL" "$api_url"
+        _env_set "HERMES_LLM_BASE_URL" "http://llama-server:8080/v1"
+        _env_set "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
+    else
+        api_url="http://litellm:4000"
+        _env_set "LLM_API_URL" "$api_url"
+        _env_set "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
+        if [[ -n "${LITELLM_KEY:-}" ]]; then
+            _env_set "HERMES_LLM_API_KEY" "$LITELLM_KEY"
+        fi
+        # Auto-enable litellm
+        local litellm_cf="$INSTALL_DIR/extensions/services/litellm/compose.yaml"
+        local litellm_disabled="${litellm_cf}.disabled"
+        if [[ -f "$litellm_disabled" && ! -f "$litellm_cf" ]]; then
+            mv "$litellm_disabled" "$litellm_cf"
+            success "Auto-enabled litellm for $mode mode"
+        fi
+        # Check for API keys
+        local has_keys=false
+        grep -q "^ANTHROPIC_API_KEY=." .env 2>/dev/null && has_keys=true
+        grep -q "^OPENAI_API_KEY=." .env 2>/dev/null && has_keys=true
+        if [[ "$has_keys" == "false" ]]; then
+            warn "No API keys found in .env — add ANTHROPIC_API_KEY or OPENAI_API_KEY"
+        fi
+    fi
+
+    echo -e "${BLUE}━━━ Mode updated ━━━${NC}"
+    echo "  ODS_MODE  = $mode"
+    echo "  LLM_API_URL = $api_url"
+    load_env || true
+    _regenerate_compose_flags
+    success "Switched to $mode mode. Run 'ods restart' to apply."
+}
+
+cmd_model() {
+    check_install; cd "$INSTALL_DIR"
+    local subcmd="${1:-current}"
+
+    case "$subcmd" in
+        current)
+            local model=$(grep "^LLM_MODEL=" .env 2>/dev/null | cut -d= -f2 || true)
+            local tier=$(grep "^TIER=" .env 2>/dev/null | cut -d= -f2 || true)
+            echo -e "Current model: ${GREEN}${model:-<not set>}${NC}"
+            [[ -n "$tier" ]] && echo "Current tier: $tier"
+            return 0
+            ;;
+        list)
+            echo -e "${BLUE}━━━ Available Tiers ━━━${NC}"
+            echo "  T0         — qwen3.5-2b (< 8GB RAM, any GPU)"
+            echo "  T1         — qwen3.5-9b (<12GB VRAM)"
+            echo "  T2         — qwen3.5-9b (12-19GB, larger context)"
+            echo "  T3         — qwen3-30b-a3b (20-47GB)"
+            echo "  T4         — qwen3-30b-a3b (48GB+)"
+            echo "  SH         — qwen3-30b-a3b (Strix Halo unified)"
+            echo "  SH_LARGE   — qwen3-coder-next (90GB+ unified)"
+            echo "  NV_ULTRA   — qwen3-coder-next (amd64) / qwen3.6-35b-a3b (arm64 Spark)"
+            echo ""
+            echo "Usage: ods model swap <tier>"
+            ;;
+        swap)
+            local tier="${2:-}"
+            [[ -z "$tier" ]] && error "Usage: ods model swap <T0|T1|T2|T3|T4|SH|SH_LARGE|NV_ULTRA>"
+            tier=$(echo "$tier" | tr '[:lower:]' '[:upper:]')
+            # Source tier-map and resolve full config (model, GGUF, context)
+            . "$INSTALL_DIR/installers/lib/tier-map.sh"
+            local model
+            model=$(tier_to_model "$tier")
+            [[ -z "$model" ]] && error "Unknown tier: $tier"
+            # Normalize aliases for resolve_tier_config (T0→0, T1→1, SH→SH_COMPACT)
+            TIER="$tier"
+            [[ "$TIER" =~ ^T([0-9]+)$ ]] && TIER="${BASH_REMATCH[1]}"
+            [[ "$TIER" == "SH" ]] && TIER="SH_COMPACT"
+            resolve_tier_config
+            _env_set "LLM_MODEL" "$model"
+            _env_set "TIER" "$TIER"
+            _env_set "GGUF_FILE" "$GGUF_FILE"
+            _env_set "GGUF_URL" "$GGUF_URL"
+            _env_set "CTX_SIZE" "$MAX_CONTEXT"
+            _env_set "MAX_CONTEXT" "$MAX_CONTEXT"
+            success "Model set to $model (tier $tier, ctx=$MAX_CONTEXT). Run 'ods restart llama-server' to apply."
+            ;;
+        *)
+            error "Usage: ods model <current|list|swap>"
+            ;;
+    esac
+}
+
+cmd_stt() {
+    check_install; cd "$INSTALL_DIR"
+    local subcmd="${1:-status}"
+
+    # Resolve model and port from .env (with fallback for older installs).
+    local model port model_encoded url
+    model=$(_env_get_raw AUDIO_STT_MODEL)
+    [[ -z "$model" ]] && model="Systran/faster-whisper-base"
+    port=$(_env_get_raw WHISPER_PORT)
+    [[ -z "$port" ]] && port="9000"
+    model_encoded="${model//\//%2F}"
+    url="http://127.0.0.1:${port}"
+
+    case "$subcmd" in
+        current)
+            echo "STT model: ${model}"
+            echo "Whisper URL: ${url}"
+            return 0
+            ;;
+        status)
+            if ! curl -sf --max-time 3 "${url}/v1/models" >/dev/null 2>&1; then
+                warn "Whisper service not reachable at ${url}"
+                echo "  Is voice enabled and the stack running?"
+                return 1
+            fi
+            local target_encoded="$model_encoded"
+            local target_model="$model"
+            if [[ -n "${2:-}" ]]; then
+                target_model="$2"
+                target_encoded="${target_model//\//%2F}"
+            fi
+            if curl -sf --max-time 5 "${url}/v1/models/${target_encoded}" >/dev/null 2>&1; then
+                success "Cached: ${target_model}"
+            else
+                warn "Not cached: ${target_model}"
+                echo "  Run: ods stt download${2:+ $2}"
+            fi
+            ;;
+        download)
+            local target_model="${2:-$model}"
+            local target_encoded="${target_model//\//%2F}"
+            # Wait briefly for the models API to be ready (max 15s).
+            local ready=false
+            for _i in $(seq 1 15); do
+                if curl -sf --max-time 2 "${url}/v1/models" >/dev/null 2>&1; then
+                    ready=true
+                    break
+                fi
+                sleep 1
+            done
+            if ! $ready; then
+                error "Whisper models API not reachable at ${url}. Is voice enabled and the stack running?"
+            fi
+            # Skip if already cached.
+            if curl -sf --max-time 5 "${url}/v1/models/${target_encoded}" >/dev/null 2>&1; then
+                success "Already cached: ${target_model}"
+                return 0
+            fi
+            echo "Downloading ${target_model}..."
+            if ! curl -s --max-time 3600 -X POST "${url}/v1/models/${target_encoded}"; then
+                error "Download request failed. Check Whisper logs: ods logs whisper"
+            fi
+            # Verify the download actually cached.
+            if curl -sf --max-time 10 "${url}/v1/models/${target_encoded}" >/dev/null 2>&1; then
+                success "Downloaded and cached: ${target_model}"
+            else
+                error "Download returned but model is not cached. Check Whisper logs: ods logs whisper"
+            fi
+            ;;
+        *)
+            error "Usage: ods stt <current|status|download> [MODEL]"
+            ;;
+    esac
+}
+
+cmd_backup() {
+    check_install
+    cd "$INSTALL_DIR"
+
+    if [[ ! -x "$INSTALL_DIR/ods-backup.sh" ]]; then
+        error "ods-backup.sh not found or not executable"
+    fi
+
+    local action="${1:-}"
+    if [[ "$action" == "verify" ]]; then
+        shift
+        local id="${1:-}"
+        [[ -z "$id" ]] && error "Usage: ods backup verify <backup_id|backup_id.tar.gz>"
+        "$INSTALL_DIR/ods-backup.sh" verify "$id"
+        return
+    fi
+
+    # Default: create backup (pass all args through)
+    "$INSTALL_DIR/ods-backup.sh" "$@"
+}
+
+cmd_restore() {
+    check_install
+    cd "$INSTALL_DIR"
+
+    if [[ ! -x "$INSTALL_DIR/ods-restore.sh" ]]; then
+        error "ods-restore.sh not found or not executable"
+    fi
+
+    # Pass all arguments to ods-restore.sh
+    "$INSTALL_DIR/ods-restore.sh" "$@"
+}
+
+cmd_rollback() {
+    check_install
+    cd "$INSTALL_DIR"
+    load_env
+
+    if [[ ! -f "$INSTALL_DIR/.last-backup-id" ]]; then
+        error "No rollback point found. Rollback is only available after a failed update."
+    fi
+
+    local backup_id
+    backup_id=$(cat "$INSTALL_DIR/.last-backup-id")
+
+    if [[ -z "$backup_id" ]]; then
+        error "Invalid rollback point (empty backup ID)"
+    fi
+
+    log "Rolling back to pre-update state (backup: $backup_id)..."
+    echo ""
+    warn "This will restore configuration from before the last update."
+    read -p "Continue with rollback? [y/N] " -n 1 -r
+    echo ""
+
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log "Rollback cancelled"
+        return 0
+    fi
+
+    # Stop services before rollback
+    log "Stopping services..."
+    local flags_str
+    flags_str=$(get_compose_flags)
+    local -a flags
+    read -ra flags <<< "$flags_str"
+    docker compose "${flags[@]}" down 2>/dev/null || true
+
+    # Restore from backup
+    if "$INSTALL_DIR/ods-restore.sh" "$backup_id"; then
+        success "Configuration restored from backup: $backup_id"
+
+        # Restart services with restored configuration
+        log "Restarting services with restored configuration..."
+        if docker compose "${flags[@]}" up -d; then
+            success "Rollback complete"
+            rm -f "$INSTALL_DIR/.last-backup-id"
+
+            log "Checking service health..."
+            sleep 5
+            cmd_status
+        else
+            error "Failed to restart services after rollback. Check 'docker compose logs' for details."
+        fi
+    else
+        error "Failed to restore from backup. Your system may be in an inconsistent state."
+    fi
+}
+
+cmd_agent() {
+    check_install
+    load_env 2>/dev/null || true
+
+    local action="${1:-status}"
+    local port="${ODS_AGENT_PORT:-7710}"
+    local pid_file="$INSTALL_DIR/data/ods-host-agent.pid"
+    local log_file="$INSTALL_DIR/data/ods-host-agent.log"
+    local agent_script="$INSTALL_DIR/bin/ods-host-agent.py"
+
+    # Detect daemon type
+    local daemon_type="none"
+    case "$(uname -s)" in
+        Darwin) daemon_type="launchd" ;;
+        Linux)
+            if systemctl status >/dev/null 2>&1 || [[ -d /run/systemd/system ]]; then
+                daemon_type="systemd"
+            fi
+            ;;
+    esac
+
+    case "$action" in
+        status)
+            local bind_addr
+            bind_addr="$(grep '^ODS_AGENT_BIND=' "${INSTALL_DIR}/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)"
+            bind_addr="${bind_addr:-127.0.0.1}"
+            if curl -sf --max-time 2 "http://${bind_addr}:${port}/health" > /dev/null 2>&1; then
+                success "ODS host agent: running (port ${port}, ${daemon_type})"
+            else
+                warn "ODS host agent: not responding (port ${port})"
+            fi
+            ;;
+        start)
+            case "$daemon_type" in
+                launchd)
+                    launchctl bootstrap "gui/$(id -u)" \
+                        "$HOME/Library/LaunchAgents/com.ods.host-agent.plist" 2>/dev/null && \
+                        success "Agent started (LaunchAgent)" || warn "Agent start failed"
+                    ;;
+                systemd)
+                    sudo systemctl start ods-host-agent.service 2>/dev/null && \
+                        success "Agent started (systemd)" || warn "Agent start failed"
+                    ;;
+                *)
+                    # Fallback: nohup + PID file
+                    if [[ -f "$pid_file" ]]; then
+                        kill "$(cat "$pid_file")" 2>/dev/null || true
+                        rm -f "$pid_file"
+                    fi
+                    if ! command -v python3 &>/dev/null; then
+                        error "python3 not found in PATH"
+                        return 1
+                    fi
+                    nohup python3 "$agent_script" --pid-file "$pid_file" \
+                        >> "$log_file" 2>&1 &disown
+                    success "Agent started (background, PID $!)"
+                    ;;
+            esac
+            ;;
+        stop)
+            case "$daemon_type" in
+                launchd)
+                    launchctl bootout "gui/$(id -u)/com.ods.host-agent" 2>/dev/null && \
+                        success "Agent stopped" || warn "Agent not running"
+                    ;;
+                systemd)
+                    sudo systemctl stop ods-host-agent.service 2>/dev/null && \
+                        success "Agent stopped" || warn "Agent not running"
+                    ;;
+                *)
+                    if [[ -f "$pid_file" ]]; then
+                        kill "$(cat "$pid_file")" 2>/dev/null && \
+                            success "Agent stopped" || warn "Agent process not found"
+                        rm -f "$pid_file"
+                    else
+                        warn "Agent not running (no PID file)"
+                    fi
+                    ;;
+            esac
+            ;;
+        restart)
+            cmd_agent stop
+            sleep 1
+            cmd_agent start
+            ;;
+        logs)
+            if [[ -f "$log_file" ]]; then
+                tail -f "$log_file"
+            else
+                warn "No log file at $log_file"
+                return 1
+            fi
+            ;;
+        *)
+            log "Usage: ods agent [status|start|stop|restart|logs]"
+            ;;
+    esac
+}
+
+#=============================================================================
+# cmd_gpu — Multi-GPU inspection and management
+#=============================================================================
+
+_gpu_status() {
+    check_install
+    load_env
+
+    if [[ "${GPU_BACKEND:-}" == "apple" ]]; then
+        echo -e "${BLUE}━━━ GPU Status (1 integrated GPU) ━━━${NC}"
+        echo ""
+    else
+        local gpu_count
+        gpu_count=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ') || gpu_count=0
+        echo -e "${BLUE}━━━ GPU Status (${gpu_count} GPU$([ "$gpu_count" -ne 1 ] && echo s)) ━━━${NC}"
+        echo ""
+    fi
+
+    if [[ "${GPU_BACKEND:-nvidia}" == "nvidia" ]] && command -v nvidia-smi &>/dev/null && [ "$gpu_count" -gt 0 ]; then
+        local output
+        output=$(nvidia-smi \
+            --query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw \
+            --format=csv,noheader,nounits 2>/dev/null) || { warn "nvidia-smi failed"; return; }
+
+        [[ -z "$output" ]] && { warn "No NVIDIA GPU data returned"; return; }
+
+        echo "$output" | awk -F', ' -v blue="${BLUE}" -v nc="${NC}" '
+        BEGIN {
+            printf "  %-4s %-22s %-22s  %-7s  %-7s  %s\n", \
+                "#", "Name", "VRAM Used/Total", "Util", "Temp", "Power"
+            printf "  %-4s %-22s %-22s  %-7s  %-7s  %s\n", \
+                "─", "──────────────────────", "──────────────────────", "───────", "───────", "─────"
+            n=0; total_u=0; total_t=0; util_sum=0; max_temp=0; pw_sum=0; pw_count=0
+        }
+        {
+            idx=$1; name=$2; mem_used=$3; mem_total=$4; util=$5; temp=$6; pw=$7
+            gsub(/^ +| +$/, "", idx); gsub(/^ +| +$/, "", name)
+            gsub(/^ +| +$/, "", mem_used); gsub(/^ +| +$/, "", mem_total)
+            gsub(/^ +| +$/, "", util); gsub(/^ +| +$/, "", temp); gsub(/^ +| +$/, "", pw)
+
+            vram_str = sprintf("%.1f / %.1f GB", mem_used/1024, mem_total/1024)
+
+            if (pw ~ /^[0-9.]+$/) {
+                pw_str = sprintf("%.0fW", pw); pw_sum += pw; pw_count++
+            } else {
+                pw_str = "N/A"
+            }
+
+            printf "  %-4s %-22s %-22s  %3d%%     %3d°C   %s\n", \
+                idx, substr(name,1,22), vram_str, util, temp, pw_str
+
+            total_u += mem_used; total_t += mem_total
+            util_sum += util
+            if (temp+0 > max_temp+0) max_temp = temp
+            n++
+        }
+        END {
+            if (n > 1) {
+                printf "                         ──────────────────────\n"
+                pw_total_str = (pw_count > 0) ? sprintf("%.0fW", pw_sum) : "N/A"
+                vram_str = sprintf("%.1f / %.1f GB", total_u/1024, total_t/1024)
+                printf "  %-4s %-22s %-22s  %3d%%     %3d°C   %s\n", \
+                    "Σ", "", vram_str, int(util_sum/n), max_temp, pw_total_str
+            }
+        }'
+
+        echo ""
+
+        # Compact assignment summary (if configured)
+        local assignment_b64="${GPU_ASSIGNMENT_JSON_B64:-}"
+        if [[ -n "$assignment_b64" ]] && command -v jq &>/dev/null; then
+            assignment_b64=$(echo "$assignment_b64" | tr -d '\r' | tr -d '[:space:]')
+            local assignment_json
+            assignment_json=$(echo "$assignment_b64" | base64 -d 2>/dev/null) || assignment_json=""
+            if [[ -n "$assignment_json" ]]; then
+                local uuid_map
+                uuid_map=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader,nounits 2>/dev/null) || uuid_map=""
+                echo "  GPU Assignments:"
+                echo "$assignment_json" | jq -r '.gpu_assignment.services | to_entries[] | [.key, (.value.gpus | join(","))] | @tsv' \
+                | while IFS=$'\t' read -r svc gpus; do
+                    local labels=""
+                    while IFS= read -r uuid; do
+                        [[ -z "$uuid" ]] && continue
+                        local idx
+                        idx=$(echo "$uuid_map" | awk -F', ' -v u="$uuid" '$2==u{print $1; exit}' | tr -d ' ')
+                        labels="${labels:+$labels, }${idx:+GPU${idx}}"
+                    done < <(echo "$gpus" | tr ',' '\n')
+                    printf "    %-20s %s\n" "$svc" "${labels:-$gpus}"
+                done
+                echo ""
+            fi
+        fi
+
+    elif [[ "${GPU_BACKEND:-}" == "amd" ]]; then
+        printf "  %-4s %-22s %-22s  %-7s  %-7s  %s\n" \
+            "#" "Name" "VRAM Used/Total" "Util" "Temp" "Power"
+        printf "  %-4s %-22s %-22s  %-7s  %-7s  %s\n" \
+            "─" "──────────────────────" "──────────────────────" "───────" "───────" "─────"
+        local _amd_idx=0 _amd_total_u=0 _amd_total_t=0 _amd_util_sum=0 _amd_max_temp=0 _amd_pw_sum=0
+        for card_dir in /sys/class/drm/card*/device; do
+            [[ -f "$card_dir/vendor" ]] || continue
+            local vendor
+            vendor=$(cat "$card_dir/vendor" 2>/dev/null)
+            [[ "$vendor" == "0x1002" ]] || continue
+            local name vram_total vram_used busy temp_c pw_w
+            name=$(cat "$card_dir/product_name" 2>/dev/null || echo "AMD Radeon")
+            [[ -z "$name" || "$name" == "(null)" ]] && name="AMD Radeon"
+            vram_total=$(cat "$card_dir/mem_info_vram_total" 2>/dev/null || echo "0")
+            vram_used=$(cat "$card_dir/mem_info_vram_used" 2>/dev/null || echo "0")
+            busy=$(cat "$card_dir/gpu_busy_percent" 2>/dev/null || echo "0")
+
+            # Temperature: find junction sensor via hwmon labels
+            temp_c="N/A"
+            for hwmon_dir in "$card_dir"/hwmon/hwmon*; do
+                [[ -d "$hwmon_dir" ]] || continue
+                for label_file in "$hwmon_dir"/temp*_label; do
+                    [[ -f "$label_file" ]] || continue
+                    local label_val
+                    label_val=$(cat "$label_file" 2>/dev/null)
+                    if [[ "$label_val" == "junction" || "$label_val" == "edge" ]]; then
+                        local input_file="${label_file/_label/_input}"
+                        if [[ -f "$input_file" ]]; then
+                            local millic
+                            millic=$(cat "$input_file" 2>/dev/null) || millic=0
+                            temp_c=$((millic / 1000))
+                            break 2
+                        fi
+                    fi
+                done
+                # Fallback: try temp1_input if no labels found
+                if [[ "$temp_c" == "N/A" && -f "$hwmon_dir/temp1_input" ]]; then
+                    local millic
+                    millic=$(cat "$hwmon_dir/temp1_input" 2>/dev/null) || millic=0
+                    temp_c=$((millic / 1000))
+                fi
+            done
+
+            # Power: try power1_average then power1_input (microwatts)
+            pw_w="N/A"
+            for hwmon_dir in "$card_dir"/hwmon/hwmon*; do
+                [[ -d "$hwmon_dir" ]] || continue
+                local pw_uw=0
+                if [[ -f "$hwmon_dir/power1_average" ]]; then
+                    pw_uw=$(cat "$hwmon_dir/power1_average" 2>/dev/null) || pw_uw=0
+                fi
+                if [[ ! "$pw_uw" =~ ^[0-9]+$ || "$pw_uw" -eq 0 ]] && [[ -f "$hwmon_dir/power1_input" ]]; then
+                    pw_uw=$(cat "$hwmon_dir/power1_input" 2>/dev/null) || pw_uw=0
+                fi
+                if [[ "$pw_uw" =~ ^[0-9]+$ && "$pw_uw" -gt 0 ]]; then
+                    pw_w=$((pw_uw / 1000000))
+                    break
+                fi
+            done
+
+            local vram_str
+            vram_str=$(awk "BEGIN{printf \"%.1f / %.1f GB\", $vram_used/1073741824, $vram_total/1073741824}")
+            local temp_str pw_str
+            [[ "$temp_c" != "N/A" ]] && temp_str="${temp_c}°C" || temp_str="N/A"
+            [[ "$pw_w" != "N/A" ]] && pw_str="${pw_w}W" || pw_str="N/A"
+
+            printf "  %-4s %-22s %-22s  %3s%%     %-7s %s\n" \
+                "$_amd_idx" "${name:0:22}" "$vram_str" "$busy" "$temp_str" "$pw_str"
+
+            _amd_total_u=$((vram_used + _amd_total_u))
+            _amd_total_t=$((vram_total + _amd_total_t))
+            _amd_util_sum=$((busy + _amd_util_sum))
+            [[ "$temp_c" != "N/A" && "$temp_c" -gt "$_amd_max_temp" ]] && _amd_max_temp=$temp_c
+            [[ "$pw_w" != "N/A" ]] && _amd_pw_sum=$((_amd_pw_sum + pw_w))
+            _amd_idx=$((_amd_idx + 1))
+        done
+
+        if [[ $_amd_idx -gt 1 ]]; then
+            printf "                         ──────────────────────\n"
+            local vram_str
+            vram_str=$(awk "BEGIN{printf \"%.1f / %.1f GB\", $_amd_total_u/1073741824, $_amd_total_t/1073741824}")
+            printf "  %-4s %-22s %-22s  %3d%%     %3d°C   %dW\n" \
+                "Σ" "" "$vram_str" $((_amd_util_sum / _amd_idx)) "$_amd_max_temp" "$_amd_pw_sum"
+        fi
+
+        echo ""
+
+        # Assignment summary (same logic as NVIDIA, but map UUIDs via topology JSON)
+        local assignment_b64="${GPU_ASSIGNMENT_JSON_B64:-}"
+        if [[ -n "$assignment_b64" ]] && command -v jq &>/dev/null; then
+            assignment_b64=$(echo "$assignment_b64" | tr -d '\r' | tr -d '[:space:]')
+            local assignment_json
+            assignment_json=$(echo "$assignment_b64" | base64 -d 2>/dev/null) || assignment_json=""
+            if [[ -n "$assignment_json" ]]; then
+                local topo_file="$INSTALL_DIR/config/gpu-topology.json"
+                echo "  GPU Assignments:"
+                echo "$assignment_json" | jq -r '.gpu_assignment.services | to_entries[] | [.key, (.value.gpus | join(","))] | @tsv' \
+                | while IFS=$'\t' read -r svc gpus; do
+                    local labels=""
+                    while IFS= read -r uuid; do
+                        [[ -z "$uuid" ]] && continue
+                        local idx=""
+                        # Look up UUID in topology JSON for index
+                        if [[ -f "$topo_file" ]]; then
+                            idx=$(jq -r --arg u "$uuid" '.gpus[] | select(.uuid == $u) | .index' "$topo_file" 2>/dev/null)
+                        fi
+                        labels="${labels:+$labels, }${idx:+GPU${idx}}"
+                    done < <(echo "$gpus" | tr ',' '\n')
+                    printf "    %-20s %s\n" "$svc" "${labels:-$gpus}"
+                done
+                echo ""
+            fi
+        fi
+    elif [[ "${GPU_BACKEND:-}" == "apple" ]]; then
+        local _chip _total_mem_gb _gpu_cores
+        _chip="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo 'Apple Silicon')"
+        _total_mem_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 / 1024 ))
+        if command -v jq >/dev/null 2>&1; then
+            _gpu_cores=$(system_profiler SPDisplaysDataType -json 2>/dev/null \
+                | jq -r '.SPDisplaysDataType[0].sppci_cores // "?"' 2>/dev/null)
+        else
+            _gpu_cores="?"
+        fi
+        echo ""
+        echo "  Chip:             $_chip"
+        echo "  Unified memory:   ${_total_mem_gb} GB"
+        echo "  GPU cores:        $_gpu_cores"
+        echo "  (Apple Silicon integrated GPU — unified memory shared with CPU)"
+    else
+        warn "GPU status unavailable: nvidia-smi not found and GPU_BACKEND is not amd"
+    fi
+}
+
+_gpu_topology() {
+    local force=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in --force|-f) force=1 ;; esac
+        shift
+    done
+
+    check_install
+    load_env
+
+    echo -e "${BLUE}━━━ GPU Topology ━━━${NC}"
+    echo ""
+
+    if [[ "${GPU_BACKEND:-}" == "apple" ]]; then
+        echo "  Single integrated GPU (Apple Silicon, unified memory) — no multi-GPU topology to display."
+        return 0
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        warn "jq not found — required for topology display"
+        return
+    fi
+
+    local backend="${GPU_BACKEND:-nvidia}"
+    local topo_lib topo_detect_fn
+
+    if [[ "$backend" == "amd" ]]; then
+        topo_lib="$SCRIPT_DIR/installers/lib/amd-topo.sh"
+        topo_detect_fn="detect_amd_topo"
+    else
+        topo_lib="$SCRIPT_DIR/installers/lib/nvidia-topo.sh"
+        topo_detect_fn="detect_nvidia_topo"
+        if ! command -v nvidia-smi &>/dev/null; then
+            warn "nvidia-smi not found — topology unavailable"
+            return
+        fi
+    fi
+
+    if [[ ! -f "$topo_lib" ]]; then
+        warn "Topology library not found: $topo_lib"
+        return
+    fi
+
+    local topo_file="$INSTALL_DIR/config/gpu-topology.json"
+    local topo_json
+
+    if [[ "$force" -eq 0 && -f "$topo_file" ]]; then
+        topo_json=$(cat "$topo_file")
+    else
+        [[ "$force" -eq 1 && -f "$topo_file" ]] && log "Re-detecting topology (--force)..."
+        . "$topo_lib"
+        topo_json=$($topo_detect_fn 2>&1) || { warn "Failed to detect GPU topology"; return; }
+        echo "$topo_json" > "$topo_file"
+        chmod 644 "$topo_file"
+        log "Topology saved to $topo_file"
+    fi
+
+    local gpu_count driver
+    gpu_count=$(echo "$topo_json" | jq -r '.gpu_count // 0')
+    driver=$(echo "$topo_json" | jq -r '.driver_version // "unknown"')
+
+    if [[ "$backend" == "amd" ]]; then
+        local vendor_label
+        vendor_label=$(echo "$topo_json" | jq -r '.vendor // "amd"')
+        echo "  GPUs: ${gpu_count}    Driver: ROCm ${driver}    Backend: ${vendor_label}"
+    else
+        local mig_enabled
+        mig_enabled=$(echo "$topo_json" | jq -r '.mig_enabled // false')
+        echo "  GPUs: ${gpu_count}    Driver: ${driver}    MIG: ${mig_enabled}"
+    fi
+    echo ""
+
+    # Build a fixed-width link_type matrix from the JSON links array
+    echo "$topo_json" | jq -r '
+        def pad(w): . + (" " * w) | .[:w];
+        .gpu_count as $n |
+        .links as $links |
+        (["      ", ([range($n) | "GPU\(.)" | pad(6)] | .[])] | join("")),
+        ([range($n) | . as $a |
+            (["GPU\($a)" | pad(6)] + [range($n) | . as $b |
+                if $a == $b then "X"
+                else
+                    ([$links[] | select(
+                        (.gpu_a == $a and .gpu_b == $b) or
+                        (.gpu_a == $b and .gpu_b == $a)
+                    ) | .link_type] | first // "?")
+                end | pad(6)
+            ] | join(""))
+        ] | .[])
+    ' | sed 's/^/  /'
+
+    echo ""
+    local numa_nodes
+    numa_nodes=$(echo "$topo_json" | jq -r '.numa.nodes // 1')
+    echo "  NUMA nodes: ${numa_nodes}"
+
+    # AMD-specific: show gfx versions and memory types
+    if [[ "$backend" == "amd" ]]; then
+        local has_gfx
+        has_gfx=$(echo "$topo_json" | jq -r '[.gpus[].gfx_version // empty] | length')
+        if [[ "$has_gfx" -gt 0 ]]; then
+            echo ""
+            echo "  GPU Details:"
+            echo "$topo_json" | jq -r '
+                .gpus[] |
+                "    GPU\(.index): \(.name) — gfx\(.gfx_version // "?") \(.memory_type // "discrete") \(.memory_gb)GB renderD\(.render_node // "?")"
+            ' 2>/dev/null
+        fi
+    fi
+}
+
+_gpu_assignment() {
+    check_install
+    load_env
+
+    echo -e "${BLUE}━━━ GPU Assignment ━━━${NC}"
+    echo ""
+
+    local assignment_b64="${GPU_ASSIGNMENT_JSON_B64:-}"
+
+    if [[ -z "$assignment_b64" ]]; then
+        echo "  Single GPU — no multi-GPU assignment configured."
+        return
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        warn "jq not found — required for assignment display"
+        return
+    fi
+
+    # Strip CR and trailing whitespace (CRLF .env or editor artifacts break base64 -d)
+    assignment_b64=$(echo "$assignment_b64" | tr -d '\r' | tr -d '[:space:]')
+    local assignment_json
+    assignment_json=$(echo "$assignment_b64" | base64 -d 2>/dev/null) || {
+        warn "Failed to decode GPU_ASSIGNMENT_JSON_B64 — try running 'ods gpu reassign'"
+        return
+    }
+
+    local strategy
+    strategy=$(echo "$assignment_json" | jq -r '.gpu_assignment.strategy // "unknown"')
+    echo "  Strategy: ${strategy}"
+    echo ""
+
+    # Build UUID → index map for readable display
+    local uuid_map="" backend="${GPU_BACKEND:-nvidia}"
+    if [[ "$backend" == "amd" ]]; then
+        # For AMD, use topology JSON which has index + uuid per GPU
+        local topo_file="$INSTALL_DIR/config/gpu-topology.json"
+        if [[ -f "$topo_file" ]] && command -v jq &>/dev/null; then
+            uuid_map=$(jq -r '.gpus[] | "\(.index), \(.uuid)"' "$topo_file" 2>/dev/null) || uuid_map=""
+        fi
+    elif command -v nvidia-smi &>/dev/null; then
+        uuid_map=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader,nounits 2>/dev/null) || uuid_map=""
+    fi
+
+    printf "  %-16s %-24s %-10s %-4s %-4s\n" "Service" "GPUs" "Mode" "TP" "PP"
+    printf "  %-16s %-24s %-10s %-4s %-4s\n" "───────────────" "───────────────────────" "─────────" "──" "──"
+
+    echo "$assignment_json" | jq -r '.gpu_assignment.services | to_entries[] |
+        [.key,
+         (.value.gpus | join(",")),
+         (.value.parallelism.mode // "—"),
+         (.value.parallelism.tensor_parallel_size // "—" | tostring),
+         (.value.parallelism.pipeline_parallel_size // "—" | tostring)] |
+        @tsv' | while IFS=$'\t' read -r service gpus mode tp pp; do
+        # Map UUIDs to GPU indices when possible
+        local display_gpus="$gpus"
+        if [[ -n "$uuid_map" ]]; then
+            local gpu_labels=""
+            while IFS= read -r uuid; do
+                [[ -z "$uuid" ]] && continue
+                local idx
+                idx=$(echo "$uuid_map" | awk -F', ' -v u="$uuid" '$2==u{print $1; exit}' | tr -d ' ')
+                if [[ -n "$idx" ]]; then
+                    gpu_labels="${gpu_labels:+$gpu_labels, }GPU${idx}"
+                fi
+            done < <(echo "$gpus" | tr ',' '\n')
+            [[ -n "$gpu_labels" ]] && display_gpus="$gpu_labels"
+        fi
+        printf "  %-16s %-24s %-10s %-4s %-4s\n" "$service" "${display_gpus:0:24}" "$mode" "$tp" "$pp"
+    done
+}
+
+_gpu_validate() {
+    check_install
+    load_env
+
+    echo -e "${BLUE}━━━ GPU Validate ━━━${NC}"
+    echo ""
+
+    # Apple Silicon is a single integrated GPU with unified memory —
+    # GPU_COUNT / multi-GPU assignment / split-mode checks do not apply.
+    # Report a clean skip rather than emitting false-positive failures.
+    if [[ "${GPU_BACKEND:-}" == "apple" ]]; then
+        echo "  Apple Silicon: single integrated GPU (unified memory) — no multi-GPU validation needed."
+        echo ""
+        echo "  Result: 0 check(s) passed, 0 failed"
+        return 0
+    fi
+
+    local pass=0 fail=0
+
+    # Check 1: GPU_COUNT matches actual
+    local env_count="${GPU_COUNT:-1}"
+    local actual_count=1
+    local backend="${GPU_BACKEND:-nvidia}"
+
+    if [[ "$backend" == "amd" ]]; then
+        # Count AMD GPUs via sysfs vendor ID
+        actual_count=0
+        for card_dir in /sys/class/drm/card*/device; do
+            [[ -d "$card_dir" ]] || continue
+            local vendor
+            vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
+            [[ "$vendor" == "0x1002" ]] && ((actual_count++)) || true
+        done
+        [[ "$actual_count" -eq 0 ]] && actual_count=1
+    elif command -v nvidia-smi &>/dev/null; then
+        actual_count=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ' || true)
+        actual_count="${actual_count:-0}"
+    fi
+
+    if [[ -z "${GPU_COUNT:-}" ]]; then
+        warn "GPU_COUNT not set in .env — defaulting to 1 (re-run installer or set manually)"
+        ((fail++)) || true
+    elif [[ "$env_count" -eq "$actual_count" ]]; then
+        success "GPU_COUNT=${env_count} matches actual GPU count"
+        ((pass++)) || true
+    else
+        warn "GPU_COUNT=${env_count} in .env does not match actual count=${actual_count}"
+        echo "    Fix: set GPU_COUNT=${actual_count} in .env"
+        ((fail++)) || true
+    fi
+
+    # Check 2: Assigned UUIDs still present in system
+    local assignment_b64="${GPU_ASSIGNMENT_JSON_B64:-}"
+    if [[ -z "$assignment_b64" ]]; then
+        echo "  (No multi-GPU assignment — single GPU setup)"
+    elif command -v jq &>/dev/null; then
+        local assignment_json
+        if assignment_json=$(echo "$assignment_b64" | base64 -d 2>/dev/null); then
+            local live_uuids=""
+            if [[ "$backend" == "amd" ]]; then
+                # For AMD, rebuild UUID list from topology JSON or sysfs
+                local topo_file="$INSTALL_DIR/config/gpu-topology.json"
+                if [[ -f "$topo_file" ]]; then
+                    live_uuids=$(jq -r '.gpus[].uuid' "$topo_file" 2>/dev/null | tr -d ' ' || true)
+                fi
+            elif command -v nvidia-smi &>/dev/null; then
+                live_uuids=$(nvidia-smi --query-gpu=uuid --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' || true)
+            fi
+            live_uuids="${live_uuids:-}"
+            local missing=0
+            while IFS= read -r uuid; do
+                [[ -z "$uuid" ]] && continue
+                if ! echo "$live_uuids" | grep -qF "$uuid"; then
+                    warn "UUID ${uuid} not found in current system"
+                    echo "    Fix: run 'ods gpu reassign'"
+                    ((missing++)) || true
+                    ((fail++)) || true
+                fi
+            done < <(echo "$assignment_json" | jq -r '.gpu_assignment.services[].gpus[]' 2>/dev/null)
+            if [[ "$missing" -eq 0 ]]; then
+                success "All assigned GPU UUIDs are present in system"
+                ((pass++)) || true
+            fi
+        else
+            warn "Failed to decode GPU_ASSIGNMENT_JSON_B64"
+            ((fail++)) || true
+        fi
+    fi
+
+    # Check 3: LLAMA_ARG_SPLIT_MODE vs assigned GPU count
+    local split_mode="${LLAMA_ARG_SPLIT_MODE:-}"
+    local llama_uuids="${LLAMA_SERVER_GPU_UUIDS:-}"
+    if [[ -n "$split_mode" && "$split_mode" != "none" ]]; then
+        local llama_count
+        llama_count=$(echo "$llama_uuids" | tr ',' '\n' | grep -c . 2>/dev/null) || llama_count=1
+        if [[ "$llama_count" -gt 1 ]]; then
+            success "LLAMA_ARG_SPLIT_MODE=${split_mode} is consistent with ${llama_count} llama GPUs"
+            ((pass++)) || true
+        else
+            warn "LLAMA_ARG_SPLIT_MODE=${split_mode} is set but only 1 GPU assigned to llama-server"
+            echo "    Fix: run 'ods gpu reassign' or set LLAMA_ARG_SPLIT_MODE=none in .env"
+            ((fail++)) || true
+        fi
+    fi
+
+    echo ""
+    echo "  Result: ${pass} check(s) passed, ${fail} failed"
+}
+
+# Helper: write AMD-specific env vars from topology JSON for manual assignment
+_gpu_reassign_write_amd_env() {
+    local topo_json="$1" indices_csv="$2"
+    _env_set "LLAMA_SERVER_GPU_INDICES" "$indices_csv"
+    _env_set "ROCR_VISIBLE_DEVICES" "$indices_csv"
+
+    _gpu_reassign_update_amd_arch_env "$topo_json" "$indices_csv"
+
+    local video_gid render_gid
+    video_gid=$(getent group video 2>/dev/null | cut -d: -f3) || video_gid="44"
+    render_gid=$(getent group render 2>/dev/null | cut -d: -f3) || render_gid="992"
+    _env_set "VIDEO_GID" "$video_gid"
+    _env_set "RENDER_GID" "$render_gid"
+}
+
+_gpu_reassign_update_amd_arch_env() {
+    local topo_json="$1" indices_csv="$2"
+    local unique_gfx gfx_ver
+
+    unique_gfx=$(echo "$topo_json" | jq -r --arg csv "$indices_csv" '
+        ($csv | split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(length > 0))) as $idxs |
+        [.gpus[] | select((.index | tostring) as $i | $idxs | index($i)) | .gfx_version // empty] |
+        map(select(. != "" and . != "null" and . != "unknown")) |
+        unique
+    ' 2>/dev/null) || unique_gfx="[]"
+
+    if [[ "$(echo "$unique_gfx" | jq 'length' 2>/dev/null || echo 0)" -eq 1 ]]; then
+        gfx_ver=$(echo "$unique_gfx" | jq -r '.[0]')
+    else
+        gfx_ver=""
+    fi
+
+    if [[ "$gfx_ver" == "gfx1151" ]]; then
+        _env_set "HSA_OVERRIDE_GFX_VERSION" "11.5.1"
+        _env_set "LEMONADE_LLAMACPP_ROCM_BIN" "/opt/llama-custom/llama-server"
+    else
+        _env_unset "HSA_OVERRIDE_GFX_VERSION"
+        _env_unset "LEMONADE_LLAMACPP_ROCM_BIN"
+    fi
+}
+
+_gpu_reassign() {
+    local auto_mode=0 dry_run=0 manual_mode=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --auto)     auto_mode=1 ;;
+            --dry-run)  dry_run=1 ;;
+            --manual)   manual_mode=1 ;;
+        esac
+        shift
+    done
+
+    check_install
+    load_env
+
+    echo -e "${BLUE}━━━ GPU Reassign ━━━${NC}"
+    echo ""
+
+    if [[ "${GPU_BACKEND:-}" == "apple" ]]; then
+        warn "GPU reassignment is not applicable on Apple Silicon (single integrated GPU)."
+        return 1
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        warn "jq not found — required for GPU reassignment"
+        return 1
+    fi
+
+    local backend="${GPU_BACKEND:-nvidia}"
+    local topo_lib topo_detect_fn
+
+    if [[ "$backend" == "amd" ]]; then
+        topo_lib="$SCRIPT_DIR/installers/lib/amd-topo.sh"
+        topo_detect_fn="detect_amd_topo"
+    else
+        topo_lib="$SCRIPT_DIR/installers/lib/nvidia-topo.sh"
+        topo_detect_fn="detect_nvidia_topo"
+        if ! command -v nvidia-smi &>/dev/null; then
+            warn "nvidia-smi not found — GPU reassignment unavailable"
+            return
+        fi
+    fi
+
+    local assign_script="$SCRIPT_DIR/scripts/assign_gpus.py"
+
+    [[ -f "$topo_lib" ]] || { warn "Topology library not found: $topo_lib"; return 1; }
+    [[ -f "$assign_script" ]] || { warn "Assignment script not found: $assign_script"; return 1; }
+
+    # warn and err are already defined; source is safe
+    . "$topo_lib"
+
+    log "Detecting GPU topology..."
+    local topo_json
+    topo_json=$($topo_detect_fn) || error "Failed to detect GPU topology"
+
+    # Persist topology for the dashboard API
+    mkdir -p "$INSTALL_DIR/config"
+    echo "$topo_json" > "$INSTALL_DIR/config/gpu-topology.json"
+    chmod 644 "$INSTALL_DIR/config/gpu-topology.json"
+
+    # Determine model size
+    local model_size_mb="${LLM_MODEL_SIZE_MB:-}"
+    if [[ -z "$model_size_mb" ]]; then
+        local gguf_file="${GGUF_FILE:-}"
+        local gguf_path="$INSTALL_DIR/data/models/${gguf_file}"
+        if [[ -n "$gguf_file" && -f "$gguf_path" ]]; then
+            model_size_mb=$(du -m "$gguf_path" | awk '{print $1}')
+            log "Estimated model size from file: ${model_size_mb} MB"
+        else
+            echo -n "  Model size not found in .env. Enter size in MB (e.g. 40000 for a 40 GB model): "
+            read -r model_size_mb
+            [[ "$model_size_mb" =~ ^[0-9]+$ ]] || error "Invalid model size: $model_size_mb"
+        fi
+    fi
+
+    # Write topology to tmpfile and run assignment
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap "rm -rf '$tmpdir'" RETURN
+    echo "$topo_json" > "$tmpdir/topo.json"
+
+    local enabled_services="${ENABLED_SERVICES:-llama_server,whisper,comfyui,embeddings}"
+
+    # ── Manual assignment mode ──
+    if [[ "$manual_mode" -eq 1 ]]; then
+        echo ""
+        echo "  Available GPUs:"
+
+        if [[ "$backend" == "amd" ]]; then
+            # List AMD GPUs from topology JSON
+            echo "$topo_json" | jq -r '.gpus[] |
+                "    GPU\(.index): \(.name) (\(.memory_gb) GB \(.memory_type // "discrete"))"
+            ' 2>/dev/null
+        else
+            local gpu_list_smi
+            gpu_list_smi=$(nvidia-smi --query-gpu=index,name,memory.total \
+                --format=csv,noheader,nounits 2>/dev/null) || { warn "nvidia-smi failed"; return; }
+            while IFS= read -r gline; do
+                [[ -z "$gline" ]] && continue
+                local idx gname gmem
+                idx=$(echo "$gline"   | awk -F', ' '{gsub(/ /,"",$1); print $1}')
+                gname=$(echo "$gline" | awk -F', ' '{gsub(/^ +/,"",$2); print $2}')
+                gmem=$(echo "$gline"  | awk -F', ' '{gsub(/ /,"",$3); printf "%.0f GB", $3/1024}')
+                echo "    GPU${idx}: ${gname} (${gmem})"
+            done <<<"$gpu_list_smi"
+        fi
+        echo ""
+
+        local _manual_llama _manual_whisper _manual_comfyui
+        echo -n "  GPU(s) for llama-server (comma-separated indices, e.g. 0,1,2,3): "
+        read -r _manual_llama
+        echo -n "  GPU for whisper          (index, or blank to skip): "
+        read -r _manual_whisper
+        echo -n "  GPU for comfyui          (index, or blank to skip): "
+        read -r _manual_comfyui
+
+        # Build UUID lists from indices
+        local uuid_map
+        if [[ "$backend" == "amd" ]]; then
+            uuid_map=$(echo "$topo_json" | jq -r '.gpus[] | "\(.index), \(.uuid)"' 2>/dev/null)
+        else
+            uuid_map=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader,nounits 2>/dev/null)
+        fi
+
+        _get_uuid() {
+            echo "$uuid_map" | awk -F', ' -v i="$1" '{gsub(/ /,"",$1); if($1==i){gsub(/ /,"",$2); print $2; exit}}'
+        }
+
+        local llama_uuid_list=""
+        for _idx in $(echo "$_manual_llama" | tr ',' ' '); do
+            _idx=$(echo "$_idx" | tr -d ' ')
+            local _u; _u=$(_get_uuid "$_idx")
+            [[ -n "$_u" ]] && llama_uuid_list="${llama_uuid_list:+$llama_uuid_list,}$_u"
+        done
+
+        local whisper_uuid_m="" comfyui_uuid_m=""
+        [[ -n "$_manual_whisper" ]] && whisper_uuid_m=$(_get_uuid "$(echo "$_manual_whisper" | tr -d ' ')")
+        [[ -n "$_manual_comfyui" ]] && comfyui_uuid_m=$(_get_uuid "$(echo "$_manual_comfyui" | tr -d ' ')")
+
+        # How many llama GPUs?
+        local llama_gpu_count
+        llama_gpu_count=$(echo "$_manual_llama" | tr ',' '\n' | grep -c '[0-9]' || true)
+
+        local split_mode_m="none"
+        if [[ "$llama_gpu_count" -gt 1 ]]; then
+            echo -n "  Parallelism mode for llama-server (tensor/pipeline/none) [tensor]: "
+            read -r _para
+            case "${_para:-tensor}" in
+                tensor|hybrid) split_mode_m="row" ;;
+                pipeline)      split_mode_m="layer" ;;
+                *)             split_mode_m="none" ;;
+            esac
+        fi
+
+        if [[ "$dry_run" -eq 1 ]]; then
+            echo ""
+            echo "  Dry run — manual assignment:"
+            echo "    llama-server: $(echo "$_manual_llama" | tr ',' ' ' | sed 's/[^ ]*/GPU&/g')"
+            [[ -n "$_manual_whisper" ]] && echo "    whisper:      GPU${_manual_whisper}"
+            [[ -n "$_manual_comfyui" ]] && echo "    comfyui:      GPU${_manual_comfyui}"
+            echo "    split_mode:   ${split_mode_m}"
+            return
+        fi
+
+        log "Updating .env with manual assignment..."
+        [[ -n "$llama_uuid_list" ]]  && _env_set "LLAMA_SERVER_GPU_UUIDS" "$llama_uuid_list"
+        _env_set "LLAMA_ARG_SPLIT_MODE" "$split_mode_m"
+        [[ -n "$whisper_uuid_m" ]]   && _env_set "WHISPER_GPU_UUID"  "$whisper_uuid_m"
+        [[ -n "$comfyui_uuid_m" ]]   && _env_set "COMFYUI_GPU_UUID"  "$comfyui_uuid_m"
+
+        # AMD-specific: write render node and ROCR env vars
+        if [[ "$backend" == "amd" ]]; then
+            _gpu_reassign_write_amd_env "$topo_json" "$_manual_llama"
+        fi
+
+        success "Manual GPU assignment saved"
+        echo ""
+        echo -n "  Apply changes now? [Y/n] "
+        read -r _yn
+        case "${_yn:-y}" in
+            y|Y|"")
+                local _flags_str _flags=()
+                _flags_str=$(get_compose_flags)
+                read -ra _flags <<< "$_flags_str"
+                cd "$INSTALL_DIR"
+                log "Recreating all containers with new GPU assignment..."
+                docker compose "${_flags[@]}" down --remove-orphans
+                docker compose "${_flags[@]}" up -d
+                success "All services recreated with new GPU assignment"
+                ;;
+            *) echo "  Run 'ods restart' when ready." ;;
+        esac
+        return
+    fi
+
+    log "Running assignment algorithm (model: ${model_size_mb} MB)..."
+    local assignment_json
+    assignment_json=$(python3 "$assign_script" \
+        --topology "$tmpdir/topo.json" \
+        --model-size "$model_size_mb" \
+        --enabled-services "$enabled_services") || error "GPU assignment failed"
+
+    if [[ "$dry_run" -eq 1 ]]; then
+        echo ""
+        echo "  Dry run — proposed assignment:"
+        echo "$assignment_json" | jq '.gpu_assignment' 2>/dev/null || echo "$assignment_json"
+        return
+    fi
+
+    # Extract individual env vars from assignment JSON
+    local strategy llama_uuids split_mode tensor_split
+    local whisper_uuid comfyui_uuid embeddings_uuid
+
+    strategy=$(echo "$assignment_json"    | jq -r '.gpu_assignment.strategy // "unknown"')
+    llama_uuids=$(echo "$assignment_json" | jq -r '(.gpu_assignment.services.llama_server.gpus // []) | join(",")' 2>/dev/null || echo "")
+
+    local _para_mode
+    _para_mode=$(echo "$assignment_json" | jq -r '.gpu_assignment.services.llama_server.parallelism.mode // "none"')
+    case "$_para_mode" in
+        tensor|hybrid) split_mode="row" ;;
+        pipeline)      split_mode="layer" ;;
+        *)             split_mode="none" ;;
+    esac
+
+    tensor_split=$(echo "$assignment_json" | jq -r '
+        (.gpu_assignment.services.llama_server.parallelism.tensor_split // []) as $ts |
+        if ($ts | length) > 0 then $ts | map(tostring) | join(",")
+        else ""
+        end' 2>/dev/null || echo "")
+
+    whisper_uuid=$(echo "$assignment_json"    | jq -r '.gpu_assignment.services.whisper.gpus[0]?    // ""' 2>/dev/null || echo "")
+    comfyui_uuid=$(echo "$assignment_json"    | jq -r '.gpu_assignment.services.comfyui.gpus[0]?    // ""' 2>/dev/null || echo "")
+    embeddings_uuid=$(echo "$assignment_json" | jq -r '.gpu_assignment.services.embeddings.gpus[0]? // ""' 2>/dev/null || echo "")
+
+    # base64-encode assignment JSON for .env storage (cross-platform)
+    local assignment_b64
+    if [[ "$(uname)" == "Linux" ]]; then
+        assignment_b64=$(echo "$assignment_json" | jq -c '.' | base64 -w0)
+    else
+        assignment_b64=$(echo "$assignment_json" | jq -c '.' | base64)
+    fi
+
+    # Write to .env
+    log "Updating .env..."
+    [[ -n "$llama_uuids" ]]     && _env_set "LLAMA_SERVER_GPU_UUIDS" "$llama_uuids"
+    _env_set "LLAMA_ARG_SPLIT_MODE" "$split_mode"
+    [[ -n "$tensor_split" ]]    && _env_set "LLAMA_ARG_TENSOR_SPLIT" "$tensor_split"
+    [[ -n "$whisper_uuid" ]]    && _env_set "WHISPER_GPU_UUID" "$whisper_uuid"
+    [[ -n "$comfyui_uuid" ]]    && _env_set "COMFYUI_GPU_UUID" "$comfyui_uuid"
+    [[ -n "$embeddings_uuid" ]] && _env_set "EMBEDDINGS_GPU_UUID" "$embeddings_uuid"
+    _env_set "GPU_ASSIGNMENT_JSON_B64" "$assignment_b64"
+
+    # AMD-specific: write render node, ROCR_VISIBLE_DEVICES, gfx overrides
+    if [[ "$backend" == "amd" ]]; then
+        # Extract llama GPU indices from assignment by matching UUIDs to topology
+        local llama_idx_csv=""
+        while IFS= read -r _uuid; do
+            [[ -z "$_uuid" ]] && continue
+            local _idx
+            _idx=$(echo "$topo_json" | jq -r --arg u "$_uuid" '.gpus[] | select(.uuid == $u) | .index')
+            llama_idx_csv="${llama_idx_csv:+$llama_idx_csv,}${_idx}"
+        done < <(echo "$assignment_json" | jq -r '.gpu_assignment.services.llama_server.gpus[]' 2>/dev/null)
+        [[ -n "$llama_idx_csv" ]] && _env_set "LLAMA_SERVER_GPU_INDICES" "$llama_idx_csv"
+        _env_set "ROCR_VISIBLE_DEVICES" "$llama_idx_csv"
+        _gpu_reassign_update_amd_arch_env "$topo_json" "$llama_idx_csv"
+
+        # Write GPU index for auxiliary services (whisper, comfyui, embeddings)
+        _amd_svc_env() {
+            local svc_prefix="$1" svc_uuid="$2"
+            [[ -z "$svc_uuid" ]] && return
+            local _si
+            _si=$(echo "$topo_json" | jq -r --arg u "$svc_uuid" '.gpus[] | select(.uuid == $u) | .index')
+            [[ -n "$_si" && "$_si" != "null" ]] && _env_set "${svc_prefix}_GPU_INDEX" "$_si"
+        }
+        _amd_svc_env "WHISPER" "$whisper_uuid"
+        _amd_svc_env "COMFYUI" "$comfyui_uuid"
+        _amd_svc_env "EMBEDDINGS" "$embeddings_uuid"
+
+        # Detect and persist GID values for AMD container group_add
+        local video_gid render_gid
+        video_gid=$(getent group video 2>/dev/null | cut -d: -f3) || video_gid="44"
+        render_gid=$(getent group render 2>/dev/null | cut -d: -f3) || render_gid="992"
+        _env_set "VIDEO_GID" "$video_gid"
+        _env_set "RENDER_GID" "$render_gid"
+
+    fi
+
+    success "GPU assignment updated (strategy: ${strategy})"
+    echo ""
+    echo -n "  Apply changes now? [Y/n] "
+    read -r _yn
+    case "${_yn:-y}" in
+        y|Y|"")
+            local _flags_str _flags=()
+            _flags_str=$(get_compose_flags)
+            read -ra _flags <<< "$_flags_str"
+            cd "$INSTALL_DIR"
+            log "Recreating all containers with new GPU assignment..."
+            docker compose "${_flags[@]}" down --remove-orphans
+            docker compose "${_flags[@]}" up -d
+            success "All services recreated with new GPU assignment"
+            ;;
+        *) echo "  Run 'ods restart' when ready." ;;
+    esac
+}
+
+cmd_gpu() {
+    local subcommand="${1:-status}"
+    shift 2>/dev/null || true
+
+    case "$subcommand" in
+        status|s)               _gpu_status "$@" ;;
+        topology|topo|t)        _gpu_topology "$@" ;;
+        assignment|assign|a)    _gpu_assignment "$@" ;;
+        validate|v)             _gpu_validate "$@" ;;
+        reassign)               _gpu_reassign "$@" ;;
+        help|--help|-h)
+            echo "Usage: ods gpu [subcommand]"
+            echo ""
+            echo "Subcommands:"
+            echo "  status       Per-GPU metrics table with VRAM, util, temp, power"
+            echo "  topology     Show GPU interconnect topology (NVLink, PCIe, NUMA)"
+            echo "  assignment   Show current service→GPU mapping from .env"
+            echo "  validate     Check GPU config is consistent with live system"
+            echo "  reassign     Re-run GPU assignment algorithm and update .env"
+            echo ""
+            echo "Options for reassign:"
+            echo "  --auto       Run automatic assignment without interactive prompts"
+            echo "  --dry-run    Show proposed assignment without writing .env"
+            echo "  --manual     Manually specify GPU assignment interactively"
+            ;;
+        *)  error "Unknown gpu subcommand: '${subcommand}'. Run 'ods gpu help'" ;;
+    esac
+}
+
+cmd_repair() {
+    check_install
+    cd "$INSTALL_DIR"
+    load_env
+    sr_load
+
+    local target="${1:-voice}"
+    case "$target" in
+        hermes-workers|slash-workers)
+            local script="$INSTALL_DIR/scripts/prune-hermes-slash-workers.sh"
+            [[ -x "$script" ]] || error "Hermes slash worker repair script not found or not executable: $script"
+            "$script" --force
+            ;;
+        voice|stt|tts)
+            local flags_str
+            flags_str=$(get_compose_flags)
+            local -a flags
+            read -ra flags <<< "$flags_str"
+
+            local services
+            services=$(docker compose "${flags[@]}" config --services 2>/dev/null || true)
+            local missing=()
+            grep -qx "whisper" <<< "$services" || missing+=("whisper")
+            grep -qx "tts" <<< "$services" || missing+=("tts")
+            if (( ${#missing[@]} > 0 )); then
+                log_error "Voice services are not in this compose stack: ${missing[*]}"
+                echo "  Enable voice, or add the whisper/tts extension compose files, then retry."
+                return 1
+            fi
+
+            _compose_run_with_summary "Starting voice services" "${flags[@]}" up -d whisper tts
+
+            local model port url tts_port tts_url
+            model=$(_env_get_raw AUDIO_STT_MODEL)
+            [[ -z "$model" ]] && model="Systran/faster-whisper-base"
+            port=$(_env_get_raw WHISPER_PORT)
+            [[ -z "$port" ]] && port="9000"
+            url="http://127.0.0.1:${port}"
+            tts_port=$(_env_get_raw TTS_PORT)
+            [[ -z "$tts_port" ]] && tts_port="8880"
+            tts_url="http://127.0.0.1:${tts_port}"
+
+            local ready=false
+            for _i in $(seq 1 45); do
+                if curl -sf --max-time 2 "${url}/health" >/dev/null 2>&1; then
+                    ready=true
+                    break
+                fi
+                sleep 2
+            done
+            if ! $ready; then
+                log_error "Whisper STT is still not responding. Check: ods logs whisper"
+                return 1
+            fi
+
+            cmd_stt download "$model"
+
+            local tts_ready=false
+            for _i in $(seq 1 45); do
+                if curl -sf --max-time 2 "${tts_url}/health" >/dev/null 2>&1; then
+                    tts_ready=true
+                    break
+                fi
+                sleep 2
+            done
+            if ! $tts_ready; then
+                log_error "Kokoro TTS is still not responding. Check: ods logs tts"
+                return 1
+            fi
+
+            success "Voice repair complete"
+            ;;
+        *)
+            log "Usage: ods repair [voice|hermes-workers]"
+            log_error "Unknown repair target: $target"
+            return 1
+            ;;
+    esac
+}
+
+#=============================================================================
+# Templates
+#=============================================================================
+_template_list() {
+    local templates_dir="$INSTALL_DIR/templates"
+    if [[ ! -d "$templates_dir" ]]; then
+        warn "No templates directory found at $templates_dir"
+        return 0
+    fi
+
+    # First pass: collect template rows and compute max ID width so the
+    # column fits IDs like "personal-knowledge-base" (23) without overflow.
+    local -a rows=()
+    local max_id_len=2  # at minimum, wide enough for the "ID" header
+
+    for f in "$templates_dir"/*.yaml "$templates_dir"/*.yml; do
+        [[ -f "$f" ]] || continue
+        local info
+        info=$(python3 - "$f" <<'PYEOF'
+import yaml, sys
+with open(sys.argv[1]) as fh:
+    d = yaml.safe_load(fh)
+if not isinstance(d, dict) or d.get("schema_version") != "ods.templates.v1":
+    sys.exit(0)
+t = d.get("template", {})
+tid = t.get("id", "")
+name = t.get("name", "")
+tier = t.get("tier_minimum", "-")
+svcs = ", ".join(t.get("services", []))
+if tid:
+    print(f"{tid}\t{name}\t{tier}\t{svcs}")
+PYEOF
+        ) || continue
+        [[ -z "$info" ]] && continue
+        rows+=("$info")
+        local this_id="${info%%$'\t'*}"
+        (( ${#this_id} > max_id_len )) && max_id_len=${#this_id}
+    done
+
+    if [[ ${#rows[@]} -eq 0 ]]; then
+        log "No templates found."
+        return 0
+    fi
+
+    # Second pass: emit header, full-width separator, and rows using the
+    # dynamic ID column width. `hr` produces separators that span each
+    # column exactly, replacing the old hard-coded "----" dashes that
+    # left visible gaps under %-Ns padding.
+    printf "${CYAN}%-*s %-30s %-6s %s${NC}\n" "$max_id_len" "ID" "NAME" "TIER" "SERVICES"
+    printf "%-*s %-30s %-6s %s\n" \
+        "$max_id_len" "$(hr "$max_id_len")" "$(hr 30)" "$(hr 6)" "$(hr 8)"
+
+    local row tid tname ttier tsvcs
+    for row in "${rows[@]}"; do
+        IFS=$'\t' read -r tid tname ttier tsvcs <<< "$row"
+        printf "%-*s %-30s %-6s %s\n" "$max_id_len" "$tid" "$tname" "$ttier" "$tsvcs"
+    done
+}
+
+_template_preview() {
+    local template_id="${1:-}"
+    [[ -z "$template_id" ]] && { log "Usage: ods template preview <template-id>"; exit 1; }
+
+    local templates_dir="$INSTALL_DIR/templates"
+    local tmpl_file=""
+    for f in "$templates_dir"/*.yaml "$templates_dir"/*.yml; do
+        [[ -f "$f" ]] || continue
+        local tid
+        tid=$(python3 - "$f" <<'PYEOF'
+import yaml, sys
+with open(sys.argv[1]) as fh:
+    d = yaml.safe_load(fh)
+if not isinstance(d, dict) or d.get("schema_version") != "ods.templates.v1":
+    sys.exit(0)
+t = d.get("template", {})
+print(t.get("id", ""))
+PYEOF
+        ) || continue
+        if [[ "$tid" == "$template_id" ]]; then
+            tmpl_file="$f"
+            break
+        fi
+    done
+
+    [[ -z "$tmpl_file" ]] && error "Template not found: $template_id"
+
+    python3 - "$tmpl_file" "$INSTALL_DIR" <<'PYEOF'
+import yaml, sys
+from pathlib import Path
+
+with open(sys.argv[1]) as fh:
+    d = yaml.safe_load(fh)
+t = d.get("template", {})
+install_dir = Path(sys.argv[2])
+
+print(f"Template: {t.get('name', t.get('id', ''))}")
+print(f"Description: {t.get('description', '-')}")
+if t.get("estimated_disk_gb"):
+    print(f"Estimated disk: ~{t['estimated_disk_gb']}GB")
+print()
+
+services = t.get("services", [])
+ext_dir = install_dir / "extensions" / "services"
+user_ext_dir = install_dir / "data" / "user-extensions"
+
+to_enable = []
+already = []
+for svc in services:
+    cf = ext_dir / svc / "compose.yaml"
+    ucf = user_ext_dir / svc / "compose.yaml"
+    if cf.exists() or ucf.exists():
+        already.append(svc)
+    else:
+        to_enable.append(svc)
+
+if already:
+    print(f"Already enabled: {', '.join(already)}")
+if to_enable:
+    print(f"Will enable:     {', '.join(to_enable)}")
+if not to_enable:
+    print("Nothing to change — all services already enabled.")
+PYEOF
+}
+
+_template_apply() {
+    local template_id="${1:-}"
+    [[ -z "$template_id" ]] && { log "Usage: ods template apply <template-id>"; exit 1; }
+
+    local templates_dir="$INSTALL_DIR/templates"
+    local services
+    services=$(python3 - "$templates_dir" "$template_id" <<'PYEOF'
+import yaml, sys
+from pathlib import Path
+
+templates_dir = Path(sys.argv[1])
+target_id = sys.argv[2]
+
+for f in sorted(templates_dir.glob("*.yaml")) + sorted(templates_dir.glob("*.yml")):
+    with open(f) as fh:
+        d = yaml.safe_load(fh)
+    if not isinstance(d, dict) or d.get("schema_version") != "ods.templates.v1":
+        continue
+    t = d.get("template", {})
+    if t.get("id") == target_id:
+        print(" ".join(t.get("services", [])))
+        sys.exit(0)
+
+print("", file=sys.stderr)
+sys.exit(1)
+PYEOF
+    ) || error "Template not found: $template_id"
+
+    [[ -z "$services" ]] && { warn "Template has no services."; return 0; }
+
+    log "Applying template: $template_id"
+    local svc
+    for svc in $services; do
+        # Skip core services (no compose toggle needed)
+        local cat="${SERVICE_CATEGORIES[$svc]:-optional}"
+        [[ "$cat" == "core" ]] && continue
+
+        local cf="$INSTALL_DIR/extensions/services/$svc/compose.yaml"
+        local ucf="$INSTALL_DIR/data/user-extensions/$svc/compose.yaml"
+        if [[ -f "$cf" || -f "$ucf" ]]; then
+            log "  $svc — already enabled"
+            continue
+        fi
+
+        log "  Enabling $svc..."
+        ( cmd_enable "$svc" ) || warn "  Failed to enable $svc (continuing)"
+    done
+    success "Template applied: $template_id"
+}
+
+cmd_template() {
+    check_install
+    sr_load
+    load_env 2>/dev/null || true
+    local subcmd="${1:-list}"
+    shift || true
+    case "$subcmd" in
+        list)    _template_list ;;
+        preview) _template_preview "$@" ;;
+        apply)   _template_apply "$@" ;;
+        *)       log "Usage: ods template [list|preview|apply] [template-id]"; exit 1 ;;
+    esac
+}
+
+cmd_help() {
+    sr_load
+    cat << EOF
+${BLUE}ODS CLI v${VERSION}${NC}
+
+Usage: ods <command> [options]
+
+${CYAN}Commands:${NC}
+  gpu [status|topology|assignment|validate|reassign]
+                      Inspect and manage multi-GPU configuration
+  status [--json]     Show service health and GPU status (--json = machine-readable)
+  status-json         Alias for 'status --json' (kept for back-compat)
+  list [--json]       List all services and their status (--json = machine-readable)
+  enable <service>    Enable an extension service
+  disable <service>   Disable an extension service
+  purge <service>     Permanently delete service data
+  preset <action>     Save/load/list/delete/export/import presets
+  mode [local|cloud|hybrid]
+                      Switch between local/cloud/hybrid modes
+  model [current|list|swap]
+                      View or change the local LLM model tier
+  stt [current|status|download] [MODEL]
+                      View Whisper STT model, check cache, or trigger download
+  backup [options]    Create a backup of user data and config
+  backup verify <id>   Verify checksum integrity for a backup
+  restore [backup_id] Restore from a backup
+  rollback            Rollback to pre-update state (after failed update)
+  logs <service>      Tail logs for a service
+  restart [service] [--rebuild-images]
+                      Restart services (all if no service specified)
+  start [service] [--rebuild-images]
+                      Start services
+  stop [service]      Stop services
+  update [--force] [--rebuild-images]
+                      Pull latest images and restart (--force skips version-compat confirmation;
+                      --rebuild-images rebuilds locally-built images so contributor edits deploy)
+  shell <service>     Open shell in container
+  config [show|edit|validate]
+                      View, edit, or validate configuration
+  chat "<message>"    Quick chat with the LLM
+  benchmark           Run a quick performance test
+  doctor [report|--json]   Run diagnostics (--json writes JSON to stdout)
+  repair|fix [voice|hermes-workers]
+                      Repair voice services or prune leaked Hermes slash workers
+  template [action]   Apply pre-built service templates (list|preview|apply)
+  audit [extensions]  Audit extension manifests and compose contracts
+  agent [action]      Manage ods host agent (status|start|stop|restart|logs)
+  help                Show this help
+
+${CYAN}Preset Commands:${NC}
+  preset save <name>     Snapshot current config (env, mode, extensions)
+  preset load <name>     Restore a saved preset
+  preset list            Show all saved presets
+  preset delete <name>   Delete a saved preset
+  preset export <name> <file.tar.gz>
+                         Export preset to shareable archive
+  preset import <file.tar.gz>
+                         Import preset from archive
+
+${CYAN}Mode Commands:${NC}
+  mode                Show current mode
+  mode local          Switch to local mode (llama-server)
+  mode cloud          Switch to cloud mode (LiteLLM + API keys)
+  mode hybrid         Switch to hybrid mode (local + cloud fallback)
+
+${CYAN}Model Commands:${NC}
+  model current       Show current model
+  model list          List available tiers
+  model swap <tier>   Switch to a different model tier
+
+${CYAN}Service aliases:${NC}
+EOF
+    # Dynamic alias listing from registry
+    for sid in "${SERVICE_IDS[@]}"; do
+        local aliases=""
+        # Collect aliases for this service
+        for alias in "${!SERVICE_ALIASES[@]}"; do
+            if [[ "${SERVICE_ALIASES[$alias]}" == "$sid" && "$alias" != "$sid" ]]; then
+                [[ -n "$aliases" ]] && aliases="$aliases, "
+                aliases="$aliases$alias"
+            fi
+        done
+        if [[ -n "$aliases" ]]; then
+            printf "  %-24s%s\n" "$sid" "also: $aliases"
+        fi
+    done
+
+    cat << EOF
+
+${CYAN}Examples:${NC}
+  ods gpu status                # Per-GPU metrics (VRAM, util, temp, power)
+  ods gpu topology              # Show GPU interconnect topology
+  ods gpu assignment            # Show service→GPU mapping
+  ods gpu validate              # Validate GPU configuration
+  ods gpu reassign --auto       # Auto-reassign GPUs after hardware change
+  ods status                    # Check all services
+  ods status-json               # JSON summary (mode/tier/model + services)
+  ods list                      # See all available services
+  ods enable n8n                # Enable the n8n extension
+  ods disable whisper           # Disable Whisper STT
+  ods mode local                # Switch to local mode
+  ods preset save my-setup      # Snapshot your config
+  ods preset load my-setup      # Restore it later
+  ods preset export my-setup my-setup.tar.gz
+                                  # Export preset for sharing
+  ods preset import shared.tar.gz
+                                  # Import preset from file
+  ods update --dry-run          # Preview changes without applying
+  ods backup                    # Create a backup
+  ods backup -c                 # Create compressed backup
+  ods backup -l                 # List all backups
+  ods backup verify <id>        # Verify backup integrity
+  ods restore                   # Interactive restore
+  ods restore 20260309-120000   # Restore specific backup
+  ods rollback                  # Rollback after failed update
+  ods logs llm                  # Watch llama-server logs (via alias)
+  ods restart stt               # Restart Whisper (via alias)
+  ods chat "What is 2+2?"      # Quick LLM test
+  ods config edit               # Edit .env file
+  ods template list              # List available templates
+  ods template preview creative-studio
+                                  # Preview what a template will change
+  ods template apply chat-playground
+                                  # Apply a template (enables services)
+  ods audit                     # Audit every extension contract
+  ods audit --json whisper      # Audit one service as JSON
+  ods agent status              # Check host agent health
+  ods agent restart             # Restart host agent
+  ods repair voice              # Start voice services and cache STT model
+  ods repair hermes-workers     # Prune leaked Hermes slash_worker children
+
+${CYAN}Environment:${NC}
+  ODS_HOME          Installation directory (default: ~/ods)
+
+EOF
+}
+
+#=============================================================================
+# Main
+#=============================================================================
+case "${1:-help}" in
+    gpu|g)       shift; cmd_gpu "$@" ;;
+    status|s)    shift; cmd_status "$@" ;;
+    status-json) cmd_status_json ;;
+    list|ls)     shift; cmd_list "$@" ;;
+    enable)      shift; cmd_enable "$@" ;;
+    disable)     shift; cmd_disable "$@" ;;
+    purge)       shift; cmd_purge "$@" ;;
+    preset|p)    shift; cmd_preset "$@" ;;
+    mode|m)      shift; cmd_mode "$@" ;;
+    model)       shift; cmd_model "$@" ;;
+    stt)         shift; cmd_stt "$@" ;;
+    backup)      shift; cmd_backup "$@" ;;
+    restore)     shift; cmd_restore "$@" ;;
+    rollback)    cmd_rollback ;;
+    logs|log|l)  shift; cmd_logs "$@" ;;
+    restart|r)   shift; cmd_restart "$@" ;;
+    repair|fix)  shift; cmd_repair "$@" ;;
+    start)       shift; cmd_start "$@" ;;
+    stop)        shift; cmd_stop "$@" ;;
+    update|u)    shift; cmd_update "$@" ;;
+    shell|sh)    shift; cmd_shell "$@" ;;
+    config|cfg)  shift; cmd_config "$@" ;;
+    chat|c)      shift; cmd_chat "$@" ;;
+    benchmark|bench|b) cmd_benchmark ;;
+    doctor|diag|d) shift; cmd_doctor "$@" ;;
+    audit)        shift; cmd_audit "$@" ;;
+    template|tmpl) shift; cmd_template "$@" ;;
+    agent)        shift; cmd_agent "$@" ;;
+    help|h|--help|-h) cmd_help ;;
+    version|v|--version|-v) echo "ods-cli v${VERSION}" ;;
+    *)           error "Unknown command: $1. Run 'ods help' for usage." ;;
+esac

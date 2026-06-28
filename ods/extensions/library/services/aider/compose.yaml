@@ -1,0 +1,38 @@
+services:
+  aider:
+    image: paulgauthier/aider:v0.86.2
+    container_name: ods-aider
+    volumes:
+      - ./data/aider:/app
+      # Note: Mount git/ssh configs manually if needed:
+      # - ${HOME}/.gitconfig:/home/aider/.gitconfig:ro
+      # - ${HOME}/.ssh:/home/aider/.ssh:ro
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - AIDER_MODEL=${AIDER_MODEL:-openrouter/anthropic/claude-sonnet-4}
+      - AIDER_WEAK_MODEL=${AIDER_WEAK_MODEL:-openrouter/anthropic/claude-haiku-3}
+      - AIDER_OPENAI_API_BASE=${AIDER_OPENAI_API_BASE:-}
+      - LLM_API_URL=${LLM_API_URL:-http://localhost:8000}
+    working_dir: /app
+    stdin_open: true
+    tty: true
+    restart: "no"  # One-shot CLI tool
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+    networks:
+      - ods-network
+    entrypoint: ["echo"]
+    command: ["Aider is a CLI tool. Run: docker compose run --rm aider <files>"]
+
+# Named volumes removed — using bind mounts only
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network

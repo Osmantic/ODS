@@ -25,7 +25,7 @@ repos:
     hooks:
       - id: shellcheck
         name: shellcheck (installer + scripts, errors only)
-        files: ^dream-server/(installers|scripts)/.*\.(sh|bash)$
+        files: ^ods/(installers|scripts)/.*\.(sh|bash)$
         args: ['--exclude=SC1091,SC2034', '--severity=error']
 
       # Catch legacy `…` command substitution anywhere in the installer
@@ -35,7 +35,7 @@ repos:
       # is currently zero-SC2006, so this hook starts as a regression guard.
       - id: shellcheck
         name: shellcheck SC2006 (no legacy backticks)
-        files: ^dream-server/(installers|scripts)/.*\.(sh|bash)$
+        files: ^ods/(installers|scripts)/.*\.(sh|bash)$
         args: ['--include=SC2006']
 
   # Custom local hook (issue #509): forbid backticks inside the BODY of
@@ -49,7 +49,7 @@ repos:
     hooks:
       - id: no-backticks-in-installer-heredocs
         name: no-backticks-in-installer-heredocs
-        description: Forbid `…` command substitution inside unquoted heredoc bodies under dream-server/installers and dream-server/scripts.
+        description: Forbid `…` command substitution inside unquoted heredoc bodies under ods/installers and ods/scripts.
         language: system
-        files: ^dream-server/(installers|scripts)/.*\.(sh|bash)$
-        entry: awk -f dream-server/scripts/check-heredoc-backticks.awk
+        files: ^ods/(installers|scripts)/.*\.(sh|bash)$
+        entry: awk -f ods/scripts/check-heredoc-backticks.awk

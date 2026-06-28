@@ -1,0 +1,13 @@
+schema_version: ods.templates.v1
+template:
+  id: creative-studio
+  name: Creative Studio
+  description: "Image generation, voice synthesis, and chat — a full creative toolkit. Requires NVIDIA or AMD GPU."
+  icon: Image
+  tags: [creative, gpu-intensive]
+  services: [llama-server, open-webui, comfyui, tts, whisper]
+  tier_minimum: T3
+  estimated_disk_gb: 25
+  service_notes:
+    comfyui: "Stable Diffusion image generation — requires 8GB+ VRAM"
+    tts: "Kokoro text-to-speech — runs on CPU"

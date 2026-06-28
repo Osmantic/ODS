@@ -88,7 +88,7 @@ pub async fn install_docker() -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
         Err(format!(
-            "For safety, the desktop installer does not run Docker's convenience script automatically.\n\nInstall Docker Engine using the official instructions, then rerun prerequisite checks:\n{}\n\nYou can also run Dream Server's shell installer from a terminal if you want the guided prerequisite flow.",
+            "For safety, the desktop installer does not run Docker's convenience script automatically.\n\nInstall Docker Engine using the official instructions, then rerun prerequisite checks:\n{}\n\nYou can also run ODS's shell installer from a terminal if you want the guided prerequisite flow.",
             download_url()
         ))
     }

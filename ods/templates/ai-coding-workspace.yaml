@@ -1,0 +1,14 @@
+schema_version: ods.templates.v1
+template:
+  id: ai-coding-workspace
+  name: AI Coding Workspace
+  description: "Local AI-assisted coding with version control and project memory — code stays on your machine."
+  icon: Code2
+  tags: [development, ai-assistant, self-hosted]
+  services: [aider, gitea, chromadb, n8n, openclaw]
+  tier_minimum: T2
+  estimated_disk_gb: 15
+  service_notes:
+    aider: "CLI tool — run with 'docker compose run --rm aider' in your project directory. Not a background service."
+    gitea: "Self-hosted Git — access at port 7830, SSH at 2222"
+    chromadb: "Vector database for codebase memory and RAG"

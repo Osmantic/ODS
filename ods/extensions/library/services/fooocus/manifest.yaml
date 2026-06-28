@@ -1,0 +1,34 @@
+schema_version: ods.services.v1
+
+service:
+  id: fooocus
+  name: Fooocus
+  aliases: [fooocus-ui, image, generation]
+  container_name: ods-fooocus
+  host_env: FOOOCUS_HOST
+  default_host: fooocus
+  port: 7865
+  external_port_env: FOOOCUS_PORT
+  external_port_default: 7865
+  health: /
+  type: docker
+  gpu_backends: [nvidia]
+  compose_file: ""
+  category: optional
+  depends_on: []
+  description: "Simplified Stable Diffusion interface inspired by Midjourney's ease of use. Not yet supported for local deployment — requires RunPod cloud platform."
+  env_vars: []
+
+features:
+  - id: fooocus-image-generation
+    name: Image Generation
+    description: User-friendly image generation with Stable Diffusion
+    icon: Image
+    category: media
+    requirements:
+      services: [fooocus]
+      vram_gb: 8
+    enabled_services_all: [fooocus]
+    setup_time: ~3 minutes
+    priority: 8
+    gpu_backends: [nvidia]

@@ -1,0 +1,63 @@
+schema_version: ods.services.v1
+
+service:
+  id: open-interpreter
+  name: Open Interpreter
+  aliases: [interpreter, oi, code-exec]
+  container_name: ods-open-interpreter
+  host_env: OPEN_INTERPRETER_HOST
+  default_host: open-interpreter
+  port: 8080
+  external_port_env: OPEN_INTERPRETER_PORT
+  external_port_default: 7805
+  health: /health
+  type: docker
+  gpu_backends: [all]
+  category: optional
+  depends_on: []
+  compose_file: compose.yaml
+  setup_hook: setup.sh
+  env_vars:
+    - key: OPEN_INTERPRETER_API_KEY
+      required: true
+      secret: true
+      description: API key for authentication
+  description: |
+    Open Interpreter lets LLMs run code locally (Python, JavaScript, Shell, etc.).
+    It provides a ChatGPT-like interface in your terminal and can control Chrome,
+    create/edit files, analyze datasets, and more. Fully local, no API costs.
+    Requires OPEN_INTERPRETER_API_KEY for authentication. Auto-run is disabled
+    by default (set OPEN_INTERPRETER_AUTO_RUN=true to enable).
+
+features:
+  - id: code-execution
+    name: Local Code Execution
+    description: Run Python, JavaScript, and Shell code locally via LLM
+    icon: Terminal
+    category: development
+    requirements:
+      services: [open-interpreter]
+      vram_gb: 0
+    enabled_services_all: [open-interpreter]
+    setup_time: ~2 minutes
+    priority: 10
+
+  - id: data-analysis
+    name: Data Analysis
+    description: Plot, clean, and analyze large datasets with AI assistance
+    icon: BarChart
+    category: development
+    requirements:
+      services: [open-interpreter]
+      vram_gb: 0
+    enabled_services_all: [open-interpreter]
+    setup_time: ~2 minutes
+    priority: 11
+
+tags:
+  - code
+  - local
+  - terminal
+  - browser
+  - file-ops
+  - data

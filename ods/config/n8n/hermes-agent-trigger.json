@@ -1,0 +1,33 @@
+{
+  "name": "Hermes Agent Trigger",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "start",
+      "name": "Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "content": "## Hermes Agent Trigger\n\nTemplate workflow for dispatching a goal to a Hermes Agent session via its OpenAI-compatible /api endpoint, streaming the response, and storing the final result.\n\nDefaults:\n- Hermes URL: http://hermes:9119 (Docker network) or http://hermes-proxy:9120 (when SSO is enabled)\n- Model: whatever Hermes is configured with (defaults to ODS's llama-server model)\n\nReplaces the deprecated `openclaw-agent-trigger`. Both templates ship in the deprecation release; only this one ships after OpenClaw is removed.\n\nCustomize the nodes below to match your setup.",
+        "height": 260,
+        "width": 460
+      },
+      "id": "note",
+      "name": "Setup Instructions",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [440, 140]
+    }
+  ],
+  "connections": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateId": "hermes-agent-trigger"
+  },
+  "tags": []
+}

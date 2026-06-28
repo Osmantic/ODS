@@ -24,8 +24,8 @@ jobs:
       - name: Install Ruff
         run: pip install ruff
 
-      - name: Run Ruff on dream-server Python files
+      - name: Run Ruff on ods Python files
         run: |
-          ruff check dream-server/ \
+          ruff check ods/ \
             --select E,F,W \
             --ignore E501,E701,E731,E741,E402

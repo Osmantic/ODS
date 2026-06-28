@@ -1,0 +1,21 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: open-webui
+  name: Open WebUI (Chat)
+  aliases: [webui, ui, web]
+  container_name: ods-webui
+  host_env: WEBUI_HOST
+  default_host: open-webui
+  port: 8080
+  external_port_env: WEBUI_PORT
+  external_port_default: 3000
+  health: /health
+  ui_path: /
+  type: docker
+  gpu_backends: [amd, nvidia]
+  category: core
+  depends_on: [llama-server]
