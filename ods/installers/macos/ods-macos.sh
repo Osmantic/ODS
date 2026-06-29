@@ -183,9 +183,9 @@ select_auto_cpu_value() {
     fi
 }
 
-LC_ALL=C cap_cpu_value() {
+cap_cpu_value() {
     local desired="$1" ceiling="$2"
-    awk -v desired="$desired" -v ceiling="$ceiling" '
+    LC_ALL=C awk -v desired="$desired" -v ceiling="$ceiling" '
         BEGIN {
             if (ceiling <= 0) ceiling = 1
             value = desired
