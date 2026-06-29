@@ -551,11 +551,19 @@ def get_gpu_info_nvidia_detailed() -> Optional[list[IndividualGPU]]:
 def _find_hwmon_temp(hwmon_dir: str) -> int:
     """Find GPU temperature via hwmon label-based discovery (junction > edge > temp1)."""
     import glob as _glob
-    # Prefer junction temperature (accurate die temp), then edge
+    # Map each label to its temp*_input first, so the junction-over-edge
+    # preference holds regardless of which tempN node carries each label.
+    # On many AMD cards edge is temp1 and junction is temp2; scanning in file
+    # order would otherwise return edge even when the more accurate junction
+    # die temperature is available.
+    inputs_by_label: dict[str, str] = {}
     for label_path in sorted(_glob.glob(f"{hwmon_dir}/temp*_label")):
         label = _read_sysfs(label_path)
-        if label and label.lower() in ("junction", "edge"):
-            input_path = label_path.replace("_label", "_input")
+        if label:
+            inputs_by_label.setdefault(label.lower(), label_path.replace("_label", "_input"))
+    for preferred in ("junction", "edge"):
+        input_path = inputs_by_label.get(preferred)
+        if input_path:
             temp_str = _read_sysfs(input_path)
             if temp_str:
                 return int(temp_str) // 1000

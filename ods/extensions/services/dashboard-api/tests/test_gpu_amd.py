@@ -35,6 +35,20 @@ class TestFindHwmonTemp:
         # junction (72000) is preferred over edge (65000)
         assert result == 72
 
+    def test_prefers_junction_when_edge_sorts_first(self, tmp_path):
+        """Common desktop AMD layout: temp1=edge, temp2=junction. Junction is
+        the accurate die temp and must win even though edge's node sorts first.
+        """
+        hwmon = tmp_path / "hwmon0"
+        hwmon.mkdir()
+        (hwmon / "temp1_label").write_text("edge\n")
+        (hwmon / "temp1_input").write_text("65000\n")
+        (hwmon / "temp2_label").write_text("junction\n")
+        (hwmon / "temp2_input").write_text("72000\n")
+
+        result = _find_hwmon_temp(str(hwmon))
+        assert result == 72
+
     def test_falls_back_to_edge(self, monkeypatch, tmp_path):
         """When no junction label, use edge."""
         hwmon = tmp_path / "hwmon0"
