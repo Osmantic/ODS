@@ -250,6 +250,18 @@
       "type": "image",
       "path": "installers/windows/docker-compose.windows-amd.local.yml",
       "value": "busybox:1.36.1"
+    },
+    {
+      "id": "vllm.nvidia",
+      "type": "image",
+      "path": "extensions/services/vllm/compose.nvidia.yaml",
+      "value": "vllm/vllm-openai:v0.10.2"
+    },
+    {
+      "id": "vllm.amd",
+      "type": "image",
+      "path": "extensions/services/vllm/compose.amd.yaml",
+      "value": "rocm/vllm:rocm7.0.0_vllm_0.10.2_20251006"
     }
   ],
   "allow_latest": [

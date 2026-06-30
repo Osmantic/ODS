@@ -1,0 +1,29 @@
+services:
+  vllm:
+    image: rocm/vllm:rocm7.0.0_vllm_0.10.2_20251006
+    container_name: ods-vllm
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${VLLM_PORT:-8008}:8000"
+    volumes:
+      - ./data/models/huggingface:/root/.cache/huggingface:z
+    shm_size: '8g'
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    command: >
+      --model ${VLLM_MODEL:-meta-llama/Meta-Llama-3-8B-Instruct}
+      --tensor-parallel-size ${VLLM_TP_SIZE:-1}
+      --host 0.0.0.0
+      --port 8000
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-992}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s

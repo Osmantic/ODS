@@ -108,12 +108,14 @@ tests/fleet-multi-distro.sh --pull
 ```
 
 The Docker and Incus distro runners take a shared host lock by default:
-`/tmp/ods-fleet-heavy.lock`, or `ODS_FLEET_HOST_LOCK` when set. The
-private release automation uses the same lock when launching heavy install
-work, so distro-lab dry-runs do not compete with full fleet installs for
-Docker/build I/O on the same host. Use `--lock-timeout SECONDS` when a CI or
-automation should fail instead of waiting, and reserve `--no-host-lock` for
-local debugging when you know no full fleet install is running.
+`/tmp/dream-fleet-heavy.lock`. Set `ODS_FLEET_HOST_LOCK` to override it;
+the older `DREAM_FLEET_HOST_LOCK` name is still honored for release automation
+compatibility. The private release automation uses the same lock when launching
+heavy install work, so distro-lab dry-runs do not compete with full fleet
+installs for Docker/build I/O on the same host. Use `--lock-timeout SECONDS`
+when a CI or automation should fail instead of waiting, and reserve
+`--no-host-lock` for local debugging when you know no full fleet install is
+running.
 
 Release-grade fleet runs should run the distro lab alongside the hardware
 fleet. The hardware fleet proves GPU and product behavior; the distro lab proves
