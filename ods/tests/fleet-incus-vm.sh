@@ -13,8 +13,8 @@ WAIT_TIMEOUT="600"
 KEEP_VMS=false
 RUN_INSTALLER_DRY_RUN=true
 HOST_LOCK=true
-LOCK_FILE="${ODS_FLEET_HOST_LOCK:-/tmp/ods-fleet-heavy.lock}"
-LOCK_TIMEOUT="${ODS_FLEET_HOST_LOCK_TIMEOUT_SECONDS:-}"
+LOCK_FILE="${ODS_FLEET_HOST_LOCK:-${DREAM_FLEET_HOST_LOCK:-/tmp/dream-fleet-heavy.lock}}"
+LOCK_TIMEOUT="${ODS_FLEET_HOST_LOCK_TIMEOUT_SECONDS:-${DREAM_FLEET_HOST_LOCK_TIMEOUT_SECONDS:-}}"
 WORK_DIR=""
 
 declare -a CREATED_VMS=()
@@ -91,7 +91,8 @@ Options:
   --memory SIZE             Memory per VM (default: 4GiB)
   --timeout SECONDS         Wait timeout for VM agent readiness (default: 600)
   --lock-file PATH          Host lock path for coordinating with full fleet runs
-                            (default: ODS_FLEET_HOST_LOCK or /tmp/ods-fleet-heavy.lock)
+                            (default: ODS_FLEET_HOST_LOCK, DREAM_FLEET_HOST_LOCK,
+                             or /tmp/dream-fleet-heavy.lock)
   --lock-timeout SECONDS    Seconds to wait for the host lock before failing
                             (default: wait indefinitely)
   --no-host-lock            Do not take the shared host lock

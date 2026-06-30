@@ -175,18 +175,108 @@ grep -q 'MINIO_TELEMETRY_DISABLED.*1' extensions/services/langfuse/compose.yaml.
   grep -q 'MINIO_TELEMETRY_DISABLED.*1' extensions/services/langfuse/compose.yaml 2>/dev/null || \
   { echo "[FAIL] MinIO telemetry not disabled"; exit 1; }
 
-echo "[contract] ENABLE_RAG opt-out disables both qdrant and embeddings"
-# RAG = qdrant (vector store) + embeddings (TEI). Both compose files must
-# be gated on ENABLE_RAG in installers/phases/03-features.sh; otherwise
-# answering 'n' to the Custom-menu RAG prompt still leaves embeddings
-# being pulled and started.
+echo "[contract] RAG service flags gate qdrant and embeddings"
+# RAG = qdrant (vector store) + embeddings (TEI). Both default from
+# ENABLE_RAG, then host-specific guards can disable the concrete service
+# when an upstream image cannot run on that machine.
 features_phase="ods/installers/phases/03-features.sh"
 test -f "$features_phase" || features_phase="installers/phases/03-features.sh"
 test -f "$features_phase" || { echo "[FAIL] cannot locate 03-features.sh"; exit 1; }
-for svc in qdrant embeddings; do
-  grep -qE "_sync_extension_compose +\"\\\$\\{ENABLE_RAG:-\\}\" +$svc\\b" "$features_phase" \
-    || { echo "[FAIL] ENABLE_RAG opt-out missing sync for '$svc' in $features_phase"; exit 1; }
+grep -q 'ENABLE_QDRANT="${ENABLE_QDRANT:-${ENABLE_RAG:-false}}"' "$features_phase" \
+  || { echo "[FAIL] ENABLE_QDRANT does not default from ENABLE_RAG in $features_phase"; exit 1; }
+grep -q 'ENABLE_EMBEDDINGS="${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}"' "$features_phase" \
+  || { echo "[FAIL] ENABLE_EMBEDDINGS does not default from ENABLE_RAG in $features_phase"; exit 1; }
+grep -qE '_sync_extension_compose +"\$\{ENABLE_QDRANT:-\$\{ENABLE_RAG:-false\}\}" +qdrant\b' "$features_phase" \
+  || { echo "[FAIL] Qdrant compose is not gated by ENABLE_QDRANT in $features_phase"; exit 1; }
+grep -qE '_sync_extension_compose +"\$\{ENABLE_EMBEDDINGS:-\$\{ENABLE_RAG:-false\}\}" +embeddings\b' "$features_phase" \
+  || { echo "[FAIL] Embeddings compose is not gated by ENABLE_EMBEDDINGS in $features_phase"; exit 1; }
+grep -q 'HOST_PAGE_SIZE:-$(getconf PAGE_SIZE' "$features_phase" \
+  || { echo "[FAIL] Qdrant arm64 page-size guard missing from $features_phase"; exit 1; }
+for f in installers/phases/04-requirements.sh installers/phases/08-images.sh installers/phases/12-health.sh installers/phases/13-summary.sh; do
+  test -f "$f" || { echo "[FAIL] missing installer phase: $f"; exit 1; }
+  grep -q 'ENABLE_QDRANT:-${ENABLE_RAG:-false}' "$f" \
+    || { echo "[FAIL] $f still gates Qdrant on ENABLE_RAG directly"; exit 1; }
 done
+
+run_phase03_rag_guard() {
+  local arch="$1" page_size="$2" tmpdir
+  tmpdir="$(mktemp -d)"
+  mkdir -p "$tmpdir/extensions/services/qdrant" "$tmpdir/extensions/services/embeddings"
+  printf 'services: {}\n' >"$tmpdir/extensions/services/qdrant/compose.yaml"
+  printf 'services: {}\n' >"$tmpdir/extensions/services/embeddings/compose.yaml"
+
+  (
+    set -euo pipefail
+    INTERACTIVE=false
+    DRY_RUN=false
+    INSTALL_CHOICE=1
+    TIER=1
+    ODS_MODE=local
+    ENABLE_RAG=true
+    ENABLE_HERMES=false
+    ENABLE_OPENCLAW=false
+    ENABLE_COMFYUI=false
+    ENABLE_WORKFLOWS=false
+    ENABLE_VOICE=false
+    GPU_COUNT=1
+    GPU_BACKEND=cpu
+    HOST_ARCH="$arch"
+    HOST_PAGE_SIZE="$page_size"
+    SCRIPT_DIR="$tmpdir"
+    INSTALL_DIR="$tmpdir/install"
+    MAX_CONTEXT=4096
+    LLM_MODEL_SIZE_MB=0
+
+    ods_progress() { :; }
+    ai_warn() { :; }
+    log() { :; }
+    warn() { :; }
+    success() { :; }
+    chapter() { :; }
+    bootline() { :; }
+    signal() { :; }
+    show_phase() { :; }
+    show_install_menu() { :; }
+
+    # shellcheck source=/dev/null
+    source "$features_phase" >/dev/null
+
+    printf 'ENABLE_QDRANT=%s\n' "${ENABLE_QDRANT:-}"
+    printf 'ENABLE_EMBEDDINGS=%s\n' "${ENABLE_EMBEDDINGS:-}"
+    if [[ -f "$tmpdir/extensions/services/qdrant/compose.yaml" ]]; then
+      printf 'QDRANT_COMPOSE=enabled\n'
+    elif [[ -f "$tmpdir/extensions/services/qdrant/compose.yaml.disabled" ]]; then
+      printf 'QDRANT_COMPOSE=disabled\n'
+    else
+      printf 'QDRANT_COMPOSE=missing\n'
+    fi
+    if [[ -f "$tmpdir/extensions/services/embeddings/compose.yaml" ]]; then
+      printf 'EMBEDDINGS_COMPOSE=enabled\n'
+    elif [[ -f "$tmpdir/extensions/services/embeddings/compose.yaml.disabled" ]]; then
+      printf 'EMBEDDINGS_COMPOSE=disabled\n'
+    else
+      printf 'EMBEDDINGS_COMPOSE=missing\n'
+    fi
+  )
+
+  rm -rf "$tmpdir"
+}
+
+guard_64k="$(run_phase03_rag_guard aarch64 65536)"
+echo "$guard_64k" | grep -q '^ENABLE_QDRANT=false$' \
+  || { echo "[FAIL] 64K-page aarch64 must disable ENABLE_QDRANT"; echo "$guard_64k"; exit 1; }
+echo "$guard_64k" | grep -q '^QDRANT_COMPOSE=disabled$' \
+  || { echo "[FAIL] 64K-page aarch64 must disable Qdrant compose"; echo "$guard_64k"; exit 1; }
+
+guard_4k="$(run_phase03_rag_guard aarch64 4096)"
+echo "$guard_4k" | grep -q '^ENABLE_QDRANT=true$' \
+  || { echo "[FAIL] 4K-page aarch64 must keep ENABLE_QDRANT enabled"; echo "$guard_4k"; exit 1; }
+echo "$guard_4k" | grep -q '^QDRANT_COMPOSE=enabled$' \
+  || { echo "[FAIL] 4K-page aarch64 must keep Qdrant compose enabled"; echo "$guard_4k"; exit 1; }
+echo "$guard_4k" | grep -q '^ENABLE_EMBEDDINGS=false$' \
+  || { echo "[FAIL] aarch64 must still disable amd64-only embeddings"; echo "$guard_4k"; exit 1; }
+echo "$guard_4k" | grep -q '^EMBEDDINGS_COMPOSE=disabled$' \
+  || { echo "[FAIL] aarch64 must still disable embeddings compose"; echo "$guard_4k"; exit 1; }
 
 echo "[contract] non-interactive reinstall reuses valid GPU assignment"
 grep -q '_load_existing_gpu_assignment_json' "$features_phase" \
