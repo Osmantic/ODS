@@ -1,0 +1,23 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: sensevoice
+  name: SenseVoice (STT)
+  aliases: [funasr]
+  container_name: ods-sensevoice
+  host_env: SENSEVOICE_HOST
+  default_host: sensevoice
+  port: 8000
+  external_port_env: SENSEVOICE_PORT
+  external_port_default: 9100
+  health: /health
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  container_uid: 1000

@@ -145,6 +145,12 @@
       "lan_exposure": "operator-controlled",
       "auth_required": false,
       "notes": "Speech-to-text model API; audio may be sensitive."
+    },
+    "sensevoice": {
+      "risk": "audio-transcription-api",
+      "lan_exposure": "operator-controlled",
+      "auth_required": false,
+      "notes": "Speech-to-text model API (FunASR/SenseVoice); audio may be sensitive."
     }
   }
 }

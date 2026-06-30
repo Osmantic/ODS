@@ -240,6 +240,12 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     _phase06_step "prepare-service-permissions"
     chown -R 1000:1000 "$INSTALL_DIR/data/token-spy" || warn "Failed to chown data/token-spy to 1000:1000 (non-fatal); container may crash if installer ran as a different uid"
 
+    # SenseVoice container runs as uid 1000 (baked in Dockerfile) and writes its
+    # model cache to the bind-mounted data dir — pre-create and fix ownership so
+    # the first model download succeeds on a fresh install.
+    mkdir -p "$INSTALL_DIR/data/sensevoice"
+    chown -R 1000:1000 "$INSTALL_DIR/data/sensevoice" || warn "Failed to chown data/sensevoice to 1000:1000 (non-fatal); container may crash if installer ran as a different uid"
+
     # ── .env merge logic: preserve user-configured values on re-install ──
     _phase06_step "generate-env"
     ods_progress 40 "directories" "Generating secrets and configuration"

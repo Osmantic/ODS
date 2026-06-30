@@ -139,6 +139,10 @@ if ! $DRY_RUN; then
     _sync_extension_compose "${ENABLE_RECOMMENDED:-}" token-spy  "Token Spy"     "recommended services not enabled"
     _sync_extension_compose "${ENABLE_VOICE:-}"      whisper    "Whisper (STT)" "voice not enabled"
     _sync_extension_compose "${ENABLE_VOICE:-}"      tts        "Kokoro (TTS)"  "voice not enabled"
+    # SenseVoice is an alternative STT engine, opt-in on its own flag (not tied to
+    # ENABLE_VOICE) so it isn't started as a second STT on every voice install.
+    # Disabled by default; enable via `ods enable sensevoice`.
+    _sync_extension_compose "${ENABLE_SENSEVOICE:-false}" sensevoice "SenseVoice (STT)" "SenseVoice not enabled"
     _sync_extension_compose "${ENABLE_WORKFLOWS:-}"  n8n        "n8n"           "workflows not enabled"
     # RAG = qdrant (vector store) + embeddings (TEI). Both must follow
     # ENABLE_RAG, otherwise opting out leaves the embeddings container

@@ -1,0 +1,19 @@
+services:
+  sensevoice:
+    environment:
+      - SENSEVOICE_DEVICE=cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          cpus: '${SENSEVOICE_CPU_LIMIT:-2.0}'
+          memory: 8G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

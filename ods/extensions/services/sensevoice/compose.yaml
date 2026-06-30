@@ -1,0 +1,36 @@
+services:
+  sensevoice:
+    build:
+      context: ./extensions/services/sensevoice
+      dockerfile: Dockerfile
+    image: ods-sensevoice:local
+    container_name: ods-sensevoice
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - SENSEVOICE_DEVICE=cpu
+      - SENSEVOICE_MAX_AUDIO_BYTES=${SENSEVOICE_MAX_AUDIO_BYTES:-26214400}
+    volumes:
+      - ./data/sensevoice:/app/cache:z
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${SENSEVOICE_PORT:-9100}:8000"
+    deploy:
+      resources:
+        limits:
+          cpus: '${SENSEVOICE_CPU_LIMIT:-2.0}'
+          memory: 6G
+        reservations:
+          cpus: '${SENSEVOICE_CPU_RESERVATION:-0.5}'
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

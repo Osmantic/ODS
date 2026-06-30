@@ -847,6 +847,7 @@ else
     mkdir -p "${INSTALL_DIR}/config/llama-server"
     mkdir -p "${INSTALL_DIR}/data/open-webui"
     mkdir -p "${INSTALL_DIR}/data/whisper"
+    mkdir -p "${INSTALL_DIR}/data/sensevoice"
     mkdir -p "${INSTALL_DIR}/data/tts"
     mkdir -p "${INSTALL_DIR}/data/n8n"
     mkdir -p "${INSTALL_DIR}/data/qdrant"
@@ -1421,6 +1422,7 @@ else
             case "$SVC_NAME" in
                 litellm|searxng|token-spy) $ENABLE_RECOMMENDED || SKIP=true ;;
                 whisper|tts)   $ENABLE_VOICE || SKIP=true ;;
+                sensevoice)    [[ "${ENABLE_SENSEVOICE:-false}" == "true" ]] || SKIP=true ;;
                 n8n)           $ENABLE_WORKFLOWS || SKIP=true ;;
                 qdrant|embeddings) $ENABLE_RAG || SKIP=true ;;
                 hermes|hermes-proxy) $ENABLE_HERMES || SKIP=true ;;
@@ -1501,6 +1503,10 @@ else
     # look broken.
     ai "Rebuilding local-built images (no-cache)..."
     _macos_candidate_build_services=(dashboard dashboard-api ape token-spy privacy-shield)
+    # SenseVoice enabled at installer time needs its image built before the
+    # --no-build compose-up; the config --services intersection below still
+    # gates whether it actually builds.
+    [[ "${ENABLE_SENSEVOICE:-false}" == "true" ]] && _macos_candidate_build_services+=(sensevoice)
     if ! _macos_enabled_services="$(docker compose "${COMPOSE_FLAGS[@]}" config --services 2>>"$ODS_LOG_FILE")"; then
         ai_err "Could not resolve macOS compose services for local image rebuilds."
         ai "Inspect compose config with: cd '$INSTALL_DIR' && docker compose ${COMPOSE_FLAGS[*]} config --services"
