@@ -584,6 +584,36 @@ fi
 
 rm -rf "$TEMP_DIR/data/user-extensions/shadow-core"
 
+# ============================================================================
+# 24. Test EXTERNAL_LLM_URL auto-layering of docker-compose.cloud.yml
+# ============================================================================
+touch "$TEMP_DIR/docker-compose.cloud.yml"
+
+ext_stdout=$(EXTERNAL_LLM_URL="http://host.docker.internal:11434" \
+    bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$TEMP_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    2>/dev/null) || true
+
+if echo "$ext_stdout" | grep -q "docker-compose.cloud.yml"; then
+    pass "EXTERNAL_LLM_URL triggers auto-layering of docker-compose.cloud.yml"
+else
+    fail "EXTERNAL_LLM_URL did not layer docker-compose.cloud.yml"
+fi
+
+# Negative case: verify it is NOT layered when EXTERNAL_LLM_URL is empty or unset
+no_ext_stdout=$(EXTERNAL_LLM_URL="" \
+    bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$TEMP_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    2>/dev/null) || true
+
+if echo "$no_ext_stdout" | grep -q "docker-compose.cloud.yml"; then
+    fail "docker-compose.cloud.yml layered even when EXTERNAL_LLM_URL is empty"
+else
+    pass "docker-compose.cloud.yml is not layered when EXTERNAL_LLM_URL is empty"
+fi
+
+rm -f "$TEMP_DIR/docker-compose.cloud.yml"
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

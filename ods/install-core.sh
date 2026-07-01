@@ -82,6 +82,7 @@ source "$SCRIPT_DIR/installers/lib/readiness-summary.sh"
 source "$SCRIPT_DIR/installers/lib/packaging.sh"
 source "$SCRIPT_DIR/installers/lib/python-runtime.sh"
 source "$SCRIPT_DIR/installers/lib/progress.sh"
+source "$SCRIPT_DIR/installers/lib/external-services.sh"
 if [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]]; then 
     source "$SCRIPT_DIR/lib/service-registry.sh" 
 fi
@@ -308,6 +309,7 @@ $DRY_RUN && echo -e "${AMB}>>> DRY RUN MODE — I will simulate everything. No c
 #=============================================================================
 INSTALL_PHASE="01-preflight";    source "$SCRIPT_DIR/installers/phases/01-preflight.sh"
 INSTALL_PHASE="02-detection";    source "$SCRIPT_DIR/installers/phases/02-detection.sh"
+INSTALL_PHASE="02b-external-services"; source "$SCRIPT_DIR/installers/phases/02b-external-services.sh"
 INSTALL_PHASE="03-features";     source "$SCRIPT_DIR/installers/phases/03-features.sh"
 INSTALL_PHASE="04-requirements"; source "$SCRIPT_DIR/installers/phases/04-requirements.sh"
 INSTALL_PHASE="05-docker";       source "$SCRIPT_DIR/installers/phases/05-docker.sh"

@@ -453,11 +453,29 @@ raise SystemExit(1)' 2>/dev/null && return 0
     LANGFUSE_INIT_PROJECT_ID=$(_env_get LANGFUSE_INIT_PROJECT_ID "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
     LANGFUSE_INIT_USER_EMAIL=$(_env_get LANGFUSE_INIT_USER_EMAIL "admin@ods.local")
     LANGFUSE_INIT_USER_PASSWORD=$(_env_get LANGFUSE_INIT_USER_PASSWORD "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
+    EXTERNAL_LLM_URL=$(_env_get_explicit_first EXTERNAL_LLM_URL "${EXTERNAL_LLM_URL:-}")
+    EXTERNAL_LLM_PROVIDER=$(_env_get_explicit_first EXTERNAL_LLM_PROVIDER "${EXTERNAL_LLM_PROVIDER:-}")
+    EXTERNAL_LLM_MODEL=$(_env_get_explicit_first EXTERNAL_LLM_MODEL "${EXTERNAL_LLM_MODEL:-}")
+    SKIP_MODEL_DOWNLOAD=$(_env_get_explicit_first SKIP_MODEL_DOWNLOAD "${SKIP_MODEL_DOWNLOAD:-false}")
+
+    if [[ -n "$EXTERNAL_LLM_MODEL" ]]; then
+        LLM_MODEL="$EXTERNAL_LLM_MODEL"
+    fi
+
     MODEL_PROFILE_VALUE=$(_env_get MODEL_PROFILE "${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}")
     ODS_MODE_VALUE="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo "${ODS_MODE:-local}"; fi)"
-    _default_llm_api_url="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "http://litellm:4000"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "http://litellm:4000"; elif [[ "${ODS_MODE:-local}" == "local" ]]; then echo "http://llama-server:8080"; else echo "http://litellm:4000"; fi)"
+    
+    if [[ -n "$EXTERNAL_LLM_URL" ]]; then
+        _default_llm_api_url="$EXTERNAL_LLM_URL"
+    else
+        _default_llm_api_url="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "http://litellm:4000"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "http://litellm:4000"; elif [[ "${ODS_MODE:-local}" == "local" ]]; then echo "http://llama-server:8080"; else echo "http://litellm:4000"; fi)"
+    fi
     LLM_API_URL_VALUE=$(_env_get LLM_API_URL "$_default_llm_api_url")
-    if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
+    
+    if [[ -n "$EXTERNAL_LLM_URL" ]]; then
+        _default_hermes_base_url="${EXTERNAL_LLM_URL}/v1"
+        _default_hermes_api_key=""
+    elif [[ "${ODS_MODE:-local}" == "cloud" ]]; then
         _default_hermes_base_url="http://litellm:4000/v1"
         _default_hermes_api_key="${LITELLM_KEY}"
     elif [[ "$GPU_BACKEND" == "amd" || "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
@@ -673,6 +691,12 @@ LEMONADE_BASE_URL=${LEMONADE_BASE_URL_VALUE}
 LEMONADE_CONTAINER_BASE_URL=${LEMONADE_CONTAINER_BASE_URL_VALUE}
 LEMONADE_API_BASE_PATH=${LEMONADE_API_BASE_PATH_VALUE}
 LEMONADE_MODEL=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${LEMONADE_MODEL_VALUE:-}"; else echo "${LEMONADE_MODEL:-}"; fi)
+
+#=== External LLM Service Integration ===
+EXTERNAL_LLM_URL=${EXTERNAL_LLM_URL}
+EXTERNAL_LLM_PROVIDER=${EXTERNAL_LLM_PROVIDER}
+EXTERNAL_LLM_MODEL=${EXTERNAL_LLM_MODEL}
+SKIP_MODEL_DOWNLOAD=${SKIP_MODEL_DOWNLOAD}
 
 #=== Cloud API Keys ===
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

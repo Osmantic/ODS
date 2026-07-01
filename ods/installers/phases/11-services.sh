@@ -344,12 +344,17 @@ else
     # Ensure model directory exists
     mkdir -p "$INSTALL_DIR/data/models"
 
+    if [[ "${SKIP_MODEL_DOWNLOAD:-false}" == "true" ]]; then
+        log "Skipping model download — using external LLM at ${EXTERNAL_LLM_URL}"
+        # Note: existing models in ./models/ are preserved for potential future local use
+    fi
+
     # ── Bootstrap model fast-start ──
     # For Tier 1+ installs, download a tiny model first so the user can chat
     # immediately. The full model downloads in the background and hot-swaps.
     [[ -f "$SCRIPT_DIR/installers/lib/bootstrap-model.sh" ]] && . "$SCRIPT_DIR/installers/lib/bootstrap-model.sh"
     _BOOTSTRAP_ACTIVE=false
-    if type bootstrap_needed &>/dev/null && bootstrap_needed; then
+    if [[ "${SKIP_MODEL_DOWNLOAD:-false}" != "true" ]] && type bootstrap_needed &>/dev/null && bootstrap_needed; then
         _BOOTSTRAP_ACTIVE=true
         # Save full model config for the background upgrade
         FULL_GGUF_FILE="$GGUF_FILE"
@@ -372,7 +377,7 @@ else
     # Download GGUF model if not already present (with retry and integrity verification)
     ods_progress 76 "services" "Checking AI model"
     GGUF_DIR="$INSTALL_DIR/data/models"
-    if [[ "${ODS_MODE:-local}" != "cloud" && -n "$GGUF_URL" ]] && ! _phase11_external_lemonade; then
+    if [[ "${ODS_MODE:-local}" != "cloud" && -n "$GGUF_URL" ]] && ! _phase11_external_lemonade && [[ "${SKIP_MODEL_DOWNLOAD:-false}" != "true" ]]; then
         # Check if model exists and verify integrity
         if [[ -f "$GGUF_DIR/$GGUF_FILE" ]]; then
             if [[ -n "$GGUF_SHA256" ]]; then
@@ -469,7 +474,7 @@ else
         fi
 
         # Abort if model download/verification failed
-        if [[ "${ODS_MODE:-local}" != "cloud" && -n "$GGUF_URL" && ! -f "$GGUF_DIR/$GGUF_FILE" ]] && ! _phase11_external_lemonade; then
+        if [[ "${ODS_MODE:-local}" != "cloud" && -n "$GGUF_URL" && ! -f "$GGUF_DIR/$GGUF_FILE" ]] && ! _phase11_external_lemonade && [[ "${SKIP_MODEL_DOWNLOAD:-false}" != "true" ]]; then
             ai_bad "Model file missing or verification failed. Cannot proceed without a valid model."
             ai "Re-run the installer to retry the download."
             exit 1

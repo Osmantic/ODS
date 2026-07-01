@@ -167,6 +167,12 @@ else:
         resolved = ["docker-compose.yml"]
         primary = "docker-compose.yml"
 
+# If external LLM is configured, disable local llama-server via docker-compose.cloud.yml
+external_llm = os.environ.get("EXTERNAL_LLM_URL", "")
+if external_llm and "docker-compose.cloud.yml" not in resolved:
+    if (script_dir / "docker-compose.cloud.yml").exists():
+        resolved.append("docker-compose.cloud.yml")
+
 if not resolved:
     resolved = [primary]
 
