@@ -19,6 +19,7 @@ import yaml
 VALID_CATEGORIES = {"core", "recommended", "optional"}
 VALID_TYPES = {"docker", "host-systemd"}
 VALID_GPU_BACKENDS = {"amd", "nvidia", "apple", "all", "none"}
+VALID_HEALTH_TYPES = {"http", "tcp", "none"}
 MANIFEST_NAMES = ("manifest.yaml", "manifest.yml", "manifest.json")
 OVERLAY_SUFFIXES = {
     "amd": ("compose.amd.yaml", "compose.amd.yml"),
@@ -495,12 +496,21 @@ def validate_records(
         # compose-port-mismatch check further down.
         host_network = bool(service.get("host_network"))
 
+        health_type = str(service.get("health_type") or "http")
+        if health_type not in VALID_HEALTH_TYPES:
+            record.add_issue(
+                "error",
+                "service-health-type-invalid",
+                f"service.health_type must be one of {sorted(VALID_HEALTH_TYPES)}",
+                path=record.manifest_path,
+            )
+
         port = parse_positive_int(service.get("port"))
-        if port is None and not host_network:
+        if port is None and not host_network and health_type in {"http", "tcp"}:
             record.add_issue("error", "service-port-invalid", "service.port must be a positive integer", path=record.manifest_path)
 
         health = str(service.get("health") or "")
-        if not health.startswith("/") and not host_network:
+        if health_type == "http" and not host_network and not health.startswith("/"):
             record.add_issue(
                 "error",
                 "service-health-invalid",

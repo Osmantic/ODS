@@ -18,12 +18,15 @@ def _write_manifest(ext_dir: Path, manifest: dict) -> None:
 
 
 def _make_manifest(service_id: str, port: int = 8080, health: str = "/health",
-                   name: str | None = None, default_host: str = "badhost") -> dict:
+                   name: str | None = None, default_host: str = "badhost",
+                   health_type: str | None = None) -> dict:
     """Build a minimal manifest dict."""
     svc: dict = {"id": service_id, "port": port, "health": health,
                  "default_host": default_host}
     if name is not None:
         svc["name"] = name
+    if health_type is not None:
+        svc["health_type"] = health_type
     return {"schema_version": "ods.services.v1", "service": svc}
 
 
@@ -93,6 +96,38 @@ class TestScanUserExtensions:
         assert "my-ext" in result
         assert result["my-ext"]["health"] == ""
         assert result["my-ext"]["port"] == 8080
+
+    def test_scan_health_type_tcp_included(self, tmp_path):
+        """Extension declaring health_type: tcp is preserved in scan results."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "my-ext"
+        _write_manifest(ext_dir, _make_manifest("my-ext", port=10200,
+                                                 health="", health_type="tcp"))
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+
+        result = scan_user_extension_services(user_dir)
+        assert result["my-ext"]["health_type"] == "tcp"
+
+    def test_scan_health_type_none_included(self, tmp_path):
+        """Extension declaring health_type: none is preserved in scan results."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "my-ext"
+        _write_manifest(ext_dir, _make_manifest("my-ext", port=0,
+                                                 health="", health_type="none"))
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+
+        result = scan_user_extension_services(user_dir)
+        assert result["my-ext"]["health_type"] == "none"
+
+    def test_scan_invalid_health_type_skipped(self, tmp_path):
+        """Invalid health_type values skip the extension instead of coercing."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "my-ext"
+        _write_manifest(ext_dir, _make_manifest("my-ext", health_type="smtp"))
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+
+        result = scan_user_extension_services(user_dir)
+        assert "my-ext" not in result
 
     def test_scan_health_path_validation(self, tmp_path):
         """Reject paths with .., @, ?, #, and scheme prefixes."""

@@ -1,0 +1,8 @@
+services:
+  tcp-service:
+    image: example/tcp-service:latest
+    container_name: ods-tcp-service
+    ports:
+      - "127.0.0.1:18082:18082"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo >/dev/tcp/localhost/18082"]

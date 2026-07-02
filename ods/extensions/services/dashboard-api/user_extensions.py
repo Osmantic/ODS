@@ -62,6 +62,11 @@ def scan_user_extension_services(
         if not isinstance(svc, dict):
             continue
 
+        health_type = svc.get("health_type", "http")
+        if health_type not in {"http", "tcp", "none"}:
+            logger.warning("Skipping extension %s: invalid health_type: %r", service_id, health_type)
+            continue
+
         health = svc.get("health") or ""
 
         try:
@@ -85,6 +90,7 @@ def scan_user_extension_services(
                 "port": int(port),
                 "external_port": int(svc.get("external_port_default", port)),
                 "health": health,
+                "health_type": health_type,
                 "name": name,
                 # Optional: extensions whose health endpoint lives on a
                 # secondary port (e.g. milvus 9091) need an explicit

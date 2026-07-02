@@ -17,7 +17,9 @@ from routers.extensions import _assert_not_core
 
 
 def _make_catalog_ext(ext_id, name="Test", category="optional",
-                      gpu_backends=None, env_vars=None, features=None):
+                      gpu_backends=None, env_vars=None, features=None,
+                      port=8080, health_endpoint="/health",
+                      health_type="http", startup_check=None):
     return {
         "id": ext_id,
         "name": name,
@@ -26,12 +28,14 @@ def _make_catalog_ext(ext_id, name="Test", category="optional",
         "gpu_backends": gpu_backends or ["nvidia", "amd", "apple"],
         "compose_file": "compose.yaml",
         "depends_on": [],
-        "port": 8080,
-        "external_port_default": 8080,
-        "health_endpoint": "/health",
+        "port": port,
+        "external_port_default": port,
+        "health_endpoint": health_endpoint,
+        "health_type": health_type,
         "env_vars": env_vars or [],
         "tags": [],
         "features": features or [],
+        **({"startup_check": startup_check} if startup_check is not None else {}),
     }
 
 
@@ -289,6 +293,111 @@ class TestUserExtensionStatus:
         ext = resp.json()["extensions"][0]
         assert ext["id"] == "my-ext"
         assert ext["status"] == "enabled"
+
+    @pytest.mark.parametrize("mock_status, expected_status", [
+        ("healthy", "enabled"),
+        ("down", "stopped"),
+    ])
+    def test_user_ext_compose_yaml_tcp_probed(self, test_client, monkeypatch, tmp_path, mock_status, expected_status):
+        """User extension with health_type: tcp is actively probed."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "my-ext"
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "compose.yaml").write_text("version: '3'")
+
+        catalog = [_make_catalog_ext("my-ext", "My Extension", port=10200,
+                                     health_endpoint="", health_type="tcp")]
+        _patch_extensions_config(monkeypatch, catalog, tmp_path=tmp_path)
+        monkeypatch.setattr("routers.extensions.USER_EXTENSIONS_DIR", user_dir)
+
+        user_services = {
+            "my-ext": {
+                "host": "my-ext",
+                "port": 10200,
+                "external_port": 10200,
+                "health": "",
+                "health_type": "tcp",
+                "name": "My Extension",
+            }
+        }
+
+        mock_result = ServiceStatus(id="my-ext", name="My Extension", status=mock_status, port=10200, external_port=10200)
+
+        # Test /api/extensions/catalog
+        with patch("helpers.get_cached_services", return_value=None):
+            with patch("user_extensions.get_user_services_cached", return_value=user_services):
+                with patch("helpers.get_all_services", new_callable=AsyncMock, return_value=[]):
+                    with patch("helpers.check_service_health", new_callable=AsyncMock, return_value=mock_result) as mock_probe:
+                        resp = test_client.get(
+                            "/api/extensions/catalog",
+                            headers=test_client.auth_headers,
+                        )
+                        assert resp.status_code == 200
+                        ext = resp.json()["extensions"][0]
+                        assert ext["id"] == "my-ext"
+                        assert ext["status"] == expected_status
+                        mock_probe.assert_awaited_once()
+                        assert mock_probe.call_args[0][0] == "my-ext"
+
+        # Test /api/extensions/{service_id}
+        with patch("helpers.get_cached_services", return_value=None):
+            with patch("user_extensions.get_user_services_cached", return_value=user_services):
+                with patch("helpers.get_all_services", new_callable=AsyncMock, return_value=[]):
+                    with patch("helpers.check_service_health", new_callable=AsyncMock, return_value=mock_result) as mock_probe:
+                        resp = test_client.get(
+                            "/api/extensions/my-ext",
+                            headers=test_client.auth_headers,
+                        )
+                        assert resp.status_code == 200
+                        ext = resp.json()
+                        assert ext["id"] == "my-ext"
+                        assert ext["status"] == expected_status
+                        mock_probe.assert_awaited_once()
+                        assert mock_probe.call_args[0][0] == "my-ext"
+
+    def test_user_ext_compose_yaml_none_cli_installed(self, test_client, monkeypatch, tmp_path):
+        """User extension with health_type: none and port 0 → cli_installed."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "aider"
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "compose.yaml").write_text("version: '3'")
+
+        catalog = [_make_catalog_ext("aider", "Aider", port=0,
+                                     health_endpoint="", health_type="none",
+                                     startup_check=False)]
+        _patch_extensions_config(monkeypatch, catalog, tmp_path=tmp_path)
+        monkeypatch.setattr("routers.extensions.USER_EXTENSIONS_DIR", user_dir)
+
+        user_services = {
+            "aider": {
+                "host": "aider",
+                "port": 0,
+                "external_port": 0,
+                "health": "",
+                "health_type": "none",
+                "name": "Aider",
+            }
+        }
+        from routers.extensions import _is_one_shot_extension
+
+        with patch("helpers.get_cached_services", return_value=None):
+            with patch("user_extensions.get_user_services_cached",
+                       return_value=user_services):
+                with patch("helpers.get_all_services", new_callable=AsyncMock,
+                           return_value=[ServiceStatus(
+                               id="aider", name="Aider", port=0,
+                               external_port=0, status="not_applicable",
+                           )]):
+                    resp = test_client.get(
+                        "/api/extensions/catalog",
+                        headers=test_client.auth_headers,
+                    )
+
+        assert resp.status_code == 200
+        ext = resp.json()["extensions"][0]
+        assert _is_one_shot_extension(catalog[0]) is True
+        assert ext["id"] == "aider"
+        assert ext["status"] == "cli_installed"
 
     def test_user_ext_compose_yaml_no_service(self, test_client, monkeypatch, tmp_path):
         """User extension with compose.yaml but no running container → stopped."""

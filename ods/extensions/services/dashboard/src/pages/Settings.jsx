@@ -230,7 +230,7 @@ export default function Settings() {
   }
 
   const routingGroups = [
-    { key: 'online', label: 'Online', tone: 'online', services: sortRoutesBySeverity(services).filter(service => service.status === 'healthy') },
+    { key: 'online', label: 'Online', tone: 'online', services: sortRoutesBySeverity(services).filter(service => service.status === 'healthy' || service.status === 'not_applicable') },
     { key: 'degraded', label: 'Degraded', tone: 'degraded', services: sortRoutesBySeverity(services).filter(service => service.status === 'degraded') },
     { key: 'inactive', label: 'Inactive', tone: 'inactive', services: sortRoutesBySeverity(services).filter(service => ['down', 'unhealthy', 'unknown'].includes(service.status)) },
   ]

@@ -265,6 +265,13 @@ function getStatusTone(status) {
         text: 'text-amber-300',
         pill: 'border-amber-400/25 bg-amber-400/[0.08]',
       }
+    case 'not_applicable':
+      return {
+        label: 'N/A',
+        dot: 'bg-zinc-400',
+        text: 'text-zinc-300',
+        pill: 'border-zinc-400/25 bg-zinc-400/[0.08]',
+      }
     default:
       return {
         label: 'Inactive',
@@ -278,6 +285,7 @@ function getStatusTone(status) {
 function getServiceTabStatus(status) {
   if (status === 'healthy') return 'online'
   if (status === 'degraded') return 'degraded'
+  if (status === 'not_applicable') return 'online'
   return 'inactive'
 }
 
