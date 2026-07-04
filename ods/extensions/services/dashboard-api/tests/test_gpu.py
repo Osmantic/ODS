@@ -7,8 +7,9 @@ import pytest
 
 from gpu import (
     get_gpu_tier, get_gpu_info_nvidia, get_gpu_info_apple,
-    get_gpu_info_amd, get_gpu_info, run_command,
+    get_gpu_info_amd, get_gpu_info, run_command, is_gpu_idle,
 )
+from models import GPUInfo
 
 
 # --- get_gpu_tier (pure function, no I/O) ---
@@ -401,3 +402,27 @@ class TestGetGpuInfoDispatcher:
 
         result = get_gpu_info()
         assert result is None
+
+
+class TestIsGpuIdle:
+    @staticmethod
+    def _mk(util, backend="nvidia", name="x"):
+        return GPUInfo(name=name, memory_used_mb=0, memory_total_mb=1,
+                       memory_percent=0.0, utilization_percent=util, temperature_c=0, gpu_backend=backend)
+
+    def test_idle_below_threshold(self):
+        assert is_gpu_idle(self._mk(3)) is True
+
+    def test_idle_at_threshold_boundary(self):
+        assert is_gpu_idle(self._mk(10)) is True
+
+    def test_busy_above_threshold(self):
+        assert is_gpu_idle(self._mk(11)) is False
+
+    def test_custom_threshold(self):
+        assert is_gpu_idle(self._mk(40), threshold_percent=50) is True
+        assert is_gpu_idle(self._mk(60), threshold_percent=50) is False
+
+    def test_unknown_backends(self):
+        assert is_gpu_idle(self._mk(0, backend="apple", name="Apple M3 Max")) is None
+        assert is_gpu_idle(self._mk(0, backend="amd", name="AMD Lemonade host runtime")) is None

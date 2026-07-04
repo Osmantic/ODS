@@ -487,3 +487,93 @@ class TestGpuDetailedEndpointApple:
         finally:
             gpu_mod._detailed_cache["expires"] = 0.0
             gpu_mod._detailed_cache["value"] = None
+
+
+class TestGpuIdleEndpoint:
+    @staticmethod
+    def _gpu(util, backend="nvidia", name="RTX 4090"):
+        return GPUInfo(name=name, memory_used_mb=1000, memory_total_mb=24000,
+                       memory_percent=4.2, utilization_percent=util, temperature_c=40,
+                       gpu_backend=backend)
+
+    @staticmethod
+    def _detailed(util, backend="nvidia", name="RTX 4090"):
+        from models import MultiGPUStatus
+        return MultiGPUStatus(gpu_count=1, backend=backend, gpus=[], aggregate=TestGpuIdleEndpoint._gpu(util, backend, name))
+
+    def test_idle_true(self, monkeypatch, test_client):
+        import routers.gpu as gpu_mod
+
+        async def _mock_detailed():
+            return self._detailed(5)
+
+        monkeypatch.setattr(gpu_mod, "gpu_detailed", _mock_detailed)
+        r = test_client.get("/api/gpu/idle", headers=test_client.auth_headers)
+        assert r.status_code == 200
+        b = r.json()
+        assert b["idle"] is True
+        assert b["utilization_percent"] == 5
+        assert b["threshold_percent"] == 10
+        assert b["backend"] == "nvidia"
+
+    def test_idle_false(self, monkeypatch, test_client):
+        import routers.gpu as gpu_mod
+
+        async def _mock_detailed():
+            return self._detailed(85)
+
+        monkeypatch.setattr(gpu_mod, "gpu_detailed", _mock_detailed)
+        r = test_client.get("/api/gpu/idle", headers=test_client.auth_headers)
+        assert r.status_code == 200
+        assert r.json()["idle"] is False
+
+    def test_threshold_env_override(self, monkeypatch, test_client):
+        import routers.gpu as gpu_mod
+        monkeypatch.setenv("GPU_IDLE_THRESHOLD_PERCENT", "50")
+
+        async def _mock_detailed():
+            return self._detailed(40)
+
+        monkeypatch.setattr(gpu_mod, "gpu_detailed", _mock_detailed)
+        r = test_client.get("/api/gpu/idle", headers=test_client.auth_headers)
+        b = r.json()
+        assert b["idle"] is True
+        assert b["threshold_percent"] == 50
+
+    def test_threshold_clamped(self, monkeypatch, test_client):
+        import routers.gpu as gpu_mod
+        monkeypatch.setenv("GPU_IDLE_THRESHOLD_PERCENT", "9999")
+
+        async def _mock_detailed():
+            return self._detailed(100)
+
+        monkeypatch.setattr(gpu_mod, "gpu_detailed", _mock_detailed)
+        r = test_client.get("/api/gpu/idle", headers=test_client.auth_headers)
+        assert r.json()["threshold_percent"] == 100
+
+    def test_503_when_no_gpu(self, monkeypatch, test_client):
+        import routers.gpu as gpu_mod
+        from fastapi import HTTPException
+
+        async def _mock_detailed():
+            raise HTTPException(status_code=503, detail="No GPU data available")
+
+        monkeypatch.setattr(gpu_mod, "gpu_detailed", _mock_detailed)
+        r = test_client.get("/api/gpu/idle", headers=test_client.auth_headers)
+        assert r.status_code == 503
+
+    def test_idle_null_for_unknown_backend(self, monkeypatch, test_client):
+        import routers.gpu as gpu_mod
+
+        async def _mock_detailed():
+            return self._detailed(0, backend="apple", name="Apple M3 Max")
+
+        monkeypatch.setattr(gpu_mod, "gpu_detailed", _mock_detailed)
+        r = test_client.get("/api/gpu/idle", headers=test_client.auth_headers)
+        assert r.status_code == 200
+        assert r.json()["idle"] is None
+        assert r.json()["backend"] == "apple"
+
+    def test_requires_auth(self, test_client):
+        r = test_client.get("/api/gpu/idle")
+        assert r.status_code in (401, 403)

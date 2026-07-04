@@ -20,9 +20,10 @@ from gpu import (
     get_gpu_info_amd_detailed,
     get_gpu_info_apple,
     get_gpu_info_nvidia_detailed,
+    is_gpu_idle,
     read_gpu_topology,
 )
-from models import GPUInfo, IndividualGPU, MultiGPUStatus
+from models import GPUInfo, IndividualGPU, MultiGPUStatus, GpuIdleStatus
 from models import AmdRuntimeStatus
 from lemonade_client import LemonadeClient, LemonadeClientError, LemonadeSettings, normalize_base_url
 
@@ -39,6 +40,7 @@ _detailed_cache: dict = {"expires": 0.0, "value": None}
 _topology_cache: dict = {"expires": 0.0, "value": None}
 _GPU_DETAILED_TTL = 3.0
 _GPU_TOPOLOGY_TTL = 300.0
+_GPU_IDLE_THRESHOLD_DEFAULT = 10
 
 
 # ============================================================================
@@ -87,6 +89,11 @@ def _env_int(name: str, default: int = 0) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _idle_threshold() -> int:
+    """Idle utilization threshold (percent), clamped to [0, 100]."""
+    return max(0, min(100, _env_int("GPU_IDLE_THRESHOLD_PERCENT", _GPU_IDLE_THRESHOLD_DEFAULT)))
 
 
 def _amd_host_runtime_fallback_gpus() -> Optional[list[IndividualGPU]]:
@@ -365,6 +372,26 @@ async def gpu_detailed():
     _detailed_cache["expires"] = now + _GPU_DETAILED_TTL
     _detailed_cache["value"] = result
     return result
+
+
+@router.get("/api/gpu/idle", response_model=GpuIdleStatus, dependencies=[Depends(verify_api_key)])
+async def gpu_idle():
+    """Whether the GPU is idle, from aggregate utilization vs a configurable threshold.
+
+    Idle means aggregate utilization_percent <= GPU_IDLE_THRESHOLD_PERCENT (default 10).
+    Read-only; derived from the same nvidia-smi/sysfs data as /api/gpu/detailed.
+    Note: backends that cannot report utilization (Apple, AMD host runtime) return
+    null for idle.
+    """
+    threshold = _idle_threshold()
+    detailed = await gpu_detailed()
+    info = detailed.aggregate
+    return GpuIdleStatus(
+        idle=is_gpu_idle(info, threshold),
+        utilization_percent=info.utilization_percent,
+        threshold_percent=threshold,
+        backend=info.gpu_backend,
+    )
 
 
 @router.get("/api/gpu/topology", dependencies=[Depends(verify_api_key)])
