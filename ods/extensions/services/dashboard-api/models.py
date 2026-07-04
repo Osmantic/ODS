@@ -28,6 +28,15 @@ class ServiceStatus(BaseModel):
     response_time_ms: Optional[float] = None
 
 
+class NodeCapabilities(BaseModel):
+    ods_version: str
+    gpu: Optional[GPUInfo] = None
+    loaded_model: Optional[str] = None
+    services: list[ServiceStatus] = []
+    service_count: int = 0
+    running_service_count: int = 0
+
+
 class DiskUsage(BaseModel):
     path: str
     used_gb: float
