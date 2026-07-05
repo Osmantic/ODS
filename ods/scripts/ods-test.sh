@@ -195,7 +195,20 @@ test_tcp() {
     local host="$2"
     local port="$3"
     
-    if timeout "$TIMEOUT" bash -c "cat < /dev/null > /dev/tcp/$host/$port" 2>/dev/null; then
+    # Validate host: allow only alphanumeric, dots, hyphens, colons (IPv6)
+    if [[ -z "$host" ]] || [[ ! "$host" =~ ^[a-zA-Z0-9.:-]+$ ]]; then
+        record_result "$name" "fail" "invalid host: $host"
+        print_test "$name" "fail" "invalid host"
+        return 1
+    fi
+    # Validate port: numeric 1-65535
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+        record_result "$name" "fail" "invalid port: $port"
+        print_test "$name" "fail" "invalid port"
+        return 1
+    fi
+
+    if timeout "$TIMEOUT" bash -c 'cat < /dev/null > /dev/tcp/$1/$2' _ "$host" "$port" 2>/dev/null; then
         record_result "$name" "pass"
         print_test "$name" "pass"
         return 0

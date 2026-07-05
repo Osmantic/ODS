@@ -1,0 +1,8 @@
+services:
+  http-service:
+    image: example/http-service:latest
+    container_name: ods-http-service
+    ports:
+      - "127.0.0.1:18081:18081"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:18081/"]

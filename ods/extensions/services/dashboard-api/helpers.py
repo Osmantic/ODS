@@ -494,9 +494,51 @@ async def check_service_health(
         return await _check_host_systemd_health(service_id, config)
 
     if config.get("host_network") and int(config.get("port") or 0) <= 0:
+        # A host-network service can legitimately declare health_type: none
+        # (e.g. a CLI daemon with no listening port). Honor that before the
+        # tailscale special case so future manifests don't need a code change.
+        if config.get("health_type") == "none":
+            return _service_status_from_config(service_id, config, "not_applicable")
         if service_id == "tailscale":
             return await _check_tailscale_health(service_id, config)
         return _service_status_from_config(service_id, config, "not_deployed")
+
+    health_type = config.get("health_type", "http")
+    if health_type == "none":
+        return _service_status_from_config(service_id, config, "not_applicable")
+
+    if health_type == "tcp":
+        host = config.get("host", "localhost")
+        health_port = int(config.get("health_port", config["port"]) or 0)
+        if health_port <= 0:
+            return _service_status_from_config(service_id, config, "not_deployed")
+
+        response_time = None
+        status = "unknown"
+        connect_timeout = (timeout.total or timeout.connect or 5) if timeout is not None else 5
+        try:
+            start = asyncio.get_event_loop().time()
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, health_port),
+                timeout=connect_timeout,
+            )
+            response_time = (asyncio.get_event_loop().time() - start) * 1000
+            writer.close()
+            await writer.wait_closed()
+            status = "healthy"
+        except asyncio.TimeoutError:
+            status = "degraded"
+        except OSError as e:
+            if "Name or service not known" in str(e) or "nodename nor servname" in str(e):
+                status = "not_deployed"
+            else:
+                status = "down"
+
+        return ServiceStatus(
+            id=service_id, name=config["name"], port=config["port"],
+            external_port=config.get("external_port", config["port"]),
+            status=status, response_time_ms=round(response_time, 1) if response_time else None
+        )
 
     host = config.get('host', 'localhost')
     health_port = config.get('health_port', config['port'])

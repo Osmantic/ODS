@@ -103,6 +103,83 @@ else
     fail "check_container_state missing docker availability check"
 fi
 
+# 8. Health type fixtures (http/tcp/none)
+FIXTURES_DIR="$SCRIPT_DIR/fixtures/health-types"
+if [[ ! -d "$FIXTURES_DIR" ]]; then
+    fail "Health type fixtures missing"
+elif ! python3 -c "import yaml" 2>/dev/null; then
+    skip "PyYAML not installed — skipping health_type fixture check"
+else
+    http_port=18081
+    tcp_port=18082
+    http_log=$(mktemp)
+    tcp_log=$(mktemp)
+    python3 -m http.server "$http_port" --bind 127.0.0.1 >"$http_log" 2>&1 &
+    http_pid=$!
+    sleep 0.5
+    if ! kill -0 "$http_pid" 2>/dev/null; then
+        skip "HTTP fixture server failed to start (port $http_port in use)"
+    else
+        python3 - "$tcp_port" >"$tcp_log" 2>&1 <<'PY' &
+import socket
+import sys
+import time
+
+port = int(sys.argv[1])
+sock = socket.socket()
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(("127.0.0.1", port))
+sock.listen(1)
+sock.settimeout(5)
+try:
+    conn, _ = sock.accept()
+    conn.close()
+    time.sleep(0.5)
+except Exception:
+    time.sleep(1)
+finally:
+    sock.close()
+PY
+        tcp_pid=$!
+        sleep 0.5
+        if ! kill -0 "$tcp_pid" 2>/dev/null; then
+            skip "TCP fixture server failed to start (port $tcp_port in use)"
+        else
+            fixture_statuses=$(
+                ROOT_DIR="$ROOT_DIR" \
+                ODS_EXTENSIONS_DIR="$FIXTURES_DIR/extensions/services" \
+                HEALTH_CHECK_LIB_ONLY=1 \
+                bash -c '
+source "$ROOT_DIR/scripts/health-check.sh"
+# Fixtures run without real Docker containers. Stub the container-state
+# check so the network probe is the actual signal under test.
+check_container_state() { echo "running"; }
+set +e
+test_service "http-service" >/dev/null 2>&1
+http_status=$(result_get "http-service")
+test_service "tcp-service" >/dev/null 2>&1
+tcp_status=$(result_get "tcp-service")
+test_service "none-service" >/dev/null 2>&1
+none_status=$(result_get "none-service")
+printf "%s,%s,%s" "$http_status" "$tcp_status" "$none_status"
+'
+            )
+            if [[ "$fixture_statuses" == "ok,ok,not_applicable" ]]; then
+                pass "health_type fixtures report http ok, tcp ok, none not_applicable"
+            else
+                fail "health_type fixture statuses incorrect" "$fixture_statuses"
+            fi
+        fi
+        if kill -0 "$tcp_pid" 2>/dev/null; then
+            kill "$tcp_pid" 2>/dev/null
+        fi
+    fi
+    if kill -0 "$http_pid" 2>/dev/null; then
+        kill "$http_pid" 2>/dev/null
+    fi
+    rm -f "$http_log" "$tcp_log"
+fi
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

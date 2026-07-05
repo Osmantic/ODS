@@ -103,6 +103,7 @@ const STATUS = {
   unhealthy: { color: '#ef4444', text: 'text-red-400', dot: 'bg-red-400' },
   down: { color: '#ef4444', text: 'text-red-400', dot: 'bg-red-400' },
   not_deployed: { color: '#6b7280', text: 'text-zinc-500', dot: 'bg-zinc-500' },
+  not_applicable: { color: '#6b7280', text: 'text-zinc-400', dot: 'bg-zinc-400' },
   unknown: { color: '#6b7280', text: 'text-zinc-500', dot: 'bg-zinc-500' },
 }
 

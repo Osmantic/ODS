@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-24T03:20:28Z",
+  "generated_at": "2026-07-02T16:46:38Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -16,6 +16,7 @@
       "depends_on": [],
       "port": 0,
       "external_port_default": 0,
+      "health_type": "none",
       "health_endpoint": "",
       "env_vars": [
         {
@@ -69,6 +70,7 @@
       ],
       "port": 3001,
       "external_port_default": 7800,
+      "health_type": "http",
       "health_endpoint": "/api/health",
       "env_vars": [
         {
@@ -149,6 +151,7 @@
       "depends_on": [],
       "port": 7860,
       "external_port_default": 7863,
+      "health_type": "http",
       "health_endpoint": "/",
       "env_vars": [],
       "tags": [
@@ -217,6 +220,7 @@
       "depends_on": [],
       "port": 9200,
       "external_port_default": 9200,
+      "health_type": "http",
       "health_endpoint": "/health",
       "env_vars": [
         {
@@ -322,6 +326,7 @@
       "depends_on": [],
       "port": 80,
       "external_port_default": 3007,
+      "health_type": "http",
       "health_endpoint": "/api/_health/",
       "env_vars": [],
       "tags": [
@@ -421,6 +426,7 @@
       "depends_on": [],
       "port": 8000,
       "external_port_default": 8000,
+      "health_type": "http",
       "health_endpoint": "/api/v2/heartbeat",
       "env_vars": [],
       "tags": [],
@@ -461,6 +467,7 @@
       ],
       "port": 8080,
       "external_port_default": 8890,
+      "health_type": "http",
       "health_endpoint": "/health",
       "env_vars": [],
       "tags": [],
@@ -504,6 +511,7 @@
       "depends_on": [],
       "port": 8501,
       "external_port_default": 8501,
+      "health_type": "http",
       "health_endpoint": "/",
       "env_vars": [],
       "tags": [
@@ -620,6 +628,7 @@
       "depends_on": [],
       "port": 5001,
       "external_port_default": 8002,
+      "health_type": "http",
       "health_endpoint": "/health",
       "env_vars": [
         {
@@ -692,6 +701,7 @@
       "depends_on": [],
       "port": 3000,
       "external_port_default": 7801,
+      "health_type": "http",
       "health_endpoint": "/api/v1/ping",
       "env_vars": [
         {
@@ -775,6 +785,7 @@
       "depends_on": [],
       "port": 7865,
       "external_port_default": 7865,
+      "health_type": "http",
       "health_endpoint": "/",
       "env_vars": [],
       "tags": [],
@@ -814,6 +825,7 @@
       "depends_on": [],
       "port": 7861,
       "external_port_default": 7861,
+      "health_type": "http",
       "health_endpoint": "/",
       "env_vars": [],
       "tags": [
@@ -922,6 +934,7 @@
       "depends_on": [],
       "port": 5000,
       "external_port_default": 8971,
+      "health_type": "http",
       "health_endpoint": "/api/version",
       "env_vars": [
         {
@@ -1037,6 +1050,7 @@
       "depends_on": [],
       "port": 4200,
       "external_port_default": 7822,
+      "health_type": "http",
       "health_endpoint": "/",
       "env_vars": [
         {
@@ -1121,6 +1135,7 @@
       "depends_on": [],
       "port": 3000,
       "external_port_default": 7830,
+      "health_type": "http",
       "health_endpoint": "/api/healthz",
       "env_vars": [
         {
@@ -1160,6 +1175,7 @@
       "depends_on": [],
       "port": 2283,
       "external_port_default": 2283,
+      "health_type": "http",
       "health_endpoint": "/api/server/ping",
       "env_vars": [
         {
@@ -1207,6 +1223,7 @@
       "depends_on": [],
       "port": 9090,
       "external_port_default": 9090,
+      "health_type": "http",
       "health_endpoint": "/health",
       "env_vars": [],
       "tags": [
@@ -1301,6 +1318,7 @@
       "depends_on": [],
       "port": 1337,
       "external_port_default": 1337,
+      "health_type": "http",
       "health_endpoint": "/health",
       "env_vars": [],
       "tags": [
@@ -1348,6 +1366,7 @@
       "depends_on": [],
       "port": 8888,
       "external_port_default": 8889,
+      "health_type": "http",
       "health_endpoint": "/tree",
       "env_vars": [
         {
@@ -1394,6 +1413,7 @@
       "depends_on": [],
       "port": 8080,
       "external_port_default": 8086,
+      "health_type": "http",
       "health_endpoint": "/health",
       "env_vars": [],
       "tags": [
@@ -1438,6 +1458,7 @@
       "depends_on": [],
       "port": 7860,
       "external_port_default": 7802,
+      "health_type": "http",
       "health_endpoint": "/health",
       "env_vars": [],
       "tags": [
@@ -1511,6 +1532,7 @@
       "depends_on": [],
       "port": 3080,
       "external_port_default": 3080,
+      "health_type": "http",
       "health_endpoint": "/health",
       "env_vars": [
         {
@@ -1641,6 +1663,7 @@
       ],
       "port": 8080,
       "external_port_default": 7803,
+      "health_type": "http",
       "health_endpoint": "/healthz",
       "env_vars": [],
       "tags": [],
@@ -1744,6 +1767,7 @@
       "depends_on": [],
       "port": 19530,
       "external_port_default": 19530,
+      "health_type": "http",
       "health_endpoint": "/healthz",
       "env_vars": [],
       "tags": [],
@@ -1762,6 +1786,7 @@
       "depends_on": [],
       "port": 11434,
       "external_port_default": 7804,
+      "health_type": "http",
       "health_endpoint": "/api/tags",
       "env_vars": [
         {
@@ -1809,6 +1834,7 @@
       "depends_on": [],
       "port": 8080,
       "external_port_default": 7805,
+      "health_type": "http",
       "health_endpoint": "/health",
       "env_vars": [
         {
@@ -1876,6 +1902,7 @@
       "depends_on": [],
       "port": 8000,
       "external_port_default": 7807,
+      "health_type": "http",
       "health_endpoint": "/accounts/login/",
       "env_vars": [
         {
@@ -1981,6 +2008,7 @@
       "depends_on": [],
       "port": 10200,
       "external_port_default": 10200,
+      "health_type": "tcp",
       "health_endpoint": "",
       "env_vars": [
         {
@@ -2025,6 +2053,7 @@
       "depends_on": [],
       "port": 7865,
       "external_port_default": 7809,
+      "health_type": "http",
       "health_endpoint": "/",
       "env_vars": [
         {
@@ -2073,6 +2102,7 @@
       "depends_on": [],
       "port": 8000,
       "external_port_default": 8001,
+      "health_type": "http",
       "health_endpoint": "/",
       "env_vars": [],
       "tags": [],
@@ -2110,6 +2140,7 @@
       "depends_on": [],
       "port": 7860,
       "external_port_default": 7862,
+      "health_type": "http",
       "health_endpoint": "/",
       "env_vars": [],
       "tags": [
@@ -2202,6 +2233,7 @@
       "depends_on": [],
       "port": 8080,
       "external_port_default": 7811,
+      "health_type": "http",
       "health_endpoint": "/v1/.well-known/ready",
       "env_vars": [
         {
@@ -2288,6 +2320,7 @@
       "depends_on": [],
       "port": 80,
       "external_port_default": 8100,
+      "health_type": "http",
       "health_endpoint": "/health",
       "env_vars": [],
       "tags": [],

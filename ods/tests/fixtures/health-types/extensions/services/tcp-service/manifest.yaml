@@ -1,0 +1,13 @@
+schema_version: ods.services.v1
+
+service:
+  id: tcp-service
+  name: TCP Fixture
+  container_name: ods-tcp-service
+  port: 18082
+  external_port_default: 18082
+  health_type: tcp
+  type: docker
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []

@@ -37,7 +37,7 @@ fail() {
 
 header() {
     echo ""
-    echo -e "${BOLD}${CYAN}[$1/7]${NC} ${BOLD}$2${NC}"
+    echo -e "${BOLD}${CYAN}[$1/8]${NC} ${BOLD}$2${NC}"
     echo -e "${CYAN}$(printf '%.0s─' {1..60})${NC}"
 }
 
@@ -215,7 +215,7 @@ PY
 
 header "1" "Valid Project Passes Cleanly"
 root=$(make_fixture_root)
-trap 'rm -rf "$root" "${root2:-}" "${root3:-}" "${root4:-}" "${root5:-}" "${root6:-}" "${root7:-}"' EXIT
+trap 'rm -rf "$root" "${root2:-}" "${root3:-}" "${root4:-}" "${root5:-}" "${root6:-}" "${root7:-}" "${root8:-}" "${root9:-}"' EXIT
 create_valid_project "$root"
 report=$(mktemp)
 if run_audit "$root" --json > "$report"; then
@@ -362,6 +362,45 @@ if run_audit "$root7" --json > "$report7" 2>/dev/null; then
     pass "external_port_default=0 fixture audits successfully"
 else
     fail "external_port_default=0 should be allowed for internal-only services"
+fi
+
+header "8" "Health Type Fixtures"
+root8=$(make_fixture_root)
+cp -R "$SCRIPT_DIR/fixtures/health-types/extensions/services/." "$root8/extensions/services/"
+report8=$(mktemp)
+if run_audit "$root8" --json > "$report8"; then
+    pass "health_type fixtures audit successfully"
+else
+    fail "health_type fixtures should pass audit"
+fi
+if assert_json_value "$report8" "payload['summary']['result'] == 'pass'" >/dev/null; then
+    pass "health_type fixtures report pass"
+else
+    fail "health_type fixtures JSON did not report pass"
+fi
+
+root9=$(make_fixture_root)
+cp -R "$SCRIPT_DIR/fixtures/health-types/extensions/services/." "$root9/extensions/services/"
+python3 - "$root9/extensions/services/tcp-service/manifest.yaml" <<'PY'
+import sys
+import yaml
+
+path = sys.argv[1]
+doc = yaml.safe_load(open(path, encoding="utf-8"))
+doc["service"]["health_type"] = "smtp"
+with open(path, "w", encoding="utf-8") as handle:
+    yaml.safe_dump(doc, handle, sort_keys=False)
+PY
+report9=$(mktemp)
+if run_audit "$root9" --json > "$report9" 2>/dev/null; then
+    fail "invalid health_type should fail audit"
+else
+    pass "invalid health_type fails audit"
+fi
+if assert_json_value "$report9" "any(issue['code'] == 'service-health-type-invalid' for svc in payload['services'] for issue in svc['issues'])" >/dev/null; then
+    pass "invalid health_type is reported"
+else
+    fail "invalid health_type code was not reported"
 fi
 
 echo ""

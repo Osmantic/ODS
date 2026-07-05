@@ -45,14 +45,14 @@ skip() {
 
 header() {
     echo ""
-    echo -e "${BOLD}${CYAN}[$1]${NC} ${BOLD}$2${NC}"
+    echo -e "${BOLD}${CYAN}[$1/8]${NC} ${BOLD}$2${NC}"
     echo -e "${CYAN}$(printf '%.0s─' {1..60})${NC}"
 }
 
 # ============================================
 # TEST 1: Registry File Exists and Sources
 # ============================================
-header "1/7" "Registry Library"
+header "1" "Registry Library"
 
 if [[ -f "$PROJECT_DIR/lib/service-registry.sh" ]]; then
     pass "lib/service-registry.sh exists"
@@ -88,7 +88,7 @@ fi
 # ============================================
 # TEST 2: Manifest Schema Validation
 # ============================================
-header "2/7" "Manifest Schema Validation"
+header "2" "Manifest Schema Validation"
 
 PYTHON_CMD="python3"
 if [[ -f "$PROJECT_DIR/lib/python-cmd.sh" ]]; then
@@ -219,7 +219,7 @@ fi
 # ============================================
 # TEST 3: Core Service Manifests
 # ============================================
-header "3/7" "Core Service Manifests"
+header "3" "Core Service Manifests"
 
 expected_core=("llama-server" "open-webui" "dashboard" "dashboard-api")
 for sid in "${expected_core[@]}"; do
@@ -247,7 +247,7 @@ done
 # ============================================
 # TEST 4: Registry Resolution (Aliases)
 # ============================================
-header "4/7" "Alias Resolution"
+header "4" "Alias Resolution"
 
 # Test known aliases
 declare -A expected_aliases=(
@@ -292,7 +292,7 @@ fi
 # ============================================
 # TEST 5: Registry Data Completeness
 # ============================================
-header "5/7" "Registry Data Completeness"
+header "5" "Registry Data Completeness"
 
 for sid in "${SERVICE_IDS[@]}"; do
     # Every service should have a name
@@ -338,7 +338,7 @@ done
 # ============================================
 # TEST 6: Compose Fragment Consistency
 # ============================================
-header "6/7" "Compose Fragments"
+header "6" "Compose Fragments"
 
 for sid in "${SERVICE_IDS[@]}"; do
     cat="${SERVICE_CATEGORIES[$sid]}"
@@ -383,7 +383,7 @@ done
 # ============================================
 # TEST 7: Enable/Disable Mechanism
 # ============================================
-header "7/7" "Enable/Disable Mechanism"
+header "7" "Enable/Disable Mechanism"
 
 # Find a non-core service that's currently enabled (has compose.yaml)
 test_service=""
@@ -444,6 +444,44 @@ else
     # Clean up backup
     rm -f "$svc_dir/compose.yaml.backup"
     pass "Cleanup complete"
+fi
+
+# ============================================
+# TEST 8: Health Type Parsing
+# ============================================
+header "8" "Health Type Parsing"
+
+fixtures_dir="$PROJECT_DIR/tests/fixtures/health-types/extensions/services"
+if [[ ! -d "$fixtures_dir" ]]; then
+    fail "Health type fixtures missing" "$fixtures_dir not found"
+else
+    _SR_LOADED=false
+    EXTENSIONS_DIR="$fixtures_dir"
+    sr_load
+
+    if declare -p SERVICE_HEALTH_TYPES &>/dev/null; then
+        pass "SERVICE_HEALTH_TYPES declared"
+    else
+        fail "SERVICE_HEALTH_TYPES missing"
+    fi
+
+    if [[ "${SERVICE_HEALTH_TYPES[http-service]:-}" == "http" ]]; then
+        pass "health_type defaults to http when absent"
+    else
+        fail "health_type default incorrect" "http-service=${SERVICE_HEALTH_TYPES[http-service]:-}"
+    fi
+
+    if [[ "${SERVICE_HEALTH_TYPES[tcp-service]:-}" == "tcp" ]]; then
+        pass "tcp health_type parsed"
+    else
+        fail "tcp health_type missing" "tcp-service=${SERVICE_HEALTH_TYPES[tcp-service]:-}"
+    fi
+
+    if [[ "${SERVICE_HEALTH_TYPES[none-service]:-}" == "none" ]]; then
+        pass "none health_type parsed"
+    else
+        fail "none health_type missing" "none-service=${SERVICE_HEALTH_TYPES[none-service]:-}"
+    fi
 fi
 
 # ============================================

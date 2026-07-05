@@ -34,6 +34,10 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" 
 if [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]]; then 
     . "$SCRIPT_DIR/lib/service-registry.sh" 
+    if [[ -n "${ODS_EXTENSIONS_DIR:-}" ]]; then
+        # shellcheck disable=SC2034  # consumed by sr_load in service-registry.sh
+        EXTENSIONS_DIR="$ODS_EXTENSIONS_DIR"
+    fi
     sr_load 
 fi
 INSTALL_DIR="${INSTALL_DIR:-$HOME/ods}"
@@ -156,18 +160,43 @@ test_service() {
     local port_env="${SERVICE_PORT_ENVS[$sid]}"
     local default_port="${SERVICE_PORTS[$sid]}"
     local health="${SERVICE_HEALTH[$sid]}"
+    local health_type="${SERVICE_HEALTH_TYPES[$sid]:-http}"
     local timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-$TIMEOUT}"
+
+    if [[ "$health_type" == "none" ]]; then
+        result_set "$sid" "not_applicable"
+        return 0
+    fi
 
     # Resolve port
     local port="$default_port"
     [[ -n "$port_env" ]] && port="${!port_env:-$default_port}"
 
-    [[ -z "$health" || "$port" == "0" ]] && return 1
+    if [[ "$health_type" == "tcp" ]]; then
+        [[ -z "$port" || "$port" == "0" ]] && return 1
+    else
+        [[ -z "$health" || "$port" == "0" ]] && return 1
+    fi
 
     # Check container state first (if docker available)
     local container_state
     container_state=$(check_container_state "$sid")
     if [[ -n "$container_state" && "$container_state" != "running" ]]; then
+        result_set "$sid" "fail"
+        ANY_FAIL=true
+        return 1
+    fi
+
+    if [[ "$health_type" == "tcp" ]]; then
+        if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+            result_set "$sid" "fail"
+            ANY_FAIL=true
+            return 1
+        fi
+        if timeout "$timeout" bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/$1' _ "$port" >/dev/null 2>&1; then
+            result_set "$sid" "ok"
+            return 0
+        fi
         result_set "$sid" "fail"
         ANY_FAIL=true
         return 1
@@ -230,6 +259,10 @@ check_service() {
     local sid="$1"
     local name="${SERVICE_NAMES[$sid]:-$sid}"
     if test_service "$sid" 2>/dev/null; then
+        if [[ "$(result_get "$sid")" == "not_applicable" ]]; then
+            log "  ${CYAN}~${NC} $name - skipped (no health check)"
+            return 0
+        fi
         log "  ${GREEN}✓${NC} $name - healthy"
         return 0
     else
@@ -255,183 +288,200 @@ check_service_async() {
 }
 
 # ── Run tests ───────────────────────────────────────────────────────────────
+if [[ "${HEALTH_CHECK_LIB_ONLY:-}" != "1" ]]; then
+    # Create temp dir for parallel results
+    TEMP_DIR=$(mktemp -d)
+    trap 'rm -rf "$TEMP_DIR"' EXIT
 
-# Create temp dir for parallel results
-TEMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TEMP_DIR"' EXIT
+    log "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    log "${CYAN}  ODS Health Check${NC}"
+    log "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    log ""
 
-log "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-log "${CYAN}  ODS Health Check${NC}"
-log "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-log ""
+    log "${CYAN}Core Services:${NC}"
 
-log "${CYAN}Core Services:${NC}"
-
-# llama-server (critical — does inference test, not just health)
-if test_llm 2>/dev/null; then
-    log "  ${GREEN}✓${NC} llama-server - inference working ($(result_get "llm_latency")ms)"
-else
-    log "  ${RED}✗${NC} llama-server - CRITICAL: inference failed"
-fi
-
-# Launch all other core services in parallel
-declare -a CORE_PIDS=()
-declare -a CORE_SIDS=()
-for sid in "${SERVICE_IDS[@]}"; do
-    [[ "$sid" == "llama-server" ]] && continue
-    [[ "${SERVICE_CATEGORIES[$sid]}" != "core" ]] && continue
-    result_file="$TEMP_DIR/core_$sid"
-    check_service_async "$sid" "$result_file" &
-    CORE_PIDS+=($!)
-    CORE_SIDS+=("$sid")
-done
-
-# Wait for all core service checks to complete
-for pid in "${CORE_PIDS[@]}"; do
-    wait "$pid" 2>/dev/null || true
-done
-
-# Display core service results
-for sid in "${CORE_SIDS[@]}"; do
-    result_file="$TEMP_DIR/core_$sid"
-    if [[ -f "$result_file" ]]; then
-        result=$(cat "$result_file")
-        name="${SERVICE_NAMES[$sid]:-$sid}"
-
-        # Parse result format: status:sid:container_state
-        IFS=':' read -r status sid_check container_state <<< "$result"
-
-        if [[ "$status" == "ok" ]]; then
-            log "  ${GREEN}✓${NC} $name - healthy"
-        else
-            # Use container state for better error message
-            case "$container_state" in
-                not_found)
-                    log "  ${YELLOW}!${NC} $name - container not found"
-                    ;;
-                exited|stopped)
-                    log "  ${YELLOW}!${NC} $name - container stopped"
-                    ;;
-                restarting)
-                    log "  ${YELLOW}!${NC} $name - container restarting"
-                    ;;
-                running)
-                    log "  ${YELLOW}!${NC} $name - not responding (container running)"
-                    ;;
-                *)
-                    log "  ${YELLOW}!${NC} $name - not responding"
-                    ;;
-            esac
-        fi
+    # llama-server (critical — does inference test, not just health)
+    if test_llm 2>/dev/null; then
+        log "  ${GREEN}✓${NC} llama-server - inference working ($(result_get "llm_latency")ms)"
+    else
+        log "  ${RED}✗${NC} llama-server - CRITICAL: inference failed"
     fi
-done
 
-log ""
-log "${CYAN}Extension Services:${NC}"
-
-# Launch all extension services in parallel
-declare -a EXT_PIDS=()
-declare -a EXT_SIDS=()
-for sid in "${SERVICE_IDS[@]}"; do
-    [[ "${SERVICE_CATEGORIES[$sid]}" == "core" ]] && continue
-    result_file="$TEMP_DIR/ext_$sid"
-    check_service_async "$sid" "$result_file" &
-    EXT_PIDS+=($!)
-    EXT_SIDS+=("$sid")
-done
-
-# Wait for all extension service checks to complete
-for pid in "${EXT_PIDS[@]}"; do
-    wait "$pid" 2>/dev/null || true
-done
-
-# Display extension service results
-for sid in "${EXT_SIDS[@]}"; do
-    result_file="$TEMP_DIR/ext_$sid"
-    if [[ -f "$result_file" ]]; then
-        result=$(cat "$result_file")
-        name="${SERVICE_NAMES[$sid]:-$sid}"
-
-        # Parse result format: status:sid:container_state
-        IFS=':' read -r status sid_check container_state <<< "$result"
-
-        if [[ "$status" == "ok" ]]; then
-            log "  ${GREEN}✓${NC} $name - healthy"
-        else
-            # Use container state for better error message
-            case "$container_state" in
-                not_found)
-                    log "  ${YELLOW}!${NC} $name - container not found"
-                    ;;
-                exited|stopped)
-                    log "  ${YELLOW}!${NC} $name - container stopped"
-                    ;;
-                restarting)
-                    log "  ${YELLOW}!${NC} $name - container restarting"
-                    ;;
-                running)
-                    log "  ${YELLOW}!${NC} $name - not responding (container running)"
-                    ;;
-                *)
-                    log "  ${YELLOW}!${NC} $name - not responding"
-                    ;;
-            esac
-        fi
-    fi
-done
-
-log ""
-log "${CYAN}System Resources:${NC}"
-
-# GPU
-if test_gpu 2>/dev/null; then
-    status_icon="${GREEN}✓${NC}"
-    [ "$(result_get "gpu")" = "warn" ] && status_icon="${YELLOW}!${NC}"
-    log "  ${status_icon} GPU - $(result_get "gpu_mem_used")/$(result_get "gpu_mem_total") MiB, $(result_get "gpu_util")% util, $(result_get "gpu_temp")°C"
-else
-    log "  ${YELLOW}?${NC} GPU - status unavailable"
-fi
-
-# Disk
-if test_disk 2>/dev/null; then
-    status_icon="${GREEN}✓${NC}"
-    [ "$(result_get "disk")" = "warn" ] && status_icon="${YELLOW}!${NC}"
-    log "  ${status_icon} Disk - $(result_get "disk_usage")% used"
-else
-    log "  ${YELLOW}?${NC} Disk - status unavailable"
-fi
-
-log ""
-
-# Summary
-if $CRITICAL_FAIL; then
-    log "${RED}Status: CRITICAL - Core services down${NC}"
-    EXIT_CODE=2
-elif $ANY_FAIL; then
-    log "${YELLOW}Status: DEGRADED - Some services unavailable${NC}"
-    EXIT_CODE=1
-else
-    log "${GREEN}Status: HEALTHY - All services operational${NC}"
-    EXIT_CODE=0
-fi
-
-log ""
-
-# JSON output
-if $JSON_OUTPUT; then
-    echo "{"
-    echo "  \"timestamp\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\","
-    echo "  \"status\": \"$([ $EXIT_CODE -eq 0 ] && echo "healthy" || ([ $EXIT_CODE -eq 1 ] && echo "degraded" || echo "critical"))\","
-    echo "  \"services\": {"
-    first=true
-    for i in "${!RESULT_KEYS[@]}"; do
-        $first || echo ","
-        first=false
-        echo -n "    \"${RESULT_KEYS[$i]}\": \"${RESULT_VALS[$i]}\""
+    # Launch all other core services in parallel
+    declare -a CORE_PIDS=()
+    declare -a CORE_SIDS=()
+    for sid in "${SERVICE_IDS[@]}"; do
+        [[ "$sid" == "llama-server" ]] && continue
+        [[ "${SERVICE_CATEGORIES[$sid]}" != "core" ]] && continue
+        result_file="$TEMP_DIR/core_$sid"
+        check_service_async "$sid" "$result_file" &
+        CORE_PIDS+=($!)
+        CORE_SIDS+=("$sid")
     done
-    echo ""
-    echo "  }"
-    echo "}"
-fi
 
-exit $EXIT_CODE
+    # Wait for all core service checks to complete
+    for pid in "${CORE_PIDS[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+
+    # Display core service results
+    for sid in "${CORE_SIDS[@]}"; do
+        result_file="$TEMP_DIR/core_$sid"
+        if [[ -f "$result_file" ]]; then
+            result=$(cat "$result_file")
+            name="${SERVICE_NAMES[$sid]:-$sid}"
+
+            # Parse result format: status:sid:container_state
+            IFS=':' read -r status sid_check container_state <<< "$result"
+            health_type="${SERVICE_HEALTH_TYPES[$sid]:-http}"
+
+            if [[ "$status" == "ok" ]]; then
+                if [[ "$health_type" == "none" ]]; then
+                    result_set "$sid" "not_applicable"
+                    log "  ${CYAN}~${NC} $name - skipped (no health check)"
+                else
+                    result_set "$sid" "ok"
+                    log "  ${GREEN}✓${NC} $name - healthy"
+                fi
+            else
+                result_set "$sid" "fail"
+                # Use container state for better error message
+                case "$container_state" in
+                    not_found)
+                        log "  ${YELLOW}!${NC} $name - container not found"
+                        ;;
+                    exited|stopped)
+                        log "  ${YELLOW}!${NC} $name - container stopped"
+                        ;;
+                    restarting)
+                        log "  ${YELLOW}!${NC} $name - container restarting"
+                        ;;
+                    running)
+                        log "  ${YELLOW}!${NC} $name - not responding (container running)"
+                        ;;
+                    *)
+                        log "  ${YELLOW}!${NC} $name - not responding"
+                        ;;
+                esac
+            fi
+        fi
+    done
+
+    log ""
+    log "${CYAN}Extension Services:${NC}"
+
+    # Launch all extension services in parallel
+    declare -a EXT_PIDS=()
+    declare -a EXT_SIDS=()
+    for sid in "${SERVICE_IDS[@]}"; do
+        [[ "${SERVICE_CATEGORIES[$sid]}" == "core" ]] && continue
+        result_file="$TEMP_DIR/ext_$sid"
+        check_service_async "$sid" "$result_file" &
+        EXT_PIDS+=($!)
+        EXT_SIDS+=("$sid")
+    done
+
+    # Wait for all extension service checks to complete
+    for pid in "${EXT_PIDS[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+
+    # Display extension service results
+    for sid in "${EXT_SIDS[@]}"; do
+        result_file="$TEMP_DIR/ext_$sid"
+        if [[ -f "$result_file" ]]; then
+            result=$(cat "$result_file")
+            name="${SERVICE_NAMES[$sid]:-$sid}"
+
+            # Parse result format: status:sid:container_state
+            IFS=':' read -r status sid_check container_state <<< "$result"
+            health_type="${SERVICE_HEALTH_TYPES[$sid]:-http}"
+
+            if [[ "$status" == "ok" ]]; then
+                if [[ "$health_type" == "none" ]]; then
+                    result_set "$sid" "not_applicable"
+                    log "  ${CYAN}~${NC} $name - skipped (no health check)"
+                else
+                    result_set "$sid" "ok"
+                    log "  ${GREEN}✓${NC} $name - healthy"
+                fi
+            else
+                result_set "$sid" "fail"
+                # Use container state for better error message
+                case "$container_state" in
+                    not_found)
+                        log "  ${YELLOW}!${NC} $name - container not found"
+                        ;;
+                    exited|stopped)
+                        log "  ${YELLOW}!${NC} $name - container stopped"
+                        ;;
+                    restarting)
+                        log "  ${YELLOW}!${NC} $name - container restarting"
+                        ;;
+                    running)
+                        log "  ${YELLOW}!${NC} $name - not responding (container running)"
+                        ;;
+                    *)
+                        log "  ${YELLOW}!${NC} $name - not responding"
+                        ;;
+                esac
+            fi
+        fi
+    done
+
+    log ""
+    log "${CYAN}System Resources:${NC}"
+
+    # GPU
+    if test_gpu 2>/dev/null; then
+        status_icon="${GREEN}✓${NC}"
+        [ "$(result_get "gpu")" = "warn" ] && status_icon="${YELLOW}!${NC}"
+        log "  ${status_icon} GPU - $(result_get "gpu_mem_used")/$(result_get "gpu_mem_total") MiB, $(result_get "gpu_util")% util, $(result_get "gpu_temp")°C"
+    else
+        log "  ${YELLOW}?${NC} GPU - status unavailable"
+    fi
+
+    # Disk
+    if test_disk 2>/dev/null; then
+        status_icon="${GREEN}✓${NC}"
+        [ "$(result_get "disk")" = "warn" ] && status_icon="${YELLOW}!${NC}"
+        log "  ${status_icon} Disk - $(result_get "disk_usage")% used"
+    else
+        log "  ${YELLOW}?${NC} Disk - status unavailable"
+    fi
+
+    log ""
+
+    # Summary
+    if $CRITICAL_FAIL; then
+        log "${RED}Status: CRITICAL - Core services down${NC}"
+        EXIT_CODE=2
+    elif $ANY_FAIL; then
+        log "${YELLOW}Status: DEGRADED - Some services unavailable${NC}"
+        EXIT_CODE=1
+    else
+        log "${GREEN}Status: HEALTHY - All services operational${NC}"
+        EXIT_CODE=0
+    fi
+
+    log ""
+
+    # JSON output
+    if $JSON_OUTPUT; then
+        echo "{"
+        echo "  \"timestamp\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\","
+        echo "  \"status\": \"$([ $EXIT_CODE -eq 0 ] && echo "healthy" || ([ $EXIT_CODE -eq 1 ] && echo "degraded" || echo "critical"))\","
+        echo "  \"services\": {"
+        first=true
+        for i in "${!RESULT_KEYS[@]}"; do
+            $first || echo ","
+            first=false
+            echo -n "    \"${RESULT_KEYS[$i]}\": \"${RESULT_VALS[$i]}\""
+        done
+        echo ""
+        echo "  }"
+        echo "}"
+    fi
+
+    exit $EXIT_CODE
+fi

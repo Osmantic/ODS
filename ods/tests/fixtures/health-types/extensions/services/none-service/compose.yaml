@@ -1,0 +1,6 @@
+services:
+  none-service:
+    image: example/none-service:latest
+    container_name: ods-none-service
+    healthcheck:
+      test: ["CMD", "true"]

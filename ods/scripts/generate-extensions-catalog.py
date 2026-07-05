@@ -103,6 +103,7 @@ def extract_entry(manifest: dict) -> dict | None:
         "depends_on": service.get("depends_on", []),
         "port": service.get("port", 0),
         "external_port_default": service.get("external_port_default", 0),
+        "health_type": service.get("health_type", "http"),
         "health_endpoint": service.get("health", ""),
         "env_vars": strip_secrets(env_vars),
         "tags": manifest.get("tags") or service.get("tags", []),
