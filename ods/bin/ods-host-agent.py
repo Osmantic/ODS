@@ -431,7 +431,7 @@ def _precreate_data_dirs(service_id: str):
         # PyYAML not available — skip pre-creation
         logger.debug("PyYAML not available, skipping data dir pre-creation for %s", service_id)
         return
-    except Exception as e:
+    except (OSError, yaml.YAMLError) as e:
         logger.debug("Failed to parse compose.yaml for %s: %s", service_id, e)
         return
     if not isinstance(data, dict):
