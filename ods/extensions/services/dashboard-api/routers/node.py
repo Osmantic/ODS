@@ -16,8 +16,10 @@ import settings
 router = APIRouter(tags=["node"])
 
 # Service statuses that indicate the container is up (as opposed to down /
-# not_deployed). Used to compute running_service_count.
-_RUNNING_STATUSES = {"healthy", "unhealthy", "unknown"}
+# not_deployed). "degraded" means reachable but slow (see
+# helpers.check_service_health), so it counts as up. Used to compute
+# running_service_count.
+_RUNNING_STATUSES = {"healthy", "unhealthy", "unknown", "degraded"}
 
 
 def _install_root() -> Path:
@@ -76,7 +78,7 @@ async def node_capabilities(request: Request):
     Combines GPU type/VRAM (see gpu.get_gpu_info), the currently loaded model,
     service health, and the installed ODS version in a single call. Read-only.
     running_service_count counts services whose container is up (healthy,
-    unhealthy, or unknown), excluding down / not_deployed.
+    unhealthy, unknown, or degraded), excluding down / not_deployed.
     """
     gpu_info, loaded_model, services = await asyncio.gather(
         asyncio.to_thread(get_gpu_info),

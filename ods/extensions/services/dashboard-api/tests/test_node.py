@@ -20,6 +20,17 @@ def _services():
     ]
 
 
+def _services_with_degraded():
+    return [
+        ServiceStatus(id="llama-server", name="Llama Server", port=8080,
+                      external_port=8080, status="healthy", response_time_ms=12.0),
+        ServiceStatus(id="open-webui", name="Open WebUI", port=3000,
+                      external_port=3000, status="degraded", response_time_ms=None),
+        ServiceStatus(id="qdrant", name="Qdrant", port=6333,
+                      external_port=6333, status="down", response_time_ms=None),
+    ]
+
+
 class TestNodeCapabilitiesEndpoint:
     def test_full_payload(self, monkeypatch, tmp_path, test_client):
         import routers.node as node_mod
@@ -46,6 +57,32 @@ class TestNodeCapabilitiesEndpoint:
         assert b["service_count"] == 3
         assert b["running_service_count"] == 2  # healthy + unhealthy, not down
         assert len(b["services"]) == 3
+
+    def test_degraded_service_counts_as_running(self, monkeypatch, tmp_path, test_client):
+        import routers.node as node_mod
+
+        async def _loaded():
+            return None
+
+        async def _svcs():
+            return _services_with_degraded()
+
+        monkeypatch.setattr(node_mod, "get_gpu_info", lambda: None)
+        monkeypatch.setattr(node_mod, "get_loaded_model", _loaded)
+        monkeypatch.setattr(node_mod, "get_all_services", _svcs)
+        (tmp_path / ".env").write_text("ODS_VERSION=1.0.0\n")
+        monkeypatch.setattr(node_mod, "_install_root", lambda: tmp_path)
+
+        r = test_client.get("/api/node/capabilities", headers=test_client.auth_headers)
+        assert r.status_code == 200
+        b = r.json()
+        # degraded == reachable-but-slow == up. Regression: it must be listed
+        # under services AND counted in running_service_count (healthy + degraded),
+        # while down is excluded.
+        assert b["service_count"] == 3
+        assert b["running_service_count"] == 2
+        statuses = {s["id"]: s["status"] for s in b["services"]}
+        assert statuses["open-webui"] == "degraded"
 
     def test_gpu_and_model_absent(self, monkeypatch, tmp_path, test_client):
         import routers.node as node_mod
