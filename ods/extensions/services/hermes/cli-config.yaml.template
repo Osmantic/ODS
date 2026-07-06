@@ -176,3 +176,17 @@ compression:
   # (~10 user/assistant exchanges); bumped to 40 so a longer back-and-forth
   # stays granular even after a compression pass.
   protect_last_n: 40
+
+# ─── MCP servers (optional) ───────────────────────────────────────────────────
+# External Model Context Protocol servers Hermes connects to for extra tools.
+# Left commented so default behavior is unchanged. Uncomment a block after
+# enabling the matching ODS extension, then restart Hermes.
+#
+# The `solana` extension (`ods enable solana`) exposes a local, self-custodial
+# Solana wallet + RPC as agent tools (solana_create_wallet, solana_get_balance,
+# solana_airdrop, solana_transfer). It runs on ods-network — reach it by its
+# service DNS name. Devnet by default; see extensions/services/solana/README.md.
+#
+# mcp_servers:
+#   solana:
+#     url: http://ods-solana:8590/mcp

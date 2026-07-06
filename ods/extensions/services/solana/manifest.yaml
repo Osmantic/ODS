@@ -1,0 +1,58 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: solana
+  name: Solana (local wallet + RPC/MCP)
+  aliases: [sol]
+  container_name: ods-solana
+  host_env: SOLANA_HOST
+  default_host: solana
+  port: 8590
+  external_port_env: SOLANA_PORT
+  external_port_default: 8590
+  health: /health
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  env_vars:
+    - key: SOLANA_NETWORK
+      required: false
+      default: "devnet"
+      description: Solana cluster (devnet | testnet | mainnet-beta). Devnet by default.
+    - key: SOLANA_RPC_URL
+      required: false
+      default: "https://api.devnet.solana.com"
+      description: JSON-RPC endpoint. Point at your own RPC when using mainnet.
+    - key: SOLANA_PORT
+      required: false
+      default: "8590"
+      description: External port the service listens on (bound to 127.0.0.1).
+    - key: SOLANA_ALLOW_MAINNET
+      required: false
+      default: "false"
+      description: Must be "true" to allow transfers on mainnet-beta. Off by default.
+    - key: SOLANA_API_KEY
+      required: false
+      secret: true
+      description: Optional bearer token required for the REST write endpoints (wallet/airdrop/transfer).
+
+features:
+  - id: solana-wallet
+    name: Solana wallet & RPC (MCP)
+    description: Self-custodial Solana wallet + RPC for local agents, over MCP and REST. Devnet by default.
+    icon: Wallet
+    category: agents
+    requirements:
+      services: [solana]
+      vram_gb: 0
+    enabled_services_all: [solana]
+    setup_time: ~2 minutes
+    priority: 50
+    launch:
+      type: none
+    gpu_backends: [all]
