@@ -27,7 +27,7 @@ ROLLBACK_DIR="${INSTALL_DIR}/data/backups"   # pre-update rollback snapshots liv
 MAX_BACKUPS="${MAX_BACKUPS:-10}"
 UPDATE_CHANNEL="${UPDATE_CHANNEL:-stable}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
-GITHUB_REPO="${GITHUB_REPO:-Light-Heart-Labs/ODS}"
+GITHUB_REPO="${GITHUB_REPO:-Osmantic/ODS}"
 
 # Colors
 RED='\033[0;31m'

@@ -39,13 +39,13 @@ see [MACOS-QUICKSTART.md](docs/MACOS-QUICKSTART.md),
 ### Linux One-Liner
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Light-Heart-Labs/ODS/main/ods/get-ods.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh | bash
 ```
 
 ### Manual Clone
 
 ```bash
-git clone https://github.com/Light-Heart-Labs/ODS.git
+git clone https://github.com/Osmantic/ODS.git
 cd ODS
 ./install.sh
 ```
@@ -54,7 +54,7 @@ cd ODS
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-git clone https://github.com/Light-Heart-Labs/ODS.git
+git clone https://github.com/Osmantic/ODS.git
 cd ODS
 .\install.ps1
 ```

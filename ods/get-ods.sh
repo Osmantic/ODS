@@ -1,6 +1,6 @@
 #!/bin/bash
 # ODS Bootstrap Installer
-# curl -fsSL https://raw.githubusercontent.com/Light-Heart-Labs/ODS/main/ods/get-ods.sh | bash
+# curl -fsSL https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh | bash
 #
 # Detects OS, clones repo, runs installer.
 
@@ -29,7 +29,7 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-REPO_URL="${ODS_REPO_URL:-https://github.com/Light-Heart-Labs/ODS.git}"
+REPO_URL="${ODS_REPO_URL:-https://github.com/Osmantic/ODS.git}"
 INSTALL_DIR="${ODS_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/ods}"
 LEGACY_DREAMSERVER_DIR="${DREAMSERVER_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/dream-server}"
 ODS_REF="${ODS_REF:-${ODS_BOOTSTRAP_REF:-}}"

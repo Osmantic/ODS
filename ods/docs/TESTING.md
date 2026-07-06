@@ -273,7 +273,7 @@ Total: ~25GB for all ISOs.
 4. Live session boots with network access
 5. Open terminal:
    ```bash
-   git clone --depth 1 https://github.com/Light-Heart-Labs/ODS.git
+   git clone --depth 1 https://github.com/Osmantic/ODS.git
    cd ODS
    ./install.sh
    ```

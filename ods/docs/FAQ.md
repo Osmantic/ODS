@@ -175,7 +175,7 @@ Yes. Common use cases:
 **With install wizard:** Under 1 hour for someone comfortable with terminal.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Light-Heart-Labs/ODS/main/ods/get-ods.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh | bash
 ```
 
 The wizard:
@@ -296,7 +296,7 @@ When the full model finishes, the system swaps it in automatically — you don't
 
 1. This documentation
 2. `TROUBLESHOOTING.md` for common issues
-3. GitHub Issues: https://github.com/Light-Heart-Labs/ODS/issues
+3. GitHub Issues: https://github.com/Osmantic/ODS/issues
 4. Discord community (link in README)
 
 ---

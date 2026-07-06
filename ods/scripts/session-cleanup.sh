@@ -1,7 +1,7 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
 # ODS - Session Cleanup Script
-# https://github.com/Light-Heart-Labs/ODS
+# https://github.com/Osmantic/ODS
 #
 # Prevents context overflow crashes by automatically managing
 # session file lifecycle. When a session file exceeds the size
