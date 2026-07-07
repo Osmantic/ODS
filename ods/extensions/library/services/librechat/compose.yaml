@@ -1,0 +1,139 @@
+services:
+  librechat:
+    image: ghcr.io/danny-avila/librechat:v0.7.7
+    container_name: ods-librechat
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3080
+      - MONGO_URI=mongodb://librechat:${LIBRECHAT_MONGO_PASSWORD:?LIBRECHAT_MONGO_PASSWORD must be set}@librechat-mongodb:27017/LibreChat?authSource=admin
+      - MEILI_HOST=http://librechat-meilisearch:7700
+      - MEILI_HTTP_ADDR=librechat-meilisearch:7700
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODELS=${OPENAI_MODELS:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_KEY=${GOOGLE_KEY:-}
+      - BEDROCK_AWS_DEFAULT_REGION=${BEDROCK_AWS_DEFAULT_REGION:-}
+      - BEDROCK_AWS_ACCESS_KEY_ID=${BEDROCK_AWS_ACCESS_KEY_ID:-}
+      - BEDROCK_AWS_SECRET_ACCESS_KEY=${BEDROCK_AWS_SECRET_ACCESS_KEY:-}
+      - BEDROCK_AWS_SESSION_TOKEN=${BEDROCK_AWS_SESSION_TOKEN:-}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
+      - AZURE_OPENAI_INSTANCE_NAME=${AZURE_OPENAI_INSTANCE_NAME:-}
+      - AZURE_OPENAI_DEPLOYMENT_NAME=${AZURE_OPENAI_DEPLOYMENT_NAME:-}
+      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION:-}
+      - AZURE_OPENAI_BASEURL=${AZURE_OPENAI_BASEURL:-}
+      - OPENROUTER_KEY=${OPENROUTER_KEY:-}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - COHERE_API_KEY=${COHERE_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - OPENAI_REVERSE_PROXY=${OPENAI_REVERSE_PROXY:-}
+      - ANTHROPIC_REVERSE_PROXY=${ANTHROPIC_REVERSE_PROXY:-}
+      - BINGAI_TOKEN=${BINGAI_TOKEN:-}
+      - DALLE3_API_KEY=${DALLE3_API_KEY:-}
+      - DALLE3_BASEURL=${DALLE3_BASEURL:-}
+      - "CREDS_KEY=${CREDS_KEY:?CREDS_KEY must be set – generate with: openssl rand -hex 32}"
+      - "CREDS_IV=${CREDS_IV:?CREDS_IV must be set – generate with: openssl rand -hex 16}"
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be set}
+      - APP_TITLE=${APP_TITLE:-LibreChat}
+      - DOMAIN_CLIENT=${DOMAIN_CLIENT:-}
+      - DOMAIN_SERVER=${DOMAIN_SERVER:-}
+      - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-true}
+      - ALLOW_SOCIAL_LOGIN=${ALLOW_SOCIAL_LOGIN:-false}
+      - CHECK_BALANCE=${CHECK_BALANCE:-false}
+      - DEBUG_CONSOLE=${DEBUG_CONSOLE:-false}
+      - CONSOLE_JSON=${CONSOLE_JSON:-false}
+      - MODELS_FILTER=${MODELS_FILTER:-}
+      - ENDPOINTS=${ENDPOINTS:-openAI,azureOpenAI,bingAI,google,gptPlugins,anthropic}
+      - SEARCH=${SEARCH:-true}
+      - CONVERSATION_ENDPOINTS=${CONVERSATION_ENDPOINTS:-azureOpenAI,openAI,bingAI,google,gptPlugins,anthropic}
+    volumes:
+      - ./data/librechat/images:/app/client/public/images:rw
+      - ./data/librechat/logs:/app/api/logs:rw
+      - ./data/librechat/uploads:/app/uploads:rw
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${LIBRECHAT_PORT:-3080}:3080"
+    depends_on:
+      librechat-mongodb:
+        condition: service_healthy
+      librechat-meilisearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.2'
+          memory: 512M
+
+  librechat-mongodb:
+    image: mongo:7.0.16
+    container_name: ods-librechat-mongodb
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=librechat
+      - MONGO_INITDB_ROOT_PASSWORD=${LIBRECHAT_MONGO_PASSWORD:?LIBRECHAT_MONGO_PASSWORD must be set}
+    volumes:
+      - ./data/librechat/mongodb:/data/db:rw
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.1'
+          memory: 256M
+
+  librechat-meilisearch:
+    image: getmeili/meilisearch:v1.12.8
+    container_name: ods-librechat-meilisearch
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - MEILI_ENV=production
+      - MEILI_MASTER_KEY=${LIBRECHAT_MEILI_KEY:?LIBRECHAT_MEILI_KEY must be set}
+    volumes:
+      - ./data/librechat/meilisearch:/meili_data:rw
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:7700/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+
+networks:
+  ods-network:
+    external: true

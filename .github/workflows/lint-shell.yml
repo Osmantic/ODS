@@ -22,13 +22,13 @@ jobs:
           sudo apt-get install -y shellcheck
           shellcheck --version
 
-      - name: Run ShellCheck on dream-server shell scripts
+      - name: Run ShellCheck on ods shell scripts
         run: |
-          # Find all .sh files under dream-server/
-          shfiles=$(find dream-server/ -name '*.sh' -type f)
+          # Find all .sh files under ods/
+          shfiles=$(find ods/ -name '*.sh' -type f)
 
           if [ -z "$shfiles" ]; then
-            echo "No .sh files found under dream-server/"
+            echo "No .sh files found under ods/"
             exit 0
           fi
 
@@ -67,12 +67,12 @@ jobs:
           # shell scripts. Excludes: demo-offline.sh (echo'd documentation,
           # never executed) and test-extension-audit.sh (heredoc compose YAML
           # fixtures with container-internal localhost).
-          # Note: extensionless scripts (e.g. dream-cli) are not scanned by
-          # this glob; coverage is limited to *.sh / *.bash. dream-cli's
+          # Note: extensionless scripts (e.g. ods-cli) are not scanned by
+          # this glob; coverage is limited to *.sh / *.bash. ods-cli's
           # localhost sites were handled by the earlier localhost-to-127.0.0.1 sweep.
-          matches=$(find dream-server -type f \( -name '*.sh' -o -name '*.bash' \) \
-            ! -path 'dream-server/scripts/demo-offline.sh' \
-            ! -path 'dream-server/tests/test-extension-audit.sh' \
+          matches=$(find ods -type f \( -name '*.sh' -o -name '*.bash' \) \
+            ! -path 'ods/scripts/demo-offline.sh' \
+            ! -path 'ods/tests/test-extension-audit.sh' \
             -exec grep -nE 'curl[^|]*http://localhost:' {} + || true)
           if [ -n "$matches" ]; then
             echo "::error::curl http://localhost: detected; use 127.0.0.1 (IPv6 ::1 resolution can hang on macOS):"

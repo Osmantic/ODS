@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: dream-server
+        working-directory: ods
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -54,8 +54,11 @@ jobs:
       - name: Health Check Tests
         run: bash tests/test-health-check.sh
 
-      - name: Dream Doctor Tests
-        run: bash tests/test-dream-doctor.sh
+      - name: n8n Cookie Policy Tests
+        run: bash tests/test-n8n-cookie-policy.sh
+
+      - name: ODS Doctor Tests
+        run: bash tests/test-ods-doctor.sh
 
       - name: Windows Report Command Tests
         run: bash tests/test-windows-report-command.sh
@@ -138,13 +141,13 @@ jobs:
         with:
           name: installer-sim
           path: |
-            dream-server/artifacts/installer-sim/summary.json
-            dream-server/artifacts/installer-sim/SUMMARY.md
-            dream-server/artifacts/installer-sim/golden-paths.json
-            dream-server/artifacts/installer-sim/linux-dryrun.log
-            dream-server/artifacts/installer-sim/macos-installer.log
-            dream-server/artifacts/installer-sim/windows-preflight-sim.json
-            dream-server/artifacts/installer-sim/macos-preflight.json
-            dream-server/artifacts/installer-sim/macos-doctor.json
-            dream-server/artifacts/installer-sim/doctor.json
-            dream-server/artifacts/update-rollback/evidence.json
+            ods/artifacts/installer-sim/summary.json
+            ods/artifacts/installer-sim/SUMMARY.md
+            ods/artifacts/installer-sim/golden-paths.json
+            ods/artifacts/installer-sim/linux-dryrun.log
+            ods/artifacts/installer-sim/macos-installer.log
+            ods/artifacts/installer-sim/windows-preflight-sim.json
+            ods/artifacts/installer-sim/macos-preflight.json
+            ods/artifacts/installer-sim/macos-doctor.json
+            ods/artifacts/installer-sim/doctor.json
+            ods/artifacts/update-rollback/evidence.json

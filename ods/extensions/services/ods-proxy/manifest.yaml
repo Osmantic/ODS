@@ -1,0 +1,77 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: ods-proxy
+  name: ODS (Web)
+  # `web` was here in an earlier draft but collided with open-webui's
+  # existing alias. The extension audit blocks aliases owned by another
+  # service; keeping it scoped to proxy/gateway.
+  aliases: [proxy, gateway]
+  container_name: ods-proxy
+  default_host: ods-proxy
+  # Standard HTTP — what `http://<device>.local` (no port) actually hits.
+  port: 80
+  external_port_env: ODS_PROXY_PORT
+  external_port_default: 80
+  health: /health
+  ui_path: /
+  health_timeout: 10
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  # Every upstream the Caddyfile routes to. Compose depends_on only
+  # sequences start-up, not health, so 502s during a cold start are
+  # expected and harmless; this list makes the routed surface explicit
+  # for operators/dependency-graph tooling.
+  depends_on: [dashboard, dashboard-api, open-webui]
+  description: >
+    Caddy reverse proxy fronting ODS's web surface on port 80
+    with host-based routing. Without this extension, the dashboard / chat
+    / API services bind to 127.0.0.1 by default, so `http://<device>.local`
+    doesn't resolve to anything. With it, each surface gets its own
+    subdomain on the mDNS hostname:
+        <device>.local           → 302 redirect to chat
+        chat.<device>.local      → Open WebUI (root-mounted)
+        dashboard.<device>.local → ODS Dashboard (operator UI)
+        auth.<device>.local      → dashboard-api (magic-link redemption)
+        api.<device>.local       → dashboard-api (admin /api/*)
+        hermes.<device>.local    → hermes-proxy (when enabled)
+        talk.<device>.local      → dashboard /talk (mobile owner portal)
+    Per-subdomain routing means every backend stays root-mounted (no
+    subpath gymnastics) and the ods-session cookie can be Domain-scoped
+    to <device>.local so SSO works across all of them.
+
+  env_vars:
+    - key: ODS_PROXY_PORT
+      default: "80"
+      description: Host port the proxy listens on (default 80; standard HTTP)
+    - key: ODS_PROXY_TLS_PORT
+      default: "443"
+      description: Host port for HTTPS (default 443; only used when ODS_PROXY_TLS is enabled)
+    - key: ODS_PROXY_BIND
+      default: "0.0.0.0"
+      description: |
+        Bind address for the proxy's host port. 0.0.0.0 (default for this
+        extension) exposes it on the LAN; that's the whole point. Override
+        to 127.0.0.1 to keep the proxy localhost-only.
+
+features:
+  - id: lan-web
+    name: LAN web entry
+    description: Single port-80 entry for dashboard, chat, and API on `<device>.local`
+    icon: Globe
+    category: networking
+    requirements:
+      services: [dashboard]
+      vram_gb: 0
+    enabled_services_all: [ods-proxy]
+    setup_time: Ready
+    priority: 1
+    launch:
+      type: service
+      service: ods-proxy
+    gpu_backends: [all]

@@ -1,0 +1,23 @@
+model_list:
+  # Lemonade exposes models as "extra.<GGUF_FILENAME>" — the wildcard
+  # passthrough (openai/*) does NOT work because it forwards the friendly
+  # model name verbatim and lemonade returns 404.
+  #
+  # This file is a template. The installer (06-directories.sh) generates
+  # the actual config with the correct model ID and Lemonade API base at
+  # install time, and bootstrap-upgrade.sh regenerates it when the model swaps.
+  - model_name: "*"
+    litellm_params:
+      model: openai/extra.GGUF_FILENAME_HERE
+      api_base: http://llama-server:8080/api/v1
+      # api_key is overwritten per-install by phase 06 / bootstrap-upgrade to LITELLM_LEMONADE_API_KEY
+      api_key: sk-lemonade
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  request_timeout: 900
+  stream_timeout: 900

@@ -1,0 +1,74 @@
+schema_version: ods.services.v1
+
+service:
+  id: text-generation-webui
+  name: Text Generation WebUI
+  aliases: [oobabooga, text-gen, tgwebui]
+  container_name: ods-text-generation-webui
+  host_env: TEXT_GEN_WEBUI_HOST
+  default_host: text-generation-webui
+  port: 7860
+  external_port_env: TEXT_GEN_WEBUI_PORT
+  external_port_default: 7862
+  health: /
+  type: docker
+  gpu_backends: [nvidia, amd]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  env_vars: []
+  description: |
+    Text Generation WebUI (Oobabooga) is the most feature-complete local LLM
+    inference interface. Supports GPTQ, GGUF, AWQ, EXL2, and HF transformer
+    formats. Includes a chat UI, API server, extensions marketplace, LoRA
+    loading, and advanced generation parameters. The goto tool for power users
+    who need full control over inference settings.
+
+features:
+  - id: llm-inference
+    name: LLM Inference
+    description: Load and run GGUF, GPTQ, AWQ, EXL2, and HF transformer models
+    icon: Cpu
+    category: ai
+    requirements:
+      services: [text-generation-webui]
+      vram_gb: 4
+    enabled_services_all: [text-generation-webui]
+    setup_time: ~3 minutes
+    priority: 5
+    gpu_backends: [amd, nvidia]
+
+  - id: chat-ui
+    name: Chat Interface
+    description: Instruct and chat mode UI with character support
+    icon: MessageSquare
+    category: chat
+    requirements:
+      services: [text-generation-webui]
+      vram_gb: 0
+    enabled_services_all: [text-generation-webui]
+    setup_time: ~3 minutes
+    priority: 6
+    gpu_backends: [amd, nvidia]
+
+  - id: openai-api
+    name: OpenAI-Compatible API
+    description: OpenAI-compatible API server with extensions and LoRA support
+    icon: Globe
+    category: ai
+    requirements:
+      services: [text-generation-webui]
+      vram_gb: 0
+    enabled_services_all: [text-generation-webui]
+    setup_time: ~3 minutes
+    priority: 7
+    gpu_backends: [amd, nvidia]
+
+tags:
+  - llm
+  - inference
+  - oobabooga
+  - chat
+  - api
+  - gguf
+  - gptq

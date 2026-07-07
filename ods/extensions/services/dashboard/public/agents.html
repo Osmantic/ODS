@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Monitor | ODS</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10" integrity="sha384-YwQSRkoBOUtKKVfHQ8C2zCPslUZHuxiPHts6X/xQCuGHipTtRXd7ImqS1VTLlpiT" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1" integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4" crossorigin="anonymous"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" integrity="sha384-L1dWfspMTHU/ApYnFiMz2QID/PlP1xCW9visvBdbEkOLkSSWsP6ZJWhPw6apiXxU" crossorigin="anonymous">
+    <style>
+        .metric-card {
+            background: var(--card-background-color);
+            border-radius: var(--border-radius);
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+        }
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--primary);
+        }
+        .metric-label {
+            font-size: 0.875rem;
+            color: var(--muted-color);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .status-ok { color: #22c55e; }
+        .status-warn { color: #f59e0b; }
+        .status-error { color: #ef4444; }
+        .chart-container {
+            position: relative;
+            height: 200px;
+            margin-top: 1rem;
+        }
+        .refresh-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #22c55e;
+            margin-left: 0.5rem;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <main class="container">
+        <nav>
+            <ul>
+                <li><strong>🤖 Agent Monitor</strong></li>
+            </ul>
+            <ul>
+                <li><a href="/">Dashboard</a></li>
+                <li><a href="/models">Models</a></li>
+                <li><a href="/agents">Agents</a></li>
+            </ul>
+        </nav>
+
+        <header style="margin-bottom: 2rem;">
+            <h1>Agent Swarm Status 
+                <span class="refresh-indicator"></span>
+            </h1>
+            <p>Real-time monitoring of local AI agents and GPU utilization</p>
+        </header>
+
+        <!-- Auto-refresh metrics every 5 seconds -->
+        <div hx-get="/api/agents/metrics" 
+             hx-trigger="load, every 5s"
+             hx-swap="innerHTML"
+             id="metrics-container">
+            <p>Loading metrics...</p>
+        </div>
+
+        <!-- Throughput Chart -->
+        <section class="metric-card">
+            <h3>Throughput (tokens/sec)</h3>
+            <div class="chart-container">
+                <canvas id="throughputChart"></canvas>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        // Initialize throughput chart
+        const ctx = document.getElementById('throughputChart').getContext('2d');
+        const throughputChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Tokens/sec',
+                    data: [],
+                    borderColor: '#3b82f6',
+                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                    tension: 0.4,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                    },
+                    x: {
+                        grid: { display: false }
+                    }
+                },
+                plugins: {
+                    legend: { display: false }
+                }
+            }
+        });
+
+        // Update chart with new data
+        function updateChart(history) {
+            if (!history || history.length === 0) return;
+            
+            const labels = history.map((h, i) => `-${30-i}s`);
+            const data = history.map(h => h.tokens_per_sec);
+            
+            throughputChart.data.labels = labels;
+            throughputChart.data.datasets[0].data = data;
+            throughputChart.update('none');
+        }
+
+        // Listen for HTMX after-swap event to update chart
+        document.body.addEventListener('htmx:afterSwap', function(evt) {
+            if (evt.detail.target.id === 'metrics-container') {
+                try {
+                    const data = JSON.parse(evt.detail.xhr.response);
+                    if (data.throughput && data.throughput.history) {
+                        updateChart(data.throughput.history);
+                    }
+                } catch (e) {
+                    console.error('Failed to parse metrics:', e);
+                }
+            }
+        });
+    </script>
+</body>
+</html>

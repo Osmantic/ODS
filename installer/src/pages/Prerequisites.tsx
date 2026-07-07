@@ -110,7 +110,7 @@ export default function Prerequisites({ onNext, onError }: Props) {
     <div className="flex flex-col items-center justify-center h-full px-8">
       <h2 className="text-2xl font-bold mb-2">Prerequisites Needed</h2>
       <p className="text-gray-400 mb-8 text-center max-w-md">
-        A few things need to be set up before we can install DreamServer.
+        A few things need to be set up before we can install ODS.
       </p>
 
       <div className="w-full max-w-md space-y-4 mb-8">

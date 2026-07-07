@@ -1,0 +1,17 @@
+[Unit]
+Description=ODS mDNS Announcer
+After=network-online.target avahi-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__INSTALL_USER__
+ExecStart=__PYTHON3__ __INSTALL_DIR__/bin/ods-mdns.py
+WorkingDirectory=__INSTALL_DIR__
+Environment=ODS_INSTALL_DIR=__INSTALL_DIR__
+Environment=HOME=__HOME__
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

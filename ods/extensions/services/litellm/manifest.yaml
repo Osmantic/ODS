@@ -1,0 +1,27 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: litellm
+  name: LiteLLM (API Gateway)
+  aliases: []
+  container_name: ods-litellm
+  default_host: litellm
+  port: 4000
+  external_port_env: LITELLM_PORT
+  external_port_default: 4000
+  health: /health/readiness
+  ui_path: /ui/
+  external_link: false
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: recommended
+  depends_on: [llama-server]
+  env_vars:
+    - key: LITELLM_KEY
+      required: true
+      secret: true
+      description: LiteLLM master API key

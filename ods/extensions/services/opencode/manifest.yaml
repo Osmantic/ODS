@@ -1,0 +1,37 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: opencode
+  name: OpenCode (IDE)
+  aliases: [opencode-web]
+  container_name: ""
+  default_host: localhost
+  port: 3003
+  external_port_env: OPENCODE_PORT
+  external_port_default: 3003
+  health: /
+  type: host-systemd
+  gpu_backends: [all]
+  category: optional
+  depends_on: []
+  sidebar_icon: Code
+
+features:
+  - id: coding
+    name: Coding Assistant
+    description: AI-powered code editor in your browser
+    icon: Code
+    category: development
+    requirements:
+      services: [opencode]
+      vram_gb: 8
+    enabled_services_all: [opencode]
+    setup_time: Ready
+    priority: 6
+    launch:
+      type: service
+      service: opencode
+    gpu_backends: [all]

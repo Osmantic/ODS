@@ -1,0 +1,34 @@
+services:
+  milvus:
+    image: milvusdb/milvus:v2.4.5
+    container_name: ods-milvus
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MILVUS_PORT:-19530}:19530"
+      - "${BIND_ADDRESS:-127.0.0.1}:9091:9091"
+    volumes:
+      - ./data/milvus:/var/lib/milvus
+    environment:
+      - MODE=standalone
+      - ETCD_USE_EMBED=true
+      - COMMON_STORAGETYPE=local
+    command: ["milvus", "run", "standalone"]
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 8G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9091/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - ods-network
+
+networks:
+  ods-network:
+    external: true

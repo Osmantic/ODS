@@ -22,9 +22,9 @@ name: openclaw filesystem write gate
 on:
   pull_request:
     paths:
-      - 'dream-server/config/openclaw/**'
-      - 'dream-server/extensions/services/openclaw/compose.yaml'
-      - 'dream-server/extensions/services/openclaw/manifest.yaml'
+      - 'ods/config/openclaw/**'
+      - 'ods/extensions/services/openclaw/compose.yaml'
+      - 'ods/extensions/services/openclaw/manifest.yaml'
       - '.github/workflows/openclaw-image-diff.yml'
 
 permissions:
@@ -72,7 +72,7 @@ jobs:
             -e HOME=/home/node \
             -e OPENCLAW_EXTERNAL_PORT=7860 \
             -e BIND_ADDRESS=127.0.0.1 \
-            -v "$(pwd)/dream-server/config/openclaw:/config:ro" \
+            -v "$(pwd)/ods/config/openclaw:/config:ro" \
             -v "$(pwd)/openclaw-test-data:/data" \
             -v "$(pwd)/openclaw-test-home:/home/node/.openclaw" \
             -v "$(pwd)/openclaw-test-agents:/home/node/.openclaw/agents" \

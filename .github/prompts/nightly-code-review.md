@@ -9,7 +9,7 @@ Analyze recent commits and make targeted code improvements. Be CONSERVATIVE — 
 
 ## Rules
 
-1. NEVER modify protected files: `.github/`, `.env*`, `dream-server/installers/`, `dream-server/dream-cli`, `dream-server/config/`
+1. NEVER modify protected files: `.github/`, `.env*`, `ods/installers/`, `ods/ods-cli`, `ods/config/`
 2. ONLY modify `.py`, `.sh`, `.ts`, and `.tsx` files
 3. Every change must be verifiable as an improvement — do not guess
 4. Prefer no change over a risky change
@@ -59,8 +59,8 @@ After all changes:
 
 - Working code that follows project conventions
 - Error handling at API boundaries (FastAPI route handlers)
-- Shell installer libraries (`dream-server/installers/lib/`) and phases (`dream-server/installers/phases/`)
-- The main CLI tool (`dream-server/dream-cli`)
+- Shell installer libraries (`ods/installers/lib/`) and phases (`ods/installers/phases/`)
+- The main CLI tool (`ods/ods-cli`)
 - Test files (unless fixing a clearly broken test)
 - Import ordering (Ruff handles this)
 - String formatting preferences
