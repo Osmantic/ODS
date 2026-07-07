@@ -141,10 +141,10 @@ export default function Knowledge() {
               )}
             </div>
             <input
-              type="file" 
-              ref={fileInputRef} 
-              className="hidden" 
-              accept=".pdf,.txt,.md,.csv" 
+              type="file"
+              ref={fileInputRef}
+              className="hidden"
+              accept=".pdf,.txt,.md,.csv"
               onChange={(e) => handleUpload(e.target.files[0])}
             />
           </div>
@@ -162,7 +162,7 @@ export default function Knowledge() {
                 {documents.length} docs
               </span>
             </div>
-            
+
             <div className="divide-y divide-theme-border max-h-[600px] overflow-y-auto">
               {loading ? (
                 <div className="p-8 text-center text-theme-text-muted flex items-center justify-center gap-2">
@@ -186,7 +186,7 @@ export default function Knowledge() {
                         <p className="text-xs text-theme-text-muted font-mono mt-1">ID: {doc.id.split('-')[0]}...</p>
                       </div>
                     </div>
-                    <button 
+                    <button
                       onClick={() => handleDelete(doc.id)}
                       className="p-2 text-theme-text-muted hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                       title="Delete from Knowledge Base"

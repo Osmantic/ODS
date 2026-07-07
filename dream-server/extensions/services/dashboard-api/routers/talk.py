@@ -708,7 +708,7 @@ async def talk_attachment(
         f"```\n{content}\n```\n\n"
         f"{caption or 'Take a look at this and let me know what you think.'}"
     )
-    
+
     if use_knowledge:
         try:
             from routers.knowledge import search_knowledge_base

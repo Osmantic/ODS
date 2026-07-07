@@ -59,7 +59,7 @@ async def get_qdrant() -> Optional[QdrantClient]:
     except Exception as e:
         logger.warning("Failed to connect to Qdrant: %s", e)
         _qdrant_client = None
-        
+
     _qdrant_initialized = True
     return _qdrant_client
 
@@ -93,22 +93,22 @@ async def upload_document(request: Request, file: UploadFile = File(...), api_ke
     content = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail=f"File is too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB).")
-        
+
     text = extract_text(content, file.filename)
     if not text.strip():
         raise HTTPException(status_code=400, detail="Document contains no extractable text.")
-        
+
     doc_id = str(uuid.uuid4())
     chunks = chunk_text(text)
     if not chunks:
         raise HTTPException(status_code=400, detail="Document chunking failed.")
-        
+
     qdrant = await get_qdrant()
     if qdrant is None:
         raise HTTPException(status_code=503, detail="Qdrant vector database is not connected.")
-        
+
     embeddings = await get_embeddings(chunks)
-    
+
     points = []
     for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
         points.append(PointStruct(
@@ -121,7 +121,7 @@ async def upload_document(request: Request, file: UploadFile = File(...), api_ke
                 "text": chunk
             }
         ))
-        
+
     # Batch upsert points
     batch_size = 100
     for i in range(0, len(points), batch_size):
@@ -129,7 +129,7 @@ async def upload_document(request: Request, file: UploadFile = File(...), api_ke
             collection_name=COLLECTION_NAME,
             points=points[i:i + batch_size]
         )
-        
+
     return {"status": "ok", "doc_id": doc_id, "filename": file.filename, "chunks": len(chunks)}
 
 @router.get("/api/knowledge/documents")
@@ -137,7 +137,7 @@ async def list_documents(request: Request, api_key: str = Depends(verify_api_key
     qdrant = await get_qdrant()
     if qdrant is None:
         return {"documents": []}
-        
+
     # Hacky way to get unique documents: scroll and group by doc_id
     try:
         records, _ = qdrant.scroll(
@@ -160,7 +160,7 @@ async def delete_document(doc_id: str, request: Request, api_key: str = Depends(
     qdrant = await get_qdrant()
     if qdrant is None:
         raise HTTPException(status_code=503, detail="Qdrant vector database is not connected.")
-    
+
     from qdrant_client.http.models import Filter, FieldCondition, MatchValue
     qdrant.delete(
         collection_name=COLLECTION_NAME,
@@ -189,13 +189,13 @@ async def search_knowledge_base(query: str, top_k: int = 3) -> str:
         )
         if not results:
             return ""
-        
+
         context_parts = []
         for r in results:
             text = r.payload.get("text", "")
             fname = r.payload.get("filename", "unknown")
             context_parts.append(f"From {fname}:\n{text}")
-            
+
         return "\n\n".join(context_parts)
     except Exception as e:
         logger.error("Failed to search knowledge base: %s", e)
