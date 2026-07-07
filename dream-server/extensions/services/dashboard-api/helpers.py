@@ -26,7 +26,7 @@ class _DirSizeCache:
         self._ttl = ttl
         self._store: dict[str, tuple[float, float]] = {}
 
-    def get(self, path: Path) -> float | None:
+    def get(self, path: Path) -> Optional[float]:
         key = str(path.resolve())
         entry = self._store.get(key)
         if entry is None:
@@ -189,7 +189,7 @@ def _get_lifetime_tokens() -> int:
         return 0
 
 
-def _normalize_perf_key(value: str | None) -> str:
+def _normalize_perf_key(value: Optional[str]) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
 
 

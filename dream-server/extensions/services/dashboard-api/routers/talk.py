@@ -35,10 +35,10 @@ MAX_MESSAGE_CHARS = 8000
 
 # Attachment limits — chat surface, not document-ingestion. Pick conservative
 # ceilings that still let a phone photo + a short doc through.
-MAX_IMAGE_BYTES = 10 * 1024 * 1024   # 10 MB raw — base64 inflates to ~13 MB on the wire
-MAX_DOC_BYTES = 5 * 1024 * 1024      # 5 MB extracted text limit, generous
-MAX_DOC_CHARS = 80_000               # post-extraction character cap so a megabyte
-                                     # log doesn't blow past the model's context
+MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB raw — base64 inflates to ~13 MB on the wire
+MAX_DOC_BYTES = 5 * 1024 * 1024  # 5 MB extracted text limit, generous
+MAX_DOC_CHARS = 80_000  # post-extraction character cap so a megabyte
+# log doesn't blow past the model's context
 
 # MIME types we accept on the attach surface. Anything else → 415.
 _IMAGE_MIME_PREFIXES = ("image/",)
@@ -54,13 +54,34 @@ _IMAGE_EXTENSION_MIMES = {
     ".webp": "image/webp",
 }
 _TEXT_LIKE_MIMES = {
-    "text/plain", "text/markdown", "text/csv", "text/x-markdown",
-    "application/json", "application/xml", "text/xml",
-    "application/x-yaml", "text/yaml", "text/x-yaml",
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "text/x-markdown",
+    "application/json",
+    "application/xml",
+    "text/xml",
+    "application/x-yaml",
+    "text/yaml",
+    "text/x-yaml",
 }
 _TEXT_LIKE_EXTENSIONS = {  # browsers sometimes upload these as application/octet-stream
-    ".txt", ".md", ".markdown", ".csv", ".json", ".yaml", ".yml",
-    ".log", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".sh",
+    ".txt",
+    ".md",
+    ".markdown",
+    ".csv",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".log",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".html",
+    ".css",
+    ".sh",
 }
 
 
@@ -113,7 +134,9 @@ def _vision_backend_key() -> str:
     return os.environ.get("DREAM_TALK_VISION_KEY") or ""
 
 
-async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text: str) -> AsyncIterator[bytes]:
+async def _stream_vision_chat(
+    image_bytes: bytes, content_type: str, prompt_text: str
+) -> AsyncIterator[bytes]:
     """Send a single multimodal turn directly to litellm and translate the
     streaming response into the same SSE frame shape Dream Talk already uses
     (session / delta / complete / done / error). Bypasses Hermes for image
@@ -124,16 +147,21 @@ async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text
     memory, etc.) — they're a one-shot "describe this image" exchange. For
     follow-up turns, users continue typing normally and Hermes resumes.
     """
-    image_url = f"data:{content_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    image_url = (
+        f"data:{content_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    )
     payload = {
         "model": _vision_model_name(),
         "stream": True,
         "max_tokens": 1024,
         "messages": [
-            {"role": "user", "content": [
-                {"type": "text", "text": prompt_text},
-                {"type": "image_url", "image_url": {"url": image_url}},
-            ]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            },
         ],
     }
     yield _sse_event("session", {"session_id": "vision-oneshot"})
@@ -155,7 +183,9 @@ async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text
                 if resp.status_code >= 400:
                     body = await resp.aread()
                     detail = body.decode("utf-8", errors="replace")[:300]
-                    yield _sse_event("error", {"status_code": resp.status_code, "detail": detail})
+                    yield _sse_event(
+                        "error", {"status_code": resp.status_code, "detail": detail}
+                    )
                     yield _sse_event("done", {})
                     return
                 async for raw in resp.aiter_lines():
@@ -174,17 +204,22 @@ async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text
                         accumulated.append(text)
                         yield _sse_event("delta", {"text": text})
     except (httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPError) as exc:
-        yield _sse_event("error", {"status_code": 502, "detail": f"Vision model unavailable: {exc}"})
+        yield _sse_event(
+            "error", {"status_code": 502, "detail": f"Vision model unavailable: {exc}"}
+        )
         yield _sse_event("done", {})
         return
 
     final_text = "".join(accumulated).strip() or "(no response)"
-    yield _sse_event("complete", {
-        "session_id": "vision-oneshot",
-        "text": final_text,
-        "status": "ok",
-        "warning": None,
-    })
+    yield _sse_event(
+        "complete",
+        {
+            "session_id": "vision-oneshot",
+            "text": final_text,
+            "status": "ok",
+            "warning": None,
+        },
+    )
     yield _sse_event("done", {})
 
 
@@ -193,7 +228,10 @@ def _require_session(request: Request) -> tuple[str, int]:
     ok, reason = session_signer.verify(cookie_value)
     if not ok:
         logger.info("dream-talk session denied: reason=%s", reason)
-        raise HTTPException(status_code=401, detail="Scan the owner card again to start a Dream Talk session.")
+        raise HTTPException(
+            status_code=401,
+            detail="Scan the owner card again to start a Dream Talk session.",
+        )
     try:
         _, expiry_str, _ = cookie_value.split(".")
         expires_at = int(expiry_str)
@@ -210,7 +248,9 @@ async def _service_state(service_id: str) -> dict[str, Any]:
         result = await check_service_health(service_id, cfg)
         return {"configured": True, "status": result.status}
     except Exception:
-        logger.warning("Dream Talk health check failed for %s", service_id, exc_info=True)
+        logger.warning(
+            "Dream Talk health check failed for %s", service_id, exc_info=True
+        )
         return {"configured": True, "status": "unavailable"}
 
 
@@ -219,7 +259,9 @@ def _whisper_url() -> str:
 
 
 def _tts_url() -> str:
-    return (os.environ.get("KOKORO_URL") or os.environ.get("TTS_URL") or "http://tts:8880").rstrip("/")
+    return (
+        os.environ.get("KOKORO_URL") or os.environ.get("TTS_URL") or "http://tts:8880"
+    ).rstrip("/")
 
 
 def _stt_model() -> str:
@@ -240,16 +282,22 @@ async def _transcribe_bytes(data: bytes, filename: str, content_type: str) -> st
             resp = await client.post(
                 f"{_whisper_url()}/v1/audio/transcriptions",
                 data={"model": _stt_model()},
-                files={"file": (filename, data, content_type or "application/octet-stream")},
+                files={
+                    "file": (filename, data, content_type or "application/octet-stream")
+                },
             )
             resp.raise_for_status()
             payload = resp.json()
     except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail="Speech transcription is not available right now.") from exc
+        raise HTTPException(
+            status_code=503, detail="Speech transcription is not available right now."
+        ) from exc
 
     text = payload.get("text") if isinstance(payload, dict) else None
     if not isinstance(text, str) or not text.strip():
-        raise HTTPException(status_code=422, detail="No speech was detected in that audio.")
+        raise HTTPException(
+            status_code=422, detail="No speech was detected in that audio."
+        )
     return text.strip()
 
 
@@ -292,7 +340,8 @@ async def _stream_speech(text: str) -> AsyncIterator[bytes]:
                     body = await resp.aread()
                     logger.warning(
                         "kokoro returned %s for /v1/audio/speech: %s",
-                        resp.status_code, body.decode("utf-8", errors="replace")[:200],
+                        resp.status_code,
+                        body.decode("utf-8", errors="replace")[:200],
                     )
                     return
                 async for chunk in resp.aiter_bytes():
@@ -311,7 +360,9 @@ async def _send_to_hermes(session_key: str, text: str) -> dict[str, Any]:
     except hermes_bridge.HermesUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (hermes_bridge.HermesBridgeError, asyncio.TimeoutError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc) or "Hermes did not finish the response.") from exc
+        raise HTTPException(
+            status_code=502, detail=str(exc) or "Hermes did not finish the response."
+        ) from exc
 
     return {
         "session_id": reply.session_id,
@@ -442,7 +493,13 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
                 pending = None
                 break
             except (hermes_bridge.HermesBridgeError, asyncio.TimeoutError) as exc:
-                yield _sse_event("error", {"status_code": 502, "detail": str(exc) or "Hermes did not finish the response."})
+                yield _sse_event(
+                    "error",
+                    {
+                        "status_code": 502,
+                        "detail": str(exc) or "Hermes did not finish the response.",
+                    },
+                )
                 pending = None
                 break
             pending = None  # ready for next iteration
@@ -456,39 +513,51 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
                 # Hermes pre-formatted status text (e.g. "⏳ Retrying in 5.1s…",
                 # "🔎 Searching the web…"). Forward verbatim — upstream is
                 # responsible for the human-readable wording.
-                yield _sse_event("status", {
-                    "label": event.get("label"),
-                    "kind": event.get("kind"),
-                    "tool": None,
-                    "detail": None,
-                })
+                yield _sse_event(
+                    "status",
+                    {
+                        "label": event.get("label"),
+                        "kind": event.get("kind"),
+                        "tool": None,
+                        "detail": None,
+                    },
+                )
             elif et == "tool_start":
                 # Translate raw bridge event into a friendly "status" frame
                 # the SPA renders as the spinner caption. The SPA replaces
                 # the caption on each new status, then drops it once
                 # message.delta frames start arriving.
                 tool_name = event.get("tool", "")
-                yield _sse_event("status", {
-                    "label": _label_for_tool(tool_name),
-                    "tool": tool_name,
-                    "detail": event.get("detail") or None,
-                })
+                yield _sse_event(
+                    "status",
+                    {
+                        "label": _label_for_tool(tool_name),
+                        "tool": tool_name,
+                        "detail": event.get("detail") or None,
+                    },
+                )
             elif et == "tool_complete":
                 # Tool finished — flip back to the default "Thinking…" caption
                 # until the next tool starts or message.delta arrives. SPA
                 # treats label=None as "clear and show default."
-                yield _sse_event("status", {
-                    "label": None,
-                    "tool": None,
-                    "detail": None,
-                })
+                yield _sse_event(
+                    "status",
+                    {
+                        "label": None,
+                        "tool": None,
+                        "detail": None,
+                    },
+                )
             elif et == "complete":
-                yield _sse_event("complete", {
-                    "session_id": event.get("session_id", ""),
-                    "text": event.get("text", ""),
-                    "status": event.get("status") or "ok",
-                    "warning": event.get("warning"),
-                })
+                yield _sse_event(
+                    "complete",
+                    {
+                        "session_id": event.get("session_id", ""),
+                        "text": event.get("text", ""),
+                        "status": event.get("status") or "ok",
+                        "warning": event.get("warning"),
+                    },
+                )
     finally:
         await cancel_pending()
         if emit_done:
@@ -529,7 +598,9 @@ async def talk_session(request: Request) -> dict[str, Any]:
     except hermes_bridge.HermesUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (hermes_bridge.HermesBridgeError, asyncio.TimeoutError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc) or "Hermes session could not be started.") from exc
+        raise HTTPException(
+            status_code=502, detail=str(exc) or "Hermes session could not be started."
+        ) from exc
     return {"session_id": session_id, "expires_at": expires_at}
 
 
@@ -560,16 +631,21 @@ async def talk_message(payload: dict[str, Any], request: Request) -> dict[str, A
     if use_knowledge:
         try:
             from routers.knowledge import search_knowledge_base
+
             context = await search_knowledge_base(text)
             if context:
-                text = f"Context from Knowledge Base:\n{context}\n\nUser Message:\n{text}"
+                text = (
+                    f"Context from Knowledge Base:\n{context}\n\nUser Message:\n{text}"
+                )
         except Exception as e:
             logger.error("Failed to inject knowledge base context: %s", e)
     return await _send_to_hermes(session_key, text)
 
 
 @router.post("/api/talk/message/stream")
-async def talk_message_stream(payload: dict[str, Any], request: Request) -> StreamingResponse:
+async def talk_message_stream(
+    payload: dict[str, Any], request: Request
+) -> StreamingResponse:
     """Server-Sent Events chat send. Streams delta + complete events.
 
     Frame shape (one JSON object per ``data:`` line, ``\\n\\n`` terminator):
@@ -591,9 +667,12 @@ async def talk_message_stream(payload: dict[str, Any], request: Request) -> Stre
     if use_knowledge:
         try:
             from routers.knowledge import search_knowledge_base
+
             context = await search_knowledge_base(text)
             if context:
-                text = f"Context from Knowledge Base:\n{context}\n\nUser Message:\n{text}"
+                text = (
+                    f"Context from Knowledge Base:\n{context}\n\nUser Message:\n{text}"
+                )
         except Exception as e:
             logger.error("Failed to inject knowledge base context: %s", e)
 
@@ -679,7 +758,10 @@ async def talk_attachment(
     if kind == "image":
         data = await file.read(MAX_IMAGE_BYTES + 1)
         if len(data) > MAX_IMAGE_BYTES:
-            raise HTTPException(status_code=413, detail=f"Image is too large (max {MAX_IMAGE_BYTES // (1024 * 1024)} MB).")
+            raise HTTPException(
+                status_code=413,
+                detail=f"Image is too large (max {MAX_IMAGE_BYTES // (1024 * 1024)} MB).",
+            )
         prompt_text = caption or "Describe what you see in this image."
         return StreamingResponse(
             _stream_vision_chat(data, _image_content_type(file), prompt_text),
@@ -694,13 +776,19 @@ async def talk_attachment(
     # text-like
     data = await file.read(MAX_DOC_BYTES + 1)
     if len(data) > MAX_DOC_BYTES:
-        raise HTTPException(status_code=413, detail=f"File is too large (max {MAX_DOC_BYTES // (1024 * 1024)} MB).")
+        raise HTTPException(
+            status_code=413,
+            detail=f"File is too large (max {MAX_DOC_BYTES // (1024 * 1024)} MB).",
+        )
     try:
         content = data.decode("utf-8")
     except UnicodeDecodeError:
         content = data.decode("utf-8", errors="replace")
     if len(content) > MAX_DOC_CHARS:
-        content = content[:MAX_DOC_CHARS] + f"\n\n[Truncated — file was {len(data):,} bytes, showing first {MAX_DOC_CHARS:,} chars]"
+        content = (
+            content[:MAX_DOC_CHARS]
+            + f"\n\n[Truncated — file was {len(data):,} bytes, showing first {MAX_DOC_CHARS:,} chars]"
+        )
 
     filename = file.filename or "attachment.txt"
     prompt = (
@@ -712,11 +800,14 @@ async def talk_attachment(
     if use_knowledge:
         try:
             from routers.knowledge import search_knowledge_base
+
             kb_context = await search_knowledge_base(prompt)
             if kb_context:
                 prompt = f"Context from Knowledge Base:\n{kb_context}\n\nUser Message:\n{prompt}"
         except Exception as e:
-            logger.error("Failed to inject knowledge base context for attachment: %s", e)
+            logger.error(
+                "Failed to inject knowledge base context for attachment: %s", e
+            )
 
     return StreamingResponse(
         _stream_hermes_sse(session_key, prompt, request),
@@ -730,7 +821,9 @@ async def talk_attachment(
 
 
 @router.post("/api/talk/audio-message")
-async def talk_audio_message(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+async def talk_audio_message(
+    request: Request, file: UploadFile = File(...)
+) -> dict[str, Any]:
     session_key, _expires_at = _require_session(request)
     data = await file.read(MAX_AUDIO_BYTES + 1)
     if len(data) > MAX_AUDIO_BYTES:
