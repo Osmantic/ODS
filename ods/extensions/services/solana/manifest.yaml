@@ -40,6 +40,10 @@ service:
       required: false
       secret: true
       description: Optional bearer token required for the REST write endpoints (wallet/airdrop/transfer).
+    - key: SOLANA_MCP_WRITE
+      required: false
+      default: "false"
+      description: Expose MCP write tools (create_wallet/airdrop/transfer). Off by default — MCP is read-only until enabled.
 
 features:
   - id: solana-wallet

@@ -10,7 +10,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund
 
-COPY index.mjs solana.mjs mcp.mjs ./
+COPY index.mjs solana.mjs mcp.mjs cluster.mjs ./
 
 # Keystore volume must be writable by the unprivileged runtime user. Named
 # volumes inherit this ownership on first creation.

@@ -3,9 +3,10 @@
 A tiny, **self-custodial** Solana helper for your ODS agents. It manages a local
 keypair and talks to a Solana RPC, exposing the same operations two ways:
 
-- **MCP over HTTP** at `/mcp` — Hermes (and any MCP client) gets native tools:
-  `solana_create_wallet`, `solana_get_pubkey`, `solana_get_balance`,
-  `solana_airdrop`, `solana_transfer`.
+- **MCP over HTTP** at `/mcp` — Hermes (and any MCP client) gets native tools.
+  Read tools (`solana_get_pubkey`, `solana_get_balance`) are always available;
+  write tools (`solana_create_wallet`, `solana_airdrop`, `solana_transfer`) are
+  exposed only when `SOLANA_MCP_WRITE=true` (MCP is read-only by default).
 - **REST** — for n8n, Open WebUI, OpenClaw, or plain `curl`.
 
 No hosted API, no custodial service. Keys never leave the box. **Devnet by
@@ -50,20 +51,28 @@ mcp_servers:
     transport: http
 ```
 
-Then the agent can just be asked: *"Create a Solana wallet and airdrop 1 devnet
-SOL"* — it calls the `solana_*` tools directly. n8n / Open WebUI / OpenClaw can
-call the REST endpoints instead.
+By default MCP exposes only read tools. To let agents create wallets, airdrop,
+and transfer over MCP, set `SOLANA_MCP_WRITE=true` — but note the `/mcp`
+endpoint is **unauthenticated within `ods-network`** (unlike the REST write
+routes, which honor `SOLANA_API_KEY`), so enable write tools only on a trusted
+network. The mainnet guard still applies. Then the agent can be asked *"Create a
+Solana wallet and airdrop 1 devnet SOL"* and it calls the tools directly. n8n /
+Open WebUI / OpenClaw can use the REST endpoints instead.
 
 ## Security
 
-- **Devnet by default** (`SOLANA_NETWORK=devnet`). Transfers on `mainnet-beta`
-  are refused unless `SOLANA_ALLOW_MAINNET=true`. Airdrop is devnet/testnet only.
+- **Devnet by default.** A target is treated as mainnet if `SOLANA_NETWORK` is
+  `mainnet-beta`/`mainnet` **or** `SOLANA_RPC_URL` points at a mainnet endpoint —
+  so a mainnet RPC can't slip past the guard while the network label is left at
+  its devnet default. Transfers on mainnet are refused unless
+  `SOLANA_ALLOW_MAINNET=true`; airdrop is devnet/testnet only.
 - The secret key is stored at `/keystore/id.json` with mode `0600` and is
   **never returned by any endpoint/tool and never logged**.
 - The host port is bound to `127.0.0.1` only. On `ods-network`, other containers
   reach it by DNS (`ods-solana`).
-- `SOLANA_API_KEY` (optional) requires `Authorization: Bearer <key>` on the REST
-  write routes. For mainnet use, set it and keep the service on a trusted network.
+- REST write routes honor `SOLANA_API_KEY` (bearer). MCP is **read-only by
+  default**; write tools require `SOLANA_MCP_WRITE=true` and are unauthenticated
+  within `ods-network` — enable only on a trusted network.
 
 ## Config (`env_vars`)
 
@@ -72,5 +81,6 @@ call the REST endpoints instead.
 | `SOLANA_NETWORK` | `devnet` | `devnet` \| `testnet` \| `mainnet-beta` |
 | `SOLANA_RPC_URL` | `https://api.devnet.solana.com` | JSON-RPC endpoint |
 | `SOLANA_PORT` | `8590` | host port (bound to 127.0.0.1) |
-| `SOLANA_ALLOW_MAINNET` | `false` | gate for mainnet writes |
+| `SOLANA_ALLOW_MAINNET` | `false` | gate for mainnet writes (network label or RPC URL) |
 | `SOLANA_API_KEY` | — | optional bearer token for REST writes |
+| `SOLANA_MCP_WRITE` | `false` | expose MCP write tools (create_wallet/airdrop/transfer) |

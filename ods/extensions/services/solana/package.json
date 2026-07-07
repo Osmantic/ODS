@@ -6,7 +6,8 @@
   "description": "Local self-custodial Solana wallet + RPC for ODS agents, exposed over MCP (HTTP) and REST.",
   "main": "index.mjs",
   "scripts": {
-    "start": "node index.mjs"
+    "start": "node index.mjs",
+    "test": "node test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

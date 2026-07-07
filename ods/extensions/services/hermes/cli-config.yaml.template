@@ -183,9 +183,11 @@ compression:
 # enabling the matching ODS extension, then restart Hermes.
 #
 # The `solana` extension (`ods enable solana`) exposes a local, self-custodial
-# Solana wallet + RPC as agent tools (solana_create_wallet, solana_get_balance,
-# solana_airdrop, solana_transfer). It runs on ods-network — reach it by its
-# service DNS name. Devnet by default; see extensions/services/solana/README.md.
+# Solana wallet + RPC as agent tools. Read tools (solana_get_pubkey,
+# solana_get_balance) are always available; write tools (create_wallet, airdrop,
+# transfer) require SOLANA_MCP_WRITE=true. It runs on ods-network — reach it by
+# its service DNS name. Devnet by default; see
+# extensions/services/solana/README.md.
 #
 # mcp_servers:
 #   solana:

@@ -208,6 +208,12 @@
       "value": "searxng/searxng:2026.3.8-a563127a2"
     },
     {
+      "id": "solana.node",
+      "type": "image",
+      "path": "extensions/services/solana/Dockerfile",
+      "value": "node:20-alpine"
+    },
+    {
       "id": "tailscale.sidecar",
       "type": "image",
       "path": "extensions/services/tailscale/compose.yaml",
@@ -273,6 +279,11 @@
     {
       "path": "extensions/services/brave-search/compose.yaml",
       "value": "ods-brave-search:local",
+      "reason": "Local extension image built from the adjacent Dockerfile."
+    },
+    {
+      "path": "extensions/services/solana/compose.yaml",
+      "value": "ods-solana:local",
       "reason": "Local extension image built from the adjacent Dockerfile."
     }
   ],

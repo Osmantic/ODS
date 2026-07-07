@@ -22,6 +22,7 @@ import {
   getOrCreateAssociatedTokenAccount,
   transfer as splTransfer,
 } from '@solana/spl-token';
+import { isMainnetTarget, writesAllowed } from './cluster.mjs';
 
 const NETWORK = process.env.SOLANA_NETWORK || 'devnet';
 const RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com';
@@ -37,10 +38,13 @@ export class HttpError extends Error {
   }
 }
 
-const isMainnet = () => NETWORK === 'mainnet-beta' || NETWORK === 'mainnet';
+// Mainnet is inferred from the network label AND the RPC URL, so a mainnet
+// SOLANA_RPC_URL cannot slip past the guard while SOLANA_NETWORK is left at
+// its devnet default.
+const isMainnet = () => isMainnetTarget(NETWORK, RPC_URL);
 
 function assertWriteAllowed() {
-  if (isMainnet() && !ALLOW_MAINNET) {
+  if (!writesAllowed(NETWORK, RPC_URL, ALLOW_MAINNET)) {
     throw new HttpError(403, 'writes on mainnet require SOLANA_ALLOW_MAINNET=true');
   }
 }
