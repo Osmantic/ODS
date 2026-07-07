@@ -13,6 +13,7 @@ services:
       - SOLANA_RPC_URL=${SOLANA_RPC_URL:-https://api.devnet.solana.com}
       - SOLANA_ALLOW_MAINNET=${SOLANA_ALLOW_MAINNET:-false}
       - SOLANA_API_KEY=${SOLANA_API_KEY:-}
+      - SOLANA_MCP_WRITE=${SOLANA_MCP_WRITE:-false}
       - SOLANA_PORT_INTERNAL=8590
       - SOLANA_KEYSTORE_DIR=/keystore
     volumes:

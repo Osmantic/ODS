@@ -122,6 +122,12 @@
       "auth_required": false,
       "notes": "Metasearch service; exposure can leak query history."
     },
+    "solana": {
+      "risk": "wallet-rpc-surface",
+      "lan_exposure": "localhost-by-default",
+      "auth_required": false,
+      "notes": "Self-custodial Solana wallet + RPC. Localhost-bound by default; MCP is read-only unless SOLANA_MCP_WRITE=true; mainnet writes require SOLANA_ALLOW_MAINNET; optional SOLANA_API_KEY guards REST writes."
+    },
     "tailscale": {
       "risk": "remote-network-access",
       "lan_exposure": "host-network",
