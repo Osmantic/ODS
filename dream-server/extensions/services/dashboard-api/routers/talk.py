@@ -596,7 +596,7 @@ async def talk_message_stream(payload: dict[str, Any], request: Request) -> Stre
                 text = f"Context from Knowledge Base:\n{context}\n\nUser Message:\n{text}"
         except Exception as e:
             logger.error("Failed to inject knowledge base context: %s", e)
-            
+
     headers = {
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
@@ -651,6 +651,7 @@ async def talk_attachment(
     request: Request,
     file: UploadFile = File(...),
     text: str = Form(""),
+    use_knowledge: bool = Form(False),
 ) -> StreamingResponse:
     """Multipart attachment endpoint. Returns the same SSE event shape as
     ``/api/talk/message/stream`` so the SPA can use a single rendering path.
@@ -707,6 +708,16 @@ async def talk_attachment(
         f"```\n{content}\n```\n\n"
         f"{caption or 'Take a look at this and let me know what you think.'}"
     )
+    
+    if use_knowledge:
+        try:
+            from routers.knowledge import search_knowledge_base
+            kb_context = await search_knowledge_base(prompt)
+            if kb_context:
+                prompt = f"Context from Knowledge Base:\n{kb_context}\n\nUser Message:\n{prompt}"
+        except Exception as e:
+            logger.error("Failed to inject knowledge base context for attachment: %s", e)
+
     return StreamingResponse(
         _stream_hermes_sse(session_key, prompt, request),
         media_type="text/event-stream",

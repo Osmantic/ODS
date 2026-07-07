@@ -9,14 +9,10 @@ import {
   UserPlus,
   CreditCard,
   ChevronRight,
-  Palette,
-  Sun,
-  Moon,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import EnvEditor from '../components/settings/EnvEditor'
-import { useTheme } from '../contexts/ThemeContext'
 
 const fetchJson = async (url, ms = 8000, options = {}) => {
   const c = new AbortController()
@@ -79,7 +75,6 @@ const matchesEnvSearch = (key, field, query) => {
 }
 
 export default function Settings() {
-  const { theme, setTheme } = useTheme()
   const [version, setVersion] = useState(null)
   const [storage, setStorage] = useState(null)
   const [services, setServices] = useState([])
@@ -255,23 +250,6 @@ export default function Settings() {
 
       <div className="max-w-5xl space-y-6 liquid-metal-sequence-grid liquid-metal-sequence-grid--services">
         <SettingsSection title="System Identity" icon={Server}><div className="grid gap-4 sm:grid-cols-2"><InfoRow label="Version" value={version?.version || 'Unknown'} /><InfoRow label="Install Date" value={version?.install_date || 'Unknown'} /><InfoRow label="Tier" value={version?.tier || 'Community'} /><InfoRow label="Uptime" value={version?.uptime || 'Unknown'} /></div></SettingsSection>
-
-        <SettingsSection title="Appearance" icon={Palette}>
-          <div className="flex gap-4">
-            <button 
-              onClick={() => setTheme('dream')} 
-              className={`px-4 py-2 rounded-lg border flex items-center gap-2 ${theme === 'dream' ? 'border-theme-accent bg-theme-accent/10 text-theme-accent' : 'border-theme-border text-theme-text-muted hover:text-theme-text transition-colors'}`}
-            >
-              <Moon size={16} /> Dark
-            </button>
-            <button 
-              onClick={() => setTheme('light')} 
-              className={`px-4 py-2 rounded-lg border flex items-center gap-2 ${theme === 'light' ? 'border-theme-accent bg-theme-accent/10 text-theme-accent' : 'border-theme-border text-theme-text-muted hover:text-theme-text transition-colors'}`}
-            >
-              <Sun size={16} /> Light
-            </button>
-          </div>
-        </SettingsSection>
 
         <SettingsSection title="Account" icon={SettingsIcon}>
           <div className="divide-y divide-theme-border">

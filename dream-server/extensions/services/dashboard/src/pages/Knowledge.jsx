@@ -71,7 +71,7 @@ export default function Knowledge() {
 
   const handleDelete = async (docId) => {
     if (!window.confirm('Are you sure you want to delete this document from the knowledge base?')) return
-    
+
     try {
       const res = await fetch(`/api/knowledge/documents/${docId}`, {
         method: 'DELETE',
@@ -121,7 +121,7 @@ export default function Knowledge() {
               <UploadCloud className="w-5 h-5 text-theme-accent" />
               Upload Document
             </h2>
-            <div 
+            <div
               className="border-2 border-dashed border-theme-border rounded-xl p-8 text-center hover:border-theme-accent transition-colors cursor-pointer"
               onClick={() => fileInputRef.current?.click()}
             >
@@ -140,7 +140,7 @@ export default function Knowledge() {
                 </div>
               )}
             </div>
-            <input 
+            <input
               type="file" 
               ref={fileInputRef} 
               className="hidden" 
