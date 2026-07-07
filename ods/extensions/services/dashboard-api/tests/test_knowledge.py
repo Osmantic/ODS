@@ -102,10 +102,10 @@ async def test_knowledge_deletion_targets_doc_id(
 def test_talk_attachment_use_knowledge(test_client, monkeypatch):
     import session_signer
 
-    monkeypatch.setenv("DREAM_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("ODS_SESSION_SECRET", "test-secret")
     session_signer._set_secret_for_tests("test-secret")
     cookie = session_signer.issue(ttl_seconds=3600)
-    test_client.cookies.set("dream-session", cookie)
+    test_client.cookies.set("ods-session", cookie)
 
     async def mock_search(query: str):
         return "This is retrieved knowledge context."
