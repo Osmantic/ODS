@@ -137,7 +137,7 @@ def test_talk_attachment_use_knowledge(test_client, monkeypatch):
 @pytest.mark.asyncio
 async def test_knowledge_qdrant_retry(monkeypatch):
     import routers.knowledge as knowledge
-    
+
     # Reset state
     knowledge._qdrant_initialized = False
     knowledge._qdrant_client = None
