@@ -125,6 +125,7 @@ def load_extension_manifests(
                     "external_port": external_port,
                     "health": service.get("health", "/health"),
                     "health_type": service.get("health_type", "http"),
+                    "health_timeout": int(service.get("health_timeout", 5)),
                     "name": service.get("name", service_id),
                     "ui_path": service.get("ui_path", "/"),
                     "external_link": bool(service.get("external_link", True)),

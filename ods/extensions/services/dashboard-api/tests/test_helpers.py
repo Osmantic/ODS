@@ -818,6 +818,106 @@ class TestGetLifetimeTokens:
         assert _get_lifetime_tokens() == 42
 
 
+# --- check_service_health health_type ---
+
+
+class TestCheckServiceHealthType:
+
+    @pytest.mark.asyncio
+    async def test_health_type_none_returns_not_applicable(self):
+        """health_type=none should skip the check and return not_applicable."""
+        config = {
+            "name": "cli-tool",
+            "port": 0,
+            "external_port": 0,
+            "health": "",
+            "health_type": "none",
+            "host": "localhost",
+        }
+        result = await check_service_health("cli-tool", config)
+        assert result.status == "not_applicable"
+        assert result.id == "cli-tool"
+
+    @pytest.mark.asyncio
+    async def test_health_type_tcp_healthy_on_open_port(self, monkeypatch):
+        """health_type=tcp with an open port returns healthy."""
+        async def fake_open_connection(host, port):
+            writer = AsyncMock()
+            writer.close = MagicMock()
+            writer.wait_closed = AsyncMock()
+            return (MagicMock(), writer)
+
+        original = asyncio.open_connection
+        monkeypatch.setattr(asyncio, "open_connection", fake_open_connection)
+
+        config = {
+            "name": "tcp-service",
+            "port": 10200,
+            "external_port": 10200,
+            "health": "",
+            "health_type": "tcp",
+            "host": "localhost",
+            "health_timeout": 5,
+        }
+        result = await check_service_health("tcp-service", config)
+        assert result.status == "healthy"
+        assert result.response_time_ms is not None
+
+    @pytest.mark.asyncio
+    async def test_health_type_tcp_down_on_closed_port(self, monkeypatch):
+        """health_type=tcp with a closed port returns down."""
+        async def fake_open_connection(host, port):
+            raise ConnectionRefusedError()
+
+        monkeypatch.setattr(asyncio, "open_connection", fake_open_connection)
+
+        config = {
+            "name": "tcp-service",
+            "port": 10200,
+            "external_port": 10200,
+            "health": "",
+            "health_type": "tcp",
+            "host": "localhost",
+            "health_timeout": 5,
+        }
+        result = await check_service_health("tcp-service", config)
+        assert result.status == "down"
+        assert result.response_time_ms is None
+
+    @pytest.mark.asyncio
+    async def test_health_type_tcp_honors_health_timeout(self, monkeypatch):
+        """health_type=tcp should use health_timeout from config instead of hardcoded 5s."""
+        called_with_timeout = None
+
+        async def fake_open_connection(host, port):
+            writer = AsyncMock()
+            writer.close = MagicMock()
+            writer.wait_closed = AsyncMock()
+            return (MagicMock(), writer)
+
+        original_wait_for = asyncio.wait_for
+
+        async def fake_wait_for(coro, timeout):
+            nonlocal called_with_timeout
+            called_with_timeout = timeout
+            return await coro
+
+        monkeypatch.setattr(asyncio, "open_connection", fake_open_connection)
+        monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+
+        config = {
+            "name": "tcp-service",
+            "port": 10200,
+            "external_port": 10200,
+            "health": "",
+            "health_type": "tcp",
+            "host": "localhost",
+            "health_timeout": 15,
+        }
+        await check_service_health("tcp-service", config)
+        assert called_with_timeout == 15, f"expected timeout 15, got {called_with_timeout}"
+
+
 # --- check_service_health host-systemd ---
 
 

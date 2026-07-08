@@ -510,6 +510,10 @@ async def check_service_health(
 
     host = config.get('host', 'localhost')
     health_port = config.get('health_port', config['port'])
+    # Use health_timeout from manifest, falling back to the per-call override,
+    # then to the default 5s. This keeps dashboard TCP probes aligned with
+    # the shell health check which uses SERVICE_HEALTH_TIMEOUTS.
+    health_timeout = config.get('health_timeout', timeout if timeout is not None else 5.0)
 
     # health_type=tcp: check port is open (Wyoming, raw TCP services)
     if health_type == "tcp":
@@ -519,7 +523,7 @@ async def check_service_health(
             start = loop.time()
             _, writer = await asyncio.wait_for(
                 asyncio.open_connection(host, health_port),
-                timeout=5.0,
+                timeout=health_timeout,
             )
             writer.close()
             await writer.wait_closed()

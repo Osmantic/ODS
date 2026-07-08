@@ -495,11 +495,12 @@ def validate_records(
         # compose-port-mismatch check further down.
         host_network = bool(service.get("host_network"))
 
-        port = parse_positive_int(service.get("port"))
-        if port is None and not host_network:
-            record.add_issue("error", "service-port-invalid", "service.port must be a positive integer", path=record.manifest_path)
-
         health_type = str(service.get("health_type") or "http")
+
+        # CLI/one-shot tools with health_type=none have no server port
+        port = parse_positive_int(service.get("port"))
+        if port is None and not host_network and health_type != "none":
+            record.add_issue("error", "service-port-invalid", "service.port must be a positive integer", path=record.manifest_path)
         if health_type not in ("http", "tcp", "none"):
             record.add_issue(
                 "error",
