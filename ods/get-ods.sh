@@ -45,6 +45,9 @@ for _arg in "$@"; do
     esac
 done
 
+# Derive INSTALL_DIR with precedence: --install-dir flag > $INSTALL_DIR env > $ODS_INSTALL_DIR env > default
+INSTALL_DIR="${BOOTSTRAP_INSTALL_DIR:-${INSTALL_DIR:-${ODS_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/ods}}}"
+
 log()     { echo -e "${CYAN}[ods]${NC} $1"; }
 success() { echo -e "${GREEN}[  ok ]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[warn ]${NC} $1"; }
