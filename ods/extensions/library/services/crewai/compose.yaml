@@ -1,0 +1,63 @@
+# CrewAI Studio — no-code multi-agent UI (https://github.com/strnad/CrewAI-Studio)
+# Image: tham0nk/crewai-studio (community build of strnad/CrewAI-Studio)
+# Digest pinned from Docker Hub tag "latest" as of 2024-09-06.
+# NOTE: This image only has a single `latest` tag. Pin is by digest for
+#       reproducibility. Check for updates at:
+#       https://hub.docker.com/r/tham0nk/crewai-studio/tags
+
+services:
+  crewai:
+    image: tham0nk/crewai-studio@sha256:5438b8fbedc5bf98481de10e8fa9be13672c88a2bc9981f30b3747e99eec1e4e
+    container_name: ods-crewai
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # --- Local LLM via ODS (OpenAI-compatible) ---
+      # Wired to LLM_API_URL so agents use the local model.
+      # The studio's "OpenAI Proxy" provider uses OPENAI_API_BASE.
+      - OPENAI_API_BASE=${LLM_API_URL:-http://llama-server:8000}/v1
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-ods-local}
+      # Optional: list model names exposed under the proxy provider
+      # e.g. "openai/llama3,openai/mistral"
+      - OPENAI_PROXY_MODELS=${CREWAI_PROXY_MODELS:-}
+      # --- Ollama (optional, for direct Ollama integration) ---
+      - OLLAMA_HOST=${OLLAMA_HOST:-}
+      - OLLAMA_MODELS=${CREWAI_OLLAMA_MODELS:-}
+      # --- LM Studio (optional) ---
+      - LMSTUDIO_API_BASE=${LMSTUDIO_API_BASE:-}
+      # --- Cloud LLM keys (all optional) ---
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      # --- Web search tools (optional) ---
+      - SERPER_API_KEY=${SERPER_API_KEY:-}
+      - SCRAPFLY_API_KEY=${SCRAPFLY_API_KEY:-}
+      # --- AgentOps observability (disabled by default) ---
+      - AGENTOPS_ENABLED=${AGENTOPS_ENABLED:-False}
+      - AGENTOPS_API_KEY=${AGENTOPS_API_KEY:-}
+    volumes:
+      # App data (SQLite DB, crew configs, history) lives under /app in the container
+      - ./data/crewai:/app:rw
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${CREWAI_PORT:-8501}:8501"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+
+networks:
+  ods-network:
+    external: true

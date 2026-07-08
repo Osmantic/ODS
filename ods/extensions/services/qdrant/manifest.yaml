@@ -1,0 +1,22 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: qdrant
+  name: Qdrant (Vector DB)
+  aliases: [vector]
+  container_name: ods-qdrant
+  host_env: QDRANT_HOST
+  default_host: qdrant
+  port: 6333
+  external_port_env: QDRANT_PORT
+  external_port_default: 6333
+  health: /
+  ui_path: /dashboard
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []

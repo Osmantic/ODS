@@ -1,0 +1,510 @@
+{
+  "schema_version": "ods.hardware.v1",
+  "_attribution": {
+    "gpu_bandwidth_data": "llmfit by Alex Jones (MIT) — github.com/AlexsJones/llmfit",
+    "note": "GPU bandwidth numbers sourced from the llmfit project's hardware database. Thank you to Alex Jones and the llmfit contributors for maintaining this excellent open-source resource."
+  },
+  "known_gpus": [
+    {
+      "id": "rtx_pro_6000_blackwell",
+      "match": {
+        "device_ids": [],
+        "name_patterns": ["RTX PRO 6000", "Blackwell"]
+      },
+      "specs": {
+        "label": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+        "vendor": "nvidia",
+        "architecture": "blackwell",
+        "memory_type": "discrete",
+        "memory_mb": 96000,
+        "memory_source": "vram",
+        "bandwidth_gbps": 1792
+      },
+      "recommended": {
+        "backend": "nvidia",
+        "tier": "NV_ULTRA"
+      }
+    },
+    {
+      "id": "strix_halo_395",
+      "match": {
+        "device_ids": ["0x1586"],
+        "name_patterns": ["Radeon 8060S", "RYZEN AI MAX+ 395", "Strix Halo"]
+      },
+      "specs": {
+        "label": "AMD Ryzen AI MAX+ 395 (Strix Halo)",
+        "vendor": "amd",
+        "architecture": "rdna-3.5",
+        "memory_type": "unified",
+        "memory_mb": 98304,
+        "memory_source": "ram",
+        "bandwidth_gbps": 256,
+        "compute_units": 40
+      },
+      "recommended": {
+        "backend": "amd",
+        "tier": "SH_LARGE"
+      }
+    },
+    {
+      "id": "strix_halo_390",
+      "match": {
+        "device_ids": ["0x1586"],
+        "name_patterns": ["RYZEN AI MAX 390", "Radeon 8050S"]
+      },
+      "specs": {
+        "label": "AMD Ryzen AI MAX 390 (Strix Halo)",
+        "vendor": "amd",
+        "architecture": "rdna-3.5",
+        "memory_type": "unified",
+        "memory_mb": 65536,
+        "memory_source": "ram",
+        "bandwidth_gbps": 256,
+        "compute_units": 32
+      },
+      "recommended": {
+        "backend": "amd",
+        "tier": "SH_COMPACT"
+      }
+    },
+    {
+      "id": "rx_7900_xtx",
+      "match": {
+        "device_ids": ["0x744c"],
+        "name_patterns": ["RX 7900 XTX", "Navi 31"]
+      },
+      "specs": {
+        "label": "AMD Radeon RX 7900 XTX",
+        "vendor": "amd",
+        "architecture": "rdna-3",
+        "memory_type": "discrete",
+        "memory_mb": 24576,
+        "memory_source": "vram",
+        "bandwidth_gbps": 960
+      },
+      "recommended": {
+        "backend": "amd",
+        "tier": "T3"
+      }
+    },
+    {
+      "id": "rx_7900_xt",
+      "match": {
+        "device_ids": ["0x744c"],
+        "name_patterns": ["RX 7900 XT"]
+      },
+      "specs": {
+        "label": "AMD Radeon RX 7900 XT",
+        "vendor": "amd",
+        "architecture": "rdna-3",
+        "memory_type": "discrete",
+        "memory_mb": 20480,
+        "memory_source": "vram",
+        "bandwidth_gbps": 800
+      },
+      "recommended": {
+        "backend": "amd",
+        "tier": "T3"
+      }
+    },
+    {
+      "id": "rx_7900_gre",
+      "match": {
+        "device_ids": ["0x744c"],
+        "name_patterns": ["RX 7900 GRE"]
+      },
+      "specs": {
+        "label": "AMD Radeon RX 7900 GRE",
+        "vendor": "amd",
+        "architecture": "rdna-3",
+        "memory_type": "discrete",
+        "memory_mb": 16384,
+        "memory_source": "vram",
+        "bandwidth_gbps": 576
+      },
+      "recommended": {
+        "backend": "amd",
+        "tier": "T2"
+      }
+    },
+    {
+      "id": "rx_7800_xt",
+      "match": {
+        "device_ids": ["0x7480"],
+        "name_patterns": ["RX 7800 XT", "Navi 32"]
+      },
+      "specs": {
+        "label": "AMD Radeon RX 7800 XT",
+        "vendor": "amd",
+        "architecture": "rdna-3",
+        "memory_type": "discrete",
+        "memory_mb": 16384,
+        "memory_source": "vram",
+        "bandwidth_gbps": 624
+      },
+      "recommended": {
+        "backend": "amd",
+        "tier": "T2"
+      }
+    },
+    {
+      "id": "rx_7700_xt",
+      "match": {
+        "device_ids": ["0x7480"],
+        "name_patterns": ["RX 7700 XT"]
+      },
+      "specs": {
+        "label": "AMD Radeon RX 7700 XT",
+        "vendor": "amd",
+        "architecture": "rdna-3",
+        "memory_type": "discrete",
+        "memory_mb": 12288,
+        "memory_source": "vram",
+        "bandwidth_gbps": 432
+      },
+      "recommended": {
+        "backend": "amd",
+        "tier": "T2"
+      }
+    },
+    {
+      "id": "rx_7600",
+      "match": {
+        "device_ids": [],
+        "name_patterns": ["RX 7600"]
+      },
+      "specs": {
+        "label": "AMD Radeon RX 7600",
+        "vendor": "amd",
+        "architecture": "rdna-3",
+        "memory_type": "discrete",
+        "memory_mb": 8192,
+        "memory_source": "vram",
+        "bandwidth_gbps": 288
+      },
+      "recommended": {
+        "backend": "amd",
+        "tier": "T1"
+      }
+    },
+    {
+      "id": "rx_9070_xt",
+      "match": {
+        "device_ids": [],
+        "name_patterns": ["RX 9070 XT", "Navi 48"]
+      },
+      "specs": {
+        "label": "AMD Radeon RX 9070 XT",
+        "vendor": "amd",
+        "architecture": "rdna-4",
+        "memory_type": "discrete",
+        "memory_mb": 16384,
+        "memory_source": "vram",
+        "bandwidth_gbps": 624
+      },
+      "recommended": {
+        "backend": "amd",
+        "tier": "T2"
+      }
+    },
+    {
+      "id": "rx_9070",
+      "match": {
+        "device_ids": [],
+        "name_patterns": ["RX 9070"]
+      },
+      "specs": {
+        "label": "AMD Radeon RX 9070",
+        "vendor": "amd",
+        "architecture": "rdna-4",
+        "memory_type": "discrete",
+        "memory_mb": 16384,
+        "memory_source": "vram",
+        "bandwidth_gbps": 488
+      },
+      "recommended": {
+        "backend": "amd",
+        "tier": "T2"
+      }
+    },
+    {
+      "id": "strix_halo_385",
+      "match": {
+        "device_ids": ["0x1586"],
+        "name_patterns": ["RYZEN AI MAX+ 385"]
+      },
+      "specs": {
+        "label": "AMD Ryzen AI MAX+ 385 (Strix Halo)",
+        "vendor": "amd",
+        "architecture": "rdna-3.5",
+        "memory_type": "unified",
+        "memory_mb": 98304,
+        "memory_source": "ram",
+        "bandwidth_gbps": 256,
+        "compute_units": 32
+      },
+      "recommended": {
+        "backend": "amd",
+        "tier": "SH_LARGE"
+      }
+    },
+    {
+      "id": "nvidia_grace_blackwell_gb10",
+      "match": {
+        "device_ids": [],
+        "name_patterns": ["GB10", "Grace Blackwell"]
+      },
+      "specs": {
+        "label": "NVIDIA Grace Blackwell GB10 (DGX Spark)",
+        "vendor": "nvidia",
+        "architecture": "grace-blackwell",
+        "memory_type": "unified",
+        "memory_mb": 122880,
+        "memory_source": "ram",
+        "bandwidth_gbps": 273
+      },
+      "recommended": {
+        "backend": "nvidia",
+        "tier": "NV_ULTRA"
+      }
+    },
+    {
+      "id": "nvidia_grace_blackwell_gb200",
+      "match": {
+        "device_ids": [],
+        "name_patterns": ["GB200"]
+      },
+      "specs": {
+        "label": "NVIDIA Grace Blackwell GB200",
+        "vendor": "nvidia",
+        "architecture": "grace-blackwell",
+        "memory_type": "unified",
+        "memory_mb": 393216,
+        "memory_source": "ram",
+        "bandwidth_gbps": 8000
+      },
+      "recommended": {
+        "backend": "nvidia",
+        "tier": "NV_ULTRA"
+      }
+    }
+  ],
+  "known_gpu_bandwidth": {
+    "nvidia": {
+      "RTX PRO 6000": 1792,
+      "RTX 5090": 1792,
+      "RTX 5080": 960,
+      "RTX 5070 Ti": 896,
+      "RTX 5070": 672,
+      "RTX 5060 Ti": 448,
+      "RTX 5060": 256,
+      "RTX 4090": 1008,
+      "RTX 4080 Super": 736,
+      "RTX 4080": 717,
+      "RTX 4070 Ti Super": 672,
+      "RTX 4070 Ti": 504,
+      "RTX 4070 Super": 504,
+      "RTX 4070": 504,
+      "RTX 4060 Ti": 288,
+      "RTX 4060": 272,
+      "RTX 3090 Ti": 1008,
+      "RTX 3090": 936,
+      "RTX 3080 Ti": 912,
+      "RTX 3080": 760,
+      "RTX 3070 Ti": 608,
+      "RTX 3070": 448,
+      "RTX 3060 Ti": 448,
+      "RTX 3060": 360,
+      "RTX 2080 Ti": 616,
+      "RTX 2080 Super": 496,
+      "RTX 2080": 448,
+      "RTX 2070 Super": 448,
+      "RTX 2070": 448,
+      "RTX 2060 Super": 448,
+      "RTX 2060": 336,
+      "GTX 1660 Ti": 288,
+      "GTX 1660 Super": 336,
+      "GTX 1660": 192,
+      "GTX 1650 Super": 192,
+      "GTX 1650": 128,
+      "H200": 4800,
+      "H100 SXM": 3350,
+      "H100 PCIe": 2039,
+      "A100 SXM": 2039,
+      "A100 PCIe": 1555,
+      "V100 SXM": 900,
+      "V100": 897,
+      "L40S": 864,
+      "L40": 864,
+      "A6000": 768,
+      "A5000": 768,
+      "A10G": 600,
+      "A10": 600,
+      "A4000": 448,
+      "T4": 320,
+      "L4": 300
+    },
+    "amd": {
+      "RX 9070 XT": 624,
+      "RX 9070": 488,
+      "RX 7900 XTX": 960,
+      "RX 7900 XT": 800,
+      "RX 7900 GRE": 576,
+      "RX 7800 XT": 624,
+      "RX 7700 XT": 432,
+      "RX 7600": 288,
+      "RX 6950 XT": 576,
+      "RX 6900 XT": 512,
+      "RX 6800 XT": 512,
+      "RX 6800": 512,
+      "RX 6700 XT": 384,
+      "RX 6600 XT": 256,
+      "RX 6600": 224,
+      "MI300X": 5300,
+      "MI300": 5300,
+      "MI250X": 3277,
+      "MI250": 3277,
+      "MI210": 1638,
+      "MI100": 1229
+    },
+    "apple": {
+      "M4 Ultra": 819,
+      "M4 Max": 546,
+      "M4 Pro": 273,
+      "M4": 120,
+      "M3 Ultra": 800,
+      "M3 Max": 400,
+      "M3 Pro": 150,
+      "M3": 100,
+      "M2 Ultra": 800,
+      "M2 Max": 400,
+      "M2 Pro": 200,
+      "M2": 100,
+      "M1 Ultra": 800,
+      "M1 Max": 400,
+      "M1 Pro": 200,
+      "M1": 68
+    }
+  },
+  "heuristic_classes": [
+    {
+      "id": "jetson_orin_nano",
+      "match": { "vendor": "jetson", "memory_type": "unified", "min_ram_mb": 0 },
+      "recommended": { "backend": "jetson", "tier": "T1" }
+    },
+    {
+      "id": "nvidia_ultra",
+      "match": { "vendor": "nvidia", "memory_type": "discrete", "min_vram_mb": 92160 },
+      "recommended": { "backend": "nvidia", "tier": "NV_ULTRA" }
+    },
+    {
+      "id": "nvidia_enterprise",
+      "match": { "vendor": "nvidia", "memory_type": "discrete", "min_vram_mb": 40960 },
+      "recommended": { "backend": "nvidia", "tier": "T4" }
+    },
+    {
+      "id": "nvidia_pro",
+      "match": { "vendor": "nvidia", "memory_type": "discrete", "min_vram_mb": 20480 },
+      "recommended": { "backend": "nvidia", "tier": "T3" }
+    },
+    {
+      "id": "nvidia_prosumer",
+      "match": { "vendor": "nvidia", "memory_type": "discrete", "min_vram_mb": 12288 },
+      "recommended": { "backend": "nvidia", "tier": "T2" }
+    },
+    {
+      "id": "nvidia_low_vram_cpu_fallback",
+      "match": { "vendor": "nvidia", "memory_type": "discrete", "min_vram_mb": 0, "max_vram_mb": 4095 },
+      "recommended": { "backend": "cpu", "tier": "T0" }
+    },
+    {
+      "id": "nvidia_entry",
+      "match": { "vendor": "nvidia", "memory_type": "discrete", "min_vram_mb": 4096 },
+      "recommended": { "backend": "nvidia", "tier": "T1" }
+    },
+    {
+      "id": "nvidia_unified_ultra",
+      "match": { "vendor": "nvidia", "memory_type": "unified", "min_ram_mb": 92160 },
+      "recommended": { "backend": "nvidia", "tier": "NV_ULTRA" }
+    },
+    {
+      "id": "nvidia_unified_enterprise",
+      "match": { "vendor": "nvidia", "memory_type": "unified", "min_ram_mb": 49152 },
+      "recommended": { "backend": "nvidia", "tier": "T4" }
+    },
+    {
+      "id": "nvidia_unified_pro",
+      "match": { "vendor": "nvidia", "memory_type": "unified", "min_ram_mb": 20480 },
+      "recommended": { "backend": "nvidia", "tier": "T3" }
+    },
+    {
+      "id": "nvidia_unified_prosumer",
+      "match": { "vendor": "nvidia", "memory_type": "unified", "min_ram_mb": 12288 },
+      "recommended": { "backend": "nvidia", "tier": "T2" }
+    },
+    {
+      "id": "nvidia_unified_entry",
+      "match": { "vendor": "nvidia", "memory_type": "unified", "min_ram_mb": 0 },
+      "recommended": { "backend": "nvidia", "tier": "T1" }
+    },
+    {
+      "id": "amd_unified_large",
+      "match": { "vendor": "amd", "memory_type": "unified", "min_ram_mb": 92160 },
+      "recommended": { "backend": "amd", "tier": "SH_LARGE" }
+    },
+    {
+      "id": "amd_unified_compact",
+      "match": { "vendor": "amd", "memory_type": "unified", "min_ram_mb": 0 },
+      "recommended": { "backend": "amd", "tier": "SH_COMPACT" }
+    },
+    {
+      "id": "amd_discrete_large",
+      "match": { "vendor": "amd", "memory_type": "discrete", "min_vram_mb": 20480 },
+      "recommended": { "backend": "amd", "tier": "T3" }
+    },
+    {
+      "id": "amd_discrete_medium",
+      "match": { "vendor": "amd", "memory_type": "discrete", "min_vram_mb": 12288 },
+      "recommended": { "backend": "amd", "tier": "T2" }
+    },
+    {
+      "id": "amd_discrete_entry",
+      "match": { "vendor": "amd", "memory_type": "discrete", "min_vram_mb": 0 },
+      "recommended": { "backend": "amd", "tier": "T1" }
+    },
+    {
+      "id": "apple_ultra",
+      "match": { "vendor": "apple", "memory_type": "unified", "min_ram_mb": 131072 },
+      "recommended": { "backend": "apple", "tier": "T4" }
+    },
+    {
+      "id": "apple_max",
+      "match": { "vendor": "apple", "memory_type": "unified", "min_ram_mb": 65536 },
+      "recommended": { "backend": "apple", "tier": "T3" }
+    },
+    {
+      "id": "apple_pro",
+      "match": { "vendor": "apple", "memory_type": "unified", "min_ram_mb": 32768 },
+      "recommended": { "backend": "apple", "tier": "T2" }
+    },
+    {
+      "id": "apple_base",
+      "match": { "vendor": "apple", "memory_type": "unified", "min_ram_mb": 0 },
+      "recommended": { "backend": "apple", "tier": "T1" }
+    },
+    {
+      "id": "cpu_only",
+      "match": { "vendor": "none", "memory_type": "none", "min_ram_mb": 0 },
+      "recommended": { "backend": "cpu", "tier": "T1" }
+    }
+  ],
+  "defaults": {
+    "bandwidth_gbps": {
+      "cuda": 220,
+      "rocm": 180,
+      "metal": 160,
+      "cpu_x86": 70,
+      "cpu_arm": 50
+    }
+  }
+}

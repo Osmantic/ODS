@@ -111,4 +111,4 @@ export const getInstallProgress = () =>
 export const getInstallState = () =>
   invoke<InstallState>("get_install_state");
 
-export const openDreamserver = () => invoke("open_dreamserver");
+export const openODSserver = () => invoke("open_ods");

@@ -45,26 +45,26 @@ After all updates, run `git diff` to verify:
 
 Use this mapping to determine which code files to read when validating each documentation file.
 
-### README.md (dream-server/README.md)
+### README.md (ods/README.md)
 
 | Doc Section | Source of Truth |
 |-------------|----------------|
-| Service manifests table | `dream-server/extensions/services/*/manifest.yaml` |
-| CLI commands | `dream-server/dream-cli` |
-| Environment variables | `dream-server/.env.example`, `dream-server/.env.schema.json` |
-| Docker Compose services | `dream-server/docker-compose.base.yml`, GPU overlays |
-| Test commands | `dream-server/Makefile`, `dream-server/tests/` directory layout |
-| Install instructions | `dream-server/install-core.sh`, `dream-server/installers/phases/` |
+| Service manifests table | `ods/extensions/services/*/manifest.yaml` |
+| CLI commands | `ods/ods-cli` |
+| Environment variables | `ods/.env.example`, `ods/.env.schema.json` |
+| Docker Compose services | `ods/docker-compose.base.yml`, GPU overlays |
+| Test commands | `ods/Makefile`, `ods/tests/` directory layout |
+| Install instructions | `ods/install-core.sh`, `ods/installers/phases/` |
 
 ### CLAUDE.md
 
 | Doc Section | Source of Truth |
 |-------------|----------------|
 | Repository Structure | Actual directory layout |
-| Build & Development Commands | `dream-server/Makefile` targets |
-| Extension System | `dream-server/extensions/services/*/manifest.yaml` |
-| GPU Backend / Tier System | `dream-server/config/backends/*.json`, `dream-server/installers/lib/tier-map.sh` |
-| Dashboard API | `dream-server/extensions/services/dashboard-api/routers/*.py` |
+| Build & Development Commands | `ods/Makefile` targets |
+| Extension System | `ods/extensions/services/*/manifest.yaml` |
+| GPU Backend / Tier System | `ods/config/backends/*.json`, `ods/installers/lib/tier-map.sh` |
+| Dashboard API | `ods/extensions/services/dashboard-api/routers/*.py` |
 | Key File Paths | Actual file existence verification |
 | CI Workflows | `.github/workflows/*.yml` |
 
@@ -72,7 +72,7 @@ Use this mapping to determine which code files to read when validating each docu
 
 ### README.md
 - Service list must match existing extension manifests
-- CLI examples must match actual dream-cli commands
+- CLI examples must match actual ods-cli commands
 - Environment variables must match `.env.example`
 - Do NOT modify the project description, badges, or contribution guidelines
 

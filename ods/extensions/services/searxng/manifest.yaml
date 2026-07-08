@@ -1,0 +1,22 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: searxng
+  name: SearXNG (Web Search)
+  aliases: [search]
+  container_name: ods-searxng
+  host_env: SEARXNG_HOST
+  default_host: searxng
+  port: 8080
+  external_port_env: SEARXNG_PORT
+  external_port_default: 8888
+  health: /healthz
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: recommended
+  depends_on: []

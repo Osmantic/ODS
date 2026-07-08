@@ -1,0 +1,50 @@
+services:
+  anythingllm:
+    image: mintplexlabs/anythingllm:1.11.1
+    container_name: ods-anythingllm
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - STORAGE_DIR=/app/server/storage
+      - JWT_SECRET=${ANYTHINGLLM_JWT_SECRET:?ANYTHINGLLM_JWT_SECRET must be set}
+      - LLM_PROVIDER=${ANYTHINGLLM_LLM_PROVIDER:-ollama}
+      - OLLAMA_BASE_PATH=${OLLAMA_BASE_PATH:-http://ollama:11434}
+      - OLLAMA_MODEL_PREF=${OLLAMA_MODEL_PREF:-llama3.2}
+      - OLLAMA_MODEL_TOKEN_LIMIT=${OLLAMA_MODEL_TOKEN_LIMIT:-4096}
+      - EMBEDDING_ENGINE=${ANYTHINGLLM_EMBEDDING_ENGINE:-ollama}
+      - EMBEDDING_BASE_PATH=${EMBEDDING_BASE_PATH:-http://ollama:11434}
+      - EMBEDDING_MODEL_PREF=${EMBEDDING_MODEL_PREF:-nomic-embed-text:latest}
+      - EMBEDDING_MODEL_MAX_CHUNK_LENGTH=${EMBEDDING_MODEL_MAX_CHUNK_LENGTH:-8192}
+      - VECTOR_DB=${ANYTHINGLLM_VECTOR_DB:-lancedb}
+      - WHISPER_PROVIDER=${ANYTHINGLLM_WHISPER_PROVIDER:-local}
+      - TTS_PROVIDER=${ANYTHINGLLM_TTS_PROVIDER:-native}
+      - PASSWORDMINCHAR=${ANYTHINGLLM_PASSWORD_MIN:-8}
+      - AUTH_TOKEN=${ANYTHINGLLM_AUTH_TOKEN:?ANYTHINGLLM_AUTH_TOKEN must be set}
+    volumes:
+      - ./data/anythingllm:/app/server/storage:rw
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${ANYTHINGLLM_PORT:-7800}:3001"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+networks:
+  ods-network:
+    external: true

@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui/tauri-v2/main/src-tauri/gen/schemas/desktop-schema.json",
-  "productName": "DreamServer Installer",
+  "productName": "ODS Installer",
   "version": "0.1.0",
-  "identifier": "ai.dreamserver.installer",
+  "identifier": "ai.ods.installer",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "DreamServer Installer",
+        "title": "ODS Installer",
         "width": 800,
         "height": 600,
         "resizable": true,

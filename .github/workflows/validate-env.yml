@@ -17,7 +17,7 @@ jobs:
     name: "tier-${{ matrix.tier }}-env-validation"
     defaults:
       run:
-        working-directory: dream-server
+        working-directory: ods
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -36,7 +36,7 @@ jobs:
           export MAX_CONTEXT=4096
           export N_GPU_LAYERS=0
           export GPU_BACKEND="cpu"
-          export DREAM_TIER="${{ matrix.tier }}"
+          export ODS_TIER="${{ matrix.tier }}"
           export HW_CLASS="cpu"
 
           # Generate a .env using the installer's env generation logic
@@ -50,7 +50,7 @@ jobs:
               ai() { echo "$1"; }
               ai_ok() { echo "$1"; }
               ai_warn() { echo "$1"; }
-              dream_progress() { true; }
+              ods_progress() { true; }
             }
             # Generate minimal .env with all expected keys
             cat > .env << ENVEOF
@@ -60,8 +60,8 @@ jobs:
           N8N_USER=admin
           N8N_PASS=test-pass-changeme
           OPENCLAW_TOKEN=sk-test-openclaw-token
-          DREAM_VERSION=2.1.0
-          DREAM_TIER=${{ matrix.tier }}
+          ODS_VERSION=2.1.0
+          ODS_TIER=${{ matrix.tier }}
           GPU_BACKEND=cpu
           HW_CLASS=cpu
           LLM_API_URL=http://llama-server:8080

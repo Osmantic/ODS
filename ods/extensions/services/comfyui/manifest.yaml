@@ -1,0 +1,39 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: comfyui
+  name: ComfyUI (Image Generation)
+  aliases: []
+  container_name: ods-comfyui
+  default_host: comfyui
+  port: 8188
+  external_port_env: COMFYUI_PORT
+  external_port_default: 8188
+  health: /
+  ui_path: /
+  health_timeout: 30  # ComfyUI can be slow to start, especially on Tier 0/1 hardware
+  type: docker
+  gpu_backends: [amd, nvidia]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+
+features:
+  - id: images
+    name: Image Generation
+    description: Generate images with FLUX.1 via ComfyUI
+    icon: Image
+    category: creative
+    requirements:
+      services: [comfyui]
+      vram_gb: 0
+    enabled_services_all: [comfyui]
+    setup_time: Ready
+    priority: 5
+    launch:
+      type: service
+      service: comfyui
+    gpu_backends: [amd, nvidia]

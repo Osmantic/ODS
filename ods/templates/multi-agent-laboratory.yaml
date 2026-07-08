@@ -1,0 +1,14 @@
+schema_version: ods.templates.v1
+template:
+  id: multi-agent-laboratory
+  name: Multi-Agent Laboratory
+  description: "Build and observe autonomous multi-agent systems with full tracing and vector memory."
+  icon: Bot
+  tags: [agents, experimental, gpu-recommended]
+  services: [crewai, langflow, openclaw, chromadb, langfuse, n8n]
+  tier_minimum: T3
+  estimated_disk_gb: 20
+  service_notes:
+    crewai: "Code-first multi-agent framework"
+    langfuse: "LLM observability — 7 containers, ~6GB. Essential for debugging agent loops."
+    n8n: "Workflow automation — wire agents into external systems"

@@ -651,7 +651,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dreamserver-installer"
+name = "ods-installer"
 version = "0.1.0"
 dependencies = [
  "serde",

@@ -1,0 +1,6 @@
+[Unit]
+Description=Memory Shepherd — MEMORY.md Baseline Reset
+
+[Service]
+Type=oneshot
+ExecStart=%h/ods/memory-shepherd/memory-shepherd.sh ods-agent-memory
