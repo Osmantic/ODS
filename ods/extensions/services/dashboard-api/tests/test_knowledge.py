@@ -134,6 +134,53 @@ def test_talk_attachment_use_knowledge(test_client, monkeypatch):
     assert "User Message:" in captured_prompt
     assert "hello.txt" in captured_prompt
 
+
+def test_talk_image_attachment_use_knowledge(test_client, monkeypatch):
+    """Image attachments with use_knowledge=true should inject KB context
+    into the prompt sent to the vision model."""
+    import session_signer
+
+    monkeypatch.setenv("ODS_SESSION_SECRET", "test-secret")
+    session_signer._set_secret_for_tests("test-secret")
+    cookie = session_signer.issue(ttl_seconds=3600)
+    test_client.cookies.set("ods-session", cookie)
+
+    async def mock_search(query: str):
+        return "Knowledge about the image subject."
+
+    monkeypatch.setattr("routers.knowledge.search_knowledge_base", mock_search)
+
+    # Mock _stream_vision_chat to capture the prompt_text it receives
+    captured_prompt = None
+
+    async def mock_vision_stream(image_bytes, content_type, prompt_text):
+        nonlocal captured_prompt
+        captured_prompt = prompt_text
+        yield b'data: {"type":"session","session_id":"vision-oneshot"}\n\n'
+        yield b'data: {"type":"complete","session_id":"vision-oneshot","text":"ok","status":"ok"}\n\n'
+        yield b'data: {"type":"done"}\n\n'
+
+    monkeypatch.setattr("routers.talk._stream_vision_chat", mock_vision_stream)
+
+    # A minimal PNG header so _classify_attachment identifies it as an image
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+        b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+    )
+
+    resp = test_client.post(
+        "/api/talk/attachment",
+        data={"text": "What is in this image?", "use_knowledge": "true"},
+        files={"file": ("photo.png", png_bytes, "image/png")},
+    )
+
+    assert resp.status_code == 200
+    assert captured_prompt is not None
+    assert "Context from Knowledge Base" in captured_prompt
+    assert "Knowledge about the image subject." in captured_prompt
+    assert "What is in this image?" in captured_prompt
+
+
 @pytest.mark.asyncio
 async def test_knowledge_qdrant_retry(monkeypatch):
     import routers.knowledge as knowledge

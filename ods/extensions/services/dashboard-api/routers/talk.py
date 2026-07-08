@@ -763,6 +763,19 @@ async def talk_attachment(
                 detail=f"Image is too large (max {MAX_IMAGE_BYTES // (1024 * 1024)} MB).",
             )
         prompt_text = caption or "Describe what you see in this image."
+
+        if use_knowledge:
+            try:
+                from routers.knowledge import search_knowledge_base
+
+                kb_context = await search_knowledge_base(prompt_text)
+                if kb_context:
+                    prompt_text = f"Context from Knowledge Base:\n{kb_context}\n\nUser Message:\n{prompt_text}"
+            except Exception as e:
+                logger.error(
+                    "Failed to inject knowledge base context for image: %s", e
+                )
+
         return StreamingResponse(
             _stream_vision_chat(data, _image_content_type(file), prompt_text),
             media_type="text/event-stream",
