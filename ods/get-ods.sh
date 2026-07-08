@@ -30,16 +30,18 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 REPO_URL="${ODS_REPO_URL:-https://github.com/Light-Heart-Labs/ODS.git}"
-INSTALL_DIR="${ODS_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/ods}"
+INSTALL_DIR="${BOOTSTRAP_INSTALL_DIR:-${INSTALL_DIR:-${ODS_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/ods}}}"
 LEGACY_DREAMSERVER_DIR="${DREAMSERVER_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/dream-server}"
 ODS_REF="${ODS_REF:-${ODS_BOOTSTRAP_REF:-}}"
 BOOTSTRAP_FORCE=false
 BOOTSTRAP_NON_INTERACTIVE=false
+BOOTSTRAP_INSTALL_DIR=""
 
 for _arg in "$@"; do
     case "$_arg" in
         --force) BOOTSTRAP_FORCE=true ;;
         --non-interactive) BOOTSTRAP_NON_INTERACTIVE=true ;;
+        --install-dir=*) BOOTSTRAP_INSTALL_DIR="${_arg#*=}" ;;
     esac
 done
 
@@ -253,6 +255,33 @@ else
 fi
 
 # GPU pre-check already done above — real detection happens in the installer
+
+# ── Choose install directory ──────────────────────
+if [[ ! -d "$INSTALL_DIR" && "$BOOTSTRAP_NON_INTERACTIVE" != "true" ]]; then
+    echo ""
+    log "Where should ODS be installed?"
+    echo "  Default: $INSTALL_DIR"
+    echo ""
+    echo -n "  Install directory [$INSTALL_DIR]: "
+    read -r _custom_dir < /dev/tty
+    _custom_dir="${_custom_dir:-}"
+    if [[ -n "$_custom_dir" ]]; then
+        # Expand tilde in the user input
+        _custom_dir="${_custom_dir/#\~\//$HOME/}"
+        _custom_dir="${_custom_dir/#\~/$HOME}"
+        # Validate the path is absolute
+        if [[ "$_custom_dir" != /* ]]; then
+            echo ""
+            warn "'$_custom_dir' is not an absolute path. Using default: $INSTALL_DIR"
+        else
+            INSTALL_DIR="$_custom_dir"
+            success "Will install to: $INSTALL_DIR"
+        fi
+    fi
+    unset _custom_dir
+elif [[ -n "${INSTALL_DIR:-}" && "$BOOTSTRAP_NON_INTERACTIVE" == "true" ]]; then
+    log "Non-interactive mode — using install directory: $INSTALL_DIR"
+fi
 
 # ── Check for existing installation ──────────────────
 if [[ -d "$INSTALL_DIR" ]]; then
