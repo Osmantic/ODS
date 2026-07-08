@@ -161,12 +161,43 @@ test_service() {
     local port_env="${SERVICE_PORT_ENVS[$sid]}"
     local default_port="${SERVICE_PORTS[$sid]}"
     local health="${SERVICE_HEALTH[$sid]}"
+    local health_type="${SERVICE_HEALTH_TYPE[$sid]:-http}"
     local timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-$TIMEOUT}"
 
     # Resolve port
     local port="$default_port"
     [[ -n "$port_env" ]] && port="${!port_env:-$default_port}"
 
+    # health_type=none: skip check entirely (CLI tools, one-shot containers)
+    if [[ "$health_type" == "none" ]]; then
+        result_set "$sid" "not_applicable"
+        return 0
+    fi
+
+    # health_type=tcp: check port is open (Wyoming, raw TCP services)
+    if [[ "$health_type" == "tcp" ]]; then
+        if [[ "$port" == "0" ]]; then
+            result_set "$sid" "not_applicable"
+            return 0
+        fi
+        # Check container state first
+        local tcp_container_state
+        tcp_container_state=$(check_container_state "$sid")
+        if [[ -n "$tcp_container_state" && "$tcp_container_state" != "running" ]]; then
+            result_set "$sid" "fail"
+            ANY_FAIL=true
+            return 1
+        fi
+        if timeout "$timeout" bash -c "echo >/dev/tcp/127.0.0.1/$port" 2>/dev/null; then
+            result_set "$sid" "ok"
+            return 0
+        fi
+        result_set "$sid" "fail"
+        ANY_FAIL=true
+        return 1
+    fi
+
+    # health_type=http (default): current behavior
     [[ -z "$health" || "$port" == "0" ]] && return 1
 
     # Check container state first (if docker available)
@@ -251,7 +282,13 @@ check_service() {
     local sid="$1"
     local name="${SERVICE_NAMES[$sid]:-$sid}"
     if test_service "$sid" 2>/dev/null; then
-        log "  ${GREEN}✓${NC} $name - healthy"
+        local svc_result
+        svc_result=$(result_get "$sid")
+        if [[ "$svc_result" == "not_applicable" ]]; then
+            log "  ${CYAN}○${NC} $name - not applicable"
+        else
+            log "  ${GREEN}✓${NC} $name - healthy"
+        fi
         return 0
     else
         log "  ${YELLOW}!${NC} $name - not responding"
@@ -272,7 +309,13 @@ check_service_async() {
     container_state=$(check_container_state "$sid") || true
 
     if test_service "$sid" 2>/dev/null; then
-        echo "ok:$sid:$container_state" > "$result_file"
+        local svc_result
+        svc_result=$(result_get "$sid")
+        if [[ "$svc_result" == "not_applicable" ]]; then
+            echo "not_applicable:$sid:$container_state" > "$result_file"
+        else
+            echo "ok:$sid:$container_state" > "$result_file"
+        fi
     else
         echo "fail:$sid:$container_state" > "$result_file"
     fi
@@ -333,6 +376,8 @@ for sid in "${CORE_SIDS[@]}"; do
 
     if [[ "$status" == "ok" ]]; then
         log "  ${GREEN}✓${NC} $name - healthy"
+    elif [[ "$status" == "not_applicable" ]]; then
+        log "  ${CYAN}○${NC} $name - not applicable"
     else
         # Core service down → critical, per the documented exit codes
         CRITICAL_FAIL=true
@@ -397,6 +442,8 @@ for sid in "${EXT_SIDS[@]}"; do
 
     if [[ "$status" == "ok" ]]; then
         log "  ${GREEN}✓${NC} $name - healthy"
+    elif [[ "$status" == "not_applicable" ]]; then
+        log "  ${CYAN}○${NC} $name - not applicable"
     else
         ANY_FAIL=true
         # Use container state for better error message
@@ -417,7 +464,7 @@ for sid in "${EXT_SIDS[@]}"; do
                 log "  ${YELLOW}!${NC} $name - not responding"
                 ;;
         esac
-    fi
+    fi    fi
 done
 
 log ""
