@@ -64,8 +64,7 @@ async def get_n8n_workflows() -> list[dict]:
     return []
 
 
-from typing import Optional
-async def check_workflow_dependencies(deps: list[str], health_cache: Optional[dict[str, bool]] = None) -> dict[str, bool]:
+async def check_workflow_dependencies(deps: list[str], health_cache: dict[str, bool] | None = None) -> dict[str, bool]:
     """Check if required services are running. Uses health_cache to avoid duplicate checks."""
     from helpers import check_service_health
 

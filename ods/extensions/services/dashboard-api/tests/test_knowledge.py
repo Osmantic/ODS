@@ -133,3 +133,37 @@ def test_talk_attachment_use_knowledge(test_client, monkeypatch):
     assert "This is retrieved knowledge context." in captured_prompt
     assert "User Message:" in captured_prompt
     assert "hello.txt" in captured_prompt
+
+@pytest.mark.asyncio
+async def test_knowledge_qdrant_retry(monkeypatch):
+    import routers.knowledge as knowledge
+    
+    # Reset state
+    knowledge._qdrant_initialized = False
+    knowledge._qdrant_client = None
+
+    call_count = 0
+
+    class DummyClient:
+        def collection_exists(self, name):
+            return True
+
+    # We mock QdrantClient inside get_qdrant, but it's easier to just mock QdrantClient directly
+    def mock_qdrant_client(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise Exception("First call fails")
+        return DummyClient()
+
+    monkeypatch.setattr(knowledge, "QdrantClient", mock_qdrant_client)
+
+    # First call should return None (caught exception) and leave _qdrant_initialized = False
+    client1 = await knowledge.get_qdrant()
+    assert client1 is None
+    assert knowledge._qdrant_initialized is False
+
+    # Second call should succeed, return DummyClient, and set _qdrant_initialized = True
+    client2 = await knowledge.get_qdrant()
+    assert client2 is not None
+    assert knowledge._qdrant_initialized is True

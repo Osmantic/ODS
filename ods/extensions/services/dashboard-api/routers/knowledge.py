@@ -18,7 +18,7 @@ router = APIRouter(tags=["knowledge"])
 SESSION_COOKIE_NAME = "dream-session"
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
-EMBEDDINGS_URL = os.environ.get("EMBEDDINGS_URL", "http://embeddings:80/v1/embeddings")
+EMBEDDING_URL = os.environ.get("EMBEDDING_URL", "http://embeddings:80")
 COLLECTION_NAME = "dream_knowledge"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
@@ -30,13 +30,13 @@ async def get_embeddings(texts: List[str]) -> List[List[float]]:
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                EMBEDDINGS_URL,
-                json={"input": texts, "model": "local-model"},
+                f"{EMBEDDING_URL}/embed",
+                json={"inputs": texts},
                 timeout=60.0,
             )
             resp.raise_for_status()
             data = resp.json()
-            return [item["embedding"] for item in data["data"]]
+            return data
     except Exception as e:
         logger.error("Failed to fetch embeddings: %s", e)
         raise HTTPException(
@@ -59,11 +59,11 @@ async def get_qdrant() -> Optional[QdrantClient]:
                 vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
             )
         _qdrant_client = client
+        _qdrant_initialized = True
     except Exception as e:
         logger.warning("Failed to connect to Qdrant: %s", e)
         _qdrant_client = None
 
-    _qdrant_initialized = True
     return _qdrant_client
 
 

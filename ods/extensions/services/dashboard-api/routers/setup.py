@@ -263,8 +263,7 @@ class WifiConnectRequest(BaseModel):
         return v
 
 
-from typing import Optional
-def _call_agent(path: str, method: str = "GET", payload: Optional[dict] = None, timeout: int = 60) -> dict:
+def _call_agent(path: str, method: str = "GET", payload: dict | None = None, timeout: int = 60) -> dict:
     """Forward a request to the host-agent.
 
     Raises HTTPException with a status code derived from the host-agent's

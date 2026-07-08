@@ -206,6 +206,7 @@ services:
       - KOKORO_URL=${KOKORO_URL:-http://tts:8880}
       - N8N_URL=${N8N_URL:-http://n8n:5678}
       - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-}
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - ODS_AGENT_KEY=${ODS_AGENT_KEY:-}
       - SHIELD_API_KEY=${SHIELD_API_KEY:-}
       - OPENCLAW_TOKEN=${OPENCLAW_TOKEN:-}
