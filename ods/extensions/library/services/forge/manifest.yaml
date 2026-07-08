@@ -1,0 +1,87 @@
+# Hardware compatibility:
+#   The bundled ai-dock Forge image (digest @sha256:36a8b82c...) ships a
+#   Torch+CUDA build that is incompatible with NVIDIA RTX 3070 Mobile (sm_86)
+#   under CUDA driver capability 12.4 - container starts but Forge crashes
+#   with "Your device does not support the current version of Torch/CUDA".
+#   Other sm_86 mobile parts likely affected (not live-tested).
+#   See README.md "Hardware compatibility" for details.
+
+schema_version: ods.services.v1
+
+service:
+  id: forge
+  name: Forge / A1111
+  aliases: [forge-ui, a1111, stable-diffusion-webui]
+  container_name: ods-forge
+  host_env: FORGE_HOST
+  default_host: forge
+  port: 7861
+  external_port_env: FORGE_PORT
+  external_port_default: 7861
+  health: /
+  type: docker
+  gpu_backends: [nvidia]
+  category: optional
+  compose_file: compose.yaml
+  depends_on: []
+  description: |
+    Forge (based on Automatic1111) is the original Stable Diffusion web UI.
+    Features extensive model support, extensions, inpainting, outpainting,
+    and professional-grade image generation capabilities. GPU required.
+
+  tags:
+    - image
+    - stable-diffusion
+    - webui
+    - generative
+    - professional
+
+features:
+  - id: forge-image-generation
+    name: Image Generation
+    description: Full Stable Diffusion control with advanced settings
+    icon: Image
+    category: media
+    requirements:
+      services: [forge]
+      vram_gb: 8
+    enabled_services_all: [forge]
+    setup_time: ~3 minutes
+    priority: 16
+    gpu_backends: [nvidia]
+  - id: inpainting
+    name: Inpainting
+    description: Inpainting with mask support
+    icon: Paintbrush
+    category: media
+    requirements:
+      services: [forge]
+      vram_gb: 8
+    enabled_services_all: [forge]
+    setup_time: ~3 minutes
+    priority: 17
+    gpu_backends: [nvidia]
+  - id: outpainting
+    name: Outpainting
+    description: Outpainting beyond image boundaries
+    icon: Maximize
+    category: media
+    requirements:
+      services: [forge]
+      vram_gb: 8
+    enabled_services_all: [forge]
+    setup_time: ~3 minutes
+    priority: 18
+    gpu_backends: [nvidia]
+  - id: upscaling
+    name: Upscaling
+    description: High-resolution upscaling with multiple engines
+    icon: ArrowUp
+    category: media
+    requirements:
+      services: [forge]
+      vram_gb: 4
+    enabled_services_all: [forge]
+    setup_time: ~3 minutes
+    priority: 19
+    gpu_backends: [nvidia]

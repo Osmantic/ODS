@@ -13,7 +13,7 @@
 [allowlist]
   description = "Installer key-generation templates (not real secrets)"
   paths = [
-    '''dream-server/installers/phases/06-directories\.sh''',
-    '''dream-server/installers/macos/lib/env-generator\.sh''',
-    '''dream-server/installers/windows/lib/env-generator\.ps1''',
+    '''ods/installers/phases/06-directories\.sh''',
+    '''ods/installers/macos/lib/env-generator\.sh''',
+    '''ods/installers/windows/lib/env-generator\.ps1''',
   ]

@@ -1,10 +1,10 @@
-# DreamServer Security Audit Status
+# ODS Security Audit Status
 
 - **Original audit date:** 2026-03-08
 - **Original analyst:** latentcollapse
 - **Status review:** 2026-05-21
-- **Scope:** `Light-Heart-Labs/DreamServer` public repository, local clone only. No live infrastructure was touched.
-- **Current operator guide:** [`dream-server/SECURITY.md`](dream-server/SECURITY.md)
+- **Scope:** `Light-Heart-Labs/ODS` public repository, local clone only. No live infrastructure was touched.
+- **Current operator guide:** [`ods/SECURITY.md`](ods/SECURITY.md)
 
 This document tracks the remediation status of the March 2026 static security
 audit. It is not a live list of active vulnerabilities. Treat a finding as
@@ -38,16 +38,16 @@ repository tree, targeted regression tests, and security-relevant docs.
 | ID | Original finding | Current status | Evidence / receipt | Remaining action |
 |----|------------------|----------------|--------------------|------------------|
 | C1 | Likely real LiveKit credentials committed to a historical voice-agent token server | Resolved / operator-confirmed | The file is historical and removed from the maintained product tree. Maintainers confirmed the exposed LiveKit credentials had already been retired when they leaked; the private incident record remains the authoritative evidence because git cannot prove external credential state. | Keep the private incident record for auditability. Do not publish unredacted credentials. |
-| H1 | SearXNG shipped a static shared `secret_key` | Remediated in tree | [`dream-server/config/searxng/settings.yml`](dream-server/config/searxng/settings.yml) now contains an installer placeholder; Linux and Windows installers generate `SEARXNG_SECRET`; [`dream-server/extensions/services/searxng/compose.yaml`](dream-server/extensions/services/searxng/compose.yaml) requires it. | Keep generated secrets out of committed config and support bundles. |
-| H2 | Installer used `eval` on helper script output | Remediated in tree | [`dream-server/lib/safe-env.sh`](dream-server/lib/safe-env.sh) provides non-evaluating parsers; maintained installer paths call `load_env_from_output`; [`dream-server/tests/test-safe-env.sh`](dream-server/tests/test-safe-env.sh) verifies command substitutions are not executed. | Keep docs and future scripts on `safe-env.sh`; avoid reintroducing `eval "$(...)"` examples. |
-| H3 | OpenClaw gateway combined disabled device auth with LAN binding | Remediated in tree | OpenClaw is deprecated and optional in [`dream-server/extensions/services/openclaw/manifest.yaml`](dream-server/extensions/services/openclaw/manifest.yaml); compose requires `OPENCLAW_TOKEN`; static configs set `dangerouslyDisableDeviceAuth` false; [`dream-server/tests/contracts/test-network-exposure-contracts.py`](dream-server/tests/contracts/test-network-exposure-contracts.py) keeps OpenClaw opt-in and token-gated. | Keep OpenClaw legacy-only; default users should use Hermes plus `hermes-proxy`. |
-| M1 | Token-spy SQL migration interpolated identifiers | Remediated in tree | [`dream-server/extensions/services/token-spy/db.py`](dream-server/extensions/services/token-spy/db.py) uses `ALLOWED_COLUMNS` and a safe SQL identifier regex before `ALTER TABLE`. | Preserve the allowlist if columns are made dynamic later. |
-| M2 | Dashboard and token-spy containers ran as root | Remediated in tree | [`dream-server/extensions/services/dashboard/Dockerfile`](dream-server/extensions/services/dashboard/Dockerfile) and [`dream-server/extensions/services/token-spy/Dockerfile`](dream-server/extensions/services/token-spy/Dockerfile) create and run as non-root users. | Keep new service Dockerfiles covered by extension audit and review. |
-| M3 | Dashboard nginx config had H2C smuggling conditions | Remediated in tree | [`dream-server/extensions/services/dashboard/nginx.conf`](dream-server/extensions/services/dashboard/nginx.conf) sets `proxy_set_header Connection "close"` on the API proxy path. | If WebSocket upgrade support is added to that path, re-review the proxy headers. |
-| M4 | Voice agent defaulted to unencrypted `ws://` | Mitigated / accepted local risk | [`dream-server/extensions/services/dashboard/src/hooks/useVoiceAgent.js`](dream-server/extensions/services/dashboard/src/hooks/useVoiceAgent.js) now derives `wss:` when the dashboard is served over HTTPS and `ws:` for local HTTP. [`dream-server/SECURITY.md`](dream-server/SECURITY.md) recommends TLS or VPN for network exposure. | Plain HTTP on localhost/LAN remains cleartext by design; use TLS or Tailscale/WireGuard for sensitive shared deployments. |
-| M5 | `local` was used outside function scope in installer service phase | Remediated in tree | Current [`dream-server/installers/phases/11-services.sh`](dream-server/installers/phases/11-services.sh) keeps `local` declarations inside functions. | Continue running shellcheck or installer contract tests on shell changes. |
-| L1 | CDN-loaded dashboard assets lacked Subresource Integrity | Remediated in tree | [`dream-server/extensions/services/dashboard/public/agents.html`](dream-server/extensions/services/dashboard/public/agents.html) and [`dream-server/extensions/services/dashboard/templates/index.html`](dream-server/extensions/services/dashboard/templates/index.html) include `integrity` and `crossorigin` on CDN assets. | Keep SRI hashes updated when CDN versions change. |
-| L2 | `dreamserver.ai` marketing site missed common security headers | External / out of repo | This repository does not contain the marketing-site hosting config, CDN config, or deployed headers. | Track separately with the website host/CDN owner; re-check with a live header scan before claiming fixed. |
+| H1 | SearXNG shipped a static shared `secret_key` | Remediated in tree | [`ods/config/searxng/settings.yml`](ods/config/searxng/settings.yml) now contains an installer placeholder; Linux and Windows installers generate `SEARXNG_SECRET`; [`ods/extensions/services/searxng/compose.yaml`](ods/extensions/services/searxng/compose.yaml) requires it. | Keep generated secrets out of committed config and support bundles. |
+| H2 | Installer used `eval` on helper script output | Remediated in tree | [`ods/lib/safe-env.sh`](ods/lib/safe-env.sh) provides non-evaluating parsers; maintained installer paths call `load_env_from_output`; [`ods/tests/test-safe-env.sh`](ods/tests/test-safe-env.sh) verifies command substitutions are not executed. | Keep docs and future scripts on `safe-env.sh`; avoid reintroducing `eval "$(...)"` examples. |
+| H3 | OpenClaw gateway combined disabled device auth with LAN binding | Remediated in tree | OpenClaw is deprecated and optional in [`ods/extensions/services/openclaw/manifest.yaml`](ods/extensions/services/openclaw/manifest.yaml); compose requires `OPENCLAW_TOKEN`; static configs set `dangerouslyDisableDeviceAuth` false; [`ods/tests/contracts/test-network-exposure-contracts.py`](ods/tests/contracts/test-network-exposure-contracts.py) keeps OpenClaw opt-in and token-gated. | Keep OpenClaw legacy-only; default users should use Hermes plus `hermes-proxy`. |
+| M1 | Token-spy SQL migration interpolated identifiers | Remediated in tree | [`ods/extensions/services/token-spy/db.py`](ods/extensions/services/token-spy/db.py) uses `ALLOWED_COLUMNS` and a safe SQL identifier regex before `ALTER TABLE`. | Preserve the allowlist if columns are made dynamic later. |
+| M2 | Dashboard and token-spy containers ran as root | Remediated in tree | [`ods/extensions/services/dashboard/Dockerfile`](ods/extensions/services/dashboard/Dockerfile) and [`ods/extensions/services/token-spy/Dockerfile`](ods/extensions/services/token-spy/Dockerfile) create and run as non-root users. | Keep new service Dockerfiles covered by extension audit and review. |
+| M3 | Dashboard nginx config had H2C smuggling conditions | Remediated in tree | [`ods/extensions/services/dashboard/nginx.conf`](ods/extensions/services/dashboard/nginx.conf) sets `proxy_set_header Connection "close"` on the API proxy path. | If WebSocket upgrade support is added to that path, re-review the proxy headers. |
+| M4 | Voice agent defaulted to unencrypted `ws://` | Mitigated / accepted local risk | [`ods/extensions/services/dashboard/src/hooks/useVoiceAgent.js`](ods/extensions/services/dashboard/src/hooks/useVoiceAgent.js) now derives `wss:` when the dashboard is served over HTTPS and `ws:` for local HTTP. [`ods/SECURITY.md`](ods/SECURITY.md) recommends TLS or VPN for network exposure. | Plain HTTP on localhost/LAN remains cleartext by design; use TLS or Tailscale/WireGuard for sensitive shared deployments. |
+| M5 | `local` was used outside function scope in installer service phase | Remediated in tree | Current [`ods/installers/phases/11-services.sh`](ods/installers/phases/11-services.sh) keeps `local` declarations inside functions. | Continue running shellcheck or installer contract tests on shell changes. |
+| L1 | CDN-loaded dashboard assets lacked Subresource Integrity | Remediated in tree | [`ods/extensions/services/dashboard/public/agents.html`](ods/extensions/services/dashboard/public/agents.html) and [`ods/extensions/services/dashboard/templates/index.html`](ods/extensions/services/dashboard/templates/index.html) include `integrity` and `crossorigin` on CDN assets. | Keep SRI hashes updated when CDN versions change. |
+| L2 | `ods.ai` marketing site missed common security headers | External / out of repo | This repository does not contain the marketing-site hosting config, CDN config, or deployed headers. | Track separately with the website host/CDN owner; re-check with a live header scan before claiming fixed. |
 
 ## Current Security Receipts
 
@@ -56,13 +56,13 @@ has moved beyond the original audit findings:
 
 | Area | Receipt |
 |------|---------|
-| Operator posture | [`dream-server/SECURITY.md`](dream-server/SECURITY.md) documents localhost defaults, LAN tradeoffs, host-agent binding, TLS/VPN guidance, API gateway auth, and disclosure. |
-| Network exposure policy | [`dream-server/config/network-exposure-policy.json`](dream-server/config/network-exposure-policy.json) labels every host-facing or host-networked service with risk, LAN exposure, and auth expectations. |
-| Exposure contracts | [`dream-server/tests/contracts/test-network-exposure-contracts.py`](dream-server/tests/contracts/test-network-exposure-contracts.py) enforces Hermes internal-only behavior, `hermes-proxy` auth gating, OpenClaw deprecation/token gating, and LiteLLM auth. |
-| Safe env parsing | [`dream-server/lib/safe-env.sh`](dream-server/lib/safe-env.sh) and [`dream-server/tests/test-safe-env.sh`](dream-server/tests/test-safe-env.sh) replace shell `eval` ingestion for helper output and `.env` loading. |
-| Secret checks | [`dream-server/tests/test-secret-security.sh`](dream-server/tests/test-secret-security.sh) scans for hardcoded secrets, auth patterns, `.gitignore` coverage, and the token-spy SQL guard. |
-| Extension hardening | [`dream-server/scripts/audit-extensions.py`](dream-server/scripts/audit-extensions.py) rejects unsafe compose patterns for bundled and user extensions. |
-| Support bundle redaction | [`dream-server/docs/SUPPORT-BUNDLE.md`](dream-server/docs/SUPPORT-BUNDLE.md) documents redaction expectations before users share diagnostics. |
+| Operator posture | [`ods/SECURITY.md`](ods/SECURITY.md) documents localhost defaults, LAN tradeoffs, host-agent binding, TLS/VPN guidance, API gateway auth, and disclosure. |
+| Network exposure policy | [`ods/config/network-exposure-policy.json`](ods/config/network-exposure-policy.json) labels every host-facing or host-networked service with risk, LAN exposure, and auth expectations. |
+| Exposure contracts | [`ods/tests/contracts/test-network-exposure-contracts.py`](ods/tests/contracts/test-network-exposure-contracts.py) enforces Hermes internal-only behavior, `hermes-proxy` auth gating, OpenClaw deprecation/token gating, and LiteLLM auth. |
+| Safe env parsing | [`ods/lib/safe-env.sh`](ods/lib/safe-env.sh) and [`ods/tests/test-safe-env.sh`](ods/tests/test-safe-env.sh) replace shell `eval` ingestion for helper output and `.env` loading. |
+| Secret checks | [`ods/tests/test-secret-security.sh`](ods/tests/test-secret-security.sh) scans for hardcoded secrets, auth patterns, `.gitignore` coverage, and the token-spy SQL guard. |
+| Extension hardening | [`ods/scripts/audit-extensions.py`](ods/scripts/audit-extensions.py) rejects unsafe compose patterns for bundled and user extensions. |
+| Support bundle redaction | [`ods/docs/SUPPORT-BUNDLE.md`](ods/docs/SUPPORT-BUNDLE.md) documents redaction expectations before users share diagnostics. |
 
 ## Residual Risks To Keep Visible
 
@@ -72,11 +72,11 @@ has moved beyond the original audit findings:
 - `--lan` and `BIND_ADDRESS=0.0.0.0` are operator-controlled exposure choices.
   They are useful for headless devices and private networks, but they should be
   paired with firewall rules, TLS, or a VPN.
-- Dream Server is still local-first. Public internet deployments need an
+- ODS is still local-first. Public internet deployments need an
   additional reverse proxy, TLS, rate limiting, and service-specific auth review.
 - Local HTTP voice traffic remains unencrypted unless HTTPS or a VPN is placed
   in front of it.
-- External properties such as `dreamserver.ai` need their own security receipt
+- External properties such as `ods.ai` need their own security receipt
   trail because this repository cannot validate deployed headers or CDN policy.
 
 ## Verification Commands
@@ -84,10 +84,10 @@ has moved beyond the original audit findings:
 Use these from the repository root when updating this status page:
 
 ```bash
-python dream-server/tests/contracts/test-network-exposure-contracts.py
-bash dream-server/tests/test-safe-env.sh
-bash dream-server/tests/test-openclaw-device-auth-default.sh
-python dream-server/scripts/audit-extensions.py --project-dir dream-server
+python ods/tests/contracts/test-network-exposure-contracts.py
+bash ods/tests/test-safe-env.sh
+bash ods/tests/test-openclaw-device-auth-default.sh
+python ods/scripts/audit-extensions.py --project-dir ods
 git diff --check
 ```
 

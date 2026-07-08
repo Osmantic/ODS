@@ -4,16 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Dream Server is a fully local AI stack (LLM inference, chat, voice, agents, workflows, RAG, image generation, privacy tools) deployed on user hardware with a single command. It supports Linux (NVIDIA + AMD), Windows (WSL2), and macOS (Apple Silicon). The project is primarily Bash (installer/CLI), Python (dashboard-api, services), and React/Vite (dashboard UI).
+ODS is a fully local AI stack (LLM inference, chat, voice, agents, workflows, RAG, image generation, privacy tools) deployed on user hardware with a single command. It supports Linux (NVIDIA + AMD), Windows (WSL2), and macOS (Apple Silicon). The project is primarily Bash (installer/CLI), Python (dashboard-api, services), and React/Vite (dashboard UI).
 
 ## Repository Structure
 
 The repo has two layers:
 
 - **Root level** — outer wrapper with top-level README, install scripts (`install.sh`, `install.ps1`), and CI workflows (`.github/workflows/`)
-- **`dream-server/`** — the core product containing all deployable code
+- **`ods/`** — the core product containing all deployable code
 
-Within `dream-server/`:
+Within `ods/`:
 
 - **`install-core.sh`** — thin orchestrator that sources libs then runs phases in order
 - **`installers/lib/`** — pure function libraries (constants, logging, UI, GPU detection, tier mapping, packaging, compose selection)
@@ -22,7 +22,7 @@ Within `dream-server/`:
 - **`extensions/services/`** — 24 bundled service manifests, each a directory with `manifest.yaml` + optional `compose.yaml` and GPU overlays
 - **`extensions/library/`** — optional extension catalog, templates, workflows, and manifest schema used by the dashboard Extensions page
 - **`docker-compose.base.yml`** — core service definitions; `docker-compose.{amd,nvidia,apple}.yml` are GPU overlays
-- **`dream-cli`** — main Bash CLI for managing the stack; keep changes narrow and follow `docs/DREAM_CLI_DECOMPOSITION.md` for behavior-preserving split work
+- **`ods-cli`** — main Bash CLI for managing the stack; keep changes narrow and follow `docs/ODS_CLI_DECOMPOSITION.md` for behavior-preserving split work
 - **`config/`** — backend configs (`backends/amd.json`, `nvidia.json`, etc.), GPU database, LiteLLM config, hardware classes
 - **`extensions/services/dashboard-api/`** — Python FastAPI backend (with `routers/`, `tests/`)
 - **`extensions/services/dashboard/`** — React + Vite + Tailwind frontend (`src/`)
@@ -32,7 +32,7 @@ Within `dream-server/`:
 
 ## Build & Development Commands
 
-All commands run from `dream-server/` directory unless noted.
+All commands run from `ods/` directory unless noted.
 
 ### Linting and Validation
 
@@ -155,9 +155,9 @@ Priority order when principles conflict: **Let It Crash > KISS > Pure Functions 
 
 ## Key File Paths
 
-- Tier mapping logic: `dream-server/installers/lib/tier-map.sh`
-- GPU detection: `dream-server/installers/lib/detection.sh`
-- Service manifests: `dream-server/extensions/services/*/manifest.yaml`
-- Compose stack resolver: `dream-server/scripts/resolve-compose-stack.sh`
-- Environment schema: `dream-server/.env.schema.json`
-- Environment example: `dream-server/.env.example`
+- Tier mapping logic: `ods/installers/lib/tier-map.sh`
+- GPU detection: `ods/installers/lib/detection.sh`
+- Service manifests: `ods/extensions/services/*/manifest.yaml`
+- Compose stack resolver: `ods/scripts/resolve-compose-stack.sh`
+- Environment schema: `ods/.env.schema.json`
+- Environment example: `ods/.env.example`

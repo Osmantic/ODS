@@ -1,17 +1,17 @@
-# Dream Server Architecture
+# ODS Architecture
 
 > Version 2.5.3 | Fully local AI stack deployed on user hardware with a single command
 
 ## Overview
 
-Dream Server is a self-hosted AI platform built around 24 bundled service
+ODS is a self-hosted AI platform built around 24 bundled service
 manifests, Docker Compose services, and a small number of host-managed helpers
 across NVIDIA, AMD, Apple Silicon, Intel Arc, and CPU/cloud fallback paths. The
 system is structured in two layers: an **outer wrapper** (installer scripts, CI,
-resources) and the **core product** (`dream-server/`) containing all deployable
+resources) and the **core product** (`ods/`) containing all deployable
 code.
 
-The architecture follows a **layered compose model**: a base compose file defines core services, GPU-specific overlays configure hardware acceleration, and extension compose files add optional services. A registry-driven CLI (`dream-cli`) manages the lifecycle.
+The architecture follows a **layered compose model**: a base compose file defines core services, GPU-specific overlays configure hardware acceleration, and extension compose files add optional services. A registry-driven CLI (`ods-cli`) manages the lifecycle.
 
 ## System Architecture
 
@@ -69,7 +69,7 @@ graph TB
     end
 
     subgraph Access["LAN / Remote Access"]
-        PROXY["dream-proxy<br/>:80<br/>mDNS web entry"]
+        PROXY["ods-proxy<br/>:80<br/>mDNS web entry"]
         TAIL["tailscale<br/>host network<br/>remote access"]
     end
 
@@ -116,7 +116,7 @@ The LLM inference engine (`llama-server`) is the foundation. GPU overlays select
 | Backend | Image | Acceleration |
 |---------|-------|-------------|
 | NVIDIA | `llama.cpp:server-cuda-b9014` default, overrideable via `LLAMA_SERVER_IMAGE` | CUDA, all GPUs reserved |
-| AMD | Custom `dream-lemonade-server` | ROCm / Vulkan / NPU via Lemonade |
+| AMD | Custom `ods-lemonade-server` | ROCm / Vulkan / NPU via Lemonade |
 | Apple | Native host `llama-server` via macOS installer; Docker overlay is CPU fallback | Metal on host; containers reach `host.docker.internal:8080` |
 | Intel Arc | SYCL backend | Experimental |
 | CPU | `llama.cpp:server-b8248` | Pure CPU fallback |
@@ -255,7 +255,7 @@ graph TB
 
 ### 2. Service Startup Flow
 
-`dream-cli start` → `resolve-compose-stack.sh` reads enabled services from `.env` → assembles `docker compose -f base -f gpu-overlay -f ext1 -f ext2 ...` → `docker compose up -d`. Health checks gate dependent services (e.g., `open-webui` waits for `llama-server` healthy).
+`ods-cli start` → `resolve-compose-stack.sh` reads enabled services from `.env` → assembles `docker compose -f base -f gpu-overlay -f ext1 -f ext2 ...` → `docker compose up -d`. Health checks gate dependent services (e.g., `open-webui` waits for `llama-server` healthy).
 
 ### 3. Chat Request Flow
 
@@ -263,7 +263,7 @@ Browser → `open-webui:3000` → `llama-server:8080/v1/chat/completions` → GP
 
 ### 4. Agent Execution Flow
 
-Browser → `hermes-proxy:9120` → magic-link auth gate → `dream-hermes:9119`
+Browser → `hermes-proxy:9120` → magic-link auth gate → `ods-hermes:9119`
 inside the Docker network → Hermes tools/search/reasoning → local LLM via an
 OpenAI-compatible endpoint. OpenClaw still exists as a deprecated optional
 agent on `:7860`; APE provides policy/audit controls for agent tool surfaces.
@@ -281,7 +281,7 @@ Browser → `dashboard:3001` → `dashboard-api:3002/api/features` → API reads
 | `GPU_BACKEND` | detected | `nvidia`, `amd`, `apple`, `cpu` |
 | `GGUF_FILE` | tier-dependent | Model file in `/data/models/` |
 | `CTX_SIZE` | `16384` | Context window (tokens) |
-| `DREAM_MODE` | `local` | `local`, `cloud`, `hybrid` |
+| `ODS_MODE` | `local` | `local`, `cloud`, `hybrid` |
 | `LITELLM_KEY` | generated | API gateway authentication |
 | `DASHBOARD_API_KEY` | generated | Dashboard API authentication |
 
@@ -291,7 +291,7 @@ All services bind to `127.0.0.1` (localhost only). Canonical port assignments li
 
 | Port | Service | Port | Service |
 |------|---------|------|---------|
-| 80 | dream-proxy | 3000 | open-webui |
+| 80 | ods-proxy | 3000 | open-webui |
 | 3001 | dashboard | 3002 | dashboard-api |
 | 3003 | opencode | 3004 | perplexica |
 | 3005 | token-spy | 3006 | langfuse |

@@ -1,0 +1,7 @@
+[Unit]
+Description=Memory Shepherd — Workspace Files (AGENTS.md + TOOLS.md)
+
+[Service]
+Type=oneshot
+ExecStart=%h/ods/memory-shepherd/memory-shepherd.sh ods-agent-agents
+ExecStart=%h/ods/memory-shepherd/memory-shepherd.sh ods-agent-tools

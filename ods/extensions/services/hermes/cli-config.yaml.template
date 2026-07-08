@@ -1,0 +1,178 @@
+# Hermes Agent configuration — ODS defaults.
+#
+# This file is mounted into the upstream image at
+# /opt/hermes/cli-config.yaml.example, which Hermes's entrypoint copies into
+# /opt/data/config.yaml on first start IF that file doesn't already exist.
+# Re-running `ods enable hermes` after editing here won't overwrite an
+# existing config — delete /opt/data/config.yaml manually if you want to
+# reset to these defaults.
+#
+# Documentation for every key: https://hermes-agent.nousresearch.com/docs/
+
+# =============================================================================
+# Model — points at ODS's local LLM by default
+# =============================================================================
+model:
+  # Local model name advertised to Hermes. llama.cpp's OpenAI-compat server
+  # ignores this field and serves whatever's loaded, but Lemonade (AMD) and
+  # other strict OpenAI-compat servers DO require an exact match — they will
+  # 404 every chat completion if Hermes asks for "qwen3.5-9b" but the server
+  # only serves "extra.Qwen3.5-4B-Q4_K_M.gguf" or similar. The installer
+  # should sed-replace this value with the actually-served model name
+  # during phase 11 (open follow-up). Until that lands, operators on
+  # AMD / Apple Silicon / aarch64 must hand-edit /opt/data/config.yaml
+  # after first start to match the output of:
+  #   curl http://<llama-server-host>:<port>/v1/models | jq .data[0].id
+  # (Hermes does NOT read HERMES_MODEL_NAME from env — config.yaml is the
+  # source of truth once it's copied out of the example.)
+  default: "qwen3.5-9b"
+
+  # provider=custom = any OpenAI-compatible local server. Aliases:
+  # ollama, vllm, llamacpp. We pick "custom" for portability.
+  provider: "custom"
+
+  # base_url for the LLM client. This value WINS over the OPENAI_BASE_URL
+  # env var that compose.yaml sets — empirically verified on macOS, where
+  # HERMES_LLM_BASE_URL=http://host.docker.internal:8080/v1 in .env got
+  # passed through as OPENAI_BASE_URL but Hermes still dialed
+  # llama-server:8080 and failed with `Connection error`. Operators on
+  # macOS (where llama-server runs native on the host, not as a sibling
+  # container) must hand-edit this to `http://host.docker.internal:8080/v1`
+  # or rely on a future installer-side substitution.
+  base_url: "http://llama-server:8080/v1"
+
+  # Hermes needs a large working window for tool-calling workflows. ODS's
+  # installers keep this value aligned with CTX_SIZE: 64K for the fast-start
+  # bootstrap model, then 128K after the full model swap. Advertising a larger
+  # window than llama-server actually allocates causes "context length
+  # exceeded / max compression attempts reached" loops.
+  context_length: 131072
+
+# =============================================================================
+# Provider overrides — local inference needs a generous first-token budget
+# =============================================================================
+# Local OpenAI-compatible backends can spend tens of seconds in prompt
+# processing before the first token, especially on AMD iGPUs with 35B-class
+# models and ODS Talk's full tool/persona prompt. The provider-level request
+# timeout is the supported Hermes knob for that path; without it, some client
+# paths fall back to shorter transport defaults and turn a slow local prefill
+# into retries plus a stuck "session busy" state.
+providers:
+  custom:
+    request_timeout_seconds: 180
+
+# =============================================================================
+# Auxiliary models — compression, etc.
+# =============================================================================
+# Hermes runs a separate "compression" model when the conversation history
+# nears the context budget. That model's context window is ALSO checked
+# against the 64K minimum, independent of model.context_length above.
+# Without this override, prompts bomb with:
+#   "Auxiliary compression model X has a context window of N tokens, which
+#    is below the minimum 64,000 required by Hermes Agent."
+# even after the main model.context_length is bumped.
+auxiliary:
+  compression:
+    context_length: 131072
+
+# =============================================================================
+# Agent — tool scoping for the consumer-facing ODS Talk surface
+# =============================================================================
+# Upstream PR #18197 (merged) added `agent.disabled_toolsets` as a strict
+# subtraction applied after every other toolset-resolution path. Removing a
+# toolset here removes its tools from the schema the model sees — which is
+# the only reliable fix for wrong-tool selection (upstream RFC #26524 reports
+# Qwen variants jumping 20%->100% reliability when offending tools are
+# removed from the schema, vs ignored prompt-only "use X never Y" guidance).
+#
+# We disable:
+#   * terminal — the model kept reaching for it on weather/news queries and
+#     hanging for 5 min on dead curl commands instead of using web_search.
+#   * browser  — full headless-browser toolset; ODS Talk is mobile chat,
+#     not interactive browsing, so we never want browser_console / navigate.
+agent:
+  disabled_toolsets:
+    - terminal
+    - browser
+
+# =============================================================================
+# Terminal backend — where tool calls execute (when terminal is enabled)
+# =============================================================================
+# Hermes can run tools in a few different sandboxes. For ODS we keep
+# it local-to-the-container: no SSH out, no Modal/Daytona, no Docker-in-Docker.
+# The container IS the sandbox.
+#
+# `timeout` caps per-command duration (default upstream: 180s). We set 30s
+# so even if `terminal` gets re-enabled via env override or a future toolset
+# change, a wedged command can't hang the chat for 5 minutes. Pair with the
+# env var TERMINAL_TIMEOUT=30 in compose.yaml as the same fallback default.
+terminal:
+  backend: "local"
+  timeout: 30
+
+# =============================================================================
+# Messaging gateways — none enabled by default in ODS
+# =============================================================================
+# Hermes ships with Telegram / Discord / Slack / WhatsApp / Signal / email /
+# Teams / Google Chat / Matrix / Mattermost / SMS gateway adapters. ODS
+# Server users reach Hermes via the web dashboard, not platform bots — so none
+# of these are enabled here.
+#
+# IMPORTANT: there is NO top-level `gateway.enabled: false` switch in
+# upstream's config schema. Earlier drafts of this template had one; it
+# was silently ignored. The gateway is "disabled" by simply not
+# enabling any adapter (no TELEGRAM_TOKEN, no DISCORD_TOKEN, etc.), which
+# means `hermes gateway run` starts, ticks cron, hosts the dashboard, and
+# has no platforms to message on.
+#
+# WhatsApp is pre-seeded as disabled only to override upstream's bridge
+# default. Upstream's WhatsApp bridge listens on 127.0.0.1:3000 by default
+# and attempts to clear that port before starting; ODS already uses
+# host port 3000 for Open WebUI. The bridge is internal to the Hermes
+# container in ODS's default compose network, but an explicit non-3000
+# value keeps native/host-network experiments from colliding with Open WebUI
+# when users intentionally enable WhatsApp.
+#
+# To enable a platform, follow upstream's adapter docs and add the
+# matching block under the platform-specific config keys, then restart
+# the container.
+platforms:
+  whatsapp:
+    enabled: false
+    extra:
+      bridge_port: 3010
+
+# =============================================================================
+# Compression — keep memory bounded on small devices
+# =============================================================================
+# Hermes auto-compacts long conversations once they cross the threshold.
+# Current upstream reads threshold as a fraction of model.context_length
+# (0.50 = 50%), not an absolute token count. A stale value like 10000
+# effectively disables proactive compression until the backend rejects the
+# request, which is how sessions fall into max-compression-attempt loops.
+#
+# Defaults tuned for ODS Talk — a deep mobile-chat conversation. Previous
+# values (threshold: 0.50, target_ratio: 0.20, protect_last_n: 20) caused
+# the agent to lose granular context mid-conversation: a single web_search
+# tool result (10-15kB of HTML/markdown) would briefly push context over
+# the 50% threshold, Hermes would compress earlier turns to 20% of their
+# original size, and the user would notice the agent "forgetting" what
+# they were working on. Reported live by the operator after a deeper
+# conversation. New values are deliberately more conservative — we defer
+# compression later and preserve more of it when it does trigger.
+compression:
+  # Enable automatic context compression. Disabling outright is appealing
+  # for a chat surface but lets a long session hit the hard context limit
+  # and fail mid-reply; better to compress gently than crash.
+  enabled: true
+  # Trigger compression at this fraction of the context window. Was 0.50;
+  # bumped to 0.75 so a transient tool-result spike doesn't fire it.
+  threshold: 0.75
+  # Preserve this fraction of the threshold-sized window as recent tail.
+  # Was 0.20 (very aggressive, summarized 80% of history away); bumped to
+  # 0.50 so half the conversation survives a compression event verbatim.
+  target_ratio: 0.50
+  # Keep roughly the last N turns intact during compression. Was 20 turns
+  # (~10 user/assistant exchanges); bumped to 40 so a longer back-and-forth
+  # stays granular even after a compression pass.
+  protect_last_n: 40

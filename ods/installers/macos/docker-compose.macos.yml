@@ -1,0 +1,63 @@
+# ODS -- macOS Apple Silicon Overlay
+# llama-server runs natively on macOS host with Metal acceleration
+# All other services remain in Docker, reaching the host via host.docker.internal
+#
+# Use with: docker compose -f docker-compose.base.yml -f installers/macos/docker-compose.macos.yml up -d
+
+services:
+  llama-server:
+    image: busybox:1.36.1   # Placeholder -- container never runs (replicas: 0)
+    deploy:
+      replicas: 0    # Disabled -- running natively on macOS host via Metal
+
+  # Readiness sidecar — polls native llama-server on the macOS host.
+  # Docker Compose cannot express depends_on for a host process, so this
+  # lightweight container bridges the gap.  open-webui waits on its
+  # healthcheck before starting.
+  llama-server-ready:
+    image: busybox:1.36.1
+    container_name: ods-llama-ready
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        echo "Waiting for native llama-server on host..."
+        while ! wget -qO- "http://host.docker.internal:${OLLAMA_PORT:-8080}/health" >/dev/null 2>&1; do
+          sleep 2
+        done
+        echo "llama-server is ready"
+        sleep infinity
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://host.docker.internal:${OLLAMA_PORT:-8080}/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 32M
+    security_opt:
+      - no-new-privileges:true
+
+  dashboard-api:
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:8080
+      - OLLAMA_HOST=host.docker.internal
+      - OLLAMA_PORT=8080        # llama-server runs natively on macOS at this port
+      # gpu.py routes to get_gpu_info_apple() which reads HOST_* env vars.
+      # config.py defaults include 'apple' so all manifests are discovered.
+      - GPU_BACKEND=apple
+      # Static host hardware info written to .env by install-macos.sh (Phase 2).
+      - HOST_RAM_GB=${HOST_RAM_GB:-0}   # explicit override; base.yml also carries this for other platforms
+
+  open-webui:
+    depends_on:
+      llama-server-ready:
+        condition: service_healthy
+    environment:
+      OPENAI_API_BASE_URL: "http://host.docker.internal:8080/v1"

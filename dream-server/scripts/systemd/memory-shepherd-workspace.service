@@ -1,7 +1,0 @@
-[Unit]
-Description=Memory Shepherd — Workspace Files (AGENTS.md + TOOLS.md)
-
-[Service]
-Type=oneshot
-ExecStart=%h/dream-server/memory-shepherd/memory-shepherd.sh dream-agent-agents
-ExecStart=%h/dream-server/memory-shepherd/memory-shepherd.sh dream-agent-tools

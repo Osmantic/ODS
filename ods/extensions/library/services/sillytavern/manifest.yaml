@@ -1,0 +1,33 @@
+schema_version: ods.services.v1
+
+service:
+  id: sillytavern
+  name: SillyTavern
+  aliases: [tavern, character-chat]
+  container_name: ods-sillytavern
+  host_env: SILLYTAVERN_HOST
+  default_host: sillytavern
+  port: 8000
+  external_port_env: SILLYTAVERN_PORT
+  external_port_default: 8001
+  health: /
+  type: docker
+  gpu_backends: [amd, nvidia, apple]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: "Advanced character-based roleplay and chat frontend with extensive customization."
+  env_vars: []
+
+features:
+  - id: character-chat
+    name: Character Chat
+    description: Character-based roleplay chat interface
+    icon: MessageCircle
+    category: chat
+    requirements:
+      services: [sillytavern]
+      vram_gb: 0
+    enabled_services_all: [sillytavern]
+    setup_time: ~1 minute
+    priority: 6

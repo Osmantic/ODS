@@ -1,0 +1,46 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: brave-search
+  name: Brave Search (Paid API)
+  aliases: [brave]
+  container_name: ods-brave-search
+  host_env: BRAVE_SEARCH_HOST
+  default_host: brave-search
+  port: 8585
+  external_port_env: BRAVE_SEARCH_PORT
+  external_port_default: 8585
+  health: /health
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  env_vars:
+    - key: BRAVE_SEARCH_API_KEY
+      required: true
+      secret: true
+      description: Brave Search API subscription token (obtain at api.search.brave.com)
+    - key: BRAVE_SEARCH_PORT
+      required: false
+      default: "8585"
+      description: External port the proxy listens on
+
+features:
+  - id: brave-web-search
+    name: Web Search (Brave)
+    description: Web search backed by Brave's independent crawler index
+    icon: Search
+    category: search
+    requirements:
+      services: [brave-search]
+      vram_gb: 0
+    enabled_services_all: [brave-search]
+    setup_time: ~2 minutes
+    priority: 50
+    launch:
+      type: none
+    gpu_backends: [all]
