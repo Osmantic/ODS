@@ -499,12 +499,21 @@ def validate_records(
         if port is None and not host_network:
             record.add_issue("error", "service-port-invalid", "service.port must be a positive integer", path=record.manifest_path)
 
+        health_type = str(service.get("health_type") or "http")
+        if health_type not in ("http", "tcp", "none"):
+            record.add_issue(
+                "error",
+                "service-health-type-invalid",
+                f"service.health_type must be one of http, tcp, none (got '{health_type}')",
+                path=record.manifest_path,
+            )
+
         health = str(service.get("health") or "")
-        if not health.startswith("/") and not host_network:
+        if health_type == "http" and not health.startswith("/") and not host_network:
             record.add_issue(
                 "error",
                 "service-health-invalid",
-                "service.health must start with '/'",
+                "service.health must start with '/' when health_type is http",
                 path=record.manifest_path,
             )
 
