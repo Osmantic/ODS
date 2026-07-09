@@ -145,13 +145,18 @@ class LemonadeClient:
         timeout: Optional[float] = None,
     ) -> dict[str, Any]:
         client = await self._ensure_client()
+        # httpx treats an explicit `timeout=None` as "no timeout" rather than
+        # "use the client default", so passing None here would silently disable
+        # the client's configured timeout on every core request. Fall back to
+        # the client default sentinel unless the caller overrides it.
+        request_timeout = httpx.USE_CLIENT_DEFAULT if timeout is None else timeout
         try:
             response = await client.request(
                 method,
                 self.api_url(path),
                 json=json,
                 headers=self.auth_headers(),
-                timeout=timeout,
+                timeout=request_timeout,
             )
             response.raise_for_status()
             payload = response.json() if response.content else {}
