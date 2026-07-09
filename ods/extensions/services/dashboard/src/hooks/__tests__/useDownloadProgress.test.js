@@ -122,6 +122,7 @@ describe('useDownloadProgress', () => {
     expect(result.current.formatBytes(5e9)).toBe('4.66 GB')
     expect(result.current.formatBytes(5e6)).toBe('4.8 MB')
     expect(result.current.formatBytes(5000)).toBe('5 KB')
+    expect(result.current.formatBytes(512)).toBe('512 B')
     expect(result.current.formatBytes(0)).toBe('0 B')
     expect(result.current.formatBytes(null)).toBe('0 B')
   })

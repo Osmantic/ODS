@@ -87,7 +87,9 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
     if (gb >= 1) return `${gb.toFixed(2)} GB`
     const mb = bytes / (1024 ** 2)
     if (mb >= 1) return `${mb.toFixed(1)} MB`
-    return `${(bytes / 1024).toFixed(0)} KB`
+    const kb = bytes / 1024
+    if (kb >= 1) return `${kb.toFixed(0)} KB`
+    return `${bytes.toFixed(0)} B`
   }
 
   const formatEta = (eta) => {
