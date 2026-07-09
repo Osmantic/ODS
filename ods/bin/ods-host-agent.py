@@ -4074,15 +4074,23 @@ def _restart_windows_lemonade(env: dict):
     independent lifecycle, which keeps fleet/dashboard activation stable.
     """
     exe = None
+    executable_names = ("lemonade-server.exe", "LemonadeServer.exe")
+    install_folders = ("Lemonade Server", "lemonade_server", "LemonadeServer")
     for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
         if not root:
             continue
-        candidate = Path(root) / "Lemonade Server" / "bin" / "lemonade-server.exe"
-        if candidate.exists():
-            exe = candidate
+        for folder in install_folders:
+            for name in executable_names:
+                candidate = Path(root) / folder / "bin" / name
+                if candidate.exists():
+                    exe = candidate
+                    break
+            if exe is not None:
+                break
+        if exe is not None:
             break
     if exe is None:
-        raise RuntimeError("lemonade-server.exe not found under Program Files")
+        raise RuntimeError("Lemonade server executable not found under Program Files")
 
     ps_env = os.environ.copy()
     ps_env.update({
@@ -4147,14 +4155,30 @@ if ($remaining.Count -gt 0) {
     throw "Could not stop existing Lemonade processes: $ids"
 }
 
-if (-not $existingTask) {
-    $argString = "serve --port $port --host $bindAddr --no-tray --llamacpp vulkan --extra-models-dir `"$modelsDir`""
+$argString = "serve --port $port --host $bindAddr --no-tray --llamacpp vulkan --extra-models-dir `"$modelsDir`""
+$launchMethod = "scheduled task"
+try {
     $action = New-ScheduledTaskAction -Execute $exe -Argument $argString -WorkingDirectory (Split-Path -Parent $exe)
     $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
+    Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+} catch {
+    if ($existingTask) {
+        try {
+            Write-Warning "Could not refresh Lemonade scheduled task; reusing existing task: $_"
+            Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+        } catch {
+            $launchMethod = "direct process"
+            Write-Warning "Could not start Lemonade through Task Scheduler: $_"
+            Start-Process -FilePath $exe -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+        }
+    } else {
+        $launchMethod = "direct process"
+        Write-Warning "Could not start Lemonade through Task Scheduler: $_"
+        Start-Process -FilePath $exe -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+    }
 }
-Start-ScheduledTask -TaskName $taskName
 $proc = $null
 for ($i = 0; $i -lt 45; $i++) {
     Start-Sleep -Seconds 1
@@ -4164,10 +4188,27 @@ for ($i = 0; $i -lt 45; $i++) {
         Select-Object -First 1
     if ($proc) { break }
 }
+if (-not $proc -and $launchMethod -eq "scheduled task") {
+    $launchMethod = "direct process"
+    Write-Warning "Lemonade scheduled task did not start a server process. Starting directly."
+    try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch {}
+    foreach ($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
+        if ($listener.OwningProcess -gt 0) { Stop-ODSProcessId -ProcId ([int]$listener.OwningProcess) }
+    }
+    Start-Process -FilePath $exe -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+    for ($i = 0; $i -lt 15; $i++) {
+        Start-Sleep -Seconds 1
+        $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($exe, [StringComparison]::OrdinalIgnoreCase) } |
+            Sort-Object ProcessId -Descending |
+            Select-Object -First 1
+        if ($proc) { break }
+    }
+}
 if (-not $proc) {
     $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
     $taskResult = if ($taskInfo) { $taskInfo.LastTaskResult } else { "unknown" }
-    throw "Lemonade scheduled task started but no lemonade-server.exe process was found (task result: $taskResult)"
+    throw "Lemonade $launchMethod started but no Lemonade process was found (task result: $taskResult)"
 }
 New-Item -ItemType Directory -Path (Split-Path -Parent $pidPath) -Force | Out-Null
 Set-Content -LiteralPath $pidPath -Value $proc.ProcessId

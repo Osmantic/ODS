@@ -85,9 +85,11 @@ function Resolve-ODSLemonadeExe {
 
     .DESCRIPTION
         Lemonade's minimal MSI can land under either Program Files root depending
-        on package architecture and Windows installer behavior. Probe both before
-        falling back to the configured default path so AMD installs do not miss a
-        valid Lemonade runtime and silently downgrade to Vulkan llama-server.
+        on package architecture and Windows installer behavior. Recent MSI builds
+        also install LemonadeServer.exe instead of the historical
+        lemonade-server.exe. Probe the known roots, folder names, and executable
+        aliases before falling back so AMD installs do not miss a valid Lemonade
+        runtime and silently downgrade to Vulkan llama-server.
     #>
     [CmdletBinding()]
     param(
@@ -101,13 +103,18 @@ function Resolve-ODSLemonadeExe {
         $candidates.Add([string]$existingVar.Value)
     }
 
-    $roots = @(
-        $env:ProgramFiles,
-        ${env:ProgramFiles(x86)}
-    )
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
+    $installFolders = @("Lemonade Server", "lemonade_server", "LemonadeServer")
+    $executableNames = @($ExecutableName, "LemonadeServer.exe", "lemonade-server.exe") |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique
     foreach ($root in $roots) {
         if ([string]::IsNullOrWhiteSpace($root)) { continue }
-        $candidates.Add((Join-Path (Join-Path (Join-Path $root "Lemonade Server") "bin") $ExecutableName))
+        foreach ($folder in $installFolders) {
+            foreach ($name in $executableNames) {
+                $candidates.Add((Join-Path (Join-Path (Join-Path $root $folder) "bin") $name))
+            }
+        }
     }
 
     foreach ($candidate in ($candidates | Select-Object -Unique)) {

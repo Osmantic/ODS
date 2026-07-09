@@ -433,18 +433,37 @@ if ($dryRun) {
                 New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
 
                 $argString = "serve --port $($script:LEMONADE_PORT) --host $bindAddr --no-tray --llamacpp vulkan --extra-models-dir `"$modelsDir`""
-                $action = New-ScheduledTaskAction -Execute $script:LEMONADE_EXE -Argument $argString -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE)
-                $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
-                $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-                Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
-                Start-ScheduledTask -TaskName $taskName
+                $launchMethod = "scheduled task"
+                try {
+                    $action = New-ScheduledTaskAction -Execute $script:LEMONADE_EXE -Argument $argString -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE)
+                    $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
+                    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+                    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
+                    Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+                } catch {
+                    $launchMethod = "direct process"
+                    Write-AIWarn "Could not start Lemonade through Task Scheduler: $_"
+                    Write-AI "Starting Lemonade directly for this Windows session..."
+                    Start-Process -FilePath $script:LEMONADE_EXE -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE) | Out-Null
+                }
                 Start-Sleep -Seconds 5
                 $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
                     Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase) } |
                     Sort-Object ProcessId -Descending |
                     Select-Object -First 1
+                if (-not $proc -and $launchMethod -eq "scheduled task") {
+                    $launchMethod = "direct process"
+                    Write-AIWarn "Lemonade scheduled task did not start a server process."
+                    Write-AI "Starting Lemonade directly for this Windows session..."
+                    Start-Process -FilePath $script:LEMONADE_EXE -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE) | Out-Null
+                    Start-Sleep -Seconds 3
+                    $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase) } |
+                        Sort-Object ProcessId -Descending |
+                        Select-Object -First 1
+                }
                 if (-not $proc) {
-                    throw "Lemonade scheduled task started but no lemonade-server.exe process was found"
+                    throw "Lemonade $launchMethod started but no Lemonade process was found"
                 }
                 Set-Content -Path $script:INFERENCE_PID_FILE -Value $proc.ProcessId
 

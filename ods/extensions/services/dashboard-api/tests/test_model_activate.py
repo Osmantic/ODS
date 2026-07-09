@@ -355,9 +355,9 @@ class TestLaunchNativeLlamaServer:
 
 class TestRestartWindowsLemonade:
 
-    def test_reuses_existing_task_and_polls_for_started_process(self, monkeypatch, tmp_path):
+    def test_refreshes_task_with_current_exe_and_falls_back_to_direct_start(self, monkeypatch, tmp_path):
         program_files = tmp_path / "Program Files"
-        lemonade_exe = program_files / "Lemonade Server" / "bin" / "lemonade-server.exe"
+        lemonade_exe = program_files / "Lemonade Server" / "bin" / "LemonadeServer.exe"
         lemonade_exe.parent.mkdir(parents=True)
         lemonade_exe.write_text("", encoding="utf-8")
 
@@ -381,15 +381,19 @@ class TestRestartWindowsLemonade:
 
         script = captured["script"]
         assert "$existingTask = Get-ScheduledTask -TaskName $taskName" in script
-        assert "if (-not $existingTask)" in script
+        assert "Could not refresh Lemonade scheduled task; reusing existing task" in script
         assert "Register-ScheduledTask -TaskName $taskName" in script
-        assert "-Force | Out-Null" in script
+        assert "-Force -ErrorAction Stop | Out-Null" in script
         assert "Unregister-ScheduledTask" not in script
         assert "taskkill.exe /PID $ProcId /T /F" in script
         assert "for ($i = 0; $i -lt 45; $i++)" in script
         assert "task result: $taskResult" in script
         assert "Start-ScheduledTask -TaskName $taskName" in script
+        assert "Start-Process -FilePath $exe" in script
+        assert "Lemonade scheduled task did not start a server process" in script
+        assert "Stop-ScheduledTask -TaskName $taskName" in script
         assert captured["env"]["ODS_WIN_LEMONADE_TASK"] == "ODSLemonadeRuntime"
+        assert captured["env"]["ODS_WIN_LEMONADE_EXE"] == str(lemonade_exe)
 
 
 # --- Rollback integration ---

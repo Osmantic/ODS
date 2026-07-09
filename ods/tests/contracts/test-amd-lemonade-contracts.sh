@@ -343,15 +343,15 @@ if command -v pwsh >/dev/null 2>&1; then
         ${env:ProgramFiles} = $programFiles
         ${env:ProgramFiles(x86)} = $programFilesX86
         $script:LEMONADE_EXE = Join-Path (Join-Path (Join-Path $programFiles "Lemonade Server") "bin") "lemonade-server.exe"
-        $x86Exe = Join-Path (Join-Path (Join-Path $programFilesX86 "Lemonade Server") "bin") "lemonade-server.exe"
+        $x86Exe = Join-Path (Join-Path (Join-Path $programFilesX86 "Lemonade Server") "bin") "LemonadeServer.exe"
         New-Item -ItemType Directory -Path (Split-Path $x86Exe) -Force | Out-Null
         Set-Content -LiteralPath $x86Exe -Value "stub" -NoNewline
         $resolved = Resolve-ODSLemonadeExe
         if ($resolved -ne $x86Exe) {
-            throw "Expected Program Files (x86) Lemonade path, got: $resolved"
+            throw "Expected Program Files (x86) LemonadeServer.exe path, got: $resolved"
         }
     '; then
-        pass "backend-contract.ps1: reads explicit root, stays standalone, resolves x86 Lemonade installs"
+        pass "backend-contract.ps1: reads explicit root, stays standalone, resolves x86 Lemonade aliases"
     else
         fail "backend-contract.ps1: PowerShell contract failed"
     fi
