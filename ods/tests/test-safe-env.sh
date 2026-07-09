@@ -111,5 +111,16 @@ load_env_file "$tmpdir/.env-readonly"
 [[ "${AFTER_READONLY_UID:-}" == "still_loads" ]] || fail "load_env_file stopped after readonly UID"
 pass "load_env_file tolerates UID from .env"
 
+echo "Test 11: load_env_file tolerates CRLF .env files (Windows/WSL2)"
+unset CRLF_PORT CRLF_PATH CRLF_QUOTED 2>/dev/null || true
+# Write a .env with Windows CRLF line endings. Without stripping the trailing
+# CR, values keep it (8080\r) and the closing quote survives on quoted values.
+printf 'CRLF_PORT=8080\r\nCRLF_PATH=/home/user/ods\r\nCRLF_QUOTED="abc123"\r\n' > "$tmpdir/.env-crlf"
+load_env_file "$tmpdir/.env-crlf"
+[[ "${CRLF_PORT:-}" == "8080" ]] || fail "CRLF_PORT has trailing CR (got len ${#CRLF_PORT}: '${CRLF_PORT:-}')"
+[[ "${CRLF_PATH:-}" == "/home/user/ods" ]] || fail "CRLF_PATH has trailing CR (got: '${CRLF_PATH:-}')"
+[[ "${CRLF_QUOTED:-}" == "abc123" ]] || fail "CRLF_QUOTED not unquoted/stripped (got: '${CRLF_QUOTED:-}')"
+pass "load_env_file strips trailing CR from CRLF .env values"
+
 echo ""
 echo "All safe-env tests passed."
