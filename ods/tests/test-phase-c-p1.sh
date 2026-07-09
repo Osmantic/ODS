@@ -205,10 +205,10 @@ echo -e "${CYAN}-- C9. ods-update.sh GitHub Repo --------------------------"
 
 UPDATE_SCRIPT="${SCRIPT_DIR}/../ods-update.sh"
 if [ -f "$UPDATE_SCRIPT" ]; then
-    if grep -q "GITHUB_REPO.*Light-Heart-Labs/ODS" "$UPDATE_SCRIPT" 2>/dev/null; then
+    if grep -q "GITHUB_REPO.*Osmantic/ODS" "$UPDATE_SCRIPT" 2>/dev/null; then
         log_pass "ods-update.sh GitHub repo configuration is correct (ODS)"
     else
-        log_fail "ods-update.sh missing correct GitHub repo (should be Light-Heart-Labs/ODS)"
+        log_fail "ods-update.sh missing correct GitHub repo (should be Osmantic/ODS)"
     fi
 else
     log_warn "ods-update.sh not found"
