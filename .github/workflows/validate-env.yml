@@ -57,7 +57,7 @@ jobs:
           # Test .env for tier ${{ matrix.tier }}
           WEBUI_SECRET=test-secret-changeme
           SEARXNG_SECRET=test-searxng-secret
-          N8N_USER=admin
+          N8N_USER=admin@ods.local
           N8N_PASS=test-pass-changeme
           OPENCLAW_TOKEN=sk-test-openclaw-token
           ODS_VERSION=2.1.0
