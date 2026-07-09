@@ -85,7 +85,7 @@ cap_cpu_value() {
 
 select_auto_cpu_value() {
     local existing="$1" detected="$2"
-    if [[ "$existing" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN { exit !($existing > 0 && $existing <= $detected) }"; then
+    if [[ "$existing" =~ ^[0-9]+([.][0-9]+)?$ ]] && LC_ALL=C awk "BEGIN { exit !($existing > 0 && $existing <= $detected) }"; then
         echo "$existing"
     else
         echo "$detected"
@@ -191,13 +191,13 @@ generate_ods_env() {
         local existing_limit existing_reservation
         existing_limit="$(read_env_value "$env_path" "LLAMA_CPU_LIMIT")"
         existing_reservation="$(read_env_value "$env_path" "LLAMA_CPU_RESERVATION")"
-        if [[ "$existing_limit" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN { exit !($existing_limit > 0 && $existing_limit <= $detected_cpu_limit) }"; then
+        if [[ "$existing_limit" =~ ^[0-9]+([.][0-9]+)?$ ]] && LC_ALL=C awk "BEGIN { exit !($existing_limit > 0 && $existing_limit <= $detected_cpu_limit) }"; then
             detected_cpu_limit="$existing_limit"
         fi
-        if [[ "$existing_reservation" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN { exit !($existing_reservation > 0 && $existing_reservation <= $detected_cpu_reservation) }"; then
+        if [[ "$existing_reservation" =~ ^[0-9]+([.][0-9]+)?$ ]] && LC_ALL=C awk "BEGIN { exit !($existing_reservation > 0 && $existing_reservation <= $detected_cpu_reservation) }"; then
             detected_cpu_reservation="$existing_reservation"
         fi
-        if awk "BEGIN { exit !($detected_cpu_reservation > $detected_cpu_limit) }"; then
+        if LC_ALL=C awk "BEGIN { exit !($detected_cpu_reservation > $detected_cpu_limit) }"; then
             detected_cpu_reservation="$detected_cpu_limit"
         fi
         upsert_env_value "$env_path" "LLAMA_CPU_LIMIT" "$detected_cpu_limit"

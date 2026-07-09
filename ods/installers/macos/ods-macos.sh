@@ -176,7 +176,7 @@ upsert_env_value() {
 select_auto_cpu_value() {
     local existing="$1"
     local detected="$2"
-    if [[ "$existing" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN { exit !($existing > 0 && $existing <= $detected) }"; then
+    if [[ "$existing" =~ ^[0-9]+([.][0-9]+)?$ ]] && LC_ALL=C awk "BEGIN { exit !($existing > 0 && $existing <= $detected) }"; then
         echo "$existing"
     else
         echo "$detected"
@@ -208,7 +208,7 @@ ensure_service_cpu_pair() {
     detected_reservation="$(cap_cpu_value "$desired_reservation" "$final_limit")"
     current_reservation="$(read_env_value "$env_file" "$reservation_key")"
     final_reservation="$(select_auto_cpu_value "$current_reservation" "$detected_reservation")"
-    if awk "BEGIN { exit !($final_reservation > $final_limit) }"; then
+    if LC_ALL=C awk "BEGIN { exit !($final_reservation > $final_limit) }"; then
         final_reservation="$final_limit"
     fi
 
@@ -242,7 +242,7 @@ ensure_llama_cpu_budget() {
     final_limit="$(select_auto_cpu_value "$current_limit" "$detected_limit")"
     final_reservation="$(select_auto_cpu_value "$current_reservation" "$detected_reservation")"
 
-    if awk "BEGIN { exit !($final_reservation > $final_limit) }"; then
+    if LC_ALL=C awk "BEGIN { exit !($final_reservation > $final_limit) }"; then
         final_reservation="$final_limit"
     fi
 
