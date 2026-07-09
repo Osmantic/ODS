@@ -141,6 +141,7 @@ if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q "rootless";
         "langfuse/postgres:70"
         "langfuse/clickhouse:101"
         "hermes:10000"
+        "comfyui:1000"
     )
 
     _rootless_owner_ok() {

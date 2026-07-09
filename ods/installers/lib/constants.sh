@@ -84,4 +84,5 @@ ROOTLESS_SERVICE_UIDS=(
     "langfuse/postgres:70"
     "langfuse/clickhouse:101"
     "hermes:10000"
+    "comfyui:1000"
 )

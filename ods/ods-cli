@@ -1328,6 +1328,7 @@ _ods_cli_fix_rootless_ownership() {
         "langfuse/postgres:70"
         "langfuse/clickhouse:101"
         "hermes:10000"
+        "comfyui:1000"
     )
 
     local _dir _svc _uid
