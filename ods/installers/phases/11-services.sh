@@ -344,10 +344,45 @@ else
     # Ensure model directory exists
     mkdir -p "$INSTALL_DIR/data/models"
 
+    # ── Sync models from LM Studio / Ollama ──
+    # Before downloading anything, check whether the user already has matching
+    # GGUF models in LM Studio or Ollama. Syncing creates a symlink in ODS's
+    # model directory, so subsequent download checks find the file and skip the
+    _sync_script="$SCRIPT_DIR/scripts/sync-external-models.sh"
+    if [[ -f "$_sync_script" ]] && [[ "${ODS_MODE:-local}" != "cloud" ]] && ! _phase11_external_lemonade; then
+        ods_progress 75 "services" "Checking for existing models in LM Studio / Ollama"
+        _sync_result="$(INSTALL_DIR="$INSTALL_DIR" bash "$_sync_script" "$GGUF_FILE" 2>>"$LOG_FILE" || true)"
+        case "$_sync_result" in
+            synced:lmstudio:*)
+                _sync_src="${_sync_result#synced:lmstudio:}"
+                ai_ok "Model found in LM Studio — skipping download: $GGUF_FILE"
+                ai  "  Source: $_sync_src"
+                ;;
+            synced:ollama:*)
+                _sync_src="${_sync_result#synced:ollama:}"
+                ai_ok "Model found in Ollama — skipping download: $GGUF_FILE"
+                ai  "  Source: $_sync_src"
+                ;;
+            already_present)
+                : # Handled below by the existing integrity-check block
+                ;;
+            *)
+                ai "No existing model found in LM Studio or Ollama — will download."
+                ;;
+        esac
+    fi
+
     # ── Bootstrap model fast-start ──
     # For Tier 1+ installs, download a tiny model first so the user can chat
     # immediately. The full model downloads in the background and hot-swaps.
     [[ -f "$SCRIPT_DIR/installers/lib/bootstrap-model.sh" ]] && . "$SCRIPT_DIR/installers/lib/bootstrap-model.sh"
+
+    # Attempt to sync the bootstrap model from external providers before
+    # deciding whether fast-start is needed.
+    if type sync_bootstrap_if_available &>/dev/null; then
+        sync_bootstrap_if_available
+    fi
+
     _BOOTSTRAP_ACTIVE=false
     if type bootstrap_needed &>/dev/null && bootstrap_needed; then
         _BOOTSTRAP_ACTIVE=true
@@ -980,10 +1015,32 @@ except Exception:
         exit 1
     fi
 
-    # ── Bootstrap: launch background full-model download + auto hot-swap ──
+    # launch background full-model download + auto hot-swap
     # Runs regardless of compose_ok — the download only needs disk + network.
     # bootstrap-upgrade.sh checks if Docker is running before attempting
     # hot-swap and handles it gracefully if containers aren't ready yet.
+    if [[ "$_BOOTSTRAP_ACTIVE" == "true" ]]; then
+        # Before starting the network download, make one last attempt to sync
+        # the full model from LM Studio or Ollama — the user may have installed
+        # it between the earlier sync attempt and now
+        _full_sync_result=""
+        if [[ -f "$_sync_script" ]] && [[ ! -f "$INSTALL_DIR/data/models/$FULL_GGUF_FILE" ]]; then
+            _full_sync_result="$(INSTALL_DIR="$INSTALL_DIR" bash "$_sync_script" "$FULL_GGUF_FILE" 2>>"$LOG_FILE" || true)"
+        fi
+        case "${_full_sync_result:-}" in
+            synced:lmstudio:*)
+                ai_ok "Full model found in LM Studio — background download skipped: $FULL_GGUF_FILE"
+                ai  "  Source: ${_full_sync_result#synced:lmstudio:}"
+                _BOOTSTRAP_ACTIVE=false
+                ;;
+            synced:ollama:*)
+                ai_ok "Full model found in Ollama — background download skipped: $FULL_GGUF_FILE"
+                ai  "  Source: ${_full_sync_result#synced:ollama:}"
+                _BOOTSTRAP_ACTIVE=false
+                ;;
+        esac
+    fi
+
     if [[ "$_BOOTSTRAP_ACTIVE" == "true" ]]; then
         ai "Launching background download for $FULL_LLM_MODEL..."
 
