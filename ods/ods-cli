@@ -1427,7 +1427,7 @@ cmd_dry_run() {
         # Direct GitHub fallback
         local gh_resp
         gh_resp=$(curl -sf --max-time 8 \
-            "https://api.github.com/repos/Light-Heart-Labs/ODS/releases/latest" 2>/dev/null || true)
+            "https://api.github.com/repos/Osmantic/ODS/releases/latest" 2>/dev/null || true)
         if [[ -n "$gh_resp" ]] && command -v jq >/dev/null 2>&1; then
             latest_ver=$(echo "$gh_resp" | jq -r '.tag_name // empty' 2>/dev/null | sed 's/^v//' || true)
             changelog_url=$(echo "$gh_resp" | jq -r '.html_url // empty' 2>/dev/null || true)

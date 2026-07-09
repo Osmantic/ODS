@@ -18,7 +18,7 @@
 ## Install
 
 ```bash
-git clone https://github.com/Light-Heart-Labs/ODS.git
+git clone https://github.com/Osmantic/ODS.git
 cd ODS/ods
 ./install.sh
 ```

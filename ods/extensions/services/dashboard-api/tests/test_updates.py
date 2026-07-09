@@ -61,6 +61,38 @@ def test_get_version_with_mock_github(test_client, monkeypatch):
     assert data["changelog_url"] == "https://github.com/test"
 
 
+def test_version_check_uses_canonical_github_repo(test_client, monkeypatch):
+    """GET /api/version queries the canonical Osmantic releases API."""
+    import routers.updates as updates_mod
+
+    monkeypatch.setattr(updates_mod, "_version_cache", {"expires_at": 0.0, "payload": None})
+    monkeypatch.setattr(updates_mod, "_version_refresh_task", None)
+
+    requested_urls = []
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {
+        "tag_name": "v2.0.0",
+        "html_url": "https://github.com/Osmantic/ODS/releases/tag/v2.0.0",
+    }
+
+    async def mock_get(url, **kwargs):
+        requested_urls.append(url)
+        return mock_resp
+
+    mock_client = AsyncMock()
+    mock_client.get = mock_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.updates.httpx.AsyncClient", return_value=mock_client):
+        resp = test_client.get("/api/version", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert requested_urls == [
+        "https://api.github.com/repos/Osmantic/ODS/releases/latest",
+    ]
+
+
 def test_build_version_result_strips_v_prefix_from_current():
     """Current versions stored with a 'v' prefix (matching the release tag
     convention, e.g. a .version file of 'v2.5.3') must normalize before

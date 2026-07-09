@@ -13,14 +13,14 @@ intentionally expose services to your LAN.
 The README one-liner downloads this bootstrap script from GitHub:
 
 ```bash
-https://raw.githubusercontent.com/Light-Heart-Labs/ODS/main/ods/get-ods.sh
+https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh
 ```
 
 That script:
 
 - detects Linux, WSL, or macOS;
 - installs or checks basic prerequisites where supported;
-- clones `https://github.com/Light-Heart-Labs/ODS.git` with sparse
+- clones `https://github.com/Osmantic/ODS.git` with sparse
   checkout for the `ods/` product tree;
 - copies the runtime product files into `~/ods`;
 - runs `./install.sh` from that copied runtime tree.
@@ -38,7 +38,7 @@ For the most auditable path, clone a known ref yourself and run the installer
 from the checked-out source:
 
 ```bash
-git clone --depth 1 --branch main https://github.com/Light-Heart-Labs/ODS.git
+git clone --depth 1 --branch main https://github.com/Osmantic/ODS.git
 cd ODS/ods
 ./install.sh
 ```
@@ -52,7 +52,7 @@ Windows users should install from a normal user PowerShell, not an elevated
 Administrator shell:
 
 ```powershell
-git clone --depth 1 --branch main https://github.com/Light-Heart-Labs/ODS.git
+git clone --depth 1 --branch main https://github.com/Osmantic/ODS.git
 cd ODS\ods
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
@@ -73,7 +73,7 @@ If you do not want to pipe a remote script directly into a shell, download and
 inspect it first:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/Light-Heart-Labs/ODS/main/ods/get-ods.sh
+curl -fsSLO https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh
 less get-ods.sh
 ODS_REF=main bash get-ods.sh
 ```
@@ -81,7 +81,7 @@ ODS_REF=main bash get-ods.sh
 On Windows, clone first and inspect `install.ps1` before running it:
 
 ```powershell
-git clone --depth 1 --branch main https://github.com/Light-Heart-Labs/ODS.git
+git clone --depth 1 --branch main https://github.com/Osmantic/ODS.git
 cd ODS\ods
 notepad .\install.ps1
 .\install.ps1

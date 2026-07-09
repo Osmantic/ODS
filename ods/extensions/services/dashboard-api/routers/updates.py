@@ -25,6 +25,9 @@ router = APIRouter(tags=["updates"])
 _VALID_ACTIONS = {"check", "backup", "update"}
 
 _GITHUB_HEADERS = {"Accept": "application/vnd.github.v3+json"}
+_GITHUB_REPO = "Osmantic/ODS"
+_GITHUB_API_BASE = f"https://api.github.com/repos/{_GITHUB_REPO}"
+_GITHUB_RELEASES_URL = f"https://github.com/{_GITHUB_REPO}/releases"
 _VERSION_CACHE_TTL = 300.0
 _version_cache: dict[str, object] = {"expires_at": 0.0, "payload": None}
 _version_refresh_task: Optional[asyncio.Task] = None
@@ -188,7 +191,7 @@ async def _refresh_release_cache() -> Optional[dict]:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(
-                "https://api.github.com/repos/Light-Heart-Labs/ODS/releases/latest",
+                f"{_GITHUB_API_BASE}/releases/latest",
                 headers=_GITHUB_HEADERS,
             )
         data = response.json()
@@ -241,7 +244,7 @@ async def get_release_manifest():
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
-                "https://api.github.com/repos/Light-Heart-Labs/ODS/releases?per_page=5",
+                f"{_GITHUB_API_BASE}/releases?per_page=5",
                 headers=_GITHUB_HEADERS,
             )
         releases = resp.json()
@@ -257,7 +260,7 @@ async def get_release_manifest():
     except (httpx.HTTPError, httpx.TimeoutException, json.JSONDecodeError, OSError):
         current = await asyncio.to_thread(_read_current_version)
         return {
-            "releases": [{"version": current, "date": datetime.now(timezone.utc).isoformat() + "Z", "title": f"ODS {current}", "changelog": "Release information unavailable. Check GitHub directly.", "url": "https://github.com/Light-Heart-Labs/ODS/releases", "prerelease": False}],
+            "releases": [{"version": current, "date": datetime.now(timezone.utc).isoformat() + "Z", "title": f"ODS {current}", "changelog": "Release information unavailable. Check GitHub directly.", "url": _GITHUB_RELEASES_URL, "prerelease": False}],
             "checked_at": datetime.now(timezone.utc).isoformat() + "Z",
             "error": "Could not fetch release information"
         }
@@ -307,7 +310,7 @@ async def get_update_dry_run():
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.get(
-                "https://api.github.com/repos/Light-Heart-Labs/ODS/releases/latest",
+                f"{_GITHUB_API_BASE}/releases/latest",
                 headers=_GITHUB_HEADERS,
             )
         data = resp.json()
