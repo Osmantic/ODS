@@ -1,7 +1,7 @@
 """Tests for the Native RAG Knowledge Base API."""
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 
 
 @pytest.fixture
@@ -77,7 +77,7 @@ async def test_knowledge_deletion_targets_doc_id(
 ):
     import routers.knowledge as knowledge
 
-    mock_qdrant = MagicMock()
+    mock_qdrant = AsyncMock()
 
     async def mock_get_qdrant():
         return mock_qdrant
@@ -192,10 +192,10 @@ async def test_knowledge_qdrant_retry(monkeypatch):
     call_count = 0
 
     class DummyClient:
-        def collection_exists(self, name):
+        async def collection_exists(self, name):
             return True
 
-    # We mock QdrantClient inside get_qdrant, but it's easier to just mock QdrantClient directly
+    # We mock AsyncQdrantClient inside get_qdrant, but it's easier to just mock AsyncQdrantClient directly
     def mock_qdrant_client(*args, **kwargs):
         nonlocal call_count
         call_count += 1
@@ -203,7 +203,7 @@ async def test_knowledge_qdrant_retry(monkeypatch):
             raise Exception("First call fails")
         return DummyClient()
 
-    monkeypatch.setattr(knowledge, "QdrantClient", mock_qdrant_client)
+    monkeypatch.setattr(knowledge, "AsyncQdrantClient", mock_qdrant_client)
 
     # First call should return None (caught exception) and leave _qdrant_initialized = False
     client1 = await knowledge.get_qdrant()
