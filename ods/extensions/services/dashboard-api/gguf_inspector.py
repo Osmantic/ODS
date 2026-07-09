@@ -214,6 +214,7 @@ def inspect_gguf(path: Path | str, max_metadata_bytes: int = 8 * 1024 * 1024) ->
             "embedding_length": _first_int(metadata, (".embedding_length",)),
             "attention_head_count": _first_int(metadata, (".attention.head_count",)),
             "attention_head_count_kv": _first_int(metadata, (".attention.head_count_kv",)),
+            "attention_sliding_window": _first_int(metadata, (".attention.sliding_window",)),
             "expert_count": _first_int(metadata, (".expert_count", ".expert.count")),
             "expert_used_count": _first_int(metadata, (".expert_used_count", ".expert.used_count")),
             "model_name": _first_value(metadata, ("general.name",)),

@@ -1006,6 +1006,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
                 "blockCount": metadata.get("block_count"),
                 "expertCount": metadata.get("expert_count"),
                 "expertUsedCount": metadata.get("expert_used_count"),
+                "slidingWindow": metadata.get("attention_sliding_window"),
             },
             "status": "loaded" if is_loaded else status_if_not_loaded,
             "recommended": is_recommended,
