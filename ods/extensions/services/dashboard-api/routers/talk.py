@@ -629,16 +629,13 @@ async def talk_message(payload: dict[str, Any], request: Request) -> dict[str, A
     text = _extract_message_text(payload)
     use_knowledge = payload.get("use_knowledge", False)
     if use_knowledge:
-        try:
-            from routers.knowledge import search_knowledge_base
+        from routers.knowledge import search_knowledge_base
 
-            context = await search_knowledge_base(text)
-            if context:
-                text = (
-                    f"Context from Knowledge Base:\n{context}\n\nUser Message:\n{text}"
-                )
-        except Exception as e:
-            logger.error("Failed to inject knowledge base context: %s", e)
+        context = await search_knowledge_base(text)
+        if context:
+            text = (
+                f"Context from Knowledge Base:\n{context}\n\nUser Message:\n{text}"
+            )
     return await _send_to_hermes(session_key, text)
 
 
@@ -665,16 +662,13 @@ async def talk_message_stream(
     text = _extract_message_text(payload)
     use_knowledge = payload.get("use_knowledge", False)
     if use_knowledge:
-        try:
-            from routers.knowledge import search_knowledge_base
+        from routers.knowledge import search_knowledge_base
 
-            context = await search_knowledge_base(text)
-            if context:
-                text = (
-                    f"Context from Knowledge Base:\n{context}\n\nUser Message:\n{text}"
-                )
-        except Exception as e:
-            logger.error("Failed to inject knowledge base context: %s", e)
+        context = await search_knowledge_base(text)
+        if context:
+            text = (
+                f"Context from Knowledge Base:\n{context}\n\nUser Message:\n{text}"
+            )
 
     headers = {
         "Cache-Control": "no-cache",
@@ -765,16 +759,11 @@ async def talk_attachment(
         prompt_text = caption or "Describe what you see in this image."
 
         if use_knowledge:
-            try:
-                from routers.knowledge import search_knowledge_base
+            from routers.knowledge import search_knowledge_base
 
-                kb_context = await search_knowledge_base(prompt_text)
-                if kb_context:
-                    prompt_text = f"Context from Knowledge Base:\n{kb_context}\n\nUser Message:\n{prompt_text}"
-            except Exception as e:
-                logger.error(
-                    "Failed to inject knowledge base context for image: %s", e
-                )
+            kb_context = await search_knowledge_base(prompt_text)
+            if kb_context:
+                prompt_text = f"Context from Knowledge Base:\n{kb_context}\n\nUser Message:\n{prompt_text}"
 
         return StreamingResponse(
             _stream_vision_chat(data, _image_content_type(file), prompt_text),
@@ -811,16 +800,11 @@ async def talk_attachment(
     )
 
     if use_knowledge:
-        try:
-            from routers.knowledge import search_knowledge_base
+        from routers.knowledge import search_knowledge_base
 
-            kb_context = await search_knowledge_base(prompt)
-            if kb_context:
-                prompt = f"Context from Knowledge Base:\n{kb_context}\n\nUser Message:\n{prompt}"
-        except Exception as e:
-            logger.error(
-                "Failed to inject knowledge base context for attachment: %s", e
-            )
+        kb_context = await search_knowledge_base(prompt)
+        if kb_context:
+            prompt = f"Context from Knowledge Base:\n{kb_context}\n\nUser Message:\n{prompt}"
 
     return StreamingResponse(
         _stream_hermes_sse(session_key, prompt, request),

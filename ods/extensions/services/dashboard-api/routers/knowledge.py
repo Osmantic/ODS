@@ -6,7 +6,7 @@ from typing import List, Optional
 
 import httpx
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile, Depends
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 
 from security import verify_api_key
@@ -22,7 +22,7 @@ EMBEDDING_URL = os.environ.get("EMBEDDING_URL", "http://embeddings:80")
 COLLECTION_NAME = "dream_knowledge"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
-_qdrant_client: Optional[QdrantClient] = None
+_qdrant_client: Optional[AsyncQdrantClient] = None
 _qdrant_initialized = False
 
 
@@ -44,17 +44,17 @@ async def get_embeddings(texts: List[str]) -> List[List[float]]:
         )
 
 
-async def get_qdrant() -> Optional[QdrantClient]:
+async def get_qdrant() -> Optional[AsyncQdrantClient]:
     global _qdrant_client, _qdrant_initialized
     if _qdrant_initialized:
         return _qdrant_client
 
     try:
-        client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
-        if not client.collection_exists(COLLECTION_NAME):
+        client = AsyncQdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+        if not await client.collection_exists(COLLECTION_NAME):
             test_embedding = await get_embeddings(["test"])
             dim = len(test_embedding[0])
-            client.create_collection(
+            await client.create_collection(
                 collection_name=COLLECTION_NAME,
                 vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
             )
@@ -150,7 +150,7 @@ async def upload_document(
     # Batch upsert points
     batch_size = 100
     for i in range(0, len(points), batch_size):
-        qdrant.upsert(
+        await qdrant.upsert(
             collection_name=COLLECTION_NAME, points=points[i : i + batch_size]
         )
 
@@ -170,7 +170,7 @@ async def list_documents(request: Request, api_key: str = Depends(verify_api_key
 
     # Hacky way to get unique documents: scroll and group by doc_id
     try:
-        records, _ = qdrant.scroll(
+        records, _ = await qdrant.scroll(
             collection_name=COLLECTION_NAME,
             limit=10000,
             with_payload=["doc_id", "filename"],
@@ -198,7 +198,7 @@ async def delete_document(
 
     from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 
-    qdrant.delete(
+    await qdrant.delete(
         collection_name=COLLECTION_NAME,
         points_selector=Filter(
             must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
@@ -211,10 +211,12 @@ async def search_knowledge_base(query: str, top_k: int = 3) -> str:
     """Helper to be called from talk.py"""
     qdrant = await get_qdrant()
     if qdrant is None:
-        return ""
+        raise HTTPException(
+            status_code=503, detail="Knowledge base unavailable: Qdrant is down"
+        )
     try:
         query_emb = (await get_embeddings([query]))[0]
-        results = qdrant.search(
+        results = await qdrant.search(
             collection_name=COLLECTION_NAME, query_vector=query_emb, limit=top_k
         )
         if not results:
@@ -229,4 +231,6 @@ async def search_knowledge_base(query: str, top_k: int = 3) -> str:
         return "\n\n".join(context_parts)
     except Exception as e:
         logger.error("Failed to search knowledge base: %s", e)
-        return ""
+        raise HTTPException(
+            status_code=503, detail="Knowledge base search failed"
+        )

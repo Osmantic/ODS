@@ -214,3 +214,29 @@ async def test_knowledge_qdrant_retry(monkeypatch):
     client2 = await knowledge.get_qdrant()
     assert client2 is not None
     assert knowledge._qdrant_initialized is True
+
+
+def test_talk_message_use_knowledge_unavailable(test_client, monkeypatch):
+    """If a user requests use_knowledge but Qdrant is down, the request should
+    fail explicitly with 503 rather than silently querying the LLM without context."""
+    import session_signer
+    import routers.knowledge as knowledge
+
+    monkeypatch.setenv("ODS_SESSION_SECRET", "test-secret")
+    session_signer._set_secret_for_tests("test-secret")
+    cookie = session_signer.issue(ttl_seconds=3600)
+    test_client.cookies.set("ods-session", cookie)
+
+    # Force get_qdrant to fail
+    async def mock_get_qdrant():
+        return None
+
+    monkeypatch.setattr(knowledge, "get_qdrant", mock_get_qdrant)
+
+    resp = test_client.post(
+        "/api/talk/message/stream",
+        json={"text": "Hello", "use_knowledge": True}
+    )
+
+    assert resp.status_code == 503
+    assert "Knowledge base unavailable" in resp.json()["detail"]
