@@ -115,6 +115,62 @@ if command -v docker &> /dev/null; then
 else
     fail "Docker not installed"
 fi
+
+# Rootless Docker ownership check
+# The preflight check is what users run when something looks broken. Without this,
+# a rootless user would see cryptic EACCES errors deep in container logs with no guidance.
+# This surfaces the problem at the right level — tells the user exactly which services have wrong ownership
+# and gives them a one-line fix. It also uses ROOTLESS_SERVICE_UIDS from constants.sh 
+# so it stays in sync automatically when new services are added.
+if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q "rootless"; then
+    warn "Docker is running in rootless mode"
+    log "  Checking data directory ownership for non-root containers..."
+
+    # Mirrors ROOTLESS_SERVICE_UIDS in installers/lib/constants.sh — keep in sync
+    # _preflight_svc_uids instead of local -a: ods-preflight.sh uses plain bash without function wrapping for its check blocks
+    # everything runs at the top level of the script. local is only valid inside functions, so we use a regular array 
+    # with a prefixed name (_preflight_) to avoid clashing with anything else in the script.
+    _preflight_svc_uids=(
+        "n8n:1000"
+        "whisper:1000"
+        "tts:1000"
+        "token-spy:1000"
+        "privacy-shield:1000"
+        "ape:100"
+        "langfuse:1001"
+        "langfuse/postgres:70"
+        "langfuse/clickhouse:101"
+        "hermes:10000"
+    )
+
+    _rootless_owner_ok() {
+        local svc="$1" uid="$2"
+        local dir="${ODS_HOME:-$HOME/ods}/data/$svc"
+        [[ -d "$dir" ]] || return 0
+        local actual_uid
+        actual_uid=$(docker run --rm --user 0:0 \
+            -v "$dir:/data" \
+            alpine sh -c "stat -c '%u' /data" 2>/dev/null || echo "unknown")
+        [[ "$actual_uid" == "$uid" ]]
+    }
+
+    _rootless_bad=()
+    for _entry in "${_preflight_svc_uids[@]}"; do
+        _svc="${_entry%%:*}"
+        _uid="${_entry##*:}"
+        if ! _rootless_owner_ok "$_svc" "$_uid"; then
+            _rootless_bad+=("$_svc (needs uid $_uid)")
+        fi
+    done
+
+    if [[ ${#_rootless_bad[@]} -gt 0 ]]; then
+        fail "Rootless ownership mismatch for: ${_rootless_bad[*]}"
+        warn "Fix with: ods restart  (ownership is corrected automatically on start/restart)"
+    else
+        pass "Rootless Docker: data directory ownership correct"
+    fi
+fi
+
 log ""
 
 # 2. Docker Compose check

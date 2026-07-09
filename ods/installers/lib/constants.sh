@@ -66,3 +66,22 @@ _sed_i() {
         sed -i '' "$@"
     fi
 }
+
+
+#=============================================================================
+# Rootless Docker — non-root container service UID map
+#=============================================================================
+# Each entry is "service:container_uid". Used by the installer, ods-cli, and
+# ods-preflight to fix data directory ownership when Docker runs in rootless mode.
+ROOTLESS_SERVICE_UIDS=(
+    "n8n:1000"
+    "whisper:1000"
+    "tts:1000"
+    "token-spy:1000"
+    "privacy-shield:1000"
+    "ape:100"
+    "langfuse:1001"
+    "langfuse/postgres:70"
+    "langfuse/clickhouse:101"
+    "hermes:10000"
+)

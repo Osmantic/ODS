@@ -35,12 +35,47 @@ _phase06_step() {
     log "Phase 06 step: ${step}"
 }
 
+# Detect if the docker is running in rootless mode
+
+_is_rootless_docker() {
+    docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q "rootless"
+}
+
+# Chown a data directory to a specific UID using a helper container.
+# In rootless mode, 'root' in a container maps to the host user,
+# so this is the only way to set ownership for non-root container users.
+_rootless_chown_data_dir() {
+    local svc="$1" uid="$2"
+    local dir="$INSTALL_DIR/data/$svc"
+    [[ -d "$dir" ]] || return 0
+    docker run --rm --user 0:0 \
+        -v "$dir:/data" \
+        alpine sh -c "chown -R ${uid}:${uid} /data" 2>/dev/null || \
+        warn "Rootless chown failed for $svc (non-fatal)"
+}
+
 if $DRY_RUN; then
     log "[DRY RUN] Would create: $INSTALL_DIR/{config,data,models}"
     log "[DRY RUN] Would copy compose files ($COMPOSE_FLAGS) and source tree"
     log "[DRY RUN] Would generate .env with secrets (WEBUI_SECRET, N8N_PASS, LITELLM_KEY, etc.)"
     log "[DRY RUN] Would generate SearXNG config with randomized secret key"
-    [[ "$ENABLE_HERMES" == "true" ]] && log "[DRY RUN] Would configure Hermes Agent (LLM endpoint: http://llama-server:8080/v1; data dir: $INSTALL_DIR/data/hermes)"
+
+    #The original sudo chown sets ownership using the host's understanding of UID 10000 — which doesn't exist in rootless mode 
+    #and doesn't map to what the container sees. In rootless mode we use the helper container instead, which chowns from inside
+    #the container where UID 10000 is valid.
+
+    if [[ "${ENABLE_HERMES:-false}" == "true" && -d "$INSTALL_DIR/data/hermes" ]]; then
+    if _is_rootless_docker; then
+        _rootless_chown_data_dir "hermes" 10000
+        docker run --rm --user 0:0 \
+            -v "$INSTALL_DIR/data/hermes:/data" \
+            alpine sh -c "chmod 700 /data" 2>/dev/null || true
+    else
+        sudo chown -R 10000:10000 "$INSTALL_DIR/data/hermes" 2>/dev/null || \
+            warn "Failed to restore data/hermes ownership to Hermes uid 10000 (Hermes dashboard may be unhealthy)"
+        sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || true
+    fi
+fi
     [[ "$ENABLE_OPENCLAW" == "true" ]] && log "[DRY RUN] Would configure OpenClaw (model: $LLM_MODEL, config: ${OPENCLAW_CONFIG:-default})"
     log "[DRY RUN] Would validate .env against schema"
 else
@@ -77,6 +112,20 @@ else
             sudo chown -R "$(id -u):$(id -g)" "$_cfg_dir" 2>/dev/null || true
         fi
     done
+
+
+    # In rootless Docker mode, fix ownership of non-root service data directories
+    # using a helper container (host chown cannot reach container UIDs)
+    if _is_rootless_docker; then
+        ai "Rootless Docker detected — fixing data directory ownership for non-root containers..."
+        for _entry in "${ROOTLESS_SERVICE_UIDS[@]}"; do
+            _svc="${_entry%%:*}"
+            _uid="${_entry##*:}"
+            [[ "$_svc" == "hermes" ]] && continue  # hermes handled separately above (needs chmod 700 too)
+            _rootless_chown_data_dir "$_svc" "$_uid"
+        done
+        ai_ok "Rootless ownership fix applied"
+    fi
 
     # Ensure we can write to config/data subtrees (rsync will fail otherwise)
     if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
@@ -233,7 +282,9 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         # Pre-create data/openclaw so chown doesn't fail on a fresh install where
         # the directory hasn't been touched yet.
         mkdir -p "$INSTALL_DIR/data/openclaw"
-        chown -R 1000:1000 "$INSTALL_DIR/data/openclaw" "$INSTALL_DIR/config/openclaw/workspace" || warn "Failed to chown openclaw paths to 1000:1000 (non-fatal); container may need uid fixup"
+        if ! _is_rootless_docker; then
+            chown -R 1000:1000 "$INSTALL_DIR/data/openclaw" "$INSTALL_DIR/config/openclaw/workspace" || warn "Failed to chown openclaw paths to 1000:1000 (non-fatal); container may need uid fixup"
+fi
     fi
 
     # token-spy container runs as uid 1000 (baked in Dockerfile) — fix ownership

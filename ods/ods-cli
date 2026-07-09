@@ -1219,6 +1219,7 @@ cmd_restart() {
         _ods_cli_wait_for_bootstrap_compose_safe "restart"
     fi
 
+     _ods_cli_fix_rootless_ownership
     if [[ -z "$resolved_service" ]]; then
         _compose_run_with_summary "Restarting all services" "${flags[@]}" up -d
     else
@@ -1306,6 +1307,48 @@ _ods_cli_refresh_soul() {
     return 0
 }
 
+# In rootless Docker mode, fix ownership of non-root service data dirs before
+# starting containers. Uses a helper container running as root (which maps to
+# the host user in rootless mode) to chown from inside the container namespace.
+_ods_cli_fix_rootless_ownership() {
+    docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q "rootless" || return 0
+    log "Rootless Docker detected — verifying data directory ownership..."
+
+    # Mirrors ROOTLESS_SERVICE_UIDS in installers/lib/constants.sh — keep in sync
+    #ods-cli is a standalone script — it never sources constants.sh. 
+    #Using local -a keeps the array scoped to the function so it doesn't pollute anything else. The comment is there so a future developer knows where to update both when adding a new service.
+    local -a _svc_uids=(
+        "n8n:1000"
+        "whisper:1000"
+        "tts:1000"
+        "token-spy:1000"
+        "privacy-shield:1000"
+        "ape:100"
+        "langfuse:1001"
+        "langfuse/postgres:70"
+        "langfuse/clickhouse:101"
+        "hermes:10000"
+    )
+
+    local _dir _svc _uid
+    for _entry in "${_svc_uids[@]}"; do
+        _svc="${_entry%%:*}"
+        _uid="${_entry##*:}"
+        _dir="$INSTALL_DIR/data/$_svc"
+        [[ -d "$_dir" ]] || continue
+
+        if [[ "$_svc" == "hermes" ]]; then
+            docker run --rm --user 0:0 \
+                -v "$_dir:/data" \
+                alpine sh -c "chown -R ${_uid}:${_uid} /data && chmod 700 /data" 2>/dev/null || true
+        else
+            docker run --rm --user 0:0 \
+                -v "$_dir:/data" \
+                alpine sh -c "chown -R ${_uid}:${_uid} /data" 2>/dev/null || true
+        fi
+    done
+}
+
 cmd_stop() {
     check_install
     cd "$INSTALL_DIR"
@@ -1366,6 +1409,7 @@ cmd_start() {
         _ods_cli_wait_for_bootstrap_compose_safe "start"
     fi
 
+     _ods_cli_fix_rootless_ownership
     if [[ -z "$resolved_service" ]]; then
         _compose_run_with_summary "Starting all services" "${flags[@]}" up -d
     else
@@ -3183,8 +3227,6 @@ cmd_backup() {
         [[ -z "$id" ]] && error "Usage: ods backup verify <backup_id|backup_id.tar.gz>"
         "$INSTALL_DIR/ods-backup.sh" verify "$id"
         return
-    fi
-
     # Default: create backup (pass all args through)
     "$INSTALL_DIR/ods-backup.sh" "$@"
 }
