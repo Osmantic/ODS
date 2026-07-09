@@ -327,12 +327,25 @@ def _estimated_param_billions(model: dict[str, Any]) -> float:
 
 def _estimated_context_kv_gb(model: dict[str, Any]) -> float:
     context = max(int(model.get("context_length") or 0), 8192)
+    # Sliding-window (local) attention keeps MOST layers' KV within the window,
+    # but SWA models (Gemma 2/3, GPT-OSS, Ministral, Phi-3) interleave global-
+    # attention layers that still hold KV for the full context. Using the full
+    # context over-counts; using the raw window under-counts those global layers
+    # and risks an OOM the estimator failed to predict. Blend the two instead.
+    # swa_global_fraction is the conservative share of the context treated as
+    # global: 0.5 covers the worst common case (~1:1 local:global, e.g. Gemma 2 /
+    # GPT-OSS) and biases toward not-OOMing. Tune in review. The 8192 floor is
+    # preserved, and when the window is absent (catalog/pre-download or dense
+    # models) the blend is a no-op and full-context behavior is preserved.
+    swa_global_fraction = 0.5
+    try:
+        window = int(model.get("attention_sliding_window") or 0)
+    except (TypeError, ValueError):
+        window = 0
+    if 0 < window < context:
+        blended = window + int(swa_global_fraction * (context - window))
+        context = max(blended, 8192)
     params_b = _estimated_param_billions(model)
-    # KV cache is architecture-dependent, but the catalog does not always carry
-    # hidden size/layer metadata before download. This intentionally estimates
-    # standard llama.cpp KV pressure for the requested context and lets published
-    # runtime-specific evidence (TurboQuant/DFlash/etc.) override performance,
-    # not baseline install compatibility.
     kv_per_32k_gb = min(max(params_b * 0.12, 0.35), 3.5)
     return round(kv_per_32k_gb * (context / 32768.0), 2)
 
@@ -946,7 +959,14 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         recommended_context = recommendation.get("contextLength") if is_configured else None
         actual_context = context_length if is_loaded and context_length else recommended_context or profile_context or model.get("context_length")
         vram_required = float(model["vram_required_gb"])
-        selector_required = _effective_required_memory_gb({**model, "context_length": actual_context}, runtime_profile)
+        selector_required = _effective_required_memory_gb(
+            {
+                **model,
+                "context_length": actual_context,
+                "attention_sliding_window": metadata.get("attention_sliding_window"),
+            },
+            runtime_profile,
+        )
         if gpu_info:
             capacity_gb = _usable_model_memory_gb(gpu_info)
             fits_total = bool(_fits_declared_vram(selector_required, capacity_gb) or is_loaded)

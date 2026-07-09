@@ -69,3 +69,6 @@ ods/.cache/
 archive/
 .claude/
 !.claude/commands/
+
+# Temporary commit messages
+commit_msg*.txt
