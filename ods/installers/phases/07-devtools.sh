@@ -18,6 +18,8 @@ ods_progress 42 "devtools" "Installing developer tools"
 if $DRY_RUN; then
     log "[DRY RUN] Would install AI developer tools (Claude Code, Codex CLI, OpenCode)"
     log "[DRY RUN] Would configure OpenCode for local llama-server (user-level systemd service on port 3003)"
+    log "[DRY RUN] Would install ODS host agent systemd service (system-mode, port 7710)"
+    log "[DRY RUN] Would install ODS mDNS announcer systemd service (if zeroconf available)"
 else
     ai "Installing AI developer tools..."
 
@@ -273,6 +275,10 @@ OPENCODE_EOF
         fi
     fi
 fi
+
+# The host-agent and mDNS blocks below use real sudo/systemctl calls.
+# Gate them behind DRY_RUN so dry-run never touches the host.
+if $DRY_RUN; then return 0; fi
 
 # ── ODS Host Agent (extension lifecycle management) ──
 # System-mode systemd unit (was --user mode pre-#573). Installs to
