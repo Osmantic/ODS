@@ -224,7 +224,7 @@ if ($dryRun) {
         Write-AI "[DRY RUN] Would install AMD Lemonade Server (or fallback to llama-server Vulkan)"
         Write-AI "[DRY RUN] Would start native inference server on port 8080"
     }
-    Write-AI "[DRY RUN] Would run: docker compose up -d"
+    Write-AI "[DRY RUN] Would run: docker compose up -d --remove-orphans --no-build --pull never"
 } else {
     Push-Location $installDir
     # Sync .NET CWD so in-process .NET API calls using relative paths (e.g., Test-Path
@@ -1143,6 +1143,139 @@ litellm_settings:
             return ""
         }
 
+        function Test-ODSWindowsLocalImageTag {
+            param([string]$Image)
+
+            if ([string]::IsNullOrWhiteSpace($Image)) { return $true }
+            return (
+                $Image -match '^ods-' -or
+                $Image -match '^docker\.io/library/ods-' -or
+                $Image -match '^localhost[/:]' -or
+                $Image -match '^127\.0\.0\.1:'
+            )
+        }
+
+        function Get-ODSWindowsComposeExternalImages {
+            param(
+                [Parameter(Mandatory = $true)][string[]]$DockerClientArgs,
+                [Parameter(Mandatory = $true)][string[]]$ComposeFlags
+            )
+
+            $images = New-Object System.Collections.Generic.List[string]
+            $seen = @{}
+            $configJson = & docker @DockerClientArgs compose @ComposeFlags config --format json 2>$null
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($configJson)) {
+                try {
+                    $composeConfig = ($configJson -join "`n") | ConvertFrom-Json
+                    foreach ($serviceProperty in $composeConfig.services.PSObject.Properties) {
+                        $service = $serviceProperty.Value
+                        $hasBuild = $false
+                        if ($service.PSObject.Properties["build"] -and $null -ne $service.build) {
+                            $hasBuild = $true
+                        }
+                        if ($hasBuild) { continue }
+
+                        $image = [string]$service.image
+                        if ([string]::IsNullOrWhiteSpace($image)) { continue }
+                        if (Test-ODSWindowsLocalImageTag -Image $image) { continue }
+                        if (-not $seen.ContainsKey($image)) {
+                            $seen[$image] = $true
+                            [void]$images.Add($image)
+                        }
+                    }
+                    return @($images)
+                } catch {
+                    Write-AIWarn "Could not parse Docker Compose JSON image list: $($_.Exception.Message)"
+                }
+            }
+
+            $imageLines = @(& docker @DockerClientArgs compose @ComposeFlags config --images 2>$null |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            if ($LASTEXITCODE -ne 0) {
+                throw "docker compose config --images failed"
+            }
+
+            foreach ($image in $imageLines) {
+                $image = [string]$image
+                if (Test-ODSWindowsLocalImageTag -Image $image) { continue }
+                if (-not $seen.ContainsKey($image)) {
+                    $seen[$image] = $true
+                    [void]$images.Add($image)
+                }
+            }
+            return @($images)
+        }
+
+        function Invoke-ODSWindowsDockerPullWithRetry {
+            param(
+                [Parameter(Mandatory = $true)][string]$Image,
+                [Parameter(Mandatory = $true)][string[]]$DockerClientArgs,
+                [Parameter(Mandatory = $true)][string]$LogPath,
+                [int]$MaxAttempts = 4
+            )
+
+            & docker @DockerClientArgs image inspect $Image *> $null
+            if ($LASTEXITCODE -eq 0) {
+                Add-Content -LiteralPath $LogPath -Value "Compose image already cached: $Image"
+                return $true
+            }
+
+            $delays = @(5, 15, 30)
+            for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+                Write-AI "Pulling Compose image ($attempt/$MaxAttempts): $Image"
+                & docker @DockerClientArgs pull $Image *>> $LogPath
+                if ($LASTEXITCODE -eq 0) {
+                    Write-AISuccess "Pulled $Image"
+                    return $true
+                }
+                if ($attempt -lt $MaxAttempts) {
+                    $delay = $delays[[Math]::Min($attempt - 1, $delays.Count - 1)]
+                    Write-AIWarn "Pull failed for $Image; retrying in ${delay}s"
+                    Start-Sleep -Seconds $delay
+                }
+            }
+
+            Write-AIError "Failed to pull Compose image after retries: $Image"
+            return $false
+        }
+
+        function Invoke-ODSWindowsComposeImagePreflight {
+            param(
+                [Parameter(Mandatory = $true)][string[]]$DockerClientArgs,
+                [Parameter(Mandatory = $true)][string[]]$ComposeFlags,
+                [Parameter(Mandatory = $true)][string]$LogPath
+            )
+
+            try {
+                $images = @(Get-ODSWindowsComposeExternalImages -DockerClientArgs $DockerClientArgs -ComposeFlags $ComposeFlags)
+            } catch {
+                Write-AIError "Could not resolve Windows Docker Compose images before service launch."
+                Write-AI "  Inspect compose config with: docker compose $($ComposeFlags -join ' ') config --images"
+                Add-Content -LiteralPath $LogPath -Value "compose image preflight failed: $($_.Exception.Message)"
+                return $false
+            }
+
+            if ($images.Count -eq 0) { return $true }
+
+            Write-AI "Verifying Compose image cache before launch..."
+            $failed = New-Object System.Collections.Generic.List[string]
+            foreach ($image in $images) {
+                if (-not (Invoke-ODSWindowsDockerPullWithRetry -Image $image -DockerClientArgs $DockerClientArgs -LogPath $LogPath)) {
+                    [void]$failed.Add($image)
+                }
+            }
+
+            if ($failed.Count -eq 0) {
+                Write-AISuccess "Compose image cache ready"
+                return $true
+            }
+
+            Write-AIError "$($failed.Count) Compose image(s) could not be pulled before launch."
+            Write-AI "Windows installer will not allow Docker Compose to pull images implicitly."
+            Write-AI "Fix Docker registry/network/disk access, then re-run .\install-windows.ps1."
+            return $false
+        }
+
         if (-not $cloudMode -and $currentBackend -ne "amd") {
             $envLlamaImage = ""
             $envFallbackImage = ""
@@ -1210,10 +1343,11 @@ litellm_settings:
         }
 
         Assert-ODSWindowsComposeCwd -InstallDir $installDir
+        $composeUpArgs = @("up", "-d", "--remove-orphans", "--no-build", "--pull", "never")
         Write-ODSWindowsComposeLaunchRecord -InstallDir $installDir -ComposeFlags $composeFlags `
-            -ComposeArgs @("up", "-d", "--remove-orphans", "--no-build")
+            -ComposeArgs $composeUpArgs
 
-        Write-AI "Running: docker --config `"$($env:DOCKER_CONFIG)`" compose $($composeFlags -join ' ') up -d --remove-orphans --no-build"
+        Write-AI "Running: docker --config `"$($env:DOCKER_CONFIG)`" compose $($composeFlags -join ' ') $($composeUpArgs -join ' ')"
         Write-AI "Compose working directory: $installDir"
         # PS 5.1 treats ANY stderr output from native commands as NativeCommandError.
         # Silence stderr-as-error so $LASTEXITCODE reflects the real compose exit code.
@@ -1298,8 +1432,18 @@ litellm_settings:
             }
             Write-AISuccess "Local images rebuilt"
 
+            if (-not (Invoke-ODSWindowsComposeImagePreflight -DockerClientArgs $dockerClientArgs -ComposeFlags $composeFlags -LogPath $_composeLog)) {
+                Write-ODSComposeDiagnostics -InstallDir $installDir -ComposeFlags $composeFlags `
+                    -ComposeArgs $composeUpArgs `
+                    -ComposeLogPath $_composeLog `
+                    -Phase "install-windows.ps1 compose image preflight" `
+                    -NextStep "A required Compose image did not download during the retry-protected preflight. Fix Docker registry/network/disk access, then re-run .\install-windows.ps1." `
+                    -SaveReport
+                exit 1
+            }
+
             Write-AI "Starting services... this may take several minutes."
-            & docker @dockerClientArgs compose @composeFlags up -d --remove-orphans --no-build *> $_composeLog
+            & docker @dockerClientArgs compose @composeFlags @composeUpArgs *> $_composeLog
             $composeExit = $LASTEXITCODE
         }
         finally {
@@ -1313,7 +1457,7 @@ litellm_settings:
         if ($composeExit -ne 0) {
             Write-AIError "docker compose up failed (exit code: $composeExit)"
             Write-ODSComposeDiagnostics -InstallDir $installDir -ComposeFlags $composeFlags `
-                -ComposeArgs @("up", "-d", "--remove-orphans", "--no-build") `
+                -ComposeArgs $composeUpArgs `
                 -ComposeLogPath $_composeLog `
                 -Phase "install-windows.ps1 docker compose up -d" `
                 -SaveReport

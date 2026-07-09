@@ -49,7 +49,8 @@ check 'Get-NetTCPConnection' "$DIAG_LIB" "report includes Windows port checks"
 check 'Compose config tail (redacted)' "$DIAG_LIB" "report captures redacted compose config"
 check '[switch]$SaveReport' "$DIAG_LIB" "diagnostics only save report when requested"
 check '-ComposeLogPath $_composeLog' "$INSTALL_PS1" "installer passes compose log to diagnostics"
-check '-ComposeArgs @("up", "-d", "--remove-orphans", "--no-build")' "$INSTALL_PS1" "installer passes exact compose up args"
+check '$composeUpArgs = @("up", "-d", "--remove-orphans", "--no-build", "--pull", "never")' "$INSTALL_PS1" "installer passes guarded compose up args"
+check 'Invoke-ODSWindowsComposeImagePreflight' "$INSTALL_PS1" "installer preflights compose images before up"
 check '-SaveReport' "$INSTALL_PS1" "installer enables saved report on compose failure"
 check 'function Assert-ODSWindowsComposeCwd' "$INSTALL_PS1" "installer asserts compose cwd before launch"
 check 'Write-ODSWindowsComposeLaunchRecord' "$INSTALL_PS1" "installer writes compose launch record"
@@ -183,7 +184,7 @@ EOF
             Assert-ODSWindowsComposeCwd -InstallDir $env:INSTALL_DIR
             Write-ODSWindowsComposeLaunchRecord -InstallDir $env:INSTALL_DIR `
                 -ComposeFlags @("--env-file", ".env", "-f", "docker-compose.base.yml") `
-                -ComposeArgs @("up", "-d", "--remove-orphans", "--no-build")
+                -ComposeArgs @("up", "-d", "--remove-orphans", "--no-build", "--pull", "never")
         }
         finally {
             [Environment]::CurrentDirectory = $previous
@@ -197,7 +198,7 @@ EOF
             "cwd=$env:INSTALL_DIR",
             "dotnet_cwd=$env:INSTALL_DIR",
             "docker_config=$expectedDockerConfig",
-            "compose_command=docker --config `"$expectedDockerConfig`" compose --env-file .env -f docker-compose.base.yml up -d --remove-orphans --no-build",
+            "compose_command=docker --config `"$expectedDockerConfig`" compose --env-file .env -f docker-compose.base.yml up -d --remove-orphans --no-build --pull never",
             "compose_ps_command=cd"
         )) {
             if (-not $text.Contains($needle)) { throw "missing $needle" }

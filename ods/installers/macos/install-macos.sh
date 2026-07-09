@@ -979,7 +979,7 @@ if $DRY_RUN; then
     [[ -n "$GGUF_URL" ]] && ai "[DRY RUN] Would download: ${GGUF_FILE}"
     ai "[DRY RUN] Would download llama-server (Metal build)"
     ai "[DRY RUN] Would start native llama-server on port 8080"
-    ai "[DRY RUN] Would run: docker compose up -d"
+    ai "[DRY RUN] Would run: docker compose up -d --remove-orphans --no-build --pull never"
 else
     # Change to install directory for docker compose
     cd "$INSTALL_DIR"
@@ -1492,6 +1492,104 @@ else
     # ── Start Docker services ──
     chapter "STARTING SERVICES"
 
+    _macos_compose_up_args=(up -d --remove-orphans --no-build --pull never)
+
+    _macos_is_local_image() {
+        local image="${1:-}"
+        case "$image" in
+            ""|ods-*|ods-*:*|docker.io/library/ods-*|localhost/*|localhost:*/*|127.0.0.1:*/*)
+                return 0
+                ;;
+        esac
+        return 1
+    }
+
+    _macos_compose_external_images() {
+        local config_json
+        if config_json="$(docker compose "${COMPOSE_FLAGS[@]}" config --format json 2>>"$ODS_LOG_FILE")"; then
+            if printf '%s' "$config_json" | python3 -c '
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+
+for service in (data.get("services") or {}).values():
+    if service.get("build") is not None:
+        continue
+    image = str(service.get("image") or "").strip()
+    if image:
+        print(image)
+' | while IFS= read -r _image; do
+                _macos_is_local_image "$_image" && continue
+                printf '%s\n' "$_image"
+            done | awk '!seen[$0]++'; then
+                return 0
+            fi
+        fi
+
+        docker compose "${COMPOSE_FLAGS[@]}" config --images 2>>"$ODS_LOG_FILE" | while IFS= read -r _image; do
+            _macos_is_local_image "$_image" && continue
+            printf '%s\n' "$_image"
+        done | awk '!seen[$0]++'
+    }
+
+    _macos_pull_image_with_retry() {
+        local image="$1" attempt max_attempts delay
+        local -a delays=(5 15 30)
+
+        if docker image inspect "$image" >/dev/null 2>&1; then
+            log "Compose image already cached: $image"
+            return 0
+        fi
+
+        max_attempts="${ODS_DOCKER_PULL_MAX_ATTEMPTS:-4}"
+        for ((attempt=1; attempt<=max_attempts; attempt++)); do
+            ai "Pulling Compose image ($attempt/$max_attempts): $image"
+            if docker pull "$image" >>"$ODS_LOG_FILE" 2>&1; then
+                ai_ok "Pulled $image"
+                return 0
+            fi
+            if (( attempt < max_attempts )); then
+                delay="${delays[$((attempt - 1))]:-30}"
+                ai_warn "Pull failed for $image; retrying in ${delay}s"
+                sleep "$delay"
+            fi
+        done
+
+        ai_err "Failed to pull Compose image after retries: $image"
+        return 1
+    }
+
+    _macos_pre_pull_compose_images() {
+        local image_output image failed
+        image_output="$(_macos_compose_external_images)" || {
+            ai_err "Could not resolve macOS Docker Compose images before service launch"
+            ai "Inspect compose config with: cd '$INSTALL_DIR' && docker compose ${COMPOSE_FLAGS[*]} config --images"
+            return 1
+        }
+        [[ -n "$image_output" ]] || return 0
+
+        ai "Verifying Compose image cache before launch..."
+        failed=0
+        while IFS= read -r image; do
+            [[ -n "$image" ]] || continue
+            _macos_pull_image_with_retry "$image" || failed=$((failed + 1))
+        done <<< "$image_output"
+
+        if [[ "$failed" -eq 0 ]]; then
+            ai_ok "Compose image cache ready"
+            return 0
+        fi
+
+        ai_err "$failed Compose image(s) could not be pulled before launch"
+        ai "macOS installer will not allow Docker Compose to pull images implicitly."
+        ai "Fix Docker registry/network/disk access, then re-run ./installers/macos/install-macos.sh."
+        return 1
+    }
+
     # ── Rebuild local-built images ─────────────────────────────────────
     # Mirrors phases/11-services.sh on Linux: local Dockerfiles can drift from
     # baked images, so rebuild the local services that are actually present in
@@ -1526,13 +1624,30 @@ else
     done
     ai_ok "Local images rebuilt"
 
-    _compose_up_log="${INSTALL_DIR}/logs/compose-up.log"
     mkdir -p "${INSTALL_DIR}/logs"
+    _compose_up_log="${INSTALL_DIR}/logs/compose-up.log"
+    : > "$_compose_up_log"
+
+    if ! _macos_pre_pull_compose_images; then
+        if command -v write_compose_failure_report >/dev/null 2>&1; then
+            _compose_report_path="$(COMPOSE_FLAGS_REPORT="${COMPOSE_FLAGS[*]}" write_compose_failure_report \
+                "$INSTALL_DIR" \
+                "install-macos compose image preflight" \
+                "docker compose ${COMPOSE_FLAGS[*]} ${_macos_compose_up_args[*]}" \
+                "$_compose_up_log" \
+                "apple" \
+                "A required Compose image did not download during the retry-protected preflight. Fix Docker registry/network/disk access, then re-run ./installers/macos/install-macos.sh." |
+                tail -n 1)" || true
+            [[ -n "${_compose_report_path:-}" ]] && ai_warn "Compose failure report saved: $_compose_report_path"
+        fi
+        exit 1
+    fi
+
     _compose_launch_record="${INSTALL_DIR}/logs/compose-launch.txt"
     {
         printf 'timestamp=%s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
         printf 'cwd=%s\n' "$INSTALL_DIR"
-        printf 'compose_command=docker compose %s up -d --remove-orphans --no-build\n' "${COMPOSE_FLAGS[*]}"
+        printf 'compose_command=docker compose %s %s\n' "${COMPOSE_FLAGS[*]}" "${_macos_compose_up_args[*]}"
         printf 'compose_flags=%s\n' "${COMPOSE_FLAGS[*]}"
         printf 'compose_flags_file=%s\n' "$INSTALL_DIR/.compose-flags"
         printf "compose_ps_command=cd '%s' && docker compose %s ps -a\n" "$INSTALL_DIR" "${COMPOSE_FLAGS[*]}"
@@ -1548,10 +1663,9 @@ else
             fi
         done
     } > "$_compose_launch_record"
-    ai "Running: docker compose ${COMPOSE_FLAGS[*]} up -d --remove-orphans --no-build"
-    : > "$_compose_up_log"
+    ai "Running: docker compose ${COMPOSE_FLAGS[*]} ${_macos_compose_up_args[*]}"
     set +o pipefail  # pipefail would abort on compose exit before PIPESTATUS is read; capture it first
-    docker compose "${COMPOSE_FLAGS[@]}" up -d --remove-orphans --no-build 2>&1 | tee -a "$_compose_up_log" | while IFS= read -r line; do
+    docker compose "${COMPOSE_FLAGS[@]}" "${_macos_compose_up_args[@]}" 2>&1 | tee -a "$_compose_up_log" | while IFS= read -r line; do
         echo "  $line"
     done
     compose_exit="${PIPESTATUS[0]}"
@@ -1562,7 +1676,7 @@ else
             _compose_report_path="$(COMPOSE_FLAGS_REPORT="${COMPOSE_FLAGS[*]}" write_compose_failure_report \
                 "$INSTALL_DIR" \
                 "install-macos docker compose up" \
-                "docker compose ${COMPOSE_FLAGS[*]} up -d --remove-orphans --no-build" \
+                "docker compose ${COMPOSE_FLAGS[*]} ${_macos_compose_up_args[*]}" \
                 "$_compose_up_log" \
                 "apple" \
                 "Open the saved report, fix the failed image/port/compose error it identifies, then re-run ./installers/macos.sh." |
@@ -1579,7 +1693,7 @@ else
             _compose_report_path="$(COMPOSE_FLAGS_REPORT="${COMPOSE_FLAGS[*]}" write_compose_failure_report \
                 "$INSTALL_DIR" \
                 "install-macos zero managed containers" \
-                "docker compose ${COMPOSE_FLAGS[*]} up -d --remove-orphans --no-build" \
+                "docker compose ${COMPOSE_FLAGS[*]} ${_macos_compose_up_args[*]}" \
                 "$_compose_up_log" \
                 "apple" \
                 "No ODS containers were created. Run the saved ps/logs commands from logs/compose-launch.txt, fix the compose/runtime failure, then re-run ./installers/macos.sh." |
