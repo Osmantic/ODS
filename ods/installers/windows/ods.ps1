@@ -16,6 +16,8 @@
 #   .\ods.ps1 update              # Pull latest images and restart
 #   .\ods.ps1 doctor              # Diagnose runtime readiness
 #   .\ods.ps1 repair voice        # Repair voice/STT/TTS readiness
+#   .\ods.ps1 enable <service>    # Enable an extension service
+#   .\ods.ps1 disable <service>   # Disable an extension service
 #   .\ods.ps1 report              # Generate Windows diagnostics bundle
 #   .\ods.ps1 version             # Show version
 #   .\ods.ps1 help                # Show help
@@ -1681,6 +1683,205 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
     }
 }
 
+function Update-ComposeFlags {
+    <#
+    .SYNOPSIS
+        Regenerate .compose-flags by re-scanning enabled extension compose fragments.
+        Mirrors _regenerate_compose_flags() in the Linux ods-cli.
+    #>
+    $flagsFile = Join-Path $InstallDir ".compose-flags"
+    if (-not (Test-Path $flagsFile)) {
+        Write-AIWarn "No .compose-flags file found -- skipping regeneration."
+        return
+    }
+
+    $existing = (Get-Content $flagsFile -Raw).Trim() -split "\s+"
+
+    # Rebuild: keep all non-extension -f flags (env-file, base, GPU overlay, windows AMD, etc.)
+    # then re-scan extensions/services for currently enabled compose fragments.
+    $baseFlags = New-Object System.Collections.Generic.List[string]
+    $skipNext = $false
+    for ($i = 0; $i -lt $existing.Count; $i++) {
+        if ($skipNext) { $skipNext = $false; continue }
+        if ($existing[$i] -eq "-f" -and ($i + 1) -lt $existing.Count) {
+            $nextVal = $existing[$i + 1]
+            if ($nextVal -match "extensions[/\\]services[/\\]") {
+                $skipNext = $true
+                continue
+            }
+        }
+        [void]$baseFlags.Add($existing[$i])
+    }
+
+    # Re-scan for enabled extension fragments
+    $extDir = Join-Path (Join-Path $InstallDir "extensions") "services"
+    if (Test-Path $extDir) {
+        Get-ChildItem -Path $extDir -Directory | Sort-Object Name | ForEach-Object {
+            $composePath = Join-Path $_.FullName "compose.yaml"
+            if (Test-Path $composePath) {
+                $relPath = $composePath.Substring($InstallDir.Length + 1) -replace "\\", "/"
+                [void]$baseFlags.Add("-f")
+                [void]$baseFlags.Add($relPath)
+            }
+        }
+    }
+
+    $newContent = $baseFlags -join " "
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($flagsFile, $newContent, $utf8NoBom)
+    Write-AI "Updated .compose-flags"
+}
+
+function Get-ExtensionServiceDir {
+    <#
+    .SYNOPSIS
+        Resolve the extension service directory for a given service ID.
+        Returns $null if not found.
+    #>
+    param([Parameter(Mandatory=$true)][string]$ServiceId)
+
+    $extDir = Join-Path (Join-Path $InstallDir "extensions") "services"
+    if (-not (Test-Path $extDir)) { return $null }
+
+    $svcDir = Join-Path $extDir $ServiceId
+    if (Test-Path $svcDir) { return $svcDir }
+    return $null
+}
+
+function Get-ExtensionCategory {
+    <#
+    .SYNOPSIS
+        Read the category field from manifest.yaml for a service directory.
+        Returns empty string if not found or unreadable.
+    #>
+    param([Parameter(Mandatory=$true)][string]$ServiceDir)
+
+    foreach ($manifestName in @("manifest.yaml", "manifest.yml")) {
+        $manifestPath = Join-Path $ServiceDir $manifestName
+        if (Test-Path $manifestPath) {
+            $line = Get-Content $manifestPath -ErrorAction SilentlyContinue |
+                Where-Object { $_ -match "^\s*category:" } |
+                Select-Object -First 1
+            if ($line) {
+                return (($line -split "category:")[1]).Trim().Trim('"').Trim("'")
+            }
+        }
+    }
+    return ""
+}
+
+function Invoke-Enable {
+    <#
+    .SYNOPSIS
+        Enable an extension service -- mirrors 'ods enable <service>' from the Linux CLI.
+        Renames compose.yaml.disabled back to compose.yaml and regenerates .compose-flags.
+    #>
+    param([string]$ServiceId)
+
+    Test-Install
+
+    if ([string]::IsNullOrWhiteSpace($ServiceId)) {
+        Write-AIError "Usage: .\ods.ps1 enable <service>"
+        Write-AI "Example: .\ods.ps1 enable comfyui"
+        exit 1
+    }
+
+    $svcDir = Get-ExtensionServiceDir -ServiceId $ServiceId
+    if (-not $svcDir) {
+        Write-AIError "Unknown extension service: '$ServiceId'"
+        Write-AI "Check available services under: $(Join-Path (Join-Path $InstallDir 'extensions') 'services')"
+        exit 1
+    }
+
+    $category = Get-ExtensionCategory -ServiceDir $svcDir
+    if ($category -eq "core") {
+        Write-AISuccess "$ServiceId is a core service (always enabled)."
+        return
+    }
+
+    $composePath  = Join-Path $svcDir "compose.yaml"
+    $disabledPath = Join-Path $svcDir "compose.yaml.disabled"
+
+    if (Test-Path $composePath) {
+        Write-AISuccess "$ServiceId is already enabled."
+        Write-AI "Run '.\ods.ps1 start $ServiceId' to launch it."
+        return
+    }
+
+    if (Test-Path $disabledPath) {
+        Rename-Item -LiteralPath $disabledPath -NewName "compose.yaml" -Force
+        Update-ComposeFlags
+        Write-AISuccess "$ServiceId enabled."
+        Write-AI "Run '.\ods.ps1 start $ServiceId' to launch it."
+        return
+    }
+
+    Write-AIError "No compose fragment found for '$ServiceId' (expected compose.yaml or compose.yaml.disabled)."
+    Write-AI "This may be a core service or the extension is not installed."
+    exit 1
+}
+
+function Invoke-Disable {
+    <#
+    .SYNOPSIS
+        Disable an extension service -- mirrors 'ods disable <service>' from the Linux CLI.
+        Stops the running container, renames compose.yaml to compose.yaml.disabled,
+        and regenerates .compose-flags.
+    #>
+    param([string]$ServiceId)
+
+    Test-Install
+
+    if ([string]::IsNullOrWhiteSpace($ServiceId)) {
+        Write-AIError "Usage: .\ods.ps1 disable <service>"
+        Write-AI "Example: .\ods.ps1 disable comfyui"
+        exit 1
+    }
+
+    $svcDir = Get-ExtensionServiceDir -ServiceId $ServiceId
+    if (-not $svcDir) {
+        Write-AIError "Unknown extension service: '$ServiceId'"
+        Write-AI "Check available services under: $(Join-Path (Join-Path $InstallDir 'extensions') 'services')"
+        exit 1
+    }
+
+    $category = Get-ExtensionCategory -ServiceDir $svcDir
+    if ($category -eq "core") {
+        Write-AIError "Cannot disable core service: $ServiceId"
+        exit 1
+    }
+
+    $composePath  = Join-Path $svcDir "compose.yaml"
+    $disabledPath = Join-Path $svcDir "compose.yaml.disabled"
+
+    if (Test-Path $disabledPath) {
+        Write-AISuccess "$ServiceId is already disabled."
+        return
+    }
+
+    if (-not (Test-Path $composePath)) {
+        Write-AIError "No compose fragment found for '$ServiceId'."
+        exit 1
+    }
+
+    # Stop the container if Docker is running
+    $dockerRunning = $false
+    try { $null = docker info 2>$null; $dockerRunning = ($LASTEXITCODE -eq 0) } catch { }
+    if ($dockerRunning) {
+        $flags = Get-ComposeFlags
+        Write-AI "Stopping $ServiceId..."
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        & docker compose @flags stop $ServiceId 2>$null
+        $ErrorActionPreference = $prevEAP
+    }
+
+    Rename-Item -LiteralPath $composePath -NewName "compose.yaml.disabled" -Force
+    Update-ComposeFlags
+    Write-AISuccess "$ServiceId disabled."
+    Write-AI "Data preserved. Run '.\ods.ps1 enable $ServiceId' to re-enable."
+}
+
 function Show-Help {
     Write-Host ""
     Write-Host "  ODS CLI (Windows)" -ForegroundColor Green
@@ -1712,6 +1913,10 @@ function Show-Help {
     Write-Host "Diagnose runtime readiness" -ForegroundColor DarkGray
     Write-Host "    repair voice        " -ForegroundColor Cyan -NoNewline
     Write-Host "Start voice services and cache STT model" -ForegroundColor DarkGray
+    Write-Host "    enable <service>    " -ForegroundColor Cyan -NoNewline
+    Write-Host "Enable an extension service (e.g. comfyui, langfuse)" -ForegroundColor DarkGray
+    Write-Host "    disable <service>   " -ForegroundColor Cyan -NoNewline
+    Write-Host "Disable an extension service" -ForegroundColor DarkGray
     Write-Host "    agent [action]      " -ForegroundColor Cyan -NoNewline
     Write-Host "Host agent: status|start|stop|restart|logs" -ForegroundColor DarkGray
     Write-Host "    report              " -ForegroundColor Cyan -NoNewline
@@ -1726,6 +1931,8 @@ function Show-Help {
     Write-Host "    .\ods.ps1 logs llama-server 50" -ForegroundColor DarkGray
     Write-Host "    .\ods.ps1 restart open-webui" -ForegroundColor DarkGray
     Write-Host "    .\ods.ps1 repair voice" -ForegroundColor DarkGray
+    Write-Host "    .\ods.ps1 enable comfyui" -ForegroundColor DarkGray
+    Write-Host "    .\ods.ps1 disable langfuse" -ForegroundColor DarkGray
     Write-Host "    .\ods.ps1 chat `"What is quantum computing?`"" -ForegroundColor DarkGray
     Write-Host ""
 }
@@ -1757,6 +1964,8 @@ switch ($Command.ToLower()) {
     "update"  { Invoke-Update }
     "doctor"  { Invoke-Doctor }
     "repair"  { Invoke-Repair -Target ($Arguments | Select-Object -First 1) }
+    "enable"  { Invoke-Enable -ServiceId ($Arguments | Select-Object -First 1) }
+    "disable" { Invoke-Disable -ServiceId ($Arguments | Select-Object -First 1) }
     "report"  { Invoke-Report }
     "agent"   {
         $action = ($Arguments | Select-Object -First 1)
