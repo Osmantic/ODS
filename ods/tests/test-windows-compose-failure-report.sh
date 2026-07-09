@@ -62,6 +62,8 @@ check 'Join-Path $installDir $cfPath' "$INSTALL_PS1" "installer validates relati
 check 'HERMES_AGENT_IMAGE_FALLBACK' "$INSTALL_PS1" "installer supports Hermes image fallback"
 check 'Validating Hermes Agent image tag before startup' "$INSTALL_PS1" "installer validates Hermes image before compose up"
 check 'ImageEnvName = "LLAMA_SERVER_IMAGE"' "$INSTALL_PS1" "image validation labels override env var"
+check 'Used user'\''s default Docker config for local image builds' "$INSTALL_PS1" "installer records default Docker config build fallback"
+check 'Remove-Item Env:DOCKER_CONFIG' "$INSTALL_PS1" "installer can clear scoped Docker config for fallback builds"
 check '$_probeImage = "alpine:3.20"' "$PRE_SCRIPT" "preflight uses pinned Alpine probe image"
 check '$_inspectExit = $LASTEXITCODE' "$PRE_SCRIPT" "preflight captures inspect exit before deciding to pull"
 check 'docker pull $_probeImage' "$PRE_SCRIPT" "preflight pulls missing probe image before bind-mount test"

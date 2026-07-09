@@ -381,14 +381,24 @@ if ($dryRun) {
                         -Destination $msiPath -Label "Downloading Lemonade Server (~3MB)"
                     if ($dlOk) {
                         $msiArgs = "/i `"$msiPath`" /quiet /norestart ALLUSERS=1"
-                        Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -NoNewWindow
-                        $_resolvedLemonadeExe = Resolve-ODSLemonadeExe -ExecutableName ([string]$amdLemonadeRuntime.windows_executable)
-                        if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
-                        if (Test-Path $script:LEMONADE_EXE) {
-                            Write-AISuccess "AMD Lemonade Server installed"
-                            $useLemonade = $true
+                        $msiProc = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -NoNewWindow -PassThru
+                        $_msiExit = $(if ($msiProc) { [int]$msiProc.ExitCode } else { 0 })
+                        if ($_msiExit -eq 0) {
+                            $_resolvedLemonadeExe = Resolve-ODSLemonadeExe -ExecutableName ([string]$amdLemonadeRuntime.windows_executable)
+                            if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
+                            if (Test-Path $script:LEMONADE_EXE) {
+                                Write-AISuccess "AMD Lemonade Server installed"
+                                $useLemonade = $true
+                            } else {
+                                Write-AIWarn "Lemonade MSI completed, but no Lemonade executable was found in the known install roots."
+                                $_candidateSample = @(Get-ODSLemonadeExeCandidatePaths -ExecutableName ([string]$amdLemonadeRuntime.windows_executable) | Select-Object -First 6)
+                                if ($_candidateSample.Count -gt 0) {
+                                    Write-AI "  Checked paths include: $($_candidateSample -join '; ')"
+                                }
+                                Write-AI "  Falling back to llama-server (Vulkan)."
+                            }
                         } else {
-                            Write-AIWarn "Lemonade MSI installed but executable not found at expected path."
+                            Write-AIWarn "Lemonade MSI exited with code $_msiExit."
                             Write-AI "  Falling back to llama-server (Vulkan)."
                         }
                     } else {
@@ -1037,20 +1047,35 @@ litellm_settings:
                 [Parameter(Mandatory = $true)][string[]]$DockerClientArgs,
                 [Parameter(Mandatory = $true)][string[]]$ComposeFlags,
                 [Parameter(Mandatory = $true)][string]$BuildLog,
-                [switch]$UseLegacyBuilder
+                [switch]$UseLegacyBuilder,
+                [switch]$UseDefaultDockerConfig
             )
 
             $hadBuildKit = Test-Path Env:DOCKER_BUILDKIT
             $previousBuildKit = $env:DOCKER_BUILDKIT
+            $hadDockerConfig = Test-Path Env:DOCKER_CONFIG
+            $previousDockerConfig = $env:DOCKER_CONFIG
+            $effectiveDockerClientArgs = $DockerClientArgs
 
             try {
                 if ($UseLegacyBuilder) {
                     $env:DOCKER_BUILDKIT = "0"
                 }
+                if ($UseDefaultDockerConfig) {
+                    $effectiveDockerClientArgs = @()
+                    Remove-Item Env:DOCKER_CONFIG -ErrorAction SilentlyContinue
+                }
 
-                & docker @DockerClientArgs compose @ComposeFlags build --no-cache $Service *>> $BuildLog
+                & docker @effectiveDockerClientArgs compose @ComposeFlags build --no-cache $Service *>> $BuildLog
                 return $LASTEXITCODE
             } finally {
+                if ($UseDefaultDockerConfig) {
+                    if ($hadDockerConfig) {
+                        $env:DOCKER_CONFIG = $previousDockerConfig
+                    } else {
+                        Remove-Item Env:DOCKER_CONFIG -ErrorAction SilentlyContinue
+                    }
+                }
                 if ($UseLegacyBuilder) {
                     if ($hadBuildKit) {
                         $env:DOCKER_BUILDKIT = $previousBuildKit
@@ -1437,6 +1462,7 @@ litellm_settings:
             Write-AI "Rebuilding local-built images (no-cache)..."
             $_failedBuildServices = @()
             $_legacyBuilderServices = @()
+            $_defaultDockerConfigServices = @()
             foreach ($_svc in $_buildServices) {
                 Write-AI "  building $_svc ..."
                 $_buildExit = Invoke-ODSWindowsComposeBuildService `
@@ -1459,12 +1485,29 @@ litellm_settings:
                 }
 
                 if ($_buildExit -ne 0) {
+                    Write-AIWarn "  $_svc build failed with the install-scoped Docker config; retrying with the user's default Docker config."
+                    Add-Content -LiteralPath $_buildLog -Value "`n--- retrying $_svc with user's default Docker config after install-scoped Docker config failure ---"
+                    $_buildExit = Invoke-ODSWindowsComposeBuildService `
+                        -Service $_svc `
+                        -DockerClientArgs $dockerClientArgs `
+                        -ComposeFlags $composeFlags `
+                        -BuildLog $_buildLog `
+                        -UseDefaultDockerConfig
+                    if ($_buildExit -eq 0) {
+                        $_defaultDockerConfigServices += $_svc
+                    }
+                }
+
+                if ($_buildExit -ne 0) {
                     $_failedBuildServices += $_svc
                     Write-AIError "$_svc build failed (see $_buildLog)"
                 }
             }
             if ($_legacyBuilderServices.Count -gt 0) {
                 Write-AIWarn "Used Docker legacy builder fallback for: $($_legacyBuilderServices -join ', ')"
+            }
+            if ($_defaultDockerConfigServices.Count -gt 0) {
+                Write-AIWarn "Used user's default Docker config for local image builds: $($_defaultDockerConfigServices -join ', ')"
             }
             if ($_failedBuildServices.Count -gt 0) {
                 Write-Host ""

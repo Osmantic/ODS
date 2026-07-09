@@ -78,18 +78,17 @@ function Get-ODSAmdLemonadeRuntime {
     return $lemonade
 }
 
-function Resolve-ODSLemonadeExe {
+function Get-ODSLemonadeExeCandidatePaths {
     <#
     .SYNOPSIS
-        Resolve the native Windows Lemonade executable across both MSI roots.
+        Return native Windows Lemonade executable candidates across MSI roots.
 
     .DESCRIPTION
         Lemonade's minimal MSI can land under either Program Files root depending
         on package architecture and Windows installer behavior. Recent MSI builds
         also install LemonadeServer.exe instead of the historical
-        lemonade-server.exe. Probe the known roots, folder names, and executable
-        aliases before falling back so AMD installs do not miss a valid Lemonade
-        runtime and silently downgrade to Vulkan llama-server.
+        lemonade-server.exe. Keep this candidate list shared between resolver
+        and installer diagnostics so failures name the roots that were checked.
     #>
     [CmdletBinding()]
     param(
@@ -117,7 +116,20 @@ function Resolve-ODSLemonadeExe {
         }
     }
 
-    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+    return @($candidates | Select-Object -Unique)
+}
+
+function Resolve-ODSLemonadeExe {
+    <#
+    .SYNOPSIS
+        Resolve the native Windows Lemonade executable across both MSI roots.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$ExecutableName = "lemonade-server.exe"
+    )
+
+    foreach ($candidate in (Get-ODSLemonadeExeCandidatePaths -ExecutableName $ExecutableName)) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
             return $candidate
         }
