@@ -48,6 +48,7 @@ bash tests/contracts/test-external-lemonade-contracts.sh
 
 echo "[contract] bootstrap hot-swap force-recreate"
 bash tests/test-bootstrap-upgrade-hotswap-contract.sh
+bash tests/contracts/test-windows-lemonade-swap-wait.sh
 
 echo "[contract] bootstrap Docker hot-swap rollback"
 bash tests/test-bootstrap-upgrade-docker-rollback.sh

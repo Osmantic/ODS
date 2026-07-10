@@ -440,6 +440,89 @@ function Set-ODSLemonadeModernRuntimeConfig {
     return $config
 }
 
+function Resolve-ODSLemonadeModelId {
+    <#
+    .SYNOPSIS
+        Resolve the request model ID Lemonade assigned to a local GGUF.
+
+    .DESCRIPTION
+        Lemonade releases before 10.7 expose extra-directory GGUFs as
+        extra.<file>.gguf. Lemonade 10.7 exposes the filename stem instead.
+        Prefer the live model catalog so future naming changes remain safe,
+        then fall back to the runtime version when the catalog is still
+        refreshing after launch.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Port,
+
+        [Parameter(Mandatory = $true)]
+        [string]$GgufFile,
+
+        [string]$VersionOverride
+    )
+
+    if ($Port -lt 1 -or $Port -gt 65535) { throw "Invalid Lemonade port: $Port" }
+    $targetFile = [IO.Path]::GetFileName($GgufFile)
+    if ([string]::IsNullOrWhiteSpace($targetFile)) { throw "GGUF filename is required." }
+    $targetStem = [IO.Path]::GetFileNameWithoutExtension($targetFile)
+
+    try {
+        $catalog = Invoke-RestMethod -Method Get `
+            -Uri "http://127.0.0.1:$Port/api/v1/models" `
+            -TimeoutSec 10 -ErrorAction Stop
+        foreach ($entry in @($catalog.data)) {
+            if ($null -eq $entry) { continue }
+            $id = [string]$entry.id
+            if ([string]::IsNullOrWhiteSpace($id)) { continue }
+            $tokens = New-Object System.Collections.Generic.List[string]
+            $tokens.Add($id)
+            if (-not [string]::IsNullOrWhiteSpace([string]$entry.checkpoint)) {
+                $tokens.Add([string]$entry.checkpoint)
+            }
+            if ($entry.checkpoints) {
+                foreach ($property in $entry.checkpoints.PSObject.Properties) {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+                        $tokens.Add([string]$property.Value)
+                    }
+                }
+            }
+            foreach ($token in $tokens) {
+                $normalized = ([string]$token).Replace([IO.Path]::DirectorySeparatorChar, '/')
+                $leaf = ($normalized -split '/')[-1]
+                if ($leaf.Contains(':')) { $leaf = ($leaf -split ':')[-1] }
+                if ($leaf.Equals($targetFile, [StringComparison]::OrdinalIgnoreCase) -or
+                    $leaf.Equals($targetStem, [StringComparison]::OrdinalIgnoreCase) -or
+                    $id.Equals($targetFile, [StringComparison]::OrdinalIgnoreCase) -or
+                    $id.Equals($targetStem, [StringComparison]::OrdinalIgnoreCase) -or
+                    $id.Equals("extra.$targetFile", [StringComparison]::OrdinalIgnoreCase)) {
+                    return $id
+                }
+            }
+        }
+    } catch { }
+
+    $versionText = $VersionOverride
+    if ([string]::IsNullOrWhiteSpace($versionText)) {
+        try {
+            $health = Invoke-RestMethod -Method Get `
+                -Uri "http://127.0.0.1:$Port/api/v1/health" `
+                -TimeoutSec 5 -ErrorAction Stop
+            $versionText = [string]$health.version
+        } catch { }
+    }
+    $versionMatch = [regex]::Match([string]$versionText, '\d+(?:\.\d+){1,3}')
+    if ($versionMatch.Success) {
+        try {
+            if ([Version]$versionMatch.Value -ge [Version]'10.7.0') {
+                return $targetStem
+            }
+        } catch { }
+    }
+    return "extra.$targetFile"
+}
+
 function Get-ODSLemonadeLaunchDiagnostics {
     [CmdletBinding()]
     param(

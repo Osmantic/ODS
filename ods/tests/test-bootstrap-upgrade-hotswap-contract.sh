@@ -96,9 +96,11 @@ pass "hot-swap asserts the running command uses the full GGUF"
 
 grep -qF 'restart_windows_lemonade_with_full_model' <<<"$active_code" \
     || fail "Windows Lemonade hot-swap must restart the native Lemonade process"
-grep -qF 'extra.${FULL_GGUF_FILE' <<<"$active_code" \
-    || fail "Windows Lemonade hot-swap must verify the full GGUF model id"
-pass "Windows Lemonade hot-swap restarts native inference and verifies the full model"
+grep -qF 'Resolve-ODSLemonadeModelId' <<<"$active_code" \
+    || fail "Windows Lemonade hot-swap must resolve the runtime's exact full-model ID"
+grep -qF 'write_env_value LEMONADE_MODEL "$model_id"' <<<"$active_code" \
+    || fail "Windows Lemonade hot-swap must persist the verified full-model ID"
+pass "Windows Lemonade hot-swap restarts native inference and persists the verified model ID"
 
 grep -qF 'patch_hermes_model_after_swap' <<<"$active_code" \
     || fail "Windows Lemonade hot-swap must patch Hermes off the bootstrap model"

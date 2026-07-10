@@ -408,6 +408,20 @@ if ((${#_lemonade_ps_cmd[@]} > 0)); then
                 }
                 return [pscustomobject]@{ status = "success" }
             }
+            if ($Uri -match "/api/v1/models$") {
+                return [pscustomobject]@{
+                    data = @(
+                        [pscustomobject]@{
+                            id = "Modern-Model"
+                            checkpoint = (Join-Path $script:expectedModelsDir "Modern-Model.gguf")
+                            checkpoints = [pscustomobject]@{}
+                        }
+                    )
+                }
+            }
+            if ($Uri -match "/api/v1/health$") {
+                return [pscustomobject]@{ version = "10.7.0" }
+            }
             return [pscustomobject]@{
                 extra_models_dir = $script:expectedModelsDir
                 llamacpp = [pscustomobject]@{ backend = "vulkan" }
@@ -428,6 +442,16 @@ if ((${#_lemonade_ps_cmd[@]} > 0)); then
         if ($script:configPost.Body.extra_models_dir -ne $script:expectedModelsDir -or
             $script:configPost.Body.llamacpp.backend -ne "vulkan") {
             throw "Lemonade 10.7 config payload values are incorrect"
+        }
+        $resolvedModernModel = Resolve-ODSLemonadeModelId `
+            -Port 8080 -GgufFile "Modern-Model.gguf"
+        if ($resolvedModernModel -ne "Modern-Model") {
+            throw "Modern Lemonade model ID resolution failed: $resolvedModernModel"
+        }
+        $legacyFallbackModel = Resolve-ODSLemonadeModelId `
+            -Port 8080 -GgufFile "Legacy-Model.gguf" -VersionOverride "10.6.9"
+        if ($legacyFallbackModel -ne "extra.Legacy-Model.gguf") {
+            throw "Legacy Lemonade model ID fallback failed: $legacyFallbackModel"
         }
 
         function New-ScheduledTaskAction {

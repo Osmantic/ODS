@@ -428,6 +428,22 @@ read_env_value() {
     grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"\047\r'
 }
 
+write_env_value() {
+    local key="$1" value="$2" tmp
+    [[ -f "$ENV_FILE" ]] || return 1
+    tmp="${ENV_FILE}.tmp.$$"
+    if ! awk -v k="$key" -v v="$value" '
+        BEGIN { found = 0 }
+        index($0, k "=") == 1 { print k "=" v; found = 1; next }
+        { print }
+        END { if (!found) print k "=" v }
+    ' "$ENV_FILE" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    cat "$tmp" > "$ENV_FILE" && rm -f "$tmp"
+}
+
 is_windows_bash() {
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*) return 0 ;;
@@ -474,34 +490,73 @@ restart_windows_lemonade_with_full_model() {
         return 1
     }
 
-    local pid_file bind_addr lemonade_port
+    local pid_file bind_addr lemonade_port helper_path env_path
     pid_file="$INSTALL_DIR/data/llama-server.pid"
     bind_addr="$(read_env_value BIND_ADDRESS)"
     [[ -n "$bind_addr" ]] || bind_addr="127.0.0.1"
     lemonade_port="$(read_env_value AMD_INFERENCE_PORT)"
     [[ -n "$lemonade_port" ]] || lemonade_port="8080"
+    helper_path="$INSTALL_DIR/installers/windows/lib/backend-contract.ps1"
+    env_path="$ENV_FILE"
+    if [[ ! -f "$helper_path" ]]; then
+        log "WARNING: Windows Lemonade launch helper is missing: $helper_path"
+        return 1
+    fi
 
     log "Restarting native Windows Lemonade with full model..."
-    ODS_WIN_PID_FILE="$(windows_path "$pid_file")" \
-    ODS_WIN_MODELS_DIR="$(windows_path "$MODELS_DIR")" \
-    ODS_WIN_BIND_ADDR="$bind_addr" \
-    ODS_WIN_LEMONADE_PORT="$lemonade_port" \
-    "$ps_cmd" -NoProfile -ExecutionPolicy Bypass -Command '
+    local ps_output model_id
+    if ! ps_output=$(
+        ODS_WIN_PID_FILE="$(windows_path "$pid_file")" \
+        ODS_WIN_MODELS_DIR="$(windows_path "$MODELS_DIR")" \
+        ODS_WIN_BIND_ADDR="$bind_addr" \
+        ODS_WIN_LEMONADE_PORT="$lemonade_port" \
+        ODS_WIN_LEMONADE_HELPER="$(windows_path "$helper_path")" \
+        ODS_WIN_ENV_PATH="$(windows_path "$env_path")" \
+        ODS_WIN_LEMONADE_DIAGNOSTIC_LOG="$(windows_path "$INSTALL_DIR/logs/lemonade-launch.log")" \
+        ODS_WIN_LEMONADE_TASK="ODSLemonadeRuntime" \
+        ODS_WIN_GGUF_FILE="$FULL_GGUF_FILE" \
+        "$ps_cmd" -NoProfile -ExecutionPolicy Bypass -Command '
         $ErrorActionPreference = "Stop"
 
-        $roots = @()
-        if ($env:ProgramFiles) { $roots += $env:ProgramFiles }
-        $pf86 = [Environment]::GetFolderPath("ProgramFilesX86")
-        if ($pf86) { $roots += $pf86 }
-        $exe = $null
-        foreach ($root in $roots) {
-            $candidate = Join-Path (Join-Path (Join-Path $root "Lemonade Server") "bin") "lemonade-server.exe"
-            if (Test-Path $candidate) { $exe = $candidate; break }
+        $helperPath = $env:ODS_WIN_LEMONADE_HELPER
+        if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
+            throw "Windows Lemonade launch helper not found: $helperPath"
         }
+        . $helperPath
+        $exe = Resolve-ODSLemonadeExe
         if (-not $exe) { throw "lemonade-server.exe not found under Program Files roots" }
+        $port = [int]$env:ODS_WIN_LEMONADE_PORT
+        $adminApiKey = Get-ODSLemonadeAdminApiKey -EnvPath $env:ODS_WIN_ENV_PATH
+        $launchContract = Get-ODSLemonadeLaunchContract `
+            -ExecutablePath $exe -Port $port -BindAddress $env:ODS_WIN_BIND_ADDR `
+            -ModelsDir $env:ODS_WIN_MODELS_DIR -AdminApiKey $adminApiKey
+        $taskName = $env:ODS_WIN_LEMONADE_TASK
+        try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch { }
+
+        $binDir = Split-Path -Parent $exe
+        $userProfile = [Environment]::GetFolderPath("UserProfile")
+        $lemonadeCacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
+        $odsModelsDir = $env:ODS_WIN_MODELS_DIR
+
+        function Test-ODSLemonadeProcess {
+            param($ProcessInfo)
+            if (-not $ProcessInfo) { return $false }
+            return (
+                ($ProcessInfo.ExecutablePath -and $ProcessInfo.ExecutablePath.StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase)) -or
+                ($lemonadeCacheBin -and $ProcessInfo.ExecutablePath -and $ProcessInfo.ExecutablePath.StartsWith($lemonadeCacheBin, [StringComparison]::OrdinalIgnoreCase)) -or
+                ($odsModelsDir -and $ProcessInfo.CommandLine -and
+                    $ProcessInfo.CommandLine.IndexOf($odsModelsDir, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+                    $ProcessInfo.CommandLine.IndexOf("lemonade", [StringComparison]::OrdinalIgnoreCase) -ge 0)
+            )
+        }
 
         function Stop-ODSProcessId {
             param([int]$ProcessId)
+            $processInfo = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $ProcessId) -ErrorAction SilentlyContinue
+            if (-not $processInfo) { return }
+            if (-not (Test-ODSLemonadeProcess $processInfo)) {
+                throw "Refusing to stop unowned process $ProcessId on configured Lemonade port $port"
+            }
             Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
             for ($i = 0; $i -lt 30; $i++) {
                 $old = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
@@ -526,7 +581,6 @@ restart_windows_lemonade_with_full_model() {
         # then polls the old bootstrap instance forever. Clear the configured
         # listener and any Lemonade Server child processes before launching the
         # full-model instance.
-        $port = [int]$env:ODS_WIN_LEMONADE_PORT
         $deadline = (Get-Date).AddSeconds(20)
         do {
             $listeners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
@@ -539,14 +593,8 @@ restart_windows_lemonade_with_full_model() {
             Start-Sleep -Milliseconds 500
         } while ((Get-Date) -lt $deadline)
 
-        $binDir = Split-Path -Parent $exe
-        $userProfile = [Environment]::GetFolderPath("UserProfile")
-        $lemonadeCacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
-        $odsModelsDir = $env:ODS_WIN_MODELS_DIR
         $lemonadeChildren = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-            ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase)) -or
-            ($lemonadeCacheBin -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($lemonadeCacheBin, [StringComparison]::OrdinalIgnoreCase)) -or
-            ($odsModelsDir -and $_.CommandLine -and $_.CommandLine.IndexOf($odsModelsDir, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+            Test-ODSLemonadeProcess $_
         })
         foreach ($child in $lemonadeChildren) {
             Stop-ODSProcessId -ProcessId ([int]$child.ProcessId)
@@ -560,39 +608,85 @@ restart_windows_lemonade_with_full_model() {
         $logPath = Join-Path $env:TEMP "lemonade-server.log"
         Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
 
-        $args = @(
-            "serve",
-            "--port", $env:ODS_WIN_LEMONADE_PORT,
-            "--host", $env:ODS_WIN_BIND_ADDR,
-            "--no-tray",
-            "--llamacpp", "vulkan",
-            "--extra-models-dir", $env:ODS_WIN_MODELS_DIR
-        )
-        $proc = Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden -PassThru
-        New-Item -ItemType Directory -Path (Split-Path -Parent $pidPath) -Force | Out-Null
-        Set-Content -LiteralPath $pidPath -Value $proc.Id
-
-        Start-Sleep -Seconds 2
-        $started = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
-        if (-not $started) {
-            try {
-                $health = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/api/v1/models" -f $port) -TimeoutSec 3 -UseBasicParsing
-                if ([int]$health.StatusCode -eq 200) { return }
-            } catch { }
-            $tail = ""
-            if (Test-Path $logPath) {
-                $tail = (Get-Content -LiteralPath $logPath -Tail 8 -ErrorAction SilentlyContinue) -join " "
-            }
-            throw "lemonade-server exited immediately after restart. $tail"
+        $action = New-ODSLemonadeScheduledTaskAction `
+            -Contract $launchContract -EnvPath $env:ODS_WIN_ENV_PATH `
+            -DiagnosticLogPath $env:ODS_WIN_LEMONADE_DIAGNOSTIC_LOG
+        $launchMethod = "scheduled task"
+        $proc = $null
+        try {
+            $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
+            $settings = New-ScheduledTaskSettingsSet `
+                -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                -ExecutionTimeLimit ([TimeSpan]::Zero)
+            $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+                -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
+            Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+        } catch {
+            $launchMethod = "direct process"
+            Write-Warning "Could not start Lemonade through Task Scheduler: $_"
+            $proc = Start-ODSLemonadeDirectProcess -Contract $launchContract
         }
-    ' >/dev/null 2>&1 || {
-        log "WARNING: native Windows Lemonade restart failed."
-        return 1
-    }
 
-    log "Waiting for native Windows Lemonade to serve extra.$FULL_GGUF_FILE ..."
-    local model_id _swap_attempts
-    model_id="extra.${FULL_GGUF_FILE//\"/\\\"}"
+        $healthy = $false
+        for ($i = 0; $i -lt 45; $i++) {
+            try {
+                $health = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/api/v1/health" -f $port) -TimeoutSec 3 -UseBasicParsing
+                if ([int]$health.StatusCode -ge 200 -and [int]$health.StatusCode -lt 300) {
+                    $healthy = $true
+                    break
+                }
+            } catch { }
+            Start-Sleep -Seconds 1
+        }
+        if (-not $healthy -and $launchMethod -eq "scheduled task") {
+            $scheduledDiagnostics = Get-ODSLemonadeLaunchDiagnostics -TaskName $taskName
+            Write-Warning "Lemonade scheduled task did not start a healthy router. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $scheduledDiagnostics)"
+            try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch { }
+            $launchMethod = "direct process"
+            $proc = Start-ODSLemonadeDirectProcess -Contract $launchContract
+            for ($i = 0; $i -lt 15; $i++) {
+                try {
+                    $health = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/api/v1/health" -f $port) -TimeoutSec 3 -UseBasicParsing
+                    if ([int]$health.StatusCode -ge 200 -and [int]$health.StatusCode -lt 300) {
+                        $healthy = $true
+                        break
+                    }
+                } catch { }
+                Start-Sleep -Seconds 1
+            }
+        }
+        if (-not $healthy) {
+            $diagnostics = Get-ODSLemonadeLaunchDiagnostics -TaskName $taskName -ChildProcess $proc
+            throw "Lemonade $launchMethod did not become healthy after restart. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $diagnostics)"
+        }
+        $listener = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) | Select-Object -First 1
+        if (-not $listener -or $listener.OwningProcess -le 0) {
+            throw "Lemonade health passed, but no listener process was found on port $port"
+        }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $pidPath) -Force | Out-Null
+        Set-Content -LiteralPath $pidPath -Value $listener.OwningProcess
+        if ($launchContract.RequiresRuntimeConfiguration) {
+            $null = Set-ODSLemonadeModernRuntimeConfig `
+                -Port $port -ModelsDir $env:ODS_WIN_MODELS_DIR -AdminApiKey $adminApiKey
+        }
+        $modelId = Resolve-ODSLemonadeModelId `
+            -Port $port -GgufFile $env:ODS_WIN_GGUF_FILE `
+            -VersionOverride ([string]$launchContract.Version)
+        Write-Output ("__ODS_LEMONADE_MODEL_ID__={0}" -f $modelId)
+    ' 2>&1
+    ); then
+        log "WARNING: native Windows Lemonade restart failed: $(printf '%s' "$ps_output" | tr '\r\n' ' ' | tail -c 800)"
+        return 1
+    fi
+
+    model_id="$(printf '%s\n' "$ps_output" | sed -n 's/^__ODS_LEMONADE_MODEL_ID__=//p' | tail -1 | tr -d '\r')"
+    if [[ -z "$model_id" ]]; then
+        log "WARNING: native Windows Lemonade restart did not report a model ID."
+        return 1
+    fi
+    log "Waiting for native Windows Lemonade to serve ${model_id} ..."
+    local _swap_attempts
     # A freshly-swapped full model can take several minutes to register in
     # --extra-models-dir and then load on the first completion. The old 12x10s
     # (~2 min) budget timed out before a 22 GB MoE (Qwen3.6-35B-A3B) was even
@@ -608,6 +702,10 @@ restart_windows_lemonade_with_full_model() {
                 -H "Content-Type: application/json" \
                 -d "{\"model\":\"${model_id}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}" \
                 >/dev/null 2>&1; then
+                if ! write_env_value LEMONADE_MODEL "$model_id"; then
+                    log "WARNING: ${model_id} completed, but ODS could not persist LEMONADE_MODEL."
+                    return 1
+                fi
                 log "SUCCESS: native Windows Lemonade completed with ${model_id}"
                 return 0
             fi
@@ -840,7 +938,8 @@ patch_hermes_model_after_swap() {
     new_model="$FULL_GGUF_FILE"
     if [[ "$runtime" == "lemonade" || "$llm_backend" == "lemonade" ]]; then
         old_model="extra.$BOOTSTRAP_GGUF_FILE"
-        new_model="extra.$FULL_GGUF_FILE"
+        new_model="$(read_env_value LEMONADE_MODEL)"
+        [[ -n "$new_model" ]] || new_model="extra.$FULL_GGUF_FILE"
     fi
 
     log "Patching Hermes config after full-model swap: ${old_model} -> ${new_model}"
@@ -978,7 +1077,8 @@ refresh_lemonade_after_bootstrap_cleanup() {
     local lemonade_port model_id old_model_id models_json
     lemonade_port="$(read_env_value OLLAMA_PORT)"
     [[ -n "$lemonade_port" ]] || lemonade_port="8080"
-    model_id="extra.${FULL_GGUF_FILE//\"/\\\"}"
+    model_id="$(read_env_value LEMONADE_MODEL)"
+    [[ -n "$model_id" ]] || model_id="extra.${FULL_GGUF_FILE//\"/\\\"}"
     old_model_id="extra.${BOOTSTRAP_GGUF//\"/\\\"}"
 
     for _i in $(seq 1 60); do
@@ -1532,7 +1632,8 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
                     # Escape any double-quotes in the filename so the JSON body
                     # below stays well-formed even for non-standard library entries.
                     # Mirrors the _safe_model pattern in write_status() above.
-                    _model_id="extra.${FULL_GGUF_FILE//\"/\\\"}"
+                    _model_id="$(read_env_value LEMONADE_MODEL)"
+                    [[ -n "$_model_id" ]] || _model_id="extra.${FULL_GGUF_FILE//\"/\\\"}"
                     log "Sending warm-up request to trigger model loading: $_model_id (attempt $_i/60)"
                     if curl -sf --max-time 30 -X POST \
                         "http://127.0.0.1:${OLLAMA_PORT:-8080}/api/v1/chat/completions" \
@@ -1602,7 +1703,9 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
         # Lemonade exposes models as "extra.<GGUF_FILE>" — the config must
         # reference the exact ID, not a wildcard passthrough.
         if $DOCKER_CMD ps --filter name=ods-litellm --format '{{.Names}}' 2>/dev/null | grep -q ods-litellm; then
-            log "Updating LiteLLM config for new model: extra.${FULL_GGUF_FILE}"
+            _lemonade_model_id="$(read_env_value LEMONADE_MODEL)"
+            [[ -n "$_lemonade_model_id" ]] || _lemonade_model_id="extra.${FULL_GGUF_FILE}"
+            log "Updating LiteLLM config for new model: ${_lemonade_model_id}"
             # Read per-install lemonade key from .env; fall back to literal so
             # older installs without the key still produce a valid config (lemonade
             # itself ignores the value).
@@ -1647,6 +1750,7 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
                     --ods-mode lemonade \
                     --gpu-backend amd \
                     --gguf-file "$FULL_GGUF_FILE" \
+                    --lemonade-model-id "$_lemonade_model_id" \
                     --lemonade-api-base "$_lemonade_api_base" \
                     --litellm-key "$LITELLM_LEMONADE_API_KEY" \
                     --output-root "$INSTALL_DIR" \
@@ -1661,7 +1765,7 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
 model_list:
   - model_name: default
     litellm_params:
-      model: openai/extra.${FULL_GGUF_FILE}
+      model: openai/${_lemonade_model_id}
       api_base: ${_lemonade_api_base}
       api_key: ${LITELLM_LEMONADE_API_KEY}
       extra_body:
@@ -1670,7 +1774,7 @@ model_list:
 
   - model_name: "*"
     litellm_params:
-      model: openai/extra.${FULL_GGUF_FILE}
+      model: openai/${_lemonade_model_id}
       api_base: ${_lemonade_api_base}
       api_key: ${LITELLM_LEMONADE_API_KEY}
       extra_body:
@@ -1684,7 +1788,7 @@ litellm_settings:
   stream_timeout: 900
 LITELLM_UPGRADE_EOF
             fi
-            unset _renderer_ok _renderer_script _renderer_py _lemonade_api_base _amd_location _amd_port
+            unset _renderer_ok _renderer_script _renderer_py _lemonade_api_base _lemonade_model_id _amd_location _amd_port
             log "Restarting LiteLLM to pick up model change..."
             $DOCKER_CMD restart ods-litellm 2>&1 || log "WARNING: LiteLLM restart failed (non-fatal)"
         fi
@@ -1743,7 +1847,8 @@ LITELLM_UPGRADE_EOF
         _gpu_backend_for_hermes=$(grep -E '^GPU_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' || echo "")
         if [[ "$_gpu_backend_for_hermes" == "amd" ]]; then
             _hermes_old_model="extra.$BOOTSTRAP_GGUF_FILE"
-            _hermes_new_model="extra.$FULL_GGUF_FILE"
+            _hermes_new_model="$(read_env_value LEMONADE_MODEL)"
+            [[ -n "$_hermes_new_model" ]] || _hermes_new_model="extra.$FULL_GGUF_FILE"
         fi
         log "Patching Hermes config: model.default $_hermes_old_model -> $_hermes_new_model"
         _hermes_request_timeout=180
@@ -1812,7 +1917,8 @@ LITELLM_UPGRADE_EOF
             _prewarm_model="$FULL_GGUF_FILE"
             if [[ "$_gpu_backend_for_hermes" == "amd" ]]; then
                 _prewarm_api_path="/api/v1"
-                _prewarm_model="extra.$FULL_GGUF_FILE"
+                _prewarm_model="$(read_env_value LEMONADE_MODEL)"
+                [[ -n "$_prewarm_model" ]] || _prewarm_model="extra.$FULL_GGUF_FILE"
             fi
             _prewarm_body="{\"model\":\"${_prewarm_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}"
             if $DOCKER_CMD exec ods-hermes curl -sf --max-time 120 -X POST \
@@ -2053,7 +2159,8 @@ if curl -sf --max-time 3 "${_perplexica_url}/api/config" >/dev/null 2>&1; then
         _runtime_for_perplexica=$(grep -E '^AMD_INFERENCE_RUNTIME=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' | tr '[:upper:]' '[:lower:]' || echo "")
         _llm_backend_for_perplexica=$(grep -E '^LLM_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' | tr '[:upper:]' '[:lower:]' || echo "")
         if [[ "$_runtime_for_perplexica" == "lemonade" || "$_llm_backend_for_perplexica" == "lemonade" ]]; then
-            _px_model="extra.$FULL_GGUF_FILE"
+            _px_model="$(read_env_value LEMONADE_MODEL)"
+            [[ -n "$_px_model" ]] || _px_model="extra.$FULL_GGUF_FILE"
         fi
         _litellm_key=$(grep -E '^LITELLM_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' || echo "no-key")
         : "${_litellm_key:=no-key}"
