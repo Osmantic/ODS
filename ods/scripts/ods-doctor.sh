@@ -106,6 +106,9 @@ fi
 
 DOCKER_CLI="false"
 DOCKER_DAEMON="false"
+DOCKER_ROOTLESS="false"
+DOCKER_ROOTLESS_SUBID_WARNING=""
+user_name=""
 COMPOSE_CLI="false"
 DASHBOARD_HTTP="false"
 WEBUI_HTTP="false"
@@ -117,6 +120,46 @@ if command -v docker >/dev/null 2>&1; then
     DOCKER_CLI="true"
     if docker info >/dev/null 2>&1; then
         DOCKER_DAEMON="true"
+        # Detect rootless mode
+        if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless; then
+            DOCKER_ROOTLESS="true"
+            # Subordinate UID/GID checks
+            user_name=$(id -un)
+            subuid_file="${ODS_TEST_SUBUID_FILE:-/etc/subuid}"
+            subgid_file="${ODS_TEST_SUBGID_FILE:-/etc/subgid}"
+            min_range=65536
+
+            if [[ "$(uname -s)" == "Linux" ]]; then
+                has_subuid=true
+                has_subgid=true
+                if [[ ! -f "$subuid_file" ]]; then
+                    DOCKER_ROOTLESS_SUBID_WARNING="Missing $subuid_file range allocation."
+                    has_subuid=false
+                fi
+                if [[ ! -f "$subgid_file" ]]; then
+                    if [[ -z "$DOCKER_ROOTLESS_SUBID_WARNING" ]]; then
+                        DOCKER_ROOTLESS_SUBID_WARNING="Missing $subgid_file range allocation."
+                    else
+                        DOCKER_ROOTLESS_SUBID_WARNING="Missing $subuid_file and $subgid_file range allocations."
+                    fi
+                    has_subgid=false
+                fi
+
+                if $has_subuid && $has_subgid; then
+                    subuid_total=$(awk -F: -v user="$user_name" '$1 == user {s+=$3} END {print s+0}' "$subuid_file" 2>/dev/null || echo 0)
+                    subgid_total=$(awk -F: -v user="$user_name" '$1 == user {s+=$3} END {print s+0}' "$subgid_file" 2>/dev/null || echo 0)
+                    if [[ -z "$subuid_total" || "$subuid_total" -eq 0 ]]; then
+                        DOCKER_ROOTLESS_SUBID_WARNING="No subordinate UID range allocated for user '$user_name' in $subuid_file."
+                    elif [[ -z "$subgid_total" || "$subgid_total" -eq 0 ]]; then
+                        DOCKER_ROOTLESS_SUBID_WARNING="No subordinate GID range allocated for user '$user_name' in $subgid_file."
+                    elif [[ "$subuid_total" -lt "$min_range" ]]; then
+                        DOCKER_ROOTLESS_SUBID_WARNING="Subordinate UID range ($subuid_total) in $subuid_file is smaller than required minimum ($min_range)."
+                    elif [[ "$subgid_total" -lt "$min_range" ]]; then
+                        DOCKER_ROOTLESS_SUBID_WARNING="Subordinate GID range ($subgid_total) in $subgid_file is smaller than required minimum ($min_range)."
+                    fi
+                fi
+            fi
+        fi
     fi
     if docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1; then
         COMPOSE_CLI="true"
@@ -343,7 +386,7 @@ elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
 
-"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ODS_MANAGED_CONTAINER_COUNT" "$ODS_RUNNING_CONTAINER_COUNT" "$ROOT_DIR" <<'PY'
+"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ODS_MANAGED_CONTAINER_COUNT" "$ODS_RUNNING_CONTAINER_COUNT" "$ROOT_DIR" "$DOCKER_ROOTLESS" "$DOCKER_ROOTLESS_SUBID_WARNING" "$user_name" <<'PY'
 import json
 import os
 import pathlib
@@ -353,7 +396,7 @@ import sys
 from datetime import datetime, timezone
 from urllib import error, parse, request
 
-cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg = sys.argv[1:]
+cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg, docker_rootless, docker_rootless_subid_warning, current_user = sys.argv[1:]
 
 cap = json.load(open(cap_file, "r", encoding="utf-8"))
 pre = json.load(open(preflight_file, "r", encoding="utf-8"))
@@ -1287,6 +1330,8 @@ report = {
         },
         "amd_runtime": amd_runtime,
         "inference_contract": inference_contract_public,
+        "docker_rootless": docker_rootless == "true",
+        "docker_rootless_subid_warning": docker_rootless_subid_warning,
     },
     "extensions": ext_diagnostics,
     "summary": {
@@ -1297,6 +1342,7 @@ report = {
             + (1 if stt_cached in {"false", "service_down"} else 0)
             + (1 if tts_http == "false" else 0)
             + (1 if hermes_slash_worker_count_num > hermes_slash_worker_max_count_num else 0)
+            + (1 if docker_rootless_subid_warning else 0)
             + len(amd_runtime.get("warnings", []))
             + inference_contract.get("issue_counts", {}).get("warnings", 0)
         ),
@@ -1333,6 +1379,14 @@ if runtime["docker_daemon"] and not runtime["dashboard_http"]:
     fix_hints.append(f"Run installer/start command, then verify dashboard on http://127.0.0.1:{dashboard_port}.")
 if runtime["docker_daemon"] and not runtime["webui_http"]:
     fix_hints.append(f"Verify Open WebUI container and port {webui_port} mapping.")
+
+if runtime["docker_rootless_subid_warning"]:
+    fix_hints.append(
+        f"Docker rootless subordinate ranges invalid: {runtime['docker_rootless_subid_warning']}\n"
+        f"  Configure subordinate ranges via:\n"
+        f"    sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 {current_user}\n"
+        f"  then run: systemctl --user restart docker"
+    )
 
 # STT model cache: service up but model missing is a common silent failure
 if stt_cached == "false" and stt_recovery:
@@ -1425,6 +1479,14 @@ ext_issues = summary.get("extensions_issues", 0)
 
 if ext_total > 0:
     print(f"  Extensions:    {ext_healthy}/{ext_total} healthy, {ext_issues} with issues")
+
+runtime_info = data.get("runtime", {})
+if runtime_info.get("docker_rootless"):
+    subid_warn = runtime_info.get("docker_rootless_subid_warning")
+    if subid_warn:
+        print(f"  Docker:        rootless mode (warning: {subid_warn})")
+    else:
+        print("  Docker:        rootless mode (subordinate ID range OK)")
 
 dgx_check = data.get("runtime", {}).get("dgx_spark_cuda_arch_check", {})
 if dgx_check.get("status") == "warn":

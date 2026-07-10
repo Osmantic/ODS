@@ -109,6 +109,50 @@ if command -v docker &> /dev/null; then
 
     if docker info &> /dev/null; then
         pass "Docker daemon running"
+
+        # Detect rootless mode
+        if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless; then
+            # Subordinate UID/GID checks
+            user_name=$(id -un)
+            subuid_file="${ODS_TEST_SUBUID_FILE:-/etc/subuid}"
+            subgid_file="${ODS_TEST_SUBGID_FILE:-/etc/subgid}"
+            min_range=65536
+
+            if [[ "$(uname -s)" == "Linux" ]]; then
+                range_ok=true
+                if [[ ! -f "$subuid_file" ]]; then
+                    warn "Subordinate UID allocation file $subuid_file is missing. Rootless containers will fail to start."
+                    warn "  To fix, run: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $user_name"
+                    range_ok=false
+                fi
+                if [[ ! -f "$subgid_file" ]]; then
+                    warn "Subordinate GID allocation file $subgid_file is missing. Rootless containers will fail to start."
+                    warn "  To fix, run: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $user_name"
+                    range_ok=false
+                fi
+
+                if $range_ok; then
+                    subuid_total=$(awk -F: -v user="$user_name" '$1 == user {s+=$3} END {print s+0}' "$subuid_file" 2>/dev/null || echo 0)
+                    subgid_total=$(awk -F: -v user="$user_name" '$1 == user {s+=$3} END {print s+0}' "$subgid_file" 2>/dev/null || echo 0)
+
+                    if [[ -z "$subuid_total" || "$subuid_total" -eq 0 ]]; then
+                        warn "No subordinate UID range allocated for user '$user_name' in $subuid_file."
+                        warn "  To fix, run: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $user_name"
+                    elif [[ "$subuid_total" -lt "$min_range" ]]; then
+                        warn "Subordinate UID range ($subuid_total) for user '$user_name' is smaller than the required minimum ($min_range)."
+                        warn "  To fix, run: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $user_name"
+                    fi
+
+                    if [[ -z "$subgid_total" || "$subgid_total" -eq 0 ]]; then
+                        warn "No subordinate GID range allocated for user '$user_name' in $subgid_file."
+                        warn "  To fix, run: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $user_name"
+                    elif [[ "$subgid_total" -lt "$min_range" ]]; then
+                        warn "Subordinate GID range ($subgid_total) for user '$user_name' is smaller than the required minimum ($min_range)."
+                        warn "  To fix, run: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $user_name"
+                    fi
+                fi
+            fi
+        fi
     else
         fail "Docker daemon not running — start with: sudo systemctl start docker"
     fi
