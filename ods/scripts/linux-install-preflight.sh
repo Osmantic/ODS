@@ -20,6 +20,8 @@ JSON_FILE=""
 STRICT=false
 ODS_ROOT="${ODS_ROOT:-$ROOT_DIR}"
 MIN_DISK_GB_FREE="${MIN_DISK_GB_FREE:-15}"
+SUBUID_FILE="${SUBUID_FILE:-/etc/subuid}"
+SUBGID_FILE="${SUBGID_FILE:-/etc/subgid}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -91,6 +93,22 @@ docker_cli_looks_like_podman() {
         esac
     fi
 
+    return 1
+}
+
+# Returns 0 when the given subid file has an entry for user or uid with a
+# range count >= min (typically 65536 for rootless Docker user namespaces).
+_check_subid_file() {
+    local file="$1" user="$2" uid="$3" min="$4"
+    local e_user e_start e_count
+    [[ -f "$file" ]] || return 1
+    while IFS=: read -r e_user e_start e_count _; do
+        [[ -z "${e_user:-}" ]] && continue
+        [[ "${e_user:-}" =~ ^[[:space:]]*# ]] && continue
+        [[ "$e_user" != "$user" && "$e_user" != "$uid" ]] && continue
+        [[ "${e_count:-}" =~ ^[0-9]+$ ]] || continue
+        [[ "$e_count" -ge "$min" ]] && return 0
+    done <"$file"
     return 1
 }
 
@@ -234,6 +252,50 @@ else
     append_check "CGROUP_V2" "warn" \
         "cgroup v2 not detected — some Docker/rootless setups may differ" \
         "Usually fine on modern distros; if Docker fails oddly, see LINUX-TROUBLESHOOTING-GUIDE.md#cgroups."
+fi
+
+# --- Docker rootless mode: subordinate UID/GID validation ---
+# Only meaningful when Docker is reachable and is not a Podman shim.
+if [[ "$DOCKER_INFO_OK" == true ]] && [[ "$DOCKER_IS_PODMAN" == false ]]; then
+    _ROOTLESS=false
+    if docker info 2>/dev/null | grep -qE '^[[:space:]]+rootless[[:space:]]*$'; then
+        _ROOTLESS=true
+    fi
+
+    if [[ "$_ROOTLESS" == true ]]; then
+        _SUBID_USER="${USER:-$(id -un 2>/dev/null || true)}"
+        _SUBID_UID="$(id -u 2>/dev/null || true)"
+        _SUBID_MIN=65536
+        _SUBID_FIX="sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 ${_SUBID_USER}"
+
+        _SUBUID_OK=false
+        _SUBGID_OK=false
+        if _check_subid_file "$SUBUID_FILE" "$_SUBID_USER" "$_SUBID_UID" "$_SUBID_MIN"; then
+            _SUBUID_OK=true
+        fi
+        if _check_subid_file "$SUBGID_FILE" "$_SUBID_USER" "$_SUBID_UID" "$_SUBID_MIN"; then
+            _SUBGID_OK=true
+        fi
+
+        if [[ "$_SUBUID_OK" == true && "$_SUBGID_OK" == true ]]; then
+            append_check "ROOTLESS_SUBUID" "pass" \
+                "Docker rootless: ${SUBUID_FILE} and ${SUBGID_FILE} both have a range ≥${_SUBID_MIN} for ${_SUBID_USER}" \
+                ""
+        else
+            _MISSING=""
+            [[ "$_SUBUID_OK" == false ]] && _MISSING="$SUBUID_FILE"
+            if [[ "$_SUBGID_OK" == false ]]; then
+                [[ -n "$_MISSING" ]] && _MISSING="$_MISSING and $SUBGID_FILE" || _MISSING="$SUBGID_FILE"
+            fi
+            append_check "ROOTLESS_SUBUID" "fail" \
+                "Docker rootless: ${_MISSING} missing or has a range <${_SUBID_MIN} for ${_SUBID_USER} — containers will fail with uid/gid map out of range" \
+                "$_SUBID_FIX"
+        fi
+    else
+        append_check "ROOTLESS_SUBUID" "pass" \
+            "Docker not running in rootless mode — subuid/subgid check not applicable" \
+            ""
+    fi
 fi
 
 # --- jq (installer often installs it; nice to have) ---

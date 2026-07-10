@@ -33,6 +33,28 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# Subordinate UID/GID files (override for tests). Docker rootless requires
+# entries for the current user with >= 65536 IDs in each; without them,
+# non-root containers fail with "uid/gid map out of range".
+SUBUID_FILE="${SUBUID_FILE:-/etc/subuid}"
+SUBGID_FILE="${SUBGID_FILE:-/etc/subgid}"
+
+# Returns 0 when the given subid file has an entry for user or uid with a
+# range count >= min. Safe under set -euo pipefail; skips comments/blanks.
+_check_subid_file() {
+    local file="$1" user="$2" uid="$3" min="$4"
+    local e_user e_start e_count
+    [[ -f "$file" ]] || return 1
+    while IFS=: read -r e_user e_start e_count _; do
+        [[ -z "${e_user:-}" ]] && continue
+        [[ "${e_user:-}" =~ ^[[:space:]]*# ]] && continue
+        [[ "$e_user" != "$user" && "$e_user" != "$uid" ]] && continue
+        [[ "${e_count:-}" =~ ^[0-9]+$ ]] || continue
+        [[ "$e_count" -ge "$min" ]] && return 0
+    done <"$file"
+    return 1
+}
+
 echo -e "${CYAN}ODS Preflight Check${NC}"
 echo "=============================="
 echo ""
@@ -52,6 +74,30 @@ else
     echo -e "${RED}✗ not running${NC}"
     echo "  Fix: Start Docker Desktop or run 'sudo systemctl start docker'"
     exit 1
+fi
+
+# Rootless Docker: verify /etc/subuid + /etc/subgid have >= 65536 IDs for the
+# current user. Non-root containers (n8n, whisper, tts, privacy-shield, ...)
+# fail with "failed to register layer: uid/gid map out of range" otherwise.
+# Warn-only at runtime: existing containers may already be up; the warning is
+# still valuable when diagnosing why one won't start or when new services are
+# enabled.
+echo -n "Docker rootless subuid/subgid... "
+if docker info 2>/dev/null | grep -qE '^[[:space:]]+rootless[[:space:]]*$'; then
+    _SUBID_USER="${USER:-$(id -un 2>/dev/null || true)}"
+    _SUBID_UID="$(id -u 2>/dev/null || true)"
+    _SUBID_MIN=65536
+    if _check_subid_file "$SUBUID_FILE" "$_SUBID_USER" "$_SUBID_UID" "$_SUBID_MIN" \
+        && _check_subid_file "$SUBGID_FILE" "$_SUBID_USER" "$_SUBID_UID" "$_SUBID_MIN"; then
+        echo -e "${GREEN}✓ mapping ≥${_SUBID_MIN} present for ${_SUBID_USER}${NC}"
+    else
+        echo -e "${YELLOW}⚠ insufficient or missing${NC}"
+        echo "  ${SUBUID_FILE}/${SUBGID_FILE} needs a range ≥${_SUBID_MIN} for ${_SUBID_USER}"
+        echo "  Fix: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 ${_SUBID_USER}"
+        echo "       then: systemctl --user restart docker"
+    fi
+else
+    echo -e "${GREEN}✓ not rootless (n/a)${NC}"
 fi
 
 # Check containers are up
