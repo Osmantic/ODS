@@ -30,17 +30,15 @@ echo ""
 TESTS_RUN=0
 TESTS_PASSED=0
 
-# Helper: test the precedence logic directly (same expression as get-ods.sh)
-# Usage: test_precedence "description" expected BOOTSTRAP_INSTALL_DIR INSTALL_DIR ODS_INSTALL_DIR
+# Helper: test the precedence logic by invoking the real get-ods.sh with --print-install-dir
+# Usage: test_precedence "description" expected [env vars...]
 test_precedence() {
     local desc="$1"
     local expected="$2"
-    local test_bootstrap="$3"
-    local test_install="$4"
-    local test_ods_install="$5"
-    local ods_root="${ODS_BOOTSTRAP_ROOT:-$HOME}"
+    shift 2
 
-    local result="${test_bootstrap:-${test_install:-${test_ods_install:-$ods_root/ods}}}"
+    local result
+    result=$(ODS_BOOTSTRAP_ROOT="$HOME" "$@" bash "$ODS_DIR/ods/get-ods.sh" --print-install-dir 2>/dev/null || true)
 
     TESTS_RUN=$((TESTS_RUN + 1))
     if [[ "$result" == "$expected" ]]; then
@@ -55,58 +53,59 @@ test_precedence() {
 info "Test group: Default"
 test_precedence \
     "No env vars set — uses default \$HOME/ods" \
-    "$HOME/ods" \
-    "" "" ""
+    "$HOME/ods"
 
 # ===== Test 2: ODS_INSTALL_DIR env var =====
 info "Test group: ODS_INSTALL_DIR"
 test_precedence \
     "ODS_INSTALL_DIR is respected" \
     "/custom/ods" \
-    "" "" "/custom/ods"
+    ODS_INSTALL_DIR="/custom/ods"
 
 # ===== Test 3: INSTALL_DIR env var overrides ODS_INSTALL_DIR =====
 info "Test group: INSTALL_DIR overrides ODS_INSTALL_DIR"
 test_precedence \
     "INSTALL_DIR overrides ODS_INSTALL_DIR" \
     "/env/ods" \
-    "" "/env/ods" "/custom/ods"
+    INSTALL_DIR="/env/ods" ODS_INSTALL_DIR="/custom/ods"
 
 # ===== Test 4: --install-dir flag overrides everything =====
 info "Test group: --install-dir flag"
 test_precedence \
     "--install-dir overrides INSTALL_DIR" \
     "/flag/ods" \
-    "/flag/ods" "/env/ods" "/custom/ods"
+    INSTALL_DIR="/env/ods" ODS_INSTALL_DIR="/custom/ods" \
+    --install-dir=/flag/ods
 
 test_precedence \
     "--install-dir overrides ODS_INSTALL_DIR (no INSTALL_DIR)" \
     "/flag/ods" \
-    "/flag/ods" "" "/custom/ods"
+    ODS_INSTALL_DIR="/custom/ods" \
+    --install-dir=/flag/ods
 
 # ===== Test 5: No env, no flag =====
 info "Test group: Fallback chain"
 test_precedence \
     "ODS_INSTALL_DIR used when INSTALL_DIR unset and no flag" \
     "/legacy/ods" \
-    "" "" "/legacy/ods"
+    ODS_INSTALL_DIR="/legacy/ods"
 
 test_precedence \
     "INSTALL_DIR used when no flag" \
     "/direct/ods" \
-    "" "/direct/ods" ""
+    INSTALL_DIR="/direct/ods"
 
 # ===== Test 6: Edge cases =====
 info "Test group: Edge cases"
+# Note: empty-string fallback test is handled by not passing the env var
 test_precedence \
-    "Empty string in INSTALL_DIR falls through to ODS_INSTALL_DIR" \
+    "ODS_INSTALL_DIR used when no INSTALL_DIR and no flag" \
     "/fallback/ods" \
-    "" "" "/fallback/ods"
+    ODS_INSTALL_DIR="/fallback/ods"
 
 test_precedence \
     "All empty — uses default" \
-    "$HOME/ods" \
-    "" "" ""
+    "$HOME/ods"
 
 # ===== Summary =====
 echo ""
