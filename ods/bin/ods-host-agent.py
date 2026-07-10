@@ -1665,6 +1665,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_model_activate()
         elif self.path == "/v1/model/delete":
             self._handle_model_delete()
+        elif self.path == "/v1/model/sync":
+            self._handle_model_sync()
         elif self.path == "/v1/compose/invalidate-cache":
             self._handle_invalidate_compose_cache()
         elif self.path == "/v1/env/update":
@@ -3985,6 +3987,71 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 200, {"status": "deleted", "gguf_file": gguf_file})
         except OSError as exc:
             json_response(self, 500, {"error": f"Failed to delete: {exc}"})
+
+
+    def _handle_model_sync(self):
+        """Sync a GGUF model from LM Studio or Ollama into ODS's model directory.
+
+        Hardlinks (or copies if cross-filesystem) the file so it is immediately
+        available to llama-server without a separate network download.
+
+        Body: {"gguf_file": "Qwen3.5-2B-Q4_K_M.gguf"}
+        Response: {"status": "synced"|"already_present"|"not_found", "source": ...}
+        """
+        if not check_auth(self):
+            return
+        body = read_json_body(self)
+        if body is None:
+            return
+
+        gguf_file = (body.get("gguf_file") or "").strip()
+        if not gguf_file:
+            json_response(self, 400, {"error": "gguf_file is required"})
+            return
+
+        # Path traversal prevention — only plain filenames allowed
+        if "/" in gguf_file or "\\" in gguf_file or not gguf_file.lower().endswith(".gguf"):
+            json_response(self, 400, {"error": "gguf_file must be a plain .gguf filename"})
+            return
+
+        sync_script = INSTALL_DIR / "scripts" / "sync-external-models.sh"
+        if not sync_script.is_file():
+            json_response(self, 501, {"error": "sync-external-models.sh not found"})
+            return
+
+        bash = _find_usable_bash()
+        if not bash:
+            json_response(self, 503, {"error": "Sync requires a usable Bash runtime. Install Git Bash or run ODS through WSL/Linux."})
+            return
+
+        try:
+            result = subprocess.run(
+                [bash, _to_bash_path(sync_script), gguf_file],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={**os.environ, "INSTALL_DIR": _to_bash_path(INSTALL_DIR)},
+            )
+            stdout = result.stdout.strip()
+
+            if result.returncode != 0:
+                json_response(self, 502, {"error": f"Sync script exited {result.returncode}: {result.stderr.strip() or stdout}"})
+                return
+
+            if stdout.startswith("synced:lmstudio:"):
+                source = stdout[len("synced:lmstudio:"):]
+                json_response(self, 200, {"status": "synced", "provider": "lmstudio", "source": source, "gguf_file": gguf_file})
+            elif stdout.startswith("synced:ollama:"):
+                source = stdout[len("synced:ollama:"):]
+                json_response(self, 200, {"status": "synced", "provider": "ollama", "source": source, "gguf_file": gguf_file})
+            elif stdout == "already_present":
+                json_response(self, 200, {"status": "already_present", "gguf_file": gguf_file})
+            elif stdout == "not_found":
+                json_response(self, 200, {"status": "not_found", "gguf_file": gguf_file})
+            else:
+                json_response(self, 502, {"error": f"Unexpected sync output: {stdout!r}"})
+        except subprocess.TimeoutExpired:
+            json_response(self, 504, {"error": "Sync script timed out"})
 
 
 def _check_lemonade_health(body: str) -> bool:

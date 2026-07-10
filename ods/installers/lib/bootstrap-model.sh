@@ -24,7 +24,7 @@ BOOTSTRAP_MAX_CONTEXT=65536
 #
 # Returns 0 (true) when ALL of these hold:
 #   1. Tier is above 0 (full model is larger than the bootstrap model)
-#   2. Full model GGUF file does NOT already exist on disk
+#   2. Full model GGUF file does NOT already exist on disk (including synced)
 #   3. --no-bootstrap flag was NOT set
 #   4. Not in offline mode (can't download anything)
 #   5. Not in cloud mode (no local model needed)
@@ -36,7 +36,7 @@ bootstrap_needed() {
     # Tier 0: the full model IS the bootstrap model — no point
     [[ "$tier_rank" -le 0 ]] && return 1
 
-    # Full model already on disk — skip bootstrap, use it directly
+    # Full model already on disk (downloaded or synced from external) — skip bootstrap
     [[ -f "${INSTALL_DIR}/data/models/${GGUF_FILE}" ]] && return 1
 
     # User opted out
@@ -50,4 +50,23 @@ bootstrap_needed() {
     [[ "${LEMONADE_EXTERNAL:-false}" == "true" ]] && return 1
 
     return 0
+}
+
+# sync_bootstrap_if_available — Try to sync the bootstrap model from external
+# providers (LM Studio / Ollama) so the fast-start download can be skipped.
+# Sets BOOTSTRAP_SYNCED=true when a sync succeeds.
+# Should be called after BOOTSTRAP_GGUF_FILE is set and before bootstrap_needed().
+sync_bootstrap_if_available() {
+    BOOTSTRAP_SYNCED=false
+    [[ -f "${INSTALL_DIR}/data/models/${BOOTSTRAP_GGUF_FILE}" ]] && return 0
+
+    local sync_script="${SCRIPT_DIR}/scripts/sync-external-models.sh"
+    [[ -f "$sync_script" ]] || return 0
+
+    local result
+    result="$(INSTALL_DIR="$INSTALL_DIR" SYNC_EXACT_ONLY=true bash "$sync_script" "$BOOTSTRAP_GGUF_FILE" 2>>"${LOG_FILE:-/dev/stderr}")"
+    case "$result" in
+        synced:*)        BOOTSTRAP_SYNCED=true ;;
+        already_present) BOOTSTRAP_SYNCED=true ;;
+    esac
 }

@@ -707,6 +707,32 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
     }
 
 
+@router.post("/api/models/sync")
+def sync_models(body: dict[str, Any] | None = None, api_key: str = Depends(verify_api_key)):
+    """Sync a GGUF model from LM Studio or Ollama into ODS's local model store.
+
+    Avoids downloading a model that already exists on the device in another tool.
+    If no gguf_file is specified, the currently configured model is synced.
+
+    Returns:
+      {"status": "synced", "provider": "lmstudio"|"ollama", "source": "<path>", "gguf_file": "..."}
+      {"status": "already_present", "gguf_file": "..."}
+      {"status": "not_found", "gguf_file": "..."}
+    """
+    gguf_file = (body or {}).get("gguf_file", "")
+    if not gguf_file:
+        active = _read_active_model()
+        if not active:
+            raise HTTPException(
+                status_code=400,
+                detail="No gguf_file specified and no active model configured",
+            )
+        gguf_file = active
+
+    result = _call_agent_model("/v1/model/sync", {"gguf_file": gguf_file})
+    return result
+
+
 @router.post("/api/models/{model_id}/download")
 def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
     """Start downloading a model from HuggingFace."""

@@ -3087,8 +3087,50 @@ cmd_model() {
             _env_set "MAX_CONTEXT" "$MAX_CONTEXT"
             success "Model set to $model (tier $tier, ctx=$MAX_CONTEXT). Run 'ods restart llama-server' to apply."
             ;;
+        sync)
+            # Scan LM Studio and Ollama for GGUF models that match ODS's
+            # model library and create symlinks to avoid duplicate downloads.
+            local sync_script="$SCRIPT_DIR/scripts/sync-external-models.sh"
+            [[ -f "$sync_script" ]] || error "sync-external-models.sh not found in $SCRIPT_DIR/scripts/"
+
+            local target_gguf="${2:-}"
+            if [[ -z "$target_gguf" ]]; then
+                # Default to the currently configured model
+                target_gguf="$(grep "^GGUF_FILE=" .env 2>/dev/null | cut -d= -f2 || true)"
+                [[ -z "$target_gguf" ]] && error "No GGUF_FILE set in .env. Pass the filename explicitly: ods model sync <file.gguf>"
+            fi
+
+            log "Searching for $target_gguf in LM Studio and Ollama..."
+            local result
+            result="$(INSTALL_DIR="$INSTALL_DIR" bash "$sync_script" "$target_gguf")"
+            case "$result" in
+                synced:lmstudio:*)
+                    success "Linked from LM Studio: ${result#synced:lmstudio:}"
+                    echo "  Model is now available in ODS as: $target_gguf"
+                    echo "  Run 'ods restart llama-server' if you want to use it now."
+                    ;;
+                synced:ollama:*)
+                    success "Linked from Ollama: ${result#synced:ollama:}"
+                    echo "  Model is now available in ODS as: $target_gguf"
+                    echo "  Run 'ods restart llama-server' if you want to use it now."
+                    ;;
+                already_present)
+                    success "Model already present in ODS: $target_gguf"
+                    ;;
+                not_found)
+                    warn "Model not found in LM Studio or Ollama: $target_gguf"
+                    echo "  Make sure LM Studio or Ollama is running and has the model loaded."
+                    echo "  To download instead: visit the Models page in the ODS dashboard."
+                    exit 1
+                    ;;
+                *)
+                    warn "Unexpected sync result: $result"
+                    exit 1
+                    ;;
+            esac
+            ;;
         *)
-            error "Usage: ods model <current|list|swap>"
+            error "Usage: ods model <current|list|swap|sync>"
             ;;
     esac
 }
