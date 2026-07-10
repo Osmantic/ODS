@@ -1,23 +1,36 @@
 import { createElement } from 'react'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Models from './Models'
 
 const useModelsMock = vi.fn()
+const useDownloadProgressMock = vi.fn()
 
 vi.mock('../hooks/useModels', () => ({
   useModels: () => useModelsMock(),
 }))
 
 vi.mock('../hooks/useDownloadProgress', () => ({
-  useDownloadProgress: () => ({
+  useDownloadProgress: () => useDownloadProgressMock(),
+}))
+
+function baseDownloadState(overrides = {}) {
+  return {
     isDownloading: false,
     progress: null,
+    completedDownload: null,
     refresh: vi.fn(),
+    cancelDownload: vi.fn(),
+    clearTerminal: vi.fn(),
     formatBytes: (value) => `${value} B`,
     formatEta: (value) => `${value}s`,
-  }),
-}))
+    ...overrides,
+  }
+}
+
+beforeEach(() => {
+  useDownloadProgressMock.mockReturnValue(baseDownloadState())
+})
 
 function baseState(overrides = {}) {
   return {
@@ -180,6 +193,97 @@ test('keeps Download available in cloud mode', () => {
   fireEvent.click(downloadButton)
 
   expect(downloadModel).toHaveBeenCalledWith('qwen3.5-9b-q4')
+})
+
+test('shows terminal download failures with a retry action', async () => {
+  const downloadModel = vi.fn()
+  const clearTerminal = vi.fn()
+  useModelsMock.mockReturnValue(baseState({
+    downloadModel,
+    models: [model()],
+  }))
+  useDownloadProgressMock.mockReturnValue(baseDownloadState({
+    progress: {
+      status: 'failed',
+      model: 'qwen3.5-9b-q4',
+      error: 'The download checksum did not match.',
+    },
+    clearTerminal,
+  }))
+
+  renderModels()
+
+  expect(screen.getByText('Download Failed')).toBeInTheDocument()
+  expect(screen.getByText('The download checksum did not match.')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+
+  expect(clearTerminal).toHaveBeenCalled()
+  expect(downloadModel).toHaveBeenCalledWith('qwen3.5-9b-q4')
+  await act(async () => {})
+})
+
+test('shows a cancel control while downloading', () => {
+  const cancelDownload = vi.fn()
+  useModelsMock.mockReturnValue(baseState({ models: [model()] }))
+  useDownloadProgressMock.mockReturnValue(baseDownloadState({
+    isDownloading: true,
+    progress: {
+      status: 'downloading',
+      model: 'qwen3.5-9b-q4',
+      bytesDownloaded: 5,
+      bytesTotal: 10,
+      percent: 50,
+      speedMbps: 1,
+      eta: 5,
+    },
+    cancelDownload,
+  }))
+
+  renderModels()
+  fireEvent.click(screen.getByRole('button', { name: /cancel/i }))
+
+  expect(cancelDownload).toHaveBeenCalledTimes(1)
+})
+
+test('recovers from Download Starting when status remains idle', async () => {
+  vi.useFakeTimers()
+  const downloadModel = vi.fn().mockResolvedValue(undefined)
+  const refresh = vi.fn().mockResolvedValue({ status: 'idle' })
+  useModelsMock.mockReturnValue(baseState({
+    downloadModel,
+    models: [model()],
+  }))
+  useDownloadProgressMock.mockReturnValue(baseDownloadState({ refresh }))
+
+  try {
+    renderModels()
+    fireEvent.click(screen.getByRole('button', { name: /^download$/i }))
+    await act(async () => {})
+    expect(screen.getByRole('button', { name: /starting/i })).toBeDisabled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+
+    expect(screen.queryByRole('button', { name: /starting/i })).not.toBeInTheDocument()
+    expect(screen.getByText(/did not start within 15 seconds/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeEnabled()
+    expect(refresh).toHaveBeenCalledTimes(2)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('disables model actions and hides Delete while that model is working', () => {
+  useModelsMock.mockReturnValue(baseState({
+    actionLoading: 'qwen3.5-9b-q4',
+    actionLoadingModels: ['qwen3.5-9b-q4'],
+    models: [model({ status: 'downloaded' })],
+  }))
+
+  renderModels()
+
+  expect(screen.getByRole('button', { name: /working/i })).toBeDisabled()
+  expect(screen.getByRole('button', { name: /model actions/i })).toBeDisabled()
+  expect(screen.queryByRole('button', { name: /delete file/i })).not.toBeInTheDocument()
 })
 
 test('disables primary and menu Run actions in cloud mode', () => {

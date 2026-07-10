@@ -13,12 +13,14 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  X,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useModels } from '../hooks/useModels'
 import { useDownloadProgress } from '../hooks/useDownloadProgress'
 
 const PAGE_SIZE = 10
+const DOWNLOAD_START_TIMEOUT_MS = 15000
 const CLOUD_MODE_RUN_TITLE = 'Switch ODS to local mode to run this model.'
 const TECH_PANEL_STYLE = {
   background: 'linear-gradient(180deg, rgba(10,10,18,0.96), rgba(7,7,13,0.92))',
@@ -48,6 +50,7 @@ export default function Models() {
     loading,
     error,
     actionLoading,
+    actionLoadingModels,
     downloadModel,
     loadModel,
     benchmarkModel,
@@ -56,6 +59,7 @@ export default function Models() {
   } = useModels()
 
   const [downloadStarting, setDownloadStarting] = useState(null)
+  const [downloadStartFailure, setDownloadStartFailure] = useState(null)
   const [openMenuId, setOpenMenuId] = useState(null)
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
@@ -66,17 +70,40 @@ export default function Models() {
   const libraryRef = useRef(null)
 
   useEffect(() => {
-    if (downloadProgress.isDownloading || error) {
+    const terminalProgress = downloadProgress.progress?.error ||
+      ['failed', 'error', 'cancelled'].includes(downloadProgress.progress?.status)
+
+    if (downloadProgress.isDownloading || error || terminalProgress) {
       setDownloadStarting(null)
     }
-  }, [downloadProgress.isDownloading, error])
+    if (downloadProgress.isDownloading || terminalProgress) {
+      setDownloadStartFailure(null)
+    }
+  }, [downloadProgress.isDownloading, downloadProgress.progress, error])
 
   useEffect(() => {
     if (downloadProgress.completedDownload?.status === 'complete') {
       setDownloadStarting(null)
+      setDownloadStartFailure(null)
       refresh()
     }
   }, [downloadProgress.completedDownload, refresh])
+
+  useEffect(() => {
+    if (!downloadStarting) return undefined
+
+    const modelId = downloadStarting
+    const timeout = setTimeout(() => {
+      setDownloadStarting(null)
+      setDownloadStartFailure({
+        modelId,
+        error: `Download for ${modelId} did not start within 15 seconds. Check the service and retry.`,
+      })
+      void downloadProgress.refresh()
+    }, DOWNLOAD_START_TIMEOUT_MS)
+
+    return () => clearTimeout(timeout)
+  }, [downloadProgress.refresh, downloadStarting])
 
   useEffect(() => {
     const closeMenu = (event) => {
@@ -136,10 +163,27 @@ export default function Models() {
   }, [categoryFilter, compatibilityFilter, contextFloor, models.length, query, speedFilter])
 
   const handleDownload = async (modelId) => {
+    setDownloadStartFailure(null)
+    downloadProgress.clearTerminal?.()
     setDownloadStarting(modelId)
-    await downloadModel(modelId)
-    downloadProgress.refresh()
+    try {
+      await downloadModel(modelId)
+      await downloadProgress.refresh()
+    } catch (downloadError) {
+      setDownloadStarting(null)
+      setDownloadStartFailure({
+        modelId,
+        error: downloadError?.message || `Failed to start download for ${modelId}.`,
+      })
+    }
   }
+
+  const pendingModelActions = actionLoadingModels ?? (actionLoading ? [actionLoading] : [])
+  const visibleDownloadProgress = downloadProgress.progress || (downloadStartFailure && {
+    status: 'error',
+    model: downloadStartFailure.modelId,
+    error: downloadStartFailure.error,
+  })
 
   if (loading) {
     return (
@@ -195,8 +239,14 @@ export default function Models() {
         </div>
       )}
 
-      {downloadProgress.isDownloading && downloadProgress.progress && (
-        <DownloadProgressBar progress={downloadProgress.progress} helpers={downloadProgress} />
+      {visibleDownloadProgress && (
+        <DownloadProgressBar
+          progress={visibleDownloadProgress}
+          helpers={downloadProgress}
+          onRetry={visibleDownloadProgress.model
+            ? () => handleDownload(visibleDownloadProgress.model)
+            : null}
+        />
       )}
 
       <CurrentModelPanel
@@ -273,8 +323,8 @@ export default function Models() {
                       gpu={gpu}
                       odsMode={odsMode}
                       isCurrentModel={model.id === currentModel}
-                      isLoading={actionLoading === model.id}
-                      loadBusy={!!actionLoading}
+                      isLoading={pendingModelActions.includes(model.id)}
+                      loadBusy={pendingModelActions.length > 0}
                       downloadBusy={downloadProgress.isDownloading || !!downloadStarting}
                       downloadStarting={downloadStarting === model.id}
                       menuOpen={openMenuId === rowId}
@@ -586,12 +636,13 @@ function ModelTableRow({
         <button
           type="button"
           onClick={onToggleMenu}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-theme-text-muted transition-colors hover:bg-white/[0.05] hover:text-theme-text"
+          disabled={isLoading}
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-theme-text-muted transition-colors hover:bg-white/[0.05] hover:text-theme-text disabled:cursor-not-allowed disabled:opacity-35"
           title="Model actions"
         >
           <MoreVertical size={15} />
         </button>
-        {menuOpen && (
+        {menuOpen && !isLoading && (
           <div className="absolute left-0 top-9 z-30 w-44 overflow-hidden rounded-lg border border-white/[0.08] bg-[#101018] py-1 shadow-2xl">
             {isLoaded && (
               <MenuButton onClick={onBenchmark} icon={RefreshCw}>Benchmark</MenuButton>
@@ -732,18 +783,31 @@ function PrimaryAction({
   )
 }
 
-function DownloadProgressBar({ progress, helpers }) {
-  const { formatBytes, formatEta } = helpers
+function DownloadProgressBar({ progress, helpers, onRetry }) {
+  const { formatBytes, formatEta, cancelDownload } = helpers
 
   if (progress.error) {
+    const cancelled = progress.status === 'cancelled'
     return (
       <div className="mb-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4">
-        <div className="flex items-center gap-3">
-          <AlertCircle size={20} className="text-red-400" />
-          <div>
-            <p className="font-medium text-red-300">Download Failed</p>
-            <p className="text-sm text-red-300/70">{progress.error}</p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <AlertCircle size={20} className="shrink-0 text-red-400" />
+            <div className="min-w-0">
+              <p className="font-medium text-red-300">{cancelled ? 'Download Cancelled' : 'Download Failed'}</p>
+              <p className="break-words text-sm text-red-300/70">{progress.error}</p>
+            </div>
           </div>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="inline-flex h-8 shrink-0 items-center justify-center gap-2 rounded-md border border-red-400/25 bg-black/20 px-3 text-xs font-semibold text-red-200 transition-colors hover:border-red-300/45 hover:bg-red-500/10"
+            >
+              <RefreshCw size={13} />
+              Retry
+            </button>
+          )}
         </div>
       </div>
     )
@@ -768,9 +832,19 @@ function DownloadProgressBar({ progress, helpers }) {
             </p>
           </div>
         </div>
-        <span className="text-lg font-bold text-theme-accent">
-          {progress.percent?.toFixed(0) || 0}%
-        </span>
+        <div className="flex shrink-0 items-center gap-3">
+          <span className="text-lg font-bold text-theme-accent">
+            {progress.percent?.toFixed(0) || 0}%
+          </span>
+          <button
+            type="button"
+            onClick={cancelDownload}
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-white/[0.1] bg-black/20 px-2.5 text-xs font-semibold text-theme-text-secondary transition-colors hover:border-red-400/35 hover:text-red-300"
+          >
+            <X size={13} />
+            Cancel
+          </button>
+        </div>
       </div>
 
       <div className="h-2.5 overflow-hidden rounded-full bg-theme-border">

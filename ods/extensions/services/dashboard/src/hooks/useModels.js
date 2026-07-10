@@ -129,42 +129,52 @@ export function useModels() {
   const [odsMode, setOdsMode] = useState('local')
   const [recommendationAlternatives, setRecommendationAlternatives] = useState([])
   const [loading, setLoading] = useState(USE_MOCK_DATA ? false : true)
-  const [error, setError] = useState(null)
-  const [pendingAction, setPendingActionState] = useState(null)
-  const pendingActionRef = useRef(null)
+  const [fetchError, setFetchError] = useState(null)
+  const [mutationError, setMutationError] = useState(null)
+  const [pendingActions, setPendingActionsState] = useState([])
+  const pendingActionsRef = useRef([])
   const actionTokenRef = useRef(0)
   const modelsRequestRef = useRef(0)
   const latestSettledModelsRequestRef = useRef(0)
   const pollInFlightRef = useRef(false)
   const loadActiveRef = useRef(false)
 
-  const setPendingAction = useCallback((action) => {
-    pendingActionRef.current = action
-    setPendingActionState(action)
+  const updatePendingActions = useCallback((update) => {
+    const nextActions = typeof update === 'function'
+      ? update(pendingActionsRef.current)
+      : update
+    pendingActionsRef.current = nextActions
+    setPendingActionsState(nextActions)
   }, [])
 
   const startAction = useCallback((modelId, kind) => {
     const action = { modelId, kind, token: ++actionTokenRef.current }
-    setPendingAction(action)
+    updatePendingActions(actions => [...actions, action])
     return action
-  }, [setPendingAction])
+  }, [updatePendingActions])
 
   const finishAction = useCallback((token) => {
-    if (pendingActionRef.current?.token === token) setPendingAction(null)
-  }, [setPendingAction])
+    updatePendingActions(actions => {
+      const nextActions = actions.filter(action => action.token !== token)
+      return nextActions.length === actions.length ? actions : nextActions
+    })
+  }, [updatePendingActions])
 
-  const reconcilePendingAction = useCallback((nextModels) => {
-    const action = pendingActionRef.current
-    if (!action || !Array.isArray(nextModels)) return
+  const reconcilePendingActions = useCallback((nextModels) => {
+    if (!Array.isArray(nextModels)) return
 
-    const model = nextModels.find(candidate => candidate.id === action.modelId)
-    const downloadFinished = action.kind === 'download' &&
-      (model?.status === 'downloaded' || model?.status === 'loaded')
-    const deleteFinished = action.kind === 'delete' &&
-      (!model || model.status === 'available')
-
-    if (downloadFinished || deleteFinished) finishAction(action.token)
-  }, [finishAction])
+    updatePendingActions(actions => {
+      const nextActions = actions.filter(action => {
+        const model = nextModels.find(candidate => candidate.id === action.modelId)
+        const downloadFinished = action.kind === 'download' &&
+          (model?.status === 'downloaded' || model?.status === 'loaded')
+        const deleteFinished = action.kind === 'delete' &&
+          (!model || model.status === 'available')
+        return !downloadFinished && !deleteFinished
+      })
+      return nextActions.length === actions.length ? actions : nextActions
+    })
+  }, [updatePendingActions])
 
   const fetchModels = useCallback(async () => {
     // If using mock data, don't attempt API call
@@ -191,20 +201,20 @@ export function useModels() {
       setConfiguredModel(data.configuredModel ?? null)
       setOdsMode(normalizeOdsMode(data.odsMode))
       setRecommendationAlternatives(data.recommendationAlternatives ?? [])
-      setError(null)
-      reconcilePendingAction(data.models)
+      setFetchError(null)
+      reconcilePendingActions(data.models)
       return data
     } catch (err) {
       if (requestId >= latestSettledModelsRequestRef.current) {
         latestSettledModelsRequestRef.current = requestId
-        setError(err.message)
+        setFetchError(err.message)
       }
       // No silent fallback - let error propagate to UI
     } finally {
       clearTimeout(timeout)
       setLoading(false)
     }
-  }, [reconcilePendingAction])
+  }, [reconcilePendingActions])
 
   const pollModels = useCallback(async () => {
     if (document.hidden || pollInFlightRef.current) return
@@ -220,7 +230,7 @@ export function useModels() {
     pollModels()
   }, [pollModels])
 
-  const pollInterval = pendingAction?.kind === 'download' || pendingAction?.kind === 'delete'
+  const pollInterval = pendingActions.some(action => action.kind === 'download' || action.kind === 'delete')
     ? PENDING_MODEL_ACTION_POLL_MS
     : DEFAULT_POLL_MS
 
@@ -240,6 +250,7 @@ export function useModels() {
   }, [pollInterval, pollModels])
 
   const downloadModel = async (modelId) => {
+    setMutationError(null)
     const action = startAction(modelId, 'download')
     try {
       const response = await fetch(`/api/models/${encodeURIComponent(modelId)}/download`, {
@@ -248,7 +259,7 @@ export function useModels() {
       if (!response.ok) throw new Error('Failed to start download')
       await fetchModels() // Refresh
     } catch (err) {
-      setError(err.message)
+      setMutationError(err.message)
     } finally {
       finishAction(action.token)
     }
@@ -256,23 +267,21 @@ export function useModels() {
 
   const loadModel = async (modelId) => {
     if (odsMode === 'cloud') {
-      setError('Switch ODS to local mode to run this model.')
+      setMutationError('Switch ODS to local mode to run this model.')
       return
     }
 
     // Prevent concurrent activations - only one model can load at a time.
     if (loadActiveRef.current) {
-      const activeModelId = pendingActionRef.current?.kind === 'load'
-        ? pendingActionRef.current.modelId
-        : null
-      setError(activeModelId
+      const activeModelId = pendingActionsRef.current.find(action => action.kind === 'load')?.modelId
+      setMutationError(activeModelId
         ? `Model activation is already in progress for ${activeModelId}.`
         : 'A model activation is already in progress.')
       return
     }
     loadActiveRef.current = true
     const action = startAction(modelId, 'load')
-    setError(null)
+    setMutationError(null)
 
     // Model activation can consume the API's full 600-second budget. The
     // browser connection may still disappear while the server completes, so
@@ -326,7 +335,7 @@ export function useModels() {
       if (!activationError && finalData?.currentModel === modelId) targetLoaded = true
 
       if (!targetLoaded) {
-        setError(activationError ||
+        setMutationError(activationError ||
           `Timed out after 10 minutes waiting for ${modelId} to activate. The server may still be finishing; refresh before retrying.`)
       }
     } finally {
@@ -339,7 +348,8 @@ export function useModels() {
 
   const deleteModel = async (modelId) => {
     if (!confirm(`Delete ${modelId}? This cannot be undone.`)) return
-    
+
+    setMutationError(null)
     const action = startAction(modelId, 'delete')
     try {
       const response = await fetch(`/api/models/${encodeURIComponent(modelId)}`, {
@@ -350,13 +360,14 @@ export function useModels() {
       }
       await fetchModels() // Refresh
     } catch (err) {
-      setError(err.message)
+      setMutationError(err.message)
     } finally {
       finishAction(action.token)
     }
   }
 
   const benchmarkModel = async (modelId) => {
+    setMutationError(null)
     const action = startAction(modelId, 'benchmark')
     try {
       const response = await fetch(`/api/models/${encodeURIComponent(modelId)}/benchmark`, {
@@ -367,13 +378,17 @@ export function useModels() {
       if (!response.ok) throw new Error(await errorMessageFromResponse(response, 'Failed to benchmark model'))
       await fetchModels()
     } catch (err) {
-      setError(err.message)
+      setMutationError(err.message)
     } finally {
       finishAction(action.token)
     }
   }
 
-  const actionLoading = pendingAction?.modelId ?? null
+  const activationAction = pendingActions.find(action => action.kind === 'load')
+  const latestAction = pendingActions[pendingActions.length - 1]
+  const actionLoading = activationAction?.modelId ?? latestAction?.modelId ?? null
+  const actionLoadingModels = [...new Set(pendingActions.map(action => action.modelId))]
+  const error = mutationError || fetchError
 
   return {
     models,
@@ -385,6 +400,7 @@ export function useModels() {
     loading,
     error,
     actionLoading,
+    actionLoadingModels,
     downloadModel,
     loadModel,
     benchmarkModel,

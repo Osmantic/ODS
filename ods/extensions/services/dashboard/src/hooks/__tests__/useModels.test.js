@@ -234,6 +234,92 @@ describe('useModels', () => {
     expect(result.current.actionLoading).toBeNull()
   })
 
+  test('does not erase a mutation error when background list polling succeeds', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    fetch.mockImplementation((_url, opts) => {
+      if (opts?.method === 'DELETE') {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({ detail: 'Delete blocked by the active runtime.' })
+        })
+      }
+      return Promise.resolve(modelsResponse([{ id: 'to-delete', status: 'downloaded' }]))
+    })
+
+    try {
+      const { result } = renderHook(() => useModels())
+      await act(async () => {})
+
+      await act(async () => {
+        await result.current.deleteModel('to-delete')
+      })
+      expect(result.current.error).toBe('Delete blocked by the active runtime.')
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+      expect(result.current.error).toBe('Delete blocked by the active runtime.')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test('keeps activation working while an overlapping model mutation settles', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    const target = 'slow-model'
+    const otherModel = 'other-model'
+    const deleteRequest = deferred()
+    let currentModel = null
+    fetch.mockImplementation((_url, opts) => {
+      if (opts?.method === 'POST') return Promise.resolve({ ok: true })
+      if (opts?.method === 'DELETE') return deleteRequest.promise
+      return Promise.resolve(modelsResponse(
+        [
+          { id: target, status: currentModel ? 'loaded' : 'downloaded' },
+          { id: otherModel, status: 'downloaded' },
+        ],
+        { currentModel }
+      ))
+    })
+
+    try {
+      const { result } = renderHook(() => useModels())
+      await act(async () => {})
+
+      let loadPromise
+      act(() => {
+        loadPromise = result.current.loadModel(target)
+      })
+      expect(result.current.actionLoading).toBe(target)
+      expect(result.current.actionLoadingModels).toEqual([target])
+
+      let deletePromise
+      act(() => {
+        deletePromise = result.current.deleteModel(otherModel)
+      })
+      expect(result.current.actionLoading).toBe(target)
+      expect(result.current.actionLoadingModels).toEqual([target, otherModel])
+
+      await act(async () => {
+        deleteRequest.resolve({ ok: true })
+        await deletePromise
+      })
+      expect(result.current.actionLoading).toBe(target)
+      expect(result.current.actionLoadingModels).toEqual([target])
+
+      currentModel = target
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+        await loadPromise
+      })
+      expect(result.current.actionLoading).toBeNull()
+      expect(result.current.actionLoadingModels).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   test('keeps activation pending beyond 150 seconds until the requested model is loaded', async () => {
     vi.useFakeTimers()
     const target = 'slow-model'

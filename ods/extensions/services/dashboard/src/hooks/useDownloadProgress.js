@@ -1,5 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 
+const TERMINAL_DOWNLOAD_STATUSES = new Set(['failed', 'error', 'cancelled'])
+
+function isTerminalProgress(progress) {
+  return TERMINAL_DOWNLOAD_STATUSES.has(progress?.status)
+}
+
 /**
  * Hook to poll download progress during model downloads.
  * Returns progress data when a download is active.
@@ -36,8 +42,8 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
         })
       } else if (data.status === 'complete' || data.status === 'idle') {
         setIsDownloading(false)
-        setProgress(null)
         if (data.status === 'complete') {
+          setProgress(null)
           const completeKey = `${data.model || ''}:${data.updatedAt || ''}`
           if (completeKey && completeKey !== lastCompleteKeyRef.current) {
             lastCompleteKeyRef.current = completeKey
@@ -47,16 +53,23 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
               updatedAt: data.updatedAt
             })
           }
+        } else {
+          // A later idle snapshot must not erase the only visible record of a
+          // failed or cancelled transfer. The next download or dismissal does.
+          setProgress(current => isTerminalProgress(current) ? current : null)
         }
-      } else if (data.status === 'failed' || data.status === 'error' || data.status === 'cancelled') {
+      } else if (TERMINAL_DOWNLOAD_STATUSES.has(data.status)) {
         setIsDownloading(false)
         setProgress({
+          status: data.status,
           error: data.error || data.message || (data.status === 'cancelled' ? 'Download cancelled' : 'Download failed'),
           model: data.model
         })
       }
+      return data
     } catch {
       // Silently fail - API might not be available
+      return null
     }
   }, [])
 
@@ -106,11 +119,16 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
   const cancelDownload = useCallback(async () => {
     try {
       await fetch('/api/models/download/cancel', { method: 'POST' })
-      fetchProgress()
+      return await fetchProgress()
     } catch (err) {
       console.error('Failed to cancel download:', err)
+      return null
     }
   }, [fetchProgress])
+
+  const clearTerminal = useCallback(() => {
+    setProgress(current => isTerminalProgress(current) ? null : current)
+  }, [])
 
   return {
     isDownloading,
@@ -119,6 +137,7 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
     formatBytes,
     formatEta,
     refresh: fetchProgress,
-    cancelDownload
+    cancelDownload,
+    clearTerminal
   }
 }
