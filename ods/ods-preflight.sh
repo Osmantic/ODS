@@ -109,6 +109,13 @@ if command -v docker &> /dev/null; then
 
     if docker info &> /dev/null; then
         pass "Docker daemon running"
+        # Rootless mode: non-root container UIDs are shifted by the subuid
+        # offset (typically 100000) so data directories created by the
+        # installer are inaccessible to those containers.  This is not a
+        # hard failure — ODS installs and starts fine once ownership is fixed.
+        if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless; then
+            warn "Docker rootless mode detected — non-root containers (n8n, hermes, whisper, tts, token-spy, privacy-shield, ape, langfuse) may fail with EACCES. Run: ods repair rootless-ownership"
+        fi
     else
         fail "Docker daemon not running — start with: sudo systemctl start docker"
     fi

@@ -109,6 +109,7 @@ DOCKER_DAEMON="false"
 COMPOSE_CLI="false"
 DASHBOARD_HTTP="false"
 WEBUI_HTTP="false"
+DOCKER_ROOTLESS="false"
 
 # Extension diagnostics (JSON array of objects)
 EXT_DIAGNOSTICS="[]"
@@ -117,6 +118,11 @@ if command -v docker >/dev/null 2>&1; then
     DOCKER_CLI="true"
     if docker info >/dev/null 2>&1; then
         DOCKER_DAEMON="true"
+        # Detect rootless mode — SecurityOptions will contain the string
+        # "rootless" when dockerd runs via rootlesskit.
+        if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless; then
+            DOCKER_ROOTLESS="true"
+        fi
     fi
     if docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1; then
         COMPOSE_CLI="true"
@@ -343,7 +349,7 @@ elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
 
-"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ODS_MANAGED_CONTAINER_COUNT" "$ODS_RUNNING_CONTAINER_COUNT" "$ROOT_DIR" <<'PY'
+"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ODS_MANAGED_CONTAINER_COUNT" "$ODS_RUNNING_CONTAINER_COUNT" "$ROOT_DIR" "$DOCKER_ROOTLESS" <<'PY'
 import json
 import os
 import pathlib
@@ -353,7 +359,7 @@ import sys
 from datetime import datetime, timezone
 from urllib import error, parse, request
 
-cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg = sys.argv[1:]
+cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg, docker_rootless = sys.argv[1:]
 
 cap = json.load(open(cap_file, "r", encoding="utf-8"))
 pre = json.load(open(preflight_file, "r", encoding="utf-8"))
@@ -1287,6 +1293,7 @@ report = {
         },
         "amd_runtime": amd_runtime,
         "inference_contract": inference_contract_public,
+        "docker_rootless": docker_rootless == "true",
     },
     "extensions": ext_diagnostics,
     "summary": {
@@ -1297,6 +1304,7 @@ report = {
             + (1 if stt_cached in {"false", "service_down"} else 0)
             + (1 if tts_http == "false" else 0)
             + (1 if hermes_slash_worker_count_num > hermes_slash_worker_max_count_num else 0)
+            + (1 if docker_rootless == "true" else 0)
             + len(amd_runtime.get("warnings", []))
             + inference_contract.get("issue_counts", {}).get("warnings", 0)
         ),
@@ -1331,6 +1339,14 @@ if not runtime["compose_cli"]:
     fix_hints.append("Install Docker Compose v2 plugin (or docker-compose).")
 if runtime["docker_daemon"] and not runtime["dashboard_http"]:
     fix_hints.append(f"Run installer/start command, then verify dashboard on http://127.0.0.1:{dashboard_port}.")
+if runtime["docker_rootless"]:
+    fix_hints.append(
+        "Docker rootless mode detected: (1) Non-root container users (n8n, hermes, tts, whisper, "
+        "token-spy, privacy-shield, ape, langfuse) may fail with EACCES because data-directory UIDs "
+        "are shifted in rootless mode. (2) host.docker.internal is not registered in rootless "
+        "containers — ODS_AGENT_BIND and ODS_AGENT_HOST must be set so dashboard-api can reach "
+        "the host agent. Run 'ods repair rootless-ownership' to fix both issues automatically."
+    )
 if runtime["docker_daemon"] and not runtime["webui_http"]:
     fix_hints.append(f"Verify Open WebUI container and port {webui_port} mapping.")
 

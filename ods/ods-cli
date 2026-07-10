@@ -4322,8 +4322,23 @@ cmd_repair() {
 
             success "Voice repair complete"
             ;;
+        rootless-ownership|rootless)
+            # Fix two rootless-mode issues:
+            #  1. Data-directory ownership (EACCES for non-root container users)
+            #  2. Host-agent network (host.docker.internal not resolvable in
+            #     rootless; needs ODS_AGENT_BIND=0.0.0.0 + ODS_AGENT_HOST=LAN IP)
+            local rootless_lib="$SCRIPT_DIR/lib/rootless-fix.sh"
+            if [[ ! -f "$rootless_lib" ]]; then
+                log_error "rootless-fix.sh not found at $rootless_lib"
+                return 1
+            fi
+            # shellcheck source=lib/rootless-fix.sh
+            . "$rootless_lib"
+            ods_fix_rootless_ownership "$INSTALL_DIR"
+            ods_fix_rootless_agent_network "$INSTALL_DIR"
+            ;;
         *)
-            log "Usage: ods repair [voice|hermes-workers]"
+            log "Usage: ods repair [voice|hermes-workers|rootless-ownership]"
             log_error "Unknown repair target: $target"
             return 1
             ;;
@@ -4560,8 +4575,9 @@ ${CYAN}Commands:${NC}
   chat "<message>"    Quick chat with the LLM
   benchmark           Run a quick performance test
   doctor [report|--json]   Run diagnostics (--json writes JSON to stdout)
-  repair|fix [voice|hermes-workers]
-                      Repair voice services or prune leaked Hermes slash workers
+  repair|fix [voice|hermes-workers|rootless-ownership]
+                      Repair voice services, prune leaked Hermes slash workers,
+                      or fix data-directory ownership for Docker rootless mode
   template [action]   Apply pre-built service templates (list|preview|apply)
   audit [extensions]  Audit extension manifests and compose contracts
   agent [action]      Manage ods host agent (status|start|stop|restart|logs)
@@ -4648,6 +4664,7 @@ ${CYAN}Examples:${NC}
   ods agent restart             # Restart host agent
   ods repair voice              # Start voice services and cache STT model
   ods repair hermes-workers     # Prune leaked Hermes slash_worker children
+  ods repair rootless-ownership # Fix data-dir ownership for Docker rootless mode
 
 ${CYAN}Environment:${NC}
   ODS_HOME          Installation directory (default: ~/ods)
