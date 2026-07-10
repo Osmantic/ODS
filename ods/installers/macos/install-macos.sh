@@ -275,7 +275,9 @@ BRIDGE_PLIST_EOF
     fi
     launchctl kickstart -k "gui/$(id -u)/${LLM_BRIDGE_PLIST_LABEL}" >/dev/null 2>&1 || true
     for _ in $(seq 1 30); do
-        if /usr/bin/nc -z -w 1 127.0.0.1 "$listen_port" >/dev/null 2>&1; then
+        if /usr/bin/python3 -c \
+            'import socket, sys; socket.create_connection(("127.0.0.1", int(sys.argv[1])), 1).close()' \
+            "$listen_port" >/dev/null 2>&1; then
             ai_ok "Colima LLM bridge listening on ${listen_port} -> 127.0.0.1:${target_port}"
             return 0
         fi
