@@ -4019,15 +4019,24 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 501, {"error": "sync-external-models.sh not found"})
             return
 
+        bash = _find_usable_bash()
+        if not bash:
+            json_response(self, 503, {"error": "Sync requires a usable Bash runtime. Install Git Bash or run ODS through WSL/Linux."})
+            return
+
         try:
             result = subprocess.run(
-                ["bash", _to_bash_path(sync_script), gguf_file],
+                [bash, _to_bash_path(sync_script), gguf_file],
                 capture_output=True,
                 text=True,
                 timeout=30,
                 env={**os.environ, "INSTALL_DIR": _to_bash_path(INSTALL_DIR)},
             )
             stdout = result.stdout.strip()
+
+            if result.returncode != 0:
+                json_response(self, 502, {"error": f"Sync script exited {result.returncode}: {result.stderr.strip() or stdout}"})
+                return
 
             if stdout.startswith("synced:lmstudio:"):
                 source = stdout[len("synced:lmstudio:"):]
@@ -4037,8 +4046,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                 json_response(self, 200, {"status": "synced", "provider": "ollama", "source": source, "gguf_file": gguf_file})
             elif stdout == "already_present":
                 json_response(self, 200, {"status": "already_present", "gguf_file": gguf_file})
-            else:
+            elif stdout == "not_found":
                 json_response(self, 200, {"status": "not_found", "gguf_file": gguf_file})
+            else:
+                json_response(self, 502, {"error": f"Unexpected sync output: {stdout!r}"})
         except subprocess.TimeoutExpired:
             json_response(self, 504, {"error": "Sync script timed out"})
 

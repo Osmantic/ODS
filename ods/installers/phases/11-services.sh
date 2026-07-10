@@ -351,7 +351,7 @@ else
     _sync_script="$SCRIPT_DIR/scripts/sync-external-models.sh"
     if [[ -f "$_sync_script" ]] && [[ "${ODS_MODE:-local}" != "cloud" ]] && ! _phase11_external_lemonade; then
         ods_progress 75 "services" "Checking for existing models in LM Studio / Ollama"
-        _sync_result="$(INSTALL_DIR="$INSTALL_DIR" bash "$_sync_script" "$GGUF_FILE" 2>>"$LOG_FILE" || true)"
+        _sync_result="$(INSTALL_DIR="$INSTALL_DIR" SYNC_EXACT_ONLY=true bash "$_sync_script" "$GGUF_FILE" 2>>"$LOG_FILE" || true)"
         case "$_sync_result" in
             synced:lmstudio:*)
                 _sync_src="${_sync_result#synced:lmstudio:}"

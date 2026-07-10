@@ -224,6 +224,40 @@ _test_ollama_not_running() {
 }
 _test_ollama_not_running
 
+# ── test: SYNC_EXACT_ONLY blocks fuzzy match ──────────────────────────────────
+#
+# Installer paths set SYNC_EXACT_ONLY=true so a differently-quantized LM Studio
+# file cannot satisfy the model-presence check and silently bypass the sha256
+# integrity download (unsafe on macOS where sha256sum may be absent).
+
+_test_exact_only_blocks_fuzzy() {
+    local td ODS_MODELS_DIR HOME OLLAMA_HOST SYNC_EXACT_ONLY result
+    td="$(_tmpdir)"
+    ODS_MODELS_DIR="$td/data/models"
+    HOME="$td/fake-home"
+    OLLAMA_HOST="http://127.0.0.1:19999"
+    SYNC_EXACT_ONLY=true
+    mkdir -p "$ODS_MODELS_DIR"
+    # LM Studio has Q8_0 but ODS requests Q4_K_M — must NOT match under exact-only
+    _make_fake_gguf "$HOME/.lmstudio/models/OrgA/TestModel/TestModel-Q8_0.gguf"
+
+    result="$(sync_model "TestModel-Q4_K_M.gguf")"
+    if [[ "$result" == "not_found" ]]; then
+        pass "SYNC_EXACT_ONLY: fuzzy match correctly blocked; returns not_found"
+    else
+        fail "SYNC_EXACT_ONLY: expected not_found, got: $result (wrong-quant file must not satisfy installer check)"
+    fi
+
+    if [[ ! -f "$ODS_MODELS_DIR/TestModel-Q4_K_M.gguf" ]]; then
+        pass "SYNC_EXACT_ONLY: no file written to models dir when fuzzy blocked"
+    else
+        fail "SYNC_EXACT_ONLY: file was written despite exact-only guard"
+    fi
+
+    rm -rf "$td"
+}
+_test_exact_only_blocks_fuzzy
+
 # ── test: CLI subprocess — not_found exits 0 (survives set -e callers) ────────
 #
 # Reproduces the exact failure the reviewer hit: `ods model sync MissingModel`

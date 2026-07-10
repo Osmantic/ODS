@@ -126,19 +126,23 @@ _sync_from_lmstudio() {
         fi
 
         # Pass 2 — base name match (same model, any quantization)
-        # Accept any quantization the user already has to avoid a re-download.
-        found="$(find "$models_dir" -maxdepth 5 -iname "${base}*.gguf" -type f 2>/dev/null | head -1)"
-        if [[ -n "$found" ]]; then
-            mkdir -p "$ODS_MODELS_DIR"
-            # Hardlink under the ODS expected filename so the installer finds it.
-            if ln "$found" "$dest" 2>/dev/null; then
-                _info "Hardlinked from LM Studio (family match): $found → $target_gguf"
-            else
-                cp "$found" "$dest"
-                _info "Copied from LM Studio (family match): $found → $target_gguf"
+        # Skipped when SYNC_EXACT_ONLY=true so that installer paths cannot have a
+        # differently-quantized file satisfy the model-presence check and silently
+        # bypass the sha256 integrity download (unsafe when sha256sum is absent).
+        if [[ "${SYNC_EXACT_ONLY:-false}" != "true" ]]; then
+            found="$(find "$models_dir" -maxdepth 5 -iname "${base}*.gguf" -type f 2>/dev/null | head -1)"
+            if [[ -n "$found" ]]; then
+                mkdir -p "$ODS_MODELS_DIR"
+                # Hardlink under the ODS expected filename so callers find it.
+                if ln "$found" "$dest" 2>/dev/null; then
+                    _info "Hardlinked from LM Studio (family match): $found → $target_gguf"
+                else
+                    cp "$found" "$dest"
+                    _info "Copied from LM Studio (family match): $found → $target_gguf"
+                fi
+                echo "synced:lmstudio:$found"
+                return 0
             fi
-            echo "synced:lmstudio:$found"
-            return 0
         fi
     done
 
