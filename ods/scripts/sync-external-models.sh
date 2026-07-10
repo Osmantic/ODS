@@ -3,8 +3,13 @@
 # ODS — External Model Sync
 # ============================================================================
 # Purpose: Detect GGUF models already present in LM Studio or Ollama that
-#          match ODS's model library, and create symlinks in ODS's model
-#          directory so the installer skips redundant downloads.
+#          match ODS's model library, and copy (hardlink when on the same
+#          filesystem, copy otherwise) them into ODS's model directory so
+#          the installer skips redundant downloads.
+#
+#          Files are NEVER symlinked: docker-compose.base.yml mounts only
+#          ./data/models:/models, so a symlink pointing outside that tree
+#          would be broken inside the container.
 #
 # Expects: INSTALL_DIR (defaults to parent of script dir)
 #          GGUF_FILE   (target GGUF filename; may also be passed as $1)
@@ -90,8 +95,10 @@ _sync_from_lmstudio() {
 
     [[ -f "$dest" ]] && { echo "already_present"; return 0; }
 
-    local -a lmstudio_dirs
-    mapfile -t lmstudio_dirs < <(_lmstudio_model_dirs 2>/dev/null || true)
+    local -a lmstudio_dirs=()
+    while IFS= read -r _lmd; do
+        [[ -n "$_lmd" ]] && lmstudio_dirs+=("$_lmd")
+    done < <(_lmstudio_model_dirs 2>/dev/null || true)
     [[ ${#lmstudio_dirs[@]} -eq 0 ]] && { echo "not_found"; return 0; }
 
     local stem="${target_gguf%.gguf}"
@@ -106,8 +113,10 @@ _sync_from_lmstudio() {
         found="$(find "$models_dir" -maxdepth 5 -name "$target_gguf" -type f 2>/dev/null | head -1)"
         if [[ -n "$found" ]]; then
             mkdir -p "$ODS_MODELS_DIR"
-            if ln -sf "$found" "$dest" 2>/dev/null; then
-                _info "Linked from LM Studio (exact): $found"
+            # Hardlink preferred — same inode, no symlink indirection, works inside Docker.
+            # Falls back to copy when source and destination are on different filesystems.
+            if ln "$found" "$dest" 2>/dev/null; then
+                _info "Hardlinked from LM Studio (exact): $found"
             else
                 cp "$found" "$dest"
                 _info "Copied from LM Studio (exact): $found"
@@ -121,9 +130,9 @@ _sync_from_lmstudio() {
         found="$(find "$models_dir" -maxdepth 5 -iname "${base}*.gguf" -type f 2>/dev/null | head -1)"
         if [[ -n "$found" ]]; then
             mkdir -p "$ODS_MODELS_DIR"
-            # Link under the ODS expected filename so the installer finds it.
-            if ln -sf "$found" "$dest" 2>/dev/null; then
-                _info "Linked from LM Studio (family match): $found → $target_gguf"
+            # Hardlink under the ODS expected filename so the installer finds it.
+            if ln "$found" "$dest" 2>/dev/null; then
+                _info "Hardlinked from LM Studio (family match): $found → $target_gguf"
             else
                 cp "$found" "$dest"
                 _info "Copied from LM Studio (family match): $found → $target_gguf"
@@ -154,8 +163,9 @@ _gguf_to_ollama_tag() {
     base="${base%-Chat}"
     base="${base%-chat}"
 
-    # Convert to lowercase
-    local lower="${base,,}"
+    # Convert to lowercase (tr used for Bash 3.2 portability; ${var,,} is Bash 4+)
+    local lower
+    lower="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
 
     # Last dash-separated token is the size (e.g., 2b, 9b, 30b-a3b, mini)
     local size="${lower##*-}"
@@ -285,8 +295,9 @@ _sync_from_ollama() {
     fi
 
     mkdir -p "$ODS_MODELS_DIR"
-    if ln -sf "$blob_path" "$dest" 2>/dev/null; then
-        _info "Linked from Ollama blob ($matched_model): $blob_path → $target_gguf"
+    # Hardlink preferred — avoids symlink breakage inside Docker's /models mount.
+    if ln "$blob_path" "$dest" 2>/dev/null; then
+        _info "Hardlinked from Ollama blob ($matched_model): $blob_path → $target_gguf"
     else
         cp "$blob_path" "$dest"
         _info "Copied from Ollama blob ($matched_model): $blob_path → $target_gguf"

@@ -70,6 +70,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== fleet-multi-distro keep-going on docker pull failure ==="
 	@bash tests/test-fleet-multi-distro-keep-going.sh
+	@echo ""
+	@echo "=== External model sync (LM Studio / Ollama) ==="
+	@bash tests/test-sync-external-models.sh
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="
