@@ -3228,6 +3228,7 @@ cmd_backup() {
         [[ -z "$id" ]] && error "Usage: ods backup verify <backup_id|backup_id.tar.gz>"
         "$INSTALL_DIR/ods-backup.sh" verify "$id"
         return
+    fi
     # Default: create backup (pass all args through)
     "$INSTALL_DIR/ods-backup.sh" "$@"
 }

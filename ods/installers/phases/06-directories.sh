@@ -65,17 +65,9 @@ if $DRY_RUN; then
     #the container where UID 10000 is valid.
 
     if [[ "${ENABLE_HERMES:-false}" == "true" && -d "$INSTALL_DIR/data/hermes" ]]; then
-    if _is_rootless_docker; then
-        _rootless_chown_data_dir "hermes" 10000
-        docker run --rm --user 0:0 \
-            -v "$INSTALL_DIR/data/hermes:/data" \
-            alpine sh -c "chmod 700 /data" 2>/dev/null || true
-    else
-        sudo chown -R 10000:10000 "$INSTALL_DIR/data/hermes" 2>/dev/null || \
-            warn "Failed to restore data/hermes ownership to Hermes uid 10000 (Hermes dashboard may be unhealthy)"
-        sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || true
+        log "[DRY RUN] Would fix data/hermes ownership to uid 10000:10000 (hermes user, chmod 700)"
     fi
-fi
+
     [[ "$ENABLE_OPENCLAW" == "true" ]] && log "[DRY RUN] Would configure OpenClaw (model: $LLM_MODEL, config: ${OPENCLAW_CONFIG:-default})"
     log "[DRY RUN] Would validate .env against schema"
 else
@@ -94,9 +86,17 @@ else
     # as the host user must not "repair" it back to uid 1000, or Hermes's web
     # status and ODS Talk JSON-RPC paths fail with PermissionError.
     if [[ "${ENABLE_HERMES:-false}" == "true" && -d "$INSTALL_DIR/data/hermes" ]]; then
-        sudo chown -R 10000:10000 "$INSTALL_DIR/data/hermes" 2>/dev/null || \
-            warn "Failed to restore data/hermes ownership to Hermes uid 10000 (Hermes dashboard may be unhealthy)"
-        sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || true
+        if _is_rootless_docker; then
+            _rootless_chown_data_dir "hermes" 10000
+            docker run --rm --user 0:0 \
+                -v "$INSTALL_DIR/data/hermes:/data" \
+                alpine sh -c "chmod 700 /data" 2>/dev/null || \
+                warn "Rootless chmod failed for hermes (non-fatal)"
+        else
+            sudo chown -R 10000:10000 "$INSTALL_DIR/data/hermes" 2>/dev/null || \
+                warn "Failed to restore data/hermes ownership to Hermes uid 10000 (Hermes dashboard may be unhealthy)"
+            sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || true
+        fi
     fi
 
     # Fix ownership of data/config dirs that may have been created by containers
