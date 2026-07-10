@@ -43,6 +43,35 @@ def can_create_symlinks(tmp_path: Path) -> bool:
     return link.is_symlink()
 
 
+@pytest.fixture
+def host_agent_wire_client(monkeypatch):
+    """Point the shared sync transport at a test server with isolated state."""
+    import host_agent_client
+
+    def reset_client():
+        client = host_agent_client._sync_client
+        if client is not None and not client.is_closed:
+            client.close()
+        host_agent_client._sync_client = None
+
+    def configure(port, *, key="wire-test-secret"):
+        reset_client()
+        monkeypatch.setattr(
+            host_agent_client,
+            "AGENT_URL",
+            f"http://127.0.0.1:{port}",
+        )
+        monkeypatch.setattr(
+            host_agent_client,
+            "_headers",
+            lambda: {"Authorization": f"Bearer {key}"},
+        )
+
+    reset_client()
+    yield configure
+    reset_client()
+
+
 class TestHostAgentShutdown:
 
     def test_signal_shutdown_runs_from_helper_thread(self, monkeypatch):
@@ -491,7 +520,9 @@ class TestResolveComposeFlagsCache:
 class TestComposeCacheInvalidationWire:
     """End-to-end HTTP test: dashboard-api client talks to the real host-agent handler."""
 
-    def test_client_posts_to_host_agent_and_unlinks_cache(self, tmp_path, monkeypatch):
+    def test_client_posts_to_host_agent_and_unlinks_cache(
+        self, tmp_path, monkeypatch, host_agent_wire_client,
+    ):
         import threading
         from http.server import HTTPServer
 
@@ -510,8 +541,7 @@ class TestComposeCacheInvalidationWire:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            monkeypatch.setattr(ext_router, "AGENT_URL", f"http://127.0.0.1:{port}")
-            monkeypatch.setattr(ext_router, "ODS_AGENT_KEY", "wire-test-secret")
+            host_agent_wire_client(port)
 
             # Correct key → cache file is unlinked, helper returns without raising.
             ext_router._call_agent_invalidate_compose_cache()
@@ -520,7 +550,7 @@ class TestComposeCacheInvalidationWire:
             # Wrong key → handler rejects with 403, helper logs and returns; cache
             # stays put. Proves the Authorization: Bearer <key> header is checked.
             cache_file.write_text("stale-again", encoding="utf-8")
-            monkeypatch.setattr(ext_router, "ODS_AGENT_KEY", "wrong-secret")
+            host_agent_wire_client(port, key="wrong-secret")
             ext_router._call_agent_invalidate_compose_cache()
             assert cache_file.exists()
         finally:
@@ -739,7 +769,7 @@ class TestComposeToggleWire:
     """End-to-end HTTP test for built-in compose toggles via the host agent."""
 
     def test_client_posts_to_host_agent_and_renames_builtin_compose(
-        self, tmp_path, monkeypatch,
+        self, tmp_path, monkeypatch, host_agent_wire_client,
     ):
         import threading
         from http.server import HTTPServer
@@ -766,8 +796,7 @@ class TestComposeToggleWire:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            monkeypatch.setattr(ext_router, "AGENT_URL", f"http://127.0.0.1:{port}")
-            monkeypatch.setattr(ext_router, "ODS_AGENT_KEY", "wire-test-secret")
+            host_agent_wire_client(port)
 
             assert ext_router._call_agent_compose_rename("activate", "fakesvc") is True
             assert (ext_dir / "compose.yaml").exists()
@@ -777,7 +806,7 @@ class TestComposeToggleWire:
             assert (ext_dir / "compose.yaml.disabled").exists()
             assert not (ext_dir / "compose.yaml").exists()
 
-            monkeypatch.setattr(ext_router, "ODS_AGENT_KEY", "wrong-secret")
+            host_agent_wire_client(port, key="wrong-secret")
             assert ext_router._call_agent_compose_rename("activate", "fakesvc") is False
             assert (ext_dir / "compose.yaml.disabled").exists()
         finally:
@@ -801,7 +830,9 @@ class TestSyncExtensionConfigWire:
         (cfg / "entrypoint.sh").write_text("#!/bin/sh\necho run\n", encoding="utf-8")
         return ext
 
-    def test_client_posts_and_host_agent_copies_config(self, tmp_path, monkeypatch):
+    def test_client_posts_and_host_agent_copies_config(
+        self, tmp_path, monkeypatch, host_agent_wire_client,
+    ):
         import threading
         from http.server import HTTPServer
 
@@ -823,8 +854,7 @@ class TestSyncExtensionConfigWire:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            monkeypatch.setattr(ext_router, "AGENT_URL", f"http://127.0.0.1:{port}")
-            monkeypatch.setattr(ext_router, "ODS_AGENT_KEY", "wire-test-secret")
+            host_agent_wire_client(port)
 
             assert ext_router._call_agent_sync_config("fakesvc") is True
 
@@ -840,7 +870,9 @@ class TestSyncExtensionConfigWire:
             server.server_close()
             thread.join(timeout=2)
 
-    def test_noop_when_extension_has_no_config_subdir(self, tmp_path, monkeypatch):
+    def test_noop_when_extension_has_no_config_subdir(
+        self, tmp_path, monkeypatch, host_agent_wire_client,
+    ):
         import threading
         from http.server import HTTPServer
 
@@ -862,8 +894,7 @@ class TestSyncExtensionConfigWire:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            monkeypatch.setattr(ext_router, "AGENT_URL", f"http://127.0.0.1:{port}")
-            monkeypatch.setattr(ext_router, "ODS_AGENT_KEY", "wire-test-secret")
+            host_agent_wire_client(port)
 
             # No config/ → server returns 200 with empty synced list, helper True.
             assert ext_router._call_agent_sync_config("noconfig") is True
@@ -874,7 +905,9 @@ class TestSyncExtensionConfigWire:
             server.server_close()
             thread.join(timeout=2)
 
-    def test_rejects_wrong_auth(self, tmp_path, monkeypatch):
+    def test_rejects_wrong_auth(
+        self, tmp_path, monkeypatch, host_agent_wire_client,
+    ):
         import threading
         from http.server import HTTPServer
 
@@ -896,8 +929,7 @@ class TestSyncExtensionConfigWire:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            monkeypatch.setattr(ext_router, "AGENT_URL", f"http://127.0.0.1:{port}")
-            monkeypatch.setattr(ext_router, "ODS_AGENT_KEY", "wrong-secret")
+            host_agent_wire_client(port, key="wrong-secret")
 
             assert ext_router._call_agent_sync_config("fakesvc") is False
             # Nothing copied — auth was rejected before any work.
