@@ -172,6 +172,14 @@ _ods_cli_wait_for_bootstrap_compose_safe() {
     done
 }
 
+_ods_cli_reload_model_env() {
+    # A background bootstrap promotion can rewrite these values while a start
+    # or restart command is waiting. Clear the process snapshot first so a key
+    # removed from .env cannot keep overriding Docker Compose.
+    unset GGUF_FILE LLM_MODEL MAX_CONTEXT CTX_SIZE
+    load_env
+}
+
 _get_host_logical_cpus() {
     local cores
     cores=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo "1")
@@ -1217,6 +1225,7 @@ cmd_restart() {
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
         _ods_cli_wait_for_bootstrap_compose_safe "restart"
+        _ods_cli_reload_model_env
     fi
 
     if [[ -z "$resolved_service" ]]; then
@@ -1364,6 +1373,7 @@ cmd_start() {
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
         _ods_cli_wait_for_bootstrap_compose_safe "start"
+        _ods_cli_reload_model_env
     fi
 
     if [[ -z "$resolved_service" ]]; then

@@ -83,8 +83,12 @@ awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_maybe_resume_bootstrap_up
   || { echo "[FAIL] ods start must retry failed bootstrap upgrades"; exit 1; }
 awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_wait_for_bootstrap_compose_safe' \
   || { echo "[FAIL] ods restart must wait for active bootstrap hot-swaps before compose"; exit 1; }
+awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_reload_model_env' \
+  || { echo "[FAIL] ods restart must reload model env after bootstrap hot-swap wait"; exit 1; }
 awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_wait_for_bootstrap_compose_safe' \
   || { echo "[FAIL] ods start must wait for active bootstrap hot-swaps before compose"; exit 1; }
+awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_reload_model_env' \
+  || { echo "[FAIL] ods start must reload model env after bootstrap hot-swap wait"; exit 1; }
 grep -q 'starting|verifying|swapping' ods-cli \
   || { echo "[FAIL] ods-cli bootstrap compose guard must include swapping"; exit 1; }
 
