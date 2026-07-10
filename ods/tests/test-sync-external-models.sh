@@ -224,6 +224,37 @@ _test_ollama_not_running() {
 }
 _test_ollama_not_running
 
+# ── test: CLI subprocess — not_found exits 0 (survives set -e callers) ────────
+#
+# Reproduces the exact failure the reviewer hit: `ods model sync MissingModel`
+# exits 1 after "Searching..." because the script's exit 1 propagates through
+# the $() command substitution under set -e, killing the CLI before it can reach
+# the not_found guidance.  The fix is not_found → exit 0 in the script.
+
+_test_cli_not_found_exit_code() {
+    local td exit_code output
+    td="$(_tmpdir)"
+
+    output="$(ODS_MODELS_DIR="$td/data/models" HOME="$td" OLLAMA_HOST="http://127.0.0.1:19999" \
+        bash "$SYNC_SCRIPT" "MissingModel-Q4_K_M.gguf")" || exit_code=$?
+    exit_code="${exit_code:-0}"
+
+    if [[ "$output" == "not_found" ]]; then
+        pass "CLI not_found: script prints not_found"
+    else
+        fail "CLI not_found: expected output 'not_found', got: $output"
+    fi
+
+    if [[ "$exit_code" -eq 0 ]]; then
+        pass "CLI not_found: script exits 0 so set -e callers survive"
+    else
+        fail "CLI not_found: script exited $exit_code; set -e callers will die before handling the result"
+    fi
+
+    rm -rf "$td"
+}
+_test_cli_not_found_exit_code
+
 # ── Report ────────────────────────────────────────────────────────────────────
 
 echo ""

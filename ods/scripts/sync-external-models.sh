@@ -357,7 +357,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         synced:lmstudio:*) exit 0 ;;
         synced:ollama:*)   exit 0 ;;
         already_present)   exit 0 ;;
-        not_found)         exit 1 ;;
+        not_found)         exit 0 ;;
         *)                 exit 1 ;;
     esac
 fi
