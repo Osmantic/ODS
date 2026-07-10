@@ -15,8 +15,8 @@
 #          GGUF_FILE   (target GGUF filename; may also be passed as $1)
 #
 # Outputs (stdout, one line):
-#   synced:lmstudio:<source_path>   — symlinked from LM Studio
-#   synced:ollama:<source_path>     — symlinked from Ollama blob store
+#   synced:lmstudio:<source_path>   — hardlinked/copied from LM Studio
+#   synced:ollama:<source_path>     — hardlinked/copied from Ollama blob store
 #   already_present                 — GGUF already in ODS models dir
 #   not_found                       — no external source found
 #
@@ -98,7 +98,7 @@ _sync_from_lmstudio() {
     local -a lmstudio_dirs=()
     while IFS= read -r _lmd; do
         [[ -n "$_lmd" ]] && lmstudio_dirs+=("$_lmd")
-    done < <(_lmstudio_model_dirs 2>/dev/null || true)
+    done < <(_lmstudio_model_dirs)
     [[ ${#lmstudio_dirs[@]} -eq 0 ]] && { echo "not_found"; return 0; }
 
     local stem="${target_gguf%.gguf}"
@@ -110,7 +110,7 @@ _sync_from_lmstudio() {
 
         # Pass 1 — exact filename match (highest confidence)
         local found=""
-        found="$(find "$models_dir" -maxdepth 5 -name "$target_gguf" -type f 2>/dev/null | head -1)"
+        found="$(find "$models_dir" -maxdepth 5 -name "$target_gguf" -type f -print -quit)"
         if [[ -n "$found" ]]; then
             mkdir -p "$ODS_MODELS_DIR"
             # Hardlink preferred — same inode, no symlink indirection, works inside Docker.
@@ -130,7 +130,7 @@ _sync_from_lmstudio() {
         # differently-quantized file satisfy the model-presence check and silently
         # bypass the sha256 integrity download (unsafe when sha256sum is absent).
         if [[ "${SYNC_EXACT_ONLY:-false}" != "true" ]]; then
-            found="$(find "$models_dir" -maxdepth 5 -iname "${base}*.gguf" -type f 2>/dev/null | head -1)"
+            found="$(find "$models_dir" -maxdepth 5 -iname "${base}*.gguf" -type f -print -quit)"
             if [[ -n "$found" ]]; then
                 mkdir -p "$ODS_MODELS_DIR"
                 # Hardlink under the ODS expected filename so callers find it.
@@ -191,7 +191,7 @@ _ollama_model_blob_digest() {
 
     # Use python3 if available (most reliable JSON parsing)
     if command -v python3 >/dev/null 2>&1; then
-        python3 - "$manifest_path" <<'PY' 2>/dev/null || true
+        python3 - "$manifest_path" <<'PY' || _warn "Could not parse Ollama manifest: $manifest_path"
 import json, sys
 try:
     data = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -200,7 +200,7 @@ try:
         if "model" in mt and "image.model" in mt:
             print(layer["digest"].replace("sha256:", "sha256-"))
             break
-except Exception:
+except (json.JSONDecodeError, KeyError, TypeError, ValueError):
     pass
 PY
     fi
@@ -221,7 +221,7 @@ _sync_from_ollama() {
     fi
 
     local tags_json
-    tags_json="$(curl -sf --max-time 8 "$ollama_host/api/tags" 2>/dev/null || true)"
+    tags_json="$(curl -sf --max-time 8 "$ollama_host/api/tags")" || { echo "not_found"; return 0; }
     [[ -z "$tags_json" ]] && { echo "not_found"; return 0; }
 
     # Derive the expected Ollama tag for this GGUF
@@ -240,15 +240,15 @@ _sync_from_ollama() {
 
     # Find the best matching model name in the Ollama list
     local matched_model=""
-    matched_model="$(echo "$tags_json" | grep -oi '"name"[[:space:]]*:[[:space:]]*"[^"]*'"${family}"'[^"]*"' \
-        | sed 's/.*"\([^"]*\)"$/\1/' | head -1 || true)"
+    matched_model="$(echo "$tags_json" | grep -oim 1 '"name"[[:space:]]*:[[:space:]]*"[^"]*'"${family}"'[^"]*"' \
+        | sed 's/.*"\([^"]*\)"$/\1/')" || { echo "not_found"; return 0; }
     [[ -z "$matched_model" ]] && { echo "not_found"; return 0; }
 
     _info "Ollama has model: $matched_model (looking for $expected_tag)"
 
     # Try to locate and link the underlying GGUF blob
     local ollama_dir
-    ollama_dir="$(_ollama_models_dir || true)"
+    ollama_dir="$(_ollama_models_dir)"
     if [[ -z "$ollama_dir" || ! -d "$ollama_dir" ]]; then
         # Ollama is running and has the model, but blob store not accessible
         _info "Ollama model found but blob directory not accessible — skipping blob link"
@@ -274,7 +274,7 @@ _sync_from_ollama() {
 
     # Fall back to a recursive search if not at the expected path
     if [[ -z "$manifest_file" && -d "$manifests_base" ]]; then
-        manifest_file="$(find "$manifests_base" -type f -path "*/$model_name/$model_tag" 2>/dev/null | head -1 || true)"
+        manifest_file="$(find "$manifests_base" -type f -path "*/$model_name/$model_tag" -print -quit)"
     fi
 
     if [[ -z "$manifest_file" ]]; then

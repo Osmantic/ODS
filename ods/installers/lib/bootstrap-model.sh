@@ -64,7 +64,7 @@ sync_bootstrap_if_available() {
     [[ -f "$sync_script" ]] || return 0
 
     local result
-    result="$(INSTALL_DIR="$INSTALL_DIR" SYNC_EXACT_ONLY=true bash "$sync_script" "$BOOTSTRAP_GGUF_FILE" 2>/dev/null || true)"
+    result="$(INSTALL_DIR="$INSTALL_DIR" SYNC_EXACT_ONLY=true bash "$sync_script" "$BOOTSTRAP_GGUF_FILE" 2>>"${LOG_FILE:-/dev/stderr}")"
     case "$result" in
         synced:*)        BOOTSTRAP_SYNCED=true ;;
         already_present) BOOTSTRAP_SYNCED=true ;;

@@ -346,12 +346,12 @@ else
 
     # ── Sync models from LM Studio / Ollama ──
     # Before downloading anything, check whether the user already has matching
-    # GGUF models in LM Studio or Ollama. Syncing creates a symlink in ODS's
-    # model directory, so subsequent download checks find the file and skip the
+    # GGUF models in LM Studio or Ollama. Syncing hardlinks (or copies) into
+    # ODS's model directory so subsequent download checks find the file and skip
     _sync_script="$SCRIPT_DIR/scripts/sync-external-models.sh"
     if [[ -f "$_sync_script" ]] && [[ "${ODS_MODE:-local}" != "cloud" ]] && ! _phase11_external_lemonade; then
         ods_progress 75 "services" "Checking for existing models in LM Studio / Ollama"
-        _sync_result="$(INSTALL_DIR="$INSTALL_DIR" SYNC_EXACT_ONLY=true bash "$_sync_script" "$GGUF_FILE" 2>>"$LOG_FILE" || true)"
+        _sync_result="$(INSTALL_DIR="$INSTALL_DIR" SYNC_EXACT_ONLY=true bash "$_sync_script" "$GGUF_FILE" 2>>"$LOG_FILE")"
         case "$_sync_result" in
             synced:lmstudio:*)
                 _sync_src="${_sync_result#synced:lmstudio:}"
@@ -1025,7 +1025,7 @@ except Exception:
         # it between the earlier sync attempt and now
         _full_sync_result=""
         if [[ -f "$_sync_script" ]] && [[ ! -f "$INSTALL_DIR/data/models/$FULL_GGUF_FILE" ]]; then
-            _full_sync_result="$(INSTALL_DIR="$INSTALL_DIR" bash "$_sync_script" "$FULL_GGUF_FILE" 2>>"$LOG_FILE" || true)"
+            _full_sync_result="$(INSTALL_DIR="$INSTALL_DIR" SYNC_EXACT_ONLY=true bash "$_sync_script" "$FULL_GGUF_FILE" 2>>"$LOG_FILE")"
         fi
         case "${_full_sync_result:-}" in
             synced:lmstudio:*)

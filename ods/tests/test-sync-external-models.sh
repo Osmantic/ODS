@@ -258,6 +258,41 @@ _test_exact_only_blocks_fuzzy() {
 }
 _test_exact_only_blocks_fuzzy
 
+# ── test: late installer sync (SYNC_EXACT_ONLY) leaves dest absent ────────────
+#
+# Mirrors the phase-11 late full-model sync at line 1027-1029: with only a
+# Q8_0 file present in LM Studio and the requested target being Q4_K_M,
+# SYNC_EXACT_ONLY=true must leave the destination absent so the normal
+# background download is not skipped.
+
+_test_late_installer_sync_exact_only() {
+    local td ODS_MODELS_DIR HOME OLLAMA_HOST SYNC_EXACT_ONLY result dest
+    td="$(_tmpdir)"
+    ODS_MODELS_DIR="$td/data/models"
+    HOME="$td/fake-home"
+    OLLAMA_HOST="http://127.0.0.1:19999"
+    SYNC_EXACT_ONLY=true
+    mkdir -p "$ODS_MODELS_DIR"
+    _make_fake_gguf "$HOME/.lmstudio/models/OrgA/TestModel/TestModel-Q8_0.gguf"
+    dest="$ODS_MODELS_DIR/TestModel-Q4_K_M.gguf"
+
+    result="$(sync_model "TestModel-Q4_K_M.gguf")"
+    if [[ "$result" == "not_found" ]]; then
+        pass "late installer sync: SYNC_EXACT_ONLY returns not_found for wrong-quant source"
+    else
+        fail "late installer sync: expected not_found, got: $result"
+    fi
+
+    if [[ ! -f "$dest" ]]; then
+        pass "late installer sync: dest absent — background download will not be skipped"
+    else
+        fail "late installer sync: dest was created; background download would be incorrectly skipped"
+    fi
+
+    rm -rf "$td"
+}
+_test_late_installer_sync_exact_only
+
 # ── test: CLI subprocess — not_found exits 0 (survives set -e callers) ────────
 #
 # Reproduces the exact failure the reviewer hit: `ods model sync MissingModel`

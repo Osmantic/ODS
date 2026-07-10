@@ -3992,7 +3992,7 @@ class AgentHandler(BaseHTTPRequestHandler):
     def _handle_model_sync(self):
         """Sync a GGUF model from LM Studio or Ollama into ODS's model directory.
 
-        Creates a symlink (or falls back to a copy) so the file is immediately
+        Hardlinks (or copies if cross-filesystem) the file so it is immediately
         available to llama-server without a separate network download.
 
         Body: {"gguf_file": "Qwen3.5-2B-Q4_K_M.gguf"}
