@@ -69,6 +69,10 @@ def settings_env_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr("main._resolve_install_root", lambda: install_root)
     monkeypatch.setattr("main._resolve_runtime_env_path", lambda: env_path)
     monkeypatch.setattr("main.DATA_DIR", str(data_root))
+    monkeypatch.setattr(
+        "settings.request_agent_json",
+        lambda method, path, *, timeout: {"status": "ok"},
+    )
 
     def fake_env_update(raw_text):
         backup_dir = data_root / "config-backups"
@@ -116,6 +120,7 @@ def test_api_settings_env_masks_secret_values(test_client, settings_env_fixture)
     assert payload["fields"]["OPENAI_API_KEY"]["secret"] is True
     assert payload["values"]["LLM_BACKEND"] == "local"
     assert payload["fields"]["LLM_BACKEND"]["value"] == "local"
+    assert payload["agentAvailable"] is True
 
 
 def test_api_settings_env_preserves_existing_secret_when_blank(test_client, settings_env_fixture):
@@ -357,6 +362,47 @@ def test_api_settings_env_apply_rejects_disallowed_service(test_client):
 
     assert response.status_code == 400
     assert "not eligible" in response.json()["detail"]["message"].lower()
+
+
+def test_check_host_agent_available_uses_shared_transport(monkeypatch):
+    import settings
+
+    calls = []
+
+    def fake_request(method, path, *, timeout):
+        calls.append((method, path, timeout))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(settings, "request_agent_json", fake_request)
+
+    assert settings._check_host_agent_available() is True
+    assert calls == [("GET", "/health", 3)]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param("unavailable", id="unavailable"),
+        pytest.param("http-error", id="http-error"),
+        pytest.param("protocol-error", id="protocol-error"),
+    ],
+)
+def test_check_host_agent_available_handles_typed_transport_errors(monkeypatch, error):
+    import settings
+    from host_agent_client import AgentHTTPError, AgentProtocolError, AgentUnavailable
+
+    failures = {
+        "unavailable": AgentUnavailable("connection refused"),
+        "http-error": AgentHTTPError(503, "not ready"),
+        "protocol-error": AgentProtocolError("invalid JSON"),
+    }
+
+    def fail(*args, **kwargs):
+        raise failures[error]
+
+    monkeypatch.setattr(settings, "request_agent_json", fail)
+
+    assert settings._check_host_agent_available() is False
 
 
 def test_settings_apply_plan_maps_hermes_env_keys():
