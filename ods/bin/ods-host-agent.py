@@ -5757,8 +5757,6 @@ function Stop-ODSProcessId {
 
     Stop-Process -Id $ProcId -Force -ErrorAction SilentlyContinue
     if (Wait-ODSProcessExit -TargetPid $ProcId) { return }
-    & taskkill.exe /PID $ProcId /T /F | Out-Null
-    if (Wait-ODSProcessExit -TargetPid $ProcId) { return }
     [void](Invoke-ODSTaskkillViaWmi -TargetPid $ProcId)
     if (Wait-ODSProcessExit -TargetPid $ProcId) { return }
     throw "Could not stop process $ProcId"

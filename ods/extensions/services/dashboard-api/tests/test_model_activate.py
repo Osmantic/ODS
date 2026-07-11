@@ -1165,7 +1165,8 @@ class TestRestartWindowsLemonade:
         assert "-Settings $settings" in script
         assert "-Force -ErrorAction Stop | Out-Null" in script
         assert "Unregister-ScheduledTask" not in script
-        assert "taskkill.exe /PID $ProcId /T /F" in script
+        assert "Invoke-ODSTaskkillViaWmi" in script
+        assert "cmd.exe /c taskkill.exe /PID {0} /T /F" in script
         assert "for ($i = 0; $i -lt 45; $i++)" in script
         assert "Get-ODSLemonadeLaunchDiagnostics" in script
         assert "Format-ODSLemonadeLaunchDiagnostics" in script

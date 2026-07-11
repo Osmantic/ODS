@@ -613,12 +613,6 @@ restart_windows_lemonade_with_full_model() {
                 if (-not $old) { return }
                 Start-Sleep -Milliseconds 500
             }
-            & taskkill.exe /PID $ProcessId /T /F | Out-Null
-            for ($i = 0; $i -lt 30; $i++) {
-                $old = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-                if (-not $old) { return }
-                Start-Sleep -Milliseconds 500
-            }
             try {
                 $null = Invoke-CimMethod -ClassName Win32_Process -MethodName Create `
                     -Arguments @{ CommandLine = ("cmd.exe /c taskkill.exe /PID {0} /T /F" -f $ProcessId) } `
@@ -863,12 +857,6 @@ restart_windows_native_llama_server_with_full_model() {
         function Stop-ODSProcessId {
             param([int]$ProcessId)
             Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
-            for ($i = 0; $i -lt 30; $i++) {
-                $old = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-                if (-not $old) { return }
-                Start-Sleep -Milliseconds 500
-            }
-            & taskkill.exe /PID $ProcessId /T /F | Out-Null
             for ($i = 0; $i -lt 30; $i++) {
                 $old = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
                 if (-not $old) { return }

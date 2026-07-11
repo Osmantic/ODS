@@ -685,8 +685,6 @@ function Stop-ODSNativeProcessId {
 
     Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
     if (Wait-ODSNativeProcessExit -TargetPid $ProcessId) { return }
-    & taskkill.exe /PID $ProcessId /T /F | Out-Null
-    if (Wait-ODSNativeProcessExit -TargetPid $ProcessId) { return }
     try {
         $null = Invoke-CimMethod -ClassName Win32_Process -MethodName Create `
             -Arguments @{ CommandLine = ("cmd.exe /c taskkill.exe /PID {0} /T /F" -f $ProcessId) } `
