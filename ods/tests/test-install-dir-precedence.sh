@@ -38,7 +38,9 @@ test_precedence() {
     shift 2
 
     local result
-    result=$(ODS_BOOTSTRAP_ROOT="$HOME" "$@" bash "$ODS_DIR/ods/get-ods.sh" --print-install-dir 2>/dev/null || true)
+    # Use env(1) so unquoted NAME=VALUE args from "$@" are parsed as
+    # environment variable assignments, not as a single quoted command name.
+    result=$(ODS_BOOTSTRAP_ROOT="$HOME" env "$@" bash "$ODS_DIR/get-ods.sh" --print-install-dir 2>/dev/null || true)
 
     TESTS_RUN=$((TESTS_RUN + 1))
     if [[ "$result" == "$expected" ]]; then
