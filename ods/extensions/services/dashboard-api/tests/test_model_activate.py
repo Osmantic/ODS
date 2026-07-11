@@ -1132,7 +1132,7 @@ class TestWindowsNativeLlamaServer:
 
 class TestRestartWindowsLemonade:
 
-    def test_refreshes_task_with_current_exe_and_falls_back_to_direct_start(self, monkeypatch, tmp_path):
+    def test_dashboard_activation_uses_direct_start_without_task_scheduler(self, monkeypatch, tmp_path):
         program_files = tmp_path / "Program Files"
         lemonade_exe = program_files / "Lemonade Server" / "bin" / "LemonadeServer.exe"
         lemonade_exe.parent.mkdir(parents=True)
@@ -1157,35 +1157,30 @@ class TestRestartWindowsLemonade:
         })
 
         script = captured["script"]
-        assert "$existingTask = Get-ScheduledTask -TaskName $taskName" in script
-        assert "Could not refresh Lemonade scheduled task; reusing existing task" in script
-        assert "Register-ScheduledTask -TaskName $taskName" in script
-        assert "$settings = New-ScheduledTaskSettingsSet" in script
-        assert "-ExecutionTimeLimit ([TimeSpan]::Zero)" in script
-        assert "-Settings $settings" in script
-        assert "-Force -ErrorAction Stop | Out-Null" in script
+        assert "Get-ScheduledTask" not in script
+        assert "Register-ScheduledTask" not in script
+        assert "Start-ScheduledTask" not in script
+        assert "Stop-ScheduledTask" not in script
         assert "Unregister-ScheduledTask" not in script
         assert "Invoke-ODSTaskkillViaWmi" in script
         assert "cmd.exe /c taskkill.exe /PID {0} /T /F" in script
-        assert "for ($i = 0; $i -lt 45; $i++)" in script
+        assert "for ($i = 0; $i -lt 75; $i++)" in script
         assert "Get-ODSLemonadeLaunchDiagnostics" in script
         assert "Format-ODSLemonadeLaunchDiagnostics" in script
         assert 'LemonadeServer.exe", "lemonade-server.exe", "lemonade-router.exe", "lemonade.exe' in script
-        assert "Start-ScheduledTask -TaskName $taskName" in script
         assert "Start-ODSLemonadeDirectProcess -Contract $launchContract -DiagnosticLogPath $diagnosticLog" in script
         assert "no healthy owned router was found" in script
-        assert "Stop-ScheduledTask -TaskName $taskName" in script
         assert "Refusing to stop unowned process" in script
         assert "Get-ODSHealthyRouter" in script
         assert "/api/v1/health" in script
         assert "$proc = Get-ODSHealthyRouter" in script
         assert "Get-ODSLemonadeLaunchContract" in script
-        assert "New-ODSLemonadeScheduledTaskAction" in script
+        assert "New-ODSLemonadeScheduledTaskAction" not in script
         assert "Set-ODSLemonadeModernRuntimeConfig" in script
-        assert "$existingTaskMatches" in script
+        assert "$existingTaskMatches" not in script
         assert "--extra-models-dir" not in script
         assert "--no-tray" not in script
-        assert captured["env"]["ODS_WIN_LEMONADE_TASK"] == "ODSLemonadeRuntime"
+        assert "ODS_WIN_LEMONADE_TASK" not in captured["env"]
         assert captured["env"]["ODS_WIN_LEMONADE_EXE"] == str(lemonade_exe)
         assert Path(captured["env"]["ODS_WIN_LEMONADE_HELPER"]).as_posix().endswith(
             "installers/windows/lib/backend-contract.ps1"

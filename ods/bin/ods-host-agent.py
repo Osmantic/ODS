@@ -5621,11 +5621,11 @@ exit 0
 
 
 def _restart_windows_lemonade(env: dict):
-    """Start managed Windows Lemonade through Task Scheduler.
+    """Restart managed Windows Lemonade from the host-agent process.
 
-    Windows OpenSSH can end plain Start-Process children when the SSH logon
-    session exits. Task Scheduler gives the native Lemonade runtime an
-    independent lifecycle, which keeps fleet/dashboard activation stable.
+    Dashboard model activation runs through the persistent host-agent. Launching
+    Lemonade directly from that process avoids Task Scheduler hangs seen from
+    remote management sessions while still keeping cleanup bounded.
     """
     if not _windows_lemonade_is_managed(env):
         raise RuntimeError("Refusing to restart externally managed Windows Lemonade")
@@ -5662,7 +5662,6 @@ def _restart_windows_lemonade(env: dict):
         "ODS_WIN_PID_FILE": str(INSTALL_DIR / "data" / "llama-server.pid"),
         "ODS_WIN_LEMONADE_PORT": env.get("AMD_INFERENCE_PORT", "8080") or "8080",
         "ODS_WIN_BIND_ADDR": env.get("BIND_ADDRESS", "127.0.0.1") or "127.0.0.1",
-        "ODS_WIN_LEMONADE_TASK": "ODSLemonadeRuntime",
     })
     script = r'''
 $ErrorActionPreference = "Stop"
@@ -5674,7 +5673,6 @@ $modelsDir = $env:ODS_WIN_MODELS_DIR
 $pidPath = $env:ODS_WIN_PID_FILE
 $port = [int]$env:ODS_WIN_LEMONADE_PORT
 $bindAddr = $env:ODS_WIN_BIND_ADDR
-$taskName = $env:ODS_WIN_LEMONADE_TASK
 if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
     throw "Windows Lemonade launch helper not found: $helperPath"
 }
@@ -5781,8 +5779,6 @@ function Get-ODSHealthyRouter {
     return $null
 }
 
-$existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch {}
 if (Test-Path $pidPath) {
     $rawPid = (Get-Content -LiteralPath $pidPath -Raw).Trim()
     if ($rawPid -match '^\d+$') { Stop-ODSProcessId -ProcId ([int]$rawPid) }
@@ -5800,64 +5796,17 @@ if ($remaining.Count -gt 0) {
     throw "Could not stop existing Lemonade processes: $ids"
 }
 
-$action = New-ODSLemonadeScheduledTaskAction `
-    -Contract $launchContract -EnvPath $envPath -DiagnosticLogPath $diagnosticLog
-$existingAction = if ($existingTask) { @($existingTask.Actions)[0] } else { $null }
-$existingTaskMatches = (
-    $existingAction -and
-    [string]$existingAction.Execute -eq [string]$action.Execute -and
-    [string]$existingAction.Arguments -eq [string]$action.Arguments
-)
-$launchMethod = "scheduled task"
-$directProcess = $null
-try {
-    $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
-    $settings = New-ScheduledTaskSettingsSet `
-        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -ExecutionTimeLimit ([TimeSpan]::Zero)
-    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
-    Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
-} catch {
-    if ($existingTaskMatches) {
-        try {
-            Write-Warning "Could not refresh Lemonade scheduled task; reusing existing task: $_"
-            Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
-        } catch {
-            $launchMethod = "direct process"
-            Write-Warning "Could not start Lemonade through Task Scheduler: $_"
-            $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract -DiagnosticLogPath $diagnosticLog
-        }
-    } else {
-        $launchMethod = "direct process"
-        Write-Warning "Could not install the current Lemonade task contract; starting directly: $_"
-        $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract -DiagnosticLogPath $diagnosticLog
-    }
-}
+$launchMethod = "direct process"
+$directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract -DiagnosticLogPath $diagnosticLog
 $proc = $null
-for ($i = 0; $i -lt 45; $i++) {
+for ($i = 0; $i -lt 75; $i++) {
     Start-Sleep -Seconds 1
     $proc = Get-ODSHealthyRouter
     if ($proc) { break }
 }
-if (-not $proc -and $launchMethod -eq "scheduled task") {
-    $scheduledDiagnostics = Get-ODSLemonadeLaunchDiagnostics -TaskName $taskName
-    $launchMethod = "direct process"
-    Write-Warning "Lemonade scheduled task did not start a server process. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $scheduledDiagnostics)"
-    try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch {}
-    foreach ($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
-        if ($listener.OwningProcess -gt 0) { Stop-ODSProcessId -ProcId ([int]$listener.OwningProcess) }
-    }
-    $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract -DiagnosticLogPath $diagnosticLog
-    for ($i = 0; $i -lt 15; $i++) {
-        Start-Sleep -Seconds 1
-        $proc = Get-ODSHealthyRouter
-        if ($proc) { break }
-    }
-}
 if (-not $proc) {
     $launchDiagnostics = Get-ODSLemonadeLaunchDiagnostics `
-        -TaskName $taskName -ChildProcess $directProcess
+        -ChildProcess $directProcess
     throw "Lemonade $launchMethod started but no healthy owned router was found. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $launchDiagnostics)"
 }
 if ($launchContract.RequiresRuntimeConfiguration) {
@@ -5866,7 +5815,7 @@ if ($launchContract.RequiresRuntimeConfiguration) {
             -Port $port -ModelsDir $modelsDir -AdminApiKey $adminApiKey
     } catch {
         $configDiagnostics = Get-ODSLemonadeLaunchDiagnostics `
-            -TaskName $taskName -ChildProcess $directProcess
+            -ChildProcess $directProcess
         throw "Lemonade 10.7+ runtime configuration failed: $_. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $configDiagnostics)"
     }
 }
@@ -5882,7 +5831,7 @@ Set-Content -LiteralPath $pidPath -Value $proc.ProcessId
     )
     if result.returncode != 0:
         raise RuntimeError(f"Windows Lemonade restart failed: {(result.stderr or result.stdout).strip()[:500]}")
-    logger.info("Windows Lemonade scheduled task started")
+    logger.info("Windows Lemonade direct process started")
 
 
 def _render_runtime_config(
