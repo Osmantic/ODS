@@ -3370,3 +3370,17 @@ class TestModelDownloadFileIntegrity:
         assert (models_dir / "split-model-00002-of-00002.gguf").read_bytes() == b"downloaded second part"
         status = json.loads((install_dir / "data" / "model-download-status.json").read_text(encoding="utf-8"))
         assert status["status"] == "complete"
+
+
+def test_read_json_body_rejects_non_object():
+    """A syntactically-valid but non-object JSON body ([]) must be rejected with
+    400, not returned as a list — every caller immediately does body.get(...),
+    which would raise AttributeError and drop the connection."""
+    handler = _FakeHandler(b"[]")
+    assert _mod.read_json_body(handler) is None
+    assert handler.response_code == 400
+
+
+def test_read_json_body_accepts_object():
+    handler = _FakeHandler(b'{"a": 1}')
+    assert _mod.read_json_body(handler) == {"a": 1}
