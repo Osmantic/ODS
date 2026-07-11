@@ -1623,21 +1623,32 @@ cmd_update() {
     log "Verifying update..."
     local failed_services=0
     local total_services=0
+    local active_services=""
+    local running_services=""
 
-    # Check each service health
+    active_services=$(docker compose "${flags[@]}" config --services 2>/dev/null \
+        || docker compose "${flags[@]}" ps --all --services 2>/dev/null \
+        || true)
+    running_services=$(docker compose "${flags[@]}" ps --services --status running 2>/dev/null || true)
+
+    if [[ -z "$active_services" ]]; then
+        log_error "Update verification failed: active compose stack has no services"
+        log_error "Run 'ods status' to check service health"
+        exit 1
+    fi
+
+    # Check only the active compose stack. sr_list_enabled() lists every
+    # installed extension with a compose file, including disabled optional
+    # services, which can make a healthy update look failed.
     while IFS= read -r service; do
         [[ -z "$service" ]] && continue
         ((++total_services))
 
-        local container
-        container=$(sr_container "$service" 2>/dev/null || echo "")
-        if [[ -n "$container" ]]; then
-            if ! docker ps --filter "name=$container" --filter "status=running" --format "{{.Names}}" | grep -q "^$container$"; then
-                warn "Service $service ($container) is not running"
-                ((++failed_services))
-            fi
+        if ! grep -Fxq "$service" <<< "$running_services"; then
+            warn "Service $service is not running"
+            ((++failed_services))
         fi
-    done < <(sr_list_enabled)
+    done <<< "$active_services"
 
     if [[ $failed_services -gt 0 ]]; then
         log_error "Update verification failed: $failed_services/$total_services services are not running"

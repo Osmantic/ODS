@@ -55,6 +55,21 @@ if [[ "${1:-}" == "info" ]]; then
 fi
 
 if [[ "${1:-}" == "compose" ]]; then
+    shift
+    args=("$@")
+    for ((i = 0; i < ${#args[@]}; i++)); do
+        if [[ "${args[$i]}" == "config" && "${args[$((i + 1))]:-}" == "--services" ]]; then
+            printf '%s\n' dashboard dashboard-api
+            exit 0
+        fi
+        if [[ "${args[$i]}" == "ps" ]]; then
+            joined=" ${args[*]} "
+            if [[ "$joined" == *" --services "* && "$joined" == *" --status running "* ]]; then
+                printf '%s\n' dashboard dashboard-api
+                exit 0
+            fi
+        fi
+    done
     exit 0
 fi
 
@@ -97,10 +112,16 @@ grep -q 'Update complete' "$tmp_dir/update.out" || {
     exit 1
 }
 
-grep -q -- '--filter name=ods-' "$docker_log" || {
+grep -q -- 'config --services' "$docker_log" || {
     cat "$docker_log" >&2
-    printf '[FAIL] update did not verify running service containers\n' >&2
+    printf '[FAIL] update did not inspect the active compose stack\n' >&2
     exit 1
 }
 
-printf '[PASS] ods update verification counts services under set -e\n'
+grep -q -- 'ps --services --status running' "$docker_log" || {
+    cat "$docker_log" >&2
+    printf '[FAIL] update did not verify running compose services\n' >&2
+    exit 1
+}
+
+printf '[PASS] ods update verifies active compose services under set -e\n'
