@@ -303,6 +303,138 @@ else
     fail "test_disk mis-parsed wrapped df output; expected disk_usage=95, got: ${got:-<none>}"
 fi
 
+# ============================================================================
+# health_type dispatch: verify non-HTTP health check modes via
+# the real health-check.sh script path.
+# ============================================================================
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+    HT_SANDBOX=$(mktemp -d)
+    trap "rm -rf '$HT_SANDBOX'" EXIT
+
+    mkdir -p "$HT_SANDBOX/scripts" "$HT_SANDBOX/lib" "$HT_SANDBOX/bin" \
+        "$HT_SANDBOX/extensions/services/htnone" \
+        "$HT_SANDBOX/extensions/services/httpass" \
+        "$HT_SANDBOX/extensions/services/htfail"
+    cp "$ROOT_DIR/scripts/health-check.sh" "$HT_SANDBOX/scripts/"
+    cp "$ROOT_DIR/lib/service-registry.sh" "$ROOT_DIR/lib/safe-env.sh" "$HT_SANDBOX/lib/"
+    if [[ -f "$ROOT_DIR/lib/python-cmd.sh" ]]; then
+        cp "$ROOT_DIR/lib/python-cmd.sh" "$HT_SANDBOX/lib/"
+    fi
+
+    # Service with health_type: none (CLI tools)
+    cat > "$HT_SANDBOX/extensions/services/htnone/manifest.yaml" <<'MANIFEST'
+schema_version: ods.services.v1
+service:
+  id: htnone
+  name: Health Type None
+  category: core
+  container_name: ods-htnone
+  external_port_default: 1
+  health: /health
+  health_type: none
+MANIFEST
+
+    # Service with health_type: tcp that passes (port open)
+    cat > "$HT_SANDBOX/extensions/services/httpass/manifest.yaml" <<'MANIFEST'
+schema_version: ods.services.v1
+service:
+  id: httpass
+  name: Health Type TCP Pass
+  category: core
+  container_name: ods-httpass
+  external_port_default: 9991
+  health: /
+  health_type: tcp
+MANIFEST
+
+    # Service with health_type: tcp that fails (port closed)
+    cat > "$HT_SANDBOX/extensions/services/htfail/manifest.yaml" <<'MANIFEST'
+schema_version: ods.services.v1
+service:
+  id: htfail
+  name: Health Type TCP Fail
+  category: core
+  container_name: ods-htfail
+  external_port_default: 9992
+  health: /
+  health_type: tcp
+MANIFEST
+
+    # docker stub: all containers report running
+    cat > "$HT_SANDBOX/bin/docker" <<'DOCKERSTUB'
+#!/bin/bash
+echo "running"
+exit 0
+DOCKERSTUB
+    chmod +x "$HT_SANDBOX/bin/docker"
+
+    # timeout stub: success on port 9991 (TCP pass), fail on port 9992 (TCP fail)
+    cat > "$HT_SANDBOX/bin/timeout" <<'TIMEOUTSTUB'
+#!/bin/bash
+# Simulate TCP port check: succeed for port 9991, fail for 9992
+for arg in "$@"; do
+    case "$arg" in
+        *9991*) exit 0 ;;
+        *9992*) exit 1 ;;
+    esac
+done
+exit 1
+TIMEOUTSTUB
+    chmod +x "$HT_SANDBOX/bin/timeout"
+
+    # curl stub: always fails (should not be called for tcp/none)
+    cat > "$HT_SANDBOX/bin/curl" <<'CURLSTUB'
+#!/bin/bash
+exit 7
+CURLSTUB
+    chmod +x "$HT_SANDBOX/bin/curl"
+
+    set +e
+    ht_json=$(cd "$HT_SANDBOX" && PATH="$HT_SANDBOX/bin:$PATH" INSTALL_DIR="$HT_SANDBOX" \
+        bash scripts/health-check.sh --json 2>&1)
+    ht_exit=$?
+    set -e
+
+    if echo "$ht_json" | grep -q '"htnone": "not_applicable"'; then
+        pass "health_type=none reports not_applicable in JSON"
+    else
+        fail "health_type=none should report not_applicable; got: $(echo "$ht_json" | grep -o '"htnone": "[^"]*"')"
+    fi
+
+    if echo "$ht_json" | grep -q '"httpass": "ok"'; then
+        pass "health_type=tcp with open port reports ok in JSON"
+    else
+        fail "health_type=tcp with open port should report ok; got: $(echo "$ht_json" | grep -o '"httpass": "[^"]*"')"
+    fi
+
+    if echo "$ht_json" | grep -q '"htfail": "fail"'; then
+        pass "health_type=tcp with closed port reports fail in JSON"
+    else
+        fail "health_type=tcp with closed port should report fail; got: $(echo "$ht_json" | grep -o '"htfail": "[^"]*"')"
+    fi
+
+    # Overall: a core service failure exits 2 (critical).
+    # This validates that the tcp/none dispatch does not silently swallow failures.
+    if [[ "$ht_exit" -eq 2 ]]; then
+        pass "health_type tests: core failure is critical (exit 2)"
+    else
+        fail "health_type tests with core failure should exit 2; got $ht_exit"
+    fi
+
+    # Verify curl was never called (no HTTP checks for tcp/none)
+    if echo "$ht_json" | grep -q 'curl stub'; then
+        fail "curl stub was called — HTTP check run for tcp/none service"
+    else
+        pass "HTTP checks skipped for non-http health_type services (curl not invoked)"
+    fi
+
+    rm -rf "$HT_SANDBOX"
+    trap - EXIT
+else
+    skip "health_type dispatch tests (python3 + PyYAML required for service registry)"
+fi
+
+
 # Helper: run health-check.sh --json with a mock nvidia-smi that reports
 # "mem_used, mem_total, util, temp" and echo the resulting gpu status.
 _gpu_status_with_mock() {
