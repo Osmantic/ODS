@@ -1,6 +1,35 @@
 """Tests for routers/setup.py — setup wizard, persona selection, and completion."""
 
 import json
+from unittest.mock import patch, MagicMock, AsyncMock
+
+
+def test_chat_handles_empty_choices(test_client, monkeypatch):
+    """A 200 LLM response with empty/absent `choices` (e.g. content-filtered)
+    must return a graceful empty reply, not an unhandled 500."""
+    monkeypatch.setenv("OLLAMA_URL", "http://llama-server:8080")
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value={"choices": []})
+    post_cm = MagicMock()
+    post_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+    post_cm.__aexit__ = AsyncMock(return_value=False)
+    mock_session = MagicMock()
+    mock_session.post = MagicMock(return_value=post_cm)
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    session_cm.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.setup.aiohttp.ClientSession", return_value=session_cm):
+        resp = test_client.post(
+            "/api/chat", json={"message": "hi"}, headers=test_client.auth_headers
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["success"] is True
+    assert data["response"] == ""
 
 
 # ---------------------------------------------------------------------------

@@ -215,7 +215,8 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             async with session.post(f"{llm_url}{_api_path}/chat/completions", json=payload, headers={"Content-Type": "application/json"}) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    response_text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    choices = data.get("choices") or [{}]
+                    response_text = (choices[0] or {}).get("message", {}).get("content", "")
                     # Strip thinking model tags — content may contain <think>...</think> blocks
                     response_text = re.sub(r'<think>[\s\S]*?</think>\s*', '', response_text).strip()
                     return {"response": response_text, "success": True}
