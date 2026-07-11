@@ -1,7 +1,7 @@
 services:
   brave-search:
     build:
-      context: .
+      context: ./extensions/services/brave-search
       dockerfile: Dockerfile
     image: ods-brave-search:local
     container_name: ods-brave-search
