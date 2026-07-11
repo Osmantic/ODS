@@ -464,7 +464,7 @@ for sid in "${EXT_SIDS[@]}"; do
                 log "  ${YELLOW}!${NC} $name - not responding"
                 ;;
         esac
-    fi    fi
+    fi
 done
 
 log ""

@@ -601,6 +601,10 @@ def _service_semantics(service_id: str, status: str) -> dict:
         state = "disabled"
         severity = "disabled"
         counts_as_issue = False
+    elif status == "not_applicable":
+        state = "ready"
+        severity = "ok"
+        counts_as_issue = False
     elif status == "unknown" and not required:
         state = "unknown"
         severity = "unknown"
