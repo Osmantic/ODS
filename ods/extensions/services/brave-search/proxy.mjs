@@ -28,17 +28,40 @@
 
 import http from "node:http";
 
+// Empty env values (e.g. from compose ${VAR:-} interpolation) fall back to
+// defaults; present-but-invalid values fail startup loudly, like a missing
+// API key does.
+function timeoutMsFromEnv() {
+  const raw = process.env.BRAVE_SEARCH_TIMEOUT_MS;
+  if (raw === undefined || raw === "") {
+    return 8_000;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    console.error(`brave-search: BRAVE_SEARCH_TIMEOUT_MS must be a positive number, got "${raw}"`);
+    process.exit(2);
+  }
+  return value;
+}
+
 const PORT = Number(process.env.BRAVE_SEARCH_PORT_INTERNAL ?? 8585);
 const API_KEY = process.env.BRAVE_SEARCH_API_KEY;
 const BRAVE_URL =
-  process.env.BRAVE_SEARCH_UPSTREAM_URL ?? "https://api.search.brave.com/res/v1/web/search";
-const REQUEST_TIMEOUT_MS = Number(process.env.BRAVE_SEARCH_TIMEOUT_MS ?? 8_000);
+  process.env.BRAVE_SEARCH_UPSTREAM_URL || "https://api.search.brave.com/res/v1/web/search";
+const REQUEST_TIMEOUT_MS = timeoutMsFromEnv();
 const SEARXNG_COMPAT = /^(1|true|yes|on)$/i.test(process.env.BRAVE_SEARCH_SEARXNG_COMPAT ?? "");
 // Brave's web endpoint returns at most 20 results per request.
 const SEARXNG_PAGE_SIZE = 20;
 
 if (!API_KEY) {
   console.error("brave-search: BRAVE_SEARCH_API_KEY is required");
+  process.exit(2);
+}
+
+try {
+  new URL(BRAVE_URL);
+} catch {
+  console.error(`brave-search: BRAVE_SEARCH_UPSTREAM_URL is not a valid URL: "${BRAVE_URL}"`);
   process.exit(2);
 }
 
@@ -59,6 +82,10 @@ async function callBrave(query, count, offset) {
         "Accept-Encoding": "gzip",
         "X-Subscription-Token": API_KEY,
       },
+      // fetch does not strip custom headers on cross-origin redirects, so a
+      // redirecting upstream could receive the subscription token. The Brave
+      // API never redirects; refuse rather than follow.
+      redirect: "error",
       signal: ctrl.signal,
     });
   } finally {

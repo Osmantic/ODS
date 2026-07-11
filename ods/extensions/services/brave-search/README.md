@@ -18,7 +18,7 @@ This extension does **not** replace `searxng`. It runs alongside it. Use whichev
 | `BRAVE_SEARCH_PORT` | `8585` | External port on the host |
 | `BRAVE_SEARCH_SEARXNG_COMPAT` | `0` | Set to `1` to enable the searxng-compatible `/search` route (see below) |
 | `BRAVE_SEARCH_TIMEOUT_MS` | `8000` | Upstream request timeout (advanced) |
-| `BRAVE_SEARCH_UPSTREAM_URL` | Brave API URL | Override the upstream endpoint (testing/advanced) |
+| `BRAVE_SEARCH_UPSTREAM_URL` | Brave API URL | Override the upstream endpoint (testing/advanced). The API key is sent to whatever endpoint this points at — only set it to a service you control |
 
 Set the key in `.env`:
 

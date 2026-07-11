@@ -70,6 +70,9 @@ function stubHandler(req, res) {
     respond(200, "this is not json");
   } else if (q === "slow") {
     setTimeout(() => respond(200, braveBody()), SLOW_UPSTREAM_DELAY_MS);
+  } else if (q === "redirect") {
+    res.writeHead(302, { location: "https://example.com/elsewhere" });
+    res.end();
   } else if (q === "echo") {
     const offset = url.searchParams.get("offset") ?? "none";
     const count = url.searchParams.get("count");
@@ -104,7 +107,7 @@ async function freePort() {
   return port;
 }
 
-async function startProxy(port, stubPort, compatValue) {
+async function startProxy(port, stubPort, extraEnv) {
   const child = spawn(process.execPath, [PROXY_SCRIPT], {
     env: {
       ...process.env,
@@ -112,7 +115,7 @@ async function startProxy(port, stubPort, compatValue) {
       BRAVE_SEARCH_PORT_INTERNAL: String(port),
       BRAVE_SEARCH_UPSTREAM_URL: `http://127.0.0.1:${stubPort}/res/v1/web/search`,
       BRAVE_SEARCH_TIMEOUT_MS: String(PROXY_TIMEOUT_MS),
-      BRAVE_SEARCH_SEARXNG_COMPAT: compatValue,
+      ...extraEnv,
     },
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -134,6 +137,25 @@ async function startProxy(port, stubPort, compatValue) {
 async function getJson(base, pathAndQuery) {
   const res = await fetch(`${base}${pathAndQuery}`);
   return { status: res.status, body: await res.json() };
+}
+
+async function expectStartupFailure(name, envOverrides, expectedStderrText) {
+  const child = spawn(process.execPath, [PROXY_SCRIPT], {
+    env: {
+      ...process.env,
+      BRAVE_SEARCH_API_KEY: STUB_API_KEY,
+      BRAVE_SEARCH_PORT_INTERNAL: "0",
+      ...envOverrides,
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const [code] = await once(child, "exit");
+  check(`${name} exits 2`, code === 2, `exit=${code}`);
+  check(`${name} stderr names the variable`, stderr.includes(expectedStderrText), stderr.trim());
 }
 
 // ── test suites ─────────────────────────────────────────────────────────────
@@ -176,6 +198,13 @@ async function testV1Route(base) {
     "504 on upstream timeout",
     slow.status === 504 && slow.body.error === "upstream_timeout",
     JSON.stringify(slow),
+  );
+
+  const redirect = await getJson(base, "/v1/search?q=redirect");
+  check(
+    "502 on upstream redirect (not followed)",
+    redirect.status === 502 && redirect.body.error === "upstream_unavailable",
+    JSON.stringify(redirect),
   );
 }
 
@@ -297,6 +326,7 @@ async function testCompatEnabled(base) {
     ["err500", "HTTP error 500"],
     ["badjson", "invalid JSON"],
     ["slow", "timeout"],
+    ["redirect", "unavailable"],
   ];
   for (const [q, reason] of cases) {
     const res = await getJson(base, `/search?format=json&q=${q}`);
@@ -319,11 +349,12 @@ const stubPort = stub.address().port;
 
 const compatPort = await freePort();
 const plainPort = await freePort();
+const emptyTimeoutPort = await freePort();
 
 const children = [];
 try {
-  children.push(await startProxy(compatPort, stubPort, "1"));
-  children.push(await startProxy(plainPort, stubPort, ""));
+  children.push(await startProxy(compatPort, stubPort, { BRAVE_SEARCH_SEARXNG_COMPAT: "1" }));
+  children.push(await startProxy(plainPort, stubPort, { BRAVE_SEARCH_SEARXNG_COMPAT: "" }));
 
   const compatBase = `http://127.0.0.1:${compatPort}`;
   const plainBase = `http://127.0.0.1:${plainPort}`;
@@ -332,6 +363,41 @@ try {
   await testV1Route(plainBase);
   await testCompatDisabled(plainBase);
   await testCompatEnabled(compatBase);
+
+  console.log("env validation:");
+  await expectStartupFailure(
+    "invalid BRAVE_SEARCH_TIMEOUT_MS",
+    { BRAVE_SEARCH_TIMEOUT_MS: "abc" },
+    "BRAVE_SEARCH_TIMEOUT_MS",
+  );
+  await expectStartupFailure(
+    "non-positive BRAVE_SEARCH_TIMEOUT_MS",
+    { BRAVE_SEARCH_TIMEOUT_MS: "0" },
+    "BRAVE_SEARCH_TIMEOUT_MS",
+  );
+  await expectStartupFailure(
+    "invalid BRAVE_SEARCH_UPSTREAM_URL",
+    { BRAVE_SEARCH_UPSTREAM_URL: "not a url" },
+    "BRAVE_SEARCH_UPSTREAM_URL",
+  );
+
+  // Empty values from compose ${VAR:-} interpolation must fall back to the
+  // default timeout, not collapse it to 0/NaN and abort every request.
+  children.push(
+    await startProxy(emptyTimeoutPort, stubPort, {
+      BRAVE_SEARCH_SEARXNG_COMPAT: "1",
+      BRAVE_SEARCH_TIMEOUT_MS: "",
+    }),
+  );
+  const emptyTimeout = await getJson(
+    `http://127.0.0.1:${emptyTimeoutPort}`,
+    "/search?format=json&q=ok",
+  );
+  check(
+    "empty BRAVE_SEARCH_TIMEOUT_MS falls back to default (request succeeds)",
+    emptyTimeout.status === 200 && emptyTimeout.body.results.length === 2,
+    JSON.stringify(emptyTimeout.body.unresponsive_engines ?? emptyTimeout.body),
+  );
 } finally {
   for (const child of children) {
     child.kill();
