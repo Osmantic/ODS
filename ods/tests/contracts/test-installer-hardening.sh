@@ -308,6 +308,7 @@ assert_contains "$host_agent" 'LemonadeServer.exe' "host-agent should accept cur
 assert_contains "$host_agent" 'Start-ODSLemonadeDirectProcess -Contract \$launchContract -DiagnosticLogPath \$diagnosticLog' "host-agent should use the shared detached direct Lemonade fallback"
 assert_contains "$host_agent" 'Set-ODSLemonadeModernRuntimeConfig' "host-agent should configure and verify Lemonade 10.7"
 assert_contains "$host_agent" 'Invoke-ODSTaskkillViaWmi' "host-agent should clear session-0 Lemonade orphans after normal termination fails"
+assert_contains "$host_agent" 'Get-ODSPortOwners' "host-agent should snapshot Lemonade port ownership instead of probing per process"
 assert_not_contains "$host_agent" '\$existingTaskMatches' "host-agent should not reuse a stale Lemonade task contract"
 assert_not_contains "$host_agent" '\$argString = "serve --port .*--no-tray' "host-agent must not embed obsolete Lemonade 10.7 arguments"
 

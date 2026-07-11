@@ -5689,18 +5689,20 @@ $binPrefix = $binDir.TrimEnd('\') + '\'
 $cachePrefix = if ($cacheBin) { $cacheBin.TrimEnd('\') + '\' } else { $null }
 $knownProcessNames = @("LemonadeServer.exe", "lemonade-server.exe", "lemonade-router.exe", "lemonade.exe")
 
-function Test-ODSLemonadeProcess {
-    param($Proc)
-    if (-not $Proc) { return $false }
-    $portOwned = $false
-    if ($Proc.ProcessId) {
-        foreach ($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
-            if ([int]$listener.OwningProcess -eq [int]$Proc.ProcessId) {
-                $portOwned = $true
-                break
-            }
+function Get-ODSPortOwners {
+    $owners = @{}
+    foreach ($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
+        if ($listener.OwningProcess -gt 0) {
+            $owners[[int]$listener.OwningProcess] = $true
         }
     }
+    return $owners
+}
+
+function Test-ODSLemonadeProcess {
+    param($Proc, [hashtable]$PortOwners = $null)
+    if (-not $Proc) { return $false }
+    $portOwned = ($PortOwners -and $Proc.ProcessId -and $PortOwners.ContainsKey([int]$Proc.ProcessId))
     $pathOwned = (
         ($Proc.ExecutablePath -and $Proc.ExecutablePath.Equals($exe, [StringComparison]::OrdinalIgnoreCase)) -or
         ($Proc.ExecutablePath -and $Proc.ExecutablePath.StartsWith($binPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
@@ -5728,7 +5730,8 @@ function Test-ODSLemonadeProcess {
 function Stop-ODSProcessId {
     param([int]$ProcId)
     $owned = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $ProcId) -ErrorAction SilentlyContinue
-    if (-not (Test-ODSLemonadeProcess $owned)) {
+    $portOwners = Get-ODSPortOwners
+    if (-not (Test-ODSLemonadeProcess $owned $portOwners)) {
         throw "Refusing to stop unowned process $ProcId on configured Lemonade port $port"
     }
 
@@ -5761,8 +5764,9 @@ function Stop-ODSProcessId {
 }
 
 function Get-ODSLemonadeProcesses {
+    $portOwners = Get-ODSPortOwners
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        Test-ODSLemonadeProcess $_
+        Test-ODSLemonadeProcess $_ $portOwners
     }
 }
 
@@ -5770,7 +5774,9 @@ function Get-ODSHealthyRouter {
     foreach ($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
         if ($listener.OwningProcess -le 0) { continue }
         $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $listener.OwningProcess) -ErrorAction SilentlyContinue
-        if (-not (Test-ODSLemonadeProcess $candidate)) { continue }
+        $portOwners = @{}
+        $portOwners[[int]$listener.OwningProcess] = $true
+        if (-not (Test-ODSLemonadeProcess $candidate $portOwners)) { continue }
         try {
             $response = Invoke-WebRequest -UseBasicParsing -Uri ("http://127.0.0.1:{0}/api/v1/health" -f $port) -TimeoutSec 2
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) { return $candidate }

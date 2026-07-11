@@ -1164,6 +1164,8 @@ class TestRestartWindowsLemonade:
         assert "Unregister-ScheduledTask" not in script
         assert "Invoke-ODSTaskkillViaWmi" in script
         assert "cmd.exe /c taskkill.exe /PID {0} /T /F" in script
+        assert "function Get-ODSPortOwners" in script
+        assert "Test-ODSLemonadeProcess $_ $portOwners" in script
         assert "for ($i = 0; $i -lt 75; $i++)" in script
         assert "Get-ODSLemonadeLaunchDiagnostics" in script
         assert "Format-ODSLemonadeLaunchDiagnostics" in script
