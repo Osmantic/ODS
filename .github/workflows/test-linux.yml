@@ -57,6 +57,9 @@ jobs:
       - name: n8n Cookie Policy Tests
         run: bash tests/test-n8n-cookie-policy.sh
 
+      - name: brave-search searxng Compat Tests
+        run: bash tests/test-brave-search-searxng-compat.sh
+
       - name: ODS Doctor Tests
         run: bash tests/test-ods-doctor.sh
 

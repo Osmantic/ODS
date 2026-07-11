@@ -47,6 +47,9 @@ test: ## Run unit and contract tests
 	@bash tests/test-bind-address-sweep.sh
 	@bash tests/test-n8n-cookie-policy.sh
 	@echo ""
+	@echo "=== brave-search searxng compat contract ==="
+	@bash tests/test-brave-search-searxng-compat.sh
+	@echo ""
 	@echo "=== ods-cli pipefail tolerance ==="
 	@bash tests/test-ods-cli-pipefail-tolerance.sh
 	@echo ""
