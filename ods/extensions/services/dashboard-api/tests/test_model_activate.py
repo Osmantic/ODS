@@ -1169,6 +1169,7 @@ class TestRestartWindowsLemonade:
         assert "for ($i = 0; $i -lt 45; $i++)" in script
         assert "Get-ODSLemonadeLaunchDiagnostics" in script
         assert "Format-ODSLemonadeLaunchDiagnostics" in script
+        assert 'LemonadeServer.exe", "lemonade-server.exe", "lemonade-router.exe", "lemonade.exe' in script
         assert "Start-ScheduledTask -TaskName $taskName" in script
         assert "Start-ODSLemonadeDirectProcess -Contract $launchContract" in script
         assert "no healthy owned router was found" in script

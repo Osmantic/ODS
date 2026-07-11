@@ -5689,6 +5689,7 @@ $userProfile = [Environment]::GetFolderPath("UserProfile")
 $cacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
 $binPrefix = $binDir.TrimEnd('\') + '\'
 $cachePrefix = if ($cacheBin) { $cacheBin.TrimEnd('\') + '\' } else { $null }
+$knownProcessNames = @("LemonadeServer.exe", "lemonade-server.exe", "lemonade-router.exe", "lemonade.exe")
 
 function Test-ODSLemonadeProcess {
     param($Proc)
@@ -5707,14 +5708,15 @@ function Test-ODSLemonadeProcess {
         ($Proc.ExecutablePath -and $Proc.ExecutablePath.StartsWith($binPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
         ($cachePrefix -and $Proc.ExecutablePath -and $Proc.ExecutablePath.StartsWith($cachePrefix, [StringComparison]::OrdinalIgnoreCase))
     )
-    $nameOwned = (
-        $portOwned -and
-        $Proc.Name -and
-        (
-            $Proc.Name.Equals("LemonadeServer.exe", [StringComparison]::OrdinalIgnoreCase) -or
-            $Proc.Name.Equals("lemonade.exe", [StringComparison]::OrdinalIgnoreCase)
-        )
-    )
+    $nameOwned = $false
+    if ($portOwned -and $Proc.Name) {
+        foreach ($knownName in $knownProcessNames) {
+            if ($Proc.Name.Equals($knownName, [StringComparison]::OrdinalIgnoreCase)) {
+                $nameOwned = $true
+                break
+            }
+        }
+    }
     $commandOwned = (
         $Proc.CommandLine -and
         $Proc.CommandLine.IndexOf($modelsDir, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
