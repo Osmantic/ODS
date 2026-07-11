@@ -889,10 +889,15 @@ async def extensions_catalog(
 
     user_svc_configs = await asyncio.to_thread(get_user_services_cached, USER_EXTENSIONS_DIR)
 
-    # Only health-check extensions that declare a health endpoint.  Use a
-    # short per-probe timeout so one slow extension cannot stall the catalog
-    # response (frontend aborts at 8 s).
-    checkable = {sid: cfg for sid, cfg in user_svc_configs.items() if cfg.get("health")}
+    # Health-check extensions that declare either a health endpoint or
+    # health_type=tcp (port-based health).  health_type=none services are
+    # handled by the fallback below.  Use a short per-probe timeout so one
+    # slow extension cannot stall the catalog response (frontend aborts at
+    # 8 s).
+    checkable = {
+        sid: cfg for sid, cfg in user_svc_configs.items()
+        if cfg.get("health") or cfg.get("health_type") == "tcp"
+    }
     user_health_tasks = [
         check_service_health(sid, cfg, timeout=_CATALOG_HEALTH_TIMEOUT)
         for sid, cfg in checkable.items()
@@ -902,17 +907,26 @@ async def extensions_catalog(
         if not isinstance(result, BaseException):
             services_by_id[sid] = result
 
-    # Extensions without health endpoints — assume running if scanned
-    # (presence in user_svc_configs means compose.yaml + manifest exist)
+    # Extensions without health endpoints — report the appropriate status
+    # based on health_type (presence in user_svc_configs means
+    # compose.yaml + manifest exist).
     from models import ServiceStatus
     for sid, cfg in user_svc_configs.items():
-        if not cfg.get("health") and sid not in services_by_id:
-            services_by_id[sid] = ServiceStatus(
-                id=sid, name=cfg.get("name", sid),
-                port=cfg.get("port", 0),
-                external_port=cfg.get("external_port", cfg.get("port", 0)),
-                status="healthy", response_time_ms=None,
-            )
+        if sid in services_by_id:
+            continue
+        if cfg.get("health") or cfg.get("health_type") == "tcp":
+            continue  # already health-checked above or queued for it
+        health_type = cfg.get("health_type", "http")
+        if health_type == "none":
+            status = "not_applicable"
+        else:
+            status = "healthy"
+        services_by_id[sid] = ServiceStatus(
+            id=sid, name=cfg.get("name", sid),
+            port=cfg.get("port", 0),
+            external_port=cfg.get("external_port", cfg.get("port", 0)),
+            status=status, response_time_ms=None,
+        )
 
     extensions = []
     for ext in EXTENSION_CATALOG:
@@ -1043,8 +1057,12 @@ async def extension_detail(
     user_svc_configs = await asyncio.to_thread(get_user_services_cached, USER_EXTENSIONS_DIR)
 
     # Same short per-probe timeout as the catalog fan-out — one slow user
-    # extension must not block the detail view.
-    checkable = {sid: cfg for sid, cfg in user_svc_configs.items() if cfg.get("health")}
+    # extension must not block the detail view.  Include TCP services even
+    # when health path is empty.
+    checkable = {
+        sid: cfg for sid, cfg in user_svc_configs.items()
+        if cfg.get("health") or cfg.get("health_type") == "tcp"
+    }
     user_health_tasks = [
         check_service_health(sid, cfg, timeout=_CATALOG_HEALTH_TIMEOUT)
         for sid, cfg in checkable.items()
@@ -1056,13 +1074,21 @@ async def extension_detail(
 
     from models import ServiceStatus
     for sid, cfg in user_svc_configs.items():
-        if not cfg.get("health") and sid not in services_by_id:
-            services_by_id[sid] = ServiceStatus(
-                id=sid, name=cfg.get("name", sid),
-                port=cfg.get("port", 0),
-                external_port=cfg.get("external_port", cfg.get("port", 0)),
-                status="healthy", response_time_ms=None,
-            )
+        if sid in services_by_id:
+            continue
+        if cfg.get("health") or cfg.get("health_type") == "tcp":
+            continue
+        health_type = cfg.get("health_type", "http")
+        if health_type == "none":
+            status = "not_applicable"
+        else:
+            status = "healthy"
+        services_by_id[sid] = ServiceStatus(
+            id=sid, name=cfg.get("name", sid),
+            port=cfg.get("port", 0),
+            external_port=cfg.get("external_port", cfg.get("port", 0)),
+            status=status, response_time_ms=None,
+        )
 
     status = _compute_extension_status(ext, services_by_id)
     installable = _is_installable(service_id)

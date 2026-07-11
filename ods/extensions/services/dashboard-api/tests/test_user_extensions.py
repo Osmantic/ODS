@@ -163,6 +163,69 @@ class TestScanUserExtensions:
         result = scan_user_extension_services(user_dir)
         assert result == {}
 
+    def test_scan_default_health_type_is_http(self, tmp_path):
+        """Extension without health_type defaults to http."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "my-ext"
+        _write_manifest(ext_dir, _make_manifest("my-ext", port=9090,
+                                                 health="/api/health"))
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+
+        result = scan_user_extension_services(user_dir)
+        cfg = result["my-ext"]
+        assert cfg["health_type"] == "http"
+        assert cfg["health_timeout"] == 5
+
+    def test_scan_explicit_health_type_tcp(self, tmp_path):
+        """Extension with health_type=tcp and empty health is included."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "tcp-ext"
+        manifest = {
+            "schema_version": "ods.services.v1",
+            "service": {"id": "tcp-ext", "port": 1234, "health": "",
+                         "health_type": "tcp", "health_timeout": 10},
+        }
+        _write_manifest(ext_dir, manifest)
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+
+        result = scan_user_extension_services(user_dir)
+        cfg = result["tcp-ext"]
+        assert cfg["health_type"] == "tcp"
+        assert cfg["health_timeout"] == 10
+        assert cfg["health"] == ""
+
+    def test_scan_explicit_health_type_none(self, tmp_path):
+        """Extension with health_type=none is included."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "cli-ext"
+        manifest = {
+            "schema_version": "ods.services.v1",
+            "service": {"id": "cli-ext", "port": 0, "health": "",
+                         "health_type": "none"},
+        }
+        _write_manifest(ext_dir, manifest)
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+
+        result = scan_user_extension_services(user_dir)
+        cfg = result["cli-ext"]
+        assert cfg["health_type"] == "none"
+        assert cfg["health"] == ""
+
+    def test_scan_invalid_health_type_rejected(self, tmp_path):
+        """Extension with unsupported health_type is skipped."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "bad-ext"
+        manifest = {
+            "schema_version": "ods.services.v1",
+            "service": {"id": "bad-ext", "port": 8080, "health": "/health",
+                         "health_type": "grpc"},
+        }
+        _write_manifest(ext_dir, manifest)
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+
+        result = scan_user_extension_services(user_dir)
+        assert "bad-ext" not in result
+
 
 # --- Caching ---
 
