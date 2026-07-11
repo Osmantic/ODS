@@ -188,7 +188,7 @@ async def _refresh_release_cache() -> Optional[dict]:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(
-                "https://api.github.com/repos/Light-Heart-Labs/ODS/releases/latest",
+                "https://api.github.com/repos/Osmantic/ODS/releases/latest",
                 headers=_GITHUB_HEADERS,
             )
         data = response.json()
@@ -241,7 +241,7 @@ async def get_release_manifest():
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
-                "https://api.github.com/repos/Light-Heart-Labs/ODS/releases?per_page=5",
+                "https://api.github.com/repos/Osmantic/ODS/releases?per_page=5",
                 headers=_GITHUB_HEADERS,
             )
         releases = resp.json()
@@ -307,7 +307,7 @@ async def get_update_dry_run():
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.get(
-                "https://api.github.com/repos/Light-Heart-Labs/ODS/releases/latest",
+                "https://api.github.com/repos/Osmantic/ODS/releases/latest",
                 headers=_GITHUB_HEADERS,
             )
         data = resp.json()
