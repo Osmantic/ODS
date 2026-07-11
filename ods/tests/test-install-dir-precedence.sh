@@ -31,16 +31,25 @@ TESTS_RUN=0
 TESTS_PASSED=0
 
 # Helper: test the precedence logic by invoking the real get-ods.sh with --print-install-dir
-# Usage: test_precedence "description" expected [env vars...]
+# Usage: test_precedence "description" expected [env vars...] [-- script args...]
+# Env vars (NAME=VALUE) are passed to env(1); all other args go after bash
+# as arguments to get-ods.sh.
 test_precedence() {
     local desc="$1"
     local expected="$2"
     shift 2
 
+    local env_vars=() script_args=() arg
+    for arg in "$@"; do
+        if [[ "$arg" =~ ^[A-Za-z_][A-Za-z0-9_]*=.* ]]; then
+            env_vars+=("$arg")
+        else
+            script_args+=("$arg")
+        fi
+    done
+
     local result
-    # Use env(1) so unquoted NAME=VALUE args from "$@" are parsed as
-    # environment variable assignments, not as a single quoted command name.
-    result=$(ODS_BOOTSTRAP_ROOT="$HOME" env "$@" bash "$ODS_DIR/get-ods.sh" --print-install-dir 2>/dev/null || true)
+    result=$(ODS_BOOTSTRAP_ROOT="$HOME" env "${env_vars[@]}" bash "$ODS_DIR/get-ods.sh" "${script_args[@]}" --print-install-dir 2>/dev/null || true)
 
     TESTS_RUN=$((TESTS_RUN + 1))
     if [[ "$result" == "$expected" ]]; then
