@@ -76,7 +76,7 @@ services:
     container_name: ods-my-service
     restart: unless-stopped
     ports:
-      - "${MY_SERVICE_PORT:-9200}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${MY_SERVICE_PORT:-9200}:8080"
     environment:
       - LLM_URL=http://llama-server:8080/v1
     depends_on:
