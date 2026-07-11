@@ -5,6 +5,7 @@ from typing import Annotated, Any, Optional
 from pydantic import BaseModel, Field
 
 from config import GPU_BACKEND
+from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 
 
 class GPUInfo(BaseModel):
@@ -196,6 +197,8 @@ class ModelLibraryResponse(BaseModel):
     currentModel: Optional[str] = None
     loadedModel: Optional[str] = None
     configuredModel: Optional[str] = None
+    hermesMinimumContext: int = HERMES_MIN_CONTEXT
+    hermesTargetContext: int = HERMES_TARGET_CONTEXT
     recommendationPolicy: Optional[str] = None
     recommendationAlternatives: list[dict[str, Any]] = Field(default_factory=list)
     odsMode: str = "unknown"

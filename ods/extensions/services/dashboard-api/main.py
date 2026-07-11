@@ -51,6 +51,7 @@ from helpers import (
     get_llama_metrics, get_loaded_model, get_llama_context_size,
     _get_httpx_client,
 )
+from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
@@ -509,10 +510,6 @@ def _serialize_model(model_info) -> Optional[dict]:
         "name": model_info.name,
         "contextLength": model_info.context_length,
     }
-
-
-HERMES_MIN_CONTEXT = 65536
-HERMES_TARGET_CONTEXT = 131072
 
 
 def _build_model_readiness_payload(

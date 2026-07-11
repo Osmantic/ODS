@@ -20,7 +20,6 @@ import { useDownloadProgress } from '../hooks/useDownloadProgress'
 
 const PAGE_SIZE = 10
 const DOWNLOAD_STATUS_TIMEOUT_MS = 15000
-const HERMES_AGENT_MIN_CONTEXT_TOKENS = 64000
 const TECH_PANEL_STYLE = {
   background: 'linear-gradient(180deg, rgba(10,10,18,0.96), rgba(7,7,13,0.92))',
   borderColor: 'rgba(255,255,255,0.08)',
@@ -68,6 +67,7 @@ export default function Models() {
     canActivateModels,
     activationModeError,
     recommendationAlternatives,
+    hermesMinimumContext,
     loading,
     error,
     actionLoading,
@@ -141,7 +141,10 @@ export default function Models() {
       || null
   }, [currentModel, models])
 
-  const categoryOptions = useMemo(() => buildCategoryOptions(models), [models])
+  const categoryOptions = useMemo(
+    () => buildCategoryOptions(models, hermesMinimumContext),
+    [hermesMinimumContext, models]
+  )
   const maxContext = useMemo(
     () => Math.max(0, ...models.map(model => Number(model.contextLength || 0))),
     [models]
@@ -155,13 +158,13 @@ export default function Models() {
     return models.filter(model => {
       const memory = getMemoryMeta(model, gpu)
       if (search && !matchesModelSearch(model, search)) return false
-      if (categoryFilter !== 'all' && !getModelCategoryIds(model).includes(categoryFilter)) return false
+      if (categoryFilter !== 'all' && !getModelCategoryIds(model, hermesMinimumContext).includes(categoryFilter)) return false
       if (!matchesCompatibilityFilter(model, memory, compatibilityFilter)) return false
-      if (!matchesSpeedFilter(model, speedFilter)) return false
+      if (!matchesSpeedFilter(model, speedFilter, hermesMinimumContext)) return false
       if (contextFloor > 0 && Number(model.contextLength || 0) < contextFloor) return false
       return true
     })
-  }, [categoryFilter, compatibilityFilter, contextFloor, gpu, models, query, speedFilter])
+  }, [categoryFilter, compatibilityFilter, contextFloor, gpu, hermesMinimumContext, models, query, speedFilter])
 
   const pageCount = Math.max(1, Math.ceil(filteredModels.length / PAGE_SIZE))
   const safePage = Math.min(page, pageCount)
@@ -367,6 +370,7 @@ export default function Models() {
                       gpu={gpu}
                       canActivateModels={canActivateModels}
                       activationModeError={activationModeError}
+                      hermesMinimumContext={hermesMinimumContext}
                       isCurrentModel={model.id === currentModel}
                       isLoading={pendingModelActions.includes(model.id)}
                       loadBusy={pendingModelActions.length > 0}
@@ -624,6 +628,7 @@ function ModelTableRow({
   gpu,
   canActivateModels,
   activationModeError,
+  hermesMinimumContext,
   isCurrentModel,
   isLoading,
   loadBusy,
@@ -640,7 +645,7 @@ function ModelTableRow({
   const memory = getMemoryMeta(model, gpu)
   const compatibility = getCompatibilityMeta(model, memory)
   const speed = getSpeedDisplay(model)
-  const tags = getModelTags(model)
+  const tags = getModelTags(model, hermesMinimumContext)
   const iconTone = getIconTone(model, compatibility)
   const performanceBadge = getPerformanceBadge(model)
   const runDisabledReason = getRunDisabledReason({
@@ -648,6 +653,7 @@ function ModelTableRow({
     gpu,
     canActivateModels,
     activationModeError,
+    hermesMinimumContext,
     loadBusy,
     activationBusy,
   })
@@ -685,6 +691,7 @@ function ModelTableRow({
           downloadBusy={downloadBusy}
           downloadStarting={downloadStarting}
           runDisabledReason={runDisabledReason}
+          hermesMinimumContext={hermesMinimumContext}
           onDownload={onDownload}
           onLoad={onLoad}
           onBenchmark={onBenchmark}
@@ -747,6 +754,7 @@ function PrimaryAction({
   downloadBusy,
   downloadStarting,
   runDisabledReason,
+  hermesMinimumContext,
   onDownload,
   onLoad,
   onBenchmark,
@@ -778,7 +786,7 @@ function PrimaryAction({
   if (isDownloaded) {
     const runDisabled = Boolean(runDisabledReason)
     const contextBlocked = isAgentContextDisabledReason(runDisabledReason)
-    const buttonLabel = contextBlocked ? 'Needs 64K' : 'Run'
+    const buttonLabel = contextBlocked ? `Needs ${formatContext(hermesMinimumContext)}` : 'Run'
     return (
       <span className="inline-flex" title={runDisabledReason || `Run ${model.name}`}>
         <button
@@ -1036,6 +1044,7 @@ function getRunDisabledReason({
   gpu,
   canActivateModels,
   activationModeError,
+  hermesMinimumContext,
   loadBusy,
   activationBusy,
 }) {
@@ -1043,8 +1052,9 @@ function getRunDisabledReason({
     return activationModeError || 'The local model runtime is unavailable. Review runtime settings before running this model.'
   }
   const contextLength = Number(model.contextLength || 0)
-  if (contextLength > 0 && contextLength < HERMES_AGENT_MIN_CONTEXT_TOKENS) {
-    return `Hermes Agent requires at least 64K context; this model has ${formatContext(contextLength)}.`
+  const minimumContext = Number(hermesMinimumContext || 0)
+  if (minimumContext > 0 && contextLength > 0 && contextLength < minimumContext) {
+    return `Hermes Agent requires at least ${formatContext(minimumContext)} context; this model has ${formatContext(contextLength)}.`
   }
   if (model.fitsVram !== true) {
     const required = Number(model.estimatedRequired || model.vramRequired || 0)
@@ -1060,7 +1070,7 @@ function getRunDisabledReason({
 }
 
 function isAgentContextDisabledReason(reason) {
-  return typeof reason === 'string' && reason.startsWith('Hermes Agent requires at least 64K context')
+  return typeof reason === 'string' && reason.startsWith('Hermes Agent requires at least ')
 }
 
 function formatModeLabel(mode) {
@@ -1117,7 +1127,7 @@ function Badge({ children, tone = 'neutral', subdued = false }) {
   )
 }
 
-function buildCategoryOptions(models) {
+function buildCategoryOptions(models, hermesMinimumContext) {
   const definitions = [
     { id: 'chat', label: 'Chat / LLM' },
     { id: 'code', label: 'Code' },
@@ -1128,7 +1138,7 @@ function buildCategoryOptions(models) {
   ]
   const counts = Object.fromEntries(definitions.map(definition => [definition.id, 0]))
   models.forEach(model => {
-    getModelCategoryIds(model).forEach(category => {
+    getModelCategoryIds(model, hermesMinimumContext).forEach(category => {
       counts[category] = (counts[category] || 0) + 1
     })
   })
@@ -1140,7 +1150,7 @@ function buildCategoryOptions(models) {
   ]
 }
 
-function getModelCategoryIds(model) {
+function getModelCategoryIds(model, hermesMinimumContext) {
   const categories = new Set()
   const text = [
     model?.id,
@@ -1161,7 +1171,8 @@ function getModelCategoryIds(model) {
   ) {
     categories.add('reasoning')
   }
-  if (Number(model?.contextLength || 0) >= 64000 || text.includes('long context')) {
+  const minimumContext = Number(hermesMinimumContext || 0)
+  if ((minimumContext > 0 && Number(model?.contextLength || 0) >= minimumContext) || text.includes('long context')) {
     categories.add('long-context')
   }
   if (
@@ -1198,14 +1209,18 @@ function matchesCompatibilityFilter(model, memory, filter) {
   return true
 }
 
-function matchesSpeedFilter(model, filter) {
+function matchesSpeedFilter(model, filter, hermesMinimumContext) {
   if (filter === 'any') return true
   const speed = getSpeedDisplay(model).value || 0
   if (filter === 'fast') return speed >= 45
   if (filter === 'balanced') return speed >= 15 && speed < 45
   if (filter === 'quality') {
     const text = `${model?.name || ''} ${model?.specialty || ''} ${model?.description || ''}`.toLowerCase()
-    return text.includes('quality') || text.includes('flagship') || text.includes('top-tier') || Number(model?.contextLength || 0) >= 64000
+    const minimumContext = Number(hermesMinimumContext || 0)
+    return text.includes('quality') ||
+      text.includes('flagship') ||
+      text.includes('top-tier') ||
+      (minimumContext > 0 && Number(model?.contextLength || 0) >= minimumContext)
   }
   return true
 }
@@ -1324,7 +1339,7 @@ function buildSpeedProfilePoints(model, speed) {
   })
 }
 
-function getModelTags(model) {
+function getModelTags(model, hermesMinimumContext) {
   const tags = []
   const name = `${model?.name || ''} ${model?.specialty || ''}`.toLowerCase()
   const add = (tag) => {
@@ -1332,7 +1347,8 @@ function getModelTags(model) {
   }
   if (name.includes('code') || name.includes('coder')) add('Code')
   if (name.includes('reason') || name.includes('deepseek')) add('Reasoning')
-  if ((model?.contextLength || 0) >= 64000) add('Long Context')
+  const minimumContext = Number(hermesMinimumContext || 0)
+  if (minimumContext > 0 && (model?.contextLength || 0) >= minimumContext) add('Long Context')
   add(model?.specialty || 'General')
   add('Chat')
   return tags.slice(0, 3)

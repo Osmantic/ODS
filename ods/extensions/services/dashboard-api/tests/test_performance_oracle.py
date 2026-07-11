@@ -202,6 +202,8 @@ def test_installer_recommended_model_survives_bootstrap_env(data_dir, tmp_path):
     by_id = {model["id"]: model for model in payload["models"]}
     assert payload["currentModel"] == "qwen3.5-2b-q4"
     assert payload["configuredModel"] == "qwen3.5-9b-q4"
+    assert payload["hermesMinimumContext"] == 65536
+    assert payload["hermesTargetContext"] == 131072
     assert by_id["qwen3.5-2b-q4"]["status"] == "loaded"
     assert by_id["qwen3.5-9b-q4"]["recommended"] is True
     assert by_id["qwen3.5-9b-q4"]["recommendation"]["source"] == "installer_tier_map"

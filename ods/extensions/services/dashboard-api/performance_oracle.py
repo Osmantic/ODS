@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from gguf_inspector import inspect_gguf
+from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 from helpers import get_model_performance_samples, get_recorded_model_performance
 from models import GPUInfo
 
@@ -1080,6 +1081,8 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         "currentModel": current_model_id,
         "loadedModel": loaded_model,
         "configuredModel": configured_model_id,
+        "hermesMinimumContext": HERMES_MIN_CONTEXT,
+        "hermesTargetContext": HERMES_TARGET_CONTEXT,
         "recommendationPolicy": recommendation.get("selectionPolicy") or _DEFAULT_RECOMMENDATION_POLICY,
         "recommendationAlternatives": [
             _recommendation_alternative(model, gpu_info)

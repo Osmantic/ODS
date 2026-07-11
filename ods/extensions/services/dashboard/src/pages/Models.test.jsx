@@ -45,6 +45,7 @@ function baseState(overrides = {}) {
     canActivateModels: true,
     activationModeError: null,
     recommendationAlternatives: [],
+    hermesMinimumContext: 65536,
     loading: false,
     error: null,
     actionLoading: null,
