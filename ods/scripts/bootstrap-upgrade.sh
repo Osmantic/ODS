@@ -1563,7 +1563,9 @@ refresh_lemonade_after_bootstrap_cleanup() {
     [[ -n "$DOCKER_CMD" ]] || return 1
 
     local compose_args=()
-    if [[ -f "$INSTALL_DIR/.compose-flags" ]]; then
+    if declare -p COMPOSE_ARGS >/dev/null 2>&1 && [[ ${#COMPOSE_ARGS[@]} -gt 0 ]]; then
+        compose_args=("${COMPOSE_ARGS[@]}")
+    elif [[ -f "$INSTALL_DIR/.compose-flags" ]]; then
         read -ra compose_args <<< "$(cat "$INSTALL_DIR/.compose-flags")"
     fi
     if [[ ${#compose_args[@]} -eq 0 || -z "$DOCKER_COMPOSE_CMD" ]]; then

@@ -99,6 +99,17 @@ if grep -qE '\b(stop|rm)[[:space:]]+ods-llama-server\b' <<<"$missing_flags_block
 fi
 pass "missing .compose-flags fallback is non-destructive"
 
+cleanup_refresh_block="$(function_block refresh_lemonade_after_bootstrap_cleanup | grep -v '^[[:space:]]*#')"
+grep -qF 'declare -p COMPOSE_ARGS' <<<"$cleanup_refresh_block" \
+    || fail "Lemonade cleanup refresh must reuse the live compose args before requiring .compose-flags"
+grep -qF 'compose_args=("${COMPOSE_ARGS[@]}")' <<<"$cleanup_refresh_block" \
+    || fail "Lemonade cleanup refresh must copy the active compose stack"
+assert_in_order "$cleanup_refresh_block" "Lemonade cleanup refresh compose args" \
+    'declare -p COMPOSE_ARGS' \
+    '[[ -f "$INSTALL_DIR/.compose-flags" ]]' \
+    'up -d --force-recreate --no-deps llama-server'
+pass "Lemonade cleanup refresh reuses active compose args before .compose-flags fallback"
+
 openclaw_recreate_block="$(awk '
     /Recreating OpenClaw to pick up model change/ { in_block=1 }
     in_block { print }
