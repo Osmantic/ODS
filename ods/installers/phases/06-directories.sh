@@ -734,7 +734,18 @@ COMFYUI_CPU_RESERVATION=${COMFYUI_CPU_RESERVATION}
 $(if [[ "$GPU_BACKEND" == "amd" ]]; then
     # Read gfx target from topology detection. Falls back to gfx1151 (Strix Halo)
     # if the topology probe failed — preserves prior behavior for the OG target.
-    _amd_gfx_detected=$(echo "${GPU_TOPOLOGY_JSON:-{\}}" | jq -r '[.gpus[]?.gfx_version] | unique | .[0] // "gfx1151"' 2>/dev/null || echo "gfx1151")
+    #
+    # Select the gfx of the GPU with the most VRAM, which is the card inference will
+    # actually run on. Do NOT use `unique | .[0]`: unique sorts ascending, so on a
+    # mixed iGPU + dGPU box the weakest device wins on a lexicographic accident
+    # (["gfx1036","gfx1201"] -> gfx1036, the Raphael display iGPU). That silently
+    # compiles the entire inference engine for a GPU it is never scheduled onto, and
+    # ROCm ships no BLAS kernels for those iGPU targets at all.
+    _amd_gfx_detected=$(echo "${GPU_TOPOLOGY_JSON:-{\}}" | jq -r '
+        [.gpus[]? | select(.gfx_version != null and .gfx_version != "unknown")]
+        | sort_by(.memory_gb // 0)
+        | reverse
+        | .[0].gfx_version // "gfx1151"' 2>/dev/null || echo "gfx1151")
     [[ -z "$_amd_gfx_detected" || "$_amd_gfx_detected" == "null" || "$_amd_gfx_detected" == "unknown" ]] && _amd_gfx_detected="gfx1151"
 
     # HSA_OVERRIDE_GFX_VERSION is a Strix Halo (gfx1151) workaround — that target
