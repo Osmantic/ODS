@@ -499,6 +499,8 @@ _macos_collect_process_descendants() {
 }
 
 _macos_cancel_detached_bootstrap_upgrade() {
+    local cancel_reason="${1:-cloud_mode}"
+    local action_label="${2:-cloud transition}"
     local status_file="${INSTALL_DIR}/data/bootstrap-status.json"
     local args_file="${INSTALL_DIR}/data/bootstrap-upgrade.args"
     local pid_file="${INSTALL_DIR}/data/bootstrap-upgrade.pid"
@@ -538,7 +540,7 @@ _macos_cancel_detached_bootstrap_upgrade() {
     [[ "${#pids[@]}" -gt 0 ]] && should_mark_cancelled=true
 
     if [[ "${#pids[@]}" -gt 0 ]]; then
-        ai "Stopping ${#pids[@]} install-owned background model upgrade process(es) before cloud transition..."
+        ai "Stopping ${#pids[@]} install-owned background model upgrade process(es) before ${action_label}..."
         for pid in "${pids[@]}"; do
             pgid="$(ps -ww -p "$pid" -o pgid= 2>/dev/null | tr -d '[:space:]' || true)"
             if [[ "$pgid" == "$pid" ]]; then
@@ -595,7 +597,7 @@ _macos_cancel_detached_bootstrap_upgrade() {
         fi
 
         if $alive; then
-            ai_err "Could not stop the complete install-owned background upgrade tree; refusing to rewrite cloud configuration."
+            ai_err "Could not stop the complete install-owned background upgrade tree; refusing to continue ${action_label}."
             return 1
         fi
     fi
@@ -605,17 +607,17 @@ _macos_cancel_detached_bootstrap_upgrade() {
         return 1
     }
     if [[ "$should_mark_cancelled" == "true" ]]; then
-        local status_tmp="${status_file}.cloud-transition.$$"
+        local status_tmp="${status_file}.${cancel_reason}.$$"
         local cancelled_at
         cancelled_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         mkdir -p "$(dirname "$status_file")"
-        if ! printf '{"status":"cancelled","reason":"cloud_mode","updatedAt":"%s"}\n' "$cancelled_at" > "$status_tmp" \
+        if ! printf '{"status":"cancelled","reason":"%s","updatedAt":"%s"}\n' "$cancel_reason" "$cancelled_at" > "$status_tmp" \
            || ! mv "$status_tmp" "$status_file"; then
             rm -f "$status_tmp" 2>/dev/null || true
-            ai_err "Could not mark the background model upgrade cancelled for cloud mode."
+            ai_err "Could not mark the background model upgrade cancelled for ${action_label}."
             return 1
         fi
-        ai_ok "Background model upgrade disabled for cloud mode"
+        ai_ok "Background model upgrade disabled for ${action_label}"
     fi
 }
 
@@ -1618,9 +1620,13 @@ else
     _macos_sync_builtin_compose_states
 
     # A detached bootstrap worker can rewrite GGUF_FILE/LLM_MODEL after its
-    # download finishes. Stop and disable it before cloud mode touches .env so
-    # the cloud values below are the final authoritative state.
-    if $CLOUD_MODE && ! _macos_cancel_detached_bootstrap_upgrade; then
+    # download finishes. Stop and disable it before cloud mode or a forced
+    # fresh install touches .env so the values below are authoritative.
+    if $CLOUD_MODE; then
+        if ! _macos_cancel_detached_bootstrap_upgrade "cloud_mode" "cloud transition"; then
+            exit 1
+        fi
+    elif $FORCE && ! _macos_cancel_detached_bootstrap_upgrade "fresh_install" "fresh install"; then
         exit 1
     fi
 

@@ -327,11 +327,35 @@ eval "$(extract_installer_function _macos_cancel_detached_bootstrap_upgrade)"
     grep -q '"reason":"cloud_mode"' "$INSTALL_DIR/data/bootstrap-status.json" \
         || fail "bootstrap cancellation status lacks its cloud-mode reason"
 )
-cancel_line="$(grep -n 'if \$CLOUD_MODE && ! _macos_cancel_detached_bootstrap_upgrade' "$INSTALLER" | cut -d: -f1)"
+(
+    INSTALL_DIR="$TMP_DIR/fresh-upgrade-install"
+    mkdir -p "$INSTALL_DIR/data"
+    printf 'full.gguf\nhttps://example.invalid/full.gguf\n\nfull\n65536\nbootstrap.gguf\n' \
+        > "$INSTALL_DIR/data/bootstrap-upgrade.args"
+    printf '{"status":"downloading"}\n' > "$INSTALL_DIR/data/bootstrap-status.json"
+    pgrep() { return 1; }
+    ai() { :; }
+    ai_ok() { :; }
+    ai_warn() { :; }
+    ai_err() { fail "$*"; }
+
+    _macos_cancel_detached_bootstrap_upgrade "fresh_install" "fresh install" \
+        || fail "fresh install bootstrap cancellation failed"
+    [[ ! -e "$INSTALL_DIR/data/bootstrap-upgrade.args" ]] \
+        || fail "fresh install left bootstrap retry metadata enabled"
+    grep -q '"status":"cancelled"' "$INSTALL_DIR/data/bootstrap-status.json" \
+        || fail "fresh install did not mark bootstrap state cancelled"
+    grep -q '"reason":"fresh_install"' "$INSTALL_DIR/data/bootstrap-status.json" \
+        || fail "bootstrap cancellation status lacks its fresh-install reason"
+)
+cloud_cancel_line="$(grep -n '_macos_cancel_detached_bootstrap_upgrade "cloud_mode" "cloud transition"' "$INSTALLER" | sed -n '1p' | cut -d: -f1)"
+fresh_cancel_line="$(grep -n '_macos_cancel_detached_bootstrap_upgrade "fresh_install" "fresh install"' "$INSTALLER" | sed -n '1p' | cut -d: -f1)"
 env_line="$(grep -n 'generate_ods_env "\$INSTALL_DIR"' "$INSTALLER" | cut -d: -f1)"
-[[ -n "$cancel_line" && -n "$env_line" && "$cancel_line" -lt "$env_line" ]] \
+[[ -n "$cloud_cancel_line" && -n "$env_line" && "$cloud_cancel_line" -lt "$env_line" ]] \
     || fail "cloud transition does not stop bootstrap workers before rewriting .env"
-pass "cloud transition waits for only install-owned bootstrap workers and disables retry"
+[[ -n "$fresh_cancel_line" && -n "$env_line" && "$fresh_cancel_line" -lt "$env_line" ]] \
+    || fail "forced fresh install does not stop bootstrap workers before rewriting .env"
+pass "cloud transition and forced fresh install disable stale bootstrap workers"
 
 # The authenticated readiness helper must reject both absent and crashed core
 # containers before probing, and must fail a running container whose bearer
