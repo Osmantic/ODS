@@ -55,15 +55,41 @@ _ae_read_env() {
 
 # ae_resolve: populate DASHBOARD_API_KEY, DASHBOARD_API_PORT, SERVICE_HOST,
 # ae_env_file, ae_api_base. Idempotent — safe to call more than once.
+#
+# .env discovery order (first hit wins):
+#   1. $ODS_INSTALL_DIR/.env  (explicit override)
+#   2. <caller_dir>/.env      (caller runs from install root)
+#   3. <caller_dir>/../.env   (caller is ods/tests/, .env lives in ods/)
+# If none is found, ae_env_file is set to the last-tried path for diagnostics.
 ae_resolve() {
     local caller_dir="${1:-}"
     if [[ -z "$caller_dir" ]]; then
         # Assume caller sourced us; use their SCRIPT_DIR if present, else pwd.
         caller_dir="${SCRIPT_DIR:-$PWD}"
     fi
-    local root="${ODS_INSTALL_DIR:-$(cd "$caller_dir/.." 2>/dev/null && pwd)}"
-    [[ -z "$root" ]] && root="$caller_dir"
-    ae_env_file="$root/.env"
+
+    ae_env_file=""
+    if [[ -n "${ODS_INSTALL_DIR:-}" ]]; then
+        # Explicit override wins unconditionally. Even if the file doesn't
+        # exist, we don't hunt elsewhere — the override is authoritative
+        # ("look here for this install's .env"). Missing file just means
+        # no key from .env; ae_key_available will report false, and callers
+        # skip auth-required checks with a clear diagnostic pointing at
+        # this path.
+        ae_env_file="$ODS_INSTALL_DIR/.env"
+    elif [[ -f "$caller_dir/.env" ]]; then
+        ae_env_file="$caller_dir/.env"
+    else
+        local up
+        up="$(cd "$caller_dir/.." 2>/dev/null && pwd || true)"
+        if [[ -n "$up" && -f "$up/.env" ]]; then
+            ae_env_file="$up/.env"
+        else
+            # Nothing found — expose the most-likely install path for
+            # diagnostic messages ("checked $ae_env_file").
+            ae_env_file="${up:-$caller_dir}/.env"
+        fi
+    fi
 
     # Key: shell env wins; else read from .env (scrubbed).
     local key="${DASHBOARD_API_KEY:-}"
