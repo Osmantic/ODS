@@ -14,8 +14,14 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Config
-API_URL="http://localhost:3002"
+# Shared auth + port resolution (shell env → installer .env, CRLF-safe).
+# Populates DASHBOARD_API_KEY, DASHBOARD_API_PORT, ae_api_base, AE_AUTH_HEADER.
+# shellcheck source=lib/auth-env.sh
+. "$SCRIPT_DIR/lib/auth-env.sh"
+ae_resolve "$SCRIPT_DIR"
+
+# Config — API_URL honors override for external test rigs.
+API_URL="${API_URL:-$ae_api_base}"
 DASHBOARD_API_URL="http://localhost:3001"
 TEST_TIMEOUT=10
 
@@ -38,6 +44,15 @@ log_warn() {
     WARN_COUNT=$((WARN_COUNT + 1))
 }
 
+# Auth-aware curl for dashboard-api. Splats AE_AUTH_HEADER (empty when no
+# key), so /health still works; auth-required endpoints get the Bearer
+# header. Call sites for auth-required probes should gate on
+# ae_key_available and log_warn otherwise, since curl -sf on a 401 returns
+# empty and the downstream grep would misreport "endpoint missing".
+api_curl() {
+    curl -sf -m "$TEST_TIMEOUT" "${AE_AUTH_HEADER[@]}" "$@"
+}
+
 echo ""
 echo "================================================================"
 echo "  ODS Phase C (P1) - Broken Features"
@@ -45,21 +60,32 @@ echo "  Prioritized CI Pipeline Tests"
 echo "================================================================"
 echo ""
 
+if ! ae_key_available; then
+    echo "NOTE: DASHBOARD_API_KEY not found (checked shell env + $ae_env_file)."
+    echo "      Auth-required checks (C1, C2, C4, C5) will be WARNed as skipped,"
+    echo "      not FAILed — set the key to run them."
+    echo ""
+fi
+
 # ==============================================================═
 # C1. Settings page is a static mockup
 # ==============================================================═
 echo -e "${CYAN}-- C1. Settings Page Mockup Detection -----------------------"
 
-SETTINGS_TEST=$(curl -sf -m $TEST_TIMEOUT "${API_URL}/api/settings" 2>/dev/null || echo "")
-if [ -n "$SETTINGS_TEST" ] && echo "$SETTINGS_TEST" | jq -e '.version, .installDate, .tier, .uptime, .storage' >/dev/null 2>&1; then
-    # Check if values are hardcoded (static string detection)
-    if echo "$SETTINGS_TEST" | grep -qE '"version":"1\.0\.0"|"installDate":"202[0-9]-' 2>/dev/null; then
-        log_fail "Settings page returns hardcoded mockup values"
-    else
-        log_pass "Settings page returns dynamic values"
-    fi
+if ! ae_key_available; then
+    log_warn "C1 skipped — no DASHBOARD_API_KEY"
 else
-    log_warn "Settings endpoint not implemented (404)"
+    SETTINGS_TEST=$(api_curl "${API_URL}/api/settings" 2>/dev/null || echo "")
+    if [ -n "$SETTINGS_TEST" ] && echo "$SETTINGS_TEST" | jq -e '.version, .installDate, .tier, .uptime, .storage' >/dev/null 2>&1; then
+        # Check if values are hardcoded (static string detection)
+        if echo "$SETTINGS_TEST" | grep -qE '"version":"1\.0\.0"|"installDate":"202[0-9]-' 2>/dev/null; then
+            log_fail "Settings page returns hardcoded mockup values"
+        else
+            log_pass "Settings page returns dynamic values"
+        fi
+    else
+        log_warn "Settings endpoint not implemented (404)"
+    fi
 fi
 
 # ==============================================================═
@@ -67,44 +93,48 @@ fi
 # ==============================================================═
 echo -e "${CYAN}-- C2. Setup Wizard Endpoints -------------------------------"
 
-# Test /api/setup/test endpoint
-SETUP_TEST=$(curl -sf -m $TEST_TIMEOUT -X POST "${API_URL}/api/setup/test" 2>/dev/null || echo "")
-if echo "$SETUP_TEST" | grep -qE "404|Not Found"; then
-    log_fail "Setup wizard calls non-existent endpoint: POST /api/setup/test"
+if ! ae_key_available; then
+    log_warn "C2 skipped — no DASHBOARD_API_KEY"
 else
-    log_pass "Setup wizard endpoints exist"
-fi
+    # Test /api/setup/test endpoint
+    SETUP_TEST=$(api_curl -X POST "${API_URL}/api/setup/test" 2>/dev/null || echo "")
+    if echo "$SETUP_TEST" | grep -qE "404|Not Found"; then
+        log_fail "Setup wizard calls non-existent endpoint: POST /api/setup/test"
+    else
+        log_pass "Setup wizard endpoints exist"
+    fi
 
-# Test LLM test endpoint
-LLM_TEST=$(curl -sf -m $TEST_TIMEOUT "${API_URL}/api/test/llm" 2>/dev/null || echo "")
-if echo "$LLM_TEST" | grep -qE "404|Not Found"; then
-    log_fail "Missing endpoint: GET /api/test/llm"
-else
-    log_pass "LLM test endpoint exists"
-fi
+    # Test LLM test endpoint
+    LLM_TEST=$(api_curl "${API_URL}/api/test/llm" 2>/dev/null || echo "")
+    if echo "$LLM_TEST" | grep -qE "404|Not Found"; then
+        log_fail "Missing endpoint: GET /api/test/llm"
+    else
+        log_pass "LLM test endpoint exists"
+    fi
 
-# Test voice test endpoint
-VOICE_TEST=$(curl -sf -m $TEST_TIMEOUT "${API_URL}/api/test/voice" 2>/dev/null || echo "")
-if echo "$VOICE_TEST" | grep -qE "404|Not Found"; then
-    log_fail "Missing endpoint: GET /api/test/voice"
-else
-    log_pass "Voice test endpoint exists"
-fi
+    # Test voice test endpoint
+    VOICE_TEST=$(api_curl "${API_URL}/api/test/voice" 2>/dev/null || echo "")
+    if echo "$VOICE_TEST" | grep -qE "404|Not Found"; then
+        log_fail "Missing endpoint: GET /api/test/voice"
+    else
+        log_pass "Voice test endpoint exists"
+    fi
 
-# Test RAG test endpoint
-RAG_TEST=$(curl -sf -m $TEST_TIMEOUT "${API_URL}/api/test/rag" 2>/dev/null || echo "")
-if echo "$RAG_TEST" | grep -qE "404|Not Found"; then
-    log_fail "Missing endpoint: GET /api/test/rag"
-else
-    log_pass "RAG test endpoint exists"
-fi
+    # Test RAG test endpoint
+    RAG_TEST=$(api_curl "${API_URL}/api/test/rag" 2>/dev/null || echo "")
+    if echo "$RAG_TEST" | grep -qE "404|Not Found"; then
+        log_fail "Missing endpoint: GET /api/test/rag"
+    else
+        log_pass "RAG test endpoint exists"
+    fi
 
-# Test workflows test endpoint
-WORKFLOWS_TEST=$(curl -sf -m $TEST_TIMEOUT "${API_URL}/api/test/workflows" 2>/dev/null || echo "")
-if echo "$WORKFLOWS_TEST" | grep -qE "404|Not Found"; then
-    log_fail "Missing endpoint: GET /api/test/workflows"
-else
-    log_pass "Workflows test endpoint exists"
+    # Test workflows test endpoint
+    WORKFLOWS_TEST=$(api_curl "${API_URL}/api/test/workflows" 2>/dev/null || echo "")
+    if echo "$WORKFLOWS_TEST" | grep -qE "404|Not Found"; then
+        log_fail "Missing endpoint: GET /api/test/workflows"
+    else
+        log_pass "Workflows test endpoint exists"
+    fi
 fi
 
 # ==============================================================═
@@ -112,9 +142,9 @@ fi
 # ==============================================================═
 echo -e "${CYAN}-- C3. Setup Wizard Step Validation -------------------------"
 
-# The setup wizard should not allow skipping the name step
-# This is a frontend validation issue - we test the API contract
-if curl -sf -m $TEST_TIMEOUT "${API_URL}/api/setup/wizard" >/dev/null 2>&1; then
+if ! ae_key_available; then
+    log_warn "C3 skipped — no DASHBOARD_API_KEY"
+elif api_curl "${API_URL}/api/setup/wizard" >/dev/null 2>&1; then
     log_pass "Setup wizard API exists (validation should be in frontend)"
 else
     log_warn "Setup wizard API not found"
@@ -125,33 +155,41 @@ fi
 # ==============================================================═
 echo -e "${CYAN}-- C4. Voice Settings Persistence ---------------------------"
 
-# Try to save and retrieve voice settings
-VOICE_SETTINGS_TEST=$(curl -sf -m $TEST_TIMEOUT "${API_URL}/api/voice/settings" 2>/dev/null || echo "")
-if [ -n "$VOICE_SETTINGS_TEST" ]; then
-    # Check if settings endpoint returns data
-    if echo "$VOICE_SETTINGS_TEST" | jq -e '.voice, .speed, .wakeWord' >/dev/null 2>&1; then
-        log_pass "Voice settings endpoint returns structured data"
-    else
-        log_warn "Voice settings endpoint exists but structure unclear"
-    fi
+if ! ae_key_available; then
+    log_warn "C4 skipped — no DASHBOARD_API_KEY"
 else
-    log_warn "Voice settings endpoint not implemented"
+    # Try to save and retrieve voice settings
+    VOICE_SETTINGS_TEST=$(api_curl "${API_URL}/api/voice/settings" 2>/dev/null || echo "")
+    if [ -n "$VOICE_SETTINGS_TEST" ]; then
+        # Check if settings endpoint returns data
+        if echo "$VOICE_SETTINGS_TEST" | jq -e '.voice, .speed, .wakeWord' >/dev/null 2>&1; then
+            log_pass "Voice settings endpoint returns structured data"
+        else
+            log_warn "Voice settings endpoint exists but structure unclear"
+        fi
+    else
+        log_warn "Voice settings endpoint not implemented"
+    fi
 fi
 
 # ==============================================================═
 # C5. Voice agent operation order
 echo -e "${CYAN}-- C5. Voice Agent Operation Order --------------------------"
 
-# Check if voice agent service is running properly
-VOICE_STATUS=$(curl -sf -m $TEST_TIMEOUT "${API_URL}/api/voice/status" 2>/dev/null || echo "")
-if [ -n "$VOICE_STATUS" ]; then
-    if echo "$VOICE_STATUS" | jq -e '.available == true' >/dev/null 2>&1; then
-        log_pass "Voice agent available and operational"
-    else
-        log_fail "Voice agent not available"
-    fi
+if ! ae_key_available; then
+    log_warn "C5 skipped — no DASHBOARD_API_KEY"
 else
-    log_warn "Voice status endpoint not responding"
+    # Check if voice agent service is running properly
+    VOICE_STATUS=$(api_curl "${API_URL}/api/voice/status" 2>/dev/null || echo "")
+    if [ -n "$VOICE_STATUS" ]; then
+        if echo "$VOICE_STATUS" | jq -e '.available == true' >/dev/null 2>&1; then
+            log_pass "Voice agent available and operational"
+        else
+            log_fail "Voice agent not available"
+        fi
+    else
+        log_warn "Voice status endpoint not responding"
+    fi
 fi
 
 # ==============================================================═

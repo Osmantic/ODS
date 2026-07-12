@@ -54,12 +54,17 @@ n8n exposes its own REST API at `/api/v1/`. The ODS Dashboard API uses this to m
 
 The ODS dashboard provides a curated catalog of workflow templates at `/api/workflows`. Templates are stored in `config/n8n/` as JSON files and can be installed with one click from the Workflows page.
 
+The dashboard API requires a Bearer token — export `DASHBOARD_API_KEY` (found in your install's `.env`) before running these calls.
+
 ```bash
 # Check available workflows via dashboard API
-curl http://localhost:3002/api/workflows
+curl -H "Authorization: Bearer $DASHBOARD_API_KEY" \
+  http://localhost:3002/api/workflows
 
 # Install a workflow
-curl -X POST http://localhost:3002/api/workflows/my-workflow-id/enable
+curl -X POST \
+  -H "Authorization: Bearer $DASHBOARD_API_KEY" \
+  http://localhost:3002/api/workflows/my-workflow-id/enable
 ```
 
 ## Data Persistence
