@@ -3907,13 +3907,30 @@ _gpu_reassign_update_amd_arch_env() {
         gfx_ver=""
     fi
 
+    # HSA_OVERRIDE_GFX_VERSION is a gfx1151-only workaround: that target is not in ROCm's
+    # official support list, so HSA is coerced into loading gfx1151 kernels by reporting
+    # "11.5.1". On natively-supported parts it MUST stay unset, or model load fails with
+    # HSA_STATUS_ERROR_INVALID_ISA. Note "unset" means genuinely absent — see the compose
+    # files: a defined-but-EMPTY HSA_OVERRIDE_GFX_VERSION makes ROCm enumerate zero devices.
     if [[ "$gfx_ver" == "gfx1151" ]]; then
         _env_set "HSA_OVERRIDE_GFX_VERSION" "11.5.1"
-        _env_set "LEMONADE_LLAMACPP_ROCM_BIN" "/opt/llama-custom/llama-server"
     else
         _env_unset "HSA_OVERRIDE_GFX_VERSION"
-        _env_unset "LEMONADE_LLAMACPP_ROCM_BIN"
     fi
+
+    # LEMONADE_LLAMACPP_ROCM_BIN is NOT arch-conditional and must never be unset here.
+    #
+    # It used to be set only for gfx1151, on the theory that the custom binary carried
+    # Strix-Halo-only patches and that other hosts would fall back to a bundled ROCm binary
+    # inside the Lemonade image. There is no such binary — the Lemonade image ships no ROCm
+    # userspace at all. Unsetting this sends Lemonade back to rocm_bin="builtin", where it
+    # tries to DOWNLOAD a llama-server for the arch it guesses from the GPU's marketing name
+    # and 404s on anything its table doesn't recognise.
+    #
+    # /opt/llama-custom is the only ROCm stack in the container, it is built for the detected
+    # AMDGPU_TARGET, and the gfx1151 MMQ patch is gated to gfx1151 — so it is correct for every
+    # target. `ods gpu reassign` silently deleting it turned a GPU re-pin into a dead stack.
+    _env_set "LEMONADE_LLAMACPP_ROCM_BIN" "/opt/llama-custom/llama-server"
 }
 
 _gpu_reassign() {
