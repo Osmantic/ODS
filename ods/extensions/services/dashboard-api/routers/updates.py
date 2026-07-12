@@ -30,6 +30,18 @@ _version_cache: dict[str, object] = {"expires_at": 0.0, "payload": None}
 _version_refresh_task: Optional[asyncio.Task] = None
 
 
+def _utc_now_z() -> str:
+    """Return the current UTC time as a valid ISO 8601 string with a 'Z' suffix.
+
+    ``datetime.now(timezone.utc)`` is timezone-aware, so ``.isoformat()`` already
+    carries a ``+00:00`` offset. Appending ``"Z"`` produced ``...+00:00Z`` — a
+    string with two UTC designators that both ``datetime.fromisoformat`` and the
+    dashboard's ``new Date(...)`` reject (the Settings page rendered "Invalid
+    Date" for the last-checked time). Swap the offset for a single ``Z``.
+    """
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _read_utf8(path: Path) -> str:
     """Read repository text files consistently across Windows and Linux."""
     return path.read_text(encoding="utf-8")
@@ -162,7 +174,7 @@ def _build_version_result(current: str, payload: Optional[dict]) -> dict:
         "latest": None,
         "update_available": False,
         "changelog_url": None,
-        "checked_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "checked_at": _utc_now_z(),
     }
     if not payload:
         return result
@@ -195,7 +207,7 @@ async def _refresh_release_cache() -> Optional[dict]:
         payload = {
             "latest": data.get("tag_name", "").lstrip("v"),
             "changelog_url": data.get("html_url"),
-            "checked_at": datetime.now(timezone.utc).isoformat() + "Z",
+            "checked_at": _utc_now_z(),
         }
         _version_cache = {
             "expires_at": time.monotonic() + _VERSION_CACHE_TTL,
@@ -252,13 +264,13 @@ async def get_release_manifest():
                 {"version": r.get("tag_name", "").lstrip("v"), "date": r.get("published_at", ""), "title": r.get("name", ""), "changelog": r.get("body", "")[:500] + "..." if len(r.get("body", "")) > 500 else r.get("body", ""), "url": r.get("html_url", ""), "prerelease": r.get("prerelease", False)}
                 for r in releases
             ],
-            "checked_at": datetime.now(timezone.utc).isoformat() + "Z"
+            "checked_at": _utc_now_z()
         }
     except (httpx.HTTPError, httpx.TimeoutException, json.JSONDecodeError, OSError):
         current = await asyncio.to_thread(_read_current_version)
         return {
-            "releases": [{"version": current, "date": datetime.now(timezone.utc).isoformat() + "Z", "title": f"ODS {current}", "changelog": "Release information unavailable. Check GitHub directly.", "url": "https://github.com/Light-Heart-Labs/ODS/releases", "prerelease": False}],
-            "checked_at": datetime.now(timezone.utc).isoformat() + "Z",
+            "releases": [{"version": current, "date": _utc_now_z(), "title": f"ODS {current}", "changelog": "Release information unavailable. Check GitHub directly.", "url": "https://github.com/Light-Heart-Labs/ODS/releases", "prerelease": False}],
+            "checked_at": _utc_now_z(),
             "error": "Could not fetch release information"
         }
 

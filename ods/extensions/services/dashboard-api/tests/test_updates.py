@@ -1,10 +1,25 @@
 """Tests for updates router endpoints."""
 
 import json
+from datetime import datetime
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import httpx
 from fastapi import HTTPException
+
+
+def _assert_valid_utc_z(value: str) -> None:
+    """A timestamp field must be a single-designator UTC ISO 8601 string.
+
+    Guards against the ``...+00:00Z`` double-designator form, which
+    ``datetime.fromisoformat`` and the dashboard's ``new Date(...)`` both
+    reject.
+    """
+    assert isinstance(value, str) and value, f"expected non-empty timestamp, got {value!r}"
+    assert value.endswith("Z"), f"expected trailing 'Z', got {value!r}"
+    assert "+00:00" not in value, f"double UTC designator in {value!r}"
+    # Parseable as a real UTC instant (fromisoformat needs the offset form).
+    datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def test_get_version_requires_auth(test_client):
@@ -543,3 +558,103 @@ def test_trigger_update_action_backup(test_client, monkeypatch):
     assert calls[0][0] == "backup"
     assert calls[0][1]["backup_id"].startswith("dashboard-")
     assert calls[0][2] == 65
+
+
+# ---------------------------------------------------------------------------
+# Timestamp formatting — checked_at / date must be valid ISO 8601
+# ---------------------------------------------------------------------------
+
+
+def test_utc_now_z_is_single_designator_iso8601():
+    """The shared timestamp helper must not emit the ``+00:00Z`` double form."""
+    from routers.updates import _utc_now_z
+
+    _assert_valid_utc_z(_utc_now_z())
+
+
+def test_build_version_result_checked_at_is_valid_when_no_payload():
+    """The default checked_at (no GitHub payload) must be a valid UTC instant."""
+    from routers.updates import _build_version_result
+
+    result = _build_version_result("1.2.3", None)
+    _assert_valid_utc_z(result["checked_at"])
+
+
+def test_get_version_checked_at_is_valid_iso8601(test_client, monkeypatch):
+    """GET /api/version returns a checked_at the dashboard's Date() can parse."""
+    import routers.updates as updates_mod
+
+    monkeypatch.setattr(updates_mod, "_version_cache", {"expires_at": 0.0, "payload": None})
+    monkeypatch.setattr(updates_mod, "_version_refresh_task", None)
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"tag_name": "v2.0.0", "html_url": "https://github.com/test"}
+
+    async def mock_get(url, **kwargs):
+        return mock_resp
+
+    mock_client = AsyncMock()
+    mock_client.get = mock_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.updates.httpx.AsyncClient", return_value=mock_client):
+        resp = test_client.get("/api/version", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    _assert_valid_utc_z(resp.json()["checked_at"])
+
+
+def test_releases_manifest_timestamps_are_valid_iso8601(test_client):
+    """GET /api/releases/manifest emits valid checked_at and per-release date."""
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = [
+        {
+            "tag_name": "v1.5.0",
+            "published_at": "2025-12-01T00:00:00Z",
+            "name": "Release 1.5.0",
+            "body": "Changelog",
+            "html_url": "https://github.com/test/releases/v1.5.0",
+            "prerelease": False,
+        },
+    ]
+
+    async def mock_get(url, **kwargs):
+        return mock_resp
+
+    mock_client = AsyncMock()
+    mock_client.get = mock_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.updates.httpx.AsyncClient", return_value=mock_client):
+        resp = test_client.get("/api/releases/manifest", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    _assert_valid_utc_z(resp.json()["checked_at"])
+
+
+def test_releases_manifest_error_fallback_timestamps_are_valid(test_client, tmp_path, monkeypatch):
+    """The GitHub-error fallback branch must also emit valid timestamps."""
+    import routers.updates as updates_mod
+
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".version").write_text("1.2.3")
+    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))
+
+    async def mock_get(url, **kwargs):
+        raise httpx.HTTPError("connection failed")
+
+    mock_client = AsyncMock()
+    mock_client.get = mock_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.updates.httpx.AsyncClient", return_value=mock_client):
+        resp = test_client.get("/api/releases/manifest", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    _assert_valid_utc_z(data["checked_at"])
+    _assert_valid_utc_z(data["releases"][0]["date"])
