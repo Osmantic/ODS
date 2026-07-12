@@ -95,11 +95,11 @@ run_suite() {
     
     if [[ -x "$script" ]]; then
         if $script $args; then
-            ((SUITE_PASSED++))
+            SUITE_PASSED=$((SUITE_PASSED + 1))
             echo ""
             echo -e "${GREEN}✓ $name passed${NC}"
         else
-            ((SUITE_FAILED++))
+            SUITE_FAILED=$((SUITE_FAILED + 1))
             echo ""
             echo -e "${RED}✗ $name failed${NC}"
         fi
@@ -150,13 +150,13 @@ if $VOICE || $STRESS; then
                     echo -e "  ${RED}✗${NC} $svc unhealthy"
                 fi
             done
-            ((SUITE_PASSED++))
+            SUITE_PASSED=$((SUITE_PASSED + 1))
         else
             echo -e "${RED}✗ Voice services unavailable${NC}"
-            ((SUITE_FAILED++))
+            SUITE_FAILED=$((SUITE_FAILED + 1))
         fi
     else
-        ((SUITE_PASSED++))
+        SUITE_PASSED=$((SUITE_PASSED + 1))
     fi
     echo ""
 fi
@@ -192,9 +192,9 @@ if $STRESS; then
         
         cd "$TESTS_DIR"
         if "$PYTHON_CMD" voice-stress-test.py --concurrent 10 --rounds 1 --skip-check; then
-            ((SUITE_PASSED++))
+            SUITE_PASSED=$((SUITE_PASSED + 1))
         else
-            ((SUITE_FAILED++))
+            SUITE_FAILED=$((SUITE_FAILED + 1))
         fi
         cd - >/dev/null
         echo ""

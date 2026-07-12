@@ -44,9 +44,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/auth-env.sh"
 
 # Logging
 log_info() { echo -e "${BLUE}ℹ${NC} $1"; }
-log_pass() { echo -e "${GREEN}✓${NC} $1"; ((PASSED++)); }
-log_fail() { echo -e "${RED}✗${NC} $1"; ((FAILED++)); }
-log_skip() { echo -e "${YELLOW}○${NC} $1 (skipped)"; ((SKIPPED++)); }
+log_pass() { echo -e "${GREEN}✓${NC} $1"; PASSED=$((PASSED + 1)); }
+log_fail() { echo -e "${RED}✗${NC} $1"; FAILED=$((FAILED + 1)); }
+log_skip() { echo -e "${YELLOW}○${NC} $1 (skipped)"; SKIPPED=$((SKIPPED + 1)); }
 log_verbose() { $VERBOSE && echo -e "  ${NC}$1" || true; }
 
 # Test helpers

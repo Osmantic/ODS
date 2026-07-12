@@ -9,8 +9,6 @@
 # Bash 3.2 compatible (macOS default shell).
 # ============================================================================
 
-set -euo pipefail
-
 AE_AUTH_HEADER=()
 
 _ae_read_env_var() {
