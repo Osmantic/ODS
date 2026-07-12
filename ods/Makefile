@@ -43,6 +43,9 @@ test: ## Run unit and contract tests
 	@bash tests/contracts/test-overlay-map-coherence.sh
 	@bash tests/contracts/test-plist-log-paths.sh
 	@echo ""
+	@echo "=== safe .env loading (quote/CRLF handling) ==="
+	@bash tests/test-safe-env.sh
+	@echo ""
 	@echo "=== Bind address sweep ==="
 	@bash tests/test-bind-address-sweep.sh
 	@bash tests/test-n8n-cookie-policy.sh
