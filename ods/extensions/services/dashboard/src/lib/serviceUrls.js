@@ -14,6 +14,6 @@ export function fallbackServiceUrl(port, path = '') {
 
 export function serviceUrl(service, path = '') {
   if (!service) return null
-  if (service.public_url) return service.public_url
+  if (service.public_url) return path ? appendPath(service.public_url, path) : service.public_url
   return fallbackServiceUrl(service.external_port || service.port, path || service.ui_path)
 }
