@@ -123,6 +123,48 @@ test('renders the model library layout from catalog fields only', () => {
   expect(screen.getByText('~3.2 GB incl. KV')).toBeInTheDocument()
 })
 
+test('running model surfaces GGUF architecture details when readable', () => {
+  useModelsMock.mockReturnValue(baseState({
+    currentModel: 'qwen3.5-9b-q4',
+    models: [
+      model({
+        status: 'loaded',
+        metadata: {
+          source: 'gguf',
+          readable: true,
+          blockCount: 48,
+          embeddingLength: 5120,
+          attentionHeadCount: 40,
+          attentionHeadCountKv: 8,
+        },
+      }),
+    ],
+  }))
+
+  renderModels()
+
+  expect(screen.getByText('48 layers')).toBeInTheDocument()
+  expect(screen.getByText('5120 hidden')).toBeInTheDocument()
+  expect(screen.getByText('40 heads (8 KV)')).toBeInTheDocument()
+})
+
+test('running model hides architecture line for catalog-only metadata', () => {
+  useModelsMock.mockReturnValue(baseState({
+    currentModel: 'qwen3.5-9b-q4',
+    models: [
+      model({
+        status: 'loaded',
+        metadata: { source: 'catalog', readable: false, blockCount: null },
+      }),
+    ],
+  }))
+
+  renderModels()
+
+  expect(screen.getByText('Currently running: qwen3.5-9b-q4')).toBeInTheDocument()
+  expect(screen.queryByText(/layers/)).not.toBeInTheDocument()
+})
+
 test('loaded models show active state and benchmark action', () => {
   const benchmarkModel = vi.fn()
   useModelsMock.mockReturnValue(baseState({

@@ -808,3 +808,54 @@ def test_published_exact_matches_gguf_stem_identity(data_dir):
     assert perf["source"] == "published_exact"
     assert perf["tokensPerSec"] == 43.7
     assert perf["sourceUrl"] == "https://example.test/stem-bench"
+
+
+def test_build_models_payload_surfaces_gguf_architecture_metadata(data_dir, tmp_path, monkeypatch):
+    import performance_oracle
+
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir(parents=True)
+    models_dir = data_dir / "models"
+    models_dir.mkdir(parents=True)
+    gguf_name = "Qwen3.5-9B-Q4_K_M.gguf"
+    (models_dir / gguf_name).write_text("gguf-bytes", encoding="utf-8")
+
+    monkeypatch.setattr(performance_oracle, "inspect_gguf", lambda *a, **k: {
+        "readable": True,
+        "architecture": "qwen3",
+        "quantization": "Q4_K_M",
+        "block_count": 48,
+        "expert_count": 0,
+        "expert_used_count": None,
+        "embedding_length": 5120,
+        "attention_head_count": 40,
+        "attention_head_count_kv": 8,
+        "tensor_count": 579,
+    })
+
+    payload = build_models_payload(
+        _gpu(), None, 0, install_dir, data_dir, catalog=[_model()], evidence=[],
+        downloaded_files_override={gguf_name: models_dir / gguf_name},
+    )
+    meta = {m["id"]: m for m in payload["models"]}["qwen3.5-9b-q4"]["metadata"]
+
+    assert meta["source"] == "gguf"
+    assert meta["readable"] is True
+    assert meta["blockCount"] == 48
+    assert meta["embeddingLength"] == 5120
+    assert meta["attentionHeadCount"] == 40
+    assert meta["attentionHeadCountKv"] == 8
+    assert meta["tensorCount"] == 579
+
+
+def test_build_models_payload_architecture_metadata_none_when_unreadable(data_dir, tmp_path):
+    # Catalog-only model (no local GGUF) must expose the new keys as null,
+    # never omit them, so the frontend can rely on their presence.
+    payload = build_models_payload(
+        _gpu(), None, 0, tmp_path, data_dir, catalog=[_model()], evidence=[],
+    )
+    meta = {m["id"]: m for m in payload["models"]}["qwen3.5-9b-q4"]["metadata"]
+
+    assert meta["readable"] is False
+    for key in ("embeddingLength", "attentionHeadCount", "attentionHeadCountKv", "tensorCount"):
+        assert key in meta and meta[key] is None
