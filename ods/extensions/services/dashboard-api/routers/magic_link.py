@@ -164,7 +164,7 @@ class GenerateRequest(BaseModel):
             normalized["scope"] = normalized.get("scope") or "hermes"
             normalized["reusable"] = True
             if normalized.get("url_mode") in (None, "auto"):
-                normalized["url_mode"] = "public" if _read_env_value("ODS_PUBLIC_URL") else "lan"
+                normalized["url_mode"] = "public" if _public_base() else "lan"
         else:
             normalized["scope"] = normalized.get("scope") or "chat"
             if normalized.get("expires_in") is None:
@@ -420,7 +420,14 @@ def _public_base() -> str:
     that instead of the per-subdomain default. Empty → use
     `_auth_url` / `_chat_url` built from ODS_DEVICE_NAME.
     """
-    return _read_env_value("ODS_PUBLIC_URL").rstrip("/")
+    value = _read_env_value("ODS_PUBLIC_URL").rstrip("/")
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        logger.warning("Ignoring invalid ODS_PUBLIC_URL value: %s", value)
+        return ""
+    return value
 
 
 def _public_url_env(key: str) -> str:

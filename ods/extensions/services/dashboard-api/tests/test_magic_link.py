@@ -318,6 +318,27 @@ def test_generate_owner_token_defaults_to_lan_without_public_url(magic_link_clie
     assert data["url"].startswith("http://auth.ods.local/magic-link/")
 
 
+def test_generate_owner_token_defaults_to_lan_with_invalid_public_url(
+    magic_link_client, monkeypatch
+):
+    monkeypatch.setenv("ODS_PUBLIC_URL", "not-a-url")
+
+    resp = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={
+            "target_username": "owner",
+            "token_type": "owner",
+            "note": "factory card",
+        },
+        headers=magic_link_client.auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["url_mode"] == "lan"
+    assert data["url"].startswith("http://auth.ods.local/magic-link/")
+
+
 def test_generate_owner_lan_requires_ods_proxy(
     magic_link_client, magic_link_module, monkeypatch
 ):
@@ -359,6 +380,21 @@ def test_owner_public_url_mode_uses_public_url_when_requested(
     data = resp.json()
     assert data["url_mode"] == "public"
     assert data["url"].startswith("https://ods.example/auth/magic-link/")
+
+
+def test_owner_public_url_mode_rejects_invalid_public_url(
+    magic_link_client, monkeypatch
+):
+    monkeypatch.setenv("ODS_PUBLIC_URL", "not-a-url")
+
+    resp = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner", "url_mode": "public"},
+        headers=magic_link_client.auth_headers,
+    )
+
+    assert resp.status_code == 400
+    assert "ODS_PUBLIC_URL" in resp.json()["detail"]
 
 
 def test_owner_public_url_mode_does_not_require_ods_proxy(
