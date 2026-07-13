@@ -765,12 +765,25 @@ cmd_rollback() {
         log_info "Snapshot time    : ${btime}"
     fi
 
-    # Stop services
+    # Stop services using the CURRENT stack's compose flags — the restored
+    # snapshot may resolve to a different overlay, so we must down the
+    # running stack before restoring, not after.
     log_info "Stopping services..."
     cd "$INSTALL_DIR"
-    if ! docker compose down; then
-        log_warn "docker compose v2 down failed, trying v1..."
-        docker-compose down
+    local pre_restore_flags=""
+    pre_restore_flags=$(resolve_compose_flags 2>/dev/null || true)
+    if [[ -n "$pre_restore_flags" ]]; then
+        if ! docker compose ${pre_restore_flags} down; then
+            log_warn "docker compose v2 down failed, trying v1..."
+            docker-compose ${pre_restore_flags} down
+        fi
+    elif [[ -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
+        if ! docker compose down; then
+            log_warn "docker compose v2 down failed, trying v1..."
+            docker-compose down
+        fi
+    else
+        log_warn "No compose stack could be resolved; skipping 'docker compose down' before restore."
     fi
 
     # Restore — use _restore_snapshot for pre-update snapshots (they include
@@ -793,11 +806,29 @@ cmd_rollback() {
         shopt -u dotglob
     fi
 
-    # Restart services
+    # Invalidate the cached compose-flags: the restored .env / overlays may
+    # select a different backend, and the cache is NOT part of the snapshot.
+    # resolve_compose_flags will then dynamically resolve against the
+    # restored configuration.
+    rm -f "${INSTALL_DIR}/.compose-flags"
+
+    # Restart services using the RESTORED stack's compose flags.
     log_info "Restarting services..."
-    if ! docker compose up -d; then
-        log_warn "docker compose v2 up failed, trying v1..."
-        docker-compose up -d
+    local post_restore_flags=""
+    post_restore_flags=$(resolve_compose_flags 2>/dev/null || true)
+    if [[ -n "$post_restore_flags" ]]; then
+        if ! docker compose ${post_restore_flags} up -d; then
+            log_warn "docker compose v2 up failed, trying v1..."
+            docker-compose ${post_restore_flags} up -d
+        fi
+    elif [[ -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
+        if ! docker compose up -d; then
+            log_warn "docker compose v2 up failed, trying v1..."
+            docker-compose up -d
+        fi
+    else
+        log_error "No compose stack could be resolved after restore; cannot restart services."
+        return 1
     fi
 
     # Verify health using the same timeout-aware poller as cmd_update

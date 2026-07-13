@@ -28,6 +28,41 @@ log_step() { echo -e "${CYAN}[STEP]${NC} $*"; }
 # Source shared rsync utilities
 . "$ODS_DIR/lib/rsync.sh"
 
+# resolve_compose_flags
+#   Prints the -f flags needed to address the active layered compose stack.
+#   ODS installs do not ship a top-level docker-compose.yml, so a bare
+#   `docker compose down` fails with "no configuration file provided".
+#   Preference order: cached .compose-flags -> resolve-compose-stack.sh ->
+#   base+backend fallback. Prints an empty string when nothing resolves.
+resolve_compose_flags() {
+    local flags=""
+
+    if [[ -f "$ODS_DIR/.compose-flags" ]]; then
+        flags="$(tr '\n' ' ' < "$ODS_DIR/.compose-flags" | xargs 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$flags" && -x "$ODS_DIR/scripts/resolve-compose-stack.sh" ]]; then
+        flags="$("$ODS_DIR/scripts/resolve-compose-stack.sh" \
+            --script-dir "$ODS_DIR" \
+            --tier "${TIER:-1}" \
+            --gpu-backend "${GPU_BACKEND:-nvidia}" \
+            --gpu-count "${GPU_COUNT:-1}" \
+            --ods-mode "${ODS_MODE:-local}" 2>/dev/null | tail -1 || true)"
+    fi
+
+    if [[ -z "$flags" && -f "$ODS_DIR/docker-compose.base.yml" ]]; then
+        flags="-f docker-compose.base.yml"
+        case "${GPU_BACKEND:-}" in
+            amd|nvidia|intel|apple|arc|cpu|sycl)
+                [[ -f "$ODS_DIR/docker-compose.${GPU_BACKEND}.yml" ]] \
+                    && flags="$flags -f docker-compose.${GPU_BACKEND}.yml"
+                ;;
+        esac
+    fi
+
+    printf '%s\n' "$flags"
+}
+
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {
     local bytes="${1:-0}"
@@ -383,10 +418,25 @@ stop_containers() {
     fi
 
     cd "$ODS_DIR"
-    if docker compose down; then
-        log_success "Containers stopped"
+    local compose_flags
+    compose_flags="$(resolve_compose_flags)"
+    if [[ -n "$compose_flags" ]]; then
+        # Word-splitting is intentional: compose_flags is a `-f a -f b` string.
+        # shellcheck disable=SC2086
+        if docker compose ${compose_flags} down; then
+            log_success "Containers stopped"
+        else
+            log_warn "Some containers may not have stopped cleanly"
+        fi
+    elif [[ -f "$ODS_DIR/docker-compose.yml" ]]; then
+        if docker compose down; then
+            log_success "Containers stopped"
+        else
+            log_warn "Some containers may not have stopped cleanly"
+        fi
     else
-        log_warn "Some containers may not have stopped cleanly"
+        log_warn "No compose stack could be resolved for: $ODS_DIR"
+        log_warn "Skipping 'docker compose down'; existing containers left running."
     fi
 }
 
@@ -545,7 +595,17 @@ do_restore() {
     echo ""
     echo "Next steps:"
     echo "  1. Review restored configuration: cat $ODS_DIR/.env"
-    echo "  2. Start services: docker compose up -d"
+    # ODS installs are layered; the restored .env may pick a different backend,
+    # so re-resolve the compose stack rather than printing stale flags here.
+    local next_flags
+    next_flags="$(resolve_compose_flags)"
+    if [[ -n "$next_flags" ]]; then
+        echo "  2. Start services: docker compose ${next_flags} up -d"
+    elif [[ -f "$ODS_DIR/docker-compose.yml" ]]; then
+        echo "  2. Start services: docker compose up -d"
+    else
+        echo "  2. Start services: ./ods-cli restart   (or run 'ods-update.sh health' first)"
+    fi
     echo "  3. Check status: ./ods-preflight.sh"
 }
 

@@ -46,5 +46,6 @@ bash scripts/simulate-installers.sh
 
 echo "[gate] update rollback"
 bash tests/test-update-rollback-contract.sh
+bash tests/test-ods-update-rollback-layered-compose.sh
 
 echo "[PASS] release gate"
