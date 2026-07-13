@@ -1554,9 +1554,12 @@ function Resolve-ODSHostAgentPython {
     }
 
     foreach ($name in @("python3", "python")) {
-        $cmd = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
-        if ($cmd -and $cmd.Source) {
-            $candidateFiles.Add($cmd.Source)
+        # Get-Command returns an array when multiple executables share a name
+        # across PATH entries; iterate so .Source is always a single string.
+        foreach ($cmd in @(Get-Command $name -CommandType Application -ErrorAction SilentlyContinue)) {
+            if ($cmd.Source) {
+                $candidateFiles.Add($cmd.Source)
+            }
         }
     }
 
@@ -1569,10 +1572,11 @@ function Resolve-ODSHostAgentPython {
         }
     }
 
-    $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
-    if ($pyLauncher -and $pyLauncher.Source -and
-        (Test-ODSHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))) {
-        return (New-ODSHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))
+    foreach ($pyLauncher in @(Get-Command py -CommandType Application -ErrorAction SilentlyContinue)) {
+        if ($pyLauncher.Source -and
+            (Test-ODSHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))) {
+            return (New-ODSHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))
+        }
     }
 
     return $null
