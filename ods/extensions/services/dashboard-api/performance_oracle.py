@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+from env_file import read_env_file_value
 from gguf_inspector import inspect_gguf
 from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 from helpers import get_model_performance_samples, get_recorded_model_performance
@@ -94,17 +95,6 @@ def read_env_value(key: str, install_dir: str | Path) -> str:
     return read_env_file_value(key, install_dir)
 
 
-def read_env_file_value(key: str, install_dir: str | Path) -> str:
-    env_path = Path(install_dir) / ".env"
-    try:
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            if line.startswith(f"{key}="):
-                return line.split("=", 1)[1].strip().strip("\"'")
-    except OSError:
-        pass
-    return ""
-
-
 def read_persisted_env_value(key: str, install_dir: str | Path) -> str:
     """Read mutable install config from .env before the container environment."""
     env_path = Path(install_dir) / ".env"
@@ -112,6 +102,7 @@ def read_persisted_env_value(key: str, install_dir: str | Path) -> str:
     if file_value or env_path.exists():
         return file_value
     return os.environ.get(key, "").strip().strip("\"'")
+
 
 
 def model_files_dir(data_dir: str | Path) -> Path:

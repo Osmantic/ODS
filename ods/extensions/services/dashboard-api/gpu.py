@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from env_file import read_env_file_value
 from models import GPUInfo, IndividualGPU
 
 logger = logging.getLogger(__name__)
@@ -422,14 +423,7 @@ def decode_gpu_assignment() -> Optional[dict]:
 def _read_env_var_from_file(key: str) -> str:
     """Read a single variable directly from the .env file (split on first '=' only)."""
     install_dir = os.environ.get("ODS_INSTALL_DIR", os.path.expanduser("~/ods"))
-    env_path = Path(install_dir) / ".env"
-    try:
-        for line in env_path.read_text().splitlines():
-            if line.startswith(f"{key}="):
-                return line[len(key) + 1:].strip().strip("\"'")
-    except OSError:
-        pass
-    return ""
+    return read_env_file_value(key, install_dir)
 
 
 def _build_uuid_service_map(assignment: dict) -> dict[str, list[str]]:
