@@ -932,6 +932,8 @@ async def extensions_catalog(
             "dependents": [],
             "dependency_status": {},
         }
+        if ext_id in SERVICES and SERVICES[ext_id].get("public_url"):
+            enriched["public_url"] = SERVICES[ext_id]["public_url"]
         # Surface install-failure reason inline. The progress file already
         # records `error` (set by _write_error_progress) but it lives behind
         # a separate /progress endpoint, so a caller seeing `status: "error"`
@@ -1077,7 +1079,7 @@ async def extension_detail(
         if _progress and _progress.get("error"):
             error_message = _progress["error"]
 
-    return {
+    payload = {
         "id": ext["id"],
         "name": ext["name"],
         "description": ext.get("description", ""),
@@ -1097,6 +1099,9 @@ async def extension_detail(
             "cli_disable": f"ods disable {service_id}",
         },
     }
+    if service_id in SERVICES and SERVICES[service_id].get("public_url"):
+        payload["public_url"] = SERVICES[service_id]["public_url"]
+    return payload
 
 
 # --- Mutation endpoints ---

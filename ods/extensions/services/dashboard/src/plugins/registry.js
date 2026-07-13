@@ -1,4 +1,5 @@
 import { coreRoutes, coreExternalLinks } from './core'
+import { appendPath } from '../lib/serviceUrls'
 import {
   MessageSquare, Network, Bot, Terminal, Search, Image, ExternalLink
 } from 'lucide-react'
@@ -66,7 +67,10 @@ export function getSidebarExternalLinks(context = {}) {
       label: link.label,
       icon: typeof link.icon === 'string' ? (ICON_MAP[link.icon] || ExternalLink) : (link.icon || ExternalLink),
       healthy,
-      url: (typeof getExternalUrl === 'function' ? getExternalUrl(link.port) : `http://localhost:${link.port}`) + (link.ui_path && link.ui_path !== '/' ? link.ui_path : ''),
+      url: link.public_url || appendPath(
+        typeof getExternalUrl === 'function' ? getExternalUrl(link.port) : `http://localhost:${link.port}`,
+        link.ui_path,
+      ),
     }
   })
 }

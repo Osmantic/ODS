@@ -29,6 +29,9 @@ def magic_link_module(tmp_path, monkeypatch):
     monkeypatch.setenv("ODS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ODS_SESSION_SECRET", "test-secret-for-magic-link-tests")
     monkeypatch.delenv("ODS_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("ODS_CHAT_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("ODS_HERMES_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("ODS_TALK_PUBLIC_URL", raising=False)
     monkeypatch.delenv("WEBUI_URL", raising=False)
     monkeypatch.delenv("ODS_TRUST_FORWARDED", raising=False)
     monkeypatch.delenv("ODS_COOKIE_DOMAIN", raising=False)
@@ -276,7 +279,7 @@ def test_generate_rejects_long_expiry(magic_link_client):
     assert resp.status_code == 422
 
 
-def test_generate_owner_token_defaults_to_revoke_only_hermes_lan(
+def test_generate_owner_token_defaults_to_public_when_public_url_is_configured(
     magic_link_client, monkeypatch
 ):
     monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example")
@@ -293,9 +296,25 @@ def test_generate_owner_token_defaults_to_revoke_only_hermes_lan(
     data = resp.json()
     assert data["token_type"] == "owner"
     assert data["scope"] == "hermes"
-    assert data["url_mode"] == "lan"
+    assert data["url_mode"] == "public"
     assert data["reusable"] is True
     assert data["expires_at"] is None
+    assert data["url"].startswith("https://ods.example/auth/magic-link/")
+
+
+def test_generate_owner_token_defaults_to_lan_without_public_url(magic_link_client):
+    resp = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={
+            "target_username": "owner",
+            "token_type": "owner",
+            "note": "factory card",
+        },
+        headers=magic_link_client.auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["url_mode"] == "lan"
     assert data["url"].startswith("http://auth.ods.local/magic-link/")
 
 
@@ -561,6 +580,23 @@ def test_owner_hermes_scope_redirects_to_ods_talk(magic_link_client, monkeypatch
     resp = magic_link_client.get(f"/magic-link/{token}", follow_redirects=False)
     assert resp.status_code == 302
     assert resp.headers["location"] == "http://talk.kitchen.local/talk"
+
+
+def test_owner_public_mode_redirects_to_talk_public_url(magic_link_client, monkeypatch):
+    monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example.test")
+    monkeypatch.setenv("ODS_TALK_PUBLIC_URL", "https://talk.example.test")
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner", "scope": "hermes"},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    resp = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://talk.example.test"
 
 
 def test_owner_token_can_be_redeemed_repeatedly_and_revoked(

@@ -488,6 +488,25 @@ class TestExternalLinks:
         assert "open-webui" in link_ids
         assert "litellm" not in link_ids
 
+    def test_returns_public_url_for_reverse_proxy_links(self, test_client, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "SERVICES", {
+            "open-webui": {
+                "name": "Open WebUI",
+                "port": 3000,
+                "external_port": 3000,
+                "health": "/health",
+                "host": "localhost",
+                "public_url": "https://chat.example.test",
+            },
+        })
+        monkeypatch.setattr("main.SERVICES", config.SERVICES)
+
+        resp = test_client.get("/api/external-links", headers=test_client.auth_headers)
+
+        assert resp.status_code == 200
+        assert resp.json()[0]["public_url"] == "https://chat.example.test"
+
 
 # --- /api/storage ---
 
@@ -875,6 +894,30 @@ class TestApiStatusServiceSerialization:
         assert serialized[0]["state"] == "disabled"
         assert serialized[0]["severity"] == "disabled"
         assert serialized[0]["countsAsIssue"] is False
+
+    def test_serialize_services_includes_public_url_metadata(self, monkeypatch):
+        from models import ServiceStatus
+        monkeypatch.setattr("main.SERVICES", {
+            "open-webui": {
+                "category": "core",
+                "public_url": "https://chat.example.test",
+                "ui_path": "/",
+            },
+        })
+        services = [
+            ServiceStatus(
+                id="open-webui",
+                name="Open WebUI",
+                port=3000,
+                external_port=3000,
+                status="healthy",
+            )
+        ]
+
+        serialized = _serialize_services(services, uptime=42)
+
+        assert serialized[0]["public_url"] == "https://chat.example.test"
+        assert serialized[0]["ui_path"] == "/"
 
     def test_optional_unknown_does_not_count_as_issue(self, monkeypatch):
         from models import ServiceStatus

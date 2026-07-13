@@ -7,6 +7,7 @@ import { useState, useEffect, useRef } from 'react'
 import { DependencyBadges, DependencyConfirmDialog, DisableDependentWarning } from '../components/DependencyBadges'
 import { TemplatePicker } from '../components/TemplatePicker'
 import { getTemplateStatus } from '../lib/templates'
+import { serviceUrl } from '../lib/serviceUrls'
 import { createRecoveryTracker } from '../utils/recoveryTracker'
 
 // Re-export so existing importers of getTemplateStatus from this module keep working.
@@ -829,7 +830,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               </span>
             ) : (
               <a
-                href={`http://${window.location.hostname}:${ext.external_port_default || ext.port}`}
+                href={serviceUrl({ ...ext, port: ext.external_port_default || ext.port })}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={e => e.stopPropagation()}

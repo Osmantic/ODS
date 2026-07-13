@@ -22,14 +22,7 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-
-// Helper to build external service URLs from current host
-const getExternalUrl = (port, path = '') => {
-  const suffix = path && path !== '/' ? path : ''
-  return typeof window !== 'undefined'
-    ? `http://${window.location.hostname}:${port}${suffix}`
-    : `http://localhost:${port}${suffix}`
-}
+import { serviceUrl } from '../lib/serviceUrls'
 
 // Compute overall health from services (excludes not_deployed from counts)
 function computeHealth(services) {
@@ -114,7 +107,7 @@ function pickFeatureLink(feature, services) {
   if (launch?.type === 'internal') return launch.path || null
   if (launch?.type === 'service') {
     const launchService = findHealthyService(services, launch.service)
-    return launchService ? getExternalUrl(launchService.port, launch.path) : null
+    return launchService ? serviceUrl(launchService, launch.path) : null
   }
 
   const req = feature?.requirements || {}
@@ -131,7 +124,7 @@ function pickFeatureLink(feature, services) {
     .filter(serviceId => !NON_USER_FACING_LINK_SERVICES.has(normalizeServiceKey(serviceId)))
     .map(serviceId => findHealthyService(services, serviceId))
     .find(Boolean)
-  return firstHealthy ? getExternalUrl(firstHealthy.port) : null
+  return firstHealthy ? serviceUrl(firstHealthy) : null
 }
 
 function normalizeFeatureStatus(featureStatus) {

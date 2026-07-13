@@ -265,15 +265,15 @@ describe('Dashboard system overview', () => {
       ...baseStatus,
       services: [
         { id: 'llama-server', name: 'llama-server (LLM Inference)', status: 'healthy', port: 11434, uptime: 14400 },
-        { id: 'open-webui', name: 'Open WebUI (Chat)', status: 'healthy', port: 3000, uptime: 14400 },
-        { id: 'hermes-proxy', name: 'Hermes Auth Proxy', status: 'healthy', port: 9120, uptime: 14400 },
+        { id: 'open-webui', name: 'Open WebUI (Chat)', status: 'healthy', port: 3000, uptime: 14400, public_url: 'https://chat.example.test' },
+        { id: 'hermes-proxy', name: 'Hermes Auth Proxy', status: 'healthy', port: 9120, uptime: 14400, public_url: 'https://hermes.example.test' },
       ],
     }
 
     await renderDashboard(statusWithLaunchTargets)
 
-    expect(await screen.findByRole('link', { name: /AI Chat/ })).toHaveAttribute('href', 'http://localhost:3000')
-    expect(screen.getByRole('link', { name: /Hermes Agent/ })).toHaveAttribute('href', 'http://localhost:9120')
+    expect(await screen.findByRole('link', { name: /AI Chat/ })).toHaveAttribute('href', 'https://chat.example.test')
+    expect(screen.getByRole('link', { name: /Hermes Agent/ })).toHaveAttribute('href', 'https://hermes.example.test')
     expect(screen.getByRole('link', { name: /Hermes Single Sign-On/ })).toHaveAttribute('href', '/invites')
     expect(screen.queryByRole('link', { name: /Remote Access/ })).not.toBeInTheDocument()
     expect(screen.getByText('Remote Access')).toBeInTheDocument()

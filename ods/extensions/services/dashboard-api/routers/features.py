@@ -198,6 +198,9 @@ async def feature_enable_instructions(
 
     def _svc_url(service_id: str) -> str:
         cfg = SERVICES.get(service_id, {})
+        public_url = cfg.get("public_url")
+        if public_url:
+            return public_url
         port = cfg.get("external_port", cfg.get("port", 0))
         if not port:
             return ""

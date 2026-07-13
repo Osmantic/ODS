@@ -3,8 +3,10 @@
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -34,6 +36,74 @@ def _read_env_from_file(key: str) -> str:
                 return line.split("=", 1)[1].strip().strip("\"'")
     except OSError:
         pass
+    return ""
+
+
+def _read_env_value(key: str) -> str:
+    return (os.environ.get(key) or _read_env_from_file(key)).strip()
+
+
+def _service_public_url_key(service_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", service_id).strip("_").upper()
+
+
+def _valid_public_url(value: str) -> str:
+    candidate = value.strip().rstrip("/")
+    if not candidate:
+        return ""
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        logger.warning("Ignoring invalid public service URL: %s", value)
+        return ""
+    return candidate
+
+
+def _read_service_public_url_map() -> dict[str, str]:
+    raw = _read_env_value("ODS_SERVICE_PUBLIC_URLS")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Ignoring invalid ODS_SERVICE_PUBLIC_URLS JSON")
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("Ignoring ODS_SERVICE_PUBLIC_URLS because it is not a JSON object")
+        return {}
+    return {str(key): _valid_public_url(str(value)) for key, value in data.items() if str(value).strip()}
+
+
+def _candidate_public_url_env_names(service_id: str, service: dict[str, Any], ext_port_env: str | None) -> list[str]:
+    service_key = _service_public_url_key(service_id)
+    names = [
+        service.get("public_url_env", ""),
+        f"{service_key}_PUBLIC_URL",
+        f"ODS_{service_key}_PUBLIC_URL",
+    ]
+    if ext_port_env:
+        if ext_port_env.endswith("_EXTERNAL_PORT"):
+            names.append(f"{ext_port_env.removesuffix('_EXTERNAL_PORT')}_PUBLIC_URL")
+        if ext_port_env.endswith("_PORT"):
+            names.append(f"{ext_port_env.removesuffix('_PORT')}_PUBLIC_URL")
+        names.append(f"{ext_port_env}_PUBLIC_URL")
+    return [name for index, name in enumerate(names) if name and name not in names[:index]]
+
+
+def _resolve_public_service_url(
+    service_id: str,
+    service: dict[str, Any],
+    ext_port_env: str | None,
+    public_url_map: dict[str, str],
+) -> str:
+    service_key = _service_public_url_key(service_id)
+    for map_key in (service_id, service_key, service_key.lower()):
+        url = public_url_map.get(map_key)
+        if url:
+            return url
+    for env_name in _candidate_public_url_env_names(service_id, service, ext_port_env):
+        url = _valid_public_url(_read_env_value(env_name))
+        if url:
+            return url
     return ""
 
 
@@ -68,6 +138,8 @@ def load_extension_manifests(
     if not manifest_dir.exists():
         logger.info("Extension manifest directory not found: %s", manifest_dir)
         return services, features, errors
+
+    public_url_map = _read_service_public_url_map()
 
     manifest_files: list[Path] = []
     for item in sorted(manifest_dir.iterdir()):
@@ -119,6 +191,8 @@ def load_extension_manifests(
                 else:
                     external_port = int(ext_port_default)
 
+                public_url = _resolve_public_service_url(service_id, service, ext_port_env, public_url_map)
+
                 services[service_id] = {
                     "host": host,
                     "port": int(service.get("port", 0)),
@@ -126,6 +200,7 @@ def load_extension_manifests(
                     "health": service.get("health", "/health"),
                     "name": service.get("name", service_id),
                     "ui_path": service.get("ui_path", "/"),
+                    "public_url": public_url,
                     "external_link": bool(service.get("external_link", True)),
                     "container_name": service.get("container_name", f"ods-{service_id}"),
                     "depends_on": service.get("depends_on", []),

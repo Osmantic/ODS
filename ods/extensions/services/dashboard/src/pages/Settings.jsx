@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import EnvEditor from '../components/settings/EnvEditor'
 import { useTheme } from '../contexts/ThemeContext'
+import { dashboardHost, serviceUrl } from '../lib/serviceUrls'
 
 const fetchJson = async (url, ms = 8000, options = {}) => {
   const c = new AbortController()
@@ -58,9 +59,6 @@ const formatDateTime = (value) => {
 const getErrorText = (err) => (
   err?.name === 'AbortError' ? 'Request timed out' : (err?.details?.message || err?.message || 'Failed to load settings')
 )
-
-const getDashboardHost = () => (typeof window !== 'undefined' ? window.location.hostname : 'localhost')
-const getExternalUrl = (port) => (port ? `http://${getDashboardHost()}:${port}` : null)
 
 const ROUTE_GROUP_STYLES = {
   inactive: { dot: 'bg-red-500', text: 'text-theme-text-secondary', line: 'rgba(239,68,68,0.26)' },
@@ -303,7 +301,7 @@ export default function Settings() {
           </div>
         </SettingsSection>
 
-        {services.length > 0 ? <SettingsSection title="Routing Table" icon={Network}><div className="space-y-3"><div className="flex flex-wrap items-center gap-2"><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/60">route surfaces</p><span className="rounded-full border border-white/10 bg-black/[0.12] px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.16em] text-theme-text">{getDashboardHost()}</span></div><div className="grid gap-3 xl:grid-cols-3">{routingGroups.map(group => <RoutingGroup key={group.key} {...group} />)}</div></div></SettingsSection> : null}
+        {services.length > 0 ? <SettingsSection title="Routing Table" icon={Network}><div className="space-y-3"><div className="flex flex-wrap items-center gap-2"><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/60">route surfaces</p><span className="rounded-full border border-white/10 bg-black/[0.12] px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.16em] text-theme-text">{dashboardHost()}</span></div><div className="grid gap-3 xl:grid-cols-3">{routingGroups.map(group => <RoutingGroup key={group.key} {...group} />)}</div></div></SettingsSection> : null}
 
         {envEditor ? <SettingsSection title="Environment Editor" icon={FileText}><EnvEditor editor={envEditor} search={envSearch} onSearchChange={setEnvSearch} sections={envSections} activeSection={activeEnvSection} onSectionChange={setEnvActiveSection} fields={envFields} values={envValues} issues={envIssues} issueMap={envIssueMap} revealedSecrets={envRevealSecrets} onToggleReveal={(key) => setEnvRevealSecrets(current => ({ ...current, [key]: !current[key] }))} onFieldChange={(key, value) => setEnvValues(current => ({ ...current, [key]: value }))} onReload={() => fetchEnvEditor({ announce: true })} onSave={handleSaveEnv} onApply={handleApplyEnv} dirty={envDirty} saving={envSaving} applyPlan={envApplyPlan} applying={envApplying} /></SettingsSection> : null}
 
@@ -351,7 +349,7 @@ function RoutingGroup({ label, tone, services }) {
 
 function RoutingRow({ service, tone }) {
   const styles = ROUTE_GROUP_STYLES[tone]
-  const href = getExternalUrl(service.port)
+  const href = serviceUrl(service)
   return <div className="flex items-center justify-between gap-3 rounded-lg border border-white/6 bg-black/[0.1] px-2 py-1.5"><div className="flex min-w-0 items-center gap-2"><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${styles.dot}`} /><span className="truncate text-[11px] font-medium text-theme-text">{service.name}</span></div><div className="flex shrink-0 items-center gap-2 text-[9px] text-theme-text-muted/75">{href ? <a className="font-mono uppercase tracking-[0.14em] text-theme-accent-light hover:text-theme-text transition-colors" href={href} target="_blank" rel="noopener noreferrer">:{service.port}</a> : <span className="font-mono uppercase tracking-[0.14em]">internal</span>}</div></div>
 }
 
