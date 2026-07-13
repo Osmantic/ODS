@@ -147,7 +147,7 @@ export default function FirstBoot({ onComplete }) {
             target_username: username,
             token_type: 'owner',
             scope: 'hermes',
-            url_mode: 'lan',
+            url_mode: ownerCardStatus?.url_mode || 'lan',
             note: `First-boot owner card (${deviceName.trim() || 'ods'})`,
           }),
         })

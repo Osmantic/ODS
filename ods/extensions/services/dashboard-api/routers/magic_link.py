@@ -459,10 +459,10 @@ def _chat_url(url_mode: str = "auto") -> str:
     works without identity claims in the cookie.
     """
     if _use_public_url(url_mode):
-        if SERVICES.get("open-webui", {}).get("public_url"):
-            return SERVICES["open-webui"]["public_url"]
         if _public_url_env("ODS_CHAT_PUBLIC_URL"):
             return _public_url_env("ODS_CHAT_PUBLIC_URL")
+        if SERVICES.get("open-webui", {}).get("public_url"):
+            return SERVICES["open-webui"]["public_url"]
         # When ODS_PUBLIC_URL is overridden, assume /chat is the chat
         # path on that origin (mirrors WEBUI_URL=…/chat for tunnel users).
         return f"{_public_base()}/chat"
@@ -472,10 +472,10 @@ def _chat_url(url_mode: str = "auto") -> str:
 def _hermes_url(url_mode: str = "auto") -> str:
     """Where a successful Hermes redemption redirects."""
     if _use_public_url(url_mode):
-        if SERVICES.get("hermes-proxy", {}).get("public_url"):
-            return SERVICES["hermes-proxy"]["public_url"]
         if _public_url_env("ODS_HERMES_PUBLIC_URL"):
             return _public_url_env("ODS_HERMES_PUBLIC_URL")
+        if SERVICES.get("hermes-proxy", {}).get("public_url"):
+            return SERVICES["hermes-proxy"]["public_url"]
         return f"{_public_base()}/hermes"
     return f"http://hermes.{_device_name()}.local"
 
@@ -593,12 +593,22 @@ def _owner_card_requires_lan_proxy(payload: GenerateRequest) -> bool:
 
 @router.get("/api/auth/magic-link/owner-card/status", dependencies=[Depends(verify_api_key)])
 def owner_card_status() -> dict:
-    """Report whether LAN owner-card URLs can be generated safely."""
+    """Report whether owner-card URLs can be generated safely."""
+    if _public_base():
+        return {
+            "ready": True,
+            "requires": "public-url",
+            "reason": "",
+            "url_mode": "public",
+            "public_url": _public_base(),
+        }
+
     ready, reason = _ods_proxy_lan_ready()
     return {
         "ready": ready,
         "requires": "ods-proxy",
         "reason": "" if ready else reason,
+        "url_mode": "lan",
     }
 
 

@@ -404,6 +404,28 @@ def test_owner_card_status_reports_proxy_state(
         "ready": False,
         "requires": "ods-proxy",
         "reason": "ods-proxy is not enabled",
+        "url_mode": "lan",
+    }
+
+
+def test_owner_card_status_reports_public_mode_when_public_url_is_configured(
+    magic_link_client,
+    monkeypatch,
+):
+    monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example.test")
+
+    resp = magic_link_client.get(
+        "/api/auth/magic-link/owner-card/status",
+        headers=magic_link_client.auth_headers,
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "ready": True,
+        "requires": "public-url",
+        "reason": "",
+        "url_mode": "public",
+        "public_url": "https://ods.example.test",
     }
 
 
@@ -564,6 +586,54 @@ def test_redeem_hermes_scope_redirects_to_hermes_subdomain(
     resp = magic_link_client.get(f"/magic-link/{token}", follow_redirects=False)
     assert resp.status_code == 302
     assert resp.headers["location"] == "http://hermes.kitchen.local"
+
+
+def test_public_chat_redirect_override_wins_over_service_public_url(
+    magic_link_client,
+    magic_link_module,
+    monkeypatch,
+):
+    monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example.test")
+    monkeypatch.setenv("ODS_CHAT_PUBLIC_URL", "https://chat-override.example.test")
+    magic_link_module.SERVICES["open-webui"] = {
+        "public_url": "https://chat-service.example.test",
+    }
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice", "url_mode": "public"},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    resp = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://chat-override.example.test"
+
+
+def test_public_hermes_redirect_override_wins_over_service_public_url(
+    magic_link_client,
+    magic_link_module,
+    monkeypatch,
+):
+    monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example.test")
+    monkeypatch.setenv("ODS_HERMES_PUBLIC_URL", "https://hermes-override.example.test")
+    magic_link_module.SERVICES["hermes-proxy"] = {
+        "public_url": "https://hermes-service.example.test",
+    }
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice", "scope": "hermes", "url_mode": "public"},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    resp = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://hermes-override.example.test"
 
 
 def test_owner_hermes_scope_redirects_to_ods_talk(magic_link_client, monkeypatch):

@@ -8,7 +8,14 @@ const response = (body, status = 200) => ({
   json: async () => body,
 })
 
-const ownerCardReady = { ready: true, requires: 'ods-proxy', reason: '' }
+const ownerCardReady = { ready: true, requires: 'ods-proxy', reason: '', url_mode: 'lan' }
+const ownerCardPublicReady = {
+  ready: true,
+  requires: 'public-url',
+  reason: '',
+  url_mode: 'public',
+  public_url: 'https://ods.example.test',
+}
 
 async function finishWizard() {
   fireEvent.change(screen.getByDisplayValue('ods'), { target: { value: 'spark' } })
@@ -79,6 +86,48 @@ describe('FirstBoot', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /open dashboard/i }))
     expect(onComplete).toHaveBeenCalledTimes(1)
+  })
+
+  test('generates a public owner card during first boot when public mode is ready', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardPublicReady)
+      }
+      if (url === '/api/auth/magic-link/generate' && options.method === 'POST') {
+        return response({
+          url: 'https://ods.example.test/auth/magic-link/first-token',
+          target_username: 'sam',
+          expires_at: null,
+          scope: 'hermes',
+          reusable: true,
+          token_type: 'owner',
+          url_mode: 'public',
+        })
+      }
+      if (url === '/api/setup/complete' && options.method === 'POST') {
+        return response({ success: true })
+      }
+      if (String(url).startsWith('/api/auth/magic-link/qr?url=')) {
+        return response({ data_url: 'data:image/png;base64,qrpayload' })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<FirstBoot onComplete={vi.fn()} />)
+
+    await finishWizard()
+
+    expect(await screen.findByRole('heading', { name: /you're set/i })).toBeInTheDocument()
+    const generateCall = fetchMock.mock.calls.find(([url]) => url === '/api/auth/magic-link/generate')
+    expect(JSON.parse(generateCall[1].body)).toMatchObject({
+      target_username: 'sam',
+      token_type: 'owner',
+      scope: 'hermes',
+      url_mode: 'public',
+      note: 'First-boot owner card (spark)',
+    })
+    expect(await screen.findByAltText('QR code for owner card')).toHaveAttribute('src', 'data:image/png;base64,qrpayload')
   })
 
   test('does not show success when setup completion fails', async () => {
