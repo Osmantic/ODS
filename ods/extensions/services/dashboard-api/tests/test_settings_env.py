@@ -384,6 +384,34 @@ def test_settings_apply_plan_maps_hermes_env_keys():
     assert plan["manualKeys"] == []
 
 
+def test_settings_apply_plan_treats_public_urls_as_manual_restart():
+    from settings import _compute_env_apply_plan
+
+    previous = {
+        "OPEN_WEBUI_PUBLIC_URL": "",
+        "N8N_PUBLIC_URL": "",
+        "HERMES_PROXY_PUBLIC_URL": "",
+        "ODS_SERVICE_PUBLIC_URLS": "",
+    }
+    updated = {
+        "OPEN_WEBUI_PUBLIC_URL": "https://chat.example.test",
+        "N8N_PUBLIC_URL": "https://n8n.example.test",
+        "HERMES_PROXY_PUBLIC_URL": "https://hermes.example.test",
+        "ODS_SERVICE_PUBLIC_URLS": '{"comfyui":"https://comfy.example.test"}',
+    }
+
+    plan = _compute_env_apply_plan(previous, updated)
+
+    assert plan["status"] == "manual"
+    assert plan["services"] == []
+    assert plan["manualKeys"] == [
+        "HERMES_PROXY_PUBLIC_URL",
+        "N8N_PUBLIC_URL",
+        "ODS_SERVICE_PUBLIC_URLS",
+        "OPEN_WEBUI_PUBLIC_URL",
+    ]
+
+
 def test_settings_apply_plan_maps_agent_and_proxy_env_keys():
     from settings import _compute_env_apply_plan
 

@@ -159,6 +159,19 @@ class TestLoadExtensionManifests:
 
         assert services["test-service"]["public_url"] == ""
 
+    def test_reads_public_url_map_from_utf8_env_file(self, tmp_path, monkeypatch):
+        install_dir = tmp_path / "ods"
+        install_dir.mkdir()
+        (install_dir / ".env").write_text(
+            "# operator note: public URLs -> browser routes 你好\n"
+            'ODS_SERVICE_PUBLIC_URLS={"test-service":"https://svc.example"}\n',
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("ODS_SERVICE_PUBLIC_URLS", raising=False)
+        monkeypatch.setattr(config, "INSTALL_DIR", str(install_dir))
+
+        assert config._read_env_value("ODS_SERVICE_PUBLIC_URLS") == '{"test-service":"https://svc.example"}'
+
     def test_preserves_host_network_flag(self, tmp_path):
         svc_dir = tmp_path / "host-network-service"
         svc_dir.mkdir()

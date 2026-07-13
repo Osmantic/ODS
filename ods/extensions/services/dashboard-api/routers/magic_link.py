@@ -68,7 +68,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 import session_signer
-from config import EXTENSIONS_DIR, GPU_BACKEND, SERVICES, load_extension_manifests
+from config import EXTENSIONS_DIR, GPU_BACKEND, SERVICES, _read_env_value, load_extension_manifests
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -164,7 +164,7 @@ class GenerateRequest(BaseModel):
             normalized["scope"] = normalized.get("scope") or "hermes"
             normalized["reusable"] = True
             if normalized.get("url_mode") in (None, "auto"):
-                normalized["url_mode"] = "public" if (os.environ.get("ODS_PUBLIC_URL") or "").strip() else "lan"
+                normalized["url_mode"] = "public" if _read_env_value("ODS_PUBLIC_URL") else "lan"
         else:
             normalized["scope"] = normalized.get("scope") or "chat"
             if normalized.get("expires_in") is None:
@@ -420,11 +420,11 @@ def _public_base() -> str:
     that instead of the per-subdomain default. Empty → use
     `_auth_url` / `_chat_url` built from ODS_DEVICE_NAME.
     """
-    return (os.environ.get("ODS_PUBLIC_URL") or "").rstrip("/")
+    return _read_env_value("ODS_PUBLIC_URL").rstrip("/")
 
 
 def _public_url_env(key: str) -> str:
-    value = (os.environ.get(key) or "").strip().rstrip("/")
+    value = _read_env_value(key).rstrip("/")
     if not value:
         return ""
     parsed = urlparse(value)

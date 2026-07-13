@@ -31,10 +31,10 @@ def _read_env_from_file(key: str) -> str:
     """Read a variable from the .env file when not available in process environment."""
     env_path = Path(INSTALL_DIR) / ".env"
     try:
-        for line in env_path.read_text().splitlines():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
                 return line.split("=", 1)[1].strip().strip("\"'")
-    except OSError:
+    except (OSError, UnicodeError):
         pass
     return ""
 

@@ -599,6 +599,37 @@ def test_owner_public_mode_redirects_to_talk_public_url(magic_link_client, monke
     assert resp.headers["location"] == "https://talk.example.test"
 
 
+def test_owner_public_mode_reads_talk_public_url_from_env_file(
+    magic_link_client, magic_link_module, monkeypatch, tmp_path
+):
+    import config
+
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".env").write_text(
+        "ODS_PUBLIC_URL=https://ods-file.example.test\n"
+        "ODS_TALK_PUBLIC_URL=https://talk-file.example.test\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "INSTALL_DIR", str(install_dir))
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner", "scope": "hermes"},
+        headers=magic_link_client.auth_headers,
+    )
+    data = gen.json()
+    token = data["token"]
+
+    assert data["url_mode"] == "public"
+    assert data["url"].startswith("https://ods-file.example.test/auth/magic-link/")
+
+    resp = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://talk-file.example.test"
+
+
 def test_owner_token_can_be_redeemed_repeatedly_and_revoked(
     magic_link_client, magic_link_module, monkeypatch
 ):
