@@ -3365,13 +3365,30 @@ cmd_agent() {
 
     case "$action" in
         status)
+            # Probe the address the agent actually binds. On Linux that is ods-network's
+            # gateway (see _resolve_agent_bind_addr in bin/ods-host-agent.py), NOT
+            # 127.0.0.1 — defaulting to localhost reported "not responding" for a
+            # perfectly healthy agent, which is worse than saying nothing.
             local bind_addr
             bind_addr="$(grep '^ODS_AGENT_BIND=' "${INSTALL_DIR}/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)"
+            if [[ -z "$bind_addr" && "$(uname -s)" == "Linux" ]]; then
+                bind_addr="$(docker network inspect ods-network \
+                    --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
+                [[ "$bind_addr" == "<no value>" ]] && bind_addr=""
+            fi
             bind_addr="${bind_addr:-127.0.0.1}"
             if curl -sf --max-time 2 "http://${bind_addr}:${port}/health" > /dev/null 2>&1; then
-                success "ODS host agent: running (port ${port}, ${daemon_type})"
+                success "ODS host agent: running (${bind_addr}:${port}, ${daemon_type})"
             else
-                warn "ODS host agent: not responding (port ${port})"
+                warn "ODS host agent: not responding (${bind_addr}:${port})"
+                # A listener on a *different* address means the agent bound a stale
+                # gateway — ods-network was recreated with a new subnet under it.
+                local actual
+                actual="$(ss -ltn 2>/dev/null | awk -v p=":${port}\$" '$4 ~ p {print $4}' | sed -n '1p')"
+                if [[ -n "$actual" ]]; then
+                    warn "  but something IS listening on ${actual} — stale bind address."
+                    warn "  Restart the agent so it rebinds: ods agent restart"
+                fi
             fi
             ;;
         start)
@@ -3382,8 +3399,17 @@ cmd_agent() {
                         success "Agent started (LaunchAgent)" || warn "Agent start failed"
                     ;;
                 systemd)
-                    sudo systemctl start ods-host-agent.service 2>/dev/null && \
-                        success "Agent started (systemd)" || warn "Agent start failed"
+                    # Do NOT swallow stderr: the common failure is sudo being unable to
+                    # prompt for a password with no TTY, and hiding it turns that into a
+                    # bare "Agent start failed" with no way to tell why.
+                    local _out
+                    if _out="$(sudo systemctl start ods-host-agent.service 2>&1)"; then
+                        success "Agent started (systemd)"
+                    else
+                        warn "Agent start failed: ${_out:-<no output>}"
+                        warn "  If sudo could not prompt for a password, run it directly:"
+                        warn "    sudo systemctl start ods-host-agent"
+                    fi
                     ;;
                 *)
                     # Fallback: nohup + PID file
@@ -3408,8 +3434,16 @@ cmd_agent() {
                         success "Agent stopped" || warn "Agent not running"
                     ;;
                 systemd)
-                    sudo systemctl stop ods-host-agent.service 2>/dev/null && \
-                        success "Agent stopped" || warn "Agent not running"
+                    # As with start: surface the real error rather than reporting the
+                    # misleading "Agent not running" when sudo simply could not prompt.
+                    local _out
+                    if _out="$(sudo systemctl stop ods-host-agent.service 2>&1)"; then
+                        success "Agent stopped"
+                    else
+                        warn "Agent stop failed: ${_out:-<no output>}"
+                        warn "  If sudo could not prompt for a password, run it directly:"
+                        warn "    sudo systemctl stop ods-host-agent"
+                    fi
                     ;;
                 *)
                     if [[ -f "$pid_file" ]]; then

@@ -4804,6 +4804,43 @@ def _request_server_shutdown(server, signum=None):
     ).start()
 
 
+# Set on SIGTERM/SIGINT to distinguish a real shutdown from a rebind, which also
+# stops serve_forever(). Without this the serve loop would exit on a rebind, or
+# spin back up after a SIGTERM.
+_SHUTTING_DOWN = threading.Event()
+_REBIND_POLL_SECONDS = 30
+
+
+def _request_shutdown(server, signum=None):
+    """Signal handler: stop serving AND stop the outer rebind loop."""
+    _SHUTTING_DOWN.set()
+    _request_server_shutdown(server, signum)
+
+
+def _watch_for_bind_address_change(server, env, current_addr):
+    """Stop the server when the address we should be bound to changes.
+
+    `ods stop` destroys the compose networks and `ods start` recreates them, so
+    ods-network's gateway can move (e.g. 172.19.0.1 -> 172.18.0.1). We bind that
+    gateway, so when it moves we are left listening on an address no container can
+    reach us at, and every host-agent call fails with ECONNREFUSED — silently, since
+    nothing restarts us. Detect the move and let main()'s loop rebind.
+    """
+    while not _SHUTTING_DOWN.wait(_REBIND_POLL_SECONDS):
+        try:
+            resolved = _resolve_agent_bind_addr(env)
+        except Exception as exc:  # never let the watchdog kill the agent
+            logger.debug("Bind-address re-resolve failed: %s", exc)
+            continue
+        if resolved and resolved != current_addr:
+            logger.warning(
+                "Bind address changed (%s -> %s) — ods-network was probably recreated "
+                "with a new subnet. Rebinding.", current_addr, resolved,
+            )
+            _request_server_shutdown(server)
+            return
+
+
 def main():
     global INSTALL_DIR, DATA_DIR, AGENT_API_KEY, GPU_BACKEND, TIER, GPU_COUNT, CORE_SERVICE_IDS
     global USER_EXTENSIONS_DIR, EXTENSIONS_DIR, ODS_VERSION
@@ -4872,26 +4909,56 @@ def main():
     # containers can reach the agent without exposing it to the LAN. The bridge
     # gateway fallback keeps partial/older installs reachable until phase 11 can
     # restart the service after ods-network exists.
-    bind_addr = _resolve_agent_bind_addr(env)
-
-    server = ThreadedHTTPServer((bind_addr, port), AgentHandler)
-    signal.signal(signal.SIGTERM, lambda signum, _frame: _request_server_shutdown(server, signum))
-    signal.signal(signal.SIGINT, lambda signum, _frame: _request_server_shutdown(server, signum))
-    logger.info("ODS Host Agent v%s listening on %s:%d", VERSION, bind_addr, port)
-    if bind_addr == "0.0.0.0":
-        logger.info(
-            "Bound to all interfaces. Bearer-auth (ODS_AGENT_KEY) is enforced "
-            "on every endpoint. To restrict to a specific interface, set "
-            "ODS_AGENT_BIND=<ip> in %s/.env.",
-            INSTALL_DIR,
-        )
     logger.info("Install dir: %s | GPU: %s | Tier: %s", INSTALL_DIR, GPU_BACKEND, TIER)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        logger.info("Shutting down")
-    finally:
-        server.server_close()
+
+    # Serve, and rebind if ods-network's gateway moves under us. `ods stop` runs
+    # `docker compose down`, which DESTROYS the compose networks; `ods start` recreates
+    # them, and Docker may hand out a different subnet. The bind address we resolved at
+    # startup then points at a gateway that is no longer ods-network's — or worse, now
+    # belongs to some other compose network — and every container calling the agent gets
+    # ECONNREFUSED. Nothing else restarts us, so we heal ourselves.
+    #
+    # Containers re-resolve their side on every start (dashboard-api reads its own default
+    # gateway from /proc/net/route), so only this end was stale.
+    while not _SHUTTING_DOWN.is_set():
+        bind_addr = _resolve_agent_bind_addr(env)
+        try:
+            server = ThreadedHTTPServer((bind_addr, port), AgentHandler)
+        except OSError as exc:
+            logger.error("Cannot bind %s:%d (%s); retrying in %ds",
+                         bind_addr, port, exc, _REBIND_POLL_SECONDS)
+            if _SHUTTING_DOWN.wait(_REBIND_POLL_SECONDS):
+                break
+            continue
+
+        signal.signal(signal.SIGTERM, lambda signum, _frame: _request_shutdown(server, signum))
+        signal.signal(signal.SIGINT, lambda signum, _frame: _request_shutdown(server, signum))
+        logger.info("ODS Host Agent v%s listening on %s:%d", VERSION, bind_addr, port)
+        if bind_addr == "0.0.0.0":
+            logger.info(
+                "Bound to all interfaces. Bearer-auth (ODS_AGENT_KEY) is enforced "
+                "on every endpoint. To restrict to a specific interface, set "
+                "ODS_AGENT_BIND=<ip> in %s/.env.",
+                INSTALL_DIR,
+            )
+
+        watchdog = threading.Thread(
+            target=_watch_for_bind_address_change,
+            args=(server, env, bind_addr),
+            name="ods-host-agent-rebind-watchdog",
+            daemon=True,
+        )
+        watchdog.start()
+
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            _SHUTTING_DOWN.set()
+            logger.info("Shutting down")
+        finally:
+            server.server_close()
+
+    logger.info("ODS Host Agent stopped")
 
 
 if __name__ == "__main__":
