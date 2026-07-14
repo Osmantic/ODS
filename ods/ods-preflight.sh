@@ -288,7 +288,8 @@ log ""
 
 # 8. Dashboard check (replaces LiveKit — more useful for all backends)
 log "[8/8] Checking Dashboard..."
-DASHBOARD_ENDPOINTS=("http://${SERVICE_HOST}:3001" "http://127.0.0.1:3001")
+DASHBOARD_PORT_RESOLVED="${DASHBOARD_PORT:-3001}"
+DASHBOARD_ENDPOINTS=("http://${SERVICE_HOST}:${DASHBOARD_PORT_RESOLVED}" "http://127.0.0.1:${DASHBOARD_PORT_RESOLVED}")
 DASHBOARD_FOUND=false
 
 for ENDPOINT in "${DASHBOARD_ENDPOINTS[@]}"; do
@@ -300,7 +301,7 @@ for ENDPOINT in "${DASHBOARD_ENDPOINTS[@]}"; do
 done
 
 if [ "$DASHBOARD_FOUND" = false ]; then
-    warn "Dashboard not found at port 3001"
+    warn "Dashboard not found at port ${DASHBOARD_PORT_RESOLVED}"
 fi
 log ""
 
