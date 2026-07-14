@@ -78,6 +78,12 @@
       "tokens_per_sec_estimate": 120,
       "llm_model_name": "llama-3.2-3b-instruct",
       "llama_server_image": null,
+      "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-14T01-31Z on strix-halo loaded this model successfully but ODS Talk refused the verification-code prompt instead of answering; keep it out of Talk-required release coverage until revalidated."
+        }
+      },
       "install_recommendation": false
     },
     {
