@@ -1960,7 +1960,17 @@ function Invoke-Enable {
     $disabledPath = Join-Path $svcDir "compose.yaml.disabled"
 
     if (Test-Path $composePath) {
-        Write-AISuccess "$ServiceId is already enabled."
+        # Installer-skipped services also carry a plain compose.yaml but are
+        # absent from .compose-flags -- "already enabled" would be misleading
+        # and the service would never join the stack. Add the missing entry.
+        $flagsFile = Join-Path $InstallDir ".compose-flags"
+        $relPath = "extensions/services/$ServiceId/compose.yaml"
+        if ((Test-Path $flagsFile) -and ((Get-Content $flagsFile -Raw) -notmatch [regex]::Escape($relPath))) {
+            Update-ComposeFlags -AddService $ServiceId
+            Write-AISuccess "$ServiceId enabled (added to compose stack)."
+        } else {
+            Write-AISuccess "$ServiceId is already enabled."
+        }
         Write-AI "Run '.\ods.ps1 start $ServiceId' to launch it."
         return
     }
