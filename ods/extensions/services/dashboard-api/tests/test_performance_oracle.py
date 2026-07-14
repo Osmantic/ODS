@@ -185,6 +185,11 @@ def test_model_payload_projects_explicit_app_compatibility(data_dir, tmp_path):
         "llm_model_name": "phi-4-mini",
         "app_compatibility": {
             "openai_chat": {"status": "verified", "reason": "direct chat passed"},
+            "agent_viability": {
+                "status": "not_agent_viable",
+                "reason": "Agent validation failed",
+                "evidence": "fleet-run/example",
+            },
             "hermes_talk": {"status": "unsupported_until_revalidated", "reason": "Talk proof failed"},
         },
     }]
@@ -193,6 +198,9 @@ def test_model_payload_projects_explicit_app_compatibility(data_dir, tmp_path):
 
     compatibility = payload["models"][0]["appCompatibility"]
     assert compatibility["openaiChat"]["status"] == "verified"
+    assert compatibility["agentViability"]["status"] == "not_agent_viable"
+    assert compatibility["agentViability"]["reason"] == "Agent validation failed"
+    assert compatibility["agentViability"]["evidence"] == "fleet-run/example"
     assert compatibility["hermesTalk"]["status"] == "unsupported_until_revalidated"
     assert compatibility["hermesTalk"]["reason"] == "Talk proof failed"
 

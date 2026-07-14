@@ -238,6 +238,10 @@ test('blocks explicit Talk-incompatible models even when context is high', () =>
       status: 'downloaded',
       contextLength: 128000,
       appCompatibility: {
+        agentViability: {
+          status: 'not_agent_viable',
+          reason: 'Direct chat works, but ODS Talk failed validation.',
+        },
         hermesTalk: {
           status: 'unsupported_until_revalidated',
           reason: 'Direct chat works, but ODS Talk failed validation.',
@@ -248,12 +252,13 @@ test('blocks explicit Talk-incompatible models even when context is high', () =>
 
   renderModels()
 
-  const runButton = screen.getByRole('button', { name: /not talk ready/i })
+  const runButton = screen.getByRole('button', { name: /not agent ready/i })
   expect(runButton).toBeDisabled()
   expect(runButton).toHaveAttribute('title', 'Direct chat works, but ODS Talk failed validation.')
   fireEvent.click(runButton)
   expect(loadModel).not.toHaveBeenCalled()
   expect(screen.getByText('Direct chat only')).toBeInTheDocument()
+  expect(screen.getByText('Agent blocked')).toBeInTheDocument()
 
   const deleteButton = screen.getByRole('button', { name: /delete phi-4 mini$/i })
   expect(deleteButton).toBeEnabled()

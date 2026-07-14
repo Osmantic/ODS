@@ -224,9 +224,50 @@ def _app_compatibility_entry(raw: Any, default_label: str) -> dict[str, Any]:
 
 def model_app_compatibility(model: dict[str, Any]) -> dict[str, Any]:
     raw = model.get("app_compatibility") if isinstance(model.get("app_compatibility"), dict) else {}
+    hermes_talk = _app_compatibility_entry(raw.get("hermes_talk"), "ODS Talk untested")
     return {
         "openaiChat": _app_compatibility_entry(raw.get("openai_chat"), "Direct chat untested"),
-        "hermesTalk": _app_compatibility_entry(raw.get("hermes_talk"), "ODS Talk untested"),
+        "hermesTalk": hermes_talk,
+        "agentViability": _agent_viability_entry(raw.get("agent_viability"), hermes_talk),
+    }
+
+
+def _agent_viability_entry(raw: Any, hermes_talk: dict[str, Any]) -> dict[str, Any]:
+    if raw:
+        return _app_compatibility_entry(raw, "Agent viability untested")
+
+    hermes_status = str((hermes_talk or {}).get("status") or "unknown").strip().lower()
+    hermes_reason = str((hermes_talk or {}).get("reason") or "").strip()
+    hermes_evidence = str((hermes_talk or {}).get("evidence") or "").strip()
+    if hermes_status in {
+        "blocked",
+        "incompatible",
+        "not_recommended",
+        "not_supported",
+        "unsupported",
+        "unsupported_until_revalidated",
+    }:
+        payload = {
+            "status": "not_agent_viable",
+            "label": "Agent viability blocked",
+            "reason": hermes_reason or "This model is not currently viable for agent-required ODS workflows.",
+        }
+        if hermes_evidence:
+            payload["evidence"] = hermes_evidence
+        return payload
+    if hermes_status in {"supported", "verified"}:
+        payload = {
+            "status": "agent_viable",
+            "label": "Agent viable",
+            "reason": hermes_reason,
+        }
+        if hermes_evidence:
+            payload["evidence"] = hermes_evidence
+        return payload
+    return {
+        "status": "unknown",
+        "label": "Agent viability untested",
+        "reason": "",
     }
 
 

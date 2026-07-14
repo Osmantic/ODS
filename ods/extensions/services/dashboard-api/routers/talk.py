@@ -76,6 +76,7 @@ _TALK_BLOCKING_COMPATIBILITY_STATUSES = {
     "not_supported",
     "unsupported",
     "unsupported_until_revalidated",
+    "not_agent_viable",
 }
 
 
@@ -93,6 +94,12 @@ def _active_model_app_compatibility() -> dict[str, Any]:
 
 
 def _hermes_talk_block_reason(compatibility: dict[str, Any]) -> str | None:
+    agent_viability = compatibility.get("agentViability") if isinstance(compatibility, dict) else {}
+    agent_status = str((agent_viability or {}).get("status") or "unknown").strip().lower()
+    if agent_status in _TALK_BLOCKING_COMPATIBILITY_STATUSES:
+        reason = str((agent_viability or {}).get("reason") or "").strip()
+        return reason or "The active model is not currently viable for ODS agent workflows."
+
     hermes_talk = compatibility.get("hermesTalk") if isinstance(compatibility, dict) else {}
     status = str((hermes_talk or {}).get("status") or "unknown").strip().lower()
     if status not in _TALK_BLOCKING_COMPATIBILITY_STATUSES:

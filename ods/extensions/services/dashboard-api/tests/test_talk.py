@@ -47,6 +47,10 @@ def test_talk_status_disables_text_chat_for_incompatible_active_model(talk_clien
 
     monkeypatch.setattr("routers.talk._service_state", fake_state)
     monkeypatch.setattr("routers.talk._active_model_app_compatibility", lambda: {
+        "agentViability": {
+            "status": "not_agent_viable",
+            "reason": "Phi direct chat works, but agent validation failed.",
+        },
         "hermesTalk": {
             "status": "unsupported_until_revalidated",
             "reason": "Phi direct chat works, but ODS Talk is not revalidated.",
@@ -57,7 +61,7 @@ def test_talk_status_disables_text_chat_for_incompatible_active_model(talk_clien
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["capabilities"]["text_chat"] is False
-    assert data["reason"] == "Phi direct chat works, but ODS Talk is not revalidated."
+    assert data["reason"] == "Phi direct chat works, but agent validation failed."
 
 
 def test_talk_message_rejects_incompatible_model_before_hermes(talk_client, monkeypatch):
@@ -69,6 +73,10 @@ def test_talk_message_rejects_incompatible_model_before_hermes(talk_client, monk
 
     monkeypatch.setattr("hermes_bridge.submit_prompt", fake_submit)
     monkeypatch.setattr("routers.talk._active_model_app_compatibility", lambda: {
+        "agentViability": {
+            "status": "not_agent_viable",
+            "reason": "Active model is not agent ready.",
+        },
         "hermesTalk": {
             "status": "unsupported_until_revalidated",
             "reason": "Active model is not Talk ready.",
@@ -77,7 +85,7 @@ def test_talk_message_rejects_incompatible_model_before_hermes(talk_client, monk
 
     resp = talk_client.post("/api/talk/message", json={"text": "hello"})
     assert resp.status_code == 409, resp.text
-    assert resp.json()["detail"] == "Active model is not Talk ready."
+    assert resp.json()["detail"] == "Active model is not agent ready."
     assert calls == []
 
 

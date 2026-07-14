@@ -79,9 +79,15 @@
       "llm_model_name": "llama-3.2-3b-instruct",
       "llama_server_image": null,
       "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-14T01-31Z on strix-halo loaded this model successfully but ODS Talk refused the verification-code prompt instead of answering; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "dream-fleet-test/runs/2026-07-14T01-31-17Z-release-affected-product-4ca225b8-harness-09f8f6f-tower2-strixhalo"
+        },
         "hermes_talk": {
           "status": "unsupported_until_revalidated",
-          "reason": "Fleet model-UI run 2026-07-14T01-31Z on strix-halo loaded this model successfully but ODS Talk refused the verification-code prompt instead of answering; keep it out of Talk-required release coverage until revalidated."
+          "reason": "Fleet model-UI run 2026-07-14T01-31Z on strix-halo loaded this model successfully but ODS Talk refused the verification-code prompt instead of answering; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "dream-fleet-test/runs/2026-07-14T01-31-17Z-release-affected-product-4ca225b8-harness-09f8f6f-tower2-strixhalo"
         }
       },
       "install_recommendation": false

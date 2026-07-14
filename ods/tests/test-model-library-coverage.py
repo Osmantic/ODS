@@ -19,21 +19,30 @@ def _download_artifacts(model):
     }]
 
 
-def _hermes_talk_supported(model):
+BLOCKING_AGENT_STATUSES = {
+    "blocked",
+    "incompatible",
+    "not_agent_viable",
+    "not_recommended",
+    "not_supported",
+    "unsupported",
+    "unsupported_until_revalidated",
+}
+
+
+def _agent_viable_for_release(model):
     compatibility = model.get("app_compatibility") or {}
+    agent = compatibility.get("agent_viability") or {}
+    agent_status = str(agent.get("status") or "").strip().lower()
+    if agent_status in BLOCKING_AGENT_STATUSES:
+        return False
+
     hermes = compatibility.get("hermes_talk") or {}
-    status = str(hermes.get("status") or "").strip().lower()
-    return status not in {
-        "blocked",
-        "incompatible",
-        "not_recommended",
-        "not_supported",
-        "unsupported",
-        "unsupported_until_revalidated",
-    }
+    hermes_status = str(hermes.get("status") or "").strip().lower()
+    return hermes_status not in BLOCKING_AGENT_STATUSES
 
 
-def test_low_vram_catalog_has_six_hermes_compatible_downloadable_models():
+def test_low_vram_catalog_has_six_agent_viable_downloadable_models():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     models = catalog["models"]
     low_vram = [
@@ -41,7 +50,7 @@ def test_low_vram_catalog_has_six_hermes_compatible_downloadable_models():
         for model in models
         if int(model.get("vram_required_gb") or 0) <= 8
         and int(model.get("context_length") or 0) >= HERMES_CONTEXT_FLOOR
-        and _hermes_talk_supported(model)
+        and _agent_viable_for_release(model)
     ]
 
     assert len(low_vram) >= 6
@@ -73,13 +82,15 @@ def test_release_model_switchboard_catalog_ids_exist():
     assert expected <= ids
 
 
-def test_llama32_3b_is_not_hermes_talk_release_candidate():
+def test_llama32_3b_is_not_agent_viable_until_revalidated():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
-    compatibility = by_id["llama3.2-3b-instruct-q4"]["app_compatibility"]["hermes_talk"]
+    compatibility = by_id["llama3.2-3b-instruct-q4"]["app_compatibility"]
 
-    assert compatibility["status"] == "unsupported_until_revalidated"
-    assert not _hermes_talk_supported(by_id["llama3.2-3b-instruct-q4"])
+    assert compatibility["agent_viability"]["status"] == "not_agent_viable"
+    assert compatibility["agent_viability"]["evidence"]
+    assert compatibility["hermes_talk"]["status"] == "unsupported_until_revalidated"
+    assert not _agent_viable_for_release(by_id["llama3.2-3b-instruct-q4"])
 
 
 def test_new_switchboard_models_do_not_change_install_recommendations():

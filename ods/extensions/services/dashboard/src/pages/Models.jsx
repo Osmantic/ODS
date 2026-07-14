@@ -786,10 +786,10 @@ function PrimaryAction({
   if (isDownloaded) {
     const runDisabled = Boolean(runDisabledReason)
     const contextBlocked = isAgentContextDisabledReason(runDisabledReason)
-    const compatibilityBlocked = isHermesTalkBlocked(getHermesTalkCompatibility(model))
+    const compatibilityBlocked = isAgentViabilityBlocked(getAgentViabilityCompatibility(model))
     const buttonLabel = contextBlocked
       ? `Needs ${formatContext(hermesMinimumContext)}`
-      : compatibilityBlocked ? 'Not Talk Ready' : 'Run'
+      : compatibilityBlocked ? 'Not Agent Ready' : 'Run'
     return (
       <span className="inline-flex" title={runDisabledReason || `Run ${model.name}`}>
         <button
@@ -1059,9 +1059,9 @@ function getRunDisabledReason({
   if (minimumContext > 0 && contextLength > 0 && contextLength < minimumContext) {
     return `Hermes Agent requires at least ${formatContext(minimumContext)} context; this model has ${formatContext(contextLength)}.`
   }
-  const talkCompatibility = getHermesTalkCompatibility(model)
-  if (isHermesTalkBlocked(talkCompatibility)) {
-    return talkCompatibility.reason || 'ODS Talk is not currently compatible with this model.'
+  const agentViability = getAgentViabilityCompatibility(model)
+  if (isAgentViabilityBlocked(agentViability)) {
+    return agentViability.reason || 'This model is not currently viable for ODS agent workflows.'
   }
   if (model.fitsVram !== true) {
     const required = Number(model.estimatedRequired || model.vramRequired || 0)
@@ -1293,14 +1293,15 @@ function getCompatibilityMeta(model, memory) {
       tone: nearLimit ? 'amber' : 'red',
     }
   }
-  const talkCompatibility = getHermesTalkCompatibility(model)
-  if (isHermesTalkBlocked(talkCompatibility)) {
+  const agentViability = getAgentViabilityCompatibility(model)
+  if (isAgentViabilityBlocked(agentViability)) {
     return {
       label: 'Direct chat only',
-      detail: 'Talk blocked',
+      detail: 'Agent blocked',
       tone: 'amber',
     }
   }
+  const talkCompatibility = getHermesTalkCompatibility(model)
   if (isHermesTalkVerified(talkCompatibility)) {
     return { label: 'Talk ready', detail: model.recommended || model.status === 'loaded' ? 'Best' : 'Verified', tone: 'green' }
   }
@@ -1315,16 +1316,27 @@ function getHermesTalkCompatibility(model) {
   return model?.appCompatibility?.hermesTalk || null
 }
 
+function getAgentViabilityCompatibility(model) {
+  return model?.appCompatibility?.agentViability || getHermesTalkCompatibility(model)
+}
+
+function isAgentViabilityBlocked(compatibility) {
+  const status = String(compatibility?.status || '').toLowerCase()
+  return ['not_agent_viable', ...BLOCKING_MODEL_COMPATIBILITY_STATUSES].includes(status)
+}
+
+const BLOCKING_MODEL_COMPATIBILITY_STATUSES = [
+  'blocked',
+  'incompatible',
+  'not_recommended',
+  'not_supported',
+  'unsupported',
+  'unsupported_until_revalidated',
+]
+
 function isHermesTalkBlocked(compatibility) {
   const status = String(compatibility?.status || '').toLowerCase()
-  return [
-    'blocked',
-    'incompatible',
-    'not_recommended',
-    'not_supported',
-    'unsupported',
-    'unsupported_until_revalidated',
-  ].includes(status)
+  return BLOCKING_MODEL_COMPATIBILITY_STATUSES.includes(status)
 }
 
 function isHermesTalkVerified(compatibility) {
