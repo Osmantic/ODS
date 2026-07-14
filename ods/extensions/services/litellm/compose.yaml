@@ -11,6 +11,13 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
       - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_API_BASE=${OPENROUTER_API_BASE:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-openrouter/auto}
+      - OPENROUTER_SITE_URL=${OPENROUTER_SITE_URL:-}
+      - OPENROUTER_APP_NAME=${OPENROUTER_APP_NAME:-ODS}
+      - OR_SITE_URL=${OPENROUTER_SITE_URL:-}
+      - OR_APP_NAME=${OPENROUTER_APP_NAME:-ODS}
       - LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-false}
     volumes:
       - ./config/litellm/${ODS_MODE:-local}.yaml:/app/config.yaml:ro,z
@@ -19,19 +26,43 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        if [ "$$LANGFUSE_ENABLED" = "true" ]; then
-          python3 -c "
+        python3 - <<'PY'
+        import os
         import yaml
+
+        def openrouter_litellm_model(raw):
+            model = (raw or "openrouter/auto").strip() or "openrouter/auto"
+            if model in {"openrouter/auto", "openrouter/free"}:
+                return f"openrouter/{model}"
+            if model.startswith("openrouter/"):
+                return model
+            return f"openrouter/{model}"
+
         with open('/app/config.yaml') as f:
             cfg = yaml.safe_load(f)
-        cfg.setdefault('litellm_settings', {})['success_callback'] = ['langfuse']
+
+        if os.environ.get("OPENROUTER_API_KEY"):
+            model_name = os.environ.get("OPENROUTER_MODEL_NAME", "openrouter")
+            model_list = cfg.setdefault("model_list", [])
+            model_list[:] = [
+                item for item in model_list
+                if item.get("model_name") != model_name
+            ]
+            params = {
+                "model": openrouter_litellm_model(os.environ.get("OPENROUTER_MODEL")),
+                "api_key": "os.environ/OPENROUTER_API_KEY",
+            }
+            if os.environ.get("OPENROUTER_API_BASE"):
+                params["api_base"] = os.environ["OPENROUTER_API_BASE"]
+            model_list.append({"model_name": model_name, "litellm_params": params})
+
+        if os.environ.get("LANGFUSE_ENABLED") == "true":
+            cfg.setdefault('litellm_settings', {})['success_callback'] = ['langfuse']
+
         with open('/tmp/config.yaml', 'w') as f:
             yaml.dump(cfg, f, default_flow_style=False)
-        "
-          exec litellm --config /tmp/config.yaml --port 4000
-        else
-          exec litellm --config /app/config.yaml --port 4000
-        fi
+        PY
+        exec litellm --config /tmp/config.yaml --port 4000
     deploy:
       resources:
         limits:

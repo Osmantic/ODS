@@ -9,3 +9,13 @@ services:
     profiles:
       - local-inference
     restart: "no"
+
+  open-webui:
+    environment:
+      OPENAI_API_KEY: "${LITELLM_KEY:-${OPENAI_API_KEY:-}}"
+
+  dashboard-api:
+    environment:
+      - ODS_TALK_VISION_URL=${ODS_TALK_VISION_URL:-http://litellm:4000/v1}
+      - ODS_TALK_VISION_KEY=${ODS_TALK_VISION_KEY:-${LITELLM_KEY:-}}
+      - ODS_TALK_VISION_MODEL=${ODS_TALK_VISION_MODEL:-${LLM_MODEL:-default}}

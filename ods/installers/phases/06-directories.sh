@@ -278,6 +278,67 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         _env_get "$key" "$default"
     }
 
+    _phase06_is_cloud_litellm_alias() {
+        # Keep in sync with config/litellm/cloud.yaml plus the dynamic
+        # OpenRouter alias injected by extensions/services/litellm/compose.yaml.
+        case "${1:-}" in
+            default|gpt4o|fast|openrouter|openrouter-auto|openrouter-free|minimax|minimax-fast)
+                return 0
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    }
+
+    _phase06_select_cloud_llm_model() {
+        local candidate="${1:-}" previous_mode="${2:-}"
+        if [[ -n "$candidate" && "$candidate" != "anthropic/claude-sonnet-4-5-20250514" ]]; then
+            if [[ "$previous_mode" == "cloud" ]] || _phase06_is_cloud_litellm_alias "$candidate"; then
+                printf '%s\n' "$candidate"
+                return
+            fi
+        fi
+        if [[ -n "$OPENROUTER_API_KEY" && -z "$ANTHROPIC_API_KEY" && -z "$OPENAI_API_KEY" && -z "$MINIMAX_API_KEY" ]]; then
+            printf 'openrouter\n'
+        else
+            printf 'default\n'
+        fi
+    }
+
+    _phase06_select_llm_api_url() {
+        local ods_mode_value="${1:-}" default_url="${2:-}" existing_url="${3:-}"
+        if [[ "$ods_mode_value" == "cloud" ]]; then
+            printf 'http://litellm:4000\n'
+        elif [[ -n "$existing_url" ]]; then
+            printf '%s\n' "$existing_url"
+        else
+            printf '%s\n' "$default_url"
+        fi
+    }
+
+    _phase06_select_hermes_llm_base_url() {
+        local ods_mode_value="${1:-}" default_url="${2:-}" existing_url="${3:-}"
+        if [[ "$ods_mode_value" == "cloud" ]]; then
+            printf 'http://litellm:4000/v1\n'
+        elif [[ -n "$existing_url" ]]; then
+            printf '%s\n' "$existing_url"
+        else
+            printf '%s\n' "$default_url"
+        fi
+    }
+
+    _phase06_select_hermes_llm_api_key() {
+        local ods_mode_value="${1:-}" default_key="${2:-}" existing_key="${3:-}"
+        if [[ "$ods_mode_value" == "cloud" ]]; then
+            printf '%s\n' "$default_key"
+        elif [[ -n "$existing_key" ]]; then
+            printf '%s\n' "$existing_key"
+        else
+            printf '%s\n' "$default_key"
+        fi
+    }
+
     _phase06_detect_lemonade_url() {
         command -v curl >/dev/null 2>&1 || return 1
         local candidate
@@ -456,7 +517,7 @@ raise SystemExit(1)' 2>/dev/null && return 0
     MODEL_PROFILE_VALUE=$(_env_get MODEL_PROFILE "${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}")
     ODS_MODE_VALUE="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo "${ODS_MODE:-local}"; fi)"
     _default_llm_api_url="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "http://litellm:4000"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "http://litellm:4000"; elif [[ "${ODS_MODE:-local}" == "local" ]]; then echo "http://llama-server:8080"; else echo "http://litellm:4000"; fi)"
-    LLM_API_URL_VALUE=$(_env_get LLM_API_URL "$_default_llm_api_url")
+    LLM_API_URL_VALUE="$(_phase06_select_llm_api_url "$ODS_MODE_VALUE" "$_default_llm_api_url" "$(_env_get LLM_API_URL "")")"
     if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
         _default_hermes_base_url="http://litellm:4000/v1"
         _default_hermes_api_key="${LITELLM_KEY}"
@@ -467,8 +528,8 @@ raise SystemExit(1)' 2>/dev/null && return 0
         _default_hermes_base_url="http://llama-server:8080/v1"
         _default_hermes_api_key="sk-ods-hermes-local"
     fi
-    HERMES_LLM_BASE_URL_VALUE=$(_env_get HERMES_LLM_BASE_URL "$_default_hermes_base_url")
-    HERMES_LLM_API_KEY_VALUE=$(_env_get HERMES_LLM_API_KEY "$_default_hermes_api_key")
+    HERMES_LLM_BASE_URL_VALUE="$(_phase06_select_hermes_llm_base_url "$ODS_MODE_VALUE" "$_default_hermes_base_url" "$(_env_get HERMES_LLM_BASE_URL "")")"
+    HERMES_LLM_API_KEY_VALUE="$(_phase06_select_hermes_llm_api_key "$ODS_MODE_VALUE" "$_default_hermes_api_key" "$(_env_get HERMES_LLM_API_KEY "")")"
     LLM_API_URL="$LLM_API_URL_VALUE"
     HERMES_LLM_BASE_URL="$HERMES_LLM_BASE_URL_VALUE"
     HERMES_LLM_API_KEY="$HERMES_LLM_API_KEY_VALUE"
@@ -624,6 +685,21 @@ raise SystemExit(1)' 2>/dev/null && return 0
     OPENAI_API_KEY=$(_env_get OPENAI_API_KEY "${OPENAI_API_KEY:-}")
     TOGETHER_API_KEY=$(_env_get TOGETHER_API_KEY "${TOGETHER_API_KEY:-}")
     MINIMAX_API_KEY=$(_env_get MINIMAX_API_KEY "${MINIMAX_API_KEY:-}")
+    OPENROUTER_API_KEY=$(_env_get OPENROUTER_API_KEY "${OPENROUTER_API_KEY:-}")
+    OPENROUTER_API_BASE=$(_env_get OPENROUTER_API_BASE "${OPENROUTER_API_BASE:-}")
+    OPENROUTER_MODEL=$(_env_get OPENROUTER_MODEL "${OPENROUTER_MODEL:-openrouter/auto}")
+    OPENROUTER_SITE_URL=$(_env_get OPENROUTER_SITE_URL "${OPENROUTER_SITE_URL:-}")
+    OPENROUTER_APP_NAME=$(_env_get OPENROUTER_APP_NAME "${OPENROUTER_APP_NAME:-ODS}")
+    if [[ "$ODS_MODE_VALUE" == "cloud" ]]; then
+        _existing_llm_model="$(_env_get LLM_MODEL "")"
+        _existing_ods_mode="$(_env_get ODS_MODE "")"
+        LLM_MODEL="$(_phase06_select_cloud_llm_model "$_existing_llm_model" "$_existing_ods_mode")"
+        MODEL_RECOMMENDATION_SOURCE="cloud_provider_alias"
+        MODEL_RECOMMENDATION_POLICY="litellm-cloud-provider"
+        MODEL_RECOMMENDATION_CONFIDENCE="high"
+        MODEL_RECOMMENDATION_REASON="Selected LiteLLM cloud alias ${LLM_MODEL}; change LLM_MODEL or provider keys to use a different cloud route."
+        unset _existing_llm_model _existing_ods_mode
+    fi
     # Base64-encode GPU assignment JSON for safe .env storage
     if [[ -n "${GPU_ASSIGNMENT_JSON:-}" && "${GPU_ASSIGNMENT_JSON:-}" != "{}" ]]; then
         GPU_ASSIGNMENT_JSON_B64=$(echo "$GPU_ASSIGNMENT_JSON" | jq -c '.' | base64 -w0)
@@ -659,7 +735,7 @@ HOST_LAN_IP=${HOST_LAN_IP}
 #=== LLM Backend Mode ===
 ODS_MODE=${ODS_MODE_VALUE}
 LLM_API_URL=${LLM_API_URL_VALUE}
-LLM_BACKEND=$(if [[ "$ODS_MODE_VALUE" == "lemonade" ]]; then echo "lemonade"; else echo "llama-server"; fi)
+LLM_BACKEND=$(if [[ "$ODS_MODE_VALUE" == "lemonade" ]]; then echo "lemonade"; elif [[ "$ODS_MODE_VALUE" == "cloud" ]]; then echo "litellm"; else echo "llama-server"; fi)
 LLM_API_BASE_PATH=$(if [[ "$ODS_MODE_VALUE" == "lemonade" ]]; then echo "${LEMONADE_API_BASE_PATH_VALUE}"; else echo "/v1"; fi)
 AMD_INFERENCE_RUNTIME=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" || ( "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ) ]]; then echo "lemonade"; else echo ""; fi)
 AMD_INFERENCE_BACKEND=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_BACKEND:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
@@ -679,6 +755,11 @@ ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 OPENAI_API_KEY=${OPENAI_API_KEY:-}
 TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
 MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
+OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+OPENROUTER_API_BASE=${OPENROUTER_API_BASE:-}
+OPENROUTER_MODEL=${OPENROUTER_MODEL:-openrouter/auto}
+OPENROUTER_SITE_URL=${OPENROUTER_SITE_URL:-}
+OPENROUTER_APP_NAME=${OPENROUTER_APP_NAME:-ODS}
 
 #=== Service Auth (LiteLLM proxy) ===
 TARGET_API_KEY=not-needed

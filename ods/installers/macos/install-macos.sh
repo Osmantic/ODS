@@ -1322,11 +1322,13 @@ else
     COMPOSE_FLAGS=("-f" "docker-compose.base.yml")
 
     if $CLOUD_MODE; then
-        # Cloud mode: disable llama-server container
-        COMPOSE_FLAGS+=("-f" "installers/macos/docker-compose.macos.yml")
+        # Cloud mode: disable llama-server container and route clients through LiteLLM.
+        COMPOSE_FLAGS+=("-f" "docker-compose.cloud.yml")
+        COMPOSE_FLAGS+=("-f" "installers/macos/docker-compose.macos.cloud.yml")
     else
         # Normal macOS mode: native llama-server
         COMPOSE_FLAGS+=("-f" "installers/macos/docker-compose.macos.yml")
+        COMPOSE_FLAGS+=("--profile" "local-inference")
     fi
 
     # Discover enabled extension compose fragments via manifests

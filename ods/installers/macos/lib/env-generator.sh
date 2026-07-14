@@ -148,6 +148,34 @@ detect_device_name() {
     sanitize_device_name "$raw"
 }
 
+is_cloud_litellm_alias() {
+    # Keep in sync with config/litellm/cloud.yaml plus the dynamic OpenRouter
+    # alias injected by extensions/services/litellm/compose.yaml.
+    case "${1:-}" in
+        default|gpt4o|fast|openrouter|openrouter-auto|openrouter-free|minimax|minimax-fast)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+select_cloud_llm_model() {
+    local candidate="${1:-}" previous_mode="${2:-}"
+    if [[ -n "$candidate" && "$candidate" != "anthropic/claude-sonnet-4-5-20250514" ]]; then
+        if [[ "$previous_mode" == "cloud" ]] || is_cloud_litellm_alias "$candidate"; then
+            printf '%s\n' "$candidate"
+            return
+        fi
+    fi
+    if [[ -n "${OPENROUTER_API_KEY:-}" && -z "${ANTHROPIC_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" && -z "${MINIMAX_API_KEY:-}" ]]; then
+        printf 'openrouter\n'
+    else
+        printf 'default\n'
+    fi
+}
+
 # Detect system timezone (macOS-specific)
 detect_timezone() {
     local tz=""
@@ -275,6 +303,43 @@ generate_ods_env() {
                 upsert_env_value "$env_path" "HOST_LAN_IP" "$_host_lan_ip"
             fi
         fi
+
+        if [[ "${CLOUD_MODE:-false}" == "true" ]]; then
+            local _previous_ods_mode _cloud_llm_candidate _cloud_llm_model _cloud_litellm_key
+            _previous_ods_mode="$(read_env_value "$env_path" "ODS_MODE")"
+            _cloud_llm_candidate="${LLM_MODEL:-$(read_env_value "$env_path" "LLM_MODEL")}"
+            _cloud_llm_model="$(select_cloud_llm_model "$_cloud_llm_candidate" "$_previous_ods_mode")"
+            _cloud_litellm_key="${HERMES_LLM_API_KEY:-$(read_env_value "$env_path" "LITELLM_KEY")}"
+
+            upsert_env_value "$env_path" "ODS_MODE" "cloud"
+            upsert_env_value "$env_path" "LLM_BACKEND" "litellm"
+            upsert_env_value "$env_path" "LLM_API_URL" "http://litellm:4000"
+            upsert_env_value "$env_path" "ANTHROPIC_API_KEY" "${ANTHROPIC_API_KEY:-$(read_env_value "$env_path" "ANTHROPIC_API_KEY")}"
+            upsert_env_value "$env_path" "OPENAI_API_KEY" "${OPENAI_API_KEY:-$(read_env_value "$env_path" "OPENAI_API_KEY")}"
+            upsert_env_value "$env_path" "TOGETHER_API_KEY" "${TOGETHER_API_KEY:-$(read_env_value "$env_path" "TOGETHER_API_KEY")}"
+            upsert_env_value "$env_path" "MINIMAX_API_KEY" "${MINIMAX_API_KEY:-$(read_env_value "$env_path" "MINIMAX_API_KEY")}"
+            upsert_env_value "$env_path" "OPENROUTER_API_KEY" "${OPENROUTER_API_KEY:-$(read_env_value "$env_path" "OPENROUTER_API_KEY")}"
+            upsert_env_value "$env_path" "OPENROUTER_API_BASE" "${OPENROUTER_API_BASE:-$(read_env_value "$env_path" "OPENROUTER_API_BASE")}"
+            upsert_env_value "$env_path" "OPENROUTER_MODEL" "${OPENROUTER_MODEL:-$(read_env_value "$env_path" "OPENROUTER_MODEL")}"
+            upsert_env_value "$env_path" "OPENROUTER_SITE_URL" "${OPENROUTER_SITE_URL:-$(read_env_value "$env_path" "OPENROUTER_SITE_URL")}"
+            upsert_env_value "$env_path" "OPENROUTER_APP_NAME" "${OPENROUTER_APP_NAME:-$(read_env_value "$env_path" "OPENROUTER_APP_NAME")}"
+            if [[ -z "$(read_env_value "$env_path" "OPENROUTER_MODEL")" ]]; then
+                upsert_env_value "$env_path" "OPENROUTER_MODEL" "openrouter/auto"
+            fi
+            if [[ -z "$(read_env_value "$env_path" "OPENROUTER_APP_NAME")" ]]; then
+                upsert_env_value "$env_path" "OPENROUTER_APP_NAME" "ODS"
+            fi
+            upsert_env_value "$env_path" "LLM_MODEL" "$_cloud_llm_model"
+            upsert_env_value "$env_path" "MODEL_RECOMMENDED_MODEL" "$_cloud_llm_model"
+            upsert_env_value "$env_path" "MODEL_RECOMMENDATION_SOURCE" "cloud_provider_alias"
+            upsert_env_value "$env_path" "MODEL_RECOMMENDATION_POLICY" "litellm-cloud-provider"
+            upsert_env_value "$env_path" "MODEL_RECOMMENDATION_CONFIDENCE" "high"
+            upsert_env_value "$env_path" "MODEL_RECOMMENDATION_REASON" "Selected LiteLLM cloud alias ${_cloud_llm_model}; change LLM_MODEL or provider keys to use a different cloud route."
+            upsert_env_value "$env_path" "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
+            if [[ -n "$_cloud_litellm_key" ]]; then
+                upsert_env_value "$env_path" "HERMES_LLM_API_KEY" "$_cloud_litellm_key"
+            fi
+        fi
         return 0
     fi
 
@@ -345,8 +410,38 @@ generate_ods_env() {
     langfuse_init_project_id=$(new_secure_hex 16)
     local langfuse_init_user_password
     langfuse_init_user_password=$(new_secure_hex 16)
-    # macOS: llama-server runs natively, containers reach it via host.docker.internal
+    # macOS: local mode runs llama-server natively, containers reach it via
+    # host.docker.internal. Cloud mode routes every OpenAI-compatible client
+    # through the LiteLLM gateway, matching Linux/Windows provider mode.
+    local ods_mode_value="local"
+    local llm_backend_value="llama-server"
     local llm_api_url="http://host.docker.internal:8080"
+    local hermes_llm_base_url="http://host.docker.internal:8080/v1"
+    local hermes_llm_api_key="sk-ods-hermes-local"
+    if [[ "${CLOUD_MODE:-false}" == "true" ]]; then
+        ods_mode_value="cloud"
+        llm_backend_value="litellm"
+        llm_api_url="http://litellm:4000"
+        hermes_llm_base_url="http://litellm:4000/v1"
+        hermes_llm_api_key="${HERMES_LLM_API_KEY:-${litellm_key}}"
+        local cloud_llm_candidate="${LLM_MODEL:-}"
+        local previous_ods_mode=""
+        if [[ -f "$env_path" ]]; then
+            previous_ods_mode="$(read_env_value "$env_path" "ODS_MODE")"
+            if [[ "$previous_ods_mode" == "cloud" ]]; then
+                local previous_llm_model
+                previous_llm_model="$(read_env_value "$env_path" "LLM_MODEL")"
+                if [[ -n "$previous_llm_model" ]]; then
+                    cloud_llm_candidate="$previous_llm_model"
+                fi
+            fi
+        fi
+        LLM_MODEL="$(select_cloud_llm_model "$cloud_llm_candidate" "$previous_ods_mode")"
+        MODEL_RECOMMENDATION_SOURCE="${MODEL_RECOMMENDATION_SOURCE:-cloud_provider_alias}"
+        MODEL_RECOMMENDATION_POLICY="${MODEL_RECOMMENDATION_POLICY:-litellm-cloud-provider}"
+        MODEL_RECOMMENDATION_CONFIDENCE="${MODEL_RECOMMENDATION_CONFIDENCE:-high}"
+        MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON:-Selected LiteLLM cloud alias ${LLM_MODEL}; change LLM_MODEL or provider keys to use a different cloud route.}"
+    fi
 
     # Host LAN IP — only populated when the operator has pre-set
     # BIND_ADDRESS=0.0.0.0 in the environment (macOS has no --lan flag).
@@ -381,14 +476,20 @@ ODS_DEVICE_NAME=${device_name}
 ODS_AGENT_HOST=${ODS_AGENT_HOST:-host.docker.internal}
 
 #=== LLM Backend Mode ===
-ODS_MODE=local
+ODS_MODE=${ods_mode_value}
+LLM_BACKEND=${llm_backend_value}
 LLM_API_URL=${llm_api_url}
 
 #=== Cloud API Keys ===
-ANTHROPIC_API_KEY=
-OPENAI_API_KEY=
-TOGETHER_API_KEY=
-MINIMAX_API_KEY=
+ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+OPENAI_API_KEY=${OPENAI_API_KEY:-}
+TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
+OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+OPENROUTER_API_BASE=${OPENROUTER_API_BASE:-}
+OPENROUTER_MODEL=${OPENROUTER_MODEL:-openrouter/auto}
+OPENROUTER_SITE_URL=${OPENROUTER_SITE_URL:-}
+OPENROUTER_APP_NAME=${OPENROUTER_APP_NAME:-ODS}
 
 #=== LLM Settings (llama-server -- native Metal) ===
 MODEL_PROFILE=${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}
@@ -447,9 +548,10 @@ OPENCLAW_PORT=7860
 LANGFUSE_PORT=3006
 
 #=== Hermes Agent ===
-# macOS runs llama-server natively with Metal; containers reach it via host.docker.internal.
-HERMES_LLM_BASE_URL=http://host.docker.internal:8080/v1
-HERMES_LLM_API_KEY=sk-ods-hermes-local
+# Local macOS routes Hermes to the native Metal llama-server; cloud mode routes
+# Hermes through LiteLLM so OpenRouter/OpenAI/Anthropic provider aliases work.
+HERMES_LLM_BASE_URL=${hermes_llm_base_url}
+HERMES_LLM_API_KEY=${hermes_llm_api_key}
 HERMES_LANGUAGE=en
 HERMES_PROXY_PORT=9120
 HERMES_PROXY_UPSTREAM=ods-hermes:9119
