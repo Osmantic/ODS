@@ -54,12 +54,19 @@ fi
 # 3. Runs without shell error (default output path)
 TEMP_REPORT=$(mktemp /tmp/ods-doctor-test.XXXXXX.json)
 REAL_ENV="$ROOT_DIR/.env"
+ORIGINAL_ENV_EXISTED=false
+if [[ -f "$REAL_ENV" ]]; then
+    ORIGINAL_ENV_EXISTED=true
+fi
 ENV_BACKUP_PATH=""
 TEST_TEMP_WORKSPACE=""
+FIXTURE_ACTIVE=false
 
 cleanup() {
     if [[ -n "$ENV_BACKUP_PATH" ]] && [[ -f "$ENV_BACKUP_PATH" ]]; then
         mv "$ENV_BACKUP_PATH" "$REAL_ENV"
+    elif [[ "$FIXTURE_ACTIVE" == "true" ]]; then
+        rm -f "$REAL_ENV"
     fi
     rm -f "$TEMP_REPORT" /tmp/curl_calls.log
     if [[ -n "$TEST_TEMP_WORKSPACE" ]] && [[ -d "$TEST_TEMP_WORKSPACE" ]]; then
@@ -279,8 +286,10 @@ EOF
     chmod +x "$TEST_TEMP_WORKSPACE/bin/curl"
 
     # Backup real .env using a unique file name and set global tracker
-    ENV_BACKUP_PATH=$(mktemp /tmp/ods-env-backup.XXXXXX)
+    ENV_BACKUP_PATH=""
+    FIXTURE_ACTIVE=true
     if [[ -f "$REAL_ENV" ]]; then
+        ENV_BACKUP_PATH=$(mktemp /tmp/ods-env-backup.XXXXXX)
         mv "$REAL_ENV" "$ENV_BACKUP_PATH"
     fi
 
@@ -312,12 +321,13 @@ EOF
     fi
 
     # Restore original env immediately
-    if [[ -f "$ENV_BACKUP_PATH" ]]; then
+    if [[ -n "$ENV_BACKUP_PATH" ]] && [[ -f "$ENV_BACKUP_PATH" ]]; then
         mv "$ENV_BACKUP_PATH" "$REAL_ENV"
     else
         rm -f "$REAL_ENV"
     fi
     ENV_BACKUP_PATH=""
+    FIXTURE_ACTIVE=false
 
     # Clean up temp workspace and curl calls log immediately
     rm -rf "$TEST_TEMP_WORKSPACE"
@@ -347,8 +357,10 @@ fi
 # 13. Cloud mode LLM backend check validation (no external LLM url configured)
 if command -v jq >/dev/null 2>&1; then
     # Backup real .env using a unique file name and set global tracker
-    ENV_BACKUP_PATH=$(mktemp /tmp/ods-env-backup.XXXXXX)
+    ENV_BACKUP_PATH=""
+    FIXTURE_ACTIVE=true
     if [[ -f "$REAL_ENV" ]]; then
+        ENV_BACKUP_PATH=$(mktemp /tmp/ods-env-backup.XXXXXX)
         mv "$REAL_ENV" "$ENV_BACKUP_PATH"
     fi
 
@@ -371,12 +383,13 @@ EOF
     llama_hint=$(jq -r '.autofix_hints[] | select(contains("llama-server") or contains("LLM backend"))' "$TEMP_REPORT" 2>/dev/null || true)
 
     # Restore original env immediately
-    if [[ -f "$ENV_BACKUP_PATH" ]]; then
+    if [[ -n "$ENV_BACKUP_PATH" ]] && [[ -f "$ENV_BACKUP_PATH" ]]; then
         mv "$ENV_BACKUP_PATH" "$REAL_ENV"
     else
         rm -f "$REAL_ENV"
     fi
     ENV_BACKUP_PATH=""
+    FIXTURE_ACTIVE=false
 
     # Perform assertions
     if [[ "$status" == "ok" ]] && [[ "$provider" == "cloud" ]] && [[ -z "$llama_hint" ]]; then
@@ -404,8 +417,10 @@ EOF
     chmod +x "$TEST_TEMP_WORKSPACE/bin/curl"
 
     # Backup real .env using a unique file name and set global tracker
-    ENV_BACKUP_PATH=$(mktemp /tmp/ods-env-backup.XXXXXX)
+    ENV_BACKUP_PATH=""
+    FIXTURE_ACTIVE=true
     if [[ -f "$REAL_ENV" ]]; then
+        ENV_BACKUP_PATH=$(mktemp /tmp/ods-env-backup.XXXXXX)
         mv "$REAL_ENV" "$ENV_BACKUP_PATH"
     fi
 
@@ -432,12 +447,13 @@ EOF
     fi
 
     # Restore original env immediately
-    if [[ -f "$ENV_BACKUP_PATH" ]]; then
+    if [[ -n "$ENV_BACKUP_PATH" ]] && [[ -f "$ENV_BACKUP_PATH" ]]; then
         mv "$ENV_BACKUP_PATH" "$REAL_ENV"
     else
         rm -f "$REAL_ENV"
     fi
     ENV_BACKUP_PATH=""
+    FIXTURE_ACTIVE=false
 
     # Clean up temp workspace and curl calls log immediately
     rm -rf "$TEST_TEMP_WORKSPACE"
@@ -465,8 +481,10 @@ fi
 # 15. Cloud mode LLM backend check validation with non-host-probeable URL (CRLF env)
 if command -v jq >/dev/null 2>&1; then
     # Backup real .env using a unique file name and set global tracker
-    ENV_BACKUP_PATH=$(mktemp /tmp/ods-env-backup.XXXXXX)
+    ENV_BACKUP_PATH=""
+    FIXTURE_ACTIVE=true
     if [[ -f "$REAL_ENV" ]]; then
+        ENV_BACKUP_PATH=$(mktemp /tmp/ods-env-backup.XXXXXX)
         mv "$REAL_ENV" "$ENV_BACKUP_PATH"
     fi
 
@@ -485,12 +503,13 @@ if command -v jq >/dev/null 2>&1; then
     url=$(jq -r '.runtime.llm_backend.url' "$TEMP_REPORT")
 
     # Restore original env immediately
-    if [[ -f "$ENV_BACKUP_PATH" ]]; then
+    if [[ -n "$ENV_BACKUP_PATH" ]] && [[ -f "$ENV_BACKUP_PATH" ]]; then
         mv "$ENV_BACKUP_PATH" "$REAL_ENV"
     else
         rm -f "$REAL_ENV"
     fi
     ENV_BACKUP_PATH=""
+    FIXTURE_ACTIVE=false
 
     # Perform assertions
     if [[ "$status" == "ok" ]] && \
@@ -502,6 +521,14 @@ if command -v jq >/dev/null 2>&1; then
     fi
 else
     skip "jq not available - skipping cloud mode non-host-probeable URL check"
+fi
+# Final check to verify we did not leak/leave behind an empty .env file if it did not exist initially.
+if [[ "$ORIGINAL_ENV_EXISTED" == "false" ]]; then
+    if [[ -f "$REAL_ENV" ]]; then
+        fail "Cleanup verification: left a .env file behind"
+    else
+        pass "Cleanup verification: no .env file left behind"
+    fi
 fi
 
 echo ""
