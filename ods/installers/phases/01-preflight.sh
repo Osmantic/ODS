@@ -103,28 +103,21 @@ _ods_truthy() {
     esac
 }
 
-if [[ ! -d "$INSTALL_DIR" ]] && ! _ods_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-${ODS_ALLOW_DREAMSERVER_PARALLEL:-}}"; then
-    _pre_ods_install_dir="${ODS_LEGACY_INSTALL_DIR:-${DREAMSERVER_INSTALL_DIR:-$HOME/dream-server}}"
+if [[ ! -d "$INSTALL_DIR" ]] && ! _ods_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}"; then
+    _pre_ods_install_dir="${ODS_LEGACY_INSTALL_DIR:-}"
     _pre_ods_findings=()
-    if [[ -d "$_pre_ods_install_dir" ]] && {
+    if [[ -n "$_pre_ods_install_dir" && -d "$_pre_ods_install_dir" ]] && {
         [[ -f "$_pre_ods_install_dir/.env" ]] ||
-        [[ -f "$_pre_ods_install_dir/dream-cli" ]] ||
         [[ -f "$_pre_ods_install_dir/docker-compose.yml" ]] ||
         [[ -d "$_pre_ods_install_dir/data" ]]
     }; then
         _pre_ods_findings+=("install directory: $_pre_ods_install_dir")
     fi
-    if command -v docker >/dev/null 2>&1; then
-        _pre_ods_containers=$(docker ps -a --filter "name=^/dream-" --format '{{.Names}}' 2>/dev/null || true)
-        _pre_ods_volumes=$(docker volume ls --filter "name=dream" --format '{{.Name}}' 2>/dev/null || true)
-        [[ -n "$_pre_ods_containers" ]] && _pre_ods_findings+=("containers: $(echo "$_pre_ods_containers" | tr '\n' ' ')")
-        [[ -n "$_pre_ods_volumes" ]] && _pre_ods_findings+=("volumes: $(echo "$_pre_ods_volumes" | tr '\n' ' ')")
-    fi
     if (( ${#_pre_ods_findings[@]} > 0 )); then
         printf '%s\n' "${_pre_ods_findings[@]}" | sed 's/^/[pre-ODS install] /' >&2
         error "Existing pre-ODS install detected before first ODS install. Stop, uninstall, or migrate the older stack first. To run both intentionally, set ODS_ALLOW_LEGACY_PARALLEL=1 and choose non-conflicting ports/install paths."
     fi
-    unset _pre_ods_install_dir _pre_ods_findings _pre_ods_containers _pre_ods_volumes
+    unset _pre_ods_install_dir _pre_ods_findings
 fi
 
 # Existing installation — update in place (secrets and data are preserved)

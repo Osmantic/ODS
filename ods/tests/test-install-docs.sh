@@ -32,6 +32,43 @@ require_literal() {
         || fail "$description missing from ${file#"$REPO_ROOT"/}"
 }
 
+assert_no_retired_names() {
+    python3 - "$REPO_ROOT" <<'PY'
+import base64
+import subprocess
+import sys
+
+repo_root = sys.argv[1]
+patterns = [
+    base64.b64decode("ZHJlYW0=").decode("ascii"),
+    (
+        base64.b64decode("bGlnaHQ=").decode("ascii")
+        + r"[[:space:]_.-]*"
+        + base64.b64decode("aGVhcnQ=").decode("ascii")
+    ),
+]
+
+matches = []
+for pattern in patterns:
+    result = subprocess.run(
+        ["git", "-C", repo_root, "grep", "-n", "-I", "-i", "-E", pattern, "--", "."],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode not in (0, 1):
+        print(result.stderr, file=sys.stderr)
+        raise SystemExit(result.returncode)
+    if result.stdout:
+        matches.append(result.stdout.rstrip())
+
+if matches:
+    print("[FAIL] Retired product or organization references remain:")
+    print("\n".join(matches))
+    raise SystemExit(1)
+PY
+}
+
 install_docs=(
     "$REPO_ROOT/README.md"
     "$ROOT_DIR/README.md"
@@ -68,31 +105,7 @@ for file in "${compatible_ref_docs[@]}"; do
     require_literal "$file" 'compatible ref with `ODS_REF`' "Compatible bootstrap ref guidance"
 done
 
-legacy_brand_matches="$(
-    git -C "$REPO_ROOT" grep -n -I -i -E \
-        'light[-_ ]?heart[-_ ]?labs' \
-        -- . ':!ods/tests/test-install-docs.sh' || true
-)"
-unexpected_legacy_brand_matches=""
-while IFS= read -r match; do
-    [[ -n "$match" ]] || continue
-    case "$match" in
-        SECURITY_AUDIT.md:*'`Light-Heart-Labs/ODS` public repository as named at audit time'*) ;;
-        installer/src-tauri/src/installer.rs:*'const TRANSFERRED_REPO_URL: &str = "https://github.com/Light-Heart-Labs/ODS.git";'*) ;;
-        *) unexpected_legacy_brand_matches+="${match}"$'\n' ;;
-    esac
-done <<<"$legacy_brand_matches"
-if [[ -n "$unexpected_legacy_brand_matches" ]]; then
-    echo "[FAIL] Unexpected legacy organization references remain:"
-    printf '%s' "$unexpected_legacy_brand_matches"
-    exit 1
-fi
-require_literal "$REPO_ROOT/SECURITY_AUDIT.md" \
-    '`Light-Heart-Labs/ODS` public repository as named at audit time' \
-    "Historical audit scope"
-require_literal "$REPO_ROOT/installer/src-tauri/src/installer.rs" \
-    'const TRANSFERRED_REPO_URL: &str = "https://github.com/Light-Heart-Labs/ODS.git";' \
-    "Transferred checkout compatibility"
+assert_no_retired_names
 
 trust_doc="$ROOT_DIR/docs/INSTALLER_TRUST.md"
 release_doc="$ROOT_DIR/docs/RELEASE_CHANNELS.md"
@@ -108,48 +121,5 @@ require_literal "$trust_doc" 'predates that repository layout' "Stable layout gu
 if grep -qF "ODS_REF=$STABLE_TAG" "$REPO_ROOT/README.md" "$trust_doc"; then
     fail "$STABLE_TAG must not be documented through the incompatible sparse-checkout bootstrap"
 fi
-
-legacy_product_doc_matches="$(
-    git -C "$REPO_ROOT" grep -n -I -i -E \
-        'dream[ _-]?server|dreamserver|dream[ _-]?fleet' \
-        -- README.md ods/README.md ods/QUICKSTART.md ods/docs || true
-)"
-if [[ -n "$legacy_product_doc_matches" ]]; then
-    echo "[FAIL] Legacy product branding remains in public documentation:"
-    echo "$legacy_product_doc_matches"
-    exit 1
-fi
-
-legacy_product_files="$(
-    git -C "$REPO_ROOT" grep -l -I -i -E \
-        'dream[ _-]?server|dreamserver|dream[ _-]?fleet' \
-        -- . ':!ods/tests/test-install-docs.sh' | sort || true
-)"
-expected_legacy_product_files="$(
-    printf '%s\n' \
-        .gitleaksignore \
-        ods/get-ods.sh \
-        ods/installers/phases/01-preflight.sh \
-        ods/installers/windows/install-windows.ps1 \
-        ods/tests/contracts/test-amd-lemonade-contracts.sh \
-        ods/tests/contracts/test-installer-contracts.sh \
-        ods/tests/fleet-incus-vm.sh \
-        ods/tests/fleet-multi-distro.sh \
-        ods/tests/test-fleet-host-lock.sh |
-        sort
-)"
-if [[ "$legacy_product_files" != "$expected_legacy_product_files" ]]; then
-    echo "[FAIL] Legacy product identifiers must remain confined to compatibility fingerprints"
-    printf '%s\n' "$legacy_product_files"
-    exit 1
-fi
-
-for fleet_script in \
-    "$ROOT_DIR/tests/fleet-incus-vm.sh" \
-    "$ROOT_DIR/tests/fleet-multi-distro.sh"; do
-    if bash "$fleet_script" --help | grep -qiE 'dream[ _-]?server|dreamserver|dream[ _-]?fleet'; then
-        fail "Legacy product branding exposed by ${fleet_script#"$REPO_ROOT"/} --help"
-    fi
-done
 
 pass "Install commands and provenance guidance are consistent"

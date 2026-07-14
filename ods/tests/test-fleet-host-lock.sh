@@ -49,9 +49,6 @@ if [[ -n "${ODS_FLEET_TEST_ROOT:-}" ]]; then
     if [[ "$LOCK_FILE" == "/tmp/ods-fleet-heavy.lock" ]]; then
         LOCK_FILE="$ODS_FLEET_TEST_ROOT/ods-fleet-heavy.lock"
     fi
-    if [[ "$PRE_ODS_DEFAULT_LOCK" == "/tmp/dream-fleet-heavy.lock" ]]; then
-        PRE_ODS_DEFAULT_LOCK="$ODS_FLEET_TEST_ROOT/dream-fleet-heavy.lock"
-    fi
 fi
 
 acquire_host_lock
@@ -90,17 +87,14 @@ for source_file in \
     mkdir -p "$default_dir"
     (
         unset ODS_FLEET_HOST_LOCK ODS_FLEET_HOST_LOCK_TIMEOUT_SECONDS
-        unset DREAM_FLEET_HOST_LOCK DREAM_FLEET_HOST_LOCK_TIMEOUT_SECONDS
         PATH="$TMP_DIR/bin:$PATH" \
             ODS_FLOCK_TRACE="$default_trace" \
             ODS_FLEET_TEST_ROOT="$default_dir" \
             bash "$harness_file"
     )
-    assert_trace "$default_trace" $'9\n8' "$script_name default lock set"
+    assert_trace "$default_trace" "9" "$script_name default lock"
     [[ -f "$default_dir/ods-fleet-heavy.lock" ]] \
         || fail "$script_name did not open the ODS default lock"
-    [[ -f "$default_dir/dream-fleet-heavy.lock" ]] \
-        || fail "$script_name did not open the pre-ODS compatibility lock"
 
     custom_dir="$TMP_DIR/$script_name-custom"
     custom_trace="$custom_dir/flock.log"
@@ -108,7 +102,6 @@ for source_file in \
     mkdir -p "$custom_dir"
     (
         unset ODS_FLEET_HOST_LOCK ODS_FLEET_HOST_LOCK_TIMEOUT_SECONDS
-        unset DREAM_FLEET_HOST_LOCK DREAM_FLEET_HOST_LOCK_TIMEOUT_SECONDS
         PATH="$TMP_DIR/bin:$PATH" \
             ODS_FLOCK_TRACE="$custom_trace" \
             ODS_FLEET_TEST_ROOT="$custom_dir" \
@@ -116,26 +109,21 @@ for source_file in \
     )
     assert_trace "$custom_trace" "9" "$script_name custom lock"
     [[ -f "$custom_lock" ]] || fail "$script_name did not open the custom lock"
-    [[ ! -e "$custom_dir/dream-fleet-heavy.lock" ]] \
-        || fail "$script_name custom lock unexpectedly opened the compatibility lock"
 
-    alias_dir="$TMP_DIR/$script_name-alias"
-    alias_trace="$alias_dir/flock.log"
-    alias_lock="$alias_dir/alias.lock"
-    mkdir -p "$alias_dir"
+    override_dir="$TMP_DIR/$script_name-override"
+    override_trace="$override_dir/flock.log"
+    override_lock="$override_dir/override.lock"
+    mkdir -p "$override_dir"
     (
-        unset ODS_FLEET_HOST_LOCK ODS_FLEET_HOST_LOCK_TIMEOUT_SECONDS
-        unset DREAM_FLEET_HOST_LOCK_TIMEOUT_SECONDS
+        unset ODS_FLEET_HOST_LOCK_TIMEOUT_SECONDS
         PATH="$TMP_DIR/bin:$PATH" \
-            ODS_FLOCK_TRACE="$alias_trace" \
-            ODS_FLEET_TEST_ROOT="$alias_dir" \
-            DREAM_FLEET_HOST_LOCK="$alias_lock" \
+            ODS_FLOCK_TRACE="$override_trace" \
+            ODS_FLEET_TEST_ROOT="$override_dir" \
+            ODS_FLEET_HOST_LOCK="$override_lock" \
             bash "$harness_file"
     )
-    assert_trace "$alias_trace" "9" "$script_name pre-rename environment alias"
-    [[ -f "$alias_lock" ]] || fail "$script_name did not honor the pre-rename lock alias"
-    [[ ! -e "$alias_dir/dream-fleet-heavy.lock" ]] \
-        || fail "$script_name alias override unexpectedly opened the compatibility lock"
+    assert_trace "$override_trace" "9" "$script_name environment override"
+    [[ -f "$override_lock" ]] || fail "$script_name did not honor the ODS lock override"
 done
 
-echo "[PASS] Fleet host locks preserve cross-version coordination"
+echo "[PASS] Fleet host locks honor ODS defaults and overrides"

@@ -525,7 +525,7 @@ fi
 # ---------------------------------------------------------------------------
 echo "[contract] Windows AMD Lemonade health failure falls back to llama-server"
 if grep -q 'function Stop-ODSWindowsLemonadeProcesses' installers/windows/install-windows.ps1 \
-    && grep -q '\$preOdsLemonadeTaskName = "DreamServerLemonadeRuntime"' installers/windows/install-windows.ps1 \
+    && grep -q '"ODSLemonadeRuntime"' installers/windows/install-windows.ps1 \
     && grep -q 'Falling back to native llama-server (Vulkan)' installers/windows/install-windows.ps1 \
     && grep -q '\$useLemonade = \$false' installers/windows/install-windows.ps1 \
     && grep -q 'if (-not \$useLemonade)' installers/windows/install-windows.ps1 \
