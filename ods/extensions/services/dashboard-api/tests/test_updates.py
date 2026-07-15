@@ -7,6 +7,14 @@ import httpx
 from fastapi import HTTPException
 
 
+def test_github_release_urls_use_canonical_repository():
+    import routers.updates as updates_mod
+
+    assert updates_mod._GITHUB_REPOSITORY == "Osmantic/ODS"
+    assert updates_mod._GITHUB_RELEASES_API == "https://api.github.com/repos/Osmantic/ODS/releases"
+    assert updates_mod._GITHUB_RELEASES_PAGE == "https://github.com/Osmantic/ODS/releases"
+
+
 def test_get_version_requires_auth(test_client):
     """GET /api/version without auth → 401."""
     resp = test_client.get("/api/version")
@@ -348,7 +356,7 @@ def test_update_dry_run_normalizes_v_prefixed_version(test_client, tmp_path, mon
     """
     import routers.updates as updates_mod
 
-    install_dir = tmp_path / "dream-server"
+    install_dir = tmp_path / "ods-install"
     install_dir.mkdir()
     (install_dir / ".version").write_text("v2.0.1")
     monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))

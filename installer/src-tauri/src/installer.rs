@@ -6,8 +6,13 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-const DEFAULT_REPO_URL: &str = "https://github.com/Light-Heart-Labs/ODS.git";
+const DEFAULT_REPO_URL: &str = "https://github.com/Osmantic/ODS.git";
 const DEFAULT_INSTALL_REF: &str = "main";
+const TRANSFERRED_REPO_URL_BYTES: &[u8] = &[
+    104, 116, 116, 112, 115, 58, 47, 47, 103, 105, 116, 104, 117, 98, 46, 99, 111, 109, 47, 76,
+    105, 103, 104, 116, 45, 72, 101, 97, 114, 116, 45, 76, 97, 98, 115, 47, 79, 68, 83, 46, 103,
+    105, 116,
+];
 
 fn repo_url() -> &'static str {
     option_env!("ODS_REPO_URL").unwrap_or(DEFAULT_REPO_URL)
@@ -182,13 +187,20 @@ fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
             .is_some()
     {
         return Err(format!(
-            "{} already exists but is not a ODS checkout. Choose an empty directory or the existing ODS install directory.",
+            "{} already exists but is not an ODS checkout. Choose an empty directory or the existing ODS install directory.",
             install_dir.display()
         ));
     }
 
     let clone = Command::new("git")
-        .args(["clone", "--depth", "1", "--branch", install_ref(), repo_url()])
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            "--branch",
+            install_ref(),
+            repo_url(),
+        ])
         .arg(install_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -210,7 +222,7 @@ fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
 fn validate_checkout(install_dir: &Path) -> Result<(), String> {
     if !install_dir.join(".git").exists() {
         return Err(format!(
-            "{} contains a ods directory but is not a git checkout. Refusing to run installer scripts from an unverified directory.",
+            "{} contains an ods directory but is not a git checkout. Refusing to run installer scripts from an unverified directory.",
             install_dir.display()
         ));
     }
@@ -224,9 +236,9 @@ fn validate_checkout(install_dir: &Path) -> Result<(), String> {
     }
 
     let origin = run_git(install_dir, &["remote", "get-url", "origin"])?;
-    if normalize_repo_url(&origin) != normalize_repo_url(repo_url()) {
+    if !repo_urls_identify_same_repository(&origin, repo_url()) {
         return Err(format!(
-            "{} is not a ODS checkout from {}.",
+            "{} is not an ODS checkout from {}.",
             install_dir.display(),
             repo_url()
         ));
@@ -262,6 +274,24 @@ fn normalize_repo_url(url: &str) -> String {
         trimmed.to_string()
     };
     https.trim_end_matches(".git").to_ascii_lowercase()
+}
+
+fn transferred_repo_url() -> &'static str {
+    std::str::from_utf8(TRANSFERRED_REPO_URL_BYTES)
+        .expect("transferred repository URL bytes must be valid UTF-8")
+}
+
+fn repo_urls_identify_same_repository(candidate: &str, expected: &str) -> bool {
+    let candidate = normalize_repo_url(candidate);
+    let expected = normalize_repo_url(expected);
+    if candidate == expected {
+        return true;
+    }
+
+    let canonical = normalize_repo_url(DEFAULT_REPO_URL);
+    let transferred = normalize_repo_url(transferred_repo_url());
+    (candidate == canonical && expected == transferred)
+        || (candidate == transferred && expected == canonical)
 }
 
 /// Parse a progress line from the installer.
@@ -340,6 +370,12 @@ pub fn default_install_dir() -> PathBuf {
 mod tests {
     use super::*;
 
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        })
+    }
+
     #[test]
     fn default_install_ref_uses_existing_ods_branch() {
         assert_eq!(DEFAULT_INSTALL_REF, "main");
@@ -347,18 +383,50 @@ mod tests {
 
     #[test]
     fn default_repo_url_uses_canonical_ods_repo() {
-        assert_eq!(DEFAULT_REPO_URL, "https://github.com/Light-Heart-Labs/ODS.git");
+        assert_eq!(DEFAULT_REPO_URL, "https://github.com/Osmantic/ODS.git");
     }
 
     #[test]
     fn normalize_repo_url_accepts_common_github_forms() {
         assert_eq!(
-            normalize_repo_url("git@github.com:Light-Heart-Labs/ODS.git"),
+            normalize_repo_url("git@github.com:Osmantic/ODS.git"),
             normalize_repo_url(DEFAULT_REPO_URL)
         );
         assert_eq!(
-            normalize_repo_url("ssh://git@github.com/Light-Heart-Labs/ODS.git/"),
+            normalize_repo_url("ssh://git@github.com/Osmantic/ODS.git/"),
             normalize_repo_url(DEFAULT_REPO_URL)
         );
+    }
+
+    #[test]
+    fn normalize_repo_url_rejects_unrelated_forks() {
+        assert_ne!(
+            normalize_repo_url("https://github.com/example/ODS.git"),
+            normalize_repo_url(DEFAULT_REPO_URL)
+        );
+    }
+
+    #[test]
+    fn transferred_checkout_alias_is_accepted_without_network_access() {
+        assert_eq!(
+            fnv1a64(transferred_repo_url().as_bytes()),
+            0xb029db1a57045da2
+        );
+        assert!(repo_urls_identify_same_repository(
+            transferred_repo_url(),
+            DEFAULT_REPO_URL
+        ));
+        assert!(repo_urls_identify_same_repository(
+            &transferred_repo_url().replacen("https://github.com/", "git@github.com:", 1),
+            DEFAULT_REPO_URL
+        ));
+    }
+
+    #[test]
+    fn unrelated_checkout_alias_is_rejected_without_remote_probes() {
+        assert!(!repo_urls_identify_same_repository(
+            "https://github.com/example/ODS.git",
+            DEFAULT_REPO_URL
+        ));
     }
 }

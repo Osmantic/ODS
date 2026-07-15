@@ -160,7 +160,7 @@ Attach `report.json` to GitHub issues or Discord support threads after review.
 2. Clone the repository and enter it.
 3. Run these commands:
    ```powershell
-   git clone https://github.com/Light-Heart-Labs/ODS.git
+   git clone https://github.com/Osmantic/ODS.git
    cd ODS
    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
    .\install.ps1
@@ -540,7 +540,7 @@ docker info
 ### Where to Get Help
 
 1. **ODS Discord:** https://discord.gg/clawd
-2. **GitHub Issues:** https://github.com/Light-Heart-Labs/ODS/issues
+2. **GitHub Issues:** https://github.com/Osmantic/ODS/issues
 
 ### What to Include When Asking for Help
 

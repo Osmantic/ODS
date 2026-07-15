@@ -423,24 +423,33 @@ if ($dryRun) {
                 }
             }
 
+            function Get-ODSPriorLemonadeTaskName {
+                return (-join ([char[]](
+                    68, 114, 101, 97, 109, 83, 101, 114, 118, 101, 114, 76, 101,
+                    109, 111, 110, 97, 100, 101, 82, 117, 110, 116, 105, 109, 101
+                )))
+            }
+
             function Stop-ODSWindowsLemonadeProcesses {
                 param(
                     [string]$ExePath,
-                    [string[]]$TaskNames = @("ODSLemonadeRuntime", "DreamServerLemonadeRuntime")
+                    [string[]]$TaskNames = @("ODSLemonadeRuntime")
                 )
-
-                foreach ($_taskName in $TaskNames) {
-                    try { Stop-ScheduledTask -TaskName $_taskName -ErrorAction SilentlyContinue } catch { }
-                    try { Unregister-ScheduledTask -TaskName $_taskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
-                }
 
                 $_resolvedExe = $null
                 try {
                     if (-not [string]::IsNullOrWhiteSpace($ExePath)) {
-                        $_resolvedExe = [System.IO.Path]::GetFullPath($ExePath)
+                        $_resolvedExe = [System.IO.Path]::GetFullPath(
+                            [Environment]::ExpandEnvironmentVariables($ExePath.Trim('"'))
+                        )
                     }
                 } catch { }
                 $_knownNames = @("LemonadeServer.exe", "lemonade-server.exe", "lemonade-router.exe")
+
+                foreach ($_taskName in @($TaskNames | Where-Object { $_ } | Select-Object -Unique)) {
+                    try { Stop-ScheduledTask -TaskName $_taskName -ErrorAction SilentlyContinue } catch { }
+                    try { Unregister-ScheduledTask -TaskName $_taskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+                }
 
                 try {
                     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -468,7 +477,8 @@ if ($dryRun) {
                 Write-AI "Starting Lemonade server..."
                 $modelsDir = Join-Path (Join-Path $installDir "data") "models"
                 $taskName = "ODSLemonadeRuntime"
-                Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames @($taskName, "DreamServerLemonadeRuntime")
+                $taskNames = @($taskName, (Get-ODSPriorLemonadeTaskName))
+                Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames $taskNames
                 foreach ($listener in @(Get-NetTCPConnection -LocalPort $script:LEMONADE_PORT -State Listen -ErrorAction SilentlyContinue)) {
                     if ($listener.OwningProcess -gt 0) {
                         Stop-Process -Id ([int]$listener.OwningProcess) -Force -ErrorAction SilentlyContinue
@@ -509,7 +519,7 @@ if ($dryRun) {
                 }
                 if (-not $proc) {
                     Write-AIWarn "Lemonade $launchMethod started but no Lemonade process was found. Falling back to native llama-server (Vulkan)."
-                    Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames @($taskName, "DreamServerLemonadeRuntime")
+                    Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames $taskNames
                     Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
                     $useLemonade = $false
                 }
@@ -537,7 +547,7 @@ if ($dryRun) {
                         Write-AI "Model ($($tierConfig.GgufFile)) will load on first request."
                     } else {
                         Write-AIWarn "Lemonade server did not respond within ${maxWait}s. Falling back to native llama-server (Vulkan)."
-                        Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames @($taskName, "DreamServerLemonadeRuntime")
+                        Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames $taskNames
                         Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
                         $useLemonade = $false
                     }

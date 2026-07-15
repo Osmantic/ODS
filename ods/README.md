@@ -43,13 +43,18 @@ Known-good version baselines: [`docs/KNOWN-GOOD-VERSIONS.md`](docs/KNOWN-GOOD-VE
 
 ```bash
 # One-line install (Linux — NVIDIA, AMD, Intel Arc, or CPU/cloud fallback)
-curl -fsSL https://raw.githubusercontent.com/Light-Heart-Labs/ODS/main/ods/get-ods.sh | bash
+curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
+
+The hosted endpoint proxies the current bootstrap from repository `main`.
+Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
+[Installer Trust](docs/INSTALLER_TRUST.md) to inspect the script or install a
+stable release or audited commit manually.
 
 Or manually:
 
 ```bash
-git clone https://github.com/Light-Heart-Labs/ODS.git
+git clone https://github.com/Osmantic/ODS.git
 cd ODS
 ./install.sh
 ```
@@ -489,7 +494,7 @@ Thanks to [lhl](https://github.com/lhl) for [strix-halo-testing](https://github.
 
 For the full contributor list with detailed credits, see the [Wall of Heroes](../README.md#wall-of-heroes) in the root README.
 
-If we missed anyone, [open an issue](https://github.com/Light-Heart-Labs/ODS/issues). We want to get this right.
+If we missed anyone, [open an issue](https://github.com/Osmantic/ODS/issues). We want to get this right.
 
 ---
 
@@ -499,4 +504,4 @@ Apache 2.0 — Use it, modify it, sell it. Just don't blame us.
 
 ---
 
-*Built by [The Collective](https://github.com/Light-Heart-Labs/ODS) — Android-17, Todd, and friends*
+*Built by [The Collective](https://github.com/Osmantic/ODS) — Android-17, Todd, and friends*
