@@ -10,6 +10,7 @@
 #           TIER, TIER_NAME, VERSION, GPU_BACKEND, LLM_MODEL, OFFLINE_MODE,
 #           ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_QDRANT, ENABLE_HERMES, ENABLE_OPENCLAW,
 #           COMPOSE_FLAGS, SUMMARY_JSON_FILE, PREFLIGHT_REPORT_FILE,
+#           INSTALL_CONFLICT_REPORT_FILE,
 #           BGRN, GRN, AMB, WHT, NC, DASHBOARD_PORT (:-3001),
 #           CAP_HARDWARE_CLASS_ID (:-unknown), CAP_HARDWARE_CLASS_LABEL (:-Unknown),
 #           BACKEND_SERVICE_NAME (:-llama-server),
@@ -162,6 +163,10 @@ if [[ -f "$LOG_FILE" ]]; then
 fi
 if [[ -f "$PREFLIGHT_REPORT_FILE" ]]; then
     echo -e "${BGRN}Preflight report:${NC} $PREFLIGHT_REPORT_FILE"
+    echo ""
+fi
+if [[ -f "$INSTALL_CONFLICT_REPORT_FILE" ]]; then
+    echo -e "${BGRN}Install conflict report:${NC} $INSTALL_CONFLICT_REPORT_FILE"
     echo ""
 fi
 
@@ -433,7 +438,7 @@ if [[ -n "$SUMMARY_JSON_FILE" ]]; then
         PYTHON_CMD="python"
     fi
 
-    "$PYTHON_CMD" - "$SUMMARY_JSON_FILE" "$VERSION" "$INSTALL_DIR" "$TIER" "$TIER_NAME" "$GPU_BACKEND" "${BACKEND_SERVICE_NAME:-llama-server}" "$LLM_MODEL" "$COMPOSE_FLAGS" "$DRY_RUN" "$PREFLIGHT_REPORT_FILE" "${CAP_HARDWARE_CLASS_ID:-unknown}" "${CAP_HARDWARE_CLASS_LABEL:-Unknown}" <<'PY'
+    "$PYTHON_CMD" - "$SUMMARY_JSON_FILE" "$VERSION" "$INSTALL_DIR" "$TIER" "$TIER_NAME" "$GPU_BACKEND" "${BACKEND_SERVICE_NAME:-llama-server}" "$LLM_MODEL" "$COMPOSE_FLAGS" "$DRY_RUN" "$PREFLIGHT_REPORT_FILE" "$INSTALL_CONFLICT_REPORT_FILE" "${CAP_HARDWARE_CLASS_ID:-unknown}" "${CAP_HARDWARE_CLASS_LABEL:-Unknown}" <<'PY'
 import json
 import pathlib
 import sys
@@ -451,6 +456,7 @@ from datetime import datetime, timezone
     compose_flags,
     dry_run,
     preflight_report,
+    install_conflict_report,
     hw_class_id,
     hw_class_label,
 ) = sys.argv[1:]
@@ -470,6 +476,7 @@ payload = {
     },
     "hardware_class": {"id": hw_class_id, "label": hw_class_label},
     "preflight_report": preflight_report,
+    "install_conflict_report": install_conflict_report,
 }
 
 path = pathlib.Path(out_file)

@@ -13,7 +13,7 @@ lint: ## Syntax check all shell scripts + Python compile check
 	@echo "=== Shell syntax ==="
 	@fail=0; for f in $(SHELL_FILES); do bash -n "$$f" || fail=1; done; [ $$fail -eq 0 ]
 	@echo "=== Python compile ==="
-	@python3 -m py_compile extensions/services/dashboard-api/main.py extensions/services/dashboard-api/agent_monitor.py
+	@python3 -m py_compile extensions/services/dashboard-api/main.py extensions/services/dashboard-api/agent_monitor.py scripts/check-install-conflicts.py tests/test-install-conflicts.py
 	@echo "All lint checks passed."
 
 test: ## Run unit and contract tests
@@ -33,6 +33,9 @@ test: ## Run unit and contract tests
 	@echo "=== Linux install preflight ==="
 	@bash tests/test-linux-install-preflight.sh
 	@bash tests/test-linux-host-agent-stop.sh
+	@python3 tests/test-install-conflicts.py
+	@bash tests/test-linux-install-conflicts.sh
+	@bash tests/test-macos-install-conflicts.sh
 	@echo ""
 	@echo "=== AMD/Lemonade contracts ==="
 	@bash tests/contracts/test-amd-lemonade-contracts.sh

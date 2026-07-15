@@ -60,6 +60,46 @@ GPU_BACKEND=cpu ./install.sh
 
 Fresh installs now fall back to CPU mode automatically when AMD is auto-detected but the required device nodes are unavailable inside a container. If you explicitly force `GPU_BACKEND=amd`, the installer fails fast with passthrough guidance instead.
 
+### Installer Reports Install Conflicts
+
+The Linux and macOS installers render the selected Docker Compose stack and
+check the exact claims they plan to create. They block:
+
+- active host listeners on planned TCP or UDP ports;
+- running or stopped foreign containers configured for those ports;
+- exact planned container or network names already owned elsewhere;
+- exact planned named volumes whose ownership cannot be tied to the current
+  install.
+
+Unrelated dormant volumes do not block installation. During an update, existing
+resources are accepted only when Compose project labels plus the current source
+or install path prove ownership. Update mode is based on an existing
+`$INSTALL_DIR/.env`, not directory existence alone.
+
+Review the structured report:
+
+```bash
+jq . /tmp/ods-install-conflicts.json
+docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+```
+
+Resolve the reported port or ownership conflict, then rerun the installer.
+On Linux, service ports can be changed before installation, for example:
+
+```bash
+WEBUI_PORT=9090 DASHBOARD_PORT=9091 ./install.sh
+```
+
+For an explicitly known older install path, `ODS_LEGACY_INSTALL_DIR=/path`
+retains the early path guard. `ODS_ALLOW_LEGACY_PARALLEL=1` bypasses only that
+declared-path guard; it does not bypass detected runtime conflicts.
+
+`ODS_ALLOW_CONFLICTS=1` accepts confirmed conflicts only. Use it after you have
+intentionally isolated ports and data ownership. `--force` and
+`--non-interactive` do not bypass conflicts, and no override bypasses an
+incomplete probe. A probe error usually means Docker or Compose was not
+reachable; fix that access first and rerun.
+
 ---
 
 ## Startup Issues

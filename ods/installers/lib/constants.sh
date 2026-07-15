@@ -8,7 +8,7 @@
 # Expects: (nothing — first file sourced)
 # Provides: VERSION, SCRIPT_DIR, INSTALL_DIR, LOG_FILE, color codes,
 #           SYSTEM_TZ, CAPABILITY_PROFILE_FILE, PREFLIGHT_REPORT_FILE,
-#           INSTALL_START_EPOCH, _sed_i()
+#           INSTALL_CONFLICT_REPORT_FILE, INSTALL_START_EPOCH, _sed_i()
 #
 # Modder notes:
 #   Change VERSION for custom builds. Add new color codes here.
@@ -29,6 +29,7 @@ fi
 LOG_FILE="${LOG_FILE:-/tmp/ods-install.log}"
 CAPABILITY_PROFILE_FILE="${CAPABILITY_PROFILE_FILE:-/tmp/ods-capabilities.json}"
 PREFLIGHT_REPORT_FILE="${PREFLIGHT_REPORT_FILE:-/tmp/ods-preflight-report.json}"
+INSTALL_CONFLICT_REPORT_FILE="${INSTALL_CONFLICT_REPORT_FILE:-/tmp/ods-install-conflicts.json}"
 INSTALL_START_EPOCH=$(date +%s)
 
 # Auto-detect system timezone (fallback to UTC)

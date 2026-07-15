@@ -26,6 +26,9 @@ selector. The bootstrap:
 - clones `https://github.com/Osmantic/ODS.git` with sparse
   checkout for the `ods/` product tree;
 - copies the runtime product files into `~/ods`;
+- on Linux and macOS, renders the selected Docker Compose stack and rejects
+  unowned host-port, container-name, network-name, and named-volume claims
+  before Docker service launch;
 - runs `./install.sh` from that copied runtime tree.
 
 Without `ODS_REF`, Git uses the repository's default branch, currently `main`.
@@ -121,6 +124,8 @@ ODS currently relies on:
 - release tags or explicit refs for reproducible source selection;
 - local generated secrets instead of checked-in default credentials;
 - localhost-first service binding by default;
+- fail-closed Linux and macOS Docker install conflict detection with a
+  structured local report;
 - release validation across zero-prereq distro bootstrap, real hardware
   installs, product behavior, full-model capabilities, and lifecycle recovery.
 

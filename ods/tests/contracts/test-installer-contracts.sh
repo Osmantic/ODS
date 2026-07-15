@@ -234,11 +234,15 @@ grep -qE '_sync_extension_compose +"\$\{ENABLE_EMBEDDINGS:-\$\{ENABLE_RAG:-false
   || { echo "[FAIL] Embeddings compose is not gated by ENABLE_EMBEDDINGS in $features_phase"; exit 1; }
 grep -q 'HOST_PAGE_SIZE:-$(getconf PAGE_SIZE' "$features_phase" \
   || { echo "[FAIL] Qdrant arm64 page-size guard missing from $features_phase"; exit 1; }
-for f in installers/phases/04-requirements.sh installers/phases/08-images.sh installers/phases/12-health.sh installers/phases/13-summary.sh; do
+for f in installers/phases/08-images.sh installers/phases/12-health.sh installers/phases/13-summary.sh; do
   test -f "$f" || { echo "[FAIL] missing installer phase: $f"; exit 1; }
   grep -q 'ENABLE_QDRANT:-${ENABLE_RAG:-false}' "$f" \
     || { echo "[FAIL] $f still gates Qdrant on ENABLE_RAG directly"; exit 1; }
 done
+if grep -q 'SERVICE_PORTS\[qdrant\]' installers/phases/04-requirements.sh; then
+  echo "[FAIL] phase 04 must not retain a hardcoded Qdrant port gate"
+  exit 1
+fi
 
 run_phase03_rag_guard() {
   local arch="$1" page_size="$2" tmpdir

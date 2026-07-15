@@ -129,6 +129,12 @@ jobs:
       - name: Linux install preflight tests
         run: bash tests/test-linux-install-preflight.sh
 
+      - name: Install conflict detection tests
+        run: |
+          python3 tests/test-install-conflicts.py
+          bash tests/test-linux-install-conflicts.sh
+          bash tests/test-macos-install-conflicts.sh
+
       - name: Installer Simulation Harness
         run: |
           bash scripts/simulate-installers.sh
