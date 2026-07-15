@@ -17,9 +17,19 @@ Osmantic endpoint:
 curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
 
-For the documented `curl` request, the endpoint serves the plain-text
-`ods/get-ods.sh` bootstrap. It is a distribution URL, not a source-version
-selector. The bootstrap:
+For the documented `curl` request, the endpoint serves the reviewed `stable`
+bootstrap channel as a separately deployed plain-text `ods/get-ods.sh` file.
+Two source selections are involved:
+
+1. **Bootstrap artifact revision:** the stable endpoint pins a reviewed
+   bootstrap commit independently of the repository default branch. Response
+   headers report the deployed `X-ODS-Channel` and exact `X-ODS-Source-Ref`.
+2. **Product checkout revision:** after the bootstrap starts, `ODS_REF` selects
+   the repository branch or tag copied into the install. Without `ODS_REF`, Git
+   uses the repository default branch, currently `main`.
+
+The bootstrap artifact and product checkout are therefore not the same
+versioning layer. The bootstrap:
 
 - detects Linux, WSL, or macOS;
 - installs or checks basic prerequisites where supported;
@@ -28,9 +38,10 @@ selector. The bootstrap:
 - copies the runtime product files into `~/ods`;
 - runs `./install.sh` from that copied runtime tree.
 
-Without `ODS_REF`, Git uses the repository's default branch, currently `main`.
-The hosted one-liner therefore tracks `main`; it does not pin the current stable
-release.
+The `stable` label describes the bootstrap artifact, not the complete installed
+payload. The hosted artifact may remain pinned while the product checkout
+follows `main`. `ODS_REF` changes the product checkout; it does not select a
+different hosted bootstrap artifact.
 
 `ODS_REF` can select a branch or tag only when that ref contains the current
 `ods/` product-tree layout used by the bootstrap's sparse checkout. For example:
@@ -46,17 +57,35 @@ and for exact audited commits.
 
 The direct raw GitHub URL,
 `https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh`, exposes
-the bootstrap source from `main`. It is an alternate transport for the
-bootstrap, not a separate stable release channel.
+the current bootstrap source from `main`. The hosted endpoint and raw URL can
+both clone `main`, but they are not guaranteed to be byte-identical because the
+hosted bootstrap has its own deployment lifecycle.
+
+The mutable hosted bootstrap alias,
+`https://install.osmantic.com/ods/main.sh`, follows the repository's current
+`main` bootstrap. It is useful for validation, but it is not the canonical
+reviewed installer command.
+
+Changes to `ods/get-ods.sh` are not live at the hosted endpoint merely because
+they merged into the repository. Maintainers must deploy the final merged
+commit to every active bootstrap endpoint or mirror, purge intermediary caches,
+and verify the response headers and body:
+
+```bash
+bash ods/scripts/verify-hosted-bootstrap.sh "$(git rev-parse HEAD)"
+```
+
+By default, the verifier checks the extensionless and `.sh` stable aliases on
+both `get.osmantic.com` and `install.osmantic.com`.
 
 Before a first install, the bootstrap checks for an explicitly declared older
-install path, sibling directories with the stack's core file and service
-signature, and existing Compose projects with the core service tuple. This
-preserves automatic coexistence protection without depending on retired product
-names. A dormant install in a custom nested path may not be discoverable; set
-`ODS_LEGACY_INSTALL_DIR=/path/to/install` to check it explicitly. Use
-`ODS_ALLOW_LEGACY_PARALLEL=1` only after assigning separate ports and data
-paths.
+install path, sibling directories with install state, Compose, and the core
+service signature, and existing Compose projects with the core service tuple.
+This preserves automatic coexistence protection without depending on retired
+product names. A dormant install in a custom nested path may not be
+discoverable; set `ODS_LEGACY_INSTALL_DIR=/path/to/install` to check it
+explicitly. Use `ODS_ALLOW_LEGACY_PARALLEL=1` only after assigning separate
+ports and data paths.
 
 ### Manual Source Install
 

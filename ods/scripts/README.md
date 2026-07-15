@@ -24,6 +24,7 @@ Utility scripts for diagnostics, testing, validation, and operations.
 | `audit-extensions.py` | Audit extension manifests and compose contracts | No |
 | `simulate-installers.sh` | Cross-platform installer simulation | No |
 | `release-gate.sh` | Full pre-release checklist | No |
+| `verify-hosted-bootstrap.sh` | Verify hosted bootstrap headers and body against an exact Git ref | No |
 | `check-compatibility.sh` | Manifest compatibility checks | No |
 | `check-release-claims.sh` | Verify release claim accuracy | No |
 

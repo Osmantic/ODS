@@ -3,7 +3,7 @@
 
 SHELL_FILES := $(shell find . -name '*.sh' -not -path './node_modules/*' -not -path './.git/*' -not -path './data/*' -not -path './token-spy/*')
 
-.PHONY: help lint test bats smoke simulate fleet-distros fleet-vms gate doctor
+.PHONY: help lint test bats smoke simulate fleet-distros fleet-vms verify-bootstrap gate doctor
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -19,6 +19,7 @@ lint: ## Syntax check all shell scripts + Python compile check
 test: ## Run unit and contract tests
 	@echo "=== Install documentation contract ==="
 	@bash tests/test-install-docs.sh
+	@bash tests/test-hosted-bootstrap-verifier.sh
 	@echo ""
 	@echo "=== Tier map tests ==="
 	@bash tests/test-tier-map.sh
@@ -97,6 +98,9 @@ fleet-distros: ## Run disposable Docker multi-distro fleet checks
 
 fleet-vms: ## Run disposable Incus VM fleet checks
 	@bash tests/fleet-incus-vm.sh
+
+verify-bootstrap: ## Verify hosted bootstrap against EXPECTED_REF (defaults to HEAD)
+	@bash scripts/verify-hosted-bootstrap.sh "$${EXPECTED_REF:-$$(git rev-parse HEAD)}" $${ENDPOINTS:-}
 
 doctor: ## Run diagnostic report
 	@bash scripts/ods-doctor.sh

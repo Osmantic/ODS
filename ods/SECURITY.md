@@ -341,7 +341,7 @@ Watch for security updates to: llama-server, Open WebUI, n8n, base images.
 Found a vulnerability?
 
 1. **Do NOT open a public issue**
-2. Email: contact@osmantic.com with subject `Security report`
+2. Email: security@osmantic.com with subject `Security report`
 3. Include: description, reproduction steps, potential impact
 
 We'll respond within 48 hours.

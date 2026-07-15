@@ -46,10 +46,11 @@ Known-good version baselines: [`docs/KNOWN-GOOD-VERSIONS.md`](docs/KNOWN-GOOD-VE
 curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
 
-The hosted bootstrap clones `main` by default. See
-[Installer Trust](docs/INSTALLER_TRUST.md) to inspect it first, select a
-compatible ref with `ODS_REF`, or install a stable release or audited commit
-manually.
+The hosted endpoint serves a separately deployed bootstrap revision. That
+script clones `main` by default; `ODS_REF` selects a compatible repository
+checkout, not the hosted script revision. See
+[Installer Trust](docs/INSTALLER_TRUST.md) to inspect both layers or install a
+stable release or audited commit manually.
 
 Or manually:
 

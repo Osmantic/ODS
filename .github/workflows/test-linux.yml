@@ -21,7 +21,9 @@ jobs:
         run: bash tests/test-doc-links.sh
 
       - name: Install Documentation Contract
-        run: bash tests/test-install-docs.sh
+        run: |
+          bash tests/test-install-docs.sh
+          bash tests/test-hosted-bootstrap-verifier.sh
 
       - name: Fleet Host Lock Contract
         run: bash tests/test-fleet-host-lock.sh
