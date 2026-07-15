@@ -107,7 +107,7 @@ function New-ODSInstallReport {
         gpu = [ordered]@{
             backend = $gpu.Backend
             name = $gpu.Name
-            vram_mb = $gpu.VRAM
+            vram_mb = $gpu.VramMB
             memory_type = $gpu.MemoryType
             native_inference_backend = $nativeBackend
         }
