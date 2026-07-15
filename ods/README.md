@@ -388,7 +388,7 @@ ods start                      # Start everything
 # Management scripts
 ./scripts/session-cleanup.sh             # Clean up bloated agent sessions
 ./scripts/llm-cold-storage.sh --status   # Check model hot/cold storage
-ods mode status                        # Show current mode
+ods mode                               # Show current mode
 ```
 
 ## Comparison
