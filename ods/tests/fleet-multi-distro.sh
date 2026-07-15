@@ -134,7 +134,6 @@ acquire_host_lock() {
         flock 9
     fi
     echo "Acquired fleet host lock: $LOCK_FILE"
-
 }
 
 while [[ $# -gt 0 ]]; do

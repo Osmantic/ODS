@@ -154,7 +154,6 @@ acquire_host_lock() {
         flock 9
     fi
     log "Acquired fleet host lock: $LOCK_FILE"
-
 }
 
 cleanup() {

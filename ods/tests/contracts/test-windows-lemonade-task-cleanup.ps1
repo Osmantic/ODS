@@ -35,6 +35,20 @@ if (-not $nameFunctionAst -or -not $cleanupFunctionAst) {
 . ([scriptblock]::Create($nameFunctionAst.Extent.Text))
 . ([scriptblock]::Create($cleanupFunctionAst.Extent.Text))
 
+$priorTaskName = Get-ODSPriorLemonadeTaskName
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $priorTaskHashBytes = $sha256.ComputeHash(
+        [System.Text.Encoding]::UTF8.GetBytes($priorTaskName)
+    )
+} finally {
+    $sha256.Dispose()
+}
+$priorTaskHash = -join ($priorTaskHashBytes | ForEach-Object { $_.ToString("x2") })
+if ($priorTaskHash -ne "8e25972bf57578b932c392251072daa312eff439c21bd09cdc0791e6c3cdeb57") {
+    throw "Prior managed task-name fingerprint mismatch"
+}
+
 $script:LEMONADE_PORT = 9000
 $script:StoppedTasks = @()
 $script:UnregisteredTasks = @()
@@ -83,11 +97,11 @@ function Write-AIWarn {
 
 Stop-ODSWindowsLemonadeProcesses `
     -ExePath "/opt/lemonade/LemonadeServer.exe" `
-    -TaskNames @("ODSLemonadeRuntime", (Get-ODSPriorLemonadeTaskName))
+    -TaskNames @("ODSLemonadeRuntime", $priorTaskName)
 
 $expectedTasks = @(
     "ODSLemonadeRuntime",
-    (Get-ODSPriorLemonadeTaskName)
+    $priorTaskName
 ) | Sort-Object
 $stoppedDifference = Compare-Object $expectedTasks ($script:StoppedTasks | Sort-Object)
 $unregisteredDifference = Compare-Object $expectedTasks ($script:UnregisteredTasks | Sort-Object)

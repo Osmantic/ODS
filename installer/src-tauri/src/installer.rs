@@ -370,6 +370,12 @@ pub fn default_install_dir() -> PathBuf {
 mod tests {
     use super::*;
 
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        })
+    }
+
     #[test]
     fn default_install_ref_uses_existing_ods_branch() {
         assert_eq!(DEFAULT_INSTALL_REF, "main");
@@ -402,8 +408,16 @@ mod tests {
 
     #[test]
     fn transferred_checkout_alias_is_accepted_without_network_access() {
+        assert_eq!(
+            fnv1a64(transferred_repo_url().as_bytes()),
+            0xb029db1a57045da2
+        );
         assert!(repo_urls_identify_same_repository(
             transferred_repo_url(),
+            DEFAULT_REPO_URL
+        ));
+        assert!(repo_urls_identify_same_repository(
+            &transferred_repo_url().replacen("https://github.com/", "git@github.com:", 1),
             DEFAULT_REPO_URL
         ));
     }

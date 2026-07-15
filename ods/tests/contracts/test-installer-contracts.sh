@@ -69,6 +69,11 @@ grep -qF '_ods_is_related_install_dir' installers/phases/01-preflight.sh \
   || { echo "[FAIL] Linux installer preflight must auto-detect dormant related installs"; exit 1; }
 grep -qF '_ods_related_compose_containers' installers/phases/01-preflight.sh \
   || { echo "[FAIL] Linux installer preflight must auto-detect related Compose projects"; exit 1; }
+for _pre_ods_scan_file in get-ods.sh installers/phases/01-preflight.sh; do
+  grep -qF '\( -type d -o -type l \)' "$_pre_ods_scan_file" \
+    || { echo "[FAIL] $_pre_ods_scan_file must include symlinked sibling install directories"; exit 1; }
+done
+unset _pre_ods_scan_file
 grep -qF 'ods/ods-cli text eol=lf' ../.gitattributes \
   || { echo "[FAIL] .gitattributes must force LF checkout for extensionless ods/ods-cli"; exit 1; }
 
@@ -137,7 +142,7 @@ if ! PRE_ODS_INSTALL_DIR="$_pre_ods_guard_tmp/older-install" \
 fi
 
 mkdir -p "$_pre_ods_guard_tmp/home/related/data"
-touch "$_pre_ods_guard_tmp/home/related/.env" "$_pre_ods_guard_tmp/home/related/install-core.sh"
+touch "$_pre_ods_guard_tmp/home/related/.env"
 cat > "$_pre_ods_guard_tmp/home/related/docker-compose.base.yml" <<'COMPOSE'
 services:
   llama-server:
@@ -155,6 +160,27 @@ fi
 grep -qF 'related install directory' "$_pre_ods_guard_tmp/auto-path.log" \
   || { echo "[FAIL] dormant related-install rejection must identify the directory"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
 rm -rf "$_pre_ods_guard_tmp/home/related"
+
+mkdir -p "$_pre_ods_guard_tmp/relocated/data"
+touch "$_pre_ods_guard_tmp/relocated/.env"
+cat > "$_pre_ods_guard_tmp/relocated/docker-compose.yml" <<'COMPOSE'
+services:
+  litellm:
+  open-webui:
+  dashboard-api:
+COMPOSE
+ln -s "$_pre_ods_guard_tmp/relocated" "$_pre_ods_guard_tmp/home/related-link"
+if PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/auto-symlink.log" 2>&1; then
+  echo "[FAIL] bootstrap guard must auto-detect a symlinked related install"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+grep -qF 'related install directory' "$_pre_ods_guard_tmp/auto-symlink.log" \
+  || { echo "[FAIL] symlinked related-install rejection must identify the directory"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
+rm -f "$_pre_ods_guard_tmp/home/related-link"
 
 cat > "$_pre_ods_guard_tmp/docker-rows" <<'ROWS'
 stack-llm|stack|llama-server
@@ -174,15 +200,31 @@ grep -qF 'related Compose containers' "$_pre_ods_guard_tmp/auto-docker.log" \
   || { echo "[FAIL] related Compose rejection must identify the containers"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
 
 cat > "$_pre_ods_guard_tmp/docker-rows" <<'ROWS'
-other-web|other|open-webui
-other-api|other|dashboard-api
+stack-gateway|stack|litellm
+stack-web|stack|open-webui
+stack-api|stack|dashboard-api
+ROWS
+if PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    ODS_TEST_DOCKER_ROWS_FILE="$_pre_ods_guard_tmp/docker-rows" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/auto-gateway.log" 2>&1; then
+  echo "[FAIL] bootstrap guard must auto-detect a related Compose project using the gateway service"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+
+cat > "$_pre_ods_guard_tmp/docker-rows" <<'ROWS'
+other-web|other-a|open-webui
+other-api|other-a|dashboard-api
+other-llm|other-b|llama-server
 ROWS
 if ! PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
     ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
     ODS_TEST_DOCKER_ROWS_FILE="$_pre_ods_guard_tmp/docker-rows" \
     INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
     bash "$_pre_ods_guard_harness" >/dev/null 2>&1; then
-  echo "[FAIL] bootstrap guard must require the complete core Compose signature"
+  echo "[FAIL] bootstrap guard must require the complete core signature within one Compose project"
   rm -rf "$_pre_ods_guard_tmp"
   exit 1
 fi

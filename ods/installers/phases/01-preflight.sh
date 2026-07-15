@@ -109,7 +109,6 @@ _ods_is_related_install_dir() {
 
     [[ -d "$candidate" ]] || return 1
     [[ -f "$candidate/.env" || -d "$candidate/data" ]] || return 1
-    [[ -f "$candidate/install-core.sh" || -f "$candidate/install.sh" ]] || return 1
 
     if [[ -f "$candidate/docker-compose.base.yml" ]]; then
         compose_file="$candidate/docker-compose.base.yml"
@@ -169,7 +168,7 @@ if [[ ! -d "$INSTALL_DIR" ]] && ! _ods_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}"; 
         if _ods_is_related_install_dir "$_pre_ods_candidate"; then
             _pre_ods_findings+=("related install directory: $_pre_ods_candidate")
         fi
-    done < <(find "$HOME" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+    done < <(find "$HOME" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 2>/dev/null)
     _pre_ods_containers="$(_ods_related_compose_containers || true)"
     if [[ -n "$_pre_ods_containers" ]]; then
         _pre_ods_findings+=("related Compose containers: $(printf '%s\n' "$_pre_ods_containers" | tr '\n' ' ')")

@@ -76,7 +76,6 @@ _ods_is_related_install_dir() {
 
     [[ -d "$candidate" ]] || return 1
     [[ -f "$candidate/.env" || -d "$candidate/data" ]] || return 1
-    [[ -f "$candidate/install-core.sh" || -f "$candidate/install.sh" ]] || return 1
 
     if [[ -f "$candidate/docker-compose.base.yml" ]]; then
         compose_file="$candidate/docker-compose.base.yml"
@@ -141,7 +140,7 @@ refuse_legacy_install() {
             if _ods_is_related_install_dir "$candidate"; then
                 findings+=("related install directory: $candidate")
             fi
-        done < <(find "$ODS_BOOTSTRAP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+        done < <(find "$ODS_BOOTSTRAP_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 2>/dev/null)
     fi
 
     related_containers="$(_ods_related_compose_containers || true)"

@@ -84,8 +84,6 @@ After install, open **http://localhost:3000** and start chatting.
 > WEBUI_PORT=9090 ./install.sh
 > ```
 
-![ODS Dashboard](ods/docs/images/dashboard.png)
-
 **New here?** Read the [Friendly Guide](ods/docs/HOW-ODS-SERVER-WORKS.md) or [listen to the audio version](https://open.spotify.com/episode/40MvqJ41bC8cEgvUyOyE3K) — a complete walkthrough of what ODS is, how it works, and how to make it your own. No technical background needed.
 
 ---
@@ -149,14 +147,6 @@ We built ODS so you don't have to.
 - **Chatting in under 2 minutes** — bootstrap mode gives you a working model instantly while your full model downloads in the background
 - **Full service stack, pre-wired** — chat, agents, voice, workflows, search, RAG, image generation, privacy tools, observability, and developer tools. All talking to each other out of the box
 - **Fully moddable** — every service is an extension. Drop in a folder, run `ods enable`, done
-
-<div align="center">
-
-![ODS Installer](ods/docs/images/installer-splash.gif)
-
-*The ODSGATE installer handles everything — GPU detection, model selection, service orchestration.*
-
-</div>
 
 <details>
 <summary><b>Manual install (Linux)</b></summary>
@@ -309,14 +299,6 @@ No waiting for large downloads. ODS uses bootstrap mode by default:
 2. You start chatting immediately
 3. The full model downloads in the background
 4. Hot-swap to the full model when it's ready — zero downtime
-
-<div align="center">
-
-![Installer downloading modules](ods/docs/images/installer-download.png)
-
-*The installer pulls all services in parallel. Downloads are resume-capable — interrupted downloads pick up where they left off.*
-
-</div>
 
 The bootstrap model starts with a 64K context window so Hermes can work during the first session. After the background download finishes, ODS swaps to the full model and restores the Hermes/full-model context target.
 

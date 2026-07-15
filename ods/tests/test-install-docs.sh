@@ -35,6 +35,7 @@ require_literal() {
 assert_no_retired_names() {
     python3 - "$REPO_ROOT" <<'PY'
 import base64
+import hashlib
 import pathlib
 import re
 import subprocess
@@ -44,15 +45,19 @@ repo_root = sys.argv[1]
 retired_product_prefix = base64.b64decode("ZHJlYW0=").decode("ascii")
 retired_product_name = base64.b64decode("c2VydmVy").decode("ascii")
 retired_fleet_name = base64.b64decode("ZmxlZXQ=").decode("ascii")
+retired_gateway_name = base64.b64decode("Z2F0ZQ==").decode("ascii")
 retired_org_prefix = base64.b64decode("bGlnaHQ=").decode("ascii")
 retired_org_middle = base64.b64decode("aGVhcnQ=").decode("ascii")
 retired_org_suffix = base64.b64decode("bGFicw==").decode("ascii")
 retired_org_account_suffix = base64.b64decode("ZGV2cw==").decode("ascii")
+retired_umbrella_middle = base64.b64decode("aG91c2U=").decode("ascii")
+retired_umbrella_suffix = base64.b64decode("YWk=").decode("ascii")
 separator = r"[\s_.-]*"
 
 patterns = [
     re.compile(retired_product_prefix + separator + retired_product_name, re.IGNORECASE),
     re.compile(retired_product_prefix + separator + retired_fleet_name, re.IGNORECASE),
+    re.compile(retired_product_prefix + separator + retired_gateway_name, re.IGNORECASE),
     re.compile(
         retired_org_prefix + separator + retired_org_middle + separator + retired_org_suffix,
         re.IGNORECASE,
@@ -65,6 +70,14 @@ patterns = [
         + retired_org_account_suffix,
         re.IGNORECASE,
     ),
+    re.compile(
+        retired_org_prefix
+        + separator
+        + retired_umbrella_middle
+        + separator
+        + retired_umbrella_suffix,
+        re.IGNORECASE,
+    ),
     re.compile(r"name=\^?/" + retired_product_prefix + "-", re.IGNORECASE),
     re.compile(
         r"--filter\s+[\"']?name=" + retired_product_prefix + r"(?:[\"'\s]|$)",
@@ -73,6 +86,18 @@ patterns = [
     re.compile(r"[ps]k-lf-" + retired_product_prefix + "-", re.IGNORECASE),
 ]
 
+retired_binary_hashes = {
+    "03d8d3d615f32c1695f0b17b7258c9c64b18ec3b37027bfc17c5112615d0b332",
+    "1bd0b57fca19d6eff2d81d4aa060e0ece17d422be77ca12e7a4054f342c22d84",
+    "20570383d7b41b936cf2802823015dadd10b5516a5cf7edc9bd90817c5a8a573",
+    "253a4b8f4a7ed003711c4b9ec3177cf14e87caf44c673bf02d6b3b110980dec6",
+    "34e5b0b822aee482ea5bef4735ee7894b5f5823d8b804ffc6dd05cea538b637e",
+    "573034c502121d9962cfa9c4ff40424b1d5ff790f244d2830bdf5d55e148dd2e",
+    "71b516c4511bfb5124a064eb6b78c6028280be9f9f393f8179c2b9f86a7683f6",
+    "afdc974ce0a383e7934a0c1f6bbc64dad7ac54b9015bb78da30882183e987162",
+    "b2ef042415a842f038c9103bfad53f4b73fc6bdceb642fe0491c0ee825868043",
+}
+
 def has_retired_reference(value):
     return any(pattern.search(value) for pattern in patterns)
 
@@ -80,8 +105,10 @@ positive_samples = [
     retired_product_prefix + retired_product_name,
     retired_product_prefix + "-" + retired_product_name,
     retired_product_prefix + "_" + retired_fleet_name,
+    retired_product_prefix + retired_gateway_name,
     retired_org_prefix + "-" + retired_org_middle + "-" + retired_org_suffix,
     retired_org_prefix + retired_org_middle + retired_org_account_suffix,
+    retired_org_prefix + retired_umbrella_middle + "-" + retired_umbrella_suffix,
     "name=^/" + retired_product_prefix + "-",
     "--filter name=" + retired_product_prefix,
     "pk-lf-" + retired_product_prefix + "-",
@@ -112,10 +139,15 @@ for relative_path in tracked_files:
         continue
 
     path = repo_path / relative_path
+    if not path.exists():
+        continue
     try:
         data = path.read_bytes()
     except OSError as exc:
         raise SystemExit(f"[FAIL] Could not inspect {relative_path}: {exc}")
+    if hashlib.sha256(data).hexdigest() in retired_binary_hashes:
+        matches.append(f"{relative_path}: retired binary asset fingerprint")
+        continue
     if b"\0" in data:
         continue
 
@@ -125,7 +157,7 @@ for relative_path in tracked_files:
             matches.append(f"{relative_path}:{line_number}:{line}")
 
 if matches:
-    print("[FAIL] Retired product or organization references remain:")
+    print("[FAIL] Retired product, organization, or binary asset references remain:")
     print("\n".join(matches))
     raise SystemExit(1)
 PY
