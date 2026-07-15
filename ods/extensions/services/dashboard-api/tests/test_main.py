@@ -648,6 +648,16 @@ class TestPreflightPorts:
         )
         assert resp.status_code == 200
 
+    def test_rejects_oversized_port_list(self, test_client):
+        # The list is capped so a caller can't force thousands of synchronous
+        # socket binds on the event loop. Rejected by validation before any bind.
+        resp = test_client.post(
+            "/api/preflight/ports",
+            json={"ports": [8000] * 129},
+            headers=test_client.auth_headers,
+        )
+        assert resp.status_code == 422
+
 
 # --- /gpu endpoint (cached paths) ---
 

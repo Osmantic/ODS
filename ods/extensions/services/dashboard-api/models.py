@@ -66,7 +66,10 @@ PortNumber = Annotated[int, Field(ge=1, le=65535)]
 
 
 class PortCheckRequest(BaseModel):
-    ports: list[PortNumber]
+    # preflight_ports binds a socket per entry synchronously on the event loop,
+    # so cap the list. A real install exposes a couple dozen service ports;
+    # 128 leaves ample headroom while preventing bind-probe amplification.
+    ports: Annotated[list[PortNumber], Field(max_length=128)]
 
 
 class PortConflict(BaseModel):
