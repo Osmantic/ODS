@@ -48,24 +48,77 @@ Security:
   * Codes are single-use — re-exchange attempts fail at the provider.
 """
 
-from __future__ import annotations
-
 import html
 import json
 import logging
 import os
+import re
+import secrets
+import threading
 import time
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["oauth"])
+
+
+# In-memory database of pending OAuth flows: {state_nonce: {"skill": skill, "expires_at": expires_at}}
+_PENDING_FLOWS: dict[str, dict] = {}
+_FLOW_LOCK = threading.Lock()
+FLOW_TTL_SECONDS = 900  # 15 minutes
+
+
+class OAuthRegisterRequest(BaseModel):
+    skill: str = Field(..., pattern=r"^[a-zA-Z0-9_-]+$", max_length=100)
+
+
+class OAuthRegisterResponse(BaseModel):
+    state: str
+    expires_at: int
+
+
+def _cleanup_expired_flows_unlocked() -> None:
+    """Remove expired entries from the pending store. Call under _FLOW_LOCK."""
+    now = int(time.time())
+    expired = [k for k, v in _PENDING_FLOWS.items() if v["expires_at"] < now]
+    for k in expired:
+        del _PENDING_FLOWS[k]
+
+
+def register_pending_flow(skill: str) -> tuple[str, int]:
+    """Generate a secure state nonce and record the pending flow."""
+    state = secrets.token_urlsafe(32)
+    now = int(time.time())
+    expires_at = now + FLOW_TTL_SECONDS
+    with _FLOW_LOCK:
+        _cleanup_expired_flows_unlocked()
+        _PENDING_FLOWS[state] = {
+            "skill": skill,
+            "expires_at": expires_at
+        }
+    return state, expires_at
+
+
+def consume_pending_flow(state: str) -> str | None:
+    """Atomically validate and consume a pending flow, returning the trusted skill if valid."""
+    now = int(time.time())
+    with _FLOW_LOCK:
+        _cleanup_expired_flows_unlocked()
+        flow = _PENDING_FLOWS.get(state)
+        if not flow:
+            return None
+        del _PENDING_FLOWS[state]
+        if flow["expires_at"] < now:
+            return None
+        return flow["skill"]
 
 
 def _callback_dir() -> Path:
@@ -198,75 +251,110 @@ def _error_page(reason: str) -> str:
 <p>Head back to ODS Talk and ask your assistant to try again.</p></body></html>"""
 
 
+@router.post("/api/oauth/pending", response_model=OAuthRegisterResponse)
+async def register_oauth_flow(
+    payload: OAuthRegisterRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    """Register a pending OAuth flow for a specific skill and get a secure state nonce."""
+    state, expires_at = register_pending_flow(payload.skill)
+    return OAuthRegisterResponse(state=state, expires_at=expires_at)
+
+
 @router.get("/api/oauth/callback")
 async def oauth_callback(
     code: str = Query("", description="Authorisation code returned by the OAuth provider."),
-    state: str = Query("", description="Opaque state token the agent issued when generating the auth URL. Used to identify which skill the callback belongs to."),
+    state: str = Query("", description="Opaque state token representing the pending OAuth flow."),
     error: str = Query("", description="Set by the provider if the user denied or auth failed."),
     return_url: str = Query("", description="Optional deep link back into ODS Talk after success."),
 ):
     """OAuth redirect target.
 
-    Writes the captured ``code`` + ``state`` to a file at
-    ``data/persona/oauth_callback.json`` for the agent to consume on its
-    next turn, then returns a friendly success page. No JSON response —
-    the user lands here via a browser redirect, so HTML is the right
-    affordance.
-
-    The agent (per persona) polls for this file after sending the auth
-    URL: when it appears, the agent runs the relevant skill's
-    ``setup.py --auth-code`` to finalise, deletes the file, and
-    confirms to the user.
+    Validates the state nonce against the pending flow store, consumes it,
+    determines the target skill, writes code + state to the legacy file and
+    a skill-specific file, then returns a success HTML page.
     """
-    if error:
-        logger.warning("oauth callback received provider error: %s", error[:200])
-        return HTMLResponse(_error_page(f"The provider sent back an error: {error}"), status_code=400)
-    if not code:
-        return HTMLResponse(_error_page("No authorisation code was returned. You may have denied the request, or the provider's redirect was malformed."), status_code=400)
+    if not state:
+        return HTMLResponse(_error_page("Missing state parameter."), status_code=400)
 
-    skill = state.strip() or "google-workspace"
+    # Validate and consume the state nonce atomically
+    skill = consume_pending_flow(state)
+    if not skill:
+        logger.warning("OAuth callback received with invalid, expired, or reused state: %s", state[:10])
+        return HTMLResponse(_error_page("Invalid, expired, or already consumed session state."), status_code=400)
+
+    # Double check skill layout to prevent any downstream path traversal or file write issues
+    if not re.match(r"^[a-zA-Z0-9_-]+$", skill):
+        logger.warning("OAuth callback rejected due to invalid skill identifier layout: %s", skill[:50])
+        return HTMLResponse(_error_page("Invalid skill name structure."), status_code=400)
+
+    if error:
+        logger.warning("oauth callback received provider error for skill=%s: %s", skill, error[:200])
+        return HTMLResponse(_error_page(f"The provider sent back an error: {error}"), status_code=400)
+
+    if not code:
+        return HTMLResponse(_error_page("No authorisation code was returned."), status_code=400)
+
     payload = {
         "code": code,
-        "state": skill,
-        # Unix epoch so the agent can detect stale callbacks (>15 min)
-        # and decline rather than trying to exchange a definitely-
-        # expired code at the provider.
+        "state": state,
         "captured_at": int(time.time()),
     }
-    target = _callback_dir() / "oauth_callback.json"
-    try:
-        tmp = target.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        try:
-            tmp.chmod(0o600)
-        except OSError:
-            logger.debug("oauth callback could not chmod temp file %s", tmp, exc_info=True)
-        tmp.replace(target)
-    except OSError as exc:
-        logger.exception("oauth callback failed to write %s: %s", target, exc)
-        return HTMLResponse(
-            _error_page("ODS caught the redirect but couldn't hand the code back to your assistant. The operator might need to check filesystem permissions on data/persona/."),
-            status_code=500,
-        )
 
-    logger.info("oauth callback captured for skill=%s (code length %d)", skill, len(code))
+    # Write atomically to both the legacy file and the skill-specific file
+    targets = [
+        _callback_dir() / "oauth_callback.json",
+        _callback_dir() / f"oauth_callback_{skill}.json"
+    ]
+
+    for target in targets:
+        try:
+            tmp = target.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            try:
+                tmp.chmod(0o600)
+            except OSError:
+                logger.debug("oauth callback could not chmod temp file %s", tmp, exc_info=True)
+            tmp.replace(target)
+        except OSError as exc:
+            logger.exception("oauth callback failed to write %s: %s", target, exc)
+            return HTMLResponse(
+                _error_page("ODS caught the redirect but couldn't hand the code back to your assistant."),
+                status_code=500,
+            )
+
+    logger.info("oauth callback captured for skill=%s", skill)
     return HTMLResponse(_success_page(skill, return_url or None))
 
 
 @router.get("/api/oauth/pending")
-async def oauth_pending(api_key: str = Depends(verify_api_key)):
+async def oauth_pending(
+    skill: str = Query("google-workspace", description="The skill identifier to check for a pending callback."),
+    api_key: str = Depends(verify_api_key)
+):
     """Convenience endpoint the agent or operator can poll to find out
-    whether an OAuth callback has arrived but not yet been consumed. The
-    agent normally reads the file directly via its filesystem tools, but
-    this endpoint is useful for debugging from a browser or curl.
+    whether an OAuth callback has arrived but not yet been consumed.
     """
-    target = _callback_dir() / "oauth_callback.json"
+    if not re.match(r"^[a-zA-Z0-9_-]+$", skill):
+        return {"pending": False, "error": "invalid skill format"}
+
+    target = _callback_dir() / f"oauth_callback_{skill}.json"
     if not target.exists():
-        return {"pending": False}
+        # Fallback to legacy file name for compatibility if it matches default
+        if skill == "google-workspace":
+            legacy = _callback_dir() / "oauth_callback.json"
+            if legacy.exists():
+                target = legacy
+            else:
+                return {"pending": False}
+        else:
+            return {"pending": False}
+
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return {"pending": False, "error": f"could not read callback file: {exc}"}
+
     age = max(0, int(time.time()) - int(payload.get("captured_at", 0)))
     return {
         "pending": True,
