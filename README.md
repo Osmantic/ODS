@@ -63,11 +63,10 @@ Linux and macOS:
 curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
 
-The hosted endpoint serves a separately deployed bootstrap revision. That
-script clones `main` by default; `ODS_REF` selects a compatible repository
-checkout, not the hosted script revision. See
-[Installer Trust](ods/docs/INSTALLER_TRUST.md) to inspect both layers or
-install a stable release or audited commit manually.
+The hosted endpoint proxies the current bootstrap from repository `main`.
+Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
+[Installer Trust](ods/docs/INSTALLER_TRUST.md) to inspect the script or install
+a stable release or audited commit manually.
 
 Windows users should use the PowerShell installer shown below or follow the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md).
 

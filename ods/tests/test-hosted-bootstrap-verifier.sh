@@ -62,8 +62,8 @@ FAKE_CURL
 chmod +x "$TMP_DIR/bin/curl"
 
 write_headers() {
-    local source_ref="$1"
-    local channel="${2:-stable}"
+    local channel="${1:-main}"
+    local source_ref="${2:-main}"
     local content_type="${3:-Text/Plain; charset=utf-8}"
     local presentation="${4:-script}"
 
@@ -79,7 +79,7 @@ EOF
 }
 
 cp "$ROOT_DIR/get-ods.sh" "$TMP_DIR/body"
-write_headers "$EXPECTED_SHA"
+write_headers
 
 PATH="$TMP_DIR/bin:$PATH" \
     ODS_TEST_HEADERS="$TMP_DIR/headers" \
@@ -92,7 +92,7 @@ PATH="$TMP_DIR/bin:$PATH" \
 
 [[ "$(wc -l < "$TMP_DIR/trace" | tr -d ' ')" == "2" ]] \
     || fail "Verifier did not check every supplied endpoint."
-grep -qF "Hosted bootstrap deployment matches $EXPECTED_SHA on 2 endpoint(s)." \
+grep -qF "Hosted bootstrap matches $EXPECTED_SHA from main on 2 endpoint(s)." \
     "$TMP_DIR/success.log" \
     || fail "Verifier success summary is missing."
 
@@ -109,9 +109,9 @@ https://install.osmantic.com/ods
 https://install.osmantic.com/ods.sh
 EOF
 cmp -s "$TMP_DIR/expected-default-endpoints" "$TMP_DIR/default-trace" \
-    || fail "Verifier defaults do not cover every active stable Worker alias."
+    || fail "Verifier defaults do not cover every active canonical Worker alias."
 
-write_headers "$(printf '0%.0s' {1..40})"
+write_headers "main" "preview"
 if PATH="$TMP_DIR/bin:$PATH" \
     ODS_TEST_HEADERS="$TMP_DIR/headers" \
     ODS_TEST_BODY="$TMP_DIR/body" \
@@ -119,10 +119,10 @@ if PATH="$TMP_DIR/bin:$PATH" \
     bash "$VERIFIER" "$EXPECTED_SHA" > "$TMP_DIR/wrong-ref.log" 2>&1; then
     fail "Verifier accepted the wrong deployed source ref."
 fi
-grep -qF "expected $EXPECTED_SHA" "$TMP_DIR/wrong-ref.log" \
-    || fail "Wrong-ref failure did not explain the expected deployment."
+grep -qF "expected main" "$TMP_DIR/wrong-ref.log" \
+    || fail "Wrong-ref failure did not explain the expected source contract."
 
-write_headers "$EXPECTED_SHA"
+write_headers
 printf '\n# changed after deployment\n' >> "$TMP_DIR/body"
 if PATH="$TMP_DIR/bin:$PATH" \
     ODS_TEST_HEADERS="$TMP_DIR/headers" \
@@ -135,7 +135,7 @@ grep -qF "body does not match" "$TMP_DIR/wrong-body.log" \
     || fail "Wrong-body failure did not identify the content mismatch."
 
 cp "$ROOT_DIR/get-ods.sh" "$TMP_DIR/body"
-write_headers "$EXPECTED_SHA" "preview"
+write_headers "preview"
 if PATH="$TMP_DIR/bin:$PATH" \
     ODS_TEST_HEADERS="$TMP_DIR/headers" \
     ODS_TEST_BODY="$TMP_DIR/body" \
@@ -143,10 +143,10 @@ if PATH="$TMP_DIR/bin:$PATH" \
     bash "$VERIFIER" "$EXPECTED_SHA" > "$TMP_DIR/wrong-channel.log" 2>&1; then
     fail "Verifier accepted the wrong hosted channel."
 fi
-grep -qF "expected stable" "$TMP_DIR/wrong-channel.log" \
+grep -qF "expected main" "$TMP_DIR/wrong-channel.log" \
     || fail "Wrong-channel failure did not identify the channel contract."
 
-write_headers "$EXPECTED_SHA"
+write_headers
 sed -i.bak 's#Text/Plain; charset=utf-8#text/html; charset=utf-8#' "$TMP_DIR/headers"
 rm -f "$TMP_DIR/headers.bak"
 if PATH="$TMP_DIR/bin:$PATH" \
@@ -159,7 +159,7 @@ fi
 grep -qF "expected text/plain" "$TMP_DIR/wrong-type.log" \
     || fail "Wrong-content-type failure did not identify the presentation mismatch."
 
-write_headers "$EXPECTED_SHA"
+write_headers
 sed -i.bak '/^x-ods-presentation:/d' "$TMP_DIR/headers"
 rm -f "$TMP_DIR/headers.bak"
 if PATH="$TMP_DIR/bin:$PATH" \
@@ -175,8 +175,8 @@ grep -qF "expected script" "$TMP_DIR/missing-presentation.log" \
 cat > "$TMP_DIR/headers" <<EOF
 HTTP/2 302
 location: https://install-two.example/ods.sh
-x-ods-channel: stable
-x-ods-source-ref: $EXPECTED_SHA
+x-ods-channel: main
+x-ods-source-ref: main
 x-ods-presentation: script
 
 HTTP/2 200
@@ -193,7 +193,7 @@ fi
 grep -qF "did not return X-ODS-Source-Ref" "$TMP_DIR/stale-redirect.log" \
     || fail "Redirect-header failure did not identify missing final-response metadata."
 
-write_headers "$EXPECTED_SHA"
+write_headers
 if PATH="$TMP_DIR/bin:$PATH" \
     ODS_TEST_HEADERS="$TMP_DIR/headers" \
     ODS_TEST_BODY="$TMP_DIR/body" \
@@ -221,7 +221,7 @@ git -C "$MALFORMED_REPO" \
     commit -q -m "test malformed bootstrap"
 MALFORMED_SHA="$(git -C "$MALFORMED_REPO" rev-parse HEAD)"
 cp "$MALFORMED_REPO/ods/get-ods.sh" "$TMP_DIR/body"
-write_headers "$MALFORMED_SHA"
+write_headers
 if PATH="$TMP_DIR/bin:$PATH" \
     ODS_TEST_HEADERS="$TMP_DIR/headers" \
     ODS_TEST_BODY="$TMP_DIR/body" \

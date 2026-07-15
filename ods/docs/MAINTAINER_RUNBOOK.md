@@ -38,69 +38,43 @@ Before publishing or recommending a release candidate:
    mode, or disabled hardware lanes.
 8. Update release notes with the commit, date, validation layer, and known
    limitations.
-9. When `ods/get-ods.sh` changes, complete the hosted-bootstrap deployment
-   checklist below.
+9. When `ods/get-ods.sh` changes, verify the rolling hosted bootstrap after the
+   change merges to `main`.
 
-## Hosted Bootstrap Deployment
+## Hosted Bootstrap Verification
 
-The public bootstrap endpoint is deployed independently from the Git branch it
-eventually clones. Merging `ods/get-ods.sh` does not update the hosted script.
+The public bootstrap endpoint follows repository `main` through the Osmantic
+Worker. Merging `ods/get-ods.sh` updates the hosted source automatically after
+edge-cache refresh; no separate bootstrap promotion or Worker deployment is
+required.
 
 For any change to `ods/get-ods.sh`:
 
 1. Squash or merge the PR using the repository's agreed strategy.
-2. Capture the final commit on the target branch. Do not deploy a pre-squash
-   branch-head SHA.
-3. From the installer endpoint configuration checkout, verify that the
-   promotion candidate is exactly the final target-branch commit:
+2. Fetch the target branch and capture the exact final commit. Do not verify a
+   pre-squash branch-head SHA.
+3. Wait for the five-minute freshness window or purge the installer Worker
+   cache.
+4. Verify every active canonical Worker endpoint from a checkout containing
+   the final target-branch commit:
 
    ```bash
-   FINAL_COMMIT_SHA="replace-with-final-target-branch-sha"
-   CHECK_JSON="$(mktemp)"
-   npm run --silent stable:check:json > "$CHECK_JSON" || [[ $? -eq 3 ]]
-   jq -e --arg sha "$FINAL_COMMIT_SHA" '.candidateRef == $sha' "$CHECK_JSON"
-   rm -f "$CHECK_JSON"
-   ```
-
-   Do not promote when `candidateRef` differs. The automation selects the
-   newest `main` commit that touched `ods/get-ods.sh`; it does not accept an
-   arbitrary deployment SHA.
-4. Promote the reviewed candidate, confirm the rendered configuration pins the
-   final commit, and deploy the Worker:
-
-   ```bash
-   npm run stable:update
-   jq -e --arg sha "$FINAL_COMMIT_SHA" \
-     '.upstream.stableRef == $sha' \
-     config/installer-endpoints.json
-   npm run deploy:dry-run
-   npm run deploy
-   npm run live:check:rollback
-   ```
-
-   `live:check:rollback` verifies the Worker aliases while accepting the
-   intentional HTML rollback on paused Pages aliases.
-5. If the `osmantic.com/get/ods*` Pages aliases are active, regenerate and
-   deploy the Pages proxy through its reviewed website release workflow, then
-   run strict `npm run live:check`. Otherwise, record that the Pages aliases
-   remain paused.
-6. Purge CDN or intermediary caches for each active stable endpoint.
-7. Verify every active stable Worker endpoint from a checkout at the final
-   commit:
-
-   ```bash
-   bash ods/scripts/verify-hosted-bootstrap.sh "$FINAL_COMMIT_SHA"
+   git fetch origin main
+   bash ods/scripts/verify-hosted-bootstrap.sh origin/main
    ```
 
    Include `https://osmantic.com/get/ods` and
    `https://osmantic.com/get/ods.sh` when those Pages aliases are active.
-
-8. Record each endpoint, `X-ODS-Channel`, `X-ODS-Source-Ref`,
+5. Record each endpoint, `X-ODS-Channel`, `X-ODS-Source-Ref`,
    `X-ODS-Presentation`, and verification result in the PR or release receipt.
 
-The deployment is incomplete if the header ref differs from the final commit,
-the presentation is not `script`, the body differs from
-`FINAL_COMMIT_SHA:ods/get-ods.sh`, or documented bootstrap controls are absent.
+Verification is incomplete if the headers do not identify `main`, the
+presentation is not `script`, or the body differs from
+`origin/main:ods/get-ods.sh`.
+
+Deploy the installer Worker only when routing, headers, validation, caching, or
+endpoint configuration changes. For a bad bootstrap merge, revert it on
+repository `main`, wait for or purge the cache, and verify again.
 
 ## When Release-Grade Fleet Is Required
 

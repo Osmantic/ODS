@@ -9,7 +9,8 @@ DEFAULT_ENDPOINTS=(
     "https://install.osmantic.com/ods"
     "https://install.osmantic.com/ods.sh"
 )
-EXPECTED_CHANNEL="${ODS_HOSTED_BOOTSTRAP_CHANNEL:-stable}"
+EXPECTED_CHANNEL="${ODS_HOSTED_BOOTSTRAP_CHANNEL:-main}"
+EXPECTED_SOURCE_REF="${ODS_HOSTED_BOOTSTRAP_SOURCE_REF:-main}"
 
 fail() {
     echo "[FAIL] $*" >&2
@@ -41,7 +42,7 @@ command -v curl >/dev/null 2>&1 || fail "curl is required."
 command -v cmp >/dev/null 2>&1 || fail "cmp is required."
 
 if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 EXPECTED_REF [ENDPOINT ...]" >&2
+    echo "Usage: $0 EXPECTED_GIT_REF [ENDPOINT ...]" >&2
     echo "Example: $0 \"\$(git rev-parse HEAD)\"" >&2
     exit 2
 fi
@@ -99,8 +100,8 @@ for endpoint in "$@"; do
 
     [[ -n "$source_ref" ]] \
         || fail "$endpoint did not return X-ODS-Source-Ref."
-    [[ "$source_ref" == "$EXPECTED_SHA" ]] \
-        || fail "$endpoint serves $source_ref; expected $EXPECTED_SHA."
+    [[ "$source_ref" == "$EXPECTED_SOURCE_REF" ]] \
+        || fail "$endpoint reports source ref '$source_ref'; expected $EXPECTED_SOURCE_REF."
 
     if [[ -n "$EXPECTED_CHANNEL" ]]; then
         [[ "$channel" == "$EXPECTED_CHANNEL" ]] \
@@ -121,7 +122,7 @@ for endpoint in "$@"; do
     bash -n "$body_file" \
         || fail "$endpoint returned a bootstrap that does not pass bash -n."
 
-    echo "[PASS] $endpoint -> $channel @ $source_ref (cache: ${cache_state:-unknown})"
+    echo "[PASS] $endpoint -> $channel/$source_ref matches $EXPECTED_SHA (cache: ${cache_state:-unknown})"
 done
 
-echo "[PASS] Hosted bootstrap deployment matches $EXPECTED_SHA on $endpoint_index endpoint(s)."
+echo "[PASS] Hosted bootstrap matches $EXPECTED_SHA from $EXPECTED_SOURCE_REF on $endpoint_index endpoint(s)."

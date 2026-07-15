@@ -197,8 +197,8 @@ compatible_ref_docs=(
 
 for file in "${compatible_ref_docs[@]}"; do
     require_literal "$file" '`ODS_REF` selects a compatible repository' "Compatible bootstrap ref guidance"
-    require_literal "$file" 'separately deployed bootstrap revision' "Hosted bootstrap deployment guidance"
-    require_literal "$file" 'not the hosted script revision' "Bootstrap versus checkout ref guidance"
+    require_literal "$file" 'proxies the current bootstrap from repository `main`' "Hosted main-source guidance"
+    require_literal "$file" 'Reviewed merges reach it automatically after edge-cache refresh' "Automatic hosted refresh guidance"
 done
 
 assert_no_retired_names
@@ -208,12 +208,13 @@ release_doc="$ROOT_DIR/docs/RELEASE_CHANNELS.md"
 require_literal "$trust_doc" 'currently `main`' "Default branch guidance"
 require_literal "$trust_doc" 'ODS_REF=' "Release-tag pinning guidance"
 require_literal "$trust_doc" 'git checkout AUDITED_COMMIT_SHA' "Exact-commit guidance"
-require_literal "$trust_doc" 'X-ODS-Source-Ref' "Hosted bootstrap source-ref guidance"
-require_literal "$trust_doc" 'reviewed `stable`' "Hosted stable-channel guidance"
-require_literal "$trust_doc" 'not guaranteed to be byte-identical' "Hosted-versus-raw deployment guidance"
+require_literal "$trust_doc" 'X-ODS-Channel: main' "Hosted main-channel guidance"
+require_literal "$trust_doc" 'X-ODS-Source-Ref: main' "Hosted main source-ref guidance"
+require_literal "$trust_doc" 'serve the same mutable' "Canonical and explicit main alias guidance"
+require_literal "$trust_doc" 'five minutes' "Hosted cache freshness guidance"
+require_literal "$trust_doc" 'AUDITED_COMMIT_SHA/ods/get-ods.sh' "Immutable bootstrap URL guidance"
 require_literal "$trust_doc" 'ods/main.sh' "Hosted main-channel guidance"
 require_literal "$trust_doc" 'verify-hosted-bootstrap.sh' "Hosted bootstrap deployment verification"
-require_literal "$trust_doc" 'both `get.osmantic.com` and `install.osmantic.com`' "Hosted Worker alias coverage"
 require_literal "$REPO_ROOT/README.md" "\`$STABLE_TAG\` is the current stable release" "README stable release"
 require_literal "$release_doc" "current stable release is \`$STABLE_TAG\`" "Release channel stable release"
 require_literal "$trust_doc" "--branch $STABLE_TAG $CANONICAL_REPO_URL" "Manual stable clone"
@@ -227,6 +228,15 @@ hosted_verifier="$ROOT_DIR/scripts/verify-hosted-bootstrap.sh"
 [[ -x "$hosted_verifier" ]] || fail "Hosted bootstrap verifier must be executable"
 require_literal "$hosted_verifier" 'x-ods-source-ref' "Hosted source-ref verification"
 require_literal "$hosted_verifier" 'x-ods-presentation' "Hosted presentation verification"
+require_literal "$hosted_verifier" 'ODS_HOSTED_BOOTSTRAP_SOURCE_REF:-main' "Hosted main source-ref default"
 require_literal "$hosted_verifier" 'cmp -s' "Hosted bootstrap byte comparison"
+
+security_doc="$ROOT_DIR/SECURITY.md"
+require_literal "$security_doc" 'security@osmantic.com' "Security reporting address"
+require_literal "$security_doc" 'inbound alias monitored through the shared' "Security alias routing guidance"
+
+if grep -qF 'separately deployed bootstrap revision' "${compatible_ref_docs[@]}" "$trust_doc"; then
+    fail "Install guidance still describes a separately promoted hosted bootstrap"
+fi
 
 pass "Install commands and provenance guidance are consistent"
