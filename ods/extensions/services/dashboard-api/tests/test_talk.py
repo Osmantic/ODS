@@ -947,6 +947,64 @@ def test_talk_vision_url_preserves_lemonade_api_v1(monkeypatch):
     assert _vision_chat_completions_url() == "http://host.docker.internal:8080/api/v1/chat/completions"
 
 
+def test_vision_stream_tolerates_empty_and_null_choices(monkeypatch):
+    """A usage-only ({"choices": []}) or null-element chunk must not crash the
+    vision SSE generator; it still processes valid chunks and emits complete."""
+    import asyncio
+
+    from routers import talk
+
+    lines = [
+        'data: {"choices": []}',
+        'data: {"choices": [{"delta": {"content": "a cat"}}]}',
+        'data: {"choices": [null]}',
+        'data: [DONE]',
+    ]
+
+    class FakeResp:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def aiter_lines(self):
+            for ln in lines:
+                yield ln
+
+        async def aread(self):
+            return b""
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def stream(self, *a, **k):
+            return FakeResp()
+
+    monkeypatch.setattr(talk.httpx, "AsyncClient", FakeClient)
+
+    async def run():
+        frames = []
+        async for raw in talk._stream_vision_chat(b"imgbytes", "image/png", "describe"):
+            frames.append(raw)
+        return frames
+
+    text = b"".join(asyncio.run(run())).decode("utf-8")
+    # Reached the end (complete frame) without an IndexError/AttributeError
+    # tearing down the stream, and the one valid chunk was still delivered.
+    assert '"complete"' in text
+    assert "a cat" in text
+
+
 def test_talk_attachment_requires_session(test_client):
     """No cookie ⇒ 401 even with a valid file."""
     resp = test_client.post(

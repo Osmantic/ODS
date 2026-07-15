@@ -168,7 +168,12 @@ async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text
                         chunk = json.loads(payload_str)
                     except json.JSONDecodeError:
                         continue
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    # A streaming chunk may carry an empty (usage-only) or
+                    # null-element choices list; the [{}] default only covers a
+                    # missing key, so guard the index/element to avoid killing
+                    # the generator mid-stream (mirrors routers/models.py).
+                    choices = chunk.get("choices") or []
+                    delta = (choices[0] or {}).get("delta", {}) if choices else {}
                     text = delta.get("content")
                     if isinstance(text, str) and text:
                         accumulated.append(text)
