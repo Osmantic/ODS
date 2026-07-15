@@ -103,6 +103,55 @@ _ods_truthy() {
     esac
 }
 
+_ods_is_related_install_dir() {
+    local candidate="$1"
+    local compose_file=""
+
+    [[ -d "$candidate" ]] || return 1
+    [[ -f "$candidate/.env" || -d "$candidate/data" ]] || return 1
+    [[ -f "$candidate/install-core.sh" || -f "$candidate/install.sh" ]] || return 1
+
+    if [[ -f "$candidate/docker-compose.base.yml" ]]; then
+        compose_file="$candidate/docker-compose.base.yml"
+    elif [[ -f "$candidate/docker-compose.yml" ]]; then
+        compose_file="$candidate/docker-compose.yml"
+    else
+        return 1
+    fi
+
+    grep -Eq '^[[:space:]]{2}open-webui:[[:space:]]*$' "$compose_file" || return 1
+    grep -Eq '^[[:space:]]{2}dashboard-api:[[:space:]]*$' "$compose_file" || return 1
+    grep -Eq '^[[:space:]]{2}(llama-server|litellm):[[:space:]]*$' "$compose_file"
+}
+
+_ods_related_compose_containers() {
+    command -v docker >/dev/null 2>&1 || return 0
+
+    docker ps -a \
+        --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}' \
+        2>/dev/null |
+        awk -F '|' '
+            $2 != "" {
+                project = $2
+                if (names[project] == "") {
+                    names[project] = $1
+                } else {
+                    names[project] = names[project] " " $1
+                }
+                if ($3 == "open-webui") open_webui[project] = 1
+                if ($3 == "dashboard-api") dashboard_api[project] = 1
+                if ($3 == "llama-server" || $3 == "litellm") inference[project] = 1
+            }
+            END {
+                for (project in names) {
+                    if (open_webui[project] && dashboard_api[project] && inference[project]) {
+                        print names[project]
+                    }
+                }
+            }
+        '
+}
+
 if [[ ! -d "$INSTALL_DIR" ]] && ! _ods_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}"; then
     _pre_ods_install_dir="${ODS_LEGACY_INSTALL_DIR:-}"
     _pre_ods_findings=()
@@ -113,11 +162,23 @@ if [[ ! -d "$INSTALL_DIR" ]] && ! _ods_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}"; 
     }; then
         _pre_ods_findings+=("install directory: $_pre_ods_install_dir")
     fi
-    if (( ${#_pre_ods_findings[@]} > 0 )); then
-        printf '%s\n' "${_pre_ods_findings[@]}" | sed 's/^/[pre-ODS install] /' >&2
-        error "Existing pre-ODS install detected before first ODS install. Stop, uninstall, or migrate the older stack first. To run both intentionally, set ODS_ALLOW_LEGACY_PARALLEL=1 and choose non-conflicting ports/install paths."
+    while IFS= read -r -d '' _pre_ods_candidate; do
+        [[ "${_pre_ods_candidate%/}" == "${INSTALL_DIR%/}" ]] && continue
+        [[ "${_pre_ods_candidate%/}" == "${SCRIPT_DIR%/}" ]] && continue
+        [[ -n "$_pre_ods_install_dir" && "${_pre_ods_candidate%/}" == "${_pre_ods_install_dir%/}" ]] && continue
+        if _ods_is_related_install_dir "$_pre_ods_candidate"; then
+            _pre_ods_findings+=("related install directory: $_pre_ods_candidate")
+        fi
+    done < <(find "$HOME" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+    _pre_ods_containers="$(_ods_related_compose_containers || true)"
+    if [[ -n "$_pre_ods_containers" ]]; then
+        _pre_ods_findings+=("related Compose containers: $(printf '%s\n' "$_pre_ods_containers" | tr '\n' ' ')")
     fi
-    unset _pre_ods_install_dir _pre_ods_findings
+    if (( ${#_pre_ods_findings[@]} > 0 )); then
+        printf '%s\n' "${_pre_ods_findings[@]}" | sed 's/^/[related install] /' >&2
+        error "Existing related install detected before first ODS install. Stop, uninstall, or migrate the older stack first. To run both intentionally, set ODS_ALLOW_LEGACY_PARALLEL=1 and choose non-conflicting ports/install paths."
+    fi
+    unset _pre_ods_install_dir _pre_ods_findings _pre_ods_candidate _pre_ods_containers
 fi
 
 # Existing installation — update in place (secrets and data are preserved)

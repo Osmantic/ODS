@@ -26,9 +26,6 @@ selector. The bootstrap:
 - clones `https://github.com/Osmantic/ODS.git` with sparse
   checkout for the `ods/` product tree;
 - copies the runtime product files into `~/ods`;
-- on Linux and macOS, renders the selected Docker Compose stack and rejects
-  unowned host-port, container-name, network-name, and named-volume claims
-  before Docker service launch;
 - runs `./install.sh` from that copied runtime tree.
 
 Without `ODS_REF`, Git uses the repository's default branch, currently `main`.
@@ -51,6 +48,15 @@ The direct raw GitHub URL,
 `https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh`, exposes
 the bootstrap source from `main`. It is an alternate transport for the
 bootstrap, not a separate stable release channel.
+
+Before a first install, the bootstrap checks for an explicitly declared older
+install path, sibling directories with the stack's core file and service
+signature, and existing Compose projects with the core service tuple. This
+preserves automatic coexistence protection without depending on retired product
+names. A dormant install in a custom nested path may not be discoverable; set
+`ODS_LEGACY_INSTALL_DIR=/path/to/install` to check it explicitly. Use
+`ODS_ALLOW_LEGACY_PARALLEL=1` only after assigning separate ports and data
+paths.
 
 ### Manual Source Install
 
@@ -124,8 +130,6 @@ ODS currently relies on:
 - release tags or explicit refs for reproducible source selection;
 - local generated secrets instead of checked-in default credentials;
 - localhost-first service binding by default;
-- fail-closed Linux and macOS Docker install conflict detection with a
-  structured local report;
 - release validation across zero-prereq distro bootstrap, real hardware
   installs, product behavior, full-model capabilities, and lifecycle recovery.
 

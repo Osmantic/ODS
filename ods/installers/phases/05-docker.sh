@@ -432,19 +432,6 @@ _docker_post_install_checks() {
 ods_progress 35 "docker" "Running Docker post-install checks"
 _docker_post_install_checks
 
-_install_conflict_status=0
-ods_run_install_conflict_check || _install_conflict_status=$?
-case "$_install_conflict_status" in
-    0) ;;
-    1)
-        error "Installation stopped because the planned Compose stack conflicts with existing host or Docker claims. Resolve the reported conflicts, then rerun the installer."
-        ;;
-    *)
-        error "Installation stopped because conflict detection could not establish complete host and Docker state. Review $INSTALL_CONFLICT_REPORT_FILE, then rerun the installer."
-        ;;
-esac
-unset _install_conflict_status
-
 # NVIDIA Container Toolkit (skip for AMD — uses /dev/dri + /dev/kfd passthrough)
 if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
     ods_progress 36 "docker" "Checking NVIDIA Container Toolkit"

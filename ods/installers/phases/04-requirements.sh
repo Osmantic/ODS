@@ -3,7 +3,7 @@
 # ODS Installer — Phase 04: Requirements Check
 # ============================================================================
 # Part of: installers/phases/
-# Purpose: RAM, disk, and GPU requirement checks
+# Purpose: RAM, disk, GPU, and port availability checks
 #
 # Expects: SCRIPT_DIR, LOG_FILE, TIER, RAM_GB, DISK_AVAIL, GPU_BACKEND,
 #           GPU_VRAM, GPU_NAME, GPU_COUNT, INTERACTIVE, DRY_RUN,
@@ -147,6 +147,101 @@ if [[ "${LLM_MODEL_SIZE_MB:-0}" =~ ^[0-9]+$ && "${LLM_MODEL_SIZE_MB:-0}" -gt 0 &
     fi
 fi
 
+# Port conflict detection with process details
+# Warn-once guard for missing port-check tools
+_port_check_warned=false
+
+check_port_conflict() {
+    local port="$1"
+    PORT_CONFLICT=false
+    PORT_CONFLICT_PID=""
+    PORT_CONFLICT_PROC=""
+
+    # Try lsof first (most reliable for getting process info)
+    if command -v lsof &> /dev/null; then
+        if lsof -i ":${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+            PORT_CONFLICT_PID=$(lsof -t -i ":${port}" -sTCP:LISTEN 2>/dev/null | head -1)
+            PORT_CONFLICT_PROC=$(ps -p "$PORT_CONFLICT_PID" -o comm= 2>/dev/null || echo "unknown")
+            PORT_CONFLICT=true
+            return 0
+        fi
+    # Fallback to ss (faster but less detailed)
+    elif command -v ss &> /dev/null; then
+        if ss -tln 2>/dev/null | grep -qE ":${port}(\s|$)"; then
+            # Try to extract PID from ss output (format: users:(("process",pid=1234,fd=5)))
+            local ss_line
+            ss_line=$(ss -tlnp 2>/dev/null | grep -E ":${port}(\s|$)" | head -1)
+            if [[ "$ss_line" =~ pid=([0-9]+) ]]; then
+                PORT_CONFLICT_PID="${BASH_REMATCH[1]}"
+                PORT_CONFLICT_PROC=$(ps -p "$PORT_CONFLICT_PID" -o comm= 2>/dev/null || echo "unknown")
+            else
+                PORT_CONFLICT_PROC="unknown"
+            fi
+            PORT_CONFLICT=true
+            return 0
+        fi
+    # Fallback to netstat
+    elif command -v netstat &> /dev/null; then
+        if netstat -tln 2>/dev/null | grep -qE ":${port}(\s|$)"; then
+            # netstat -tlnp requires root, so we may not get PID
+            local netstat_line
+            netstat_line=$(netstat -tlnp 2>/dev/null | grep -E ":${port}(\s|$)" | head -1)
+            if [[ "$netstat_line" =~ ([0-9]+)/([^ ]+) ]]; then
+                PORT_CONFLICT_PID="${BASH_REMATCH[1]}"
+                PORT_CONFLICT_PROC="${BASH_REMATCH[2]}"
+            else
+                PORT_CONFLICT_PROC="unknown"
+            fi
+            PORT_CONFLICT=true
+            return 0
+        fi
+    else
+        # No tools available
+        if [[ "${_port_check_warned}" != "true" ]]; then
+            _port_check_warned=true
+            warn "Neither 'lsof', 'ss', nor 'netstat' found — cannot verify port availability"
+            warn "Install lsof, iproute2 (for ss), or net-tools (for netstat) to enable port checks"
+        fi
+        return 1
+    fi
+
+    return 1
+}
+
+# Ollama conflict detection
+check_ollama_conflict() {
+    OLLAMA_RUNNING=false
+    OLLAMA_PID=""
+
+    if pgrep -x ollama >/dev/null 2>&1; then
+        OLLAMA_RUNNING=true
+        OLLAMA_PID=$(pgrep -x ollama | head -1)
+    fi
+}
+
+# Ollama conflict detection (must happen before port checks)
+check_ollama_conflict
+if $OLLAMA_RUNNING; then
+    ai_warn "Ollama is running (PID ${OLLAMA_PID}) and may conflict with ODS."
+    ai "  Note: this is usually not a port collision. Open WebUI may auto-discover Ollama (11434) and prefer it over the local llama-server (8080)."
+    if $INTERACTIVE && ! $DRY_RUN; then
+        read -r -p "  Stop Ollama for this session? [Y/n] " ollama_choice < /dev/tty
+        if [[ ! "$ollama_choice" =~ ^[nN] ]]; then
+            kill "$OLLAMA_PID" 2>/dev/null || sudo kill "$OLLAMA_PID" 2>/dev/null || true
+            sleep 2
+            if pgrep -x ollama >/dev/null 2>&1; then
+                ai_warn "Ollama restarted automatically. Stop it manually: sudo systemctl stop ollama"
+            else
+                ai_ok "Ollama stopped"
+            fi
+        else
+            ai_warn "Ollama left running. Port conflicts may occur."
+        fi
+    else
+        ai_warn "Ollama detected. Run without --non-interactive to resolve, or stop manually: sudo systemctl stop ollama"
+    fi
+fi
+
 _phase04_lemonade_uses_host_9000() {
     [[ "${LEMONADE_EXTERNAL:-false}" =~ ^([Tt][Rr][Uu][Ee]|1|yes|on)$ ]] && return 0
     [[ "${AMD_INFERENCE_RUNTIME:-}" =~ ^([Ll][Ee][Mm][Oo][Nn][Aa][Dd][Ee])$ ]] && return 0
@@ -155,26 +250,35 @@ _phase04_lemonade_uses_host_9000() {
 }
 
 if [[ "${ENABLE_VOICE:-false}" == "true" ]] && _phase04_lemonade_uses_host_9000; then
-    _whisper_port_for_check="${WHISPER_PORT:-}"
-    if [[ -z "$_whisper_port_for_check" ]] \
-        && declare -f ods_install_env_value >/dev/null 2>&1
-    then
-        _whisper_port_for_check="$(
-            ods_install_env_value "$INSTALL_DIR/.env" WHISPER_PORT \
-                "${SERVICE_PORTS[whisper]:-9000}"
-        )"
-    fi
-    _whisper_port_for_check="${_whisper_port_for_check:-${SERVICE_PORTS[whisper]:-9000}}"
+    _whisper_port_for_check="${WHISPER_PORT:-${SERVICE_PORTS[whisper]:-9000}}"
     if [[ "$_whisper_port_for_check" == "9000" ]]; then
         # Lemonade's native router can reserve host port 9000 on AMD systems.
-        # Keep Whisper's container port unchanged, but use 9100 on the host
+        # Keep Whisper's container port unchanged, but check/use 9100 on the host
         # unless the user explicitly selected another non-9000 port.
         WHISPER_PORT=9100
         SERVICE_PORTS[whisper]=9100
-        log "AMD/Lemonade detected; reserving host port 9000 for Lemonade and selecting Whisper port 9100"
+        log "AMD/Lemonade detected; reserving host port 9000 for Lemonade and checking Whisper on 9100"
     fi
     unset _whisper_port_for_check
 fi
+
+# Port conflict detection with detailed process information
+PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-8080} ${SERVICE_PORTS[open-webui]:-3000}"
+[[ "$ENABLE_VOICE" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[whisper]:-9000} ${SERVICE_PORTS[tts]:-8880}"
+[[ "$ENABLE_WORKFLOWS" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[n8n]:-5678}"
+[[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[qdrant]:-6333}"
+[[ "$ENABLE_COMFYUI" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[comfyui]:-8188}"
+
+for port in $PORTS_TO_CHECK; do
+    if check_port_conflict "$port"; then
+        if [[ -n "$PORT_CONFLICT_PID" ]]; then
+            warn "Port $port is in use by ${PORT_CONFLICT_PROC} (PID ${PORT_CONFLICT_PID})"
+        else
+            warn "Port $port is in use by ${PORT_CONFLICT_PROC}"
+        fi
+        REQUIREMENTS_MET=false
+    fi
+done
 
 if [[ "$REQUIREMENTS_MET" != "true" ]]; then
     warn "Some requirements not met. Installation may have limited functionality."

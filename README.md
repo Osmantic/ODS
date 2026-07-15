@@ -2,8 +2,6 @@
 
 # ODS
 
-<img src="ods/docs/images/osmantic-lockup.png" alt="Osmantic" width="800">
-
 **Osmantic Deployment System**
 
 **Turn your PC, Mac, or Linux box into a private AI server.**
@@ -20,6 +18,10 @@ It should feel that way for everyone.
 </div>
 
 ---
+
+<p align="center">
+  <img src="ods/docs/images/osmantic-lockup.png" alt="Osmantic" width="800">
+</p>
 
 ODS installs and wires together everything you need to run AI locally, so you do not have to assemble Ollama, Open WebUI, n8n, ComfyUI, and privacy tools by hand:
 
@@ -81,14 +83,6 @@ After install, open **http://localhost:3000** and start chatting.
 > ```bash
 > WEBUI_PORT=9090 ./install.sh
 > ```
->
-> On Linux, and before the macOS Docker stack launches, the installer renders
-> the selected Compose stack. It blocks conflicting host listeners, running
-> or stopped containers configured for the same ports, exact Docker name
-> collisions, and unverified adoption of planned named volumes. Review
-> `/tmp/ods-install-conflicts.json`; use `ODS_ALLOW_CONFLICTS=1` only after
-> intentionally isolating ports and data ownership. `--force` does not bypass
-> this check.
 
 ![ODS Dashboard](ods/docs/images/dashboard.png)
 

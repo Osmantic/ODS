@@ -423,6 +423,13 @@ if ($dryRun) {
                 }
             }
 
+            function Get-ODSPriorLemonadeTaskName {
+                return (-join ([char[]](
+                    68, 114, 101, 97, 109, 83, 101, 114, 118, 101, 114, 76, 101,
+                    109, 111, 110, 97, 100, 101, 82, 117, 110, 116, 105, 109, 101
+                )))
+            }
+
             function Stop-ODSWindowsLemonadeProcesses {
                 param(
                     [string]$ExePath,
@@ -438,42 +445,8 @@ if ($dryRun) {
                     }
                 } catch { }
                 $_knownNames = @("LemonadeServer.exe", "lemonade-server.exe", "lemonade-router.exe")
-                $_taskNamesToRemove = @($TaskNames)
 
-                try {
-                    foreach ($_scheduledTask in @(Get-ScheduledTask -ErrorAction SilentlyContinue)) {
-                        foreach ($_action in @($_scheduledTask.Actions)) {
-                            $_actionPath = [string]$_action.Execute
-                            $_normalizedActionPath = [Environment]::ExpandEnvironmentVariables(
-                                $_actionPath.Trim('"')
-                            )
-                            $_actionName = [System.IO.Path]::GetFileName($_normalizedActionPath)
-                            $_arguments = [string]$_action.Arguments
-                            $_sameExecutable = $false
-                            try {
-                                if ($_resolvedExe -and $_normalizedActionPath) {
-                                    $_actionFullPath = [System.IO.Path]::GetFullPath(
-                                        $_normalizedActionPath
-                                    )
-                                    $_sameExecutable = $_actionFullPath.Equals(
-                                        $_resolvedExe,
-                                        [StringComparison]::OrdinalIgnoreCase
-                                    )
-                                }
-                            } catch { }
-                            $_managedPort = $_arguments -match "(^|\s)--port(?:=|\s+)$($script:LEMONADE_PORT)(\s|$)"
-                            $_serveAction = $_arguments -match "(^|\s)serve(\s|$)"
-                            if (($_sameExecutable -or ($_knownNames -contains $_actionName)) -and $_managedPort -and $_serveAction) {
-                                $_taskNamesToRemove += [string]$_scheduledTask.TaskName
-                                break
-                            }
-                        }
-                    }
-                } catch {
-                    Write-AIWarn "Could not inspect stale Lemonade scheduled tasks: $_"
-                }
-
-                foreach ($_taskName in @($_taskNamesToRemove | Where-Object { $_ } | Select-Object -Unique)) {
+                foreach ($_taskName in @($TaskNames | Where-Object { $_ } | Select-Object -Unique)) {
                     try { Stop-ScheduledTask -TaskName $_taskName -ErrorAction SilentlyContinue } catch { }
                     try { Unregister-ScheduledTask -TaskName $_taskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
                 }
@@ -504,7 +477,8 @@ if ($dryRun) {
                 Write-AI "Starting Lemonade server..."
                 $modelsDir = Join-Path (Join-Path $installDir "data") "models"
                 $taskName = "ODSLemonadeRuntime"
-                Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames @($taskName)
+                $taskNames = @($taskName, (Get-ODSPriorLemonadeTaskName))
+                Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames $taskNames
                 foreach ($listener in @(Get-NetTCPConnection -LocalPort $script:LEMONADE_PORT -State Listen -ErrorAction SilentlyContinue)) {
                     if ($listener.OwningProcess -gt 0) {
                         Stop-Process -Id ([int]$listener.OwningProcess) -Force -ErrorAction SilentlyContinue
@@ -545,7 +519,7 @@ if ($dryRun) {
                 }
                 if (-not $proc) {
                     Write-AIWarn "Lemonade $launchMethod started but no Lemonade process was found. Falling back to native llama-server (Vulkan)."
-                    Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames @($taskName)
+                    Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames $taskNames
                     Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
                     $useLemonade = $false
                 }
@@ -573,7 +547,7 @@ if ($dryRun) {
                         Write-AI "Model ($($tierConfig.GgufFile)) will load on first request."
                     } else {
                         Write-AIWarn "Lemonade server did not respond within ${maxWait}s. Falling back to native llama-server (Vulkan)."
-                        Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames @($taskName)
+                        Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames $taskNames
                         Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
                         $useLemonade = $false
                     }

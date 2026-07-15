@@ -75,13 +75,6 @@ teardown() {
         pkg_install() { :; }
         pkg_update() { :; }
         pkg_resolve() { echo "$1"; }
-        ods_run_install_conflict_check() { return 0; }
-        docker() {
-            case "$*" in
-                "compose version") echo "Docker Compose version v2.27.0" ;;
-                "version") echo "Docker version 27.0.0" ;;
-            esac
-        }
 
         source "'"$BATS_TEST_DIRNAME/../../installers/phases/05-docker.sh"'"
         echo "PHASE_COMPLETE"
@@ -196,7 +189,6 @@ teardown() {
         pkg_install() { echo "PKG_INSTALL: $*"; }
         pkg_update() { echo "PKG_UPDATE"; }
         pkg_resolve() { echo "$1"; }
-        ods_run_install_conflict_check() { return 0; }
 
         # Mock docker as already installed so we skip the install path
         docker() { echo "Docker 27.0.0"; }

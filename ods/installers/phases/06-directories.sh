@@ -278,18 +278,6 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         _env_get "$key" "$default"
     }
 
-    if ! declare -f ods_install_port_defaults >/dev/null 2>&1; then
-        # shellcheck source=/dev/null
-        . "$SCRIPT_DIR/installers/lib/install-conflicts.sh"
-    fi
-    while IFS='=' read -r _port_key _port_default; do
-        [[ -n "$_port_key" ]] || continue
-        printf -v "$_port_key" '%s' \
-            "$(_env_get_explicit_first "$_port_key" "$_port_default")"
-    done < <(ods_install_port_defaults)
-    ODS_PROXY_BIND="$(_env_get_explicit_first ODS_PROXY_BIND "0.0.0.0")"
-    unset _port_key _port_default
-
     _phase06_detect_lemonade_url() {
         command -v curl >/dev/null 2>&1 || return 1
         local candidate
@@ -450,7 +438,7 @@ raise SystemExit(1)' 2>/dev/null && return 0
     # Langfuse (LLM Observability). LANGFUSE_ENABLED mirrors the install-time
     # ENABLE_LANGFUSE toggle, falling back to whatever the user had in .env on
     # re-install so manual post-install `ods enable langfuse` edits survive.
-    LANGFUSE_PORT=$(_env_get_explicit_first LANGFUSE_PORT "3006")
+    LANGFUSE_PORT=$(_env_get LANGFUSE_PORT "3006")
     LANGFUSE_ENABLED=$(_env_get LANGFUSE_ENABLED "${ENABLE_LANGFUSE:-false}")
     LANGFUSE_NEXTAUTH_SECRET=$(_env_get LANGFUSE_NEXTAUTH_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
     LANGFUSE_SALT=$(_env_get LANGFUSE_SALT "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
@@ -805,32 +793,19 @@ INTEL_ENV
 fi)
 
 #=== Ports ===
-OLLAMA_PORT=${OLLAMA_PORT}
-WEBUI_PORT=${WEBUI_PORT}
-SEARXNG_PORT=${SEARXNG_PORT}
-PERPLEXICA_PORT=${PERPLEXICA_PORT}
+OLLAMA_PORT=11434
+WEBUI_PORT=3000
+SEARXNG_PORT=8888
+PERPLEXICA_PORT=3004
 WHISPER_PORT=${WHISPER_PORT_VALUE}
-TTS_PORT=${TTS_PORT}
-N8N_PORT=${N8N_PORT}
-QDRANT_PORT=${QDRANT_PORT}
-QDRANT_GRPC_PORT=${QDRANT_GRPC_PORT}
-EMBEDDINGS_PORT=${EMBEDDINGS_PORT}
-LITELLM_PORT=${LITELLM_PORT}
-OPENCLAW_PORT=${OPENCLAW_PORT}
+TTS_PORT=8880
+N8N_PORT=5678
+QDRANT_PORT=6333
+QDRANT_GRPC_PORT=6334
+EMBEDDINGS_PORT=8090
+LITELLM_PORT=4000
+OPENCLAW_PORT=7860
 LANGFUSE_PORT=${LANGFUSE_PORT}
-SHIELD_PORT=${SHIELD_PORT}
-DASHBOARD_API_PORT=${DASHBOARD_API_PORT}
-DASHBOARD_PORT=${DASHBOARD_PORT}
-COMFYUI_PORT=${COMFYUI_PORT}
-TOKEN_SPY_PORT=${TOKEN_SPY_PORT}
-APE_PORT=${APE_PORT}
-BRAVE_SEARCH_PORT=${BRAVE_SEARCH_PORT}
-HERMES_PROXY_PORT=${HERMES_PROXY_PORT}
-ODS_PROXY_BIND=${ODS_PROXY_BIND}
-ODS_PROXY_PORT=${ODS_PROXY_PORT}
-ODS_PROXY_TLS_PORT=${ODS_PROXY_TLS_PORT}
-OPENCODE_PORT=${OPENCODE_PORT}
-ODS_AGENT_PORT=${ODS_AGENT_PORT}
 
 #=== Hermes Agent ===
 # On AMD/Lemonade hosts, route Hermes through litellm. Lemonade is strict
@@ -843,6 +818,7 @@ ODS_AGENT_PORT=${ODS_AGENT_PORT}
 HERMES_LLM_BASE_URL=${HERMES_LLM_BASE_URL_VALUE}
 HERMES_LLM_API_KEY=${HERMES_LLM_API_KEY_VALUE}
 HERMES_LANGUAGE=${HERMES_LANGUAGE:-en}
+HERMES_PROXY_PORT=${HERMES_PROXY_PORT:-9120}
 HERMES_PROXY_UPSTREAM=${HERMES_PROXY_UPSTREAM:-ods-hermes:9119}
 ODS_AUTH_UPSTREAM=${ODS_AUTH_UPSTREAM:-ods-dashboard-api:3002}
 
@@ -887,7 +863,7 @@ WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===
 N8N_HOST=localhost
-N8N_WEBHOOK_URL=$(_env_get N8N_WEBHOOK_URL "http://localhost:${N8N_PORT}")
+N8N_WEBHOOK_URL=http://localhost:5678
 TIMEZONE=${SYSTEM_TZ:-UTC}
 
 #=== Langfuse (LLM Observability) ===

@@ -156,9 +156,6 @@ source "${LIB_DIR}/env-generator.sh"
 if [[ -f "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh" ]]; then
     source "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh"
 fi
-if [[ -f "${SOURCE_ROOT}/installers/lib/install-conflicts.sh" ]]; then
-    source "${SOURCE_ROOT}/installers/lib/install-conflicts.sh"
-fi
 source "${SOURCE_ROOT}/lib/safe-env.sh"
 if [[ -f "${SOURCE_ROOT}/lib/python-cmd.sh" ]]; then
     source "${SOURCE_ROOT}/lib/python-cmd.sh"
@@ -1476,37 +1473,6 @@ else
             fi
         fi
     done
-
-    _macos_ods_mode="local"
-    $CLOUD_MODE && _macos_ods_mode="cloud"
-    _macos_conflict_status=0
-    INSTALL_CONFLICT_SOURCE_DIR="$INSTALL_DIR" \
-    INSTALL_CONFLICT_INSTALL_DIR="$INSTALL_DIR" \
-    INSTALL_CONFLICT_COMPOSE_FLAGS="${COMPOSE_FLAGS[*]}" \
-    INSTALL_CONFLICT_ENV_FILE="$INSTALL_DIR/.env" \
-    INSTALL_CONFLICT_UPDATE_MODE="$env_existed" \
-    INSTALL_CONFLICT_REPORT_FILE="${INSTALL_CONFLICT_REPORT_FILE:-/tmp/ods-install-conflicts.json}" \
-    GPU_BACKEND="apple" \
-    GPU_COUNT=0 \
-    ODS_MODE="$_macos_ods_mode" \
-    BIND_ADDRESS_EXPLICIT=false \
-    DOCKER_CMD="docker" \
-    DOCKER_COMPOSE_CMD="docker compose" \
-        ods_run_install_conflict_check || _macos_conflict_status=$?
-    case "$_macos_conflict_status" in
-        0) ;;
-        1)
-            ai_err "Installation stopped because the planned macOS Docker stack conflicts with existing host or Docker claims."
-            ai "Review ${INSTALL_CONFLICT_REPORT_FILE:-/tmp/ods-install-conflicts.json}, resolve the conflicts, and rerun the installer."
-            exit 1
-            ;;
-        *)
-            ai_err "Installation stopped because conflict detection could not establish complete host and Docker state."
-            ai "Review ${INSTALL_CONFLICT_REPORT_FILE:-/tmp/ods-install-conflicts.json}, fix Docker or Compose access, and rerun the installer."
-            exit 1
-            ;;
-    esac
-    unset _macos_conflict_status _macos_ods_mode
 
     # ── Unload stale LaunchAgents before compose (crash-safe) ──
     # If a previous install registered these agents and this run fails at

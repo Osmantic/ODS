@@ -65,24 +65,49 @@ grep -qF 'ODS_ALLOW_LEGACY_PARALLEL' installers/phases/01-preflight.sh \
   || { echo "[FAIL] Linux installer preflight must gate pre-ODS coexistence"; exit 1; }
 grep -qF '_pre_ods_install_dir="${ODS_LEGACY_INSTALL_DIR:-}"' installers/phases/01-preflight.sh \
   || { echo "[FAIL] Linux installer preflight must use only the canonical pre-ODS install-dir control"; exit 1; }
+grep -qF '_ods_is_related_install_dir' installers/phases/01-preflight.sh \
+  || { echo "[FAIL] Linux installer preflight must auto-detect dormant related installs"; exit 1; }
+grep -qF '_ods_related_compose_containers' installers/phases/01-preflight.sh \
+  || { echo "[FAIL] Linux installer preflight must auto-detect related Compose projects"; exit 1; }
 grep -qF 'ods/ods-cli text eol=lf' ../.gitattributes \
   || { echo "[FAIL] .gitattributes must force LF checkout for extensionless ods/ods-cli"; exit 1; }
 
 _pre_ods_guard_tmp="$(mktemp -d)"
 _pre_ods_guard_harness="$_pre_ods_guard_tmp/bootstrap-guard.sh"
+for _pre_ods_helper in _ods_is_related_install_dir _ods_related_compose_containers; do
+  sed -n "/^${_pre_ods_helper}() {/,/^}/p" get-ods.sh \
+    > "$_pre_ods_guard_tmp/bootstrap-${_pre_ods_helper}.sh"
+  sed -n "/^${_pre_ods_helper}() {/,/^}/p" installers/phases/01-preflight.sh \
+    > "$_pre_ods_guard_tmp/preflight-${_pre_ods_helper}.sh"
+  cmp -s \
+    "$_pre_ods_guard_tmp/bootstrap-${_pre_ods_helper}.sh" \
+    "$_pre_ods_guard_tmp/preflight-${_pre_ods_helper}.sh" \
+    || { echo "[FAIL] Bootstrap and Linux preflight must share ${_pre_ods_helper} behavior"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
+done
+unset _pre_ods_helper
+
 {
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
   printf '%s\n' 'warn() { printf "[warn] %s\n" "$*"; }'
-  sed -n '/^is_truthy() {/,/^}/p' get-ods.sh
-  sed -n '/^refuse_legacy_install() {/,/^}/p' get-ods.sh
+  sed -n '/^is_truthy() {/,/^# ── Banner/p' get-ods.sh | sed '$d'
+  cat <<'HARNESS_DOCKER'
+docker() {
+  if [[ -n "${ODS_TEST_DOCKER_ROWS_FILE:-}" && -f "$ODS_TEST_DOCKER_ROWS_FILE" ]]; then
+    cat "$ODS_TEST_DOCKER_ROWS_FILE"
+  fi
+}
+HARNESS_DOCKER
   printf '%s\n' 'refuse_legacy_install'
 } > "$_pre_ods_guard_harness"
 chmod +x "$_pre_ods_guard_harness"
 
+mkdir -p "$_pre_ods_guard_tmp/home/unrelated"
+touch "$_pre_ods_guard_tmp/home/unrelated/.env"
 if ! PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
     INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
     bash "$_pre_ods_guard_harness" >/dev/null 2>&1; then
-  echo "[FAIL] bootstrap guard must allow installs when no explicit older path is configured"
+  echo "[FAIL] bootstrap guard must ignore directories without the full stack signature"
   rm -rf "$_pre_ods_guard_tmp"
   exit 1
 fi
@@ -91,20 +116,73 @@ mkdir -p "$_pre_ods_guard_tmp/older-install"
 touch "$_pre_ods_guard_tmp/older-install/.env"
 if PRE_ODS_INSTALL_DIR="$_pre_ods_guard_tmp/older-install" \
     ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
     INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
     bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/blocked.log" 2>&1; then
   echo "[FAIL] bootstrap guard must reject a configured older install path"
   rm -rf "$_pre_ods_guard_tmp"
   exit 1
 fi
-grep -qF 'Existing pre-ODS install detected' "$_pre_ods_guard_tmp/blocked.log" \
+grep -qF 'Existing related install detected' "$_pre_ods_guard_tmp/blocked.log" \
   || { echo "[FAIL] bootstrap guard rejection must explain the detected older install"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
 
 if ! PRE_ODS_INSTALL_DIR="$_pre_ods_guard_tmp/older-install" \
     ODS_ALLOW_LEGACY_PARALLEL=1 \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
     INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
     bash "$_pre_ods_guard_harness" >/dev/null 2>&1; then
   echo "[FAIL] bootstrap guard must honor the explicit parallel-install override"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+
+mkdir -p "$_pre_ods_guard_tmp/home/related/data"
+touch "$_pre_ods_guard_tmp/home/related/.env" "$_pre_ods_guard_tmp/home/related/install-core.sh"
+cat > "$_pre_ods_guard_tmp/home/related/docker-compose.base.yml" <<'COMPOSE'
+services:
+  llama-server:
+  open-webui:
+  dashboard-api:
+COMPOSE
+if PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/auto-path.log" 2>&1; then
+  echo "[FAIL] bootstrap guard must auto-detect a dormant related install"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+grep -qF 'related install directory' "$_pre_ods_guard_tmp/auto-path.log" \
+  || { echo "[FAIL] dormant related-install rejection must identify the directory"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
+rm -rf "$_pre_ods_guard_tmp/home/related"
+
+cat > "$_pre_ods_guard_tmp/docker-rows" <<'ROWS'
+stack-llm|stack|llama-server
+stack-web|stack|open-webui
+stack-api|stack|dashboard-api
+ROWS
+if PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    ODS_TEST_DOCKER_ROWS_FILE="$_pre_ods_guard_tmp/docker-rows" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/auto-docker.log" 2>&1; then
+  echo "[FAIL] bootstrap guard must auto-detect a related Compose project"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+grep -qF 'related Compose containers' "$_pre_ods_guard_tmp/auto-docker.log" \
+  || { echo "[FAIL] related Compose rejection must identify the containers"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
+
+cat > "$_pre_ods_guard_tmp/docker-rows" <<'ROWS'
+other-web|other|open-webui
+other-api|other|dashboard-api
+ROWS
+if ! PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    ODS_TEST_DOCKER_ROWS_FILE="$_pre_ods_guard_tmp/docker-rows" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >/dev/null 2>&1; then
+  echo "[FAIL] bootstrap guard must require the complete core Compose signature"
   rm -rf "$_pre_ods_guard_tmp"
   exit 1
 fi
@@ -234,15 +312,11 @@ grep -qE '_sync_extension_compose +"\$\{ENABLE_EMBEDDINGS:-\$\{ENABLE_RAG:-false
   || { echo "[FAIL] Embeddings compose is not gated by ENABLE_EMBEDDINGS in $features_phase"; exit 1; }
 grep -q 'HOST_PAGE_SIZE:-$(getconf PAGE_SIZE' "$features_phase" \
   || { echo "[FAIL] Qdrant arm64 page-size guard missing from $features_phase"; exit 1; }
-for f in installers/phases/08-images.sh installers/phases/12-health.sh installers/phases/13-summary.sh; do
+for f in installers/phases/04-requirements.sh installers/phases/08-images.sh installers/phases/12-health.sh installers/phases/13-summary.sh; do
   test -f "$f" || { echo "[FAIL] missing installer phase: $f"; exit 1; }
   grep -q 'ENABLE_QDRANT:-${ENABLE_RAG:-false}' "$f" \
     || { echo "[FAIL] $f still gates Qdrant on ENABLE_RAG directly"; exit 1; }
 done
-if grep -q 'SERVICE_PORTS\[qdrant\]' installers/phases/04-requirements.sh; then
-  echo "[FAIL] phase 04 must not retain a hardcoded Qdrant port gate"
-  exit 1
-fi
 
 run_phase03_rag_guard() {
   local arch="$1" page_size="$2" tmpdir

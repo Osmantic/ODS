@@ -70,10 +70,62 @@ is_truthy() {
     esac
 }
 
+_ods_is_related_install_dir() {
+    local candidate="$1"
+    local compose_file=""
+
+    [[ -d "$candidate" ]] || return 1
+    [[ -f "$candidate/.env" || -d "$candidate/data" ]] || return 1
+    [[ -f "$candidate/install-core.sh" || -f "$candidate/install.sh" ]] || return 1
+
+    if [[ -f "$candidate/docker-compose.base.yml" ]]; then
+        compose_file="$candidate/docker-compose.base.yml"
+    elif [[ -f "$candidate/docker-compose.yml" ]]; then
+        compose_file="$candidate/docker-compose.yml"
+    else
+        return 1
+    fi
+
+    grep -Eq '^[[:space:]]{2}open-webui:[[:space:]]*$' "$compose_file" || return 1
+    grep -Eq '^[[:space:]]{2}dashboard-api:[[:space:]]*$' "$compose_file" || return 1
+    grep -Eq '^[[:space:]]{2}(llama-server|litellm):[[:space:]]*$' "$compose_file"
+}
+
+_ods_related_compose_containers() {
+    command -v docker >/dev/null 2>&1 || return 0
+
+    docker ps -a \
+        --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}' \
+        2>/dev/null |
+        awk -F '|' '
+            $2 != "" {
+                project = $2
+                if (names[project] == "") {
+                    names[project] = $1
+                } else {
+                    names[project] = names[project] " " $1
+                }
+                if ($3 == "open-webui") open_webui[project] = 1
+                if ($3 == "dashboard-api") dashboard_api[project] = 1
+                if ($3 == "llama-server" || $3 == "litellm") inference[project] = 1
+            }
+            END {
+                for (project in names) {
+                    if (open_webui[project] && dashboard_api[project] && inference[project]) {
+                        print names[project]
+                    }
+                }
+            }
+        '
+}
+
 refuse_legacy_install() {
     is_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}" && return 0
 
     local findings=()
+    local candidate=""
+    local related_containers=""
+
     if [[ -n "$PRE_ODS_INSTALL_DIR" && -d "$PRE_ODS_INSTALL_DIR" ]] && {
         [[ -f "$PRE_ODS_INSTALL_DIR/.env" ]] ||
         [[ -f "$PRE_ODS_INSTALL_DIR/docker-compose.yml" ]] ||
@@ -82,9 +134,24 @@ refuse_legacy_install() {
         findings+=("install directory: $PRE_ODS_INSTALL_DIR")
     fi
 
+    if [[ -d "$ODS_BOOTSTRAP_ROOT" ]]; then
+        while IFS= read -r -d '' candidate; do
+            [[ "${candidate%/}" == "${INSTALL_DIR%/}" ]] && continue
+            [[ -n "$PRE_ODS_INSTALL_DIR" && "${candidate%/}" == "${PRE_ODS_INSTALL_DIR%/}" ]] && continue
+            if _ods_is_related_install_dir "$candidate"; then
+                findings+=("related install directory: $candidate")
+            fi
+        done < <(find "$ODS_BOOTSTRAP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+    fi
+
+    related_containers="$(_ods_related_compose_containers || true)"
+    if [[ -n "$related_containers" ]]; then
+        findings+=("related Compose containers: $(printf '%s\n' "$related_containers" | tr '\n' ' ')")
+    fi
+
     if (( ${#findings[@]} > 0 )); then
         echo ""
-        warn "Existing pre-ODS install detected before first ODS install."
+        warn "Existing related install detected before first ODS install."
         echo ""
         echo "ODS uses the same default ports and service roles as the older stack."
         echo "Resolve the old install intentionally before installing ODS, or run in"

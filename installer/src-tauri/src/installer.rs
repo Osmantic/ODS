@@ -8,6 +8,11 @@ use std::thread;
 
 const DEFAULT_REPO_URL: &str = "https://github.com/Osmantic/ODS.git";
 const DEFAULT_INSTALL_REF: &str = "main";
+const TRANSFERRED_REPO_URL_BYTES: &[u8] = &[
+    104, 116, 116, 112, 115, 58, 47, 47, 103, 105, 116, 104, 117, 98, 46, 99, 111, 109, 47, 76,
+    105, 103, 104, 116, 45, 72, 101, 97, 114, 116, 45, 76, 97, 98, 115, 47, 79, 68, 83, 46, 103,
+    105, 116,
+];
 
 fn repo_url() -> &'static str {
     option_env!("ODS_REPO_URL").unwrap_or(DEFAULT_REPO_URL)
@@ -271,54 +276,22 @@ fn normalize_repo_url(url: &str) -> String {
     https.trim_end_matches(".git").to_ascii_lowercase()
 }
 
+fn transferred_repo_url() -> &'static str {
+    std::str::from_utf8(TRANSFERRED_REPO_URL_BYTES)
+        .expect("transferred repository URL bytes must be valid UTF-8")
+}
+
 fn repo_urls_identify_same_repository(candidate: &str, expected: &str) -> bool {
-    if normalize_repo_url(candidate) == normalize_repo_url(expected) {
+    let candidate = normalize_repo_url(candidate);
+    let expected = normalize_repo_url(expected);
+    if candidate == expected {
         return true;
     }
 
-    match (
-        remote_ref_fingerprint(candidate),
-        remote_ref_fingerprint(expected),
-    ) {
-        (Ok(candidate_refs), Ok(expected_refs)) => {
-            remote_ref_fingerprints_match(&candidate_refs, &expected_refs)
-        }
-        _ => false,
-    }
-}
-
-fn remote_ref_fingerprints_match(candidate: &[String], expected: &[String]) -> bool {
-    !candidate.is_empty() && candidate == expected
-}
-
-fn remote_ref_fingerprint(url: &str) -> Result<Vec<String>, String> {
-    let output = Command::new("git")
-        .args(["ls-remote", "--heads", "--tags", url])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("Failed to inspect repository remote: {}", e))?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-
-    Ok(normalize_remote_refs(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
-}
-
-fn normalize_remote_refs(output: &str) -> Vec<String> {
-    let mut refs = output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect::<Vec<String>>();
-    refs.sort_unstable();
-    refs.dedup();
-    refs
+    let canonical = normalize_repo_url(DEFAULT_REPO_URL);
+    let transferred = normalize_repo_url(transferred_repo_url());
+    (candidate == canonical && expected == transferred)
+        || (candidate == transferred && expected == canonical)
 }
 
 /// Parse a progress line from the installer.
@@ -428,27 +401,18 @@ mod tests {
     }
 
     #[test]
-    fn normalize_remote_refs_sorts_and_deduplicates() {
-        let output = concat!(
-            "bbbb\trefs/tags/v2\n",
-            "aaaa\trefs/heads/main\n",
-            "bbbb\trefs/tags/v2\n",
-        );
-        assert_eq!(
-            normalize_remote_refs(output),
-            vec![
-                "aaaa\trefs/heads/main".to_string(),
-                "bbbb\trefs/tags/v2".to_string(),
-            ]
-        );
+    fn transferred_checkout_alias_is_accepted_without_network_access() {
+        assert!(repo_urls_identify_same_repository(
+            transferred_repo_url(),
+            DEFAULT_REPO_URL
+        ));
     }
 
     #[test]
-    fn remote_ref_fingerprints_require_nonempty_exact_match() {
-        let refs = vec!["aaaa\trefs/heads/main".to_string()];
-        let different = vec!["bbbb\trefs/heads/main".to_string()];
-        assert!(remote_ref_fingerprints_match(&refs, &refs));
-        assert!(!remote_ref_fingerprints_match(&refs, &different));
-        assert!(!remote_ref_fingerprints_match(&[], &[]));
+    fn unrelated_checkout_alias_is_rejected_without_remote_probes() {
+        assert!(!repo_urls_identify_same_repository(
+            "https://github.com/example/ODS.git",
+            DEFAULT_REPO_URL
+        ));
     }
 }

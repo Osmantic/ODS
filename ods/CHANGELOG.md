@@ -6,18 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added
-- Linux installation and the macOS Docker launch now render the selected
-  Compose stack and fail closed on active host listeners, running or stopped
-  foreign container port claims, exact Docker name collisions, and unverified
-  named-volume adoption. Results are written to a structured install-conflict
-  report.
-
 ### Fixed
-- Linux installer port overrides now survive fresh installs and updates, so the
-  conflict check and generated `.env` describe the same planned stack.
-- Replaced the incomplete hardcoded Linux port/process checks with rendered
-  Compose claims and current-install ownership evidence.
 - Dashboard Hermes readiness now accepts either llama-server or LiteLLM and
   requires the complete authenticated runtime chain. Hermes Single Sign-On now
   opens owner and support access management instead of duplicating the Agent

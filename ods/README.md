@@ -61,16 +61,6 @@ cd ODS
 
 The installer auto-detects your GPU, picks the right model, generates secure passwords, and starts everything. Open **http://localhost:3000** and start chatting.
 
-Before a Linux install writes runtime configuration, and before macOS launches
-its Docker services, the installer renders the selected Compose stack and
-verifies its host ports, container names, networks, and named volumes against
-current Docker state. Running and stopped foreign containers both count;
-resources from the current install are accepted only when Compose labels and
-install-path evidence prove ownership. The report is written to
-`/tmp/ods-install-conflicts.json`. See
-[Troubleshooting](docs/TROUBLESHOOTING.md#installer-reports-install-conflicts)
-before using the explicit `ODS_ALLOW_CONFLICTS=1` override.
-
 On Linux Docker installs, llama-server is exposed to the host on **http://localhost:11434** (`OLLAMA_PORT`) and runs on `8080` inside Docker. Use `llama-server:8080` only from other containers on the ODS network. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden.
 
 On Linux AMD hosts already running Lemonade SDK, install ODS around it with

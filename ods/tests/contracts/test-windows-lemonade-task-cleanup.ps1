@@ -12,7 +12,15 @@ if ($parseErrors.Count -gt 0) {
     throw $parseErrors[0]
 }
 
-$functionAst = $ast.Find(
+$nameFunctionAst = $ast.Find(
+    {
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Get-ODSPriorLemonadeTaskName"
+    },
+    $true
+)
+$cleanupFunctionAst = $ast.Find(
     {
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -20,11 +28,12 @@ $functionAst = $ast.Find(
     },
     $true
 )
-if (-not $functionAst) {
-    throw "Stop-ODSWindowsLemonadeProcesses was not found"
+if (-not $nameFunctionAst -or -not $cleanupFunctionAst) {
+    throw "Windows Lemonade compatibility functions were not found"
 }
 
-. ([scriptblock]::Create($functionAst.Extent.Text))
+. ([scriptblock]::Create($nameFunctionAst.Extent.Text))
+. ([scriptblock]::Create($cleanupFunctionAst.Extent.Text))
 
 $script:LEMONADE_PORT = 9000
 $script:StoppedTasks = @()
@@ -32,36 +41,7 @@ $script:UnregisteredTasks = @()
 
 function Get-ScheduledTask {
     param($ErrorAction)
-
-    @(
-        [pscustomobject]@{
-            TaskName = "PriorManagedRuntime"
-            Actions = @(
-                [pscustomobject]@{
-                    Execute = '"/opt/lemonade/LemonadeServer.exe"'
-                    Arguments = "serve --port 9000 --host 127.0.0.1"
-                }
-            )
-        },
-        [pscustomobject]@{
-            TaskName = "PriorManagedRuntimeEquals"
-            Actions = @(
-                [pscustomobject]@{
-                    Execute = "/another/location/lemonade-server.exe"
-                    Arguments = "serve --port=9000 --host 127.0.0.1"
-                }
-            )
-        },
-        [pscustomobject]@{
-            TaskName = "UnrelatedRuntime"
-            Actions = @(
-                [pscustomobject]@{
-                    Execute = "/opt/lemonade/LemonadeServer.exe"
-                    Arguments = "serve --port 9001 --host 127.0.0.1"
-                }
-            )
-        }
-    )
+    throw "Cleanup must not enumerate unrelated scheduled tasks"
 }
 
 function Stop-ScheduledTask {
@@ -103,12 +83,11 @@ function Write-AIWarn {
 
 Stop-ODSWindowsLemonadeProcesses `
     -ExePath "/opt/lemonade/LemonadeServer.exe" `
-    -TaskNames @("ODSLemonadeRuntime")
+    -TaskNames @("ODSLemonadeRuntime", (Get-ODSPriorLemonadeTaskName))
 
 $expectedTasks = @(
     "ODSLemonadeRuntime",
-    "PriorManagedRuntime",
-    "PriorManagedRuntimeEquals"
+    (Get-ODSPriorLemonadeTaskName)
 ) | Sort-Object
 $stoppedDifference = Compare-Object $expectedTasks ($script:StoppedTasks | Sort-Object)
 $unregisteredDifference = Compare-Object $expectedTasks ($script:UnregisteredTasks | Sort-Object)
@@ -116,9 +95,4 @@ $unregisteredDifference = Compare-Object $expectedTasks ($script:UnregisteredTas
 if ($stoppedDifference -or $unregisteredDifference) {
     throw "Managed task cleanup mismatch: stopped=$($script:StoppedTasks -join ',') unregistered=$($script:UnregisteredTasks -join ',')"
 }
-if ($script:StoppedTasks -contains "UnrelatedRuntime" -or
-    $script:UnregisteredTasks -contains "UnrelatedRuntime") {
-    throw "Cleanup removed an unrelated Lemonade task"
-}
-
-Write-Host "[PASS] Windows Lemonade task cleanup discovers managed runtime tasks"
+Write-Host "[PASS] Windows Lemonade task cleanup removes only exact managed task names"
