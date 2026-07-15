@@ -182,13 +182,20 @@ fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
             .is_some()
     {
         return Err(format!(
-            "{} already exists but is not a ODS checkout. Choose an empty directory or the existing ODS install directory.",
+            "{} already exists but is not an ODS checkout. Choose an empty directory or the existing ODS install directory.",
             install_dir.display()
         ));
     }
 
     let clone = Command::new("git")
-        .args(["clone", "--depth", "1", "--branch", install_ref(), repo_url()])
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            "--branch",
+            install_ref(),
+            repo_url(),
+        ])
         .arg(install_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -210,7 +217,7 @@ fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
 fn validate_checkout(install_dir: &Path) -> Result<(), String> {
     if !install_dir.join(".git").exists() {
         return Err(format!(
-            "{} contains a ods directory but is not a git checkout. Refusing to run installer scripts from an unverified directory.",
+            "{} contains an ods directory but is not a git checkout. Refusing to run installer scripts from an unverified directory.",
             install_dir.display()
         ));
     }
@@ -224,9 +231,9 @@ fn validate_checkout(install_dir: &Path) -> Result<(), String> {
     }
 
     let origin = run_git(install_dir, &["remote", "get-url", "origin"])?;
-    if normalize_repo_url(&origin) != normalize_repo_url(repo_url()) {
+    if !repo_urls_identify_same_repository(&origin, repo_url()) {
         return Err(format!(
-            "{} is not a ODS checkout from {}.",
+            "{} is not an ODS checkout from {}.",
             install_dir.display(),
             repo_url()
         ));
@@ -262,6 +269,56 @@ fn normalize_repo_url(url: &str) -> String {
         trimmed.to_string()
     };
     https.trim_end_matches(".git").to_ascii_lowercase()
+}
+
+fn repo_urls_identify_same_repository(candidate: &str, expected: &str) -> bool {
+    if normalize_repo_url(candidate) == normalize_repo_url(expected) {
+        return true;
+    }
+
+    match (
+        remote_ref_fingerprint(candidate),
+        remote_ref_fingerprint(expected),
+    ) {
+        (Ok(candidate_refs), Ok(expected_refs)) => {
+            remote_ref_fingerprints_match(&candidate_refs, &expected_refs)
+        }
+        _ => false,
+    }
+}
+
+fn remote_ref_fingerprints_match(candidate: &[String], expected: &[String]) -> bool {
+    !candidate.is_empty() && candidate == expected
+}
+
+fn remote_ref_fingerprint(url: &str) -> Result<Vec<String>, String> {
+    let output = Command::new("git")
+        .args(["ls-remote", "--heads", "--tags", url])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Failed to inspect repository remote: {}", e))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+
+    Ok(normalize_remote_refs(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn normalize_remote_refs(output: &str) -> Vec<String> {
+    let mut refs = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<String>>();
+    refs.sort_unstable();
+    refs.dedup();
+    refs
 }
 
 /// Parse a progress line from the installer.
@@ -368,5 +425,30 @@ mod tests {
             normalize_repo_url("https://github.com/example/ODS.git"),
             normalize_repo_url(DEFAULT_REPO_URL)
         );
+    }
+
+    #[test]
+    fn normalize_remote_refs_sorts_and_deduplicates() {
+        let output = concat!(
+            "bbbb\trefs/tags/v2\n",
+            "aaaa\trefs/heads/main\n",
+            "bbbb\trefs/tags/v2\n",
+        );
+        assert_eq!(
+            normalize_remote_refs(output),
+            vec![
+                "aaaa\trefs/heads/main".to_string(),
+                "bbbb\trefs/tags/v2".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn remote_ref_fingerprints_require_nonempty_exact_match() {
+        let refs = vec!["aaaa\trefs/heads/main".to_string()];
+        let different = vec!["bbbb\trefs/heads/main".to_string()];
+        assert!(remote_ref_fingerprints_match(&refs, &refs));
+        assert!(!remote_ref_fingerprints_match(&refs, &different));
+        assert!(!remote_ref_fingerprints_match(&[], &[]));
     }
 }

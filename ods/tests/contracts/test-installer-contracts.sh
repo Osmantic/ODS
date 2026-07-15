@@ -68,6 +68,48 @@ grep -qF '_pre_ods_install_dir="${ODS_LEGACY_INSTALL_DIR:-}"' installers/phases/
 grep -qF 'ods/ods-cli text eol=lf' ../.gitattributes \
   || { echo "[FAIL] .gitattributes must force LF checkout for extensionless ods/ods-cli"; exit 1; }
 
+_pre_ods_guard_tmp="$(mktemp -d)"
+_pre_ods_guard_harness="$_pre_ods_guard_tmp/bootstrap-guard.sh"
+{
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+  printf '%s\n' 'warn() { printf "[warn] %s\n" "$*"; }'
+  sed -n '/^is_truthy() {/,/^}/p' get-ods.sh
+  sed -n '/^refuse_legacy_install() {/,/^}/p' get-ods.sh
+  printf '%s\n' 'refuse_legacy_install'
+} > "$_pre_ods_guard_harness"
+chmod +x "$_pre_ods_guard_harness"
+
+if ! PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >/dev/null 2>&1; then
+  echo "[FAIL] bootstrap guard must allow installs when no explicit older path is configured"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+
+mkdir -p "$_pre_ods_guard_tmp/older-install"
+touch "$_pre_ods_guard_tmp/older-install/.env"
+if PRE_ODS_INSTALL_DIR="$_pre_ods_guard_tmp/older-install" \
+    ODS_ALLOW_LEGACY_PARALLEL="" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/blocked.log" 2>&1; then
+  echo "[FAIL] bootstrap guard must reject a configured older install path"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+grep -qF 'Existing pre-ODS install detected' "$_pre_ods_guard_tmp/blocked.log" \
+  || { echo "[FAIL] bootstrap guard rejection must explain the detected older install"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
+
+if ! PRE_ODS_INSTALL_DIR="$_pre_ods_guard_tmp/older-install" \
+    ODS_ALLOW_LEGACY_PARALLEL=1 \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >/dev/null 2>&1; then
+  echo "[FAIL] bootstrap guard must honor the explicit parallel-install override"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+rm -rf "$_pre_ods_guard_tmp"
+
 echo "[contract] bootstrap download finalization is non-destructive"
 bash tests/test-bootstrap-upgrade-download-finalization.sh
 

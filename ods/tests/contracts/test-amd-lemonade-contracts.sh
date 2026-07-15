@@ -526,6 +526,8 @@ fi
 echo "[contract] Windows AMD Lemonade health failure falls back to llama-server"
 if grep -q 'function Stop-ODSWindowsLemonadeProcesses' installers/windows/install-windows.ps1 \
     && grep -q '"ODSLemonadeRuntime"' installers/windows/install-windows.ps1 \
+    && grep -q 'Get-ScheduledTask' installers/windows/install-windows.ps1 \
+    && grep -q '_managedPort' installers/windows/install-windows.ps1 \
     && grep -q 'Falling back to native llama-server (Vulkan)' installers/windows/install-windows.ps1 \
     && grep -q '\$useLemonade = \$false' installers/windows/install-windows.ps1 \
     && grep -q 'if (-not \$useLemonade)' installers/windows/install-windows.ps1 \
@@ -533,6 +535,15 @@ if grep -q 'function Stop-ODSWindowsLemonadeProcesses' installers/windows/instal
     pass "install-windows.ps1: stale Lemonade is stopped and unhealthy Lemonade falls back"
 else
     fail "install-windows.ps1: Windows AMD must not block Compose behind an unhealthy Lemonade endpoint"
+fi
+if command -v pwsh >/dev/null 2>&1; then
+    if pwsh -NoProfile -File tests/contracts/test-windows-lemonade-task-cleanup.ps1; then
+        pass "install-windows.ps1: managed scheduled-task cleanup behavior"
+    else
+        fail "install-windows.ps1: managed scheduled-task cleanup behavior failed"
+    fi
+else
+    pass "install-windows.ps1: scheduled-task cleanup runtime test skipped (pwsh unavailable)"
 fi
 
 # ---------------------------------------------------------------------------

@@ -429,18 +429,54 @@ if ($dryRun) {
                     [string[]]$TaskNames = @("ODSLemonadeRuntime")
                 )
 
-                foreach ($_taskName in $TaskNames) {
-                    try { Stop-ScheduledTask -TaskName $_taskName -ErrorAction SilentlyContinue } catch { }
-                    try { Unregister-ScheduledTask -TaskName $_taskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
-                }
-
                 $_resolvedExe = $null
                 try {
                     if (-not [string]::IsNullOrWhiteSpace($ExePath)) {
-                        $_resolvedExe = [System.IO.Path]::GetFullPath($ExePath)
+                        $_resolvedExe = [System.IO.Path]::GetFullPath(
+                            [Environment]::ExpandEnvironmentVariables($ExePath.Trim('"'))
+                        )
                     }
                 } catch { }
                 $_knownNames = @("LemonadeServer.exe", "lemonade-server.exe", "lemonade-router.exe")
+                $_taskNamesToRemove = @($TaskNames)
+
+                try {
+                    foreach ($_scheduledTask in @(Get-ScheduledTask -ErrorAction SilentlyContinue)) {
+                        foreach ($_action in @($_scheduledTask.Actions)) {
+                            $_actionPath = [string]$_action.Execute
+                            $_normalizedActionPath = [Environment]::ExpandEnvironmentVariables(
+                                $_actionPath.Trim('"')
+                            )
+                            $_actionName = [System.IO.Path]::GetFileName($_normalizedActionPath)
+                            $_arguments = [string]$_action.Arguments
+                            $_sameExecutable = $false
+                            try {
+                                if ($_resolvedExe -and $_normalizedActionPath) {
+                                    $_actionFullPath = [System.IO.Path]::GetFullPath(
+                                        $_normalizedActionPath
+                                    )
+                                    $_sameExecutable = $_actionFullPath.Equals(
+                                        $_resolvedExe,
+                                        [StringComparison]::OrdinalIgnoreCase
+                                    )
+                                }
+                            } catch { }
+                            $_managedPort = $_arguments -match "(^|\s)--port(?:=|\s+)$($script:LEMONADE_PORT)(\s|$)"
+                            $_serveAction = $_arguments -match "(^|\s)serve(\s|$)"
+                            if (($_sameExecutable -or ($_knownNames -contains $_actionName)) -and $_managedPort -and $_serveAction) {
+                                $_taskNamesToRemove += [string]$_scheduledTask.TaskName
+                                break
+                            }
+                        }
+                    }
+                } catch {
+                    Write-AIWarn "Could not inspect stale Lemonade scheduled tasks: $_"
+                }
+
+                foreach ($_taskName in @($_taskNamesToRemove | Where-Object { $_ } | Select-Object -Unique)) {
+                    try { Stop-ScheduledTask -TaskName $_taskName -ErrorAction SilentlyContinue } catch { }
+                    try { Unregister-ScheduledTask -TaskName $_taskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+                }
 
                 try {
                     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |

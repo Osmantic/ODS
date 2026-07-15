@@ -35,32 +35,94 @@ require_literal() {
 assert_no_retired_names() {
     python3 - "$REPO_ROOT" <<'PY'
 import base64
+import pathlib
+import re
 import subprocess
 import sys
 
 repo_root = sys.argv[1]
+retired_product_prefix = base64.b64decode("ZHJlYW0=").decode("ascii")
+retired_product_name = base64.b64decode("c2VydmVy").decode("ascii")
+retired_fleet_name = base64.b64decode("ZmxlZXQ=").decode("ascii")
+retired_org_prefix = base64.b64decode("bGlnaHQ=").decode("ascii")
+retired_org_middle = base64.b64decode("aGVhcnQ=").decode("ascii")
+retired_org_suffix = base64.b64decode("bGFicw==").decode("ascii")
+retired_org_account_suffix = base64.b64decode("ZGV2cw==").decode("ascii")
+separator = r"[\s_.-]*"
+
 patterns = [
-    base64.b64decode("ZHJlYW0=").decode("ascii"),
-    (
-        base64.b64decode("bGlnaHQ=").decode("ascii")
-        + r"[[:space:]_.-]*"
-        + base64.b64decode("aGVhcnQ=").decode("ascii")
+    re.compile(retired_product_prefix + separator + retired_product_name, re.IGNORECASE),
+    re.compile(retired_product_prefix + separator + retired_fleet_name, re.IGNORECASE),
+    re.compile(
+        retired_org_prefix + separator + retired_org_middle + separator + retired_org_suffix,
+        re.IGNORECASE,
     ),
+    re.compile(
+        retired_org_prefix
+        + separator
+        + retired_org_middle
+        + separator
+        + retired_org_account_suffix,
+        re.IGNORECASE,
+    ),
+    re.compile(r"name=\^?/" + retired_product_prefix + "-", re.IGNORECASE),
+    re.compile(
+        r"--filter\s+[\"']?name=" + retired_product_prefix + r"(?:[\"'\s]|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"[ps]k-lf-" + retired_product_prefix + "-", re.IGNORECASE),
+]
+
+def has_retired_reference(value):
+    return any(pattern.search(value) for pattern in patterns)
+
+positive_samples = [
+    retired_product_prefix + retired_product_name,
+    retired_product_prefix + "-" + retired_product_name,
+    retired_product_prefix + "_" + retired_fleet_name,
+    retired_org_prefix + "-" + retired_org_middle + "-" + retired_org_suffix,
+    retired_org_prefix + retired_org_middle + retired_org_account_suffix,
+    "name=^/" + retired_product_prefix + "-",
+    "--filter name=" + retired_product_prefix,
+    "pk-lf-" + retired_product_prefix + "-",
+]
+negative_samples = [
+    retired_product_prefix + " big",
+    retired_org_prefix + "-" + retired_org_middle + "ed copy",
+]
+if not all(has_retired_reference(sample) for sample in positive_samples):
+    raise SystemExit("[FAIL] Retired-name guard misses a supported identifier form")
+if any(has_retired_reference(sample) for sample in negative_samples):
+    raise SystemExit("[FAIL] Retired-name guard rejects unrelated language")
+
+repo_path = pathlib.Path(repo_root)
+tracked_output = subprocess.check_output(
+    ["git", "-C", repo_root, "ls-files", "-z"]
+)
+tracked_files = [
+    entry.decode("utf-8", errors="surrogateescape")
+    for entry in tracked_output.split(b"\0")
+    if entry
 ]
 
 matches = []
-for pattern in patterns:
-    result = subprocess.run(
-        ["git", "-C", repo_root, "grep", "-n", "-I", "-i", "-E", pattern, "--", "."],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode not in (0, 1):
-        print(result.stderr, file=sys.stderr)
-        raise SystemExit(result.returncode)
-    if result.stdout:
-        matches.append(result.stdout.rstrip())
+for relative_path in tracked_files:
+    if has_retired_reference(relative_path):
+        matches.append(relative_path)
+        continue
+
+    path = repo_path / relative_path
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise SystemExit(f"[FAIL] Could not inspect {relative_path}: {exc}")
+    if b"\0" in data:
+        continue
+
+    text = data.decode("utf-8", errors="ignore")
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if has_retired_reference(line):
+            matches.append(f"{relative_path}:{line_number}:{line}")
 
 if matches:
     print("[FAIL] Retired product or organization references remain:")

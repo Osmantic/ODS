@@ -124,6 +124,33 @@ for source_file in \
     )
     assert_trace "$override_trace" "9" "$script_name environment override"
     [[ -f "$override_lock" ]] || fail "$script_name did not honor the ODS lock override"
+
+    timeout_dir="$TMP_DIR/$script_name-timeout"
+    timeout_trace="$timeout_dir/flock.log"
+    mkdir -p "$timeout_dir"
+    (
+        unset ODS_FLEET_HOST_LOCK
+        PATH="$TMP_DIR/bin:$PATH" \
+            ODS_FLOCK_TRACE="$timeout_trace" \
+            ODS_FLEET_TEST_ROOT="$timeout_dir" \
+            ODS_FLEET_HOST_LOCK_TIMEOUT_SECONDS=7 \
+            bash "$harness_file"
+    )
+    assert_trace "$timeout_trace" "-w 7 9" "$script_name timeout environment override"
+
+    disabled_dir="$TMP_DIR/$script_name-disabled"
+    disabled_trace="$disabled_dir/flock.log"
+    mkdir -p "$disabled_dir"
+    (
+        unset ODS_FLEET_HOST_LOCK ODS_FLEET_HOST_LOCK_TIMEOUT_SECONDS
+        PATH="$TMP_DIR/bin:$PATH" \
+            ODS_FLOCK_TRACE="$disabled_trace" \
+            ODS_FLEET_TEST_ROOT="$disabled_dir" \
+            bash "$harness_file" --no-host-lock
+    )
+    [[ ! -e "$disabled_trace" ]] || fail "$script_name called flock with --no-host-lock"
+    [[ ! -e "$disabled_dir/ods-fleet-heavy.lock" ]] \
+        || fail "$script_name opened the default lock with --no-host-lock"
 done
 
 echo "[PASS] Fleet host locks honor ODS defaults and overrides"
