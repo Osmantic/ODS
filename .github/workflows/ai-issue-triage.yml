@@ -80,7 +80,7 @@ jobs:
             - ods/tests/ = shell-based tests (BATS, contracts, smoke)
             - ods/extensions/services/ = 17 service extensions with manifests
 
-            Analyze this new issue and apply appropriate labels:
+            Analyze this new issue and determine the appropriate labels:
 
             **Issue #${{ github.event.issue.number }}**
             **Title**: ${{ steps.sanitize.outputs.title }}
@@ -98,9 +98,67 @@ jobs:
                - **Type labels** (pick one): `bug`, `enhancement`, `question`, `documentation`
                - **Component labels** (pick all that apply): `installer`, `cli`, `dashboard`, `dashboard-api`, `extensions`, `docker`, `scripts`, `tests`, `docs`, `ci-cd`
                - **Priority labels** (pick one): `priority:high`, `priority:medium`, `priority:low`
-            3. Apply the labels using: `gh issue edit ${{ github.event.issue.number }} --add-label "label1,label2"`
-            4. Do NOT close, assign, or comment on the issue — only add labels
+            3. Write the determined labels to a file named `triage_labels.json` in the workspace root in JSON format:
+               {
+                 "labels": ["label1", "label2"]
+               }
+            4. Do NOT use any tools other than Write to create this file. Do NOT close, assign, or comment on the issue.
           claude_args: >-
             --allowedTools
-            "Bash(gh issue edit *),Read,Glob,Grep"
+            "Write,Read"
             --max-turns 5
+
+      - name: Apply labels
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const filePath = path.join(process.env.GITHUB_WORKSPACE || '.', 'triage_labels.json');
+            if (!fs.existsSync(filePath)) {
+              console.log('No triage_labels.json found. Skipping label application.');
+              return;
+            }
+
+            let data;
+            try {
+              data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            } catch (err) {
+              console.error('Failed to parse triage_labels.json:', err);
+              return;
+            }
+
+            if (!data || !Array.isArray(data.labels)) {
+              console.error('Invalid triage_labels.json format:', data);
+              return;
+            }
+
+            // Strict allowlist of valid labels to prevent arbitrary injection
+            const ALLOWED_LABELS = new Set([
+              'bug', 'enhancement', 'question', 'documentation',
+              'installer', 'cli', 'dashboard', 'dashboard-api', 'extensions', 'docker', 'scripts', 'tests', 'docs', 'ci-cd',
+              'priority:high', 'priority:medium', 'priority:low'
+            ]);
+
+            const labelsToAdd = Array.from(new Set(data.labels.filter(label => {
+              if (ALLOWED_LABELS.has(label)) {
+                return true;
+              }
+              console.warn(`Label "${label}" is not in the approved allowlist and will be ignored.`);
+              return false;
+            })));
+
+            if (labelsToAdd.length === 0) {
+              console.log('No approved labels to add.');
+              return;
+            }
+
+            console.log(`Adding approved labels: ${labelsToAdd.join(', ')}`);
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: labelsToAdd
+            });
