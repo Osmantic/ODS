@@ -102,6 +102,9 @@ jobs:
       - name: Dependency Pin Contract Tests
         run: python3 tests/test-dependency-pins.py
 
+      - name: Version Consistency Error Reporting Tests
+        run: python3 tests/test-version-consistency-error-reporting.py
+
       - name: Runtime Config Renderer Tests
         run: python3 tests/test-render-runtime-configs.py
 
