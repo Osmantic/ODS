@@ -105,11 +105,19 @@ PATH="$TMP_DIR/bin:$PATH" \
 cat > "$TMP_DIR/expected-default-endpoints" <<'EOF'
 https://get.osmantic.com/ods
 https://get.osmantic.com/ods.sh
+https://get.osmantic.com/ods/main
+https://get.osmantic.com/ods/main.sh
 https://install.osmantic.com/ods
 https://install.osmantic.com/ods.sh
+https://install.osmantic.com/ods/main
+https://install.osmantic.com/ods/main.sh
+https://osmantic.com/get/ods
+https://osmantic.com/get/ods.sh
+https://osmantic.com/get/ods/main
+https://osmantic.com/get/ods/main.sh
 EOF
 cmp -s "$TMP_DIR/expected-default-endpoints" "$TMP_DIR/default-trace" \
-    || fail "Verifier defaults do not cover every active canonical Worker alias."
+    || fail "Verifier defaults do not cover all twelve active Worker aliases."
 
 write_headers "main" "preview"
 if PATH="$TMP_DIR/bin:$PATH" \

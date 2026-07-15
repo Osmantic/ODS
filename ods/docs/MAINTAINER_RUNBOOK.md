@@ -55,20 +55,18 @@ For any change to `ods/get-ods.sh`:
    pre-squash branch-head SHA.
 3. Wait for the five-minute freshness window or purge the installer Worker
    cache.
-4. Verify every active canonical Worker endpoint from a checkout containing
-   the final target-branch commit:
+4. Verify all twelve active Worker aliases from a checkout containing the
+   final target-branch commit:
 
    ```bash
    git fetch origin main
    bash ods/scripts/verify-hosted-bootstrap.sh origin/main
    ```
 
-   Include `https://osmantic.com/get/ods` and
-   `https://osmantic.com/get/ods.sh` when those Pages aliases are active.
 5. Record each endpoint, `X-ODS-Channel`, `X-ODS-Source-Ref`,
    `X-ODS-Presentation`, and verification result in the PR or release receipt.
 
-Verification is incomplete if the headers do not identify `main`, the
+Verification is incomplete if any alias does not identify `main`, the
 presentation is not `script`, or the body differs from
 `origin/main:ods/get-ods.sh`.
 

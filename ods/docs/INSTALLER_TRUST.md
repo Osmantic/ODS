@@ -69,7 +69,7 @@ curl -fsSL https://install.osmantic.com/ods.sh | ODS_REF=main bash
 layout used by the sparse checkout. The current stable tag, `v2.5.3`, predates that repository layout and must be installed through the manual source path below.
 Do not pass `v2.5.3` through `ODS_REF`.
 
-Maintainers can verify the hosted canonical Worker aliases against an exact Git
+Maintainers can verify all twelve hosted Worker aliases against an exact Git
 ref:
 
 ```bash
