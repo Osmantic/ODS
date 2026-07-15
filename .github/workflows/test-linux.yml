@@ -62,6 +62,9 @@ jobs:
       - name: Local Image Build Coverage
         run: python3 tests/test-local-image-build-coverage.py
 
+      - name: Service Registry set -e Tests
+        run: bash tests/test-service-registry-set-e.sh
+
       - name: Validate Manifests Tests
         run: bash tests/test-validate-manifests.sh
 
