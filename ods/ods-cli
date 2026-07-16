@@ -1406,14 +1406,21 @@ cmd_dry_run() {
     fi
 
     # Try dashboard API first; fall back to direct GitHub query.
+    # Two prior bugs fixed here:
+    #   1) DASHBOARD_PORT (3001) is the UI port, not the API port; the API
+    #      lives on DASHBOARD_API_PORT (3002). Hitting the UI port here
+    #      would route through nginx which does not proxy /api/update/*.
+    #   2) dashboard-api/security.py uses HTTPBearer, not X-API-Key. The
+    #      old X-API-Key header was always ignored → always 401 → silent
+    #      fallback to GitHub.
     local api_json=""
-    local dashboard_port="${DASHBOARD_PORT:-3002}"
+    local dashboard_api_port="${DASHBOARD_API_PORT:-3002}"
     local api_key=""
     api_key=$(grep '^DASHBOARD_API_KEY=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
     if [[ -n "$api_key" ]]; then
         api_json=$(curl -sf --max-time 5 \
-            -H "X-API-Key: ${api_key}" \
-            "http://127.0.0.1:${dashboard_port}/api/update/dry-run" 2>/dev/null || true)
+            -H "Authorization: Bearer ${api_key}" \
+            "http://127.0.0.1:${dashboard_api_port}/api/update/dry-run" 2>/dev/null || true)
     fi
 
     local latest_ver="" changelog_url="" update_status=""

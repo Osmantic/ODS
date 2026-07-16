@@ -10,6 +10,8 @@ Usage:
 """
 
 import argparse
+import os
+import sys
 import threading
 import urllib.request
 import urllib.error
@@ -17,7 +19,39 @@ import time
 from datetime import datetime
 import queue
 
-DASHBOARD_API = "http://localhost:3002"
+# Dashboard-api endpoints under /api/* require Authorization: Bearer <key>
+# (see extensions/services/dashboard-api/security.py). The key lives in the
+# installer's .env; we read it from the environment or fall back to the
+# nearest .env file on disk. Without a key every request 401s and the load
+# report becomes meaningless — abort with a clear message instead.
+def _load_api_key() -> str:
+    key = os.environ.get("DASHBOARD_API_KEY", "").strip()
+    if key:
+        return key
+    here = os.path.dirname(os.path.abspath(__file__))
+    env_path = os.environ.get("ODS_INSTALL_DIR", os.path.dirname(here))
+    env_file = os.path.join(env_path, ".env")
+    if os.path.isfile(env_file):
+        with open(env_file, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                # CRLF-safe, quote/comment-safe
+                line = line.rstrip("\r\n").split("#", 1)[0]
+                if line.startswith("DASHBOARD_API_KEY="):
+                    v = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if v:
+                        return v
+    return ""
+
+
+API_KEY = _load_api_key()
+if not API_KEY:
+    sys.stderr.write(
+        "ERROR: DASHBOARD_API_KEY not found. Export the variable or run this "
+        "test from an ODS install directory whose .env holds the key.\n"
+    )
+    sys.exit(2)
+
+DASHBOARD_API = os.environ.get("DASHBOARD_API_URL", "http://localhost:3002")
 ENDPOINTS = [
     "/api/agents/metrics",
     "/api/agents/cluster",
@@ -47,6 +81,7 @@ class LoadTester:
                 try:
                     req = urllib.request.Request(url, method='GET')
                     req.add_header('Accept', 'application/json')
+                    req.add_header('Authorization', f'Bearer {API_KEY}')
 
                     with urllib.request.urlopen(req, timeout=5) as resp:
                         elapsed = (time.time() - req_start) * 1000

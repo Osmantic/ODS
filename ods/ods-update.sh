@@ -902,14 +902,17 @@ cmd_health() {
         fi
     done
     
-    # Check dashboard API health endpoint
+    # Check dashboard API health endpoint. /health is the only unauth'd
+    # route on dashboard-api (see security.py), and it is always present
+    # when the container is up — no fallback needed. (The previous
+    # `/api/status` fallback was dead code: it requires Bearer auth, so
+    # `curl -sf` without a header would always 401 → non-zero → drop to
+    # the warn branch anyway.)
     local dashboard_api_port="${DASHBOARD_API_PORT:-}"
     [[ -n "$dashboard_api_port" ]] || dashboard_api_port="$(env_file_value DASHBOARD_API_PORT)"
     dashboard_api_port="${dashboard_api_port:-3002}"
     if curl -sf "http://127.0.0.1:${dashboard_api_port}/health" &>/dev/null; then
         log_ok "Dashboard API: healthy"
-    elif curl -sf "http://127.0.0.1:${dashboard_api_port}/api/status" &>/dev/null; then
-        log_ok "Dashboard API: responding"
     else
         log_warn "Dashboard API: not responding on port ${dashboard_api_port}"
     fi

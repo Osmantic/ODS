@@ -133,23 +133,33 @@ if $VOICE || $STRESS; then
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BOLD}Voice Pipeline Health Check${NC}"
     echo ""
-    
-    # Quick voice health
-    if curl -s http://127.0.0.1:3002/api/voice/status | grep -q '"available":true'; then
-        echo -e "${GREEN}✓ Voice services available${NC}"
-        
-        # Check individual services
-        for svc in stt tts livekit; do
-            if curl -s http://127.0.0.1:3002/api/voice/status | jq -e ".services.$svc.status == \"healthy\"" >/dev/null 2>&1; then
-                echo -e "  ${GREEN}✓${NC} $svc healthy"
-            else
-                echo -e "  ${RED}✗${NC} $svc unhealthy"
-            fi
-        done
-        ((SUITE_PASSED++))
+
+    # /api/voice/status requires a Bearer token (see dashboard-api
+    # security.py). Shared helper handles env resolution + CRLF scrubbing.
+    # shellcheck source=tests/lib/auth-env.sh
+    . "$TESTS_DIR/lib/auth-env.sh"
+    ae_resolve "$SCRIPT_DIR"
+
+    if ! ae_key_available; then
+        echo -e "${YELLOW}○ Skipped: DASHBOARD_API_KEY not found (checked env + $ae_env_file)${NC}"
     else
-        echo -e "${RED}✗ Voice services unavailable${NC}"
-        ((SUITE_FAILED++))
+        _VOICE_URL="$ae_api_base/api/voice/status"
+        # Fetch once, reuse — avoids the "available" check racing the per-svc probe.
+        _VOICE_JSON="$(curl -s --max-time 10 "${AE_AUTH_HEADER[@]}" "$_VOICE_URL" 2>/dev/null || echo '')"
+        if echo "$_VOICE_JSON" | grep -q '"available":true'; then
+            echo -e "${GREEN}✓ Voice services available${NC}"
+            for svc in stt tts livekit; do
+                if echo "$_VOICE_JSON" | jq -e ".services.$svc.status == \"healthy\"" >/dev/null 2>&1; then
+                    echo -e "  ${GREEN}✓${NC} $svc healthy"
+                else
+                    echo -e "  ${RED}✗${NC} $svc unhealthy"
+                fi
+            done
+            ((SUITE_PASSED++))
+        else
+            echo -e "${RED}✗ Voice services unavailable${NC}"
+            ((SUITE_FAILED++))
+        fi
     fi
     echo ""
 fi
