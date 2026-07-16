@@ -516,6 +516,45 @@ write_env_value() {
     cat "$tmp" > "$ENV_FILE" && rm -f "$tmp"
 }
 
+full_model_env_matches() {
+    [[ "$(read_env_value GGUF_FILE)" == "$FULL_GGUF_FILE" ]] || return 1
+    [[ "$(read_env_value LLM_MODEL)" == "$FULL_LLM_MODEL" ]] || return 1
+    [[ "$(read_env_value MAX_CONTEXT)" == "$FULL_MAX_CONTEXT" ]] || return 1
+    [[ "$(read_env_value CTX_SIZE)" == "$FULL_MAX_CONTEXT" ]] || return 1
+}
+
+log_model_env_state() {
+    local _k
+    for _k in GGUF_FILE LLM_MODEL MAX_CONTEXT CTX_SIZE; do
+        log "    $(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null || echo "${_k}=<missing>")"
+    done
+}
+
+promote_full_model_env() {
+    local reason="${1:-full-model promotion}"
+    [[ -f "$ENV_FILE" ]] || return 1
+
+    log "Promoting .env to full model (${reason})..."
+    write_env_value GGUF_FILE "$FULL_GGUF_FILE" || return 1
+    write_env_value LLM_MODEL "$FULL_LLM_MODEL" || return 1
+    write_env_value MAX_CONTEXT "$FULL_MAX_CONTEXT" || return 1
+    write_env_value CTX_SIZE "$FULL_MAX_CONTEXT" || return 1
+
+    if full_model_env_matches; then
+        return 0
+    fi
+
+    log "ERROR: .env promotion did not persist expected full-model values (${reason})."
+    log "  expected:"
+    log "    GGUF_FILE=$FULL_GGUF_FILE"
+    log "    LLM_MODEL=$FULL_LLM_MODEL"
+    log "    MAX_CONTEXT=$FULL_MAX_CONTEXT"
+    log "    CTX_SIZE=$FULL_MAX_CONTEXT"
+    log "  .env now has:"
+    log_model_env_state
+    return 1
+}
+
 is_windows_bash() {
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*) return 0 ;;
@@ -2115,26 +2154,7 @@ fi
 # ── Phase 3: Update .env ──
 write_status "swapping" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""
 log "Updating .env..."
-if [[ -f "$ENV_FILE" ]]; then
-    # Update GGUF_FILE
-    if grep -q '^GGUF_FILE=' "$ENV_FILE"; then
-        awk -v v="$FULL_GGUF_FILE" '{ if (index($0, "GGUF_FILE=") == 1) print "GGUF_FILE=" v; else print }' \
-            "$ENV_FILE" > "${ENV_FILE}.tmp" && cat "${ENV_FILE}.tmp" > "$ENV_FILE" && rm -f "${ENV_FILE}.tmp"
-    fi
-    # Update LLM_MODEL
-    if grep -q '^LLM_MODEL=' "$ENV_FILE"; then
-        awk -v v="$FULL_LLM_MODEL" '{ if (index($0, "LLM_MODEL=") == 1) print "LLM_MODEL=" v; else print }' \
-            "$ENV_FILE" > "${ENV_FILE}.tmp" && cat "${ENV_FILE}.tmp" > "$ENV_FILE" && rm -f "${ENV_FILE}.tmp"
-    fi
-    # Update MAX_CONTEXT / CTX_SIZE
-    if grep -q '^MAX_CONTEXT=' "$ENV_FILE"; then
-        awk -v v="$FULL_MAX_CONTEXT" '{ if (index($0, "MAX_CONTEXT=") == 1) print "MAX_CONTEXT=" v; else print }' \
-            "$ENV_FILE" > "${ENV_FILE}.tmp" && cat "${ENV_FILE}.tmp" > "$ENV_FILE" && rm -f "${ENV_FILE}.tmp"
-    fi
-    if grep -q '^CTX_SIZE=' "$ENV_FILE"; then
-        awk -v v="$FULL_MAX_CONTEXT" '{ if (index($0, "CTX_SIZE=") == 1) print "CTX_SIZE=" v; else print }' \
-            "$ENV_FILE" > "${ENV_FILE}.tmp" && cat "${ENV_FILE}.tmp" > "$ENV_FILE" && rm -f "${ENV_FILE}.tmp"
-    fi
+if promote_full_model_env "initial full-model promotion"; then
     # Linux AMD installs route through Lemonade, whose request model id is a
     # separate runtime alias. Keep it in lockstep with the promoted GGUF so
     # LiteLLM/Hermes/OpenClaw do not keep targeting the deleted bootstrap id.
@@ -2153,7 +2173,7 @@ if [[ -f "$ENV_FILE" ]]; then
     fi
     log ".env updated"
 else
-    fail ".env not found at $ENV_FILE"
+    fail ".env could not be promoted to the full model at $ENV_FILE"
 fi
 
 # ── Phase 4: Update models.ini ──
@@ -2316,6 +2336,12 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
     # "AMD uses restart to preserve cached binary" comment was wrong —
     # named volumes are decoupled from the container lifecycle.
     if [[ ${#COMPOSE_ARGS[@]} -gt 0 && -n "$DOCKER_COMPOSE_CMD" ]]; then
+        if ! promote_full_model_env "pre-compose full-model promotion"; then
+            restore_active_model_config || log "WARNING: could not restore previous active model config; inspect $ENV_FILE and $MODELS_INI"
+            write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+                "Full model downloaded and verified, but ODS could not keep .env promoted to the full model before Docker hot-swap. Previous active model config restored; re-run to retry."
+            exit 1
+        fi
         compose_recreate_llama_server_with_retry "${COMPOSE_ARGS[@]}" || \
             log "WARNING: llama-server recreate command failed after retries; continuing to health check before declaring failure."
     else
@@ -2435,22 +2461,32 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
             log "ERROR: llama-server container started with stale --model arg."
             log "  expected /models/${FULL_GGUF_FILE}, got: $_running_cmd"
             log "  This means 'compose up -d --force-recreate' did not pick up the updated .env."
-            # Dump what compose would have seen so a future regression can be
-            # diagnosed from logs alone. If any of these have non-empty values,
-            # they overrode the .env at compose interpolation time.
-            for _k in GGUF_FILE LLM_MODEL MAX_CONTEXT CTX_SIZE; do
-                _v="$(printenv "$_k" 2>/dev/null || true)"
-                if [[ -n "$_v" ]]; then
-                    log "  shell env leak: $_k=$_v (overrode .env's $_k)"
+            if ! full_model_env_matches; then
+                log "  Detected .env drift away from the full model after promotion; re-promoting and recreating once."
+                if promote_full_model_env "stale llama-server command repair" \
+                    && compose_recreate_llama_server_with_retry "${COMPOSE_ARGS[@]}"; then
+                    _running_cmd=$($DOCKER_CMD inspect ods-llama-server --format '{{join .Config.Cmd " "}}' 2>/dev/null || echo "")
+                    if [[ "$_running_cmd" == *"/models/${FULL_GGUF_FILE}"* ]]; then
+                        log "Recovered llama-server after re-promoting .env; container command now targets ${FULL_GGUF_FILE}."
+                    fi
                 fi
-            done
-            log "  .env now has:"
-            for _k in GGUF_FILE LLM_MODEL MAX_CONTEXT CTX_SIZE; do
-                log "    $(grep -E "^${_k}=" "$ENV_FILE" 2>/dev/null || echo "${_k}=<missing>")"
-            done
-            log "  Recover with: cd $INSTALL_DIR && env -u GGUF_FILE -u LLM_MODEL -u MAX_CONTEXT -u CTX_SIZE docker compose \$(cat .compose-flags) up -d --force-recreate --no-deps llama-server"
-            write_status "failed"
-            fail "llama-server container started with stale --model arg after force-recreate."
+            fi
+            if ! [[ "$_running_cmd" == *"/models/${FULL_GGUF_FILE}"* ]]; then
+                # Dump what compose would have seen so a future regression can be
+                # diagnosed from logs alone. If any of these have non-empty values,
+                # they overrode the .env at compose interpolation time.
+                for _k in GGUF_FILE LLM_MODEL MAX_CONTEXT CTX_SIZE; do
+                    _v="$(printenv "$_k" 2>/dev/null || true)"
+                    if [[ -n "$_v" ]]; then
+                        log "  shell env leak: $_k=$_v (overrode .env's $_k)"
+                    fi
+                done
+                log "  .env now has:"
+                log_model_env_state
+                log "  Recover with: cd $INSTALL_DIR && env -u GGUF_FILE -u LLM_MODEL -u MAX_CONTEXT -u CTX_SIZE docker compose \$(cat .compose-flags) up -d --force-recreate --no-deps llama-server"
+                write_status "failed"
+                fail "llama-server container started with stale --model arg after force-recreate."
+            fi
         fi
     fi
 

@@ -1713,7 +1713,7 @@ litellm_settings:
 set -uo pipefail
 mkdir -p "`$(dirname "$bashUpgradeLog")"
 echo "`$`$" > "$bashUpgradePidFile"
-exec bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($fullTierConfig.GgufUrl)" "$($fullTierConfig.GgufSha256)" "$($fullTierConfig.LlmModel)" "$($fullTierConfig.MaxContext)" > "$bashUpgradeLog" 2> "$bashUpgradeErrLog" < /dev/null
+exec bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($fullTierConfig.GgufUrl)" "$($fullTierConfig.GgufSha256)" "$($fullTierConfig.LlmModel)" "$($fullTierConfig.MaxContext)" "$($script:BOOTSTRAP_GGUF_FILE)" > "$bashUpgradeLog" 2> "$bashUpgradeErrLog" < /dev/null
 "@
                 [System.IO.File]::WriteAllText($wrapperScript, $wrapperContent.Replace("`r`n", "`n"), (New-Object System.Text.UTF8Encoding($false)))
 

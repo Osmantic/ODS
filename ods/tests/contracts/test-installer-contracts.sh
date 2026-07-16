@@ -94,6 +94,8 @@ grep -q '_macos_persist_bootstrap_upgrade_args' installers/macos/install-macos.s
   || { echo "[FAIL] macOS installer must persist bootstrap-upgrade retry metadata"; exit 1; }
 grep -q '"$BOOTSTRAP_GGUF_FILE"' installers/macos/install-macos.sh \
   || { echo "[FAIL] macOS installer must pass the bootstrap GGUF into bootstrap-upgrade"; exit 1; }
+grep -q '\$script:BOOTSTRAP_GGUF_FILE' installers/windows/install-windows.ps1 \
+  || { echo "[FAIL] Windows installer must pass the bootstrap GGUF into bootstrap-upgrade"; exit 1; }
 awk '/cmd_restart\(\)/,/^}/' installers/macos/ods-macos.sh | grep -q 'macos_maybe_resume_bootstrap_upgrade' \
   || { echo "[FAIL] macOS ods restart must retry failed bootstrap upgrades"; exit 1; }
 awk '/cmd_start\(\)/,/^}/' installers/macos/ods-macos.sh | grep -q 'macos_maybe_resume_bootstrap_upgrade' \

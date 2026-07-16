@@ -70,6 +70,28 @@ grep -qF 'No such container' <<<"$compose_retry_block" \
     || fail "llama-server recreate must retry Docker's missing-container race"
 pass "llama-server recreate retries transient compose races"
 
+promote_env_block="$(function_block promote_full_model_env | grep -v '^[[:space:]]*#')"
+for expected in \
+    'write_env_value GGUF_FILE "$FULL_GGUF_FILE"' \
+    'write_env_value LLM_MODEL "$FULL_LLM_MODEL"' \
+    'write_env_value MAX_CONTEXT "$FULL_MAX_CONTEXT"' \
+    'write_env_value CTX_SIZE "$FULL_MAX_CONTEXT"' \
+    'full_model_env_matches' \
+    'log_model_env_state'
+do
+    grep -qF "$expected" <<<"$promote_env_block" \
+        || fail "full-model .env promotion must strictly persist ${expected}"
+done
+pass "full-model .env promotion is strict and self-diagnosing"
+
+grep -qF 'promote_full_model_env "initial full-model promotion"' <<<"$active_code" \
+    || fail "bootstrap upgrade must strictly promote .env before mutating runtime config"
+grep -qF 'promote_full_model_env "pre-compose full-model promotion"' <<<"$active_code" \
+    || fail "Docker hot-swap must reassert full-model .env immediately before compose recreate"
+grep -qF 'promote_full_model_env "stale llama-server command repair"' <<<"$active_code" \
+    || fail "stale llama-server command recovery must re-promote .env before its bounded retry"
+pass "Docker hot-swap reasserts full-model .env before and during stale-command recovery"
+
 if grep -qE '\brestart[[:space:]]+(llama-server|ods-llama-server)\b' <<<"$active_code"; then
     fail "llama-server hot-swap must not use restart; recreate is required so updated env lands"
 fi
