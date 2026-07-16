@@ -1263,7 +1263,7 @@ function Invoke-ConfigShow {
     Get-Content $envFile | ForEach-Object {
         $line = $_.Trim()
         if ($line -match "^#" -or $line -eq "") { return }
-        if ($line -match "(SECRET|PASS|TOKEN|KEY)=") {
+        if ($line -match "^[^=]*(SECRET|PASS|TOKEN|KEY|SALT)[^=]*=") {
             $key = ($line -split "=")[0]
             Write-Host "  $key=***" -ForegroundColor DarkGray
         } else {
