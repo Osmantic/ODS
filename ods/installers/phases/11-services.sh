@@ -778,6 +778,12 @@ MODELS_INI_EOF
             sed '/<!-- INSTALLATION_CONTEXT -->/d' "$_soul_template" >"$_soul_output" || \
                 warn "Could not create fallback Hermes SOUL.md at $_soul_output"
         fi
+
+        # Copy pre-registered OAuth credentials into Hermes home, allowing operator override
+        if [[ -f "$SCRIPT_DIR/installers/lib/oauth-credentials.sh" ]]; then
+            . "$SCRIPT_DIR/installers/lib/oauth-credentials.sh"
+            copy_oauth_credentials "$INSTALL_DIR"
+        fi
     fi
 
     # Validate service dependencies before launching

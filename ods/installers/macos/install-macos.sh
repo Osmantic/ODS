@@ -1113,6 +1113,12 @@ else
                 python3 "$_soul_builder" >>"$ODS_LOG_FILE" 2>&1 || \
                     ai_warn "Could not generate Hermes installation-context SOUL.md (non-fatal — Hermes will use the template default)"
             fi
+
+            # Copy pre-registered OAuth credentials into Hermes home, allowing operator override
+            if [[ -f "${SOURCE_ROOT}/installers/lib/oauth-credentials.sh" ]]; then
+                source "${SOURCE_ROOT}/installers/lib/oauth-credentials.sh"
+                copy_oauth_credentials "${INSTALL_DIR}"
+            fi
         fi
     fi
 

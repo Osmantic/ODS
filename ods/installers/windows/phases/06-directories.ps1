@@ -553,6 +553,37 @@ if ($enableHermes) {
     }
     Invoke-HermesSoulRefresh -InstallRoot $installDir
     Write-AISuccess "Patched Hermes config (model=$_hermesModel, context=$($tierConfig.MaxContext), request_timeout=${_hermesRequestTimeout}s)"
+
+    # Copy OAuth credentials if they exist
+    $_credsDir = Join-Path $installDir "extensions\services\hermes\credentials"
+    $_hermesData = Join-Path $installDir "data\hermes"
+    if (Test-Path -LiteralPath $_credsDir -PathType Container) {
+        $_jsonFiles = @(Get-ChildItem -LiteralPath $_credsDir -Filter "*.json" -File -ErrorAction SilentlyContinue)
+        if ($_jsonFiles.Count -gt 0) {
+            Write-AI "Bundled OAuth credentials detected in $_credsDir"
+            if (-not (Test-Path -LiteralPath $_hermesData -PathType Container)) {
+                New-Item -ItemType Directory -Path $_hermesData -Force | Out-Null
+            }
+            foreach ($_cred in $_jsonFiles) {
+                $_fname = $_cred.Name
+                $_destPath = Join-Path $_hermesData $_fname
+                if (-not (Test-Path -LiteralPath $_destPath -PathType Leaf)) {
+                    try {
+                        Copy-Item -LiteralPath $_cred.FullName -Destination $_destPath -Force -ErrorAction Stop
+                        if (Test-Path -LiteralPath $_destPath -PathType Leaf) {
+                            Write-AISuccess "Copied OAuth credential: $_fname"
+                        } else {
+                            Write-AIWarn "Failed to copy OAuth credential: $_fname"
+                        }
+                    } catch {
+                        Write-AIWarn "Failed to copy OAuth credential: $_fname"
+                    }
+                } else {
+                    Write-AI "Preserved existing OAuth credential: $_fname (operator override)"
+                }
+            }
+        }
+    }
 }
 
 # ── Generate SearXNG config ───────────────────────────────────────────────────
