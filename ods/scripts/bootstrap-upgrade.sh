@@ -1801,7 +1801,7 @@ LITELLM_UPGRADE_EOF
                     >/dev/null 2>&1; then
                     log "Hermes system prompt cached — first user prompt will be fast."
                 else
-                    log "WARNING: Hermes warm-up timed out (>90s). First user prompt will incur the full 14K-token prefill."
+                    log "WARNING: Hermes warm-up failed or timed out (>90s). If the Hermes log shows 'KeyError: final_response', this is a known upstream issue (#1497) — the hotfix requires container recreation ('ods restart hermes' or 'docker compose up -d hermes') to apply the new mounts. First user prompt will incur the full 14K-token prefill."
                 fi
             else
                 log "WARNING: Hermes did not respond on /api/status within 60s; skipping system-prompt warm-up."

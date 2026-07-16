@@ -84,6 +84,14 @@ services:
       # Persistent state: Hermes's HERMES_HOME. Sessions, skills, memories,
       # cron jobs, audit logs all live here.
       - ./data/hermes:/opt/data:z
+      # Hotfix for upstream KeyError on missing 'final_response' (#1497).
+      # A .pth file triggers `import dream_hotfix_1497` at interpreter
+      # startup.  The module installs a sys.meta_path hook that patches
+      # run_agent.Agent.chat() when it is first imported — inside the
+      # same process that runs the gateway.  Remove both mounts once the
+      # pinned image includes the upstream fix.
+      - ./extensions/services/hermes/dream_hotfix_1497.py:/opt/hermes/.venv/lib/python3.11/site-packages/dream_hotfix_1497.py:ro,z
+      - ./extensions/services/hermes/dream-hotfix-1497.pth:/opt/hermes/.venv/lib/python3.11/site-packages/dream-hotfix-1497.pth:ro,z
       # Bake our cli-config.yaml + SOUL.md as the defaults Hermes copies into
       # HERMES_HOME on first start (its entrypoint copies these examples into
       # /opt/data/ if the destination files don't exist yet). Mounting them
