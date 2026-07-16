@@ -3,6 +3,8 @@ services:
     image: ghcr.io/openclaw/openclaw:2026.3.8
     container_name: ods-openclaw
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     security_opt:
       - no-new-privileges:true
     environment:

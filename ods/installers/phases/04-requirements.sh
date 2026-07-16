@@ -222,23 +222,27 @@ check_ollama_conflict() {
 # Ollama conflict detection (must happen before port checks)
 check_ollama_conflict
 if $OLLAMA_RUNNING; then
-    ai_warn "Ollama is running (PID ${OLLAMA_PID}) and may conflict with ODS."
-    ai "  Note: this is usually not a port collision. Open WebUI may auto-discover Ollama (11434) and prefer it over the local llama-server (8080)."
-    if $INTERACTIVE && ! $DRY_RUN; then
-        read -r -p "  Stop Ollama for this session? [Y/n] " ollama_choice < /dev/tty
-        if [[ ! "$ollama_choice" =~ ^[nN] ]]; then
-            kill "$OLLAMA_PID" 2>/dev/null || sudo kill "$OLLAMA_PID" 2>/dev/null || true
-            sleep 2
-            if pgrep -x ollama >/dev/null 2>&1; then
-                ai_warn "Ollama restarted automatically. Stop it manually: sudo systemctl stop ollama"
+    if [[ "${EXTERNAL_LLM_PROVIDER:-}" == "ollama" ]] || [[ "${EXTERNAL_LLM_URL:-}" =~ :11434 ]]; then
+        log "Active external Ollama service is configured for reuse. Keeping Ollama running."
+    else
+        ai_warn "Ollama is running (PID ${OLLAMA_PID}) and may conflict with ODS."
+        ai "  Note: this is usually not a port collision. Open WebUI may auto-discover Ollama (11434) and prefer it over the local llama-server (8080)."
+        if [[ "${INTERACTIVE:-false}" == "true" ]] && [[ "${DRY_RUN:-false}" != "true" ]]; then
+            read -r -p "  Stop Ollama for this session? [Y/n] " ollama_choice < /dev/tty
+            if [[ ! "$ollama_choice" =~ ^[nN] ]]; then
+                kill "$OLLAMA_PID" 2>/dev/null || sudo kill "$OLLAMA_PID" 2>/dev/null || true
+                sleep 2
+                if pgrep -x ollama >/dev/null 2>&1; then
+                    ai_warn "Ollama restarted automatically. Stop it manually: sudo systemctl stop ollama"
+                else
+                    ai_ok "Ollama stopped"
+                fi
             else
-                ai_ok "Ollama stopped"
+                ai_warn "Ollama left running. Port conflicts may occur."
             fi
         else
-            ai_warn "Ollama left running. Port conflicts may occur."
+            ai_warn "Ollama detected. Run without --non-interactive to resolve, or stop manually: sudo systemctl stop ollama"
         fi
-    else
-        ai_warn "Ollama detected. Run without --non-interactive to resolve, or stop manually: sudo systemctl stop ollama"
     fi
 fi
 
@@ -263,7 +267,11 @@ if [[ "${ENABLE_VOICE:-false}" == "true" ]] && _phase04_lemonade_uses_host_9000;
 fi
 
 # Port conflict detection with detailed process information
-PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-8080} ${SERVICE_PORTS[open-webui]:-3000}"
+PORTS_TO_CHECK="${SERVICE_PORTS[open-webui]:-3000}"
+# Only check local llama-server port if local inference is enabled (i.e. EXTERNAL_LLM_URL is not set)
+if [[ -z "${EXTERNAL_LLM_URL:-}" ]]; then
+    PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-8080} $PORTS_TO_CHECK"
+fi
 [[ "$ENABLE_VOICE" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[whisper]:-9000} ${SERVICE_PORTS[tts]:-8880}"
 [[ "$ENABLE_WORKFLOWS" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[n8n]:-5678}"
 [[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[qdrant]:-6333}"

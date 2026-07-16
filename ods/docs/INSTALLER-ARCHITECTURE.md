@@ -110,6 +110,7 @@ Common customizations and exactly where to make them:
 | **Skip a phase** | `install-core.sh` | Comment out or remove the `source` line for that phase (e.g., remove phase 07 to skip dev tools) |
 | **Add a new phase** | `installers/phases/` | Create a numbered `.sh` file with the standard header, then add a `source` line in `install-core.sh` in the right order |
 | **Swap inference backend** | `lib/compose-select.sh` | Change the compose overlay logic in `resolve_compose_config()` to point at different compose files |
+| **Reuse external LLM** | `phases/02b-external-services.sh` + `scripts/resolve-compose-stack.sh` | Detected Ollama or LM Studio instances are offered for reuse. If selected, `EXTERNAL_LLM_URL`, `EXTERNAL_LLM_PROVIDER`, `EXTERNAL_LLM_MODEL`, and `SKIP_MODEL_DOWNLOAD` are saved to `.env`. This triggers `resolve-compose-stack.sh` to layer `docker-compose.cloud.yml` which disables local `llama-server`. |
 | **Change model downloads** | `phases/11-services.sh` | Edit the GGUF download logic or add new model files |
 | **Add a service health check** | `phases/12-health.sh` | Add a new `check_service()` call for your service |
 | **Change minimum requirements** | `phases/04-requirements.sh` | Adjust RAM/disk/VRAM thresholds per tier |

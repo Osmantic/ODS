@@ -3,6 +3,8 @@ services:
     image: itzcrazykns1337/perplexica:slim-latest@sha256:6e399abf4ff587822b0ef0df11f36088fb928e17ac61556fe89beb68d48c378e
     container_name: ods-perplexica
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     security_opt:
       - no-new-privileges:true
     environment:

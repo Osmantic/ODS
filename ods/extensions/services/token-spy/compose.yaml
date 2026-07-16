@@ -6,6 +6,8 @@ services:
       dockerfile: Dockerfile
     container_name: ods-token-spy
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     security_opt:
       - no-new-privileges:true
     ports:

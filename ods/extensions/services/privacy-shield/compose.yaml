@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     container_name: ods-privacy-shield
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     user: "${UID:-1000}:${GID:-1000}"
     security_opt:
       - no-new-privileges:true

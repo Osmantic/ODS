@@ -83,6 +83,8 @@ services:
     image: ghcr.io/open-webui/open-webui:v0.7.2
     container_name: ods-webui
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     logging: *default-logging
     security_opt:
       - no-new-privileges:true

@@ -192,43 +192,65 @@ if [[ "${ODS_MODE:-local}" == "cloud" ]] || _phase12_external_lemonade; then
         fi
     fi
 else
-    # Format: _check_health "name" "url" max_attempts timeout_per_request
-    # llama-server: 150 attempts * adaptive backoff (2s->8s) = up to ~20 minutes (model loading can be slow)
-    _llm_health_attempts=150
-    if [[ "${COMPOSE_STARTED_WITH_DELAYED_HEALTH:-false}" == "true" ]]; then
-        # If phase 11 already saw Docker Compose outlive its own health-gate
-        # window, keep the installer in the long readiness loop instead of
-        # failing right as very large GGUFs finish loading after reinstall.
-        _llm_health_attempts="${ODS_LLM_DELAYED_HEALTH_ATTEMPTS:-300}"
-    fi
-
-    # When a background model upgrade is in progress the bootstrap model is
-    # already serving and healthy — the full model will hot-swap automatically
-    # once the download finishes. Blocking here would fail the installer on
-    # hosts where the full model download + swap exceeds the health window
-    # (e.g. tower2 with a 24 GB GGUF after a ComfyUI rebuild).
-    _bootstrap_status_file="${INSTALL_DIR}/data/bootstrap-status.json"
-    _model_download_active=false
-    if [[ -f "$_bootstrap_status_file" ]]; then
-        _bs_status="$(grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' "$_bootstrap_status_file" 2>/dev/null | head -1 | cut -d'"' -f4)"
-        case "$_bs_status" in
-            starting|downloading|verifying|swapping)
-                _model_download_active=true
-                ;;
-        esac
-    fi
-    if [[ "$_model_download_active" != "true" ]] && command -v bg_task_status >/dev/null 2>&1; then
-        if bg_task_status "full-model-download" >/dev/null 2>&1; then
-            _model_download_active=true
+    if [[ -n "$EXTERNAL_LLM_URL" ]]; then
+        ods_progress 86 "health" "Verifying external LLM service"
+        _external_host_url="${EXTERNAL_LLM_URL/host.docker.internal/127.0.0.1}"
+        printf "  ${GRN}...${NC} Probing external LLM service at %-20s " "$_external_host_url"
+        # Try a simple models check (standard for both Ollama and LM Studio OpenAI compat endpoints, or Ollama tags endpoint)
+        if curl -sf --max-time 5 "${_external_host_url}/v1/models" >/dev/null || \
+           curl -sf --max-time 5 "${_external_host_url}/api/tags" >/dev/null; then
+            printf "\r  ${BGRN}OK${NC} External LLM service healthy (%s)\n" "${EXTERNAL_LLM_PROVIDER:-service}"
+        else
+            printf "\r  ${RED}FAIL${NC} External LLM service unreachable at %s\n" "$_external_host_url"
+            echo
+            warn "External LLM service (${EXTERNAL_LLM_PROVIDER:-service}) at ${_external_host_url} is not responding."
+            warn "Since ODS is configured to reuse this external service, the local llama-server is disabled and model downloads were skipped."
+            echo
+            ai "To recover:"
+            ai "  1. Ensure your external LLM service (Ollama or LM Studio) is running and accessible at ${_external_host_url}."
+            ai "  2. Or, revert to local mode by removing EXTERNAL_LLM_URL from your .env file and re-running the installer."
+            echo
+            exit 1
         fi
-    fi
-
-    if [[ "$_model_download_active" == "true" ]]; then
-        ai_ok "Full model upgrade in progress — skipping blocking LLM health wait"
-        ai "  Monitor progress: tail -f ${INSTALL_DIR}/logs/model-upgrade.log"
     else
-        ods_progress 86 "health" "Waiting for LLM engine"
-        _check_health "llama-server" "http://127.0.0.1:${SERVICE_PORTS[llama-server]:-8080}${SERVICE_HEALTH[llama-server]:-/health}" "$_llm_health_attempts" 15 "$(sr_container llama-server)"
+        # Format: _check_health "name" "url" max_attempts timeout_per_request
+        # llama-server: 150 attempts * adaptive backoff (2s->8s) = up to ~20 minutes (model loading can be slow)
+        _llm_health_attempts=150
+        if [[ "${COMPOSE_STARTED_WITH_DELAYED_HEALTH:-false}" == "true" ]]; then
+            # If phase 11 already saw Docker Compose outlive its own health-gate
+            # window, keep the installer in the long readiness loop instead of
+            # failing right as very large GGUFs finish loading after reinstall.
+            _llm_health_attempts="${ODS_LLM_DELAYED_HEALTH_ATTEMPTS:-300}"
+        fi
+
+        # When a background model upgrade is in progress the bootstrap model is
+        # already serving and healthy — the full model will hot-swap automatically
+        # once the download finishes. Blocking here would fail the installer on
+        # hosts where the full model download + swap exceeds the health window
+        # (e.g. tower2 with a 24 GB GGUF after a ComfyUI rebuild).
+        _bootstrap_status_file="${INSTALL_DIR}/data/bootstrap-status.json"
+        _model_download_active=false
+        if [[ -f "$_bootstrap_status_file" ]]; then
+            _bs_status="$(grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' "$_bootstrap_status_file" 2>/dev/null | head -1 | cut -d'"' -f4)"
+            case "$_bs_status" in
+                starting|downloading|verifying|swapping)
+                    _model_download_active=true
+                    ;;
+            esac
+        fi
+        if [[ "$_model_download_active" != "true" ]] && command -v bg_task_status >/dev/null 2>&1; then
+            if bg_task_status "full-model-download" >/dev/null 2>&1; then
+                _model_download_active=true
+            fi
+        fi
+
+        if [[ "$_model_download_active" == "true" ]]; then
+            ai_ok "Full model upgrade in progress — skipping blocking LLM health wait"
+            ai "  Monitor progress: tail -f ${INSTALL_DIR}/logs/model-upgrade.log"
+        else
+            ods_progress 86 "health" "Waiting for LLM engine"
+            _check_health "llama-server" "http://127.0.0.1:${SERVICE_PORTS[llama-server]:-8080}${SERVICE_HEALTH[llama-server]:-/health}" "$_llm_health_attempts" 15 "$(sr_container llama-server)"
+        fi
     fi
 fi
 
@@ -249,7 +271,7 @@ fi
 # cold path inside the installer (where time isn't surprising) so Hermes
 # lands on an already-hot slot. Bounded by curl --max-time so a stalled
 # llama-server doesn't hang phase 12.
-if [[ "${ODS_MODE:-local}" == "cloud" ]] || _phase12_external_lemonade; then
+if [[ "${ODS_MODE:-local}" == "cloud" ]] || _phase12_external_lemonade || [[ -n "$EXTERNAL_LLM_URL" ]]; then
     ai "External LLM mode - skipping local llama-server pre-warm"
 else
     ods_progress 87 "health" "Pre-warming LLM slot"
