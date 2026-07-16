@@ -114,6 +114,28 @@ else
     pass "Triage job does not have issues permission"
 fi
 
+# Check model-facing permission boundary invariant
+AI_STEP=$(echo "$TRIAGE_BLOCK" | grep -A 8 "\- name: AI Triage")
+if [[ -z "$AI_STEP" ]]; then
+    fail "Could not locate AI Triage step in triage job"
+else
+    HAS_TOKEN=0
+    if echo "$AI_STEP" | grep -q "github_token"; then
+        HAS_TOKEN=1
+    fi
+
+    HAS_WRITE=0
+    if echo "$TRIAGE_HEADER" | grep -A 5 "permissions:" | grep -q "issues: write"; then
+        HAS_WRITE=1
+    fi
+
+    if [[ "$HAS_TOKEN" -eq 1 ]] && [[ "$HAS_WRITE" -eq 1 ]]; then
+        fail "Model-facing permission boundary violation: AI Triage receives github_token and triage job has issues: write"
+    else
+        pass "Model-facing permission boundary locked (either no token or triage job lacks issues: write)"
+    fi
+fi
+
 # Extract apply-labels job block
 APPLY_BLOCK=$(awk '/^  apply-labels:/, 0' "$WORKFLOW_TRIAGE")
 if [[ -z "$APPLY_BLOCK" ]]; then
