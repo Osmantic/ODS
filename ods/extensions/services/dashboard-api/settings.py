@@ -258,6 +258,10 @@ def _match_apply_service(key: str) -> Optional[str]:
         return "llama-server"
     if key == "SEARXNG_URL":
         return "hermes"
+    if key.startswith("LITELLM_") or key.startswith("OPENROUTER_") or key in {
+        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "TOGETHER_API_KEY", "MINIMAX_API_KEY",
+    }:
+        return "litellm"
     if (
         key in _OPEN_WEBUI_APPLY_KEYS
         or key.startswith("WEBUI_")
@@ -269,8 +273,6 @@ def _match_apply_service(key: str) -> Optional[str]:
         return "token-spy"
     if key in _PRIVACY_SHIELD_APPLY_KEYS or key.startswith("SHIELD_"):
         return "privacy-shield"
-    if key.startswith("LITELLM_"):
-        return "litellm"
     if key.startswith("LANGFUSE_"):
         return "langfuse"
     if key.startswith("N8N_"):

@@ -74,7 +74,7 @@ After install, open **http://localhost:3000** and start chatting.
 
 > **API endpoint:** Linux Docker installs expose llama-server on **http://localhost:11434** by default (`OLLAMA_PORT`) while containers use `llama-server:8080`. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden. Open WebUI stays on **http://localhost:3000**.
 
-> **No GPU?** ODS also runs in cloud mode — same full stack, powered by OpenAI/Anthropic/Together APIs instead of local inference:
+> **No GPU?** ODS also runs in cloud mode — same full stack, powered by OpenAI, Anthropic, OpenRouter, MiniMax, or other LiteLLM-backed APIs instead of local inference:
 > ```bash
 > ./install.sh --cloud
 > ```

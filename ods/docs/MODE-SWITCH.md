@@ -63,7 +63,7 @@ LLM requests routed through LiteLLM to cloud APIs.
 
 | Aspect | Details |
 |--------|---------|
-| **LLM** | Claude, GPT-4o, MiniMax via LiteLLM |
+| **LLM** | Claude, GPT-4o, OpenRouter, MiniMax via LiteLLM |
 | **Cost** | ~$0.003-0.06/1K tokens |
 | **Requires** | Internet, API keys |
 | **GPU** | Not needed |
@@ -77,6 +77,25 @@ ods mode cloud
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
 ```
+
+For OpenRouter-only installs, set the OpenRouter key instead:
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=openrouter/auto
+```
+
+Cloud mode exposes these LiteLLM model aliases by default:
+
+| Alias | Provider route | Notes |
+|-------|----------------|-------|
+| `default` | Anthropic Sonnet | Existing default alias for Anthropic-backed cloud installs |
+| `gpt4o` | OpenAI GPT-4o | Requires `OPENAI_API_KEY` |
+| `fast` | Anthropic Haiku | Requires `ANTHROPIC_API_KEY` |
+| `openrouter-auto` | OpenRouter Auto Router | Requires `OPENROUTER_API_KEY` |
+| `openrouter-free` | OpenRouter Free Router | Requires `OPENROUTER_API_KEY`; subject to OpenRouter limits/availability |
+| `openrouter` | `OPENROUTER_MODEL` | Dynamic alias rendered at LiteLLM start; defaults to `openrouter/auto` |
+| `minimax` / `minimax-fast` | MiniMax | Requires `MINIMAX_API_KEY` |
 
 ### Hybrid Mode
 Local llama-server as primary, cloud APIs as fallback via LiteLLM.
@@ -123,6 +142,11 @@ adding one-off installer or dashboard paths.
 | `OPENAI_API_KEY` | *(empty)* | OpenAI API key (cloud/hybrid) |
 | `TOGETHER_API_KEY` | *(empty)* | Together AI API key (optional) |
 | `MINIMAX_API_KEY` | *(empty)* | MiniMax API key (optional, cloud/hybrid) |
+| `OPENROUTER_API_KEY` | *(empty)* | OpenRouter API key (cloud/hybrid) |
+| `OPENROUTER_API_BASE` | *(empty)* | Optional OpenRouter-compatible API base override; leave empty for the hosted OpenRouter API |
+| `OPENROUTER_MODEL` | `openrouter/auto` | Model slug used by the dynamic `openrouter` LiteLLM alias |
+| `OPENROUTER_SITE_URL` | *(empty)* | Optional OpenRouter attribution header |
+| `OPENROUTER_APP_NAME` | `ODS` | Optional OpenRouter attribution header |
 
 ---
 
@@ -135,6 +159,18 @@ Install in cloud mode (skips GPU detection and model download):
 ```
 
 This sets `ODS_MODE=cloud`, `LLM_API_URL=http://litellm:4000`, and auto-enables the LiteLLM extension.
+
+For constrained hosts that should run Hermes through OpenRouter, a lightweight
+install can start with:
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-... ./install.sh --cloud --hermes --no-comfyui --no-voice --no-workflows --no-rag --no-langfuse
+```
+
+After the stack starts, select `openrouter`, `openrouter-auto`, or
+`openrouter-free` in the chat surface. If you change OpenRouter values from
+Settings, apply the returned LiteLLM restart plan so the generated proxy config
+is rebuilt.
 
 ---
 

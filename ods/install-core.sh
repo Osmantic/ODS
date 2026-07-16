@@ -189,6 +189,8 @@ Examples:
     $0 --tier 2 --voice          # Tier 2 with voice
     $0 --all --non-interactive   # Full stack, no prompts
     $0 --cloud                   # Cloud mode (no GPU needed, uses API keys)
+    OPENROUTER_API_KEY=sk-or-v1-... $0 --cloud
+                                  # Cloud mode through OpenRouter
     $0 --use-existing-lemonade   # Wrap an existing Lemonade SDK runtime
     $0 --offline --all           # Fully offline (M1 mode) with all services
     $0 --dry-run                 # Preview installation

@@ -62,6 +62,47 @@ function New-SecureBase64 {
     return [Convert]::ToBase64String($buf)
 }
 
+function Test-ODSCloudLiteLLMAlias {
+    param([string]$Model)
+    # Keep in sync with config/litellm/cloud.yaml plus the dynamic OpenRouter
+    # alias injected by extensions/services/litellm/compose.yaml.
+    return @(
+        "default",
+        "gpt4o",
+        "fast",
+        "openrouter",
+        "openrouter-auto",
+        "openrouter-free",
+        "minimax",
+        "minimax-fast"
+    ) -contains $Model
+}
+
+function Select-ODSCloudLlmModel {
+    param(
+        [string]$CandidateModel,
+        [string]$PreviousOdsMode,
+        [string]$OpenRouterApiKey,
+        [string]$AnthropicApiKey,
+        [string]$OpenAiApiKey,
+        [string]$MiniMaxApiKey
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($CandidateModel) -and
+        $CandidateModel -ne "anthropic/claude-sonnet-4-5-20250514") {
+        if ($PreviousOdsMode -eq "cloud" -or (Test-ODSCloudLiteLLMAlias $CandidateModel)) {
+            return $CandidateModel
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($OpenRouterApiKey) -and
+        [string]::IsNullOrWhiteSpace($AnthropicApiKey) -and
+        [string]::IsNullOrWhiteSpace($OpenAiApiKey) -and
+        [string]::IsNullOrWhiteSpace($MiniMaxApiKey)) {
+        return "openrouter"
+    }
+    return "default"
+}
+
 function New-ODSEnv {
     <#
     .SYNOPSIS
@@ -303,6 +344,35 @@ function New-ODSEnv {
         "http://llama-server:8080"
     })
 
+    $anthropicApiKey = Get-EnvOrNew "ANTHROPIC_API_KEY" $env:ANTHROPIC_API_KEY
+    $openaiApiKey = Get-EnvOrNew "OPENAI_API_KEY" $env:OPENAI_API_KEY
+    $togetherApiKey = Get-EnvOrNew "TOGETHER_API_KEY" $env:TOGETHER_API_KEY
+    $minimaxApiKey = Get-EnvOrNew "MINIMAX_API_KEY" $env:MINIMAX_API_KEY
+    $openrouterApiKey = Get-EnvOrNew "OPENROUTER_API_KEY" $env:OPENROUTER_API_KEY
+    $openrouterApiBase = Get-EnvOrNew "OPENROUTER_API_BASE" $env:OPENROUTER_API_BASE
+    $openrouterModel = Get-EnvOrNew "OPENROUTER_MODEL" $(if ($env:OPENROUTER_MODEL) { $env:OPENROUTER_MODEL } else { "openrouter/auto" })
+    $openrouterSiteUrl = Get-EnvOrNew "OPENROUTER_SITE_URL" $env:OPENROUTER_SITE_URL
+    $openrouterAppName = Get-EnvOrNew "OPENROUTER_APP_NAME" $(if ($env:OPENROUTER_APP_NAME) { $env:OPENROUTER_APP_NAME } else { "ODS" })
+    $cloudLlmModel = Get-EnvOrNew "LLM_MODEL" "$($TierConfig.LlmModel)"
+    $previousOdsMode = $(if ($existingEnv.ContainsKey("ODS_MODE")) { $existingEnv["ODS_MODE"] } else { "" })
+    $cloudRecommendationSource = $(if ($TierConfig.RecommendationSource) { $TierConfig.RecommendationSource } else { "installer_tier_map" })
+    $cloudRecommendationPolicy = $(if ($TierConfig.RecommendationPolicy) { $TierConfig.RecommendationPolicy } else { "tier-map" })
+    $cloudRecommendationConfidence = $(if ($TierConfig.RecommendationConfidence) { $TierConfig.RecommendationConfidence } else { "medium" })
+    $cloudRecommendationReason = $(if ($TierConfig.RecommendationReason) { $TierConfig.RecommendationReason } else { "Selected by installer tier $Tier ($($TierConfig.TierName)) for $GpuBackend backend; benchmark locally after first launch." })
+    if ($ODSMode -eq "cloud") {
+        $cloudLlmModel = Select-ODSCloudLlmModel `
+            -CandidateModel $cloudLlmModel `
+            -PreviousOdsMode $previousOdsMode `
+            -OpenRouterApiKey $openrouterApiKey `
+            -AnthropicApiKey $anthropicApiKey `
+            -OpenAiApiKey $openaiApiKey `
+            -MiniMaxApiKey $minimaxApiKey
+        $cloudRecommendationSource = "cloud_provider_alias"
+        $cloudRecommendationPolicy = "litellm-cloud-provider"
+        $cloudRecommendationConfidence = "high"
+        $cloudRecommendationReason = "Selected LiteLLM cloud alias $cloudLlmModel; change LLM_MODEL or provider keys to use a different cloud route."
+    }
+
     # Hermes streams through the OpenAI-compatible provider. On Windows AMD
     # Lemonade, direct streaming against Lemonade can close chunked responses
     # early; LiteLLM normalizes that path and already fronts the same runtime
@@ -385,24 +455,29 @@ AMD_INFERENCE_RUNTIME_MODE=$AmdInferenceRuntimeMode
 AMD_INFERENCE_MANAGED=$AmdInferenceManaged
 
 #=== Cloud API Keys ===
-ANTHROPIC_API_KEY=$(Get-EnvOrNew "ANTHROPIC_API_KEY" "")
-OPENAI_API_KEY=$(Get-EnvOrNew "OPENAI_API_KEY" "")
-TOGETHER_API_KEY=$(Get-EnvOrNew "TOGETHER_API_KEY" "")
-MINIMAX_API_KEY=$(Get-EnvOrNew "MINIMAX_API_KEY" "")
+ANTHROPIC_API_KEY=$anthropicApiKey
+OPENAI_API_KEY=$openaiApiKey
+TOGETHER_API_KEY=$togetherApiKey
+MINIMAX_API_KEY=$minimaxApiKey
+OPENROUTER_API_KEY=$openrouterApiKey
+OPENROUTER_API_BASE=$openrouterApiBase
+OPENROUTER_MODEL=$openrouterModel
+OPENROUTER_SITE_URL=$openrouterSiteUrl
+OPENROUTER_APP_NAME=$openrouterAppName
 
 #=== LLM Settings (llama-server) ===
 MODEL_PROFILE=$(Get-EnvOrNew "MODEL_PROFILE" "$(if ($TierConfig.ModelProfileRequested) { $TierConfig.ModelProfileRequested } else { "qwen" })")
-LLM_MODEL=$($TierConfig.LlmModel)
+LLM_MODEL=$cloudLlmModel
 GGUF_FILE=$($TierConfig.GgufFile)
 MAX_CONTEXT=$($TierConfig.MaxContext)
 CTX_SIZE=$($TierConfig.MaxContext)
-MODEL_RECOMMENDED_MODEL=$($TierConfig.LlmModel)
+MODEL_RECOMMENDED_MODEL=$cloudLlmModel
 MODEL_RECOMMENDED_GGUF=$($TierConfig.GgufFile)
 MODEL_RECOMMENDED_CONTEXT=$($TierConfig.MaxContext)
-MODEL_RECOMMENDATION_SOURCE=$(if ($TierConfig.RecommendationSource) { $TierConfig.RecommendationSource } else { "installer_tier_map" })
-MODEL_RECOMMENDATION_POLICY=$(if ($TierConfig.RecommendationPolicy) { $TierConfig.RecommendationPolicy } else { "tier-map" })
-MODEL_RECOMMENDATION_CONFIDENCE=$(if ($TierConfig.RecommendationConfidence) { $TierConfig.RecommendationConfidence } else { "medium" })
-MODEL_RECOMMENDATION_REASON=$(if ($TierConfig.RecommendationReason) { $TierConfig.RecommendationReason } else { "Selected by installer tier $Tier ($($TierConfig.TierName)) for $GpuBackend backend; benchmark locally after first launch." })
+MODEL_RECOMMENDATION_SOURCE=$cloudRecommendationSource
+MODEL_RECOMMENDATION_POLICY=$cloudRecommendationPolicy
+MODEL_RECOMMENDATION_CONFIDENCE=$cloudRecommendationConfidence
+MODEL_RECOMMENDATION_REASON=$cloudRecommendationReason
 MODEL_RECOMMENDED_ALTERNATIVES=$(if ($TierConfig.RecommendationAlternatives) { $TierConfig.RecommendationAlternatives } else { "" })
 MODEL_RUNTIME_PROFILE=$(if ($TierConfig.RuntimeProfile) { $TierConfig.RuntimeProfile } else { "" })
 MODEL_RUNTIME_PROFILE_LABEL=$(if ($TierConfig.RuntimeProfileLabel) { $TierConfig.RuntimeProfileLabel } else { "" })

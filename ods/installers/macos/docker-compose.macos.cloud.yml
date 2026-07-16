@@ -1,0 +1,18 @@
+# ODS -- macOS cloud overlay
+#
+# Cloud mode routes Open WebUI through LiteLLM and does not launch the native
+# Metal llama-server readiness sidecar used by docker-compose.macos.yml.
+
+services:
+  dashboard-api:
+    environment:
+      - OLLAMA_URL=${LLM_API_URL:-http://litellm:4000}
+      # gpu.py routes to get_gpu_info_apple() which reads HOST_* env vars.
+      # config.py defaults include 'apple' so all manifests are discovered.
+      - GPU_BACKEND=apple
+      # Static host hardware info written to .env by install-macos.sh (Phase 2).
+      - HOST_RAM_GB=${HOST_RAM_GB:-0}
+
+  open-webui:
+    environment:
+      OPENAI_API_BASE_URL: "${LLM_API_URL:-http://litellm:4000}/v1"

@@ -405,6 +405,52 @@ def test_settings_apply_plan_maps_agent_and_proxy_env_keys():
     assert plan["manualKeys"] == []
 
 
+def test_settings_apply_plan_maps_openrouter_env_keys_to_litellm():
+    from settings import _compute_env_apply_plan
+
+    previous = {
+        "OPENROUTER_API_KEY": "",
+        "OPENROUTER_MODEL": "openrouter/auto",
+        "OPENROUTER_SITE_URL": "",
+        "OPENROUTER_APP_NAME": "ODS",
+    }
+    updated = {
+        "OPENROUTER_API_KEY": "sk-or-v1-test",
+        "OPENROUTER_MODEL": "qwen/qwen3-235b-a22b:free",
+        "OPENROUTER_SITE_URL": "https://example.test",
+        "OPENROUTER_APP_NAME": "ODS Lab",
+    }
+
+    plan = _compute_env_apply_plan(previous, updated)
+
+    assert plan["status"] == "ready"
+    assert plan["services"] == ["litellm"]
+    assert plan["manualKeys"] == []
+
+
+def test_settings_apply_plan_maps_cloud_provider_keys_to_litellm():
+    from settings import _compute_env_apply_plan
+
+    previous = {
+        "ANTHROPIC_API_KEY": "sk-ant-old",
+        "OPENAI_API_KEY": "sk-old",
+        "TOGETHER_API_KEY": "",
+        "MINIMAX_API_KEY": "",
+    }
+    updated = {
+        "ANTHROPIC_API_KEY": "sk-ant-new",
+        "OPENAI_API_KEY": "sk-new",
+        "TOGETHER_API_KEY": "tog-new",
+        "MINIMAX_API_KEY": "mm-new",
+    }
+
+    plan = _compute_env_apply_plan(previous, updated)
+
+    assert plan["status"] == "ready"
+    assert plan["services"] == ["litellm"]
+    assert plan["manualKeys"] == []
+
+
 # --- Render round-trip fidelity ---
 
 
@@ -511,6 +557,7 @@ def test_render_env_preserves_commented_key_absent_from_values(commented_example
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "TOGETHER_API_KEY",
+        "OPENROUTER_API_KEY",
         "LIVEKIT_API_KEY",
         "AUDIO_STT_OPENAI_API_KEY",
         "AUDIO_TTS_OPENAI_API_KEY",
