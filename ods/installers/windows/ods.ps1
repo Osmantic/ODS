@@ -1735,20 +1735,23 @@ function Update-ComposeFlags {
            overlays, multi-GPU overlays, user-extension overlays, and
            docker-compose.override.yml -- exactly the same stack the installer
            built). This is the safe path.
-        2. Otherwise fall back to a minimal in-process swap: keep every token
-           in the existing .compose-flags that is NOT an extension service -f
-           entry, then re-scan extensions/services for enabled compose.yaml
-           fragments and append them. This preserves all backend and GPU
-           overlays (--env-file, -f docker-compose.base.yml,
-           -f docker-compose.nvidia.yml, etc.) because those paths never
-           match 'extensions/services' and are kept verbatim.
+        2. Otherwise fall back to a minimal in-process swap: apply only the
+           single-service delta (-AddService / -RemoveService) to the existing
+           .compose-flags. Every other token -- --env-file, base compose, GPU
+           overlays, and all other extension entries -- is kept verbatim.
 
-        The fallback intentionally mirrors only what the Windows installer
-        writes: base + GPU overlay + enabled extension compose.yaml entries.
-        It does NOT add GPU-specific per-extension overlays (compose.nvidia.yaml
-        etc.) because those are the canonical resolver's responsibility and
-        we must not silently diverge from it.
+        The fallback must NOT re-scan extensions/services to decide what is
+        enabled: services the installer skipped still carry a plain
+        compose.yaml, so presence on disk does not mean enabled. Only the
+        canonical resolver knows the full plan; the swap just edits one entry.
+        It also does not add GPU-specific per-extension overlays
+        (compose.nvidia.yaml etc.) -- the resolver's responsibility.
     #>
+    param(
+        [string]$AddService = "",
+        [string]$RemoveService = ""
+    )
+
     $flagsFile = Join-Path $InstallDir ".compose-flags"
     if (-not (Test-Path $flagsFile)) {
         Write-AIWarn "No .compose-flags file found -- skipping regeneration."
@@ -1758,6 +1761,25 @@ function Update-ComposeFlags {
     # ── Path 1: delegate to the canonical resolver ────────────────────────────
     $resolverScript = Join-Path (Join-Path $InstallDir "scripts") "resolve-compose-stack.sh"
     $bashExe = Get-Command bash -ErrorAction SilentlyContinue
+    # `Get-Command bash` can resolve to the System32 WSL relay, which exists
+    # whenever WSL is enabled but fails with "execvpe(/bin/bash) failed" when
+    # the only registered distro is docker-desktop. Probe that bash actually
+    # runs before trusting it. The probe must not redirect native stderr to
+    # $null directly: under $ErrorActionPreference = "Stop", PowerShell 5.1
+    # wraps redirected native stderr in a terminating NativeCommandError.
+    if ($bashExe) {
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $null = & $bashExe.Source -c "exit 0" 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-AIWarn "bash at $($bashExe.Source) cannot run scripts (no usable WSL distro?); using minimal swap."
+                $bashExe = $null
+            }
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+    }
     if ((Test-Path $resolverScript) -and $bashExe) {
         # Read GPU_BACKEND and TIER from .env so the resolver uses the same
         # parameters that the installer originally selected.
@@ -1776,11 +1798,20 @@ function Update-ComposeFlags {
         $wslInstallDir = $InstallDir -replace "\\", "/" -replace "^([A-Za-z]):", "/mnt/`$1"
         $wslInstallDir = $wslInstallDir.ToLower() -replace "^/mnt/([a-z])", { "/mnt/$($_.Groups[1].Value.ToLower())" }
 
-        $resolvedFlagsRaw = & $bashExe.Source "$resolverScript" `
-            --script-dir "$InstallDir" `
-            --gpu-backend "$gpuBackend" `
-            --tier "$tier" `
-            2>$null
+        # Same NativeCommandError hazard as the probe above: run the resolver
+        # with a non-terminating preference so stderr noise (or a bash crash)
+        # falls through to the minimal-swap path instead of killing the CLI.
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $resolvedFlagsRaw = & $bashExe.Source "$resolverScript" `
+                --script-dir "$InstallDir" `
+                --gpu-backend "$gpuBackend" `
+                --tier "$tier" `
+                2>$null
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
         if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($resolvedFlagsRaw)) {
             # Prepend --env-file .env if the existing flags had it (the resolver
             # emits only -f flags; the Windows installer adds --env-file separately).
@@ -1798,20 +1829,21 @@ function Update-ComposeFlags {
     }
 
     # ── Path 2: minimal in-process swap (fallback) ────────────────────────────
-    # Keep all tokens that are NOT an extension service -f entry, then
-    # re-append only the enabled compose.yaml fragments.
-    # This preserves --env-file, -f docker-compose.base.yml,
-    # -f docker-compose.nvidia.yml, and any other backend overlays verbatim.
+    # Apply only the requested single-service delta. All other tokens
+    # (--env-file, base compose, GPU overlays, other extension entries) are
+    # kept verbatim -- do NOT rebuild the extension list from a directory
+    # scan: installer-skipped services also have a plain compose.yaml, so
+    # disk state cannot distinguish enabled from never-enabled.
     $existing = (Get-Content $flagsFile -Raw).Trim() -split "\s+"
     $baseFlags = New-Object System.Collections.Generic.List[string]
     $skipNext = $false
     for ($i = 0; $i -lt $existing.Count; $i++) {
         if ($skipNext) { $skipNext = $false; continue }
-        if ($existing[$i] -eq "-f" -and ($i + 1) -lt $existing.Count) {
+        if ($RemoveService -and $existing[$i] -eq "-f" -and ($i + 1) -lt $existing.Count) {
             $nextVal = $existing[$i + 1]
-            # Strip extension service entries (compose.yaml and per-backend
-            # overlays such as compose.nvidia.yaml, compose.local.yaml).
-            if ($nextVal -match "extensions[/\\]services[/\\]") {
+            # Strip only the removed service's entries (compose.yaml and
+            # per-backend overlays such as compose.nvidia.yaml).
+            if ($nextVal -match "extensions[/\\]services[/\\]$([regex]::Escape($RemoveService))[/\\]") {
                 $skipNext = $true   # also drop the path token that follows -f
                 continue
             }
@@ -1819,17 +1851,14 @@ function Update-ComposeFlags {
         [void]$baseFlags.Add($existing[$i])
     }
 
-    # Re-append only compose.yaml (the base fragment) for enabled extensions.
+    # Append the newly enabled service's compose.yaml if not already present.
     # Per-backend and local-mode overlays require the canonical resolver.
-    $extDir = Join-Path (Join-Path $InstallDir "extensions") "services"
-    if (Test-Path $extDir) {
-        Get-ChildItem -Path $extDir -Directory | Sort-Object Name | ForEach-Object {
-            $composePath = Join-Path $_.FullName "compose.yaml"
-            if (Test-Path $composePath) {
-                $relPath = $composePath.Substring($InstallDir.Length + 1) -replace "\\", "/"
-                [void]$baseFlags.Add("-f")
-                [void]$baseFlags.Add($relPath)
-            }
+    if ($AddService) {
+        $relPath = "extensions/services/$AddService/compose.yaml"
+        $composePath = Join-Path $InstallDir ($relPath -replace "/", "\")
+        if ((Test-Path $composePath) -and ($baseFlags -notcontains $relPath)) {
+            [void]$baseFlags.Add("-f")
+            [void]$baseFlags.Add($relPath)
         }
     }
 
@@ -1931,14 +1960,24 @@ function Invoke-Enable {
     $disabledPath = Join-Path $svcDir "compose.yaml.disabled"
 
     if (Test-Path $composePath) {
-        Write-AISuccess "$ServiceId is already enabled."
+        # Installer-skipped services also carry a plain compose.yaml but are
+        # absent from .compose-flags -- "already enabled" would be misleading
+        # and the service would never join the stack. Add the missing entry.
+        $flagsFile = Join-Path $InstallDir ".compose-flags"
+        $relPath = "extensions/services/$ServiceId/compose.yaml"
+        if ((Test-Path $flagsFile) -and ((Get-Content $flagsFile -Raw) -notmatch [regex]::Escape($relPath))) {
+            Update-ComposeFlags -AddService $ServiceId
+            Write-AISuccess "$ServiceId enabled (added to compose stack)."
+        } else {
+            Write-AISuccess "$ServiceId is already enabled."
+        }
         Write-AI "Run '.\ods.ps1 start $ServiceId' to launch it."
         return
     }
 
     if (Test-Path $disabledPath) {
         Rename-Item -LiteralPath $disabledPath -NewName "compose.yaml" -Force
-        Update-ComposeFlags
+        Update-ComposeFlags -AddService $ServiceId
         Write-AISuccess "$ServiceId enabled."
         Write-AI "Run '.\ods.ps1 start $ServiceId' to launch it."
         return
@@ -2011,7 +2050,7 @@ function Invoke-Disable {
 
     # Rename and refresh flags regardless of Docker state.
     Rename-Item -LiteralPath $composePath -NewName "compose.yaml.disabled" -Force
-    Update-ComposeFlags
+    Update-ComposeFlags -RemoveService $ServiceId
     Write-AISuccess "$ServiceId disabled."
     Write-AI "Data preserved. Run '.\ods.ps1 enable $ServiceId' to re-enable."
 }
