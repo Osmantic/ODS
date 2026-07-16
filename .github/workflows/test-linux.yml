@@ -141,6 +141,9 @@ jobs:
       - name: Update Rollback Contract
         run: bash tests/test-update-rollback-contract.sh
 
+      - name: ods-update rollback layered compose regression
+        run: bash tests/test-ods-update-rollback-layered-compose.sh
+
       - name: Support Bundle Evidence Tests
         run: bash tests/test-support-bundle.sh
 
