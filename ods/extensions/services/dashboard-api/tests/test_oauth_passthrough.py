@@ -265,6 +265,22 @@ def test_oauth_callback_only_reflects_relative_return_url(oauth_client):
     assert "javascript:alert" not in unsafe.text
     assert "Back to ODS Talk" not in unsafe.text
 
+    _register_state("google-workspace", "google-workspace")
+    unsafe_double_slash = oauth_client.get(
+        "/api/oauth/callback",
+        params={"code": "fake-code", "state": "google-workspace", "return_url": "//evil.com"},
+    )
+    assert "//evil.com" not in unsafe_double_slash.text
+    assert "Back to ODS Talk" not in unsafe_double_slash.text
+
+    _register_state("google-workspace", "google-workspace")
+    unsafe_backslash = oauth_client.get(
+        "/api/oauth/callback",
+        params={"code": "fake-code", "state": "google-workspace", "return_url": "/\\evil.com"},
+    )
+    assert "evil.com" not in unsafe_backslash.text
+    assert "Back to ODS Talk" not in unsafe_backslash.text
+
 
 # =============================================================================
 # Issue #1790 Secure OAuth State Validation Regression Tests

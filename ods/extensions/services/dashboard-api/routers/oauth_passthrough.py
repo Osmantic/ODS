@@ -203,7 +203,7 @@ def _safe_return_path(return_url: str) -> str | None:
     pass "/talk" when it wants a button back into ODS Talk.
     """
     candidate = (return_url or "").strip()
-    if not candidate.startswith("/") or candidate.startswith("//"):
+    if not candidate.startswith("/") or candidate.startswith(("//", "/\\")):
         return None
     return candidate
 
