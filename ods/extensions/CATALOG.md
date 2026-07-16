@@ -18,7 +18,7 @@ For adding or authoring extensions, see [EXTENSIONS.md](../docs/EXTENSIONS.md) a
 | hermes          | Hermes Agent             | recommended | internal 9119 | all          | Default generalist agent (Nous Research) with tools, memory, and skills. Not host-bound directly. |
 | hermes-proxy    | Hermes Auth Proxy        | recommended | 9120       | all            | Magic-link-gated Caddy proxy in front of Hermes. |
 | ape             | APE (Agent Policy Engine) | optional  | 7890        | all            | Policy/audit layer for autonomous agent tool calls. |
-| brave-search    | Brave Search (Paid API)  | optional   | 8585        | all            | Optional Brave Search API bridge. Requires `BRAVE_SEARCH_API_KEY`. |
+| brave-search    | Brave Search (Paid API)  | optional   | 8585        | all            | Optional Brave Search API bridge. Requires `BRAVE_SEARCH_API_KEY`. Opt-in searxng-compatible mode for consumers like Perplexica. |
 | comfyui         | ComfyUI (Image Gen)      | optional   | 8188        | amd, nvidia    | Image generation UI and API. |
 | ods-proxy     | ODS (Web)       | optional   | 80          | all            | LAN/mDNS web entry with host-based routing for chat, dashboard, API, and Hermes proxy. |
 | embeddings      | TEI (Embeddings)         | optional   | 8090        | all            | Text embeddings service for RAG. |
