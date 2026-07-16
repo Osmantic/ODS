@@ -1,6 +1,7 @@
 """Tests for updates router endpoints."""
 
 import json
+from datetime import datetime
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import httpx
@@ -30,6 +31,7 @@ def test_get_version_authenticated(test_client):
     assert "latest" in data
     assert "update_available" in data
     assert "checked_at" in data
+    datetime.fromisoformat(data["checked_at"])  # valid ISO-8601 (regression: no trailing "Z" after the offset)
 
 
 def test_get_version_with_mock_github(test_client, monkeypatch):
@@ -135,6 +137,7 @@ def test_get_releases_manifest_authenticated(test_client):
     data = resp.json()
     assert "releases" in data
     assert "checked_at" in data
+    datetime.fromisoformat(data["checked_at"])  # valid ISO-8601 (regression: no trailing "Z" after the offset)
     assert isinstance(data["releases"], list)
     assert len(data["releases"]) == 1
     assert data["releases"][0]["version"] == "1.0.0"
@@ -210,6 +213,7 @@ def test_releases_manifest_with_mocked_github(test_client):
     assert data["releases"][0]["version"] == "1.5.0"
     assert data["releases"][1]["prerelease"] is True
     assert "checked_at" in data
+    datetime.fromisoformat(data["checked_at"])  # valid ISO-8601 (regression: no trailing "Z" after the offset)
 
 
 def test_releases_manifest_github_error_fallback(test_client, tmp_path, monkeypatch):
