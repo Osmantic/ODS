@@ -1836,6 +1836,24 @@ $windowsEnvMap = Get-WindowsODSEnvMap -InstallDir $installDir
 $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $installDir `
     -EnvMap $windowsEnvMap `
     -UseLemonade:$useLemonade -GpuBackend $gpuInfo.Backend -CloudMode:$cloudMode
+function Get-WindowsActiveModelSelection {
+    param(
+        [Parameter(Mandatory=$true)][hashtable]$EnvMap,
+        [string]$DefaultGgufFile = "",
+        [string]$DefaultModelName = ""
+    )
+
+    $activeGgufFile = Get-WindowsODSEnvValue -EnvMap $EnvMap -Keys @("GGUF_FILE") -Default $DefaultGgufFile
+    $activeModelName = Get-WindowsODSEnvValue -EnvMap $EnvMap -Keys @("LLM_MODEL") -Default $DefaultModelName
+    if ([string]::IsNullOrWhiteSpace($activeGgufFile)) { $activeGgufFile = $DefaultGgufFile }
+    if ([string]::IsNullOrWhiteSpace($activeModelName)) { $activeModelName = $DefaultModelName }
+    return @{
+        GgufFile = $activeGgufFile
+        LlmModel = $activeModelName
+    }
+}
+$activeModel = Get-WindowsActiveModelSelection -EnvMap $windowsEnvMap `
+    -DefaultGgufFile $tierConfig.GgufFile -DefaultModelName $tierConfig.LlmModel
 $healthChecks = @(
     @{ Name = $llmEndpoint.Name; Url = $llmEndpoint.HealthUrl }
     @{ Name = "Chat UI (Open WebUI)"; Url = "http://localhost:3000" }
@@ -1887,8 +1905,17 @@ foreach ($check in $healthChecks) {
 $llmModelReady = $true
 if (-not $cloudMode) {
     Write-AI "Verifying the LLM can actually serve a completion..."
+    $windowsEnvMap = Get-WindowsODSEnvMap -InstallDir $installDir
+    $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $installDir `
+        -EnvMap $windowsEnvMap `
+        -UseLemonade:$useLemonade -GpuBackend $gpuInfo.Backend -CloudMode:$cloudMode
+    $activeModel = Get-WindowsActiveModelSelection -EnvMap $windowsEnvMap `
+        -DefaultGgufFile $tierConfig.GgufFile -DefaultModelName $tierConfig.LlmModel
+    if (-not [string]::IsNullOrWhiteSpace($activeModel.GgufFile) -and $activeModel.GgufFile -ne $tierConfig.GgufFile) {
+        Write-AI "  Active model changed during install; verifying $($activeModel.GgufFile)."
+    }
     $llmReady = Test-WindowsLlmModelReadiness -Endpoint $llmEndpoint -InstallDir $installDir `
-        -GgufFile $tierConfig.GgufFile -TimeoutSec 120
+        -GgufFile $activeModel.GgufFile -TimeoutSec 120
     if ($llmReady.Ok -and $useLemonade) {
         try {
             $lemonadeModel = [string]$llmReady.ModelId
@@ -2052,14 +2079,20 @@ if ($enableVoice) {
 # ── Auto-configure Perplexica ─────────────────────────────────────────────────
 if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $servicePlan) {
     Write-AI "Configuring Perplexica..."
-    $perplexicaModel = $(if ($tierConfig.GgufFile) {
+    $windowsEnvMap = Get-WindowsODSEnvMap -InstallDir $installDir
+    $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $installDir `
+        -EnvMap $windowsEnvMap `
+        -UseLemonade:$useLemonade -GpuBackend $gpuInfo.Backend -CloudMode:$cloudMode
+    $activeModel = Get-WindowsActiveModelSelection -EnvMap $windowsEnvMap `
+        -DefaultGgufFile $tierConfig.GgufFile -DefaultModelName $tierConfig.LlmModel
+    $perplexicaModel = $(if ($activeModel.GgufFile) {
         if ($useLemonade -and -not [string]::IsNullOrWhiteSpace($lemonadeModel)) {
             $lemonadeModel
         } else {
-            $tierConfig.GgufFile
+            $activeModel.GgufFile
         }
     } else {
-        $tierConfig.LlmModel
+        $activeModel.LlmModel
     })
     $perplexicaBaseUrl = $(if ($useLemonade -or $cloudMode) {
         "http://litellm:4000/v1"
@@ -2217,11 +2250,14 @@ try {
 
 # ── Summary JSON (for CI / automation) ───────────────────────────────────────
 if ($SummaryJsonPath) {
+    $windowsEnvMap = Get-WindowsODSEnvMap -InstallDir $installDir
+    $activeModel = Get-WindowsActiveModelSelection -EnvMap $windowsEnvMap `
+        -DefaultGgufFile $tierConfig.GgufFile -DefaultModelName $tierConfig.LlmModel
     $summary = @{
         version    = $script:ODS_VERSION
         tier       = $selectedTier
         tierName   = $tierConfig.TierName
-        model      = $tierConfig.LlmModel
+        model      = $activeModel.LlmModel
         gpuBackend = $gpuInfo.Backend
         gpuName    = $gpuInfo.Name
         installDir = $installDir

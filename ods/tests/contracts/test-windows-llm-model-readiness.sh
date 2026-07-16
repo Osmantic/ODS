@@ -73,6 +73,28 @@ if grep -Eq 'healthy\s*=\s*\$allHealthy' "$INSTALLER"; then
 else
     fail "install summary must derive healthy from \$allHealthy"
 fi
+if grep -q 'function Get-WindowsActiveModelSelection' "$INSTALLER" \
+    && grep -q 'Get-WindowsODSEnvValue -EnvMap \$EnvMap -Keys @("GGUF_FILE")' "$INSTALLER" \
+    && grep -q 'Get-WindowsODSEnvValue -EnvMap \$EnvMap -Keys @("LLM_MODEL")' "$INSTALLER"; then
+    pass "installer can refresh active GGUF/LLM model from .env"
+else
+    fail "installer must refresh active GGUF/LLM model from .env after background swaps"
+fi
+if awk '/Verifying the LLM can actually serve/{f=1} f&&/-GgufFile/{print; exit}' "$INSTALLER" | grep -q -- '-GgufFile \$activeModel.GgufFile'; then
+    pass "readiness verifies the active env GGUF, not the original tier GGUF"
+else
+    fail "readiness must pass the active env GGUF to Test-WindowsLlmModelReadiness"
+fi
+if awk '/Configuring Perplexica/{f=1} f&&/Set-PerplexicaConfig/{print; exit}' "$INSTALLER" | grep -q '\$perplexicaModel'; then
+    pass "Perplexica configuration uses refreshed active model selection"
+else
+    fail "Perplexica configuration must use refreshed active model selection"
+fi
+if grep -Eq 'model\s*=\s*\$activeModel\.LlmModel' "$INSTALLER"; then
+    pass "summary JSON records the active env model"
+else
+    fail "summary JSON must report the active env model"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Behavioral (pwsh): a registered model whose file is missing fails readiness.
