@@ -112,6 +112,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== CLI user-extension dependency resolution ==="
 	@bash tests/test-cli-user-extension-deps.sh
+	@echo ""
+	@echo "=== session cleanup lifecycle ==="
+	@bash tests/test-session-cleanup.sh
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="
