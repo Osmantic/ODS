@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sentence_transformers import CrossEncoder
@@ -10,20 +11,36 @@ logger = logging.getLogger(__name__)
 
 MAX_DOCUMENTS = int(os.getenv("RERANKER_MAX_DOCUMENTS", "25"))
 
-app = FastAPI(
-    title="ODS Reranker",
-    description="Cross-encoder reranking for RAG pipelines",
-    version="1.0.0"
-)
-
 MODEL_NAME = os.getenv(
     "RERANKER_MODEL",
     "BAAI/bge-reranker-base"
 )
 
-logger.info(f"Loading reranker model: {MODEL_NAME}")
-model = CrossEncoder(MODEL_NAME)
-logger.info("Reranker model loaded successfully")
+
+def get_model() -> CrossEncoder:
+    """Load and return the reranker model. Injectable for testing."""
+    logger.info(f"Loading reranker model: {MODEL_NAME}")
+    m = CrossEncoder(MODEL_NAME)
+    logger.info("Reranker model loaded successfully")
+    return m
+
+
+model: CrossEncoder = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global model
+    model = get_model()
+    yield
+
+
+app = FastAPI(
+    title="ODS Reranker",
+    description="Cross-encoder reranking for RAG pipelines",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 
 class RerankRequest(BaseModel):
@@ -90,6 +107,16 @@ def rerank(request: RerankRequest):
 
         return RerankResponse(results=results, model=MODEL_NAME)
 
+    except ValueError as e:
+        logger.error(f"Reranking input error: {e}")
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid input format"
+        )
+
     except Exception as e:
         logger.error(f"Reranking failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Internal reranking error"
+        )

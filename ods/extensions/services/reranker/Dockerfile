@@ -10,7 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+ARG DEFAULT_MODEL=BAAI/bge-reranker-base
+ENV RERANKER_MODEL=BAAI/bge-reranker-base
+RUN python -c "from sentence_transformers import CrossEncoder; import os; CrossEncoder(os.environ['RERANKER_MODEL'])"
 
 COPY main.py .
 
