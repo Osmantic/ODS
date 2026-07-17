@@ -36,10 +36,10 @@ echo "OMNIGENT_ACCOUNTS_COOKIE_SECRET=$(openssl rand -hex 32)" >> .env
 ods restart omnigent
 ```
 
-Open `http://localhost:6767`. The first-boot admin password is written
-to `data/omnigent/admin-credentials` (also printed in
-`ods logs omnigent`). Auth is on by default; the port is bound to
-`127.0.0.1` like every ODS service.
+Open `http://localhost:6767` and create the first account — Omnigent's
+accounts flow is first-user-is-admin (verified against `v0.5.1`; no
+pre-generated password exists). Auth is on by default; the port is
+bound to `127.0.0.1` like every ODS service.
 
 ## 2. Install a runner on the host
 
@@ -132,5 +132,5 @@ Then smoke-check:
 ## State & reset
 
 Everything lives in `data/omnigent/` — SQLite DB (`artifacts/chat.db`),
-artifacts, admin credentials. `ods disable omnigent` stops the service;
+artifacts, account data. `ods disable omnigent` stops the service;
 deleting `data/omnigent/` is a factory reset.

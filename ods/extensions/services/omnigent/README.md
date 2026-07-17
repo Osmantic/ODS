@@ -21,7 +21,7 @@ ods enable omnigent
 # generate a stable session-cookie secret (logins survive restarts):
 echo "OMNIGENT_ACCOUNTS_COOKIE_SECRET=$(openssl rand -hex 32)" >> .env
 ods restart omnigent
-# admin password: data/omnigent/admin-credentials
+# then open http://localhost:6767 — first account created becomes admin
 ```
 
 Then install a runner on the host and point its harness at the local
@@ -46,5 +46,5 @@ treat Omnigent-launched agents accordingly. Tracked in Osmantic/ODS#1867.
 
 ## State
 
-All state lives in `data/omnigent/` (SQLite DB, artifacts, admin
-credentials). Remove the directory for a factory reset.
+All state lives in `data/omnigent/` (SQLite DB, artifacts, account
+data). Remove the directory for a factory reset.
