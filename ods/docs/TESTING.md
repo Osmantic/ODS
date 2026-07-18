@@ -1,5 +1,29 @@
 # Multi-Distro Testing Guide
 
+## 1Password governance lane
+
+Changes to 1Password, service-account, provider environment, MCP credential, or
+scope policy are high risk even when they are configuration-only. Validate the
+repository contract first:
+
+```sh
+mise exec -- ajv validate --spec=draft2020 \
+  -s ods/config/onepassword-scope.schema.json \
+  -d ods/config/onepassword-scope.json
+git diff --check
+```
+
+Then run the host-level identity, exact-vault, mode-0600, reference grammar,
+shell startup, provider isolation, MCP handshake, CLI/SDK/API, and secret-scan
+gates documented in
+[ONEPASSWORD-SERVICE-ACCOUNT.md](ONEPASSWORD-SERVICE-ACCOUNT.md). Do not run a
+test that downloads its own tools; provision the pinned dependency first.
+
+For a docs-and-schema-only change, `make -C ods lint` plus the commands above is
+the minimum repository lane. Any runtime, installer, workflow, or service change
+also runs the corresponding focused and release-grade lanes below. Record every
+skipped, blocked, or pre-existing failure explicitly.
+
 ODS supports multiple Linux distributions. This guide covers how to test across distros efficiently.
 
 ## Real Hardware Fleet Validation

@@ -37,6 +37,7 @@ obvious to contributors, fork operators, and auditors.
 | Network binding/proxy routes | High | Affects LAN exposure and security posture | Network exposure contracts, auth checks, owner-card/Talk lane when enabled |
 | Dependency updates | Medium/High | Risk depends on runtime surface | Package tests plus service startup smoke; release-grade if installer/runtime wiring changes |
 | CI-only workflow changes | Low/Medium | Does not affect users but can hide failures | Workflow review and green checks |
+| 1Password, service-account, secret-reference, MCP credential, or provider environment policy | High | Can expose credentials, select the wrong principal/vault, introduce interactive authentication, or affect every developer process | Scope-schema validation, identity and exact-vault checks, child-process isolation probes, MCP handshake, provider smoke tests, secret scan, shell matrix, cited provenance, rotation/rollback review |
 
 ## Release-Grade Trigger
 
@@ -53,6 +54,8 @@ affect:
 - Hermes or capability probes;
 - host mutation;
 - LAN/proxy exposure.
+- service-account authentication, secret injection, provider environment
+  boundaries, or credential bootstrap/rotation.
 
 When a full fleet run is not practical, record the narrower validation and the
 reason it is enough.
