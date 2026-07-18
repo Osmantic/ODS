@@ -88,6 +88,8 @@ smoke: ## Run platform smoke tests
 	@bash tests/smoke/linux-nvidia.sh
 	@bash tests/smoke/wsl-logic.sh
 	@bash tests/smoke/macos-dispatch.sh
+	@bash tests/smoke/mobile-dispatch.sh
+	@bash tests/smoke/android-lite.sh
 	@echo "All smoke tests passed."
 
 simulate: ## Run installer simulation harness

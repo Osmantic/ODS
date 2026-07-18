@@ -1,0 +1,298 @@
+#!/bin/bash
+# Purpose: Android Lite CLI — status / chat / serve / bench / models for the
+#   Termux CPU runtime installed by install-mobile.sh.
+# Expects: $ODS_MOBILE_HOME (default ~/.ods-mobile) created by the installer.
+#   jq for catalog commands. Read-only commands also work off-device (CI).
+# Provides: user-facing wrapper around llama-cli / llama-server / llama-bench.
+# Modder notes: this file is installed VERBATIM to $PREFIX/bin/ods-mobile —
+#   keep it static and self-contained. Model download/verify logic is sourced
+#   from $ODS_MOBILE_HOME/lib/model-pull.sh (shared with the installer);
+#   do not duplicate it here.
+
+set -euo pipefail
+
+ODS_MOBILE_VERSION="0.1.0-experimental"
+
+ODS_MOBILE_HOME="${ODS_MOBILE_HOME:-$HOME/.ods-mobile}"
+ENV_FILE="$ODS_MOBILE_HOME/env"
+CATALOG="$ODS_MOBILE_HOME/config/mobile-models.json"
+BIN_DIR="$ODS_MOBILE_HOME/bin"
+MODELS_DIR="$ODS_MOBILE_HOME/models"
+PULL_LIB="$ODS_MOBILE_HOME/lib/model-pull.sh"
+
+# Conservative defaults; env file (written by the installer) overrides them,
+# and per-command flags override both. Context is the primary Android memory
+# control — keep it visible.
+ODS_MOBILE_MODEL=""
+ODS_MOBILE_CTX=4096
+ODS_MOBILE_HOST=127.0.0.1
+ODS_MOBILE_PORT=8080
+ODS_MOBILE_LLAMA_TAG=""
+ODS_MOBILE_LLAMA_COMMIT=""
+
+if [[ -f "$ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+fi
+
+usage() {
+    cat <<EOF
+ods-mobile $ODS_MOBILE_VERSION — experimental ODS Android Lite (Termux, CPU)
+
+Usage: ods-mobile <command> [options]
+
+Commands:
+  status                       Runtime, models, and config overview
+  chat   [--model ID] [--ctx N]
+                               Interactive chat (llama-cli conversation mode)
+  serve  [--model ID] [--ctx N] [--host H] [--port P]
+                               OpenAI-compatible API server (default 127.0.0.1:8080)
+  bench  [--model ID] [--ctx N]
+                               llama-bench + provenance template for honest numbers
+  models list                  Show catalog and download state
+  models pull <id>             Download + sha256-verify a catalog model
+  models use  <id>             Set the default model
+  models rm   <id>             Delete a downloaded model file (asks first)
+  help | version
+
+Context (--ctx) is the main memory knob on phones: lower it if Android kills
+the process, raise it (up to the model's context_max) if you have headroom.
+EOF
+}
+
+die() {
+    echo "[ERROR] $*" >&2
+    exit 1
+}
+
+require_runtime() {
+    [[ -d "$ODS_MOBILE_HOME" ]] || die "$ODS_MOBILE_HOME not found — run the Android Lite installer first."
+}
+
+require_bin() {
+    local bin="$1"
+    [[ -x "$BIN_DIR/$bin" ]] || die "$BIN_DIR/$bin missing — re-run the installer (or --rebuild)."
+}
+
+catalog_field() {
+    local model_id="$1" field="$2"
+    jq -re --arg id "$model_id" --arg f "$field" \
+        '.models[] | select(.id == $id) | .[$f]' "$CATALOG"
+}
+
+resolve_model_path() {
+    local model_id="$1" gguf_file
+    gguf_file="$(catalog_field "$model_id" gguf_file)" \
+        || die "Model '$model_id' is not in the catalog ($CATALOG)."
+    MODEL_PATH="$MODELS_DIR/$gguf_file"
+    [[ -f "$MODEL_PATH" ]] \
+        || die "Model '$model_id' is not downloaded. Run: ods-mobile models pull $model_id"
+}
+
+# Sampling defaults ride in the catalog per model (gen_defaults), not in code.
+# Emits flags on stdout; emits nothing when gen_defaults is null.
+gen_flags() {
+    local model_id="$1"
+    jq -r --arg id "$model_id" '
+        .models[] | select(.id == $id) | .gen_defaults
+        | if . == null then ""
+          else "--temp \(.temp) --top-k \(.top_k) --top-p \(.top_p)"
+          end' "$CATALOG"
+}
+
+parse_run_flags() {
+    RUN_MODEL="$ODS_MOBILE_MODEL"
+    RUN_CTX="$ODS_MOBILE_CTX"
+    RUN_HOST="$ODS_MOBILE_HOST"
+    RUN_PORT="$ODS_MOBILE_PORT"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --model) shift; RUN_MODEL="${1:?--model requires an id}" ;;
+            --ctx)   shift; RUN_CTX="${1:?--ctx requires a number}" ;;
+            --host)  shift; RUN_HOST="${1:?--host requires an address}" ;;
+            --port)  shift; RUN_PORT="${1:?--port requires a number}" ;;
+            *) die "Unknown option: $1" ;;
+        esac
+        shift
+    done
+    [[ -n "$RUN_MODEL" ]] || die "No model configured — run: ods-mobile models use <id>"
+}
+
+cmd_status() {
+    require_runtime
+    echo "ods-mobile $ODS_MOBILE_VERSION (experimental, Termux CPU)"
+    echo ""
+    echo "runtime:"
+    echo "  home:      $ODS_MOBILE_HOME"
+    echo "  llama.cpp: ${ODS_MOBILE_LLAMA_TAG:-unknown} (${ODS_MOBILE_LLAMA_COMMIT:-unknown})"
+    local bin
+    for bin in llama-cli llama-server llama-bench; do
+        if [[ -x "$BIN_DIR/$bin" ]]; then
+            echo "  $bin: OK"
+        else
+            echo "  $bin: MISSING"
+        fi
+    done
+    echo ""
+    echo "config:"
+    echo "  model: ${ODS_MOBILE_MODEL:-unset}"
+    echo "  ctx:   $ODS_MOBILE_CTX"
+    echo "  serve: $ODS_MOBILE_HOST:$ODS_MOBILE_PORT"
+    echo ""
+    echo "models ($MODELS_DIR):"
+    local found=false f
+    if [[ -d "$MODELS_DIR" ]]; then
+        for f in "$MODELS_DIR"/*.gguf; do
+            [[ -e "$f" ]] || continue
+            found=true
+            echo "  $(basename "$f")  $(( $(stat -c %s "$f") / 1024 / 1024 )) MB"
+        done
+    fi
+    $found || echo "  (none downloaded)"
+    if [[ -r /proc/meminfo ]]; then
+        echo ""
+        echo "device:"
+        echo "  RAM: $(awk '/^MemTotal:/ {printf "%.1f GB", $2/1024/1024}' /proc/meminfo)"
+        echo "  free disk: $(df -Pk "$HOME" | awk 'NR==2 {printf "%.1f GB", $4/1024/1024}')"
+    fi
+}
+
+cmd_chat() {
+    require_runtime
+    require_bin llama-cli
+    parse_run_flags "$@"
+    resolve_model_path "$RUN_MODEL"
+    local flags
+    flags="$(gen_flags "$RUN_MODEL")"
+    echo "[INFO] chat: $RUN_MODEL ctx=$RUN_CTX ${flags:+($flags)}"
+    # shellcheck disable=SC2086
+    exec "$BIN_DIR/llama-cli" -m "$MODEL_PATH" -c "$RUN_CTX" -cnv $flags
+}
+
+cmd_serve() {
+    require_runtime
+    require_bin llama-server
+    parse_run_flags "$@"
+    resolve_model_path "$RUN_MODEL"
+    local flags
+    flags="$(gen_flags "$RUN_MODEL")"
+    echo "[INFO] serve: $RUN_MODEL ctx=$RUN_CTX on http://$RUN_HOST:$RUN_PORT"
+    if [[ "$RUN_HOST" != "127.0.0.1" ]]; then
+        echo "[WARN] Binding beyond loopback exposes an unauthenticated LLM API"
+        echo "[WARN] to your network. Only do this on networks you trust."
+    fi
+    echo "[INFO] Long runs: hold a wake lock first (termux-wake-lock)."
+    # shellcheck disable=SC2086
+    exec "$BIN_DIR/llama-server" -m "$MODEL_PATH" -c "$RUN_CTX" \
+        --host "$RUN_HOST" --port "$RUN_PORT" $flags
+}
+
+cmd_bench() {
+    require_runtime
+    require_bin llama-bench
+    parse_run_flags "$@"
+    resolve_model_path "$RUN_MODEL"
+    local device="unknown" sha
+    if command -v getprop >/dev/null 2>&1; then
+        device="$(getprop ro.product.model) ($(getprop ro.product.board), Android $(getprop ro.build.version.release))"
+    fi
+    sha="$(catalog_field "$RUN_MODEL" gguf_sha256)"
+    cat <<EOF
+━━━ benchmark provenance — record ALL fields before quoting any number ━━━
+  device:        $device
+  SoC / RAM:     <fill in: SoC, RAM GB>
+  backend:       CPU (llama.cpp, no GPU offload)
+  llama.cpp:     ${ODS_MOBILE_LLAMA_TAG:-unknown} (${ODS_MOBILE_LLAMA_COMMIT:-unknown})
+  model:         $(basename "$MODEL_PATH")
+  sha256:        $sha
+  context depth: $RUN_CTX (passed to llama-bench as -d/--n-depth; use --ctx 0
+                 for the community-standard zero-depth run)
+  thermal state: <fill in: cold / soaked; screen on/off; charging?>
+  run length:    <fill in: n runs, tokens per run>
+A number without every field above is not a result. Do not publish it.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOF
+    # llama-bench at the pinned tag has no -c/--ctx-size; -d sets the KV/context
+    # depth the pp/tg tests run at, which is what "context" means for a phone.
+    exec "$BIN_DIR/llama-bench" -m "$MODEL_PATH" -d "$RUN_CTX"
+}
+
+cmd_models() {
+    require_runtime
+    [[ -f "$CATALOG" ]] || die "Catalog missing: $CATALOG — re-run the installer."
+    local sub="${1:-list}"
+    case "$sub" in
+        list)
+            local id name file marker state
+            while IFS=$'\t' read -r id name file; do
+                marker=" "
+                [[ "$id" == "$ODS_MOBILE_MODEL" ]] && marker="*"
+                state="not downloaded"
+                [[ -f "$MODELS_DIR/$file" ]] && state="downloaded"
+                printf '%s %-18s %-24s [%s]\n' "$marker" "$id" "$name" "$state"
+            done < <(jq -r '.models[] | [.id, .name, .gguf_file] | @tsv' "$CATALOG")
+            echo ""
+            echo "(* = default; switch with: ods-mobile models use <id>)"
+            ;;
+        pull)
+            local model_id="${2:?usage: ods-mobile models pull <id>}"
+            [[ -f "$PULL_LIB" ]] || die "Missing $PULL_LIB — re-run the installer."
+            # shellcheck disable=SC1090
+            source "$PULL_LIB"
+            mkdir -p "$MODELS_DIR"
+            ods_mobile_pull_model "$CATALOG" "$model_id" "$MODELS_DIR"
+            ;;
+        use)
+            local model_id="${2:?usage: ods-mobile models use <id>}"
+            catalog_field "$model_id" id >/dev/null \
+                || die "Model '$model_id' is not in the catalog."
+            local tmp
+            tmp="$(mktemp)"
+            if [[ -f "$ENV_FILE" ]]; then
+                grep -v '^ODS_MOBILE_MODEL=' "$ENV_FILE" > "$tmp"
+            fi
+            echo "ODS_MOBILE_MODEL=$model_id" >> "$tmp"
+            mv "$tmp" "$ENV_FILE"
+            echo "[INFO] Default model set to: $model_id"
+            ;;
+        rm)
+            local model_id="${2:?usage: ods-mobile models rm <id>}" gguf_file target reply
+            gguf_file="$(catalog_field "$model_id" gguf_file)" \
+                || die "Model '$model_id' is not in the catalog."
+            target="$MODELS_DIR/$gguf_file"
+            [[ -f "$target" ]] || die "Not downloaded: $target"
+            read -r -p "Delete $target? [y/N] " reply
+            case "$reply" in
+                y|Y|yes|YES)
+                    rm -f "$target"
+                    echo "[INFO] Deleted $target"
+                    ;;
+                *)
+                    echo "[INFO] Kept $target"
+                    ;;
+            esac
+            ;;
+        *)
+            die "Unknown models subcommand: $sub (list|pull|use|rm)"
+            ;;
+    esac
+}
+
+cmd="${1:-help}"
+if [[ $# -gt 0 ]]; then
+    shift
+fi
+
+case "$cmd" in
+    status) cmd_status "$@" ;;
+    chat) cmd_chat "$@" ;;
+    serve) cmd_serve "$@" ;;
+    bench) cmd_bench "$@" ;;
+    models) cmd_models "$@" ;;
+    version|--version|-v) echo "ods-mobile $ODS_MOBILE_VERSION (llama.cpp ${ODS_MOBILE_LLAMA_TAG:-not installed})" ;;
+    help|--help|-h) usage ;;
+    *)
+        usage >&2
+        die "Unknown command: $cmd"
+        ;;
+esac
