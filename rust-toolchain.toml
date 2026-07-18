@@ -1,0 +1,7 @@
+# Portable Rust pin for ODS (Mode A: rustup + rust-toolchain.toml).
+# mise owns tasks only; do not add a competing [tools].rust pin here.
+[toolchain]
+channel = "1.97.1"
+profile = "default"
+components = ["rustfmt", "clippy", "rust-src"]
+targets = ["aarch64-apple-darwin", "wasm32-unknown-unknown"]
