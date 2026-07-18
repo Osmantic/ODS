@@ -43,7 +43,19 @@ bound to `127.0.0.1` like every ODS service.
 
 ## 2. Install a runner on the host
 
-Any one of:
+Host prerequisites (verified on a clean macOS install):
+
+- **tmux** — Omnigent spawns native-terminal harnesses inside tmux;
+  without it sessions fail with "Native OpenCode terminal failed to
+  start". `brew install tmux` (macOS) / distro package (Linux).
+- **OpenCode version pin** — Omnigent v0.5.1 requires OpenCode
+  `>=1.17.7,<1.18.0`. ODS's own opencode service may install a newer
+  CLI; if the versions clash, install a pinned copy for the runner
+  (`npm i -g opencode-ai@1.17.7`) and make sure it resolves first on
+  the PATH of the shell that runs `omnigent host`. Re-check this pin
+  whenever you bump `OMNIGENT_IMAGE_TAG`.
+
+Install the runner CLI, any one of:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/omnigent-ai/omnigent/main/scripts/install_oss.sh | sh
@@ -58,6 +70,10 @@ Register the host as a runner against the local server:
 ```bash
 omnigent host --server http://localhost:6767
 ```
+
+Keep this daemon running (its own terminal, tmux window, or a service
+manager) — if it exits, session launches fail with
+`(504): host did not respond to launch request`.
 
 or run a single agent session against it:
 
