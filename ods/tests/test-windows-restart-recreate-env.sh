@@ -29,10 +29,21 @@ else
     fail "single-service restart must use guarded docker compose up -d --force-recreate <service>"
 fi
 
-if grep -qF -- '-ComposeArgs @("up", "-d", "--force-recreate", "--no-build", "--pull", "never")' <<<"$restart_block"; then
-    pass "all-service restart recreates containers with current .env"
+if grep -qF -- '$restartTargets = Get-ODSRunningComposeServices -ComposeFlags $flags' <<<"$restart_block" &&
+   grep -qF -- '$composeArgs = @("up", "-d", "--force-recreate", "--no-build", "--pull", "never")' <<<"$restart_block" &&
+   grep -qF -- '$composeArgs += $restartTargets' <<<"$restart_block" &&
+   grep -qF -- '-ComposeArgs $composeArgs' <<<"$restart_block"; then
+    pass "all-service restart recreates the running compose services with current .env"
 else
-    fail "all-service restart must use guarded docker compose up -d --force-recreate"
+    fail "all-service restart must target running compose services with guarded docker compose up -d --force-recreate"
+fi
+
+if grep -qF -- 'function Get-ODSRunningComposeServices' "$ODS_PS1" &&
+   grep -qF -- 'ps --services --filter "status=running"' "$ODS_PS1" &&
+   grep -qF -- 'label=com.docker.compose.project=ods' "$ODS_PS1"; then
+    pass "all-service restart discovers running services before force-recreate"
+else
+    fail "all-service restart must discover running services and avoid disabled compose services"
 fi
 
 if grep -qF -- '-ComposeArgs @("restart"' <<<"$restart_block"; then

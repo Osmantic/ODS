@@ -413,6 +413,32 @@ function Test-ODSComposeServiceAvailable {
     }
 }
 
+function Get-ODSRunningComposeServices {
+    param([string[]]$ComposeFlags)
+
+    try {
+        $services = & docker compose @ComposeFlags ps --services --filter "status=running" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $services) {
+            return @($services |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Sort-Object -Unique)
+        }
+    } catch { }
+
+    try {
+        $services = & docker ps `
+            --filter "label=com.docker.compose.project=ods" `
+            --format "{{.Label ""com.docker.compose.service""}}" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $services) {
+            return @($services |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Sort-Object -Unique)
+        }
+    } catch { }
+
+    return @()
+}
+
 function Write-ODSMissingComposeServiceHint {
     param(
         [string[]]$ComposeFlags,
@@ -1501,8 +1527,15 @@ function Invoke-Restart {
                 Invoke-HermesSoulRefresh
             }
             Write-AI "Restarting all services..."
+            $restartTargets = Get-ODSRunningComposeServices -ComposeFlags $flags
+            $composeArgs = @("up", "-d", "--force-recreate", "--no-build", "--pull", "never")
+            if ($restartTargets.Count -gt 0) {
+                $composeArgs += $restartTargets
+            } else {
+                Write-AIWarn "No running compose services found; falling back to full stack restart."
+            }
             $composeExit = Invoke-ODSDockerCompose -InstallDir $InstallDir -ComposeFlags $flags `
-                -ComposeArgs @("up", "-d", "--force-recreate", "--no-build", "--pull", "never")
+                -ComposeArgs $composeArgs
             if ($composeExit -ne 0) {
                 Write-AIError "docker compose up --force-recreate failed (exit code: $composeExit)"
                 Write-ODSComposeDiagnostics -InstallDir $InstallDir -ComposeFlags $flags -Phase "ods.ps1 restart (all)"
