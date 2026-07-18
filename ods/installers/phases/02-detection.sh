@@ -115,8 +115,16 @@ else
 fi
 
 # Disk Detection
-DISK_AVAIL=$(df -BG "$HOME" | tail -1 | awk '{print $4}' | tr -d 'G')
-log "Available disk: ${DISK_AVAIL}GB"
+# Check free space on the filesystem where ODS will actually be installed.
+# INSTALL_DIR may not exist yet, so walk up to the nearest existing ancestor
+# so df always receives a valid path. Falls back to $HOME if nothing resolves.
+_disk_probe_path="${INSTALL_DIR:-$HOME/ods}"
+while [[ -n "$_disk_probe_path" ]] && [[ ! -e "$_disk_probe_path" ]]; do
+    _disk_probe_path="$(dirname "$_disk_probe_path")"
+done
+_disk_probe_path="${_disk_probe_path:-$HOME}"
+DISK_AVAIL=$(df -BG "$_disk_probe_path" | tail -1 | awk '{print $4}' | tr -d 'G')
+log "Available disk: ${DISK_AVAIL}GB (on filesystem: $_disk_probe_path)"
 
 # GPU Detection
 if [[ "$GPU_BACKEND_FORCED_CPU" == "true" ]]; then

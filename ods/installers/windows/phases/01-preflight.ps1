@@ -292,7 +292,7 @@ $_composeBase = Join-Path $sourceRoot "docker-compose.base.yml"
 if (-not (Test-Path $_composeBase)) {
     Write-AIError "docker-compose.base.yml not found in: $sourceRoot"
     Write-AI "  Make sure you are running this installer from the ODS clone:"
-    Write-AI "  git clone https://github.com/Light-Heart-Labs/ODS.git"
+    Write-AI "  git clone https://github.com/Osmantic/ODS.git"
     Write-AI "  cd ODS && .\install.ps1"
     exit 1
 }

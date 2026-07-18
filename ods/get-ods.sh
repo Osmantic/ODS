@@ -1,6 +1,6 @@
 #!/bin/bash
 # ODS Bootstrap Installer
-# curl -fsSL https://raw.githubusercontent.com/Light-Heart-Labs/ODS/main/ods/get-ods.sh | bash
+# curl -fsSL https://install.osmantic.com/ods.sh | bash
 #
 # Detects OS, clones repo, runs installer.
 
@@ -29,15 +29,39 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-REPO_URL="${ODS_REPO_URL:-https://github.com/Light-Heart-Labs/ODS.git}"
+REPO_URL="${ODS_REPO_URL:-https://github.com/Osmantic/ODS.git}"
 INSTALL_DIR="${ODS_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/ods}"
-LEGACY_DREAMSERVER_DIR="${DREAMSERVER_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/dream-server}"
+PRE_ODS_INSTALL_DIR="${ODS_LEGACY_INSTALL_DIR:-}"
 ODS_REF="${ODS_REF:-${ODS_BOOTSTRAP_REF:-}}"
+BOOTSTRAP_FORCE=false
+BOOTSTRAP_NON_INTERACTIVE=false
+
+for _arg in "$@"; do
+    case "$_arg" in
+        --force) BOOTSTRAP_FORCE=true ;;
+        --non-interactive) BOOTSTRAP_NON_INTERACTIVE=true ;;
+    esac
+done
 
 log()     { echo -e "${CYAN}[ods]${NC} $1"; }
 success() { echo -e "${GREEN}[  ok ]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[warn ]${NC} $1"; }
 error()   { echo -e "${RED}[error]${NC} $1"; exit 1; }
+
+remove_install_dir() {
+    local target_dir="$1"
+
+    if rm -rf -- "$target_dir" 2>/dev/null; then
+        return 0
+    fi
+
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        warn "Normal removal failed; retrying with sudo for root-owned container data."
+        sudo -n rm -rf -- "$target_dir" && return 0
+    fi
+
+    return 1
+}
 
 is_truthy() {
     case "${1:-}" in
@@ -46,30 +70,89 @@ is_truthy() {
     esac
 }
 
-refuse_legacy_dreamserver_install() {
-    is_truthy "${ODS_ALLOW_DREAMSERVER_PARALLEL:-}" && return 0
+_ods_is_related_install_dir() {
+    local candidate="$1"
+    local compose_file=""
 
-    local findings=()
-    if [[ -d "$LEGACY_DREAMSERVER_DIR" ]] && {
-        [[ -f "$LEGACY_DREAMSERVER_DIR/.env" ]] ||
-        [[ -f "$LEGACY_DREAMSERVER_DIR/dream-cli" ]] ||
-        [[ -f "$LEGACY_DREAMSERVER_DIR/docker-compose.yml" ]] ||
-        [[ -d "$LEGACY_DREAMSERVER_DIR/data" ]]
-    }; then
-        findings+=("install directory: $LEGACY_DREAMSERVER_DIR")
+    [[ -d "$candidate" ]] || return 1
+    [[ -f "$candidate/.env" || -d "$candidate/data" ]] || return 1
+
+    if [[ -f "$candidate/docker-compose.base.yml" ]]; then
+        compose_file="$candidate/docker-compose.base.yml"
+    elif [[ -f "$candidate/docker-compose.yml" ]]; then
+        compose_file="$candidate/docker-compose.yml"
+    else
+        return 1
     fi
 
-    if command -v docker >/dev/null 2>&1; then
-        local legacy_containers
-        legacy_containers=$(docker ps -a --filter "name=^/dream-" --format '{{.Names}}' 2>/dev/null || true)
-        [[ -n "$legacy_containers" ]] && findings+=("containers: $(echo "$legacy_containers" | tr '\n' ' ')")
+    grep -Eq '^[[:space:]]{2}open-webui:[[:space:]]*$' "$compose_file" || return 1
+    grep -Eq '^[[:space:]]{2}dashboard-api:[[:space:]]*$' "$compose_file" || return 1
+    grep -Eq '^[[:space:]]{2}(llama-server|litellm):[[:space:]]*$' "$compose_file"
+}
+
+_ods_related_compose_containers() {
+    command -v docker >/dev/null 2>&1 || return 0
+
+    docker ps -a \
+        --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}' \
+        2>/dev/null |
+        awk -F '|' '
+            $2 != "" {
+                project = $2
+                if (names[project] == "") {
+                    names[project] = $1
+                } else {
+                    names[project] = names[project] " " $1
+                }
+                if ($3 == "open-webui") open_webui[project] = 1
+                if ($3 == "dashboard-api") dashboard_api[project] = 1
+                if ($3 == "llama-server" || $3 == "litellm") inference[project] = 1
+            }
+            END {
+                for (project in names) {
+                    if (open_webui[project] && dashboard_api[project] && inference[project]) {
+                        print names[project]
+                    }
+                }
+            }
+        '
+}
+
+refuse_legacy_install() {
+    is_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}" && return 0
+
+    local findings=()
+    local candidate=""
+    local related_containers=""
+
+    if [[ -n "$PRE_ODS_INSTALL_DIR" && -d "$PRE_ODS_INSTALL_DIR" ]] && {
+        [[ -f "$PRE_ODS_INSTALL_DIR/.env" ]] ||
+        [[ -f "$PRE_ODS_INSTALL_DIR/docker-compose.yml" ]] ||
+        [[ -d "$PRE_ODS_INSTALL_DIR/data" ]]
+    }; then
+        findings+=("install directory: $PRE_ODS_INSTALL_DIR")
+    fi
+
+    if [[ -d "$ODS_BOOTSTRAP_ROOT" ]]; then
+        while IFS= read -r -d '' candidate; do
+            [[ "${candidate%/}" == "${INSTALL_DIR%/}" ]] && continue
+            [[ -n "$PRE_ODS_INSTALL_DIR" && "${candidate%/}" == "${PRE_ODS_INSTALL_DIR%/}" ]] && continue
+            if _ods_is_related_install_dir "$candidate"; then
+                findings+=("related install directory: $candidate")
+            fi
+        done < <(find "$ODS_BOOTSTRAP_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 2>/dev/null)
+    fi
+
+    related_containers="$(_ods_related_compose_containers || true)"
+    if [[ -n "$related_containers" ]]; then
+        findings+=("related Compose containers: $(printf '%s\n' "$related_containers" | tr '\n' ' ')")
     fi
 
     if (( ${#findings[@]} > 0 )); then
         echo ""
-        warn "Existing DreamServer install detected before first ODS install."
+        warn "Existing related install detected before first ODS install."
         echo ""
-        echo "ODS uses the same default ports and service roles as DreamServer."
+        echo "ODS uses the same default ports and service roles as the older stack."
         echo "Resolve the old install intentionally before installing ODS, or run in"
         echo "parallel only after choosing separate ports and an explicit install dir."
         echo ""
@@ -77,7 +160,7 @@ refuse_legacy_dreamserver_install() {
         printf '  - %s\n' "${findings[@]}"
         echo ""
         echo "To proceed after you have isolated the old stack:"
-        echo "  ODS_ALLOW_DREAMSERVER_PARALLEL=1 ODS_INSTALL_DIR=\"$INSTALL_DIR\" bash get-ods.sh"
+        echo "  ODS_ALLOW_LEGACY_PARALLEL=1 ODS_INSTALL_DIR=\"$INSTALL_DIR\" bash get-ods.sh"
         echo ""
         exit 1
     fi
@@ -243,19 +326,27 @@ if [[ -d "$INSTALL_DIR" ]]; then
     else
         warn "Directory exists but incomplete install at $INSTALL_DIR"
         echo ""
-        echo -n "  Remove and reinstall? [y/N] "
-        read -r response
-        if [[ "$response" =~ ^[Yy]$ ]]; then
-            rm -rf "$INSTALL_DIR"
-        else
-            echo "  Aborting. Remove manually with: rm -rf $INSTALL_DIR"
+        if [[ "$BOOTSTRAP_FORCE" == "true" ]]; then
+            echo "  Removing incomplete install because --force was provided."
+            remove_install_dir "$INSTALL_DIR" || error "Failed to remove incomplete install at $INSTALL_DIR. Try: sudo rm -rf \"$INSTALL_DIR\""
+        elif [[ "$BOOTSTRAP_NON_INTERACTIVE" == "true" ]]; then
+            echo "  Aborting. Re-run with --force to remove it automatically, or remove manually with: rm -rf $INSTALL_DIR"
             exit 1
+        else
+            echo -n "  Remove and reinstall? [y/N] "
+            read -r response
+            if [[ "$response" =~ ^[Yy]$ ]]; then
+                remove_install_dir "$INSTALL_DIR" || error "Failed to remove incomplete install at $INSTALL_DIR. Try: sudo rm -rf \"$INSTALL_DIR\""
+            else
+                echo "  Aborting. Remove manually with: rm -rf $INSTALL_DIR"
+                exit 1
+            fi
         fi
     fi
 fi
 
 # ── Clone repository ──────────────────────────────
-refuse_legacy_dreamserver_install
+refuse_legacy_install
 
 log "Cloning ODS..."
 if [[ -n "$ODS_REF" ]]; then

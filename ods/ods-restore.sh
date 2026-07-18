@@ -128,7 +128,7 @@ list_backups() {
     local backups=()
     while IFS= read -r -d '' backup; do
         backups+=("$backup")
-    done < <(find "$BACKUP_ROOT" -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
+    done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
 
     if [[ ${#backups[@]} -eq 0 ]]; then
         log_error "No backups found in: $BACKUP_ROOT"
@@ -178,18 +178,21 @@ list_backups() {
 }
 
 # Select backup interactively
+# The caller captures stdout (backup_id=$(select_backup)), so the table and
+# prompt go to stderr — on stdout they'd be swallowed into the captured ID
+# and the user would stare at a blank screen.
 select_backup() {
-    if ! list_backups; then
+    if ! list_backups >&2; then
         return 1
     fi
 
-    echo "Select a backup to restore (enter number):"
+    echo "Select a backup to restore (enter number):" >&2
     read -r selection
 
     local backups=()
     while IFS= read -r -d '' backup; do
         backups+=("$backup")
-    done < <(find "$BACKUP_ROOT" -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
+    done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
 
     local index=$((selection - 1))
     if [[ $index -lt 0 || $index -ge ${#backups[@]} ]]; then
@@ -201,6 +204,9 @@ select_backup() {
 }
 
 # Extract compressed backup
+# Callers capture stdout (backup_dir=$(extract_backup ...)), so every log
+# line must go to stderr — anything on stdout becomes part of the returned
+# path and breaks the restore.
 extract_backup() {
     local backup_id="$1"
     local compressed="$BACKUP_ROOT/$backup_id.tar.gz"
@@ -215,13 +221,13 @@ extract_backup() {
     if [[ -f "$compressed" ]]; then
         # Validate: reject archives with absolute paths or path traversal
         if tar -tzf "$compressed" 2>/dev/null | grep -qE '(^/|\.\./)'; then
-            log_error "Backup archive contains unsafe paths (absolute or ../) — refusing to extract"
+            log_error "Backup archive contains unsafe paths (absolute or ../) — refusing to extract" >&2
             return 1
         fi
-        log_info "Extracting compressed backup..."
+        log_info "Extracting compressed backup..." >&2
         mkdir -p "$uncompressed"
         if ! tar xzf "$compressed" --no-same-owner -C "$BACKUP_ROOT"; then
-            log_error "Failed to extract backup archive"
+            log_error "Failed to extract backup archive" >&2
             rm -rf "$uncompressed"
             return 1
         fi
@@ -229,7 +235,7 @@ extract_backup() {
         return 0
     fi
 
-    log_error "Backup not found: $backup_id"
+    log_error "Backup not found: $backup_id" >&2
     return 1
 }
 
@@ -497,7 +503,9 @@ do_restore() {
 
     # Extract if compressed
     local backup_dir
-    backup_dir=$(extract_backup "$backup_id")
+    if ! backup_dir=$(extract_backup "$backup_id"); then
+        return 1
+    fi
 
     # Validate backup (with optional checksum verification)
     if ! validate_backup "$backup_dir" "$skip_verify"; then

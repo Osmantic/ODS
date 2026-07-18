@@ -110,7 +110,7 @@ report_path="$(
     COMPOSE_FLAGS_REPORT="$COMPOSE_FLAGS_REPORT" write_compose_failure_report \
         "$INSTALL_DIR" \
         "install-core phase 11 docker compose up" \
-        "docker compose $COMPOSE_FLAGS_REPORT up -d --remove-orphans --no-build" \
+        "docker compose $COMPOSE_FLAGS_REPORT up -d --remove-orphans --no-build --pull never" \
         "$COMPOSE_LOG" \
         "nvidia" \
         "Fix the missing image tag, then re-run ./install.sh." |
@@ -126,7 +126,7 @@ fi
 assert_contains "$report_path" "ODS install failure report" "report has title"
 assert_contains "$report_path" "Phase: install-core phase 11 docker compose up" "report records phase"
 assert_contains "$report_path" "GPU backend: nvidia" "report records GPU backend"
-assert_contains "$report_path" "Compose command: docker compose --env-file .env -f docker-compose.base.yml -f docker-compose.nvidia.yml up -d --remove-orphans --no-build" "report records compose command"
+assert_contains "$report_path" "Compose command: docker compose --env-file .env -f docker-compose.base.yml -f docker-compose.nvidia.yml up -d --remove-orphans --no-build --pull never" "report records compose command"
 assert_contains "$report_path" "LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b8648" "report records configured image"
 assert_contains "$report_path" "- ghcr.io/ggml-org/llama.cpp:server-cuda-b8648" "report extracts failed image"
 assert_contains "$report_path" "- dashboard:39001" "report includes port checks"

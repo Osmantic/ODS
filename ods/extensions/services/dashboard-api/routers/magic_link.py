@@ -343,10 +343,17 @@ def _check_rate_limit(ip: str) -> None:
     """Raise 429 if the IP has exceeded the failure window."""
     now = time.monotonic()
     with _RATE_LIMIT_LOCK:
+        if len(_RATE_LIMIT_BUCKETS) > 1000:
+            stale = [k for k, v in _RATE_LIMIT_BUCKETS.items() if now - v[1] > _RATE_LIMIT_WINDOW_SECONDS]
+            for k in stale:
+                del _RATE_LIMIT_BUCKETS[k]
+            if len(_RATE_LIMIT_BUCKETS) > 10000:
+                _RATE_LIMIT_BUCKETS.clear()
+
         count, window_start = _RATE_LIMIT_BUCKETS.get(ip, (0, now))
         if now - window_start > _RATE_LIMIT_WINDOW_SECONDS:
             # Window expired; reset.
-            _RATE_LIMIT_BUCKETS[ip] = (0, now)
+            _RATE_LIMIT_BUCKETS.pop(ip, None)
             return
         if count >= _RATE_LIMIT_MAX_FAILURES:
             raise HTTPException(

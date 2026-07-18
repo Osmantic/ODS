@@ -224,7 +224,7 @@ if ($dryRun) {
         Write-AI "[DRY RUN] Would install AMD Lemonade Server (or fallback to llama-server Vulkan)"
         Write-AI "[DRY RUN] Would start native inference server on port 8080"
     }
-    Write-AI "[DRY RUN] Would run: docker compose up -d"
+    Write-AI "[DRY RUN] Would run: docker compose up -d --remove-orphans --no-build --pull never"
 } else {
     Push-Location $installDir
     # Sync .NET CWD so in-process .NET API calls using relative paths (e.g., Test-Path
@@ -381,14 +381,24 @@ if ($dryRun) {
                         -Destination $msiPath -Label "Downloading Lemonade Server (~3MB)"
                     if ($dlOk) {
                         $msiArgs = "/i `"$msiPath`" /quiet /norestart ALLUSERS=1"
-                        Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -NoNewWindow
-                        $_resolvedLemonadeExe = Resolve-ODSLemonadeExe -ExecutableName ([string]$amdLemonadeRuntime.windows_executable)
-                        if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
-                        if (Test-Path $script:LEMONADE_EXE) {
-                            Write-AISuccess "AMD Lemonade Server installed"
-                            $useLemonade = $true
+                        $msiProc = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -NoNewWindow -PassThru
+                        $_msiExit = $(if ($msiProc) { [int]$msiProc.ExitCode } else { 0 })
+                        if ($_msiExit -eq 0) {
+                            $_resolvedLemonadeExe = Resolve-ODSLemonadeExe -ExecutableName ([string]$amdLemonadeRuntime.windows_executable)
+                            if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
+                            if (Test-Path $script:LEMONADE_EXE) {
+                                Write-AISuccess "AMD Lemonade Server installed"
+                                $useLemonade = $true
+                            } else {
+                                Write-AIWarn "Lemonade MSI completed, but no Lemonade executable was found in the known install roots."
+                                $_candidateSample = @(Get-ODSLemonadeExeCandidatePaths -ExecutableName ([string]$amdLemonadeRuntime.windows_executable) | Select-Object -First 6)
+                                if ($_candidateSample.Count -gt 0) {
+                                    Write-AI "  Checked paths include: $($_candidateSample -join '; ')"
+                                }
+                                Write-AI "  Falling back to llama-server (Vulkan)."
+                            }
                         } else {
-                            Write-AIWarn "Lemonade MSI installed but executable not found at expected path."
+                            Write-AIWarn "Lemonade MSI exited with code $_msiExit."
                             Write-AI "  Falling back to llama-server (Vulkan)."
                         }
                     } else {
@@ -413,6 +423,51 @@ if ($dryRun) {
                 }
             }
 
+            function Get-ODSPriorLemonadeTaskName {
+                return (-join ([char[]](
+                    68, 114, 101, 97, 109, 83, 101, 114, 118, 101, 114, 76, 101,
+                    109, 111, 110, 97, 100, 101, 82, 117, 110, 116, 105, 109, 101
+                )))
+            }
+
+            function Stop-ODSWindowsLemonadeProcesses {
+                param(
+                    [string]$ExePath,
+                    [string[]]$TaskNames = @("ODSLemonadeRuntime")
+                )
+
+                $_resolvedExe = $null
+                try {
+                    if (-not [string]::IsNullOrWhiteSpace($ExePath)) {
+                        $_resolvedExe = [System.IO.Path]::GetFullPath(
+                            [Environment]::ExpandEnvironmentVariables($ExePath.Trim('"'))
+                        )
+                    }
+                } catch { }
+                $_knownNames = @("LemonadeServer.exe", "lemonade-server.exe", "lemonade-router.exe")
+
+                foreach ($_taskName in @($TaskNames | Where-Object { $_ } | Select-Object -Unique)) {
+                    try { Stop-ScheduledTask -TaskName $_taskName -ErrorAction SilentlyContinue } catch { }
+                    try { Unregister-ScheduledTask -TaskName $_taskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+                }
+
+                try {
+                    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                        Where-Object {
+                            $_path = [string]$_.ExecutablePath
+                            $_name = [string]$_.Name
+                            ($_resolvedExe -and $_path -and $_path.Equals($_resolvedExe, [StringComparison]::OrdinalIgnoreCase)) -or
+                            ($_knownNames -contains $_name) -or
+                            ($_path -and ($_path -match '\\(Lemonade Server|lemonade_server|LemonadeServer)\\bin\\'))
+                        } |
+                        ForEach-Object {
+                            try { Stop-Process -Id ([int]$_.ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
+                        }
+                } catch {
+                    Write-AIWarn "Could not stop stale Lemonade processes: $_"
+                }
+            }
+
             if ($useLemonade) {
                 # ── Start Lemonade server ──
                 # --extra-models-dir: Lemonade auto-discovers GGUF files in this directory
@@ -422,8 +477,8 @@ if ($dryRun) {
                 Write-AI "Starting Lemonade server..."
                 $modelsDir = Join-Path (Join-Path $installDir "data") "models"
                 $taskName = "ODSLemonadeRuntime"
-                try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch { }
-                try { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+                $taskNames = @($taskName, (Get-ODSPriorLemonadeTaskName))
+                Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames $taskNames
                 foreach ($listener in @(Get-NetTCPConnection -LocalPort $script:LEMONADE_PORT -State Listen -ErrorAction SilentlyContinue)) {
                     if ($listener.OwningProcess -gt 0) {
                         Stop-Process -Id ([int]$listener.OwningProcess) -Force -ErrorAction SilentlyContinue
@@ -433,43 +488,73 @@ if ($dryRun) {
                 New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
 
                 $argString = "serve --port $($script:LEMONADE_PORT) --host $bindAddr --no-tray --llamacpp vulkan --extra-models-dir `"$modelsDir`""
-                $action = New-ScheduledTaskAction -Execute $script:LEMONADE_EXE -Argument $argString -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE)
-                $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
-                $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-                Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
-                Start-ScheduledTask -TaskName $taskName
+                $launchMethod = "scheduled task"
+                try {
+                    $action = New-ScheduledTaskAction -Execute $script:LEMONADE_EXE -Argument $argString -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE)
+                    $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
+                    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+                    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
+                    Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+                } catch {
+                    $launchMethod = "direct process"
+                    Write-AIWarn "Could not start Lemonade through Task Scheduler: $_"
+                    Write-AI "Starting Lemonade directly for this Windows session..."
+                    Start-Process -FilePath $script:LEMONADE_EXE -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE) | Out-Null
+                }
                 Start-Sleep -Seconds 5
                 $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
                     Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase) } |
                     Sort-Object ProcessId -Descending |
                     Select-Object -First 1
+                if (-not $proc -and $launchMethod -eq "scheduled task") {
+                    $launchMethod = "direct process"
+                    Write-AIWarn "Lemonade scheduled task did not start a server process."
+                    Write-AI "Starting Lemonade directly for this Windows session..."
+                    Start-Process -FilePath $script:LEMONADE_EXE -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE) | Out-Null
+                    Start-Sleep -Seconds 3
+                    $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase) } |
+                        Sort-Object ProcessId -Descending |
+                        Select-Object -First 1
+                }
                 if (-not $proc) {
-                    throw "Lemonade scheduled task started but no lemonade-server.exe process was found"
+                    Write-AIWarn "Lemonade $launchMethod started but no Lemonade process was found. Falling back to native llama-server (Vulkan)."
+                    Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames $taskNames
+                    Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
+                    $useLemonade = $false
                 }
-                Set-Content -Path $script:INFERENCE_PID_FILE -Value $proc.ProcessId
 
-                Write-AI "Waiting for Lemonade server to start..."
-                $maxWait = 60; $waited = 0; $healthy = $false
-                while ($waited -lt $maxWait) {
-                    Start-Sleep -Seconds 2; $waited += 2
-                    try {
-                        $req = [System.Net.HttpWebRequest]::Create($script:LEMONADE_HEALTH_URL)
-                        $req.Timeout = 3000; $req.Method = "GET"
-                        $resp = $req.GetResponse(); $code = [int]$resp.StatusCode; $resp.Close()
-                        if ($code -eq 200) { $healthy = $true; break }
-                    } catch { }
-                    if ($waited % 10 -eq 0) { Write-AI "  Still starting... ($waited s)" }
-                }
-                if ($healthy) {
-                    Write-AISuccess "Lemonade server healthy (PID $($proc.ProcessId))"
-                    if ($gpuInfo.HasNpu) {
-                        Write-AISuccess "NPU hybrid mode available (NPU prefill + GPU decode)"
+                if ($useLemonade) {
+                    Set-Content -Path $script:INFERENCE_PID_FILE -Value $proc.ProcessId
+
+                    Write-AI "Waiting for Lemonade server to start..."
+                    $maxWait = 60; $waited = 0; $healthy = $false
+                    while ($waited -lt $maxWait) {
+                        Start-Sleep -Seconds 2; $waited += 2
+                        try {
+                            $req = [System.Net.HttpWebRequest]::Create($script:LEMONADE_HEALTH_URL)
+                            $req.Timeout = 3000; $req.Method = "GET"
+                            $resp = $req.GetResponse(); $code = [int]$resp.StatusCode; $resp.Close()
+                            if ($code -eq 200) { $healthy = $true; break }
+                        } catch { }
+                        if ($waited % 10 -eq 0) { Write-AI "  Still starting... ($waited s)" }
                     }
-                    Write-AI "Model ($($tierConfig.GgufFile)) will load on first request."
-                } else {
-                    Write-AIWarn "Lemonade server did not respond within ${maxWait}s. It may still be starting."
+                    if ($healthy) {
+                        Write-AISuccess "Lemonade server healthy (PID $($proc.ProcessId))"
+                        if ($gpuInfo.HasNpu) {
+                            Write-AISuccess "NPU hybrid mode available (NPU prefill + GPU decode)"
+                        }
+                        Write-AI "Model ($($tierConfig.GgufFile)) will load on first request."
+                    } else {
+                        Write-AIWarn "Lemonade server did not respond within ${maxWait}s. Falling back to native llama-server (Vulkan)."
+                        Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames $taskNames
+                        Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
+                        $useLemonade = $false
+                    }
                 }
-            } else {
+            }
+
+            if (-not $useLemonade) {
                 # ── Fallback: llama-server.exe (Vulkan) ──
                 $llamaZip = Join-Path $env:TEMP $script:LLAMA_CPP_VULKAN_ASSET
                 if (-not (Test-Path $script:LLAMA_SERVER_EXE)) {
@@ -972,20 +1057,35 @@ litellm_settings:
                 [Parameter(Mandatory = $true)][string[]]$DockerClientArgs,
                 [Parameter(Mandatory = $true)][string[]]$ComposeFlags,
                 [Parameter(Mandatory = $true)][string]$BuildLog,
-                [switch]$UseLegacyBuilder
+                [switch]$UseLegacyBuilder,
+                [switch]$UseDefaultDockerConfig
             )
 
             $hadBuildKit = Test-Path Env:DOCKER_BUILDKIT
             $previousBuildKit = $env:DOCKER_BUILDKIT
+            $hadDockerConfig = Test-Path Env:DOCKER_CONFIG
+            $previousDockerConfig = $env:DOCKER_CONFIG
+            $effectiveDockerClientArgs = $DockerClientArgs
 
             try {
                 if ($UseLegacyBuilder) {
                     $env:DOCKER_BUILDKIT = "0"
                 }
+                if ($UseDefaultDockerConfig) {
+                    $effectiveDockerClientArgs = @()
+                    Remove-Item Env:DOCKER_CONFIG -ErrorAction SilentlyContinue
+                }
 
-                & docker @DockerClientArgs compose @ComposeFlags build --no-cache $Service *>> $BuildLog
+                & docker @effectiveDockerClientArgs compose @ComposeFlags build --no-cache $Service *>> $BuildLog
                 return $LASTEXITCODE
             } finally {
+                if ($UseDefaultDockerConfig) {
+                    if ($hadDockerConfig) {
+                        $env:DOCKER_CONFIG = $previousDockerConfig
+                    } else {
+                        Remove-Item Env:DOCKER_CONFIG -ErrorAction SilentlyContinue
+                    }
+                }
                 if ($UseLegacyBuilder) {
                     if ($hadBuildKit) {
                         $env:DOCKER_BUILDKIT = $previousBuildKit
@@ -1124,6 +1224,145 @@ litellm_settings:
             return ""
         }
 
+        function Test-ODSWindowsLocalImageTag {
+            param([string]$Image)
+
+            if ([string]::IsNullOrWhiteSpace($Image)) { return $true }
+            return (
+                $Image -match '^ods-' -or
+                $Image -match '^docker\.io/library/ods-' -or
+                $Image -match '^localhost[/:]' -or
+                $Image -match '^127\.0\.0\.1:'
+            )
+        }
+
+        function Get-ODSWindowsComposeExternalImages {
+            param(
+                [Parameter(Mandatory = $true)][string[]]$DockerClientArgs,
+                [Parameter(Mandatory = $true)][string[]]$ComposeFlags
+            )
+
+            $images = New-Object System.Collections.Generic.List[string]
+            $seen = @{}
+            $configJson = & docker @DockerClientArgs compose @ComposeFlags config --format json 2>$null
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($configJson)) {
+                try {
+                    $composeConfig = ($configJson -join "`n") | ConvertFrom-Json
+                    foreach ($serviceProperty in $composeConfig.services.PSObject.Properties) {
+                        $service = $serviceProperty.Value
+                        $hasBuild = $false
+                        if ($service.PSObject.Properties["build"] -and $null -ne $service.build) {
+                            $hasBuild = $true
+                        }
+                        if ($hasBuild) { continue }
+
+                        $image = [string]$service.image
+                        if ([string]::IsNullOrWhiteSpace($image)) { continue }
+                        if (Test-ODSWindowsLocalImageTag -Image $image) { continue }
+                        if (-not $seen.ContainsKey($image)) {
+                            $seen[$image] = $true
+                            [void]$images.Add($image)
+                        }
+                    }
+                    return @($images)
+                } catch {
+                    Write-AIWarn "Could not parse Docker Compose JSON image list: $($_.Exception.Message)"
+                }
+            }
+
+            $imageLines = @(& docker @DockerClientArgs compose @ComposeFlags config --images 2>$null |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            if ($LASTEXITCODE -ne 0) {
+                throw "docker compose config --images failed"
+            }
+
+            foreach ($image in $imageLines) {
+                $image = [string]$image
+                if (Test-ODSWindowsLocalImageTag -Image $image) { continue }
+                if (-not $seen.ContainsKey($image)) {
+                    $seen[$image] = $true
+                    [void]$images.Add($image)
+                }
+            }
+            return @($images)
+        }
+
+        function Invoke-ODSWindowsDockerPullWithRetry {
+            param(
+                [Parameter(Mandatory = $true)][string]$Image,
+                [Parameter(Mandatory = $true)][string[]]$DockerClientArgs,
+                [Parameter(Mandatory = $true)][string]$LogPath,
+                [int]$MaxAttempts = 4
+            )
+
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "SilentlyContinue"
+            try {
+                & docker @DockerClientArgs image inspect $Image *> $null
+                if ($LASTEXITCODE -eq 0) {
+                    Add-Content -LiteralPath $LogPath -Value "Compose image already cached: $Image"
+                    return $true
+                }
+            } finally {
+                $ErrorActionPreference = $prevEAP
+            }
+
+            $delays = @(5, 15, 30)
+            for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+                Write-AI "Pulling Compose image ($attempt/$MaxAttempts): $Image"
+                & docker @DockerClientArgs pull $Image *>> $LogPath
+                if ($LASTEXITCODE -eq 0) {
+                    Write-AISuccess "Pulled $Image"
+                    return $true
+                }
+                if ($attempt -lt $MaxAttempts) {
+                    $delay = $delays[[Math]::Min($attempt - 1, $delays.Count - 1)]
+                    Write-AIWarn "Pull failed for $Image; retrying in ${delay}s"
+                    Start-Sleep -Seconds $delay
+                }
+            }
+
+            Write-AIError "Failed to pull Compose image after retries: $Image"
+            return $false
+        }
+
+        function Invoke-ODSWindowsComposeImagePreflight {
+            param(
+                [Parameter(Mandatory = $true)][string[]]$DockerClientArgs,
+                [Parameter(Mandatory = $true)][string[]]$ComposeFlags,
+                [Parameter(Mandatory = $true)][string]$LogPath
+            )
+
+            try {
+                $images = @(Get-ODSWindowsComposeExternalImages -DockerClientArgs $DockerClientArgs -ComposeFlags $ComposeFlags)
+            } catch {
+                Write-AIError "Could not resolve Windows Docker Compose images before service launch."
+                Write-AI "  Inspect compose config with: docker compose $($ComposeFlags -join ' ') config --images"
+                Add-Content -LiteralPath $LogPath -Value "compose image preflight failed: $($_.Exception.Message)"
+                return $false
+            }
+
+            if ($images.Count -eq 0) { return $true }
+
+            Write-AI "Verifying Compose image cache before launch..."
+            $failed = New-Object System.Collections.Generic.List[string]
+            foreach ($image in $images) {
+                if (-not (Invoke-ODSWindowsDockerPullWithRetry -Image $image -DockerClientArgs $DockerClientArgs -LogPath $LogPath)) {
+                    [void]$failed.Add($image)
+                }
+            }
+
+            if ($failed.Count -eq 0) {
+                Write-AISuccess "Compose image cache ready"
+                return $true
+            }
+
+            Write-AIError "$($failed.Count) Compose image(s) could not be pulled before launch."
+            Write-AI "Windows installer will not allow Docker Compose to pull images implicitly."
+            Write-AI "Fix Docker registry/network/disk access, then re-run .\install-windows.ps1."
+            return $false
+        }
+
         if (-not $cloudMode -and $currentBackend -ne "amd") {
             $envLlamaImage = ""
             $envFallbackImage = ""
@@ -1191,10 +1430,11 @@ litellm_settings:
         }
 
         Assert-ODSWindowsComposeCwd -InstallDir $installDir
+        $composeUpArgs = @("up", "-d", "--remove-orphans", "--no-build", "--pull", "never")
         Write-ODSWindowsComposeLaunchRecord -InstallDir $installDir -ComposeFlags $composeFlags `
-            -ComposeArgs @("up", "-d", "--remove-orphans", "--no-build")
+            -ComposeArgs $composeUpArgs
 
-        Write-AI "Running: docker --config `"$($env:DOCKER_CONFIG)`" compose $($composeFlags -join ' ') up -d --remove-orphans --no-build"
+        Write-AI "Running: docker --config `"$($env:DOCKER_CONFIG)`" compose $($composeFlags -join ' ') $($composeUpArgs -join ' ')"
         Write-AI "Compose working directory: $installDir"
         # PS 5.1 treats ANY stderr output from native commands as NativeCommandError.
         # Silence stderr-as-error so $LASTEXITCODE reflects the real compose exit code.
@@ -1232,6 +1472,7 @@ litellm_settings:
             Write-AI "Rebuilding local-built images (no-cache)..."
             $_failedBuildServices = @()
             $_legacyBuilderServices = @()
+            $_defaultDockerConfigServices = @()
             foreach ($_svc in $_buildServices) {
                 Write-AI "  building $_svc ..."
                 $_buildExit = Invoke-ODSWindowsComposeBuildService `
@@ -1254,12 +1495,29 @@ litellm_settings:
                 }
 
                 if ($_buildExit -ne 0) {
+                    Write-AIWarn "  $_svc build failed with the install-scoped Docker config; retrying with the user's default Docker config."
+                    Add-Content -LiteralPath $_buildLog -Value "`n--- retrying $_svc with user's default Docker config after install-scoped Docker config failure ---"
+                    $_buildExit = Invoke-ODSWindowsComposeBuildService `
+                        -Service $_svc `
+                        -DockerClientArgs $dockerClientArgs `
+                        -ComposeFlags $composeFlags `
+                        -BuildLog $_buildLog `
+                        -UseDefaultDockerConfig
+                    if ($_buildExit -eq 0) {
+                        $_defaultDockerConfigServices += $_svc
+                    }
+                }
+
+                if ($_buildExit -ne 0) {
                     $_failedBuildServices += $_svc
                     Write-AIError "$_svc build failed (see $_buildLog)"
                 }
             }
             if ($_legacyBuilderServices.Count -gt 0) {
                 Write-AIWarn "Used Docker legacy builder fallback for: $($_legacyBuilderServices -join ', ')"
+            }
+            if ($_defaultDockerConfigServices.Count -gt 0) {
+                Write-AIWarn "Used user's default Docker config for local image builds: $($_defaultDockerConfigServices -join ', ')"
             }
             if ($_failedBuildServices.Count -gt 0) {
                 Write-Host ""
@@ -1279,8 +1537,18 @@ litellm_settings:
             }
             Write-AISuccess "Local images rebuilt"
 
+            if (-not (Invoke-ODSWindowsComposeImagePreflight -DockerClientArgs $dockerClientArgs -ComposeFlags $composeFlags -LogPath $_composeLog)) {
+                Write-ODSComposeDiagnostics -InstallDir $installDir -ComposeFlags $composeFlags `
+                    -ComposeArgs $composeUpArgs `
+                    -ComposeLogPath $_composeLog `
+                    -Phase "install-windows.ps1 compose image preflight" `
+                    -NextStep "A required Compose image did not download during the retry-protected preflight. Fix Docker registry/network/disk access, then re-run .\install-windows.ps1." `
+                    -SaveReport
+                exit 1
+            }
+
             Write-AI "Starting services... this may take several minutes."
-            & docker @dockerClientArgs compose @composeFlags up -d --remove-orphans --no-build *> $_composeLog
+            & docker @dockerClientArgs compose @composeFlags @composeUpArgs *> $_composeLog
             $composeExit = $LASTEXITCODE
         }
         finally {
@@ -1294,7 +1562,7 @@ litellm_settings:
         if ($composeExit -ne 0) {
             Write-AIError "docker compose up failed (exit code: $composeExit)"
             Write-ODSComposeDiagnostics -InstallDir $installDir -ComposeFlags $composeFlags `
-                -ComposeArgs @("up", "-d", "--remove-orphans", "--no-build") `
+                -ComposeArgs $composeUpArgs `
                 -ComposeLogPath $_composeLog `
                 -Phase "install-windows.ps1 docker compose up -d" `
                 -SaveReport

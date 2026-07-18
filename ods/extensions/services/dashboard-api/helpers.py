@@ -59,32 +59,54 @@ logger = logging.getLogger(__name__)
 # poll cycle and prevents file-descriptor exhaustion.
 
 _aio_session: Optional[aiohttp.ClientSession] = None
+_aio_session_lock: Optional[asyncio.Lock] = None
 _HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=30)
 # Short timeout for the catalog fan-out: one slow probe must not stall the
 # whole Extensions page (frontend aborts after 8 s).
 _CATALOG_HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=5)
 
 
+def _get_aio_session_lock() -> asyncio.Lock:
+    global _aio_session_lock
+    if _aio_session_lock is None:
+        _aio_session_lock = asyncio.Lock()
+    return _aio_session_lock
+
+
 async def _get_aio_session() -> aiohttp.ClientSession:
     """Return (and lazily create) a module-level aiohttp session."""
     global _aio_session
-    if _aio_session is None or _aio_session.closed:
-        _aio_session = aiohttp.ClientSession(
-            timeout=_HEALTH_TIMEOUT,
-            connector=aiohttp.TCPConnector(family=socket.AF_INET),
-        )
+    if _aio_session is not None and not _aio_session.closed:
+        return _aio_session
+    async with _get_aio_session_lock():
+        if _aio_session is None or _aio_session.closed:
+            _aio_session = aiohttp.ClientSession(
+                timeout=_HEALTH_TIMEOUT,
+                connector=aiohttp.TCPConnector(family=socket.AF_INET),
+            )
     return _aio_session
 
 
 # Shared httpx client for llama-server requests (connection pooling)
 _httpx_client: Optional[httpx.AsyncClient] = None
+_httpx_client_lock: Optional[asyncio.Lock] = None
+
+
+def _get_httpx_client_lock() -> asyncio.Lock:
+    global _httpx_client_lock
+    if _httpx_client_lock is None:
+        _httpx_client_lock = asyncio.Lock()
+    return _httpx_client_lock
 
 
 async def _get_httpx_client() -> httpx.AsyncClient:
     """Return (and lazily create) a module-level httpx async client."""
     global _httpx_client
-    if _httpx_client is None or _httpx_client.is_closed:
-        _httpx_client = httpx.AsyncClient(timeout=5.0)
+    if _httpx_client is not None and not _httpx_client.is_closed:
+        return _httpx_client
+    async with _get_httpx_client_lock():
+        if _httpx_client is None or _httpx_client.is_closed:
+            _httpx_client = httpx.AsyncClient(timeout=5.0)
     return _httpx_client
 
 
@@ -555,7 +577,9 @@ def dir_size_gb(path: Path) -> float:
     try:
         for f in path.rglob("*"):
             try:
-                if f.is_file() and not f.is_symlink():
+                if f.is_symlink():
+                    continue
+                if f.is_file():
                     total += f.stat().st_size
             except (PermissionError, OSError):
                 pass

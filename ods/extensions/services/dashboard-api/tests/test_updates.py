@@ -7,6 +7,14 @@ import httpx
 from fastapi import HTTPException
 
 
+def test_github_release_urls_use_canonical_repository():
+    import routers.updates as updates_mod
+
+    assert updates_mod._GITHUB_REPOSITORY == "Osmantic/ODS"
+    assert updates_mod._GITHUB_RELEASES_API == "https://api.github.com/repos/Osmantic/ODS/releases"
+    assert updates_mod._GITHUB_RELEASES_PAGE == "https://github.com/Osmantic/ODS/releases"
+
+
 def test_get_version_requires_auth(test_client):
     """GET /api/version without auth → 401."""
     resp = test_client.get("/api/version")
@@ -59,6 +67,29 @@ def test_get_version_with_mock_github(test_client, monkeypatch):
     data = resp.json()
     assert data["latest"] == "2.0.0"
     assert data["changelog_url"] == "https://github.com/test"
+
+
+def test_build_version_result_strips_v_prefix_from_current():
+    """Current versions stored with a 'v' prefix (matching the release tag
+    convention, e.g. a .version file of 'v2.5.3') must normalize before
+    comparison. Otherwise the numeric parser misreads them and a real update
+    is reported as unavailable.
+    """
+    from routers.updates import _build_version_result
+
+    result = _build_version_result("v2.5.3", {"latest": "2.6.0"})
+    assert result["current"] == "2.5.3"
+    assert result["update_available"] is True
+
+
+def test_build_version_result_handles_v_prefix_on_both_sides():
+    """A 'v' on either side must not affect the comparison."""
+    from routers.updates import _build_version_result
+
+    result = _build_version_result("v2.6.0", {"latest": "v2.6.0"})
+    assert result["current"] == "2.6.0"
+    assert result["latest"] == "2.6.0"
+    assert result["update_available"] is False
 
 
 def test_get_releases_manifest_requires_auth(test_client):
@@ -316,6 +347,42 @@ def test_update_dry_run_version_from_json_version_file(test_client, tmp_path, mo
 
     assert resp.status_code == 200
     assert resp.json()["current_version"] == "3.1.4"
+
+
+def test_update_dry_run_normalizes_v_prefixed_version(test_client, tmp_path, monkeypatch):
+    """A .version file written as 'v2.0.1' must still compare against the latest
+    release tag correctly. Before normalization the 'v' prefix broke parsing, so
+    a newer release showed up as update_available=False.
+    """
+    import routers.updates as updates_mod
+
+    install_dir = tmp_path / "ods-install"
+    install_dir.mkdir()
+    (install_dir / ".version").write_text("v2.0.1")
+    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {
+        "tag_name": "v2.6.0",
+        "html_url": "https://github.com/test",
+    }
+
+    async def mock_get(url, **kwargs):
+        return mock_resp
+
+    mock_client = AsyncMock()
+    mock_client.get = mock_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.updates.httpx.AsyncClient", return_value=mock_client):
+        resp = test_client.get("/api/update/dry-run", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["current_version"] == "2.0.1"
+    assert data["latest_version"] == "2.6.0"
+    assert data["update_available"] is True
 
 
 def test_update_dry_run_reads_compose_images(test_client, tmp_path, monkeypatch):

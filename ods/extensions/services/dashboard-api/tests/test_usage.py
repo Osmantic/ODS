@@ -271,6 +271,22 @@ def test_usage_report_rejects_reversed_date_range(test_client):
     assert data["source"]["detail"] == "end must be on or after start"
 
 
+def test_usage_report_rejects_calendar_invalid_dates(test_client):
+    # Month 13 and Feb 30 pass the route's YYYY-MM-DD regex but are not real
+    # dates; the endpoint must answer with invalid_range, not crash with 500.
+    for query in ("start=2026-13-01&end=2026-13-02", "start=2026-02-30&end=2026-03-01"):
+        resp = test_client.get(
+            f"/api/usage/report?{query}",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source"]["status"] == "invalid_range"
+        assert data["source"]["detail"] == "Dates must be valid YYYY-MM-DD calendar dates"
+        assert data["daily"] == []
+
+
 def test_usage_report_surfaces_local_runtime_counters_without_date_bucketing(test_client, monkeypatch):
     import routers.usage as usage_router
 

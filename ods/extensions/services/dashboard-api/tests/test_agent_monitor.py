@@ -127,8 +127,9 @@ class TestFetchTokenSpyMetrics:
 
         assert agent_monitor.agent_metrics.session_count == 2
         assert len(agent_monitor.throughput.data_points) == 1
-        # total_out = 10800 tokens; avg tps = 10800 / 3600 = 3.0
-        assert agent_monitor.throughput.data_points[0]["tokens_per_sec"] == pytest.approx(3.0)
+        # total_out = 10800 tokens over the 24 h summary window;
+        # avg tps = 10800 / 86400 = 0.125
+        assert agent_monitor.throughput.data_points[0]["tokens_per_sec"] == pytest.approx(0.125)
 
     @pytest.mark.asyncio
     async def test_no_url_skips_fetch(self, monkeypatch):

@@ -146,10 +146,11 @@ async def _fetch_token_spy_metrics() -> None:
                 if resp.status == 200:
                     data = await resp.json()
                     agent_metrics.session_count = len(data)
-                    # total_output_tokens is a 24 h aggregate; dividing by 3600 gives
-                    # an average tokens/sec over the last hour (approximation)
+                    # Token Spy's /api/summary defaults to a 24 h window, so
+                    # total_output_tokens is a 24 h aggregate; divide by the
+                    # seconds in that window to get an average tokens/sec.
                     total_out = sum(r.get("total_output_tokens", 0) or 0 for r in data)
-                    throughput.add_sample(total_out / 3600.0)
+                    throughput.add_sample(total_out / 86400.0)
                     logger.debug("Token Spy metrics: %d sessions, %d total output tokens",
                                len(data), total_out)
                 else:

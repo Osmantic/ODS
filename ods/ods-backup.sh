@@ -135,6 +135,24 @@ ensure_backup_space() {
     fi
 }
 
+# Collect backup entries (dirs or .tar.gz archives) under BACKUP_ROOT into
+# the global COLLECTED_BACKUPS array, newest first.
+#
+# Backup IDs are YYYYMMDD-HHMMSS (this script) or <prefix>-YYYYMMDD-HHMMSS
+# (dashboard/host-agent). Match that shape explicitly: retention deletes
+# whatever this collects, so an operator's unrelated files in the backup
+# directory must never qualify.
+COLLECTED_BACKUPS=()
+collect_backups() {
+    COLLECTED_BACKUPS=()
+    local entry base
+    while IFS= read -r -d '' entry; do
+        base=$(basename "$entry")
+        [[ "$base" =~ ^([A-Za-z0-9_]+-)?[0-9]{8}-[0-9]{6}(\.tar\.gz)?$ ]] || continue
+        COLLECTED_BACKUPS+=("$entry")
+    done < <(find "$BACKUP_ROOT" -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
+}
+
 # Show usage
 usage() {
     cat << EOF
@@ -180,12 +198,9 @@ list_backups() {
         return 0
     fi
 
-    local backups=()
-    while IFS= read -r -d '' backup; do
-        backups+=("$backup")
-    done < <(find "$BACKUP_ROOT" -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -name "*-*-*" -print0 2>/dev/null | sort -z -r)
+    collect_backups
 
-    if [[ ${#backups[@]} -eq 0 ]]; then
+    if [[ ${#COLLECTED_BACKUPS[@]} -eq 0 ]]; then
         log_info "No backups found"
         return 0
     fi
@@ -196,7 +211,7 @@ list_backups() {
     printf "%-20s %-12s %-10s %s\n" "ID" "Type" "Size" "Description"
     echo "───────────────────────────────────────────────────────────────────"
 
-    for backup in "${backups[@]}"; do
+    for backup in "${COLLECTED_BACKUPS[@]}"; do
         local id
         id=$(basename "$backup")
         local backup_type="unknown"
@@ -234,17 +249,23 @@ delete_backup() {
         return 1
     fi
 
-    local backup_dir="$BACKUP_ROOT/$backup_id"
+    local target="$BACKUP_ROOT/$backup_id"
 
-    if [[ ! -d "$backup_dir" ]]; then
+    # Compressed backups are .tar.gz files, not directories; also accept the
+    # bare ID for an archive-only backup.
+    if [[ ! -e "$target" && -f "$target.tar.gz" ]]; then
+        target="$target.tar.gz"
+    fi
+
+    if [[ ! -e "$target" ]]; then
         log_error "Backup not found: $backup_id"
         return 1
     fi
 
-    read -rp "Are you sure you want to delete backup $backup_id? [y/N] " confirm
+    read -rp "Are you sure you want to delete backup $(basename "$target")? [y/N] " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        rm -rf "$backup_dir"
-        log_success "Deleted backup: $backup_id"
+        rm -rf "$target"
+        log_success "Deleted backup: $(basename "$target")"
     else
         log_info "Deletion cancelled"
     fi
@@ -413,18 +434,15 @@ backup_cache() {
 apply_retention() {
     log_info "Applying retention policy (keeping last $RETENTION_COUNT backups)..."
 
-    local backups=()
-    while IFS= read -r -d '' backup; do
-        backups+=("$backup")
-    done < <(find "$BACKUP_ROOT" -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -name "*-*-*" -print0 2>/dev/null | sort -z -r)
+    collect_backups
 
-    local count=${#backups[@]}
+    local count=${#COLLECTED_BACKUPS[@]}
     if [[ $count -gt $RETENTION_COUNT ]]; then
         local to_delete=$((count - RETENTION_COUNT))
         log_info "Removing $to_delete old backup(s)..."
 
         for ((i=RETENTION_COUNT; i<count; i++)); do
-            local old_backup="${backups[$i]}"
+            local old_backup="${COLLECTED_BACKUPS[$i]}"
             log_warn "Removing old backup: $(basename "$old_backup")"
             rm -rf "$old_backup"
         done

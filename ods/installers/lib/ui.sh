@@ -194,21 +194,61 @@ spin_task() {
   return $rc
 }
 
+_docker_pull_retry_delay() {
+  local retry_number=$1
+  local default_delays=(5 15 30)
+  local delays_raw="${ODS_DOCKER_PULL_RETRY_DELAYS:-${default_delays[*]}}"
+  local delays=()
+  read -r -a delays <<< "$delays_raw"
+
+  if (( ${#delays[@]} == 0 )); then
+    delays=("${default_delays[@]}")
+  fi
+
+  local idx=$((retry_number - 1))
+  local delay="${delays[$idx]:-}"
+
+  if [[ -z "$delay" ]]; then
+    local last_idx=$(( ${#delays[@]} - 1 ))
+    delay="${delays[$last_idx]}"
+    if ! [[ "$delay" =~ ^[0-9]+$ ]] || (( delay < 1 )); then
+      delay="${default_delays[2]}"
+    fi
+
+    local extra_steps=$((idx - last_idx))
+    local step
+    for ((step = 0; step < extra_steps; step++)); do
+      delay=$((delay * 2))
+    done
+  fi
+
+  if ! [[ "$delay" =~ ^[0-9]+$ ]] || (( delay < 1 )); then
+    delay="${default_delays[$idx]:-${default_delays[2]}}"
+  fi
+
+  printf '%s\n' "$delay"
+}
+
 # Pull wrapper that prints consistent success/fail lines with retry logic
 pull_with_progress() {
   local img=$1
   local label=$2
   local count=$3
   local total=$4
-  local max_attempts=3
+  local configured_max_attempts="${ODS_DOCKER_PULL_MAX_ATTEMPTS:-4}"
+  local max_attempts=4
   local pull_timeout=3600  # 60 minutes for large images (CUDA is ~10GB)
   local pull_pid
 
-  for attempt in $(seq 1 $max_attempts); do
+  if [[ "$configured_max_attempts" =~ ^[0-9]+$ ]] && (( configured_max_attempts >= 1 )); then
+    max_attempts=$configured_max_attempts
+  fi
+
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     if [[ $attempt -gt 1 ]]; then
-      printf "  ${AMB}⟳${NC} [$count/$total] Retry attempt $attempt of $max_attempts for $label\n"
-      # Exponential backoff: 2s, 5s, 10s
-      local backoff=$((2 * (2 ** (attempt - 2)) + (attempt - 2)))
+      local backoff
+      backoff="$(_docker_pull_retry_delay "$((attempt - 1))")"
+      printf "  ${AMB}⟳${NC} [$count/$total] Retry attempt $attempt of $max_attempts for $label (waiting ${backoff}s)\n"
       sleep "$backoff"
     fi
 

@@ -91,7 +91,8 @@ Options:
   --memory SIZE             Memory per VM (default: 4GiB)
   --timeout SECONDS         Wait timeout for VM agent readiness (default: 600)
   --lock-file PATH          Host lock path for coordinating with full fleet runs
-                            (default: ODS_FLEET_HOST_LOCK or /tmp/ods-fleet-heavy.lock)
+                            (default: ODS_FLEET_HOST_LOCK or
+                             /tmp/ods-fleet-heavy.lock)
   --lock-timeout SECONDS    Seconds to wait for the host lock before failing
                             (default: wait indefinitely)
   --no-host-lock            Do not take the shared host lock

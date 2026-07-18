@@ -96,11 +96,16 @@ _now_ms() {
 test_llm() {
     local start
     start=$(_now_ms)
+    # Lemonade (AMD) serves its OpenAI-compatible API under /api/v1;
+    # llama-server uses /v1. Honor LLM_API_BASE_PATH from .env (written by
+    # phase 06, default /v1) so the probe hits the backend that is actually
+    # running instead of failing on every Lemonade install.
+    local base_path="${LLM_API_BASE_PATH:-/v1}"
     local response
     response=$(curl -sf --max-time $TIMEOUT \
         -H "Content-Type: application/json" \
         -d '{"model":"default","prompt":"Hi","max_tokens":1}' \
-        "http://${LLM_HOST}:${LLM_PORT}/v1/completions" 2>/dev/null)
+        "http://${LLM_HOST}:${LLM_PORT}${base_path}/completions" 2>/dev/null)
     local end
     end=$(_now_ms)
 
@@ -195,8 +200,16 @@ test_gpu() {
             result_set "gpu_util" "${gpu_util// /}"
             result_set "gpu_temp" "${temp// /}"
 
-            # Warn if GPU memory > 95% or temp > 80C
-            if [ "$(result_get "gpu_util")" -gt 95 ] 2>/dev/null; then
+            # Warn if GPU memory > 95% (approaching OOM) or temp > 80C.
+            # Deliberately NOT based on utilization: a llama-server doing
+            # inference legitimately pins the GPU at ~100% util, so a
+            # util-based warning would fire during normal, healthy load.
+            local mem_used mem_total
+            mem_used="$(result_get "gpu_mem_used")"
+            mem_total="$(result_get "gpu_mem_total")"
+            if [[ "$mem_used" =~ ^[0-9]+$ && "$mem_total" =~ ^[0-9]+$ ]] \
+                && [ "$mem_total" -gt 0 ] \
+                && [ $(( mem_used * 100 / mem_total )) -gt 95 ]; then
                 result_set "gpu" "warn"
             fi
             if [ "$(result_get "gpu_temp")" -gt 80 ] 2>/dev/null; then
@@ -212,8 +225,16 @@ test_gpu() {
 # System-level: Disk
 test_disk() {
     local usage
-    usage=$(df -h "$INSTALL_DIR" 2>/dev/null | tail -1 | awk '{print $5}' | tr -d '%')
-    if [ -n "$usage" ]; then
+    # df -P forces POSIX single-line output. Plain `df -h` wraps a long device
+    # name onto a second line, which shifts awk's column indexes so `$5` reads
+    # the mount point ("/") instead of the capacity — that then trips the
+    # numeric comparison below. Grab the capacity field by its trailing "%" so
+    # the parse survives any column shift, then strip the percent sign.
+    usage=$(df -P "$INSTALL_DIR" 2>/dev/null \
+        | awk 'NR>1 { for (i = 1; i <= NF; i++) if ($i ~ /%$/) { gsub(/%/, "", $i); print $i; exit } }')
+    # Only treat the probe as successful when we parsed a numeric percentage;
+    # this also keeps the `-gt` comparison from erroring on unexpected output.
+    if [[ "$usage" =~ ^[0-9]+$ ]]; then
         result_set "disk" "ok"
         result_set "disk_usage" "$usage"
         if [ "$usage" -gt 90 ]; then
@@ -243,9 +264,12 @@ check_service_async() {
     local sid="$1"
     local result_file="$2"
 
-    # Check container state first
+    # Check container state first. check_container_state exits non-zero for
+    # any not-running state; without the guard, set -e kills this background
+    # subshell before the result file is written and the service silently
+    # disappears from the report.
     local container_state
-    container_state=$(check_container_state "$sid")
+    container_state=$(check_container_state "$sid") || true
 
     if test_service "$sid" 2>/dev/null; then
         echo "ok:$sid:$container_state" > "$result_file"
@@ -291,49 +315,61 @@ for pid in "${CORE_PIDS[@]}"; do
     wait "$pid" 2>/dev/null || true
 done
 
-# Display core service results
+# Display core service results. The async checks run in subshells, so their
+# result_set/ANY_FAIL mutations are lost — the parent must aggregate status
+# from the result files or failures never reach the summary, exit code, or
+# JSON output.
 for sid in "${CORE_SIDS[@]}"; do
     result_file="$TEMP_DIR/core_$sid"
+    name="${SERVICE_NAMES[$sid]:-$sid}"
+    status="fail"
+    container_state=""
     if [[ -f "$result_file" ]]; then
         result=$(cat "$result_file")
-        name="${SERVICE_NAMES[$sid]:-$sid}"
-
         # Parse result format: status:sid:container_state
         IFS=':' read -r status sid_check container_state <<< "$result"
+    fi
+    result_set "$sid" "$status"
 
-        if [[ "$status" == "ok" ]]; then
-            log "  ${GREEN}✓${NC} $name - healthy"
-        else
-            # Use container state for better error message
-            case "$container_state" in
-                not_found)
-                    log "  ${YELLOW}!${NC} $name - container not found"
-                    ;;
-                exited|stopped)
-                    log "  ${YELLOW}!${NC} $name - container stopped"
-                    ;;
-                restarting)
-                    log "  ${YELLOW}!${NC} $name - container restarting"
-                    ;;
-                running)
-                    log "  ${YELLOW}!${NC} $name - not responding (container running)"
-                    ;;
-                *)
-                    log "  ${YELLOW}!${NC} $name - not responding"
-                    ;;
-            esac
-        fi
+    if [[ "$status" == "ok" ]]; then
+        log "  ${GREEN}✓${NC} $name - healthy"
+    else
+        # Core service down → critical, per the documented exit codes
+        CRITICAL_FAIL=true
+        ANY_FAIL=true
+        # Use container state for better error message
+        case "$container_state" in
+            not_found)
+                log "  ${YELLOW}!${NC} $name - container not found"
+                ;;
+            exited|stopped)
+                log "  ${YELLOW}!${NC} $name - container stopped"
+                ;;
+            restarting)
+                log "  ${YELLOW}!${NC} $name - container restarting"
+                ;;
+            running)
+                log "  ${YELLOW}!${NC} $name - not responding (container running)"
+                ;;
+            *)
+                log "  ${YELLOW}!${NC} $name - not responding"
+                ;;
+        esac
     fi
 done
 
 log ""
 log "${CYAN}Extension Services:${NC}"
 
-# Launch all extension services in parallel
+# Launch all enabled extension services in parallel. Disabled extensions
+# (no active compose fragment — same predicate as sr_list_enabled) are not
+# part of this install's stack and must not be probed or degrade the status.
 declare -a EXT_PIDS=()
 declare -a EXT_SIDS=()
 for sid in "${SERVICE_IDS[@]}"; do
     [[ "${SERVICE_CATEGORIES[$sid]}" == "core" ]] && continue
+    ext_compose="${SERVICE_COMPOSE[$sid]:-}"
+    [[ -n "$ext_compose" && -f "$ext_compose" ]] || continue
     result_file="$TEMP_DIR/ext_$sid"
     check_service_async "$sid" "$result_file" &
     EXT_PIDS+=($!)
@@ -345,38 +381,42 @@ for pid in "${EXT_PIDS[@]}"; do
     wait "$pid" 2>/dev/null || true
 done
 
-# Display extension service results
+# Display extension service results — same aggregation as core services,
+# but a down extension only degrades the stack instead of marking it critical.
 for sid in "${EXT_SIDS[@]}"; do
     result_file="$TEMP_DIR/ext_$sid"
+    name="${SERVICE_NAMES[$sid]:-$sid}"
+    status="fail"
+    container_state=""
     if [[ -f "$result_file" ]]; then
         result=$(cat "$result_file")
-        name="${SERVICE_NAMES[$sid]:-$sid}"
-
         # Parse result format: status:sid:container_state
         IFS=':' read -r status sid_check container_state <<< "$result"
+    fi
+    result_set "$sid" "$status"
 
-        if [[ "$status" == "ok" ]]; then
-            log "  ${GREEN}✓${NC} $name - healthy"
-        else
-            # Use container state for better error message
-            case "$container_state" in
-                not_found)
-                    log "  ${YELLOW}!${NC} $name - container not found"
-                    ;;
-                exited|stopped)
-                    log "  ${YELLOW}!${NC} $name - container stopped"
-                    ;;
-                restarting)
-                    log "  ${YELLOW}!${NC} $name - container restarting"
-                    ;;
-                running)
-                    log "  ${YELLOW}!${NC} $name - not responding (container running)"
-                    ;;
-                *)
-                    log "  ${YELLOW}!${NC} $name - not responding"
-                    ;;
-            esac
-        fi
+    if [[ "$status" == "ok" ]]; then
+        log "  ${GREEN}✓${NC} $name - healthy"
+    else
+        ANY_FAIL=true
+        # Use container state for better error message
+        case "$container_state" in
+            not_found)
+                log "  ${YELLOW}!${NC} $name - container not found"
+                ;;
+            exited|stopped)
+                log "  ${YELLOW}!${NC} $name - container stopped"
+                ;;
+            restarting)
+                log "  ${YELLOW}!${NC} $name - container restarting"
+                ;;
+            running)
+                log "  ${YELLOW}!${NC} $name - not responding (container running)"
+                ;;
+            *)
+                log "  ${YELLOW}!${NC} $name - not responding"
+                ;;
+        esac
     fi
 done
 

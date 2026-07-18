@@ -486,7 +486,7 @@ raise SystemExit(1)' 2>/dev/null && return 0
         local key="$1" detected="$2"
         local existing
         existing=$(_env_get "$key" "")
-        if [[ "$existing" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN { exit !($existing > 0 && $existing <= $detected) }"; then
+        if [[ "$existing" =~ ^[0-9]+([.][0-9]+)?$ ]] && LC_ALL=C awk "BEGIN { exit !($existing > 0 && $existing <= $detected) }"; then
             echo "$existing"
         else
             echo "$detected"
@@ -495,7 +495,7 @@ raise SystemExit(1)' 2>/dev/null && return 0
 
     _cap_cpu_value() {
         local desired="$1" ceiling="$2"
-        awk -v desired="$desired" -v ceiling="$ceiling" '
+        LC_ALL=C awk -v desired="$desired" -v ceiling="$ceiling" '
             BEGIN {
                 if (ceiling <= 0) ceiling = 1
                 value = desired
@@ -522,7 +522,7 @@ raise SystemExit(1)' 2>/dev/null && return 0
     _llama_cpu_reservation_detected="${_llama_cpu_reservation_raw}.0"
     LLAMA_CPU_LIMIT=$(_select_auto_cpu_value LLAMA_CPU_LIMIT "${_llama_cpu_limit_detected}")
     LLAMA_CPU_RESERVATION=$(_select_auto_cpu_value LLAMA_CPU_RESERVATION "${_llama_cpu_reservation_detected}")
-    if awk "BEGIN { exit !($LLAMA_CPU_RESERVATION > $LLAMA_CPU_LIMIT) }"; then
+    if LC_ALL=C awk "BEGIN { exit !($LLAMA_CPU_RESERVATION > $LLAMA_CPU_LIMIT) }"; then
         LLAMA_CPU_RESERVATION="$LLAMA_CPU_LIMIT"
     fi
 

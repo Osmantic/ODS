@@ -49,8 +49,13 @@ def _date_range(start_day: date, end_day: date) -> list[str]:
 
 
 def _empty_report(start: str, end: str, status: str = "unavailable", detail: str | None = None) -> dict[str, Any]:
-    start_day = _parse_date(start)
-    end_day = _parse_date(end)
+    # The route's regex gate only checks the YYYY-MM-DD shape, so this is also
+    # reached with calendar-invalid dates (month 13, Feb 30) when reporting an
+    # invalid_range status. Those can't produce daily buckets — return none.
+    try:
+        days = _date_range(_parse_date(start), _parse_date(end))
+    except ValueError:
+        days = []
     return {
         "period": {"start": start, "end": end},
         "source": {
@@ -83,7 +88,7 @@ def _empty_report(start: str, end: str, status: str = "unavailable", detail: str
                 "cache_read_tokens": 0,
                 "cache_write_tokens": 0,
             }
-            for day in _date_range(start_day, end_day)
+            for day in days
         ],
         "models": [],
         "services": [],
@@ -556,7 +561,7 @@ async def usage_report(
         start_day = _parse_date(start)
         end_day = _parse_date(end)
     except ValueError:
-        return _empty_report(start, end, status="invalid_range", detail="Dates must use YYYY-MM-DD")
+        return _empty_report(start, end, status="invalid_range", detail="Dates must be valid YYYY-MM-DD calendar dates")
     if end_day < start_day:
         return _empty_report(start, end, status="invalid_range", detail="end must be on or after start")
 

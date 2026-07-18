@@ -21,7 +21,7 @@ ods_progress 75 "services" "Starting services"
 show_phase 5 6 "Starting Services" "~2-3 minutes"
 
 if $DRY_RUN; then
-    log "[DRY RUN] Would start services: $DOCKER_COMPOSE_CMD $COMPOSE_FLAGS up -d"
+    log "[DRY RUN] Would start services: $DOCKER_COMPOSE_CMD $COMPOSE_FLAGS up -d --remove-orphans --no-build --pull never"
 else
     cd "$INSTALL_DIR" || exit 1
 
@@ -247,14 +247,19 @@ else
         printf ' %s' "${COMPOSE_FLAGS_ARR[@]}"
     }
 
+    _phase11_compose_up_suffix() {
+        printf '%s' 'up -d --remove-orphans --no-build --pull never'
+    }
+
     _phase11_write_compose_launch_record() {
         local path="$INSTALL_DIR/logs/compose-launch.txt"
-        local command_text
+        local command_text up_suffix
         command_text="$(_phase11_compose_command_text)"
+        up_suffix="$(_phase11_compose_up_suffix)"
         {
             printf 'timestamp=%s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
             printf 'cwd=%s\n' "$INSTALL_DIR"
-            printf 'compose_command=%s up -d --remove-orphans --no-build\n' "$command_text"
+            printf 'compose_command=%s %s\n' "$command_text" "$up_suffix"
             printf 'compose_flags=%s\n' "${COMPOSE_FLAGS_ARR[*]}"
             printf 'compose_flags_file=%s\n' "$INSTALL_DIR/.compose-flags"
             printf "compose_ps_command=cd '%s' && %s ps -a\n" "$INSTALL_DIR" "$command_text"
@@ -275,8 +280,9 @@ else
 
     _phase11_assert_managed_containers() {
         local write_report="${1:-true}"
-        local command_text ids count report_path
+        local command_text up_suffix ids count report_path
         command_text="$(_phase11_compose_command_text)"
+        up_suffix="$(_phase11_compose_up_suffix)"
         ids="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" ps -q 2>>"$LOG_FILE" || true)"
         count=$(printf '%s\n' "$ids" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
         if [[ "${count:-0}" -gt 0 ]]; then
@@ -293,7 +299,7 @@ else
             report_path="$(COMPOSE_FLAGS_REPORT="${COMPOSE_FLAGS_ARR[*]}" write_compose_failure_report \
                 "$INSTALL_DIR" \
                 "install-core phase 11 zero managed containers" \
-                "$command_text up -d --remove-orphans --no-build" \
+                "$command_text $up_suffix" \
                 "$LOG_FILE" \
                 "${GPU_BACKEND:-unknown}" \
                 "No ODS containers were created. Run the saved ps/logs commands from the launch record, fix the compose/runtime failure, then re-run ./install.sh." |
@@ -318,6 +324,63 @@ else
         local log_path="${LOG_FILE:-}"
         [[ -n "$log_path" && -f "$log_path" ]] || return 1
         grep -Eiq 'dependency failed to start: container ods-(llama-server|llama-ready|llama-server-ready) is unhealthy' "$log_path"
+    }
+
+    _phase11_pre_pull_compose_images() {
+        command -v ods_compose_external_images >/dev/null 2>&1 || return 0
+        command -v pull_with_progress >/dev/null 2>&1 || return 0
+
+        local -a images=()
+        local image image_output count total failed command_text up_suffix report_path
+        image_output=""
+        if ! image_output="$(ods_compose_external_images "$DOCKER_COMPOSE_CMD" "${COMPOSE_FLAGS_ARR[@]}" 2>>"$LOG_FILE")"; then
+            ai_bad "Could not resolve Docker Compose images before service launch"
+            ai "Inspect compose config with: $(_phase11_compose_command_text) config --images"
+            return 1
+        fi
+        if [[ -n "$image_output" ]]; then
+            mapfile -t images <<< "$image_output"
+        fi
+
+        [[ ${#images[@]} -gt 0 ]] || return 0
+
+        ai "Verifying Compose image cache before launch..."
+        count=0
+        total=${#images[@]}
+        failed=0
+        for image in "${images[@]}"; do
+            count=$((count + 1))
+            if $DOCKER_CMD image inspect "$image" >/dev/null 2>&1; then
+                log "Compose image already cached: $image"
+                continue
+            fi
+            if ! pull_with_progress "$image" "COMPOSE — ${image}" "$count" "$total"; then
+                failed=$((failed + 1))
+            fi
+        done
+
+        if [[ $failed -eq 0 ]]; then
+            ai_ok "Compose image cache ready"
+            return 0
+        fi
+
+        ai_bad "$failed Compose image(s) could not be pulled before launch"
+        ai "Phase 5 does not allow Docker Compose to pull images implicitly."
+        ai "Fix the registry/network/disk error above, then re-run ./install.sh."
+        if command -v write_compose_failure_report >/dev/null 2>&1; then
+            command_text="$(_phase11_compose_command_text)"
+            up_suffix="$(_phase11_compose_up_suffix)"
+            report_path="$(COMPOSE_FLAGS_REPORT="${COMPOSE_FLAGS_ARR[*]}" write_compose_failure_report \
+                "$INSTALL_DIR" \
+                "install-core phase 11 compose image preflight" \
+                "$command_text $up_suffix" \
+                "$LOG_FILE" \
+                "${GPU_BACKEND:-unknown}" \
+                "A required Compose image did not download during the retry-protected preflight. Fix Docker registry/network/disk access, then re-run ./install.sh." |
+                tail -n 1)" || true
+            [[ -n "${report_path:-}" ]] && ai_warn "Compose failure report saved: $report_path"
+        fi
+        return 1
     }
 
     # Cloud/external Lemonade modes skip ODS-managed GGUF downloads and
@@ -870,12 +933,17 @@ except Exception:
     # Start everything. --no-build is intentional: the explicit build loop
     # above already produced (or failed-and-excluded) every buildable image,
     # and we don't want compose-up silently re-invoking the slow ComfyUI build
-    # on each retry. Up to 3 attempts with increasing wait
-    # between retries — on AMD/Lemonade, the first boot builds a cached
-    # llama-server binary which can take 3-5 min.
+    # on each retry. --pull never is intentional too: Phase 08 and the preflight
+    # below own registry access through pull_with_progress, so compose-up cannot
+    # die mid-launch on an unbounded TLS handshake timeout.
+    # Up to 3 attempts with increasing wait between retries — on AMD/Lemonade,
+    # the first boot builds a cached llama-server binary which can take 3-5 min.
+    if ! _phase11_pre_pull_compose_images; then
+        exit 1
+    fi
     _phase11_write_compose_launch_record
     for _attempt in 1 2 3; do
-        $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build >> "$LOG_FILE" 2>&1 &
+        $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build --pull never >> "$LOG_FILE" 2>&1 &
         compose_pid=$!
         if spin_task $compose_pid "Launching containers (attempt $_attempt/3)..."; then
             compose_ok=true
@@ -894,7 +962,7 @@ except Exception:
     $DOCKER_CMD start $($DOCKER_CMD ps -a --filter status=created -q) 2>/dev/null || true
     # Step 2: wait for services to stabilize, then compose pass
     sleep 10
-    $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build >> "$LOG_FILE" 2>&1 || true
+    $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build --pull never >> "$LOG_FILE" 2>&1 || true
     # Step 3: catch any stragglers from the second pass
     $DOCKER_CMD start $($DOCKER_CMD ps -a --filter status=created -q) 2>/dev/null || true
 
@@ -970,10 +1038,11 @@ except Exception:
         ai_warn "Some services failed. Check: docker compose logs"
         ai_warn "Log file: $LOG_FILE"
         if command -v write_compose_failure_report >/dev/null 2>&1; then
+            _compose_up_suffix="$(_phase11_compose_up_suffix)"
             _compose_report_path="$(write_compose_failure_report \
                 "$INSTALL_DIR" \
                 "install-core phase 11 docker compose up" \
-                "$DOCKER_COMPOSE_CMD $COMPOSE_FLAGS up -d --remove-orphans --no-build" \
+                "$DOCKER_COMPOSE_CMD $COMPOSE_FLAGS $_compose_up_suffix" \
                 "$LOG_FILE" \
                 "${GPU_BACKEND:-unknown}" \
                 "Open the saved report, fix the failed image/port/compose error it identifies, then re-run ./install.sh." |

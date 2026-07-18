@@ -88,13 +88,15 @@ fi
 
 # 4. .env with all required keys (minimal) → exit 0
 # Schema required: WEBUI_SECRET, SEARXNG_SECRET, N8N_USER, N8N_PASS, LITELLM_KEY, OPENCLAW_TOKEN
+# Values must satisfy the schema minLength (10) on these secret keys, so use
+# realistic-length placeholders rather than short tokens like "admin"/"testkey".
 cat > "$TMP_DIR/valid.env" <<'EOF'
-WEBUI_SECRET=test-secret
-SEARXNG_SECRET=test-secret
-N8N_USER=admin
-N8N_PASS=testpass
-LITELLM_KEY=testkey
-OPENCLAW_TOKEN=testtoken
+WEBUI_SECRET=test-webui-secret
+SEARXNG_SECRET=test-searxng-secret
+N8N_USER=admin@ods.local
+N8N_PASS=test-pass-1234
+LITELLM_KEY=sk-test-key-1234
+OPENCLAW_TOKEN=test-openclaw-token
 EOF
 set +e
 "$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/valid.env" "$ROOT_DIR/.env.schema.json" >/dev/null 2>&1
@@ -147,6 +149,32 @@ if [[ $r -eq 2 ]]; then
     pass "Unknown key yields exit 2"
 else
     fail "Unknown key should yield exit 2, got $r"
+fi
+
+# 7. Required keys present but a secret too short for minLength → exit 2
+# WEBUI_SECRET=CHANGEME is 8 chars, below the schema minLength of 10. All other
+# required keys are long enough, so this isolates the length check.
+cat > "$TMP_DIR/short.env" <<'EOF'
+WEBUI_SECRET=CHANGEME
+SEARXNG_SECRET=test-searxng-secret
+N8N_USER=admin@ods.local
+N8N_PASS=test-pass-1234
+LITELLM_KEY=sk-test-key-1234
+OPENCLAW_TOKEN=test-openclaw-token
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/short.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 2 ]]; then
+    pass "Too-short secret yields exit 2"
+else
+    fail "Too-short secret should yield exit 2, got $r"
+fi
+if echo "$out" | grep -q "minLength"; then
+    pass "Output reports a minLength violation"
+else
+    fail "Output should report a minLength violation"
 fi
 
 echo ""

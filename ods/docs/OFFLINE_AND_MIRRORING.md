@@ -29,7 +29,7 @@ For a durable downstream release, preserve:
 For an internal mirror:
 
 ```bash
-git clone --mirror https://github.com/Light-Heart-Labs/ODS.git
+git clone --mirror https://github.com/Osmantic/ODS.git
 cd ODS.git
 git remote set-url --push origin <your-mirror-url>
 git push --mirror
@@ -38,7 +38,7 @@ git push --mirror
 For a working fork, pin your release in `DOWNSTREAM.md`:
 
 ```text
-Upstream: Light-Heart-Labs/ODS
+Upstream: Osmantic/ODS
 Upstream ref: <commit-or-tag>
 Downstream ref: <commit-or-tag>
 Validation receipt: <date-and-run-id-or-local-report>
@@ -56,6 +56,14 @@ docker push <your-registry>/<image>:<tag>
 
 Prefer digest-pinned records for release receipts. If a service still uses a tag
 pin, record the digest resolved during validation.
+
+On high-latency or unreliable links, the Linux installer gives transient Docker
+pull failures four attempts total, with `5 15 30` second waits between retries.
+Operators can tune this without editing the installer:
+
+```bash
+ODS_DOCKER_PULL_MAX_ATTEMPTS=4 ODS_DOCKER_PULL_RETRY_DELAYS="10 30 60" ./install.sh
+```
 
 ## Models
 

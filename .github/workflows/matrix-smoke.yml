@@ -138,8 +138,7 @@ jobs:
             retry pacman -Syyu --noconfirm --needed ca-certificates git curl
           elif command -v zypper &>/dev/null; then
             configure_zypper_ci_network
-            retry bounded 240 zypper --non-interactive --gpg-auto-import-keys refresh
-            retry bounded 240 zypper --non-interactive install -y ca-certificates git curl
+            echo "Skipping zypper checkout prerequisites; packaging.sh install behavior is tested after checkout."
           fi
 
       - name: Checkout

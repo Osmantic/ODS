@@ -49,7 +49,8 @@ check 'Get-NetTCPConnection' "$DIAG_LIB" "report includes Windows port checks"
 check 'Compose config tail (redacted)' "$DIAG_LIB" "report captures redacted compose config"
 check '[switch]$SaveReport' "$DIAG_LIB" "diagnostics only save report when requested"
 check '-ComposeLogPath $_composeLog' "$INSTALL_PS1" "installer passes compose log to diagnostics"
-check '-ComposeArgs @("up", "-d", "--remove-orphans", "--no-build")' "$INSTALL_PS1" "installer passes exact compose up args"
+check '$composeUpArgs = @("up", "-d", "--remove-orphans", "--no-build", "--pull", "never")' "$INSTALL_PS1" "installer passes guarded compose up args"
+check 'Invoke-ODSWindowsComposeImagePreflight' "$INSTALL_PS1" "installer preflights compose images before up"
 check '-SaveReport' "$INSTALL_PS1" "installer enables saved report on compose failure"
 check 'function Assert-ODSWindowsComposeCwd' "$INSTALL_PS1" "installer asserts compose cwd before launch"
 check 'Write-ODSWindowsComposeLaunchRecord' "$INSTALL_PS1" "installer writes compose launch record"
@@ -61,6 +62,8 @@ check 'Join-Path $installDir $cfPath' "$INSTALL_PS1" "installer validates relati
 check 'HERMES_AGENT_IMAGE_FALLBACK' "$INSTALL_PS1" "installer supports Hermes image fallback"
 check 'Validating Hermes Agent image tag before startup' "$INSTALL_PS1" "installer validates Hermes image before compose up"
 check 'ImageEnvName = "LLAMA_SERVER_IMAGE"' "$INSTALL_PS1" "image validation labels override env var"
+check 'Used user'\''s default Docker config for local image builds' "$INSTALL_PS1" "installer records default Docker config build fallback"
+check 'Remove-Item Env:DOCKER_CONFIG' "$INSTALL_PS1" "installer can clear scoped Docker config for fallback builds"
 check '$_probeImage = "alpine:3.20"' "$PRE_SCRIPT" "preflight uses pinned Alpine probe image"
 check '$_inspectExit = $LASTEXITCODE' "$PRE_SCRIPT" "preflight captures inspect exit before deciding to pull"
 check 'docker pull $_probeImage' "$PRE_SCRIPT" "preflight pulls missing probe image before bind-mount test"
@@ -183,7 +186,7 @@ EOF
             Assert-ODSWindowsComposeCwd -InstallDir $env:INSTALL_DIR
             Write-ODSWindowsComposeLaunchRecord -InstallDir $env:INSTALL_DIR `
                 -ComposeFlags @("--env-file", ".env", "-f", "docker-compose.base.yml") `
-                -ComposeArgs @("up", "-d", "--remove-orphans", "--no-build")
+                -ComposeArgs @("up", "-d", "--remove-orphans", "--no-build", "--pull", "never")
         }
         finally {
             [Environment]::CurrentDirectory = $previous
@@ -197,7 +200,7 @@ EOF
             "cwd=$env:INSTALL_DIR",
             "dotnet_cwd=$env:INSTALL_DIR",
             "docker_config=$expectedDockerConfig",
-            "compose_command=docker --config `"$expectedDockerConfig`" compose --env-file .env -f docker-compose.base.yml up -d --remove-orphans --no-build",
+            "compose_command=docker --config `"$expectedDockerConfig`" compose --env-file .env -f docker-compose.base.yml up -d --remove-orphans --no-build --pull never",
             "compose_ps_command=cd"
         )) {
             if (-not $text.Contains($needle)) { throw "missing $needle" }

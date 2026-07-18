@@ -175,8 +175,13 @@ Yes. Common use cases:
 **With install wizard:** Under 1 hour for someone comfortable with terminal.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Light-Heart-Labs/ODS/main/ods/get-ods.sh | bash
+curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
+
+The hosted endpoint proxies the current bootstrap from repository `main`.
+Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
+[Installer Trust](INSTALLER_TRUST.md) to inspect the script or install a stable
+release or audited commit manually.
 
 The wizard:
 1. Detects your hardware
@@ -296,7 +301,7 @@ When the full model finishes, the system swaps it in automatically — you don't
 
 1. This documentation
 2. `TROUBLESHOOTING.md` for common issues
-3. GitHub Issues: https://github.com/Light-Heart-Labs/ODS/issues
+3. GitHub Issues: https://github.com/Osmantic/ODS/issues
 4. Discord community (link in README)
 
 ---
@@ -329,4 +334,4 @@ See "Cost & ROI" section above. TL;DR: Local is cheaper at scale, more private, 
 
 ---
 
-*Built by Light Heart Labs / The Collective*
+*Built by Osmantic / The Collective*

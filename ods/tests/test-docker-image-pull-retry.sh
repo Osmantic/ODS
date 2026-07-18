@@ -49,11 +49,15 @@ run_pull_with_progress() {
     GRN=""; BGRN=""; DGRN=""; AMB=""; WHT=""; RED=""; NC=""; CURSOR=""
     VERSION="test"; INTERACTIVE="false"; DRY_RUN=false
 
-    # Keep CI fast
-    sleep() { :; }
-    spin_task() { local pid="$1"; wait "$pid"; }
+    # Keep CI fast while preserving the requested retry delays for assertions.
+    sleep() {
+      if [[ -n "${SLEEP_LOG:-}" ]]; then
+        printf "%s " "$1" >> "$SLEEP_LOG"
+      fi
+    }
 
     source "$ROOT_DIR/installers/lib/ui.sh"
+    spin_task() { local pid="$1"; wait "$pid"; }
     pull_with_progress "$IMG" "$LABEL" "$COUNT" "$TOTAL"
   ' _ "$docker_cmd" "$img" "$label" "$count" "$total" "$ROOT_DIR" \
     >>"$TMP_DIR/stdout.log" 2>>"$TMP_DIR/stderr.log"
@@ -86,11 +90,11 @@ cat >"$TMP_DIR/docker-fail-then-succeed" <<'EOF'
 #!/usr/bin/env bash
 state_file="${DOCKER_MOCK_STATE_FILE}"
 : "${state_file:?DOCKER_MOCK_STATE_FILE required}"
-count=$(cat "$state_file" 2>/dev/null || echo 0)
-count=$((count + 1))
-echo "$count" > "$state_file"
 
 if [[ "$1" == "pull" ]]; then
+  count=$(cat "$state_file" 2>/dev/null || echo 0)
+  count=$((count + 1))
+  echo "$count" > "$state_file"
   if [[ $count -lt 3 ]]; then
     echo "network timeout" >&2
     exit 1
@@ -102,15 +106,31 @@ exit 0
 EOF
 chmod +x "$TMP_DIR/docker-fail-then-succeed"
 
+cat >"$TMP_DIR/docker-always-timeout" <<'EOF'
+#!/usr/bin/env bash
+state_file="${DOCKER_MOCK_STATE_FILE}"
+: "${state_file:?DOCKER_MOCK_STATE_FILE required}"
+
+if [[ "$1" == "pull" ]]; then
+  count=$(cat "$state_file" 2>/dev/null || echo 0)
+  count=$((count + 1))
+  echo "$count" > "$state_file"
+  echo "network timeout" >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$TMP_DIR/docker-always-timeout"
+
 cat >"$TMP_DIR/docker-unauthorized" <<'EOF'
 #!/usr/bin/env bash
 state_file="${DOCKER_MOCK_STATE_FILE}"
 : "${state_file:?DOCKER_MOCK_STATE_FILE required}"
-count=$(cat "$state_file" 2>/dev/null || echo 0)
-count=$((count + 1))
-echo "$count" > "$state_file"
 
 if [[ "$1" == "pull" ]]; then
+  count=$(cat "$state_file" 2>/dev/null || echo 0)
+  count=$((count + 1))
+  echo "$count" > "$state_file"
   echo "Error response from daemon: unauthorized: authentication required" >&2
   exit 1
 fi
@@ -133,17 +153,21 @@ fi
 printf "  %-60s " "retries transient failures and succeeds..."
 rm -f "$TMP_DIR/stdout.log" "$TMP_DIR/stderr.log"
 export DOCKER_MOCK_STATE_FILE="$TMP_DIR/state-transient"
+export SLEEP_LOG="$TMP_DIR/sleep-transient.log"
 rm -f "$DOCKER_MOCK_STATE_FILE"
+rm -f "$SLEEP_LOG"
 if run_pull_with_progress "$TMP_DIR/docker-fail-then-succeed" "img" "label"; then
   attempts=$(cat "$DOCKER_MOCK_STATE_FILE" 2>/dev/null || echo 0)
-  if [[ "$attempts" == "3" ]]; then
+  sleeps=$(sed 's/[[:space:]]*$//' "$SLEEP_LOG" 2>/dev/null || true)
+  if [[ "$attempts" == "3" && "$sleeps" == "5 15" ]]; then
     print_pass
   else
-    print_fail "(attempts=$attempts, expected 3)"
+    print_fail "(attempts=$attempts, expected 3; sleeps='$sleeps', expected '5 15')"
   fi
 else
   print_fail
 fi
+unset SLEEP_LOG
 
 printf "  %-60s " "fails fast on unauthorized (no retries)..."
 rm -f "$TMP_DIR/stdout.log" "$TMP_DIR/stderr.log"
@@ -160,12 +184,57 @@ else
   fi
 fi
 
+printf "  %-60s " "uses full default retry schedule before giving up..."
+rm -f "$TMP_DIR/stdout.log" "$TMP_DIR/stderr.log"
+export DOCKER_MOCK_STATE_FILE="$TMP_DIR/state-default-timeout"
+export SLEEP_LOG="$TMP_DIR/sleep-default-timeout.log"
+rm -f "$DOCKER_MOCK_STATE_FILE" "$SLEEP_LOG"
+if run_pull_with_progress "$TMP_DIR/docker-always-timeout" "img" "label"; then
+  print_fail "(unexpected success)"
+else
+  attempts=$(cat "$DOCKER_MOCK_STATE_FILE" 2>/dev/null || echo 0)
+  sleeps=$(sed 's/[[:space:]]*$//' "$SLEEP_LOG" 2>/dev/null || true)
+  if [[ "$attempts" == "4" && "$sleeps" == "5 15 30" ]]; then
+    print_pass
+  else
+    print_fail "(attempts=$attempts, expected 4; sleeps='$sleeps', expected '5 15 30')"
+  fi
+fi
+unset SLEEP_LOG
+
+printf "  %-60s " "supports configurable retry delays and attempts..."
+rm -f "$TMP_DIR/stdout.log" "$TMP_DIR/stderr.log"
+export DOCKER_MOCK_STATE_FILE="$TMP_DIR/state-configurable"
+export SLEEP_LOG="$TMP_DIR/sleep-configurable.log"
+export ODS_DOCKER_PULL_MAX_ATTEMPTS=4
+export ODS_DOCKER_PULL_RETRY_DELAYS="1 2"
+rm -f "$DOCKER_MOCK_STATE_FILE" "$SLEEP_LOG"
+if run_pull_with_progress "$TMP_DIR/docker-always-timeout" "img" "label"; then
+  print_fail "(unexpected success)"
+else
+  attempts=$(cat "$DOCKER_MOCK_STATE_FILE" 2>/dev/null || echo 0)
+  sleeps=$(sed 's/[[:space:]]*$//' "$SLEEP_LOG" 2>/dev/null || true)
+  if [[ "$attempts" == "4" && "$sleeps" == "1 2 4" ]]; then
+    print_pass
+  else
+    print_fail "(attempts=$attempts, expected 4; sleeps='$sleeps', expected '1 2 4')"
+  fi
+fi
+unset ODS_DOCKER_PULL_MAX_ATTEMPTS ODS_DOCKER_PULL_RETRY_DELAYS SLEEP_LOG
+
 echo ""
 echo "2. Integration Tests"
 echo "────────────────────"
 
 printf "  %-60s " "Phase 08 calls pull_with_progress..."
 if grep -q "pull_with_progress" "$ROOT_DIR/installers/phases/08-images.sh"; then
+  print_pass
+else
+  print_fail
+fi
+
+printf "  %-60s " "Phase 08 audits resolved Compose images..."
+if grep -q "ods_compose_external_images" "$ROOT_DIR/installers/phases/08-images.sh"; then
   print_pass
 else
   print_fail
@@ -178,8 +247,23 @@ else
   print_fail
 fi
 
-printf "  %-60s " "Phase 08 shows warning for failures..."
-if grep -q "ai_warn.*failed" "$ROOT_DIR/installers/phases/08-images.sh"; then
+printf "  %-60s " "Phase 08 fails before service startup on pull failures..."
+if grep -q "Phase 5 will not perform unprotected Docker pulls" "$ROOT_DIR/installers/phases/08-images.sh"; then
+  print_pass
+else
+  print_fail
+fi
+
+printf "  %-60s " "Phase 11 preflights Compose images with retry..."
+if grep -q "_phase11_pre_pull_compose_images" "$ROOT_DIR/installers/phases/11-services.sh" \
+  && grep -q "pull_with_progress" "$ROOT_DIR/installers/phases/11-services.sh"; then
+  print_pass
+else
+  print_fail
+fi
+
+printf "  %-60s " "Phase 11 disables implicit Compose pulls..."
+if grep -q -- "--pull never" "$ROOT_DIR/installers/phases/11-services.sh"; then
   print_pass
 else
   print_fail
@@ -189,20 +273,29 @@ echo ""
 echo "3. Retry Strategy Tests (source-level sanity checks)"
 echo "────────────────────────────────────────────────────"
 
-printf "  %-60s " "max_attempts is 3..."
+printf "  %-60s " "max_attempts is 4..."
 retry_count=$(grep -A 15 "^pull_with_progress()" "$ROOT_DIR/installers/lib/ui.sh" | grep -m1 "max_attempts=" | grep -oE '[0-9]+' || true)
 retry_count=${retry_count:-0}
-if [[ "$retry_count" == "3" ]]; then
+if [[ "$retry_count" == "4" ]]; then
   print_pass
 else
-  print_fail "(found $retry_count, expected 3)"
+  print_fail "(found $retry_count, expected 4)"
 fi
 
-printf "  %-60s " "backoff uses exponential formula..."
-if grep -A 30 "^pull_with_progress()" "$ROOT_DIR/installers/lib/ui.sh" | grep -Fq "5 * (2 ** (attempt - 2))"; then
+printf "  %-60s " "default retry delays are 5s, 15s, 30s..."
+default_delays=$(
+  bash -c '
+    set -euo pipefail
+    source "$1"
+    _docker_pull_retry_delay 1
+    _docker_pull_retry_delay 2
+    _docker_pull_retry_delay 3
+  ' _ "$ROOT_DIR/installers/lib/ui.sh" | paste -sd ' '
+)
+if [[ "$default_delays" == "5 15 30" ]]; then
   print_pass
 else
-  print_fail
+  print_fail "(found '$default_delays')"
 fi
 
 echo ""

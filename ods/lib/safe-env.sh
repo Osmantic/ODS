@@ -16,6 +16,11 @@ load_env_file() {
     [[ -f "$path" ]] || return 0
     local line key value
     while IFS= read -r line || [[ -n "$line" ]]; do
+        # Strip a trailing CR so CRLF .env files (Windows editors, the Windows
+        # installer) don't leave carriage returns on every value — which would
+        # otherwise corrupt ports/paths (e.g. 8080\r) and leave the closing
+        # quote unstripped on quoted values. Matches load_env_from_output.
+        line="${line%$'\r'}"
         # Skip comments and blank lines
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
         [[ "$line" =~ ^[[:space:]]*$ ]] && continue

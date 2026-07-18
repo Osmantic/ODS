@@ -123,3 +123,51 @@ async def test_http_status_errors_are_classified():
     assert exc.value.status_code == 401
     assert "missing bearer" in str(exc.value)
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_requests_inherit_client_timeout():
+    # Regression: _request_json must not pass an explicit timeout=None. httpx
+    # reads that as "no timeout" and would silently disable the client's
+    # configured timeout on every core call, so a hung Lemonade backend would
+    # hang the request forever instead of failing fast.
+    seen = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json={"status": "ok"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=20.0)
+    adapter = LemonadeClient(
+        LemonadeSettings(base_url="http://lemonade:13305"),
+        client=client,
+    )
+
+    await adapter.health()
+    await client.aclose()
+
+    assert seen["timeout"] is not None, "request must carry a resolved timeout"
+    assert seen["timeout"].get("read") == 20.0, (
+        f"core requests must inherit the client timeout, got {seen['timeout']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_explicit_timeout_override_is_applied():
+    # An explicit per-request timeout still wins over the client default.
+    seen = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(200, json={"status": "ok"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=20.0)
+    adapter = LemonadeClient(
+        LemonadeSettings(base_url="http://lemonade:13305"),
+        client=client,
+    )
+
+    await adapter._request_json("GET", "health", timeout=5.0)
+    await client.aclose()
+
+    assert seen["timeout"].get("read") == 5.0

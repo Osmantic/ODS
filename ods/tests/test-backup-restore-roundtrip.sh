@@ -33,6 +33,10 @@ echo "compose-content" > "$SRC/docker-compose.yml"
 echo "config-data" > "$SRC/config/settings.json"
 echo "user-data-file" > "$SRC/data/open-webui/data.txt"
 
+# Both scripts source lib/rsync.sh relative to ODS_DIR
+mkdir -p "$SRC/lib"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$SRC/lib/"
+
 info "Creating backup from source"
 ODS_DIR="$SRC" bash "$ODS_BACKUP" --type full >/dev/null 2>&1 || fail "Backup failed"
 
@@ -45,6 +49,8 @@ pass "Backup created: $BACKUP_ID"
 DST="$TMP/dst"
 mkdir -p "$DST/data"
 mkdir -p "$DST/.backups"
+mkdir -p "$DST/lib"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$DST/lib/"
 
 info "Restoring backup to destination"
 # Copy backup to destination's backup root
@@ -75,6 +81,41 @@ pass "All expected files/dirs present after restore"
 [[ "$(cat "$DST/data/open-webui/data.txt")" == "user-data-file" ]] || fail "data/open-webui/data.txt content mismatch"
 
 pass "All file contents match after restore"
+
+# ── Compressed round-trip ─────────────────────────────────────────────
+# extract_backup's stdout is command-substituted into the backup path, so a
+# log line leaking to stdout garbles the path and fails every .tar.gz restore.
+
+info "Creating compressed backup from source"
+ODS_DIR="$SRC" bash "$ODS_BACKUP" --type config --compress >/dev/null 2>&1 || fail "Compressed backup failed"
+
+TARBALL=$(ls -1 "$SRC/.backups"/*.tar.gz 2>/dev/null | head -n 1)
+[[ -n "$TARBALL" ]] || fail "No compressed backup created"
+CBACKUP_ID=$(basename "$TARBALL" .tar.gz)
+pass "Compressed backup created: $CBACKUP_ID.tar.gz"
+
+DST2="$TMP/dst2"
+mkdir -p "$DST2/data" "$DST2/.backups" "$DST2/lib"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$DST2/lib/"
+echo "compose-content" > "$DST2/docker-compose.yml"
+cp "$TARBALL" "$DST2/.backups/"
+
+info "Restoring from compressed backup"
+ODS_DIR="$DST2" bash "$ODS_RESTORE" -f "$CBACKUP_ID" >/dev/null 2>&1 || fail "Compressed restore failed"
+[[ -f "$DST2/.env" ]] || fail "Missing .env after compressed restore"
+[[ "$(cat "$DST2/.env")" == "test-env-value" ]] || fail ".env content mismatch after compressed restore"
+pass "Compressed backup restores correctly"
+
+# ── Interactive selection ─────────────────────────────────────────────
+# select_backup's stdout is command-substituted into backup_id, so the list
+# and prompt must print to stderr or the selection table is swallowed and
+# the captured ID is garbage.
+
+info "Restoring via interactive selection (dry run)"
+interactive_err=$(printf '1\n' | ODS_DIR="$DST2" bash "$ODS_RESTORE" -f -d 2>&1 >/dev/null) \
+    || fail "Interactive selection restore failed"
+echo "$interactive_err" | grep -q "Available Backups" || fail "Selection table not shown to the user (stderr)"
+pass "Interactive selection shows the table and resolves a clean backup ID"
 
 echo ""
 echo -e "${GREEN}✓ Round-trip backup/restore test passed${NC}"

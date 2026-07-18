@@ -16,7 +16,7 @@ from helpers import (
     get_llama_metrics, get_loaded_model, get_llama_context_size,
     get_disk_usage, dir_size_gb, invalidate_dir_size_cache, clear_dir_size_cache,
     _get_aio_session, set_services_cache, get_cached_services,
-    _get_lifetime_tokens,
+    _get_httpx_client, _get_lifetime_tokens,
 )
 from models import BootstrapStatus, ServiceStatus, DiskUsage
 
@@ -681,6 +681,7 @@ class TestGetAioSession:
     async def test_creates_session(self, monkeypatch):
         import helpers
         monkeypatch.setattr(helpers, "_aio_session", None)
+        monkeypatch.setattr(helpers, "_aio_session_lock", None)
         session = await _get_aio_session()
         assert session is not None
         await session.close()
@@ -689,10 +690,61 @@ class TestGetAioSession:
     async def test_reuses_session(self, monkeypatch):
         import helpers
         monkeypatch.setattr(helpers, "_aio_session", None)
+        monkeypatch.setattr(helpers, "_aio_session_lock", None)
         s1 = await _get_aio_session()
         s2 = await _get_aio_session()
         assert s1 is s2
         await s1.close()
+
+    @pytest.mark.asyncio
+    async def test_waits_for_singleton_lock_before_creating_session(self, monkeypatch):
+        import helpers
+        lock = asyncio.Lock()
+        await lock.acquire()
+        monkeypatch.setattr(helpers, "_aio_session", None)
+        monkeypatch.setattr(helpers, "_aio_session_lock", lock)
+
+        task = asyncio.create_task(_get_aio_session())
+        await asyncio.sleep(0)
+
+        assert not task.done()
+        lock.release()
+        session = await task
+        assert session is not None
+        await session.close()
+
+
+# --- _get_httpx_client ---
+
+
+class TestGetHttpxClient:
+
+    @pytest.mark.asyncio
+    async def test_reuses_client(self, monkeypatch):
+        import helpers
+        monkeypatch.setattr(helpers, "_httpx_client", None)
+        monkeypatch.setattr(helpers, "_httpx_client_lock", None)
+        c1 = await _get_httpx_client()
+        c2 = await _get_httpx_client()
+        assert c1 is c2
+        await c1.aclose()
+
+    @pytest.mark.asyncio
+    async def test_waits_for_singleton_lock_before_creating_client(self, monkeypatch):
+        import helpers
+        lock = asyncio.Lock()
+        await lock.acquire()
+        monkeypatch.setattr(helpers, "_httpx_client", None)
+        monkeypatch.setattr(helpers, "_httpx_client_lock", lock)
+
+        task = asyncio.create_task(_get_httpx_client())
+        await asyncio.sleep(0)
+
+        assert not task.done()
+        lock.release()
+        client = await task
+        assert client is not None
+        await client.aclose()
 
 
 # --- set_services_cache / get_cached_services ---
@@ -989,6 +1041,13 @@ class TestBootstrapStatusEtaEdge:
 
 class TestDirSizeGb:
 
+    @staticmethod
+    def _symlink_or_skip(link: Path, target: Path):
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable in this test environment: {exc}")
+
     def test_nonexistent_path_returns_zero(self, tmp_path):
         clear_dir_size_cache()
         assert dir_size_gb(tmp_path / "does-not-exist") == 0.0
@@ -1015,10 +1074,29 @@ class TestDirSizeGb:
         real = d / "real.bin"
         real.write_bytes(b"\x00" * 1024)
         link = d / "link.bin"
-        link.symlink_to(real)
+        self._symlink_or_skip(link, real)
         # Only real.bin should be counted (1024 B ≈ 0.0 GB when rounded to 2dp)
         result = dir_size_gb(d)
         assert result == 0.0  # 1024 bytes rounds to 0.0 GB
+
+    def test_checks_symlink_before_is_file(self, tmp_path, monkeypatch):
+        clear_dir_size_cache()
+        d = tmp_path / "withlinks"
+        d.mkdir()
+        outside = tmp_path / "outside.bin"
+        outside.write_bytes(b"\x00" * 1024)
+        link = d / "outside-link.bin"
+        self._symlink_or_skip(link, outside)
+
+        original_is_file = Path.is_file
+
+        def guarded_is_file(self):
+            if self == link:
+                raise AssertionError("dir_size_gb called is_file before skipping symlink")
+            return original_is_file(self)
+
+        monkeypatch.setattr(Path, "is_file", guarded_is_file)
+        assert dir_size_gb(d) == 0.0
 
     def test_uses_cached_value_until_invalidated(self, tmp_path, monkeypatch):
         clear_dir_size_cache()
