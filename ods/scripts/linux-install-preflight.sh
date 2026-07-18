@@ -272,15 +272,20 @@ if [[ "$ROOTLESS_DOCKER" == true ]]; then
     SUBID_UID="$(id -u)"
     SUBUID_TOTAL="$(subid_range_total "$SUBUID_FILE" "$SUBID_USER" "$SUBID_UID")"
     SUBGID_TOTAL="$(subid_range_total "$SUBGID_FILE" "$SUBID_USER" "$SUBID_UID")"
-    SUBID_FIX="Allocate ranges with: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $SUBID_USER, then restart the rootless Docker daemon (systemctl --user restart docker)."
+    # Two remediations: with NO allocation the standard 100000-165535 range is
+    # safe to suggest verbatim, but with an existing-but-small allocation that
+    # fixed range can overlap what the user already has (e.g. 100000:1000), so
+    # the small-range hint asks for a non-overlapping extension instead.
+    SUBID_FIX_MISSING="Allocate ranges with: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $SUBID_USER, then restart the rootless Docker daemon (systemctl --user restart docker)."
+    SUBID_FIX_SMALL="Extend the allocation to at least $MIN_SUBID_RANGE subordinate IDs: pick a start ABOVE every range already listed in $SUBUID_FILE and $SUBGID_FILE (sudo usermod --add-subuids <start>-<start+65535> --add-subgids <start>-<start+65535> $SUBID_USER), then restart the rootless Docker daemon (systemctl --user restart docker)."
     if [[ "$SUBUID_TOTAL" -eq 0 || "$SUBGID_TOTAL" -eq 0 ]]; then
         append_check "ROOTLESS_SUBID" "fail" \
             "Rootless Docker detected but $SUBID_USER has no subordinate ID range (subuids=$SUBUID_TOTAL in $SUBUID_FILE, subgids=$SUBGID_TOTAL in $SUBGID_FILE) — non-root containers cannot map user namespaces" \
-            "$SUBID_FIX"
+            "$SUBID_FIX_MISSING"
     elif [[ "$SUBUID_TOTAL" -lt "$MIN_SUBID_RANGE" || "$SUBGID_TOTAL" -lt "$MIN_SUBID_RANGE" ]]; then
         append_check "ROOTLESS_SUBID" "warn" \
             "Rootless Docker: subordinate ID range for $SUBID_USER is small (subuids=$SUBUID_TOTAL, subgids=$SUBGID_TOTAL, recommended ≥$MIN_SUBID_RANGE) — images using high UIDs/GIDs may fail to extract" \
-            "$SUBID_FIX"
+            "$SUBID_FIX_SMALL"
     else
         append_check "ROOTLESS_SUBID" "pass" \
             "Rootless Docker: $SUBID_USER has subuids=$SUBUID_TOTAL, subgids=$SUBGID_TOTAL (≥$MIN_SUBID_RANGE)" ""

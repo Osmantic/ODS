@@ -169,6 +169,16 @@ print(next(c["status"] for c in report["checks"] if c["id"] == "ROOTLESS_SUBID")
         fail "ROOTLESS_SUBID should pass with a full 65536 range"
     fi
 
+    rootless_subid_remediation() {
+        # Reads the remediation of the LAST rootless_subid_status run.
+        python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    report = json.load(f)
+print(next(c["remediation"] for c in report["checks"] if c["id"] == "ROOTLESS_SUBID"))
+' "$SUBID_TMP/report.json"
+    }
+
     printf 'someone-else:100000:65536\n' >"$SUBID_TMP/subuid-missing"
     printf 'someone-else:100000:65536\n' >"$SUBID_TMP/subgid-missing"
     if [[ "$(rootless_subid_status "$SUBID_TMP/subuid-missing" "$SUBID_TMP/subgid-missing")" == "fail" ]]; then
@@ -176,12 +186,26 @@ print(next(c["status"] for c in report["checks"] if c["id"] == "ROOTLESS_SUBID")
     else
         fail "ROOTLESS_SUBID should fail when the user has no entry"
     fi
+    if [[ "$(rootless_subid_remediation)" == *"100000-165535"* ]]; then
+        pass "missing-entry remediation suggests the standard 100000-165535 range"
+    else
+        fail "missing-entry remediation should carry the exact usermod command"
+    fi
 
     printf '%s:100000:1000\n' "$CURRENT_USER" >"$SUBID_TMP/subuid-small"
     if [[ "$(rootless_subid_status "$SUBID_TMP/subuid-small" "$SUBID_TMP/subgid-ok")" == "warn" ]]; then
         pass "ROOTLESS_SUBID warns when the allocated range is below 65536"
     else
         fail "ROOTLESS_SUBID should warn on a small range"
+    fi
+    # The fixture already occupies 100000:1000, so the warning must NOT
+    # suggest the fixed 100000-165535 range (it would overlap); it should
+    # ask for a non-overlapping extension to at least 65536 IDs instead.
+    SMALL_FIX="$(rootless_subid_remediation)"
+    if [[ "$SMALL_FIX" != *"100000-165535"* && "$SMALL_FIX" == *"65536"* ]]; then
+        pass "small-range remediation asks for a non-overlapping extension"
+    else
+        fail "small-range remediation must not reuse the fixed 100000-165535 range"
     fi
 
     printf '%s:100000:30000\n%s:200000:40000\n' "$CURRENT_USER" "$CURRENT_USER" >"$SUBID_TMP/subuid-split"
