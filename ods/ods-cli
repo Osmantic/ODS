@@ -1670,6 +1670,9 @@ cmd_update() {
     # verification before the new version is persisted.
     while IFS= read -r service; do
         [[ -z "$service" ]] && continue
+        if ! sr_requires_startup_check "$service"; then
+            continue
+        fi
         total_services=$((total_services + 1))
 
         local container

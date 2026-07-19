@@ -38,7 +38,7 @@ trap 'rm -rf "$FIXTURE"' EXIT
 # ---------------------------------------------------------------------------
 # Fixture: minimal install dir plus docker/curl shims
 # ---------------------------------------------------------------------------
-mkdir -p "$FIXTURE/lib" "$FIXTURE/extensions/services/bsvc" "$FIXTURE/bin"
+mkdir -p "$FIXTURE/lib" "$FIXTURE/extensions/services/bsvc" "$FIXTURE/extensions/services/oneshot" "$FIXTURE/bin"
 cp "$ROOT_DIR/ods-cli" "$FIXTURE/ods-cli"
 cp "$ROOT_DIR"/lib/*.sh "$FIXTURE/lib/"
 : > "$FIXTURE/docker-compose.base.yml"
@@ -57,6 +57,22 @@ service:
   depends_on: []
 EOF
 echo "services: {}" > "$FIXTURE/extensions/services/bsvc/compose.yaml"
+
+cat > "$FIXTURE/extensions/services/oneshot/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+service:
+  id: oneshot
+  name: oneshot
+  container_name: ods-oneshot
+  health: ""
+  type: docker
+  startup_check: false
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+EOF
+echo "services: {}" > "$FIXTURE/extensions/services/oneshot/compose.yaml"
 
 # Update target: installed 2.0.0 (.env) -> target 2.0.1 (manifest.json)
 echo '{"ods_version": "2.0.1"}' > "$FIXTURE/manifest.json"
