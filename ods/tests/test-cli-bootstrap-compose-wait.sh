@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Regression: CLI lifecycle commands must not race the background bootstrap
-# model upgrade. If restart/start compose while bootstrap-status is still
-# downloading, the hot-swap can finish after the CLI has already exported the
-# bootstrap GGUF from .env, causing compose to recreate llama-server with a
-# model file the upgrade just removed.
+# model upgrade near hot-swap, but must also not block for hours while a large
+# full-model download is still safely writing only its .part file.
 
 set -euo pipefail
 
@@ -78,6 +76,19 @@ exit 0
 SH
 chmod +x "$BIN_DIR/docker"
 
+cat > "$BIN_DIR/ps" <<'SH'
+#!/usr/bin/env bash
+if [[ "${ODS_FAKE_BOOTSTRAP_PROCESS:-}" == "1" && "${1:-}" == "-eo" && "${2:-}" == "args=" ]]; then
+    echo "bash ${ODS_HOME:?}/scripts/bootstrap-upgrade.sh ${ODS_HOME:?} Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --fixture"
+    exit 0
+fi
+if [[ -x /bin/ps ]]; then
+    exec /bin/ps "$@"
+fi
+exit 0
+SH
+chmod +x "$BIN_DIR/ps"
+
 cat > "$BIN_DIR/sleep" <<'SH'
 #!/usr/bin/env bash
 cat > "${ODS_HOME:?}/data/bootstrap-status.json" <<'JSON'
@@ -118,11 +129,12 @@ pass "bootstrap compose wait default matches release lifecycle update window"
 PATH="$BIN_DIR:$PATH" \
 ODS_HOME="$INSTALL_DIR" \
 DOCKER_LOG="$DOCKER_LOG" \
+ODS_FAKE_BOOTSTRAP_PROCESS=1 \
 ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_INTERVAL=1 \
 bash "$INSTALL_DIR/ods-cli" restart > "$OUT" 2>&1 || fail "ods restart failed"
 
-grep -q 'Model Upgrade: downloading; waiting before restart touches llama-server' "$OUT" \
-    || fail "restart did not wait while bootstrap upgrade was downloading"
+grep -q 'Model Upgrade: download nearly complete; waiting before restart touches llama-server' "$OUT" \
+    || fail "restart did not wait while bootstrap upgrade was near hot-swap"
 
 grep -q 'COMPOSE_GGUF_FILE=Qwen3.6-35B-A3B-UD-Q4_K_M.gguf' "$DOCKER_LOG" \
     || fail "compose did not receive the reloaded full-model GGUF_FILE"
@@ -132,6 +144,50 @@ if grep -q 'COMPOSE_GGUF_FILE=Qwen3.5-2B-Q4_K_M.gguf' "$DOCKER_LOG"; then
 fi
 
 pass "restart waits for bootstrap upgrade and reloads .env before compose"
+
+cat > "$INSTALL_DIR/.env" <<'EOF'
+ODS_VERSION=2.0.0
+GPU_BACKEND=nvidia
+TIER=4
+LLM_MODEL=qwen3.5-2b
+GGUF_FILE=Qwen3.5-2B-Q4_K_M.gguf
+MAX_CONTEXT=65536
+CTX_SIZE=65536
+SHIELD_API_KEY=test-fixture-key
+EOF
+
+cat > "$INSTALL_DIR/data/bootstrap-status.json" <<'EOF'
+{
+  "status": "downloading",
+  "model": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+  "percent": 0.4,
+  "bytesDownloaded": 186867712,
+  "bytesTotal": 48528320544,
+  "speedBytesPerSec": 3041280,
+  "eta": "264m 55s",
+  "updatedAt": "2026-07-19T00:00:02Z"
+}
+EOF
+: > "$DOCKER_LOG"
+
+PATH="$BIN_DIR:$PATH" \
+ODS_HOME="$INSTALL_DIR" \
+DOCKER_LOG="$DOCKER_LOG" \
+ODS_FAKE_BOOTSTRAP_PROCESS=1 \
+ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_INTERVAL=1 \
+bash "$INSTALL_DIR/ods-cli" restart > "$OUT" 2>&1 || fail "ods restart blocked early background download"
+
+grep -q 'Model Upgrade: downloading in background; continuing with restart before hot-swap begins' "$OUT" \
+    || fail "restart did not continue during early background download"
+
+grep -q 'COMPOSE_GGUF_FILE=Qwen3.5-2B-Q4_K_M.gguf' "$DOCKER_LOG" \
+    || fail "compose did not continue with bootstrap GGUF during early background download"
+
+if grep -q 'COMPOSE_GGUF_FILE=Qwen3.6-35B-A3B-UD-Q4_K_M.gguf' "$DOCKER_LOG"; then
+    fail "compose unexpectedly waited for full-model GGUF during early background download"
+fi
+
+pass "restart proceeds during early background download without waiting for full model"
 
 cat > "$INSTALL_DIR/.env" <<'EOF'
 ODS_VERSION=2.0.0
