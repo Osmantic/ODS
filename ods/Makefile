@@ -69,6 +69,9 @@ test: ## Run unit and contract tests
 	@echo "=== ods config show secret-mask matrix ==="
 	@bash tests/test-ods-config-secret-mask.sh
 	@echo ""
+	@echo "=== macOS ods config show secret-mask ==="
+	@bash tests/test-macos-config-show-secret-mask.sh
+	@echo ""
 	@echo "=== bootstrap OpenClaw compose-guard regression ==="
 	@bash tests/test-bootstrap-openclaw-compose-guard.sh
 	@echo ""
