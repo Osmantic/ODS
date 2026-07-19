@@ -677,6 +677,7 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_TIE
                 --ram-gb "${SYSTEM_RAM_GB:-0}" \
                 --profile "${MODEL_PROFILE_EFFECTIVE:-${MODEL_PROFILE:-qwen}}" \
                 --tier "$SELECTED_TIER" \
+                --max-size-mb "${LLM_MODEL_SIZE_MB:-0}" \
                 --host-arch "$(uname -m 2>/dev/null || echo unknown)" \
                 --installable-only \
                 --env 2>>"$ODS_LOG_FILE" || true)"
