@@ -618,7 +618,8 @@ def get_disk_usage() -> DiskUsage:
     """Get disk usage for the ODS install directory."""
     path = INSTALL_DIR if os.path.exists(INSTALL_DIR) else os.path.expanduser("~")
     total, used, free = shutil.disk_usage(path)
-    return DiskUsage(path=path, used_gb=round(used / (1024**3), 2), total_gb=round(total / (1024**3), 2), percent=round(used / total * 100, 1))
+    percent = round(used / total * 100, 1) if total > 0 else 0.0
+    return DiskUsage(path=path, used_gb=round(used / (1024**3), 2), total_gb=round(total / (1024**3), 2), percent=percent)
 
 
 def get_model_info() -> Optional[ModelInfo]:
