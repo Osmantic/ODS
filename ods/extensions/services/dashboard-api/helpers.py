@@ -801,7 +801,7 @@ def get_uptime() -> int:
         elif _system == "Windows":
             import ctypes
             return ctypes.windll.kernel32.GetTickCount64() // 1000
-    except (OSError, subprocess.SubprocessError, ValueError, AttributeError) as e:
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, AttributeError) as e:
         logger.debug("get_uptime failed on %s: %s", _system, e)
     return 0
 
