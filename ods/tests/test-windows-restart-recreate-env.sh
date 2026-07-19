@@ -47,10 +47,21 @@ else
 fi
 
 if grep -qF -- 'docker compose force-recreate returned' <<<"$restart_block" &&
-   grep -qF -- '$retryArgs = @("up", "-d", "--no-build", "--pull", "never") + $restartTargets' <<<"$restart_block"; then
+   grep -qF -- '$retryArgs = @("up", "-d", "--no-build", "--pull", "never") + $restartTargets' <<<"$restart_block" &&
+   grep -qF -- 'Invoke-ODSComposeUpWithStartupRetry -ComposeFlags $flags' <<<"$restart_block"; then
     pass "all-service restart retries start after partial force-recreate failure"
 else
-    fail "all-service restart must recover from partial force-recreate failures"
+    fail "all-service restart must recover from partial force-recreate failures with bounded startup retries"
+fi
+
+if grep -qF -- 'function Test-ODSComposeServicesStarted' "$ODS_PS1" &&
+   grep -qF -- 'function Invoke-ODSComposeUpWithStartupRetry' "$ODS_PS1" &&
+   grep -qF -- 'ODS_RESTART_STARTUP_RETRY_ATTEMPTS' "$ODS_PS1" &&
+   grep -qF -- 'ODS_RESTART_STARTUP_RETRY_DELAY_SECONDS' "$ODS_PS1" &&
+   grep -qF -- 'targeted services are running or completed cleanly; continuing' "$ODS_PS1"; then
+    pass "restart retry validates targeted services before tolerating compose nonzero"
+else
+    fail "restart retry must be bounded and validate targeted service state before tolerating compose nonzero"
 fi
 
 if grep -qF -- '-ComposeArgs @("restart"' <<<"$restart_block"; then

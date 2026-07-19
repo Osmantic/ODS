@@ -439,6 +439,101 @@ function Get-ODSRunningComposeServices {
     return @()
 }
 
+function Test-ODSComposeServicesStarted {
+    param(
+        [string[]]$ComposeFlags,
+        [string[]]$Services
+    )
+
+    if (-not $Services -or $Services.Count -eq 0) {
+        return $false
+    }
+
+    foreach ($service in $Services) {
+        if ([string]::IsNullOrWhiteSpace($service)) {
+            continue
+        }
+
+        $ids = @()
+        try {
+            $ids = @(& docker compose @ComposeFlags ps --all -q $service 2>$null |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        } catch {
+            return $false
+        }
+
+        if (-not $ids -or $ids.Count -eq 0) {
+            return $false
+        }
+
+        foreach ($id in $ids) {
+            $state = ""
+            try {
+                $state = & docker inspect --format "{{.State.Status}} {{.State.ExitCode}}" $id 2>$null
+            } catch {
+                return $false
+            }
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($state)) {
+                return $false
+            }
+
+            $normalized = $state.Trim()
+            if ($normalized -like "running *") {
+                continue
+            }
+            if ($normalized -eq "exited 0") {
+                continue
+            }
+
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Invoke-ODSComposeUpWithStartupRetry {
+    param(
+        [string[]]$ComposeFlags,
+        [string[]]$ComposeArgs,
+        [string[]]$Services,
+        [string]$Description = "docker compose up"
+    )
+
+    $attempts = 20
+    $parsedAttempts = 0
+    if ([int]::TryParse([string]$env:ODS_RESTART_STARTUP_RETRY_ATTEMPTS, [ref]$parsedAttempts) -and $parsedAttempts -gt 0) {
+        $attempts = $parsedAttempts
+    }
+
+    $delaySeconds = 15
+    $parsedDelay = 0
+    if ([int]::TryParse([string]$env:ODS_RESTART_STARTUP_RETRY_DELAY_SECONDS, [ref]$parsedDelay) -and $parsedDelay -gt 0) {
+        $delaySeconds = $parsedDelay
+    }
+
+    $composeExit = 1
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+        $composeExit = Invoke-ODSDockerCompose -InstallDir $InstallDir -ComposeFlags $ComposeFlags `
+            -ComposeArgs $ComposeArgs
+        if ($composeExit -eq 0) {
+            return 0
+        }
+
+        if (Test-ODSComposeServicesStarted -ComposeFlags $ComposeFlags -Services $Services) {
+            Write-AIWarn "$Description returned $composeExit, but targeted services are running or completed cleanly; continuing."
+            return 0
+        }
+
+        if ($attempt -lt $attempts) {
+            Write-AIWarn "$Description returned $composeExit; waiting for dependencies to settle before retrying ($attempt/$($attempts - 1))."
+            Start-Sleep -Seconds $delaySeconds
+        }
+    }
+
+    return $composeExit
+}
+
 function Write-ODSMissingComposeServiceHint {
     param(
         [string[]]$ComposeFlags,
@@ -1508,10 +1603,18 @@ function Invoke-Restart {
             $composeExit = Invoke-ODSDockerCompose -InstallDir $InstallDir -ComposeFlags $flags `
                 -ComposeArgs @("up", "-d", "--force-recreate", "--no-build", "--pull", "never", $Service)
             if ($composeExit -ne 0) {
-                Write-AIError "docker compose up --force-recreate failed (exit code: $composeExit)"
-                Write-ODSComposeDiagnostics -InstallDir $InstallDir -ComposeFlags $flags `
-                    -Phase "ods.ps1 restart ($Service)"
-                exit 1
+                Write-AIWarn "docker compose force-recreate returned $composeExit; retrying start for $Service."
+                $retryArgs = @("up", "-d", "--no-build", "--pull", "never", $Service)
+                $composeExit = Invoke-ODSComposeUpWithStartupRetry -ComposeFlags $flags `
+                    -ComposeArgs $retryArgs `
+                    -Services @($Service) `
+                    -Description "docker compose start for $Service"
+                if ($composeExit -ne 0) {
+                    Write-AIError "docker compose up --force-recreate failed (exit code: $composeExit)"
+                    Write-ODSComposeDiagnostics -InstallDir $InstallDir -ComposeFlags $flags `
+                        -Phase "ods.ps1 restart ($Service)"
+                    exit 1
+                }
             }
             Write-AISuccess "$Service restarted"
             if ($Service -eq "hermes" -and $hermesInStack) {
@@ -1539,8 +1642,10 @@ function Invoke-Restart {
             if ($composeExit -ne 0 -and $restartTargets.Count -gt 0) {
                 Write-AIWarn "docker compose force-recreate returned $composeExit; retrying start for recreated running services."
                 $retryArgs = @("up", "-d", "--no-build", "--pull", "never") + $restartTargets
-                $composeExit = Invoke-ODSDockerCompose -InstallDir $InstallDir -ComposeFlags $flags `
-                    -ComposeArgs $retryArgs
+                $composeExit = Invoke-ODSComposeUpWithStartupRetry -ComposeFlags $flags `
+                    -ComposeArgs $retryArgs `
+                    -Services $restartTargets `
+                    -Description "docker compose start for recreated running services"
             }
             if ($composeExit -ne 0) {
                 Write-AIError "docker compose up --force-recreate failed (exit code: $composeExit)"
