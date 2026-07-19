@@ -2348,7 +2348,9 @@ cmd_enable() {
     if [[ -n "$deps" ]]; then
         local missing=()
         for dep in $deps; do
+            # Check built-in extensions first, then dashboard-installed user extensions
             local dep_cf="$INSTALL_DIR/extensions/services/$dep/compose.yaml"
+            [[ -f "$dep_cf" ]] || dep_cf="$INSTALL_DIR/data/user-extensions/$dep/compose.yaml"
             local dep_cat="${SERVICE_CATEGORIES[$dep]:-optional}"
             # Core services are always available; check extension deps
             if [[ "$dep_cat" != "core" && ! -f "$dep_cf" ]]; then
@@ -2413,7 +2415,9 @@ cmd_disable() {
     local dependents=()
     for sid in "${SERVICE_IDS[@]}"; do
         [[ "$sid" == "$service_id" ]] && continue
+        # Check built-in extensions first, then dashboard-installed user extensions
         local dep_cf="$INSTALL_DIR/extensions/services/$sid/compose.yaml"
+        [[ -f "$dep_cf" ]] || dep_cf="$INSTALL_DIR/data/user-extensions/$sid/compose.yaml"
         [[ ! -f "$dep_cf" ]] && continue
         local deps="${SERVICE_DEPENDS[$sid]:-}"
         for dep in $deps; do
@@ -2478,7 +2482,9 @@ cmd_purge() {
     fi
 
     # Check if service is still enabled (compose.yaml exists = enabled)
+    # Check built-in extensions first, then dashboard-installed user extensions
     local _cf="$INSTALL_DIR/extensions/services/$service_id/compose.yaml"
+    [[ -f "$_cf" ]] || _cf="$INSTALL_DIR/data/user-extensions/$service_id/compose.yaml"
     if [[ -f "$_cf" ]]; then
         error "$service_id is still enabled. Run 'ods disable $service_id' first."
     fi

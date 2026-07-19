@@ -109,6 +109,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== issue-to-pr security check ==="
 	@bash tests/test-issue-to-pr-security.sh
+	@echo ""
+	@echo "=== CLI user-extension dependency resolution ==="
+	@bash tests/test-cli-user-extension-deps.sh
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="
