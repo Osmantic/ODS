@@ -104,7 +104,7 @@ status_percent() {
     local display_bytes="$downloaded"
     [[ "$display_bytes" -lt 0 ]] && display_bytes=0
     [[ "$display_bytes" -gt "$total" ]] && display_bytes="$total"
-    awk "BEGIN { printf \"%.1f\", ($display_bytes / $total) * 100 }"
+    LC_ALL=C awk "BEGIN { printf \"%.1f\", ($display_bytes / $total) * 100 }"
 }
 
 write_failed_download_status() {
