@@ -69,6 +69,43 @@ function Test-WindowsPortInUse {
     return @{ InUse = $false; ProcessName = ""; ProcessId = 0 }
 }
 
+function Resolve-WindowsLlmPreflightPort {
+    <#
+    .SYNOPSIS
+        Resolve the host LLM port that the selected Windows backend will bind.
+    .OUTPUTS
+        Port number, or 0 when cloud mode does not bind a local inference port.
+    #>
+    param(
+        [string]$GpuBackend,
+        [switch]$CloudMode,
+        [int]$LemonadeDefaultPort = 8080
+    )
+
+    if ($CloudMode) { return 0 }
+
+    $defaultPort = 11434
+    $candidate = $null
+    if ($GpuBackend -eq "amd") {
+        $defaultPort = $LemonadeDefaultPort
+        $candidate = $env:AMD_INFERENCE_PORT
+    } elseif ($env:OLLAMA_PORT) {
+        $candidate = $env:OLLAMA_PORT
+    } elseif ($env:LLAMA_SERVER_PORT) {
+        $candidate = $env:LLAMA_SERVER_PORT
+    }
+
+    if ($candidate) {
+        $parsedPort = 0
+        if ([int]::TryParse(([string]$candidate).Trim(), [ref]$parsedPort) -and
+            $parsedPort -ge 1 -and $parsedPort -le 65535) {
+            return $parsedPort
+        }
+    }
+
+    return $defaultPort
+}
+
 function Get-WindowsODSLemonadeProcesses {
     <#
     .SYNOPSIS
@@ -214,10 +251,17 @@ Stop-WindowsODSLemonadePortConflicts `
 # Build list of ports to check based on enabled features.
 # Default service ports match .env.example; overridden ports are not checked here.
 $_portsToCheck = [ordered]@{
-    "llama-server (LLM)"  = 11434
     "Open WebUI (chat)"   = 3000
     "Dashboard"           = 3001
     "Dashboard API"       = 3002
+}
+$_llmPortToCheck = Resolve-WindowsLlmPreflightPort `
+    -GpuBackend ([string]$gpuInfo.Backend) `
+    -CloudMode:$cloudMode `
+    -LemonadeDefaultPort ([int]$script:LEMONADE_PORT)
+if ($_llmPortToCheck -gt 0) {
+    $_llmServiceLabel = $(if ($gpuInfo.Backend -eq "amd") { "Lemonade (LLM)" } else { "llama-server (LLM)" })
+    $_portsToCheck[$_llmServiceLabel] = $_llmPortToCheck
 }
 if ($enableRecommended) {
     $_portsToCheck["LiteLLM (API gateway)"] = 4000
