@@ -1097,9 +1097,14 @@ async def preflight_gpu():
     return {"available": False, "error": "No GPU detected. Ensure NVIDIA drivers or AMD amdgpu driver is loaded."}
 
 
-@app.get("/api/preflight/required-ports")
+@app.get("/api/preflight/required-ports", dependencies=[Depends(verify_api_key)])
 async def preflight_required_ports():
-    """Return the list of service ports for preflight checking (no auth required)."""
+    """Return the list of deployed service names and ports for preflight checking.
+
+    Gated like the sibling preflight endpoints (docker/gpu/ports/disk): the
+    response enumerates which services are live and on which ports, so it must
+    not be reachable unauthenticated.
+    """
     # When health cache exists, filter out services not in the compose stack
     cached = get_cached_services()
     deployed = {s.id for s in cached if s.status != "not_deployed"} if cached else None

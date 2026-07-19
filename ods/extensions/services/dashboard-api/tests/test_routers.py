@@ -307,9 +307,17 @@ def test_preflight_ports_empty_list(test_client):
     assert data["available"] is True
 
 
-def test_preflight_required_ports_no_auth(test_client):
-    """GET /api/preflight/required-ports → 200, no auth required."""
+def test_preflight_required_ports_requires_auth(test_client):
+    """GET /api/preflight/required-ports without auth → 401 (gated like siblings)."""
     resp = test_client.get("/api/preflight/required-ports")
+    assert resp.status_code == 401
+
+
+def test_preflight_required_ports_authenticated(test_client):
+    """GET /api/preflight/required-ports with auth → 200, returns port list."""
+    resp = test_client.get(
+        "/api/preflight/required-ports", headers=test_client.auth_headers
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert "ports" in data

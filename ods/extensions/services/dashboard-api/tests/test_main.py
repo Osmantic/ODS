@@ -599,7 +599,9 @@ class TestPreflightRequiredPorts:
         monkeypatch.setattr("main.SERVICES", {
             "svc-a": {"name": "A", "port": 8000, "external_port": 8000},
         })
-        resp = test_client.get("/api/preflight/required-ports")
+        resp = test_client.get(
+            "/api/preflight/required-ports", headers=test_client.auth_headers
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert any(p["port"] == 8000 for p in data["ports"])
