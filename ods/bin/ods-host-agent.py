@@ -2267,6 +2267,11 @@ class AgentHandler(BaseHTTPRequestHandler):
             payload_text = raw_text if raw_text.endswith("\n") else raw_text + "\n"
             tmp_path = env_path.with_name(".env.tmp")
             tmp_path.write_text(payload_text, encoding="utf-8")
+            # .env holds service secrets (DASHBOARD_API_KEY, ODS_AGENT_KEY,
+            # JWT_SECRET, OAuth secrets). The fresh tmp file is created at the
+            # umask default (0644); tighten before os.replace() swaps it in so
+            # the live .env keeps mode 0600 instead of inheriting 0644.
+            os.chmod(tmp_path, 0o600)
             os.replace(str(tmp_path), str(env_path))
         except OSError as exc:
             logger.warning("env_update OSError from %s: %s", client_ip, exc)
