@@ -106,6 +106,8 @@ if [[ "$1" == "compose" ]]; then
     echo "    environment:"
     echo "      DASHBOARD_API_KEY: super-secret-dashboard-key"
     echo "      OPENCLAW_TOKEN: super-secret-openclaw-token"
+    echo "      N8N_USER: super-secret-n8n-user"
+    echo "      LANGFUSE_INIT_USER_EMAIL: super-secret-langfuse-email"
     exit 0
   fi
   if [[ "$*" == *" ps -a"* ]]; then
@@ -122,6 +124,8 @@ GPU_BACKEND=nvidia
 LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b8648
 DASHBOARD_API_KEY=super-secret-dashboard-key
 OPENCLAW_TOKEN=super-secret-openclaw-token
+N8N_USER=super-secret-n8n-user
+LANGFUSE_INIT_USER_EMAIL=super-secret-langfuse-email
 OLLAMA_PORT=39134
 EOF
 
@@ -146,12 +150,19 @@ EOF
             "ghcr.io/ggml-org/llama.cpp:server-cuda-b8648",
             "Compose config tail (redacted)",
             "DASHBOARD_API_KEY: [REDACTED]",
-            "OPENCLAW_TOKEN: [REDACTED]"
+            "OPENCLAW_TOKEN: [REDACTED]",
+            "N8N_USER: [REDACTED]",
+            "LANGFUSE_INIT_USER_EMAIL: [REDACTED]"
         )) {
             if (-not $text.Contains($needle)) { throw "missing $needle" }
         }
-        if ($text.Contains("super-secret-dashboard-key") -or $text.Contains("super-secret-openclaw-token")) {
-            throw "sensitive compose config value leaked"
+        foreach ($secret in @(
+            "super-secret-dashboard-key",
+            "super-secret-openclaw-token",
+            "super-secret-n8n-user",
+            "super-secret-langfuse-email"
+        )) {
+            if ($text.Contains($secret)) { throw "sensitive compose config value leaked: $secret" }
         }
     '; then
         pass "PowerShell report writer creates redacted report with mocked docker"
