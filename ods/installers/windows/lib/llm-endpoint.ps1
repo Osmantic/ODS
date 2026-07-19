@@ -32,7 +32,18 @@ function Get-WindowsODSEnvMap {
             if ($line -match "^#" -or $line -eq "") { return }
             if ($line -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
                 $key = $Matches[1]
-                $val = $Matches[2].Trim('"').Trim("'")
+                $val = $Matches[2]
+                # Strip exactly one matching pair of surrounding quotes.
+                # Trimming each quote character independently corrupts values
+                # that legitimately start or end with the other quote: a
+                # double-quoted "'literal'" loses its inner single quotes and
+                # KEY="'" collapses to empty. Mismatched quotes are kept
+                # verbatim, matching lib/safe-env.sh on Linux.
+                if ($val.Length -ge 2 -and (
+                        ($val.StartsWith('"') -and $val.EndsWith('"')) -or
+                        ($val.StartsWith("'") -and $val.EndsWith("'")))) {
+                    $val = $val.Substring(1, $val.Length - 2)
+                }
                 $result[$key] = $val
             }
         }
