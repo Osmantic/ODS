@@ -89,6 +89,36 @@ NODE
 
 patch_scrape_url
 
+sync_model_route() {
+    attempts="${PERPLEXICA_MODEL_SYNC_ATTEMPTS:-30}"
+    delay="${PERPLEXICA_MODEL_SYNC_DELAY_SECONDS:-2}"
+    case "$attempts:$delay" in
+        *[!0-9:]*|:*|*:)
+            attempts=30
+            delay=2
+            ;;
+    esac
+
+    (
+        attempt=1
+        last_error=""
+        while [ "$attempt" -le "$attempts" ]; do
+            if output=$(node /app/ods-sync-model-config.js 2>&1); then
+                if [ -n "$output" ]; then
+                    log "Active model route synchronized: $output"
+                fi
+                exit 0
+            fi
+            last_error="$output"
+            attempt=$((attempt + 1))
+            [ "$attempt" -le "$attempts" ] && sleep "$delay"
+        done
+        log "WARNING: model-route synchronization did not complete: $last_error"
+    ) &
+}
+
+sync_model_route
+
 # When compose overrides `entrypoint:`, Docker drops the image's CMD
 # (`node server.js`), so $@ arrives empty. Fall back to the image's default
 # command so the upstream docker-entrypoint.sh has something to exec.

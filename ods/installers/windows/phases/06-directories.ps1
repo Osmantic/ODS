@@ -315,6 +315,9 @@ if (Test-Path $_envPath) {
         }
     }
 }
+if ($_amdInferenceRuntime -eq "lemonade") {
+    $_requiredKeys += "LEMONADE_MODEL"
+}
 $_missingKeys = @()
 foreach ($_k in $_requiredKeys) {
     if (-not $_envLines.ContainsKey($_k) -or -not $_envLines[$_k]) {
@@ -520,7 +523,13 @@ function Invoke-HermesSoulRefresh {
 
 if ($enableHermes) {
     $_hermesModel = $(if ($tierConfig.GgufFile) {
-        if ($gpuInfo.Backend -eq "amd") { "extra.$($tierConfig.GgufFile)" } else { $tierConfig.GgufFile }
+        if ($gpuInfo.Backend -eq "amd" -and
+            $_envLines.ContainsKey("LEMONADE_MODEL") -and
+            -not [string]::IsNullOrWhiteSpace([string]$_envLines["LEMONADE_MODEL"])) {
+            $_envLines["LEMONADE_MODEL"].Trim().Trim('"').Trim("'")
+        } else {
+            $tierConfig.GgufFile
+        }
     } else {
         $tierConfig.LlmModel
     })

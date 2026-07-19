@@ -93,6 +93,7 @@ lemonade_external = (
 
 IS_DARWIN = platform.system() == "Darwin"
 APPLE_OVERLAY = "installers/macos/docker-compose.macos.yml" if IS_DARWIN else "docker-compose.apple.yml"
+macos_cloud_auth = script_dir / "data" / "generated" / "docker-compose.macos-cloud-auth.yml"
 
 def existing(overlays):
     return all((script_dir / f).exists() for f in overlays)
@@ -169,6 +170,21 @@ else:
 
 if not resolved:
     resolved = [primary]
+
+# A generated auth file is an override, never a primary/profile input. Remove
+# stale cached occurrences before extension discovery so it cannot make a
+# partial core service appear to exist or influence overlay eligibility.
+macos_cloud_auth_resolved = macos_cloud_auth.resolve()
+resolved = [
+    compose_rel
+    for compose_rel in resolved
+    if (script_dir / compose_rel).resolve() != macos_cloud_auth_resolved
+]
+if not resolved:
+    print("ERROR: compose resolution produced no usable base files", file=sys.stderr)
+    sys.exit(1)
+if (script_dir / primary).resolve() == macos_cloud_auth_resolved:
+    primary = resolved[-1]
 
 # Multi-GPU overlay if we have more than 1 GPU.
 if gpu_count > 1:
@@ -378,6 +394,113 @@ def _scan_user_compose_content(compose_path):
     return (ok, warnings)
 
 
+def _extension_base_path(service_dir, service, label):
+    """Return an enabled extension base path, or None when it is disabled."""
+    compose_rel = service.get("compose_file", "compose.yaml")
+    if not isinstance(compose_rel, str) or not compose_rel:
+        print(f"WARNING: {label}: manifest has no usable compose_file, skipping overlays", file=sys.stderr)
+        return None
+    if compose_rel.endswith(".disabled"):
+        return None
+
+    compose_path = service_dir / compose_rel
+    try:
+        compose_path.resolve().relative_to(service_dir.resolve())
+    except ValueError:
+        print(
+            f"WARNING: {label}: compose_file '{compose_rel}' escapes the extension directory; skipping",
+            file=sys.stderr,
+        )
+        return None
+
+    if compose_path.exists():
+        return compose_path
+    if (service_dir / f"{compose_rel}.disabled").exists():
+        return None
+
+    print(
+        f"WARNING: {label}: compose_file '{compose_rel}' not found, skipping overlays",
+        file=sys.stderr,
+    )
+    return None
+
+
+def _load_compose_mapping(compose_path, label):
+    try:
+        data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, OSError) as e:
+        print(f"ERROR: {label} is not valid Compose YAML: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(data, dict):
+        print(f"ERROR: {label} must be a YAML mapping", file=sys.stderr)
+        sys.exit(1)
+    return data
+
+
+def _declared_compose_services(files, strict=True):
+    declared_services = set()
+    for compose_rel in files:
+        compose_path = pathlib.Path(compose_rel)
+        if not compose_path.is_absolute():
+            compose_path = script_dir / compose_path
+        if strict:
+            compose_data = _load_compose_mapping(compose_path, f"Compose file {compose_rel}")
+        else:
+            try:
+                compose_data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+            except (yaml.YAMLError, OSError):
+                continue
+            if not isinstance(compose_data, dict):
+                continue
+        compose_services = compose_data.get("services", {})
+        if isinstance(compose_services, dict):
+            declared_services.update(compose_services)
+    return declared_services
+
+
+def _append_macos_cloud_auth_overlay(files, overlay_path):
+    """Append the generated auth override without allowing a partial service."""
+    label = "generated macOS cloud-auth overlay"
+    data = _load_compose_mapping(overlay_path, label)
+    if set(data) != {"services"}:
+        print(f"ERROR: {label} may contain only the services mapping", file=sys.stderr)
+        sys.exit(1)
+
+    services = data.get("services")
+    if not isinstance(services, dict) or set(services) != {"open-webui"}:
+        print(
+            f"ERROR: {label} may target only the always-present open-webui service",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    open_webui = services.get("open-webui")
+    if not isinstance(open_webui, dict) or set(open_webui) != {"environment"}:
+        print(f"ERROR: {label} may only override open-webui environment", file=sys.stderr)
+        sys.exit(1)
+    environment = open_webui.get("environment")
+    if not isinstance(environment, dict):
+        print(f"ERROR: {label} environment must be a mapping", file=sys.stderr)
+        sys.exit(1)
+    api_key = environment.get("OPENAI_API_KEY")
+    if not isinstance(api_key, str) or not api_key.startswith("${LITELLM_KEY:"):
+        print(f"ERROR: {label} must source OPENAI_API_KEY from LITELLM_KEY", file=sys.stderr)
+        sys.exit(1)
+
+    missing = set(services) - _declared_compose_services(files)
+    if missing:
+        print(
+            f"ERROR: {label} would create partial service(s): {', '.join(sorted(missing))}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    files.append(str(overlay_path.relative_to(script_dir)))
+
+
+base_stack_services = _declared_compose_services(resolved, strict=False)
+
+
 # Discover enabled extension compose fragments via manifests
 ext_dir = script_dir / "extensions" / "services"
 if ext_dir.exists():
@@ -410,34 +533,20 @@ if ext_dir.exists():
             # "none" means CPU-only — compatible with any GPU backend
             if gpu_backend not in backends and "all" not in backends and "none" not in backends:
                 continue
-            # Get compose file from manifest
-            compose_rel = service.get("compose_file", "")
-            if compose_rel and not compose_rel.endswith(".disabled"):
-                # Validate compose_file stays inside its extension's directory.
-                # Path.relative_to() does lexical part-prefix matching, so a
-                # `..`-traversal ("../../../etc/passwd") still string-matches
-                # script_dir without escape detection; an absolute compose_file
-                # ("/etc/shadow") replaces service_dir entirely under `/`. Both
-                # would otherwise reach docker compose `-f`. Boundary-check on
-                # fully resolved paths, but keep the unresolved compose_path
-                # for the emit so the existing relative_to(script_dir) contract
-                # still holds on systems where script_dir contains symlinks
-                # (macOS /var -> /private/var would mismatch otherwise).
-                compose_path = service_dir / compose_rel
-                try:
-                    compose_path.resolve().relative_to(service_dir.resolve())
-                except ValueError:
-                    print(f"WARNING: {service_dir.name}: compose_file '{compose_rel}' "
-                          f"escapes the extension directory; skipping",
-                          file=sys.stderr)
+            compose_rel = service.get("compose_file")
+            if compose_rel:
+                compose_path = _extension_base_path(service_dir, service, service_dir.name)
+                if compose_path is None:
                     continue
-                if compose_path.exists():
-                    resolved.append(str(compose_path.relative_to(script_dir)))
-                elif (service_dir / f"{compose_rel}.disabled").exists():
-                    continue  # Service disabled — skip all overlays
-                else:
-                    print(f"WARNING: {service_dir.name}: compose_file '{compose_rel}' not found, skipping overlays", file=sys.stderr)
-                    continue  # Base compose missing — skip GPU/mode overlays
+                resolved.append(str(compose_path.relative_to(script_dir)))
+            else:
+                # Core services may keep their base definition in the primary
+                # stack and ship only specialized fragments here. Permit that
+                # shape only when the service already exists; otherwise an
+                # overlay would create the same partial-service failure.
+                service_id = service.get("id")
+                if service_id not in base_stack_services:
+                    continue
             # GPU-specific overlay (filesystem discovery — not in manifest)
             gpu_overlay = service_dir / f"compose.{gpu_backend}.yaml"
             if gpu_overlay.exists():
@@ -521,38 +630,22 @@ if user_ext_dir.exists():
                     # "none" means CPU-only — compatible with any GPU backend
                     if gpu_backend not in backends and "all" not in backends and "none" not in backends:
                         continue
-                # Get compose file from manifest, default to compose.yaml
-                compose_rel = service.get("compose_file", "compose.yaml")
-                if compose_rel and not compose_rel.endswith(".disabled"):
-                    # Boundary check: a malicious manifest could point compose_file
-                    # at "../../etc/passwd" or an absolute path. Resolve both sides
-                    # so a `/var → /private/var` symlink on macOS doesn't false-flag.
-                    compose_path = service_dir / compose_rel
-                    try:
-                        compose_path.resolve().relative_to(service_dir.resolve())
-                    except ValueError:
-                        print(f"WARNING: {service_dir.name}: compose_file '{compose_rel}' "
-                              f"escapes the extension directory; skipping",
-                              file=sys.stderr)
-                        continue
-                    if compose_path.exists():
-                        # Scan content before appending — user-ext composes are
-                        # untrusted. The dashboard-api scans at install time;
-                        # the resolver runs every `ods` invocation, so a
-                        # tampered-with compose dropped under data/user-extensions
-                        # without going through the install API would otherwise
-                        # bypass scanning entirely.
-                        ok, warnings = _scan_user_compose_content(compose_path)
-                        for w in warnings:
-                            print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
-                        if not ok:
-                            continue
-                        resolved.append(str(compose_path.relative_to(script_dir)))
-                    elif (service_dir / f"{compose_rel}.disabled").exists():
-                        continue  # Service disabled — skip all overlays
-                    else:
-                        # No base compose — skip overlays for this user extension
-                        continue
+                # The base file is also the enable/disable marker for user
+                # extensions. Resolve it before considering any overlays.
+                compose_path = _extension_base_path(service_dir, service, service_dir.name)
+                if compose_path is None:
+                    continue
+                # Scan content before appending — user-ext composes are
+                # untrusted. The dashboard-api scans at install time; the
+                # resolver runs every `ods` invocation, so a tampered-with
+                # compose dropped under data/user-extensions without going
+                # through the install API would otherwise bypass scanning.
+                ok, warnings = _scan_user_compose_content(compose_path)
+                for w in warnings:
+                    print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
+                if not ok:
+                    continue
+                resolved.append(str(compose_path.relative_to(script_dir)))
                 # GPU-specific overlay (filesystem discovery — not in manifest)
                 gpu_overlay = service_dir / f"compose.{gpu_backend}.yaml"
                 if gpu_overlay.exists():
@@ -631,6 +724,14 @@ if override.exists():
         print(f"WARNING: docker-compose.override.yml: {w}", file=sys.stderr)
     if ok:
         resolved.append("docker-compose.override.yml")
+
+# macOS cloud installs generate this secret-free, core-only overlay so Open
+# WebUI authenticates to LiteLLM with the same LITELLM_KEY as the gateway.
+# Strip any caller-supplied occurrence, then append the validated overlay last
+# only for Apple cloud mode. This prevents stale profile flags from applying it
+# to local/non-Apple stacks or placing it before a user override.
+if ods_mode == "cloud" and gpu_backend == "apple" and macos_cloud_auth.exists():
+    _append_macos_cloud_auth_overlay(resolved, macos_cloud_auth)
 
 def to_flags(files):
     return " ".join(f"-f {f}" for f in files)

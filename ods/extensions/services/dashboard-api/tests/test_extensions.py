@@ -3379,33 +3379,29 @@ class TestSyncExtensionConfig:
         assert ext_mod._sync_extension_config("my-ext") is False
 
     def test_call_agent_sync_config_sends_post(self, monkeypatch):
-        """The HTTP helper POSTs to /v1/extension/sync_config with bearer auth."""
+        """The helper POSTs the expected payload through the shared transport."""
         from routers import extensions as ext_mod
 
         captured = {}
 
-        class _FakeResp:
-            status = 200
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
+        def _fake_request_json(method, path, *, payload=None, timeout=None):
+            captured.update(
+                method=method,
+                path=path,
+                payload=payload,
+                timeout=timeout,
+            )
+            return {"success": True}
 
-        def _fake_urlopen(req, timeout=None):
-            captured["url"] = req.full_url
-            captured["method"] = req.get_method()
-            captured["auth"] = req.get_header("Authorization")
-            captured["body"] = req.data
-            return _FakeResp()
-
-        monkeypatch.setattr(ext_mod, "AGENT_URL", "http://agent:7710")
-        monkeypatch.setattr(ext_mod, "ODS_AGENT_KEY", "secret")
-        monkeypatch.setattr(ext_mod.urllib.request, "urlopen", _fake_urlopen)
+        monkeypatch.setattr(ext_mod, "request_agent_json", _fake_request_json)
 
         assert ext_mod._call_agent_sync_config("my-ext") is True
-        assert captured["url"] == "http://agent:7710/v1/extension/sync_config"
-        assert captured["method"] == "POST"
-        assert captured["auth"] == "Bearer secret"
-        assert b'"service_id"' in captured["body"]
-        assert b'"my-ext"' in captured["body"]
+        assert captured == {
+            "method": "POST",
+            "path": "/v1/extension/sync_config",
+            "payload": {"service_id": "my-ext"},
+            "timeout": ext_mod._AGENT_TIMEOUT,
+        }
 
 
 # --- Error progress ---
@@ -3577,16 +3573,16 @@ def test_production_core_service_ids_include_hermes_services():
 class TestCallAgentErrorNarrowing:
     """_call_agent swallows network errors but not programmer errors."""
 
-    def test_call_agent_returns_false_on_urlerror(self, monkeypatch, caplog):
+    def test_call_agent_returns_false_on_transport_error(self, monkeypatch, caplog):
         """Network failures produce (False, warning) — callers rely on this."""
         import logging
-        import urllib.error
+        from host_agent_client import AgentUnavailable
         from routers import extensions as ext_module
 
         def _raise(*_args, **_kwargs):
-            raise urllib.error.URLError("timeout")
+            raise AgentUnavailable("timeout")
 
-        monkeypatch.setattr(ext_module.urllib.request, "urlopen", _raise)
+        monkeypatch.setattr(ext_module, "request_agent_json", _raise)
         with caplog.at_level(logging.WARNING, logger="routers.extensions"):
             result = ext_module._call_agent("start", "svc-x")
 
@@ -3600,7 +3596,7 @@ class TestCallAgentErrorNarrowing:
         def _raise(*_args, **_kwargs):
             raise AttributeError("boom")
 
-        monkeypatch.setattr(ext_module.urllib.request, "urlopen", _raise)
+        monkeypatch.setattr(ext_module, "request_agent_json", _raise)
         with pytest.raises(AttributeError):
             ext_module._call_agent("start", "svc-x")
 

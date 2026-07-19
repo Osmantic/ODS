@@ -27,6 +27,7 @@ _EVIDENCE_PATH = Path(__file__).with_name("performance_evidence.json")
 _DEFAULT_RECOMMENDATION_POLICY = "catalog-fit-pre-download"
 _VRAM_FIT_TOLERANCE_GB = 0.25
 _MODEL_SELECTOR_POLICY = "context-aware-largest-capable-general-v1"
+_RUNTIME_MODEL_PREFIXES = ("extra.", "user.")
 
 
 def normalize_key(value: Any) -> str:
@@ -238,15 +239,35 @@ def format_size(size_mb: int | float) -> str:
     return f"{gb:.1f} GB" if gb >= 1 else f"{int(size_mb)} MB"
 
 
+def _runtime_model_aliases(value: Any) -> set[str]:
+    token = str(value or "").strip()
+    if not token:
+        return set()
+
+    aliases = {token}
+    basename = re.split(r"[\\/]", token)[-1]
+    if basename:
+        aliases.add(basename)
+
+    for alias in tuple(aliases):
+        lower_alias = alias.lower()
+        for prefix in _RUNTIME_MODEL_PREFIXES:
+            if lower_alias.startswith(prefix):
+                aliases.add(alias[len(prefix):])
+                break
+    return aliases
+
+
 def current_model_matches(model: dict[str, Any], current_model: str | None, current_gguf: str | None = None) -> bool:
-    haystack = normalize_key(" ".join([current_model or "", current_gguf or ""]))
-    if not haystack:
-        return False
-    for alias in _model_aliases(model):
-        key = normalize_key(alias)
-        if key and (key == haystack or key in haystack or haystack in key):
-            return True
-    return False
+    model_keys = {normalize_key(alias) for alias in _model_aliases(model)}
+    runtime_keys = {
+        normalize_key(alias)
+        for value in (current_model, current_gguf)
+        for alias in _runtime_model_aliases(value)
+    }
+    model_keys.discard("")
+    runtime_keys.discard("")
+    return bool(model_keys & runtime_keys)
 
 
 def find_catalog_model(catalog: list[dict[str, Any]], model_name: str | None, gguf: str | None = None) -> dict[str, Any] | None:

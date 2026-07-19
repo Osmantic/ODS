@@ -220,6 +220,41 @@ if ($gpuInfo.Backend -eq "amd") {
     throw
 }
 
+$lemonadeModel = ""
+if ($envResult -and $envResult.ContainsKey("LemonadeModel")) {
+    $lemonadeModel = [string]$envResult.LemonadeModel
+}
+
+function Set-ODSWindowsHermesRuntimeModel {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ModelId
+    )
+
+    if (-not $enableHermes) { return $true }
+
+    $runtimeEnv = Get-WindowsODSEnvMap -InstallDir $installDir
+    $hermesBaseUrl = Get-WindowsODSEnvValue `
+        -EnvMap $runtimeEnv -Keys @("HERMES_LLM_BASE_URL") `
+        -Default $(if ($cloudMode -or $gpuInfo.Backend -eq "amd") {
+            "http://litellm:4000/v1"
+        } else {
+            "http://llama-server:8080/v1"
+        })
+    $hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
+    $hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
+    $hermesRequestTimeout = $(if ($cloudMode) { 180 } else { 900 })
+    $templateUpdated = Update-HermesConfigFile -Path $hermesTemplate -Model $ModelId -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) `
+        -RequestTimeoutSeconds $hermesRequestTimeout `
+        -LemonadeCompact:($gpuInfo.Backend -eq "amd")
+    $liveUpdated = Update-HermesConfigFile `
+        -Path $hermesLive -Model $ModelId -BaseUrl $hermesBaseUrl `
+        -ContextLength ([int]$tierConfig.MaxContext) `
+        -RequestTimeoutSeconds $hermesRequestTimeout `
+        -LemonadeCompact:($gpuInfo.Backend -eq "amd")
+    return ($templateUpdated -and $liveUpdated)
+}
+
 # ============================================================================
 # PHASE 8 -- LAUNCH (download model, start Docker services)
 # ============================================================================
@@ -319,44 +354,12 @@ if ($dryRun) {
             }
 
             if ($enableHermes) {
-                $hermesModel = $(if ($tierConfig.GgufFile) {
-                    if ($gpuInfo.Backend -eq "amd") { "extra.$($tierConfig.GgufFile)" } else { $tierConfig.GgufFile }
-                } else {
-                    $tierConfig.LlmModel
-                })
-                $hermesBaseUrl = ""
-                if (Test-Path $envPath) {
-                    foreach ($line in Get-Content $envPath) {
-                        if ($line -match "^HERMES_LLM_BASE_URL=(.+)$") {
-                            $hermesBaseUrl = $Matches[1].Trim().Trim('"').Trim("'")
-                            break
-                        }
-                    }
-                }
-                if ([string]::IsNullOrWhiteSpace($hermesBaseUrl)) {
-                    $hermesBaseUrl = $(if ($cloudMode -or $gpuInfo.Backend -eq "amd") {
-                        "http://litellm:4000/v1"
-                    } else {
-                        "http://llama-server:8080/v1"
-                    })
-                }
-                $hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
-                $hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
-                if (-not (Test-Path $hermesTemplate)) {
-                    Write-AIError "Missing Hermes config template at $hermesTemplate"
+                $hermesModel = $(if ($tierConfig.GgufFile) { $tierConfig.GgufFile } else { $tierConfig.LlmModel })
+                if (-not (Set-ODSWindowsHermesRuntimeModel -ModelId $hermesModel)) {
+                    Write-AIError "Failed to patch Hermes config for Windows runtime (model=$hermesModel)"
                     exit 1
                 }
-                if (-not (Test-Path $hermesLive)) {
-                    Copy-Item -Path $hermesTemplate -Destination $hermesLive -Force
-                }
-                $hermesRequestTimeout = $(if ($cloudMode) { 180 } else { 900 })
-                $patchedHermesTemplate = Update-HermesConfigFile -Path $hermesTemplate -Model $hermesModel -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
-                $patchedHermesLive = Update-HermesConfigFile -Path $hermesLive -Model $hermesModel -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
-                if (-not ($patchedHermesTemplate -and $patchedHermesLive)) {
-                    Write-AIError "Failed to patch Hermes config for Windows runtime (model=$hermesModel, base_url=$hermesBaseUrl)"
-                    exit 1
-                }
-                Write-AISuccess "Patched Hermes config for bootstrap model (model=$hermesModel, context=$($tierConfig.MaxContext), request_timeout=${hermesRequestTimeout}s)"
+                Write-AISuccess "Patched Hermes config for bootstrap model (model=$hermesModel, context=$($tierConfig.MaxContext))"
             }
         }
 
@@ -496,10 +499,9 @@ if ($dryRun) {
 
             if ($useLemonade) {
                 # ── Start Lemonade server ──
-                # --extra-models-dir: Lemonade auto-discovers GGUF files in this directory
-                # --no-tray: headless mode (no GUI system tray icon)
-                # --llamacpp vulkan: AMD Vulkan GPU acceleration
-                # Model loads automatically on first chat request -- no /api/v1/load needed
+                # The shared launch contract keeps legacy CLI flags on older
+                # releases and configures models/Vulkan through Lemonade 10.7's
+                # authenticated internal API. Models load on first chat request.
                 Write-AI "Starting Lemonade server..."
                 $modelsDir = Join-Path (Join-Path $installDir "data") "models"
                 $taskName = "ODSLemonadeRuntime"
@@ -513,19 +515,32 @@ if ($dryRun) {
                 $pidDir = Split-Path $script:INFERENCE_PID_FILE
                 New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
 
-                $argString = "serve --port $($script:LEMONADE_PORT) --host $bindAddr --no-tray --llamacpp vulkan --extra-models-dir `"$modelsDir`""
+                $adminApiKey = Get-ODSLemonadeAdminApiKey -EnvPath $_envPath
+                $launchContract = Get-ODSLemonadeLaunchContract `
+                    -ExecutablePath $script:LEMONADE_EXE `
+                    -Port $script:LEMONADE_PORT `
+                    -BindAddress $bindAddr `
+                    -ModelsDir $modelsDir `
+                    -AdminApiKey $adminApiKey
+                Write-AI "Lemonade $($launchContract.Version) launch contract: $($launchContract.ArgumentString)"
+                $diagnosticLog = Join-Path (Join-Path $installDir "logs") "lemonade-launch.log"
                 $launchMethod = "scheduled task"
+                $directProcess = $null
                 try {
-                    $action = New-ScheduledTaskAction -Execute $script:LEMONADE_EXE -Argument $argString -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE)
+                    $action = New-ODSLemonadeScheduledTaskAction `
+                        -Contract $launchContract -EnvPath $_envPath -DiagnosticLogPath $diagnosticLog
                     $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
+                    $lemonadeSettings = New-ScheduledTaskSettingsSet `
+                        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                        -ExecutionTimeLimit ([TimeSpan]::Zero)
                     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-                    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
+                    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $lemonadeSettings -Principal $principal -Force -ErrorAction Stop | Out-Null
                     Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
                 } catch {
                     $launchMethod = "direct process"
                     Write-AIWarn "Could not start Lemonade through Task Scheduler: $_"
                     Write-AI "Starting Lemonade directly for this Windows session..."
-                    Start-Process -FilePath $script:LEMONADE_EXE -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE) | Out-Null
+                    $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract
                 }
                 Start-Sleep -Seconds 5
                 $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -533,10 +548,12 @@ if ($dryRun) {
                     Sort-Object ProcessId -Descending |
                     Select-Object -First 1
                 if (-not $proc -and $launchMethod -eq "scheduled task") {
+                    $scheduledDiagnostics = Get-ODSLemonadeLaunchDiagnostics -TaskName $taskName
                     $launchMethod = "direct process"
                     Write-AIWarn "Lemonade scheduled task did not start a server process."
+                    Write-AIWarn (Format-ODSLemonadeLaunchDiagnostics -Diagnostics $scheduledDiagnostics)
                     Write-AI "Starting Lemonade directly for this Windows session..."
-                    Start-Process -FilePath $script:LEMONADE_EXE -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE) | Out-Null
+                    $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract
                     Start-Sleep -Seconds 3
                     $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
                         Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase) } |
@@ -544,7 +561,10 @@ if ($dryRun) {
                         Select-Object -First 1
                 }
                 if (-not $proc) {
+                    $launchDiagnostics = Get-ODSLemonadeLaunchDiagnostics `
+                        -TaskName $taskName -ChildProcess $directProcess
                     Write-AIWarn "Lemonade $launchMethod started but no Lemonade process was found. Falling back to native llama-server (Vulkan)."
+                    Write-AIWarn (Format-ODSLemonadeLaunchDiagnostics -Diagnostics $launchDiagnostics)
                     Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames $taskNames
                     Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
                     $useLemonade = $false
@@ -565,6 +585,35 @@ if ($dryRun) {
                         } catch { }
                         if ($waited % 10 -eq 0) { Write-AI "  Still starting... ($waited s)" }
                     }
+                    if ($healthy -and $launchContract.RequiresRuntimeConfiguration) {
+                        try {
+                            $null = Set-ODSLemonadeModernRuntimeConfig `
+                                -Port $script:LEMONADE_PORT -ModelsDir $modelsDir `
+                                -AdminApiKey $adminApiKey
+                            Write-AISuccess "Lemonade 10.7+ runtime configuration verified"
+                        } catch {
+                            Write-AIWarn "Lemonade runtime configuration failed: $_"
+                            $healthy = $false
+                        }
+                    }
+                    if ($healthy) {
+                        try {
+                            $lemonadeModel = Resolve-ODSLemonadeModelId `
+                                -Port $script:LEMONADE_PORT `
+                                -GgufFile $tierConfig.GgufFile `
+                                -VersionOverride ([string]$launchContract.Version)
+                            $null = Set-WindowsODSLemonadeModelConfiguration `
+                                -InstallDir $installDir -ModelId $lemonadeModel `
+                                -Port ([string]$script:LEMONADE_PORT)
+                            if (-not (Set-ODSWindowsHermesRuntimeModel -ModelId $lemonadeModel)) {
+                                throw "Hermes configuration could not be updated for model '$lemonadeModel'."
+                            }
+                            Write-AISuccess "Lemonade model route configured (model: $lemonadeModel)"
+                        } catch {
+                            Write-AIWarn "Lemonade model route configuration failed: $_"
+                            $healthy = $false
+                        }
+                    }
                     if ($healthy) {
                         Write-AISuccess "Lemonade server healthy (PID $($proc.ProcessId))"
                         if ($gpuInfo.HasNpu) {
@@ -572,7 +621,10 @@ if ($dryRun) {
                         }
                         Write-AI "Model ($($tierConfig.GgufFile)) will load on first request."
                     } else {
+                        $healthDiagnostics = Get-ODSLemonadeLaunchDiagnostics `
+                            -TaskName $taskName -ChildProcess $directProcess
                         Write-AIWarn "Lemonade server did not respond within ${maxWait}s. Falling back to native llama-server (Vulkan)."
+                        Write-AIWarn (Format-ODSLemonadeLaunchDiagnostics -Diagnostics $healthDiagnostics)
                         Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames $taskNames
                         Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
                         $useLemonade = $false
@@ -652,8 +704,55 @@ if ($dryRun) {
                 $pidDir = Split-Path $script:INFERENCE_PID_FILE
                 New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
 
-                $proc = Start-Process -FilePath $script:LLAMA_SERVER_EXE `
-                    -ArgumentList $llamaArgs -WindowStyle Hidden -PassThru
+                # The installer itself may be elevated. Launching llama-server
+                # directly here would give it a high-integrity token that the
+                # limited ODS host agent cannot stop during a dashboard model
+                # swap. Keep the native runtime in the user's integrity level.
+                $nativeLlamaTaskName = "ODSNativeLlamaRuntime"
+                try { Stop-ScheduledTask -TaskName $nativeLlamaTaskName -ErrorAction SilentlyContinue } catch { }
+                try { Unregister-ScheduledTask -TaskName $nativeLlamaTaskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+
+                $nativeLlamaArgString = ($llamaArgs | ForEach-Object {
+                    '"' + ([string]$_).Replace('"', '\"') + '"'
+                }) -join ' '
+                $nativeLlamaAction = New-ScheduledTaskAction `
+                    -Execute $script:LLAMA_SERVER_EXE `
+                    -Argument $nativeLlamaArgString `
+                    -WorkingDirectory $script:LLAMA_SERVER_DIR
+                $nativeLlamaTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
+                $nativeLlamaSettings = New-ScheduledTaskSettingsSet `
+                    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                    -ExecutionTimeLimit ([TimeSpan]::Zero)
+                $nativeLlamaPrincipal = New-ScheduledTaskPrincipal `
+                    -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+                Register-ScheduledTask -TaskName $nativeLlamaTaskName `
+                    -Action $nativeLlamaAction `
+                    -Trigger $nativeLlamaTrigger `
+                    -Settings $nativeLlamaSettings `
+                    -Principal $nativeLlamaPrincipal `
+                    -Description "ODS managed native llama-server runtime" `
+                    -Force -ErrorAction Stop | Out-Null
+                Start-ScheduledTask -TaskName $nativeLlamaTaskName -ErrorAction Stop
+
+                $nativeLlamaProcess = $null
+                for ($i = 0; $i -lt 30; $i++) {
+                    Start-Sleep -Seconds 1
+                    $nativeLlamaProcess = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                        Where-Object {
+                            $_.ExecutablePath -and
+                            $_.ExecutablePath.Equals($script:LLAMA_SERVER_EXE, [StringComparison]::OrdinalIgnoreCase) -and
+                            $_.CommandLine -and
+                            $_.CommandLine.IndexOf($modelFullPath, [StringComparison]::OrdinalIgnoreCase) -ge 0
+                        } |
+                        Sort-Object ProcessId -Descending |
+                        Select-Object -First 1
+                    if ($nativeLlamaProcess) { break }
+                }
+                if (-not $nativeLlamaProcess) {
+                    Write-AIError "Native llama-server scheduled task started but no matching process was found."
+                    exit 1
+                }
+                $proc = Get-Process -Id ([int]$nativeLlamaProcess.ProcessId) -ErrorAction Stop
                 Set-Content -Path $script:INFERENCE_PID_FILE -Value $proc.Id
 
                 Write-AI "Waiting for llama-server to load model..."
@@ -676,6 +775,7 @@ if ($dryRun) {
 
                 # Patch .env: user declined Lemonade, correct backend and API path
                 $envPath = Join-Path $installDir ".env"
+                $nativeModel = $tierConfig.GgufFile
                 if (Test-Path $envPath) {
                     $envContent = Get-Content $envPath -Raw
                     $envContent = $envContent -replace "(?m)^ODS_MODE=.*$", "ODS_MODE=local"
@@ -688,6 +788,7 @@ if ($dryRun) {
                     $envContent = $envContent -replace "(?m)^AMD_INFERENCE_SUPPORTED_BACKENDS=.*$", "AMD_INFERENCE_SUPPORTED_BACKENDS=vulkan"
                     $envContent = $envContent -replace "(?m)^AMD_INFERENCE_RUNTIME_MODE=.*$", "AMD_INFERENCE_RUNTIME_MODE=windows-llama-server-fallback"
                     $envContent = $envContent -replace "(?m)^AMD_INFERENCE_MANAGED=.*$", "AMD_INFERENCE_MANAGED=true"
+                    $envContent = $envContent -replace "(?m)^LEMONADE_MODEL=.*$", "LEMONADE_MODEL="
                     [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
                     Write-AISuccess "Patched .env for llama-server backend"
 
@@ -729,6 +830,11 @@ litellm_settings:
 "@
                     [System.IO.File]::WriteAllText((Join-Path $litellmDir "local.yaml"), $litellmLocal, (New-Object System.Text.UTF8Encoding($false)))
                     Write-AISuccess "Patched LiteLLM local config for native llama-server"
+                }
+                $lemonadeModel = ""
+                if (-not (Set-ODSWindowsHermesRuntimeModel -ModelId $nativeModel)) {
+                    Write-AIError "Failed to patch Hermes config for native llama-server model '$nativeModel'"
+                    exit 1
                 }
             }
         }
@@ -1750,7 +1856,10 @@ exec bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($full
                         $upgradeSettings = New-ScheduledTaskSettingsSet `
                             -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
                             -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
-                        $upgradePrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+                        # The upgrade owns the native llama-server hot-swap. It
+                        # must run at the same limited integrity level as the
+                        # host agent so later UI model swaps can stop the child.
+                        $upgradePrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
                         Register-ScheduledTask -TaskName $upgradeTaskName `
                             -Action $upgradeAction `
                             -Trigger $upgradeTrigger `
@@ -1910,6 +2019,20 @@ if (-not $cloudMode) {
     Write-AI "Verifying the LLM can actually serve a completion..."
     $llmReady = Test-WindowsLlmModelReadiness -Endpoint $llmEndpoint -InstallDir $installDir `
         -GgufFile $tierConfig.GgufFile -TimeoutSec 120
+    if ($llmReady.Ok -and $useLemonade) {
+        try {
+            $lemonadeModel = [string]$llmReady.ModelId
+            $null = Set-WindowsODSLemonadeModelConfiguration `
+                -InstallDir $installDir -ModelId $lemonadeModel `
+                -Port ([string]$script:LEMONADE_PORT)
+            if (-not (Set-ODSWindowsHermesRuntimeModel -ModelId $lemonadeModel)) {
+                throw "Hermes configuration could not be updated for model '$lemonadeModel'."
+            }
+        } catch {
+            $llmReady.Ok = $false
+            $llmReady.Detail = "completion succeeded, but the resolved Lemonade model configuration could not be persisted: $_"
+        }
+    }
     if ($llmReady.Ok) {
         Write-AISuccess "LLM serving verified (model: $($llmReady.ModelId))"
     } else {
@@ -2060,7 +2183,11 @@ if ($enableVoice) {
 if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $servicePlan) {
     Write-AI "Configuring Perplexica..."
     $perplexicaModel = $(if ($tierConfig.GgufFile) {
-        if ($useLemonade) { "extra.$($tierConfig.GgufFile)" } else { $tierConfig.GgufFile }
+        if ($useLemonade -and -not [string]::IsNullOrWhiteSpace($lemonadeModel)) {
+            $lemonadeModel
+        } else {
+            $tierConfig.GgufFile
+        }
     } else {
         $tierConfig.LlmModel
     })

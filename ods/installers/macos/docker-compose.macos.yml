@@ -1,6 +1,7 @@
 # ODS -- macOS Apple Silicon Overlay
 # llama-server runs natively on macOS host with Metal acceleration
-# All other services remain in Docker, reaching the host via host.docker.internal
+# All other services remain in Docker, reaching the host through the scoped
+# Colima vmnet gateway (or host.docker.internal on Docker Desktop).
 #
 # Use with: docker compose -f docker-compose.base.yml -f installers/macos/docker-compose.macos.yml up -d
 
@@ -25,13 +26,13 @@ services:
       - -c
       - |
         echo "Waiting for native llama-server on host..."
-        while ! wget -qO- "http://host.docker.internal:${OLLAMA_PORT:-8080}/health" >/dev/null 2>&1; do
+        while ! wget -qO- "http://${ODS_MACOS_HOST_GATEWAY:-host.docker.internal}:${OLLAMA_PORT:-8080}/health" >/dev/null 2>&1; do
           sleep 2
         done
         echo "llama-server is ready"
         sleep infinity
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://host.docker.internal:${OLLAMA_PORT:-8080}/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://${ODS_MACOS_HOST_GATEWAY:-host.docker.internal}:${OLLAMA_PORT:-8080}/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 60
@@ -46,8 +47,8 @@ services:
 
   dashboard-api:
     environment:
-      - OLLAMA_URL=http://host.docker.internal:8080
-      - OLLAMA_HOST=host.docker.internal
+      - OLLAMA_URL=http://${ODS_MACOS_HOST_GATEWAY:-host.docker.internal}:8080
+      - OLLAMA_HOST=${ODS_MACOS_HOST_GATEWAY:-host.docker.internal}
       - OLLAMA_PORT=8080        # llama-server runs natively on macOS at this port
       # gpu.py routes to get_gpu_info_apple() which reads HOST_* env vars.
       # config.py defaults include 'apple' so all manifests are discovered.
@@ -60,4 +61,4 @@ services:
       llama-server-ready:
         condition: service_healthy
     environment:
-      OPENAI_API_BASE_URL: "http://host.docker.internal:8080/v1"
+      OPENAI_API_BASE_URL: "http://${ODS_MACOS_HOST_GATEWAY:-host.docker.internal}:8080/v1"

@@ -345,8 +345,27 @@ generate_ods_env() {
     langfuse_init_project_id=$(new_secure_hex 16)
     local langfuse_init_user_password
     langfuse_init_user_password=$(new_secure_hex 16)
-    # macOS: llama-server runs natively, containers reach it via host.docker.internal
+    # Colima's user-mode host.docker.internal route can become unreachable
+    # under load. The orchestrator enables its private vmnet address first;
+    # bridge loopback-only host services through that scoped interface.
+    local macos_llm_bridge_enabled="false"
+    local macos_host_agent_bridge_enabled="false"
+    local native_llama_port="8080"
+    local macos_host_gateway=""
+    local macos_vm_ip=""
+    local agent_host="host.docker.internal"
     local llm_api_url="http://host.docker.internal:8080"
+    if [[ "${DOCKER_BACKEND:-unknown}" == "colima" ]]; then
+        macos_llm_bridge_enabled="true"
+        macos_host_agent_bridge_enabled="true"
+        native_llama_port="8080"
+        macos_host_gateway="${COLIMA_HOST_IP:-}"
+        macos_vm_ip="${COLIMA_VM_IP:-}"
+        if [[ -n "$macos_host_gateway" ]]; then
+            agent_host="$macos_host_gateway"
+            llm_api_url="http://${macos_host_gateway}:8080"
+        fi
+    fi
 
     # Host LAN IP — only populated when the operator has pre-set
     # BIND_ADDRESS=0.0.0.0 in the environment (macOS has no --lan flag).
@@ -377,8 +396,8 @@ HOST_LAN_IP=${host_lan_ip}
 # Derived from the macOS LocalHostName/hostname so multiple installs on one LAN
 # do not all collide on auth.ods.local/chat.ods.local.
 ODS_DEVICE_NAME=${device_name}
-# Docker Desktop containers reach loopback-only host services through this name.
-ODS_AGENT_HOST=${ODS_AGENT_HOST:-host.docker.internal}
+# Container route to the loopback-only host agent (private Colima bridge or Docker Desktop helper).
+ODS_AGENT_HOST=${ODS_AGENT_HOST:-${agent_host}}
 
 #=== LLM Backend Mode ===
 ODS_MODE=local
@@ -392,6 +411,11 @@ TOGETHER_API_KEY=
 MINIMAX_API_KEY=
 
 #=== LLM Settings (llama-server -- native Metal) ===
+ODS_MACOS_LLM_BRIDGE_ENABLED=${macos_llm_bridge_enabled}
+ODS_MACOS_HOST_AGENT_BRIDGE_ENABLED=${macos_host_agent_bridge_enabled}
+ODS_MACOS_HOST_GATEWAY=${macos_host_gateway}
+ODS_MACOS_VM_IP=${macos_vm_ip}
+ODS_NATIVE_LLAMA_PORT=${native_llama_port}
 MODEL_PROFILE=${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}
 # Effective model profile for this hardware: ${MODEL_PROFILE_EFFECTIVE:-qwen}
 LLM_MODEL=${LLM_MODEL}
@@ -448,8 +472,8 @@ OPENCLAW_PORT=7860
 LANGFUSE_PORT=3006
 
 #=== Hermes Agent ===
-# macOS runs llama-server natively with Metal; containers reach it via host.docker.internal.
-HERMES_LLM_BASE_URL=http://host.docker.internal:8080/v1
+# macOS runs llama-server natively with Metal; containers use the scoped host route above.
+HERMES_LLM_BASE_URL=${llm_api_url}/v1
 HERMES_LLM_API_KEY=sk-ods-hermes-local
 HERMES_LANGUAGE=en
 HERMES_PROXY_PORT=9120
@@ -573,6 +597,7 @@ generate_openclaw_config() {
     local token="$4"
     local provider_url="${5:-http://host.docker.internal:8080}"
     local force_overwrite="${6:-false}"
+    local provider_api_key="${7:-none}"
     local provider_name="local-llama"
 
     # Create directories
@@ -583,8 +608,101 @@ generate_openclaw_config() {
     local sess_dir="${home_dir}/agents/main/sessions"
     mkdir -p "$agent_dir" "$canvas_dir" "$cron_dir" "$sess_dir"
 
-    # Idempotency: if OpenClaw has already been configured, don't overwrite unless forced.
+    # Preserve unrelated user configuration, but always refresh ODS's managed
+    # provider on local/cloud transitions so an old endpoint or key cannot win.
     if [[ -f "${home_dir}/openclaw.json" ]] && [[ "$force_overwrite" != "true" ]]; then
+        ODS_OPENCLAW_HOME_CONFIG="${home_dir}/openclaw.json" \
+        ODS_OPENCLAW_AUTH_CONFIG="${agent_dir}/auth-profiles.json" \
+        ODS_OPENCLAW_MODELS_CONFIG="${agent_dir}/models.json" \
+        ODS_OPENCLAW_PROVIDER="$provider_name" \
+        ODS_OPENCLAW_MODEL="$llm_model" \
+        ODS_OPENCLAW_CONTEXT="$max_context" \
+        ODS_OPENCLAW_BASE_URL="$provider_url" \
+        ODS_OPENCLAW_API_KEY="$provider_api_key" \
+            python3 - <<'OPENCLAW_REFRESH_PY'
+import json
+import os
+from pathlib import Path
+
+provider_id = os.environ["ODS_OPENCLAW_PROVIDER"]
+model_id = os.environ["ODS_OPENCLAW_MODEL"]
+context = int(os.environ["ODS_OPENCLAW_CONTEXT"])
+base_url = os.environ["ODS_OPENCLAW_BASE_URL"]
+api_key = os.environ["ODS_OPENCLAW_API_KEY"]
+provider_model = f"{provider_id}/{model_id}"
+
+model_entry = {
+    "id": model_id,
+    "name": "ODS LLM",
+    "reasoning": False,
+    "input": ["text"],
+    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+    "contextWindow": context,
+    "maxTokens": min(8192, context),
+    "compat": {
+        "supportsStore": False,
+        "supportsDeveloperRole": False,
+        "supportsReasoningEffort": False,
+        "maxTokensField": "max_tokens",
+    },
+}
+
+def load(path):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        value = {}
+    return value if isinstance(value, dict) else {}
+
+def save(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+home_path = Path(os.environ["ODS_OPENCLAW_HOME_CONFIG"])
+home = load(home_path)
+provider = home.setdefault("models", {}).setdefault("providers", {}).setdefault(provider_id, {})
+provider.update({
+    "baseUrl": base_url,
+    "apiKey": api_key,
+    "api": "openai-completions",
+    "models": [model_entry],
+})
+defaults = home.setdefault("agents", {}).setdefault("defaults", {})
+defaults["model"] = {"primary": provider_model}
+defaults["models"] = {provider_model: {}}
+defaults.setdefault("subagents", {})["model"] = provider_model
+save(home_path, home)
+
+auth_path = Path(os.environ["ODS_OPENCLAW_AUTH_CONFIG"])
+auth = load(auth_path)
+auth.setdefault("version", 1)
+auth.setdefault("profiles", {})[f"{provider_id}:default"] = {
+    "type": "api_key",
+    "provider": provider_id,
+    "key": api_key,
+}
+auth.setdefault("lastGood", {})[provider_id] = f"{provider_id}:default"
+auth.setdefault("usageStats", {})
+save(auth_path, auth)
+
+models_path = Path(os.environ["ODS_OPENCLAW_MODELS_CONFIG"])
+models = load(models_path)
+models.setdefault("providers", {})[provider_id] = {
+    "baseUrl": base_url,
+    "apiKey": api_key,
+    "api": "openai-completions",
+    "models": [model_entry],
+}
+save(models_path, models)
+
+for path in (home_path, auth_path, models_path):
+    check = load(path)
+    if not check:
+        raise SystemExit(f"OpenClaw config verification failed: {path}")
+OPENCLAW_REFRESH_PY
         return 0
     fi
 
@@ -595,12 +713,12 @@ generate_openclaw_config() {
     "providers": {
       "${provider_name}": {
         "baseUrl": "${provider_url}",
-        "apiKey": "none",
+        "apiKey": "${provider_api_key}",
         "api": "openai-completions",
         "models": [
           {
             "id": "${llm_model}",
-            "name": "ODS LLM (Local)",
+            "name": "ODS LLM",
             "reasoning": false,
             "input": ["text"],
             "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
@@ -643,7 +761,7 @@ OCEOF
     "${provider_name}:default": {
       "type": "api_key",
       "provider": "${provider_name}",
-      "key": "none"
+      "key": "${provider_api_key}"
     }
   },
   "lastGood": {"${provider_name}": "${provider_name}:default"},
@@ -657,12 +775,12 @@ AUTHEOF
   "providers": {
     "${provider_name}": {
       "baseUrl": "${provider_url}",
-      "apiKey": "none",
+      "apiKey": "${provider_api_key}",
       "api": "openai-completions",
       "models": [
         {
           "id": "${llm_model}",
-          "name": "ODS LLM (Local)",
+          "name": "ODS LLM",
           "reasoning": false,
           "input": ["text"],
           "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
@@ -681,6 +799,9 @@ AUTHEOF
 }
 MODEOF
 
+    chmod 600 "${home_dir}/openclaw.json" \
+        "${agent_dir}/auth-profiles.json" "${agent_dir}/models.json"
+
     # Workspace directory
     mkdir -p "${install_dir}/config/openclaw/workspace/memory"
 }
@@ -698,10 +819,6 @@ configure_perplexica() {
         *) llm_base_url="${llm_base_url%/}/v1" ;;
     esac
 
-    # Check if Perplexica is responding
-    local config_json
-    config_json=$(curl -sf "${perplexica_url}/api/config" 2>/dev/null) || return 1
-
     PYTHON_CMD="python3"
     if [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/lib/python-cmd.sh" ]]; then
         . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/lib/python-cmd.sh"
@@ -710,68 +827,105 @@ configure_perplexica() {
         PYTHON_CMD="python"
     fi
 
-    # Check if already configured for this served model.
-    if echo "$config_json" | PERPLEXICA_MODEL="$llm_model" "$PYTHON_CMD" -c '
-import os, sys, json
-values = json.load(sys.stdin).get("values", {})
-model = os.environ["PERPLEXICA_MODEL"]
-providers = values.get("modelProviders", [])
-openai_prov = next((p for p in providers if p.get("type") == "openai"), {})
-chat_models = openai_prov.get("chatModels") or []
-prefs = values.get("preferences") or {}
-has_model = any(m.get("key") == model or m.get("name") == model for m in chat_models)
-sys.exit(0 if values.get("setupComplete") and has_model and prefs.get("defaultChatModel") == model else 1)
-' 2>/dev/null; then
-        return 0
-    fi
-
-    echo "$config_json" | \
-        PERPLEXICA_URL="$perplexica_url" \
-        PERPLEXICA_MODEL="$llm_model" \
-        PERPLEXICA_LLM_BASE_URL="$llm_base_url" \
-        PERPLEXICA_API_KEY="$api_key" \
-        "$PYTHON_CMD" -c '
+    # Current Perplexica images start with only the Transformers provider. Use
+    # the provider API to create or update the managed OpenAI-compatible route,
+    # then verify the exact persisted endpoint, key, model, and preferences.
+    PERPLEXICA_URL="$perplexica_url" \
+    PERPLEXICA_MODEL="$llm_model" \
+    PERPLEXICA_LLM_BASE_URL="$llm_base_url" \
+    PERPLEXICA_API_KEY="$api_key" \
+        "$PYTHON_CMD" - <<'PERPLEXICA_CONFIG_PY' >/dev/null 2>&1
+import json
 import os
-import sys, json, urllib.request
+import urllib.request
 
-config = json.load(sys.stdin)["values"]
-providers = config.get("modelProviders", [])
-openai_prov = next((p for p in providers if p.get("type") == "openai"), None)
-transformers_prov = next((p for p in providers if p.get("type") == "transformers"), None)
-if not openai_prov:
-    sys.exit(1)
-
-url = os.environ["PERPLEXICA_URL"] + "/api/config"
+root = os.environ["PERPLEXICA_URL"].rstrip("/")
 model = os.environ["PERPLEXICA_MODEL"]
 base_url = os.environ["PERPLEXICA_LLM_BASE_URL"]
 api_key = os.environ["PERPLEXICA_API_KEY"] or "no-key"
 
-def post(key, value):
-    data = json.dumps({"key": key, "value": value}).encode()
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=10)
 
-def post_setup_complete():
-    setup_url = os.environ["PERPLEXICA_URL"] + "/api/config/setup-complete"
-    req = urllib.request.Request(setup_url, data=b"{}", headers={"Content-Type": "application/json"})
-    try:
-        urllib.request.urlopen(req, timeout=10)
-    except Exception:
-        post("setupComplete", True)
+def request(method, path, payload=None):
+    body = None if payload is None else json.dumps(payload).encode()
+    req = urllib.request.Request(
+        root + path,
+        data=body,
+        method=method,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as response:
+        raw = response.read()
+    return json.loads(raw) if raw else {}
 
-openai_prov["chatModels"] = [{"key": model, "name": model}]
-openai_prov["config"] = {
-    **(openai_prov.get("config") or {}),
-    "apiKey": api_key,
-    "baseURL": base_url,
-}
-post("modelProviders", providers)
-post("preferences", {
-    "defaultChatProvider": openai_prov["id"],
-    "defaultChatModel": model,
-    "defaultEmbeddingProvider": transformers_prov["id"] if transformers_prov else openai_prov["id"],
-    "defaultEmbeddingModel": "Xenova/all-MiniLM-L6-v2"
-})
-post_setup_complete()
-' >/dev/null 2>&1
+
+values = request("GET", "/api/config").get("values", {})
+providers = values.get("modelProviders") or []
+provider = next((item for item in providers if item.get("type") == "openai"), None)
+if provider is None:
+    provider = request(
+        "POST",
+        "/api/providers",
+        {
+            "type": "openai",
+            "name": "ODS inference",
+            "config": {"apiKey": api_key, "baseURL": base_url},
+        },
+    ).get("provider")
+else:
+    config = dict(provider.get("config") or {})
+    config.update({"apiKey": api_key, "baseURL": base_url})
+    provider = request(
+        "PATCH",
+        f"/api/providers/{provider['id']}",
+        {"name": provider.get("name") or "ODS inference", "config": config},
+    ).get("provider")
+if not isinstance(provider, dict) or not provider.get("id"):
+    raise SystemExit("Perplexica provider configuration failed")
+
+provider_id = provider["id"]
+models = provider.get("chatModels") or []
+if not any(item.get("key") == model or item.get("name") == model for item in models):
+    request(
+        "POST",
+        f"/api/providers/{provider_id}/models",
+        {"key": model, "name": model, "type": "chat"},
+    )
+
+transformers = next((item for item in providers if item.get("type") == "transformers"), None)
+request(
+    "POST",
+    "/api/config",
+    {
+        "key": "preferences",
+        "value": {
+            "defaultChatProvider": provider_id,
+            "defaultChatModel": model,
+            "defaultEmbeddingProvider": transformers["id"] if transformers else provider_id,
+            "defaultEmbeddingModel": "Xenova/all-MiniLM-L6-v2",
+        },
+    },
+)
+try:
+    request("POST", "/api/config/setup-complete", {})
+except Exception:
+    request("POST", "/api/config", {"key": "setupComplete", "value": True})
+
+check = request("GET", "/api/config").get("values", {})
+saved = next(
+    (item for item in check.get("modelProviders", []) if item.get("id") == provider_id),
+    {},
+)
+saved_config = saved.get("config") or {}
+saved_models = saved.get("chatModels") or []
+preferences = check.get("preferences") or {}
+ok = (
+    check.get("setupComplete")
+    and saved_config.get("baseURL") == base_url
+    and saved_config.get("apiKey") == api_key
+    and any(item.get("key") == model or item.get("name") == model for item in saved_models)
+    and preferences.get("defaultChatProvider") == provider_id
+    and preferences.get("defaultChatModel") == model
+)
+raise SystemExit(0 if ok else 1)
+PERPLEXICA_CONFIG_PY
 }

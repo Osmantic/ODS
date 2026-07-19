@@ -7,14 +7,12 @@ remain in main.py so that test monkeypatches continue to intercept them.
 """
 
 import re
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import HTTPException
 
-from config import AGENT_URL
+from host_agent_client import AgentClientError, request_json as request_agent_json
 
 # ── Regex constants ────────────────────────────────────────────────────────────
 
@@ -55,6 +53,9 @@ _MANUAL_RESTART_KEYS = {
     "BIND_ADDRESS",
     "DASHBOARD_API_KEY", "ODS_AGENT_KEY", "DASHBOARD_PORT",
     "DASHBOARD_API_PORT", "ODS_AGENT_PORT", "ODS_AGENT_HOST",
+}
+_READ_ONLY_ENV_FIELDS = {
+    "ODS_MODE": "Runtime mode is selected by the installer and cannot be changed from the dashboard.",
 }
 
 # ── Env parsing ────────────────────────────────────────────────────────────────
@@ -152,6 +153,8 @@ def _build_env_fields(
             "default": definition.get("default"),
             "value": value,
             "hasValue": value != "",
+            "readOnly": key in _READ_ONLY_ENV_FIELDS,
+            "readOnlyReason": _READ_ONLY_ENV_FIELDS.get(key, ""),
         }
 
     for key, value in values.items():
@@ -170,6 +173,8 @@ def _build_env_fields(
             "default": None,
             "value": value,
             "hasValue": value != "",
+            "readOnly": key in _READ_ONLY_ENV_FIELDS,
+            "readOnlyReason": _READ_ONLY_ENV_FIELDS.get(key, ""),
         }
 
     return fields
@@ -361,7 +366,7 @@ def _compute_env_apply_plan(previous_values: dict[str, str], next_values: dict[s
 
 def _check_host_agent_available() -> bool:
     try:
-        with urllib.request.urlopen(f"{AGENT_URL}/health", timeout=3) as response:
-            return response.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+        request_agent_json("GET", "/health", timeout=3)
+        return True
+    except AgentClientError:
         return False

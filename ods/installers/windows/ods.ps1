@@ -795,21 +795,34 @@ function Start-ODSLemonadeRuntime {
 
     Sync-ODSNativeInferenceConfig
     $modelsDir = Join-Path (Join-Path $InstallDir "data") "models"
+    $envPath = Join-Path $InstallDir ".env"
     Stop-ODSLemonadeRuntime
 
-    $argString = "serve --port $($script:LEMONADE_PORT) --host $BindAddress --no-tray --llamacpp vulkan --extra-models-dir `"$modelsDir`""
+    $adminApiKey = Get-ODSLemonadeAdminApiKey -EnvPath $envPath
+    $launchContract = Get-ODSLemonadeLaunchContract `
+        -ExecutablePath $script:LEMONADE_EXE `
+        -Port $script:LEMONADE_PORT `
+        -BindAddress $BindAddress `
+        -ModelsDir $modelsDir `
+        -AdminApiKey $adminApiKey
+    $diagnosticLog = Join-Path (Join-Path $InstallDir "logs") "lemonade-launch.log"
     $launchMethod = "scheduled task"
+    $directProcess = $null
     try {
-        $action = New-ScheduledTaskAction -Execute $script:LEMONADE_EXE -Argument $argString -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE)
+        $action = New-ODSLemonadeScheduledTaskAction `
+            -Contract $launchContract -EnvPath $envPath -DiagnosticLogPath $diagnosticLog
         $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
+        $lemonadeSettings = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit ([TimeSpan]::Zero)
         $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-        Register-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
+        Register-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -Action $action -Trigger $trigger -Settings $lemonadeSettings -Principal $principal -Force -ErrorAction Stop | Out-Null
         Start-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -ErrorAction Stop
     } catch {
         $launchMethod = "direct process"
         Write-AIWarn "Could not start Lemonade through Task Scheduler: $_"
         Write-AI "Starting Lemonade directly for this Windows session..."
-        Start-Process -FilePath $script:LEMONADE_EXE -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE) | Out-Null
+        $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract
     }
 
     Start-Sleep -Seconds 5
@@ -818,10 +831,12 @@ function Start-ODSLemonadeRuntime {
         Sort-Object ProcessId -Descending |
         Select-Object -First 1
     if (-not $proc -and $launchMethod -eq "scheduled task") {
+        $scheduledDiagnostics = Get-ODSLemonadeLaunchDiagnostics -TaskName $script:LEMONADE_TASK_NAME
         $launchMethod = "direct process"
         Write-AIWarn "Lemonade scheduled task did not start a server process."
+        Write-AIWarn (Format-ODSLemonadeLaunchDiagnostics -Diagnostics $scheduledDiagnostics)
         Write-AI "Starting Lemonade directly for this Windows session..."
-        Start-Process -FilePath $script:LEMONADE_EXE -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $script:LEMONADE_EXE) | Out-Null
+        $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract
         Start-Sleep -Seconds 3
         $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase) } |
@@ -829,7 +844,37 @@ function Start-ODSLemonadeRuntime {
             Select-Object -First 1
     }
     if (-not $proc) {
-        throw "Lemonade $launchMethod started but no Lemonade process was found"
+        $launchDiagnostics = Get-ODSLemonadeLaunchDiagnostics `
+            -TaskName $script:LEMONADE_TASK_NAME -ChildProcess $directProcess
+        throw "Lemonade $launchMethod started but no Lemonade process was found. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $launchDiagnostics)"
+    }
+
+    $healthy = $false
+    for ($i = 0; $i -lt 45; $i++) {
+        try {
+            $response = Invoke-WebRequest -Uri $script:LEMONADE_HEALTH_URL `
+                -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
+                $healthy = $true
+                break
+            }
+        } catch { }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $healthy) {
+        $healthDiagnostics = Get-ODSLemonadeLaunchDiagnostics `
+            -TaskName $script:LEMONADE_TASK_NAME -ChildProcess $directProcess
+        throw "Lemonade did not become healthy. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $healthDiagnostics)"
+    }
+    if ($launchContract.RequiresRuntimeConfiguration) {
+        try {
+            $null = Set-ODSLemonadeModernRuntimeConfig `
+                -Port $script:LEMONADE_PORT -ModelsDir $modelsDir -AdminApiKey $adminApiKey
+        } catch {
+            $configDiagnostics = Get-ODSLemonadeLaunchDiagnostics `
+                -TaskName $script:LEMONADE_TASK_NAME -ChildProcess $directProcess
+            throw "Lemonade 10.7+ runtime configuration failed: $_. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $configDiagnostics)"
+        }
     }
 
     $pidDir = Split-Path $script:INFERENCE_PID_FILE

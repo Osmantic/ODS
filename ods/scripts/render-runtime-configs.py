@@ -166,11 +166,17 @@ def render_opencode(inputs: RenderInputs) -> RenderedFile:
 
 
 def render_env(inputs: RenderInputs) -> RenderedFile:
+    lemonade_model = (
+        lemonade_model_id(inputs)
+        if inputs.ods_mode == "lemonade"
+        else inputs.lemonade_model_id
+    )
     lines = [
         f"ODS_MODE={inputs.ods_mode}",
         f"LLM_BACKEND={'lemonade' if inputs.ods_mode == 'lemonade' else 'llama-server'}",
         f"LLM_MODEL={inputs.model}",
         f"GGUF_FILE={inputs.gguf_file}",
+        f"LEMONADE_MODEL={lemonade_model}",
         f"GPU_BACKEND={inputs.gpu_backend}",
         f"LLM_API_URL={inputs.llm_base_url}",
         f"CTX_SIZE={inputs.context_length}",

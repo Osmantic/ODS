@@ -192,6 +192,7 @@ services:
       - ODS_INSTALL_DIR=/ods
       - ODS_DATA_DIR=/data
       - ODS_EXTENSIONS_LIBRARY_DIR=/data/extensions-library
+      - ODS_MODE=${ODS_MODE:-local}
       - ODS_AGENT_HOST=${ODS_AGENT_HOST:-}
       - ODS_AGENT_PORT=${ODS_AGENT_PORT:-7710}
       - GPU_BACKEND=${GPU_BACKEND:-nvidia}

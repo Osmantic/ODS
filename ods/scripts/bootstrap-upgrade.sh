@@ -38,7 +38,37 @@ BOOTSTRAP_GGUF_FILE="${7:-Qwen3.5-2B-Q4_K_M.gguf}"
 LOG_TAG="[BOOTSTRAP-UPGRADE]"
 
 log()  { echo "$LOG_TAG $(date '+%H:%M:%S') $*"; }
-fail() { log "ERROR: $*"; release_upgrade_lock; exit 1; }
+release_model_lifecycle_lock() {
+    if declare -F ods_model_lifecycle_lock_release >/dev/null 2>&1; then
+        ods_model_lifecycle_lock_release
+    fi
+}
+prepare_model_lifecycle_lock() {
+    [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]] || return 0
+    declare -F ods_model_lifecycle_lock_acquire >/dev/null 2>&1 && return 0
+
+    local script_root candidate
+    script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)" || return 1
+    for candidate in \
+        "$INSTALL_DIR/installers/lib/model-lifecycle-lock.sh" \
+        "$script_root/installers/lib/model-lifecycle-lock.sh"
+    do
+        if [[ -f "$candidate" ]]; then
+            # shellcheck source=installers/lib/model-lifecycle-lock.sh
+            . "$candidate"
+            return 0
+        fi
+    done
+
+    log "ERROR: Linux model lifecycle lock helper is missing."
+    return 1
+}
+acquire_model_lifecycle_lock() {
+    prepare_model_lifecycle_lock || return 1
+    [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]] || return 0
+    ods_model_lifecycle_lock_acquire "$INSTALL_DIR" "background full-model activation"
+}
+fail() { log "ERROR: $*"; release_model_lifecycle_lock; release_upgrade_lock; exit 1; }
 
 if [[ -z "$INSTALL_DIR" || ! -d "$INSTALL_DIR" ]]; then
     log "ERROR: install directory does not exist: ${INSTALL_DIR:-<empty>}"
@@ -181,7 +211,7 @@ acquire_upgrade_lock() {
 
     UPGRADE_LOCK_DIR="$lock_dir"
     printf '%s\n' "$$" > "$pid_file"
-    trap 'release_upgrade_lock' EXIT
+    trap 'release_model_lifecycle_lock; release_upgrade_lock' EXIT
 }
 
 model_sha256() {
@@ -227,8 +257,28 @@ verify_model_integrity() {
 
 ACTIVE_CONFIG_SNAPSHOT_DIR=""
 
+snapshot_file_state() {
+    local source_path="$1" snapshot_path="$2"
+    mkdir -p "$(dirname "$snapshot_path")" || return 1
+    if [[ -f "$source_path" ]]; then
+        cp -p "$source_path" "$snapshot_path"
+    else
+        : > "${snapshot_path}.missing"
+    fi
+}
+
+restore_file_state() {
+    local snapshot_path="$1" target_path="$2"
+    if [[ -f "$snapshot_path" ]]; then
+        mkdir -p "$(dirname "$target_path")" || return 1
+        cp -p "$snapshot_path" "$target_path"
+    elif [[ -f "${snapshot_path}.missing" ]]; then
+        rm -f "$target_path"
+    fi
+}
+
 snapshot_active_model_config() {
-    local snapshot_base
+    local snapshot_base include_windows_lemonade="${1:-false}"
     snapshot_base="${INSTALL_DIR}/data"
     mkdir -p "$snapshot_base" 2>/dev/null || return 1
     ACTIVE_CONFIG_SNAPSHOT_DIR="$(mktemp -d "${snapshot_base}/bootstrap-upgrade-active-config.XXXXXX" 2>/dev/null || true)"
@@ -246,6 +296,19 @@ snapshot_active_model_config() {
     else
         : > "$ACTIVE_CONFIG_SNAPSHOT_DIR/models.ini.missing"
     fi
+
+    if [[ "$include_windows_lemonade" == "true" ]]; then
+        snapshot_file_state \
+            "$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template" \
+            "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade/hermes-template" || return 1
+        snapshot_file_state \
+            "$INSTALL_DIR/data/hermes/config.yaml" \
+            "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade/hermes-live" || return 1
+        snapshot_file_state \
+            "$INSTALL_DIR/config/litellm/lemonade.yaml" \
+            "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade/litellm-lemonade" || return 1
+        : > "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade.included"
+    fi
 }
 
 restore_active_model_config() {
@@ -262,6 +325,18 @@ restore_active_model_config() {
         cp -p "$ACTIVE_CONFIG_SNAPSHOT_DIR/config-llama-server/models.ini" "$MODELS_INI" || return 1
     elif [[ -f "$ACTIVE_CONFIG_SNAPSHOT_DIR/models.ini.missing" ]]; then
         rm -f "$MODELS_INI"
+    fi
+
+    if [[ -f "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade.included" ]]; then
+        restore_file_state \
+            "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade/hermes-template" \
+            "$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template" || return 1
+        restore_file_state \
+            "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade/hermes-live" \
+            "$INSTALL_DIR/data/hermes/config.yaml" || return 1
+        restore_file_state \
+            "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade/litellm-lemonade" \
+            "$INSTALL_DIR/config/litellm/lemonade.yaml" || return 1
     fi
 
     rm -rf "$ACTIVE_CONFIG_SNAPSHOT_DIR"
@@ -353,6 +428,7 @@ restore_bootstrap_model_after_windows_swap_failure() {
     [[ -n "$BOOTSTRAP_SWAP_BACKUP_PATH" && -f "$BOOTSTRAP_SWAP_BACKUP_PATH" ]] || return 0
 
     mv "$BOOTSTRAP_SWAP_BACKUP_PATH" "$BOOTSTRAP_PATH" || return 1
+    BOOTSTRAP_SWAP_BACKUP_PATH=""
     log "Restored bootstrap model after Windows Lemonade swap failure: $(basename "$BOOTSTRAP_PATH")"
 }
 
@@ -360,6 +436,7 @@ discard_bootstrap_model_backup_after_windows_swap() {
     [[ -n "$BOOTSTRAP_SWAP_BACKUP_PATH" && -f "$BOOTSTRAP_SWAP_BACKUP_PATH" ]] || return 0
 
     rm -f "$BOOTSTRAP_SWAP_BACKUP_PATH"
+    BOOTSTRAP_SWAP_BACKUP_PATH=""
     log "Removed bootstrap model after verified Windows Lemonade full-model serving: $(basename "$BOOTSTRAP_PATH")"
 }
 
@@ -398,6 +475,22 @@ read_env_value() {
     grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"\047\r'
 }
 
+write_env_value() {
+    local key="$1" value="$2" tmp
+    [[ -f "$ENV_FILE" ]] || return 1
+    tmp="${ENV_FILE}.tmp.$$"
+    if ! awk -v k="$key" -v v="$value" '
+        BEGIN { found = 0 }
+        index($0, k "=") == 1 { print k "=" v; found = 1; next }
+        { print }
+        END { if (!found) print k "=" v }
+    ' "$ENV_FILE" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    cat "$tmp" > "$ENV_FILE" && rm -f "$tmp"
+}
+
 is_windows_bash() {
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*) return 0 ;;
@@ -425,6 +518,9 @@ windows_ps_command() {
 restart_windows_lemonade_with_full_model() {
     is_windows_bash || return 1
 
+    local target_gguf="${1:-$FULL_GGUF_FILE}" target_label="${2:-full model}"
+    [[ -n "$target_gguf" ]] || return 1
+
     local runtime llm_backend managed runtime_mode lemonade_external
     runtime="$(read_env_value AMD_INFERENCE_RUNTIME | tr '[:upper:]' '[:lower:]')"
     llm_backend="$(read_env_value LLM_BACKEND | tr '[:upper:]' '[:lower:]')"
@@ -444,34 +540,73 @@ restart_windows_lemonade_with_full_model() {
         return 1
     }
 
-    local pid_file bind_addr lemonade_port
+    local pid_file bind_addr lemonade_port helper_path env_path
     pid_file="$INSTALL_DIR/data/llama-server.pid"
     bind_addr="$(read_env_value BIND_ADDRESS)"
     [[ -n "$bind_addr" ]] || bind_addr="127.0.0.1"
     lemonade_port="$(read_env_value AMD_INFERENCE_PORT)"
     [[ -n "$lemonade_port" ]] || lemonade_port="8080"
+    helper_path="$INSTALL_DIR/installers/windows/lib/backend-contract.ps1"
+    env_path="$ENV_FILE"
+    if [[ ! -f "$helper_path" ]]; then
+        log "WARNING: Windows Lemonade launch helper is missing: $helper_path"
+        return 1
+    fi
 
-    log "Restarting native Windows Lemonade with full model..."
-    ODS_WIN_PID_FILE="$(windows_path "$pid_file")" \
-    ODS_WIN_MODELS_DIR="$(windows_path "$MODELS_DIR")" \
-    ODS_WIN_BIND_ADDR="$bind_addr" \
-    ODS_WIN_LEMONADE_PORT="$lemonade_port" \
-    "$ps_cmd" -NoProfile -ExecutionPolicy Bypass -Command '
+    log "Restarting native Windows Lemonade with ${target_label}: ${target_gguf}"
+    local ps_output model_id
+    if ! ps_output=$(
+        ODS_WIN_PID_FILE="$(windows_path "$pid_file")" \
+        ODS_WIN_MODELS_DIR="$(windows_path "$MODELS_DIR")" \
+        ODS_WIN_BIND_ADDR="$bind_addr" \
+        ODS_WIN_LEMONADE_PORT="$lemonade_port" \
+        ODS_WIN_LEMONADE_HELPER="$(windows_path "$helper_path")" \
+        ODS_WIN_ENV_PATH="$(windows_path "$env_path")" \
+        ODS_WIN_LEMONADE_DIAGNOSTIC_LOG="$(windows_path "$INSTALL_DIR/logs/lemonade-launch.log")" \
+        ODS_WIN_LEMONADE_TASK="ODSLemonadeRuntime" \
+        ODS_WIN_GGUF_FILE="$target_gguf" \
+        "$ps_cmd" -NoProfile -ExecutionPolicy Bypass -Command '
         $ErrorActionPreference = "Stop"
 
-        $roots = @()
-        if ($env:ProgramFiles) { $roots += $env:ProgramFiles }
-        $pf86 = [Environment]::GetFolderPath("ProgramFilesX86")
-        if ($pf86) { $roots += $pf86 }
-        $exe = $null
-        foreach ($root in $roots) {
-            $candidate = Join-Path (Join-Path (Join-Path $root "Lemonade Server") "bin") "lemonade-server.exe"
-            if (Test-Path $candidate) { $exe = $candidate; break }
+        $helperPath = $env:ODS_WIN_LEMONADE_HELPER
+        if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
+            throw "Windows Lemonade launch helper not found: $helperPath"
         }
+        . $helperPath
+        $exe = Resolve-ODSLemonadeExe
         if (-not $exe) { throw "lemonade-server.exe not found under Program Files roots" }
+        $port = [int]$env:ODS_WIN_LEMONADE_PORT
+        $adminApiKey = Get-ODSLemonadeAdminApiKey -EnvPath $env:ODS_WIN_ENV_PATH
+        $launchContract = Get-ODSLemonadeLaunchContract `
+            -ExecutablePath $exe -Port $port -BindAddress $env:ODS_WIN_BIND_ADDR `
+            -ModelsDir $env:ODS_WIN_MODELS_DIR -AdminApiKey $adminApiKey
+        $taskName = $env:ODS_WIN_LEMONADE_TASK
+        try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch { }
+
+        $binDir = Split-Path -Parent $exe
+        $userProfile = [Environment]::GetFolderPath("UserProfile")
+        $lemonadeCacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
+        $odsModelsDir = $env:ODS_WIN_MODELS_DIR
+
+        function Test-ODSLemonadeProcess {
+            param($ProcessInfo)
+            if (-not $ProcessInfo) { return $false }
+            return (
+                ($ProcessInfo.ExecutablePath -and $ProcessInfo.ExecutablePath.StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase)) -or
+                ($lemonadeCacheBin -and $ProcessInfo.ExecutablePath -and $ProcessInfo.ExecutablePath.StartsWith($lemonadeCacheBin, [StringComparison]::OrdinalIgnoreCase)) -or
+                ($odsModelsDir -and $ProcessInfo.CommandLine -and
+                    $ProcessInfo.CommandLine.IndexOf($odsModelsDir, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+                    $ProcessInfo.CommandLine.IndexOf("lemonade", [StringComparison]::OrdinalIgnoreCase) -ge 0)
+            )
+        }
 
         function Stop-ODSProcessId {
             param([int]$ProcessId)
+            $processInfo = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $ProcessId) -ErrorAction SilentlyContinue
+            if (-not $processInfo) { return }
+            if (-not (Test-ODSLemonadeProcess $processInfo)) {
+                throw "Refusing to stop unowned process $ProcessId on configured Lemonade port $port"
+            }
             Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
             for ($i = 0; $i -lt 30; $i++) {
                 $old = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
@@ -496,7 +631,6 @@ restart_windows_lemonade_with_full_model() {
         # then polls the old bootstrap instance forever. Clear the configured
         # listener and any Lemonade Server child processes before launching the
         # full-model instance.
-        $port = [int]$env:ODS_WIN_LEMONADE_PORT
         $deadline = (Get-Date).AddSeconds(20)
         do {
             $listeners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
@@ -509,14 +643,8 @@ restart_windows_lemonade_with_full_model() {
             Start-Sleep -Milliseconds 500
         } while ((Get-Date) -lt $deadline)
 
-        $binDir = Split-Path -Parent $exe
-        $userProfile = [Environment]::GetFolderPath("UserProfile")
-        $lemonadeCacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
-        $odsModelsDir = $env:ODS_WIN_MODELS_DIR
         $lemonadeChildren = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-            ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase)) -or
-            ($lemonadeCacheBin -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($lemonadeCacheBin, [StringComparison]::OrdinalIgnoreCase)) -or
-            ($odsModelsDir -and $_.CommandLine -and $_.CommandLine.IndexOf($odsModelsDir, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+            Test-ODSLemonadeProcess $_
         })
         foreach ($child in $lemonadeChildren) {
             Stop-ODSProcessId -ProcessId ([int]$child.ProcessId)
@@ -530,39 +658,85 @@ restart_windows_lemonade_with_full_model() {
         $logPath = Join-Path $env:TEMP "lemonade-server.log"
         Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
 
-        $args = @(
-            "serve",
-            "--port", $env:ODS_WIN_LEMONADE_PORT,
-            "--host", $env:ODS_WIN_BIND_ADDR,
-            "--no-tray",
-            "--llamacpp", "vulkan",
-            "--extra-models-dir", $env:ODS_WIN_MODELS_DIR
-        )
-        $proc = Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden -PassThru
-        New-Item -ItemType Directory -Path (Split-Path -Parent $pidPath) -Force | Out-Null
-        Set-Content -LiteralPath $pidPath -Value $proc.Id
-
-        Start-Sleep -Seconds 2
-        $started = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
-        if (-not $started) {
-            try {
-                $health = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/api/v1/models" -f $port) -TimeoutSec 3 -UseBasicParsing
-                if ([int]$health.StatusCode -eq 200) { return }
-            } catch { }
-            $tail = ""
-            if (Test-Path $logPath) {
-                $tail = (Get-Content -LiteralPath $logPath -Tail 8 -ErrorAction SilentlyContinue) -join " "
-            }
-            throw "lemonade-server exited immediately after restart. $tail"
+        $action = New-ODSLemonadeScheduledTaskAction `
+            -Contract $launchContract -EnvPath $env:ODS_WIN_ENV_PATH `
+            -DiagnosticLogPath $env:ODS_WIN_LEMONADE_DIAGNOSTIC_LOG
+        $launchMethod = "scheduled task"
+        $proc = $null
+        try {
+            $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
+            $settings = New-ScheduledTaskSettingsSet `
+                -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                -ExecutionTimeLimit ([TimeSpan]::Zero)
+            $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+                -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
+            Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+        } catch {
+            $launchMethod = "direct process"
+            Write-Warning "Could not start Lemonade through Task Scheduler: $_"
+            $proc = Start-ODSLemonadeDirectProcess -Contract $launchContract
         }
-    ' >/dev/null 2>&1 || {
-        log "WARNING: native Windows Lemonade restart failed."
-        return 1
-    }
 
-    log "Waiting for native Windows Lemonade to serve extra.$FULL_GGUF_FILE ..."
-    local model_id _swap_attempts
-    model_id="extra.${FULL_GGUF_FILE//\"/\\\"}"
+        $healthy = $false
+        for ($i = 0; $i -lt 45; $i++) {
+            try {
+                $health = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/api/v1/health" -f $port) -TimeoutSec 3 -UseBasicParsing
+                if ([int]$health.StatusCode -ge 200 -and [int]$health.StatusCode -lt 300) {
+                    $healthy = $true
+                    break
+                }
+            } catch { }
+            Start-Sleep -Seconds 1
+        }
+        if (-not $healthy -and $launchMethod -eq "scheduled task") {
+            $scheduledDiagnostics = Get-ODSLemonadeLaunchDiagnostics -TaskName $taskName
+            Write-Warning "Lemonade scheduled task did not start a healthy router. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $scheduledDiagnostics)"
+            try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch { }
+            $launchMethod = "direct process"
+            $proc = Start-ODSLemonadeDirectProcess -Contract $launchContract
+            for ($i = 0; $i -lt 15; $i++) {
+                try {
+                    $health = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/api/v1/health" -f $port) -TimeoutSec 3 -UseBasicParsing
+                    if ([int]$health.StatusCode -ge 200 -and [int]$health.StatusCode -lt 300) {
+                        $healthy = $true
+                        break
+                    }
+                } catch { }
+                Start-Sleep -Seconds 1
+            }
+        }
+        if (-not $healthy) {
+            $diagnostics = Get-ODSLemonadeLaunchDiagnostics -TaskName $taskName -ChildProcess $proc
+            throw "Lemonade $launchMethod did not become healthy after restart. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $diagnostics)"
+        }
+        $listener = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) | Select-Object -First 1
+        if (-not $listener -or $listener.OwningProcess -le 0) {
+            throw "Lemonade health passed, but no listener process was found on port $port"
+        }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $pidPath) -Force | Out-Null
+        Set-Content -LiteralPath $pidPath -Value $listener.OwningProcess
+        if ($launchContract.RequiresRuntimeConfiguration) {
+            $null = Set-ODSLemonadeModernRuntimeConfig `
+                -Port $port -ModelsDir $env:ODS_WIN_MODELS_DIR -AdminApiKey $adminApiKey
+        }
+        $modelId = Resolve-ODSLemonadeModelId `
+            -Port $port -GgufFile $env:ODS_WIN_GGUF_FILE `
+            -VersionOverride ([string]$launchContract.Version)
+        Write-Output ("__ODS_LEMONADE_MODEL_ID__={0}" -f $modelId)
+    ' 2>&1
+    ); then
+        log "WARNING: native Windows Lemonade restart failed: $(printf '%s' "$ps_output" | tr '\r\n' ' ' | tail -c 800)"
+        return 1
+    fi
+
+    model_id="$(printf '%s\n' "$ps_output" | sed -n 's/^__ODS_LEMONADE_MODEL_ID__=//p' | tail -1 | tr -d '\r')"
+    if [[ -z "$model_id" ]]; then
+        log "WARNING: native Windows Lemonade restart did not report a model ID."
+        return 1
+    fi
+    log "Waiting for native Windows Lemonade to serve ${model_id} ..."
+    local _swap_attempts
     # A freshly-swapped full model can take several minutes to register in
     # --extra-models-dir and then load on the first completion. The old 12x10s
     # (~2 min) budget timed out before a 22 GB MoE (Qwen3.6-35B-A3B) was even
@@ -578,6 +752,10 @@ restart_windows_lemonade_with_full_model() {
                 -H "Content-Type: application/json" \
                 -d "{\"model\":\"${model_id}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}" \
                 >/dev/null 2>&1; then
+                if ! write_env_value LEMONADE_MODEL "$model_id"; then
+                    log "WARNING: ${model_id} completed, but ODS could not persist LEMONADE_MODEL."
+                    return 1
+                fi
                 log "SUCCESS: native Windows Lemonade completed with ${model_id}"
                 return 0
             fi
@@ -588,8 +766,13 @@ restart_windows_lemonade_with_full_model() {
         sleep 10
     done
 
-    log "WARNING: native Windows Lemonade did not complete with ${model_id} after ${_swap_attempts} attempts; keeping bootstrap model for recovery."
+    log "WARNING: native Windows Lemonade did not complete with ${model_id} after ${_swap_attempts} attempts."
     return 1
+}
+
+restart_windows_lemonade_with_previous_model() {
+    local previous_gguf="${1:-}"
+    restart_windows_lemonade_with_full_model "$previous_gguf" "previous model"
 }
 
 restart_windows_native_llama_server_with_full_model() {
@@ -810,7 +993,8 @@ patch_hermes_model_after_swap() {
     new_model="$FULL_GGUF_FILE"
     if [[ "$runtime" == "lemonade" || "$llm_backend" == "lemonade" ]]; then
         old_model="extra.$BOOTSTRAP_GGUF_FILE"
-        new_model="extra.$FULL_GGUF_FILE"
+        new_model="$(read_env_value LEMONADE_MODEL)"
+        [[ -n "$new_model" ]] || new_model="extra.$FULL_GGUF_FILE"
     fi
 
     log "Patching Hermes config after full-model swap: ${old_model} -> ${new_model}"
@@ -862,6 +1046,353 @@ patch_hermes_model_after_swap() {
         return 1
     fi
 
+    return 0
+}
+
+WINDOWS_LEMONADE_LITELLM_PRESENT=false
+WINDOWS_LEMONADE_HERMES_PRESENT=false
+WINDOWS_LEMONADE_OPENCLAW_PRESENT=false
+WINDOWS_LEMONADE_COMPOSE_ARGS=()
+WINDOWS_LEMONADE_SWAP_FAILURE=""
+WINDOWS_LEMONADE_ROLLBACK_VERIFIED=false
+
+windows_lemonade_container_present() {
+    local container_name="$1"
+    [[ -n "${DOCKER_CMD:-}" ]] || return 1
+    $DOCKER_CMD ps -a --filter "name=${container_name}" --format '{{.Names}}' 2>/dev/null \
+        | grep -Fxq "$container_name"
+}
+
+capture_windows_lemonade_dependent_state() {
+    WINDOWS_LEMONADE_LITELLM_PRESENT=false
+    WINDOWS_LEMONADE_HERMES_PRESENT=false
+    WINDOWS_LEMONADE_OPENCLAW_PRESENT=false
+    windows_lemonade_container_present ods-litellm && WINDOWS_LEMONADE_LITELLM_PRESENT=true
+    windows_lemonade_container_present ods-hermes && WINDOWS_LEMONADE_HERMES_PRESENT=true
+    windows_lemonade_container_present ods-openclaw && WINDOWS_LEMONADE_OPENCLAW_PRESENT=true
+}
+
+load_windows_lemonade_compose_args() {
+    [[ ${#WINDOWS_LEMONADE_COMPOSE_ARGS[@]} -eq 0 ]] || return 0
+    [[ -n "${DOCKER_COMPOSE_CMD:-}" ]] || return 1
+
+    if [[ -f "$INSTALL_DIR/.compose-flags" ]]; then
+        read -ra WINDOWS_LEMONADE_COMPOSE_ARGS <<< "$(cat "$INSTALL_DIR/.compose-flags")"
+    elif [[ -x "$INSTALL_DIR/scripts/resolve-compose-stack.sh" ]]; then
+        local tier resolved_env resolved_flags
+        tier="$(read_env_value TIER)"
+        [[ -n "$tier" ]] || tier="1"
+        resolved_env=$("$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
+            --script-dir "$INSTALL_DIR" \
+            --tier "$tier" \
+            --gpu-backend amd \
+            --env 2>/dev/null || true)
+        resolved_flags=$(printf '%s\n' "$resolved_env" | sed -n 's/^COMPOSE_FLAGS="\([^"]*\)".*/\1/p')
+        [[ -n "$resolved_flags" ]] && read -ra WINDOWS_LEMONADE_COMPOSE_ARGS <<< "$resolved_flags"
+    fi
+
+    [[ ${#WINDOWS_LEMONADE_COMPOSE_ARGS[@]} -gt 0 ]]
+}
+
+refresh_windows_lemonade_litellm_after_swap() {
+    local model_id="${1:-}"
+    [[ -n "$model_id" ]] || return 1
+
+    local litellm_dir litellm_config lemonade_port lemonade_api_base lemonade_api_key
+    local renderer_script renderer_py renderer_ok=false
+    litellm_dir="$INSTALL_DIR/config/litellm"
+    litellm_config="$litellm_dir/lemonade.yaml"
+    lemonade_port="$(read_env_value AMD_INFERENCE_PORT)"
+    [[ -n "$lemonade_port" ]] || lemonade_port="8080"
+    lemonade_api_base="http://host.docker.internal:${lemonade_port}/api/v1"
+    lemonade_api_key="$(read_env_value LITELLM_LEMONADE_API_KEY)"
+    [[ -n "$lemonade_api_key" ]] || lemonade_api_key="sk-lemonade"
+
+    log "Regenerating LiteLLM config for resolved Lemonade model: ${model_id}"
+    mkdir -p "$litellm_dir" || return 1
+    renderer_script="$INSTALL_DIR/scripts/render-runtime-configs.py"
+    renderer_py="${ODS_PYTHON_CMD:-}"
+    if [[ -z "$renderer_py" && -f "$INSTALL_DIR/lib/python-cmd.sh" ]]; then
+        . "$INSTALL_DIR/lib/python-cmd.sh"
+        renderer_py="$(ods_detect_python_cmd 2>/dev/null || true)"
+    fi
+    if [[ -n "$renderer_py" && -f "$renderer_script" ]]; then
+        if "$renderer_py" "$renderer_script" \
+            --surface litellm-lemonade \
+            --ods-mode lemonade \
+            --gpu-backend amd \
+            --gguf-file "$FULL_GGUF_FILE" \
+            --lemonade-model-id "$model_id" \
+            --lemonade-api-base "$lemonade_api_base" \
+            --litellm-key "$lemonade_api_key" \
+            --output-root "$INSTALL_DIR" \
+            --write >/dev/null 2>&1; then
+            renderer_ok=true
+        fi
+    fi
+
+    if [[ "$renderer_ok" != "true" ]]; then
+        local litellm_tmp="${litellm_config}.tmp.$$"
+        if ! cat > "$litellm_tmp" << LITELLM_WINDOWS_LEMONADE_EOF
+model_list:
+  - model_name: default
+    litellm_params:
+      model: openai/${model_id}
+      api_base: ${lemonade_api_base}
+      api_key: ${lemonade_api_key}
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+  - model_name: "*"
+    litellm_params:
+      model: openai/${model_id}
+      api_base: ${lemonade_api_base}
+      api_key: ${lemonade_api_key}
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  request_timeout: 900
+  stream_timeout: 900
+LITELLM_WINDOWS_LEMONADE_EOF
+        then
+            rm -f "$litellm_tmp"
+            return 1
+        fi
+        mv "$litellm_tmp" "$litellm_config" || {
+            rm -f "$litellm_tmp"
+            return 1
+        }
+    fi
+
+    grep -Fq "model: openai/${model_id}" "$litellm_config" || return 1
+    grep -Fq "api_base: ${lemonade_api_base}" "$litellm_config" || return 1
+
+    if [[ "$WINDOWS_LEMONADE_LITELLM_PRESENT" == "true" ]]; then
+        log "Restarting LiteLLM with the resolved Lemonade route..."
+        $DOCKER_CMD restart ods-litellm 2>&1 || return 1
+    fi
+}
+
+recreate_windows_lemonade_openclaw() {
+    [[ "$WINDOWS_LEMONADE_OPENCLAW_PRESENT" == "true" ]] || return 0
+    if ! load_windows_lemonade_compose_args; then
+        log "ERROR: cannot recreate OpenClaw because the active compose stack is unavailable."
+        return 1
+    fi
+
+    log "Recreating OpenClaw with the resolved Lemonade model..."
+    env -u GGUF_FILE -u LLM_MODEL -u LEMONADE_MODEL -u MAX_CONTEXT -u CTX_SIZE \
+        $DOCKER_COMPOSE_CMD "${WINDOWS_LEMONADE_COMPOSE_ARGS[@]}" \
+        up -d --force-recreate --no-deps openclaw 2>&1
+}
+
+openclaw_env_value_from_inspect() {
+    local key="$1" env_output="$2"
+    printf '%s\n' "$env_output" | sed -n "s/^${key}=//p" | tail -1 | tr -d '\r'
+}
+
+verify_windows_lemonade_openclaw_model_env() {
+    local expected_model="${1:-}" env_output lemonade_model gguf_file llm_model ollama_url actual_model
+    [[ "$WINDOWS_LEMONADE_OPENCLAW_PRESENT" == "true" ]] || return 0
+    [[ -n "$expected_model" ]] || return 1
+    [[ -n "${DOCKER_CMD:-}" ]] || return 1
+
+    if ! env_output=$($DOCKER_CMD inspect --type container --format '{{range .Config.Env}}{{println .}}{{end}}' ods-openclaw 2>/dev/null); then
+        log "ERROR: could not inspect OpenClaw environment after recreate."
+        return 1
+    fi
+
+    lemonade_model="$(openclaw_env_value_from_inspect LEMONADE_MODEL "$env_output")"
+    gguf_file="$(openclaw_env_value_from_inspect GGUF_FILE "$env_output")"
+    llm_model="$(openclaw_env_value_from_inspect LLM_MODEL "$env_output")"
+    ollama_url="$(openclaw_env_value_from_inspect OLLAMA_URL "$env_output")"
+    if [[ -n "$lemonade_model" ]]; then
+        actual_model="$lemonade_model"
+    elif [[ "$ollama_url" == */api || "$ollama_url" == */api/ ]]; then
+        [[ -n "$gguf_file" ]] && actual_model="extra.${gguf_file}"
+    else
+        actual_model="$llm_model"
+    fi
+
+    if [[ "$actual_model" == "$expected_model" ]]; then
+        log "Verified OpenClaw recreated with model ${actual_model}."
+        return 0
+    fi
+
+    log "ERROR: OpenClaw recreated with model ${actual_model:-<empty>}; expected ${expected_model}."
+    return 1
+}
+
+verify_windows_lemonade_downstream_route() {
+    local model_id="${1:-}" route_label="${2:-model}"
+    [[ -n "$model_id" ]] || return 1
+
+    local route_base route_key route_url route_mode="host" route_container=""
+    local attempts request_timeout request_body escaped_model
+    escaped_model="${model_id//\\/\\\\}"
+    escaped_model="${escaped_model//\"/\\\"}"
+    request_body="{\"model\":\"${escaped_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"route check\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}"
+
+    if [[ "$WINDOWS_LEMONADE_HERMES_PRESENT" == "true" ]]; then
+        route_base="$(read_env_value HERMES_LLM_BASE_URL)"
+        [[ -n "$route_base" ]] || route_base="http://litellm:4000/v1"
+        route_key="$(read_env_value HERMES_LLM_API_KEY)"
+        [[ -n "$route_key" ]] || route_key="$(read_env_value LITELLM_KEY)"
+        route_mode="container"
+        route_container="ods-hermes"
+    elif [[ "$WINDOWS_LEMONADE_LITELLM_PRESENT" == "true" ]]; then
+        local litellm_port
+        litellm_port="$(read_env_value LITELLM_PORT)"
+        [[ -n "$litellm_port" ]] || litellm_port="4000"
+        route_base="http://127.0.0.1:${litellm_port}/v1"
+        route_key="$(read_env_value LITELLM_KEY)"
+    else
+        local lemonade_port
+        lemonade_port="$(read_env_value AMD_INFERENCE_PORT)"
+        [[ -n "$lemonade_port" ]] || lemonade_port="8080"
+        route_base="http://127.0.0.1:${lemonade_port}/api/v1"
+        route_key="$(read_env_value LITELLM_LEMONADE_API_KEY)"
+    fi
+    route_url="${route_base%/}/chat/completions"
+
+    attempts="${ODS_LEMONADE_DOWNSTREAM_ATTEMPTS:-30}"
+    case "$attempts" in ''|*[!0-9]*|0) attempts=30 ;; esac
+    request_timeout="${ODS_LEMONADE_DOWNSTREAM_TIMEOUT:-120}"
+    case "$request_timeout" in ''|*[!0-9]*|0) request_timeout=120 ;; esac
+
+    log "Verifying ${route_label} through the configured downstream route: ${route_base}"
+    for _route_i in $(seq 1 "$attempts"); do
+        if [[ "$route_mode" == "container" ]]; then
+            if $DOCKER_CMD exec "$route_container" curl -sf --max-time "$request_timeout" -X POST \
+                "$route_url" \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer ${route_key}" \
+                -d "$request_body" >/dev/null 2>&1; then
+                log "Verified ${route_label} through ${route_base} with model ${model_id}."
+                return 0
+            fi
+        elif curl -sf --max-time "$request_timeout" -X POST \
+            "$route_url" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${route_key}" \
+            -d "$request_body" >/dev/null 2>&1; then
+            log "Verified ${route_label} through ${route_base} with model ${model_id}."
+            return 0
+        fi
+        sleep 2
+    done
+
+    log "ERROR: ${route_label} did not complete through ${route_base} with model ${model_id}."
+    return 1
+}
+
+restart_windows_lemonade_dependents_after_rollback() {
+    local dependents_ok=true
+    if [[ "$WINDOWS_LEMONADE_LITELLM_PRESENT" == "true" ]]; then
+        log "Restarting LiteLLM with its restored config..."
+        $DOCKER_CMD restart ods-litellm 2>&1 || dependents_ok=false
+    fi
+    if [[ "$WINDOWS_LEMONADE_HERMES_PRESENT" == "true" ]]; then
+        log "Restarting Hermes with its restored config..."
+        $DOCKER_CMD restart ods-hermes 2>&1 || dependents_ok=false
+    fi
+    if [[ "$WINDOWS_LEMONADE_OPENCLAW_PRESENT" == "true" ]]; then
+        log "Recreating OpenClaw with the restored model environment..."
+        recreate_windows_lemonade_openclaw || dependents_ok=false
+    fi
+    [[ "$dependents_ok" == "true" ]]
+}
+
+snapshot_env_value() {
+    local key="$1" snapshot_env="${ACTIVE_CONFIG_SNAPSHOT_DIR:-}/env"
+    [[ -f "$snapshot_env" ]] || return 0
+    grep -E "^${key}=" "$snapshot_env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"\047\r'
+}
+
+rollback_windows_lemonade_swap() {
+    local previous_gguf previous_model_id rollback_ok=true inference_restored=false route_verified=false
+    previous_gguf="$(snapshot_env_value GGUF_FILE)"
+    previous_model_id="$(snapshot_env_value LEMONADE_MODEL)"
+    [[ -n "$previous_gguf" ]] || previous_gguf="$BOOTSTRAP_GGUF_FILE"
+
+    log "Rolling back the Windows Lemonade model transaction..."
+    restore_bootstrap_model_after_windows_swap_failure || rollback_ok=false
+    restore_active_model_config || rollback_ok=false
+
+    if restart_windows_lemonade_with_previous_model "$previous_gguf"; then
+        inference_restored=true
+        previous_model_id="$(read_env_value LEMONADE_MODEL)"
+    else
+        rollback_ok=false
+    fi
+
+    restart_windows_lemonade_dependents_after_rollback || rollback_ok=false
+    if [[ "$WINDOWS_LEMONADE_OPENCLAW_PRESENT" == "true" && -n "$previous_model_id" ]]; then
+        verify_windows_lemonade_openclaw_model_env "$previous_model_id" || rollback_ok=false
+    fi
+    if [[ "$inference_restored" == "true" && -n "$previous_model_id" ]] \
+        && verify_windows_lemonade_downstream_route "$previous_model_id" "previous model route"; then
+        route_verified=true
+    else
+        rollback_ok=false
+    fi
+
+    if [[ "$rollback_ok" == "true" && "$route_verified" == "true" ]]; then
+        log "Rollback verified: the previous model completed through the restored downstream route."
+        return 0
+    fi
+
+    log "WARNING: rollback was attempted, but the previous downstream model route could not be fully restored and verified."
+    return 1
+}
+
+windows_lemonade_swap_failed() {
+    WINDOWS_LEMONADE_SWAP_FAILURE="$1"
+    WINDOWS_LEMONADE_ROLLBACK_VERIFIED=false
+    log "Windows Lemonade full-model activation failed: ${WINDOWS_LEMONADE_SWAP_FAILURE}"
+    log "Restoring previous active model config after Windows Lemonade swap timeout or post-swap failure..."
+    if rollback_windows_lemonade_swap; then
+        WINDOWS_LEMONADE_ROLLBACK_VERIFIED=true
+    fi
+    return 1
+}
+
+activate_windows_lemonade_full_model() {
+    local model_id
+    if ! restart_windows_lemonade_with_full_model; then
+        windows_lemonade_swap_failed "native Lemonade did not load it after swap (registration timeout)"
+        return 1
+    fi
+    model_id="$(read_env_value LEMONADE_MODEL)"
+    if [[ -z "$model_id" ]]; then
+        windows_lemonade_swap_failed "native Lemonade did not persist its resolved full-model ID"
+        return 1
+    fi
+    if ! refresh_windows_lemonade_litellm_after_swap "$model_id"; then
+        windows_lemonade_swap_failed "LiteLLM config regeneration or reload failed"
+        return 1
+    fi
+    if ! patch_hermes_model_after_swap; then
+        windows_lemonade_swap_failed "Hermes config update or restart failed"
+        return 1
+    fi
+    if ! recreate_windows_lemonade_openclaw; then
+        windows_lemonade_swap_failed "OpenClaw recreate failed"
+        return 1
+    fi
+    if ! verify_windows_lemonade_openclaw_model_env "$model_id"; then
+        windows_lemonade_swap_failed "OpenClaw recreated with a stale model environment"
+        return 1
+    fi
+    if ! verify_windows_lemonade_downstream_route "$model_id" "full model route"; then
+        windows_lemonade_swap_failed "the full model failed through the configured downstream route"
+        return 1
+    fi
     return 0
 }
 
@@ -948,7 +1479,8 @@ refresh_lemonade_after_bootstrap_cleanup() {
     local lemonade_port model_id old_model_id models_json
     lemonade_port="$(read_env_value OLLAMA_PORT)"
     [[ -n "$lemonade_port" ]] || lemonade_port="8080"
-    model_id="extra.${FULL_GGUF_FILE//\"/\\\"}"
+    model_id="$(read_env_value LEMONADE_MODEL)"
+    [[ -n "$model_id" ]] || model_id="extra.${FULL_GGUF_FILE//\"/\\\"}"
     old_model_id="extra.${BOOTSTRAP_GGUF//\"/\\\"}"
 
     for _i in $(seq 1 60); do
@@ -1091,6 +1623,7 @@ case "$_download_attempts" in
 esac
 
 if [[ -f "$_final_path" ]]; then
+    acquire_model_lifecycle_lock || fail "Could not serialize full-model finalization."
     log "Full model already exists on disk; verifying before reuse"
     if verify_model_integrity "$_final_path"; then
         _dl_success=true
@@ -1098,6 +1631,7 @@ if [[ -f "$_final_path" ]]; then
     else
         log "Existing full model failed integrity; deleting and retrying from a clean file."
         rm -f "$_final_path"
+        release_model_lifecycle_lock
     fi
 fi
 
@@ -1112,7 +1646,7 @@ fi
 if [[ "$_dl_success" != "true" ]]; then
     monitor_download "$_part_path" "$TOTAL_BYTES" &
     _monitor_pid=$!
-    trap 'kill $_monitor_pid 2>/dev/null || true; write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Download interrupted; partial file preserved for resume."; release_upgrade_lock; exit 1' TERM INT
+    trap 'kill $_monitor_pid 2>/dev/null || true; write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Download interrupted; partial file preserved for resume."; release_model_lifecycle_lock; release_upgrade_lock; exit 1' TERM INT
 
     # Download with resume support. curl success is not enough: finalizing the
     # .part file can fail, and checksum verification can expose a corrupt
@@ -1128,8 +1662,10 @@ if [[ "$_dl_success" != "true" ]]; then
                 rm -f "$_part_path"
             elif [[ "$_part_bytes" -eq "$TOTAL_BYTES" ]]; then
                 log "Partial file already has the expected size; promoting it for integrity verification."
+                acquire_model_lifecycle_lock || fail "Could not serialize full-model finalization."
                 if ! mv "$_part_path" "$_final_path"; then
                     log "Download attempt $_attempt failed while finalizing $_part_path -> $_final_path"
+                    release_model_lifecycle_lock
                 fi
             fi
         fi
@@ -1142,10 +1678,12 @@ if [[ "$_dl_success" != "true" ]]; then
                     -o "$_part_path" "$FULL_GGUF_URL" 2>&1; then
                 if [[ ! -s "$_part_path" ]]; then
                     log "Download attempt $_attempt reported success but produced no partial file: $_part_path"
-                elif mv "$_part_path" "$_final_path"; then
-                    :
                 else
-                    log "Download attempt $_attempt failed while finalizing $_part_path -> $_final_path"
+                    acquire_model_lifecycle_lock || fail "Could not serialize full-model finalization."
+                    if ! mv "$_part_path" "$_final_path"; then
+                        log "Download attempt $_attempt failed while finalizing $_part_path -> $_final_path"
+                        release_model_lifecycle_lock
+                    fi
                 fi
             else
                 log "Download attempt $_attempt failed"
@@ -1160,11 +1698,13 @@ if [[ "$_dl_success" != "true" ]]; then
             ACTUAL_BYTES=$(file_size "$_final_path")
             if [[ "$ACTUAL_BYTES" -lt "$TOTAL_BYTES" ]]; then
                 mv "$_final_path" "$_part_path" 2>/dev/null || rm -f "$_final_path"
+                release_model_lifecycle_lock
                 log "Downloaded model is smaller than expected (got $ACTUAL_BYTES, expected $TOTAL_BYTES); preserving as partial for retry."
                 continue
             fi
             if [[ "$ACTUAL_BYTES" -gt "$TOTAL_BYTES" ]]; then
                 rm -f "$_final_path" "$_part_path"
+                release_model_lifecycle_lock
                 log "Downloaded model is larger than expected (got $ACTUAL_BYTES, expected $TOTAL_BYTES); deleting corrupt file and retrying from scratch."
                 continue
             fi
@@ -1178,6 +1718,7 @@ if [[ "$_dl_success" != "true" ]]; then
         fi
 
         rm -f "$_final_path" "$_part_path"
+        release_model_lifecycle_lock
         log "Integrity verification failed on attempt $_attempt; retrying from a clean download."
     done
 
@@ -1201,6 +1742,11 @@ if [[ -n "$FULL_GGUF_SHA256" ]]; then
         fail "SHA256 mismatch after retries. Deleted corrupt file."
     fi
 fi
+
+# Download bytes stay outside the lifecycle lock. Linux finalization acquires it
+# immediately before publishing the full GGUF filename, then retains it through
+# config promotion, compose verification, and bootstrap cleanup.
+acquire_model_lifecycle_lock || fail "Could not serialize background full-model activation."
 
 _windows_lemonade_swap_applies=false
 _windows_native_llama_swap_applies=false
@@ -1226,7 +1772,12 @@ fi
 
 if [[ "$_windows_lemonade_swap_applies" == "true" || "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_applies" == "true" ]]; then
     log "Snapshotting active model config before full-model swap..."
-    if ! snapshot_active_model_config; then
+    _include_windows_lemonade_snapshot=false
+    if [[ "$_windows_lemonade_swap_applies" == "true" ]]; then
+        _include_windows_lemonade_snapshot=true
+        capture_windows_lemonade_dependent_state
+    fi
+    if ! snapshot_active_model_config "$_include_windows_lemonade_snapshot"; then
         discard_active_model_config_snapshot
         write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
             "Full model downloaded and verified, but ODS could not snapshot active model config before swap. Bootstrap model left unchanged; re-run to retry."
@@ -1285,39 +1836,26 @@ fi
 
 if [[ "$_windows_lemonade_swap_applies" == "true" ]]; then
     if ! move_bootstrap_model_aside_for_windows_swap; then
-        restore_active_model_config || log "WARNING: could not restore active model config; inspect $ENV_FILE and $MODELS_INI"
+        _move_restore_status="Previous active model config restore could not be verified; inspect the transaction snapshot."
+        if restore_active_model_config; then
+            _move_restore_status="Previous active model config restored; native Lemonade was not changed."
+        fi
         write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
-            "Full model downloaded and verified, but ODS could not move the bootstrap model aside before the Windows Lemonade swap. Previous active model config restored; re-run to retry."
+            "Full model downloaded and verified, but ODS could not move the bootstrap model aside before the Windows Lemonade swap. ${_move_restore_status} Re-run to retry."
         exit 1
     fi
 
-    if restart_windows_lemonade_with_full_model; then
-        if ! patch_hermes_model_after_swap; then
-            # The full model downloaded, verified, and loaded; only the Hermes
-            # config patch failed. Report the real byte counts and the actual
-            # cause, not a bare write_status "failed" that zeroes the byte fields
-            # and reads as a 0-byte download failure (#1517).
-            log "Restoring previous active model config after Hermes patch failure..."
-            restore_active_model_config || log "WARNING: could not restore active model config; inspect $ENV_FILE and $MODELS_INI"
-            restore_bootstrap_model_after_windows_swap_failure || log "WARNING: could not restore bootstrap model; inspect $BOOTSTRAP_PATH"
-            write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
-                "Full model downloaded and loaded, but the Hermes config patch failed after swap. Previous active model config restored; re-run to retry."
-            exit 1
-        fi
+    if activate_windows_lemonade_full_model; then
         HOT_SWAP_VERIFIED=true
         discard_active_model_config_snapshot
         discard_bootstrap_model_backup_after_windows_swap
     else
-        # The model downloaded and verified (byte counts are real); the native
-        # Windows Lemonade swap did not register/load it within the wait window,
-        # so the bootstrap model is kept. Report the real bytes + cause instead
-        # of a bare write_status "failed" that zeroes bytesDownloaded/bytesTotal
-        # and misreads as a 0-byte download failure (#1517).
-        log "Restoring previous active model config after Windows Lemonade swap timeout..."
-        restore_active_model_config || log "WARNING: could not restore active model config; inspect $ENV_FILE and $MODELS_INI"
-        restore_bootstrap_model_after_windows_swap_failure || log "WARNING: could not restore bootstrap model; inspect $BOOTSTRAP_PATH"
+        _windows_rollback_status="Rollback was attempted, but the previous model route was not proven; inspect the logs and active configs before retrying."
+        if [[ "$WINDOWS_LEMONADE_ROLLBACK_VERIFIED" == "true" ]]; then
+            _windows_rollback_status="Previous active model config restored and bootstrap model kept; dependents restarted and the previous model route verified."
+        fi
         write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
-            "Model downloaded and verified, but native Windows Lemonade did not load it after swap (registration timeout). Previous active model config restored and bootstrap model kept; re-run to retry the swap."
+            "Full model downloaded and verified, but Windows Lemonade activation failed: ${WINDOWS_LEMONADE_SWAP_FAILURE}. ${_windows_rollback_status} Re-run to retry the swap."
         exit 1
     fi
 elif [[ "$_windows_native_llama_swap_applies" == "true" ]]; then
@@ -1500,7 +2038,8 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
                     # Escape any double-quotes in the filename so the JSON body
                     # below stays well-formed even for non-standard library entries.
                     # Mirrors the _safe_model pattern in write_status() above.
-                    _model_id="extra.${FULL_GGUF_FILE//\"/\\\"}"
+                    _model_id="$(read_env_value LEMONADE_MODEL)"
+                    [[ -n "$_model_id" ]] || _model_id="extra.${FULL_GGUF_FILE//\"/\\\"}"
                     log "Sending warm-up request to trigger model loading: $_model_id (attempt $_i/60)"
                     if curl -sf --max-time 30 -X POST \
                         "http://127.0.0.1:${OLLAMA_PORT:-8080}/api/v1/chat/completions" \
@@ -1570,7 +2109,9 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
         # Lemonade exposes models as "extra.<GGUF_FILE>" — the config must
         # reference the exact ID, not a wildcard passthrough.
         if $DOCKER_CMD ps --filter name=ods-litellm --format '{{.Names}}' 2>/dev/null | grep -q ods-litellm; then
-            log "Updating LiteLLM config for new model: extra.${FULL_GGUF_FILE}"
+            _lemonade_model_id="$(read_env_value LEMONADE_MODEL)"
+            [[ -n "$_lemonade_model_id" ]] || _lemonade_model_id="extra.${FULL_GGUF_FILE}"
+            log "Updating LiteLLM config for new model: ${_lemonade_model_id}"
             # Read per-install lemonade key from .env; fall back to literal so
             # older installs without the key still produce a valid config (lemonade
             # itself ignores the value).
@@ -1615,6 +2156,7 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
                     --ods-mode lemonade \
                     --gpu-backend amd \
                     --gguf-file "$FULL_GGUF_FILE" \
+                    --lemonade-model-id "$_lemonade_model_id" \
                     --lemonade-api-base "$_lemonade_api_base" \
                     --litellm-key "$LITELLM_LEMONADE_API_KEY" \
                     --output-root "$INSTALL_DIR" \
@@ -1629,7 +2171,7 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
 model_list:
   - model_name: default
     litellm_params:
-      model: openai/extra.${FULL_GGUF_FILE}
+      model: openai/${_lemonade_model_id}
       api_base: ${_lemonade_api_base}
       api_key: ${LITELLM_LEMONADE_API_KEY}
       extra_body:
@@ -1638,7 +2180,7 @@ model_list:
 
   - model_name: "*"
     litellm_params:
-      model: openai/extra.${FULL_GGUF_FILE}
+      model: openai/${_lemonade_model_id}
       api_base: ${_lemonade_api_base}
       api_key: ${LITELLM_LEMONADE_API_KEY}
       extra_body:
@@ -1652,7 +2194,7 @@ litellm_settings:
   stream_timeout: 900
 LITELLM_UPGRADE_EOF
             fi
-            unset _renderer_ok _renderer_script _renderer_py _lemonade_api_base _amd_location _amd_port
+            unset _renderer_ok _renderer_script _renderer_py _lemonade_api_base _lemonade_model_id _amd_location _amd_port
             log "Restarting LiteLLM to pick up model change..."
             $DOCKER_CMD restart ods-litellm 2>&1 || log "WARNING: LiteLLM restart failed (non-fatal)"
         fi
@@ -1711,7 +2253,8 @@ LITELLM_UPGRADE_EOF
         _gpu_backend_for_hermes=$(grep -E '^GPU_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' || echo "")
         if [[ "$_gpu_backend_for_hermes" == "amd" ]]; then
             _hermes_old_model="extra.$BOOTSTRAP_GGUF_FILE"
-            _hermes_new_model="extra.$FULL_GGUF_FILE"
+            _hermes_new_model="$(read_env_value LEMONADE_MODEL)"
+            [[ -n "$_hermes_new_model" ]] || _hermes_new_model="extra.$FULL_GGUF_FILE"
         fi
         log "Patching Hermes config: model.default $_hermes_old_model -> $_hermes_new_model"
         _hermes_request_timeout=180
@@ -1780,7 +2323,8 @@ LITELLM_UPGRADE_EOF
             _prewarm_model="$FULL_GGUF_FILE"
             if [[ "$_gpu_backend_for_hermes" == "amd" ]]; then
                 _prewarm_api_path="/api/v1"
-                _prewarm_model="extra.$FULL_GGUF_FILE"
+                _prewarm_model="$(read_env_value LEMONADE_MODEL)"
+                [[ -n "$_prewarm_model" ]] || _prewarm_model="extra.$FULL_GGUF_FILE"
             fi
             _prewarm_body="{\"model\":\"${_prewarm_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}"
             if $DOCKER_CMD exec ods-hermes curl -sf --max-time 120 -X POST \
@@ -1892,6 +2436,8 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             # Honour the unified BIND_ADDRESS knob (PR #964); empty/missing → loopback.
             _bind=$(grep '^BIND_ADDRESS=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             [[ -z "$_bind" ]] && _bind="127.0.0.1"
+            _native_port=$(grep '^ODS_NATIVE_LLAMA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+            [[ "$_native_port" =~ ^[0-9]+$ ]] || _native_port="8080"
             _flash_attn=$(grep '^LLAMA_ARG_FLASH_ATTN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
@@ -1899,7 +2445,7 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _spec_draft_n_max=$(grep '^LLAMA_ARG_SPEC_DRAFT_N_MAX=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _llama_args=(
-                --host "$_bind" --port 8080
+                --host "$_bind" --port "$_native_port"
                 --model "$_model_path"
                 --ctx-size "$_ctx_size"
                 --n-gpu-layers 999
@@ -1926,7 +2472,7 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             log "Waiting for native llama-server health..."
             _healthy=false
             for _i in $(seq 1 60); do
-                if curl -sf --max-time 5 "http://127.0.0.1:8080/health" &>/dev/null; then
+                if curl -sf --max-time 5 "http://127.0.0.1:${_native_port}/health" &>/dev/null; then
                     _healthy=true
                     break
                 fi
@@ -1947,7 +2493,7 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
                     (
                         cd "$INSTALL_DIR" || exit 1
                         exec "$LLAMA_SERVER_BIN" \
-                            --host "$_bind" --port 8080 \
+                            --host "$_bind" --port "$_native_port" \
                             --model "$_old_model_path" \
                             --ctx-size "$_ctx_size" \
                             --n-gpu-layers 999 \
@@ -2011,7 +2557,14 @@ PERPLEXICA_PORT=$(grep -E '^PERPLEXICA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= 
 _perplexica_url="http://127.0.0.1:${PERPLEXICA_PORT}"
 if curl -sf --max-time 3 "${_perplexica_url}/api/config" >/dev/null 2>&1; then
     log "Updating Perplexica config to point at ${FULL_LLM_MODEL}..."
-    _py_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+        _py_cmd="${ODS_PYTHON_CMD:-}"
+        if [[ -z "$_py_cmd" && -f "$INSTALL_DIR/lib/python-cmd.sh" ]]; then
+            . "$INSTALL_DIR/lib/python-cmd.sh"
+            _py_cmd="$(ods_detect_python_cmd 2>/dev/null || true)"
+        fi
+        if [[ -z "$_py_cmd" ]]; then
+            _py_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+        fi
     if [[ -n "$_py_cmd" ]]; then
         # On Lemonade, LiteLLM exposes the model id as "extra.<GGUF_FILE>".
         # On NVIDIA/Apple/CPU, llama.cpp serves under the bare GGUF id.
@@ -2019,17 +2572,23 @@ if curl -sf --max-time 3 "${_perplexica_url}/api/config" >/dev/null 2>&1; then
         _runtime_for_perplexica=$(grep -E '^AMD_INFERENCE_RUNTIME=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' | tr '[:upper:]' '[:lower:]' || echo "")
         _llm_backend_for_perplexica=$(grep -E '^LLM_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' | tr '[:upper:]' '[:lower:]' || echo "")
         if [[ "$_runtime_for_perplexica" == "lemonade" || "$_llm_backend_for_perplexica" == "lemonade" ]]; then
-            _px_model="extra.$FULL_GGUF_FILE"
+            _px_model="$(read_env_value LEMONADE_MODEL)"
+            [[ -n "$_px_model" ]] || _px_model="extra.$FULL_GGUF_FILE"
         fi
         _litellm_key=$(grep -E '^LITELLM_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' || echo "no-key")
         : "${_litellm_key:=no-key}"
-        _px_base_url=$(grep -E '^LLM_API_URL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' || echo "http://llama-server:8080")
-        : "${_px_base_url:=http://llama-server:8080}"
+        if [[ "$_runtime_for_perplexica" == "lemonade" || "$_llm_backend_for_perplexica" == "lemonade" ]]; then
+            _px_base_url="$(read_env_value HERMES_LLM_BASE_URL)"
+            : "${_px_base_url:=http://litellm:4000/v1}"
+        else
+            _px_base_url=$(grep -E '^LLM_API_URL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' || echo "http://llama-server:8080")
+            : "${_px_base_url:=http://llama-server:8080}"
+        fi
         case "$_px_base_url" in
             */v1|*/api/v1) ;;
             *) _px_base_url="${_px_base_url%/}/v1" ;;
         esac
-        if curl -sf --max-time 3 "${_perplexica_url}/api/config" 2>/dev/null | \
+        if _px_update_output=$(curl -sf --max-time 3 "${_perplexica_url}/api/config" 2>/dev/null | \
             PERPLEXICA_URL="$_perplexica_url" \
             PX_MODEL="$_px_model" \
             PX_KEY="$_litellm_key" \
@@ -2069,9 +2628,10 @@ prefs["defaultChatProvider"] = openai_prov["id"]
 post("preferences", prefs)
 post_setup_complete()
 print("ok")
-' >/dev/null 2>&1; then
+ ' 2>&1); then
             log "Perplexica defaultChatModel updated to ${_px_model}."
         else
+            log "Perplexica updater error: $(printf '%s' "$_px_update_output" | tr '\r\n' ' ' | tail -c 800)"
             log "WARNING: Perplexica config update failed (non-fatal — defaultChatModel may still read the bootstrap value)"
         fi
     else

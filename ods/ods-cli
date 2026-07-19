@@ -303,6 +303,14 @@ _ods_cli_wait_for_bootstrap_compose_safe() {
     done
 }
 
+_ods_cli_reload_model_env() {
+    # A background bootstrap promotion can rewrite these values while a start
+    # or restart command is waiting. Clear the process snapshot first so a key
+    # removed from .env cannot keep overriding Docker Compose.
+    unset GGUF_FILE LLM_MODEL MAX_CONTEXT CTX_SIZE
+    load_env
+}
+
 _get_host_logical_cpus() {
     local cores
     cores=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo "1")
@@ -1448,7 +1456,7 @@ cmd_restart() {
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
         _ods_cli_wait_for_bootstrap_compose_safe "restart"
-        load_env
+        _ods_cli_reload_model_env
         ensure_llama_cpu_budget
         flags_str=$(get_compose_flags)
         read -ra flags <<< "$flags_str"
@@ -1599,7 +1607,7 @@ cmd_start() {
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
         _ods_cli_wait_for_bootstrap_compose_safe "start"
-        load_env
+        _ods_cli_reload_model_env
         ensure_llama_cpu_budget
         flags_str=$(get_compose_flags)
         read -ra flags <<< "$flags_str"
@@ -1861,27 +1869,56 @@ cmd_update() {
     log "Verifying update..."
     local failed_services=0
     local total_services=0
+    local active_services=""
+    local running_services=""
 
-    # Check each service health
-    # NB: x=$((x + 1)) not ((x++)) — the post-increment form evaluates to 0
-    # on the first increment, which set -e treats as failure and aborts the
-    # verification before the new version is persisted.
+    active_services=$(docker compose "${flags[@]}" config --services 2>/dev/null \
+        || docker compose "${flags[@]}" ps --all --services 2>/dev/null \
+        || true)
+    running_services=$(docker compose "${flags[@]}" ps --services --status running 2>/dev/null || true)
+
+    if [[ -z "$active_services" ]]; then
+        log_error "Update verification failed: active compose stack has no services"
+        log_error "Run 'ods status' to check service health"
+        exit 1
+    fi
+
+    # Check only the active compose stack. sr_list_enabled() lists every
+    # installed extension with a compose file, including disabled optional
+    # services, which can make a healthy update look failed.
     while IFS= read -r service; do
         [[ -z "$service" ]] && continue
-        if ! sr_requires_startup_check "$service"; then
+        ((++total_services))
+
+        if grep -Fxq "$service" <<< "$running_services"; then
             continue
         fi
-        total_services=$((total_services + 1))
 
-        local container
-        container=$(sr_container "$service" 2>/dev/null || echo "")
-        if [[ -n "$container" ]]; then
-            if ! docker ps --filter "name=$container" --filter "status=running" --format "{{.Names}}" | grep -q "^$container$"; then
-                warn "Service $service ($container) is not running"
-                failed_services=$((failed_services + 1))
-            fi
+        # Some user extensions are one-shot jobs that legitimately exit 0
+        # after compose recreates them. Treat those as successful, but still
+        # fail missing containers and non-zero exits.
+        local ids=""
+        local completed_ok="false"
+        ids=$(docker compose "${flags[@]}" ps --all -q "$service" 2>/dev/null || true)
+        if [[ -n "$ids" ]]; then
+            completed_ok="true"
+            while IFS= read -r id; do
+                [[ -z "$id" ]] && continue
+                local state=""
+                state=$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "$id" 2>/dev/null || true)
+                case "$state" in
+                    "running "*) ;;
+                    "exited 0") ;;
+                    *) completed_ok="false"; break ;;
+                esac
+            done <<< "$ids"
         fi
-    done < <(sr_list_enabled)
+
+        if [[ "$completed_ok" != "true" ]]; then
+            warn "Service $service is not running"
+            ((++failed_services))
+        fi
+    done <<< "$active_services"
 
     if [[ $failed_services -gt 0 ]]; then
         log_error "Update verification failed: $failed_services/$total_services services are not running"

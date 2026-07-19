@@ -20,6 +20,7 @@ $ErrorActionPreference = "Stop"
 
 $repo = $env:ODS_TEST_ROOT
 . (Join-Path $repo "installers\windows\lib\llm-endpoint.ps1")
+. (Join-Path $repo "installers\windows\lib\env-generator.ps1")
 
 $script:LEMONADE_PORT = "8080"
 $script:LEMONADE_HEALTH_URL = "http://localhost:8080/api/v1/health"
@@ -131,6 +132,87 @@ Assert-ResolvedEndpoint -Label "AMD Lemonade endpoint" `
     -ExpectedHealthUrl "http://localhost:8080/api/v1/health" `
     -ExpectedChatUrl "http://localhost:8080/api/v1/chat/completions"
 
+function Write-AIWarn { param([string]$Message) }
+function Get-LlamaCpuBudget {
+    return @{ Limit = "4.0"; Reservation = "1.0"; Available = "4.0" }
+}
+
+$modelTestDir = Join-Path ([IO.Path]::GetTempPath()) "ods-windows-lemonade-model-$([Guid]::NewGuid().ToString('N'))"
+try {
+    New-Item -ItemType Directory -Path $modelTestDir -Force | Out-Null
+    $tier = @{
+        TierName = "Test"
+        LlmModel = "modern-model"
+        GgufFile = "Modern-Model.gguf"
+        MaxContext = 4096
+    }
+    $envResult = New-ODSEnv -InstallDir $modelTestDir -TierConfig $tier -Tier "SH" `
+        -GpuBackend "amd" -AmdInferenceRuntime "lemonade" `
+        -AmdInferenceLocation "host" -AmdInferencePort "8080"
+    if ($envResult.LemonadeModel -ne "extra.Modern-Model.gguf") {
+        throw "Legacy Lemonade fallback changed: $($envResult.LemonadeModel)"
+    }
+
+    $null = Set-WindowsODSLemonadeModelConfiguration `
+        -InstallDir $modelTestDir -ModelId "Modern-Model" -Port "8080"
+    $envText = Get-Content -LiteralPath (Join-Path $modelTestDir ".env") -Raw
+    if ($envText -notmatch '(?m)^LEMONADE_MODEL=Modern-Model\r?$') {
+        throw "Resolved Lemonade model ID was not persisted to .env"
+    }
+    $litellmPath = Join-Path (Join-Path (Join-Path $modelTestDir "config") "litellm") "lemonade.yaml"
+    $litellmText = Get-Content -LiteralPath $litellmPath -Raw
+    if ($litellmText -notmatch '(?m)^      model: openai/Modern-Model\r?$') {
+        throw "Resolved Lemonade model ID was not written to lemonade.yaml"
+    }
+
+    $reinstallResult = New-ODSEnv -InstallDir $modelTestDir -TierConfig $tier -Tier "SH" `
+        -GpuBackend "amd" -AmdInferenceRuntime "lemonade" `
+        -AmdInferenceLocation "host" -AmdInferencePort "8080"
+    if ($reinstallResult.LemonadeModel -ne "Modern-Model") {
+        throw "Reinstall discarded the resolved Lemonade model ID: $($reinstallResult.LemonadeModel)"
+    }
+
+    $modelsDir = Join-Path (Join-Path $modelTestDir "data") "models"
+    New-Item -ItemType Directory -Path $modelsDir -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $modelsDir $tier.GgufFile) -Value "test"
+
+    $script:resolvedModelPort = 0
+    $script:resolvedModelFile = ""
+    $script:completionBody = ""
+    function Resolve-ODSLemonadeModelId {
+        param([int]$Port, [string]$GgufFile)
+        $script:resolvedModelPort = $Port
+        $script:resolvedModelFile = $GgufFile
+        return "Modern-Model"
+    }
+    function Invoke-WebRequest {
+        param($Method, $Uri, $ContentType, $Body, $TimeoutSec, [switch]$UseBasicParsing, $ErrorAction)
+        $script:completionBody = [string]$Body
+        return [pscustomobject]@{ StatusCode = 200 }
+    }
+
+    $readinessEndpoint = @{
+        Backend = "lemonade"
+        Port = "8080"
+        ApiBasePath = "/api/v1"
+        ChatCompletionsUrl = "http://localhost:8080/api/v1/chat/completions"
+    }
+    $readiness = Test-WindowsLlmModelReadiness `
+        -Endpoint $readinessEndpoint -InstallDir $modelTestDir `
+        -GgufFile $tier.GgufFile -TimeoutSec 5
+    $request = $script:completionBody | ConvertFrom-Json
+    if (-not $readiness.Ok -or $readiness.ModelId -ne "Modern-Model" -or
+        $request.model -ne "Modern-Model") {
+        throw "Readiness did not use the live Lemonade model ID"
+    }
+    if ($script:resolvedModelPort -ne 8080 -or $script:resolvedModelFile -ne $tier.GgufFile) {
+        throw "Readiness passed the wrong endpoint/model to Resolve-ODSLemonadeModelId"
+    }
+} finally {
+    Remove-Item -LiteralPath $modelTestDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host "[PASS] Windows local LLM endpoint and Lemonade model resolver"
 # --- Get-WindowsODSEnvMap quote handling ---
 # The parser must strip exactly one MATCHING pair of surrounding quotes.
 # Stripping each quote type independently corrupts values that contain or

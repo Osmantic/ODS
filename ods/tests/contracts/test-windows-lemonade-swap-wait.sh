@@ -124,12 +124,12 @@ fi
 # ---------------------------------------------------------------------------
 if grep -q 'Get-NetTCPConnection -LocalPort' "$SCRIPT" \
    && grep -q 'lemonade-router is already running' "$SCRIPT" \
-   && grep -q 'lemonade-server exited immediately after restart' "$SCRIPT" \
+   && grep -q 'Refusing to stop unowned process' "$SCRIPT" \
    && grep -q 'lemonadeCacheBin' "$SCRIPT" \
    && grep -q 'ODS_WIN_MODELS_DIR' "$SCRIPT"; then
-    pass "Windows Lemonade restart clears stale listeners, cached llama.cpp children, and singleton-router failures"
+    pass "Windows Lemonade restart clears only owned listeners, cached children, and singleton-router failures"
 else
-    fail "Windows Lemonade restart must stop stale listeners/cache children and detect singleton-router launch failures"
+    fail "Windows Lemonade restart must safely stop owned listeners/cache children and detect singleton-router launch failures"
 fi
 
 # ---------------------------------------------------------------------------
@@ -144,6 +144,28 @@ if grep -q 'AMD_INFERENCE_MANAGED' "$SCRIPT" \
     pass "Windows Lemonade restart is scoped to managed runtimes and allows healthy daemonized launches"
 else
     fail "Windows Lemonade restart must avoid external runtimes and accept healthy daemonized launches"
+fi
+
+# ---------------------------------------------------------------------------
+# 8b. Lemonade 10.7 removed the legacy launch flags and changed local GGUF
+#     request IDs. Bootstrap promotion must use the shared version-aware
+#     contract, resolve the live ID, and persist it for every downstream client.
+# ---------------------------------------------------------------------------
+restart_block="$(awk '
+    /^restart_windows_lemonade_with_full_model\(\)/ { in_block=1 }
+    in_block { print }
+    in_block && /^}/ { exit }
+' "$SCRIPT" | grep -v '^[[:space:]]*#')"
+if grep -q 'Get-ODSLemonadeLaunchContract' <<<"$restart_block" \
+   && grep -q 'New-ODSLemonadeScheduledTaskAction' <<<"$restart_block" \
+   && grep -q 'Set-ODSLemonadeModernRuntimeConfig' <<<"$restart_block" \
+   && grep -q 'Resolve-ODSLemonadeModelId' <<<"$restart_block" \
+   && grep -q 'write_env_value LEMONADE_MODEL' <<<"$restart_block" \
+   && ! grep -q -- '--no-tray' <<<"$restart_block" \
+   && ! grep -q -- '--extra-models-dir' <<<"$restart_block"; then
+    pass "Windows Lemonade swap uses the version-aware launch and exact model-ID contracts"
+else
+    fail "Windows Lemonade swap must use shared 10.7 launch/model-ID contracts without legacy flags"
 fi
 
 # ---------------------------------------------------------------------------

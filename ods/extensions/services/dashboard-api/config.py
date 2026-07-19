@@ -4,7 +4,8 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+from urllib.parse import urlparse
 
 import yaml
 
@@ -97,6 +98,42 @@ def _read_env_from_file(key: str) -> str:
     except OSError:
         pass
     return ""
+
+
+def _apply_host_native_llm_service_override(
+    services: dict[str, dict[str, Any]],
+    gpu_backend: str,
+    environment: Mapping[str, str] | None = None,
+) -> None:
+    """Route Windows AMD dashboard probes to the host-native LLM endpoint."""
+    env = environment if environment is not None else os.environ
+    if str(gpu_backend).lower() != "amd":
+        return
+    if str(env.get("AMD_INFERENCE_LOCATION", "")).lower() != "host":
+        return
+    service = services.get("llama-server")
+    if not service:
+        return
+
+    configured_url = (
+        env.get("OLLAMA_URL")
+        or env.get("LLM_URL")
+        or env.get("LLM_API_URL")
+        or f"http://host.docker.internal:{env.get('AMD_INFERENCE_PORT', '8080')}"
+    )
+    parsed = urlparse(str(configured_url).strip())
+    if not parsed.hostname:
+        logger.warning("Ignoring invalid host-native LLM URL: %s", configured_url)
+        return
+    try:
+        port = parsed.port or int(env.get("AMD_INFERENCE_PORT", "8080"))
+    except ValueError:
+        logger.warning("Ignoring invalid host-native LLM port in URL: %s", configured_url)
+        return
+
+    service["host"] = parsed.hostname
+    service["port"] = port
+    logger.info("Host-native AMD inference detected; routing LLM probes to %s:%d", parsed.hostname, port)
 
 
 # --- Manifest Loading ---
@@ -237,6 +274,7 @@ if not SERVICES:
 # Lemonade serves at /api/v1 instead of llama.cpp's /v1. Override the
 # health path so the dashboard poll loop hits the correct endpoint.
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "")
+_apply_host_native_llm_service_override(SERVICES, GPU_BACKEND)
 if LLM_BACKEND == "lemonade" and "llama-server" in SERVICES:
     SERVICES["llama-server"]["health"] = "/api/v1/health"
     logger.info("Lemonade backend detected — overriding llama-server health to /api/v1/health")

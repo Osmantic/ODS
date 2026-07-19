@@ -5,8 +5,6 @@ import json
 import logging
 import re
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -14,7 +12,12 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
-from config import AGENT_URL, ODS_AGENT_KEY, INSTALL_DIR
+from config import INSTALL_DIR
+from host_agent_client import (
+    AgentHTTPError,
+    AgentUnavailable,
+    request_text as request_agent_text,
+)
 from models import VersionInfo, UpdateAction
 from security import verify_api_key
 
@@ -86,26 +89,17 @@ def _read_current_version() -> str:
 
 def _call_update_agent(endpoint_action: str, payload: dict, timeout: int) -> dict:
     """Call the host agent for update execution."""
-    url = f"{AGENT_URL}/v1/update/{endpoint_action}"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        try:
-            body = json.loads(exc.read().decode("utf-8") or "{}")
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            body = {}
-        detail = body.get("error") or body.get("detail") or exc.reason
-        raise HTTPException(status_code=exc.code, detail=detail)
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        detail = str(getattr(exc, "reason", exc))
-        raise HTTPException(status_code=503, detail=f"Host agent unreachable: {detail}")
+        raw = request_agent_text(
+            "POST",
+            f"/v1/update/{endpoint_action}",
+            payload=payload,
+            timeout=timeout,
+        )
+    except AgentHTTPError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except AgentUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"Host agent unreachable: {exc}") from exc
 
     try:
         parsed = json.loads(raw or "{}")
@@ -115,22 +109,12 @@ def _call_update_agent(endpoint_action: str, payload: dict, timeout: int) -> dic
 
 
 def _get_update_agent_status(timeout: int = 5) -> dict:
-    url = f"{AGENT_URL}/v1/update/status"
-    headers = {"Authorization": f"Bearer {ODS_AGENT_KEY}"}
-    req = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        try:
-            body = json.loads(exc.read().decode("utf-8") or "{}")
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            body = {}
-        detail = body.get("error") or body.get("detail") or exc.reason
-        raise HTTPException(status_code=exc.code, detail=detail)
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        detail = str(getattr(exc, "reason", exc))
-        raise HTTPException(status_code=503, detail=f"Host agent unreachable: {detail}")
+        raw = request_agent_text("GET", "/v1/update/status", timeout=timeout)
+    except AgentHTTPError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except AgentUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"Host agent unreachable: {exc}") from exc
 
     try:
         parsed = json.loads(raw or "{}")

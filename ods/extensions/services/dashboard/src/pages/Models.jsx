@@ -13,12 +13,14 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  X,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useModels } from '../hooks/useModels'
 import { useDownloadProgress } from '../hooks/useDownloadProgress'
 
 const PAGE_SIZE = 10
+const DOWNLOAD_STATUS_TIMEOUT_MS = 15000
 const TECH_PANEL_STYLE = {
   background: 'linear-gradient(180deg, rgba(10,10,18,0.96), rgba(7,7,13,0.92))',
   borderColor: 'rgba(255,255,255,0.08)',
@@ -35,6 +37,25 @@ const TECH_TILE_STYLE = {
   boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.045), inset 0 -18px 34px rgba(0,0,0,0.18)',
 }
 
+function catalogModelIdForProgress(models, progressModel) {
+  const rawLabel = typeof progressModel === 'string' ? progressModel.trim() : ''
+  if (!rawLabel) return null
+
+  const rawToken = rawLabel.toLowerCase()
+  const directMatch = models.find(model => String(model.id || '').toLowerCase() === rawToken)
+  if (directMatch) return directMatch.id
+
+  const fileToken = rawLabel.split(' (', 1)[0].split(/[\\/]/).pop()?.toLowerCase()
+  if (!fileToken) return null
+  const fileMatch = models.find(model => {
+    if (String(model.gguf || '').toLowerCase() === fileToken) return true
+    return Array.isArray(model.ggufParts) && model.ggufParts.some(
+      part => String(part?.file || '').toLowerCase() === fileToken
+    )
+  })
+  return fileMatch?.id ?? null
+}
+
 export default function Models() {
   const downloadProgress = useDownloadProgress()
   const {
@@ -42,10 +63,16 @@ export default function Models() {
     gpu,
     currentModel,
     configuredModel,
+    odsMode,
+    configuredMode,
+    canActivateModels,
+    activationModeError,
     recommendationAlternatives,
     loading,
     error,
     actionLoading,
+    actionLoadingModels,
+    activationLoading,
     downloadModel,
     loadModel,
     benchmarkModel,
@@ -54,6 +81,8 @@ export default function Models() {
   } = useModels()
 
   const [downloadStarting, setDownloadStarting] = useState(null)
+  const [downloadAwaitingStatus, setDownloadAwaitingStatus] = useState(false)
+  const [downloadStartFailure, setDownloadStartFailure] = useState(null)
   const [openMenuId, setOpenMenuId] = useState(null)
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
@@ -64,17 +93,43 @@ export default function Models() {
   const libraryRef = useRef(null)
 
   useEffect(() => {
-    if (downloadProgress.isDownloading || error) {
+    const terminalProgress = downloadProgress.progress?.error ||
+      ['failed', 'error', 'cancelled'].includes(downloadProgress.progress?.status)
+
+    if (downloadProgress.isDownloading || terminalProgress) {
       setDownloadStarting(null)
+      setDownloadAwaitingStatus(false)
     }
-  }, [downloadProgress.isDownloading, error])
+    if (downloadProgress.isDownloading || terminalProgress) {
+      setDownloadStartFailure(null)
+    }
+  }, [downloadProgress.isDownloading, downloadProgress.progress])
 
   useEffect(() => {
     if (downloadProgress.completedDownload?.status === 'complete') {
       setDownloadStarting(null)
+      setDownloadAwaitingStatus(false)
+      setDownloadStartFailure(null)
       refresh()
     }
   }, [downloadProgress.completedDownload, refresh])
+
+  useEffect(() => {
+    if (!downloadStarting || !downloadAwaitingStatus) return undefined
+
+    const modelId = downloadStarting
+    const timeout = setTimeout(() => {
+      setDownloadStarting(null)
+      setDownloadAwaitingStatus(false)
+      setDownloadStartFailure({
+        modelId,
+        error: `Download for ${modelId} did not start within 15 seconds. Check the service and retry.`,
+      })
+      void downloadProgress.refresh()
+    }, DOWNLOAD_STATUS_TIMEOUT_MS)
+
+    return () => clearTimeout(timeout)
+  }, [downloadAwaitingStatus, downloadProgress.refresh, downloadStarting])
 
   useEffect(() => {
     const closeMenu = (event) => {
@@ -134,10 +189,31 @@ export default function Models() {
   }, [categoryFilter, compatibilityFilter, contextFloor, models.length, query, speedFilter])
 
   const handleDownload = async (modelId) => {
+    setDownloadStartFailure(null)
+    downloadProgress.clearTerminal?.()
+    setDownloadAwaitingStatus(false)
     setDownloadStarting(modelId)
-    await downloadModel(modelId)
-    downloadProgress.refresh()
+    try {
+      await downloadModel(modelId)
+      setDownloadAwaitingStatus(true)
+      await downloadProgress.refresh()
+    } catch (downloadError) {
+      setDownloadStarting(null)
+      setDownloadAwaitingStatus(false)
+      setDownloadStartFailure({
+        modelId,
+        error: downloadError?.message || `Failed to start download for ${modelId}.`,
+      })
+    }
   }
+
+  const pendingModelActions = actionLoadingModels ?? (actionLoading ? [actionLoading] : [])
+  const visibleDownloadProgress = downloadProgress.progress || (downloadStartFailure && {
+    status: 'error',
+    model: downloadStartFailure.modelId,
+    error: downloadStartFailure.error,
+  })
+  const retryModelId = catalogModelIdForProgress(models, visibleDownloadProgress?.model)
 
   if (loading) {
     return (
@@ -167,7 +243,11 @@ export default function Models() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex max-w-full flex-wrap items-center gap-2">
+          <span className="inline-flex min-h-9 max-w-full items-center rounded-lg border border-white/[0.08] bg-black/20 px-3 py-2 text-center text-xs font-medium text-theme-text-secondary">
+            Runtime: {formatModeLabel(odsMode)}
+            {configuredMode !== odsMode ? ` / configured ${formatModeLabel(configuredMode)}` : ''}
+          </span>
           <button
             type="button"
             onClick={() => libraryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
@@ -193,8 +273,33 @@ export default function Models() {
         </div>
       )}
 
-      {downloadProgress.isDownloading && downloadProgress.progress && (
-        <DownloadProgressBar progress={downloadProgress.progress} helpers={downloadProgress} />
+      {!canActivateModels && (
+        <section className="mb-5 flex flex-col gap-3 rounded-xl border border-amber-400/25 bg-amber-500/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-start gap-3">
+            <AlertCircle size={18} className="mt-0.5 shrink-0 text-amber-300" />
+            <div>
+              <p className="text-sm font-semibold text-amber-100">Local model runtime unavailable</p>
+              <p className="mt-1 text-sm text-amber-100/75">{activationModeError}</p>
+              <p className="mt-1 text-xs text-amber-100/60">Model downloads and deletion remain available.</p>
+            </div>
+          </div>
+          <Link
+            to="/settings"
+            className="inline-flex h-8 shrink-0 items-center justify-center rounded-md border border-amber-200/20 bg-black/20 px-3 text-xs font-semibold text-amber-100 transition-colors hover:border-amber-200/40"
+          >
+            Review runtime settings
+          </Link>
+        </section>
+      )}
+
+      {visibleDownloadProgress && (
+        <DownloadProgressBar
+          progress={visibleDownloadProgress}
+          helpers={downloadProgress}
+          onRetry={retryModelId
+            ? () => handleDownload(retryModelId)
+            : null}
+        />
       )}
 
       <CurrentModelPanel
@@ -250,15 +355,15 @@ export default function Models() {
         >
           <div className="min-w-full overflow-x-auto">
             <div className="min-w-[1020px]">
-              <div className="grid grid-cols-[minmax(280px,1.7fr)_90px_130px_150px_110px_150px_130px_36px] gap-5 border-b border-white/[0.055] px-5 py-3 text-[9px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/55">
+              <div className="grid grid-cols-[minmax(280px,1.7fr)_130px_36px_90px_130px_150px_110px_150px] gap-5 border-b border-white/[0.055] px-5 py-3 text-[9px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/55">
                 <span>Model</span>
+                <span>Action</span>
+                <span />
                 <span>Size</span>
                 <span>VRAM</span>
                 <span>Speed</span>
                 <span>Context</span>
                 <span>Compatibility</span>
-                <span>Action</span>
-                <span />
               </div>
 
               <div className="divide-y divide-white/[0.04]">
@@ -269,8 +374,11 @@ export default function Models() {
                       key={rowId}
                       model={model}
                       gpu={gpu}
-                      isLoading={actionLoading === model.id}
-                      loadBusy={!!actionLoading}
+                      canActivateModels={canActivateModels}
+                      isCurrentModel={model.id === currentModel}
+                      isLoading={pendingModelActions.includes(model.id)}
+                      loadBusy={pendingModelActions.length > 0}
+                      activationBusy={Boolean(activationLoading)}
                       downloadBusy={downloadProgress.isDownloading || !!downloadStarting}
                       downloadStarting={downloadStarting === model.id}
                       menuOpen={openMenuId === rowId}
@@ -516,8 +624,11 @@ function FilterChip({ active, onClick, children }) {
 function ModelTableRow({
   model,
   gpu,
+  canActivateModels,
+  isCurrentModel,
   isLoading,
   loadBusy,
+  activationBusy,
   downloadBusy,
   downloadStarting,
   menuOpen,
@@ -527,7 +638,7 @@ function ModelTableRow({
   onBenchmark,
   onDelete,
 }) {
-  const isLoaded = model.status === 'loaded'
+  const isLoaded = model.status === 'loaded' || isCurrentModel
   const isDownloaded = model.status === 'downloaded'
   const memory = getMemoryMeta(model, gpu)
   const compatibility = getCompatibilityMeta(model, memory)
@@ -537,7 +648,7 @@ function ModelTableRow({
   const performanceBadge = getPerformanceBadge(model)
 
   return (
-    <div className="grid grid-cols-[minmax(280px,1.7fr)_90px_130px_150px_110px_150px_130px_36px] gap-5 px-5 py-3.5 transition-colors hover:bg-white/[0.025]">
+    <div className="grid grid-cols-[minmax(280px,1.7fr)_130px_36px_90px_130px_150px_110px_150px] gap-5 px-5 py-3.5 transition-colors hover:bg-white/[0.025]">
       <div className="min-w-0">
         <div className="flex min-w-0 items-start gap-3">
           <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${iconTone.border} ${iconTone.bg}`}>
@@ -557,6 +668,64 @@ function ModelTableRow({
             </div>
           </div>
         </div>
+      </div>
+
+      <div className="self-center">
+        <PrimaryAction
+          model={model}
+          canActivateModels={canActivateModels}
+          isLoaded={isLoaded}
+          isDownloaded={isDownloaded}
+          isLoading={isLoading}
+          loadBusy={loadBusy}
+          activationBusy={activationBusy}
+          downloadBusy={downloadBusy}
+          downloadStarting={downloadStarting}
+          onDownload={onDownload}
+          onLoad={onLoad}
+          onBenchmark={onBenchmark}
+        />
+      </div>
+
+      <div className="relative flex items-center justify-end self-center" data-model-menu>
+        <button
+          type="button"
+          onClick={onToggleMenu}
+          disabled={isLoading || activationBusy}
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-theme-text-muted transition-colors hover:bg-white/[0.05] hover:text-theme-text disabled:cursor-not-allowed disabled:opacity-35"
+          title="Model actions"
+        >
+          <MoreVertical size={15} />
+        </button>
+        {menuOpen && !isLoading && !activationBusy && (
+          <div className="absolute left-0 top-9 z-30 w-44 overflow-hidden rounded-lg border border-white/[0.08] bg-[#101018] py-1 shadow-2xl">
+            {isLoaded && (
+              <MenuButton onClick={onBenchmark} icon={RefreshCw}>Benchmark</MenuButton>
+            )}
+            {isDownloaded && !isLoaded && (
+              canActivateModels ? (
+                <MenuButton
+                  onClick={onLoad}
+                  icon={Play}
+                  disabled={!model.fitsVram || loadBusy}
+                >
+                  Run model
+                </MenuButton>
+              ) : (
+                <MenuLink to="/settings" icon={AlertCircle}>Review runtime mode</MenuLink>
+              )
+            )}
+            {model.status === 'available' && (
+              <MenuButton onClick={onDownload} icon={Download} disabled={downloadBusy}>Download</MenuButton>
+            )}
+            {isDownloaded && !isLoaded && (
+              <MenuButton onClick={onDelete} icon={Trash2} danger>Delete file</MenuButton>
+            )}
+            {!isLoaded && !isDownloaded && model.status !== 'available' && (
+              <div className="px-3 py-2 text-xs text-theme-text-muted">No local action</div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="self-center font-mono text-xs text-theme-text-secondary">{model.size || '--'}</div>
@@ -585,61 +754,18 @@ function ModelTableRow({
         <Badge tone={compatibility.tone}>{compatibility.label}</Badge>
         <p className="mt-1 text-[10px] text-theme-text-muted">{compatibility.detail}</p>
       </div>
-
-      <div className="self-center">
-        <PrimaryAction
-          model={model}
-          isLoaded={isLoaded}
-          isDownloaded={isDownloaded}
-          isLoading={isLoading}
-          loadBusy={loadBusy}
-          downloadBusy={downloadBusy}
-            downloadStarting={downloadStarting}
-            onDownload={onDownload}
-            onLoad={onLoad}
-            onBenchmark={onBenchmark}
-          />
-      </div>
-
-      <div className="relative flex items-center justify-end self-center" data-model-menu>
-        <button
-          type="button"
-          onClick={onToggleMenu}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-theme-text-muted transition-colors hover:bg-white/[0.05] hover:text-theme-text"
-          title="Model actions"
-        >
-          <MoreVertical size={15} />
-        </button>
-        {menuOpen && (
-          <div className="absolute right-0 top-9 z-30 w-44 overflow-hidden rounded-lg border border-white/[0.08] bg-[#101018] py-1 shadow-2xl">
-            {isLoaded && (
-              <MenuButton onClick={onBenchmark} icon={RefreshCw}>Benchmark</MenuButton>
-            )}
-            {isDownloaded && !isLoaded && (
-              <MenuButton onClick={onLoad} icon={Play} disabled={!model.fitsVram || loadBusy}>Run model</MenuButton>
-            )}
-            {model.status === 'available' && (
-              <MenuButton onClick={onDownload} icon={Download} disabled={downloadBusy}>Download</MenuButton>
-            )}
-            {(isDownloaded || isLoaded) && (
-              <MenuButton onClick={onDelete} icon={Trash2} danger>Delete file</MenuButton>
-            )}
-            {!isLoaded && !isDownloaded && model.status !== 'available' && (
-              <div className="px-3 py-2 text-xs text-theme-text-muted">No local action</div>
-            )}
-          </div>
-        )}
-      </div>
     </div>
   )
 }
 
 function PrimaryAction({
   model,
+  canActivateModels,
   isLoaded,
   isDownloaded,
   isLoading,
   loadBusy,
+  activationBusy,
   downloadBusy,
   downloadStarting,
   onDownload,
@@ -660,7 +786,8 @@ function PrimaryAction({
       <button
         type="button"
         onClick={onBenchmark}
-        className="inline-flex h-8 min-w-24 items-center justify-center gap-2 rounded-md bg-theme-accent px-3 text-xs font-semibold text-white shadow-[0_0_18px_rgba(168,85,247,0.26)] transition-colors hover:bg-theme-accent-hover"
+        disabled={activationBusy}
+        className="inline-flex h-8 min-w-24 items-center justify-center gap-2 rounded-md bg-theme-accent px-3 text-xs font-semibold text-white shadow-[0_0_18px_rgba(168,85,247,0.26)] transition-colors hover:bg-theme-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
         title="Run a local benchmark for this loaded model"
       >
         <RefreshCw size={13} />
@@ -670,13 +797,25 @@ function PrimaryAction({
   }
 
   if (isDownloaded) {
+    if (!canActivateModels) {
+      return (
+        <Link
+          to="/settings"
+          className="inline-flex h-8 min-w-24 items-center justify-center gap-2 rounded-md border border-amber-300/20 bg-amber-500/10 px-3 text-xs font-semibold text-amber-100 transition-colors hover:border-amber-200/40"
+        >
+          <AlertCircle size={13} />
+          Review mode
+        </Link>
+      )
+    }
+    const runDisabled = !model.fitsVram || loadBusy || activationBusy
     return (
       <button
         type="button"
         onClick={onLoad}
-        disabled={!model.fitsVram || loadBusy}
+        disabled={runDisabled}
         className={`inline-flex h-8 min-w-24 items-center justify-center gap-2 rounded-md px-3 text-xs font-semibold transition-colors ${
-          model.fitsVram && !loadBusy
+          !runDisabled
             ? 'bg-theme-accent text-white shadow-[0_0_18px_rgba(168,85,247,0.32)] hover:bg-theme-accent-hover'
             : 'cursor-not-allowed border border-white/[0.08] bg-black/20 text-theme-text-muted'
         }`}
@@ -700,9 +839,9 @@ function PrimaryAction({
     <button
       type="button"
       onClick={onDownload}
-      disabled={downloadBusy}
+      disabled={downloadBusy || activationBusy}
       className={`inline-flex h-8 min-w-24 items-center justify-center gap-2 rounded-md border px-3 text-xs font-semibold transition-colors ${
-        downloadBusy
+        downloadBusy || activationBusy
           ? 'cursor-not-allowed border-white/[0.08] bg-black/20 text-theme-text-muted'
           : 'border-white/[0.08] bg-black/20 text-theme-text-secondary hover:border-theme-accent/35 hover:text-theme-text'
       }`}
@@ -713,18 +852,31 @@ function PrimaryAction({
   )
 }
 
-function DownloadProgressBar({ progress, helpers }) {
-  const { formatBytes, formatEta } = helpers
+function DownloadProgressBar({ progress, helpers, onRetry }) {
+  const { formatBytes, formatEta, cancelDownload, cancelError, isCancelling } = helpers
 
   if (progress.error) {
+    const cancelled = progress.status === 'cancelled'
     return (
       <div className="mb-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4">
-        <div className="flex items-center gap-3">
-          <AlertCircle size={20} className="text-red-400" />
-          <div>
-            <p className="font-medium text-red-300">Download Failed</p>
-            <p className="text-sm text-red-300/70">{progress.error}</p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <AlertCircle size={20} className="shrink-0 text-red-400" />
+            <div className="min-w-0">
+              <p className="font-medium text-red-300">{cancelled ? 'Download Cancelled' : 'Download Failed'}</p>
+              <p className="break-words text-sm text-red-300/70">{progress.error}</p>
+            </div>
           </div>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="inline-flex h-8 shrink-0 items-center justify-center gap-2 rounded-md border border-red-400/25 bg-black/20 px-3 text-xs font-semibold text-red-200 transition-colors hover:border-red-300/45 hover:bg-red-500/10"
+            >
+              <RefreshCw size={13} />
+              Retry
+            </button>
+          )}
         </div>
       </div>
     )
@@ -749,10 +901,27 @@ function DownloadProgressBar({ progress, helpers }) {
             </p>
           </div>
         </div>
-        <span className="text-lg font-bold text-theme-accent">
-          {progress.percent?.toFixed(0) || 0}%
-        </span>
+        <div className="flex shrink-0 items-center gap-3">
+          <span className="text-lg font-bold text-theme-accent">
+            {progress.percent?.toFixed(0) || 0}%
+          </span>
+          <button
+            type="button"
+            onClick={cancelDownload}
+            disabled={isCancelling}
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-white/[0.1] bg-black/20 px-2.5 text-xs font-semibold text-theme-text-secondary transition-colors hover:border-red-400/35 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isCancelling ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
+            {isCancelling ? 'Cancelling' : 'Cancel'}
+          </button>
+        </div>
       </div>
+
+      {cancelError && (
+        <p role="alert" className="mb-3 text-sm text-red-300">
+          {cancelError}
+        </p>
+      )}
 
       <div className="h-2.5 overflow-hidden rounded-full bg-theme-border">
         <div
@@ -807,12 +976,13 @@ function Pagination({ page, pageCount, onChange }) {
   )
 }
 
-function MenuButton({ icon: Icon, children, onClick, disabled, danger }) {
+function MenuButton({ icon: Icon, children, onClick, disabled, danger, title }) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
         danger
           ? 'text-red-300 hover:bg-red-500/10'
@@ -823,6 +993,24 @@ function MenuButton({ icon: Icon, children, onClick, disabled, danger }) {
       {children}
     </button>
   )
+}
+
+function MenuLink({ icon: Icon, children, to }) {
+  return (
+    <Link
+      to={to}
+      className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-amber-100 transition-colors hover:bg-amber-500/10"
+    >
+      <Icon size={13} />
+      {children}
+    </Link>
+  )
+}
+
+function formatModeLabel(mode) {
+  if (!mode || mode === 'unknown') return 'Unknown'
+  if (mode === 'lemonade') return 'Lemonade'
+  return `${mode.charAt(0).toUpperCase()}${mode.slice(1)}`
 }
 
 function ModelSpeedVisual({ model, speed, compact = false }) {

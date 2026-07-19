@@ -48,6 +48,7 @@ bash tests/contracts/test-external-lemonade-contracts.sh
 
 echo "[contract] bootstrap hot-swap force-recreate"
 bash tests/test-bootstrap-upgrade-hotswap-contract.sh
+bash tests/contracts/test-windows-lemonade-swap-wait.sh
 
 echo "[contract] bootstrap Docker hot-swap rollback"
 bash tests/test-bootstrap-upgrade-docker-rollback.sh
@@ -264,13 +265,29 @@ awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_maybe_resume_bootstrap_up
   || { echo "[FAIL] ods start must retry failed bootstrap upgrades"; exit 1; }
 awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_wait_for_bootstrap_compose_safe' \
   || { echo "[FAIL] ods restart must wait for active bootstrap hot-swaps before compose"; exit 1; }
+awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_reload_model_env' \
+  || { echo "[FAIL] ods restart must reload model env after bootstrap hot-swap wait"; exit 1; }
 awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_wait_for_bootstrap_compose_safe' \
   || { echo "[FAIL] ods start must wait for active bootstrap hot-swaps before compose"; exit 1; }
+awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_reload_model_env' \
+  || { echo "[FAIL] ods start must reload model env after bootstrap hot-swap wait"; exit 1; }
 grep -q 'starting|verifying|swapping' ods-cli \
   || { echo "[FAIL] ods-cli bootstrap compose guard must include swapping"; exit 1; }
 
 echo "[contract] macOS host-agent LaunchAgent install-dir"
 bash tests/test-macos-host-agent-verification.sh
+
+echo "[contract] macOS direct binds replace conflicting Colima bridges"
+bash tests/test-macos-direct-bind-bridge.sh
+
+echo "[contract] macOS CLI preserves cloud/local model routing"
+bash tests/test-macos-cli-mode-routing.sh
+
+echo "[contract] macOS cloud resolver preserves selected extension state"
+bash tests/test-macos-cloud-resolver.sh
+
+echo "[contract] macOS installer preserves authenticated local/cloud transitions"
+bash tests/test-macos-installer-transitions.sh
 
 echo "[contract] AMD reassign keeps HSA override Strix-only"
 grep -q '_env_set "HSA_OVERRIDE_GFX_VERSION" "11.5.1"' ods-cli \
@@ -548,6 +565,9 @@ if grep -q '^[[:space:]]*_build_services=(dashboard dashboard-api ape token-spy 
   exit 1
 fi
 
+echo "[contract] failed requested local builds cannot reuse stale images"
+bash tests/test-phase11-local-build-failure.sh
+
 echo "[contract] OpenClaw deprecation preserves actual installs only"
 for installer in install-core.sh installers/macos/install-macos.sh; do
   grep -Fq 'name=^/ods-openclaw$' "$installer" \
@@ -729,5 +749,8 @@ fi
 
 echo "[contract] Hermes context defaults are installer-wide"
 bash tests/test-installer-context-parity.sh
+
+echo "[contract] Linux installer/background model lifecycle serialization"
+bash tests/test-linux-installer-model-lifecycle-lock.sh
 
 echo "[PASS] installer contracts"

@@ -81,8 +81,55 @@ echo '{"ods_version": "2.0.1"}' > "$FIXTURE/manifest.json"
 # FAKE_DOCKER_PS_EMPTY=1; `info` supplies a CPU count for the budget calc
 cat > "$FIXTURE/bin/docker" <<'SH'
 #!/usr/bin/env bash
+# Model the active-compose-stack verification protocol:
+#   compose config --services        -> declared stack services
+#   compose ps --services --status running -> running subset
+#   compose ps --all -q SVC          -> synthetic container id
+#   inspect -f ... id-SVC            -> status/exit for one-shot tolerance
+#   compose pull IMG...              -> record pulled images for assertions
+if [[ "${1:-}" == "compose" ]]; then
+    sub=""
+    for a in "$@"; do case "$a" in config|ps|pull|up|down|version) sub=$a; break;; esac; done
+    case "$sub" in
+        config)
+            echo "bsvc"
+            echo "oneshot"
+            ;;
+        pull)
+            seen=0
+            for a in "$@"; do
+                [[ "$a" == "pull" ]] && { seen=1; continue; }
+                [[ "$seen" == "1" && "$a" != -* ]] && echo "$a" >> "${FAKE_DOCKER_PULL_LOG:-/dev/null}"
+            done
+            ;;
+        ps)
+            if [[ " $* " == *" -q "* ]]; then
+                for last in "$@"; do :; done
+                echo "id-$last"
+            elif [[ " $* " == *"--status"*"running"* ]]; then
+                [[ "${FAKE_DOCKER_PS_EMPTY:-}" == "1" ]] || echo "bsvc"
+            else
+                echo "bsvc"
+                echo "oneshot"
+            fi
+            ;;
+    esac
+    exit 0
+fi
 case "${1:-}" in
-    compose) exit 0 ;;
+    pull)
+        echo "${2:-}" >> "${FAKE_DOCKER_PULL_LOG:-/dev/null}"
+        ;;
+    inspect)
+        for last in "$@"; do :; done
+        case "$last" in
+            id-bsvc)
+                if [[ "${FAKE_DOCKER_PS_EMPTY:-}" == "1" ]]; then echo "exited 1"; else echo "running 0"; fi
+                ;;
+            id-oneshot) echo "exited 0" ;;
+            *) echo "running 0" ;;
+        esac
+        ;;
     ps)
         [[ "${FAKE_DOCKER_PS_EMPTY:-}" == "1" ]] && exit 0
         echo "ods-bsvc"
@@ -149,7 +196,7 @@ export FAKE_DOCKER_PS_EMPTY=1
 output=$(run_update)
 unset FAKE_DOCKER_PS_EMPTY
 
-if echo "$output" | grep -q "Update verification failed: 1/1 services are not running"; then
+if echo "$output" | grep -q "Update verification failed: 1/2 services are not running"; then
     pass "update counts and reports the non-running service"
 else
     fail "update did not report the failed-service count: $(echo "$output" | tail -5)"
@@ -158,6 +205,27 @@ if echo "$output" | grep -q "Update complete"; then
     fail "update claimed success despite failed verification"
 else
     pass "update does not claim success on failed verification"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. update pulls registry images only, never locally built tags
+# ---------------------------------------------------------------------------
+reset_env
+mkdir -p "$FIXTURE/installers/lib"
+cat > "$FIXTURE/installers/lib/compose-images.sh" <<'HELPER'
+ods_compose_external_images() {
+    echo "ghcr.io/example/upstream:1.2.3"
+}
+HELPER
+export FAKE_DOCKER_PULL_LOG="$FIXTURE/pull.log"
+: > "$FAKE_DOCKER_PULL_LOG"
+output=$(run_update)
+unset FAKE_DOCKER_PULL_LOG
+
+if grep -q "ghcr.io/example/upstream:1.2.3" "$FIXTURE/pull.log" 2>/dev/null && ! grep -q "ods-lemonade-server" "$FIXTURE/pull.log" 2>/dev/null; then
+    pass "update pulls registry images without pulling local build tags"
+else
+    fail "external-only pull not exercised: $(cat "$FIXTURE/pull.log" 2>/dev/null)"
 fi
 
 echo ""

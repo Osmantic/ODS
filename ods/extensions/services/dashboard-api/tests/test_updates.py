@@ -5,7 +5,8 @@ from datetime import datetime
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import httpx
-from fastapi import HTTPException
+
+from host_agent_client import AgentHTTPError, AgentUnavailable
 
 
 def test_github_release_urls_use_canonical_repository():
@@ -153,10 +154,10 @@ def test_trigger_update_host_agent_unreachable(test_client, monkeypatch):
     """POST /api/update surfaces host-agent reachability failures."""
     import routers.updates as updates_mod
 
-    def fail(action, payload, timeout):
-        raise HTTPException(status_code=503, detail="Host agent unreachable: timed out")
+    def fail(*args, **kwargs):
+        raise AgentUnavailable("timed out")
 
-    monkeypatch.setattr(updates_mod, "_call_update_agent", fail)
+    monkeypatch.setattr(updates_mod, "request_agent_text", fail)
 
     resp = test_client.post(
         "/api/update",
@@ -165,6 +166,25 @@ def test_trigger_update_host_agent_unreachable(test_client, monkeypatch):
     )
     assert resp.status_code == 503
     assert "Host agent unreachable" in resp.json()["detail"]
+
+
+def test_trigger_update_preserves_host_agent_http_error(test_client, monkeypatch):
+    """POST /api/update preserves typed host-agent status and detail."""
+    import routers.updates as updates_mod
+
+    def fail(*args, **kwargs):
+        raise AgentHTTPError(409, "Update already running")
+
+    monkeypatch.setattr(updates_mod, "request_agent_text", fail)
+
+    resp = test_client.post(
+        "/api/update",
+        json={"action": "check"},
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Update already running"
 
 
 # ---------------------------------------------------------------------------
@@ -439,16 +459,19 @@ def test_get_update_status_proxies_host_agent(test_client, monkeypatch):
     """GET /api/update/status returns host-agent update status."""
     import routers.updates as updates_mod
 
-    monkeypatch.setattr(
-        updates_mod,
-        "_get_update_agent_status",
-        lambda: {"status": "succeeded", "returncode": 0},
-    )
+    calls = []
+
+    def fake_request(method, path, *, timeout):
+        calls.append((method, path, timeout))
+        return json.dumps({"status": "succeeded", "returncode": 0})
+
+    monkeypatch.setattr(updates_mod, "request_agent_text", fake_request)
 
     resp = test_client.get("/api/update/status", headers=test_client.auth_headers)
 
     assert resp.status_code == 200
     assert resp.json() == {"status": "succeeded", "returncode": 0}
+    assert calls == [("GET", "/v1/update/status", 5)]
 
 
 # ---------------------------------------------------------------------------
@@ -478,11 +501,11 @@ def test_trigger_update_action_update(test_client, monkeypatch):
 
     calls = []
 
-    def fake_call(action, payload, timeout):
-        calls.append((action, payload, timeout))
-        return {"success": True, "message": "Update started in background."}
+    def fake_request(method, path, *, payload, timeout):
+        calls.append((method, path, payload, timeout))
+        return json.dumps({"success": True, "message": "Update started in background."})
 
-    monkeypatch.setattr(updates_mod, "_call_update_agent", fake_call)
+    monkeypatch.setattr(updates_mod, "request_agent_text", fake_request)
 
     resp = test_client.post(
         "/api/update",
@@ -493,7 +516,7 @@ def test_trigger_update_action_update(test_client, monkeypatch):
     data = resp.json()
     assert data["success"] is True
     assert "background" in data["message"].lower()
-    assert calls == [("start", {}, 10)]
+    assert calls == [("POST", "/v1/update/start", {}, 10)]
 
 
 # ---------------------------------------------------------------------------
@@ -507,11 +530,13 @@ def test_trigger_update_action_check(test_client, monkeypatch):
 
     calls = []
 
-    def fake_call(action, payload, timeout):
-        calls.append((action, payload, timeout))
-        return {"success": True, "update_available": False, "output": "no updates"}
+    def fake_request(method, path, *, payload, timeout):
+        calls.append((method, path, payload, timeout))
+        return json.dumps(
+            {"success": True, "update_available": False, "output": "no updates"}
+        )
 
-    monkeypatch.setattr(updates_mod, "_call_update_agent", fake_call)
+    monkeypatch.setattr(updates_mod, "request_agent_text", fake_request)
 
     resp = test_client.post(
         "/api/update",
@@ -523,7 +548,7 @@ def test_trigger_update_action_check(test_client, monkeypatch):
     assert data["success"] is True
     assert data["update_available"] is False
     assert "no updates" in data["output"]
-    assert calls == [("check", {}, 35)]
+    assert calls == [("POST", "/v1/update/check", {}, 35)]
 
 
 # ---------------------------------------------------------------------------
@@ -537,11 +562,11 @@ def test_trigger_update_action_backup(test_client, monkeypatch):
 
     calls = []
 
-    def fake_call(action, payload, timeout):
-        calls.append((action, payload, timeout))
-        return {"success": True, "output": "backup complete"}
+    def fake_request(method, path, *, payload, timeout):
+        calls.append((method, path, payload, timeout))
+        return json.dumps({"success": True, "output": "backup complete"})
 
-    monkeypatch.setattr(updates_mod, "_call_update_agent", fake_call)
+    monkeypatch.setattr(updates_mod, "request_agent_text", fake_request)
 
     resp = test_client.post(
         "/api/update",
@@ -552,6 +577,6 @@ def test_trigger_update_action_backup(test_client, monkeypatch):
     data = resp.json()
     assert data["success"] is True
     assert "backup" in data["output"].lower()
-    assert calls[0][0] == "backup"
-    assert calls[0][1]["backup_id"].startswith("dashboard-")
-    assert calls[0][2] == 65
+    assert calls[0][0:2] == ("POST", "/v1/update/backup")
+    assert calls[0][2]["backup_id"].startswith("dashboard-")
+    assert calls[0][3] == 65

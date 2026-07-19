@@ -7,6 +7,16 @@ const setDocumentHidden = (hidden) => {
   Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
 }
 
+const deferred = () => {
+  let resolve
+  let reject
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 describe('useDownloadProgress', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn())
@@ -79,6 +89,163 @@ describe('useDownloadProgress', () => {
       status: 'complete',
       model: 'test-model',
       updatedAt: '2026-05-16T12:00:00Z'
+    })
+  })
+
+  test.each(['failed', 'error', 'cancelled'])('keeps %s status visible across a later idle poll', async (status) => {
+    fetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          status,
+          model: 'test-model',
+          message: `${status} detail`,
+        })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ status: 'idle' })
+      })
+
+    const { result } = renderHook(() => useDownloadProgress())
+
+    await waitFor(() => expect(result.current.progress?.status).toBe(status))
+    await act(async () => {
+      await result.current.refresh()
+    })
+
+    expect(result.current.isDownloading).toBe(false)
+    expect(result.current.progress).toMatchObject({
+      status,
+      model: 'test-model',
+      error: `${status} detail`,
+    })
+  })
+
+  test('does not let an older idle response overwrite newer download progress', async () => {
+    const olderRequest = deferred()
+    const newerRequest = deferred()
+    fetch
+      .mockImplementationOnce(() => olderRequest.promise)
+      .mockImplementationOnce(() => newerRequest.promise)
+
+    const { result } = renderHook(() => useDownloadProgress())
+    let newerRefresh
+    act(() => {
+      newerRefresh = result.current.refresh()
+    })
+
+    await act(async () => {
+      newerRequest.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          status: 'downloading',
+          model: 'new-model.gguf',
+          bytesDownloaded: 5,
+          bytesTotal: 10,
+        }),
+      })
+      await newerRefresh
+    })
+    expect(result.current.isDownloading).toBe(true)
+    expect(result.current.progress).toMatchObject({
+      model: 'new-model.gguf',
+      status: 'downloading',
+      percent: 50,
+    })
+
+    await act(async () => {
+      olderRequest.resolve({
+        ok: true,
+        json: () => Promise.resolve({ status: 'idle' }),
+      })
+      await olderRequest.promise
+      await Promise.resolve()
+    })
+
+    expect(result.current.isDownloading).toBe(true)
+    expect(result.current.progress).toMatchObject({
+      model: 'new-model.gguf',
+      status: 'downloading',
+    })
+  })
+
+  test('cancelDownload posts to the cancel endpoint and refreshes terminal status', async () => {
+    let cancelled = false
+    fetch.mockImplementation((url, options) => {
+      if (options?.method === 'POST') {
+        cancelled = true
+        return Promise.resolve({ ok: true })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(cancelled
+          ? { status: 'cancelled', model: 'test-model' }
+          : {
+              status: 'downloading',
+              model: 'test-model',
+              bytesDownloaded: 1,
+              bytesTotal: 10,
+            })
+      })
+    })
+
+    const { result } = renderHook(() => useDownloadProgress())
+    await waitFor(() => expect(result.current.isDownloading).toBe(true))
+
+    await act(async () => {
+      await result.current.cancelDownload()
+    })
+
+    expect(fetch).toHaveBeenCalledWith('/api/models/download/cancel', { method: 'POST' })
+    expect(result.current.isDownloading).toBe(false)
+    expect(result.current.progress).toMatchObject({
+      status: 'cancelled',
+      model: 'test-model',
+      error: 'Download cancelled',
+    })
+  })
+
+  test('keeps active progress and exposes an error when cancellation fails', async () => {
+    const cancelRequest = deferred()
+    fetch.mockImplementation((_url, options) => {
+      if (options?.method === 'POST') return cancelRequest.promise
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          status: 'downloading',
+          model: 'test-model',
+          bytesDownloaded: 1,
+          bytesTotal: 10,
+        }),
+      })
+    })
+
+    const { result } = renderHook(() => useDownloadProgress())
+    await waitFor(() => expect(result.current.isDownloading).toBe(true))
+
+    let cancelPromise
+    act(() => {
+      cancelPromise = result.current.cancelDownload()
+    })
+    await waitFor(() => expect(result.current.isCancelling).toBe(true))
+
+    await act(async () => {
+      cancelRequest.resolve({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({ detail: 'The host agent did not accept cancellation.' }),
+      })
+      await cancelPromise
+    })
+
+    expect(result.current.isCancelling).toBe(false)
+    expect(result.current.cancelError).toBe('The host agent did not accept cancellation.')
+    expect(result.current.isDownloading).toBe(true)
+    expect(result.current.progress).toMatchObject({
+      status: 'downloading',
+      model: 'test-model',
+      percent: 10,
     })
   })
 

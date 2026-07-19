@@ -1,17 +1,21 @@
 """Per-service resource metrics."""
 
 import asyncio
-import json
 import logging
 import re
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from config import AGENT_URL, DATA_DIR, ODS_AGENT_KEY, GPU_BACKEND, SERVICES
+from config import DATA_DIR, GPU_BACKEND, SERVICES
 from helpers import dir_size_gb
+from host_agent_client import (
+    AgentClientError,
+    AgentHTTPError,
+    AgentProtocolError,
+    AgentUnavailable,
+    request_json as request_agent_json,
+)
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -61,47 +65,28 @@ def _scan_service_disk() -> dict[str, dict]:
 
 def _fetch_container_stats() -> list[dict]:
     """Fetch container stats from host agent."""
-    url = f"{AGENT_URL}/v1/service/stats"
-    headers = {"Authorization": f"Bearer {ODS_AGENT_KEY}"}
-    req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode())
-            return data.get("containers", [])
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError):
+        data = request_agent_json("GET", "/v1/service/stats", timeout=10)
+        return data.get("containers", [])
+    except (AgentClientError, OSError):
         logger.debug("Could not fetch container stats from host agent")
         return []
 
 
 def _post_agent_json(path: str, body: dict, timeout: int = 65) -> dict:
     """POST JSON to the host agent and return its JSON response."""
-    url = f"{AGENT_URL}{path}"
-    payload = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {ODS_AGENT_KEY}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode()
-            return json.loads(raw) if raw else {}
-    except json.JSONDecodeError:
-        logger.warning("Host agent returned invalid JSON for %s", path)
-        return {}
-    except urllib.error.HTTPError as exc:
-        try:
-            detail = json.loads(exc.read().decode() or "{}").get("error")
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            detail = exc.reason
-        raise HTTPException(status_code=exc.code, detail=detail or "Host agent request failed") from exc
-    except (urllib.error.URLError, OSError) as exc:
+        return request_agent_json("POST", path, payload=body, timeout=timeout)
+    except AgentHTTPError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail or "Host agent request failed",
+        ) from exc
+    except AgentUnavailable as exc:
         logger.warning("Host agent unavailable at %s: %s", path, exc)
-        raise HTTPException(status_code=503, detail="Host agent unavailable") from exc
+        raise HTTPException(status_code=503, detail=f"Host agent unavailable: {exc}") from exc
+    except AgentProtocolError as exc:
+        raise HTTPException(status_code=500, detail=f"Host agent call failed: {exc}") from exc
 
 
 @router.get("/api/services/resources")

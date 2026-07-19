@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import urllib.error
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -33,41 +32,23 @@ def test_host_agent_diagnostics_success(test_client, monkeypatch):
 
     captured = {}
 
-    class Response:
-        status = 200
+    def fake_request_json(method, path, *, timeout):
+        captured.update(method=method, path=path, timeout=timeout)
+        return {"status": "ok", "version": "1.0.0"}
 
-        def getcode(self):
-            return self.status
-
-        def read(self, limit=-1):
-            return b'{"status":"ok","version":"1.0.0"}'
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    def fake_urlopen(request, timeout):
-        captured["url"] = request.full_url
-        captured["authorization"] = request.get_header("Authorization")
-        captured["timeout"] = timeout
-        return Response()
-
-    monkeypatch.setattr(main_mod, "AGENT_URL", "http://172.18.0.1:7710")
     monkeypatch.setattr(main_mod, "AGENT_HOST", "172.18.0.1")
     monkeypatch.setattr(main_mod, "AGENT_PORT", 7710)
     monkeypatch.setattr(main_mod, "ODS_AGENT_KEY", "secret")
     monkeypatch.setattr(main_mod, "_running_inside_container", lambda: True)
     monkeypatch.setattr(main_mod, "_detect_container_default_gateway", lambda: "172.18.0.1")
     monkeypatch.setattr(main_mod, "_host_agent_probe_state", {"last_success_at": None, "last_error": None})
-    monkeypatch.setattr(main_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(main_mod, "request_agent_json", fake_request_json)
 
     resp = test_client.get("/api/host-agent/diagnostics", headers=test_client.auth_headers)
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["configured"]["url"] == "http://172.18.0.1:7710"
+    assert data["configured"]["url"] == main_mod.AGENT_URL
     assert data["configured"]["ods_agent_key_configured"] is True
     assert data["container"]["inside_container"] is True
     assert data["container"]["default_gateway"] == "172.18.0.1"
@@ -77,8 +58,8 @@ def test_host_agent_diagnostics_success(test_client, monkeypatch):
     assert data["probe"]["last_success_at"]
     assert data["probe"]["last_error"] is None
     assert captured == {
-        "url": "http://172.18.0.1:7710/health",
-        "authorization": "Bearer secret",
+        "method": "GET",
+        "path": "/health",
         "timeout": 3,
     }
 
@@ -87,7 +68,6 @@ def test_host_agent_diagnostics_omits_gateway_outside_container(test_client, mon
     """Host-side diagnostics should not report a host route as a container gateway."""
     import main as main_mod
 
-    monkeypatch.setattr(main_mod, "AGENT_URL", "http://127.0.0.1:7710")
     monkeypatch.setattr(main_mod, "AGENT_HOST", "127.0.0.1")
     monkeypatch.setattr(main_mod, "AGENT_PORT", 7710)
     monkeypatch.setattr(main_mod, "ODS_AGENT_KEY", "")
@@ -121,8 +101,8 @@ def test_host_agent_diagnostics_omits_gateway_outside_container(test_client, mon
 def test_host_agent_diagnostics_failure_keeps_last_success(test_client, monkeypatch):
     """A failed probe reports the error without discarding last success."""
     import main as main_mod
+    from host_agent_client import AgentUnavailable
 
-    monkeypatch.setattr(main_mod, "AGENT_URL", "http://172.18.0.1:7710")
     monkeypatch.setattr(main_mod, "AGENT_HOST", "172.18.0.1")
     monkeypatch.setattr(main_mod, "AGENT_PORT", 7710)
     monkeypatch.setattr(main_mod, "ODS_AGENT_KEY", "")
@@ -134,10 +114,10 @@ def test_host_agent_diagnostics_failure_keeps_last_success(test_client, monkeypa
         {"last_success_at": "2026-01-01T00:00:00+00:00", "last_error": None},
     )
 
-    def fake_urlopen(request, timeout):
-        raise urllib.error.URLError("timed out")
+    def fake_request_json(*_args, **_kwargs):
+        raise AgentUnavailable("timed out")
 
-    monkeypatch.setattr(main_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(main_mod, "request_agent_json", fake_request_json)
 
     resp = test_client.get("/api/host-agent/diagnostics", headers=test_client.auth_headers)
 

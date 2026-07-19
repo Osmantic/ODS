@@ -170,7 +170,22 @@ else
     log_warn "Docker not found — skipping container cleanup"
 fi
 
-# 2. Stop and remove systemd user services
+# 2. Stop and remove host service definitions
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    log_info "Removing macOS LaunchAgents..."
+    for _label in \
+        com.ods.llm-bridge \
+        com.ods.host-agent-bridge \
+        com.ods.host-agent \
+        com.ods.opencode-web \
+        com.ods.llama-server \
+        com.ods.full-model-download; do
+        launchctl bootout "gui/$(id -u)/${_label}" >/dev/null 2>&1 || true
+        rm -f "$HOME/Library/LaunchAgents/${_label}.plist" 2>/dev/null || true
+    done
+    unset _label
+fi
+
 log_info "Removing systemd user services..."
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 for unit in opencode-web.service openclaw-session-cleanup.timer \
@@ -258,6 +273,9 @@ if command -v pgrep >/dev/null 2>&1; then
     while IFS= read -r _pid; do
         [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
     done < <(pgrep -f "$INSTALL_DIR/bin/llama-server" 2>/dev/null || true)
+    while IFS= read -r _pid; do
+        [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
+    done < <(pgrep -f "$INSTALL_DIR/bin/ods-macos-llm-bridge.py" 2>/dev/null || true)
 fi
 if (( ${#_ods_uninstall_orphan_pids[@]} > 0 )); then
     log_info "  Sending SIGTERM to ${#_ods_uninstall_orphan_pids[@]} orphan PID(s): ${_ods_uninstall_orphan_pids[*]}"

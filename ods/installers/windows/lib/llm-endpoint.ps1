@@ -200,6 +200,7 @@ function Test-WindowsLlmModelReadiness {
         [Parameter(Mandatory = $true)] [hashtable]$Endpoint,
         [Parameter(Mandatory = $true)] [string]$InstallDir,
         [string]$GgufFile = "",
+        [string]$LemonadeModel = "",
         [int]$TimeoutSec = 120
     )
 
@@ -215,10 +216,10 @@ function Test-WindowsLlmModelReadiness {
         $result.FileExists = $true
     }
 
-    # 2. Resolve the served model id. Lemonade prefixes discovered GGUFs with
-    #    'extra.', while the native llama-server fallback serves the GGUF name
-    #    directly. Key this off the resolved endpoint, not the broader AMD GPU
-    #    family, so a valid Vulkan fallback install does not false-fail.
+    # 2. Resolve the served model id. Modern Lemonade derives IDs from its live
+    #    model catalog, while legacy releases use extra.<GGUF_FILE>. Key this off
+    #    the resolved endpoint, not the broader AMD GPU family, so a valid Vulkan
+    #    fallback install does not false-fail.
     $modelId = $GgufFile
     $isLemonadeEndpoint = $false
     if ($Endpoint.ContainsKey("Backend")) {
@@ -227,7 +228,33 @@ function Test-WindowsLlmModelReadiness {
         $isLemonadeEndpoint = ([string]$Endpoint.ApiBasePath) -eq "/api/v1"
     }
     if (-not [string]::IsNullOrWhiteSpace($GgufFile) -and $isLemonadeEndpoint) {
-        $modelId = "extra.$GgufFile"
+        $modelId = $LemonadeModel
+        if ([string]::IsNullOrWhiteSpace($modelId)) {
+            $envMap = Get-WindowsODSEnvMap -InstallDir $InstallDir
+            $modelId = Get-WindowsODSEnvValue `
+                -EnvMap $envMap -Keys @("LEMONADE_MODEL") `
+                -Default "extra.$GgufFile"
+        }
+
+        $resolver = Get-Command Resolve-ODSLemonadeModelId -ErrorAction SilentlyContinue
+        if ($resolver) {
+            $lemonadePort = 0
+            if ($Endpoint.ContainsKey("Port")) {
+                [void][int]::TryParse([string]$Endpoint.Port, [ref]$lemonadePort)
+            }
+            if ($lemonadePort -lt 1 -and $Endpoint.ContainsKey("ChatCompletionsUrl")) {
+                try { $lemonadePort = ([Uri]$Endpoint.ChatCompletionsUrl).Port } catch { }
+            }
+            if ($lemonadePort -gt 0) {
+                try {
+                    $liveModelId = Resolve-ODSLemonadeModelId `
+                        -Port $lemonadePort -GgufFile $GgufFile
+                    if (-not [string]::IsNullOrWhiteSpace($liveModelId)) {
+                        $modelId = $liveModelId
+                    }
+                } catch { }
+            }
+        }
     }
     if ([string]::IsNullOrWhiteSpace($modelId)) { $modelId = "default" }
     $result.ModelId = $modelId

@@ -52,6 +52,44 @@ grep -qF 'com.ods.full-model-download' "$installer" \
     || fail "macOS installer must unload legacy full-model-download LaunchAgent"
 pass "macOS installer clears legacy native llama LaunchAgents"
 
+bridge="$ROOT_DIR/bin/ods-macos-llm-bridge.py"
+bridge_manager="$ROOT_DIR/installers/macos/lib/bridge-manager.sh"
+env_generator="$ROOT_DIR/installers/macos/lib/env-generator.sh"
+uninstaller="$ROOT_DIR/ods-uninstall.sh"
+[[ -f "$bridge" ]] || fail "macOS Colima LLM bridge script is missing"
+[[ -f "$bridge_manager" ]] || fail "shared macOS bridge manager is missing"
+grep -qF 'ODS_MACOS_LLM_BRIDGE_ENABLED=${macos_llm_bridge_enabled}' "$env_generator" \
+    || fail "macOS env generator must enable the private LLM bridge for Colima"
+grep -qF 'ODS_NATIVE_LLAMA_PORT=${native_llama_port}' "$env_generator" \
+    || fail "macOS env generator must persist the native loopback LLM port"
+grep -qF 'ODS_MACOS_HOST_GATEWAY=${macos_host_gateway}' "$env_generator" \
+    || fail "macOS env generator must persist the private Colima host gateway"
+grep -qF 'ODS_MACOS_VM_IP=${macos_vm_ip}' "$env_generator" \
+    || fail "macOS env generator must persist the authorized Colima VM peer"
+grep -qF 'colima start --network-address --network-preferred-route' "$installer" \
+    || fail "macOS installer must prefer Colima private vmnet routing"
+grep -qF '_configure_macos_llm_bridge' "$installer" \
+    || fail "macOS installer must launch the Colima LLM bridge before native llama"
+grep -qF '_configure_macos_host_agent_bridge' "$installer" \
+    || fail "macOS installer must bridge dashboard actions to the loopback host agent"
+grep -qF 'source "${LIB_DIR}/bridge-manager.sh"' "$installer" \
+    || fail "macOS installer must source the shared bridge manager"
+grep -qF 'source "${LIB_DIR}/bridge-manager.sh"' "$cli" \
+    || fail "macOS CLI must source the shared bridge manager"
+grep -qF 'macos_configure_llm_bridge_from_env' "$bridge_manager" \
+    || fail "shared bridge manager must derive LLM bridge state from .env"
+grep -qF -- '--allow-peer' "$bridge_manager" \
+    || fail "shared bridge manager must scope host bridges to the Colima VM peer"
+grep -qF 'ODS_NATIVE_LLAMA_PORT' "$bootstrap" \
+    || fail "bootstrap hot-swap must preserve the private native llama port"
+grep -qF 'ODS_NATIVE_LLAMA_PORT' "$cli" \
+    || fail "macOS CLI must preserve the private native llama port"
+grep -qF 'com.ods.llm-bridge' "$uninstaller" \
+    || fail "uninstaller must remove the Colima LLM bridge LaunchAgent"
+grep -qF 'com.ods.host-agent-bridge' "$uninstaller" \
+    || fail "uninstaller must remove the Colima host-agent bridge LaunchAgent"
+pass "macOS Colima bridge lifecycle is wired through install, swap, CLI, and uninstall"
+
 grep -qF 'Full model downloaded and verified, but native macOS llama-server did not load it after swap' "$bootstrap" \
     || fail "macOS native hot-swap failure must persist an honest failed status"
 grep -qF 'write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES"' "$bootstrap" \

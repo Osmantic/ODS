@@ -11,8 +11,6 @@ import stat
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -22,10 +20,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from config import (
-    AGENT_URL, ALWAYS_ON_SERVICES, CORE_SERVICE_IDS, DATA_DIR,
-    ODS_AGENT_KEY, EXTENSION_CATALOG, EXTENSIONS_DIR,
+    ALWAYS_ON_SERVICES, CORE_SERVICE_IDS, DATA_DIR,
+    EXTENSION_CATALOG, EXTENSIONS_DIR,
     EXTENSIONS_LIBRARY_DIR, GPU_BACKEND, SERVICES,
     USER_EXTENSIONS_DIR,
+)
+from host_agent_client import (
+    AgentClientError,
+    AgentHTTPError,
+    AgentProtocolError,
+    AgentUnavailable,
+    request_json as request_agent_json,
+    request_text as request_agent_text,
 )
 from security import verify_api_key
 
@@ -642,16 +648,18 @@ _AGENT_TIMEOUT = 300  # seconds — image pulls can take several minutes on firs
 _AGENT_LOG_TIMEOUT = 30  # seconds — log fetches should be fast
 
 
-def _fetch_agent_logs(url: str, headers: dict, data: bytes, timeout: int) -> str:
+def _fetch_agent_logs(service_id: str, timeout: int) -> str:
     """Blocking POST to host agent that returns the response body as text.
 
-    Extracted so async handlers can offload the urllib call via
-    ``asyncio.to_thread``. urllib.error.HTTPError / URLError raised inside
-    propagate back to the caller and are handled there.
+    Extracted so async handlers can offload the blocking pooled request via
+    ``asyncio.to_thread``. Typed transport errors propagate to the caller.
     """
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode()
+    return request_agent_text(
+        "POST",
+        "/v1/service/logs",
+        payload={"service_id": service_id, "tail": 100},
+        timeout=timeout,
+    )
 
 
 def _call_agent(action: str, service_id: str) -> bool:
@@ -661,39 +669,35 @@ def _call_agent(action: str, service_id: str) -> bool:
     background retry — caller should let the dashboard's progress poll surface
     the eventual outcome). Mirrors _call_agent_install's contract.
     """
-    url = f"{AGENT_URL}/v1/extension/{action}"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"service_id": service_id}).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=_AGENT_TIMEOUT) as resp:
-            return resp.status in (200, 202)
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError) as exc:
+        request_agent_json(
+            "POST",
+            f"/v1/extension/{action}",
+            payload={"service_id": service_id},
+            timeout=_AGENT_TIMEOUT,
+        )
+        return True
+    except AgentClientError as exc:
         logger.warning(
             "Host agent unreachable at %s — fallback to restart_required: %s",
-            AGENT_URL, exc,
+            "shared transport", exc,
         )
         return False
 
 
 def _call_agent_invalidate_compose_cache() -> None:
     """Ask host agent to drop the .compose-flags cache after a compose mutation."""
-    url = f"{AGENT_URL}/v1/compose/invalidate-cache"
-    headers = {"Authorization": f"Bearer {ODS_AGENT_KEY}"}
-    req = urllib.request.Request(url, data=b"", headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=_AGENT_LOG_TIMEOUT) as resp:
-            if resp.status != 200:
-                logger.warning(
-                    "compose-flags cache invalidation returned HTTP %d", resp.status,
-                )
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError) as exc:
+        request_agent_json(
+            "POST",
+            "/v1/compose/invalidate-cache",
+            payload={},
+            timeout=_AGENT_LOG_TIMEOUT,
+        )
+    except AgentClientError as exc:
         logger.warning(
             "Host agent unreachable for compose-flags invalidation at %s: %s",
-            AGENT_URL, exc,
+            "shared transport", exc,
         )
 
 
@@ -708,49 +712,43 @@ def _call_agent_setup_hook(service_id: str) -> bool:
 
 def _call_agent_hook(service_id: str, hook_name: str) -> bool:
     """Call host agent to run a lifecycle hook. Returns True on success."""
-    url = f"{AGENT_URL}/v1/extension/hooks"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"service_id": service_id, "hook": hook_name}).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=_AGENT_TIMEOUT) as resp:
-            return resp.status == 200
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
+        request_agent_json(
+            "POST",
+            "/v1/extension/hooks",
+            payload={"service_id": service_id, "hook": hook_name},
+            timeout=_AGENT_TIMEOUT,
+        )
+        return True
+    except AgentHTTPError as exc:
+        if exc.status_code == 404:
             # No hook defined — not an error
             return True
-        logger.warning("%s hook failed for %s (HTTP %d)", hook_name, service_id, exc.code)
+        logger.warning(
+            "%s hook failed for %s (HTTP %d)", hook_name, service_id, exc.status_code
+        )
         return False
-    except (urllib.error.URLError, OSError, TimeoutError):
-        logger.warning("Host agent unreachable for %s hook at %s", hook_name, AGENT_URL)
+    except AgentClientError:
+        logger.warning("Host agent unreachable for %s hook", hook_name)
         return False
 
 
 def _call_agent_install(service_id: str) -> bool:
     """Call host agent combined install endpoint."""
-    url = f"{AGENT_URL}/v1/extension/install"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({
-        "service_id": service_id,
-        "run_setup_hook": True,
-    }).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=_AGENT_TIMEOUT) as resp:
-            return resp.status in (200, 202)
-    except urllib.error.HTTPError as exc:
-        logger.warning("Host agent install failed for %s (HTTP %d)", service_id, exc.code)
+        request_agent_json(
+            "POST",
+            "/v1/extension/install",
+            payload={"service_id": service_id, "run_setup_hook": True},
+            timeout=_AGENT_TIMEOUT,
+        )
+        return True
+    except AgentHTTPError as exc:
+        logger.warning(
+            "Host agent install failed for %s (HTTP %d)", service_id, exc.status_code
+        )
         return False
-    except urllib.error.URLError as exc:
-        logger.warning("Host agent unreachable for install at %s: %s", AGENT_URL, exc.reason)
-        return False
-    except OSError as exc:
+    except AgentClientError as exc:
         logger.warning("Host agent install error for %s: %s", service_id, exc)
         return False
 
@@ -766,25 +764,21 @@ def _call_agent_sync_config(service_id: str) -> bool:
     extension has no shipped config), False if the agent rejected or
     was unreachable.
     """
-    url = f"{AGENT_URL}/v1/extension/sync_config"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"service_id": service_id}).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=_AGENT_TIMEOUT) as resp:
-            return resp.status == 200
-    except urllib.error.HTTPError as exc:
+        request_agent_json(
+            "POST",
+            "/v1/extension/sync_config",
+            payload={"service_id": service_id},
+            timeout=_AGENT_TIMEOUT,
+        )
+        return True
+    except AgentHTTPError as exc:
         logger.warning(
-            "sync_config failed for %s (HTTP %d)", service_id, exc.code,
+            "sync_config failed for %s (HTTP %d)", service_id, exc.status_code,
         )
         return False
-    except (urllib.error.URLError, OSError, TimeoutError):
-        logger.warning(
-            "Host agent unreachable for sync_config at %s", AGENT_URL,
-        )
+    except AgentClientError:
+        logger.warning("Host agent unreachable for sync_config")
         return False
 
 
@@ -794,19 +788,17 @@ def _call_agent_compose_rename(action: str, service_id: str) -> bool:
     Used for built-in extensions where the extensions mount is read-only.
     action must be 'activate' or 'deactivate'.
     """
-    url = f"{AGENT_URL}/v1/extension/{action}"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"service_id": service_id}).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=_AGENT_LOG_TIMEOUT) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError) as exc:
+        request_agent_json(
+            "POST",
+            f"/v1/extension/{action}",
+            payload={"service_id": service_id},
+            timeout=_AGENT_LOG_TIMEOUT,
+        )
+        return True
+    except AgentClientError as exc:
         logger.warning(
-            "Host agent unreachable for compose rename at %s: %s", AGENT_URL, exc,
+            "Host agent unreachable for compose rename: %s", exc,
         )
         return False
 
@@ -823,10 +815,9 @@ def _check_agent_health() -> bool:
             return _agent_cache["available"]
     # Check outside lock to avoid holding it during network I/O
     try:
-        req = urllib.request.Request(f"{AGENT_URL}/health")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            available = resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError):
+        request_agent_json("GET", "/health", timeout=3)
+        available = True
+    except AgentClientError:
         available = False
     with _agent_cache_lock:
         _agent_cache.update(available=available, checked_at=time.monotonic())
@@ -1143,29 +1134,20 @@ async def extension_logs(
     if not _SERVICE_ID_RE.match(service_id):
         raise HTTPException(status_code=404, detail=f"Invalid service_id: {service_id}")
 
-    url = f"{AGENT_URL}/v1/service/logs"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"service_id": service_id, "tail": 100}).encode()
     try:
         body = await asyncio.to_thread(
-            _fetch_agent_logs, url, headers, data, _AGENT_LOG_TIMEOUT,
+            _fetch_agent_logs, service_id, _AGENT_LOG_TIMEOUT,
         )
         return json.loads(body)
-    except urllib.error.HTTPError as exc:
-        try:
-            err_body = json.loads(exc.read().decode())
-            detail = err_body.get("error", f"Host agent error: HTTP {exc.code}")
-        except (json.JSONDecodeError, OSError):
-            detail = f"Host agent returned HTTP {exc.code}"
-        raise HTTPException(status_code=502, detail=detail)
-    except (urllib.error.URLError, OSError):
+    except AgentHTTPError as exc:
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
+    except AgentUnavailable as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Host agent unavailable. Use 'docker logs ods-{service_id}' in terminal.",
-        )
+        ) from exc
+    except (AgentProtocolError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail=f"Invalid host agent response: {exc}") from exc
 
 
 def _install_from_library(service_id: str) -> None:
