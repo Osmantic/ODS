@@ -38,6 +38,10 @@ from urllib.parse import parse_qs, urlparse
 VERSION = "1.0.0"
 ODS_VERSION = VERSION
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+# backup_id is interpolated into a backup directory name by ods-update.sh
+# (BACKUP_DIR/backup-<backup_id>-<ts>). Restrict it to a plain label so it can
+# never contain a path separator or ".." and escape BACKUP_DIR.
+BACKUP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MAX_BODY = 16384
 SUBPROCESS_TIMEOUT_START = 600  # 10 min — image pulls can be slow
 SUBPROCESS_TIMEOUT_STOP = 120   # 2 min — stop should be fast
@@ -1714,6 +1718,9 @@ class AgentHandler(BaseHTTPRequestHandler):
             backup_id = body.get("backup_id")
             if not isinstance(backup_id, str) or not backup_id.strip():
                 backup_id = f"dashboard-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            elif not BACKUP_ID_RE.match(backup_id.strip()):
+                json_response(self, 400, {"error": "Invalid backup_id"})
+                return
             self._handle_update_backup(backup_id.strip())
         elif endpoint_action == "start":
             self._handle_update_start()
