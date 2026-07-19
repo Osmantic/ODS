@@ -110,7 +110,7 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
     from helpers import get_cached_services, get_all_services
     from routers.extensions import (
         _activate_service, _extensions_lock, _call_agent, _call_agent_hook,
-        _get_missing_deps_transitive, _validate_service_id,
+        _get_missing_deps_transitive, _read_direct_deps, _validate_service_id,
         _install_from_library, _is_installable,
         _call_agent_invalidate_compose_cache,
     )
@@ -129,7 +129,17 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
         with _extensions_lock():
             for dep in missing_deps:
                 if dep in prior_results:
-                    continue
+                    prior_outcome = prior_results[dep]
+                    prior_succeeded = prior_outcome in {
+                        "already_enabled", "core_service", "enabled",
+                        "enabled_as_dependency", "library_installed",
+                    }
+                    if prior_succeeded:
+                        continue
+                    raise HTTPException(
+                        status_code=424,
+                        detail=f"Dependency {dep} was not enabled: {prior_outcome}",
+                    )
                 dep_result = _activate_service(dep)
                 if dep_result.get("action") == "enabled":
                     deps_enabled.append(dep)
@@ -226,6 +236,16 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
     # but stopped until a manual full-stack restart.
     failed_services: list[str] = []
     for svc_id in enabled_services:
+        direct_deps = await asyncio.to_thread(_read_direct_deps, svc_id)
+        blocked_deps = [dep for dep in direct_deps if dep in failed_services]
+        if blocked_deps:
+            results[svc_id] = "enabled_but_dependency_failed"
+            failed_services.append(svc_id)
+            warnings.append(
+                f"{svc_id}: not started because dependencies failed: {', '.join(blocked_deps)}",
+            )
+            continue
+
         pre_start_ok = await asyncio.to_thread(_call_agent_hook, svc_id, "pre_start")
         if not pre_start_ok:
             results[svc_id] = "enabled_but_pre_start_failed"

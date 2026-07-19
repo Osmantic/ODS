@@ -1,6 +1,6 @@
 """Tests for service template loading, preview, and apply."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import yaml
@@ -507,6 +507,94 @@ async def test_template_apply_does_not_start_after_pre_start_failure(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_template_apply_skips_dependent_after_prior_activation_failure(tmp_path):
+    """A prior failed dependency result cannot be treated as satisfied."""
+    from fastapi import HTTPException
+
+    mock_templates = [{
+        "id": "test-tmpl",
+        "name": "Test",
+        "services": ["dep-svc", "child-svc"],
+    }]
+
+    def mock_activate(service_id):
+        if service_id == "dep-svc":
+            raise HTTPException(status_code=400, detail="dependency config invalid")
+        return {"id": service_id, "action": "enabled"}
+
+    def mock_missing_deps(service_id):
+        return ["dep-svc"] if service_id == "child-svc" else []
+
+    mock_lock = MagicMock()
+    mock_lock.__enter__ = MagicMock(return_value=None)
+    mock_lock.__exit__ = MagicMock(return_value=False)
+
+    with (
+        patch("routers.templates.TEMPLATES", mock_templates),
+        patch("routers.templates._BASE_COMPOSE_SERVICES", frozenset()),
+        patch("routers.templates.USER_EXTENSIONS_DIR", tmp_path / "user-ext"),
+        patch("helpers.get_cached_services", return_value=[]),
+        patch("routers.extensions._activate_service", side_effect=mock_activate),
+        patch("routers.extensions._extensions_lock", return_value=mock_lock),
+        patch("routers.extensions._get_missing_deps_transitive", side_effect=mock_missing_deps),
+        patch("routers.extensions._call_agent", return_value=True),
+        patch("routers.extensions._call_agent_hook", return_value=True),
+        patch("routers.extensions._read_direct_deps", return_value=[]),
+        patch("routers.extensions._validate_service_id"),
+    ):
+        from routers.templates import apply_template
+        result = await apply_template("test-tmpl", api_key="test")
+
+    assert "dependency config invalid" in result["results"]["dep-svc"]
+    assert "Dependency dep-svc was not enabled" in result["results"]["child-svc"]
+    assert result["enabled_count"] == 0
+    assert result["skipped_services"] == ["dep-svc", "child-svc"]
+
+
+@pytest.mark.asyncio
+async def test_template_apply_does_not_start_dependent_after_runtime_failure(tmp_path):
+    """A child is not started after its activated dependency fails at runtime."""
+    mock_templates = [{
+        "id": "test-tmpl",
+        "name": "Test",
+        "services": ["dep-svc", "child-svc"],
+    }]
+    mock_activate = MagicMock(side_effect=lambda service_id: {
+        "id": service_id,
+        "action": "enabled",
+    })
+    mock_agent = MagicMock(side_effect=lambda action, service_id: service_id != "dep-svc")
+    mock_lock = MagicMock()
+    mock_lock.__enter__ = MagicMock(return_value=None)
+    mock_lock.__exit__ = MagicMock(return_value=False)
+
+    with (
+        patch("routers.templates.TEMPLATES", mock_templates),
+        patch("routers.templates._BASE_COMPOSE_SERVICES", frozenset()),
+        patch("routers.templates.USER_EXTENSIONS_DIR", tmp_path / "user-ext"),
+        patch("helpers.get_cached_services", return_value=[]),
+        patch("routers.extensions._activate_service", mock_activate),
+        patch("routers.extensions._extensions_lock", return_value=mock_lock),
+        patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
+        patch("routers.extensions._call_agent", mock_agent),
+        patch("routers.extensions._call_agent_hook", return_value=True),
+        patch(
+            "routers.extensions._read_direct_deps",
+            side_effect=lambda service_id: ["dep-svc"] if service_id == "child-svc" else [],
+        ),
+        patch("routers.extensions._validate_service_id"),
+    ):
+        from routers.templates import apply_template
+        result = await apply_template("test-tmpl", api_key="test")
+
+    assert mock_agent.call_args_list == [call("start", "dep-svc")]
+    assert result["results"]["dep-svc"] == "enabled_but_start_failed"
+    assert result["results"]["child-svc"] == "enabled_but_dependency_failed"
+    assert result["failed_services"] == ["dep-svc", "child-svc"]
+    assert result["started_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_template_apply_auto_installs_library_extension(tmp_path):
     """Apply copies a library extension into USER_EXTENSIONS_DIR before activating it."""
     mock_templates = [{
@@ -819,6 +907,7 @@ def test_apply_template_blocking_calls_run_in_to_thread():
         "_call_agent",
         "_call_agent_invalidate_compose_cache",
         "_get_missing_deps_transitive",
+        "_read_direct_deps",
         "_install_from_library",
         "_install_with_lock",
         "_activate_with_lock",
@@ -874,6 +963,7 @@ def test_apply_template_blocking_calls_run_in_to_thread():
         "_call_agent_hook",
         "_call_agent",
         "_get_missing_deps_transitive",
+        "_read_direct_deps",
         "_install_with_lock",
         "_activate_with_lock",
     }
