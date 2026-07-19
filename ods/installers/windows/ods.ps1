@@ -16,8 +16,9 @@
 #   .\ods.ps1 update              # Pull latest images and restart
 #   .\ods.ps1 doctor              # Diagnose runtime readiness
 #   .\ods.ps1 repair voice        # Repair voice/STT/TTS readiness
-#   .\ods.ps1 enable <service>    # Enable an extension service
+#   .\ods.ps1 enable <service>    # Enable an extension service (+ its dependencies)
 #   .\ods.ps1 disable <service>   # Disable an extension service
+#   .\ods.ps1 disable <svc> -Force # Disable even when other extensions depend on it
 #   .\ods.ps1 report              # Generate Windows diagnostics bundle
 #   .\ods.ps1 version             # Show version
 #   .\ods.ps1 help                # Show help
@@ -1852,6 +1853,94 @@ function Get-ExtensionCategory {
     return ""
 }
 
+function Get-ExtensionDependencies {
+    <#
+    .SYNOPSIS
+        Read the depends_on list from manifest.yaml for a service directory.
+        Returns an empty array when the key is absent, empty, or unreadable.
+    #>
+    param([Parameter(Mandatory=$true)][string]$ServiceDir)
+
+    foreach ($manifestName in @("manifest.yaml", "manifest.yml")) {
+        $manifestPath = Join-Path $ServiceDir $manifestName
+        if (-not (Test-Path $manifestPath)) { continue }
+        # A prose comment that merely mentions depends_on starts with '#', so
+        # anchoring the match to the key skips it.
+        $line = Get-Content $manifestPath -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match "^\s*depends_on:" } |
+            Select-Object -First 1
+        if (-not $line) { return @() }
+        # Manifests declare deps in YAML flow style: depends_on: [a, b]
+        if ($line -notmatch "\[(.*)\]") { return @() }
+        $inner = $Matches[1].Trim()
+        if (-not $inner) { return @() }
+        return @(
+            $inner -split "," |
+                ForEach-Object { $_.Trim().Trim('"').Trim("'") } |
+                Where-Object { $_ }
+        )
+    }
+    return @()
+}
+
+function Get-DisabledDependencies {
+    <#
+    .SYNOPSIS
+        Extension dependencies of $ServiceId that are currently disabled.
+
+        Core services are skipped: their compose lives in docker-compose.base.yml,
+        so they are always in the merged project and never carry a compose.yaml
+        of their own. Ids with no service directory are skipped too -- there is
+        nothing to enable.
+
+        Only a service holding a compose.yaml.disabled counts as disabled. A
+        service with neither fragment (e.g. opencode) cannot be enabled by a
+        rename, and reporting it here would abort the caller's enable.
+    #>
+    param([Parameter(Mandatory=$true)][string]$ServiceId)
+
+    $svcDir = Get-ExtensionServiceDir -ServiceId $ServiceId
+    if (-not $svcDir) { return @() }
+
+    $missing = @()
+    foreach ($dep in @(Get-ExtensionDependencies -ServiceDir $svcDir)) {
+        $depDir = Get-ExtensionServiceDir -ServiceId $dep
+        if (-not $depDir) { continue }
+        if ((Get-ExtensionCategory -ServiceDir $depDir) -eq "core") { continue }
+        if (Test-Path (Join-Path $depDir "compose.yaml")) { continue }
+        if (Test-Path (Join-Path $depDir "compose.yaml.disabled")) { $missing += $dep }
+    }
+    return $missing
+}
+
+function Get-EnabledDependents {
+    <#
+    .SYNOPSIS
+        Enabled extensions whose manifest declares $ServiceId in depends_on.
+
+        Compose rejects a project whose depends_on names a service the merged
+        files never define ("depends on undefined service"), so a dependent left
+        enabled after its dependency is disabled breaks every service in the
+        stack, not just itself.
+    #>
+    param([Parameter(Mandatory=$true)][string]$ServiceId)
+
+    $extDir = Join-Path (Join-Path $InstallDir "extensions") "services"
+    if (-not (Test-Path $extDir)) { return @() }
+
+    $dependents = @()
+    foreach ($dir in @(Get-ChildItem -LiteralPath $extDir -Directory -ErrorAction SilentlyContinue)) {
+        if ($dir.Name -eq $ServiceId) { continue }
+        # No compose.yaml means the extension is disabled -- it contributes no
+        # depends_on to the merged project.
+        if (-not (Test-Path (Join-Path $dir.FullName "compose.yaml"))) { continue }
+        if (@(Get-ExtensionDependencies -ServiceDir $dir.FullName) -contains $ServiceId) {
+            $dependents += $dir.Name
+        }
+    }
+    return $dependents
+}
+
 function Test-ODSInstallFiles {
     <#
     .SYNOPSIS
@@ -1871,23 +1960,40 @@ function Test-ODSInstallFiles {
     }
 }
 
+# Services already visited by the current 'enable' invocation, so a manifest
+# cycle cannot recurse forever.
+$script:_EnableVisited = @()
+
 function Invoke-Enable {
     <#
     .SYNOPSIS
         Enable an extension service -- mirrors 'ods enable <service>' from the Linux CLI.
         Renames compose.yaml.disabled back to compose.yaml and regenerates .compose-flags.
+        Disabled extension dependencies are enabled first so the merged compose
+        project never names a service it does not define.
         Does NOT require Docker Desktop to be running (file-only operation).
     #>
-    param([string]$ServiceId)
+    param(
+        [string]$ServiceId,
+        # Set on the recursive dependency calls: the install check and the
+        # visited-set reset already ran for the service the operator named.
+        [switch]$AsDependency
+    )
 
-    # Validate install files only -- Docker is not needed to rename a compose fragment.
-    Test-ODSInstallFiles
+    if (-not $AsDependency) {
+        # Validate install files only -- Docker is not needed to rename a compose fragment.
+        Test-ODSInstallFiles
+        $script:_EnableVisited = @()
+    }
 
     if ([string]::IsNullOrWhiteSpace($ServiceId)) {
         Write-AIError "Usage: .\ods.ps1 enable <service>"
         Write-AI "Example: .\ods.ps1 enable comfyui"
         exit 1
     }
+
+    if ($script:_EnableVisited -contains $ServiceId) { return }
+    $script:_EnableVisited += $ServiceId
 
     $svcDir = Get-ExtensionServiceDir -ServiceId $ServiceId
     if (-not $svcDir) {
@@ -1900,6 +2006,19 @@ function Invoke-Enable {
     if ($category -eq "core") {
         Write-AISuccess "$ServiceId is a core service (always enabled)."
         return
+    }
+
+    # Pull in disabled dependencies before touching this service's fragment.
+    # This runs ahead of the already-enabled check on purpose: an operator whose
+    # stack is already broken (dependent enabled, dependency not) repairs it by
+    # re-running enable on the dependent.
+    $missingDeps = @(Get-DisabledDependencies -ServiceId $ServiceId)
+    if ($missingDeps.Count -gt 0) {
+        Write-AIWarn "$ServiceId depends on disabled services: $($missingDeps -join ', ')"
+        foreach ($dep in $missingDeps) {
+            Write-AI "Enabling dependency: $dep"
+            Invoke-Enable -ServiceId $dep -AsDependency
+        }
     }
 
     $composePath  = Join-Path $svcDir "compose.yaml"
@@ -1931,8 +2050,16 @@ function Invoke-Disable {
         Stops the running container when Docker is available, then renames
         compose.yaml to compose.yaml.disabled and regenerates .compose-flags.
         The file/cache changes always run even when Docker Desktop is offline.
+
+        Refuses when another enabled extension declares this service in its
+        manifest depends_on, unless -Force is passed.
     #>
-    param([string]$ServiceId)
+    param(
+        [string]$ServiceId,
+        # Disable anyway, leaving the dependents pointing at a service the
+        # merged compose project no longer defines.
+        [switch]$Force
+    )
 
     # Validate install files only -- Docker stop is best-effort below.
     Test-ODSInstallFiles
@@ -1967,6 +2094,23 @@ function Invoke-Disable {
     if (-not (Test-Path $composePath)) {
         Write-AIError "No compose fragment found for '$ServiceId'."
         exit 1
+    }
+
+    # Compose validates depends_on against the merged project, so an enabled
+    # dependent whose dependency just vanished takes down every service, not
+    # just itself. Refuse by default; -Force is the operator's escape hatch.
+    $dependents = @(Get-EnabledDependents -ServiceId $ServiceId)
+    if ($dependents.Count -gt 0) {
+        if (-not $Force) {
+            Write-AIError "These enabled extensions depend on ${ServiceId}: $($dependents -join ', ')"
+            Write-AI "Disabling $ServiceId now would make '.\ods.ps1 start' fail for the whole stack."
+            Write-AI "Disable them first, or re-run with -Force to proceed anyway:"
+            Write-AI "  .\ods.ps1 disable $($dependents[0])"
+            Write-AI "  .\ods.ps1 disable $ServiceId -Force"
+            exit 1
+        }
+        Write-AIWarn "Forcing disable. Still enabled and depending on ${ServiceId}: $($dependents -join ', ')"
+        Write-AIWarn "'.\ods.ps1 start' will fail until those extensions are disabled too."
     }
 
     # Best-effort container stop -- skip gracefully when Docker Desktop is
@@ -2023,9 +2167,9 @@ function Show-Help {
     Write-Host "    repair voice        " -ForegroundColor Cyan -NoNewline
     Write-Host "Start voice services and cache STT model" -ForegroundColor DarkGray
     Write-Host "    enable <service>    " -ForegroundColor Cyan -NoNewline
-    Write-Host "Enable an extension service (e.g. comfyui, langfuse)" -ForegroundColor DarkGray
+    Write-Host "Enable an extension service and its dependencies" -ForegroundColor DarkGray
     Write-Host "    disable <service>   " -ForegroundColor Cyan -NoNewline
-    Write-Host "Disable an extension service" -ForegroundColor DarkGray
+    Write-Host "Disable an extension service (-Force skips the dependent check)" -ForegroundColor DarkGray
     Write-Host "    agent [action]      " -ForegroundColor Cyan -NoNewline
     Write-Host "Host agent: status|start|stop|restart|logs" -ForegroundColor DarkGray
     Write-Host "    report              " -ForegroundColor Cyan -NoNewline
@@ -2042,6 +2186,7 @@ function Show-Help {
     Write-Host "    .\ods.ps1 repair voice" -ForegroundColor DarkGray
     Write-Host "    .\ods.ps1 enable comfyui" -ForegroundColor DarkGray
     Write-Host "    .\ods.ps1 disable langfuse" -ForegroundColor DarkGray
+    Write-Host "    .\ods.ps1 disable hermes -Force" -ForegroundColor DarkGray
     Write-Host "    .\ods.ps1 chat `"What is quantum computing?`"" -ForegroundColor DarkGray
     Write-Host ""
 }
@@ -2049,6 +2194,35 @@ function Show-Help {
 # ============================================================================
 # Command Dispatch
 # ============================================================================
+
+function Get-ServiceIdArgument {
+    <#
+    .SYNOPSIS
+        First non-flag token, so 'disable -Force hermes' and 'disable hermes -Force'
+        both resolve the service id.
+    #>
+    param([string[]]$Arguments)
+
+    if (-not $Arguments) { return $null }
+    foreach ($arg in $Arguments) {
+        if ($arg -notmatch '^-') { return $arg }
+    }
+    return $null
+}
+
+function Test-ForceArgument {
+    <#
+    .SYNOPSIS
+        True when the operator passed -Force / --force among the trailing args.
+    #>
+    param([string[]]$Arguments)
+
+    if (-not $Arguments) { return $false }
+    foreach ($arg in $Arguments) {
+        if ($arg -eq "-Force" -or $arg -eq "--force") { return $true }
+    }
+    return $false
+}
 
 switch ($Command.ToLower()) {
     "status"  { Invoke-Status }
@@ -2086,8 +2260,8 @@ switch ($Command.ToLower()) {
     "update"  { Invoke-Update }
     "doctor"  { Invoke-Doctor }
     "repair"  { Invoke-Repair -Target ($Arguments | Select-Object -First 1) }
-    "enable"  { Invoke-Enable -ServiceId ($Arguments | Select-Object -First 1) }
-    "disable" { Invoke-Disable -ServiceId ($Arguments | Select-Object -First 1) }
+    "enable"  { Invoke-Enable -ServiceId (Get-ServiceIdArgument -Arguments $Arguments) }
+    "disable" { Invoke-Disable -ServiceId (Get-ServiceIdArgument -Arguments $Arguments) -Force:(Test-ForceArgument -Arguments $Arguments) }
     "report"  { Invoke-Report }
     "agent"   {
         $action = ($Arguments | Select-Object -First 1)
