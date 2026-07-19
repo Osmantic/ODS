@@ -404,6 +404,9 @@ def main() -> int:
     args = parser.parse_args()
 
     catalog = load_catalog(args.catalog)
+    if not catalog:
+        print("error: model catalog is empty (no usable models)", file=sys.stderr)
+        return 1
     profile = effective_profile(normalize_profile(args.profile), args.backend, args.tier)
     capacity_gb, memory_label = usable_memory_gb(args.backend, args.memory_type, args.vram_mb, args.ram_gb)
     confidence = "high" if args.backend not in {"unknown", "none"} and capacity_gb > 0 else "medium"
