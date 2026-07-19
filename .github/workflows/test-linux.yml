@@ -135,7 +135,9 @@ jobs:
           python3 tests/contracts/test-network-exposure-contracts.py
 
       - name: Linux install preflight tests
-        run: bash tests/test-linux-install-preflight.sh
+        run: |
+          bash tests/test-linux-install-preflight.sh
+          bash tests/test-preflight-dashboard-port.sh
 
       - name: Installer Simulation Harness
         run: |
