@@ -203,6 +203,34 @@ _ods_cli_bootstrap_active_status_settled() {
     return 0
 }
 
+_ods_cli_bootstrap_download_near_swap() {
+    local model percent percent_int downloaded total remaining threshold
+    model="$(_ods_cli_bootstrap_status_field model)"
+    [[ -n "$model" ]] || return 1
+    _ods_cli_bootstrap_upgrade_process_running "$model" || return 1
+
+    threshold="${ODS_CLI_BOOTSTRAP_COMPOSE_DOWNLOAD_WAIT_BYTES:-1073741824}"
+    if ! [[ "$threshold" =~ ^[0-9]+$ ]]; then
+        threshold=1073741824
+    fi
+
+    downloaded="$(_ods_cli_bootstrap_status_number bytesDownloaded)"
+    total="$(_ods_cli_bootstrap_status_number bytesTotal)"
+    if [[ "$downloaded" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ ]] && (( total > 0 )); then
+        remaining=$(( total - downloaded ))
+        (( remaining < 0 )) && remaining=0
+        (( remaining <= threshold )) && return 0
+    fi
+
+    percent="$(_ods_cli_bootstrap_status_number percent)"
+    percent_int="${percent%%.*}"
+    if [[ "$percent_int" =~ ^[0-9]+$ ]] && (( percent_int >= 95 )); then
+        return 0
+    fi
+
+    return 1
+}
+
 _ods_cli_wait_for_bootstrap_compose_safe() {
     local action="${1:-service operation}"
     local status_file="$INSTALL_DIR/data/bootstrap-status.json"
@@ -221,7 +249,31 @@ _ods_cli_wait_for_bootstrap_compose_safe() {
     while true; do
         status="$(_ods_cli_bootstrap_status)"
         case "$status" in
-            downloading|starting|verifying|swapping)
+            downloading)
+                if _ods_cli_bootstrap_active_status_settled "$status"; then
+                    if [[ "$announced" == "true" ]]; then
+                        log "  Model Upgrade: stale $status status already settled; continuing with $action"
+                    else
+                        warn "Model upgrade status is stale ($status) but the full model is already configured; continuing with $action."
+                    fi
+                    return 0
+                fi
+                if ! _ods_cli_bootstrap_download_near_swap; then
+                    log "  Model Upgrade: downloading in background; continuing with $action before hot-swap begins"
+                    return 0
+                fi
+                if [[ "$announced" == "false" ]]; then
+                    log "  Model Upgrade: download nearly complete; waiting before $action touches llama-server"
+                    announced=true
+                fi
+                if (( waited >= max_wait )); then
+                    warn "Model upgrade is still $status after ${max_wait}s; refusing to run $action against an active hot-swap."
+                    return 1
+                fi
+                sleep "$interval"
+                waited=$(( waited + interval ))
+                ;;
+            starting|verifying|swapping)
                 if _ods_cli_bootstrap_active_status_settled "$status"; then
                     if [[ "$announced" == "true" ]]; then
                         log "  Model Upgrade: stale $status status already settled; continuing with $action"
