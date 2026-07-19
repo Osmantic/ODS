@@ -191,6 +191,11 @@ Write-ODSBanner
 #  Phase 06 → $envResult (SearxngSecret, OpenclawToken)
 #  Phase 07 → (no output -- tools installed to $env:USERPROFILE)
 
+# Phases signal a fatal, already-explained failure by throwing the
+# ODS_INSTALL_ABORTED sentinel. `exit 1` inside a dot-sourced file does NOT
+# stop this orchestrator (PowerShell resumes at the next statement), which
+# previously let later phases run against half-initialized state.
+try {
 . (Join-Path $PhasesDir "01-preflight.ps1")
 . (Join-Path $PhasesDir "02-detection.ps1")
 . (Join-Path $PhasesDir "03-features.ps1")
@@ -210,6 +215,10 @@ if ($gpuInfo.Backend -eq "amd") {
 }
 . (Join-Path $PhasesDir "06-directories.ps1")
 . (Join-Path $PhasesDir "07-devtools.ps1")
+} catch {
+    if ($_.FullyQualifiedErrorId -eq "ODS_INSTALL_ABORTED") { exit 1 }
+    throw
+}
 
 # ============================================================================
 # PHASE 8 -- LAUNCH (download model, start Docker services)

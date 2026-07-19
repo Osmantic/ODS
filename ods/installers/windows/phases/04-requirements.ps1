@@ -287,7 +287,7 @@ if (-not $requirementsMet) {
         $continueChoice = Read-Host "  Continue anyway? [y/N]"
         if ($continueChoice -notmatch "^[yY]") {
             Write-AI "Resolve the issues above and re-run the installer."
-            exit 1
+            throw "ODS_INSTALL_ABORTED"
         }
     }
 } else {
