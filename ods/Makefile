@@ -29,6 +29,7 @@ test: ## Run unit and contract tests
 	@echo "=== Installer contracts ==="
 	@bash tests/contracts/test-installer-contracts.sh
 	@bash tests/contracts/test-preflight-fixtures.sh
+	@bash tests/test-preflight-resolver-bug.sh
 	@bash tests/test-linux-cloud-mode.sh
 	@echo ""
 	@echo "=== Linux install preflight ==="
