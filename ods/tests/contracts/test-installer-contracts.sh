@@ -79,7 +79,7 @@ grep -qF 'ods/ods-cli text eol=lf' ../.gitattributes \
 
 _pre_ods_guard_tmp="$(mktemp -d)"
 _pre_ods_guard_harness="$_pre_ods_guard_tmp/bootstrap-guard.sh"
-for _pre_ods_helper in _ods_is_related_install_dir _ods_related_compose_containers; do
+for _pre_ods_helper in _ods_is_install_backup_dir _ods_is_related_install_dir _ods_related_compose_containers; do
   sed -n "/^${_pre_ods_helper}() {/,/^}/p" get-ods.sh \
     > "$_pre_ods_guard_tmp/bootstrap-${_pre_ods_helper}.sh"
   sed -n "/^${_pre_ods_helper}() {/,/^}/p" installers/phases/01-preflight.sh \
@@ -160,6 +160,25 @@ fi
 grep -qF 'related install directory' "$_pre_ods_guard_tmp/auto-path.log" \
   || { echo "[FAIL] dormant related-install rejection must identify the directory"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
 rm -rf "$_pre_ods_guard_tmp/home/related"
+
+mkdir -p "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646/data"
+touch "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646/.env"
+cat > "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646/docker-compose.base.yml" <<'COMPOSE'
+services:
+  llama-server:
+  open-webui:
+  dashboard-api:
+COMPOSE
+if ! PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/backup-path.log" 2>&1; then
+  cat "$_pre_ods_guard_tmp/backup-path.log"
+  echo "[FAIL] bootstrap guard must ignore timestamped dormant backup directories"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+rm -rf "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646"
 
 mkdir -p "$_pre_ods_guard_tmp/relocated/data"
 touch "$_pre_ods_guard_tmp/relocated/.env"
