@@ -92,6 +92,25 @@ test('renders the model library layout from catalog fields only', () => {
   expect(screen.getByText('~3.2 GB incl. KV')).toBeInTheDocument()
 })
 
+test('keeps primary actions in the base-width model library grid', () => {
+  useModelsMock.mockReturnValue(baseState({
+    models: [model({ status: 'available' })],
+  }))
+
+  renderModels()
+
+  const libraryGrid = screen.getByTestId('model-library-grid')
+  expect(libraryGrid.className).toContain('min-w-[660px]')
+  expect(libraryGrid.className).toContain('2xl:min-w-[1020px]')
+  expect(screen.getByText('Size')).toHaveClass('hidden', '2xl:block')
+  expect(screen.getByText('Context')).toHaveClass('hidden', '2xl:block')
+  const compatibilityHeader = screen
+    .getAllByText('Compatibility')
+    .find(element => element.tagName.toLowerCase() === 'span')
+  expect(compatibilityHeader).toHaveClass('hidden', '2xl:block')
+  expect(screen.getByRole('button', { name: /download/i })).toBeInTheDocument()
+})
+
 test('loaded models show active state and benchmark action', () => {
   const benchmarkModel = vi.fn()
   useModelsMock.mockReturnValue(baseState({

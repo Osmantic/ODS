@@ -249,14 +249,14 @@ export default function Models() {
           style={TECH_PANEL_STYLE}
         >
           <div className="min-w-full overflow-x-auto">
-            <div className="min-w-[1020px]">
-              <div className="grid grid-cols-[minmax(280px,1.7fr)_90px_130px_150px_110px_150px_130px_36px] gap-5 border-b border-white/[0.055] px-5 py-3 text-[9px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/55">
+            <div data-testid="model-library-grid" className="min-w-[660px] 2xl:min-w-[1020px]">
+              <div className="grid grid-cols-[minmax(220px,1fr)_110px_120px_112px_32px] gap-3 border-b border-white/[0.055] px-4 py-3 text-[9px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/55 2xl:grid-cols-[minmax(280px,1.7fr)_90px_130px_150px_110px_150px_130px_36px] 2xl:gap-5 2xl:px-5">
                 <span>Model</span>
-                <span>Size</span>
+                <span className="hidden 2xl:block">Size</span>
                 <span>VRAM</span>
                 <span>Speed</span>
-                <span>Context</span>
-                <span>Compatibility</span>
+                <span className="hidden 2xl:block">Context</span>
+                <span className="hidden 2xl:block">Compatibility</span>
                 <span>Action</span>
                 <span />
               </div>
@@ -537,7 +537,7 @@ function ModelTableRow({
   const performanceBadge = getPerformanceBadge(model)
 
   return (
-    <div className="grid grid-cols-[minmax(280px,1.7fr)_90px_130px_150px_110px_150px_130px_36px] gap-5 px-5 py-3.5 transition-colors hover:bg-white/[0.025]">
+    <div className="grid grid-cols-[minmax(220px,1fr)_110px_120px_112px_32px] gap-3 px-4 py-3.5 transition-colors hover:bg-white/[0.025] 2xl:grid-cols-[minmax(280px,1.7fr)_90px_130px_150px_110px_150px_130px_36px] 2xl:gap-5 2xl:px-5">
       <div className="min-w-0">
         <div className="flex min-w-0 items-start gap-3">
           <div className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${iconTone.border} ${iconTone.bg}`}>
@@ -559,7 +559,7 @@ function ModelTableRow({
         </div>
       </div>
 
-      <div className="self-center font-mono text-xs text-theme-text-secondary">{model.size || '--'}</div>
+      <div className="hidden self-center font-mono text-xs text-theme-text-secondary 2xl:block">{model.size || '--'}</div>
 
       <div className="self-center">
         <div className="mb-2 flex items-center justify-between gap-2 font-mono text-xs text-theme-text-secondary">
@@ -579,9 +579,9 @@ function ModelTableRow({
         <ModelSpeedVisual model={model} speed={speed} />
       </div>
 
-      <div className="self-center font-mono text-xs text-theme-text-secondary">{formatContext(model.contextLength)}</div>
+      <div className="hidden self-center font-mono text-xs text-theme-text-secondary 2xl:block">{formatContext(model.contextLength)}</div>
 
-      <div className="self-center">
+      <div className="hidden self-center 2xl:block">
         <Badge tone={compatibility.tone}>{compatibility.label}</Badge>
         <p className="mt-1 text-[10px] text-theme-text-muted">{compatibility.detail}</p>
       </div>
