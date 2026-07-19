@@ -41,6 +41,7 @@ description = sys.argv[4]
 log_file = sys.argv[5]
 
 tasks = json.loads(registry_path.read_text())
+tasks = [task for task in tasks if task.get("id") != task_id]
 tasks.append({
     "id": task_id,
     "pid": pid,
@@ -75,7 +76,7 @@ if not registry_path.exists():
     sys.exit(3)
 
 tasks = json.loads(registry_path.read_text())
-task = next((t for t in tasks if t["id"] == task_id), None)
+task = next((t for t in reversed(tasks) if t.get("id") == task_id), None)
 
 if not task:
     sys.exit(3)
@@ -149,6 +150,12 @@ from pathlib import Path
 
 registry_path = Path(sys.argv[1])
 tasks = json.loads(registry_path.read_text())
+latest_by_id = {}
+for task in tasks:
+    task_id = task.get("id")
+    if task_id:
+        latest_by_id[task_id] = task
+tasks = list(latest_by_id.values())
 
 if not tasks:
     print("No background tasks registered")

@@ -78,6 +78,80 @@ print('OK')
 
 # ── bg_task_status ──────────────────────────────────────────────────────────
 
+@test "bg_task_start: replaces an existing task id" {
+    local old_log="$BATS_TEST_TMPDIR/old-full-model.log"
+    echo "old task completed" > "$old_log"
+    bg_task_start "full-model-download" "99999" "Old full model download" "$old_log"
+
+    sleep 60 &
+    local bg_pid=$!
+    local new_log="$BATS_TEST_TMPDIR/new-full-model.log"
+    echo "new task running" > "$new_log"
+    bg_task_start "full-model-download" "$bg_pid" "New full model download" "$new_log"
+
+    run python3 -c "
+import json
+tasks = json.load(open('$BG_TASK_REGISTRY'))
+assert len(tasks) == 1
+assert tasks[0]['id'] == 'full-model-download'
+assert tasks[0]['pid'] == $bg_pid
+assert tasks[0]['description'] == 'New full model download'
+print('OK')
+"
+    assert_success
+    assert_output "OK"
+
+    run bg_task_status "full-model-download"
+    local status_result="$status"
+
+    kill "$bg_pid" 2>/dev/null || true
+    wait "$bg_pid" 2>/dev/null || true
+
+    [[ "$status_result" -eq 0 ]]
+}
+
+@test "bg_task_status: uses latest duplicate task id" {
+    local old_log="$BATS_TEST_TMPDIR/old-duplicate.log"
+    local new_log="$BATS_TEST_TMPDIR/new-duplicate.log"
+    echo "old task completed" > "$old_log"
+    echo "new task running" > "$new_log"
+
+    sleep 60 &
+    local bg_pid=$!
+    python3 - "$BG_TASK_REGISTRY" "$old_log" "$new_log" "$bg_pid" <<'PY'
+import json
+import sys
+
+registry, old_log, new_log, bg_pid = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+tasks = [
+    {
+        "id": "full-model-download",
+        "pid": 99999,
+        "description": "Old full model download",
+        "log_file": old_log,
+        "status": "running",
+    },
+    {
+        "id": "full-model-download",
+        "pid": bg_pid,
+        "description": "New full model download",
+        "log_file": new_log,
+        "status": "running",
+    },
+]
+with open(registry, "w") as fh:
+    json.dump(tasks, fh)
+PY
+
+    run bg_task_status "full-model-download"
+    local status_result="$status"
+
+    kill "$bg_pid" 2>/dev/null || true
+    wait "$bg_pid" 2>/dev/null || true
+
+    [[ "$status_result" -eq 0 ]]
+}
+
 @test "bg_task_status: returns 3 when no registry exists" {
     rm -f "$BG_TASK_REGISTRY"
     run bg_task_status "nonexistent"
