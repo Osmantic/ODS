@@ -7,6 +7,7 @@ import asyncio
 import json
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 from models import GPUInfo
@@ -282,6 +283,86 @@ def _gpu():
         temperature_c=40,
         gpu_backend="nvidia",
     )
+
+
+def test_download_status_clears_stale_interrupted_retry(test_client, monkeypatch, tmp_path):
+    models_router, _install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "_MODEL_DOWNLOAD_STALE_SECONDS", 60)
+    status_path = data_dir / "model-download-status.json"
+    status_path.write_text(
+        json.dumps({
+            "status": "downloading",
+            "model": "Phi-4-mini-instruct-Q4_K_M.gguf",
+            "bytesDownloaded": 0,
+            "bytesTotal": 2491874272,
+            "updatedAt": (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat(),
+            "error": "Retry 1/3: curl exited with code -15",
+        }),
+        encoding="utf-8",
+    )
+
+    resp = test_client.get("/api/models/download-status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["status"] == "idle"
+    assert payload["active"] is False
+    assert payload["isDownloading"] is False
+    assert payload["stale"] is True
+    assert payload["previousModel"] == "Phi-4-mini-instruct-Q4_K_M.gguf"
+    assert json.loads(status_path.read_text(encoding="utf-8"))["status"] == "idle"
+
+
+def test_download_status_keeps_recent_interrupted_retry_active(test_client, monkeypatch, tmp_path):
+    models_router, _install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "_MODEL_DOWNLOAD_STALE_SECONDS", 60)
+    status_path = data_dir / "model-download-status.json"
+    status_path.write_text(
+        json.dumps({
+            "status": "downloading",
+            "model": "Phi-4-mini-instruct-Q4_K_M.gguf",
+            "bytesDownloaded": 0,
+            "bytesTotal": 2491874272,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+            "error": "Retry 1/3: curl exited with code -15",
+        }),
+        encoding="utf-8",
+    )
+
+    resp = test_client.get("/api/models/download-status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["status"] == "downloading"
+    assert payload["model"] == "Phi-4-mini-instruct-Q4_K_M.gguf"
+
+
+def test_download_status_marks_stale_existing_file_complete(test_client, monkeypatch, tmp_path):
+    models_router, _install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "_MODEL_DOWNLOAD_STALE_SECONDS", 60)
+    models_dir = data_dir / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    (models_dir / "Phi-4-mini-instruct-Q4_K_M.gguf").write_bytes(b"model")
+    status_path = data_dir / "model-download-status.json"
+    status_path.write_text(
+        json.dumps({
+            "status": "downloading",
+            "model": "Phi-4-mini-instruct-Q4_K_M.gguf",
+            "bytesDownloaded": 0,
+            "bytesTotal": 2491874272,
+            "updatedAt": (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat(),
+        }),
+        encoding="utf-8",
+    )
+
+    resp = test_client.get("/api/models/download-status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["status"] == "complete"
+    assert payload["active"] is False
+    assert payload["isDownloading"] is False
+    assert payload["model"] == "Phi-4-mini-instruct-Q4_K_M.gguf"
 
 
 def test_api_models_returns_full_catalog_without_fake_tokens(test_client, monkeypatch, tmp_path):

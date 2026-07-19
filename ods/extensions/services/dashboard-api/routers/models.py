@@ -8,6 +8,7 @@ import re
 import time
 import urllib.request
 import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from typing import Optional
@@ -44,6 +45,8 @@ _LIBRARY_PATH = Path(INSTALL_DIR) / "config" / "model-library.json"
 _MODELS_DIR = Path(DATA_DIR) / "models"
 _ENV_PATH = Path(INSTALL_DIR) / ".env"
 _MODEL_DISCOVERY_TIMEOUT_SECONDS = float(os.environ.get("DASHBOARD_MODEL_DISCOVERY_TIMEOUT", "15.0"))
+_MODEL_DOWNLOAD_STALE_SECONDS = float(os.environ.get("DASHBOARD_MODEL_DOWNLOAD_STALE_SECONDS", "900"))
+_ACTIVE_MODEL_DOWNLOAD_STATUSES = {"downloading", "starting", "verifying"}
 _GPU_VRAM_EXCEPTIONS = (
     ImportError,
     FileNotFoundError,
@@ -100,6 +103,98 @@ def _is_final_gguf_file(path: Path) -> bool:
         return path.is_file() and path.name.lower().endswith(".gguf") and path.stat().st_size > 0
     except OSError:
         return False
+
+
+def _safe_model_status_name(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    # Split-model progress labels include human text after the real file name.
+    raw = raw.split(" (part ", 1)[0].split(" (", 1)[0]
+    if raw != Path(raw).name or not raw.lower().endswith(".gguf"):
+        return None
+    return raw
+
+
+def _download_status_age_seconds(value: Any) -> Optional[float]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0.0, time.time() - parsed.timestamp())
+
+
+def _download_status_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _write_download_status(path: Path, payload: dict[str, Any]) -> None:
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger.debug("Failed to normalize model download status: %s", exc)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _normalize_model_download_status(status_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    status = str(payload.get("status") or "").lower()
+    model_name = _safe_model_status_name(payload.get("model"))
+    if model_name:
+        model_path = (_MODELS_DIR / model_name).resolve()
+        try:
+            if model_path.is_relative_to(_MODELS_DIR.resolve()) and _is_final_gguf_file(model_path):
+                normalized = {
+                    "status": "complete",
+                    "active": False,
+                    "isDownloading": False,
+                    "model": model_name,
+                    "stale": status in _ACTIVE_MODEL_DOWNLOAD_STATUSES,
+                    "updatedAt": datetime.now(timezone.utc).isoformat(),
+                }
+                _write_download_status(status_path, normalized)
+                return normalized
+        except OSError:
+            pass
+
+    if status in _ACTIVE_MODEL_DOWNLOAD_STATUSES:
+        age = _download_status_age_seconds(payload.get("updatedAt"))
+        error = str(payload.get("error") or "").lower()
+        downloaded = _download_status_int(payload.get("bytesDownloaded"))
+        retry_interrupted = "retry" in error and "curl exited" in error
+        if (
+            age is not None
+            and age >= _MODEL_DOWNLOAD_STALE_SECONDS
+            and downloaded <= 0
+            and retry_interrupted
+        ):
+            normalized = {
+                "status": "idle",
+                "active": False,
+                "isDownloading": False,
+                "stale": True,
+                "previousStatus": payload.get("status"),
+                "previousModel": payload.get("model"),
+                "error": payload.get("error"),
+                "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }
+            _write_download_status(status_path, normalized)
+            return normalized
+
+    return payload
 
 
 def _read_active_model() -> Optional[str]:
@@ -361,9 +456,12 @@ def model_download_status(api_key: str = Depends(verify_api_key)):
             "eta": bootstrap_info.eta_seconds,
         }
     try:
-        return json.loads(status_path.read_text(encoding="utf-8"))
+        data = json.loads(status_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {"status": "idle"}
+    if isinstance(data, dict):
+        return _normalize_model_download_status(status_path, data)
+    return {"status": "idle"}
 
 
 def _call_agent_model(path: str, body: dict, timeout: int = 30) -> dict:
