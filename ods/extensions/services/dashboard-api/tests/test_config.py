@@ -195,6 +195,51 @@ class TestLoadExtensionManifests:
         assert llm["swap_safe"] is False
         assert llm["badge"] == "not-swap-safe"
 
+    def test_skips_docker_service_when_declared_compose_file_is_absent(self, tmp_path):
+        svc_dir = tmp_path / "openclaw"
+        svc_dir.mkdir()
+        (svc_dir / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: openclaw\n"
+            "  name: OpenClaw\n"
+            "  type: docker\n"
+            "  compose_file: compose.yaml\n"
+            "  port: 18789\n"
+            "  health: /\n"
+            "  llm:\n"
+            "    consumes: true\n"
+            "    route: direct\n"
+            "    pinning: none\n"
+            "features:\n"
+            "  - id: openclaw-feature\n"
+            "    name: OpenClaw Feature\n"
+        )
+
+        services, features, _ = load_extension_manifests(tmp_path, "nvidia")
+
+        assert "openclaw" not in services
+        assert features == []
+
+    def test_loads_docker_service_when_declared_compose_file_exists(self, tmp_path):
+        svc_dir = tmp_path / "openclaw"
+        svc_dir.mkdir()
+        (svc_dir / "compose.yaml").write_text("services:\n  openclaw:\n    image: test\n")
+        (svc_dir / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: openclaw\n"
+            "  name: OpenClaw\n"
+            "  type: docker\n"
+            "  compose_file: compose.yaml\n"
+            "  port: 18789\n"
+            "  health: /\n"
+        )
+
+        services, _, _ = load_extension_manifests(tmp_path, "nvidia")
+
+        assert "openclaw" in services
+
     def test_builtin_llm_probe_paths_match_live_service_routes(self):
         services_dir = Path(__file__).resolve().parents[2]
 
