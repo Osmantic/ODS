@@ -310,10 +310,6 @@ if ! $DRY_RUN; then
         _perplexica_model="${LLM_MODEL:-qwen3-30b-a3b}"
         if [[ -n "${GGUF_FILE:-}" ]]; then
             _perplexica_model="$GGUF_FILE"
-            _perplexica_backend="$(printf '%s' "${LLM_BACKEND:-${AMD_INFERENCE_RUNTIME:-}}" | tr '[:upper:]' '[:lower:]')"
-            if [[ "$_perplexica_backend" == "lemonade" ]]; then
-                _perplexica_model="extra.$GGUF_FILE"
-            fi
         fi
         _perplexica_status=$(curl -sf --max-time 5 "http://127.0.0.1:${SERVICE_PORTS[perplexica]:-3004}/api/config" 2>>"$LOG_FILE" | \
             PERPLEXICA_MODEL="$_perplexica_model" "$PYTHON_CMD" -c '

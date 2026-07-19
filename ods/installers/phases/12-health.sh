@@ -307,10 +307,6 @@ if $DOCKER_CMD inspect ods-perplexica &>/dev/null; then
     PERPLEXICA_MODEL="${LLM_MODEL:-default}"
     if [[ -n "${GGUF_FILE:-}" ]]; then
         PERPLEXICA_MODEL="$GGUF_FILE"
-        _perplexica_backend="$(printf '%s' "${LLM_BACKEND:-${AMD_INFERENCE_RUNTIME:-}}" | tr '[:upper:]' '[:lower:]')"
-        if [[ "$_perplexica_backend" == "lemonade" ]]; then
-            PERPLEXICA_MODEL="extra.$GGUF_FILE"
-        fi
     fi
     PERPLEXICA_LLM_BASE_URL="${LLM_API_URL:-http://llama-server:8080}"
     case "$PERPLEXICA_LLM_BASE_URL" in

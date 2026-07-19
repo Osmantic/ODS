@@ -959,6 +959,7 @@ ENV_EOF
                 --ods-mode lemonade \
                 --gpu-backend amd \
                 --gguf-file "$_active_gguf" \
+                --model "${LLM_MODEL:-$_active_gguf}" \
                 --lemonade-model-id "$_lemonade_model_id" \
                 --lemonade-api-base "$LEMONADE_CONTAINER_API_BASE_VALUE" \
                 --litellm-key "$LITELLM_LEMONADE_API_KEY" \
@@ -982,6 +983,24 @@ model_list:
           enable_thinking: false
 
   - model_name: "*"
+    litellm_params:
+      model: openai/$(if [[ -n "$_lemonade_model_id" ]]; then echo "$_lemonade_model_id"; else echo "extra.${_active_gguf}"; fi)
+      api_base: ${LEMONADE_CONTAINER_API_BASE_VALUE}
+      api_key: ${LITELLM_LEMONADE_API_KEY}
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+  - model_name: ${_active_gguf}
+    litellm_params:
+      model: openai/$(if [[ -n "$_lemonade_model_id" ]]; then echo "$_lemonade_model_id"; else echo "extra.${_active_gguf}"; fi)
+      api_base: ${LEMONADE_CONTAINER_API_BASE_VALUE}
+      api_key: ${LITELLM_LEMONADE_API_KEY}
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+  - model_name: $(if [[ -n "$_lemonade_model_id" ]]; then echo "$_lemonade_model_id"; else echo "extra.${_active_gguf}"; fi)
     litellm_params:
       model: openai/$(if [[ -n "$_lemonade_model_id" ]]; then echo "$_lemonade_model_id"; else echo "extra.${_active_gguf}"; fi)
       api_base: ${LEMONADE_CONTAINER_API_BASE_VALUE}

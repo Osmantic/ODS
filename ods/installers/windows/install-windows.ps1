@@ -2060,7 +2060,7 @@ if ($enableVoice) {
 if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $servicePlan) {
     Write-AI "Configuring Perplexica..."
     $perplexicaModel = $(if ($tierConfig.GgufFile) {
-        if ($useLemonade) { "extra.$($tierConfig.GgufFile)" } else { $tierConfig.GgufFile }
+        $tierConfig.GgufFile
     } else {
         $tierConfig.LlmModel
     })

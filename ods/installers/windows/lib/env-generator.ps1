@@ -591,6 +591,33 @@ model_list:
         chat_template_kwargs:
           enable_thinking: false
 
+  - model_name: $($TierConfig.GgufFile)
+    litellm_params:
+      model: openai/$lemonadeModel
+      api_base: $lemonadeApiBase
+      api_key: $litellmLemonadeApiKey
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+  - model_name: $lemonadeModel
+    litellm_params:
+      model: openai/$lemonadeModel
+      api_base: $lemonadeApiBase
+      api_key: $litellmLemonadeApiKey
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+  - model_name: $($TierConfig.LlmModel)
+    litellm_params:
+      model: openai/$lemonadeModel
+      api_base: $lemonadeApiBase
+      api_key: $litellmLemonadeApiKey
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
 litellm_settings:
   drop_params: true
   set_verbose: false

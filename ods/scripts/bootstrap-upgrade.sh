@@ -1615,6 +1615,7 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
                     --ods-mode lemonade \
                     --gpu-backend amd \
                     --gguf-file "$FULL_GGUF_FILE" \
+                    --model "$FULL_LLM_MODEL" \
                     --lemonade-api-base "$_lemonade_api_base" \
                     --litellm-key "$LITELLM_LEMONADE_API_KEY" \
                     --output-root "$INSTALL_DIR" \
@@ -1637,6 +1638,24 @@ model_list:
           enable_thinking: false
 
   - model_name: "*"
+    litellm_params:
+      model: openai/extra.${FULL_GGUF_FILE}
+      api_base: ${_lemonade_api_base}
+      api_key: ${LITELLM_LEMONADE_API_KEY}
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+  - model_name: ${FULL_GGUF_FILE}
+    litellm_params:
+      model: openai/extra.${FULL_GGUF_FILE}
+      api_base: ${_lemonade_api_base}
+      api_key: ${LITELLM_LEMONADE_API_KEY}
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+  - model_name: extra.${FULL_GGUF_FILE}
     litellm_params:
       model: openai/extra.${FULL_GGUF_FILE}
       api_base: ${_lemonade_api_base}
@@ -2013,14 +2032,7 @@ if curl -sf --max-time 3 "${_perplexica_url}/api/config" >/dev/null 2>&1; then
     log "Updating Perplexica config to point at ${FULL_LLM_MODEL}..."
     _py_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
     if [[ -n "$_py_cmd" ]]; then
-        # On Lemonade, LiteLLM exposes the model id as "extra.<GGUF_FILE>".
-        # On NVIDIA/Apple/CPU, llama.cpp serves under the bare GGUF id.
         _px_model="$FULL_GGUF_FILE"
-        _runtime_for_perplexica=$(grep -E '^AMD_INFERENCE_RUNTIME=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' | tr '[:upper:]' '[:lower:]' || echo "")
-        _llm_backend_for_perplexica=$(grep -E '^LLM_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' | tr '[:upper:]' '[:lower:]' || echo "")
-        if [[ "$_runtime_for_perplexica" == "lemonade" || "$_llm_backend_for_perplexica" == "lemonade" ]]; then
-            _px_model="extra.$FULL_GGUF_FILE"
-        fi
         _litellm_key=$(grep -E '^LITELLM_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' || echo "no-key")
         : "${_litellm_key:=no-key}"
         _px_base_url=$(grep -E '^LLM_API_URL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' || echo "http://llama-server:8080")

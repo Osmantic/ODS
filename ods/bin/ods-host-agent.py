@@ -4257,6 +4257,7 @@ def _render_runtime_config(
     lemonade_api_base: str,
     ods_mode: str,
     gpu_backend: str,
+    model: str = "",
 ) -> bool:
     renderer = install_dir / "scripts" / "render-runtime-configs.py"
     if not renderer.exists():
@@ -4272,6 +4273,8 @@ def _render_runtime_config(
         gpu_backend,
         "--gguf-file",
         gguf_file,
+        "--model",
+        model or gguf_file,
         "--lemonade-api-base",
         lemonade_api_base,
         "--litellm-key",
@@ -4323,21 +4326,32 @@ def _write_lemonade_config(install_dir: Path, gguf_file: str):
         lemonade_api_base=lemonade_api_base,
         ods_mode=ods_mode,
         gpu_backend=gpu_backend,
+        model=env.get("LLM_MODEL", ""),
     ):
         logger.info("Wrote lemonade.yaml via runtime renderer for model: extra.%s", gguf_file)
         return
 
+    aliases = []
+    for alias in ["default", "*", gguf_file, f"extra.{gguf_file}", env.get("LLM_MODEL", "")]:
+        if alias and alias not in aliases:
+            aliases.append(alias)
+    entries = []
+    for alias in aliases:
+        model_name = '"*"' if alias == "*" else alias
+        entries.append(
+            "  - model_name: " + model_name + "\n"
+            "    litellm_params:\n"
+            f"      model: openai/extra.{gguf_file}\n"
+            f"      api_base: {lemonade_api_base}\n"
+            f"      api_key: {lemonade_api_key}\n"
+            "      extra_body:\n"
+            "        chat_template_kwargs:\n"
+            "          enable_thinking: false\n"
+        )
     content = (
         "model_list:\n"
-        "  - model_name: \"*\"\n"
-        "    litellm_params:\n"
-        f"      model: openai/extra.{gguf_file}\n"
-        f"      api_base: {lemonade_api_base}\n"
-        f"      api_key: {lemonade_api_key}\n"
-        "      extra_body:\n"
-        "        chat_template_kwargs:\n"
-        "          enable_thinking: false\n"
-        "\n"
+        + "\n".join(entries)
+        + "\n"
         "litellm_settings:\n"
         "  drop_params: true\n"
         "  set_verbose: false\n"

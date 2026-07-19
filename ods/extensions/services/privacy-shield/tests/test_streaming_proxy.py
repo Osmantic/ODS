@@ -95,6 +95,36 @@ def client():
     return TestClient(proxy.app)
 
 
+class TestAuthForwarding:
+    def test_client_shield_auth_is_replaced_with_target_auth(
+        self, client, install_upstream, monkeypatch
+    ):
+        monkeypatch.setattr(proxy, "TARGET_API_KEY", "sk-target-upstream")
+        seen = {}
+
+        def handler(request):
+            seen["auth"] = [
+                value
+                for key, value in request.headers.multi_items()
+                if key.lower() == "authorization"
+            ]
+            return _resp(
+                200,
+                {"content-type": "application/json"},
+                [b'{"choices":[{"message":{"content":"OK"}}]}'],
+            )
+
+        install_upstream(handler)
+        resp = client.post(
+            "/chat/completions",
+            headers=AUTH,
+            json={"model": "default", "messages": []},
+        )
+
+        assert resp.status_code == 200
+        assert seen["auth"] == ["Bearer sk-target-upstream"]
+
+
 # ── 1. Streaming API used; response is a StreamingResponse ──────────────────
 
 class TestStreamingNotBuffered:

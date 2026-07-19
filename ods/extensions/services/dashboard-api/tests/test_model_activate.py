@@ -163,6 +163,8 @@ class TestWriteLemonadeConfig:
         assert "extra_body:" in content
         assert "chat_template_kwargs:" in content
         assert "enable_thinking: false" in content
+        assert "model_name: Qwen3.5-9B-Q4_K_M.gguf" in content
+        assert "model_name: extra.Qwen3.5-9B-Q4_K_M.gguf" in content
         assert 'model_name: "*"' in content
         assert "drop_params: true" in content
         assert "request_timeout: 900" in content
@@ -177,6 +179,8 @@ class TestWriteLemonadeConfig:
 
         content = (litellm_dir / "lemonade.yaml").read_text()
         assert "model: openai/extra.fallback-model.gguf" in content
+        assert "model_name: fallback-model.gguf" in content
+        assert "model_name: extra.fallback-model.gguf" in content
         assert "request_timeout: 900" in content
         assert "stream_timeout: 900" in content
 

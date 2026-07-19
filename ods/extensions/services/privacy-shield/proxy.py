@@ -251,12 +251,12 @@ async def stats():
 
 
 def _build_upstream_headers(request: Request, scrubbed_len: int | None) -> dict:
-    """Forward client headers to upstream, stripping hop-by-hop + host."""
+    """Forward client headers to upstream, stripping hop-by-hop + auth."""
     headers = {
         k: v
         for k, v in request.headers.items()
         if k.lower() not in _HOP_BY_HOP
-        and k.lower() not in ("host", "content-length")
+        and k.lower() not in ("authorization", "host", "content-length")
     }
     headers["host"] = TARGET_API_BASE.split("//")[-1].split("/")[0]
     if scrubbed_len is not None:

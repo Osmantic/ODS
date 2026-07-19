@@ -17,10 +17,6 @@ esac
 if [[ -z "$PERPLEXICA_MODEL" ]]; then
     if [[ -n "${GGUF_FILE:-}" ]]; then
         PERPLEXICA_MODEL="$GGUF_FILE"
-        _perplexica_backend="$(printf '%s' "${LLM_BACKEND:-${AMD_INFERENCE_RUNTIME:-}}" | tr '[:upper:]' '[:lower:]')"
-        if [[ "$_perplexica_backend" == "lemonade" ]]; then
-            PERPLEXICA_MODEL="extra.$GGUF_FILE"
-        fi
     else
         PERPLEXICA_MODEL="$LLM_MODEL"
     fi

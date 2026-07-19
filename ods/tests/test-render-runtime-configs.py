@@ -55,6 +55,8 @@ def test_lemonade_disables_thinking_and_uses_extra_alias() -> None:
         "lemonade",
         "--gpu-backend",
         "amd",
+        "--model",
+        "friendly-model",
         "--gguf-file",
         "Model.gguf",
         "--litellm-key",
@@ -62,6 +64,11 @@ def test_lemonade_disables_thinking_and_uses_extra_alias() -> None:
     )
     content = file_by_surface(payload, "litellm-lemonade")["content"]
     assert "model: openai/extra.Model.gguf" in content
+    assert "model_name: default" in content
+    assert 'model_name: "*"' in content
+    assert "model_name: Model.gguf" in content
+    assert "model_name: extra.Model.gguf" in content
+    assert "model_name: friendly-model" in content
     assert "api_key: sk-test" in content
     assert "enable_thinking: false" in content
 
@@ -121,8 +128,8 @@ def test_perplexica_default_model_matches_route() -> None:
     )
     content = json.loads(file_by_surface(payload, "perplexica")["content"])
     openai_provider = model_provider_by_id(content, "openai")
-    assert content["preferences"]["defaultChatModel"] == "extra.Research.gguf"
-    assert openai_provider["chatModels"][0]["name"] == "extra.Research.gguf"
+    assert content["preferences"]["defaultChatModel"] == "Research.gguf"
+    assert openai_provider["chatModels"][0]["name"] == "Research.gguf"
 
 
 def test_write_mode_writes_under_output_root() -> None:

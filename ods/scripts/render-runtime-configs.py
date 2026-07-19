@@ -55,6 +55,32 @@ def lemonade_model_id(inputs: RenderInputs) -> str:
     return f"extra.{inputs.gguf_file}"
 
 
+def dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        value = value.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def yaml_model_name(value: str) -> str:
+    return '"*"' if value == "*" else value
+
+
+def litellm_lemonade_aliases(inputs: RenderInputs) -> list[str]:
+    return dedupe([
+        "default",
+        "*",
+        inputs.gguf_file,
+        lemonade_model_id(inputs),
+        inputs.model,
+    ])
+
+
 def hermes_model_id(inputs: RenderInputs) -> str:
     if inputs.ods_mode == "lemonade" or inputs.gpu_backend == "amd":
         return lemonade_model_id(inputs)
@@ -68,24 +94,19 @@ def opencode_key(inputs: RenderInputs) -> str:
 def render_litellm_lemonade(inputs: RenderInputs) -> RenderedFile:
     model = lemonade_model_id(inputs)
     api_base = inputs.lemonade_api_base.rstrip("/") or "http://llama-server:8080/api/v1"
+    entries = []
+    for alias in litellm_lemonade_aliases(inputs):
+        entries.append(f"""  - model_name: {yaml_model_name(alias)}
+    litellm_params:
+      model: openai/{model}
+      api_base: {api_base}
+      api_key: {inputs.litellm_key}
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false""")
+    model_entries = "\n\n".join(entries)
     content = f"""model_list:
-  - model_name: default
-    litellm_params:
-      model: openai/{model}
-      api_base: {api_base}
-      api_key: {inputs.litellm_key}
-      extra_body:
-        chat_template_kwargs:
-          enable_thinking: false
-
-  - model_name: "*"
-    litellm_params:
-      model: openai/{model}
-      api_base: {api_base}
-      api_key: {inputs.litellm_key}
-      extra_body:
-        chat_template_kwargs:
-          enable_thinking: false
+{model_entries}
 
 litellm_settings:
   drop_params: true
@@ -118,7 +139,7 @@ compression:
 
 
 def render_perplexica(inputs: RenderInputs) -> RenderedFile:
-    model = lemonade_model_id(inputs) if inputs.ods_mode == "lemonade" else (inputs.gguf_file or inputs.model)
+    model = inputs.gguf_file or inputs.model
     base_url = inputs.llm_base_url.rstrip("/") or "http://llama-server:8080"
     if not (base_url.endswith("/v1") or base_url.endswith("/api/v1")):
         base_url = f"{base_url}/v1"

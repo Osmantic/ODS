@@ -173,12 +173,33 @@ if python3 scripts/render-runtime-configs.py \
         --surface litellm-lemonade \
         --ods-mode lemonade \
         --gpu-backend amd \
+        --model contract-selected \
         --gguf-file contract-selected.gguf \
         --lemonade-api-base http://llama-server:8080/api/v1 \
     | grep -q 'openai/extra.contract-selected.gguf'; then
     pass "LiteLLM Lemonade config maps default/wildcard to extra.\${GGUF_FILE}"
 else
     fail "LiteLLM Lemonade config must map selected GGUF to openai/extra.\${GGUF_FILE}"
+fi
+if python3 scripts/render-runtime-configs.py \
+        --surface litellm-lemonade \
+        --ods-mode lemonade \
+        --gpu-backend amd \
+        --model contract-selected \
+        --gguf-file contract-selected.gguf \
+        --lemonade-api-base http://llama-server:8080/api/v1 \
+    | grep -q 'model_name: contract-selected.gguf' \
+    && python3 scripts/render-runtime-configs.py \
+        --surface litellm-lemonade \
+        --ods-mode lemonade \
+        --gpu-backend amd \
+        --model contract-selected \
+        --gguf-file contract-selected.gguf \
+        --lemonade-api-base http://llama-server:8080/api/v1 \
+    | grep -q 'model_name: extra.contract-selected.gguf'; then
+    pass "LiteLLM Lemonade config exposes GGUF and Lemonade aliases"
+else
+    fail "LiteLLM Lemonade config must expose GGUF and extra.\${GGUF_FILE} aliases"
 fi
 if python3 scripts/render-runtime-configs.py \
         --surface litellm-lemonade \

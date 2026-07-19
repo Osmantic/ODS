@@ -16,6 +16,24 @@ model_list:
         chat_template_kwargs:
           enable_thinking: false
 
+  - model_name: GGUF_FILENAME_HERE
+    litellm_params:
+      model: openai/extra.GGUF_FILENAME_HERE
+      api_base: http://llama-server:8080/api/v1
+      api_key: sk-lemonade
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+  - model_name: extra.GGUF_FILENAME_HERE
+    litellm_params:
+      model: openai/extra.GGUF_FILENAME_HERE
+      api_base: http://llama-server:8080/api/v1
+      api_key: sk-lemonade
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
 litellm_settings:
   drop_params: true
   set_verbose: false
