@@ -147,6 +147,9 @@ jobs:
       - name: Support Bundle Evidence Tests
         run: bash tests/test-support-bundle.sh
 
+      - name: Config Migration Tests
+        run: bash tests/test-migrate-config.sh
+
       - name: Upload Installer Simulation Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
