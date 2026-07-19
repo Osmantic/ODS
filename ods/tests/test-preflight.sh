@@ -175,6 +175,33 @@ else
     fail "Unexpected exit code $run_exit — script may have crashed"
 fi
 
+# ── Sibling: scripts/ods-preflight.sh (runtime, service-registry-aware) ────
+
+RUNTIME_PREFLIGHT="$ROOT_DIR/scripts/ods-preflight.sh"
+if [[ -f "$RUNTIME_PREFLIGHT" ]]; then
+    if bash -n "$RUNTIME_PREFLIGHT" 2>/dev/null; then
+        pass "scripts/ods-preflight.sh passes bash -n"
+    else
+        fail "scripts/ods-preflight.sh bash -n failed"
+    fi
+
+    # Docker rootless subuid/subgid diagnostic must be present with the same
+    # helper + env-override contract as linux-install-preflight.sh, so users
+    # get consistent guidance at install and at runtime.
+    if grep -q '_check_subid_file' "$RUNTIME_PREFLIGHT" \
+        && grep -q 'SUBUID_FILE' "$RUNTIME_PREFLIGHT" \
+        && grep -q 'SUBGID_FILE' "$RUNTIME_PREFLIGHT" \
+        && grep -q 'rootless' "$RUNTIME_PREFLIGHT" \
+        && grep -q '65536' "$RUNTIME_PREFLIGHT" \
+        && grep -q 'usermod' "$RUNTIME_PREFLIGHT"; then
+        pass "scripts/ods-preflight.sh has rootless subuid/subgid diagnostic + fix cmd"
+    else
+        fail "scripts/ods-preflight.sh missing rootless subuid/subgid diagnostic"
+    fi
+else
+    fail "scripts/ods-preflight.sh not found at $RUNTIME_PREFLIGHT"
+fi
+
 # ── Summary ────────────────────────────────────────────────────────────────
 
 echo ""

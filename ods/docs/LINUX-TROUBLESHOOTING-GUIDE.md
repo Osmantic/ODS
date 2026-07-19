@@ -216,6 +216,56 @@ If you are intentionally **CPU-only**, you can ignore this after setting `GPU_BA
 
 ---
 
+### ROOTLESS_SUBUID
+
+**Symptoms:** **Fail** — Docker is running in rootless mode but `/etc/subuid` or `/etc/subgid` is missing an entry for the current user, or the allocated range is smaller than 65 536 IDs.
+
+**Typical causes:**
+
+- The user was created without subordinate UID/GID ranges (common on minimal or cloud images).
+- The ranges were assigned manually with a count below 65 536 (the minimum needed for a full Linux user namespace).
+- `/etc/subuid` or `/etc/subgid` does not exist at all on the host.
+
+**Why this matters:** Docker rootless mode uses Linux user namespaces to map container UIDs into unprivileged host ranges. Services such as n8n, Whisper, TTS, privacy-shield, and others run as non-root users inside containers and require a minimum of 65 536 subordinate IDs. Without a sufficient mapping, container startup fails with errors like `failed to register layer: uid/gid map out of range`.
+
+**Fix:**
+
+```bash
+# Allocate 65 536 subordinate IDs starting at 100000 for the current user
+sudo usermod \
+  --add-subuids 100000-165535 \
+  --add-subgids 100000-165535 \
+  "$USER"
+```
+
+Verify:
+
+```bash
+grep "^$USER:" /etc/subuid
+grep "^$USER:" /etc/subgid
+# Expected output: <username>:100000:65536 (or any range with count ≥ 65536)
+```
+
+Then restart the rootless Docker service so the new mappings take effect:
+
+```bash
+systemctl --user restart docker
+```
+
+If the files do not exist at all, install the subordinate ID support package first:
+
+```bash
+# Debian/Ubuntu
+sudo apt install -y uidmap
+
+# Fedora/RHEL
+sudo dnf install -y shadow-utils
+```
+
+**Note:** This check is skipped when Docker is not running in rootless mode. Standard (daemon-level) Docker installations use a different user namespace strategy and do not require `/etc/subuid`/`/etc/subgid` entries.
+
+---
+
 ## Common cross-cutting issues
 
 ### Firewall blocking local ports
