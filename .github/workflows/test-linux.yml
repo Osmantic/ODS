@@ -147,6 +147,9 @@ jobs:
       - name: Update Rollback Contract
         run: bash tests/test-update-rollback-contract.sh
 
+      - name: Bootstrap Upgrade Compose Flags Recovery Tests
+        run: bash tests/test-bootstrap-upgrade-compose-flags-recovery.sh
+
       - name: Support Bundle Evidence Tests
         run: bash tests/test-support-bundle.sh
 
