@@ -198,6 +198,16 @@ def load_extension_manifests(
                 service_id = service.get("id")
                 if not service_id:
                     raise ValueError("service.id is required")
+                compose_file = str(service.get("compose_file") or "").strip()
+                if service.get("type") == "docker" and compose_file:
+                    compose_path = ext_dir / compose_file
+                    if not compose_path.exists():
+                        logger.debug(
+                            "Skipping docker service %s because %s is not installed",
+                            service_id,
+                            compose_path,
+                        )
+                        continue
                 supported = service.get("gpu_backends", ["amd", "nvidia", "apple"])
                 if gpu_backend == "apple":
                     if service.get("type") == "host-systemd":

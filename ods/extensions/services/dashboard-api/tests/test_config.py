@@ -245,9 +245,9 @@ class TestLoadExtensionManifests:
 
         services, _, _ = load_extension_manifests(services_dir, "nvidia")
 
-        assert services["open-webui"]["llm"]["probe"]["path"] == "/api/chat/completions"
-        assert services["perplexica"]["llm"]["probe"]["path"] == "/api/chat"
-        assert services["privacy-shield"]["llm"]["probe"]["path"] == "/chat/completions"
+        assert services["open-webui"]["llm"]["probe"]["path"] == "/openai/v1/chat/completions"
+        assert services["perplexica"]["llm"]["probe"]["path"] == "/api/search"
+        assert services["privacy-shield"]["llm"]["probe"]["path"] == "/v1/chat/completions"
 
     def test_external_port_default_zero_disables_external_port_fallback(self, tmp_path):
         svc_dir = tmp_path / "internal-service"

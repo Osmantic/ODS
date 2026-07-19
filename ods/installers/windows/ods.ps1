@@ -52,6 +52,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 $_resolvedLemonadeExe = Resolve-ODSLemonadeExe
 if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
 $script:LEMONADE_TASK_NAME = "ODSLemonadeRuntime"
+$script:ODS_MODEL_UPGRADE_TASK_NAME = "ODSModelUpgrade"
 
 # ── Resolve install directory ──
 $InstallDir = $script:ODS_INSTALL_DIR
@@ -179,7 +180,7 @@ function Sync-ODSNativeInferenceConfig {
             $parsedPort = 0
             if ([int]::TryParse($lemonadePort, [ref]$parsedPort) -and $parsedPort -gt 0 -and $parsedPort -le 65535) {
                 $script:LEMONADE_PORT = $parsedPort
-                $script:LEMONADE_HEALTH_URL = "http://localhost:$($script:LEMONADE_PORT)/api/v1/health"
+                $script:LEMONADE_HEALTH_URL = "http://127.0.0.1:$($script:LEMONADE_PORT)/api/v1/health"
             }
         }
     } catch { }
@@ -412,6 +413,127 @@ function Test-ODSComposeServiceAvailable {
     } catch {
         return $false
     }
+}
+
+function Get-ODSRunningComposeServices {
+    param([string[]]$ComposeFlags)
+
+    try {
+        $services = & docker compose @ComposeFlags ps --services --filter "status=running" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $services) {
+            return @($services |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Sort-Object -Unique)
+        }
+    } catch { }
+
+    try {
+        $services = & docker ps `
+            --filter "label=com.docker.compose.project=ods" `
+            --format "{{.Label ""com.docker.compose.service""}}" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $services) {
+            return @($services |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Sort-Object -Unique)
+        }
+    } catch { }
+
+    return @()
+}
+
+function Test-ODSComposeServicesStarted {
+    param(
+        [string[]]$ComposeFlags,
+        [string[]]$Services
+    )
+
+    if (-not $Services -or $Services.Count -eq 0) {
+        return $false
+    }
+
+    foreach ($service in $Services) {
+        if ([string]::IsNullOrWhiteSpace($service)) {
+            continue
+        }
+
+        $ids = @()
+        try {
+            $ids = @(& docker compose @ComposeFlags ps --all -q $service 2>$null |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        } catch {
+            return $false
+        }
+
+        if (-not $ids -or $ids.Count -eq 0) {
+            return $false
+        }
+
+        foreach ($id in $ids) {
+            $state = ""
+            try {
+                $state = & docker inspect --format "{{.State.Status}} {{.State.ExitCode}}" $id 2>$null
+            } catch {
+                return $false
+            }
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($state)) {
+                return $false
+            }
+
+            $normalized = $state.Trim()
+            if ($normalized -like "running *") {
+                continue
+            }
+            if ($normalized -eq "exited 0") {
+                continue
+            }
+
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Invoke-ODSComposeUpWithStartupRetry {
+    param(
+        [string[]]$ComposeFlags,
+        [string[]]$ComposeArgs,
+        [string[]]$Services,
+        [string]$Description = "docker compose up"
+    )
+
+    $attempts = 20
+    $parsedAttempts = 0
+    if ([int]::TryParse([string]$env:ODS_RESTART_STARTUP_RETRY_ATTEMPTS, [ref]$parsedAttempts) -and $parsedAttempts -gt 0) {
+        $attempts = $parsedAttempts
+    }
+
+    $delaySeconds = 15
+    $parsedDelay = 0
+    if ([int]::TryParse([string]$env:ODS_RESTART_STARTUP_RETRY_DELAY_SECONDS, [ref]$parsedDelay) -and $parsedDelay -gt 0) {
+        $delaySeconds = $parsedDelay
+    }
+
+    $composeExit = 1
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+        $composeExit = Invoke-ODSDockerCompose -InstallDir $InstallDir -ComposeFlags $ComposeFlags `
+            -ComposeArgs $ComposeArgs
+        if ($composeExit -eq 0) {
+            return 0
+        }
+
+        if (Test-ODSComposeServicesStarted -ComposeFlags $ComposeFlags -Services $Services) {
+            Write-AIWarn "$Description returned $composeExit, but targeted services are running or completed cleanly; continuing."
+            return 0
+        }
+
+        if ($attempt -lt $attempts) {
+            Write-AIWarn "$Description returned $composeExit; waiting for dependencies to settle before retrying ($attempt/$($attempts - 1))."
+            Start-Sleep -Seconds $delaySeconds
+        }
+    }
+
+    return $composeExit
 }
 
 function Write-ODSMissingComposeServiceHint {
@@ -685,12 +807,24 @@ function Get-NativeInferenceStatus {
 function Stop-ODSNativeProcessId {
     param([int]$ProcessId)
 
-    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
-    for ($i = 0; $i -lt 30; $i++) {
-        $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-        if (-not $proc) { return }
-        Start-Sleep -Milliseconds 500
+    function Wait-ODSNativeProcessExit {
+        param([int]$TargetPid)
+        for ($i = 0; $i -lt 30; $i++) {
+            $proc = Get-Process -Id $TargetPid -ErrorAction SilentlyContinue
+            if (-not $proc) { return $true }
+            Start-Sleep -Milliseconds 500
+        }
+        return $false
     }
+
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    if (Wait-ODSNativeProcessExit -TargetPid $ProcessId) { return }
+    try {
+        $null = Invoke-CimMethod -ClassName Win32_Process -MethodName Create `
+            -Arguments @{ CommandLine = ("cmd.exe /c taskkill.exe /PID {0} /T /F" -f $ProcessId) } `
+            -ErrorAction Stop
+    } catch { }
+    [void](Wait-ODSNativeProcessExit -TargetPid $ProcessId)
 }
 
 function Stop-ODSOpenCodeRuntime {
@@ -796,6 +930,9 @@ function Start-ODSLemonadeRuntime {
     Sync-ODSNativeInferenceConfig
     $modelsDir = Join-Path (Join-Path $InstallDir "data") "models"
     $envPath = Join-Path $InstallDir ".env"
+    $contextRaw = Get-ODSEnvValue -Name "CTX_SIZE" -Default (Get-ODSEnvValue -Name "MAX_CONTEXT" -Default "0")
+    $contextSize = 0
+    $null = [int]::TryParse([string]$contextRaw, [ref]$contextSize)
     Stop-ODSLemonadeRuntime
 
     $adminApiKey = Get-ODSLemonadeAdminApiKey -EnvPath $envPath
@@ -822,7 +959,7 @@ function Start-ODSLemonadeRuntime {
         $launchMethod = "direct process"
         Write-AIWarn "Could not start Lemonade through Task Scheduler: $_"
         Write-AI "Starting Lemonade directly for this Windows session..."
-        $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract
+        $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract -DiagnosticLogPath $diagnosticLog
     }
 
     Start-Sleep -Seconds 5
@@ -836,7 +973,7 @@ function Start-ODSLemonadeRuntime {
         Write-AIWarn "Lemonade scheduled task did not start a server process."
         Write-AIWarn (Format-ODSLemonadeLaunchDiagnostics -Diagnostics $scheduledDiagnostics)
         Write-AI "Starting Lemonade directly for this Windows session..."
-        $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract
+        $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract -DiagnosticLogPath $diagnosticLog
         Start-Sleep -Seconds 3
         $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase) } |
@@ -869,7 +1006,8 @@ function Start-ODSLemonadeRuntime {
     if ($launchContract.RequiresRuntimeConfiguration) {
         try {
             $null = Set-ODSLemonadeModernRuntimeConfig `
-                -Port $script:LEMONADE_PORT -ModelsDir $modelsDir -AdminApiKey $adminApiKey
+                -Port $script:LEMONADE_PORT -ModelsDir $modelsDir `
+                -AdminApiKey $adminApiKey -ContextSize $contextSize
         } catch {
             $configDiagnostics = Get-ODSLemonadeLaunchDiagnostics `
                 -TaskName $script:LEMONADE_TASK_NAME -ChildProcess $directProcess
@@ -881,6 +1019,163 @@ function Start-ODSLemonadeRuntime {
     New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
     Set-Content -Path $script:INFERENCE_PID_FILE -Value $proc.ProcessId
     return [int]$proc.ProcessId
+}
+
+function Test-ODSLemonadeLoadedModelMatches {
+    param(
+        [string]$LoadedModel,
+        [string]$ExpectedModelId,
+        [string]$GgufFile
+    )
+
+    if ([string]::IsNullOrWhiteSpace($LoadedModel)) { return $false }
+    $targetFile = [IO.Path]::GetFileName($GgufFile)
+    if ([string]::IsNullOrWhiteSpace($targetFile)) { return $false }
+    $targetStem = [IO.Path]::GetFileNameWithoutExtension($targetFile)
+
+    $actualValues = New-Object System.Collections.Generic.List[string]
+    $normalizedLoaded = ([string]$LoadedModel).Replace('\', '/').Trim()
+    $actualValues.Add($normalizedLoaded)
+    $loadedLeaf = ($normalizedLoaded -split '/')[-1]
+    $actualValues.Add($loadedLeaf)
+    if ($loadedLeaf.Contains(':')) {
+        $actualValues.Add(($loadedLeaf -split ':')[-1])
+    }
+    $actualValues.Add(($loadedLeaf -replace '^(extra|user)[\.\:_-]', ''))
+
+    $expectedValues = @(
+        $ExpectedModelId,
+        $targetFile,
+        $targetStem,
+        "extra.$targetFile"
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+
+    foreach ($actual in @($actualValues)) {
+        foreach ($expected in @($expectedValues)) {
+            if ([string]$actual -and [string]$expected -and
+                ([string]$actual).Equals([string]$expected, [StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
+function Wait-ODSLemonadeConfiguredModel {
+    param([hashtable]$EnvVars)
+
+    $ggufFile = $EnvVars["GGUF_FILE"]
+    if ([string]::IsNullOrWhiteSpace($ggufFile)) { return }
+
+    $modelPath = Join-Path (Join-Path $InstallDir "data\models") $ggufFile
+    if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
+        throw "Configured Lemonade model file is missing: $modelPath"
+    }
+
+    $modelId = $EnvVars["LEMONADE_MODEL"]
+    try {
+        $modelId = Resolve-ODSLemonadeModelId -Port $script:LEMONADE_PORT -GgufFile $ggufFile
+    } catch {
+        if ([string]::IsNullOrWhiteSpace($modelId)) {
+            $modelId = [IO.Path]::GetFileNameWithoutExtension($ggufFile)
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($modelId)) {
+        $modelId = [IO.Path]::GetFileNameWithoutExtension($ggufFile)
+    }
+
+    $chatUrl = "http://127.0.0.1:$($script:LEMONADE_PORT)/api/v1/chat/completions"
+    $payload = @{
+        model = $modelId
+        messages = @(@{ role = "user"; content = "hello" })
+        max_tokens = 1
+    } | ConvertTo-Json -Depth 5 -Compress
+
+    $lastError = ""
+    for ($i = 0; $i -lt 60; $i++) {
+        try {
+            $health = Invoke-RestMethod -Method Get -Uri $script:LEMONADE_HEALTH_URL `
+                -TimeoutSec 5 -ErrorAction Stop
+            if (Test-ODSLemonadeLoadedModelMatches `
+                    -LoadedModel ([string]$health.model_loaded) `
+                    -ExpectedModelId $modelId `
+                    -GgufFile $ggufFile) {
+                Write-AISuccess "Lemonade model ready ($modelId)"
+                return
+            }
+        } catch {
+            $lastError = $_.Exception.Message
+        }
+
+        try {
+            $null = Invoke-RestMethod -Method Post -Uri $chatUrl `
+                -ContentType "application/json" -Body $payload `
+                -TimeoutSec 30 -ErrorAction Stop
+        } catch {
+            $lastError = $_.Exception.Message
+        }
+        Start-Sleep -Seconds 5
+    }
+
+    throw "Lemonade did not load configured model '$ggufFile' using request id '$modelId'. Last error: $lastError"
+}
+
+function Resolve-ODSModelLibraryIdForGguf {
+    param([string]$GgufFile)
+
+    if ([string]::IsNullOrWhiteSpace($GgufFile)) { return $null }
+    $libraryPath = Join-Path (Join-Path $InstallDir "config") "model-library.json"
+    if (-not (Test-Path -LiteralPath $libraryPath -PathType Leaf)) { return $null }
+    try {
+        $library = Get-Content -LiteralPath $libraryPath -Raw -ErrorAction Stop |
+            ConvertFrom-Json -ErrorAction Stop
+        foreach ($model in @($library.models)) {
+            if ([string]$model.gguf_file -and
+                ([string]$model.gguf_file).Equals($GgufFile, [StringComparison]::OrdinalIgnoreCase) -and
+                -not [string]::IsNullOrWhiteSpace([string]$model.id)) {
+                return [string]$model.id
+            }
+        }
+    } catch { }
+    return $null
+}
+
+function Invoke-ODSHostAgentConfiguredModelActivation {
+    param([hashtable]$EnvVars)
+
+    $ggufFile = $EnvVars["GGUF_FILE"]
+    if ([string]::IsNullOrWhiteSpace($ggufFile)) { return $false }
+    $modelId = Resolve-ODSModelLibraryIdForGguf -GgufFile $ggufFile
+    if ([string]::IsNullOrWhiteSpace($modelId)) { $modelId = $ggufFile }
+
+    $agentKey = $EnvVars["ODS_AGENT_KEY"]
+    if ([string]::IsNullOrWhiteSpace($agentKey)) { $agentKey = $EnvVars["DASHBOARD_API_KEY"] }
+    if ([string]::IsNullOrWhiteSpace($agentKey)) { return $false }
+
+    $agentPort = $EnvVars["ODS_AGENT_PORT"]
+    if ([string]::IsNullOrWhiteSpace($agentPort)) { $agentPort = $script:ODS_AGENT_PORT }
+    if ([string]::IsNullOrWhiteSpace($agentPort)) { $agentPort = "7710" }
+
+    $agentHealthUrl = "http://127.0.0.1:$agentPort/health"
+    $agentUrl = "http://127.0.0.1:$agentPort/v1/runtime/lemonade/ensure"
+    try {
+        $null = Invoke-WebRequest -Uri $agentHealthUrl `
+            -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+        Write-AI "Loading configured Lemonade model through host agent..."
+        $body = @{
+            model_id = $modelId
+            gguf_file = $ggufFile
+        } | ConvertTo-Json -Compress
+        $headers = @{ Authorization = "Bearer $agentKey" }
+        $null = Invoke-RestMethod -Method Post -Uri $agentUrl `
+            -Headers $headers -ContentType "application/json" -Body $body `
+            -TimeoutSec 900 -ErrorAction Stop
+        Wait-ODSLemonadeConfiguredModel -EnvVars $EnvVars
+        return $true
+    } catch {
+        Write-AIWarn "Host agent Lemonade activation unavailable: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 # Backward-compat alias
@@ -905,6 +1200,9 @@ function Start-NativeInferenceServer {
     if ([string]::IsNullOrWhiteSpace($bindAddr)) { $bindAddr = "127.0.0.1" }
 
     if ($backend -eq "lemonade") {
+        if (Invoke-ODSHostAgentConfiguredModelActivation -EnvVars $envVars) {
+            return
+        }
         $procId = Start-ODSLemonadeRuntime -BindAddress $bindAddr
         Write-AISuccess "Lemonade server started (PID $procId)"
         Write-AI "Waiting for health..."
@@ -914,9 +1212,10 @@ function Start-NativeInferenceServer {
             Start-Sleep -Seconds 2; $waited += 2
             try {
                 $resp = Invoke-WebRequest -Uri $script:LEMONADE_HEALTH_URL `
-                    -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue
+                -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue
                 if ($resp.StatusCode -eq 200) {
                     Write-AISuccess "Lemonade server healthy"
+                    Wait-ODSLemonadeConfiguredModel -EnvVars $envVars
                     return
                 }
             } catch { }
@@ -1104,6 +1403,75 @@ function Invoke-Status {
     }
 }
 
+function Get-ODSBootstrapStatusData {
+    $statusPath = Join-Path $InstallDir "data\bootstrap-status.json"
+    if (-not (Test-Path -LiteralPath $statusPath)) { return $null }
+    try {
+        return Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+}
+
+function Test-ODSBootstrapUpgradeStaleActive {
+    param([object]$StatusData)
+
+    if ($null -eq $StatusData) { return $false }
+    $state = ([string]$StatusData.status).ToLowerInvariant()
+    if (@("starting", "downloading", "verifying", "swapping") -notcontains $state) {
+        return $false
+    }
+
+    $updatedRaw = [string]$StatusData.updatedAt
+    if ([string]::IsNullOrWhiteSpace($updatedRaw)) { return $false }
+
+    try {
+        $updatedAt = [DateTimeOffset]::Parse($updatedRaw).ToUniversalTime()
+    } catch {
+        return $false
+    }
+
+    $staleSeconds = 120
+    if ($env:ODS_BOOTSTRAP_UPGRADE_STALE_SECONDS -match '^[0-9]+$') {
+        $staleSeconds = [int]$env:ODS_BOOTSTRAP_UPGRADE_STALE_SECONDS
+    }
+
+    return (([DateTimeOffset]::UtcNow - $updatedAt).TotalSeconds -gt $staleSeconds)
+}
+
+function Invoke-BootstrapUpgradeResume {
+    $statusData = Get-ODSBootstrapStatusData
+    if ($null -eq $statusData) { return }
+
+    $state = ([string]$statusData.status).ToLowerInvariant()
+    $reason = $null
+    if ($state -eq "failed" -or $state -eq "error") {
+        $reason = "previous download failed"
+    } elseif (Test-ODSBootstrapUpgradeStaleActive -StatusData $statusData) {
+        $reason = "stale download appears stopped"
+    } else {
+        return
+    }
+
+    $modelName = [string]$statusData.model
+    if ([string]::IsNullOrWhiteSpace($modelName)) {
+        $modelName = "full model"
+    }
+
+    try {
+        $task = Get-ScheduledTask -TaskName $script:ODS_MODEL_UPGRADE_TASK_NAME -ErrorAction Stop
+        if ($task.State -eq "Running") {
+            Write-AI "  Model Upgrade: retry already running"
+            return
+        }
+        Start-ScheduledTask -TaskName $script:ODS_MODEL_UPGRADE_TASK_NAME -ErrorAction Stop
+        Write-AI "  Model Upgrade: $reason; retrying in background ($modelName)"
+    } catch {
+        Write-AIWarn "Model Upgrade: $reason, but the ODSModelUpgrade scheduled task is unavailable."
+        Write-AI "  Re-run the installer or run scripts\bootstrap-upgrade.sh manually."
+    }
+}
+
 function Invoke-Start {
     param([string]$Service)
     Test-Install
@@ -1160,6 +1528,9 @@ function Invoke-Start {
             if ($hermesInStack) {
                 Invoke-HermesSoulRefresh -SyncContainer
             }
+        }
+        if (-not $Service -or $Service -eq "llama-server") {
+            Invoke-BootstrapUpgradeResume
         }
     } finally {
         Pop-Location
@@ -1242,12 +1613,20 @@ function Invoke-Restart {
                 Invoke-HermesSoulRefresh
             }
             $composeExit = Invoke-ODSDockerCompose -InstallDir $InstallDir -ComposeFlags $flags `
-                -ComposeArgs @("restart", $Service)
+                -ComposeArgs @("up", "-d", "--force-recreate", "--no-build", "--pull", "never", $Service)
             if ($composeExit -ne 0) {
-                Write-AIError "docker compose restart failed (exit code: $composeExit)"
-                Write-ODSComposeDiagnostics -InstallDir $InstallDir -ComposeFlags $flags `
-                    -Phase "ods.ps1 restart ($Service)"
-                exit 1
+                Write-AIWarn "docker compose force-recreate returned $composeExit; retrying start for $Service."
+                $retryArgs = @("up", "-d", "--no-build", "--pull", "never", $Service)
+                $composeExit = Invoke-ODSComposeUpWithStartupRetry -ComposeFlags $flags `
+                    -ComposeArgs $retryArgs `
+                    -Services @($Service) `
+                    -Description "docker compose start for $Service"
+                if ($composeExit -ne 0) {
+                    Write-AIError "docker compose up --force-recreate failed (exit code: $composeExit)"
+                    Write-ODSComposeDiagnostics -InstallDir $InstallDir -ComposeFlags $flags `
+                        -Phase "ods.ps1 restart ($Service)"
+                    exit 1
+                }
             }
             Write-AISuccess "$Service restarted"
             if ($Service -eq "hermes" -and $hermesInStack) {
@@ -1263,10 +1642,25 @@ function Invoke-Restart {
                 Invoke-HermesSoulRefresh
             }
             Write-AI "Restarting all services..."
+            $restartTargets = Get-ODSRunningComposeServices -ComposeFlags $flags
+            $composeArgs = @("up", "-d", "--force-recreate", "--no-build", "--pull", "never")
+            if ($restartTargets.Count -gt 0) {
+                $composeArgs += $restartTargets
+            } else {
+                Write-AIWarn "No running compose services found; falling back to full stack restart."
+            }
             $composeExit = Invoke-ODSDockerCompose -InstallDir $InstallDir -ComposeFlags $flags `
-                -ComposeArgs @("restart")
+                -ComposeArgs $composeArgs
+            if ($composeExit -ne 0 -and $restartTargets.Count -gt 0) {
+                Write-AIWarn "docker compose force-recreate returned $composeExit; retrying start for recreated running services."
+                $retryArgs = @("up", "-d", "--no-build", "--pull", "never") + $restartTargets
+                $composeExit = Invoke-ODSComposeUpWithStartupRetry -ComposeFlags $flags `
+                    -ComposeArgs $retryArgs `
+                    -Services $restartTargets `
+                    -Description "docker compose start for recreated running services"
+            }
             if ($composeExit -ne 0) {
-                Write-AIError "docker compose restart failed (exit code: $composeExit)"
+                Write-AIError "docker compose up --force-recreate failed (exit code: $composeExit)"
                 Write-ODSComposeDiagnostics -InstallDir $InstallDir -ComposeFlags $flags -Phase "ods.ps1 restart (all)"
                 exit 1
             }
@@ -1274,6 +1668,9 @@ function Invoke-Restart {
             if ($hermesInStack) {
                 Invoke-HermesSoulRefresh -SyncContainer
             }
+        }
+        if (-not $Service -or $Service -eq "llama-server") {
+            Invoke-BootstrapUpgradeResume
         }
     } finally {
         Pop-Location
@@ -1715,7 +2112,7 @@ function Invoke-Agent {
 `$env:PATH = $_dockerPathLiteral + `$env:PATH
 `$agentArgs = $_pythonPrefixArgsLiteral + @($_agentScriptLiteral, '--port', '$port', '--pid-file', $_pidFileLiteral, '--install-dir', $_installDirLiteral)
 Set-Location $_installDirLiteral
-Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirectory $_installDirLiteral -WindowStyle Hidden -RedirectStandardError $_logFileLiteral -Wait
+Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirectory $_installDirLiteral -WindowStyle Hidden -RedirectStandardError $_logFileLiteral
 "@
             $_encodedAgentCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_agentCommand))
             try { Stop-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME -ErrorAction SilentlyContinue } catch { }
