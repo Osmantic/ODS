@@ -325,30 +325,37 @@ function New-ODSEnv {
             if ($ok -and $outIana) { $ianaId = $outIana }
         } catch { }
         if ($ianaId) { $ianaId } else {
+            # PowerShell `switch` runs *every* matching arm, and as a
+            # subexpression it collects all emitted values into an array, so
+            # multi-matching IDs (e.g. "AUS Eastern Standard Time" hits both
+            # "*AUS Eastern*" and "*Eastern*") would write an invalid
+            # "TIMEZONE=America/New_York Australia/Sydney". `break` on every arm
+            # makes the first match win; the more specific "*AUS Eastern*" is
+            # ordered ahead of "*Eastern*" so it takes precedence.
             switch -Wildcard ($tzInfo.Id) {
-                "*Eastern*"    { "America/New_York" }
-                "*Central*"    { "America/Chicago" }
-                "*Mountain*"   { "America/Denver" }
-                "*Pacific*"    { "America/Los_Angeles" }
-                "*Alaska*"     { "America/Anchorage" }
-                "*Hawaii*"     { "Pacific/Honolulu" }
-                "*UTC*"        { "UTC" }
-                "*GMT*"        { "Europe/London" }
-                "*W. Europe*"  { "Europe/Berlin" }
-                "*Romance*"    { "Europe/Paris" }
-                "*India*"      { "Asia/Kolkata" }
-                "*China*"      { "Asia/Shanghai" }
-                "*Tokyo*"      { "Asia/Tokyo" }
-                "*Korea*"      { "Asia/Seoul" }
-                "*AUS Eastern*"  { "Australia/Sydney" }
-                "*E. South America*" { "America/Sao_Paulo" }
-                "*SE Asia*"    { "Asia/Bangkok" }
-                "*Arab*"       { "Asia/Riyadh" }
-                "*Egypt*"      { "Africa/Cairo" }
-                "*South Africa*" { "Africa/Johannesburg" }
-                "*E. Europe*"  { "Europe/Bucharest" }
-                "*FLE*"        { "Europe/Kiev" }
-                default        { "UTC" }
+                "*AUS Eastern*"  { "Australia/Sydney"; break }
+                "*Eastern*"    { "America/New_York"; break }
+                "*Central*"    { "America/Chicago"; break }
+                "*Mountain*"   { "America/Denver"; break }
+                "*Pacific*"    { "America/Los_Angeles"; break }
+                "*Alaska*"     { "America/Anchorage"; break }
+                "*Hawaii*"     { "Pacific/Honolulu"; break }
+                "*UTC*"        { "UTC"; break }
+                "*GMT*"        { "Europe/London"; break }
+                "*W. Europe*"  { "Europe/Berlin"; break }
+                "*Romance*"    { "Europe/Paris"; break }
+                "*India*"      { "Asia/Kolkata"; break }
+                "*China*"      { "Asia/Shanghai"; break }
+                "*Tokyo*"      { "Asia/Tokyo"; break }
+                "*Korea*"      { "Asia/Seoul"; break }
+                "*E. South America*" { "America/Sao_Paulo"; break }
+                "*SE Asia*"    { "Asia/Bangkok"; break }
+                "*Arab*"       { "Asia/Riyadh"; break }
+                "*Egypt*"      { "Africa/Cairo"; break }
+                "*South Africa*" { "Africa/Johannesburg"; break }
+                "*E. Europe*"  { "Europe/Bucharest"; break }
+                "*FLE*"        { "Europe/Kiev"; break }
+                default        { "UTC"; break }
             }
         }
     } catch { "UTC" })
