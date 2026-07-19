@@ -63,6 +63,24 @@ class TestGetModelInfo:
         assert info.size_gb == 35.0
         assert info.quantization == "GGUF"
 
+    def test_parses_numeric_context(self, install_dir):
+        env_file = install_dir / ".env"
+        env_file.write_text('LLM_MODEL=Qwen2.5-7B-Instruct\nCTX_SIZE=8192\n')
+
+        info = get_model_info()
+        assert info is not None
+        assert info.context_length == 8192
+
+    def test_non_numeric_context_falls_back_to_default(self, install_dir):
+        # A non-numeric CTX_SIZE/MAX_CONTEXT (e.g. "auto") must not 500 every
+        # caller of get_model_info(); it falls back to the default context.
+        env_file = install_dir / ".env"
+        env_file.write_text('LLM_MODEL=Qwen2.5-7B-Instruct\nCTX_SIZE=auto\n')
+
+        info = get_model_info()
+        assert info is not None
+        assert info.context_length == 32768
+
     def test_returns_none_when_no_env(self, install_dir):
         # No .env file created
         assert get_model_info() is None
