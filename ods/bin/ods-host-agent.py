@@ -980,10 +980,14 @@ def read_json_body(handler) -> dict | None:
         json_response(handler, 400, {"error": "Request body required"})
         return None
     try:
-        return json.loads(handler.rfile.read(min(length, MAX_BODY)))
+        data = json.loads(handler.rfile.read(min(length, MAX_BODY)))
     except (json.JSONDecodeError, UnicodeDecodeError):
         json_response(handler, 400, {"error": "Invalid JSON"})
         return None
+    if not isinstance(data, dict):
+        json_response(handler, 400, {"error": "JSON body must be an object"})
+        return None
+    return data
 
 
 def read_optional_json_body(handler) -> dict | None:
