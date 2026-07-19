@@ -62,7 +62,7 @@ if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
         RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
     fi
     RAM_GB=$((RAM_KB / 1024 / 1024))
-    DISK_AVAIL=$(df -BG "$HOME" | tail -1 | awk '{print $4}' | tr -d 'G')
+    DISK_AVAIL=$(df -Pk "$HOME" 2>/dev/null | tail -1 | awk '{printf "%d", $4 / 1048576}')
     BACKEND_ID="cpu"
     LLM_HEALTHCHECK_URL="http://localhost:4000/health/readiness"
     LLM_PUBLIC_API_PORT="4000"
@@ -123,7 +123,7 @@ while [[ -n "$_disk_probe_path" ]] && [[ ! -e "$_disk_probe_path" ]]; do
     _disk_probe_path="$(dirname "$_disk_probe_path")"
 done
 _disk_probe_path="${_disk_probe_path:-$HOME}"
-DISK_AVAIL=$(df -BG "$_disk_probe_path" | tail -1 | awk '{print $4}' | tr -d 'G')
+DISK_AVAIL=$(df -Pk "$_disk_probe_path" 2>/dev/null | tail -1 | awk '{printf "%d", $4 / 1048576}')
 log "Available disk: ${DISK_AVAIL}GB (on filesystem: $_disk_probe_path)"
 
 # GPU Detection
