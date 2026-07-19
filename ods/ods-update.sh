@@ -570,20 +570,23 @@ cmd_backup() {
     mkdir -p "$backup_path"
     
     # Backup compose files
+    # NB: x=$((x + 1)) not ((x++)) — the post-increment form evaluates to 0
+    # on the first increment, which set -e treats as failure and aborts the
+    # backup after copying a single file.
     local files_backed_up=0
     for pattern in "docker-compose*.yml" "docker-compose*.yaml" ".env" ".env.*"; do
         for file in "${INSTALL_DIR}"/${pattern}; do
             if [[ -f "$file" ]]; then
                 cp "$file" "$backup_path/"
-                ((files_backed_up++))
+                files_backed_up=$((files_backed_up + 1))
             fi
         done
     done
-    
+
     # Backup version file
     if [[ -f "$VERSION_FILE" ]]; then
         cp "$VERSION_FILE" "$backup_path/.version"
-        ((files_backed_up++))
+        files_backed_up=$((files_backed_up + 1))
     fi
     
     # Generate metadata (use jq for safe JSON construction)
@@ -604,7 +607,7 @@ cmd_backup() {
     backup_dirs=$(find "$BACKUP_DIR" -maxdepth 1 -type d -name "backup-*" | sort -r)
     local count=0
     for dir in $backup_dirs; do
-        ((count++))
+        count=$((count + 1))
         if ((count > MAX_BACKUPS)); then
             log_info "Removing old backup: $(basename "$dir")"
             rm -rf "$dir"

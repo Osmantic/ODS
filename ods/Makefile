@@ -78,6 +78,9 @@ test: ## Run unit and contract tests
 	@echo "=== bootstrap OpenClaw compose-guard regression ==="
 	@bash tests/test-bootstrap-openclaw-compose-guard.sh
 	@echo ""
+	@echo "=== ods-update.sh backup command ==="
+	@bash tests/test-update-script-backup.sh
+	@echo ""
 	@echo "=== bootstrap-upgrade spawn closes inherited FDs ==="
 	@bash tests/test-bootstrap-upgrade-close-inherited-fds.sh
 	@echo ""
