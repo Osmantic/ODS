@@ -380,6 +380,18 @@ def get_gpu_info() -> Optional[GPUInfo]:
     return None
 
 
+def is_gpu_idle(info: GPUInfo, threshold_percent: int = 10) -> Optional[bool]:
+    """Return True if aggregate GPU utilization is at or below threshold_percent.
+
+    Pure function — no I/O. `info` is an aggregate GPUInfo (see get_gpu_info).
+    Note: backends that cannot report utilization (Apple, AMD host runtime)
+    return None.
+    """
+    if info.gpu_backend == "apple" or "host runtime" in info.name.lower():
+        return None
+    return info.utilization_percent <= threshold_percent
+
+
 # ============================================================================
 # Topology — read from file written by installer / ods-cli
 # ============================================================================
