@@ -423,3 +423,33 @@ def test_published_exact_requires_matching_signature(data_dir):
     assert perf["source"] == "published_exact"
     assert perf["tokensPerSec"] == 44.2
     assert perf["sourceUrl"] == "https://example.test/bench"
+
+
+def test_published_exact_matches_gguf_stem_identity(data_dir):
+    evidence = [{
+        "model_id": "Qwen3.5-9B-Q4_K_M",
+        "model_names": [],
+        "quantization": "Q4_K_M",
+        "backend": "nvidia",
+        "gpu_name": "NVIDIA GeForce RTX 4060",
+        "vram_gb": 8,
+        "context_length": 32768,
+        "tokens_per_second": 43.7,
+        "source_url": "https://example.test/stem-bench",
+    }]
+
+    perf = evaluate_performance(
+        _model(),
+        _gpu(),
+        {"quantization": "Q4_K_M", "readable": False},
+        False,
+        0,
+        32768,
+        {},
+        evidence,
+        True,
+    )
+
+    assert perf["source"] == "published_exact"
+    assert perf["tokensPerSec"] == 43.7
+    assert perf["sourceUrl"] == "https://example.test/stem-bench"
