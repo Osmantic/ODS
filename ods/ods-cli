@@ -2560,7 +2560,9 @@ validate_preset_compatibility() {
     local missing_exts=()
     while IFS=: read -r state sid; do
         [[ -z "$sid" ]] && continue
+        # Check built-in extensions first, then dashboard-installed user extensions
         local ext_dir="$INSTALL_DIR/extensions/services/$sid"
+        [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
         if [[ ! -d "$ext_dir" ]]; then
             missing_exts+=("$sid")
         fi
@@ -2659,20 +2661,25 @@ META
             if [[ -f "$preset_dir/extensions.list" ]]; then
                 local enabled=0 disabled=0
                 while IFS=: read -r state sid; do
+                    # Check built-in extensions first, then dashboard-installed user extensions
                     local ext_dir="$INSTALL_DIR/extensions/services/$sid"
+                    [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
                     [[ -d "$ext_dir" ]] || continue
                     local cf="$ext_dir/compose.yaml"
                     local cf_dis="$ext_dir/compose.yaml.disabled"
 
+                    # NB: enabled=$((enabled + 1)) not ((enabled++)) — the
+                    # post-increment form evaluates to 0 on the first hit,
+                    # which set -e treats as failure and aborts mid-restore.
                     if [[ "$state" == "enabled" ]]; then
                         if [[ -f "$cf_dis" && ! -f "$cf" ]]; then
                             mv "$cf_dis" "$cf"
-                            ((enabled++))
+                            enabled=$((enabled + 1))
                         fi
                     elif [[ "$state" == "disabled" ]]; then
                         if [[ -f "$cf" ]]; then
                             mv "$cf" "$cf_dis"
-                            ((disabled++))
+                            disabled=$((disabled + 1))
                         fi
                     fi
                 done < "$preset_dir/extensions.list"
