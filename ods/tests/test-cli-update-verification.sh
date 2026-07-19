@@ -38,9 +38,10 @@ trap 'rm -rf "$FIXTURE"' EXIT
 # ---------------------------------------------------------------------------
 # Fixture: minimal install dir plus docker/curl shims
 # ---------------------------------------------------------------------------
-mkdir -p "$FIXTURE/lib" "$FIXTURE/extensions/services/bsvc" "$FIXTURE/extensions/services/oneshot" "$FIXTURE/bin"
+mkdir -p "$FIXTURE/lib" "$FIXTURE/installers/lib" "$FIXTURE/extensions/services/bsvc" "$FIXTURE/extensions/services/oneshot" "$FIXTURE/bin"
 cp "$ROOT_DIR/ods-cli" "$FIXTURE/ods-cli"
 cp "$ROOT_DIR"/lib/*.sh "$FIXTURE/lib/"
+cp "$ROOT_DIR/installers/lib/compose-images.sh" "$FIXTURE/installers/lib/compose-images.sh"
 : > "$FIXTURE/docker-compose.base.yml"
 
 cat > "$FIXTURE/extensions/services/bsvc/manifest.yaml" <<'EOF'
@@ -81,8 +82,36 @@ echo '{"ods_version": "2.0.1"}' > "$FIXTURE/manifest.json"
 # FAKE_DOCKER_PS_EMPTY=1; `info` supplies a CPU count for the budget calc
 cat > "$FIXTURE/bin/docker" <<'SH'
 #!/usr/bin/env bash
+echo "DOCKER_ARGS: $*" >> "${DOCKER_CALL_LOG:?}"
 case "${1:-}" in
-    compose) exit 0 ;;
+    compose)
+        if [[ "$*" == *"config --format json"* ]]; then
+            cat <<'JSON'
+{
+  "services": {
+    "llama-server": {
+      "build": {"context": "./extensions/services/llama-server"},
+      "image": "ods-lemonade-server:latest"
+    },
+    "remote-helper": {
+      "image": "caddy:2.11.3-alpine"
+    }
+  }
+}
+JSON
+            exit 0
+        fi
+        exit 0
+        ;;
+    pull)
+        case "${2:-}" in
+            ods-*|ods-*:*|docker.io/library/ods-*)
+                echo "unexpected local image pull: ${2:-}" >&2
+                exit 42
+                ;;
+        esac
+        exit 0
+        ;;
     ps)
         [[ "${FAKE_DOCKER_PS_EMPTY:-}" == "1" ]] && exit 0
         echo "ods-bsvc"
@@ -105,11 +134,12 @@ ODS_VERSION=2.0.0
 GPU_BACKEND=nvidia
 SHIELD_API_KEY=test-fixture-key
 EOF
+    : > "$FIXTURE/docker.log"
 }
 
 run_update() {
     # Never let a non-zero CLI exit kill the test; callers assert on output/state
-    PATH="$FIXTURE/bin:$PATH" ODS_HOME="$FIXTURE" \
+    PATH="$FIXTURE/bin:$PATH" ODS_HOME="$FIXTURE" DOCKER_CALL_LOG="$FIXTURE/docker.log" \
         bash "$FIXTURE/ods-cli" update 2>&1 || true
 }
 
@@ -139,6 +169,12 @@ if echo "$output" | grep -q "Update verification failed"; then
     fail "update reported a false verification failure"
 else
     pass "update reported no verification failure"
+fi
+if grep -q 'DOCKER_ARGS: pull caddy:2.11.3-alpine' "$FIXTURE/docker.log" &&
+   ! grep -q 'DOCKER_ARGS: pull ods-lemonade-server:latest' "$FIXTURE/docker.log"; then
+    pass "update pulls registry images without pulling local build tags"
+else
+    fail "update did not filter local build tags during pull: $(grep 'DOCKER_ARGS: pull' "$FIXTURE/docker.log" | tr '\n' ';')"
 fi
 
 # ---------------------------------------------------------------------------
