@@ -953,8 +953,10 @@ cmd_health() {
     local dashboard_api_port="${DASHBOARD_API_PORT:-}"
     [[ -n "$dashboard_api_port" ]] || dashboard_api_port="$(env_file_value DASHBOARD_API_PORT)"
     dashboard_api_port="${dashboard_api_port:-3002}"
-    if curl -sf "http://127.0.0.1:${dashboard_api_port}/health" &>/dev/null; then
+    if curl -sf --max-time 15 "http://127.0.0.1:${dashboard_api_port}/health" &>/dev/null; then
         log_ok "Dashboard API: healthy"
+    elif curl -sf --max-time 15 "http://127.0.0.1:${dashboard_api_port}/api/status" &>/dev/null; then
+        log_ok "Dashboard API: responding"
     else
         log_warn "Dashboard API: not responding on port ${dashboard_api_port}"
     fi
@@ -964,7 +966,7 @@ cmd_health() {
     [[ -n "$llama_server_port" ]] || llama_server_port="$(env_file_value OLLAMA_PORT)"
     [[ -n "$llama_server_port" ]] || llama_server_port="$(env_file_value LLAMA_SERVER_PORT)"
     llama_server_port="${llama_server_port:-8080}"
-    if curl -sf "http://127.0.0.1:${llama_server_port}/v1/models" &>/dev/null; then
+    if curl -sf --max-time 15 "http://127.0.0.1:${llama_server_port}/v1/models" &>/dev/null; then
         log_ok "llama-server: healthy"
     else
         log_warn "llama-server: not responding on port ${llama_server_port}"
