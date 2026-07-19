@@ -150,7 +150,7 @@ _ods_cli_wait_for_bootstrap_compose_safe() {
     while true; do
         status="$(_ods_cli_bootstrap_status)"
         case "$status" in
-            starting|verifying|swapping)
+            downloading|starting|verifying|swapping)
                 if [[ "$announced" == "false" ]]; then
                     log "  Model Upgrade: $status; waiting before $action touches llama-server"
                     announced=true
@@ -904,6 +904,59 @@ _ods_cli_rebuild_images() {
     fi
 }
 
+_ods_cli_pull_external_images() {
+    local flags=("$@")
+    local helper="$INSTALL_DIR/installers/lib/compose-images.sh"
+
+    if ! command -v ods_compose_external_images >/dev/null 2>&1 && [[ -f "$helper" ]]; then
+        # Reuse the installer's image discovery contract: pull registry images,
+        # skip local build tags such as ods-lemonade-server:latest.
+        . "$helper"
+    fi
+
+    if ! command -v ods_compose_external_images >/dev/null 2>&1; then
+        _compose_run_with_summary "Pulling latest images" "${flags[@]}" pull
+        return
+    fi
+
+    local image_output=""
+    if ! image_output="$(ods_compose_external_images "docker compose" "${flags[@]}")"; then
+        warn "Could not resolve external Compose image list; falling back to docker compose pull."
+        _compose_run_with_summary "Pulling latest images" "${flags[@]}" pull
+        return
+    fi
+
+    local -a images=()
+    local image
+    while IFS= read -r image; do
+        [[ -n "$image" ]] && images+=("$image")
+    done <<< "$image_output"
+
+    if (( ${#images[@]} == 0 )); then
+        success "Pulling latest images — done"
+        return 0
+    fi
+
+    _check_docker_access
+    log "Pulling latest images..."
+
+    local count=0 total=${#images[@]} failed=0
+    for image in "${images[@]}"; do
+        count=$((count + 1))
+        log "  [$count/$total] $image"
+        if ! docker pull "$image"; then
+            failed=$((failed + 1))
+        fi
+    done
+
+    if (( failed > 0 )); then
+        log_error "Pulling latest images failed: $failed/$total image(s)"
+        return 1
+    fi
+
+    success "Pulling latest images — done"
+}
+
 #=============================================================================
 # Commands
 #=============================================================================
@@ -1217,6 +1270,10 @@ cmd_restart() {
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
         _ods_cli_wait_for_bootstrap_compose_safe "restart"
+        load_env
+        ensure_llama_cpu_budget
+        flags_str=$(get_compose_flags)
+        read -ra flags <<< "$flags_str"
     fi
 
     if [[ -z "$resolved_service" ]]; then
@@ -1364,6 +1421,10 @@ cmd_start() {
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
         _ods_cli_wait_for_bootstrap_compose_safe "start"
+        load_env
+        ensure_llama_cpu_budget
+        flags_str=$(get_compose_flags)
+        read -ra flags <<< "$flags_str"
     fi
 
     if [[ -z "$resolved_service" ]]; then
@@ -1596,9 +1657,15 @@ cmd_update() {
         warn "ods-update.sh and ods-backup.sh not found; skipping pre-update snapshot."
     fi
 
-    if ! _compose_run_with_summary "Pulling latest images" "${flags[@]}" pull; then
+    if ! _ods_cli_pull_external_images "${flags[@]}"; then
         error "Failed to pull latest images"
     fi
+
+    _ods_cli_wait_for_bootstrap_compose_safe "update"
+    load_env
+    ensure_llama_cpu_budget
+    flags_str=$(get_compose_flags)
+    read -ra flags <<< "$flags_str"
 
     [[ "$rebuild_images" == "true" ]] && _ods_cli_rebuild_images "${flags[@]}"
 
