@@ -165,7 +165,7 @@ def _build_version_result(current: str, payload: Optional[dict]) -> dict:
         "latest": None,
         "update_available": False,
         "changelog_url": None,
-        "checked_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
     }
     if not payload:
         return result
@@ -198,7 +198,7 @@ async def _refresh_release_cache() -> Optional[dict]:
         payload = {
             "latest": data.get("tag_name", "").lstrip("v"),
             "changelog_url": data.get("html_url"),
-            "checked_at": datetime.now(timezone.utc).isoformat() + "Z",
+            "checked_at": datetime.now(timezone.utc).isoformat(),
         }
         _version_cache = {
             "expires_at": time.monotonic() + _VERSION_CACHE_TTL,
@@ -255,13 +255,13 @@ async def get_release_manifest():
                 {"version": r.get("tag_name", "").lstrip("v"), "date": r.get("published_at", ""), "title": r.get("name", ""), "changelog": r.get("body", "")[:500] + "..." if len(r.get("body", "")) > 500 else r.get("body", ""), "url": r.get("html_url", ""), "prerelease": r.get("prerelease", False)}
                 for r in releases
             ],
-            "checked_at": datetime.now(timezone.utc).isoformat() + "Z"
+            "checked_at": datetime.now(timezone.utc).isoformat()
         }
     except (httpx.HTTPError, httpx.TimeoutException, json.JSONDecodeError, OSError):
         current = await asyncio.to_thread(_read_current_version)
         return {
-            "releases": [{"version": current, "date": datetime.now(timezone.utc).isoformat() + "Z", "title": f"ODS {current}", "changelog": "Release information unavailable. Check GitHub directly.", "url": _GITHUB_RELEASES_PAGE, "prerelease": False}],
-            "checked_at": datetime.now(timezone.utc).isoformat() + "Z",
+            "releases": [{"version": current, "date": datetime.now(timezone.utc).isoformat(), "title": f"ODS {current}", "changelog": "Release information unavailable. Check GitHub directly.", "url": _GITHUB_RELEASES_PAGE, "prerelease": False}],
+            "checked_at": datetime.now(timezone.utc).isoformat(),
             "error": "Could not fetch release information"
         }
 
