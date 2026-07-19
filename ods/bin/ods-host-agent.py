@@ -964,7 +964,9 @@ def check_auth(handler) -> bool:
     if not auth.startswith("Bearer "):
         json_response(handler, 401, {"error": "Authorization header required"})
         return False
-    if not secrets.compare_digest(auth[7:], AGENT_API_KEY):
+    # Compared as UTF-8 bytes: compare_digest raises TypeError on non-ASCII
+    # str, which would turn an unauthenticated request into a 500 not a 403.
+    if not secrets.compare_digest(auth[7:].encode("utf-8"), AGENT_API_KEY.encode("utf-8")):
         json_response(handler, 403, {"error": "Invalid API key"})
         return False
     return True
