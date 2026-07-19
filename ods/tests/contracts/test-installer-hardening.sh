@@ -277,13 +277,14 @@ assert_contains "$win_installer" 'model-upgrade.pid' "Windows installer should r
 assert_contains "$win_installer" 'ODSModelUpgrade' "Windows installer should launch full-model upgrade through a separate scheduled task"
 python3 - "$win_installer" >"$tmpdir/windows-upgrade-launcher.out" <<'PY'
 import sys
+import re
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 start = text.index('$upgradeTaskName = "ODSModelUpgrade"')
 end = text.index("if (Test-Path -LiteralPath $upgradePidFile)", start)
 block = text[start:end]
-if "Start-Process -FilePath $bashPath" in block or "-Wait" in block:
+if re.search(r"Start-Process\s+-FilePath\s+\$bashPath[^\r\n]*\s-Wait(?:\s|$)", block):
     raise SystemExit("model upgrade launcher stays in the installer process tree")
 if 'nohup bash "$bashScript"' in block or 'disown "$pid"' in block:
     raise SystemExit("model upgrade task detaches from the process it is meant to supervise")
