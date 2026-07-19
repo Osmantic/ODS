@@ -19,5 +19,6 @@
   "searxng",
   "token-spy",
   "tts",
-  "whisper"
+  "whisper",
+  "minio"
 ]

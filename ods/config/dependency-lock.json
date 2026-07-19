@@ -8,6 +8,18 @@
   },
   "entries": [
     {
+      "id": "ape.python",
+      "type": "image",
+      "path": "extensions/services/ape/Dockerfile",
+      "value": "python:3.12-slim"
+    },
+    {
+      "id": "apple.llama-server",
+      "type": "image",
+      "path": "docker-compose.apple.yml",
+      "value": "ghcr.io/ggml-org/llama.cpp:server-b8248"
+    },
+    {
       "id": "base.llama-server",
       "type": "image",
       "path": "docker-compose.base.yml",
@@ -18,36 +30,6 @@
       "type": "image",
       "path": "docker-compose.base.yml",
       "value": "ghcr.io/open-webui/open-webui:v0.7.2"
-    },
-    {
-      "id": "apple.llama-server",
-      "type": "image",
-      "path": "docker-compose.apple.yml",
-      "value": "ghcr.io/ggml-org/llama.cpp:server-b8248"
-    },
-    {
-      "id": "cpu.llama-server",
-      "type": "image",
-      "path": "docker-compose.cpu.yml",
-      "value": "ghcr.io/ggml-org/llama.cpp:server-b8248"
-    },
-    {
-      "id": "intel.llama-server",
-      "type": "image",
-      "path": "docker-compose.intel.yml",
-      "value": "ghcr.io/ggml-org/llama.cpp:server-intel-b8248"
-    },
-    {
-      "id": "nvidia.llama-server",
-      "type": "image",
-      "path": "docker-compose.nvidia.yml",
-      "value": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014"
-    },
-    {
-      "id": "ape.python",
-      "type": "image",
-      "path": "extensions/services/ape/Dockerfile",
-      "value": "python:3.12-slim"
     },
     {
       "id": "brave-search.node",
@@ -68,16 +50,10 @@
       "value": "nvidia/cuda:12.8.0-runtime-ubuntu22.04"
     },
     {
-      "id": "dashboard.node",
+      "id": "cpu.llama-server",
       "type": "image",
-      "path": "extensions/services/dashboard/Dockerfile",
-      "value": "node:20.19-alpine"
-    },
-    {
-      "id": "dashboard.nginx",
-      "type": "image",
-      "path": "extensions/services/dashboard/Dockerfile",
-      "value": "nginx:alpine"
+      "path": "docker-compose.cpu.yml",
+      "value": "ghcr.io/ggml-org/llama.cpp:server-b8248"
     },
     {
       "id": "dashboard-api.python",
@@ -86,10 +62,16 @@
       "value": "python:3.11-slim"
     },
     {
-      "id": "ods-proxy.caddy",
+      "id": "dashboard.nginx",
       "type": "image",
-      "path": "extensions/services/ods-proxy/compose.yaml",
-      "value": "caddy:2.11.3-alpine"
+      "path": "extensions/services/dashboard/Dockerfile",
+      "value": "nginx:alpine"
+    },
+    {
+      "id": "dashboard.node",
+      "type": "image",
+      "path": "extensions/services/dashboard/Dockerfile",
+      "value": "node:20.19-alpine"
     },
     {
       "id": "embeddings.tei",
@@ -98,46 +80,28 @@
       "value": "ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1"
     },
     {
-      "id": "hermes.agent",
-      "type": "image",
-      "path": "extensions/services/hermes/compose.yaml",
-      "value": "nousresearch/hermes-agent:v2026.5.16"
-    },
-    {
       "id": "hermes-proxy.caddy",
       "type": "image",
       "path": "extensions/services/hermes-proxy/compose.yaml",
       "value": "caddy:2.11.3-alpine"
     },
     {
-      "id": "langfuse.web",
+      "id": "hermes.agent",
       "type": "image",
-      "path": "extensions/services/langfuse/compose.yaml.disabled",
-      "value": "langfuse/langfuse:3.159.0"
+      "path": "extensions/services/hermes/compose.yaml",
+      "value": "nousresearch/hermes-agent:v2026.5.16"
     },
     {
-      "id": "langfuse.worker",
+      "id": "intel.llama-server",
       "type": "image",
-      "path": "extensions/services/langfuse/compose.yaml.disabled",
-      "value": "langfuse/langfuse-worker:3.159.0"
-    },
-    {
-      "id": "langfuse.postgres",
-      "type": "image",
-      "path": "extensions/services/langfuse/compose.yaml.disabled",
-      "value": "postgres:17.9-alpine"
+      "path": "docker-compose.intel.yml",
+      "value": "ghcr.io/ggml-org/llama.cpp:server-intel-b8248"
     },
     {
       "id": "langfuse.clickhouse",
       "type": "image",
       "path": "extensions/services/langfuse/compose.yaml.disabled",
       "value": "clickhouse/clickhouse-server:26.2.4.23"
-    },
-    {
-      "id": "langfuse.redis",
-      "type": "image",
-      "path": "extensions/services/langfuse/compose.yaml.disabled",
-      "value": "redis:7.4.8-alpine"
     },
     {
       "id": "langfuse.minio",
@@ -152,17 +116,34 @@
       "value": "minio/mc:RELEASE.2025-08-13T08-35-41Z"
     },
     {
+      "id": "langfuse.postgres",
+      "type": "image",
+      "path": "extensions/services/langfuse/compose.yaml.disabled",
+      "value": "postgres:17.9-alpine"
+    },
+    {
+      "id": "langfuse.redis",
+      "type": "image",
+      "path": "extensions/services/langfuse/compose.yaml.disabled",
+      "value": "redis:7.4.8-alpine"
+    },
+    {
+      "id": "langfuse.web",
+      "type": "image",
+      "path": "extensions/services/langfuse/compose.yaml.disabled",
+      "value": "langfuse/langfuse:3.159.0"
+    },
+    {
+      "id": "langfuse.worker",
+      "type": "image",
+      "path": "extensions/services/langfuse/compose.yaml.disabled",
+      "value": "langfuse/langfuse-worker:3.159.0"
+    },
+    {
       "id": "litellm.proxy",
       "type": "image",
       "path": "extensions/services/litellm/compose.yaml",
       "value": "ghcr.io/berriai/litellm:v1.81.3-stable"
-    },
-    {
-      "id": "llama-server.rocm-build",
-      "type": "image",
-      "path": "extensions/services/llama-server/Dockerfile.amd",
-      "raw": "rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete",
-      "value": "rocm/dev-ubuntu-24.04:7.2-complete"
     },
     {
       "id": "llama-server.lemonade-runtime",
@@ -172,10 +153,41 @@
       "value": "ghcr.io/lemonade-sdk/lemonade-server:v10.2.0"
     },
     {
+      "id": "llama-server.rocm-build",
+      "type": "image",
+      "path": "extensions/services/llama-server/Dockerfile.amd",
+      "raw": "rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete",
+      "value": "rocm/dev-ubuntu-24.04:7.2-complete"
+    },
+    {
+      "id": "macos.placeholder-api",
+      "type": "image",
+      "path": "installers/macos/docker-compose.macos.yml",
+      "value": "busybox:1.36.1"
+    },
+    {
+      "id": "minio",
+      "type": "image",
+      "path": "extensions/services/minio/compose.yaml",
+      "value": "quay.io/minio/minio:RELEASE.2026-06-11T22-08-49Z"
+    },
+    {
       "id": "n8n.app",
       "type": "image",
       "path": "extensions/services/n8n/compose.yaml",
       "value": "n8nio/n8n:2.6.4"
+    },
+    {
+      "id": "nvidia.llama-server",
+      "type": "image",
+      "path": "docker-compose.nvidia.yml",
+      "value": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014"
+    },
+    {
+      "id": "ods-proxy.caddy",
+      "type": "image",
+      "path": "extensions/services/ods-proxy/compose.yaml",
+      "value": "caddy:2.11.3-alpine"
     },
     {
       "id": "openclaw.app",
@@ -240,12 +252,6 @@
       "value": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda"
     },
     {
-      "id": "macos.placeholder-api",
-      "type": "image",
-      "path": "installers/macos/docker-compose.macos.yml",
-      "value": "busybox:1.36.1"
-    },
-    {
       "id": "windows-amd-local.placeholder-api",
       "type": "image",
       "path": "installers/windows/docker-compose.windows-amd.local.yml",
@@ -278,16 +284,16 @@
   ],
   "allow_variable_refs": [
     {
+      "path": "docker-compose.arc.yml",
+      "value": "${LLAMA_ARC_IMAGE:-ods-llama-sycl:local}",
+      "default": "ods-llama-sycl:local",
+      "reason": "Intel Arc uses a local SYCL image by default and can be overridden for experiments."
+    },
+    {
       "path": "docker-compose.base.yml",
       "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014}",
       "default": "ghcr.io/ggml-org/llama.cpp:server-b9014",
       "reason": "Core llama.cpp image can be overridden for testing, but the shipped default is locked."
-    },
-    {
-      "path": "docker-compose.nvidia.yml",
-      "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014}",
-      "default": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014",
-      "reason": "NVIDIA llama.cpp image can be overridden for testing, but the shipped default is locked."
     },
     {
       "path": "docker-compose.cpu.yml",
@@ -302,10 +308,10 @@
       "reason": "Intel llama.cpp image can be overridden for testing, but the shipped default is locked."
     },
     {
-      "path": "docker-compose.arc.yml",
-      "value": "${LLAMA_ARC_IMAGE:-ods-llama-sycl:local}",
-      "default": "ods-llama-sycl:local",
-      "reason": "Intel Arc uses a local SYCL image by default and can be overridden for experiments."
+      "path": "docker-compose.nvidia.yml",
+      "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014}",
+      "default": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014",
+      "reason": "NVIDIA llama.cpp image can be overridden for testing, but the shipped default is locked."
     },
     {
       "path": "extensions/services/hermes/compose.yaml",
@@ -328,16 +334,29 @@
       "reason": "AMD runtime image is overrideable for hotfix testing while the default stays locked."
     },
     {
-      "path": "extensions/services/whisper/compose.yaml",
-      "value": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu}",
-      "default": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu",
-      "reason": "Whisper CPU image can be overridden by operators, but the shipped default is locked."
+      "id": "minio",
+      "type": "image",
+      "path": "extensions/services/minio/compose.yaml",
+      "value": "${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2026-06-11T22-08-49Z}",
+      "default": "quay.io/minio/minio:RELEASE.2026-06-11T22-08-49Z",
+      "reason": "MinIO S3 storage image is overrideable for hotfix testing while the shipped default stays locked."
+    },
+    {
+      "path": "extensions/services/minio/compose.yaml",
+      "value": "${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2026-06-11T22-08-49Z}",
+      "reason": "Allow MINIO_IMAGE override; locked default resolves to the pinned entry above."
     },
     {
       "path": "extensions/services/whisper/compose.nvidia.yaml",
       "value": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda}",
       "default": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda",
       "reason": "Whisper CUDA image can be overridden by operators, but the shipped default is locked."
+    },
+    {
+      "path": "extensions/services/whisper/compose.yaml",
+      "value": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu}",
+      "default": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu",
+      "reason": "Whisper CPU image can be overridden by operators, but the shipped default is locked."
     }
   ]
 }

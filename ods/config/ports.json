@@ -130,6 +130,20 @@
       "internal_port": 3003,
       "compose_managed": false,
       "manifest_service": "opencode"
+    },
+    {
+      "env_var": "MINIO_PORT",
+      "external_default": 9002,
+      "service_id": "minio",
+      "internal_port": 9000,
+      "manifest_service": "minio"
+    },
+    {
+      "env_var": "MINIO_CONSOLE_PORT",
+      "external_default": 9003,
+      "service_id": "minio",
+      "internal_port": 9001,
+      "include_in_example": false
     }
   ]
 }

@@ -145,6 +145,12 @@
       "lan_exposure": "operator-controlled",
       "auth_required": false,
       "notes": "Speech-to-text model API; audio may be sensitive."
+    },
+    "minio": {
+      "risk": "data-storage",
+      "lan_exposure": "operator-controlled",
+      "auth_required": true,
+      "notes": "S3-compatible object storage; data access controlled by root credentials."
     }
   }
 }
