@@ -1,0 +1,119 @@
+# hipfire — RDNA-native LLM inference engine, containerized for ODS.
+#
+# Two stages: the build needs the full ROCm SDK (hipcc compiles the HIP kernels,
+# which upstream does not commit), but serving needs only the HIP runtime + Bun.
+#
+# Corrections vs. the first draft, all verified against the real tree:
+#   - The HTTP server lives in cli/index.ts (Bun), NOT a "cli/serve_admission.ts"
+#     (that file does not exist on any ref). The Rust daemon has no HTTP deps at
+#     all — `serve` is a Bun process that spawns the daemon over JSON-lines stdio.
+#     So the runtime stage genuinely needs Bun.
+#   - There is no top-level registry/ dir. The model registry is cli/registry.json,
+#     so copying cli/ covers it. (The old draft's `COPY /src/registry` would have
+#     failed the build outright.)
+#   - HIPFIRE_DIR is NOT honored: cli/index.ts hardcodes join(homedir(), ".hipfire").
+#     Only HOME matters — hence ENV HOME below, and no HIPFIRE_DIR.
+#   - The engine probes kernels at {exe_dir}/kernels/compiled/{arch}, i.e. next to
+#     the daemon binary, so they land in bin/kernels/compiled/$AMDGPU_TARGET.
+#   - compile-kernels.sh writes to <repo>/kernels/compiled/<arch>.
+#
+ARG AMDGPU_TARGET=gfx1201
+# Pinned to a master commit, NOT v0.2.1: v0.2.1 cannot quantize this box's
+# Qwen3.6-35B-A3B MoE (it F16-dumps the expert tensors), and the gfx1201 kernel
+# work landed after the tag. Bump deliberately, never float.
+ARG HIPFIRE_REF=5d3683a7847391cf91bd76304188c926737d4146
+
+# ─────────────────────────────────────────────────────────────
+# Stage 1: builder — ROCm SDK, Rust daemon, HIP kernels
+# ─────────────────────────────────────────────────────────────
+# ROCm 7.2, NOT 7.0: on 7.0 the gfx1201 attention_dflash_wmma_* kernels fail to
+# compile (69 of 528 failed), and the host runs ROCm 7.2.4 anyway. Keep the
+# builder's ROCm major.minor aligned with the host's.
+FROM rocm/dev-ubuntu-24.04:7.2-complete AS builder
+
+ARG AMDGPU_TARGET
+ARG HIPFIRE_REF
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential git curl ca-certificates pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
+ENV PATH=/opt/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --default-toolchain stable --profile minimal
+
+WORKDIR /src
+RUN git clone https://github.com/Kaden-Schutt/hipfire.git . \
+ && git checkout --detach "${HIPFIRE_REF}"
+
+# The engine is an *example* target of hipfire-runtime, not a bin — this is how
+# upstream's own install.sh builds it.
+RUN cargo build --release --features deltanet --example daemon -p hipfire-runtime
+
+# Kernels are not committed; hipcc compiles them here. gfx1201 is already one of
+# compile-kernels.sh's default targets.
+# 69 of 528 kernels (all attention_dflash_wmma_* spec-decode variants) fail to
+# compile for gfx1201 upstream. Verified identical on the ROCm 7.2.4 HOST
+# toolchain, so it is not a container artifact — and the engine serves fine
+# without them (they are speculative-decode paths, not the AR decode hot path).
+# compile-kernels.sh therefore exits non-zero on a healthy build.
+#
+# So the gate is an explicit COUNT, not the script's exit code. This is NOT the
+# `|| true` antipattern: swallowing the status without checking anything is what
+# shipped ODS's llama-server an image with empty kernel dirs and a green build.
+# Here the count is asserted loudly and the build dies if the kernels aren't there.
+RUN ./scripts/compile-kernels.sh "${AMDGPU_TARGET}" || true; \
+    n=$(ls kernels/compiled/${AMDGPU_TARGET}/*.hsaco 2>/dev/null | wc -l); \
+    echo "kernels compiled for ${AMDGPU_TARGET}: $n"; \
+    if [ "$n" -lt 450 ]; then \
+        echo "FATAL: only $n kernels for ${AMDGPU_TARGET} (expected >=450)."; \
+        echo "       ROCm may not support this target; refusing to ship a hollow image."; \
+        exit 1; \
+    fi
+
+# ─────────────────────────────────────────────────────────────
+# Stage 2: runtime — HIP runtime + Bun + daemon + kernels + CLI
+# ─────────────────────────────────────────────────────────────
+FROM rocm/dev-ubuntu-24.04:7.2 AS runtime
+
+ARG AMDGPU_TARGET
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV BUN_INSTALL=/opt/bun
+ENV PATH=/opt/bun/bin:$PATH
+RUN curl -fsSL https://bun.sh/install | bash
+
+# The CLI resolves everything from $HOME/.hipfire — this is the only knob.
+ENV HOME=/opt/hipfire
+WORKDIR /opt/hipfire
+
+COPY --from=builder /src/target/release/examples/daemon \
+                    /opt/hipfire/.hipfire/bin/daemon
+COPY --from=builder /src/kernels/compiled/${AMDGPU_TARGET} \
+                    /opt/hipfire/.hipfire/bin/kernels/compiled/${AMDGPU_TARGET}
+COPY --from=builder /src/cli /opt/hipfire/.hipfire/cli
+
+RUN cd /opt/hipfire/.hipfire/cli && bun install --frozen-lockfile
+
+# Upstream's own wrapper: probes for bun, then runs the TS CLI.
+RUN printf '%s\n' \
+      '#!/bin/bash' \
+      'set -e' \
+      'exec /opt/bun/bin/bun run "$HOME/.hipfire/cli/index.ts" "$@"' \
+      > /usr/local/bin/hipfire \
+ && chmod +x /usr/local/bin/hipfire
+
+COPY hipfire-entrypoint.sh /usr/local/bin/hipfire-entrypoint.sh
+RUN chmod +x /usr/local/bin/hipfire-entrypoint.sh
+
+EXPOSE 11435
+
+# /health returns 503 while a model loads; a cold load can take minutes.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=5 \
+  CMD curl -fsS http://127.0.0.1:11435/health || exit 1
+
+ENTRYPOINT ["/usr/local/bin/hipfire-entrypoint.sh"]
