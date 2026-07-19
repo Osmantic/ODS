@@ -21,6 +21,25 @@ are intentionally accepting admin-owned files under your user profile. The
 Windows preflight warns because `.opencode`, `.env`, and `data/` should normally
 belong to your regular account.
 
+### Lemonade MSI fails during an AMD install
+
+Keep the ODS installer in a normal PowerShell session. ODS installs the
+Lemonade runtime for the current user under `%LOCALAPPDATA%\lemonade_server`;
+it does not require an Administrator shell or an all-users `Program Files`
+installation. The installer writes a verbose MSI log under the ODS install directory:
+
+```text
+<ODS install directory>\logs\lemonade-msi-install.log
+```
+
+With the default location this is `%USERPROFILE%\ods\logs\lemonade-msi-install.log`.
+If the installer was run with `-InstallDir`, use that directory instead.
+
+If Lemonade still fails, attach the installer output plus that log after
+reviewing it for local paths. ODS falls back to native Vulkan `llama-server`
+when Lemonade cannot be installed, but the installer output will make the
+Lemonade failure explicit.
+
 ---
 
 ## Docker Compose failed (during install or `ods.ps1`)

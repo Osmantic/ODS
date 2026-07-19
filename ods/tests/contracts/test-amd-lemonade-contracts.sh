@@ -262,6 +262,16 @@ else
     fail "amd.json: Windows Lemonade MSI contract missing"
 fi
 
+echo "[contract] Windows Lemonade follows the normal per-user install contract"
+if grep -q 'INSTALLDIR=' installers/windows/install-windows.ps1 \
+   && ! grep -q 'ALLUSERS=1' installers/windows/install-windows.ps1 \
+   && grep -q 'LOCALAPPDATA' installers/windows/lib/backend-contract.ps1 \
+   && grep -q 'LOCALAPPDATA' bin/ods-host-agent.py; then
+    pass "Windows Lemonade uses and resolves the per-user MSI install location"
+else
+    fail "Windows Lemonade must use the non-elevated per-user MSI install location across lifecycle paths"
+fi
+
 # ---------------------------------------------------------------------------
 # 14. Linux AMD image consumers use the same Lemonade image pin
 # ---------------------------------------------------------------------------
@@ -389,17 +399,17 @@ if command -v pwsh >/dev/null 2>&1; then
         }
         New-ODSEnv -InstallDir $installDir -TierConfig $tier -Tier "SH" -GpuBackend "amd" -AmdInferenceRuntime "lemonade" -AmdInferenceLocation "host" | Out-Null
         $envText = Get-Content -LiteralPath (Join-Path $installDir ".env") -Raw
-        if ($envText -notmatch "(?m)^ODS_MODE=lemonade$") {
+        if ($envText -notmatch "(?m)^ODS_MODE=lemonade\r?$") {
             throw "Expected Windows AMD Lemonade installs to write ODS_MODE=lemonade"
         }
-        if ($envText -notmatch "(?m)^LLM_BACKEND=lemonade$") {
+        if ($envText -notmatch "(?m)^LLM_BACKEND=lemonade\r?$") {
             throw "Expected Windows AMD Lemonade installs to write LLM_BACKEND=lemonade"
         }
         $litellmKey = [regex]::Match($envText, "(?m)^LITELLM_KEY=([^\r\n]+)\r?$").Groups[1].Value
         if ([string]::IsNullOrWhiteSpace($litellmKey)) {
             throw "Expected Windows AMD Lemonade installs to generate LITELLM_KEY"
         }
-        if ($envText -notmatch "(?m)^HERMES_LLM_BASE_URL=http://litellm:4000/v1$") {
+        if ($envText -notmatch "(?m)^HERMES_LLM_BASE_URL=http://litellm:4000/v1\r?$") {
             throw "Expected Windows AMD Lemonade Hermes to route through LiteLLM"
         }
         if ($envText -notmatch "(?m)^HERMES_LLM_API_KEY=$([regex]::Escape($litellmKey))\r?$") {
@@ -408,7 +418,7 @@ if command -v pwsh >/dev/null 2>&1; then
         if ($envText -match "(?m)^HERMES_LLM_BASE_URL=http://host\.docker\.internal:8080/api/v1$") {
             throw "Windows AMD Lemonade Hermes must not stream directly against native Lemonade"
         }
-        if ($envText -notmatch "(?m)^WHISPER_PORT=9100$") {
+        if ($envText -notmatch "(?m)^WHISPER_PORT=9100\r?$") {
             throw "Expected WHISPER_PORT=9100 for Windows AMD managed Lemonade"
         }
         $litellmConfig = Join-Path (Join-Path (Join-Path $installDir "config") "litellm") "lemonade.yaml"
@@ -422,21 +432,21 @@ if command -v pwsh >/dev/null 2>&1; then
         if ($litellmText -match "api_base: http://llama-server:8080/api/v1") {
             throw "Windows AMD Lemonade LiteLLM config must not route to in-container llama-server"
         }
-        if ($litellmText -notmatch "(?m)^  request_timeout: 900$" -or $litellmText -notmatch "(?m)^  stream_timeout: 900$") {
+        if ($litellmText -notmatch "(?m)^  request_timeout: 900\r?$" -or $litellmText -notmatch "(?m)^  stream_timeout: 900\r?$") {
             throw "Windows AMD Lemonade LiteLLM config must keep long-model proxy timeouts at 900s"
         }
 
         Set-Content -LiteralPath (Join-Path $installDir ".env") -Value "WHISPER_PORT=9000`n" -NoNewline
         New-ODSEnv -InstallDir $installDir -TierConfig $tier -Tier "SH" -GpuBackend "amd" -AmdInferenceRuntime "lemonade" -AmdInferenceLocation "host" | Out-Null
         $envText = Get-Content -LiteralPath (Join-Path $installDir ".env") -Raw
-        if ($envText -notmatch "(?m)^WHISPER_PORT=9100$") {
+        if ($envText -notmatch "(?m)^WHISPER_PORT=9100\r?$") {
             throw "Expected unsafe WHISPER_PORT=9000 to be remapped for Lemonade"
         }
 
         Set-Content -LiteralPath (Join-Path $installDir ".env") -Value "WHISPER_PORT=9200`n" -NoNewline
         New-ODSEnv -InstallDir $installDir -TierConfig $tier -Tier "SH" -GpuBackend "amd" -AmdInferenceRuntime "lemonade" -AmdInferenceLocation "host" | Out-Null
         $envText = Get-Content -LiteralPath (Join-Path $installDir ".env") -Raw
-        if ($envText -notmatch "(?m)^WHISPER_PORT=9200$") {
+        if ($envText -notmatch "(?m)^WHISPER_PORT=9200\r?$") {
             throw "Expected existing WHISPER_PORT override to be preserved"
         }
     '; then
@@ -457,6 +467,7 @@ if command -v pwsh >/dev/null 2>&1; then
     if ROOT_DIR="$ROOT_DIR" TEMP="$_ps_tmp" USERPROFILE="$_ps_tmp" pwsh -NoProfile -Command '
         $ErrorActionPreference = "Stop"
         function Write-AIWarn { param([string]$Message) Write-Host "WARN: $Message" }
+        . (Join-Path $env:ROOT_DIR "installers/windows/lib/detection.ps1")
         . (Join-Path $env:ROOT_DIR "installers/windows/lib/env-generator.ps1")
         $installDir = Join-Path $env:TEMP "ods-env-generator-windows-local-contract"
         Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -481,7 +492,7 @@ if command -v pwsh >/dev/null 2>&1; then
         if ($localText -notmatch "api_base: http://llama-server:8080/v1") {
             throw "Expected Windows NVIDIA local LiteLLM config to route through llama-server:8080/v1"
         }
-        if ($localText -notmatch "(?m)^  request_timeout: 900$" -or $localText -notmatch "(?m)^  stream_timeout: 900$") {
+        if ($localText -notmatch "(?m)^  request_timeout: 900\r?$" -or $localText -notmatch "(?m)^  stream_timeout: 900\r?$") {
             throw "Windows local LiteLLM config must keep long-model proxy timeouts at 900s"
         }
     '; then
