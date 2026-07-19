@@ -843,6 +843,53 @@ _compose_run_with_summary() {
     else
         warn "(no error keywords matched in compose log)"
     fi
+
+    # Connect failed services to logs and recovery steps if not in test stub mode
+    if [[ -z "${DOCKER_STUB_MODE:-}" ]]; then
+        local -a _compose_args=()
+        local _arg
+        for _arg in "$@"; do
+            [[ "$_arg" == "up" || "$_arg" == "down" || "$_arg" == "stop" || "$_arg" == "pull" ]] && break
+            _compose_args+=("$_arg")
+        done
+
+        local _failed_candidates=()
+        local _c
+        while read -r _c; do
+            [[ -n "$_c" ]] && _failed_candidates+=("$_c")
+        done < <(grep -oE 'ods-[a-zA-Z0-9_-]+' "$_compose_log" | sort -u || true)
+
+        local _failed_containers=()
+        if (( ${#_failed_candidates[@]} > 0 )); then
+            local _project_containers
+            _project_containers=$(docker compose "${_compose_args[@]}" ps -a --format "{{.Name}}" 2>/dev/null || true)
+
+            for _c in "${_failed_candidates[@]}"; do
+                if grep -qxFe "$_c" <<< "$_project_containers"; then
+                    local _inspect
+                    _inspect=$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$_c" 2>/dev/null || true)
+                    local _status="" _health=""
+                    read -r _status _health <<< "$_inspect"
+                    if [[ "$_status" == "exited" || "$_status" == "dead" || "$_status" == "restarting" || "$_health" == "unhealthy" ]]; then
+                        _failed_containers+=("$_c")
+                    fi
+                fi
+            done
+        fi
+
+        for _c in "${_failed_containers[@]}"; do
+            echo ""
+            warn "Recent logs for container $_c (evidence):"
+            docker logs --tail 20 "$_c" 2>&1 | sed 's/^/  /' || true
+        done
+
+        if (( ${#_failed_containers[@]} > 0 )); then
+            echo ""
+            warn "Actionable recovery step:"
+            warn "  Run 'ods doctor' to inspect system readiness and get suggested fixes."
+        fi
+    fi
+
     if grep -qiE 'permission denied.*(docker API|docker daemon|docker\.sock|/var/run/docker\.sock)|/var/run/docker\.sock.*permission denied' "$_compose_log"; then
         warn "Docker socket permission denied. Add your user to the docker group, then start a new login shell:"
         warn "  sudo usermod -aG docker \"\$USER\""
