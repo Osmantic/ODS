@@ -81,6 +81,9 @@ test: ## Run unit and contract tests
 	@echo "=== macOS model download retry contract ==="
 	@bash tests/test-macos-download-retries.sh
 	@echo ""
+	@echo "=== macOS CLI .env quote handling ==="
+	@bash tests/test-macos-env-quote-strip.sh
+	@echo ""
 	@echo "=== fleet-multi-distro keep-going on docker pull failure ==="
 	@bash tests/test-fleet-multi-distro-keep-going.sh
 	@echo ""
