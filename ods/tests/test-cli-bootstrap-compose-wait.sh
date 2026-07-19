@@ -108,6 +108,13 @@ echo ""
 echo "=== CLI bootstrap compose wait test ==="
 echo ""
 
+grep -q 'ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_SECONDS:-1800' "$ROOT_DIR/ods-cli" \
+    || fail "bootstrap compose wait default must cover release lifecycle's 1800s update window"
+grep -q 'max_wait=1800' "$ROOT_DIR/ods-cli" \
+    || fail "invalid bootstrap compose wait override must fall back to 1800s"
+
+pass "bootstrap compose wait default matches release lifecycle update window"
+
 PATH="$BIN_DIR:$PATH" \
 ODS_HOME="$INSTALL_DIR" \
 DOCKER_LOG="$DOCKER_LOG" \
@@ -125,3 +132,44 @@ if grep -q 'COMPOSE_GGUF_FILE=Qwen3.5-2B-Q4_K_M.gguf' "$DOCKER_LOG"; then
 fi
 
 pass "restart waits for bootstrap upgrade and reloads .env before compose"
+
+cat > "$INSTALL_DIR/.env" <<'EOF'
+ODS_VERSION=2.0.0
+GPU_BACKEND=nvidia
+TIER=4
+LLM_MODEL=qwen3.6-35b-a3b
+GGUF_FILE=Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+MAX_CONTEXT=131072
+CTX_SIZE=131072
+SHIELD_API_KEY=test-fixture-key
+EOF
+
+cat > "$INSTALL_DIR/data/bootstrap-status.json" <<'EOF'
+{
+  "status": "swapping",
+  "model": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+  "percent": 100,
+  "bytesDownloaded": 100,
+  "bytesTotal": 100,
+  "speedBytesPerSec": 0,
+  "eta": "",
+  "updatedAt": "2026-07-19T00:00:02Z"
+}
+EOF
+mkdir -p "$INSTALL_DIR/data/models"
+dd if=/dev/zero of="$INSTALL_DIR/data/models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" bs=100 count=1 >/dev/null 2>&1
+: > "$DOCKER_LOG"
+
+PATH="$BIN_DIR:$PATH" \
+ODS_HOME="$INSTALL_DIR" \
+DOCKER_LOG="$DOCKER_LOG" \
+ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_SECONDS=0 \
+bash "$INSTALL_DIR/ods-cli" restart > "$OUT" 2>&1 || fail "ods restart rejected stale settled bootstrap status"
+
+grep -q 'stale (swapping) but the full model is already configured' "$OUT" \
+    || fail "restart did not identify stale settled bootstrap status"
+
+grep -q 'COMPOSE_GGUF_FILE=Qwen3.6-35B-A3B-UD-Q4_K_M.gguf' "$DOCKER_LOG" \
+    || fail "restart did not continue with full-model GGUF after stale settled status"
+
+pass "restart treats stale settled bootstrap status as safe"

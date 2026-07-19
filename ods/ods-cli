@@ -132,15 +132,86 @@ _ods_cli_bootstrap_status() {
         || true
 }
 
+_ods_cli_bootstrap_status_field() {
+    local key="$1" status_file="$INSTALL_DIR/data/bootstrap-status.json"
+    [[ -f "$status_file" ]] || return 0
+    grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$status_file" \
+        | sed -n '1p' \
+        | sed "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"//" \
+        | sed 's/"//' \
+        || true
+}
+
+_ods_cli_bootstrap_status_number() {
+    local key="$1" status_file="$INSTALL_DIR/data/bootstrap-status.json"
+    [[ -f "$status_file" ]] || return 0
+    grep -o "\"${key}\"[[:space:]]*:[[:space:]]*[0-9][0-9.]*" "$status_file" \
+        | sed -n '1p' \
+        | sed "s/.*:[[:space:]]*//" \
+        || true
+}
+
+_ods_cli_file_size() {
+    local path="$1"
+    if stat -c %s "$path" 2>/dev/null; then
+        return 0
+    fi
+    stat -f %z "$path" 2>/dev/null || echo 0
+}
+
+_ods_cli_bootstrap_upgrade_process_running() {
+    local model="$1" args
+    [[ -n "$model" ]] || return 1
+    while IFS= read -r args; do
+        case "$args" in
+            *"/scripts/bootstrap-upgrade.sh"*" $model "*|*" scripts/bootstrap-upgrade.sh"*" $model "*)
+                return 0
+                ;;
+        esac
+    done < <(ps -eo args= 2>/dev/null || true)
+    return 1
+}
+
+_ods_cli_bootstrap_active_status_settled() {
+    local status="$1"
+    case "$status" in
+        downloading|starting|verifying|swapping) ;;
+        *) return 1 ;;
+    esac
+
+    local model env_model model_path expected_bytes actual_bytes
+    model="$(_ods_cli_bootstrap_status_field model)"
+    [[ -n "$model" ]] || return 1
+
+    if _ods_cli_bootstrap_upgrade_process_running "$model"; then
+        return 1
+    fi
+
+    env_model="$(_env_get_raw GGUF_FILE)"
+    [[ "$env_model" == "$model" ]] || return 1
+
+    model_path="$INSTALL_DIR/data/models/$model"
+    [[ -f "$model_path" ]] || return 1
+
+    expected_bytes="$(_ods_cli_bootstrap_status_number bytesTotal)"
+    if [[ "$expected_bytes" =~ ^[0-9]+$ ]] && (( expected_bytes > 0 )); then
+        actual_bytes="$(_ods_cli_file_size "$model_path")"
+        [[ "$actual_bytes" =~ ^[0-9]+$ ]] || return 1
+        (( actual_bytes >= expected_bytes )) || return 1
+    fi
+
+    return 0
+}
+
 _ods_cli_wait_for_bootstrap_compose_safe() {
     local action="${1:-service operation}"
     local status_file="$INSTALL_DIR/data/bootstrap-status.json"
     [[ -f "$status_file" ]] || return 0
 
-    local max_wait="${ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_SECONDS:-900}"
+    local max_wait="${ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_SECONDS:-1800}"
     local interval="${ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_INTERVAL:-5}"
     if ! [[ "$max_wait" =~ ^[0-9]+$ ]] || (( max_wait < 0 )); then
-        max_wait=900
+        max_wait=1800
     fi
     if ! [[ "$interval" =~ ^[0-9]+$ ]] || (( interval < 1 )); then
         interval=5
@@ -151,6 +222,14 @@ _ods_cli_wait_for_bootstrap_compose_safe() {
         status="$(_ods_cli_bootstrap_status)"
         case "$status" in
             downloading|starting|verifying|swapping)
+                if _ods_cli_bootstrap_active_status_settled "$status"; then
+                    if [[ "$announced" == "true" ]]; then
+                        log "  Model Upgrade: stale $status status already settled; continuing with $action"
+                    else
+                        warn "Model upgrade status is stale ($status) but the full model is already configured; continuing with $action."
+                    fi
+                    return 0
+                fi
                 if [[ "$announced" == "false" ]]; then
                     log "  Model Upgrade: $status; waiting before $action touches llama-server"
                     announced=true
