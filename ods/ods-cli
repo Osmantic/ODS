@@ -2304,6 +2304,35 @@ for name, status in checks:
         print(f"  {RED}✗{NC} {name}")
         has_failures = True
 
+llm_backend = runtime.get('llm_backend', {})
+if llm_backend:
+    llm_status = llm_backend.get('status', 'unknown')
+    llm_provider = llm_backend.get('provider', 'unknown')
+    llm_url = llm_backend.get('url', '')
+    llm_model = llm_backend.get('model', '')
+    local_warn = llm_backend.get('local_running_warning', False)
+    recovery = llm_backend.get('recovery_hint', '')
+
+    is_external = llm_provider != "llama-server"
+    backend_label = f"{llm_provider} (external)" if is_external else "llama-server (local)"
+
+    if llm_status == 'ok':
+        print(f"  {GREEN}✓{NC} LLM Backend: {backend_label} — responding")
+        if llm_url:
+            print(f"    Endpoint: {llm_url}")
+        if llm_model:
+            print(f"    Model:    {llm_model}")
+    else:
+        print(f"  {RED}✗{NC} LLM Backend: {backend_label} — not responding")
+        if llm_url:
+            print(f"    Endpoint: {llm_url}")
+        if recovery:
+            print(f"    Recovery: {recovery}")
+        has_failures = True
+
+    if local_warn:
+        print(f"    {YELLOW}⚠{NC} Note: Unused local llama-server container is running")
+
 dgx_check = runtime.get('dgx_spark_cuda_arch_check', {})
 dgx_status = dgx_check.get('status')
 dgx_message = dgx_check.get('message', '')

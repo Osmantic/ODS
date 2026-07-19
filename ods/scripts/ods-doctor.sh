@@ -46,6 +46,7 @@ load_env_safe() {
     local env_file="${1:-$ROOT_DIR/.env}"
     [[ -f "$env_file" ]] || return 0
     while IFS='=' read -r key value; do
+        value="${value%$'\r'}"
         [[ "$key" =~ ^[[:space:]]*# ]] && continue
         [[ -z "$key" ]] && continue
         [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
@@ -131,6 +132,176 @@ if command -v curl >/dev/null 2>&1; then
         WEBUI_HTTP="true"
     fi
 fi
+
+# Colors for doctor logging
+if [[ -t 1 ]] && [[ -z "${NO_COLOR+x}" ]]; then
+    _GREEN=$'\033[0;32m'
+    _RED=$'\033[0;31m'
+    _BLUE=$'\033[0;34m'
+    _YELLOW=$'\033[1;33m'
+    _NC=$'\033[0m'
+else
+    _GREEN=''
+    _RED=''
+    _BLUE=''
+    _YELLOW=''
+    _NC=''
+fi
+
+log_ok()   { echo -e "  ${_GREEN}✓${_NC} $*"; }
+log_fail() { echo -e "  ${_RED}✗${_NC} $*"; }
+log_info() { echo -e "  ${_BLUE}ℹ${_NC} $*"; }
+log_warn() { echo -e "  ${_YELLOW}⚠${_NC} $*"; }
+
+LLM_STATUS="unknown"
+LLM_PROVIDER=""
+LLM_MODEL=""
+LLM_URL=""
+LLM_LOCAL_WARNING="false"
+LLM_RECOVERY=""
+
+_doctor_check_external_llm() {
+    local url="$1" provider="$2" model="$3"
+    local health_path
+
+    LLM_URL="$url"
+    LLM_PROVIDER="${provider:-external}"
+    LLM_MODEL="$model"
+
+    case "$provider" in
+        ollama)     health_path="/api/tags" ;;
+        lmstudio)   health_path="/v1/models" ;;
+        *)          health_path="/v1/models" ;;  # OpenAI-compat fallback
+    esac
+
+    if command -v curl >/dev/null 2>&1 && curl -sf --max-time 5 "${url}${health_path}" > /dev/null 2>&1; then
+        LLM_STATUS="ok"
+        log_ok "LLM backend: ${provider:-external} (external) — responding"
+        log_ok "  Endpoint : $url"
+        [ -n "$model" ] && log_ok "  Model    : $model"
+    else
+        LLM_STATUS="fail"
+        log_fail "LLM backend: ${provider:-external} (external) — not responding"
+        log_info "  Endpoint : $url"
+        case "$provider" in
+            ollama)
+                LLM_RECOVERY="ollama serve"
+                log_info "  Recovery : ollama serve"
+                ;;
+            lmstudio)
+                LLM_RECOVERY="start LM Studio and enable local server"
+                log_info "  Recovery : start LM Studio and enable local server"
+                ;;
+            *)
+                LLM_RECOVERY="check external LLM service connectivity"
+                ;;
+        esac
+    fi
+
+    if [[ "$DOCKER_DAEMON" == "true" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'ods-llama-server'; then
+        LLM_LOCAL_WARNING="true"
+        log_warn "  Note     : Unused local llama-server container is running"
+    fi
+}
+
+_doctor_check_llama_server() {
+    local port="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-${SERVICE_PORTS[llama-server]:-11434}}}"
+    local health_path="${SERVICE_HEALTH[llama-server]:-/health}"
+    local container_name
+    container_name=$(sr_container "llama-server" 2>/dev/null || echo "ods-llama-server")
+
+    LLM_URL="http://127.0.0.1:${port}"
+    LLM_PROVIDER="llama-server"
+
+    if [[ "$DOCKER_DAEMON" == "true" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container_name"; then
+        if command -v curl >/dev/null 2>&1 && curl -sf --max-time 5 "http://127.0.0.1:${port}${health_path}" >/dev/null 2>&1; then
+            LLM_STATUS="ok"
+            log_ok "LLM backend: llama-server (local) — responding"
+            log_ok "  Endpoint : http://127.0.0.1:${port}"
+        else
+            LLM_STATUS="fail"
+            LLM_RECOVERY="ods restart llama-server"
+            log_fail "LLM backend: llama-server (local) — container running but not responding"
+            log_info "  Endpoint : http://127.0.0.1:${port}"
+            log_info "  Recovery : ods restart llama-server"
+        fi
+    else
+        LLM_STATUS="fail"
+        LLM_RECOVERY="ods start llama-server"
+        log_fail "LLM backend: llama-server (local) — container not running"
+        log_info "  Recovery : ods start llama-server"
+    fi
+}
+
+_doctor_check_llm_backend() {
+    local ext_url="${EXTERNAL_LLM_URL:-}"
+    local ext_provider="${EXTERNAL_LLM_PROVIDER:-}"
+    local ext_model="${EXTERNAL_LLM_MODEL:-}"
+    local mode="${ODS_MODE:-local}"
+
+    if [ -n "$ext_url" ]; then
+        # External LLM mode — skip llama-server check
+        _doctor_check_external_llm "$ext_url" "$ext_provider" "$ext_model"
+    elif [[ "$mode" == "cloud" ]]; then
+        local cloud_url="${LLM_API_URL:-}"
+        if [ -n "$cloud_url" ]; then
+            # Translate known LiteLLM/container routes to the host-mapped port
+            # E.g. http://litellm:4000 -> http://127.0.0.1:${LITELLM_PORT:-4000}
+            local probe_url="$cloud_url"
+            if [[ "$probe_url" =~ ^https?://litellm(:[0-9]+)?(.*)$ ]]; then
+                local port_part="${BASH_REMATCH[1]:-}"
+                local path_part="${BASH_REMATCH[2]:-}"
+                local port="4000"
+                if [ -n "$port_part" ]; then
+                    port="${port_part#:}"
+                elif [ -n "${LITELLM_PORT:-}" ]; then
+                    port="$LITELLM_PORT"
+                fi
+                probe_url="http://127.0.0.1:${port}${path_part}"
+            fi
+
+            # Extract host to check if it's host-probeable (e.g. contains '.' or is 'localhost')
+            local host
+            host=$(echo "$probe_url" | grep -oE '://[^/]+' | cut -d/ -f3 | cut -d: -f1)
+
+            local is_probeable=false
+            if [[ "$host" == "localhost" ]] || [[ "$host" == *"."* ]]; then
+                is_probeable=true
+            fi
+
+            if [ "$is_probeable" = true ]; then
+                _doctor_check_external_llm "$probe_url" "${ext_provider:-openai}" "$ext_model"
+            else
+                LLM_URL="$cloud_url"
+                LLM_PROVIDER="cloud"
+                LLM_STATUS="ok"
+                LLM_MODEL=""
+                LLM_RECOVERY=""
+                log_ok "LLM backend: cloud (external) — container-internal endpoint bypassed host probe"
+                log_ok "  Endpoint : $cloud_url"
+            fi
+        else
+            # Leave backend check provider-neutral when no probe target exists
+            LLM_URL=""
+            LLM_PROVIDER="cloud"
+            LLM_STATUS="ok"
+            LLM_MODEL=""
+            LLM_RECOVERY=""
+        fi
+    else
+        # Local, hybrid, lemonade modes (or default local) — existing llama-server container check unchanged
+        _doctor_check_llama_server
+    fi
+}
+
+_doctor_check_llm_backend
+
+export LLM_STATUS
+export LLM_PROVIDER
+export LLM_MODEL
+export LLM_URL
+export LLM_LOCAL_WARNING
+export LLM_RECOVERY
 
 # STT model cache check: a common silent-failure mode is the installer's
 # pre-download failing, so Whisper's /health passes (service up) but the
@@ -1266,6 +1437,14 @@ report = {
         "compose_cli": compose_cli == "true",
         "dashboard_http": dashboard_http == "true",
         "webui_http": webui_http == "true",
+        "llm_backend": {
+            "status": os.environ.get("LLM_STATUS", "unknown"),
+            "provider": os.environ.get("LLM_PROVIDER", ""),
+            "url": os.environ.get("LLM_URL", ""),
+            "model": os.environ.get("LLM_MODEL", ""),
+            "local_running_warning": os.environ.get("LLM_LOCAL_WARNING", "false") == "true",
+            "recovery_hint": os.environ.get("LLM_RECOVERY", ""),
+        },
         "stt_model_cached": stt_cached,
         "stt_model_name": stt_model_name,
         "tts_http": tts_http,
@@ -1333,6 +1512,20 @@ if runtime["docker_daemon"] and not runtime["dashboard_http"]:
     fix_hints.append(f"Run installer/start command, then verify dashboard on http://127.0.0.1:{dashboard_port}.")
 if runtime["docker_daemon"] and not runtime["webui_http"]:
     fix_hints.append(f"Verify Open WebUI container and port {webui_port} mapping.")
+
+llm_status = os.environ.get("LLM_STATUS", "unknown")
+llm_recovery = os.environ.get("LLM_RECOVERY", "")
+llm_provider = os.environ.get("LLM_PROVIDER", "")
+llm_local_warn = os.environ.get("LLM_LOCAL_WARNING", "false") == "true"
+
+if llm_status == "fail" and llm_recovery:
+    if llm_provider != "llama-server":
+        fix_hints.append(f"External LLM backend ({llm_provider}) is unreachable. Hint: {llm_recovery}")
+    else:
+        fix_hints.append(f"Local llama-server is unreachable. Hint: {llm_recovery}")
+
+if llm_local_warn:
+    fix_hints.append("External LLM is configured but the local llama-server container is still running. Stop it with: ods stop llama-server")
 
 # STT model cache: service up but model missing is a common silent failure
 if stt_cached == "false" and stt_recovery:
