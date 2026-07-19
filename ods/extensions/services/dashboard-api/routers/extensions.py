@@ -383,7 +383,7 @@ def _scan_compose_content(
         else:
             label_keys = []
         for lk in label_keys:
-            if lk.startswith("com.docker.compose."):
+            if lk.lower().startswith(("com.docker.compose.", "io.docker.")):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Extension rejected: reserved Docker Compose label '{lk}' in service '{svc_name}'",
@@ -418,7 +418,8 @@ def _scan_compose_content(
         cap_add = svc_def.get("cap_add", [])
         if isinstance(cap_add, list):
             for cap in cap_add:
-                if str(cap).upper() in {
+                cap_str = str(cap).upper().removeprefix("CAP_")
+                if cap_str in {
                     "SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "NET_RAW",
                     "DAC_OVERRIDE", "SETUID", "SETGID", "SYS_MODULE",
                     "SYS_RAWIO", "ALL",
