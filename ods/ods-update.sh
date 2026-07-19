@@ -768,12 +768,19 @@ cmd_rollback() {
         log_info "Snapshot time    : ${btime}"
     fi
 
+    local compose_flags=""
+    local -a compose_args=()
+    compose_flags=$(resolve_compose_flags 2>/dev/null || true)
+    if [[ -n "$compose_flags" ]]; then
+        read -ra compose_args <<< "$compose_flags"
+    fi
+
     # Stop services
     log_info "Stopping services..."
     cd "$INSTALL_DIR"
-    if ! docker compose down; then
+    if ! docker compose "${compose_args[@]}" down; then
         log_warn "docker compose v2 down failed, trying v1..."
-        docker-compose down
+        docker-compose "${compose_args[@]}" down
     fi
 
     # Restore — use _restore_snapshot for pre-update snapshots (they include
@@ -798,9 +805,16 @@ cmd_rollback() {
 
     # Restart services
     log_info "Restarting services..."
-    if ! docker compose up -d; then
+    local restored_compose_flags=""
+    local -a restored_compose_args=()
+    restored_compose_flags=$(resolve_compose_flags 2>/dev/null || true)
+    if [[ -n "$restored_compose_flags" ]]; then
+        read -ra restored_compose_args <<< "$restored_compose_flags"
+    fi
+
+    if ! docker compose "${restored_compose_args[@]}" up -d; then
         log_warn "docker compose v2 up failed, trying v1..."
-        docker-compose up -d
+        docker-compose "${restored_compose_args[@]}" up -d
     fi
 
     # Verify health using the same timeout-aware poller as cmd_update
