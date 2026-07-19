@@ -5,9 +5,8 @@ import json
 import logging
 import os
 import re
+import threading
 import time
-import urllib.request
-import urllib.error
 from pathlib import Path
 from typing import Any
 from typing import Optional
@@ -15,7 +14,15 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
-from config import AGENT_URL, DATA_DIR, ODS_AGENT_KEY, INSTALL_DIR, LLM_BACKEND, SERVICES
+from config import (
+    DATA_DIR,
+    INSTALL_DIR,
+    LLM_BACKEND,
+    LOCAL_MODEL_MODES,
+    ODS_MODE_EFFECTIVE,
+    SERVICES,
+    normalize_ods_mode,
+)
 from gpu import get_gpu_info
 from helpers import (
     get_bootstrap_status,
@@ -23,6 +30,13 @@ from helpers import (
     get_llama_metrics,
     get_loaded_model,
     record_model_performance,
+)
+from host_agent_client import (
+    AgentClientError,
+    AgentHTTPError,
+    AgentProtocolError,
+    AgentUnavailable,
+    request_json as request_agent_json,
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
 from performance_oracle import (
@@ -44,6 +58,12 @@ _LIBRARY_PATH = Path(INSTALL_DIR) / "config" / "model-library.json"
 _MODELS_DIR = Path(DATA_DIR) / "models"
 _ENV_PATH = Path(INSTALL_DIR) / ".env"
 _MODEL_DISCOVERY_TIMEOUT_SECONDS = float(os.environ.get("DASHBOARD_MODEL_DISCOVERY_TIMEOUT", "15.0"))
+_AGENT_MODEL_STATUS_CACHE_TTL_SECONDS = float(
+    os.environ.get("DASHBOARD_AGENT_MODEL_STATUS_CACHE_TTL", "0.5")
+)
+_agent_model_status_cache_lock = threading.Lock()
+_agent_model_status_cache_at = 0.0
+_agent_model_status_cache_value: Optional[dict] = None
 _GPU_VRAM_EXCEPTIONS = (
     ImportError,
     FileNotFoundError,
@@ -51,6 +71,52 @@ _GPU_VRAM_EXCEPTIONS = (
     KeyError,
     AttributeError,
 )
+
+
+def _configured_ods_mode() -> str:
+    """Return the current persisted mode without treating process env as config."""
+    return normalize_ods_mode(read_env_file_value("ODS_MODE", INSTALL_DIR))
+
+
+def _model_activation_mode_denial(
+    effective_mode: str,
+    configured_mode: str,
+) -> dict[str, str] | None:
+    """Describe why this runtime cannot safely perform a local model swap."""
+    effective_mode = normalize_ods_mode(effective_mode)
+    configured_mode = normalize_ods_mode(configured_mode)
+    if "unknown" in {effective_mode, configured_mode}:
+        code = "ods_mode_unknown"
+        reason = "mode_unknown"
+        message = (
+            "Local model activation is unavailable because the effective or "
+            "configured ODS mode is unknown."
+        )
+    elif effective_mode != configured_mode:
+        code = "ods_mode_mismatch"
+        reason = "mode_mismatch"
+        message = (
+            f"Local model activation is unavailable because effective mode "
+            f"'{effective_mode}' does not match configured mode '{configured_mode}'."
+        )
+    elif effective_mode not in LOCAL_MODEL_MODES:
+        code = "local_mode_required"
+        reason = "effective_mode_not_local"
+        message = (
+            f"Local model activation is unavailable while effective ODS mode "
+            f"is '{effective_mode}'."
+        )
+    else:
+        return None
+
+    return {
+        "error": "local_mode_required",
+        "code": code,
+        "reason": reason,
+        "message": message,
+        "effectiveMode": effective_mode,
+        "configuredMode": configured_mode,
+    }
 
 try:
     import pynvml
@@ -187,6 +253,8 @@ async def _probe_loaded_lemonade_model(model_name: str) -> bool:
         resp = await client.post(f"{base_url}/api/v1/chat/completions", json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
+        if not isinstance(data, dict):
+            return False
         if isinstance(data.get("error"), dict):
             return False
         return bool(data.get("choices"))
@@ -336,12 +404,18 @@ async def list_models(api_key: str = Depends(verify_api_key)):
             os_name=signature.get("os"),
             flags=signature.get("flags"),
         )
+    payload["odsMode"] = ODS_MODE_EFFECTIVE
+    payload["configuredMode"] = _configured_ods_mode()
     return payload
 
 
 @router.get("/api/models/download-status")
 def model_download_status(api_key: str = Depends(verify_api_key)):
     """Get current model download progress (if any)."""
+    agent_status = _get_agent_model_status()
+    if agent_status and agent_status.get("status") != "idle":
+        return agent_status
+
     status_path = Path(DATA_DIR) / "model-download-status.json"
     if not status_path.exists():
         bootstrap_info = get_bootstrap_status()
@@ -364,29 +438,48 @@ def model_download_status(api_key: str = Depends(verify_api_key)):
         return {"status": "idle"}
 
 
+def _get_agent_model_status(timeout: int = 5) -> Optional[dict]:
+    """Return host-agent-normalized model download status when reachable."""
+    global _agent_model_status_cache_at, _agent_model_status_cache_value
+
+    now = time.monotonic()
+    if now - _agent_model_status_cache_at < _AGENT_MODEL_STATUS_CACHE_TTL_SECONDS:
+        return _agent_model_status_cache_value
+
+    with _agent_model_status_cache_lock:
+        now = time.monotonic()
+        if now - _agent_model_status_cache_at < _AGENT_MODEL_STATUS_CACHE_TTL_SECONDS:
+            return _agent_model_status_cache_value
+
+        try:
+            status = request_agent_json("GET", "/v1/model/status", timeout=timeout)
+        except AgentClientError:
+            status = None
+
+        _agent_model_status_cache_value = status
+        _agent_model_status_cache_at = time.monotonic()
+        return status
+
+
 def _call_agent_model(path: str, body: dict, timeout: int = 30) -> dict:
     """Call the host agent model endpoint."""
-    url = f"{AGENT_URL}{path}"
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=data, method="POST",
-        headers={
-            "Authorization": f"Bearer {ODS_AGENT_KEY}",
-            "Content-Type": "application/json",
-        },
-    )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as exc:
-        try:
-            err_body = json.loads(exc.read().decode())
-            detail = err_body.get("error", f"Host agent returned HTTP {exc.code}")
-        except (json.JSONDecodeError, OSError):
-            detail = f"Host agent returned HTTP {exc.code}"
-        raise HTTPException(status_code=502, detail=detail)
-    except (urllib.error.URLError, OSError) as exc:
-        raise HTTPException(status_code=503, detail=f"Host agent unreachable: {exc}")
+        return request_agent_json("POST", path, payload=body, timeout=timeout)
+    except AgentHTTPError as exc:
+        if exc.status_code == 409:
+            detail: Any = exc.detail
+            try:
+                payload = json.loads(exc.response_text)
+                if isinstance(payload, dict):
+                    detail = payload
+            except (json.JSONDecodeError, TypeError):
+                pass
+            raise HTTPException(status_code=409, detail=detail) from exc
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
+    except AgentUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"Host agent unreachable: {exc}") from exc
+    except AgentProtocolError as exc:
+        raise HTTPException(status_code=502, detail=f"Invalid host agent response: {exc}") from exc
 
 
 def _find_model_in_library(model_id: str) -> Optional[dict]:
@@ -419,6 +512,8 @@ def _resolve_local_gguf_filename(model_id: str) -> str | None:
     candidate_stem = Path(candidate).stem.lower()
     exact_matches: list[Path] = []
     stem_matches: list[Path] = []
+    logical_matches: list[Path] = []
+    candidate_logical = _local_model_name_from_gguf(candidate).lower()
     try:
         for path in _MODELS_DIR.iterdir():
             if not _is_final_gguf_file(path):
@@ -427,11 +522,13 @@ def _resolve_local_gguf_filename(model_id: str) -> str | None:
                 exact_matches.append(path)
             elif path.stem.lower() == candidate_stem:
                 stem_matches.append(path)
+            elif _local_model_name_from_gguf(path.name).lower() == candidate_logical:
+                logical_matches.append(path)
     except OSError as exc:
         logger.warning("Failed to resolve local GGUF %s: %s", model_id, exc)
         return None
 
-    matches = exact_matches or stem_matches
+    matches = exact_matches or stem_matches or logical_matches
     if len(matches) == 1:
         return matches[0].name
     if len(matches) > 1:
@@ -742,6 +839,16 @@ def cancel_download(api_key: str = Depends(verify_api_key)):
 @router.post("/api/models/{model_id}/load")
 def load_model(model_id: str, api_key: str = Depends(verify_api_key)):
     """Activate a model — update config and restart llama-server."""
+    mode_denial = _model_activation_mode_denial(
+        ODS_MODE_EFFECTIVE,
+        _configured_ods_mode(),
+    )
+    if mode_denial is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={**mode_denial, "requestedModelId": model_id},
+        )
+
     model = _find_loadable_model(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
@@ -778,9 +885,9 @@ async def benchmark_model(model_id: str, body: dict[str, Any] | None = None, api
 @router.delete("/api/models/{model_id}")
 def delete_model(model_id: str, api_key: str = Depends(verify_api_key)):
     """Delete a downloaded model file."""
-    model = _find_model_in_library(model_id)
+    model = _find_model_in_library(model_id) or _find_local_gguf_model(model_id)
     if model is None:
-        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library")
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
     if model.get("engine") == "hipfire":
         raise HTTPException(
             status_code=400,

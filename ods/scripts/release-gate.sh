@@ -27,6 +27,7 @@ bash scripts/check-release-claims.sh
 "$PYTHON_CMD" scripts/check-dependency-pins.py
 
 echo "[gate] contracts"
+bash tests/test-hosted-bootstrap-verifier.sh
 bash tests/contracts/test-installer-contracts.sh
 bash tests/contracts/test-preflight-fixtures.sh
 bash tests/contracts/test-installer-hardening.sh

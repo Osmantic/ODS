@@ -1,8 +1,9 @@
 # LiteLLM macOS Apple Silicon overlay — adds host-gateway resolution so the
 # litellm container can reach the natively-running llama-server on the macOS
 # host via the hostname `llama-server` (not in Docker on macOS, so DNS would
-# otherwise fail).
+# otherwise fail). Colima uses its scoped vmnet gateway because its user-mode
+# host-gateway route is not reliable under sustained container activity.
 services:
   litellm:
     extra_hosts:
-      - "llama-server:host-gateway"
+      - "llama-server:${ODS_MACOS_HOST_GATEWAY:-host-gateway}"

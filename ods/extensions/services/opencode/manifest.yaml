@@ -18,6 +18,15 @@ service:
   category: optional
   depends_on: []
   sidebar_icon: Code
+  llm:
+    consumes: true
+    route: direct
+    pinning: dynamic
+    min_context: 65536
+    probe:
+      kind: custom
+      path: /
+      auth: env:OPENCODE_SERVER_PASSWORD
 
 features:
   - id: coding

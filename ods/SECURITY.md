@@ -341,8 +341,13 @@ Watch for security updates to: llama-server, Open WebUI, n8n, base images.
 Found a vulnerability?
 
 1. **Do NOT open a public issue**
-2. Email: security@lightheartlabs.com
+2. Email: security@osmantic.com with subject `Security report`
 3. Include: description, reproduction steps, potential impact
+
+`security@osmantic.com` is an inbound alias monitored through the shared
+`contact@osmantic.com` inbox. It is not a separate mailbox or Send-As identity,
+so replies may come from `contact@osmantic.com` or another configured Osmantic
+sender.
 
 We'll respond within 48 hours.
 

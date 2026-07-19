@@ -224,3 +224,16 @@ def test_oauth_callback_only_reflects_relative_return_url(oauth_client):
     )
     assert "javascript:alert" not in unsafe.text
     assert "Back to ODS Talk" not in unsafe.text
+
+
+@pytest.mark.parametrize("return_url", ["//evil.com", "/\\evil.com", "/\\/evil.com"])
+def test_oauth_callback_rejects_protocol_relative_return_url(oauth_client, return_url):
+    """Browsers fold backslashes to forward slashes, so "/\\evil.com" becomes
+    the protocol-relative "//evil.com" — an off-origin redirect. The success
+    page must not render a Back button for any of these."""
+    resp = oauth_client.get(
+        "/api/oauth/callback",
+        params={"code": "fake-code", "return_url": return_url},
+    )
+    assert "evil.com" not in resp.text
+    assert "Back to ODS Talk" not in resp.text

@@ -4,7 +4,7 @@
     "name": "ODS 2.1.0",
     "published_at": "2026-03-10T12:00:00Z",
     "body": "## What's New\n- Feature A\n- Feature B\n- Bug fix C",
-    "html_url": "https://github.com/Light-Heart-Labs/ODS/releases/tag/v2.1.0",
+    "html_url": "https://github.com/Osmantic/ODS/releases/tag/v2.1.0",
     "prerelease": false
   },
   {
@@ -12,7 +12,7 @@
     "name": "ODS 2.0.0",
     "published_at": "2026-02-01T12:00:00Z",
     "body": "## Major Release\n- Complete rewrite",
-    "html_url": "https://github.com/Light-Heart-Labs/ODS/releases/tag/v2.0.0",
+    "html_url": "https://github.com/Osmantic/ODS/releases/tag/v2.0.0",
     "prerelease": false
   },
   {
@@ -20,7 +20,7 @@
     "name": "ODS 2.0.0 RC1",
     "published_at": "2026-01-15T12:00:00Z",
     "body": "Release candidate",
-    "html_url": "https://github.com/Light-Heart-Labs/ODS/releases/tag/v2.0.0-rc1",
+    "html_url": "https://github.com/Osmantic/ODS/releases/tag/v2.0.0-rc1",
     "prerelease": true
   }
 ]

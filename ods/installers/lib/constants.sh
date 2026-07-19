@@ -26,9 +26,9 @@ else
     INSTALL_DIR="${INSTALL_DIR:-$HOME/ods}"
 fi
 
-LOG_FILE="${LOG_FILE:-/tmp/ods-install.log}"
-CAPABILITY_PROFILE_FILE="${CAPABILITY_PROFILE_FILE:-/tmp/ods-capabilities.json}"
-PREFLIGHT_REPORT_FILE="${PREFLIGHT_REPORT_FILE:-/tmp/ods-preflight-report.json}"
+LOG_FILE="${LOG_FILE:-${TMPDIR:-/tmp}/ods-install.log}"
+CAPABILITY_PROFILE_FILE="${CAPABILITY_PROFILE_FILE:-${TMPDIR:-/tmp}/ods-capabilities.json}"
+PREFLIGHT_REPORT_FILE="${PREFLIGHT_REPORT_FILE:-${TMPDIR:-/tmp}/ods-preflight-report.json}"
 INSTALL_START_EPOCH=$(date +%s)
 
 # Auto-detect system timezone (fallback to UTC)

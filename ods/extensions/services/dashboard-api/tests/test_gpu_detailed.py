@@ -137,6 +137,22 @@ class TestGetGpuInfoNvidiaDetailed:
         assert g.power_w == 285.5
         assert g.assigned_services == []
 
+    def test_keeps_gpu_with_na_util_temp(self, monkeypatch):
+        # nvidia-smi reports [N/A] for utilization/temperature on MIG/vGPU and
+        # unified-memory parts. The GPU must be kept (util/temp default to 0),
+        # not dropped by an int("[N/A]") crash.
+        csv = "0, GPU-abc123, NVIDIA A100, 2048, 40536, [N/A], [N/A], 100.0"
+        monkeypatch.setattr("gpu.run_command", lambda cmd, **kw: (True, csv))
+        monkeypatch.delenv("GPU_ASSIGNMENT_JSON_B64", raising=False)
+
+        result = get_gpu_info_nvidia_detailed()
+        assert result is not None
+        assert len(result) == 1
+        g = result[0]
+        assert g.uuid == "GPU-abc123"
+        assert g.utilization_percent == 0
+        assert g.temperature_c == 0
+
     def test_parses_multi_gpu(self, monkeypatch):
         csv = (
             "0, GPU-aaa, NVIDIA GeForce RTX 4090, 2048, 24564, 35, 62, 285.5\n"

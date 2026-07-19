@@ -142,6 +142,7 @@ export function TroubleshootingAssistant({ serviceStatus }) {
       <input
         type="text"
         placeholder="Search issues..."
+        aria-label="Search troubleshooting issues"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         className="w-full px-3 py-2 bg-theme-card border border-theme-border rounded-lg text-sm text-theme-text placeholder-theme-text-muted focus:outline-none focus:border-theme-accent"
@@ -259,7 +260,7 @@ export function TroubleshootingAssistant({ serviceStatus }) {
         <p className="text-xs text-theme-text-muted">
           Still stuck? Check the{' '}
           <a
-            href="https://github.com/Light-Heart-Labs/ODS/tree/main/ods#troubleshooting"
+            href="https://github.com/Osmantic/ODS/tree/main/ods#troubleshooting"
             target="_blank"
             rel="noopener noreferrer"
             className="text-theme-accent hover:text-theme-accent-light"

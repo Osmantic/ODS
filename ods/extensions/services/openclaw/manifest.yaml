@@ -26,6 +26,15 @@ service:
   compose_file: compose.yaml
   category: optional
   depends_on: [llama-server, searxng]
+  llm:
+    consumes: true
+    route: direct
+    pinning: none
+    min_context: 65536
+    probe:
+      kind: custom
+      path: /
+      auth: env:OPENCLAW_TOKEN
   env_vars:
     - key: OPENCLAW_TOKEN
       required: true

@@ -149,8 +149,11 @@ def verify(cookie_value: str) -> Tuple[bool, str]:
 
     payload = f"{random_id}.{expiry_str}"
     expected_sig = _sign(payload)
-    # constant-time compare to defeat signature timing oracles.
-    if not hmac.compare_digest(expected_sig, claimed_sig):
+    # Constant-time compare to defeat signature timing oracles. Encoded to
+    # UTF-8 first because compare_digest raises TypeError on non-ASCII str,
+    # and claimed_sig comes straight off an attacker-controlled cookie —
+    # verify() must return a reason, never raise.
+    if not hmac.compare_digest(expected_sig.encode("utf-8"), claimed_sig.encode("utf-8")):
         return False, "bad-signature"
 
     # Signature is good — check expiry.

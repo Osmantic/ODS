@@ -7,6 +7,17 @@ from datetime import date, timedelta
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "data", "usage.db"))
 
+# "Last N hours" cutoff for recent-window queries. The timestamp column stores
+# strftime('%Y-%m-%dT%H:%M:%fZ', ...) (T-separated, trailing Z). A bare
+# datetime('now', ...) yields a space-separated 'YYYY-MM-DD HH:MM:SS' value, and
+# because the column is TEXT the comparison is a byte-wise sort: the space
+# separator (0x20) sorts before the stored 'T' (0x54), so every row on the
+# cutoff's calendar date compares greater than the bound regardless of its
+# time-of-day and gets pulled in — over-including up to a full extra day. Build
+# the bound in the stored format so the comparison matches wall-clock order, in
+# line with the Postgres backend's NOW() - INTERVAL arithmetic.
+_RECENT_TS_BOUND = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)"
+
 _local = threading.local()
 
 
@@ -126,7 +137,7 @@ def log_usage(entry: dict):
 def query_usage(agent: str | None = None, hours: int = 24, limit: int = 200) -> list[dict]:
     conn = _get_conn()
     conn.row_factory = sqlite3.Row
-    sql = "SELECT * FROM usage WHERE timestamp > datetime('now', ?)"
+    sql = f"SELECT * FROM usage WHERE timestamp > {_RECENT_TS_BOUND}"
     params: list = [f"-{hours} hours"]
     if agent:
         sql += " AND agent = ?"
@@ -349,7 +360,7 @@ def query_report(start: str, end: str) -> dict:
 def query_summary(hours: int = 24) -> list[dict]:
     conn = _get_conn()
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT
             agent,
             COUNT(*) as turns,
@@ -365,7 +376,7 @@ def query_summary(hours: int = 24) -> list[dict]:
             AVG(skill_injection_chars) as avg_skill_chars,
             AVG(base_prompt_chars) as avg_base_prompt_chars
         FROM usage
-        WHERE timestamp > datetime('now', ?)
+        WHERE timestamp > {_RECENT_TS_BOUND}
         GROUP BY agent
     """, [f"-{hours} hours"]).fetchall()
     return [dict(r) for r in rows]
@@ -382,13 +393,13 @@ def query_session_status(agent: str, char_limit: int = 200_000) -> dict:
     conn.row_factory = sqlite3.Row
 
     # Get all recent turns for this agent, ordered chronologically
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT conversation_history_chars, cache_read_tokens, cache_write_tokens,
                estimated_cost_usd, timestamp
         FROM usage
-        WHERE agent = ? AND timestamp > datetime('now', '-24 hours')
+        WHERE agent = ? AND timestamp > {_RECENT_TS_BOUND}
         ORDER BY timestamp ASC
-    """, [agent]).fetchall()
+    """, [agent, "-24 hours"]).fetchall()
 
     if not rows:
         return {

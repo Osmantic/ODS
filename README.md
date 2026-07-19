@@ -4,20 +4,24 @@
 
 **Osmantic Deployment System**
 
+<p align="center">
+  <a href="https://osmantic.com" target="_blank" rel="noopener noreferrer">
+    <img src="ods/docs/images/osmantic-lockup.png" alt="Osmantic" width="800">
+  </a>
+</p>
+
 **Turn your PC, Mac, or Linux box into a private AI server.**
 
 AI server and homelab setup is rapidly becoming a solved problem.
 It should feel that way for everyone.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/Light-Heart-Labs/ODS)](https://github.com/Light-Heart-Labs/ODS/stargazers)
-[![Release](https://img.shields.io/github/v/release/Light-Heart-Labs/ODS)](https://github.com/Light-Heart-Labs/ODS/releases)
+[![GitHub Stars](https://img.shields.io/github/stars/Osmantic/ODS)](https://github.com/Osmantic/ODS/stargazers)
+[![Release](https://img.shields.io/github/v/release/Osmantic/ODS)](https://github.com/Osmantic/ODS/releases)
 
 [![Watch the demo](https://img.shields.io/badge/Demo-Watch%20on%20YouTube-red?logo=youtube)](https://youtu.be/nO8xFNHX-HA)
 
 </div>
-
----
 
 ODS installs and wires together everything you need to run AI locally, so you do not have to assemble Ollama, Open WebUI, n8n, ComfyUI, and privacy tools by hand:
 
@@ -42,7 +46,7 @@ security policy, GitHub workflows, and project coordination docs. The
 `ods/` directory is the product runtime: services, installer phases,
 compose overlays, dashboard, CLI, tests, and operator docs.
 
-**Stable consumption:** `v2.5.2` is the current stable release. `main` moves
+**Stable consumption:** `v2.5.3` is the current stable release. `main` moves
 quickly; use it for active development and validation candidates. For forks,
 appliances, labs, or production-like installs, pin a tagged release or audited
 commit and keep your own validation receipt. Stable patch fixes land on
@@ -56,11 +60,13 @@ commit and keep your own validation receipt. Stable patch fixes land on
 Linux and macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Light-Heart-Labs/ODS/main/ods/get-ods.sh | bash
+curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
 
-Prefer to inspect before running or pin a release tag? See
-[Installer Trust](ods/docs/INSTALLER_TRUST.md).
+The hosted endpoint proxies the current bootstrap from repository `main`.
+Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
+[Installer Trust](ods/docs/INSTALLER_TRUST.md) to inspect the script or install
+a stable release or audited commit manually.
 
 Windows users should use the PowerShell installer shown below or follow the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md).
 
@@ -77,8 +83,6 @@ After install, open **http://localhost:3000** and start chatting.
 > ```bash
 > WEBUI_PORT=9090 ./install.sh
 > ```
-
-![ODS Dashboard](ods/docs/images/dashboard.png)
 
 **New here?** Read the [Friendly Guide](ods/docs/HOW-ODS-SERVER-WORKS.md) or [listen to the audio version](https://open.spotify.com/episode/40MvqJ41bC8cEgvUyOyE3K) — a complete walkthrough of what ODS is, how it works, and how to make it your own. No technical background needed.
 
@@ -111,7 +115,7 @@ After install, open **http://localhost:3000** and start chatting.
 > | **Windows** (NVIDIA + AMD) | **Supported** — install and run today |
 > | **macOS** (Apple Silicon) | **Supported** — install and run today |
 >
-> **Tested Linux distros:** Ubuntu 24.04/22.04, Debian 12, Linux Mint 21.3, Fedora 41+, Rocky Linux 9, Arch Linux, Manjaro, CachyOS, and openSUSE Tumbleweed. Other distros using apt, dnf, pacman, or zypper should also work — [open an issue](https://github.com/Light-Heart-Labs/ODS/issues) if yours doesn't.
+> **Tested Linux distros:** Ubuntu 24.04/22.04, Debian 12, Linux Mint 21.3, Fedora 41+, Rocky Linux 9, Arch Linux, Manjaro, CachyOS, and openSUSE Tumbleweed. Other distros using apt, dnf, pacman, or zypper should also work — [open an issue](https://github.com/Osmantic/ODS/issues) if yours doesn't.
 >
 > **Release validation:** Operational changes run through a release-grade gate
 > that covers zero-prereq bootstrap, clean installs, product behavior,
@@ -144,19 +148,11 @@ We built ODS so you don't have to.
 - **Full service stack, pre-wired** — chat, agents, voice, workflows, search, RAG, image generation, privacy tools, observability, and developer tools. All talking to each other out of the box
 - **Fully moddable** — every service is an extension. Drop in a folder, run `ods enable`, done
 
-<div align="center">
-
-![ODS Installer](ods/docs/images/installer-splash.gif)
-
-*The ODSGATE installer handles everything — GPU detection, model selection, service orchestration.*
-
-</div>
-
 <details>
 <summary><b>Manual install (Linux)</b></summary>
 
 ```bash
-git clone https://github.com/Light-Heart-Labs/ODS.git
+git clone https://github.com/Osmantic/ODS.git
 cd ODS/ods
 ./install.sh
 ```
@@ -173,7 +169,7 @@ Open a normal **PowerShell** session and run:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-git clone https://github.com/Light-Heart-Labs/ODS.git
+git clone https://github.com/Osmantic/ODS.git
 cd ODS
 .\install.ps1
 ```
@@ -192,7 +188,7 @@ Requires Apple Silicon (M1+) and [Docker Desktop](https://www.docker.com/product
 **Install Docker Desktop first and make sure it is running before you start.**
 
 ```bash
-git clone https://github.com/Light-Heart-Labs/ODS.git
+git clone https://github.com/Osmantic/ODS.git
 cd ODS/ods
 ./install.sh
 ```
@@ -303,14 +299,6 @@ No waiting for large downloads. ODS uses bootstrap mode by default:
 2. You start chatting immediately
 3. The full model downloads in the background
 4. Hot-swap to the full model when it's ready — zero downtime
-
-<div align="center">
-
-![Installer downloading modules](ods/docs/images/installer-download.png)
-
-*The installer pulls all services in parallel. Downloads are resume-capable — interrupted downloads pick up where they left off.*
-
-</div>
 
 The bootstrap model starts with a 64K context window so Hermes can work during the first session. After the background download finishes, ODS swaps to the full model and restores the Hermes/full-model context target.
 
@@ -468,6 +456,6 @@ Apache 2.0 — Use it, modify it, ship it. See [LICENSE](LICENSE).
 
 <div align="center">
 
-*Built by [Light Heart Labs](https://github.com/Light-Heart-Labs) and the growing resistance that refuses to rent what should be owned.*
+*Built by [Osmantic](https://github.com/Osmantic) and the growing resistance that refuses to rent what should be owned.*
 
 </div>

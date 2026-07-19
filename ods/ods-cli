@@ -132,15 +132,114 @@ _ods_cli_bootstrap_status() {
         || true
 }
 
+_ods_cli_bootstrap_status_field() {
+    local key="$1" status_file="$INSTALL_DIR/data/bootstrap-status.json"
+    [[ -f "$status_file" ]] || return 0
+    grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$status_file" \
+        | sed -n '1p' \
+        | sed "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"//" \
+        | sed 's/"//' \
+        || true
+}
+
+_ods_cli_bootstrap_status_number() {
+    local key="$1" status_file="$INSTALL_DIR/data/bootstrap-status.json"
+    [[ -f "$status_file" ]] || return 0
+    grep -o "\"${key}\"[[:space:]]*:[[:space:]]*[0-9][0-9.]*" "$status_file" \
+        | sed -n '1p' \
+        | sed "s/.*:[[:space:]]*//" \
+        || true
+}
+
+_ods_cli_file_size() {
+    local path="$1"
+    if stat -c %s "$path" 2>/dev/null; then
+        return 0
+    fi
+    stat -f %z "$path" 2>/dev/null || echo 0
+}
+
+_ods_cli_bootstrap_upgrade_process_running() {
+    local model="$1" args
+    [[ -n "$model" ]] || return 1
+    while IFS= read -r args; do
+        case "$args" in
+            *"/scripts/bootstrap-upgrade.sh"*" $model "*|*" scripts/bootstrap-upgrade.sh"*" $model "*)
+                return 0
+                ;;
+        esac
+    done < <(ps -eo args= 2>/dev/null || true)
+    return 1
+}
+
+_ods_cli_bootstrap_active_status_settled() {
+    local status="$1"
+    case "$status" in
+        downloading|starting|verifying|swapping) ;;
+        *) return 1 ;;
+    esac
+
+    local model env_model model_path expected_bytes actual_bytes
+    model="$(_ods_cli_bootstrap_status_field model)"
+    [[ -n "$model" ]] || return 1
+
+    if _ods_cli_bootstrap_upgrade_process_running "$model"; then
+        return 1
+    fi
+
+    env_model="$(_env_get_raw GGUF_FILE)"
+    [[ "$env_model" == "$model" ]] || return 1
+
+    model_path="$INSTALL_DIR/data/models/$model"
+    [[ -f "$model_path" ]] || return 1
+
+    expected_bytes="$(_ods_cli_bootstrap_status_number bytesTotal)"
+    if [[ "$expected_bytes" =~ ^[0-9]+$ ]] && (( expected_bytes > 0 )); then
+        actual_bytes="$(_ods_cli_file_size "$model_path")"
+        [[ "$actual_bytes" =~ ^[0-9]+$ ]] || return 1
+        (( actual_bytes >= expected_bytes )) || return 1
+    fi
+
+    return 0
+}
+
+_ods_cli_bootstrap_download_near_swap() {
+    local model percent percent_int downloaded total remaining threshold
+    model="$(_ods_cli_bootstrap_status_field model)"
+    [[ -n "$model" ]] || return 1
+    _ods_cli_bootstrap_upgrade_process_running "$model" || return 1
+
+    threshold="${ODS_CLI_BOOTSTRAP_COMPOSE_DOWNLOAD_WAIT_BYTES:-1073741824}"
+    if ! [[ "$threshold" =~ ^[0-9]+$ ]]; then
+        threshold=1073741824
+    fi
+
+    downloaded="$(_ods_cli_bootstrap_status_number bytesDownloaded)"
+    total="$(_ods_cli_bootstrap_status_number bytesTotal)"
+    if [[ "$downloaded" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ ]] && (( total > 0 )); then
+        remaining=$(( total - downloaded ))
+        (( remaining < 0 )) && remaining=0
+        (( remaining <= threshold )) && return 0
+    fi
+
+    percent="$(_ods_cli_bootstrap_status_number percent)"
+    percent_int="${percent%%.*}"
+    if [[ "$percent_int" =~ ^[0-9]+$ ]] && (( percent_int >= 95 )); then
+        return 0
+    fi
+
+    return 1
+}
+
 _ods_cli_wait_for_bootstrap_compose_safe() {
     local action="${1:-service operation}"
     local status_file="$INSTALL_DIR/data/bootstrap-status.json"
     [[ -f "$status_file" ]] || return 0
 
-    local max_wait="${ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_SECONDS:-900}"
+    local max_wait="${ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_SECONDS:-1800}"
     local interval="${ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_INTERVAL:-5}"
     if ! [[ "$max_wait" =~ ^[0-9]+$ ]] || (( max_wait < 0 )); then
-        max_wait=900
+        max_wait=1800
     fi
     if ! [[ "$interval" =~ ^[0-9]+$ ]] || (( interval < 1 )); then
         interval=5
@@ -150,7 +249,39 @@ _ods_cli_wait_for_bootstrap_compose_safe() {
     while true; do
         status="$(_ods_cli_bootstrap_status)"
         case "$status" in
+            downloading)
+                if _ods_cli_bootstrap_active_status_settled "$status"; then
+                    if [[ "$announced" == "true" ]]; then
+                        log "  Model Upgrade: stale $status status already settled; continuing with $action"
+                    else
+                        warn "Model upgrade status is stale ($status) but the full model is already configured; continuing with $action."
+                    fi
+                    return 0
+                fi
+                if ! _ods_cli_bootstrap_download_near_swap; then
+                    log "  Model Upgrade: downloading in background; continuing with $action before hot-swap begins"
+                    return 0
+                fi
+                if [[ "$announced" == "false" ]]; then
+                    log "  Model Upgrade: download nearly complete; waiting before $action touches llama-server"
+                    announced=true
+                fi
+                if (( waited >= max_wait )); then
+                    warn "Model upgrade is still $status after ${max_wait}s; refusing to run $action against an active hot-swap."
+                    return 1
+                fi
+                sleep "$interval"
+                waited=$(( waited + interval ))
+                ;;
             starting|verifying|swapping)
+                if _ods_cli_bootstrap_active_status_settled "$status"; then
+                    if [[ "$announced" == "true" ]]; then
+                        log "  Model Upgrade: stale $status status already settled; continuing with $action"
+                    else
+                        warn "Model upgrade status is stale ($status) but the full model is already configured; continuing with $action."
+                    fi
+                    return 0
+                fi
                 if [[ "$announced" == "false" ]]; then
                     log "  Model Upgrade: $status; waiting before $action touches llama-server"
                     announced=true
@@ -170,6 +301,14 @@ _ods_cli_wait_for_bootstrap_compose_safe() {
                 ;;
         esac
     done
+}
+
+_ods_cli_reload_model_env() {
+    # A background bootstrap promotion can rewrite these values while a start
+    # or restart command is waiting. Clear the process snapshot first so a key
+    # removed from .env cannot keep overriding Docker Compose.
+    unset GGUF_FILE LLM_MODEL MAX_CONTEXT CTX_SIZE
+    load_env
 }
 
 _get_host_logical_cpus() {
@@ -843,6 +982,53 @@ _compose_run_with_summary() {
     else
         warn "(no error keywords matched in compose log)"
     fi
+
+    # Connect failed services to logs and recovery steps if not in test stub mode
+    if [[ -z "${DOCKER_STUB_MODE:-}" ]]; then
+        local -a _compose_args=()
+        local _arg
+        for _arg in "$@"; do
+            [[ "$_arg" == "up" || "$_arg" == "down" || "$_arg" == "stop" || "$_arg" == "pull" ]] && break
+            _compose_args+=("$_arg")
+        done
+
+        local _failed_candidates=()
+        local _c
+        while read -r _c; do
+            [[ -n "$_c" ]] && _failed_candidates+=("$_c")
+        done < <(grep -oE 'ods-[a-zA-Z0-9_-]+' "$_compose_log" | sort -u || true)
+
+        local _failed_containers=()
+        if (( ${#_failed_candidates[@]} > 0 )); then
+            local _project_containers
+            _project_containers=$(docker compose "${_compose_args[@]}" ps -a --format "{{.Name}}" 2>/dev/null || true)
+
+            for _c in "${_failed_candidates[@]}"; do
+                if grep -qxFe "$_c" <<< "$_project_containers"; then
+                    local _inspect
+                    _inspect=$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$_c" 2>/dev/null || true)
+                    local _status="" _health=""
+                    read -r _status _health <<< "$_inspect"
+                    if [[ "$_status" == "exited" || "$_status" == "dead" || "$_status" == "restarting" || "$_health" == "unhealthy" ]]; then
+                        _failed_containers+=("$_c")
+                    fi
+                fi
+            done
+        fi
+
+        for _c in "${_failed_containers[@]}"; do
+            echo ""
+            warn "Recent logs for container $_c (evidence):"
+            docker logs --tail 20 "$_c" 2>&1 | sed 's/^/  /' || true
+        done
+
+        if (( ${#_failed_containers[@]} > 0 )); then
+            echo ""
+            warn "Actionable recovery step:"
+            warn "  Run 'ods doctor' to inspect system readiness and get suggested fixes."
+        fi
+    fi
+
     if grep -qiE 'permission denied.*(docker API|docker daemon|docker\.sock|/var/run/docker\.sock)|/var/run/docker\.sock.*permission denied' "$_compose_log"; then
         warn "Docker socket permission denied. Add your user to the docker group, then start a new login shell:"
         warn "  sudo usermod -aG docker \"\$USER\""
@@ -902,6 +1088,59 @@ _ods_cli_rebuild_images() {
     if ! docker compose "${flags[@]}" build --no-cache "${svcs[@]}"; then
         warn "One or more images failed to rebuild (continuing — see compose output above)"
     fi
+}
+
+_ods_cli_pull_external_images() {
+    local flags=("$@")
+    local helper="$INSTALL_DIR/installers/lib/compose-images.sh"
+
+    if ! command -v ods_compose_external_images >/dev/null 2>&1 && [[ -f "$helper" ]]; then
+        # Reuse the installer's image discovery contract: pull registry images,
+        # skip local build tags such as ods-lemonade-server:latest.
+        . "$helper"
+    fi
+
+    if ! command -v ods_compose_external_images >/dev/null 2>&1; then
+        _compose_run_with_summary "Pulling latest images" "${flags[@]}" pull
+        return
+    fi
+
+    local image_output=""
+    if ! image_output="$(ods_compose_external_images "docker compose" "${flags[@]}")"; then
+        warn "Could not resolve external Compose image list; falling back to docker compose pull."
+        _compose_run_with_summary "Pulling latest images" "${flags[@]}" pull
+        return
+    fi
+
+    local -a images=()
+    local image
+    while IFS= read -r image; do
+        [[ -n "$image" ]] && images+=("$image")
+    done <<< "$image_output"
+
+    if (( ${#images[@]} == 0 )); then
+        success "Pulling latest images — done"
+        return 0
+    fi
+
+    _check_docker_access
+    log "Pulling latest images..."
+
+    local count=0 total=${#images[@]} failed=0
+    for image in "${images[@]}"; do
+        count=$((count + 1))
+        log "  [$count/$total] $image"
+        if ! docker pull "$image"; then
+            failed=$((failed + 1))
+        fi
+    done
+
+    if (( failed > 0 )); then
+        log_error "Pulling latest images failed: $failed/$total image(s)"
+        return 1
+    fi
+
+    success "Pulling latest images — done"
 }
 
 #=============================================================================
@@ -1217,6 +1456,10 @@ cmd_restart() {
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
         _ods_cli_wait_for_bootstrap_compose_safe "restart"
+        _ods_cli_reload_model_env
+        ensure_llama_cpu_budget
+        flags_str=$(get_compose_flags)
+        read -ra flags <<< "$flags_str"
     fi
 
     if [[ -z "$resolved_service" ]]; then
@@ -1364,6 +1607,10 @@ cmd_start() {
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
         _ods_cli_wait_for_bootstrap_compose_safe "start"
+        _ods_cli_reload_model_env
+        ensure_llama_cpu_budget
+        flags_str=$(get_compose_flags)
+        read -ra flags <<< "$flags_str"
     fi
 
     if [[ -z "$resolved_service" ]]; then
@@ -1407,13 +1654,16 @@ cmd_dry_run() {
 
     # Try dashboard API first; fall back to direct GitHub query.
     local api_json=""
-    local dashboard_port="${DASHBOARD_PORT:-3002}"
+    local dashboard_api_port="${DASHBOARD_API_PORT:-3002}"
     local api_key=""
     api_key=$(grep '^DASHBOARD_API_KEY=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
+    if [[ -z "$api_key" && -f "$INSTALL_DIR/data/dashboard-api-key.txt" ]]; then
+        api_key=$(cat "$INSTALL_DIR/data/dashboard-api-key.txt" | tr -d '\r\n ' || true)
+    fi
     if [[ -n "$api_key" ]]; then
         api_json=$(curl -sf --max-time 5 \
-            -H "X-API-Key: ${api_key}" \
-            "http://127.0.0.1:${dashboard_port}/api/update/dry-run" 2>/dev/null || true)
+            -H "Authorization: Bearer ${api_key}" \
+            "http://127.0.0.1:${dashboard_api_port}/api/update/dry-run" 2>/dev/null || true)
     fi
 
     local latest_ver="" changelog_url="" update_status=""
@@ -1427,7 +1677,7 @@ cmd_dry_run() {
         # Direct GitHub fallback
         local gh_resp
         gh_resp=$(curl -sf --max-time 8 \
-            "https://api.github.com/repos/Light-Heart-Labs/ODS/releases/latest" 2>/dev/null || true)
+            "https://api.github.com/repos/Osmantic/ODS/releases/latest" 2>/dev/null || true)
         if [[ -n "$gh_resp" ]] && command -v jq >/dev/null 2>&1; then
             latest_ver=$(echo "$gh_resp" | jq -r '.tag_name // empty' 2>/dev/null | sed 's/^v//' || true)
             changelog_url=$(echo "$gh_resp" | jq -r '.html_url // empty' 2>/dev/null || true)
@@ -1596,9 +1846,15 @@ cmd_update() {
         warn "ods-update.sh and ods-backup.sh not found; skipping pre-update snapshot."
     fi
 
-    if ! _compose_run_with_summary "Pulling latest images" "${flags[@]}" pull; then
+    if ! _ods_cli_pull_external_images "${flags[@]}"; then
         error "Failed to pull latest images"
     fi
+
+    _ods_cli_wait_for_bootstrap_compose_safe "update"
+    load_env
+    ensure_llama_cpu_budget
+    flags_str=$(get_compose_flags)
+    read -ra flags <<< "$flags_str"
 
     [[ "$rebuild_images" == "true" ]] && _ods_cli_rebuild_images "${flags[@]}"
 
@@ -1613,21 +1869,56 @@ cmd_update() {
     log "Verifying update..."
     local failed_services=0
     local total_services=0
+    local active_services=""
+    local running_services=""
 
-    # Check each service health
+    active_services=$(docker compose "${flags[@]}" config --services 2>/dev/null \
+        || docker compose "${flags[@]}" ps --all --services 2>/dev/null \
+        || true)
+    running_services=$(docker compose "${flags[@]}" ps --services --status running 2>/dev/null || true)
+
+    if [[ -z "$active_services" ]]; then
+        log_error "Update verification failed: active compose stack has no services"
+        log_error "Run 'ods status' to check service health"
+        exit 1
+    fi
+
+    # Check only the active compose stack. sr_list_enabled() lists every
+    # installed extension with a compose file, including disabled optional
+    # services, which can make a healthy update look failed.
     while IFS= read -r service; do
         [[ -z "$service" ]] && continue
-        ((total_services++))
+        ((++total_services))
 
-        local container
-        container=$(sr_container "$service" 2>/dev/null || echo "")
-        if [[ -n "$container" ]]; then
-            if ! docker ps --filter "name=$container" --filter "status=running" --format "{{.Names}}" | grep -q "^$container$"; then
-                warn "Service $service ($container) is not running"
-                ((failed_services++))
-            fi
+        if grep -Fxq "$service" <<< "$running_services"; then
+            continue
         fi
-    done < <(sr_list_enabled)
+
+        # Some user extensions are one-shot jobs that legitimately exit 0
+        # after compose recreates them. Treat those as successful, but still
+        # fail missing containers and non-zero exits.
+        local ids=""
+        local completed_ok="false"
+        ids=$(docker compose "${flags[@]}" ps --all -q "$service" 2>/dev/null || true)
+        if [[ -n "$ids" ]]; then
+            completed_ok="true"
+            while IFS= read -r id; do
+                [[ -z "$id" ]] && continue
+                local state=""
+                state=$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "$id" 2>/dev/null || true)
+                case "$state" in
+                    "running "*) ;;
+                    "exited 0") ;;
+                    *) completed_ok="false"; break ;;
+                esac
+            done <<< "$ids"
+        fi
+
+        if [[ "$completed_ok" != "true" ]]; then
+            warn "Service $service is not running"
+            ((++failed_services))
+        fi
+    done <<< "$active_services"
 
     if [[ $failed_services -gt 0 ]]; then
         log_error "Update verification failed: $failed_services/$total_services services are not running"
@@ -2295,7 +2586,9 @@ cmd_enable() {
     if [[ -n "$deps" ]]; then
         local missing=()
         for dep in $deps; do
+            # Check built-in extensions first, then dashboard-installed user extensions
             local dep_cf="$INSTALL_DIR/extensions/services/$dep/compose.yaml"
+            [[ -f "$dep_cf" ]] || dep_cf="$INSTALL_DIR/data/user-extensions/$dep/compose.yaml"
             local dep_cat="${SERVICE_CATEGORIES[$dep]:-optional}"
             # Core services are always available; check extension deps
             if [[ "$dep_cat" != "core" && ! -f "$dep_cf" ]]; then
@@ -2360,7 +2653,9 @@ cmd_disable() {
     local dependents=()
     for sid in "${SERVICE_IDS[@]}"; do
         [[ "$sid" == "$service_id" ]] && continue
+        # Check built-in extensions first, then dashboard-installed user extensions
         local dep_cf="$INSTALL_DIR/extensions/services/$sid/compose.yaml"
+        [[ -f "$dep_cf" ]] || dep_cf="$INSTALL_DIR/data/user-extensions/$sid/compose.yaml"
         [[ ! -f "$dep_cf" ]] && continue
         local deps="${SERVICE_DEPENDS[$sid]:-}"
         for dep in $deps; do
@@ -2425,7 +2720,9 @@ cmd_purge() {
     fi
 
     # Check if service is still enabled (compose.yaml exists = enabled)
+    # Check built-in extensions first, then dashboard-installed user extensions
     local _cf="$INSTALL_DIR/extensions/services/$service_id/compose.yaml"
+    [[ -f "$_cf" ]] || _cf="$INSTALL_DIR/data/user-extensions/$service_id/compose.yaml"
     if [[ -f "$_cf" ]]; then
         error "$service_id is still enabled. Run 'ods disable $service_id' first."
     fi
@@ -2557,7 +2854,9 @@ validate_preset_compatibility() {
     local missing_exts=()
     while IFS=: read -r state sid; do
         [[ -z "$sid" ]] && continue
+        # Check built-in extensions first, then dashboard-installed user extensions
         local ext_dir="$INSTALL_DIR/extensions/services/$sid"
+        [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
         if [[ ! -d "$ext_dir" ]]; then
             missing_exts+=("$sid")
         fi
@@ -2656,20 +2955,25 @@ META
             if [[ -f "$preset_dir/extensions.list" ]]; then
                 local enabled=0 disabled=0
                 while IFS=: read -r state sid; do
+                    # Check built-in extensions first, then dashboard-installed user extensions
                     local ext_dir="$INSTALL_DIR/extensions/services/$sid"
+                    [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
                     [[ -d "$ext_dir" ]] || continue
                     local cf="$ext_dir/compose.yaml"
                     local cf_dis="$ext_dir/compose.yaml.disabled"
 
+                    # NB: enabled=$((enabled + 1)) not ((enabled++)) — the
+                    # post-increment form evaluates to 0 on the first hit,
+                    # which set -e treats as failure and aborts mid-restore.
                     if [[ "$state" == "enabled" ]]; then
                         if [[ -f "$cf_dis" && ! -f "$cf" ]]; then
                             mv "$cf_dis" "$cf"
-                            ((enabled++))
+                            enabled=$((enabled + 1))
                         fi
                     elif [[ "$state" == "disabled" ]]; then
                         if [[ -f "$cf" ]]; then
                             mv "$cf" "$cf_dis"
-                            ((disabled++))
+                            disabled=$((disabled + 1))
                         fi
                     fi
                 done < "$preset_dir/extensions.list"

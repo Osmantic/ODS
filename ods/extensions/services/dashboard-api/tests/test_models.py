@@ -6,8 +6,13 @@ import importlib
 import asyncio
 import json
 import sys
+import threading
+import time
 import types
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock
+
+import pytest
 
 from models import GPUInfo
 
@@ -58,6 +63,78 @@ def test_default_model_discovery_timeout_covers_slow_local_runtime():
     import routers.models as models_router
 
     assert models_router._MODEL_DISCOVERY_TIMEOUT_SECONDS >= 10.0
+
+
+def test_agent_model_status_collapses_concurrent_poll_bursts(monkeypatch):
+    import routers.models as models_router
+
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def fake_request(method, path, *, timeout, payload=None):
+        nonlocal calls
+        assert method == "GET"
+        assert path == "/v1/model/status"
+        assert timeout == 5
+        assert payload is None
+        with calls_lock:
+            calls += 1
+        time.sleep(0.05)
+        return {"status": "downloading", "percent": 42}
+
+    monkeypatch.setattr(models_router, "request_agent_json", fake_request)
+    monkeypatch.setattr(models_router, "_AGENT_MODEL_STATUS_CACHE_TTL_SECONDS", 1.0)
+    monkeypatch.setattr(models_router, "_agent_model_status_cache_at", 0.0)
+    monkeypatch.setattr(models_router, "_agent_model_status_cache_value", None)
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(pool.map(lambda _: models_router._get_agent_model_status(), range(16)))
+
+    assert calls == 1
+    assert results == [{"status": "downloading", "percent": 42}] * 16
+
+
+def test_agent_model_status_and_actions_share_transport(monkeypatch):
+    import routers.models as models_router
+
+    calls = []
+
+    def fake_request(method, path, *, timeout, payload=None):
+        calls.append((method, path, timeout, payload))
+        return {"status": "idle" if method == "GET" else "started"}
+
+    monkeypatch.setattr(models_router, "request_agent_json", fake_request)
+    monkeypatch.setattr(models_router, "_AGENT_MODEL_STATUS_CACHE_TTL_SECONDS", 0.0)
+    monkeypatch.setattr(models_router, "_agent_model_status_cache_at", 0.0)
+
+    assert models_router._get_agent_model_status() == {"status": "idle"}
+    assert models_router._call_agent_model("/v1/model/download", {"model": "test"}) == {
+        "status": "started"
+    }
+    assert calls == [
+        ("GET", "/v1/model/status", 5, None),
+        ("POST", "/v1/model/download", 30, {"model": "test"}),
+    ]
+
+
+def test_agent_activation_conflict_preserves_target(monkeypatch):
+    import routers.models as models_router
+
+    payload = {
+        "error": "Another model activation is in progress",
+        "activeModelId": "phi4-mini-q4",
+    }
+
+    def conflict(*_args, **_kwargs):
+        raise models_router.AgentHTTPError(409, payload["error"], json.dumps(payload))
+
+    monkeypatch.setattr(models_router, "request_agent_json", conflict)
+
+    with pytest.raises(models_router.HTTPException) as exc_info:
+        models_router._call_agent_model("/v1/model/activate", {"model_id": "phi4-mini-q4"}, timeout=600)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == payload
 
 
 def test_fetch_loaded_model_falls_back_to_models_when_lemonade_health_empty(monkeypatch):
@@ -263,13 +340,74 @@ def _patch_model_router_paths(monkeypatch, tmp_path):
     install_dir = tmp_path / "ods"
     data_dir = install_dir / "data"
     data_dir.mkdir(parents=True)
+    (install_dir / ".env").write_text("ODS_MODE=local\n", encoding="utf-8")
     monkeypatch.setattr(helpers, "_PERF_FILE", data_dir / "model_performance.json")
     monkeypatch.setattr(models_router, "INSTALL_DIR", str(install_dir))
     monkeypatch.setattr(models_router, "DATA_DIR", str(data_dir))
     monkeypatch.setattr(models_router, "_LIBRARY_PATH", install_dir / "config" / "model-library.json")
     monkeypatch.setattr(models_router, "_MODELS_DIR", data_dir / "models")
     monkeypatch.setattr(models_router, "_ENV_PATH", install_dir / ".env")
+    monkeypatch.setattr(models_router, "ODS_MODE_EFFECTIVE", "local")
     return models_router, install_dir, data_dir
+
+
+@pytest.mark.parametrize("mode", ["local", "hybrid", "lemonade"])
+def test_model_activation_mode_policy_allows_matching_local_modes(mode):
+    import routers.models as models_router
+
+    assert models_router._model_activation_mode_denial(mode, mode) is None
+
+
+@pytest.mark.parametrize(
+    ("effective_mode", "configured_mode", "expected_code", "expected_reason"),
+    [
+        ("cloud", "cloud", "local_mode_required", "effective_mode_not_local"),
+        ("unknown", "local", "ods_mode_unknown", "mode_unknown"),
+        ("local", "invalid", "ods_mode_unknown", "mode_unknown"),
+        ("cloud", "local", "ods_mode_mismatch", "mode_mismatch"),
+        ("local", "cloud", "ods_mode_mismatch", "mode_mismatch"),
+    ],
+)
+def test_load_model_rejects_unsafe_mode_before_lookup_or_agent_call(
+    test_client,
+    monkeypatch,
+    tmp_path,
+    effective_mode,
+    configured_mode,
+    expected_code,
+    expected_reason,
+):
+    models_router, install_dir, _data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    (install_dir / ".env").write_text(
+        f"ODS_MODE={configured_mode}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(models_router, "ODS_MODE_EFFECTIVE", effective_mode)
+    monkeypatch.setattr(
+        models_router,
+        "_call_agent_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unsafe activation reached host agent")
+        ),
+    )
+
+    response = test_client.post(
+        "/api/models/not-installed/load",
+        headers=test_client.auth_headers,
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    message = detail.pop("message")
+    assert message.startswith("Local model activation is unavailable")
+    assert detail == {
+        "error": "local_mode_required",
+        "code": expected_code,
+        "reason": expected_reason,
+        "effectiveMode": models_router.normalize_ods_mode(effective_mode),
+        "configuredMode": models_router.normalize_ods_mode(configured_mode),
+        "requestedModelId": "not-installed",
+    }
 
 
 def _gpu():
@@ -374,6 +512,7 @@ def test_api_models_marks_installer_configured_model(test_client, monkeypatch, t
         "llm_model_name": "qwen3.5-9b",
     }])
     (install_dir / ".env").write_text(
+        "ODS_MODE=cloud\n"
         "LLM_MODEL=qwen3.5-9b\n"
         "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n",
         encoding="utf-8",
@@ -388,6 +527,8 @@ def test_api_models_marks_installer_configured_model(test_client, monkeypatch, t
     assert resp.status_code == 200
     model = resp.json()["models"][0]
     assert resp.json()["configuredModel"] == "qwen3.5-9b-q4"
+    assert resp.json()["odsMode"] == "local"
+    assert resp.json()["configuredMode"] == "cloud"
     assert model["recommended"] is True
     assert model["configured"] is True
     assert model["recommendation"]["source"] == "installer_configured"
@@ -441,6 +582,7 @@ def test_load_model_noops_when_requested_model_already_loaded(test_client, monke
     }])
     (data_dir / "models" / "Qwen3.5-9B-Q4_K_M.gguf").write_text("model", encoding="utf-8")
     (install_dir / ".env").write_text(
+        "ODS_MODE=local\n"
         "LLM_MODEL=qwen3.5-9b\n"
         "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n",
         encoding="utf-8",
@@ -479,6 +621,7 @@ def test_load_model_delegates_when_live_backend_reports_different_model(test_cli
     }])
     (data_dir / "models" / "Qwen3.5-9B-Q4_K_M.gguf").write_text("model", encoding="utf-8")
     (install_dir / ".env").write_text(
+        "ODS_MODE=local\n"
         "LLM_MODEL=qwen3.5-9b\n"
         "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n",
         encoding="utf-8",
@@ -517,6 +660,7 @@ def test_load_model_delegates_when_loaded_backend_is_not_ready(test_client, monk
     }])
     (data_dir / "models" / "Qwen3.5-9B-Q4_K_M.gguf").write_text("model", encoding="utf-8")
     (install_dir / ".env").write_text(
+        "ODS_MODE=local\n"
         "LLM_MODEL=qwen3.5-9b\n"
         "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n",
         encoding="utf-8",
@@ -547,7 +691,10 @@ def test_load_model_delegates_local_gguf_without_catalog_entry(test_client, monk
         "model",
         encoding="utf-8",
     )
-    (install_dir / ".env").write_text("MAX_CONTEXT=65536\n", encoding="utf-8")
+    (install_dir / ".env").write_text(
+        "ODS_MODE=local\nMAX_CONTEXT=65536\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(
         models_router,
         "_call_agent_model",
@@ -578,6 +725,35 @@ def test_local_gguf_scan_keeps_mixed_case_and_skips_empty(monkeypatch, tmp_path)
     assert models_router._scan_downloaded_models() == {
         "MixedCaseModel.GGUF": len("model"),
     }
+
+
+def test_download_status_prefers_host_agent_normalized_status(test_client, monkeypatch, tmp_path):
+    models_router, _install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    status_path = data_dir / "model-download-status.json"
+    status_path.write_text(
+        json.dumps({
+            "status": "downloading",
+            "model": "Phi-4-mini-instruct-Q4_K_M.gguf",
+            "bytesDownloaded": 0,
+            "bytesTotal": 2491874272,
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        models_router,
+        "_get_agent_model_status",
+        lambda: {
+            "status": "failed",
+            "model": "Phi-4-mini-instruct-Q4_K_M.gguf",
+            "error": "Model download is not running; previous download was interrupted.",
+        },
+    )
+
+    resp = test_client.get("/api/models/download-status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "failed"
+    assert "not running" in resp.json()["error"]
 
 
 def test_load_model_resolves_local_gguf_by_stem_with_mixed_case_extension(
@@ -619,6 +795,54 @@ def test_local_gguf_model_uses_safe_logical_id_for_spaced_filename(monkeypatch, 
     assert model["gguf_file"] == "My Custom Model.Q8_0.GGUF"
     assert model["id"] == "My-Custom-Model.Q8_0"
     assert model["llm_model_name"] == "My-Custom-Model.Q8_0"
+
+
+def test_local_gguf_ui_id_loads_and_deletes_spaced_filename(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, [])
+    gguf = data_dir / "models" / "My Custom Model.Q8_0.GGUF"
+    gguf.write_text("model", encoding="utf-8")
+    calls = []
+
+    def agent_call(path, body, timeout=30):
+        calls.append((path, body, timeout))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(models_router, "_call_agent_model", agent_call)
+
+    load_response = test_client.post(
+        "/api/models/My-Custom-Model.Q8_0/load",
+        headers=test_client.auth_headers,
+    )
+    delete_response = test_client.delete(
+        "/api/models/My-Custom-Model.Q8_0",
+        headers=test_client.auth_headers,
+    )
+
+    assert load_response.status_code == 200
+    assert delete_response.status_code == 200
+    assert calls == [
+        ("/v1/model/activate", {"model_id": "My-Custom-Model.Q8_0"}, 600),
+        ("/v1/model/delete", {"gguf_file": "My Custom Model.Q8_0.GGUF"}, 30),
+    ]
+
+
+def test_delete_local_gguf_rejects_path_separators(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, [])
+    (data_dir / "models" / "nested.gguf").write_text("model", encoding="utf-8")
+    monkeypatch.setattr(
+        models_router,
+        "_call_agent_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unsafe delete reached host agent")),
+    )
+
+    response = test_client.delete(
+        "/api/models/..%5Cnested",
+        headers=test_client.auth_headers,
+    )
+
+    assert response.status_code == 404
 
 
 def test_load_model_rejects_local_gguf_path_separators(test_client, monkeypatch, tmp_path):

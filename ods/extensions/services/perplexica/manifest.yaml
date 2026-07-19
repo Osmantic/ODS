@@ -20,3 +20,12 @@ service:
   compose_file: compose.yaml
   category: optional
   depends_on: [searxng, llama-server]
+  llm:
+    consumes: true
+    route: direct
+    pinning: dynamic
+    min_context: 65536
+    probe:
+      kind: custom
+      path: /api/search
+      auth: none

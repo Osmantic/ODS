@@ -34,6 +34,15 @@ service:
   compose_file: compose.yaml
   category: recommended
   depends_on: [llama-server, searxng]
+  llm:
+    consumes: true
+    route: direct
+    pinning: dynamic
+    min_context: 65536
+    probe:
+      kind: custom
+      path: /api/talk/message/stream
+      auth: cookie:dream-session
   description: >
     Hermes Agent (Nous Research) — a self-improving generalist agent with
     persistent memory, autonomous skill creation, and 70+ built-in tools.

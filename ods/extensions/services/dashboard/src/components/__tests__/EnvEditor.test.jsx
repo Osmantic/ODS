@@ -93,4 +93,31 @@ describe('EnvEditor', () => {
     expect(screen.getByText(/Pending runtime changes/i)).toBeInTheDocument()
     expect(screen.getAllByText(/llama-server/i).length).toBeGreaterThan(0)
   })
+
+  test('renders runtime-managed fields as read only', () => {
+    const modeField = {
+      key: 'ODS_MODE',
+      label: 'ODS Mode',
+      type: 'string',
+      description: 'LLM backend mode.',
+      required: false,
+      secret: false,
+      enum: ['local', 'cloud'],
+      default: 'local',
+      readOnly: true,
+      readOnlyReason: 'Runtime mode is selected by the installer and cannot be changed from the dashboard.',
+    }
+    const modeSection = { id: 'llm-settings', title: 'LLM Settings', keys: ['ODS_MODE'] }
+
+    renderEditor({
+      sections: [modeSection],
+      activeSection: modeSection,
+      fields: { ODS_MODE: modeField },
+      values: { ODS_MODE: 'local' },
+    })
+
+    expect(screen.getByRole('combobox')).toBeDisabled()
+    expect(screen.getByText('read only')).toBeInTheDocument()
+    expect(screen.getByText(/selected by the installer/i)).toBeInTheDocument()
+  })
 })

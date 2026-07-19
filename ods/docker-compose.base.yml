@@ -29,7 +29,7 @@ services:
       - ./data/models:/models:z
       - ./config/llama-server/models.ini:/config/models.ini:ro,z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${OLLAMA_PORT:-8080}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${OLLAMA_PORT:-11434}:8080"
     command:
       - --model
       - /models/${GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}
@@ -192,6 +192,7 @@ services:
       - ODS_INSTALL_DIR=/ods
       - ODS_DATA_DIR=/data
       - ODS_EXTENSIONS_LIBRARY_DIR=/data/extensions-library
+      - ODS_MODE=${ODS_MODE:-local}
       - ODS_AGENT_HOST=${ODS_AGENT_HOST:-}
       - ODS_AGENT_PORT=${ODS_AGENT_PORT:-7710}
       - GPU_BACKEND=${GPU_BACKEND:-nvidia}

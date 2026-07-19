@@ -48,25 +48,207 @@ bash tests/contracts/test-external-lemonade-contracts.sh
 
 echo "[contract] bootstrap hot-swap force-recreate"
 bash tests/test-bootstrap-upgrade-hotswap-contract.sh
+bash tests/contracts/test-windows-lemonade-swap-wait.sh
 
 echo "[contract] bootstrap Docker hot-swap rollback"
 bash tests/test-bootstrap-upgrade-docker-rollback.sh
 
 echo "[contract] ODS rename migration guardrails"
-grep -qF 'ODS_ALLOW_DREAMSERVER_PARALLEL' get-ods.sh \
-  || { echo "[FAIL] get-ods.sh must require an explicit override before parallel DreamServer installs"; exit 1; }
+grep -qF 'ODS_ALLOW_LEGACY_PARALLEL' get-ods.sh \
+  || { echo "[FAIL] get-ods.sh must require an explicit override before parallel pre-ODS installs"; exit 1; }
+grep -qF 'ODS_LEGACY_INSTALL_DIR' get-ods.sh \
+  || { echo "[FAIL] get-ods.sh must allow an explicit pre-ODS install path"; exit 1; }
+grep -qF 'PRE_ODS_INSTALL_DIR="${ODS_LEGACY_INSTALL_DIR:-}"' get-ods.sh \
+  || { echo "[FAIL] get-ods.sh must use only the canonical pre-ODS install-dir control"; exit 1; }
 grep -qF 'ODS_INSTALL_DIR' get-ods.sh \
   || { echo "[FAIL] get-ods.sh must allow an explicit ODS install dir for isolated parallel testing"; exit 1; }
-grep -qF 'dream-server' get-ods.sh \
-  || { echo "[FAIL] get-ods.sh must detect legacy ~/dream-server installs"; exit 1; }
-grep -qF 'name=^/dream-' get-ods.sh \
-  || { echo "[FAIL] get-ods.sh must detect legacy DreamServer containers"; exit 1; }
-grep -qF 'ODS_ALLOW_DREAMSERVER_PARALLEL' installers/phases/01-preflight.sh \
-  || { echo "[FAIL] Linux installer preflight must gate legacy DreamServer coexistence"; exit 1; }
-grep -qF 'name=^/dream-' installers/phases/01-preflight.sh \
-  || { echo "[FAIL] Linux installer preflight must detect legacy DreamServer containers"; exit 1; }
+grep -qF 'ODS_ALLOW_LEGACY_PARALLEL' installers/phases/01-preflight.sh \
+  || { echo "[FAIL] Linux installer preflight must gate pre-ODS coexistence"; exit 1; }
+grep -qF '_pre_ods_install_dir="${ODS_LEGACY_INSTALL_DIR:-}"' installers/phases/01-preflight.sh \
+  || { echo "[FAIL] Linux installer preflight must use only the canonical pre-ODS install-dir control"; exit 1; }
+grep -qF '_ods_is_related_install_dir' installers/phases/01-preflight.sh \
+  || { echo "[FAIL] Linux installer preflight must auto-detect dormant related installs"; exit 1; }
+grep -qF '_ods_related_compose_containers' installers/phases/01-preflight.sh \
+  || { echo "[FAIL] Linux installer preflight must auto-detect related Compose projects"; exit 1; }
+for _pre_ods_scan_file in get-ods.sh installers/phases/01-preflight.sh; do
+  grep -qF '\( -type d -o -type l \)' "$_pre_ods_scan_file" \
+    || { echo "[FAIL] $_pre_ods_scan_file must include symlinked sibling install directories"; exit 1; }
+done
+unset _pre_ods_scan_file
 grep -qF 'ods/ods-cli text eol=lf' ../.gitattributes \
   || { echo "[FAIL] .gitattributes must force LF checkout for extensionless ods/ods-cli"; exit 1; }
+
+_pre_ods_guard_tmp="$(mktemp -d)"
+_pre_ods_guard_harness="$_pre_ods_guard_tmp/bootstrap-guard.sh"
+for _pre_ods_helper in _ods_is_install_backup_dir _ods_is_related_install_dir _ods_related_compose_containers; do
+  sed -n "/^${_pre_ods_helper}() {/,/^}/p" get-ods.sh \
+    > "$_pre_ods_guard_tmp/bootstrap-${_pre_ods_helper}.sh"
+  sed -n "/^${_pre_ods_helper}() {/,/^}/p" installers/phases/01-preflight.sh \
+    > "$_pre_ods_guard_tmp/preflight-${_pre_ods_helper}.sh"
+  cmp -s \
+    "$_pre_ods_guard_tmp/bootstrap-${_pre_ods_helper}.sh" \
+    "$_pre_ods_guard_tmp/preflight-${_pre_ods_helper}.sh" \
+    || { echo "[FAIL] Bootstrap and Linux preflight must share ${_pre_ods_helper} behavior"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
+done
+unset _pre_ods_helper
+
+{
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+  printf '%s\n' 'warn() { printf "[warn] %s\n" "$*"; }'
+  sed -n '/^is_truthy() {/,/^# ── Banner/p' get-ods.sh | sed '$d'
+  cat <<'HARNESS_DOCKER'
+docker() {
+  if [[ -n "${ODS_TEST_DOCKER_ROWS_FILE:-}" && -f "$ODS_TEST_DOCKER_ROWS_FILE" ]]; then
+    cat "$ODS_TEST_DOCKER_ROWS_FILE"
+  fi
+}
+HARNESS_DOCKER
+  printf '%s\n' 'refuse_legacy_install'
+} > "$_pre_ods_guard_harness"
+chmod +x "$_pre_ods_guard_harness"
+
+mkdir -p "$_pre_ods_guard_tmp/home/unrelated"
+touch "$_pre_ods_guard_tmp/home/unrelated/.env"
+if ! PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >/dev/null 2>&1; then
+  echo "[FAIL] bootstrap guard must ignore directories without the full stack signature"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+
+mkdir -p "$_pre_ods_guard_tmp/older-install"
+touch "$_pre_ods_guard_tmp/older-install/.env"
+if PRE_ODS_INSTALL_DIR="$_pre_ods_guard_tmp/older-install" \
+    ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/blocked.log" 2>&1; then
+  echo "[FAIL] bootstrap guard must reject a configured older install path"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+grep -qF 'Existing related install detected' "$_pre_ods_guard_tmp/blocked.log" \
+  || { echo "[FAIL] bootstrap guard rejection must explain the detected older install"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
+
+if ! PRE_ODS_INSTALL_DIR="$_pre_ods_guard_tmp/older-install" \
+    ODS_ALLOW_LEGACY_PARALLEL=1 \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >/dev/null 2>&1; then
+  echo "[FAIL] bootstrap guard must honor the explicit parallel-install override"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+
+mkdir -p "$_pre_ods_guard_tmp/home/related/data"
+touch "$_pre_ods_guard_tmp/home/related/.env"
+cat > "$_pre_ods_guard_tmp/home/related/docker-compose.base.yml" <<'COMPOSE'
+services:
+  llama-server:
+  open-webui:
+  dashboard-api:
+COMPOSE
+if PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/auto-path.log" 2>&1; then
+  echo "[FAIL] bootstrap guard must auto-detect a dormant related install"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+grep -qF 'related install directory' "$_pre_ods_guard_tmp/auto-path.log" \
+  || { echo "[FAIL] dormant related-install rejection must identify the directory"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
+rm -rf "$_pre_ods_guard_tmp/home/related"
+
+mkdir -p "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646/data"
+touch "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646/.env"
+cat > "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646/docker-compose.base.yml" <<'COMPOSE'
+services:
+  llama-server:
+  open-webui:
+  dashboard-api:
+COMPOSE
+if ! PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/backup-path.log" 2>&1; then
+  cat "$_pre_ods_guard_tmp/backup-path.log"
+  echo "[FAIL] bootstrap guard must ignore timestamped dormant backup directories"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+rm -rf "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646"
+
+mkdir -p "$_pre_ods_guard_tmp/relocated/data"
+touch "$_pre_ods_guard_tmp/relocated/.env"
+cat > "$_pre_ods_guard_tmp/relocated/docker-compose.yml" <<'COMPOSE'
+services:
+  litellm:
+  open-webui:
+  dashboard-api:
+COMPOSE
+ln -s "$_pre_ods_guard_tmp/relocated" "$_pre_ods_guard_tmp/home/related-link"
+if PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/auto-symlink.log" 2>&1; then
+  echo "[FAIL] bootstrap guard must auto-detect a symlinked related install"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+grep -qF 'related install directory' "$_pre_ods_guard_tmp/auto-symlink.log" \
+  || { echo "[FAIL] symlinked related-install rejection must identify the directory"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
+rm -f "$_pre_ods_guard_tmp/home/related-link"
+
+cat > "$_pre_ods_guard_tmp/docker-rows" <<'ROWS'
+stack-llm|stack|llama-server
+stack-web|stack|open-webui
+stack-api|stack|dashboard-api
+ROWS
+if PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    ODS_TEST_DOCKER_ROWS_FILE="$_pre_ods_guard_tmp/docker-rows" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/auto-docker.log" 2>&1; then
+  echo "[FAIL] bootstrap guard must auto-detect a related Compose project"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+grep -qF 'related Compose containers' "$_pre_ods_guard_tmp/auto-docker.log" \
+  || { echo "[FAIL] related Compose rejection must identify the containers"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
+
+cat > "$_pre_ods_guard_tmp/docker-rows" <<'ROWS'
+stack-gateway|stack|litellm
+stack-web|stack|open-webui
+stack-api|stack|dashboard-api
+ROWS
+if PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    ODS_TEST_DOCKER_ROWS_FILE="$_pre_ods_guard_tmp/docker-rows" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/auto-gateway.log" 2>&1; then
+  echo "[FAIL] bootstrap guard must auto-detect a related Compose project using the gateway service"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+
+cat > "$_pre_ods_guard_tmp/docker-rows" <<'ROWS'
+other-web|other-a|open-webui
+other-api|other-a|dashboard-api
+other-llm|other-b|llama-server
+ROWS
+if ! PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    ODS_TEST_DOCKER_ROWS_FILE="$_pre_ods_guard_tmp/docker-rows" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >/dev/null 2>&1; then
+  echo "[FAIL] bootstrap guard must require the complete core signature within one Compose project"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+rm -rf "$_pre_ods_guard_tmp"
 
 echo "[contract] bootstrap download finalization is non-destructive"
 bash tests/test-bootstrap-upgrade-download-finalization.sh
@@ -83,13 +265,29 @@ awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_maybe_resume_bootstrap_up
   || { echo "[FAIL] ods start must retry failed bootstrap upgrades"; exit 1; }
 awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_wait_for_bootstrap_compose_safe' \
   || { echo "[FAIL] ods restart must wait for active bootstrap hot-swaps before compose"; exit 1; }
+awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_reload_model_env' \
+  || { echo "[FAIL] ods restart must reload model env after bootstrap hot-swap wait"; exit 1; }
 awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_wait_for_bootstrap_compose_safe' \
   || { echo "[FAIL] ods start must wait for active bootstrap hot-swaps before compose"; exit 1; }
+awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_reload_model_env' \
+  || { echo "[FAIL] ods start must reload model env after bootstrap hot-swap wait"; exit 1; }
 grep -q 'starting|verifying|swapping' ods-cli \
   || { echo "[FAIL] ods-cli bootstrap compose guard must include swapping"; exit 1; }
 
 echo "[contract] macOS host-agent LaunchAgent install-dir"
 bash tests/test-macos-host-agent-verification.sh
+
+echo "[contract] macOS direct binds replace conflicting Colima bridges"
+bash tests/test-macos-direct-bind-bridge.sh
+
+echo "[contract] macOS CLI preserves cloud/local model routing"
+bash tests/test-macos-cli-mode-routing.sh
+
+echo "[contract] macOS cloud resolver preserves selected extension state"
+bash tests/test-macos-cloud-resolver.sh
+
+echo "[contract] macOS installer preserves authenticated local/cloud transitions"
+bash tests/test-macos-installer-transitions.sh
 
 echo "[contract] AMD reassign keeps HSA override Strix-only"
 grep -q '_env_set "HSA_OVERRIDE_GFX_VERSION" "11.5.1"' ods-cli \
@@ -367,6 +565,9 @@ if grep -q '^[[:space:]]*_build_services=(dashboard dashboard-api ape token-spy 
   exit 1
 fi
 
+echo "[contract] failed requested local builds cannot reuse stale images"
+bash tests/test-phase11-local-build-failure.sh
+
 echo "[contract] OpenClaw deprecation preserves actual installs only"
 for installer in install-core.sh installers/macos/install-macos.sh; do
   grep -Fq 'name=^/ods-openclaw$' "$installer" \
@@ -548,5 +749,8 @@ fi
 
 echo "[contract] Hermes context defaults are installer-wide"
 bash tests/test-installer-context-parity.sh
+
+echo "[contract] Linux installer/background model lifecycle serialization"
+bash tests/test-linux-installer-model-lifecycle-lock.sh
 
 echo "[PASS] installer contracts"

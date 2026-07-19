@@ -70,20 +70,70 @@ function getMockModels() {
 
 const MOCK_GPU = { vramTotal: 16, vramUsed: 13.2, vramFree: 2.8 }
 const MOCK_CURRENT_MODEL = 'Qwen/Qwen2.5-32B-Instruct-AWQ'
+const DEFAULT_POLL_MS = 30000
+const PENDING_MODEL_ACTION_POLL_MS = 2000
+const MODELS_FETCH_TIMEOUT_MS = 30000
+const MODEL_DOWNLOAD_START_TIMEOUT_MS = 15000
+const MODEL_ACTIVATION_POLL_MS = 5000
+// The dashboard API permits the host activation request to run for 600s.
+// Keep the UI lock slightly longer so that deadline can settle before we fail.
+const MODEL_ACTIVATION_TIMEOUT_MS = 610000
+const ODS_MODES = new Set(['local', 'cloud', 'hybrid', 'lemonade'])
+const LOCAL_MODEL_MODES = new Set(['local', 'hybrid', 'lemonade'])
 
 // Named export for dev-only mocking (explicit opt-in via VITE_USE_MOCK_DATA)
 export { getMockModels }
 
-async function errorMessageFromResponse(response, fallback) {
+async function responseJson(response) {
   try {
-    const data = await response.json()
-    if (typeof data?.detail === 'string' && data.detail.trim()) return data.detail
-    if (typeof data?.message === 'string' && data.message.trim()) return data.message
-    if (typeof data?.error === 'string' && data.error.trim()) return data.error
+    return await response.json()
   } catch {
-    // Keep the stable fallback when the server returns non-JSON error content.
+    return {}
   }
+}
+
+function errorMessageFromPayload(data, fallback) {
+  if (typeof data?.detail === 'string' && data.detail.trim()) return data.detail
+  if (data?.detail && typeof data.detail === 'object') {
+    if (typeof data.detail.message === 'string' && data.detail.message.trim()) return data.detail.message
+    if (typeof data.detail.error === 'string' && data.detail.error.trim()) return data.detail.error
+    if (typeof data.detail.detail === 'string' && data.detail.detail.trim()) return data.detail.detail
+  }
+  if (typeof data?.message === 'string' && data.message.trim()) return data.message
+  if (typeof data?.error === 'string' && data.error.trim()) return data.error
   return fallback
+}
+
+async function errorMessageFromResponse(response, fallback) {
+  return errorMessageFromPayload(await responseJson(response), fallback)
+}
+
+function conflictActiveModelId(data) {
+  const nested = data?.detail && typeof data.detail === 'object'
+    ? data.detail.activeModelId
+    : null
+  for (const value of [data?.activeModelId, nested]) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
+}
+
+function normalizeOdsMode(value) {
+  const mode = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  return ODS_MODES.has(mode) ? mode : 'unknown'
+}
+
+function modelActivationModeError(effectiveMode, configuredMode) {
+  if (effectiveMode === 'unknown' || configuredMode === 'unknown') {
+    return 'ODS could not verify the active runtime mode. Repair or restart ODS before running a local model.'
+  }
+  if (effectiveMode !== configuredMode) {
+    return `ODS is running in ${effectiveMode} mode but configured for ${configuredMode} mode. Restart or repair ODS before running a local model.`
+  }
+  if (!LOCAL_MODEL_MODES.has(effectiveMode)) {
+    return 'ODS is running in cloud mode. A local-mode installation is required to run downloaded models.'
+  }
+  return null
 }
 
 export function useModels() {
@@ -91,11 +141,56 @@ export function useModels() {
   const [gpu, setGpu] = useState(USE_MOCK_DATA ? MOCK_GPU : null)
   const [currentModel, setCurrentModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
   const [configuredModel, setConfiguredModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [odsMode, setOdsMode] = useState('unknown')
+  const [configuredMode, setConfiguredMode] = useState('unknown')
   const [recommendationAlternatives, setRecommendationAlternatives] = useState([])
   const [loading, setLoading] = useState(USE_MOCK_DATA ? false : true)
-  const [error, setError] = useState(null)
-  const [actionLoading, setActionLoading] = useState(null)
+  const [fetchError, setFetchError] = useState(null)
+  const [mutationError, setMutationError] = useState(null)
+  const [pendingActions, setPendingActionsState] = useState([])
+  const pendingActionsRef = useRef([])
+  const actionTokenRef = useRef(0)
+  const modelsRequestRef = useRef(0)
+  const latestSettledModelsRequestRef = useRef(0)
+  const pollInFlightRef = useRef(false)
   const loadActiveRef = useRef(false)
+
+  const updatePendingActions = useCallback((update) => {
+    const nextActions = typeof update === 'function'
+      ? update(pendingActionsRef.current)
+      : update
+    pendingActionsRef.current = nextActions
+    setPendingActionsState(nextActions)
+  }, [])
+
+  const startAction = useCallback((modelId, kind) => {
+    const action = { modelId, kind, token: ++actionTokenRef.current }
+    updatePendingActions(actions => [...actions, action])
+    return action
+  }, [updatePendingActions])
+
+  const finishAction = useCallback((token) => {
+    updatePendingActions(actions => {
+      const nextActions = actions.filter(action => action.token !== token)
+      return nextActions.length === actions.length ? actions : nextActions
+    })
+  }, [updatePendingActions])
+
+  const reconcilePendingActions = useCallback((nextModels) => {
+    if (!Array.isArray(nextModels)) return
+
+    updatePendingActions(actions => {
+      const nextActions = actions.filter(action => {
+        const model = nextModels.find(candidate => candidate.id === action.modelId)
+        const downloadFinished = action.kind === 'download' &&
+          (model?.status === 'downloaded' || model?.status === 'loaded')
+        const deleteFinished = action.kind === 'delete' &&
+          (!model || model.status === 'available')
+        return !downloadFinished && !deleteFinished
+      })
+      return nextActions.length === actions.length ? actions : nextActions
+    })
+  }, [updatePendingActions])
 
   const fetchModels = useCallback(async () => {
     // If using mock data, don't attempt API call
@@ -104,125 +199,209 @@ export function useModels() {
       return
     }
 
+    const requestId = ++modelsRequestRef.current
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), MODELS_FETCH_TIMEOUT_MS)
     try {
-      const response = await fetch('/api/models')
+      const response = await fetch('/api/models', { signal: controller.signal })
       if (!response.ok) throw new Error('Failed to fetch models')
       const data = await response.json()
+
+      // A slower, older request must not overwrite a newer snapshot.
+      if (requestId < latestSettledModelsRequestRef.current) return data
+      latestSettledModelsRequestRef.current = requestId
+
       setModels(data.models)
       setGpu(data.gpu)
       setCurrentModel(data.currentModel)
       setConfiguredModel(data.configuredModel ?? null)
+      const effectiveMode = normalizeOdsMode(data.odsMode)
+      setOdsMode(effectiveMode)
+      setConfiguredMode(normalizeOdsMode(data.configuredMode ?? data.odsMode))
       setRecommendationAlternatives(data.recommendationAlternatives ?? [])
-      setError(null)
+      setFetchError(null)
+      reconcilePendingActions(data.models)
+      return data
     } catch (err) {
-      setError(err.message)
+      if (requestId >= latestSettledModelsRequestRef.current) {
+        latestSettledModelsRequestRef.current = requestId
+        setFetchError(err.message)
+      }
       // No silent fallback - let error propagate to UI
     } finally {
+      clearTimeout(timeout)
       setLoading(false)
     }
-  }, [])
+  }, [reconcilePendingActions])
+
+  const pollModels = useCallback(async () => {
+    if (document.hidden || pollInFlightRef.current) return
+    pollInFlightRef.current = true
+    try {
+      await fetchModels()
+    } finally {
+      pollInFlightRef.current = false
+    }
+  }, [fetchModels])
 
   useEffect(() => {
-    fetchModels()
-    // Refresh every 30 seconds — but skip ticks while the tab is hidden so
-    // an idle dashboard doesn't keep polling for nobody (#1490).
-    const tick = () => { if (!document.hidden) fetchModels() }
-    const interval = setInterval(tick, 30000)
+    pollModels()
+  }, [pollModels])
+
+  const pollInterval = pendingActions.some(action => action.kind === 'download' || action.kind === 'delete')
+    ? PENDING_MODEL_ACTION_POLL_MS
+    : DEFAULT_POLL_MS
+
+  useEffect(() => {
+    // Poll promptly while a model mutation is pending, while keeping at most
+    // one scheduled request in flight. Hidden tabs remain idle (#1490).
+    const interval = setInterval(pollModels, pollInterval)
 
     // Resume immediately when the tab becomes visible again
-    const onVisibility = () => { if (!document.hidden) fetchModels() }
+    const onVisibility = () => { if (!document.hidden) pollModels() }
     document.addEventListener('visibilitychange', onVisibility)
 
     return () => {
       clearInterval(interval)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [fetchModels])
+  }, [pollInterval, pollModels])
 
   const downloadModel = async (modelId) => {
-    setActionLoading(modelId)
+    const action = startAction(modelId, 'download')
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), MODEL_DOWNLOAD_START_TIMEOUT_MS)
     try {
-      const response = await fetch(`/api/models/${encodeURIComponent(modelId)}/download`, {
-        method: 'POST'
-      })
-      if (!response.ok) throw new Error('Failed to start download')
+      let response
+      try {
+        response = await fetch(`/api/models/${encodeURIComponent(modelId)}/download`, {
+          method: 'POST',
+          signal: controller.signal,
+        })
+      } catch (err) {
+        if (err?.name === 'AbortError') {
+          throw new Error(`Download for ${modelId} did not start within 15 seconds. Check the service and retry.`)
+        }
+        throw err
+      } finally {
+        clearTimeout(timeout)
+      }
+
+      if (!response.ok) {
+        throw new Error(await errorMessageFromResponse(response, `Failed to start download for ${modelId}`))
+      }
       await fetchModels() // Refresh
-    } catch (err) {
-      setError(err.message)
     } finally {
-      setActionLoading(null)
+      clearTimeout(timeout)
+      finishAction(action.token)
     }
   }
 
   const loadModel = async (modelId) => {
-    // Prevent concurrent activations — only one model can load at a time
-    if (loadActiveRef.current) return
-    loadActiveRef.current = true
-    setActionLoading(modelId)
-    setError(null)
-
-    // Model activation is long-running (20-60s).  The browser connection
-    // often drops before the backend responds (nginx 499 / NetworkError),
-    // but the server still completes the activation.  Fire the POST
-    // without blocking and poll for status instead.
-    let serverError = null
-    fetch(`/api/models/${encodeURIComponent(modelId)}/load`, { method: 'POST' })
-      .then(async (res) => {
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}))
-          const detail = body.detail || ''
-          // 409/lock = another activation running — not a real error, keep polling
-          if (/in progress|lock|already/i.test(detail)) return
-          serverError = detail || 'Failed to load model'
-        }
-      })
-      .catch(() => {}) // NetworkError — server still processing
-
-    // Poll until model loads, server error, or timeout (2.5 min)
-    for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 5000))
-      if (serverError) {
-        setError(serverError)
-        break
-      }
-      try {
-        const res = await fetch('/api/models')
-        if (res.ok) {
-          const data = await res.json()
-          if (data.currentModel === modelId) {
-            setModels(data.models)
-            setGpu(data.gpu)
-            setCurrentModel(data.currentModel)
-            break
-          }
-        }
-      } catch { /* poll failure, retry */ }
+    const modeError = modelActivationModeError(odsMode, configuredMode)
+    if (modeError) {
+      setMutationError(modeError)
+      return
     }
 
-    await fetchModels()
-    setActionLoading(null)
-    loadActiveRef.current = false
+    // Prevent concurrent activations - only one model can load at a time.
+    if (loadActiveRef.current) {
+      const activeModelId = pendingActionsRef.current.find(action => action.kind === 'load')?.modelId
+      setMutationError(activeModelId
+        ? `Model activation is already in progress for ${activeModelId}.`
+        : 'A model activation is already in progress.')
+      return
+    }
+    loadActiveRef.current = true
+    const action = startAction(modelId, 'load')
+    setMutationError(null)
+
+    // Model activation can consume the API's full 600-second budget. The
+    // browser connection may still disappear while the server completes, so
+    // status remains authoritative and the POST runs alongside polling.
+    const controller = new AbortController()
+    const startedAt = Date.now()
+    let activationError = null
+    let targetLoaded = false
+
+    const activationRequest = fetch(`/api/models/${encodeURIComponent(modelId)}/load`, {
+      method: 'POST',
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (response.ok) return
+
+        const body = await responseJson(response)
+        if (response.status === 409) {
+          const activeModelId = conflictActiveModelId(body)
+          if (activeModelId === modelId) return
+
+          const detail = errorMessageFromPayload(body, 'Another model activation is in progress')
+          activationError = activeModelId
+            ? `${detail} Active target: ${activeModelId}; requested target: ${modelId}.`
+            : `${detail} The server did not identify the active target, so this request cannot safely join it.`
+          return
+        }
+
+        activationError = errorMessageFromPayload(body, 'Failed to load model')
+      })
+      // A dropped request does not prove activation failed. Continue polling
+      // until the requested model appears or the explicit UI deadline expires.
+      .catch(() => {})
+
+    try {
+      while (Date.now() - startedAt < MODEL_ACTIVATION_TIMEOUT_MS) {
+        const remainingMs = MODEL_ACTIVATION_TIMEOUT_MS - (Date.now() - startedAt)
+        await new Promise(resolve => setTimeout(resolve, Math.min(MODEL_ACTIVATION_POLL_MS, remainingMs)))
+
+        if (activationError) break
+        const data = await fetchModels()
+        if (data?.currentModel === modelId) {
+          targetLoaded = true
+          break
+        }
+      }
+
+      // Take one final authoritative snapshot at the deadline or after a POST
+      // failure. This cannot turn an unverified 409 into same-target success.
+      const finalData = await fetchModels()
+      if (!activationError && finalData?.currentModel === modelId) targetLoaded = true
+
+      if (!targetLoaded) {
+        setMutationError(activationError ||
+          `Timed out after 10 minutes waiting for ${modelId} to activate. The server may still be finishing; refresh before retrying.`)
+      }
+    } finally {
+      controller.abort()
+      void activationRequest
+      finishAction(action.token)
+      loadActiveRef.current = false
+    }
   }
 
   const deleteModel = async (modelId) => {
     if (!confirm(`Delete ${modelId}? This cannot be undone.`)) return
-    
-    setActionLoading(modelId)
+
+    setMutationError(null)
+    const action = startAction(modelId, 'delete')
     try {
       const response = await fetch(`/api/models/${encodeURIComponent(modelId)}`, {
         method: 'DELETE'
       })
-      if (!response.ok) throw new Error('Failed to delete model')
+      if (!response.ok) {
+        throw new Error(await errorMessageFromResponse(response, `Failed to delete ${modelId}`))
+      }
       await fetchModels() // Refresh
     } catch (err) {
-      setError(err.message)
+      setMutationError(err.message)
     } finally {
-      setActionLoading(null)
+      finishAction(action.token)
     }
   }
 
   const benchmarkModel = async (modelId) => {
-    setActionLoading(modelId)
+    setMutationError(null)
+    const action = startAction(modelId, 'benchmark')
     try {
       const response = await fetch(`/api/models/${encodeURIComponent(modelId)}/benchmark`, {
         method: 'POST',
@@ -232,21 +411,35 @@ export function useModels() {
       if (!response.ok) throw new Error(await errorMessageFromResponse(response, 'Failed to benchmark model'))
       await fetchModels()
     } catch (err) {
-      setError(err.message)
+      setMutationError(err.message)
     } finally {
-      setActionLoading(null)
+      finishAction(action.token)
     }
   }
+
+  const activationAction = pendingActions.find(action => action.kind === 'load')
+  const latestAction = pendingActions[pendingActions.length - 1]
+  const activationLoading = activationAction?.modelId ?? null
+  const actionLoading = activationAction?.modelId ?? latestAction?.modelId ?? null
+  const actionLoadingModels = [...new Set(pendingActions.map(action => action.modelId))]
+  const error = mutationError || fetchError
+  const activationModeError = modelActivationModeError(odsMode, configuredMode)
 
   return {
     models,
     gpu,
     currentModel,
     configuredModel,
+    odsMode,
+    configuredMode,
+    canActivateModels: activationModeError === null,
+    activationModeError,
     recommendationAlternatives,
     loading,
     error,
     actionLoading,
+    actionLoadingModels,
+    activationLoading,
     downloadModel,
     loadModel,
     benchmarkModel,

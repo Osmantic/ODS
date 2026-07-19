@@ -5,8 +5,6 @@ import json
 import logging
 import os
 import re
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,7 +13,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
-from config import SERVICES, PERSONAS, SETUP_CONFIG_DIR, INSTALL_DIR, AGENT_URL, ODS_AGENT_KEY
+from config import SERVICES, PERSONAS, SETUP_CONFIG_DIR, INSTALL_DIR
+from host_agent_client import (
+    AgentHTTPError,
+    AgentProtocolError,
+    AgentUnavailable,
+    request_json as request_agent_json,
+)
 from models import PersonaRequest, ChatRequest
 from security import verify_api_key
 
@@ -271,40 +275,18 @@ def _call_agent(path: str, method: str = "GET", payload: dict | None = None, tim
     upstream status. Never logs the request payload (which may contain
     Wi-Fi passwords); logs only the path and resulting status.
     """
-    headers = {
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = None
-    if payload is not None:
-        headers["Content-Type"] = "application/json"
-        data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        f"{AGENT_URL}{path}",
-        data=data,
-        headers=headers,
-        method=method,
-    )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
-            return json.loads(body) if body else {}
-    except urllib.error.HTTPError as exc:
-        # The host-agent returns structured JSON errors. Surface them.
-        detail = f"Host agent returned HTTP {exc.code}"
-        try:
-            err_payload = json.loads(exc.read().decode("utf-8"))
-            detail = err_payload.get("error", detail)
-        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-            pass
-        logger.info("host-agent %s %s -> %s", method, path, exc.code)
-        raise HTTPException(status_code=exc.code, detail=detail) from exc
-    except urllib.error.URLError as exc:
+        return request_agent_json(method, path, payload=payload, timeout=timeout)
+    except AgentHTTPError as exc:
+        logger.info("host-agent %s %s -> %s", method, path, exc.status_code)
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except AgentUnavailable as exc:
         logger.warning("host-agent %s %s unreachable: %s", method, path, exc)
         raise HTTPException(
             status_code=503,
             detail="ODS host agent is not reachable.",
         ) from exc
-    except (OSError, json.JSONDecodeError) as exc:
+    except AgentProtocolError as exc:
         logger.exception("host-agent %s %s failed", method, path)
         raise HTTPException(
             status_code=500,

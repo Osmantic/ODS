@@ -52,6 +52,13 @@ class TestStatsAuth:
         resp = client.get("/stats", headers={"Authorization": "Bearer wrong-key"})
         assert resp.status_code == 403
 
+    def test_stats_with_non_ascii_bearer_returns_403(self, client):
+        """Authorization headers decode as latin-1, so an unauthenticated
+        client can present a non-ASCII token. It must be a plain mismatch
+        rather than a TypeError surfacing as a 500."""
+        resp = client.get("/stats", headers={"Authorization": b"Bearer \xe9"})
+        assert resp.status_code == 403
+
 
 # --- /health ---
 

@@ -83,33 +83,27 @@ awk '/^function Invoke-Disable/,/^}/' "$ODS_PS1" \
     || fail "Rename-Item not found in Invoke-Disable body"
 pass "Rename + flags update unconditional in Invoke-Disable"
 
-info "Static: Update-ComposeFlags delegates to resolve-compose-stack.sh when available"
-grep -q 'resolve-compose-stack.sh' "$ODS_PS1" \
-    || fail "Update-ComposeFlags does not reference resolve-compose-stack.sh"
-pass "Update-ComposeFlags references resolve-compose-stack.sh"
+info "Static: Update-ComposeFlags edits the toggled service only"
+grep -q 'Update-ComposeFlags -ServiceId .* -Action "enable"' "$ODS_PS1" \
+    || fail "Invoke-Enable does not tell Update-ComposeFlags which service it toggled"
+grep -q 'Update-ComposeFlags -ServiceId .* -Action "disable"' "$ODS_PS1" \
+    || fail "Invoke-Disable does not tell Update-ComposeFlags which service it toggled"
+pass "Update-ComposeFlags is scoped to the toggled service"
 
-info "Static: Update-ComposeFlags has safe fallback when resolver not available"
-grep -q 'fallback minimal swap\|fallback' "$ODS_PS1" \
-    || fail "Update-ComposeFlags has no fallback path"
-pass "Update-ComposeFlags has fallback path"
+info "Static: Update-ComposeFlags scopes its -f removal to the toggled service dir"
+grep -q 'ownedByService' "$ODS_PS1" \
+    || fail "Update-ComposeFlags does not scope removal to the toggled service directory"
+grep -q "extensions\[/\\\\\\\\\]services\[/\\\\\\\\\]" "$ODS_PS1" \
+    || fail "Update-ComposeFlags service-scoped pattern is missing"
+pass "Update-ComposeFlags removes only the toggled service's fragments"
 
-info "Static: Update-ComposeFlags preserves --env-file in resolver path"
-grep -q 'env-file.*resolver\|--env-file .env.*newContent\|existingRaw.*--env-file' "$ODS_PS1" \
-    || grep -q "Prepend --env-file" "$ODS_PS1" \
-    || fail "Update-ComposeFlags does not preserve --env-file when using the resolver"
-pass "Update-ComposeFlags preserves --env-file in resolver output"
-
-info "Static: Update-ComposeFlags passes GPU_BACKEND to resolver"
-grep -q 'gpuBackend\|gpu-backend' "$ODS_PS1" \
-    || fail "Update-ComposeFlags does not pass GPU_BACKEND to resolver"
-pass "Update-ComposeFlags passes GPU_BACKEND to resolver"
-
-info "Static: Update-ComposeFlags fallback preserves backend overlay -f entries"
-# The fallback keeps everything that doesn't match extensions/services
-grep -q "extensions\[/\\\\\\\\\]services" "$ODS_PS1" \
-    || grep -q 'extensions.*services' "$ODS_PS1" \
-    || fail "Update-ComposeFlags fallback does not filter on extensions/services path"
-pass "Update-ComposeFlags fallback preserves non-extension -f entries (backend overlays)"
+info "Static: Update-ComposeFlags does not delegate to the Linux resolver"
+# resolve-compose-stack.sh emits neither docker-compose.tier0.yml nor the
+# Windows AMD overlay, so its output is not a superset of the Windows stack.
+if grep -q '\$resolverScript' "$ODS_PS1"; then
+    fail "Update-ComposeFlags still invokes resolve-compose-stack.sh"
+fi
+pass "Update-ComposeFlags no longer shells out to the Linux resolver"
 
 info "Static: Update-ComposeFlags helper defined"
 grep -q 'function Update-ComposeFlags' "$ODS_PS1" \
@@ -361,6 +355,377 @@ mv "$SVCDIR/compose.yaml" "$SVCDIR/compose.yaml.disabled"
 [[ -f "$SVCDIR/compose.yaml.disabled" ]] || fail "compose.yaml.disabled not created after disable"
 [[ ! -f "$SVCDIR/compose.yaml" ]]        || fail "compose.yaml still exists after disable"
 pass "Disable renames compose.yaml to compose.yaml.disabled"
+
+# ── Behavioral: Update-ComposeFlags must not touch other services ─────────────
+# Toggling one extension used to rebuild every extension -f entry from disk,
+# which dropped the per-extension GPU overlays the installer recorded and
+# hoisted tier0/override ahead of the extension fragments.
+PS_BIN="$(command -v pwsh || command -v powershell || true)"
+if [[ -n "$PS_BIN" ]]; then
+    # Reuse $TMP so the existing EXIT trap cleans this up too.
+    PS_TMP="$TMP/compose-flags"
+    mkdir -p "$PS_TMP"
+
+    if ODS_PS1="$ODS_PS1" PS_TMP="$PS_TMP" "$PS_BIN" -NoProfile -Command '
+        $ErrorActionPreference = "Stop"
+        function Write-AIWarn { param($m) }
+        function Write-AI     { param($m) }
+
+        # ods.ps1 runs a command dispatcher on load, so lift just the function.
+        $src   = Get-Content $env:ODS_PS1 -Raw
+        $start = $src.IndexOf("function Update-ComposeFlags {")
+        $next  = $src.IndexOf("`nfunction Get-ExtensionServiceDir", $start)
+        if ($start -lt 0 -or $next -lt 0) { throw "Update-ComposeFlags not found" }
+        Invoke-Expression $src.Substring($start, $next - $start)
+
+        $InstallDir = Join-Path $env:PS_TMP "ods"
+        $svcRoot = Join-Path (Join-Path $InstallDir "extensions") "services"
+        foreach ($s in @("comfyui", "n8n", "whisper")) {
+            New-Item -ItemType Directory -Path (Join-Path $svcRoot $s) -Force | Out-Null
+            New-Item -ItemType File -Path (Join-Path (Join-Path $svcRoot $s) "compose.yaml") -Force | Out-Null
+        }
+        # comfyui and whisper also carry a per-extension NVIDIA overlay.
+        foreach ($s in @("comfyui", "whisper")) {
+            New-Item -ItemType File -Path (Join-Path (Join-Path $svcRoot $s) "compose.nvidia.yaml") -Force | Out-Null
+        }
+
+        # Token order exactly as install-windows.ps1 writes it.
+        $original = "--env-file .env -f docker-compose.base.yml -f docker-compose.nvidia.yml " +
+                    "-f extensions/services/comfyui/compose.yaml -f extensions/services/comfyui/compose.nvidia.yaml " +
+                    "-f extensions/services/n8n/compose.yaml " +
+                    "-f extensions/services/whisper/compose.yaml -f extensions/services/whisper/compose.nvidia.yaml " +
+                    "-f docker-compose.tier0.yml -f docker-compose.override.yml"
+        $flagsFile = Join-Path $InstallDir ".compose-flags"
+        [System.IO.File]::WriteAllText($flagsFile, $original, (New-Object System.Text.UTF8Encoding($false)))
+
+        # disable n8n
+        Remove-Item (Join-Path (Join-Path $svcRoot "n8n") "compose.yaml")
+        New-Item -ItemType File -Path (Join-Path (Join-Path $svcRoot "n8n") "compose.yaml.disabled") -Force | Out-Null
+        Update-ComposeFlags -ServiceId "n8n" -Action "disable"
+        $afterDisable = (Get-Content $flagsFile -Raw).Trim()
+
+        if ($afterDisable -match "n8n") { throw "n8n fragment survived disable" }
+        foreach ($keep in @("comfyui/compose.nvidia.yaml", "whisper/compose.nvidia.yaml",
+                            "docker-compose.tier0.yml", "docker-compose.override.yml")) {
+            if ($afterDisable -notmatch [regex]::Escape($keep)) { throw "disable dropped $keep" }
+        }
+        if ($afterDisable -notmatch "^--env-file \.env ") { throw "disable dropped --env-file" }
+
+        # tier0/override must stay behind the extension fragments so they win the merge
+        $iExt = $afterDisable.IndexOf("extensions/services/")
+        $iTier0 = $afterDisable.IndexOf("docker-compose.tier0.yml")
+        if ($iExt -lt 0 -or $iTier0 -lt $iExt) { throw "disable reordered tier0 ahead of extensions" }
+
+        # re-enable n8n -> byte-for-byte round trip of the token set
+        Remove-Item (Join-Path (Join-Path $svcRoot "n8n") "compose.yaml.disabled")
+        New-Item -ItemType File -Path (Join-Path (Join-Path $svcRoot "n8n") "compose.yaml") -Force | Out-Null
+        Update-ComposeFlags -ServiceId "n8n" -Action "enable"
+        $afterEnable = (Get-Content $flagsFile -Raw).Trim()
+
+        if ($afterEnable -notmatch "extensions/services/n8n/compose\.yaml") { throw "enable did not restore n8n" }
+        if ($afterEnable -notmatch "whisper/compose\.nvidia\.yaml") { throw "enable dropped whisper overlay" }
+        $iN8n = $afterEnable.IndexOf("n8n/compose.yaml")
+        $iTier0 = $afterEnable.IndexOf("docker-compose.tier0.yml")
+        if ($iTier0 -lt $iN8n) { throw "enable inserted n8n after tier0" }
+
+        $before = ($original -split "\s+" | Sort-Object) -join " "
+        $after  = ($afterEnable -split "\s+" | Sort-Object) -join " "
+        if ($before -ne $after) { throw "disable+enable round trip changed the token set" }
+    '; then
+        pass "Update-ComposeFlags preserves other services overlays and token order"
+    else
+        fail "Update-ComposeFlags corrupted .compose-flags on enable/disable"
+    fi
+else
+    info "No PowerShell on PATH -- skipping Update-ComposeFlags behavioral test"
+fi
+
+# ── Static checks: manifest depends_on awareness ──────────────────────────────
+
+info "Static: Get-ExtensionDependencies helper defined"
+grep -q 'function Get-ExtensionDependencies' "$ODS_PS1" \
+    || fail "Get-ExtensionDependencies not found -- enable cannot resolve manifest deps"
+pass "Get-ExtensionDependencies helper present"
+
+info "Static: Get-DisabledDependencies helper defined"
+grep -q 'function Get-DisabledDependencies' "$ODS_PS1" \
+    || fail "Get-DisabledDependencies not found"
+pass "Get-DisabledDependencies helper present"
+
+info "Static: Get-EnabledDependents helper defined"
+grep -q 'function Get-EnabledDependents' "$ODS_PS1" \
+    || fail "Get-EnabledDependents not found"
+pass "Get-EnabledDependents helper present"
+
+info "Static: Invoke-Enable cascades into disabled dependencies"
+awk '/^function Invoke-Enable/,/^}/' "$ODS_PS1" \
+    | grep -q 'Get-DisabledDependencies' \
+    || fail "Invoke-Enable does not resolve disabled dependencies"
+awk '/^function Invoke-Enable/,/^}/' "$ODS_PS1" \
+    | grep -q 'Invoke-Enable -ServiceId \$dep -AsDependency' \
+    || fail "Invoke-Enable does not recursively enable its dependencies"
+pass "Invoke-Enable enables disabled dependencies first"
+
+info "Static: Invoke-Enable guards against manifest dependency cycles"
+awk '/^function Invoke-Enable/,/^}/' "$ODS_PS1" \
+    | grep -q '_EnableVisited' \
+    || fail "Invoke-Enable has no cycle guard"
+pass "Invoke-Enable has a cycle guard"
+
+info "Static: Invoke-Disable refuses when enabled extensions still depend on the target"
+awk '/^function Invoke-Disable/,/^}/' "$ODS_PS1" \
+    | grep -q 'Get-EnabledDependents' \
+    || fail "Invoke-Disable does not check reverse dependents"
+awk '/^function Invoke-Disable/,/^}/' "$ODS_PS1" \
+    | grep -q 'These enabled extensions depend on' \
+    || fail "Invoke-Disable has no dependent-refusal message"
+pass "Invoke-Disable checks reverse dependents"
+
+info "Static: Invoke-Disable exposes a -Force escape hatch"
+awk '/^function Invoke-Disable/,/^}/' "$ODS_PS1" \
+    | grep -q '\[switch\]\$Force' \
+    || fail "Invoke-Disable has no -Force switch"
+grep -q 'Test-ForceArgument' "$ODS_PS1" \
+    || fail "Dispatcher cannot detect -Force"
+pass "Invoke-Disable supports -Force"
+
+# ── PowerShell behaviour tests ────────────────────────────────────────────────
+# These run the real functions out of ods.ps1 (extracted, with the UI/Docker
+# boundary stubbed) so the manifest parsing and the guards are exercised as
+# written, not re-implemented in bash.
+
+PS_BIN=""
+if command -v pwsh >/dev/null 2>&1; then
+    PS_BIN="pwsh"
+elif command -v powershell >/dev/null 2>&1; then
+    PS_BIN="powershell"
+fi
+
+if [[ -z "$PS_BIN" ]]; then
+    info "PowerShell not available -- skipping behaviour tests (static checks still ran)"
+else
+    info "PowerShell behaviour tests using: $PS_BIN"
+
+    PSTMP="$TMP/ps"
+    mkdir -p "$PSTMP"
+
+    # Pull the functions under test straight out of ods.ps1.
+    extract_fn() {
+        # Top-level functions open with `function <Name> {` and close on a
+        # column-0 brace. [{] keeps the brace literal without an awk escape.
+        awk -v fn="^function $1 [{]" '$0 ~ fn, /^}/' "$ODS_PS1"
+    }
+
+    HARNESS="$PSTMP/harness.ps1"
+    {
+        echo '$ErrorActionPreference = "Stop"'
+        echo '$InstallDir = $env:TEST_INSTALL_DIR'
+        # UI + side-effect boundary stubs.
+        echo 'function Write-AI { param($Message) Write-Host $Message }'
+        echo 'function Write-AIWarn { param($Message) Write-Host "WARN: $Message" }'
+        echo 'function Write-AIError { param($Message) Write-Host "ERROR: $Message" }'
+        echo 'function Write-AISuccess { param($Message) Write-Host "OK: $Message" }'
+        echo 'function Test-ODSInstallFiles { }'
+        # Accepts both the no-arg and the -ServiceId/-Action call shapes.
+        echo 'function Update-ComposeFlags { param($ServiceId, $Action) }'
+        # Keep Docker out of the test: force the offline branch of Invoke-Disable.
+        echo 'function docker { $global:LASTEXITCODE = 1 }'
+        echo '$script:_EnableVisited = @()'
+        for fn in Get-ExtensionServiceDir Get-ExtensionCategory Get-ExtensionDependencies \
+                  Get-DisabledDependencies Get-EnabledDependents Invoke-Enable Invoke-Disable \
+                  Get-ServiceIdArgument Test-ForceArgument; do
+            extract_fn "$fn"
+            echo ""
+        done
+    } > "$HARNESS"
+
+    # Sanity: every function we asked for made it into the harness.
+    for fn in Get-ExtensionDependencies Get-DisabledDependencies Get-EnabledDependents \
+              Invoke-Enable Invoke-Disable; do
+        grep -q "function $fn" "$HARNESS" || fail "extraction failed for $fn"
+    done
+    pass "Extracted enable/disable functions from ods.ps1"
+
+    # ── Fixture builder: a service dir with a manifest and a compose fragment ──
+    # make_service <install_dir> <id> <category> <deps-csv> <enabled|disabled|none>
+    make_service() {
+        local root="$1" id="$2" svc_category="$3" deps="$4" state="$5"
+        local dir="$root/extensions/services/$id"
+        mkdir -p "$dir"
+        cat > "$dir/manifest.yaml" <<EOF
+schema_version: ods.services.v1
+
+service:
+  id: $id
+  category: $svc_category
+  depends_on: [$deps]
+
+library:
+  meta:
+    category: not-the-service-category
+EOF
+        case "$state" in
+            enabled)  echo "services: {}" > "$dir/compose.yaml" ;;
+            disabled) echo "services: {}" > "$dir/compose.yaml.disabled" ;;
+            none)     : ;;
+        esac
+    }
+
+    run_ps() {
+        local install_dir="$1" snippet="$2"
+        local script="$PSTMP/case.ps1"
+        cat "$HARNESS" > "$script"
+        echo "$snippet" >> "$script"
+        TEST_INSTALL_DIR="$install_dir" "$PS_BIN" -NoProfile -File "$script" 2>&1
+    }
+
+    # ── Case 1: disable is refused while an enabled extension depends on it ────
+    # Regression: hermes-proxy/compose.yaml carries `depends_on: - hermes`.
+    # Disabling hermes while hermes-proxy stays enabled makes docker compose
+    # reject the entire project ("depends on undefined service").
+    info "PowerShell: disable refuses while an enabled extension depends on the target"
+    C1="$PSTMP/case1"
+    make_service "$C1" llama-server core ""                     none
+    make_service "$C1" dashboard-api core ""                    none
+    make_service "$C1" hermes        recommended "llama-server" enabled
+    make_service "$C1" hermes-proxy  recommended "hermes, dashboard-api" enabled
+
+    out1=$(run_ps "$C1" 'Invoke-Disable -ServiceId "hermes"' || true)
+    echo "$out1" | grep -q "These enabled extensions depend on hermes" \
+        || fail "disable did not refuse; output: $out1"
+    echo "$out1" | grep -q "hermes-proxy" \
+        || fail "refusal message does not name hermes-proxy; output: $out1"
+    [[ -f "$C1/extensions/services/hermes/compose.yaml" ]] \
+        || fail "hermes was disabled despite an enabled dependent"
+    [[ ! -f "$C1/extensions/services/hermes/compose.yaml.disabled" ]] \
+        || fail "hermes compose fragment was renamed despite the refusal"
+    pass "disable refused and left the compose fragment untouched"
+
+    # ── Case 2: -Force overrides the refusal ──────────────────────────────────
+    info "PowerShell: disable -Force proceeds and warns about the dependents"
+    C2="$PSTMP/case2"
+    make_service "$C2" dashboard-api core ""                    none
+    make_service "$C2" hermes        recommended ""             enabled
+    make_service "$C2" hermes-proxy  recommended "hermes, dashboard-api" enabled
+
+    out2=$(run_ps "$C2" 'Invoke-Disable -ServiceId "hermes" -Force' || true)
+    echo "$out2" | grep -q "Forcing disable" \
+        || fail "-Force did not warn about dependents; output: $out2"
+    [[ -f "$C2/extensions/services/hermes/compose.yaml.disabled" ]] \
+        || fail "-Force did not disable hermes"
+    pass "disable -Force proceeds with a warning"
+
+    # ── Case 3: enable pulls in a disabled dependency ─────────────────────────
+    info "PowerShell: enable cascades into disabled dependencies"
+    C3="$PSTMP/case3"
+    make_service "$C3" dashboard-api core ""                    none
+    make_service "$C3" searxng       recommended ""             disabled
+    make_service "$C3" hermes        recommended "searxng"      disabled
+    make_service "$C3" hermes-proxy  recommended "hermes, dashboard-api" disabled
+
+    out3=$(run_ps "$C3" 'Invoke-Enable -ServiceId "hermes-proxy"' || true)
+    for svc in hermes-proxy hermes searxng; do
+        [[ -f "$C3/extensions/services/$svc/compose.yaml" ]] \
+            || fail "enable hermes-proxy did not transitively enable $svc; output: $out3"
+    done
+    pass "enable resolved the transitive dependency chain"
+
+    # ── Case 4: core dependencies are never treated as disabled ───────────────
+    # Core services live in docker-compose.base.yml and own no compose.yaml,
+    # so a naive Test-Path check would report them as missing forever.
+    info "PowerShell: core dependencies are not reported as disabled"
+    C4="$PSTMP/case4"
+    make_service "$C4" dashboard-api core ""                     none
+    make_service "$C4" ods-proxy     optional "dashboard-api"    disabled
+
+    out4=$(run_ps "$C4" '@(Get-DisabledDependencies -ServiceId "ods-proxy").Count' || true)
+    echo "$out4" | tail -1 | grep -qx "0" \
+        || fail "core dependency reported as disabled; output: $out4"
+    pass "core dependencies skipped by Get-DisabledDependencies"
+
+    # ── Case 4b: a dependency with no compose fragment is not "disabled" ──────
+    # opencode ships a manifest but no compose.yaml/.disabled, so there is
+    # nothing to rename. Reporting it as disabled would abort the caller's
+    # enable on "No compose fragment found".
+    info "PowerShell: a dependency with no compose fragment does not abort enable"
+    C4B="$PSTMP/case4b"
+    make_service "$C4B" opencode optional ""         none
+    make_service "$C4B" widget   optional "opencode" disabled
+
+    out4b=$(run_ps "$C4B" '@(Get-DisabledDependencies -ServiceId "widget").Count' || true)
+    echo "$out4b" | tail -1 | grep -qx "0" \
+        || fail "fragment-less dependency reported as disabled; output: $out4b"
+    out4c=$(run_ps "$C4B" 'Invoke-Enable -ServiceId "widget"' || true)
+    [[ -f "$C4B/extensions/services/widget/compose.yaml" ]] \
+        || fail "enable aborted on a fragment-less dependency; output: $out4c"
+    pass "fragment-less dependencies are skipped, enable still succeeds"
+
+    # ── Case 5: manifest dependency cycles terminate ──────────────────────────
+    info "PowerShell: a dependency cycle does not recurse forever"
+    C5="$PSTMP/case5"
+    make_service "$C5" alpha optional "beta"  disabled
+    make_service "$C5" beta  optional "alpha" disabled
+
+    out5=$(run_ps "$C5" 'Invoke-Enable -ServiceId "alpha"' || true)
+    [[ -f "$C5/extensions/services/alpha/compose.yaml" ]] \
+        || fail "cycle guard blocked the requested service; output: $out5"
+    [[ -f "$C5/extensions/services/beta/compose.yaml" ]] \
+        || fail "cycle guard blocked the dependency; output: $out5"
+    pass "dependency cycle terminates and both services are enabled"
+
+    # ── Case 6: disable still works when nothing depends on the service ───────
+    info "PowerShell: disable proceeds when no enabled extension depends on it"
+    C6="$PSTMP/case6"
+    make_service "$C6" comfyui optional "" enabled
+    make_service "$C6" langfuse optional "" disabled
+
+    out6=$(run_ps "$C6" 'Invoke-Disable -ServiceId "comfyui"' || true)
+    [[ -f "$C6/extensions/services/comfyui/compose.yaml.disabled" ]] \
+        || fail "disable did not rename an undepended service; output: $out6"
+    pass "disable proceeds without dependents"
+
+    # ── Case 7: a disabled dependent does not block disable ───────────────────
+    info "PowerShell: a disabled dependent does not block disable"
+    C7="$PSTMP/case7"
+    make_service "$C7" hermes       recommended "" enabled
+    make_service "$C7" hermes-proxy recommended "hermes" disabled
+
+    out7=$(run_ps "$C7" 'Invoke-Disable -ServiceId "hermes"' || true)
+    [[ -f "$C7/extensions/services/hermes/compose.yaml.disabled" ]] \
+        || fail "a disabled dependent wrongly blocked disable; output: $out7"
+    pass "disabled dependents are ignored"
+
+    # ── Case 8: manifest parsing ignores nested keys and prose comments ───────
+    info "PowerShell: depends_on parsing handles empty lists and nested category keys"
+    C8="$PSTMP/case8"
+    make_service "$C8" solo optional "" enabled
+    out8a=$(run_ps "$C8" '@(Get-ExtensionDependencies -ServiceDir (Join-Path (Join-Path (Join-Path $InstallDir "extensions") "services") "solo")).Count' || true)
+    echo "$out8a" | tail -1 | grep -qx "0" \
+        || fail "empty depends_on did not parse to 0 entries; output: $out8a"
+    out8b=$(run_ps "$C8" 'Get-ExtensionCategory -ServiceDir (Join-Path (Join-Path (Join-Path $InstallDir "extensions") "services") "solo")' || true)
+    echo "$out8b" | tail -1 | grep -qx "optional" \
+        || fail "category parsed from the nested library block; output: $out8b"
+    pass "depends_on and category parse from the top-level service block"
+
+    # ── Case 9: argument parsing tolerates flag order ─────────────────────────
+    info "PowerShell: -Force is detected regardless of argument order"
+    C9="$PSTMP/case9"
+    mkdir -p "$C9"
+    out9=$(run_ps "$C9" '
+$a = @("-Force", "hermes")
+"id=$(Get-ServiceIdArgument -Arguments $a)"
+"force=$(Test-ForceArgument -Arguments $a)"
+$b = @("hermes", "--force")
+"id2=$(Get-ServiceIdArgument -Arguments $b)"
+"force2=$(Test-ForceArgument -Arguments $b)"
+"force3=$(Test-ForceArgument -Arguments @("hermes"))"' || true)
+    echo "$out9" | grep -qx "id=hermes"   || fail "service id not parsed past a leading flag; output: $out9"
+    echo "$out9" | grep -qx "force=True"  || fail "-Force not detected before the id; output: $out9"
+    echo "$out9" | grep -qx "id2=hermes"  || fail "service id not parsed before a trailing flag; output: $out9"
+    echo "$out9" | grep -qx "force2=True" || fail "--force not detected; output: $out9"
+    echo "$out9" | grep -qx "force3=False" || fail "-Force detected when absent; output: $out9"
+    pass "argument parsing handles flag order and both flag spellings"
+fi
 
 echo ""
 echo -e "${GREEN}All windows-cli-enable-disable tests passed.${NC}"

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import collections
+import hashlib
 import importlib
 import json
 import logging
@@ -21,6 +22,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -33,11 +35,16 @@ from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingMixIn
+from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
 
 VERSION = "1.0.0"
 ODS_VERSION = VERSION
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+# backup_id is interpolated into a backup directory name by ods-update.sh
+# (BACKUP_DIR/backup-<backup_id>-<ts>). Restrict it to a plain label so it can
+# never contain a path separator or ".." and escape BACKUP_DIR.
+BACKUP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MAX_BODY = 16384
 SUBPROCESS_TIMEOUT_START = 600  # 10 min — image pulls can be slow
 SUBPROCESS_TIMEOUT_STOP = 120   # 2 min — stop should be fast
@@ -47,6 +54,9 @@ VALID_HOOK_NAMES = frozenset({
     "pre_uninstall", "post_uninstall",
 })
 logger = logging.getLogger("ods-host-agent")
+
+_MACOS_LLM_BRIDGE_LABEL = "com.ods.llm-bridge"
+_MACOS_HOST_AGENT_BRIDGE_LABEL = "com.ods.host-agent-bridge"
 
 # Hardcoded fallback — used when core-service-ids.json is missing or unreadable.
 # Prevents fail-open: without this, a missing JSON file would allow anyone with
@@ -62,6 +72,7 @@ INSTALL_DIR: Path = Path()
 DATA_DIR: Path = Path()
 AGENT_API_KEY: str = ""
 GPU_BACKEND: str = "nvidia"
+STARTUP_ODS_MODE: str | None = None
 TIER: str = "1"
 GPU_COUNT: str = "1"
 CORE_SERVICE_IDS: set = set()
@@ -70,6 +81,8 @@ CORE_SERVICE_IDS: set = set()
 ALWAYS_ON_SERVICES: frozenset = frozenset({"llama-server", "open-webui", "dashboard", "dashboard-api"})
 USER_EXTENSIONS_DIR: Path = Path()
 EXTENSIONS_DIR: Path = Path()
+_ODS_MODES = frozenset({"local", "cloud", "hybrid", "lemonade"})
+_LOCAL_MODEL_MODES = frozenset({"local", "hybrid", "lemonade"})
 
 # Per-service locks to prevent concurrent start+stop races on the same service
 _service_locks: dict[str, threading.Lock] = collections.defaultdict(threading.Lock)
@@ -208,14 +221,345 @@ _model_download_lock = threading.Lock()
 _model_download_thread: threading.Thread | None = None
 _model_download_proc: subprocess.Popen | None = None
 _model_download_cancel = threading.Event()
-# Model activation lock — prevent concurrent .env writes and Docker restarts
-_model_activate_lock = threading.Lock()
+_model_download_cancelable = False
+_model_status_lock = threading.Lock()
+# Model lifecycle ownership serializes operations that read or mutate model
+# artifacts, active routing, or the runtime containers. Keep the historical
+# activation-lock name as an alias because env updates use the same boundary.
+_model_lifecycle_lock = threading.Lock()
+_model_activate_lock = _model_lifecycle_lock
+_model_lifecycle_state_lock = threading.Lock()
+_model_lifecycle_operation: str | None = None
+_model_lifecycle_target: str | None = None
+_model_activation_target: str | None = None
+_model_status_verify_thread: threading.Thread | None = None
 # Update lock/state: only one background ods-update run at a time.
 _update_lock = threading.Lock()
 _update_status_lock = threading.Lock()
 _update_thread: threading.Thread | None = None
 _update_usable_bash: str | bool | None = None
 _usable_bash: str | bool | None = None
+
+
+def _model_download_thread_alive() -> bool:
+    thread = _model_download_thread
+    return bool(thread is not None and thread.is_alive())
+
+
+def _begin_model_lifecycle(operation: str, target: str = "") -> tuple[bool, dict]:
+    """Claim the process-wide model lifecycle boundary without waiting."""
+    global _model_lifecycle_operation, _model_lifecycle_target
+    with _model_lifecycle_state_lock:
+        if not _model_lifecycle_lock.acquire(blocking=False):
+            return False, {
+                "operation": _model_lifecycle_operation,
+                "target": _model_lifecycle_target,
+            }
+        _model_lifecycle_operation = operation
+        _model_lifecycle_target = target or None
+        return True, {"operation": operation, "target": target or None}
+
+
+def _end_model_lifecycle(operation: str) -> None:
+    """Release lifecycle ownership held by ``operation``."""
+    global _model_lifecycle_operation, _model_lifecycle_target
+    with _model_lifecycle_state_lock:
+        if _model_lifecycle_operation != operation:
+            logger.error(
+                "Model lifecycle release mismatch: owner=%s releaser=%s",
+                _model_lifecycle_operation,
+                operation,
+            )
+        _model_lifecycle_operation = None
+        _model_lifecycle_target = None
+        _model_lifecycle_lock.release()
+
+
+def _model_lifecycle_conflict(requested_operation: str, active: dict) -> dict:
+    active_operation = active.get("operation") or "another lifecycle operation"
+    payload = {
+        "error": (
+            f"Cannot start {requested_operation} while {active_operation} is in progress"
+        ),
+        "code": "model_lifecycle_busy",
+        "activeOperation": active.get("operation"),
+        "activeTarget": active.get("target"),
+    }
+    return payload
+
+
+def _begin_model_activation(model_id: str) -> tuple[bool, str | None]:
+    """Atomically acquire activation ownership and publish its target."""
+    global _model_activation_target
+    acquired, active = _begin_model_lifecycle("model_activation", model_id)
+    if not acquired:
+        active_target = active.get("target")
+        return False, active_target if active.get("operation") == "model_activation" else None
+    with _model_lifecycle_state_lock:
+        _model_activation_target = model_id
+        return True, model_id
+
+
+def _end_model_activation() -> None:
+    """Clear activation ownership before making the lock available again."""
+    global _model_activation_target
+    with _model_lifecycle_state_lock:
+        _model_activation_target = None
+    _end_model_lifecycle("model_activation")
+
+
+def _download_status_model_token(value: object) -> str:
+    """Return the catalog filename embedded in a progress label."""
+    return str(value or "").split(" (", 1)[0].strip()
+
+
+def _artifact_expected_size(metadata: dict) -> int | None:
+    """Return an exact catalog byte size when one is available."""
+    for key in ("size_bytes", "expected_size_bytes", "file_size_bytes"):
+        raw = metadata.get(key)
+        if isinstance(raw, bool) or raw in (None, ""):
+            continue
+        try:
+            size = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if size > 0:
+            return size
+    return None
+
+
+def _model_download_manifest(model: dict) -> dict | None:
+    """Build the complete integrity manifest for one catalog model."""
+    gguf_file = str(model.get("gguf_file") or "").strip()
+    if not gguf_file:
+        return None
+
+    raw_parts = model.get("gguf_parts")
+    artifacts = []
+    if isinstance(raw_parts, list) and raw_parts:
+        for raw_part in raw_parts:
+            if not isinstance(raw_part, dict):
+                return None
+            filename = str(raw_part.get("file") or "").strip()
+            url = str(raw_part.get("url") or "").strip()
+            if not filename or not url:
+                return None
+            artifacts.append({
+                "file": filename,
+                "url": url,
+                "sha256": str(raw_part.get("sha256") or "").strip().lower(),
+                "size_bytes": _artifact_expected_size(raw_part),
+            })
+    else:
+        url = str(model.get("gguf_url") or "").strip()
+        if not url:
+            return None
+        artifacts.append({
+            "file": gguf_file,
+            "url": url,
+            "sha256": str(model.get("gguf_sha256") or "").strip().lower(),
+            "size_bytes": _artifact_expected_size(model),
+        })
+
+    filenames = [artifact["file"] for artifact in artifacts]
+    if gguf_file not in filenames or len(filenames) != len(set(filenames)):
+        return None
+    return {"gguf_file": gguf_file, "artifacts": artifacts}
+
+
+def _safe_model_artifact_path(models_dir: Path, filename: object) -> Path | None:
+    """Resolve a catalog artifact while keeping it directly in models_dir."""
+    token = str(filename or "").strip()
+    if (
+        not token
+        or "\x00" in token
+        or "/" in token
+        or "\\" in token
+        or Path(token).name != token
+    ):
+        return None
+    try:
+        root = models_dir.resolve()
+        target = (models_dir / token).resolve()
+        if not target.is_relative_to(root):
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return target
+
+
+def _verify_model_artifact(
+    path: Path,
+    artifact: dict,
+    cancel_event: threading.Event | None = None,
+) -> tuple[bool, str]:
+    """Verify one model artifact against exact catalog integrity metadata."""
+    try:
+        if not path.is_file():
+            return False, "file is missing"
+        actual_size = path.stat().st_size
+    except OSError as exc:
+        return False, f"file could not be inspected: {exc}"
+    if actual_size <= 0:
+        return False, "file is empty"
+
+    expected_size = artifact.get("size_bytes")
+    if expected_size is not None and actual_size != expected_size:
+        return False, f"size mismatch: expected {expected_size} bytes, got {actual_size}"
+
+    expected_sha = str(artifact.get("sha256") or "").strip().lower()
+    if expected_sha:
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
+            return False, "catalog SHA256 is malformed"
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1048576), b""):
+                    if cancel_event is not None and cancel_event.is_set():
+                        return False, "verification cancelled"
+                    digest.update(chunk)
+        except OSError as exc:
+            return False, f"file could not be hashed: {exc}"
+        actual_sha = digest.hexdigest()
+        if actual_sha != expected_sha:
+            return (
+                False,
+                f"SHA256 mismatch: expected {expected_sha[:12]}..., got {actual_sha[:12]}...",
+            )
+    elif expected_size is None:
+        return False, "catalog has no exact size or SHA256"
+
+    if cancel_event is not None and cancel_event.is_set():
+        return False, "verification cancelled"
+    return True, ""
+
+
+def _verify_model_manifest(
+    models_dir: Path,
+    manifest: dict,
+    cancel_event: threading.Event | None = None,
+) -> tuple[bool, str]:
+    """Verify every file in a catalog model manifest."""
+    for artifact in manifest.get("artifacts", []):
+        filename = artifact.get("file", "")
+        target = _safe_model_artifact_path(models_dir, filename)
+        if target is None:
+            return False, f"unsafe catalog filename: {filename!r}"
+        valid, reason = _verify_model_artifact(target, artifact, cancel_event)
+        if not valid:
+            return False, f"{filename}: {reason}"
+    return True, ""
+
+
+def _catalog_manifest_for_status(model_label: object) -> tuple[dict | None, str]:
+    """Resolve a stale status label to its complete catalog manifest."""
+    token = _download_status_model_token(model_label)
+    library_path = INSTALL_DIR / "config" / "model-library.json"
+    try:
+        library = json.loads(library_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return None, f"model catalog unavailable: {exc}"
+
+    models = library.get("models", []) if isinstance(library, dict) else []
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        manifest = _model_download_manifest(model)
+        if manifest is None:
+            continue
+        filenames = {artifact["file"] for artifact in manifest["artifacts"]}
+        if token == manifest["gguf_file"] or token in filenames:
+            return manifest, ""
+    return None, f"no catalog manifest matches {token or 'the stale download'}"
+
+
+def _read_model_status(path: Path) -> dict:
+    with _model_status_lock:
+        return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _normalize_model_download_status(status_path: Path, data: dict) -> dict:
+    """Schedule single-flight verification for status left by a dead worker."""
+    global _model_status_verify_thread
+    status = str(data.get("status") or "")
+    if status not in {"downloading", "verifying"}:
+        return data
+    if _model_download_thread_alive():
+        return data
+
+    model = _download_status_model_token(data.get("model"))
+    manifest, manifest_error = _catalog_manifest_for_status(model)
+    if manifest is None:
+        _write_model_status(
+            status_path,
+            "failed",
+            model,
+            int(data.get("bytesDownloaded") or 0),
+            int(data.get("bytesTotal") or 0),
+            data.get("error")
+            or (
+                "Model download is not running; previous download is incomplete or corrupt: "
+                f"{manifest_error}"
+            ),
+        )
+    else:
+        model = manifest["gguf_file"]
+        acquired, _active = _begin_model_lifecycle("artifact_verification", model)
+        if not acquired:
+            return data
+
+        downloaded = int(data.get("bytesDownloaded") or 0)
+        total = int(data.get("bytesTotal") or 0)
+        _write_model_status(status_path, "verifying", model, downloaded, total)
+
+        def _verify_stale_manifest() -> None:
+            try:
+                models_dir = INSTALL_DIR / "data" / "models"
+                manifest_valid, integrity_error = _verify_model_manifest(
+                    models_dir,
+                    manifest,
+                )
+                if manifest_valid:
+                    _write_model_status(status_path, "complete", model, 0, 0)
+                else:
+                    _write_model_status(
+                        status_path,
+                        "failed",
+                        model,
+                        downloaded,
+                        total,
+                        data.get("error")
+                        or (
+                            "Model download is not running; previous download is "
+                            f"incomplete or corrupt: {integrity_error}"
+                        ),
+                    )
+            except Exception as exc:
+                logger.exception("Stale model artifact verification failed")
+                _write_model_status(
+                    status_path,
+                    "failed",
+                    model,
+                    downloaded,
+                    total,
+                    f"Stale model verification failed: {exc}",
+                )
+            finally:
+                _end_model_lifecycle("artifact_verification")
+
+        try:
+            _model_status_verify_thread = threading.Thread(
+                target=_verify_stale_manifest,
+                daemon=True,
+            )
+            _model_status_verify_thread.start()
+        except Exception:
+            _end_model_lifecycle("artifact_verification")
+            raise
+    try:
+        return _read_model_status(status_path)
+    except (json.JSONDecodeError, OSError):
+        return {"status": "idle"}
 
 
 def load_env(env_path: Path) -> dict:
@@ -231,6 +575,87 @@ def load_env(env_path: Path) -> dict:
             key, _, val = line.partition("=")
             env[key.strip()] = val.strip().strip("'\"")
     return env
+
+
+def _upsert_env_value(env_path: Path, key: str, value: str) -> None:
+    """Persist one simple ``KEY=value`` entry without disturbing other lines."""
+    if any(character in value for character in "\r\n\x00"):
+        raise ValueError(f"Invalid newline or NUL in {key}")
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    output = []
+    written = False
+    for line in lines:
+        line_key = line.split("=", 1)[0] if "=" in line and not line.startswith("#") else None
+        if line_key == key:
+            if not written:
+                output.append(f"{key}={value}")
+                written = True
+            continue
+        output.append(line)
+    if not written:
+        output.append(f"{key}={value}")
+    env_path.write_text("\n".join(output) + "\n", encoding="utf-8")
+
+
+def _normalize_ods_mode(value) -> str:
+    """Return a supported ODS mode or ``unknown`` for missing/invalid input."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in _ODS_MODES else "unknown"
+
+
+def _model_activation_modes(persisted_env: dict) -> tuple[str, str]:
+    """Return immutable startup mode and current persisted configured mode."""
+    configured_mode = _normalize_ods_mode(persisted_env.get("ODS_MODE"))
+    if STARTUP_ODS_MODE is None:
+        # Direct unit calls predate startup-mode initialization. Keep their
+        # historical local default; main() always initializes the real process.
+        if configured_mode == "unknown" and not persisted_env.get("ODS_MODE"):
+            configured_mode = "local"
+        effective_mode = configured_mode
+    else:
+        effective_mode = _normalize_ods_mode(STARTUP_ODS_MODE)
+    return effective_mode, configured_mode
+
+
+def _model_activation_mode_denial(
+    effective_mode: str,
+    configured_mode: str,
+) -> dict[str, str] | None:
+    """Describe why this host process cannot safely perform a model swap."""
+    effective_mode = _normalize_ods_mode(effective_mode)
+    configured_mode = _normalize_ods_mode(configured_mode)
+    if "unknown" in {effective_mode, configured_mode}:
+        code = "ods_mode_unknown"
+        reason = "mode_unknown"
+        message = (
+            "Local model activation is unavailable because the effective or "
+            "configured ODS mode is unknown."
+        )
+    elif effective_mode != configured_mode:
+        code = "ods_mode_mismatch"
+        reason = "mode_mismatch"
+        message = (
+            f"Local model activation is unavailable because effective mode "
+            f"'{effective_mode}' does not match configured mode '{configured_mode}'."
+        )
+    elif effective_mode not in _LOCAL_MODEL_MODES:
+        code = "local_mode_required"
+        reason = "effective_mode_not_local"
+        message = (
+            f"Local model activation is unavailable while effective ODS mode "
+            f"is '{effective_mode}'."
+        )
+    else:
+        return None
+
+    return {
+        "error": "local_mode_required",
+        "code": code,
+        "reason": reason,
+        "message": message,
+        "effectiveMode": effective_mode,
+        "configuredMode": configured_mode,
+    }
 
 
 def load_core_service_ids(config_path: Path) -> set:
@@ -287,11 +712,13 @@ def _detect_docker_bridge_gateway() -> str:
 
 def _resolve_agent_bind_addr(env: dict, system_name: str | None = None) -> str:
     """Resolve the host-agent bind address without exposing LAN by default."""
+    system_name = system_name or platform.system()
     explicit = env.get("ODS_AGENT_BIND", "").strip()
     if explicit:
+        if system_name == "Darwin" and explicit == "::":
+            return "0.0.0.0"
         return explicit
 
-    system_name = system_name or platform.system()
     if system_name in ("Darwin", "Windows"):
         return "127.0.0.1"
 
@@ -308,6 +735,62 @@ def _resolve_agent_bind_addr(env: dict, system_name: str | None = None) -> str:
     return "127.0.0.1"
 
 
+def _macos_direct_bind_conflicts_with_bridge(
+    env: dict,
+    bind_addr: str,
+    system_name: str | None = None,
+) -> bool:
+    """Return whether a native macOS bind supersedes the Colima bridge."""
+    if (system_name or platform.system()) != "Darwin":
+        return False
+
+    bind_addr = str(bind_addr or "").strip()
+    gateway_addr = str(env.get("ODS_MACOS_HOST_GATEWAY") or "").strip()
+    return (
+        bind_addr in {"0.0.0.0", "::"}
+        or bool(gateway_addr and bind_addr == gateway_addr)
+    )
+
+
+def _disable_conflicting_macos_bridge(env: dict, bind_addr: str, label: str) -> bool:
+    """Best-effort bootout of a bridge that would collide with a direct bind."""
+    if not _macos_direct_bind_conflicts_with_bridge(env, bind_addr):
+        return False
+
+    service_target = f"gui/{os.getuid()}/{label}"
+    try:
+        result = subprocess.run(
+            ["launchctl", "bootout", service_target],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning(
+            "Could not disable conflicting macOS bridge %s before binding %s; continuing: %s",
+            label,
+            bind_addr,
+            exc,
+        )
+        return False
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or "no output"
+        logger.warning(
+            "Could not disable conflicting macOS bridge %s before binding %s "
+            "(launchctl exit %d: %s); continuing",
+            label,
+            bind_addr,
+            result.returncode,
+            detail,
+        )
+        return False
+
+    logger.info("Disabled conflicting macOS bridge %s before binding %s", label, bind_addr)
+    return True
+
+
 def invalidate_compose_cache() -> None:
     """Drop the saved .compose-flags cache so the next resolve re-runs the script."""
     (INSTALL_DIR / ".compose-flags").unlink(missing_ok=True)
@@ -321,7 +804,9 @@ def resolve_compose_flags() -> list:
             return raw.split()
 
     script = INSTALL_DIR / "scripts" / "resolve-compose-stack.sh"
-    # Contract note: every resolver launch below must include --gpu-count.
+    # Contract note: every resolver launch below must include --gpu-count and
+    # the persisted ODS_MODE. Extension toggles invalidate the cache while the
+    # agent process keeps running, so os.environ may not reflect the install.
     if not script.exists():
         raise RuntimeError(f"resolve-compose-stack.sh not found at {script}")
     bash = _find_usable_bash()
@@ -336,12 +821,14 @@ def resolve_compose_flags() -> list:
     if platform.system() == "Windows":
         _ensure_windows_resolver_pyyaml(sys.executable)
         env["ODS_PYTHON_CMD"] = _to_bash_path(Path(sys.executable))
+    ods_mode = load_env(INSTALL_DIR / ".env").get("ODS_MODE", "").strip() or "local"
     cmd = [
         bash, _to_bash_path(script),
         "--script-dir", _to_bash_path(INSTALL_DIR),
         "--tier", TIER,
         "--gpu-backend", GPU_BACKEND,
         "--gpu-count", GPU_COUNT,
+        "--ods-mode", ods_mode,
     ]
     try:
         result = subprocess.run(
@@ -554,10 +1041,14 @@ def docker_compose_recreate(service_ids: list[str]) -> tuple:
 
     flags = resolve_compose_flags()
     cmd = ["docker", "compose"] + flags + ["up", "-d", "--no-deps", "--force-recreate"] + service_ids
+    compose_env = os.environ.copy()
+    for key in ("GGUF_FILE", "LLM_MODEL", "LEMONADE_MODEL", "MAX_CONTEXT", "CTX_SIZE"):
+        compose_env.pop(key, None)
     try:
         result = subprocess.run(
             cmd, cwd=str(INSTALL_DIR),
             capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_START,
+            env=compose_env,
         )
         return (True, "") if result.returncode == 0 else (False, result.stderr[:500] or result.stdout[:500])
     except subprocess.TimeoutExpired:
@@ -680,6 +1171,8 @@ def _resolve_local_gguf_filename(model_id: str, models_dir: Path) -> str | None:
     candidate_stem = Path(candidate).stem.lower()
     exact_matches: list[Path] = []
     stem_matches: list[Path] = []
+    logical_matches: list[Path] = []
+    candidate_logical = _local_model_name_from_gguf(candidate).lower()
     try:
         for path in models_dir.iterdir():
             if not path.is_file() or not path.name.lower().endswith(".gguf"):
@@ -688,10 +1181,12 @@ def _resolve_local_gguf_filename(model_id: str, models_dir: Path) -> str | None:
                 exact_matches.append(path)
             elif path.stem.lower() == candidate_stem:
                 stem_matches.append(path)
+            elif _local_model_name_from_gguf(path.name).lower() == candidate_logical:
+                logical_matches.append(path)
     except OSError:
         return None
 
-    matches = exact_matches or stem_matches
+    matches = exact_matches or stem_matches or logical_matches
     if len(matches) == 1:
         return matches[0].name
     if len(matches) > 1:
@@ -897,6 +1392,8 @@ def json_response(handler, code: int, body: dict):
     handler.send_response(code)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(payload)))
+    if getattr(handler, "close_connection", False):
+        handler.send_header("Connection", "close")
     handler.end_headers()
     handler.wfile.write(payload)
 
@@ -960,7 +1457,9 @@ def check_auth(handler) -> bool:
     if not auth.startswith("Bearer "):
         json_response(handler, 401, {"error": "Authorization header required"})
         return False
-    if not secrets.compare_digest(auth[7:], AGENT_API_KEY):
+    # Compared as UTF-8 bytes: compare_digest raises TypeError on non-ASCII
+    # str, which would turn an unauthenticated request into a 500 not a 403.
+    if not secrets.compare_digest(auth[7:].encode("utf-8"), AGENT_API_KEY.encode("utf-8")):
         json_response(handler, 403, {"error": "Invalid API key"})
         return False
     return True
@@ -976,10 +1475,14 @@ def read_json_body(handler) -> dict | None:
         json_response(handler, 400, {"error": "Request body required"})
         return None
     try:
-        return json.loads(handler.rfile.read(min(length, MAX_BODY)))
+        data = json.loads(handler.rfile.read(min(length, MAX_BODY)))
     except (json.JSONDecodeError, UnicodeDecodeError):
         json_response(handler, 400, {"error": "Invalid JSON"})
         return None
+    if not isinstance(data, dict):
+        json_response(handler, 400, {"error": "JSON body must be an object"})
+        return None
+    return data
 
 
 def read_optional_json_body(handler) -> dict | None:
@@ -1324,6 +1827,10 @@ def _run_update_script(action: str, *args: str, timeout: int | None) -> subproce
 
 
 class AgentHandler(BaseHTTPRequestHandler):
+    # Dashboard API keeps a small connection pool to avoid exhausting macOS
+    # ephemeral ports when requests traverse the private Colima TCP bridge.
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, fmt, *args):
         logger.info(fmt, *args)
 
@@ -1634,6 +2141,12 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 500, {"error": f"Failed to fetch stats: {exc}"})
 
     def do_POST(self):
+        # Several legacy endpoints intentionally ignore an optional body, and
+        # rejected requests may return before consuming one. Close POST
+        # connections after their framed response so unread bytes can never be
+        # parsed as the next request on an HTTP/1.1 keep-alive connection. GET
+        # polling remains reusable, which is where connection churn matters.
+        self.close_connection = True
         if self.path in ("/v1/extension/start", "/v1/extension/stop"):
             action = "start" if self.path.endswith("/start") else "stop"
             self._handle_extension(action)
@@ -1714,6 +2227,9 @@ class AgentHandler(BaseHTTPRequestHandler):
             backup_id = body.get("backup_id")
             if not isinstance(backup_id, str) or not backup_id.strip():
                 backup_id = f"dashboard-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            elif not BACKUP_ID_RE.match(backup_id.strip()):
+                json_response(self, 400, {"error": "Invalid backup_id"})
+                return
             self._handle_update_backup(backup_id.strip())
         elif endpoint_action == "start":
             self._handle_update_start()
@@ -1770,8 +2286,21 @@ class AgentHandler(BaseHTTPRequestHandler):
     def _handle_update_start(self):
         global _update_thread
 
+        acquired, active = _begin_model_lifecycle("system_update")
+        if not acquired:
+            json_response(
+                self,
+                409,
+                {
+                    "success": False,
+                    **_model_lifecycle_conflict("system update", active),
+                },
+            )
+            return
+
         with _update_lock:
             if _update_thread is not None and _update_thread.is_alive():
+                _end_model_lifecycle("system_update")
                 json_response(self, 409, {
                     "success": False,
                     "status": "running",
@@ -1779,7 +2308,11 @@ class AgentHandler(BaseHTTPRequestHandler):
                 })
                 return
 
-            _write_update_status("queued", "update", started_at=_iso_now())
+            try:
+                _write_update_status("queued", "update", started_at=_iso_now())
+            except Exception:
+                _end_model_lifecycle("system_update")
+                raise
 
             def _run_background_update():
                 try:
@@ -1816,9 +2349,15 @@ class AgentHandler(BaseHTTPRequestHandler):
                         error=f"Update failed unexpectedly: {exc}",
                         finished_at=_iso_now(),
                     )
+                finally:
+                    _end_model_lifecycle("system_update")
 
-            _update_thread = threading.Thread(target=_run_background_update, daemon=True)
-            _update_thread.start()
+            try:
+                _update_thread = threading.Thread(target=_run_background_update, daemon=True)
+                _update_thread.start()
+            except Exception:
+                _end_model_lifecycle("system_update")
+                raise
 
         json_response(self, 202, {
             "success": True,
@@ -2256,6 +2795,11 @@ class AgentHandler(BaseHTTPRequestHandler):
             payload_text = raw_text if raw_text.endswith("\n") else raw_text + "\n"
             tmp_path = env_path.with_name(".env.tmp")
             tmp_path.write_text(payload_text, encoding="utf-8")
+            # .env holds service secrets (DASHBOARD_API_KEY, ODS_AGENT_KEY,
+            # JWT_SECRET, OAuth secrets). The fresh tmp file is created at the
+            # umask default (0644); tighten before os.replace() swaps it in so
+            # the live .env keeps mode 0600 instead of inheriting 0644.
+            os.chmod(tmp_path, 0o600)
             os.replace(str(tmp_path), str(env_path))
         except OSError as exc:
             logger.warning("env_update OSError from %s: %s", client_ip, exc)
@@ -3131,7 +3675,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 200, {"status": "idle"})
             return
         try:
-            data = json.loads(status_path.read_text(encoding="utf-8"))
+            data = _read_model_status(status_path)
+            data = _normalize_model_download_status(status_path, data)
             json_response(self, 200, data)
         except (json.JSONDecodeError, OSError):
             json_response(self, 200, {"status": "idle"})
@@ -3144,7 +3689,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         {"file": ..., "url": ...} dicts.  The first part's filename is
         used as gguf_file for status tracking.
         """
-        global _model_download_thread
+        global _model_download_cancelable, _model_download_thread
         if not check_auth(self):
             return
         body = read_json_body(self)
@@ -3168,40 +3713,42 @@ class AgentHandler(BaseHTTPRequestHandler):
         else:
             download_plan = [(gguf_file, gguf_url)]
 
-        # Validate against library (prevent arbitrary URL downloads).
-        # Also harvest expected SHA256s keyed by filename so verification can
-        # cover every part of split-file downloads, not just single-file models.
+        # Validate the complete request against the library. A split request
+        # must include every catalog part; accepting a subset can otherwise
+        # create a false-complete model that llama.cpp cannot load.
         library_path = INSTALL_DIR / "config" / "model-library.json"
         allowed = False
         # Sentinel: distinguishes "catalog unreadable/missing" (500) from
         # "catalog readable but model not listed" (403). Conflating the two
         # masks broken installs as policy denials.
         catalog_ok = False
-        expected_sha_by_file: dict = {}
+        manifest = None
         if library_path.exists():
             try:
                 lib = json.loads(library_path.read_text(encoding="utf-8"))
                 catalog_ok = True
                 for m in lib.get("models", []):
+                    if not isinstance(m, dict):
+                        continue
                     if m.get("gguf_file") != gguf_file:
                         continue
+                    candidate_manifest = _model_download_manifest(m)
+                    if candidate_manifest is None:
+                        break
                     if gguf_parts:
-                        # Verify every (file, url) in the request matches the library
-                        lib_parts_meta = {
-                            (p["file"], p["url"]): p.get("sha256", "")
-                            for p in m.get("gguf_parts", [])
-                            if p.get("file") and p.get("url")
-                        }
-                        req_parts = set(download_plan)
-                        if req_parts and req_parts <= set(lib_parts_meta.keys()):
+                        catalog_plan = [
+                            (artifact["file"], artifact["url"])
+                            for artifact in candidate_manifest["artifacts"]
+                        ]
+                        if download_plan == catalog_plan:
                             allowed = True
-                            expected_sha_by_file = {
-                                file: lib_parts_meta[(file, url)]
-                                for file, url in download_plan
-                            }
-                    elif m.get("gguf_url") == gguf_url:
+                            manifest = candidate_manifest
+                    elif (
+                        len(candidate_manifest["artifacts"]) == 1
+                        and candidate_manifest["artifacts"][0]["url"] == gguf_url
+                    ):
                         allowed = True
-                        expected_sha_by_file = {gguf_file: m.get("gguf_sha256", "")}
+                        manifest = candidate_manifest
                     break
             except (json.JSONDecodeError, OSError):
                 logger.exception("Model library catalog unavailable")
@@ -3213,38 +3760,140 @@ class AgentHandler(BaseHTTPRequestHandler):
         if not allowed:
             json_response(self, 403, {"error": "Model not in library catalog"})
             return
+        if manifest is None:
+            json_response(self, 500, {"error": "Model catalog manifest is invalid"})
+            return
 
         models_dir = INSTALL_DIR / "data" / "models"
         status_path = INSTALL_DIR / "data" / "model-download-status.json"
-        # For split models, check ALL parts exist (not just the first)
-        all_downloaded = all(_model_file_ready(models_dir / fn) for fn, _ in download_plan)
-        if all_downloaded:
+        artifact_by_file = {
+            artifact["file"]: artifact
+            for artifact in manifest["artifacts"]
+        }
+        artifact_paths = {}
+        for artifact in manifest["artifacts"]:
+            target = _safe_model_artifact_path(models_dir, artifact["file"])
+            if target is None:
+                json_response(self, 500, {"error": "Model catalog contains an unsafe filename"})
+                return
+            artifact_paths[artifact["file"]] = target
+
+        lifecycle_acquired, active = _begin_model_lifecycle("model_download", gguf_file)
+        if not lifecycle_acquired:
+            json_response(
+                self,
+                409,
+                _model_lifecycle_conflict("model download", active),
+            )
+            return
+
+        # Existing files are reusable only after exact catalog verification.
+        # This intentionally hashes them before returning already_downloaded;
+        # non-empty alone is not evidence that a prior transfer completed.
+        valid_preexisting_files = set()
+        invalid_existing_files = {}
+        try:
+            for filename, target in artifact_paths.items():
+                valid, reason = _verify_model_artifact(target, artifact_by_file[filename])
+                if valid:
+                    valid_preexisting_files.add(filename)
+                elif target.exists():
+                    invalid_existing_files[filename] = reason
+        except Exception:
+            _end_model_lifecycle("model_download")
+            raise
+
+        if len(valid_preexisting_files) == len(download_plan):
             # A previous process can leave stale "downloading" status after the
             # final file is already on disk. Normalize that here so the
             # dashboard stops showing phantom progress.
             _write_model_status(status_path, "complete", gguf_file, 0, 0)
+            _end_model_lifecycle("model_download")
             json_response(self, 200, {"status": "already_downloaded"})
             return
-        for fn, _ in download_plan:
-            target = models_dir / fn
-            if target.is_file() and not _model_file_ready(target):
-                target.unlink(missing_ok=True)
+
+        for filename, reason in invalid_existing_files.items():
+            logger.warning("Discarding invalid existing model artifact %s: %s", filename, reason)
+            try:
+                artifact_paths[filename].unlink(missing_ok=True)
+            except OSError as exc:
+                _end_model_lifecycle("model_download")
+                json_response(
+                    self,
+                    500,
+                    {"error": f"Invalid model artifact could not be replaced: {filename}: {exc}"},
+                )
+                return
         pending_download_plan = [
             (idx, fn, url)
             for idx, (fn, url) in enumerate(download_plan, 1)
-            if not _model_file_ready(models_dir / fn)
+            if fn not in valid_preexisting_files
         ]
 
         # Check for concurrent download
         with _model_download_lock:
             if _model_download_thread is not None and _model_download_thread.is_alive():
+                _end_model_lifecycle("model_download")
                 json_response(self, 409, {"error": "Another download is in progress"})
                 return
 
             _model_download_cancel.clear()
+            _model_download_cancelable = True
 
             def _download():
-                global _model_download_proc
+                global _model_download_cancelable, _model_download_proc
+                created_final_paths: set[Path] = set()
+                temp_paths: set[Path] = set()
+                cancel_cleanup_done = False
+
+                def _discard_cancelled_path(path: Path) -> str | None:
+                    if not path.exists():
+                        return None
+                    try:
+                        path.unlink()
+                        return None
+                    except OSError as unlink_error:
+                        quarantine = path.with_name(
+                            f".{path.name}.cancelled-{threading.get_ident()}-{time.time_ns()}"
+                        )
+                        try:
+                            os.replace(str(path), str(quarantine))
+                            logger.warning(
+                                "Quarantined cancelled model artifact %s as %s after unlink failed: %s",
+                                path.name,
+                                quarantine.name,
+                                unlink_error,
+                            )
+                            return None
+                        except OSError as quarantine_error:
+                            return (
+                                f"{path.name}: unlink failed ({unlink_error}); "
+                                f"quarantine failed ({quarantine_error})"
+                            )
+
+                def _finish_cancelled_download() -> None:
+                    nonlocal cancel_cleanup_done
+                    if cancel_cleanup_done:
+                        return
+                    cancel_cleanup_done = True
+                    cleanup_errors = []
+                    for path in sorted(temp_paths | created_final_paths, key=str):
+                        error = _discard_cancelled_path(path)
+                        if error:
+                            cleanup_errors.append(error)
+                    message = "Download cancelled by user"
+                    if cleanup_errors:
+                        message += "; cleanup incomplete: " + "; ".join(cleanup_errors)
+                    _write_model_status(
+                        status_path,
+                        "cancelled" if not cleanup_errors else "failed",
+                        gguf_file,
+                        0,
+                        0,
+                        message,
+                    )
+                    logger.info("Model download cancelled: %s", gguf_file)
+
                 try:
                     models_dir.mkdir(parents=True, exist_ok=True)
                     label = gguf_file if len(download_plan) == 1 else f"{gguf_file} ({len(download_plan)} parts)"
@@ -3252,9 +3901,16 @@ class AgentHandler(BaseHTTPRequestHandler):
 
                     for part_idx, part_file_name, part_url in pending_download_plan:
                         if _model_download_cancel.is_set():
-                            break
-                        part_target = models_dir / part_file_name
-                        part_tmp = models_dir / f"{part_file_name}.part"
+                            _finish_cancelled_download()
+                            return
+                        part_target = artifact_paths[part_file_name]
+                        part_tmp = _safe_model_artifact_path(
+                            models_dir,
+                            f"{part_file_name}.part",
+                        )
+                        if part_tmp is None:
+                            raise RuntimeError(f"Unsafe temporary model filename: {part_file_name}.part")
+                        temp_paths.add(part_tmp)
                         part_label = part_file_name if len(download_plan) == 1 else f"{part_file_name} (part {part_idx}/{len(download_plan)})"
 
                         # Get real file size by following redirects and reading final Content-Length
@@ -3303,57 +3959,61 @@ class AgentHandler(BaseHTTPRequestHandler):
                         # be killed from the cancel handler or _poll_progress thread.
                         success = False
                         last_error = ""
-                        for attempt in range(1, 4):
-                            if _model_download_cancel.is_set():
-                                break
-                            if attempt > 1:
-                                logger.info("Model download retry %d/3 for %s", attempt, part_file_name)
-                                # Use wait() instead of sleep() so cancel is honored immediately
-                                _model_download_cancel.wait(5)
-                            proc = subprocess.Popen(
-                                ["curl", "-fSL", "-C", "-", "--connect-timeout", "30",
-                                 "-o", str(part_tmp), part_url],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            )
-                            _model_download_proc = proc
-                            try:
-                                proc.wait(timeout=14400)
-                            except subprocess.TimeoutExpired:
-                                proc.kill()
-                                proc.wait(timeout=5)
-                            _model_download_proc = None
-
-                            if _model_download_cancel.is_set():
-                                break
-                            if proc.returncode == 0:
-                                try:
-                                    part_tmp.rename(part_target)
-                                except OSError as exc:
-                                    last_error = f"Download finished but final file could not be moved into place: {exc}"
-                                else:
-                                    if _model_file_ready(part_target):
-                                        success = True
+                        try:
+                            for attempt in range(1, 4):
+                                if _model_download_cancel.is_set():
+                                    break
+                                if attempt > 1:
+                                    logger.info("Model download retry %d/3 for %s", attempt, part_file_name)
+                                    # Use wait() instead of sleep() so cancel is honored immediately
+                                    _model_download_cancel.wait(5)
+                                    if _model_download_cancel.is_set():
                                         break
-                                    last_error = "Download finished but model file is missing or empty"
-                                    part_target.unlink(missing_ok=True)
-                            else:
-                                last_error = f"curl exited with code {proc.returncode}"
-                            _write_model_status(
-                                status_path,
-                                "downloading",
-                                part_label,
-                                0,
-                                part_total,
-                                f"Retry {attempt}/3: {last_error}",
-                            )
+                                proc = subprocess.Popen(
+                                    ["curl", "-fSL", "-C", "-", "--connect-timeout", "30",
+                                     "-o", str(part_tmp), part_url],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                )
+                                _model_download_proc = proc
+                                try:
+                                    proc.wait(timeout=14400)
+                                except subprocess.TimeoutExpired:
+                                    proc.kill()
+                                    proc.wait(timeout=5)
+                                finally:
+                                    _model_download_proc = None
 
-                        _stop_progress.set()
-                        progress_thread.join(timeout=3)
+                                if _model_download_cancel.is_set():
+                                    break
+                                if proc.returncode == 0:
+                                    try:
+                                        part_tmp.replace(part_target)
+                                        created_final_paths.add(part_target)
+                                    except OSError as exc:
+                                        last_error = f"Download finished but final file could not be moved into place: {exc}"
+                                    else:
+                                        if _model_file_ready(part_target):
+                                            success = True
+                                            break
+                                        last_error = "Download finished but model file is missing or empty"
+                                        part_target.unlink(missing_ok=True)
+                                        created_final_paths.discard(part_target)
+                                else:
+                                    last_error = f"curl exited with code {proc.returncode}"
+                                _write_model_status(
+                                    status_path,
+                                    "downloading",
+                                    part_label,
+                                    0,
+                                    part_total,
+                                    f"Retry {attempt}/3: {last_error}",
+                                )
+                        finally:
+                            _stop_progress.set()
+                            progress_thread.join(timeout=3)
 
                         if _model_download_cancel.is_set():
-                            part_tmp.unlink(missing_ok=True)
-                            _write_model_status(status_path, "cancelled", gguf_file, 0, 0, "Download cancelled by user")
-                            logger.info("Model download cancelled: %s", gguf_file)
+                            _finish_cancelled_download()
                             return
 
                         if not success:
@@ -3368,66 +4028,84 @@ class AgentHandler(BaseHTTPRequestHandler):
                             )
                             return
 
-                    # Verify SHA256 for every downloaded part. Catalog is the
-                    # source of truth: split-file models carry per-part sha256
-                    # in expected_sha_by_file, single-file models carry one
-                    # entry. Empty checksum -> warn (do not silently skip), so
-                    # missing catalog entries surface during operator review.
-                    import hashlib
                     if _model_download_cancel.is_set():
-                        _write_model_status(status_path, "cancelled", gguf_file, 0, 0, "Download cancelled by user")
+                        _finish_cancelled_download()
                         return
-                    for part_idx, (part_file_name, _) in enumerate(download_plan, 1):
-                        expected = expected_sha_by_file.get(part_file_name, "")
-                        final_target = models_dir / part_file_name
-                        if not _model_file_ready(final_target):
-                            _write_model_status(
-                                status_path,
-                                "failed",
-                                part_file_name,
-                                0,
-                                0,
-                                "Download finished but model file is missing or empty",
-                            )
-                            return
-                        if not expected:
-                            logger.warning(
-                                "SHA256 verification skipped for %s: no checksum in model-library.json",
-                                part_file_name,
-                            )
-                            continue
-                        final_size = final_target.stat().st_size
+                    for part_idx, artifact in enumerate(manifest["artifacts"], 1):
+                        part_file_name = artifact["file"]
+                        final_target = artifact_paths[part_file_name]
+                        try:
+                            final_size = final_target.stat().st_size
+                        except OSError:
+                            final_size = 0
                         verify_label = (
                             part_file_name
                             if len(download_plan) == 1
                             else f"{part_file_name} (part {part_idx}/{len(download_plan)})"
                         )
                         _write_model_status(status_path, "verifying", verify_label, final_size, final_size)
-                        sha = hashlib.sha256()
-                        with open(final_target, "rb") as f:
-                            for chunk in iter(lambda: f.read(1048576), b""):
-                                sha.update(chunk)
-                        actual = sha.hexdigest()
-                        if actual != expected:
-                            final_target.unlink(missing_ok=True)
+                        valid, reason = _verify_model_artifact(
+                            final_target,
+                            artifact,
+                            _model_download_cancel,
+                        )
+                        if _model_download_cancel.is_set():
+                            _finish_cancelled_download()
+                            return
+                        if not valid:
+                            if final_target in created_final_paths:
+                                final_target.unlink(missing_ok=True)
+                                created_final_paths.discard(final_target)
                             _write_model_status(
                                 status_path,
                                 "failed",
                                 part_file_name,
                                 0,
                                 0,
-                                f"SHA256 mismatch: expected {expected[:12]}..., got {actual[:12]}...",
+                                reason,
                             )
                             return
 
-                    _write_model_status(status_path, "complete", gguf_file, 0, 0)
+                    with _model_download_lock:
+                        cancelled_before_commit = _model_download_cancel.is_set()
+                        if not cancelled_before_commit:
+                            _model_download_cancelable = False
+                            _write_model_status(status_path, "complete", gguf_file, 0, 0)
+                    if cancelled_before_commit:
+                        _finish_cancelled_download()
+                        return
                     logger.info("Model download complete: %s (%d parts)", gguf_file, len(download_plan))
                 except Exception as exc:
-                    logger.error("Model download failed: %s", exc)
-                    _write_model_status(status_path, "failed", gguf_file, 0, 0, str(exc))
+                    if _model_download_cancel.is_set():
+                        _finish_cancelled_download()
+                    else:
+                        for path in temp_paths:
+                            try:
+                                path.unlink(missing_ok=True)
+                            except OSError:
+                                logger.warning("Could not remove failed model temporary file %s", path)
+                        logger.error("Model download failed: %s", exc)
+                        _write_model_status(status_path, "failed", gguf_file, 0, 0, str(exc))
+                finally:
+                    _model_download_proc = None
+                    with _model_download_lock:
+                        late_cancel = (
+                            _model_download_cancelable
+                            and _model_download_cancel.is_set()
+                            and not cancel_cleanup_done
+                        )
+                        _model_download_cancelable = False
+                    if late_cancel:
+                        _finish_cancelled_download()
+                    _end_model_lifecycle("model_download")
 
-            _model_download_thread = threading.Thread(target=_download, daemon=True)
-            _model_download_thread.start()
+            try:
+                _model_download_thread = threading.Thread(target=_download, daemon=True)
+                _model_download_thread.start()
+            except Exception:
+                _model_download_cancelable = False
+                _end_model_lifecycle("model_download")
+                raise
 
         json_response(self, 200, {"status": "started"})
 
@@ -3436,13 +4114,17 @@ class AgentHandler(BaseHTTPRequestHandler):
         if not check_auth(self):
             return
         with _model_download_lock:
-            if _model_download_thread is None or not _model_download_thread.is_alive():
+            if (
+                _model_download_thread is None
+                or not _model_download_thread.is_alive()
+                or not _model_download_cancelable
+            ):
                 json_response(self, 200, {"status": "no_download"})
                 return
-        _model_download_cancel.set()
-        # Capture local reference to avoid TOCTOU race — the download thread
-        # may null out _model_download_proc between the check and kill.
-        proc_ref = _model_download_proc
+            _model_download_cancel.set()
+            # Capture under the same state lock; the worker may clear the
+            # global process reference as soon as curl exits.
+            proc_ref = _model_download_proc
         if proc_ref is not None:
             try:
                 proc_ref.kill()
@@ -3459,22 +4141,62 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
 
         model_id = body.get("model_id", "")
-        if not model_id:
+        if not isinstance(model_id, str) or not model_id.strip():
             json_response(self, 400, {"error": "model_id is required"})
             return
 
-        if not _model_activate_lock.acquire(blocking=False):
-            json_response(self, 409, {"error": "Another model activation is in progress"})
+        acquired, active_model_id = _begin_model_activation(model_id)
+        if not acquired:
+            with _model_lifecycle_state_lock:
+                active_operation = _model_lifecycle_operation
+            json_response(
+                self,
+                409,
+                {
+                    "error": (
+                        "Another model activation is in progress"
+                        if active_operation == "model_activation"
+                        else f"Cannot activate a model while {active_operation or 'another operation'} is in progress"
+                    ),
+                    "code": "model_lifecycle_busy",
+                    "activeOperation": active_operation,
+                    "activeModelId": active_model_id,
+                },
+            )
             return
 
         try:
             self._do_model_activate(model_id)
         finally:
-            _model_activate_lock.release()
+            _end_model_activation()
 
     def _do_model_activate(self, model_id: str):
         """Inner activate logic — called with _model_activate_lock held."""
-        import time
+        env_path = INSTALL_DIR / ".env"
+        try:
+            persisted_env = load_env(env_path)
+        except (OSError, UnicodeError) as exc:
+            logger.exception("Model activation could not read persisted mode")
+            json_response(self, 500, {"error": f"Model activation failed: {exc}"})
+            return
+        effective_mode, configured_mode = _model_activation_modes(persisted_env)
+        mode_denial = _model_activation_mode_denial(effective_mode, configured_mode)
+        if mode_denial is not None:
+            json_response(
+                self,
+                409,
+                {
+                    **mode_denial,
+                    "mode": configured_mode,
+                    "requestedModelId": model_id,
+                    "activeModelId": (
+                        persisted_env.get("LLM_MODEL")
+                        or persisted_env.get("GGUF_FILE")
+                        or None
+                    ),
+                },
+            )
+            return
 
         def local_gguf_model_from_id(raw_model_id: str) -> dict | None:
             models_dir = INSTALL_DIR / "data" / "models"
@@ -3509,12 +4231,14 @@ class AgentHandler(BaseHTTPRequestHandler):
         # Look up model in library
         library_path = INSTALL_DIR / "config" / "model-library.json"
         model = None
+        model_from_catalog = False
         if library_path.exists():
             try:
                 lib = json.loads(library_path.read_text(encoding="utf-8"))
                 for m in lib.get("models", []):
                     if m.get("id") == model_id:
                         model = m
+                        model_from_catalog = True
                         break
             except (json.JSONDecodeError, OSError):
                 pass
@@ -3542,10 +4266,34 @@ class AgentHandler(BaseHTTPRequestHandler):
         if not _model_file_ready(target):
             json_response(self, 400, {"error": f"Model file not downloaded or empty: {gguf_file}"})
             return
+        if model_from_catalog:
+            activation_manifest = _model_download_manifest(model)
+            if activation_manifest is None:
+                json_response(
+                    self,
+                    500,
+                    {"error": f"Model catalog integrity manifest is invalid: {model_id}"},
+                )
+                return
+            manifest_valid, integrity_error = _verify_model_manifest(
+                models_dir,
+                activation_manifest,
+            )
+            if not manifest_valid:
+                json_response(
+                    self,
+                    400,
+                    {
+                        "error": (
+                            f"Model artifacts failed catalog verification: {integrity_error}"
+                        )
+                    },
+                )
+                return
 
-        env_path = INSTALL_DIR / ".env"
         models_ini = INSTALL_DIR / "config" / "llama-server" / "models.ini"
         lemonade_yaml = INSTALL_DIR / "config" / "litellm" / "lemonade.yaml"
+        litellm_local_yaml = INSTALL_DIR / "config" / "litellm" / "local.yaml"
         hermes_live_config = INSTALL_DIR / "data" / "hermes" / "config.yaml"
         hermes_template_config = INSTALL_DIR / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
 
@@ -3553,30 +4301,166 @@ class AgentHandler(BaseHTTPRequestHandler):
         # None means the snapshot was not captured, so rollback must skip it.
         env_backup: str | None = None
         ini_backup: str | None = None
+        lemonade_existed: bool | None = None
         lemonade_backup = None
+        litellm_local_existed: bool | None = None
+        litellm_local_backup: str | None = None
+        hermes_live_snapshot: dict | None = None
         hermes_backups: dict[Path, str] = {}
+        perplexica_snapshot: dict | None = None
         committed = False
+        rollback_attempted = False
+        runtime_restart_strategy: str | None = None
+        apple_llama_bin: Path | None = None
+        apple_llama_log: Path | None = None
+        apple_pid_file: Path | None = None
 
         def restore_backups():
             if env_backup is not None:
                 env_path.write_text(env_backup, encoding="utf-8")
             if ini_backup is not None:
                 models_ini.write_text(ini_backup, encoding="utf-8")
-            if lemonade_backup is not None:
+            if lemonade_existed is True:
                 lemonade_yaml.write_text(lemonade_backup, encoding="utf-8")
+            elif lemonade_existed is False:
+                lemonade_yaml.unlink(missing_ok=True)
+            if litellm_local_existed is True:
+                litellm_local_yaml.write_text(litellm_local_backup or "", encoding="utf-8")
+            elif litellm_local_existed is False:
+                litellm_local_yaml.unlink(missing_ok=True)
             for hermes_path, hermes_text in hermes_backups.items():
                 hermes_path.write_text(hermes_text, encoding="utf-8")
+            if hermes_live_snapshot and hermes_live_snapshot.get("exists"):
+                _write_hermes_live_config(
+                    hermes_live_config,
+                    str(hermes_live_snapshot.get("text") or ""),
+                    hermes_live_snapshot.get("source"),
+                )
+            elif hermes_live_snapshot is not None:
+                _remove_hermes_live_config(hermes_live_config)
+
+        def restore_previous_runtime():
+            rollback_env = load_env(env_path)
+            if runtime_restart_strategy == "windows-lemonade":
+                _restart_windows_lemonade(rollback_env)
+            elif runtime_restart_strategy == "windows-native-llama":
+                _restart_windows_native_llama_server(env_path, rollback_env)
+            elif runtime_restart_strategy == "macos-native-llama":
+                if not all((apple_llama_bin, apple_llama_log, apple_pid_file)):
+                    raise RuntimeError("macOS native llama rollback paths are unavailable")
+                _restart_macos_native_llama_server(
+                    env_path,
+                    apple_llama_bin,
+                    apple_llama_log,
+                    apple_pid_file,
+                )
+            elif runtime_restart_strategy == "container-llama":
+                _recreate_llama_server(
+                    rollback_env,
+                    override_image=str(rollback_env.get("LLAMA_SERVER_IMAGE") or ""),
+                )
+            elif runtime_restart_strategy == "compose-llama":
+                _compose_restart_llama_server(rollback_env)
+            elif runtime_restart_strategy is not None:
+                raise RuntimeError(
+                    f"Unknown model activation restart strategy: {runtime_restart_strategy}"
+                )
+
+        def rollback_and_prove() -> tuple[bool, str]:
+            """Restore config/runtime/dependents and prove the prior route."""
+            nonlocal rollback_attempted
+            rollback_attempted = True
+            try:
+                restore_backups()
+                restore_previous_runtime()
+                rollback_env = load_env(env_path)
+                litellm_restarted = _restart_existing_container("ods-litellm")
+                hermes_restarted = _restart_existing_container("ods-hermes")
+                openclaw_recreated = _recreate_openclaw_if_present()
+                if perplexica_snapshot is not None:
+                    _restore_perplexica_config(perplexica_snapshot)
+                previous_gguf = str(rollback_env.get("GGUF_FILE") or "")
+                previous_model = str(
+                    rollback_env.get("LLM_MODEL")
+                    or _local_model_name_from_gguf(previous_gguf)
+                )
+                previous_windows_native = _is_windows_host_llama_server(rollback_env)
+                previous_hermes_model = previous_gguf
+                if (
+                    not previous_windows_native
+                    and str(rollback_env.get("GPU_BACKEND") or "").lower() == "amd"
+                ):
+                    previous_hermes_model = str(
+                        rollback_env.get("LEMONADE_MODEL")
+                        or f"extra.{previous_gguf}"
+                    )
+                if hermes_restarted and hermes_live_snapshot and hermes_live_snapshot.get("exists"):
+                    try:
+                        previous_context = int(
+                            rollback_env.get("MAX_CONTEXT")
+                            or rollback_env.get("CTX_SIZE")
+                            or 32768
+                        )
+                    except (TypeError, ValueError):
+                        previous_context = 32768
+                    previous_base_url = rollback_env.get("HERMES_LLM_BASE_URL") or (
+                        "http://litellm:4000/v1"
+                        if _is_windows_host_lemonade(rollback_env)
+                        else None
+                    )
+                    _verify_running_hermes_route(
+                        previous_hermes_model,
+                        previous_base_url,
+                        previous_context,
+                    )
+                if not previous_gguf:
+                    raise RuntimeError("previous GGUF identity is empty")
+                if not _wait_for_model_readiness(
+                    rollback_env,
+                    model_id=previous_model,
+                    gguf_file=previous_gguf,
+                    llm_model_name=previous_model,
+                    lemonade_model_id=str(rollback_env.get("LEMONADE_MODEL") or ""),
+                ):
+                    raise RuntimeError(
+                        f"previous model {previous_gguf} did not pass identity and completion readiness"
+                    )
+                if litellm_restarted:
+                    _verify_litellm_route(rollback_env)
+                if openclaw_recreated:
+                    _verify_openclaw_model_env(previous_hermes_model)
+                return True, ""
+            except Exception as rollback_exc:
+                logger.exception("Failed to prove previous model route during rollback")
+                return False, str(rollback_exc)
 
         try:
             # Read current env BEFORE modification — needed for gpu_backend guard
             env_pre = load_env(env_path)
             gpu_backend = env_pre.get("GPU_BACKEND", "nvidia")
             windows_host_lemonade = _is_windows_host_lemonade(env_pre)
+            windows_lemonade_managed = _windows_lemonade_is_managed(env_pre)
+            windows_native_llama = _is_windows_host_llama_server(env_pre)
+            lemonade_runtime = str(gpu_backend).lower() == "amd" and not windows_native_llama
+            same_lemonade_target = _runtime_model_identity_matches(
+                env_pre.get("GGUF_FILE"),
+                gguf_file=gguf_file,
+            )
+            lemonade_model_id = ""
             windows_lemonade_already_serving = False
-            if windows_host_lemonade and env_pre.get("GGUF_FILE") == gguf_file:
+            if windows_host_lemonade and same_lemonade_target:
                 lemonade_port = env_pre.get("AMD_INFERENCE_PORT", "8080") or "8080"
+                lemonade_model_id = _resolve_lemonade_model_id(
+                    env_pre,
+                    gguf_file,
+                    host="127.0.0.1",
+                    port=str(lemonade_port),
+                )
                 windows_lemonade_already_serving = _lemonade_completion_ready(
-                    "127.0.0.1", lemonade_port, gguf_file,
+                    "127.0.0.1",
+                    str(lemonade_port),
+                    gguf_file,
+                    lemonade_model_id,
                 )
                 if windows_lemonade_already_serving:
                     logger.info(
@@ -3594,47 +4478,29 @@ class AgentHandler(BaseHTTPRequestHandler):
                 llama_server_image = runtime_profile.get("llama_server_image") or llama_server_image
                 runtime_env = runtime_profile.get("env") if isinstance(runtime_profile.get("env"), dict) else {}
 
-            def _context_from_env_key(key: str) -> int:
-                try:
-                    return int(env_pre.get(key) or 0)
-                except (TypeError, ValueError):
-                    return 0
-
-            hermes_context_floor = max(_context_from_env_key("MAX_CONTEXT"), _context_from_env_key("CTX_SIZE"))
-            try:
-                hermes_live_exists_for_context = hermes_live_config.exists()
-            except PermissionError:
-                hermes_live_exists_for_context = False
-            if hermes_context_floor > context_length and hermes_live_exists_for_context:
-                # A Hermes-enabled install may intentionally raise llama.cpp's
-                # context above the catalog/profile value. Do not let dashboard
-                # model activation silently lower Hermes back under its own
-                # 64K minimum.
-                context_length = hermes_context_floor
-
             # Save rollback snapshot
             env_backup = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
             ini_backup = models_ini.read_text(encoding="utf-8") if models_ini.exists() else ""
-            lemonade_backup = lemonade_yaml.read_text(encoding="utf-8") if lemonade_yaml.exists() else None
-            # Hermes's live config dir is created by the container at first
-            # boot with UID 10000 / mode 0700, so the host-agent (running as
-            # the host user) cannot read or write data/hermes/config.yaml.
-            # That's expected — patching the model name there is a courtesy
-            # so the next Hermes restart picks up the new model. If we can't
-            # read it, skip the backup/patch and continue. bootstrap-upgrade.sh
-            # already treats this as non-fatal (line ~640) — mirror it here.
-            for hermes_path in (hermes_live_config, hermes_template_config):
-                try:
-                    if hermes_path.exists():
-                        hermes_backups[hermes_path] = hermes_path.read_text(encoding="utf-8")
-                except PermissionError:
-                    logger.warning(
-                        "Hermes config %s not readable by host-agent (likely owned by "
-                        "container UID); skipping backup. Patch attempt will also skip; "
-                        "operator can manually edit the live config and then "
-                        "`docker restart ods-hermes` to pick up the new model.",
-                        hermes_path,
-                    )
+            lemonade_existed = lemonade_yaml.exists()
+            lemonade_backup = (
+                lemonade_yaml.read_text(encoding="utf-8")
+                if lemonade_existed
+                else None
+            )
+            litellm_local_existed = litellm_local_yaml.exists()
+            if litellm_local_existed:
+                litellm_local_backup = litellm_local_yaml.read_text(encoding="utf-8")
+            # Persisted Hermes state is commonly UID-10000-owned. Capture it
+            # through the running container when host permissions deny access;
+            # activation must never claim success with an unpatched live route.
+            hermes_live_snapshot = _capture_hermes_live_config(hermes_live_config)
+            try:
+                hermes_backups[hermes_template_config] = (
+                    hermes_template_config.read_text(encoding="utf-8")
+                )
+            except FileNotFoundError:
+                pass
+            perplexica_snapshot = _capture_perplexica_config(env_pre)
 
             # Update .env
             if env_path.exists():
@@ -3648,6 +4514,12 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "MODEL_RUNTIME_PROFILE_LABEL": runtime_profile.get("label", "") if runtime_profile else "",
                     "MODEL_RUNTIME_PROFILE_SOURCE": runtime_profile.get("source_url", "") if runtime_profile else "",
                 }
+                if lemonade_runtime:
+                    updates["LEMONADE_MODEL"] = (
+                        str(env_pre.get("LEMONADE_MODEL") or "")
+                        if same_lemonade_target
+                        else ""
+                    )
                 # Loading a GGUF is an explicit engine choice: text routes back to
                 # llama-server/Lemonade. hipfire stays resident and reachable via
                 # the "hipfire" model name; activating its catalog entry flips back.
@@ -3681,7 +4553,6 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS",
                     "LLAMA_ARG_SPEC_TYPE",
                     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
-                    "LLAMA_SERVER_IMAGE",
                 }
                 remove_keys.difference_update(updates)
                 # Only update LLAMA_SERVER_IMAGE on Docker backends.
@@ -3714,41 +4585,6 @@ class AgentHandler(BaseHTTPRequestHandler):
                 encoding="utf-8",
             )
 
-            # Regenerate LiteLLM lemonade config so it routes to the new model.
-            # Only written on AMD installs where lemonade.yaml exists.
-            if lemonade_yaml.exists():
-                _write_lemonade_config(INSTALL_DIR, gguf_file)
-
-            hermes_model_name = f"extra.{gguf_file}" if gpu_backend == "amd" else gguf_file
-            try:
-                hermes_live_exists = hermes_live_config.exists()
-            except PermissionError:
-                hermes_live_exists = None
-            hermes_base_url = "http://litellm:4000/v1" if windows_host_lemonade else None
-            hermes_live_patched = _patch_hermes_model_config(
-                hermes_live_config,
-                hermes_model_name,
-                base_url=hermes_base_url,
-                context_length=context_length,
-            )
-            hermes_template_patched = _patch_hermes_model_config(
-                hermes_template_config,
-                hermes_model_name,
-                base_url=hermes_base_url,
-                context_length=context_length,
-            )
-            # Restart Hermes only when its persisted live config changed, or
-            # when no persisted config exists and a patched template can seed
-            # the next start. If live config is container-owned and unreadable,
-            # restarting would keep the old persisted model, so skip it.
-            hermes_patched = hermes_live_patched or (hermes_template_patched and hermes_live_exists is False)
-            if hermes_template_patched and not hermes_patched:
-                logger.warning(
-                    "Patched Hermes template but not the live config; skipping "
-                    "ods-hermes restart because it would keep using the old "
-                    "persisted config until an operator edits data/hermes/config.yaml."
-                )
-
             # Restart llama-server with the new model.
             # Three strategies depending on platform / agent location:
             # - apple (macOS): llama-server runs natively via Metal, not Docker.
@@ -3761,184 +4597,185 @@ class AgentHandler(BaseHTTPRequestHandler):
             _in_container = bool(os.environ.get("ODS_HOST_INSTALL_DIR"))
 
             if windows_host_lemonade:
-                if not windows_lemonade_already_serving:
+                if windows_lemonade_managed and not windows_lemonade_already_serving:
+                    runtime_restart_strategy = "windows-lemonade"
                     _restart_windows_lemonade(env)
+                elif not windows_lemonade_managed:
+                    logger.info(
+                        "Using externally managed Windows Lemonade without process restart"
+                    )
+            elif windows_native_llama:
+                runtime_restart_strategy = "windows-native-llama"
+                _restart_windows_native_llama_server(env_path, env)
             elif gpu_backend == "apple":
                 # macOS: manage native llama-server process via PID file
-                pid_file = INSTALL_DIR / "data" / ".llama-server.pid"
-                llama_bin = INSTALL_DIR / "bin" / "llama-server"
-                llama_log = INSTALL_DIR / "data" / "llama-server.log"
+                apple_pid_file = INSTALL_DIR / "data" / ".llama-server.pid"
+                apple_llama_bin = INSTALL_DIR / "bin" / "llama-server"
+                apple_llama_log = INSTALL_DIR / "data" / "llama-server.log"
 
-                if not llama_bin.exists():
+                if not apple_llama_bin.exists():
                     restore_backups()
                     json_response(self, 500, {"error": "llama-server binary not found — re-run installer"})
                     return
 
-                # Stop existing native process
-                if pid_file.exists():
-                    try:
-                        old_pid = int(pid_file.read_text(encoding="utf-8").strip())
-                        # Verify PID is llama-server before killing (prevent PID reuse accidents)
-                        try:
-                            ps_result = subprocess.run(
-                                ["ps", "-p", str(old_pid), "-o", "comm="],
-                                capture_output=True, text=True, timeout=5,
-                            )
-                            if "llama" not in ps_result.stdout.lower():
-                                raise OSError("PID is not llama-server")
-                        except (subprocess.TimeoutExpired, OSError):
-                            pid_file.unlink(missing_ok=True)
-                            raise OSError("stale PID")
-                        os.kill(old_pid, signal.SIGTERM)
-                        for _ in range(20):
-                            try:
-                                os.kill(old_pid, 0)
-                                time.sleep(0.5)
-                            except OSError:
-                                break
-                        else:
-                            os.kill(old_pid, signal.SIGKILL)
-                    except (ValueError, OSError):
-                        pass
-                    pid_file.unlink(missing_ok=True)
-
-                # Re-launch native llama-server with new model
-                _launch_native_llama_server(env_path, llama_bin, llama_log, pid_file)
+                runtime_restart_strategy = "macos-native-llama"
+                _restart_macos_native_llama_server(
+                    env_path,
+                    apple_llama_bin,
+                    apple_llama_log,
+                    apple_pid_file,
+                )
             elif _in_container:
-                override_image = llama_server_image or ("ghcr.io/ggml-org/llama.cpp:server-cuda-b9014" if gpu_backend == "nvidia" else "")
+                override_image = (
+                    llama_server_image
+                    or env.get("LLAMA_SERVER_IMAGE")
+                    or (
+                        "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014"
+                        if gpu_backend == "nvidia"
+                        else ""
+                    )
+                )
+                runtime_restart_strategy = "container-llama"
                 _recreate_llama_server(env, override_image=override_image)
             else:
+                runtime_restart_strategy = "compose-llama"
                 _compose_restart_llama_server(env)
 
-            # Health check (up to 5 min)
-            # Use container name on docker network (localhost is the agent
-            # container when running containerized, not the llama-server).
-            # Determine health check URL based on where the agent runs:
-            # - Inside a container (ODS_HOST_INSTALL_DIR set): use docker
-            #   network name + internal port 8080
-            # - On the host (native systemd or macOS): use 127.0.0.1 + OLLAMA_PORT.
-            #   (Use 127.0.0.1, not localhost — localhost resolves to ::1 on
-            #   IPv6-enabled hosts but Docker binds to 127.0.0.1 only.)
-            if windows_host_lemonade:
-                llama_host = "127.0.0.1"
-                llama_port = env.get("AMD_INFERENCE_PORT", "8080")
-            elif os.environ.get("ODS_HOST_INSTALL_DIR"):
-                llama_host = "ods-llama-server"
-                llama_port = "8080"
-            else:
-                llama_host = "127.0.0.1"
-                llama_port = env.get("OLLAMA_PORT", "8080")
-            health_path = "/api/v1/health" if gpu_backend == "amd" else "/health"
-            health_url = f"http://{llama_host}:{llama_port}{health_path}"
-            logger.info("Waiting for llama-server health at %s", health_url)
-            healthy = False
-            warmup_sent = False
-            time.sleep(5)  # Give container time to start
-            for attempt in range(60):
-                try:
-                    result = subprocess.run(
-                        ["curl", "-s", "--max-time", "5", health_url],
-                        capture_output=True, text=True, timeout=10,
+            if lemonade_runtime:
+                lemonade_host, lemonade_port = _lemonade_runtime_address(env)
+                lemonade_model_id = _resolve_lemonade_model_id(
+                    env,
+                    gguf_file,
+                    host=lemonade_host,
+                    port=lemonade_port,
+                )
+                if not lemonade_model_id:
+                    raise RuntimeError(
+                        f"Could not resolve Lemonade model ID for {gguf_file}"
                     )
-                    body = result.stdout.strip()
-                    if gpu_backend == "amd":
-                        # Lemonade returns {"status":"ok","model_loaded":null}
-                        # before a model is loaded — must verify model_loaded
-                        # is non-null.  Mirrors bootstrap-upgrade.sh:330.
-                        if _check_lemonade_health(body):
-                            healthy = True
-                        elif body:
-                            # Send warm-up request every 3rd attempt (~15s)
-                            # to trigger on-demand model loading.
-                            if not warmup_sent or attempt % 3 == 0:
-                                warmup_sent = _send_lemonade_warmup(
-                                    llama_host, llama_port, gguf_file, attempt,
-                                )
-                            if attempt % 6 == 0:
-                                logger.info(
-                                    "Lemonade healthy but no model loaded (attempt %d)",
-                                    attempt + 1,
-                                )
-                    else:
-                        # llama.cpp: 200 with "ok" means model is loaded
-                        if '"ok"' in body:
-                            healthy = True
-                        elif attempt % 6 == 0:
-                            logger.info("Health check attempt %d: %s", attempt + 1, body[:100])
-                    if healthy:
-                        logger.info("llama-server healthy after %d attempts", attempt + 1)
-                        break
-                except subprocess.TimeoutExpired:
-                    if attempt % 6 == 0:
-                        logger.info("Health check attempt %d: timeout", attempt + 1)
-                time.sleep(5)
+
+            hermes_model_name = (
+                gguf_file
+                if windows_native_llama
+                else lemonade_model_id if lemonade_runtime else gguf_file
+            )
+            hermes_base_url = env_pre.get("HERMES_LLM_BASE_URL") or (
+                "http://litellm:4000/v1" if windows_host_lemonade else None
+            )
+
+            healthy = _wait_for_model_readiness(
+                env,
+                model_id=model_id,
+                gguf_file=gguf_file,
+                llm_model_name=llm_model_name,
+                lemonade_model_id=lemonade_model_id,
+            )
 
             if healthy:
-                # Regenerate lemonade.yaml if active.  Lemonade requires the
-                # exact model ID (extra.<GGUF_FILE>) — a wildcard doesn't work.
-                # Mirrors bootstrap-upgrade.sh lines 364-384.
-                ods_mode = env.get("ODS_MODE", "local")
-                if ods_mode == "lemonade":
-                    _write_lemonade_config(INSTALL_DIR, gguf_file)
+                if lemonade_runtime:
+                    _upsert_env_value(env_path, "LEMONADE_MODEL", lemonade_model_id)
+                    env["LEMONADE_MODEL"] = lemonade_model_id
+                    if lemonade_yaml.exists() or env.get("ODS_MODE") == "lemonade":
+                        _write_lemonade_config(
+                            INSTALL_DIR,
+                            gguf_file,
+                            lemonade_model_id,
+                        )
+
+                if windows_native_llama:
+                    _write_windows_native_litellm_config(INSTALL_DIR, gguf_file, env)
+
+                hermes_live_exists = bool(
+                    hermes_live_snapshot and hermes_live_snapshot.get("exists")
+                )
+                hermes_live_patched = False
+                if hermes_live_exists:
+                    patched_live, hermes_live_patched = _patch_hermes_config_text(
+                        str(hermes_live_snapshot.get("text") or ""),
+                        hermes_model_name,
+                        base_url=hermes_base_url,
+                        context_length=context_length,
+                    )
+                    if hermes_live_patched:
+                        _write_hermes_live_config(
+                            hermes_live_config,
+                            patched_live,
+                            hermes_live_snapshot.get("source"),
+                        )
+                    verified_live = _capture_hermes_live_config(hermes_live_config)
+                    if not _hermes_config_matches(
+                        str(verified_live.get("text") or ""),
+                        hermes_model_name,
+                        hermes_base_url,
+                        int(context_length),
+                    ):
+                        raise RuntimeError(
+                            "Hermes persisted model route could not be verified"
+                        )
+                hermes_template_patched = _patch_hermes_model_config(
+                    hermes_template_config,
+                    hermes_model_name,
+                    base_url=hermes_base_url,
+                    context_length=context_length,
+                )
+                # A missing live file can be seeded from the patched template
+                # on the next Hermes start. An existing file was verified above.
+                hermes_patched = hermes_live_patched or (
+                    hermes_template_patched and not hermes_live_exists
+                )
 
                 # Restart dependent services so they pick up the new model
-                dependent_services = ["ods-litellm"]
-                if hermes_patched:
-                    dependent_services.append("ods-hermes")
-                for svc in dependent_services:
-                    subprocess.run(["docker", "restart", svc],
-                                   capture_output=True, timeout=60)
+                litellm_restarted = _restart_existing_container("ods-litellm")
+                if hermes_patched and _restart_existing_container("ods-hermes"):
+                    _verify_running_hermes_route(
+                        hermes_model_name,
+                        hermes_base_url,
+                        int(context_length),
+                    )
+                openclaw_recreated = _recreate_openclaw_if_present()
+                if perplexica_snapshot is not None:
+                    _update_perplexica_model(
+                        env,
+                        perplexica_snapshot,
+                        gguf_file=gguf_file,
+                        lemonade_model_id=lemonade_model_id,
+                    )
+                if litellm_restarted:
+                    _verify_litellm_route(env)
+                if openclaw_recreated:
+                    _verify_openclaw_model_env(hermes_model_name)
                 committed = True  # system state is committed before the response write
                 json_response(self, 200, {"status": "activated", "model_id": model_id})
             else:
-                # Rollback
                 logger.warning("Model activation failed — rolling back")
-                restore_backups()
-                rollback_env = load_env(env_path)
-                rollback_windows_host_lemonade = _is_windows_host_lemonade(rollback_env)
-                if rollback_windows_host_lemonade:
-                    _restart_windows_lemonade(rollback_env)
-                elif gpu_backend == "apple":
-                    # Stop newly launched native process, re-launch with old params
-                    if pid_file.exists():
-                        try:
-                            new_pid = int(pid_file.read_text(encoding="utf-8").strip())
-                            try:
-                                ps_result = subprocess.run(
-                                    ["ps", "-p", str(new_pid), "-o", "comm="],
-                                    capture_output=True, text=True, timeout=5,
-                                )
-                                if "llama" not in ps_result.stdout.lower():
-                                    raise OSError("PID is not llama-server")
-                            except (subprocess.TimeoutExpired, OSError):
-                                pid_file.unlink(missing_ok=True)
-                                raise OSError("stale PID")
-                            os.kill(new_pid, signal.SIGTERM)
-                            for _ in range(20):
-                                try:
-                                    os.kill(new_pid, 0)
-                                    time.sleep(0.5)
-                                except OSError:
-                                    break
-                            else:
-                                os.kill(new_pid, signal.SIGKILL)
-                        except (ValueError, OSError):
-                            pass
-                        pid_file.unlink(missing_ok=True)
-                    _launch_native_llama_server(env_path, llama_bin, llama_log, pid_file)
-                elif _in_container:
-                    _recreate_llama_server(rollback_env)
-                else:
-                    _compose_restart_llama_server(rollback_env)
-                json_response(self, 500, {"error": "Health check failed — rolled back to previous model", "rolled_back": True})
+                rolled_back, rollback_error = rollback_and_prove()
+                error = (
+                    "Health check failed — rolled back to previous model"
+                    if rolled_back
+                    else (
+                        "Health check failed; previous model restoration could not be proved: "
+                        f"{rollback_error}"
+                    )
+                )
+                json_response(
+                    self,
+                    500,
+                    {"error": error, "rolled_back": rolled_back},
+                )
 
         except Exception as exc:
-            if not committed:
-                try:
-                    restore_backups()
-                except OSError:
-                    logger.exception("Rollback write failed during model-activate failure handling")
-            json_response(self, 500, {"error": f"Model activation failed: {exc}"})
+            rolled_back = False
+            rollback_error = ""
+            if not committed and env_backup is not None and not rollback_attempted:
+                rolled_back, rollback_error = rollback_and_prove()
+            logger.exception("Model activation failed")
+            error = f"Model activation failed: {exc}"
+            if rollback_error:
+                error += f"; rollback could not be proved: {rollback_error}"
+            payload = {"error": error}
+            if env_backup is not None:
+                payload["rolled_back"] = rolled_back
+            json_response(self, 500, payload)
 
     def _do_hipfire_activate(self, model_id: str, model: dict):
         """Activate a hipfire-engine model — called with _model_activate_lock held.
@@ -4067,30 +4904,29 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
 
         gguf_file = body.get("gguf_file", "")
-        if not gguf_file:
+        if not isinstance(gguf_file, str) or not gguf_file:
             json_response(self, 400, {"error": "gguf_file is required"})
             return
 
         models_dir = INSTALL_DIR / "data" / "models"
-        target = (models_dir / gguf_file).resolve()
-
-        # Path traversal prevention
-        if not target.is_relative_to(models_dir.resolve()):
+        target = _safe_model_artifact_path(models_dir, gguf_file)
+        if target is None:
             json_response(self, 400, {"error": "Invalid file path"})
             return
 
-        if not target.exists():
-            json_response(self, 404, {"error": f"File not found: {gguf_file}"})
-            return
-
-        # Refuse to delete the active model
-        env = load_env(INSTALL_DIR / ".env")
-        if env.get("GGUF_FILE", "") == gguf_file:
-            json_response(self, 409, {"error": "Cannot delete the currently active model"})
+        acquired, active = _begin_model_lifecycle("model_delete", gguf_file)
+        if not acquired:
+            json_response(
+                self,
+                409,
+                _model_lifecycle_conflict("model deletion", active),
+            )
             return
 
         try:
-            # For split models, delete all part files
+            if not target.exists():
+                json_response(self, 404, {"error": f"File not found: {gguf_file}"})
+                return
             library_path = INSTALL_DIR / "config" / "model-library.json"
             parts_to_delete = [target]
             if library_path.exists():
@@ -4100,42 +4936,548 @@ class AgentHandler(BaseHTTPRequestHandler):
                         if m.get("gguf_file") == gguf_file and m.get("gguf_parts"):
                             parts_to_delete = []
                             for p in m["gguf_parts"]:
-                                pf = (models_dir / p["file"]).resolve()
-                                if pf.is_relative_to(models_dir.resolve()) and pf.exists():
+                                pf = _safe_model_artifact_path(models_dir, p.get("file"))
+                                if pf is not None and pf.exists():
                                     parts_to_delete.append(pf)
                             break
                 except (json.JSONDecodeError, OSError):
                     pass
 
+            deleted_names = {path.name for path in parts_to_delete}
+            deleted_names.add(gguf_file)
+            env = load_env(INSTALL_DIR / ".env")
+            if str(env.get("GGUF_FILE") or "") in deleted_names:
+                json_response(
+                    self,
+                    409,
+                    {"error": "Cannot delete the currently active model"},
+                )
+                return
+            live_active = _live_runtime_has_model(env, gguf_file)
+            if live_active is True:
+                json_response(
+                    self,
+                    409,
+                    {"error": "Cannot delete a model still active in the live runtime"},
+                )
+                return
+            if live_active is None:
+                json_response(
+                    self,
+                    503,
+                    {
+                        "error": (
+                            "Cannot prove the model is inactive because live runtime identity "
+                            "is unavailable"
+                        )
+                    },
+                )
+                return
+
             for pf in parts_to_delete:
                 pf.unlink()
+
+            status_path = INSTALL_DIR / "data" / "model-download-status.json"
+            if status_path.exists():
+                try:
+                    status_data = json.loads(status_path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    status_path.unlink(missing_ok=True)
+                else:
+                    status_model = _download_status_model_token(status_data.get("model"))
+                    if status_model in deleted_names:
+                        _write_model_status(status_path, "idle", "", 0, 0)
             json_response(self, 200, {"status": "deleted", "gguf_file": gguf_file})
         except OSError as exc:
             json_response(self, 500, {"error": f"Failed to delete: {exc}"})
+        finally:
+            _end_model_lifecycle("model_delete")
 
 
-def _check_lemonade_health(body: str) -> bool:
+def _runtime_model_identity_tokens(value: object) -> set[str]:
+    """Return exact, known runtime aliases for one model identity value."""
+    if not isinstance(value, str):
+        return set()
+    raw = value.strip()
+    if not raw:
+        return set()
+
+    variants = {raw}
+    lowered = raw.casefold()
+    for prefix in ("extra.", "user."):
+        if lowered.startswith(prefix):
+            variants.add(raw[len(prefix):])
+
+    tokens = set()
+    for variant in variants:
+        normalized = variant.strip().replace("\\", "/").rstrip("/")
+        if not normalized:
+            continue
+        basename = normalized.rsplit("/", 1)[-1]
+        for candidate in (normalized, basename):
+            folded = candidate.casefold()
+            tokens.add(folded)
+            if folded.endswith(".gguf"):
+                tokens.add(folded[:-5])
+    return tokens
+
+
+def _runtime_model_identity_matches(
+    value: object,
+    *,
+    model_id: str = "",
+    gguf_file: str = "",
+    llm_model_name: str = "",
+) -> bool:
+    """Match a runtime identity to exact supported aliases, never substrings."""
+    actual = _runtime_model_identity_tokens(value)
+    if not actual:
+        return False
+    expected = set()
+    for candidate in (model_id, gguf_file, llm_model_name):
+        expected.update(_runtime_model_identity_tokens(candidate))
+    return bool(expected and actual.intersection(expected))
+
+
+def _lemonade_runtime_address(env: dict) -> tuple[str, str]:
+    """Return the Lemonade address reachable from this host-agent process."""
+    location = str(env.get("AMD_INFERENCE_LOCATION") or "").lower()
+    if _is_windows_host_lemonade(env) or location == "host":
+        return (
+            "127.0.0.1",
+            str(env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080"),
+        )
+    if os.environ.get("ODS_HOST_INSTALL_DIR"):
+        return "ods-llama-server", "8080"
+    return "127.0.0.1", str(env.get("OLLAMA_PORT") or "8080")
+
+
+def _lemonade_catalog_values(value: object):
+    """Yield string leaves from Lemonade checkpoint metadata."""
+    if isinstance(value, str):
+        if value.strip():
+            yield value
+    elif isinstance(value, dict):
+        for nested in value.values():
+            yield from _lemonade_catalog_values(nested)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            yield from _lemonade_catalog_values(nested)
+
+
+def _lemonade_catalog_model_id(body: str, gguf_file: str) -> str:
+    """Return the exact catalog ID whose ID/checkpoint matches ``gguf_file``."""
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    models = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return ""
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        candidates = [model_id]
+        candidates.extend(_lemonade_catalog_values(entry.get("checkpoint")))
+        candidates.extend(_lemonade_catalog_values(entry.get("checkpoints")))
+        for candidate in candidates:
+            normalized = candidate.strip().replace("\\", "/").rstrip("/")
+            leaf = normalized.rsplit("/", 1)[-1]
+            if ":" in leaf:
+                leaf = leaf.rsplit(":", 1)[-1]
+            if _runtime_model_identity_matches(candidate, gguf_file=gguf_file) or (
+                leaf != candidate
+                and _runtime_model_identity_matches(leaf, gguf_file=gguf_file)
+            ):
+                return model_id.strip()
+    return ""
+
+
+def _lemonade_uses_stem_ids(version: object) -> bool:
+    """Return whether ``version`` is Lemonade 10.7 or newer."""
+    match = re.search(r"\d+(?:\.\d+){1,3}", str(version or ""))
+    if not match:
+        return False
+    try:
+        parts = tuple(int(part) for part in match.group(0).split("."))
+    except ValueError:
+        return False
+    return (parts + (0, 0, 0, 0))[:4] >= (10, 7, 0, 0)
+
+
+def _resolve_lemonade_model_id(
+    env: dict,
+    gguf_file: str,
+    *,
+    host: str | None = None,
+    port: str | None = None,
+) -> str:
+    """Resolve the exact request ID Lemonade assigned to a local GGUF.
+
+    Prefer the live model catalog, whose checkpoint metadata survives naming
+    changes. A persisted ID is a fallback only when it belongs to the requested
+    configured GGUF. Lemonade 10.7 changed
+    extra-directory IDs to filename stems, so the health version determines
+    the fallback when the catalog is not ready yet. An absent/older version
+    deliberately keeps the legacy Linux ``extra.<file>.gguf`` behavior.
+    """
+    normalized = str(gguf_file or "").strip().replace("\\", "/").rstrip("/")
+    filename = normalized.rsplit("/", 1)[-1]
+    if not filename:
+        return ""
+    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    persisted = str(env.get("LEMONADE_MODEL") or "").strip()
+    configured_gguf = str(env.get("GGUF_FILE") or "").strip()
+    persisted_matches_target = bool(
+        persisted
+        and _runtime_model_identity_matches(
+            configured_gguf,
+            gguf_file=filename,
+        )
+    )
+    if host is None or port is None:
+        resolved_host, resolved_port = _lemonade_runtime_address(env)
+        host = host or resolved_host
+        port = port or resolved_port
+
+    version = ""
+    for path, timeout in (("/api/v1/models", 5), ("/api/v1/health", 5)):
+        try:
+            result = subprocess.run(
+                [
+                    "curl", "-sf", "--max-time", str(timeout),
+                    f"http://{host}:{port}{path}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout + 5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode != 0:
+            continue
+        if path.endswith("/models"):
+            live_id = _lemonade_catalog_model_id(result.stdout, filename)
+            if live_id:
+                return live_id
+            continue
+        try:
+            health = json.loads(result.stdout or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(health, dict):
+            version = health.get("version") or ""
+
+    if persisted_matches_target:
+        return persisted
+    return stem if _lemonade_uses_stem_ids(version) else f"extra.{filename}"
+
+
+def _check_llama_model_identity(
+    body: str,
+    *,
+    model_id: str,
+    gguf_file: str,
+    llm_model_name: str,
+) -> bool:
+    """Return True only when llama.cpp reports the requested model loaded."""
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    models = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(models, list):
+        return False
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        status = model.get("status")
+        if isinstance(status, dict):
+            status = status.get("value")
+        if status is not None and str(status).strip().casefold() != "loaded":
+            continue
+        if _runtime_model_identity_matches(
+            model.get("id"),
+            model_id=model_id,
+            gguf_file=gguf_file,
+            llm_model_name=llm_model_name,
+        ):
+            return True
+    return False
+
+
+def _live_runtime_has_model(env: dict, gguf_file: str) -> bool | None:
+    """Return whether the live local runtime reports ``gguf_file`` active."""
+    if str(env.get("ODS_MODE") or "local").lower() == "cloud":
+        return False
+    gpu_backend = str(env.get("GPU_BACKEND") or "nvidia").lower()
+    windows_native_llama = _is_windows_host_llama_server(env)
+    is_lemonade = gpu_backend == "amd" and not windows_native_llama
+    if is_lemonade:
+        host, port = _lemonade_runtime_address(env)
+    elif windows_native_llama:
+        host = "127.0.0.1"
+        port = str(env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080")
+    elif gpu_backend == "apple":
+        host = _native_llama_health_host(env)
+        port = str(env.get("ODS_NATIVE_LLAMA_PORT") or env.get("OLLAMA_PORT") or "8080")
+    elif os.environ.get("ODS_HOST_INSTALL_DIR"):
+        host = "ods-llama-server"
+        port = "8080"
+    else:
+        host = "127.0.0.1"
+        port = str(env.get("OLLAMA_PORT") or "8080")
+    path = "/api/v1/health" if is_lemonade else "/v1/models"
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "--max-time", "5", f"http://{host}:{port}{path}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout or "{}")
+    except (json.JSONDecodeError, OSError, subprocess.TimeoutExpired):
+        return None
+    body = json.dumps(data)
+    if is_lemonade:
+        if not isinstance(data, dict) or "model_loaded" not in data:
+            return None
+        lemonade_model_id = _resolve_lemonade_model_id(
+            env,
+            gguf_file,
+            host=host,
+            port=port,
+        )
+        return _check_lemonade_health(body, gguf_file, lemonade_model_id)
+    if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+        return None
+    local_name = _local_model_name_from_gguf(gguf_file)
+    return _check_llama_model_identity(
+        body,
+        model_id=local_name,
+        gguf_file=gguf_file,
+        llm_model_name=local_name,
+    )
+
+
+def _check_lemonade_health(
+    body: str,
+    expected_gguf_file: str | None = None,
+    expected_model_id: str = "",
+) -> bool:
     """Check if Lemonade health response indicates a model is loaded.
 
     Lemonade returns {"status": "ok", "model_loaded": null} when healthy
-    but no model is loaded yet.  Returns True only when model_loaded is
-    non-null.  Mirrors bootstrap-upgrade.sh line 330.
+    but no model is loaded yet. Activation callers pass expected_gguf_file so
+    success requires that exact target. The optional generic form still
+    requires a non-empty string identity; false and empty values are never
+    treated as a loaded model.
     """
     try:
         data = json.loads(body)
-        return data.get("model_loaded") is not None
-    except (json.JSONDecodeError, TypeError):
+        if expected_gguf_file is not None or expected_model_id:
+            if not isinstance(data, dict) or str(data.get("status") or "").casefold() != "ok":
+                return False
+            return _runtime_model_identity_matches(
+                data.get("model_loaded"),
+                model_id=expected_model_id,
+                gguf_file=expected_gguf_file or "",
+            )
+        loaded = data.get("model_loaded")
+        return isinstance(loaded, str) and bool(loaded.strip())
+    except (AttributeError, json.JSONDecodeError, TypeError):
         return False
 
 
-def _send_lemonade_warmup(host: str, port: str, gguf_file: str, attempt: int) -> bool:
+def _completion_text(data: object) -> str:
+    """Extract bounded OpenAI-compatible assistant text from one response."""
+    if not isinstance(data, dict):
+        return ""
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return ""
+    message = choice.get("message")
+    content = message.get("content") if isinstance(message, dict) else choice.get("text")
+    if isinstance(content, str):
+        return content[:4096]
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "".join(parts)[:4096]
+    return ""
+
+
+def _meaningful_completion(data: object) -> bool:
+    """Reject empty, punctuation-only, and pathological all-question output."""
+    text = _completion_text(data).strip()
+    if not text or not any(character.isalnum() for character in text):
+        return False
+    non_space = "".join(character for character in text if not character.isspace())
+    return bool(non_space) and set(non_space) != {"?"}
+
+
+def _chat_completion_ready(
+    host: str,
+    port: str,
+    model_name: str,
+    api_prefix: str = "/v1",
+    api_key: str = "",
+) -> bool:
+    """Require one bounded deterministic, meaningful chat completion."""
+    prefix = "/" + api_prefix.strip("/")
+    url = f"http://{host}:{port}{prefix}/chat/completions"
+    payload = json.dumps({
+        "model": model_name,
+        "messages": [{
+            "role": "user",
+            "content": "Reply with the single word READY.",
+        }],
+        "max_tokens": 8,
+        "temperature": 0,
+    })
+    try:
+        command = [
+            "curl", "-sf", "--max-time", "30", "--max-filesize", "65536",
+            "-X", "POST", url,
+            "-H", "Content-Type: application/json",
+        ]
+        if api_key:
+            command.extend(["-H", f"Authorization: Bearer {api_key}"])
+        command.extend(["-d", payload])
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=35,
+        )
+        if result.returncode != 0:
+            return False
+        return _meaningful_completion(json.loads(result.stdout or "{}"))
+    except (json.JSONDecodeError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _native_llama_health_host(env: dict) -> str:
+    """Return a URL-safe host reachable through the native llama bind."""
+    bind_addr = str(env.get("BIND_ADDRESS") or "").strip() or "127.0.0.1"
+    if bind_addr == "0.0.0.0":
+        return "127.0.0.1"
+    if bind_addr == "::":
+        return "[::1]"
+    if ":" in bind_addr and not bind_addr.startswith("["):
+        return f"[{bind_addr}]"
+    return bind_addr
+
+
+def _require_macos_bridge_manager(env_path: Path) -> tuple[Path, Path]:
+    """Return installed bridge lifecycle files or fail before listener shutdown."""
+    constants_path = INSTALL_DIR / "lib" / "constants.sh"
+    manager_path = INSTALL_DIR / "lib" / "bridge-manager.sh"
+    missing = [path for path in (constants_path, manager_path) if not path.is_file()]
+    if missing:
+        names = ", ".join(str(path) for path in missing)
+        raise RuntimeError(
+            f"Installed macOS bridge lifecycle files are missing: {names}; re-run the installer"
+        )
+    if not env_path.is_file():
+        raise RuntimeError(f"macOS bridge configuration requires {env_path}")
+    return constants_path, manager_path
+
+
+def _configure_macos_llm_bridge(env_path: Path) -> None:
+    """Apply the installed shared macOS LLM bridge manager to current .env."""
+    _require_macos_bridge_manager(env_path)
+
+    bash = _find_usable_bash()
+    if not bash:
+        raise RuntimeError("A usable Bash executable is required for macOS bridge management")
+
+    bridge_adapter = r'''
+set -euo pipefail
+install_dir="$1"
+env_file="$2"
+export ODS_HOME="$install_dir"
+export ODS_SCRIPT_HINT="$install_dir"
+
+source "$install_dir/lib/constants.sh"
+source "$install_dir/lib/bridge-manager.sh"
+
+ai_err() { printf '%s\n' "$*" >&2; }
+ai_ok() { printf '%s\n' "$*" >&2; }
+
+read_env_value() {
+    local source_file="$1" key="$2"
+    awk -v key="$key" '
+        index($0, key "=") == 1 {
+            sub(/^[^=]*=/, "")
+            sub(/\r$/, "")
+            print
+            exit
+        }
+    ' "$source_file"
+}
+
+upsert_env_value() {
+    local target_file="$1" key="$2" value="$3" tmp_file
+    tmp_file="${target_file}.bridge.$$"
+    if ! cp -p "$target_file" "$tmp_file"; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+    if ! awk -v key="$key" -v value="$value" '
+        BEGIN { found = 0 }
+        index($0, key "=") == 1 {
+            if (!found) {
+                print key "=" value
+                found = 1
+            }
+            next
+        }
+        { print }
+        END {
+            if (!found) print key "=" value
+        }
+    ' "$target_file" > "$tmp_file"; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+    mv -f "$tmp_file" "$target_file"
+}
+
+macos_configure_llm_bridge_from_env "$env_file" "$install_dir"
+'''
+    result = subprocess.run(
+        [bash, "-c", bridge_adapter, "ods-host-agent", str(INSTALL_DIR), str(env_path)],
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or "no output"
+        raise RuntimeError(
+            f"macOS LLM bridge configuration failed (exit {result.returncode}): "
+            f"{detail[-1000:]}"
+        )
+
+
+def _send_lemonade_warmup(host: str, port: str, model_id: str, attempt: int) -> bool:
     """Send a warm-up chat completion to trigger Lemonade on-demand model load.
 
-    Lemonade discovers models via --extra-models-dir but only loads them when
-    a request arrives for that model ID.  Returns True if the request was
-    accepted (model is loading).  Mirrors bootstrap-upgrade.sh lines 343-347.
+    Lemonade discovers models from its configured extra_models_dir but only
+    loads them when a request arrives for that model ID. Returns True if the
+    request was accepted (model is loading). Mirrors bootstrap-upgrade.sh.
     """
-    model_id = f"extra.{gguf_file}"
     url = f"http://{host}:{port}/api/v1/chat/completions"
     payload = json.dumps({
         "model": model_id,
@@ -4157,28 +5499,120 @@ def _send_lemonade_warmup(host: str, port: str, gguf_file: str, attempt: int) ->
     return False
 
 
-def _lemonade_completion_ready(host: str, port: str, gguf_file: str) -> bool:
+def _lemonade_completion_ready(
+    host: str,
+    port: str,
+    gguf_file: str,
+    lemonade_model_id: str = "",
+) -> bool:
     """Return True when Lemonade can complete against the requested GGUF."""
-    model_id = f"extra.{gguf_file}"
-    url = f"http://{host}:{port}/api/v1/chat/completions"
-    payload = json.dumps({
-        "model": model_id,
-        "messages": [{"role": "user", "content": "reply ok"}],
-        "max_tokens": 1,
-        "temperature": 0,
-    })
-    try:
-        result = subprocess.run(
-            ["curl", "-sf", "--max-time", "30", "-X", "POST", url,
-             "-H", "Content-Type: application/json", "-d", payload],
-            capture_output=True, text=True, timeout=35,
+    return _chat_completion_ready(
+        host,
+        port,
+        lemonade_model_id or f"extra.{gguf_file}",
+        api_prefix="/api/v1",
+    )
+
+
+def _wait_for_model_readiness(
+    env: dict,
+    *,
+    model_id: str,
+    gguf_file: str,
+    llm_model_name: str,
+    lemonade_model_id: str = "",
+    attempts: int = 60,
+    initial_delay: float = 5,
+    interval: float = 5,
+) -> bool:
+    """Prove exact runtime identity and one meaningful completion."""
+    gpu_backend = str(env.get("GPU_BACKEND") or "nvidia").lower()
+    windows_native_llama = _is_windows_host_llama_server(env)
+    is_lemonade = gpu_backend == "amd" and not windows_native_llama
+    if is_lemonade:
+        host, port = _lemonade_runtime_address(env)
+    elif windows_native_llama:
+        host = "127.0.0.1"
+        port = str(env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080")
+    elif gpu_backend == "apple":
+        host = _native_llama_health_host(env)
+        port = str(env.get("ODS_NATIVE_LLAMA_PORT") or env.get("OLLAMA_PORT") or "8080")
+    elif os.environ.get("ODS_HOST_INSTALL_DIR"):
+        host = "ods-llama-server"
+        port = "8080"
+    else:
+        host = "127.0.0.1"
+        port = str(env.get("OLLAMA_PORT") or "8080")
+
+    identity_path = "/api/v1/health" if is_lemonade else "/v1/models"
+    identity_url = f"http://{host}:{port}{identity_path}"
+    completion_model = llm_model_name or gguf_file
+    completion_prefix = "/v1"
+    if is_lemonade:
+        lemonade_model_id = lemonade_model_id or _resolve_lemonade_model_id(
+            env,
+            gguf_file,
+            host=host,
+            port=port,
         )
-        if result.returncode != 0:
-            return False
-        data = json.loads(result.stdout or "{}")
-        return bool(data.get("choices"))
-    except (json.JSONDecodeError, subprocess.TimeoutExpired, OSError):
-        return False
+        completion_model = lemonade_model_id
+        completion_prefix = str(env.get("LEMONADE_API_BASE_PATH") or "/api/v1")
+
+    logger.info("Waiting for requested model identity %s at %s", gguf_file, identity_url)
+    warmup_sent = False
+    if initial_delay > 0:
+        time.sleep(initial_delay)
+    for attempt in range(max(1, attempts)):
+        identity_ready = False
+        try:
+            result = subprocess.run(
+                ["curl", "-s", "--max-time", "5", identity_url],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            body = result.stdout.strip()
+            if is_lemonade:
+                identity_ready = _check_lemonade_health(
+                    body,
+                    gguf_file,
+                    lemonade_model_id,
+                )
+                if not identity_ready and body and (not warmup_sent or attempt % 3 == 0):
+                    warmup_sent = _send_lemonade_warmup(
+                        host,
+                        port,
+                        lemonade_model_id,
+                        attempt,
+                    )
+            else:
+                identity_ready = _check_llama_model_identity(
+                    body,
+                    model_id=model_id,
+                    gguf_file=gguf_file,
+                    llm_model_name=llm_model_name,
+                )
+            if identity_ready and _chat_completion_ready(
+                host,
+                port,
+                str(completion_model),
+                completion_prefix,
+            ):
+                logger.info("Model %s ready after %d attempts", gguf_file, attempt + 1)
+                return True
+            if attempt % 6 == 0:
+                logger.info(
+                    "Model %s readiness incomplete (attempt %d, identity=%s)",
+                    gguf_file,
+                    attempt + 1,
+                    identity_ready,
+                )
+        except subprocess.TimeoutExpired:
+            if attempt % 6 == 0:
+                logger.info("Model readiness attempt %d timed out", attempt + 1)
+        if attempt + 1 < attempts and interval > 0:
+            time.sleep(interval)
+    return False
 
 
 def _is_windows_host_lemonade(env: dict) -> bool:
@@ -4193,6 +5627,119 @@ def _is_windows_host_lemonade(env: dict) -> bool:
     )
 
 
+def _windows_lemonade_is_managed(env: dict) -> bool:
+    managed = str(env.get("AMD_INFERENCE_MANAGED") or "true").lower()
+    runtime_mode = str(env.get("AMD_INFERENCE_RUNTIME_MODE") or "").lower()
+    external = str(env.get("LEMONADE_EXTERNAL") or "false").lower()
+    return managed != "false" and runtime_mode != "external-lemonade" and external != "true"
+
+
+def _is_windows_host_llama_server(env: dict) -> bool:
+    runtime = env.get("AMD_INFERENCE_RUNTIME", "").lower()
+    runtime_mode = env.get("AMD_INFERENCE_RUNTIME_MODE", "").lower()
+    backend = env.get("LLM_BACKEND", "").lower()
+    location = env.get("AMD_INFERENCE_LOCATION", "").lower()
+    managed = env.get("AMD_INFERENCE_MANAGED", "true").lower()
+    return (
+        platform.system().lower() == "windows"
+        and env.get("GPU_BACKEND", "").lower() == "amd"
+        and location == "host"
+        and managed != "false"
+        and (
+            runtime_mode == "windows-llama-server-fallback"
+            or runtime == "llama-server"
+            or backend == "llama-server"
+        )
+    )
+
+
+def _restart_windows_native_llama_server(env_path: Path, env: dict):
+    """Restart managed native Windows llama-server.exe with the active .env."""
+    llama_bin = INSTALL_DIR / "llama-server" / "llama-server.exe"
+    llama_log = INSTALL_DIR / "data" / "llama-server.log"
+    pid_file = INSTALL_DIR / "data" / "llama-server.pid"
+    gguf_file = env.get("GGUF_FILE", "")
+    model_path = INSTALL_DIR / "data" / "models" / gguf_file
+    port = env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080"
+
+    if not llama_bin.exists():
+        raise RuntimeError(f"llama-server.exe not found at {llama_bin}")
+    if not _model_file_ready(model_path):
+        raise RuntimeError(f"Model file not ready for native llama-server: {model_path}")
+
+    ps_env = os.environ.copy()
+    ps_env.update({
+        "ODS_WIN_LLAMA_EXE": str(llama_bin),
+        "ODS_WIN_LLAMA_PID_FILE": str(pid_file),
+        "ODS_WIN_LLAMA_PORT": str(port),
+    })
+    script = r'''
+$ErrorActionPreference = "Stop"
+$llamaExe = $env:ODS_WIN_LLAMA_EXE
+$pidPath = $env:ODS_WIN_LLAMA_PID_FILE
+$port = [int]$env:ODS_WIN_LLAMA_PORT
+
+function Test-ODSLlamaProcess {
+    param($Proc)
+    if (-not $Proc) { return $false }
+    if ($Proc.Name -like "llama-server*") { return $true }
+    if ($Proc.ExecutablePath -and $Proc.ExecutablePath.Equals($llamaExe, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    if ($Proc.CommandLine -and $Proc.CommandLine.IndexOf("llama-server", [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    return $false
+}
+
+function Stop-ODSLlamaProcessId {
+    param([int]$ProcId)
+    $proc = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $ProcId) -ErrorAction SilentlyContinue
+    if (-not (Test-ODSLlamaProcess $proc)) { return }
+    Stop-Process -Id $ProcId -Force -ErrorAction SilentlyContinue
+    for ($i = 0; $i -lt 30; $i++) {
+        if (-not (Get-Process -Id $ProcId -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Milliseconds 500
+    }
+    & taskkill.exe /PID $ProcId /F | Out-Null
+    for ($i = 0; $i -lt 30; $i++) {
+        if (-not (Get-Process -Id $ProcId -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "Could not stop native llama-server process $ProcId"
+}
+
+if (Test-Path $pidPath) {
+    $rawPid = (Get-Content -LiteralPath $pidPath -Raw).Trim()
+    if ($rawPid -match "^\d+$") {
+        Stop-ODSLlamaProcessId -ProcId ([int]$rawPid)
+    }
+    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+}
+
+foreach ($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Ignore)) {
+    if ($listener.OwningProcess -gt 0) {
+        Stop-ODSLlamaProcessId -ProcId ([int]$listener.OwningProcess)
+    }
+}
+exit 0
+'''
+    ps_cmd = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
+    try:
+        result = subprocess.run(ps_cmd, capture_output=True, text=True, timeout=90, env=ps_env)
+    except FileNotFoundError:
+        result = subprocess.run(
+            ["pwsh.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            env=ps_env,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Windows native llama-server stop failed: "
+            f"{(result.stderr or result.stdout).strip()[:500]}"
+        )
+
+    _launch_native_llama_server(env_path, llama_bin, llama_log, pid_file)
+
+
 def _restart_windows_lemonade(env: dict):
     """Start managed Windows Lemonade through Task Scheduler.
 
@@ -4200,10 +5747,17 @@ def _restart_windows_lemonade(env: dict):
     session exits. Task Scheduler gives the native Lemonade runtime an
     independent lifecycle, which keeps fleet/dashboard activation stable.
     """
+    if not _windows_lemonade_is_managed(env):
+        raise RuntimeError("Refusing to restart externally managed Windows Lemonade")
     exe = None
-    executable_names = ("lemonade-server.exe", "LemonadeServer.exe")
+    executable_names = ("LemonadeServer.exe", "lemonade-server.exe")
     install_folders = ("Lemonade Server", "lemonade_server", "LemonadeServer")
-    for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+    install_roots = (
+        os.environ.get("LOCALAPPDATA"),
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+    )
+    for root in install_roots:
         if not root:
             continue
         for folder in install_folders:
@@ -4217,11 +5771,18 @@ def _restart_windows_lemonade(env: dict):
         if exe is not None:
             break
     if exe is None:
-        raise RuntimeError("Lemonade server executable not found under Program Files")
+        raise RuntimeError("Lemonade server executable not found under supported Windows install roots")
 
     ps_env = os.environ.copy()
     ps_env.update({
         "ODS_WIN_LEMONADE_EXE": str(exe),
+        "ODS_WIN_LEMONADE_HELPER": str(
+            INSTALL_DIR / "installers" / "windows" / "lib" / "backend-contract.ps1"
+        ),
+        "ODS_WIN_ENV_PATH": str(INSTALL_DIR / ".env"),
+        "ODS_WIN_LEMONADE_DIAGNOSTIC_LOG": str(
+            INSTALL_DIR / "logs" / "lemonade-launch.log"
+        ),
         "ODS_WIN_MODELS_DIR": str(INSTALL_DIR / "data" / "models"),
         "ODS_WIN_PID_FILE": str(INSTALL_DIR / "data" / "llama-server.pid"),
         "ODS_WIN_LEMONADE_PORT": env.get("AMD_INFERENCE_PORT", "8080") or "8080",
@@ -4231,14 +5792,53 @@ def _restart_windows_lemonade(env: dict):
     script = r'''
 $ErrorActionPreference = "Stop"
 $exe = $env:ODS_WIN_LEMONADE_EXE
+$helperPath = $env:ODS_WIN_LEMONADE_HELPER
+$envPath = $env:ODS_WIN_ENV_PATH
+$diagnosticLog = $env:ODS_WIN_LEMONADE_DIAGNOSTIC_LOG
 $modelsDir = $env:ODS_WIN_MODELS_DIR
 $pidPath = $env:ODS_WIN_PID_FILE
 $port = [int]$env:ODS_WIN_LEMONADE_PORT
 $bindAddr = $env:ODS_WIN_BIND_ADDR
 $taskName = $env:ODS_WIN_LEMONADE_TASK
+if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
+    throw "Windows Lemonade launch helper not found: $helperPath"
+}
+. $helperPath
+$adminApiKey = Get-ODSLemonadeAdminApiKey -EnvPath $envPath
+$launchContract = Get-ODSLemonadeLaunchContract `
+    -ExecutablePath $exe -Port $port -BindAddress $bindAddr `
+    -ModelsDir $modelsDir -AdminApiKey $adminApiKey
+$bindAddr = $launchContract.BindAddress
+$binDir = Split-Path -Parent $exe
+$userProfile = [Environment]::GetFolderPath("UserProfile")
+$cacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
+$binPrefix = $binDir.TrimEnd('\') + '\'
+$cachePrefix = if ($cacheBin) { $cacheBin.TrimEnd('\') + '\' } else { $null }
+
+function Test-ODSLemonadeProcess {
+    param($Proc)
+    if (-not $Proc) { return $false }
+    $pathOwned = (
+        ($Proc.ExecutablePath -and $Proc.ExecutablePath.Equals($exe, [StringComparison]::OrdinalIgnoreCase)) -or
+        ($Proc.ExecutablePath -and $Proc.ExecutablePath.StartsWith($binPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
+        ($cachePrefix -and $Proc.ExecutablePath -and $Proc.ExecutablePath.StartsWith($cachePrefix, [StringComparison]::OrdinalIgnoreCase))
+    )
+    $commandOwned = (
+        $Proc.CommandLine -and
+        $Proc.CommandLine.IndexOf($modelsDir, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+        $Proc.CommandLine.IndexOf("lemonade", [StringComparison]::OrdinalIgnoreCase) -ge 0
+    )
+    return (
+        $pathOwned -or $commandOwned
+    )
+}
 
 function Stop-ODSProcessId {
     param([int]$ProcId)
+    $owned = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $ProcId) -ErrorAction SilentlyContinue
+    if (-not (Test-ODSLemonadeProcess $owned)) {
+        throw "Refusing to stop unowned process $ProcId on configured Lemonade port $port"
+    }
     Stop-Process -Id $ProcId -Force -ErrorAction SilentlyContinue
     for ($i = 0; $i -lt 30; $i++) {
         if (-not (Get-Process -Id $ProcId -ErrorAction SilentlyContinue)) { return }
@@ -4254,10 +5854,21 @@ function Stop-ODSProcessId {
 
 function Get-ODSLemonadeProcesses {
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase)) -or
-        ($cacheBin -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($cacheBin, [StringComparison]::OrdinalIgnoreCase)) -or
-        ($_.CommandLine -and $_.CommandLine.IndexOf($modelsDir, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+        Test-ODSLemonadeProcess $_
     }
+}
+
+function Get-ODSHealthyRouter {
+    foreach ($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
+        if ($listener.OwningProcess -le 0) { continue }
+        $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $listener.OwningProcess) -ErrorAction SilentlyContinue
+        if (-not (Test-ODSLemonadeProcess $candidate)) { continue }
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri ("http://127.0.0.1:{0}/api/v1/health" -f $port) -TimeoutSec 2
+            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) { return $candidate }
+        } catch {}
+    }
+    return $null
 }
 
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -4270,9 +5881,6 @@ if (Test-Path $pidPath) {
 foreach ($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
     if ($listener.OwningProcess -gt 0) { Stop-ODSProcessId -ProcId ([int]$listener.OwningProcess) }
 }
-$binDir = Split-Path -Parent $exe
-$userProfile = [Environment]::GetFolderPath("UserProfile")
-$cacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
 foreach ($child in @(Get-ODSLemonadeProcesses)) {
     Stop-ODSProcessId -ProcId ([int]$child.ProcessId)
 }
@@ -4282,60 +5890,75 @@ if ($remaining.Count -gt 0) {
     throw "Could not stop existing Lemonade processes: $ids"
 }
 
-$argString = "serve --port $port --host $bindAddr --no-tray --llamacpp vulkan --extra-models-dir `"$modelsDir`""
+$action = New-ODSLemonadeScheduledTaskAction `
+    -Contract $launchContract -EnvPath $envPath -DiagnosticLogPath $diagnosticLog
+$existingAction = if ($existingTask) { @($existingTask.Actions)[0] } else { $null }
+$existingTaskMatches = (
+    $existingAction -and
+    [string]$existingAction.Execute -eq [string]$action.Execute -and
+    [string]$existingAction.Arguments -eq [string]$action.Arguments
+)
 $launchMethod = "scheduled task"
+$directProcess = $null
 try {
-    $action = New-ScheduledTaskAction -Execute $exe -Argument $argString -WorkingDirectory (Split-Path -Parent $exe)
     $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
+    $settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit ([TimeSpan]::Zero)
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
     Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
 } catch {
-    if ($existingTask) {
+    if ($existingTaskMatches) {
         try {
             Write-Warning "Could not refresh Lemonade scheduled task; reusing existing task: $_"
             Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
         } catch {
             $launchMethod = "direct process"
             Write-Warning "Could not start Lemonade through Task Scheduler: $_"
-            Start-Process -FilePath $exe -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+            $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract
         }
     } else {
         $launchMethod = "direct process"
-        Write-Warning "Could not start Lemonade through Task Scheduler: $_"
-        Start-Process -FilePath $exe -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+        Write-Warning "Could not install the current Lemonade task contract; starting directly: $_"
+        $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract
     }
 }
 $proc = $null
 for ($i = 0; $i -lt 45; $i++) {
     Start-Sleep -Seconds 1
-    $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($exe, [StringComparison]::OrdinalIgnoreCase) } |
-        Sort-Object ProcessId -Descending |
-        Select-Object -First 1
+    $proc = Get-ODSHealthyRouter
     if ($proc) { break }
 }
 if (-not $proc -and $launchMethod -eq "scheduled task") {
+    $scheduledDiagnostics = Get-ODSLemonadeLaunchDiagnostics -TaskName $taskName
     $launchMethod = "direct process"
-    Write-Warning "Lemonade scheduled task did not start a server process. Starting directly."
+    Write-Warning "Lemonade scheduled task did not start a server process. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $scheduledDiagnostics)"
     try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch {}
     foreach ($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
         if ($listener.OwningProcess -gt 0) { Stop-ODSProcessId -ProcId ([int]$listener.OwningProcess) }
     }
-    Start-Process -FilePath $exe -ArgumentList $argString -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $exe) | Out-Null
+    $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract
     for ($i = 0; $i -lt 15; $i++) {
         Start-Sleep -Seconds 1
-        $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($exe, [StringComparison]::OrdinalIgnoreCase) } |
-            Sort-Object ProcessId -Descending |
-            Select-Object -First 1
+        $proc = Get-ODSHealthyRouter
         if ($proc) { break }
     }
 }
 if (-not $proc) {
-    $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
-    $taskResult = if ($taskInfo) { $taskInfo.LastTaskResult } else { "unknown" }
-    throw "Lemonade $launchMethod started but no Lemonade process was found (task result: $taskResult)"
+    $launchDiagnostics = Get-ODSLemonadeLaunchDiagnostics `
+        -TaskName $taskName -ChildProcess $directProcess
+    throw "Lemonade $launchMethod started but no healthy owned router was found. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $launchDiagnostics)"
+}
+if ($launchContract.RequiresRuntimeConfiguration) {
+    try {
+        $null = Set-ODSLemonadeModernRuntimeConfig `
+            -Port $port -ModelsDir $modelsDir -AdminApiKey $adminApiKey
+    } catch {
+        $configDiagnostics = Get-ODSLemonadeLaunchDiagnostics `
+            -TaskName $taskName -ChildProcess $directProcess
+        throw "Lemonade 10.7+ runtime configuration failed: $_. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $configDiagnostics)"
+    }
 }
 New-Item -ItemType Directory -Path (Split-Path -Parent $pidPath) -Force | Out-Null
 Set-Content -LiteralPath $pidPath -Value $proc.ProcessId
@@ -4357,6 +5980,7 @@ def _render_runtime_config(
     surface: str,
     *,
     gguf_file: str,
+    lemonade_model_id: str,
     lemonade_api_key: str,
     lemonade_api_base: str,
     ods_mode: str,
@@ -4379,6 +6003,8 @@ def _render_runtime_config(
         gpu_backend,
         "--gguf-file",
         gguf_file,
+        "--lemonade-model-id",
+        lemonade_model_id,
         "--lemonade-api-base",
         lemonade_api_base,
         "--litellm-key",
@@ -4406,7 +6032,11 @@ def _render_runtime_config(
     return True
 
 
-def _write_lemonade_config(install_dir: Path, gguf_file: str):
+def _write_lemonade_config(
+    install_dir: Path,
+    gguf_file: str,
+    lemonade_model_id: str = "",
+):
     """Regenerate lemonade.yaml with the correct model ID for LiteLLM.
 
     Lemonade exposes models as ``extra.<GGUF_FILE>`` — the LiteLLM config
@@ -4420,6 +6050,11 @@ def _write_lemonade_config(install_dir: Path, gguf_file: str):
     # static "sk-lemonade" would silently revert key rotation.
     env = load_env(install_dir / ".env")
     lemonade_api_key = env.get("LITELLM_LEMONADE_API_KEY", "sk-lemonade")
+    lemonade_model_id = (
+        str(lemonade_model_id or "").strip()
+        or str(env.get("LEMONADE_MODEL") or "").strip()
+        or f"extra.{gguf_file}"
+    )
     ods_mode = env.get("ODS_MODE", "lemonade")
     gpu_backend = env.get("GPU_BACKEND", "amd")
     lemonade_api_base = "http://llama-server:8080/api/v1"
@@ -4435,6 +6070,7 @@ def _write_lemonade_config(install_dir: Path, gguf_file: str):
         install_dir,
         "litellm-lemonade",
         gguf_file=gguf_file,
+        lemonade_model_id=lemonade_model_id,
         lemonade_api_key=lemonade_api_key,
         lemonade_api_base=lemonade_api_base,
         ods_mode=ods_mode,
@@ -4443,12 +6079,15 @@ def _write_lemonade_config(install_dir: Path, gguf_file: str):
         hipfire_active=hipfire_active,
         hipfire_model=hipfire_model,
     ):
-        logger.info("Wrote lemonade.yaml via runtime renderer for model: extra.%s", gguf_file)
+        logger.info(
+            "Wrote lemonade.yaml via runtime renderer for model: %s",
+            lemonade_model_id,
+        )
         return
 
     lemonade_route = (
         "    litellm_params:\n"
-        f"      model: openai/extra.{gguf_file}\n"
+        f"      model: openai/{lemonade_model_id}\n"
         f"      api_base: {lemonade_api_base}\n"
         f"      api_key: {lemonade_api_key}\n"
         "      extra_body:\n"
@@ -4490,61 +6129,106 @@ def _write_lemonade_config(install_dir: Path, gguf_file: str):
             f"{settings}"
         )
     config_path.write_text(content, encoding="utf-8")
-    logger.info("Wrote lemonade.yaml for model: extra.%s", gguf_file)
+    logger.info("Wrote lemonade.yaml for model: %s", lemonade_model_id)
 
 
-def _patch_hermes_model_config(
-    path: Path,
+def _write_windows_native_litellm_config(install_dir: Path, gguf_file: str, env: dict):
+    """Regenerate LiteLLM local.yaml for native Windows llama-server."""
+    config_path = install_dir / "config" / "litellm" / "local.yaml"
+    port = env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080"
+    api_base = f"http://host.docker.internal:{port}/v1"
+    content = (
+        "model_list:\n"
+        "  - model_name: default\n"
+        "    litellm_params:\n"
+        f"      model: openai/{gguf_file}\n"
+        f"      api_base: {api_base}\n"
+        "      api_key: not-needed\n"
+        "      extra_body:\n"
+        "        chat_template_kwargs:\n"
+        "          enable_thinking: false\n"
+        "\n"
+        "  - model_name: \"*\"\n"
+        "    litellm_params:\n"
+        "      model: openai/*\n"
+        f"      api_base: {api_base}\n"
+        "      api_key: not-needed\n"
+        "      extra_body:\n"
+        "        chat_template_kwargs:\n"
+        "          enable_thinking: false\n"
+        "\n"
+        "general_settings:\n"
+        "  master_key: os.environ/LITELLM_MASTER_KEY\n"
+        "\n"
+        "litellm_settings:\n"
+        "  drop_params: true\n"
+        "  set_verbose: false\n"
+        "  request_timeout: 900\n"
+        "  stream_timeout: 900\n"
+    )
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(content, encoding="utf-8")
+    logger.info("Wrote native Windows LiteLLM local.yaml for model: %s", gguf_file)
+
+
+def _patch_hermes_config_text(
+    text: str,
     model_name: str,
     base_url: str | None = None,
     context_length: int | None = None,
-) -> bool:
-    """Patch model routing fields in Hermes config.
-
-    Hermes copies the template once into data/hermes/config.yaml and then uses
-    the persisted copy as source of truth. Patch both when present so current
-    and future Hermes starts request the model that ODS just loaded.
-
-    Non-fatal: the live config lives in a container-owned dir (UID 10000,
-    mode 0700) so the host-agent often can't read or write it. Treat any
-    permission error as a skip, not a failure.
-    """
-    try:
-        if not path.exists():
-            return False
-    except PermissionError:
-        logger.warning(
-            "Hermes config %s not statable by host-agent (container-owned dir); "
-            "skipping patch. Operator can manually edit the live config and then "
-            "`docker restart ods-hermes` to pick up the new model.",
-            path,
-        )
-        return False
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        logger.warning("Could not read Hermes config for model patch: %s", path)
-        return False
-
+) -> tuple[str, bool]:
+    """Return Hermes YAML with its routing fields updated line-for-line."""
+    lines = text.splitlines()
     in_model_block = False
+    model_block_found = False
+    model_indent = "  "
+    model_fields = set()
     changed = False
     new_lines = []
+
+    def add_missing_model_fields() -> None:
+        nonlocal changed
+        if "default" not in model_fields:
+            new_lines.append(f'{model_indent}default: "{model_name}"')
+            changed = True
+        if base_url and "base_url" not in model_fields:
+            new_lines.append(f'{model_indent}base_url: "{base_url}"')
+            changed = True
+        if context_length and "context_length" not in model_fields:
+            new_lines.append(f"{model_indent}context_length: {int(context_length)}")
+            changed = True
+
     for line in lines:
         if re.match(r"^model:\s*(?:#.*)?$", line):
             in_model_block = True
+            model_block_found = True
+            model_fields = set()
             new_lines.append(line)
             continue
         if in_model_block and line and not line.startswith((" ", "\t", "#")):
+            add_missing_model_fields()
             in_model_block = False
         if in_model_block and re.match(r"^\s+default:\s*", line):
+            model_fields.add("default")
+            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f'{indent}default: "{model_name}"'
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
         if base_url and in_model_block and re.match(r"^\s+base_url:\s*", line):
+            model_fields.add("base_url")
+            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f'{indent}base_url: "{base_url}"'
+            new_lines.append(new_line)
+            changed = changed or new_line != line
+            continue
+        if context_length and in_model_block and re.match(r"^\s+context_length:\s*", line):
+            model_fields.add("context_length")
+            model_indent = line[:len(line) - len(line.lstrip())]
+            indent = line[:len(line) - len(line.lstrip())]
+            new_line = f"{indent}context_length: {int(context_length)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
@@ -4556,15 +6240,473 @@ def _patch_hermes_model_config(
             continue
         new_lines.append(line)
 
+    if in_model_block:
+        add_missing_model_fields()
+    elif not model_block_found:
+        if new_lines and new_lines[-1]:
+            new_lines.append("")
+        new_lines.extend([
+            "model:",
+            f'{model_indent}default: "{model_name}"',
+        ])
+        if base_url:
+            new_lines.append(f'{model_indent}base_url: "{base_url}"')
+        if context_length:
+            new_lines.append(f"{model_indent}context_length: {int(context_length)}")
+        changed = True
+
+    return "\n".join(new_lines) + "\n", changed
+
+
+def _patch_hermes_model_config(
+    path: Path,
+    model_name: str,
+    base_url: str | None = None,
+    context_length: int | None = None,
+) -> bool:
+    """Patch a host-writable Hermes config file."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.warning("Could not read Hermes config for model patch: %s", path)
+        return False
+    patched, changed = _patch_hermes_config_text(
+        text,
+        model_name,
+        base_url=base_url,
+        context_length=context_length,
+    )
     if not changed:
         return False
     try:
-        path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        path.write_text(patched, encoding="utf-8")
         logger.info("Patched Hermes model.default in %s to %s", path, model_name)
         return True
     except OSError:
         logger.warning("Could not write Hermes config model patch: %s", path)
         return False
+
+
+def _container_exists(container: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--type", "container", "--format", "{{.Id}}", container],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Could not inspect optional container {container}: {exc}") from exc
+    if result.returncode == 0:
+        return bool(result.stdout.strip())
+    detail = (result.stderr or result.stdout or "").strip()
+    if "no such" in detail.casefold() or "not found" in detail.casefold():
+        return False
+    raise RuntimeError(f"Could not inspect optional container {container}: {detail[:300]}")
+
+
+def _container_running(container: str) -> bool:
+    try:
+        result = subprocess.run(
+            [
+                "docker", "inspect", "--type", "container", "--format",
+                "{{.State.Running}}", container,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and result.stdout.strip().casefold() == "true"
+
+
+def _restart_existing_container(container: str) -> bool:
+    """Restart a dependent only when that optional container exists."""
+    if not _container_exists(container):
+        logger.info("Skipping restart for optional missing container %s", container)
+        return False
+    result = subprocess.run(
+        ["docker", "restart", container],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(
+            f"docker restart {container} failed (exit {result.returncode}): {detail[:300]}"
+        )
+    return True
+
+
+def _perplexica_config_url(env: dict) -> str:
+    """Return the Perplexica config endpoint reachable from this process."""
+    if os.environ.get("ODS_HOST_INSTALL_DIR"):
+        return "http://ods-perplexica:3000/api/config"
+    port = str(env.get("PERPLEXICA_PORT") or "3004").strip()
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        port = "3004"
+    return f"http://127.0.0.1:{port}/api/config"
+
+
+def _perplexica_http_json(url: str, payload: dict | None = None) -> dict:
+    """Read or update Perplexica's config API using only the stdlib."""
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = urllib_request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"} if data is not None else {},
+        method="POST" if data is not None else "GET",
+    )
+    with urllib_request.urlopen(request, timeout=5) as response:
+        body = response.read().decode("utf-8")
+    if not body.strip():
+        return {}
+    parsed = json.loads(body)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Perplexica config API returned a non-object response")
+    return parsed
+
+
+def _capture_perplexica_config(env: dict) -> dict | None:
+    """Snapshot mutable Perplexica routing state when the service is running."""
+    if not _container_running("ods-perplexica"):
+        return None
+    url = _perplexica_config_url(env)
+    payload = _perplexica_http_json(url)
+    values = payload.get("values")
+    if not isinstance(values, dict):
+        raise RuntimeError("Perplexica config response is missing values")
+    required = ("modelProviders", "preferences")
+    if any(key not in values for key in required):
+        raise RuntimeError("Perplexica config is missing model provider preferences")
+    return {
+        "url": url,
+        "values": {key: values[key] for key in required},
+    }
+
+
+def _perplexica_model_route(
+    env: dict,
+    gguf_file: str,
+    lemonade_model_id: str = "",
+) -> tuple[str, str, str]:
+    """Return model, container-visible base URL, and key for Perplexica."""
+    runtime = str(
+        env.get("AMD_INFERENCE_RUNTIME")
+        or env.get("LLM_BACKEND")
+        or env.get("ODS_MODE")
+        or ""
+    ).strip().lower()
+    lemonade = runtime == "lemonade" or _is_windows_host_lemonade(env)
+    model = str(
+        lemonade_model_id
+        or (env.get("LEMONADE_MODEL") if lemonade else "")
+        or (f"extra.{gguf_file}" if lemonade else gguf_file)
+    ).strip()
+    if not model:
+        raise RuntimeError("Perplexica model route has an empty model ID")
+
+    if lemonade:
+        base_url = str(
+            env.get("HERMES_LLM_BASE_URL") or "http://litellm:4000/v1"
+        ).strip()
+    else:
+        base_url = str(env.get("LLM_API_URL") or "http://llama-server:8080").strip()
+    if not re.search(r"/(?:api/)?v1/?$", base_url, re.IGNORECASE):
+        base_url = f"{base_url.rstrip('/')}/v1"
+    api_key = str(env.get("LITELLM_KEY") or env.get("OPENAI_API_KEY") or "no-key")
+    return model, base_url, api_key
+
+
+def _post_perplexica_config(url: str, key: str, value: object) -> None:
+    _perplexica_http_json(url, {"key": key, "value": value})
+
+
+def _perplexica_config_matches(
+    values: dict,
+    model: str,
+    base_url: str,
+    api_key: str,
+) -> bool:
+    providers = values.get("modelProviders")
+    preferences = values.get("preferences")
+    if not isinstance(providers, list) or not isinstance(preferences, dict):
+        return False
+    provider = next(
+        (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
+        None,
+    )
+    if provider is None:
+        return False
+    chat_models = provider.get("chatModels")
+    config = provider.get("config")
+    return bool(
+        isinstance(chat_models, list)
+        and any(
+            isinstance(entry, dict)
+            and (entry.get("key") == model or entry.get("name") == model)
+            for entry in chat_models
+        )
+        and isinstance(config, dict)
+        and config.get("baseURL") == base_url
+        and config.get("apiKey") == api_key
+        and preferences.get("defaultChatModel") == model
+        and preferences.get("defaultChatProvider") == provider.get("id")
+    )
+
+
+def _update_perplexica_model(
+    env: dict,
+    snapshot: dict,
+    *,
+    gguf_file: str,
+    lemonade_model_id: str = "",
+) -> None:
+    """Update and verify Perplexica after a successful runtime model swap."""
+    url = str(snapshot["url"])
+    values = json.loads(json.dumps(snapshot["values"]))
+    providers = values.get("modelProviders")
+    preferences = values.get("preferences")
+    if not isinstance(providers, list) or not isinstance(preferences, dict):
+        raise RuntimeError("Perplexica snapshot is missing routing state")
+    provider = next(
+        (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
+        None,
+    )
+    if provider is None or not provider.get("id"):
+        raise RuntimeError("Perplexica has no configured OpenAI provider")
+
+    model, base_url, api_key = _perplexica_model_route(
+        env,
+        gguf_file,
+        lemonade_model_id,
+    )
+    provider["chatModels"] = [{"key": model, "name": model}]
+    provider_config = provider.get("config")
+    if not isinstance(provider_config, dict):
+        provider_config = {}
+        provider["config"] = provider_config
+    provider_config["baseURL"] = base_url
+    provider_config["apiKey"] = api_key
+    preferences["defaultChatModel"] = model
+    preferences["defaultChatProvider"] = provider["id"]
+
+    _post_perplexica_config(url, "modelProviders", providers)
+    _post_perplexica_config(url, "preferences", preferences)
+    verified = _perplexica_http_json(url).get("values")
+    if not isinstance(verified, dict) or not _perplexica_config_matches(
+        verified,
+        model,
+        base_url,
+        api_key,
+    ):
+        raise RuntimeError("Perplexica did not persist the active model route")
+
+
+def _restore_perplexica_config(snapshot: dict) -> None:
+    """Restore the Perplexica routing keys captured before model activation."""
+    url = str(snapshot["url"])
+    values = snapshot.get("values")
+    if not isinstance(values, dict):
+        raise RuntimeError("Perplexica rollback snapshot is invalid")
+    for key in ("modelProviders", "preferences"):
+        if key not in values:
+            raise RuntimeError(f"Perplexica rollback snapshot is missing {key}")
+        _post_perplexica_config(url, key, values[key])
+    verified = _perplexica_http_json(url).get("values")
+    if not isinstance(verified, dict) or any(
+        verified.get(key) != values[key]
+        for key in ("modelProviders", "preferences")
+    ):
+        raise RuntimeError("Perplexica rollback could not be verified")
+
+
+def _recreate_openclaw_if_present() -> bool:
+    """Recreate OpenClaw so model environment changes reach its injector."""
+    if not _container_exists("ods-openclaw"):
+        return False
+    ok, error = docker_compose_recreate(["openclaw"])
+    if not ok:
+        raise RuntimeError(f"Could not recreate OpenClaw after model change: {error}")
+    return True
+
+
+def _verify_litellm_route(env: dict) -> None:
+    """Prove the active LiteLLM default route can serve a completion."""
+    host = "ods-litellm" if os.environ.get("ODS_HOST_INSTALL_DIR") else "127.0.0.1"
+    port = str(env.get("LITELLM_PORT") or "4000")
+    api_key = str(env.get("LITELLM_KEY") or env.get("LITELLM_MASTER_KEY") or "")
+    for attempt in range(12):
+        if _chat_completion_ready(host, port, "default", "/v1", api_key):
+            return
+        if attempt < 11:
+            time.sleep(2)
+    raise RuntimeError("LiteLLM did not serve a completion through the active model route")
+
+
+def _verify_openclaw_model_env(expected_model: str) -> None:
+    """Verify recreated OpenClaw received the active persisted model identity."""
+    result = subprocess.run(
+        [
+            "docker", "inspect", "--type", "container", "--format",
+            "{{range .Config.Env}}{{println .}}{{end}}", "ods-openclaw",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not verify OpenClaw model environment: {detail[:300]}")
+    values = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+    actual_model = (
+        values.get("LEMONADE_MODEL")
+        or values.get("GGUF_FILE")
+        or values.get("LLM_MODEL")
+        or ""
+    )
+    if not _runtime_model_identity_matches(
+        actual_model,
+        model_id=expected_model,
+        gguf_file=expected_model,
+    ):
+        raise RuntimeError(
+            f"OpenClaw recreated with model {actual_model or '<empty>'}, expected {expected_model}"
+        )
+
+
+def _read_hermes_container_config() -> str:
+    if not _container_running("ods-hermes"):
+        raise RuntimeError("Hermes live config is host-inaccessible and ods-hermes is not running")
+    result = subprocess.run(
+        ["docker", "exec", "ods-hermes", "cat", "/opt/data/config.yaml"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not read Hermes live config in container: {detail[:300]}")
+    return result.stdout
+
+
+def _write_hermes_container_config(text: str) -> None:
+    script = (
+        "set -eu; target=/opt/data/config.yaml; tmp=/opt/data/.config.yaml.ods-$$; "
+        "owner=$(stat -c '%u:%g' \"$target\" 2>/dev/null || printf '10000:10000'); "
+        "mode=$(stat -c '%a' \"$target\" 2>/dev/null || printf '600'); "
+        "trap 'rm -f \"$tmp\"' EXIT; cat > \"$tmp\"; chown \"$owner\" \"$tmp\"; "
+        "chmod \"$mode\" \"$tmp\"; mv -f \"$tmp\" \"$target\"; trap - EXIT"
+    )
+    result = subprocess.run(
+        ["docker", "exec", "-i", "--user", "0:0", "ods-hermes", "sh", "-c", script],
+        input=text,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not write Hermes live config in container: {detail[:300]}")
+
+
+def _capture_hermes_live_config(path: Path) -> dict:
+    """Capture persisted Hermes config, falling back through its running container."""
+    try:
+        return {"exists": True, "text": path.read_text(encoding="utf-8"), "source": "host"}
+    except FileNotFoundError:
+        return {"exists": False, "text": None, "source": None}
+    except OSError as exc:
+        logger.info("Reading container-owned Hermes config through ods-hermes: %s", exc)
+        return {
+            "exists": True,
+            "text": _read_hermes_container_config(),
+            "source": "container",
+        }
+
+
+def _write_hermes_live_config(path: Path, text: str, source: str | None) -> None:
+    if source != "container":
+        try:
+            path.write_text(text, encoding="utf-8")
+            return
+        except OSError as exc:
+            logger.info("Writing container-owned Hermes config through ods-hermes: %s", exc)
+    _write_hermes_container_config(text)
+
+
+def _remove_hermes_live_config(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+        return
+    except OSError as exc:
+        logger.info("Removing container-owned Hermes config through ods-hermes: %s", exc)
+    if not _container_running("ods-hermes"):
+        raise RuntimeError(
+            "Hermes live config was created during activation and cannot be removed safely"
+        )
+    result = subprocess.run(
+        [
+            "docker", "exec", "--user", "0:0", "ods-hermes",
+            "rm", "-f", "/opt/data/config.yaml",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not remove Hermes live config in container: {detail[:300]}")
+
+
+def _hermes_config_matches(
+    text: str,
+    model_name: str,
+    base_url: str | None,
+    context_length: int,
+) -> bool:
+    values = {}
+    in_model_block = False
+    for line in text.splitlines():
+        if re.match(r"^model:\s*(?:#.*)?$", line):
+            in_model_block = True
+            continue
+        if in_model_block and line and not line.startswith((" ", "\t", "#")):
+            break
+        if not in_model_block:
+            continue
+        match = re.match(r"^\s+(default|base_url|context_length):\s*(.*?)\s*$", line)
+        if not match:
+            continue
+        value = match.group(2).split(" #", 1)[0].strip().strip("'\"")
+        values[match.group(1)] = value
+
+    if values.get("default") != str(model_name):
+        return False
+    if base_url is not None and values.get("base_url") != str(base_url):
+        return False
+    try:
+        return int(values.get("context_length", "")) == int(context_length)
+    except (TypeError, ValueError):
+        return False
+
+
+def _verify_running_hermes_route(
+    model_name: str,
+    base_url: str | None,
+    context_length: int,
+) -> None:
+    text = _read_hermes_container_config()
+    if not _hermes_config_matches(text, model_name, base_url, context_length):
+        raise RuntimeError("Hermes restarted without the requested persisted model route")
 
 
 def _normalize_key(value) -> str:
@@ -4665,6 +6807,57 @@ def _select_runtime_profile(model: dict, env: dict) -> dict | None:
     return None
 
 
+def _stop_macos_native_llama_server(pid_file: Path) -> None:
+    """Stop only the PID-file-owned native llama-server process."""
+    if not pid_file.exists():
+        return
+    try:
+        old_pid = int(pid_file.read_text(encoding="utf-8").strip())
+        if old_pid <= 1:
+            raise OSError("invalid llama-server PID")
+        try:
+            ps_result = subprocess.run(
+                ["ps", "-p", str(old_pid), "-o", "comm="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if ps_result.returncode != 0 or "llama" not in ps_result.stdout.lower():
+                raise OSError("PID is not llama-server")
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            raise OSError("stale llama-server PID") from exc
+
+        os.kill(old_pid, signal.SIGTERM)
+        for _ in range(20):
+            try:
+                os.kill(old_pid, 0)
+                time.sleep(0.5)
+            except OSError:
+                break
+        else:
+            os.kill(old_pid, signal.SIGKILL)
+    except (ValueError, OSError):
+        pass
+    finally:
+        pid_file.unlink(missing_ok=True)
+
+
+def _restart_macos_native_llama_server(
+    env_path: Path,
+    llama_bin: Path,
+    llama_log: Path,
+    pid_file: Path,
+) -> None:
+    """Restart native inference with bridge lifecycle ordering preserved."""
+    # Validate the installed shared manager before taking down a healthy
+    # listener. The actual bridge mutation must happen after shutdown so a
+    # direct-bound listener cannot collide with a newly recreated bridge.
+    _require_macos_bridge_manager(env_path)
+    _stop_macos_native_llama_server(pid_file)
+    _configure_macos_llm_bridge(env_path)
+    _launch_native_llama_server(env_path, llama_bin, llama_log, pid_file)
+
+
 def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path, pid_file: Path):
     """Launch the native (Metal) llama-server process and write its PID file.
 
@@ -4679,9 +6872,16 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
     reasoning_fmt = {"off": "none", "on": "deepseek"}.get(reasoning, reasoning)
     # Honour the unified BIND_ADDRESS knob (PR #964); empty/missing → loopback.
     bind_addr = env.get("BIND_ADDRESS", "").strip() or "127.0.0.1"
+    _disable_conflicting_macos_bridge(env, bind_addr, _MACOS_LLM_BRIDGE_LABEL)
+    port = (
+        env.get("ODS_NATIVE_LLAMA_PORT")
+        or env.get("AMD_INFERENCE_PORT")
+        or env.get("OLLAMA_PORT")
+        or "8080"
+    )
     args = [
         str(llama_bin),
-        "--host", bind_addr, "--port", "8080",
+        "--host", bind_addr, "--port", str(port),
         "--model", str(model_path),
         "--ctx-size", ctx_size,
         "--n-gpu-layers", "999",
@@ -4704,10 +6904,18 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
             args.extend([flag, value])
     if _normalize_key(env.get("LLAMA_ARG_NO_CACHE_PROMPT")) not in {"", "0", "false", "off", "no"}:
         args.append("--no-cache-prompt")
+    llama_log.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    popen_kwargs = {}
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if platform.system().lower() == "windows" and creationflags:
+        popen_kwargs["creationflags"] = creationflags
     with open(llama_log, "a") as log_f:
         proc = subprocess.Popen(
             args,
             stdout=log_f, stderr=log_f,
+            cwd=str(INSTALL_DIR),
+            **popen_kwargs,
         )
     pid_file.write_text(str(proc.pid), encoding="utf-8")
     logger.info("Native llama-server launched (pid %d, model %s)", proc.pid, gguf_file)
@@ -4809,164 +7017,433 @@ def _compose_restart_llama_server(env: dict):
     logger.info("llama-server restarted via compose (backend: %s)", gpu_backend)
 
 
-def _recreate_llama_server(env: dict, override_image: str = ""):
-    """Recreate llama-server container with updated model from .env.
+def _as_argv(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str) and value:
+        return [value]
+    return []
 
-    Instead of docker compose (which breaks relative volume mounts when
-    run from inside a container), we inspect the existing container and
-    create a new one with the same config but updated --model and --ctx-size.
 
-    If override_image is set, use that image instead of the existing one
-    (e.g., Gemma 4 models need a different llama.cpp build).
-    """
-    container = "ods-llama-server"
-    gguf_file = env.get("GGUF_FILE", "")
-    ctx_size = env.get("CTX_SIZE", "32768")
+def _refresh_llama_cmd(command: list[str], env: dict) -> list[str]:
+    replacements = {
+        "--model": f"/models/{env.get('GGUF_FILE', '')}",
+        "--ctx-size": str(env.get("CTX_SIZE") or env.get("MAX_CONTEXT") or "32768"),
+        "--parallel": str(env.get("LLAMA_PARALLEL") or "1"),
+    }
+    refreshed = []
+    index = 0
+    while index < len(command):
+        argument = command[index]
+        matched = False
+        for flag, replacement in replacements.items():
+            if argument == flag and index + 1 < len(command):
+                refreshed.extend([flag, replacement])
+                index += 2
+                matched = True
+                break
+            if argument.startswith(f"{flag}="):
+                refreshed.append(f"{flag}={replacement}")
+                index += 1
+                matched = True
+                break
+        if not matched:
+            refreshed.append(argument)
+            index += 1
+    return refreshed
 
-    # Get existing container config for image, mounts, env, ports, etc.
-    result = subprocess.run(
-        ["docker", "inspect", container],
-        capture_output=True, text=True, timeout=30,
-    )
-    if result.returncode != 0:
-        logger.error("Failed to inspect %s: %s", container, result.stderr)
-        return
 
-    config = json.loads(result.stdout)[0]
+def _device_request_cli_value(request: dict) -> str | None:
+    capabilities = request.get("Capabilities") or []
+    flat_capabilities = [
+        str(capability)
+        for capability_set in capabilities
+        if isinstance(capability_set, list)
+        for capability in capability_set
+    ]
+    if request.get("Driver") not in {None, "", "nvidia"} and "gpu" not in flat_capabilities:
+        return None
 
-    # Build new command: replace --model and --ctx-size values
-    old_cmd = config["Config"]["Cmd"] or []
-    new_cmd = []
-    skip_next = False
-    for i, arg in enumerate(old_cmd):
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "--model" and i + 1 < len(old_cmd):
-            new_cmd.append("--model")
-            new_cmd.append(f"/models/{gguf_file}")
-            skip_next = True
-        elif arg == "--ctx-size" and i + 1 < len(old_cmd):
-            new_cmd.append("--ctx-size")
-            new_cmd.append(ctx_size)
-            skip_next = True
-        elif arg == "--parallel" and i + 1 < len(old_cmd):
-            new_cmd.append("--parallel")
-            new_cmd.append(env.get("LLAMA_PARALLEL", "1"))
-            skip_next = True
-        else:
-            new_cmd.append(arg)
+    device_ids = [str(device_id) for device_id in (request.get("DeviceIDs") or [])]
+    count = request.get("Count")
+    options = request.get("Options") or {}
+    only_default_capability = not flat_capabilities or flat_capabilities == ["gpu"]
+    if not device_ids and count == -1 and not options and only_default_capability:
+        return "all"
+    if not device_ids and isinstance(count, int) and count >= 0 and not options and only_default_capability:
+        return str(count)
 
-    image = override_image or config["Config"]["Image"]
-    host_config = config["HostConfig"]
+    fields = []
+    driver = str(request.get("Driver") or "").strip()
+    if driver:
+        fields.append(f"driver={driver}")
+    if device_ids:
+        fields.append(f"device={','.join(device_ids)}")
+    elif isinstance(count, int):
+        fields.append(f"count={'all' if count == -1 else count}")
+    if flat_capabilities:
+        fields.append(f"capabilities={','.join(flat_capabilities)}")
+    for key, value in sorted(options.items()):
+        fields.append(f"{key}={value}")
+    return f'"{",".join(fields)}"' if fields else None
 
-    # Stop and remove old container
-    subprocess.run(["docker", "stop", container], capture_output=True, timeout=120)
-    subprocess.run(["docker", "rm", container], capture_output=True, timeout=30)
 
-    # Build docker run command from inspected config
+def _append_network_settings(
+    argv: list[str],
+    network_name: str,
+    network: dict,
+    container: str,
+    hostname: str,
+) -> None:
+    argv.extend(["--network", network_name])
+    aliases = []
+    for alias in network.get("Aliases") or []:
+        if alias and alias not in {container, hostname} and alias not in aliases:
+            aliases.append(alias)
+    if "llama-server" not in aliases:
+        aliases.append("llama-server")
+    for alias in aliases:
+        argv.extend(["--network-alias", str(alias)])
+
+
+def _llama_recreate_argv(
+    inspect_config: dict,
+    env: dict,
+    image: str,
+    container: str,
+) -> tuple[list[str], list[list[str]]]:
+    """Translate runtime-relevant inspect state into docker CLI argv."""
+    container_config = inspect_config.get("Config") or {}
+    host_config = inspect_config.get("HostConfig") or {}
     run_cmd = ["docker", "run", "-d", "--name", container]
 
-    # Restart policy
-    restart = host_config.get("RestartPolicy", {})
-    if restart.get("Name"):
-        run_cmd += ["--restart", restart["Name"]]
+    restart = host_config.get("RestartPolicy") or {}
+    restart_name = str(restart.get("Name") or "")
+    if restart_name:
+        maximum_retry = int(restart.get("MaximumRetryCount") or 0)
+        restart_value = (
+            f"{restart_name}:{maximum_retry}"
+            if restart_name == "on-failure" and maximum_retry > 0
+            else restart_name
+        )
+        run_cmd.extend(["--restart", restart_value])
 
-    # Network + aliases (compose sets service name as alias, e.g. "llama-server")
-    # Other containers (LiteLLM, Open WebUI) reference "llama-server" by
-    # the compose service name, so we must preserve it as a network alias.
-    networks = config.get("NetworkSettings", {}).get("Networks", {})
-    for net_name, net_cfg in networks.items():
-        run_cmd += ["--network", net_name]
-        # Restore aliases from the compose config
-        for alias in (net_cfg.get("Aliases") or []):
-            if alias != container and alias != config["Config"].get("Hostname", ""):
-                run_cmd += ["--network-alias", alias]
-        # Always ensure the compose service name is an alias
-        run_cmd += ["--network-alias", "llama-server"]
-        break  # Use the first network
+    networks = (inspect_config.get("NetworkSettings") or {}).get("Networks") or {}
+    network_items = list(networks.items())
+    hostname = str(container_config.get("Hostname") or "")
+    if network_items:
+        first_name, first_network = network_items[0]
+        _append_network_settings(
+            run_cmd,
+            first_name,
+            first_network or {},
+            container,
+            hostname,
+        )
+    else:
+        network_mode = str(host_config.get("NetworkMode") or "")
+        if network_mode and network_mode not in {"default", "bridge"}:
+            run_cmd.extend(["--network", network_mode])
 
-    # Ports
-    port_bindings = host_config.get("PortBindings") or {}
-    for container_port, bindings in port_bindings.items():
-        if bindings:
-            for b in bindings:
-                host_ip = b.get("HostIp", "")
-                host_port = b.get("HostPort", "")
-                if host_ip:
-                    run_cmd += ["-p", f"{host_ip}:{host_port}:{container_port}"]
-                else:
-                    run_cmd += ["-p", f"{host_port}:{container_port}"]
+    for container_port, bindings in (host_config.get("PortBindings") or {}).items():
+        for binding in bindings or []:
+            host_ip = str(binding.get("HostIp") or "")
+            host_port = str(binding.get("HostPort") or "")
+            if ":" in host_ip and not host_ip.startswith("["):
+                host_ip = f"[{host_ip}]"
+            published = ":".join(
+                part for part in (host_ip, host_port, str(container_port)) if part
+            )
+            run_cmd.extend(["-p", published])
+    for container_port in (container_config.get("ExposedPorts") or {}):
+        run_cmd.extend(["--expose", str(container_port)])
 
-    # Volumes/Bind mounts
-    for mount in config.get("Mounts", []):
-        src = mount.get("Source", "")
-        dst = mount.get("Destination", "")
-        mode = "ro" if mount.get("RW") is False else "rw"
-        if src and dst:
-            run_cmd += ["-v", f"{src}:{dst}:{mode}"]
+    binds = host_config.get("Binds") or []
+    if binds:
+        for binding in binds:
+            run_cmd.extend(["-v", str(binding)])
+    else:
+        for mount in inspect_config.get("Mounts") or []:
+            source = mount.get("Name") if mount.get("Type") == "volume" else mount.get("Source")
+            destination = mount.get("Destination")
+            if source and destination:
+                mode = "ro" if mount.get("RW") is False else "rw"
+                run_cmd.extend(["-v", f"{source}:{destination}:{mode}"])
+    for destination, options in (host_config.get("Tmpfs") or {}).items():
+        value = str(destination)
+        if options:
+            value += f":{options}"
+        run_cmd.extend(["--tmpfs", value])
+    for source in host_config.get("VolumesFrom") or []:
+        run_cmd.extend(["--volumes-from", str(source)])
 
-    # Environment variables
+    replacement_keys = {
+        "LLAMA_PARALLEL", "LLAMA_REASONING", "GGUF_FILE", "LLM_MODEL",
+        "CTX_SIZE", "MAX_CONTEXT", "LLAMA_SERVER_IMAGE",
+    }
     replacement_env = {
-        key: value
+        key: str(value)
         for key, value in env.items()
-        if key.startswith("LLAMA_ARG_") or key in {"LLAMA_PARALLEL", "LLAMA_REASONING", "GGUF_FILE", "LLM_MODEL", "CTX_SIZE", "MAX_CONTEXT"}
+        if key.startswith("LLAMA_ARG_") or key in replacement_keys
     }
     seen_env_keys = set()
-    for e in (config["Config"].get("Env") or []):
-        key = e.split("=", 1)[0]
+    for entry in container_config.get("Env") or []:
+        key = str(entry).split("=", 1)[0]
         if key in replacement_env:
-            run_cmd += ["-e", f"{key}={replacement_env[key]}"]
+            run_cmd.extend(["-e", f"{key}={replacement_env[key]}"])
             seen_env_keys.add(key)
-        elif key.startswith("LLAMA_ARG_") or key in {"LLAMA_PARALLEL"}:
+        elif key.startswith("LLAMA_ARG_") or key in replacement_keys:
             continue
         else:
-            run_cmd += ["-e", e]
+            run_cmd.extend(["-e", str(entry)])
     for key, value in replacement_env.items():
         if key not in seen_env_keys:
-            run_cmd += ["-e", f"{key}={value}"]
+            run_cmd.extend(["-e", f"{key}={value}"])
 
-    # Extra hosts
-    for eh in (host_config.get("ExtraHosts") or []):
-        run_cmd += ["--add-host", eh]
+    scalar_options = (
+        ("User", "--user"),
+        ("WorkingDir", "--workdir"),
+        ("Domainname", "--domainname"),
+        ("StopSignal", "--stop-signal"),
+    )
+    for config_key, flag in scalar_options:
+        value = container_config.get(config_key)
+        if value:
+            run_cmd.extend([flag, str(value)])
+    stop_timeout = container_config.get("StopTimeout")
+    if isinstance(stop_timeout, int) and stop_timeout > 0:
+        run_cmd.extend(["--stop-timeout", str(stop_timeout)])
+    if hostname:
+        run_cmd.extend(["--hostname", hostname])
+    if container_config.get("Tty"):
+        run_cmd.append("--tty")
+    if container_config.get("OpenStdin"):
+        run_cmd.append("--interactive")
+    for key, value in (container_config.get("Labels") or {}).items():
+        run_cmd.extend(["--label", f"{key}={value}"])
+    healthcheck = container_config.get("Healthcheck") or {}
+    health_test = _as_argv(healthcheck.get("Test"))
+    if health_test == ["NONE"]:
+        run_cmd.append("--no-healthcheck")
+    elif health_test and health_test[0] in {"CMD", "CMD-SHELL"} and len(health_test) > 1:
+        health_command = (
+            health_test[1]
+            if health_test[0] == "CMD-SHELL"
+            else shlex.join(health_test[1:])
+        )
+        run_cmd.extend(["--health-cmd", health_command])
+        for key, flag in (
+            ("Interval", "--health-interval"),
+            ("Timeout", "--health-timeout"),
+            ("StartPeriod", "--health-start-period"),
+        ):
+            value = healthcheck.get(key)
+            if isinstance(value, int) and value > 0:
+                run_cmd.extend([flag, f"{value}ns"])
+        retries = healthcheck.get("Retries")
+        if isinstance(retries, int) and retries > 0:
+            run_cmd.extend(["--health-retries", str(retries)])
 
-    # GPU (device requests)
-    for dr in (host_config.get("DeviceRequests") or []):
-        if dr.get("Driver") == "" or "gpu" in (dr.get("Capabilities") or [[]])[0]:
-            count = dr.get("Count", 0)
-            device_ids = dr.get("DeviceIDs") or []
-            if device_ids:
-                run_cmd += ["--gpus", f'device={",".join(device_ids)}']
-            elif count == -1:
-                run_cmd += ["--gpus", "all"]
-            else:
-                run_cmd += ["--gpus", str(count)]
+    for host in host_config.get("ExtraHosts") or []:
+        run_cmd.extend(["--add-host", str(host)])
+    for link in host_config.get("Links") or []:
+        run_cmd.extend(["--link", str(link)])
+    for device in host_config.get("Devices") or []:
+        source = device.get("PathOnHost")
+        destination = device.get("PathInContainer") or source
+        permissions = device.get("CgroupPermissions") or "rwm"
+        if source and destination:
+            run_cmd.extend(["--device", f"{source}:{destination}:{permissions}"])
+    for group in host_config.get("GroupAdd") or []:
+        run_cmd.extend(["--group-add", str(group)])
+    for request in host_config.get("DeviceRequests") or []:
+        value = _device_request_cli_value(request)
+        if value:
+            run_cmd.extend(["--gpus", value])
 
-    # Security options
-    for so in (host_config.get("SecurityOpt") or []):
-        run_cmd += ["--security-opt", so]
+    for capability in host_config.get("CapAdd") or []:
+        run_cmd.extend(["--cap-add", str(capability)])
+    for capability in host_config.get("CapDrop") or []:
+        run_cmd.extend(["--cap-drop", str(capability)])
+    for option in host_config.get("SecurityOpt") or []:
+        run_cmd.extend(["--security-opt", str(option)])
+    for rule in host_config.get("DeviceCgroupRules") or []:
+        run_cmd.extend(["--device-cgroup-rule", str(rule)])
+    if host_config.get("Privileged"):
+        run_cmd.append("--privileged")
+    if host_config.get("ReadonlyRootfs"):
+        run_cmd.append("--read-only")
+    if host_config.get("Init"):
+        run_cmd.append("--init")
+    if host_config.get("AutoRemove"):
+        run_cmd.append("--rm")
 
-    # Logging
-    log_config = host_config.get("LogConfig", {})
+    host_scalar_options = (
+        ("Runtime", "--runtime"),
+        ("IpcMode", "--ipc"),
+        ("PidMode", "--pid"),
+        ("UTSMode", "--uts"),
+        ("UsernsMode", "--userns"),
+        ("CgroupnsMode", "--cgroupns"),
+        ("CgroupParent", "--cgroup-parent"),
+        ("CpusetCpus", "--cpuset-cpus"),
+        ("CpusetMems", "--cpuset-mems"),
+    )
+    for config_key, flag in host_scalar_options:
+        value = host_config.get(config_key)
+        if value and value not in {"default", "private"}:
+            run_cmd.extend([flag, str(value)])
+    numeric_options = (
+        ("Memory", "--memory"),
+        ("MemoryReservation", "--memory-reservation"),
+        ("MemorySwap", "--memory-swap"),
+        ("CpuShares", "--cpu-shares"),
+        ("PidsLimit", "--pids-limit"),
+        ("ShmSize", "--shm-size"),
+        ("OomScoreAdj", "--oom-score-adj"),
+    )
+    for config_key, flag in numeric_options:
+        value = host_config.get(config_key)
+        if isinstance(value, int) and value != 0:
+            run_cmd.extend([flag, str(value)])
+    nano_cpus = host_config.get("NanoCpus")
+    if isinstance(nano_cpus, int) and nano_cpus > 0:
+        run_cmd.extend(["--cpus", f"{nano_cpus / 1_000_000_000:g}"])
+    if host_config.get("OomKillDisable"):
+        run_cmd.append("--oom-kill-disable")
+    for key, value in (host_config.get("Sysctls") or {}).items():
+        run_cmd.extend(["--sysctl", f"{key}={value}"])
+    for limit in host_config.get("Ulimits") or []:
+        name = limit.get("Name")
+        soft = limit.get("Soft")
+        hard = limit.get("Hard")
+        if name and soft is not None and hard is not None:
+            run_cmd.extend(["--ulimit", f"{name}={soft}:{hard}"])
+    for server in host_config.get("Dns") or []:
+        run_cmd.extend(["--dns", str(server)])
+    for search in host_config.get("DnsSearch") or []:
+        run_cmd.extend(["--dns-search", str(search)])
+    for option in host_config.get("DnsOptions") or []:
+        run_cmd.extend(["--dns-option", str(option)])
+
+    log_config = host_config.get("LogConfig") or {}
     if log_config.get("Type"):
-        run_cmd += ["--log-driver", log_config["Type"]]
-        for k, v in (log_config.get("Config") or {}).items():
-            run_cmd += ["--log-opt", f"{k}={v}"]
+        run_cmd.extend(["--log-driver", str(log_config["Type"])])
+        for key, value in (log_config.get("Config") or {}).items():
+            run_cmd.extend(["--log-opt", f"{key}={value}"])
 
-    # Entrypoint (AMD Lemonade overrides this in compose)
-    entrypoint = config["Config"].get("Entrypoint")
+    entrypoint = _as_argv(container_config.get("Entrypoint"))
     if entrypoint:
-        run_cmd += ["--entrypoint", entrypoint[0]]
-
-    # Image and command
+        run_cmd.extend(["--entrypoint", entrypoint[0]])
     run_cmd.append(image)
-    run_cmd.extend(new_cmd)
+    run_cmd.extend(entrypoint[1:])
+    run_cmd.extend(_refresh_llama_cmd(_as_argv(container_config.get("Cmd")), env))
 
-    logger.info("Recreating llama-server: %s with model %s", image, gguf_file)
-    result = subprocess.run(run_cmd, capture_output=True, text=True, timeout=60)
-    if result.returncode != 0:
-        logger.error("Failed to create llama-server: %s", result.stderr)
-        raise RuntimeError(f"docker run failed: {result.stderr[-500:]}")
+    connect_commands = []
+    for network_name, network in network_items[1:]:
+        connect = ["docker", "network", "connect"]
+        for alias in network.get("Aliases") or []:
+            if alias and alias not in {container, hostname}:
+                connect.extend(["--alias", str(alias)])
+        if "llama-server" not in (network.get("Aliases") or []):
+            connect.extend(["--alias", "llama-server"])
+        connect.extend([network_name, container])
+        connect_commands.append(connect)
+    return run_cmd, connect_commands
+
+
+def _recreate_llama_server(env: dict, override_image: str = ""):
+    """Transactionally recreate llama-server from its inspected runtime state."""
+    container = "ods-llama-server"
+    inspect_result = subprocess.run(
+        ["docker", "inspect", container],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if inspect_result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to inspect {container}: {(inspect_result.stderr or '').strip()[-500:]}"
+        )
+    try:
+        inspect_config = json.loads(inspect_result.stdout)[0]
+    except (IndexError, json.JSONDecodeError, TypeError) as exc:
+        raise RuntimeError(f"Docker returned invalid inspect data for {container}") from exc
+
+    image = override_image or (inspect_config.get("Config") or {}).get("Image")
+    if not image:
+        raise RuntimeError(f"Docker inspect did not report an image for {container}")
+    run_cmd, connect_commands = _llama_recreate_argv(
+        inspect_config,
+        env,
+        str(image),
+        container,
+    )
+
+    backup = f"{container}-ods-rollback-{os.getpid()}"
+
+    def _checked(argv: list[str], timeout: int) -> subprocess.CompletedProcess:
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"{' '.join(argv[:3])} failed: {detail[-500:]}")
+        return result
+
+    def _best_effort(argv: list[str], timeout: int) -> subprocess.CompletedProcess | None:
+        try:
+            return subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning("Best-effort Docker recovery command failed (%s): %s", argv, exc)
+            return None
+
+    _checked(["docker", "stop", container], 120)
+    try:
+        _checked(["docker", "rename", container, backup], 30)
+    except Exception as rename_exc:
+        try:
+            _checked(["docker", "start", container], 120)
+        except Exception as restart_exc:
+            raise RuntimeError(
+                f"Could not stage or restart existing llama-server: {restart_exc}"
+            ) from rename_exc
+        raise
+    try:
+        logger.info("Recreating llama-server: %s with model %s", image, env.get("GGUF_FILE", ""))
+        _checked(run_cmd, 120)
+        for command in connect_commands:
+            _checked(command, 30)
+    except Exception as recreate_exc:
+        logger.exception("Replacement llama-server failed; restoring inspected container")
+        _best_effort(["docker", "rm", "-f", container], 30)
+        try:
+            _checked(["docker", "rename", backup, container], 30)
+            _checked(["docker", "start", container], 120)
+        except Exception as rollback_exc:
+            raise RuntimeError(
+                f"llama-server recreation failed and rollback also failed: {rollback_exc}"
+            ) from recreate_exc
+        raise
+
+    cleanup = _best_effort(["docker", "rm", backup], 30)
+    if cleanup is None or cleanup.returncode != 0:
+        logger.warning(
+            "Replacement succeeded but old llama-server cleanup failed: %s",
+            (
+                (cleanup.stderr or cleanup.stdout or "").strip()[-500:]
+                if cleanup is not None
+                else "Docker cleanup command did not complete"
+            ),
+        )
     logger.info("llama-server container created successfully")
 
 
@@ -4983,9 +7460,10 @@ def _write_model_status(path: Path, status: str, model: str, downloaded: int, to
         data["error"] = error
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(data), encoding="utf-8")
-        os.replace(str(tmp), str(path))
+        with _model_status_lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            os.replace(str(tmp), str(path))
     except OSError as e:
         # Don't crash the activate flow; surface to the journal so operators
         # can diagnose why progress stalled.
@@ -4998,6 +7476,19 @@ def _write_model_status(path: Path, status: str, model: str, downloaded: int, to
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
+    # Dashboard model discovery can issue bursts larger than HTTPServer's
+    # default backlog of 5; keep action requests from being dropped behind polls.
+    request_queue_size = 128
+
+
+def _create_host_agent_server(env: dict, bind_addr: str, port: int):
+    """Create the agent server after removing any colliding macOS bridge."""
+    _disable_conflicting_macos_bridge(
+        env,
+        bind_addr,
+        _MACOS_HOST_AGENT_BRIDGE_LABEL,
+    )
+    return ThreadedHTTPServer((bind_addr, port), AgentHandler)
 
 
 def _request_server_shutdown(server, signum=None):
@@ -5017,7 +7508,8 @@ def _request_server_shutdown(server, signum=None):
 
 
 def main():
-    global INSTALL_DIR, DATA_DIR, AGENT_API_KEY, GPU_BACKEND, TIER, GPU_COUNT, CORE_SERVICE_IDS
+    global INSTALL_DIR, DATA_DIR, AGENT_API_KEY, GPU_BACKEND, STARTUP_ODS_MODE
+    global TIER, GPU_COUNT, CORE_SERVICE_IDS
     global USER_EXTENSIONS_DIR, EXTENSIONS_DIR, ODS_VERSION
 
     parser = argparse.ArgumentParser(description="ODS Host Agent")
@@ -5053,6 +7545,7 @@ def main():
         logger.error("Neither ODS_AGENT_KEY nor DASHBOARD_API_KEY set in .env")
         sys.exit(1)
     GPU_BACKEND = env.get("GPU_BACKEND", "nvidia")
+    STARTUP_ODS_MODE = _normalize_ods_mode(env.get("ODS_MODE"))
     TIER = env.get("TIER", "1")
     GPU_COUNT = env.get("GPU_COUNT", "1")
 
@@ -5086,7 +7579,7 @@ def main():
     # restart the service after ods-network exists.
     bind_addr = _resolve_agent_bind_addr(env)
 
-    server = ThreadedHTTPServer((bind_addr, port), AgentHandler)
+    server = _create_host_agent_server(env, bind_addr, port)
     signal.signal(signal.SIGTERM, lambda signum, _frame: _request_server_shutdown(server, signum))
     signal.signal(signal.SIGINT, lambda signum, _frame: _request_server_shutdown(server, signum))
     logger.info("ODS Host Agent v%s listening on %s:%d", VERSION, bind_addr, port)
@@ -5097,7 +7590,13 @@ def main():
             "ODS_AGENT_BIND=<ip> in %s/.env.",
             INSTALL_DIR,
         )
-    logger.info("Install dir: %s | GPU: %s | Tier: %s", INSTALL_DIR, GPU_BACKEND, TIER)
+    logger.info(
+        "Install dir: %s | GPU: %s | Tier: %s | Effective mode: %s",
+        INSTALL_DIR,
+        GPU_BACKEND,
+        TIER,
+        STARTUP_ODS_MODE,
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -20,6 +20,14 @@ jobs:
       - name: Docs Link Checks
         run: bash tests/test-doc-links.sh
 
+      - name: Install Documentation Contract
+        run: |
+          bash tests/test-install-docs.sh
+          bash tests/test-hosted-bootstrap-verifier.sh
+
+      - name: Fleet Host Lock Contract
+        run: bash tests/test-fleet-host-lock.sh
+
       - name: Integration Smoke
         run: bash tests/integration-test.sh
 
@@ -72,6 +80,9 @@ jobs:
       - name: Windows Compose Failure Report Tests
         run: bash tests/test-windows-compose-failure-report.sh
 
+      - name: Windows CLI Enable/Disable Tests
+        run: bash tests/test-windows-cli-enable-disable.sh
+
       - name: Windows Missing Service Hint Tests
         run: bash tests/test-windows-missing-service-hints.sh
 
@@ -89,6 +100,9 @@ jobs:
 
       - name: Validate Env Tests
         run: bash tests/test-validate-env.sh
+
+      - name: Safe Env Loading Tests
+        run: bash tests/test-safe-env.sh
 
       - name: Validate Simulation Summary Tests
         run: bash tests/test-validate-sim-summary.sh
@@ -118,10 +132,13 @@ jobs:
         run: |
           bash tests/contracts/test-installer-contracts.sh
           bash tests/contracts/test-preflight-fixtures.sh
+          bash tests/test-preflight-resolver-bug.sh
           python3 tests/contracts/test-network-exposure-contracts.py
 
       - name: Linux install preflight tests
-        run: bash tests/test-linux-install-preflight.sh
+        run: |
+          bash tests/test-linux-install-preflight.sh
+          bash tests/test-preflight-dashboard-port.sh
 
       - name: Installer Simulation Harness
         run: |
@@ -133,8 +150,17 @@ jobs:
       - name: Update Rollback Contract
         run: bash tests/test-update-rollback-contract.sh
 
+      - name: Bootstrap Upgrade Compose Flags Recovery Tests
+        run: bash tests/test-bootstrap-upgrade-compose-flags-recovery.sh
+
       - name: Support Bundle Evidence Tests
         run: bash tests/test-support-bundle.sh
+
+      - name: Config Migration Tests
+        run: bash tests/test-migrate-config.sh
+
+      - name: Issue-to-PR Security Contract Tests
+        run: bash tests/test-issue-to-pr-security.sh
 
       - name: Upload Installer Simulation Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

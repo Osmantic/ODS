@@ -20,3 +20,12 @@ service:
   compose_file: compose.yaml
   category: optional
   depends_on: [llama-server]
+  llm:
+    consumes: true
+    route: direct
+    pinning: none
+    min_context: 0
+    probe:
+      kind: completion
+      path: /v1/chat/completions
+      auth: env:SHIELD_API_KEY

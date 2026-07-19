@@ -49,7 +49,7 @@ if ($gpuInfo.Backend -eq "nvidia") {
         Write-AIError "NVIDIA driver $($gpuInfo.DriverVersion) is below the required minimum ($($script:MIN_NVIDIA_DRIVER))."
         Write-AI "  Update your driver: https://www.nvidia.com/Download/index.aspx"
         Write-AI "  After updating, re-run this installer."
-        if (-not $force) { exit 1 }
+        if (-not $force) { throw "ODS_INSTALL_ABORTED" }
         Write-AIWarn "--Force specified, continuing with outdated driver (may fail at inference)."
     } else {
         Write-AISuccess "NVIDIA driver $($gpuInfo.DriverVersion) OK (>= $($script:MIN_NVIDIA_DRIVER) required)"
@@ -165,7 +165,7 @@ if (-not $_tierDisk.Sufficient) {
     Write-AI "  .\install.ps1 -InstallDir $_installDirHint"
     if (-not $force) {
         Write-AIError "Insufficient disk space. Free up space and re-run, or use --Force to override."
-        exit 1
+        throw "ODS_INSTALL_ABORTED"
     }
     Write-AIWarn "--Force specified, continuing with limited disk space."
 }

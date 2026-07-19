@@ -23,6 +23,7 @@ os.environ.setdefault("ODS_INSTALL_DIR", "/tmp/ods-test-install")
 os.environ.setdefault("ODS_DATA_DIR", "/tmp/ods-test-data")
 os.environ.setdefault("ODS_EXTENSIONS_DIR", "/tmp/ods-test-extensions")
 os.environ.setdefault("GPU_BACKEND", "nvidia")
+os.environ.setdefault("ODS_MODE", "local")
 
 if "fcntl" not in sys.modules:
     try:

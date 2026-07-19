@@ -227,6 +227,12 @@ class TestBuildApiStatus:
         assert result["gpu"]["name"] == "RTX 4090"
         assert result["tier"] == "Prosumer"
         assert result["uptime"] == 3600
+        assert result["currentModel"] == "Test-32B"
+        assert result["loadedModel"] == "Test-32B"
+        assert result["configuredModel"] == "Test-32B"
+        assert result["model"]["currentModel"] == "Test-32B"
+        assert result["model"]["loadedModel"] == "Test-32B"
+        assert result["model"]["configuredModel"] == "Test-32B"
         assert result["inference"]["tokensPerSecond"] == 25.5
         assert result["inference"]["loadedModel"] == "Test-32B"
 
@@ -599,7 +605,9 @@ class TestPreflightRequiredPorts:
         monkeypatch.setattr("main.SERVICES", {
             "svc-a": {"name": "A", "port": 8000, "external_port": 8000},
         })
-        resp = test_client.get("/api/preflight/required-ports")
+        resp = test_client.get(
+            "/api/preflight/required-ports", headers=test_client.auth_headers
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert any(p["port"] == 8000 for p in data["ports"])
@@ -845,6 +853,8 @@ class TestApiStatusServiceSerialization:
             "status": "healthy",
             "port": 11434,
             "uptime": 42,
+            "url": "http://127.0.0.1:11434/",
+            "href": "http://127.0.0.1:11434/",
             "category": "core",
             "required": True,
             "impact": "core",
@@ -875,6 +885,31 @@ class TestApiStatusServiceSerialization:
         assert serialized[0]["state"] == "disabled"
         assert serialized[0]["severity"] == "disabled"
         assert serialized[0]["countsAsIssue"] is False
+
+    def test_serialize_services_includes_llm_contract(self, monkeypatch):
+        from models import ServiceStatus
+        llm_contract = {
+            "consumes": True,
+            "route": "gateway",
+            "pinning": "none",
+            "swap_safe": True,
+        }
+        monkeypatch.setattr("main.SERVICES", {
+            "open-webui": {"category": "core", "llm": llm_contract},
+        })
+        services = [
+            ServiceStatus(
+                id="open-webui",
+                name="Open WebUI (Chat)",
+                port=8080,
+                external_port=3000,
+                status="healthy",
+            )
+        ]
+
+        serialized = _serialize_services(services, uptime=42)
+
+        assert serialized[0]["llm"] == llm_contract
 
     def test_optional_unknown_does_not_count_as_issue(self, monkeypatch):
         from models import ServiceStatus
@@ -915,6 +950,8 @@ class TestApiStatusServiceSerialization:
             "status": "unknown",
             "port": 3002,
             "uptime": None,
+            "url": "http://127.0.0.1:3002/",
+            "href": "http://127.0.0.1:3002/",
             "category": "core",
             "required": True,
             "impact": "core",
@@ -922,6 +959,27 @@ class TestApiStatusServiceSerialization:
             "severity": "critical",
             "countsAsIssue": True,
         }]
+
+    def test_fallback_services_include_llm_contract(self, monkeypatch):
+        llm_contract = {
+            "consumes": True,
+            "route": "direct",
+            "pinning": "none",
+            "swap_safe": False,
+        }
+        monkeypatch.setattr("main.SERVICES", {
+            "openclaw": {
+                "name": "OpenClaw",
+                "port": 18789,
+                "external_port": 7860,
+                "category": "optional",
+                "llm": llm_contract,
+            }
+        })
+
+        serialized = _fallback_services()
+
+        assert serialized[0]["llm"] == llm_contract
 
 
 # --- /api/status fallback on exception ---

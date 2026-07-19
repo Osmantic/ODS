@@ -5,7 +5,12 @@ import logging
 import pytest
 
 import config
-from config import _detect_container_default_gateway, load_extension_manifests, _read_manifest_file
+from config import (
+    _apply_host_native_llm_service_override,
+    _detect_container_default_gateway,
+    load_extension_manifests,
+    _read_manifest_file,
+)
 
 
 VALID_MANIFEST = """\
@@ -24,6 +29,22 @@ features:
     category: inference
     gpu_backends: [amd, nvidia]
 """
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, "unknown"),
+        ("", "unknown"),
+        (" LOCAL ", "local"),
+        ("cloud", "cloud"),
+        ("HYBRID", "hybrid"),
+        ("lemonade", "lemonade"),
+        ("core", "unknown"),
+    ],
+)
+def test_normalize_ods_mode(value, expected):
+    assert config.normalize_ods_mode(value) == expected
 
 
 class TestReadManifestFile:
@@ -96,6 +117,37 @@ class TestHostAgentResolution:
         assert config._resolve_agent_host() == "host.docker.internal"
 
 
+class TestHostNativeLlmResolution:
+
+    def test_routes_windows_amd_host_runtime_to_ollama_url(self):
+        services = {"llama-server": {"host": "llama-server", "port": 8080}}
+        env = {
+            "AMD_INFERENCE_LOCATION": "host",
+            "AMD_INFERENCE_PORT": "9090",
+            "OLLAMA_URL": "http://host.docker.internal:9090/v1",
+        }
+
+        _apply_host_native_llm_service_override(services, "amd", env)
+
+        assert services["llama-server"]["host"] == "host.docker.internal"
+        assert services["llama-server"]["port"] == 9090
+
+    @pytest.mark.parametrize(
+        ("backend", "location"),
+        [("nvidia", "host"), ("amd", "container"), ("amd", "external")],
+    )
+    def test_leaves_non_host_native_services_unchanged(self, backend, location):
+        services = {"llama-server": {"host": "llama-server", "port": 8080}}
+
+        _apply_host_native_llm_service_override(
+            services,
+            backend,
+            {"AMD_INFERENCE_LOCATION": location, "OLLAMA_URL": "http://host.docker.internal:9090"},
+        )
+
+        assert services["llama-server"] == {"host": "llama-server", "port": 8080}
+
+
 class TestLoadExtensionManifests:
 
     def test_loads_valid_manifest(self, tmp_path):
@@ -110,6 +162,37 @@ class TestLoadExtensionManifests:
         assert services["test-service"]["health"] == "/health"
         assert len(features) == 1
         assert features[0]["id"] == "test-feature"
+
+    def test_normalizes_llm_contract(self, tmp_path):
+        svc_dir = tmp_path / "llm-app"
+        svc_dir.mkdir()
+        (svc_dir / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: llm-app\n"
+            "  name: LLM App\n"
+            "  port: 8080\n"
+            "  health: /health\n"
+            "  llm:\n"
+            "    consumes: true\n"
+            "    route: direct\n"
+            "    pinning: none\n"
+            "    min_context: 65536\n"
+            "    probe:\n"
+            "      kind: chat\n"
+            "      path: /v1/chat/completions\n"
+        )
+
+        services, _, _ = load_extension_manifests(tmp_path, "nvidia")
+
+        llm = services["llm-app"]["llm"]
+        assert llm["consumes"] is True
+        assert llm["route"] == "direct"
+        assert llm["pinning"] == "none"
+        assert llm["min_context"] == 65536
+        assert llm["probe"]["kind"] == "chat"
+        assert llm["swap_safe"] is False
+        assert llm["badge"] == "not-swap-safe"
 
     def test_external_port_default_zero_disables_external_port_fallback(self, tmp_path):
         svc_dir = tmp_path / "internal-service"

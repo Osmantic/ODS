@@ -33,9 +33,18 @@ def test_host_agent_uses_renderer_with_fallback() -> None:
     text = read("bin/ods-host-agent.py")
     assert "def _render_runtime_config" in text
     assert "--surface" in text
+    assert '"--lemonade-model-id"' in text
     assert "litellm-lemonade" in text
     assert "Runtime config renderer failed" in text
     assert "model_list:\\n" in text
+
+
+def test_openclaw_receives_persisted_lemonade_model_id() -> None:
+    compose = read("extensions/services/openclaw/compose.yaml")
+    injector = read("config/openclaw/inject-token.js")
+    assert "LEMONADE_MODEL=${LEMONADE_MODEL:-}" in compose
+    assert "LEMONADE_MODEL ||" in injector
+    assert "`extra.${GGUF_FILE}`" in injector
 
 
 def main() -> int:
@@ -43,6 +52,7 @@ def main() -> int:
         test_linux_installer_uses_renderer_with_fallback,
         test_bootstrap_upgrade_uses_renderer_with_fallback,
         test_host_agent_uses_renderer_with_fallback,
+        test_openclaw_receives_persisted_lemonade_model_id,
     ):
         test()
         print(f"[PASS] {test.__name__}")

@@ -1,23 +1,38 @@
 import { createElement } from 'react'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Models from './Models'
 
 const useModelsMock = vi.fn()
+const useDownloadProgressMock = vi.fn()
 
 vi.mock('../hooks/useModels', () => ({
   useModels: () => useModelsMock(),
 }))
 
 vi.mock('../hooks/useDownloadProgress', () => ({
-  useDownloadProgress: () => ({
+  useDownloadProgress: () => useDownloadProgressMock(),
+}))
+
+function baseDownloadState(overrides = {}) {
+  return {
     isDownloading: false,
     progress: null,
+    completedDownload: null,
+    cancelError: null,
+    isCancelling: false,
     refresh: vi.fn(),
+    cancelDownload: vi.fn(),
+    clearTerminal: vi.fn(),
     formatBytes: (value) => `${value} B`,
     formatEta: (value) => `${value}s`,
-  }),
-}))
+    ...overrides,
+  }
+}
+
+beforeEach(() => {
+  useDownloadProgressMock.mockReturnValue(baseDownloadState())
+})
 
 function baseState(overrides = {}) {
   return {
@@ -25,10 +40,15 @@ function baseState(overrides = {}) {
     gpu: { vramUsed: 2, vramTotal: 8, vramFree: 6 },
     currentModel: null,
     configuredModel: null,
+    odsMode: 'local',
+    configuredMode: 'local',
+    canActivateModels: true,
+    activationModeError: null,
     recommendationAlternatives: [],
     loading: false,
     error: null,
     actionLoading: null,
+    activationLoading: null,
     downloadModel: vi.fn(),
     loadModel: vi.fn(),
     benchmarkModel: vi.fn(),
@@ -36,6 +56,16 @@ function baseState(overrides = {}) {
     refresh: vi.fn(),
     ...overrides,
   }
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
 }
 
 function model(overrides = {}) {
@@ -105,6 +135,9 @@ test('loaded models show active state and benchmark action', () => {
   expect(screen.getByText('Active')).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: /benchmark/i }))
   expect(benchmarkModel).toHaveBeenCalledWith('qwen3.5-9b-q4')
+
+  fireEvent.click(screen.getByRole('button', { name: /model actions/i }))
+  expect(screen.queryByRole('button', { name: /delete file/i })).not.toBeInTheDocument()
 })
 
 test('renders oracle source labels and install recommendation context', () => {
@@ -157,6 +190,307 @@ test('runs downloaded models through the existing load action', () => {
   fireEvent.click(screen.getByRole('button', { name: /^run$/i }))
 
   expect(loadModel).toHaveBeenCalledWith('qwen3.5-9b-q4')
+
+  fireEvent.click(screen.getByRole('button', { name: /model actions/i }))
+  expect(screen.getByRole('button', { name: /delete file/i })).toBeInTheDocument()
+})
+
+test('keeps Download available in cloud mode', () => {
+  const downloadModel = vi.fn()
+  useModelsMock.mockReturnValue(baseState({
+    odsMode: 'cloud',
+    configuredMode: 'cloud',
+    canActivateModels: false,
+    activationModeError: 'ODS is running in cloud mode. A local-mode installation is required to run downloaded models.',
+    downloadModel,
+    models: [model()],
+  }))
+
+  renderModels()
+  const downloadButton = screen.getByRole('button', { name: /^download$/i })
+  expect(downloadButton).toBeEnabled()
+  fireEvent.click(downloadButton)
+
+  expect(downloadModel).toHaveBeenCalledWith('qwen3.5-9b-q4')
+  expect(screen.getByText('Runtime: Cloud')).toBeInTheDocument()
+  expect(screen.getByText(/Model downloads and deletion remain available/i)).toBeInTheDocument()
+})
+
+test('shows terminal download failures with a retry action', async () => {
+  const downloadModel = vi.fn()
+  const clearTerminal = vi.fn()
+  useModelsMock.mockReturnValue(baseState({
+    downloadModel,
+    models: [model()],
+  }))
+  useDownloadProgressMock.mockReturnValue(baseDownloadState({
+    progress: {
+      status: 'failed',
+      model: 'qwen3.5-9b-q4',
+      error: 'The download checksum did not match.',
+    },
+    clearTerminal,
+  }))
+
+  renderModels()
+
+  expect(screen.getByText('Download Failed')).toBeInTheDocument()
+  expect(screen.getByText('The download checksum did not match.')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+
+  expect(clearTerminal).toHaveBeenCalled()
+  expect(downloadModel).toHaveBeenCalledWith('qwen3.5-9b-q4')
+  await act(async () => {})
+})
+
+test.each([
+  [
+    'single GGUF filename',
+    { gguf: 'Qwen3.5-9B-Q4_K_M.gguf' },
+    'Qwen3.5-9B-Q4_K_M.gguf',
+  ],
+  [
+    'split-part progress label',
+    {
+      gguf: 'Qwen3-Coder-Next-Q4_K_M-00001-of-00002.gguf',
+      ggufParts: [
+        { file: 'Qwen3-Coder-Next-Q4_K_M-00001-of-00002.gguf' },
+        { file: 'Qwen3-Coder-Next-Q4_K_M-00002-of-00002.gguf' },
+      ],
+    },
+    'Qwen3-Coder-Next-Q4_K_M-00002-of-00002.gguf (part 2/2)',
+  ],
+])('retries a failed %s with the catalog model ID', async (_label, modelFields, progressModel) => {
+  const downloadModel = vi.fn()
+  useModelsMock.mockReturnValue(baseState({
+    downloadModel,
+    models: [model(modelFields)],
+  }))
+  useDownloadProgressMock.mockReturnValue(baseDownloadState({
+    progress: {
+      status: 'failed',
+      model: progressModel,
+      error: 'Transfer failed.',
+    },
+  }))
+
+  renderModels()
+  fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+
+  expect(downloadModel).toHaveBeenCalledWith('qwen3.5-9b-q4')
+  await act(async () => {})
+})
+
+test('shows a cancel control while downloading', () => {
+  const cancelDownload = vi.fn()
+  useModelsMock.mockReturnValue(baseState({ models: [model()] }))
+  useDownloadProgressMock.mockReturnValue(baseDownloadState({
+    isDownloading: true,
+    progress: {
+      status: 'downloading',
+      model: 'qwen3.5-9b-q4',
+      bytesDownloaded: 5,
+      bytesTotal: 10,
+      percent: 50,
+      speedMbps: 1,
+      eta: 5,
+    },
+    cancelDownload,
+  }))
+
+  renderModels()
+  fireEvent.click(screen.getByRole('button', { name: /cancel/i }))
+
+  expect(cancelDownload).toHaveBeenCalledTimes(1)
+})
+
+test('shows cancellation state and errors without hiding active progress', () => {
+  useModelsMock.mockReturnValue(baseState({ models: [model()] }))
+  useDownloadProgressMock.mockReturnValue(baseDownloadState({
+    isDownloading: true,
+    isCancelling: true,
+    cancelError: 'The host agent did not accept cancellation.',
+    progress: {
+      status: 'downloading',
+      model: 'qwen3.5-9b-q4',
+      bytesDownloaded: 5,
+      bytesTotal: 10,
+      percent: 50,
+      speedMbps: 1,
+      eta: 5,
+    },
+  }))
+
+  renderModels()
+
+  expect(screen.getByText(/downloading qwen3\.5-9b-q4/i)).toBeInTheDocument()
+  expect(screen.getByRole('alert')).toHaveTextContent('The host agent did not accept cancellation.')
+  expect(screen.getByRole('button', { name: /cancelling/i })).toBeDisabled()
+})
+
+test('recovers from Download Starting when status remains idle', async () => {
+  vi.useFakeTimers()
+  const downloadModel = vi.fn().mockResolvedValue(undefined)
+  const refresh = vi.fn().mockResolvedValue({ status: 'idle' })
+  useModelsMock.mockReturnValue(baseState({
+    downloadModel,
+    models: [model()],
+  }))
+  useDownloadProgressMock.mockReturnValue(baseDownloadState({ refresh }))
+
+  try {
+    renderModels()
+    fireEvent.click(screen.getByRole('button', { name: /^download$/i }))
+    await act(async () => {})
+    expect(screen.getByRole('button', { name: /starting/i })).toBeDisabled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+
+    expect(screen.queryByRole('button', { name: /starting/i })).not.toBeInTheDocument()
+    expect(screen.getByText(/did not start within 15 seconds/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeEnabled()
+    expect(refresh).toHaveBeenCalledTimes(2)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('does not expose Retry while the download start request is unresolved', async () => {
+  vi.useFakeTimers()
+  const startRequest = deferred()
+  useModelsMock.mockReturnValue(baseState({
+    downloadModel: vi.fn(() => startRequest.promise),
+    models: [model()],
+  }))
+
+  try {
+    renderModels()
+    fireEvent.click(screen.getByRole('button', { name: /^download$/i }))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
+    expect(screen.getByRole('button', { name: /starting/i })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument()
+
+    await act(async () => {
+      startRequest.reject(new Error('Download start timed out.'))
+      await startRequest.promise.catch(() => {})
+    })
+    expect(screen.getByRole('button', { name: /retry/i })).toBeEnabled()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('does not let unrelated mutation errors clear an in-flight download start', () => {
+  const startRequest = deferred()
+  let hookState = baseState({
+    downloadModel: vi.fn(() => startRequest.promise),
+    models: [model()],
+  })
+  useModelsMock.mockImplementation(() => hookState)
+
+  const view = renderModels()
+  fireEvent.click(screen.getByRole('button', { name: /^download$/i }))
+  expect(screen.getByRole('button', { name: /starting/i })).toBeDisabled()
+
+  hookState = { ...hookState, error: 'Delete is blocked by the active runtime.' }
+  view.rerender(createElement(MemoryRouter, null, createElement(Models)))
+
+  expect(screen.getByText('Delete is blocked by the active runtime.')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /starting/i })).toBeDisabled()
+  expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument()
+})
+
+test('disables model actions and hides Delete while that model is working', () => {
+  useModelsMock.mockReturnValue(baseState({
+    actionLoading: 'qwen3.5-9b-q4',
+    actionLoadingModels: ['qwen3.5-9b-q4'],
+    models: [model({ status: 'downloaded' })],
+  }))
+
+  renderModels()
+
+  expect(screen.getByRole('button', { name: /working/i })).toBeDisabled()
+  expect(screen.getByRole('button', { name: /model actions/i })).toBeDisabled()
+  expect(screen.queryByRole('button', { name: /delete file/i })).not.toBeInTheDocument()
+})
+
+test('locks every model action while activation is in progress, including rollback and downloads', () => {
+  useModelsMock.mockReturnValue(baseState({
+    actionLoading: 'next-model',
+    actionLoadingModels: ['next-model'],
+    activationLoading: 'next-model',
+    models: [
+      model({ id: 'rollback-model', name: 'Rollback Model', status: 'downloaded' }),
+      model({ id: 'next-model', name: 'Next Model', status: 'downloaded' }),
+      model({ id: 'available-model', name: 'Available Model', status: 'available' }),
+    ],
+  }))
+
+  renderModels()
+
+  expect(screen.getByText('Rollback Model')).toBeInTheDocument()
+  for (const button of screen.getAllByRole('button', { name: /model actions/i })) {
+    expect(button).toBeDisabled()
+  }
+  for (const button of screen.getAllByRole('button', { name: /^run$/i })) {
+    expect(button).toBeDisabled()
+  }
+  expect(screen.getByRole('button', { name: /^download$/i })).toBeDisabled()
+  expect(screen.queryByRole('button', { name: /delete file/i })).not.toBeInTheDocument()
+})
+
+test('replaces unusable Run actions with visible runtime settings links', () => {
+  const loadModel = vi.fn()
+  useModelsMock.mockReturnValue(baseState({
+    odsMode: 'cloud',
+    configuredMode: 'cloud',
+    canActivateModels: false,
+    activationModeError: 'ODS is running in cloud mode. A local-mode installation is required to run downloaded models.',
+    loadModel,
+    models: [model({ status: 'downloaded' })],
+  }))
+
+  renderModels()
+
+  expect(screen.queryByRole('button', { name: /^run$/i })).not.toBeInTheDocument()
+  expect(screen.getByRole('link', { name: /^review mode$/i })).toHaveAttribute('href', '/settings')
+  expect(screen.getByRole('link', { name: /review runtime settings/i })).toHaveAttribute('href', '/settings')
+
+  fireEvent.click(screen.getByRole('button', { name: /model actions/i }))
+  expect(screen.queryByRole('button', { name: /run model/i })).not.toBeInTheDocument()
+  expect(screen.getByRole('link', { name: /review runtime mode/i })).toHaveAttribute('href', '/settings')
+
+  expect(loadModel).not.toHaveBeenCalled()
+})
+
+test('shows effective and configured runtime modes when they differ', () => {
+  useModelsMock.mockReturnValue(baseState({
+    odsMode: 'local',
+    configuredMode: 'cloud',
+    canActivateModels: false,
+    activationModeError: 'ODS is running in local mode but configured for cloud mode. Restart or repair ODS before running a local model.',
+    models: [model({ status: 'downloaded' })],
+  }))
+
+  renderModels()
+
+  expect(screen.getByText('Runtime: Local / configured Cloud')).toBeInTheDocument()
+  expect(screen.getByText(/running in local mode but configured for cloud mode/i)).toBeInTheDocument()
+})
+
+test('treats currentModel as active even if a stale row still says downloaded', () => {
+  useModelsMock.mockReturnValue(baseState({
+    currentModel: 'qwen3.5-9b-q4',
+    models: [model({ status: 'downloaded' })],
+  }))
+
+  renderModels()
+
+  expect(screen.getByText('Active')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /benchmark/i })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: /model actions/i }))
+  expect(screen.queryByRole('button', { name: /delete file/i })).not.toBeInTheDocument()
 })
 
 test('filters models by search and category without changing catalog data', () => {

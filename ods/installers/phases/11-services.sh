@@ -17,6 +17,55 @@
 #   Change model download logic or compose launch flags here.
 # ============================================================================
 
+_phase11_build_local_images() {
+    local -a build_services=("$@")
+    local -a failed_build_services=()
+    local build_count=0 build_total=${#build_services[@]}
+    local svc build_pid build_failed resolved_image
+
+    for svc in "${build_services[@]}"; do
+        build_count=$((build_count + 1))
+        $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" build --no-cache "$svc" >> "$LOG_FILE" 2>&1 &
+        build_pid=$!
+        build_failed=false
+        spin_task "$build_pid" "[$build_count/$build_total] Building $svc" || build_failed=true
+
+        # Cross-check that a successful build produced a tagged image. An
+        # image left by an earlier install never overrides a non-zero build.
+        resolved_image=$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --format json 2>/dev/null \
+            | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    svc_name = '$svc'
+    svc_config = d.get('services', {}).get(svc_name, {})
+    image = svc_config.get('image', '') or ''
+    if not image and svc_config.get('build') is not None:
+        project = d.get('name') or 'ods'
+        image = f'{project}-{svc_name}'
+    print(image)
+except Exception:
+    pass
+" 2>/dev/null || echo "")
+        if [[ -n "$resolved_image" ]] && ! $DOCKER_CMD image inspect "$resolved_image" &>/dev/null; then
+            build_failed=true
+        fi
+
+        if $build_failed; then
+            printf "\r  ${AMB}⚠${NC} %-60s\n" "$svc build failed or image missing"
+            failed_build_services+=("$svc")
+        else
+            printf "\r  ${BGRN}✓${NC} %-60s\n" "$svc built"
+        fi
+    done
+
+    if (( ${#failed_build_services[@]} > 0 )); then
+        ai_bad "Required local image build(s) failed: ${failed_build_services[*]}"
+        ai "Refusing to start an image left by an earlier install. Fix the build error and rerun the installer."
+        return 1
+    fi
+}
+
 ods_progress 75 "services" "Starting services"
 show_phase 5 6 "Starting Services" "~2-3 minutes"
 
@@ -569,24 +618,30 @@ else
                 . "$SCRIPT_DIR/installers/lib/background-tasks.sh"
             fi
 
-            nohup env \
-                SDXL_CHECKPOINT_DIR="$SDXL_CHECKPOINT_DIR" \
-                SDXL_MODEL="$SDXL_MODEL" \
-                SDXL_URL="$SDXL_URL" \
-                bash -c '
-                    echo "[SDXL] Starting SDXL Lightning model download..."
-                    if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
-                        echo "[SDXL] Downloading $SDXL_MODEL (~6.5GB)..."
-                        curl -fSL -C - --connect-timeout 30 --max-time 3600 \
-                            --retry 5 --retry-delay 10 --retry-all-errors \
-                            -o "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" \
-                            "$SDXL_URL" 2>&1 && \
-                            mv "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" && \
-                            echo "[SDXL] $SDXL_MODEL complete" || \
-                            echo "[SDXL] ERROR: Failed to download $SDXL_MODEL"
-                    fi
-                    echo "[SDXL] SDXL Lightning model download finished."
-                ' > "$INSTALL_DIR/logs/sdxl-download.log" 2>&1 &
+            # This daemon must not inherit the installer model lifecycle lock;
+            # otherwise full-model activation waits for an unrelated 6.5 GB
+            # image download after the installer itself releases the lock.
+            (
+                _phase11_close_inherited_fds_for_daemon
+                exec nohup env \
+                    SDXL_CHECKPOINT_DIR="$SDXL_CHECKPOINT_DIR" \
+                    SDXL_MODEL="$SDXL_MODEL" \
+                    SDXL_URL="$SDXL_URL" \
+                    bash -c '
+                        echo "[SDXL] Starting SDXL Lightning model download..."
+                        if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
+                            echo "[SDXL] Downloading $SDXL_MODEL (~6.5GB)..."
+                            curl -fSL -C - --connect-timeout 30 --max-time 3600 \
+                                --retry 5 --retry-delay 10 --retry-all-errors \
+                                -o "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" \
+                                "$SDXL_URL" 2>&1 && \
+                                mv "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" && \
+                                echo "[SDXL] $SDXL_MODEL complete" || \
+                                echo "[SDXL] ERROR: Failed to download $SDXL_MODEL"
+                        fi
+                        echo "[SDXL] SDXL Lightning model download finished."
+                    ' > "$INSTALL_DIR/logs/sdxl-download.log" 2>&1
+            ) &
 
             sdxl_pid=$!
 
@@ -814,8 +869,8 @@ MODELS_INI_EOF
     echo ""
     COMPOSE_STARTED_WITH_DELAYED_HEALTH=false
     compose_ok=false
-    # Build locally-built images individually so one failure doesn't block the rest
-    _build_count=0
+    # Build local images individually so every failure is reported before the
+    # installer refuses to launch any potentially stale image.
     _candidate_build_services=(dashboard dashboard-api ape token-spy privacy-shield)
     [[ "$ENABLE_COMFYUI" == "true" ]] && _candidate_build_services+=(comfyui)
     [[ "$GPU_BACKEND" == "amd" ]] && _candidate_build_services+=(llama-server)
@@ -835,97 +890,12 @@ MODELS_INI_EOF
     if [[ "$GPU_BACKEND" == "nvidia" && " ${_build_services[*]} " == *" comfyui "* ]]; then
         ai "ComfyUI is compiling from source for NVIDIA — this takes 25-40 minutes on first run."
     fi
-    _build_total=${#_build_services[@]}
-    # Track builds that didn't produce a usable image so we don't abort the
-    # whole compose-up on a single missing service. Each entry is a service
-    # name (matches ods-cli's service id) that will be excluded below.
-    _failed_build_services=()
-    for _svc in "${_build_services[@]}"; do
-        _build_count=$((_build_count + 1))
-        $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" build --no-cache "$_svc" >> "$LOG_FILE" 2>&1 &
-        _build_pid=$!
-        _build_failed=false
-        spin_task $_build_pid "[$_build_count/$_build_total] Building $_svc" || _build_failed=true
-        # Cross-check: did the build actually produce a usable image? A
-        # build can "succeed" (exit 0) yet leave no tagged image (rare —
-        # buildx bugs, disk-full mid-export) and a "failed" build can
-        # still leave a usable cached image (idempotent re-run). Inspect
-        # the resolved image tag rather than trusting the exit code alone.
-        _resolved_image=$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --format json 2>/dev/null \
-            | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    svc_name = '$_svc'
-    svc = d.get('services', {}).get(svc_name, {})
-    image = svc.get('image', '') or ''
-    if not image and svc.get('build') is not None:
-        project = d.get('name') or 'ods'
-        image = f'{project}-{svc_name}'
-    print(image)
-except Exception:
-    pass
-" 2>/dev/null || echo "")
-        if [[ -n "$_resolved_image" ]] && ! $DOCKER_CMD image inspect "$_resolved_image" &>/dev/null; then
-            _build_failed=true
-        fi
-        if $_build_failed; then
-            printf "\r  ${AMB}⚠${NC} %-60s\n" "$_svc build failed or image missing"
-            _failed_build_services+=("$_svc")
-        else
-            printf "\r  ${BGRN}✓${NC} %-60s\n" "$_svc built"
-        fi
-    done
-
-    # Exclude failed-build services from compose-up. Without this, --no-build
-    # at compose-up time would see a referenced image that doesn't exist and
-    # abort the ENTIRE stack — a single failed build of, say, comfyui takes
-    # down the other 24+ healthy services. Repro'd on Tower2 during today's
-    # cross-platform install test. Removing the compose file from
-    # COMPOSE_FLAGS_ARR lets compose-up proceed with everything that did
-    # build, and the operator can re-attempt the failed extension later via
-    # `ods enable <svc>` once they've fixed the build cause.
-    if [[ ${#_failed_build_services[@]} -gt 0 ]]; then
-        _new_compose_flags_arr=()
-        _excluded_build_services=()
-        _skip_next=false
-        for _arg in "${COMPOSE_FLAGS_ARR[@]}"; do
-            if $_skip_next; then
-                _skip_next=false
-                _drop=false
-                for _failed in "${_failed_build_services[@]}"; do
-                    if [[ "$_arg" == *"/extensions/services/$_failed/"* ]]; then
-                        _drop=true
-                        if [[ " ${_excluded_build_services[*]} " != *" $_failed "* ]]; then
-                            _excluded_build_services+=("$_failed")
-                        fi
-                        break
-                    fi
-                done
-                $_drop || _new_compose_flags_arr+=("-f" "$_arg")
-            elif [[ "$_arg" == "-f" ]]; then
-                _skip_next=true
-            else
-                _new_compose_flags_arr+=("$_arg")
-            fi
-        done
-        COMPOSE_FLAGS_ARR=("${_new_compose_flags_arr[@]}")
-        _retained_failed_build_services=()
-        for _failed in "${_failed_build_services[@]}"; do
-            if [[ " ${_excluded_build_services[*]} " != *" $_failed "* ]]; then
-                _retained_failed_build_services+=("$_failed")
-            fi
-        done
-        if [[ ${#_excluded_build_services[@]} -gt 0 ]]; then
-            ai_warn "Excluding from compose-up due to build failure: ${_excluded_build_services[*]}"
-        fi
-        if [[ ${#_retained_failed_build_services[@]} -gt 0 ]]; then
-            ai_warn "Build failed for core/overlay service(s) still present in compose-up: ${_retained_failed_build_services[*]}"
-        fi
+    if ! _phase11_build_local_images "${_build_services[@]}"; then
+        exit 1
     fi
 
     # Start everything. --no-build is intentional: the explicit build loop
-    # above already produced (or failed-and-excluded) every buildable image,
+    # above successfully produced every enabled buildable image,
     # and we don't want compose-up silently re-invoking the slow ComfyUI build
     # on each retry. --pull never is intentional too: Phase 08 and the preflight
     # below own registry access through pull_with_progress, so compose-up cannot
