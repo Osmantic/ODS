@@ -537,8 +537,8 @@ def get_gpu_info_nvidia_detailed() -> Optional[list[IndividualGPU]]:
                 memory_used_mb=mem_used,
                 memory_total_mb=mem_total,
                 memory_percent=round(mem_used / mem_total * 100, 1) if mem_total > 0 else 0.0,
-                utilization_percent=int(parts[5]),
-                temperature_c=int(parts[6]),
+                utilization_percent=int(parts[5]) if parts[5] not in na_values else 0,
+                temperature_c=int(parts[6]) if parts[6] not in na_values else 0,
                 power_w=power_w,
                 assigned_services=uuid_service_map.get(uuid, []),
             ))
