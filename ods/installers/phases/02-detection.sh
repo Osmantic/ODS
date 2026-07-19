@@ -64,7 +64,7 @@ if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
     RAM_GB=$((RAM_KB / 1024 / 1024))
     DISK_AVAIL=$(df -Pk "$HOME" 2>/dev/null | tail -1 | awk '{printf "%d", $4 / 1048576}')
     BACKEND_ID="cpu"
-    LLM_HEALTHCHECK_URL="http://localhost:4000/health/readiness"
+    LLM_HEALTHCHECK_URL="http://127.0.0.1:4000/health/readiness"
     LLM_PUBLIC_API_PORT="4000"
     OPENCLAW_PROVIDER_NAME_DEFAULT="litellm-cloud"
     OPENCLAW_PROVIDER_URL_DEFAULT="http://litellm:4000/v1"
@@ -187,7 +187,7 @@ if [[ "${CAP_LLM_BACKEND:-}" == "cpu" || "${CAP_LLM_BACKEND:-}" == "apple" ]]; t
     BACKEND_ID="${CAP_LLM_BACKEND}"
 fi
 load_backend_contract "$BACKEND_ID" || true
-LLM_HEALTHCHECK_URL="${BACKEND_PUBLIC_HEALTH_URL:-http://localhost:8080/health}"
+LLM_HEALTHCHECK_URL="${BACKEND_PUBLIC_HEALTH_URL:-http://127.0.0.1:8080/health}"
 LLM_PUBLIC_API_PORT="${BACKEND_PUBLIC_API_PORT:-8080}"
 OPENCLAW_PROVIDER_NAME_DEFAULT="${BACKEND_PROVIDER_NAME:-local-llama}"
 OPENCLAW_PROVIDER_URL_DEFAULT="${BACKEND_PROVIDER_URL:-http://llama-server:8080/v1}"
