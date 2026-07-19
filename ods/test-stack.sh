@@ -24,6 +24,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTS_DIR="$SCRIPT_DIR/tests"
 
+source "$(dirname "${BASH_SOURCE[0]}")/tests/lib/auth-env.sh"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -93,11 +95,11 @@ run_suite() {
     
     if [[ -x "$script" ]]; then
         if $script $args; then
-            ((SUITE_PASSED++))
+            SUITE_PASSED=$((SUITE_PASSED + 1))
             echo ""
             echo -e "${GREEN}✓ $name passed${NC}"
         else
-            ((SUITE_FAILED++))
+            SUITE_FAILED=$((SUITE_FAILED + 1))
             echo ""
             echo -e "${RED}✗ $name failed${NC}"
         fi
@@ -135,21 +137,26 @@ if $VOICE || $STRESS; then
     echo ""
     
     # Quick voice health
-    if curl -s http://127.0.0.1:3002/api/voice/status | grep -q '"available":true'; then
-        echo -e "${GREEN}✓ Voice services available${NC}"
-        
-        # Check individual services
-        for svc in stt tts livekit; do
-            if curl -s http://127.0.0.1:3002/api/voice/status | jq -e ".services.$svc.status == \"healthy\"" >/dev/null 2>&1; then
-                echo -e "  ${GREEN}✓${NC} $svc healthy"
-            else
-                echo -e "  ${RED}✗${NC} $svc unhealthy"
-            fi
-        done
-        ((SUITE_PASSED++))
+    if _ae_require_key; then
+        voice_url="http://127.0.0.1:${DASHBOARD_API_PORT}/api/voice/status"
+        if curl -sf "${AE_AUTH_HEADER[@]}" "$voice_url" | grep -q '"available":true'; then
+            echo -e "${GREEN}✓ Voice services available${NC}"
+
+            # Check individual services
+            for svc in stt tts livekit; do
+                if curl -sf "${AE_AUTH_HEADER[@]}" "$voice_url" | jq -e ".services.$svc.status == \"healthy\"" >/dev/null 2>&1; then
+                    echo -e "  ${GREEN}✓${NC} $svc healthy"
+                else
+                    echo -e "  ${RED}✗${NC} $svc unhealthy"
+                fi
+            done
+            SUITE_PASSED=$((SUITE_PASSED + 1))
+        else
+            echo -e "${RED}✗ Voice services unavailable${NC}"
+            SUITE_FAILED=$((SUITE_FAILED + 1))
+        fi
     else
-        echo -e "${RED}✗ Voice services unavailable${NC}"
-        ((SUITE_FAILED++))
+        SUITE_PASSED=$((SUITE_PASSED + 1))
     fi
     echo ""
 fi
@@ -185,9 +192,9 @@ if $STRESS; then
         
         cd "$TESTS_DIR"
         if "$PYTHON_CMD" voice-stress-test.py --concurrent 10 --rounds 1 --skip-check; then
-            ((SUITE_PASSED++))
+            SUITE_PASSED=$((SUITE_PASSED + 1))
         else
-            ((SUITE_FAILED++))
+            SUITE_FAILED=$((SUITE_FAILED + 1))
         fi
         cd - >/dev/null
         echo ""

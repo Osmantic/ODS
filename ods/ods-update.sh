@@ -911,8 +911,6 @@ cmd_health() {
     dashboard_api_port="${dashboard_api_port:-3002}"
     if curl -sf "http://127.0.0.1:${dashboard_api_port}/health" &>/dev/null; then
         log_ok "Dashboard API: healthy"
-    elif curl -sf "http://127.0.0.1:${dashboard_api_port}/api/status" &>/dev/null; then
-        log_ok "Dashboard API: responding"
     else
         log_warn "Dashboard API: not responding on port ${dashboard_api_port}"
     fi

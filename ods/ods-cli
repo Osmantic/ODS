@@ -1454,13 +1454,16 @@ cmd_dry_run() {
 
     # Try dashboard API first; fall back to direct GitHub query.
     local api_json=""
-    local dashboard_port="${DASHBOARD_PORT:-3002}"
+    local dashboard_api_port="${DASHBOARD_API_PORT:-3002}"
     local api_key=""
     api_key=$(grep '^DASHBOARD_API_KEY=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
+    if [[ -z "$api_key" && -f "$INSTALL_DIR/data/dashboard-api-key.txt" ]]; then
+        api_key=$(cat "$INSTALL_DIR/data/dashboard-api-key.txt" | tr -d '\r\n ' || true)
+    fi
     if [[ -n "$api_key" ]]; then
         api_json=$(curl -sf --max-time 5 \
-            -H "X-API-Key: ${api_key}" \
-            "http://127.0.0.1:${dashboard_port}/api/update/dry-run" 2>/dev/null || true)
+            -H "Authorization: Bearer ${api_key}" \
+            "http://127.0.0.1:${dashboard_api_port}/api/update/dry-run" 2>/dev/null || true)
     fi
 
     local latest_ver="" changelog_url="" update_status=""

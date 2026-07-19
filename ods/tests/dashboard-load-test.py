@@ -16,6 +16,8 @@ import urllib.error
 import time
 from datetime import datetime
 import queue
+import os
+import sys
 
 DASHBOARD_API = "http://localhost:3002"
 ENDPOINTS = [
@@ -24,6 +26,36 @@ ENDPOINTS = [
     "/api/agents/tokens",
     "/api/agents/throughput"
 ]
+
+
+def _load_api_key():
+    key = os.environ.get('DASHBOARD_API_KEY', '')
+    if not key:
+        # Try .env
+        env_file = os.path.join(
+            os.environ.get('ODS_HOME', os.path.expanduser('~/ods')), '.env')
+        if os.path.exists(env_file):
+            with open(env_file) as f:
+                for line in f:
+                    line = line.strip().rstrip('\r')
+                    if line.startswith('DASHBOARD_API_KEY='):
+                        key = line.split('=', 1)[1].strip().strip('"\'')
+                        break
+    if not key:
+        # Try data/dashboard-api-key.txt
+        key_file = os.path.join(
+            os.environ.get('ODS_HOME', os.path.expanduser('~/ods')), 'data', 'dashboard-api-key.txt')
+        if os.path.exists(key_file):
+            with open(key_file) as f:
+                key = f.read().strip()
+    if not key:
+        print("ERROR: DASHBOARD_API_KEY not set — load test would produce "
+              "meaningless 401 results", file=sys.stderr)
+        sys.exit(2)
+    return key
+
+
+API_KEY = _load_api_key()
 
 
 class LoadTester:
@@ -47,6 +79,7 @@ class LoadTester:
                 try:
                     req = urllib.request.Request(url, method='GET')
                     req.add_header('Accept', 'application/json')
+                    req.add_header('Authorization', f'Bearer {API_KEY}')
 
                     with urllib.request.urlopen(req, timeout=5) as resp:
                         elapsed = (time.time() - req_start) * 1000
