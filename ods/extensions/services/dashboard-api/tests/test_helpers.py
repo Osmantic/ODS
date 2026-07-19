@@ -1173,3 +1173,18 @@ class TestDirSizeGb:
         invalidate_dir_size_cache(d)
         assert dir_size_gb(d) == 0.0
         assert calls["count"] == 1
+
+    def test_dir_size_cache_bound(self, tmp_path):
+        from helpers import _dir_size_cache
+        _dir_size_cache.clear()
+
+        # Fill cache with 1005 items
+        for i in range(1005):
+            path = tmp_path / f"test_dir_{i}"
+            _dir_size_cache.set(path, 1.0)
+
+        assert len(_dir_size_cache._store) == 1000
+
+        # Verify older items were evicted
+        first_path = tmp_path / "test_dir_0"
+        assert _dir_size_cache.get(first_path) is None

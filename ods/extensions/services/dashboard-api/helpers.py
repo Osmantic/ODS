@@ -38,7 +38,15 @@ class _DirSizeCache:
         return value
 
     def set(self, path: Path, value: float):
-        self._store[str(path.resolve())] = (time.monotonic() + self._ttl, value)
+        now = time.monotonic()
+        expired_keys = [k for k, (expires_at, _) in self._store.items() if now > expires_at]
+        for k in expired_keys:
+            del self._store[k]
+        key = str(path.resolve())
+        if len(self._store) >= 1000 and key not in self._store:
+            oldest_key = next(iter(self._store))
+            del self._store[oldest_key]
+        self._store[key] = (now + self._ttl, value)
 
     def invalidate(self, path: Path) -> None:
         self._store.pop(str(path.resolve()), None)
