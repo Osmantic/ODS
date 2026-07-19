@@ -28,6 +28,28 @@ def manifest_bool(text: str, key: str) -> bool:
     return bool(value and value.lower() == "true")
 
 
+def caddy_block_body(text: str, opener: str) -> str:
+    """Return the body of the Caddy block whose opening line equals `opener`.
+
+    `opener` is the literal site line ending in the block's opening brace, e.g.
+    ``http://chat.{$ODS_DEVICE_NAME:ods}.local {``. Depth counting starts at that
+    brace; inline placeholders like ``{scheme}`` or ``{$ENV}`` are brace-balanced,
+    so they net to zero and do not disturb the match. This keeps assertions scoped
+    to the intended host block rather than the file as a whole.
+    """
+    idx = text.index(opener)
+    brace = idx + len(opener) - 1  # opener ends with the block's opening "{"
+    depth = 0
+    for i in range(brace, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace + 1 : i]
+    raise AssertionError(f"unbalanced braces after Caddy block opener {opener!r}")
+
+
 def exposed_service_ids() -> set[str]:
     exposed: set[str] = set()
     for manifest in SERVICES.glob("*/manifest.yaml"):
@@ -131,6 +153,47 @@ def test_dashboard_csp_allows_ods_talk_tts_blob_audio() -> None:
     assert_true("media-src 'self' blob:" in nginx_conf, "ODS Talk TTS playback uses blob: audio URLs")
 
 
+def test_ods_proxy_caps_request_body_sizes() -> None:
+    caddyfile = read(SERVICES / "ods-proxy" / "Caddyfile")
+
+    chat_block = caddy_block_body(caddyfile, "http://chat.{$ODS_DEVICE_NAME:ods}.local {")
+    assert_true(
+        re.search(r"request_body\s*\{\s*max_size\s+200MB\s*\}", chat_block) is not None,
+        "ods-proxy chat host must cap request body at 200MB (Open WebUI document uploads)",
+    )
+
+    api_block = caddy_block_body(caddyfile, "http://api.{$ODS_DEVICE_NAME:ods}.local {")
+    assert_true(
+        re.search(r"request_body\s*\{\s*max_size\s+50MB\s*\}", api_block) is not None,
+        "ods-proxy api host must cap request body at 50MB (admin surface)",
+    )
+
+
+def test_hermes_proxy_caps_request_body() -> None:
+    caddyfile = read(SERVICES / "hermes-proxy" / "Caddyfile")
+
+    site_block = caddy_block_body(caddyfile, ":9120 {")
+    assert_true(
+        re.search(r"request_body\s*\{\s*max_size\s+50MB\s*\}", site_block) is not None,
+        "hermes-proxy must cap request body at 50MB (agent prompt attachments)",
+    )
+
+
+def test_dashboard_pre_stages_hsts() -> None:
+    nginx_conf = read(SERVICES / "dashboard" / "nginx.conf")
+
+    # HSTS is pre-staged so it activates once TLS lands via Caddy/Tailscale.
+    # Browsers ignore the header over plain HTTP, so it is inert until then.
+    assert_true(
+        re.search(
+            r'add_header\s+Strict-Transport-Security\s+"max-age=\d+;[^"]*includeSubDomains',
+            nginx_conf,
+        )
+        is not None,
+        "dashboard nginx must pre-stage a Strict-Transport-Security header with includeSubDomains",
+    )
+
+
 def test_openclaw_stays_deprecated_optional_and_token_gated() -> None:
     manifest = read(SERVICES / "openclaw" / "manifest.yaml")
     docs = read(ROOT / "docs" / "OPENCLAW-INTEGRATION.md")
@@ -161,6 +224,9 @@ def main() -> int:
         test_hermes_local_provider_has_generous_timeouts,
         test_ods_proxy_routes_talk_portal,
         test_dashboard_csp_allows_ods_talk_tts_blob_audio,
+        test_ods_proxy_caps_request_body_sizes,
+        test_hermes_proxy_caps_request_body,
+        test_dashboard_pre_stages_hsts,
         test_openclaw_stays_deprecated_optional_and_token_gated,
         test_litellm_gateway_auth_is_enforced,
     ]
