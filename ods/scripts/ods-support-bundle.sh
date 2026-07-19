@@ -215,7 +215,11 @@ from pathlib import Path
 
 src = Path(sys.argv[1])
 dest = Path(sys.argv[2])
-secret = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)", re.I)
+# USER|EMAIL|BEARER cover schema secret:true keys the old pattern missed —
+# N8N_USER, LANGFUSE_INIT_USER_EMAIL, LANGFUSE_MINIO_ROOT_USER — which are
+# published in cleartext when this env.redacted is shared on a public issue.
+# Match .env.schema.json's secret set / the CLI's config-show masking.
+secret = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL|USER|EMAIL|BEARER)", re.I)
 
 lines = []
 for line in src.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -586,7 +590,10 @@ bundle_dir = Path(sys.argv[1])
 root_dir = Path(sys.argv[2])
 status_path = bundle_dir / "manifest" / "command-status.tsv"
 
-secret = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)", re.I)
+# Keep in sync with write_redacted_env's key set. USER|EMAIL|BEARER cover
+# schema secret:true keys (N8N_USER, LANGFUSE_INIT_USER_EMAIL,
+# LANGFUSE_MINIO_ROOT_USER) whose VALUES would otherwise land in evidence.json.
+secret = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL|USER|EMAIL|BEARER)", re.I)
 
 
 def load_json(path):
