@@ -83,33 +83,27 @@ awk '/^function Invoke-Disable/,/^}/' "$ODS_PS1" \
     || fail "Rename-Item not found in Invoke-Disable body"
 pass "Rename + flags update unconditional in Invoke-Disable"
 
-info "Static: Update-ComposeFlags delegates to resolve-compose-stack.sh when available"
-grep -q 'resolve-compose-stack.sh' "$ODS_PS1" \
-    || fail "Update-ComposeFlags does not reference resolve-compose-stack.sh"
-pass "Update-ComposeFlags references resolve-compose-stack.sh"
+info "Static: Update-ComposeFlags edits the toggled service only"
+grep -q 'Update-ComposeFlags -ServiceId .* -Action "enable"' "$ODS_PS1" \
+    || fail "Invoke-Enable does not tell Update-ComposeFlags which service it toggled"
+grep -q 'Update-ComposeFlags -ServiceId .* -Action "disable"' "$ODS_PS1" \
+    || fail "Invoke-Disable does not tell Update-ComposeFlags which service it toggled"
+pass "Update-ComposeFlags is scoped to the toggled service"
 
-info "Static: Update-ComposeFlags has safe fallback when resolver not available"
-grep -q 'fallback minimal swap\|fallback' "$ODS_PS1" \
-    || fail "Update-ComposeFlags has no fallback path"
-pass "Update-ComposeFlags has fallback path"
+info "Static: Update-ComposeFlags scopes its -f removal to the toggled service dir"
+grep -q 'ownedByService' "$ODS_PS1" \
+    || fail "Update-ComposeFlags does not scope removal to the toggled service directory"
+grep -q "extensions\[/\\\\\\\\\]services\[/\\\\\\\\\]" "$ODS_PS1" \
+    || fail "Update-ComposeFlags service-scoped pattern is missing"
+pass "Update-ComposeFlags removes only the toggled service's fragments"
 
-info "Static: Update-ComposeFlags preserves --env-file in resolver path"
-grep -q 'env-file.*resolver\|--env-file .env.*newContent\|existingRaw.*--env-file' "$ODS_PS1" \
-    || grep -q "Prepend --env-file" "$ODS_PS1" \
-    || fail "Update-ComposeFlags does not preserve --env-file when using the resolver"
-pass "Update-ComposeFlags preserves --env-file in resolver output"
-
-info "Static: Update-ComposeFlags passes GPU_BACKEND to resolver"
-grep -q 'gpuBackend\|gpu-backend' "$ODS_PS1" \
-    || fail "Update-ComposeFlags does not pass GPU_BACKEND to resolver"
-pass "Update-ComposeFlags passes GPU_BACKEND to resolver"
-
-info "Static: Update-ComposeFlags fallback preserves backend overlay -f entries"
-# The fallback keeps everything that doesn't match extensions/services
-grep -q "extensions\[/\\\\\\\\\]services" "$ODS_PS1" \
-    || grep -q 'extensions.*services' "$ODS_PS1" \
-    || fail "Update-ComposeFlags fallback does not filter on extensions/services path"
-pass "Update-ComposeFlags fallback preserves non-extension -f entries (backend overlays)"
+info "Static: Update-ComposeFlags does not delegate to the Linux resolver"
+# resolve-compose-stack.sh emits neither docker-compose.tier0.yml nor the
+# Windows AMD overlay, so its output is not a superset of the Windows stack.
+if grep -q '\$resolverScript' "$ODS_PS1"; then
+    fail "Update-ComposeFlags still invokes resolve-compose-stack.sh"
+fi
+pass "Update-ComposeFlags no longer shells out to the Linux resolver"
 
 info "Static: Update-ComposeFlags helper defined"
 grep -q 'function Update-ComposeFlags' "$ODS_PS1" \
@@ -361,6 +355,90 @@ mv "$SVCDIR/compose.yaml" "$SVCDIR/compose.yaml.disabled"
 [[ -f "$SVCDIR/compose.yaml.disabled" ]] || fail "compose.yaml.disabled not created after disable"
 [[ ! -f "$SVCDIR/compose.yaml" ]]        || fail "compose.yaml still exists after disable"
 pass "Disable renames compose.yaml to compose.yaml.disabled"
+
+# ── Behavioral: Update-ComposeFlags must not touch other services ─────────────
+# Toggling one extension used to rebuild every extension -f entry from disk,
+# which dropped the per-extension GPU overlays the installer recorded and
+# hoisted tier0/override ahead of the extension fragments.
+PS_BIN="$(command -v pwsh || command -v powershell || true)"
+if [[ -n "$PS_BIN" ]]; then
+    # Reuse $TMP so the existing EXIT trap cleans this up too.
+    PS_TMP="$TMP/compose-flags"
+    mkdir -p "$PS_TMP"
+
+    if ODS_PS1="$ODS_PS1" PS_TMP="$PS_TMP" "$PS_BIN" -NoProfile -Command '
+        $ErrorActionPreference = "Stop"
+        function Write-AIWarn { param($m) }
+        function Write-AI     { param($m) }
+
+        # ods.ps1 runs a command dispatcher on load, so lift just the function.
+        $src   = Get-Content $env:ODS_PS1 -Raw
+        $start = $src.IndexOf("function Update-ComposeFlags {")
+        $next  = $src.IndexOf("`nfunction Get-ExtensionServiceDir", $start)
+        if ($start -lt 0 -or $next -lt 0) { throw "Update-ComposeFlags not found" }
+        Invoke-Expression $src.Substring($start, $next - $start)
+
+        $InstallDir = Join-Path $env:PS_TMP "ods"
+        $svcRoot = Join-Path (Join-Path $InstallDir "extensions") "services"
+        foreach ($s in @("comfyui", "n8n", "whisper")) {
+            New-Item -ItemType Directory -Path (Join-Path $svcRoot $s) -Force | Out-Null
+            New-Item -ItemType File -Path (Join-Path (Join-Path $svcRoot $s) "compose.yaml") -Force | Out-Null
+        }
+        # comfyui and whisper also carry a per-extension NVIDIA overlay.
+        foreach ($s in @("comfyui", "whisper")) {
+            New-Item -ItemType File -Path (Join-Path (Join-Path $svcRoot $s) "compose.nvidia.yaml") -Force | Out-Null
+        }
+
+        # Token order exactly as install-windows.ps1 writes it.
+        $original = "--env-file .env -f docker-compose.base.yml -f docker-compose.nvidia.yml " +
+                    "-f extensions/services/comfyui/compose.yaml -f extensions/services/comfyui/compose.nvidia.yaml " +
+                    "-f extensions/services/n8n/compose.yaml " +
+                    "-f extensions/services/whisper/compose.yaml -f extensions/services/whisper/compose.nvidia.yaml " +
+                    "-f docker-compose.tier0.yml -f docker-compose.override.yml"
+        $flagsFile = Join-Path $InstallDir ".compose-flags"
+        [System.IO.File]::WriteAllText($flagsFile, $original, (New-Object System.Text.UTF8Encoding($false)))
+
+        # disable n8n
+        Remove-Item (Join-Path (Join-Path $svcRoot "n8n") "compose.yaml")
+        New-Item -ItemType File -Path (Join-Path (Join-Path $svcRoot "n8n") "compose.yaml.disabled") -Force | Out-Null
+        Update-ComposeFlags -ServiceId "n8n" -Action "disable"
+        $afterDisable = (Get-Content $flagsFile -Raw).Trim()
+
+        if ($afterDisable -match "n8n") { throw "n8n fragment survived disable" }
+        foreach ($keep in @("comfyui/compose.nvidia.yaml", "whisper/compose.nvidia.yaml",
+                            "docker-compose.tier0.yml", "docker-compose.override.yml")) {
+            if ($afterDisable -notmatch [regex]::Escape($keep)) { throw "disable dropped $keep" }
+        }
+        if ($afterDisable -notmatch "^--env-file \.env ") { throw "disable dropped --env-file" }
+
+        # tier0/override must stay behind the extension fragments so they win the merge
+        $iExt = $afterDisable.IndexOf("extensions/services/")
+        $iTier0 = $afterDisable.IndexOf("docker-compose.tier0.yml")
+        if ($iExt -lt 0 -or $iTier0 -lt $iExt) { throw "disable reordered tier0 ahead of extensions" }
+
+        # re-enable n8n -> byte-for-byte round trip of the token set
+        Remove-Item (Join-Path (Join-Path $svcRoot "n8n") "compose.yaml.disabled")
+        New-Item -ItemType File -Path (Join-Path (Join-Path $svcRoot "n8n") "compose.yaml") -Force | Out-Null
+        Update-ComposeFlags -ServiceId "n8n" -Action "enable"
+        $afterEnable = (Get-Content $flagsFile -Raw).Trim()
+
+        if ($afterEnable -notmatch "extensions/services/n8n/compose\.yaml") { throw "enable did not restore n8n" }
+        if ($afterEnable -notmatch "whisper/compose\.nvidia\.yaml") { throw "enable dropped whisper overlay" }
+        $iN8n = $afterEnable.IndexOf("n8n/compose.yaml")
+        $iTier0 = $afterEnable.IndexOf("docker-compose.tier0.yml")
+        if ($iTier0 -lt $iN8n) { throw "enable inserted n8n after tier0" }
+
+        $before = ($original -split "\s+" | Sort-Object) -join " "
+        $after  = ($afterEnable -split "\s+" | Sort-Object) -join " "
+        if ($before -ne $after) { throw "disable+enable round trip changed the token set" }
+    '; then
+        pass "Update-ComposeFlags preserves other services overlays and token order"
+    else
+        fail "Update-ComposeFlags corrupted .compose-flags on enable/disable"
+    fi
+else
+    info "No PowerShell on PATH -- skipping Update-ComposeFlags behavioral test"
+fi
 
 echo ""
 echo -e "${GREEN}All windows-cli-enable-disable tests passed.${NC}"
