@@ -92,6 +92,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== fleet host lock behavior ==="
 	@bash tests/test-fleet-host-lock.sh
+	@echo ""
+	@echo "=== issue-to-pr security check ==="
+	@bash tests/test-issue-to-pr-security.sh
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="
