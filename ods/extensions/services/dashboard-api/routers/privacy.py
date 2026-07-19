@@ -73,7 +73,10 @@ async def toggle_privacy_shield(request: PrivacyShieldToggle, api_key: str = Dep
         body = ""
         try:
             body = e.read().decode()
-        except Exception:
+        except (OSError, UnicodeDecodeError):
+            # Reading/decoding the error body is best-effort — the HTTP status
+            # code below is the meaningful signal. Only tolerate the specific
+            # failures that a body read can raise; anything else propagates.
             pass
         logger.warning("Privacy Shield toggle failed: HTTP %d: %s", e.code, body)
         return {"success": False, "message": f"Host agent returned error ({e.code}): {body or e.reason}"}
