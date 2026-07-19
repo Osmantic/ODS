@@ -96,6 +96,9 @@ test: ## Run unit and contract tests
 	@echo "=== macOS CLI .env quote handling ==="
 	@bash tests/test-macos-env-quote-strip.sh
 	@echo ""
+	@echo "=== macOS uninstall LaunchAgent cleanup ==="
+	@bash tests/test-macos-uninstall-launchagents.sh
+	@echo ""
 	@echo "=== fleet-multi-distro keep-going on docker pull failure ==="
 	@bash tests/test-fleet-multi-distro-keep-going.sh
 	@echo ""
