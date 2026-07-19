@@ -55,9 +55,9 @@ The bootstrap:
 - runs `./install.sh` from that copied runtime tree.
 
 The bootstrap source and installed checkout are separate selections. The
-hosted script follows `main`; `ODS_REF` selects a compatible branch or tag for
-the repository checkout. Without `ODS_REF`, the checkout also follows the
-repository default branch, currently `main`.
+hosted script follows `main`; `ODS_REF` selects a compatible branch, tag, or
+exact 40-character commit SHA for the repository checkout. Without `ODS_REF`,
+the checkout also follows the repository default branch, currently `main`.
 
 For example:
 
@@ -121,8 +121,9 @@ https://raw.githubusercontent.com/Osmantic/ODS/AUDITED_COMMIT_SHA/ods/get-ods.sh
 ```
 
 A commit-specific bootstrap URL does not by itself make the complete install
-immutable. Use the audited source checkout when the installed payload must also
-be pinned.
+immutable. Pair it with `ODS_REF=AUDITED_COMMIT_SHA` when the installed payload
+must also be pinned, or use the audited source checkout when you want to review
+or modify the tree before installation.
 
 ### Windows PowerShell Install
 

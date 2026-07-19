@@ -70,6 +70,26 @@ is_truthy() {
     esac
 }
 
+ods_ref_is_exact_sha() {
+    [[ "${1:-}" =~ ^[0-9a-fA-F]{40}$ ]]
+}
+
+checkout_requested_sha_ref() {
+    local ref="${1:-}"
+    local fetch_err=""
+    local checkout_err=""
+
+    [[ -n "$ref" ]] || return 0
+    ods_ref_is_exact_sha "$ref" || return 0
+
+    fetch_err=$(git fetch --depth 1 origin "$ref" 2>&1) || true
+    if ! checkout_err=$(git checkout --detach "$ref" 2>&1); then
+        error "Failed to check out repository ref $ref after cloning.
+  git fetch said: ${fetch_err:-already present in shallow clone}
+  git checkout said: $checkout_err"
+    fi
+}
+
 _ods_is_related_install_dir() {
     local candidate="$1"
     local compose_file=""
@@ -364,7 +384,7 @@ TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
 clone_args=(--depth 1 --filter=blob:none --sparse)
-if [[ -n "$ODS_REF" ]]; then
+if [[ -n "$ODS_REF" ]] && ! ods_ref_is_exact_sha "$ODS_REF"; then
     clone_args+=(--branch "$ODS_REF")
 fi
 
@@ -383,17 +403,19 @@ _clone_err=$(git clone "${clone_args[@]}" "$REPO_URL" "$TEMP_DIR/repo" 2>&1) || 
 echo "$_clone_err" | tail -1
 
 cd "$TEMP_DIR/repo"
+checkout_requested_sha_ref "$ODS_REF"
 git sparse-checkout set ods 2>/dev/null || {
     # Fallback: full clone if sparse checkout fails
     cd "$ODS_BOOTSTRAP_ROOT"
     rm -rf "$TEMP_DIR/repo"
     fallback_clone_args=(--depth 1)
-    if [[ -n "$ODS_REF" ]]; then
+    if [[ -n "$ODS_REF" ]] && ! ods_ref_is_exact_sha "$ODS_REF"; then
         fallback_clone_args+=(--branch "$ODS_REF")
     fi
     git clone "${fallback_clone_args[@]}" "$REPO_URL" "$TEMP_DIR/repo" 2>&1 | tail -1 || \
         error "Failed to clone repository (fallback full clone also failed)."
     cd "$TEMP_DIR/repo"
+    checkout_requested_sha_ref "$ODS_REF"
 }
 
 # Move ods to install location (exclude dev-only files)
