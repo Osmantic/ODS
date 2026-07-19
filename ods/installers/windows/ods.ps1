@@ -643,7 +643,17 @@ function Get-NativeInferenceStatus {
 
     if (-not (Test-Path $script:INFERENCE_PID_FILE)) { return $result }
 
-    $savedPid = [int](Get-Content $script:INFERENCE_PID_FILE -Raw).Trim()
+    # Guard the PID parse: this runs with $ErrorActionPreference = "Stop", so
+    # casting an empty or non-numeric PID file to [int] throws a terminating
+    # error and crashes `ods status`/`start`/`stop`. Mirror the numeric guard
+    # used elsewhere and treat a bad PID file as "not running" (and clear it).
+    $rawPid = (Get-Content $script:INFERENCE_PID_FILE -Raw)
+    if (-not $rawPid) { $rawPid = "" }
+    if ($rawPid.Trim() -notmatch '^\d+$') {
+        Remove-Item $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
+        return $result
+    }
+    $savedPid = [int]$rawPid.Trim()
     try {
         $proc = Get-Process -Id $savedPid -ErrorAction SilentlyContinue
         if ($proc -and -not $proc.HasExited) {
