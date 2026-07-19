@@ -63,6 +63,9 @@ test: ## Run unit and contract tests
 	@echo "=== Bash 3.2 guard contracts ==="
 	@bash tests/test-bash32-guards.sh
 	@echo ""
+	@echo "=== CLI update post-verification ==="
+	@bash tests/test-cli-update-verification.sh
+	@echo ""
 	@echo "=== ods config show secret-mask matrix ==="
 	@bash tests/test-ods-config-secret-mask.sh
 	@echo ""
