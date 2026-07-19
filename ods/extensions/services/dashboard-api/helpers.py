@@ -38,7 +38,15 @@ class _DirSizeCache:
         return value
 
     def set(self, path: Path, value: float):
-        self._store[str(path.resolve())] = (time.monotonic() + self._ttl, value)
+        now = time.monotonic()
+        expired_keys = [k for k, (expires_at, _) in self._store.items() if now > expires_at]
+        for k in expired_keys:
+            del self._store[k]
+        key = str(path.resolve())
+        if len(self._store) >= 1000 and key not in self._store:
+            oldest_key = next(iter(self._store))
+            del self._store[oldest_key]
+        self._store[key] = (now + self._ttl, value)
 
     def invalidate(self, path: Path) -> None:
         self._store.pop(str(path.resolve()), None)
@@ -365,9 +373,15 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
             if line.startswith("#"):
                 continue
             if "tokens_predicted_total" in line:
-                metrics["tokens_predicted_total"] = float(line.split()[-1])
+                try:
+                    metrics["tokens_predicted_total"] = float(line.split()[-1])
+                except (ValueError, IndexError):
+                    pass
             if "tokens_predicted_seconds_total" in line:
-                metrics["tokens_predicted_seconds_total"] = float(line.split()[-1])
+                try:
+                    metrics["tokens_predicted_seconds_total"] = float(line.split()[-1])
+                except (ValueError, IndexError):
+                    pass
 
         now = time.time()
         curr = metrics.get("tokens_predicted_total", 0)
@@ -604,7 +618,8 @@ def get_disk_usage() -> DiskUsage:
     """Get disk usage for the ODS install directory."""
     path = INSTALL_DIR if os.path.exists(INSTALL_DIR) else os.path.expanduser("~")
     total, used, free = shutil.disk_usage(path)
-    return DiskUsage(path=path, used_gb=round(used / (1024**3), 2), total_gb=round(total / (1024**3), 2), percent=round(used / total * 100, 1))
+    percent = round(used / total * 100, 1) if total > 0 else 0.0
+    return DiskUsage(path=path, used_gb=round(used / (1024**3), 2), total_gb=round(total / (1024**3), 2), percent=percent)
 
 
 def get_model_info() -> Optional[ModelInfo]:
@@ -618,12 +633,30 @@ def get_model_info() -> Optional[ModelInfo]:
                     if "=" not in line or line.lstrip().startswith("#"):
                         continue
                     key, value = line.split("=", 1)
-                    env_values[key.strip()] = value.strip().strip('"\'')
+                    key = key.strip()
+                    if not key:
+                        continue
+                    value = value.strip()
+                    # Strip exactly one matching pair of surrounding quotes.
+                    # str.strip("\"'") removes any run of either quote from
+                    # both ends, so a value legitimately ending in a quote is
+                    # truncated and "'literal'" loses its inner quotes. Keep
+                    # mismatched quotes verbatim, matching lib/safe-env.sh.
+                    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                        value = value[1:-1]
+                    env_values[key] = value
 
             model_name = env_values.get("LLM_MODEL")
             if model_name:
                 size_gb, quant = 15.0, None
-                context = int(env_values.get("MAX_CONTEXT") or env_values.get("CTX_SIZE") or 32768)
+                # MAX_CONTEXT/CTX_SIZE come straight from .env and may be
+                # non-numeric (e.g. "auto", "8k", or a trailing comment); fall
+                # back to the default rather than 500-ing every caller. Mirrors
+                # the guard already used in routers/models.py.
+                try:
+                    context = int(env_values.get("MAX_CONTEXT") or env_values.get("CTX_SIZE") or 32768)
+                except (TypeError, ValueError):
+                    context = 32768
 
                 import re as _re
 
@@ -768,7 +801,7 @@ def get_uptime() -> int:
         elif _system == "Windows":
             import ctypes
             return ctypes.windll.kernel32.GetTickCount64() // 1000
-    except (OSError, subprocess.SubprocessError, ValueError, AttributeError) as e:
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, AttributeError) as e:
         logger.debug("get_uptime failed on %s: %s", _system, e)
     return 0
 

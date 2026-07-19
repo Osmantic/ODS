@@ -78,13 +78,37 @@ function Get-ODSAmdLemonadeRuntime {
     return $lemonade
 }
 
+function Get-ODSLemonadeUserInstallDir {
+    <#
+    .SYNOPSIS
+        Return Lemonade's supported per-user Windows install root.
+
+    .DESCRIPTION
+        The Lemonade minimal MSI defaults to a per-user installation below
+        LOCALAPPDATA. ODS itself must run as a normal user, so this is the
+        primary runtime location; Program Files remains a legacy/all-users
+        fallback for existing installations.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $localAppData = $env:LOCALAPPDATA
+    if ([string]::IsNullOrWhiteSpace($localAppData)) {
+        $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    }
+    if ([string]::IsNullOrWhiteSpace($localAppData)) { return $null }
+
+    return (Join-Path $localAppData "lemonade_server")
+}
+
 function Get-ODSLemonadeExeCandidatePaths {
     <#
     .SYNOPSIS
         Return native Windows Lemonade executable candidates across MSI roots.
 
     .DESCRIPTION
-        Lemonade's minimal MSI can land under either Program Files root depending
+        Lemonade's minimal MSI installs per-user below LOCALAPPDATA by default.
+        Older/all-users installs can land under either Program Files root depending
         on package architecture and Windows installer behavior. Recent MSI builds
         also install LemonadeServer.exe instead of the historical
         lemonade-server.exe. Keep this candidate list shared between resolver
@@ -97,16 +121,25 @@ function Get-ODSLemonadeExeCandidatePaths {
 
     $candidates = New-Object System.Collections.Generic.List[string]
 
-    $existingVar = Get-Variable -Name LEMONADE_EXE -Scope Script -ErrorAction SilentlyContinue
-    if ($existingVar -and -not [string]::IsNullOrWhiteSpace([string]$existingVar.Value)) {
-        $candidates.Add([string]$existingVar.Value)
-    }
-
+    $userInstallDir = Get-ODSLemonadeUserInstallDir
     $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
     $installFolders = @("Lemonade Server", "lemonade_server", "LemonadeServer")
     $executableNames = @($ExecutableName, "LemonadeServer.exe", "lemonade-server.exe") |
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
         Select-Object -Unique
+
+    # Prefer the normal per-user path. The root itself is already lemonade_server,
+    # so it must be checked before the generic Program Files permutations.
+    if (-not [string]::IsNullOrWhiteSpace($userInstallDir)) {
+        foreach ($name in $executableNames) {
+            $candidates.Add((Join-Path (Join-Path $userInstallDir "bin") $name))
+        }
+    }
+
+    $existingVar = Get-Variable -Name LEMONADE_EXE -Scope Script -ErrorAction SilentlyContinue
+    if ($existingVar -and -not [string]::IsNullOrWhiteSpace([string]$existingVar.Value)) {
+        $candidates.Add([string]$existingVar.Value)
+    }
     foreach ($root in $roots) {
         if ([string]::IsNullOrWhiteSpace($root)) { continue }
         foreach ($folder in $installFolders) {

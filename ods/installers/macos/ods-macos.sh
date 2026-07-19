@@ -149,7 +149,18 @@ read_ods_env() {
         if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
             local key="${BASH_REMATCH[1]}"
             local val="${BASH_REMATCH[2]}"
-            val=$(echo "$val" | sed 's/^["'"'"']//;s/["'"'"']$//')
+            # Strip exactly one matching pair of surrounding quotes. The old
+            # sed removed a leading and a trailing quote independently (either
+            # type), so KEY=abc" lost its trailing quote and "abc' was cut on
+            # both ends. Mismatched quotes stay verbatim, matching
+            # lib/safe-env.sh used by the Linux CLI.
+            if [[ "$val" == '"'*'"' ]]; then
+                val="${val#\"}"
+                val="${val%\"}"
+            elif [[ "$val" == "'"*"'" ]]; then
+                val="${val#\'}"
+                val="${val%\'}"
+            fi
             export "ENV_${key}=${val}"
         fi
     done < "$env_file"
@@ -584,13 +595,24 @@ cmd_config_show() {
         line_trimmed=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [[ "$line_trimmed" =~ ^# ]] && echo -e "  ${DGRN}${line_trimmed}${NC}" && continue
         [[ -z "$line_trimmed" ]] && continue
-        if echo "$line_trimmed" | grep -qE "(SECRET|PASS|TOKEN|KEY)="; then
-            local key
-            key=$(echo "$line_trimmed" | cut -d= -f1)
-            echo -e "  ${DGRN}${key}=***${NC}"
-        else
-            echo -e "  ${WHT}${line_trimmed}${NC}"
-        fi
+        # Non KEY=VALUE lines: print verbatim.
+        [[ "$line_trimmed" == *=* ]] || { echo -e "  ${WHT}${line_trimmed}${NC}"; continue; }
+        # Mask by KEY NAME, not "keyword immediately before =". The old
+        # `(SECRET|PASS|TOKEN|KEY)=` regex only matched when the keyword was
+        # adjacent to `=`, so OPENCODE_SERVER_PASSWORD, LANGFUSE_DB_PASSWORD,
+        # LANGFUSE_SALT, N8N_USER, LANGFUSE_INIT_USER_EMAIL, ... printed their
+        # (auto-generated) secret values in cleartext. Match the key name
+        # against the same keyword set the Linux CLI's _cmd_config_is_secret
+        # falls back to (tr for lowercasing keeps this Bash 3.2 / macOS safe).
+        local key key_lc
+        key="${line_trimmed%%=*}"
+        key_lc=$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')
+        case "$key_lc" in
+            *secret*|*password*|*pass*|*token*|*key*|*salt*|*bearer*|*user*|*email*)
+                echo -e "  ${DGRN}${key}=***${NC}" ;;
+            *)
+                echo -e "  ${WHT}${line_trimmed}${NC}" ;;
+        esac
     done < "$env_file"
     echo ""
 }

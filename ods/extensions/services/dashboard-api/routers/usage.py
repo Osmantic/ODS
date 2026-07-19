@@ -27,6 +27,11 @@ TOKEN_SPY_SERVICE_ID = "token-spy"
 TOKEN_SPY_URL = os.environ.get("TOKEN_SPY_URL", "http://token-spy:8080")
 TOKEN_SPY_API_KEY = os.environ.get("TOKEN_SPY_API_KEY", "")
 TOKEN_SPY_KEY_FILE = Path(os.environ.get("TOKEN_SPY_KEY_FILE", "/data/token-spy/token-spy-api-key.txt"))
+# Inclusive-day span cap for /report. Without it a single request for e.g.
+# 0001-01-01..9999-12-31 makes _empty_report materialize ~3.6 million daily
+# buckets in memory and on the wire. The dashboard presets top out well
+# below a year; one full year is a generous ceiling.
+MAX_REPORT_RANGE_DAYS = 366
 LLAMA_CPP_PROMETHEUS_METRICS = {
     "input_tokens": "llamacpp:prompt_tokens_total",
     "output_tokens": "llamacpp:tokens_predicted_total",
@@ -52,10 +57,18 @@ def _empty_report(start: str, end: str, status: str = "unavailable", detail: str
     # The route's regex gate only checks the YYYY-MM-DD shape, so this is also
     # reached with calendar-invalid dates (month 13, Feb 30) when reporting an
     # invalid_range status. Those can't produce daily buckets — return none.
+    # Oversized or reversed spans likewise get no buckets: materializing one
+    # dict per day is what the span cap exists to prevent.
     try:
-        days = _date_range(_parse_date(start), _parse_date(end))
+        start_day = _parse_date(start)
+        end_day = _parse_date(end)
     except ValueError:
         days = []
+    else:
+        if start_day <= end_day and (end_day - start_day).days < MAX_REPORT_RANGE_DAYS:
+            days = _date_range(start_day, end_day)
+        else:
+            days = []
     return {
         "period": {"start": start, "end": end},
         "source": {
@@ -564,6 +577,13 @@ async def usage_report(
         return _empty_report(start, end, status="invalid_range", detail="Dates must be valid YYYY-MM-DD calendar dates")
     if end_day < start_day:
         return _empty_report(start, end, status="invalid_range", detail="end must be on or after start")
+    if (end_day - start_day).days + 1 > MAX_REPORT_RANGE_DAYS:
+        return _empty_report(
+            start,
+            end,
+            status="invalid_range",
+            detail=f"Date range too large (max {MAX_REPORT_RANGE_DAYS} days)",
+        )
 
     report = await _fetch_token_spy_report(start, end)
     runtime_counters = await _fetch_local_runtime_counters()

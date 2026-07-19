@@ -38,6 +38,10 @@ from urllib.parse import parse_qs, urlparse
 VERSION = "1.0.0"
 ODS_VERSION = VERSION
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+# backup_id is interpolated into a backup directory name by ods-update.sh
+# (BACKUP_DIR/backup-<backup_id>-<ts>). Restrict it to a plain label so it can
+# never contain a path separator or ".." and escape BACKUP_DIR.
+BACKUP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MAX_BODY = 16384
 SUBPROCESS_TIMEOUT_START = 600  # 10 min — image pulls can be slow
 SUBPROCESS_TIMEOUT_STOP = 120   # 2 min — stop should be fast
@@ -960,7 +964,9 @@ def check_auth(handler) -> bool:
     if not auth.startswith("Bearer "):
         json_response(handler, 401, {"error": "Authorization header required"})
         return False
-    if not secrets.compare_digest(auth[7:], AGENT_API_KEY):
+    # Compared as UTF-8 bytes: compare_digest raises TypeError on non-ASCII
+    # str, which would turn an unauthenticated request into a 500 not a 403.
+    if not secrets.compare_digest(auth[7:].encode("utf-8"), AGENT_API_KEY.encode("utf-8")):
         json_response(handler, 403, {"error": "Invalid API key"})
         return False
     return True
@@ -976,10 +982,14 @@ def read_json_body(handler) -> dict | None:
         json_response(handler, 400, {"error": "Request body required"})
         return None
     try:
-        return json.loads(handler.rfile.read(min(length, MAX_BODY)))
+        data = json.loads(handler.rfile.read(min(length, MAX_BODY)))
     except (json.JSONDecodeError, UnicodeDecodeError):
         json_response(handler, 400, {"error": "Invalid JSON"})
         return None
+    if not isinstance(data, dict):
+        json_response(handler, 400, {"error": "JSON body must be an object"})
+        return None
+    return data
 
 
 def read_optional_json_body(handler) -> dict | None:
@@ -1714,6 +1724,9 @@ class AgentHandler(BaseHTTPRequestHandler):
             backup_id = body.get("backup_id")
             if not isinstance(backup_id, str) or not backup_id.strip():
                 backup_id = f"dashboard-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            elif not BACKUP_ID_RE.match(backup_id.strip()):
+                json_response(self, 400, {"error": "Invalid backup_id"})
+                return
             self._handle_update_backup(backup_id.strip())
         elif endpoint_action == "start":
             self._handle_update_start()
@@ -2256,6 +2269,11 @@ class AgentHandler(BaseHTTPRequestHandler):
             payload_text = raw_text if raw_text.endswith("\n") else raw_text + "\n"
             tmp_path = env_path.with_name(".env.tmp")
             tmp_path.write_text(payload_text, encoding="utf-8")
+            # .env holds service secrets (DASHBOARD_API_KEY, ODS_AGENT_KEY,
+            # JWT_SECRET, OAuth secrets). The fresh tmp file is created at the
+            # umask default (0644); tighten before os.replace() swaps it in so
+            # the live .env keeps mode 0600 instead of inheriting 0644.
+            os.chmod(tmp_path, 0o600)
             os.replace(str(tmp_path), str(env_path))
         except OSError as exc:
             logger.warning("env_update OSError from %s: %s", client_ip, exc)
@@ -4074,9 +4092,14 @@ def _restart_windows_lemonade(env: dict):
     independent lifecycle, which keeps fleet/dashboard activation stable.
     """
     exe = None
-    executable_names = ("lemonade-server.exe", "LemonadeServer.exe")
+    executable_names = ("LemonadeServer.exe", "lemonade-server.exe")
     install_folders = ("Lemonade Server", "lemonade_server", "LemonadeServer")
-    for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+    install_roots = (
+        os.environ.get("LOCALAPPDATA"),
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+    )
+    for root in install_roots:
         if not root:
             continue
         for folder in install_folders:
@@ -4090,7 +4113,7 @@ def _restart_windows_lemonade(env: dict):
         if exe is not None:
             break
     if exe is None:
-        raise RuntimeError("Lemonade server executable not found under Program Files")
+        raise RuntimeError("Lemonade server executable not found under supported Windows install roots")
 
     ps_env = os.environ.copy()
     ps_env.update({

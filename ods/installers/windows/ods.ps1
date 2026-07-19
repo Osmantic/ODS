@@ -16,8 +16,9 @@
 #   .\ods.ps1 update              # Pull latest images and restart
 #   .\ods.ps1 doctor              # Diagnose runtime readiness
 #   .\ods.ps1 repair voice        # Repair voice/STT/TTS readiness
-#   .\ods.ps1 enable <service>    # Enable an extension service
+#   .\ods.ps1 enable <service>    # Enable an extension service (+ its dependencies)
 #   .\ods.ps1 disable <service>   # Disable an extension service
+#   .\ods.ps1 disable <svc> -Force # Disable even when other extensions depend on it
 #   .\ods.ps1 report              # Generate Windows diagnostics bundle
 #   .\ods.ps1 version             # Show version
 #   .\ods.ps1 help                # Show help
@@ -46,6 +47,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "detection.ps1")
 . (Join-Path $LibDir "llm-endpoint.ps1")
 . (Join-Path $LibDir "install-report.ps1")
+. (Join-Path $LibDir "tier-map.ps1")
 
 $_resolvedLemonadeExe = Resolve-ODSLemonadeExe
 if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
@@ -643,7 +645,17 @@ function Get-NativeInferenceStatus {
 
     if (-not (Test-Path $script:INFERENCE_PID_FILE)) { return $result }
 
-    $savedPid = [int](Get-Content $script:INFERENCE_PID_FILE -Raw).Trim()
+    # Guard the PID parse: this runs with $ErrorActionPreference = "Stop", so
+    # casting an empty or non-numeric PID file to [int] throws a terminating
+    # error and crashes `ods status`/`start`/`stop`. Mirror the numeric guard
+    # used elsewhere and treat a bad PID file as "not running" (and clear it).
+    $rawPid = (Get-Content $script:INFERENCE_PID_FILE -Raw)
+    if (-not $rawPid) { $rawPid = "" }
+    if ($rawPid.Trim() -notmatch '^\d+$') {
+        Remove-Item $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
+        return $result
+    }
+    $savedPid = [int]$rawPid.Trim()
     try {
         $proc = Get-Process -Id $savedPid -ErrorAction SilentlyContinue
         if ($proc -and -not $proc.HasExited) {
@@ -1263,8 +1275,13 @@ function Invoke-ConfigShow {
     Get-Content $envFile | ForEach-Object {
         $line = $_.Trim()
         if ($line -match "^#" -or $line -eq "") { return }
-        if ($line -match "(SECRET|PASS|TOKEN|KEY)=") {
-            $key = ($line -split "=")[0]
+        # Redact any key whose NAME contains a sensitive keyword, mirroring the
+        # Linux CLI's `ods config show` over-mask policy. Anchoring keywords to
+        # the "=" (the old behavior) let *_PASSWORD, *_SALT, and similar values
+        # print in cleartext because the keyword is not the last token before "=".
+        $key = ($line -split '=', 2)[0].Trim()
+        if ($line.Contains('=') -and
+            $key -match '(?i)secret|password|pass|token|key|salt|bearer|user|email') {
             Write-Host "  $key=***" -ForegroundColor DarkGray
         } else {
             Write-Host "  $line" -ForegroundColor White
@@ -1665,11 +1682,43 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
                 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
                 -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
             $taskPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-            Register-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME `
-                -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -Principal $taskPrincipal `
-                -Description "ODS Host Agent -- manages extensions and bridges dashboard to host" `
-                -Force | Out-Null
-            Start-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME
+
+            $taskError = $null
+            try {
+                Register-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME `
+                    -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -Principal $taskPrincipal `
+                    -Description "ODS Host Agent -- manages extensions and bridges dashboard to host" `
+                    -Force -ErrorAction Stop | Out-Null
+                Start-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME
+                # Cleanup any startup VBScript if scheduled task succeeded
+                $startupFolder = [Environment]::GetFolderPath("Startup")
+                $vbsFile = Join-Path $startupFolder "ods-host-agent.vbs"
+                if (Test-Path $vbsFile) {
+                    Remove-Item $vbsFile -Force -ErrorAction SilentlyContinue
+                }
+            } catch {
+                $taskError = $_
+                Write-AIWarn "Could not start host agent through Task Scheduler: $($taskError.Exception.Message)"
+                Write-AI "Setting up alternative startup persistence for standard user..."
+
+                $startupFolder = [Environment]::GetFolderPath("Startup")
+                $vbsFile = Join-Path $startupFolder "ods-host-agent.vbs"
+                $vbsContent = @"
+' ODS Host Agent login startup launcher
+Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $_encodedAgentCommand", 0, False
+"@
+                try {
+                    Write-Utf8NoBom -Path $vbsFile -Content $vbsContent
+                    Write-AISuccess "Startup persistence configured via Start Menu Startup folder: $vbsFile"
+                    # Start the agent now using the startup script
+                    Start-Process wscript.exe -ArgumentList ('"{0}"' -f $vbsFile) -NoNewWindow
+                } catch {
+                    Write-AIError "Failed to set up alternative startup persistence: $_"
+                    Write-AIWarn "Starting host agent directly for this session..."
+                    Start-Process -FilePath $_python3.FilePath -ArgumentList @($agentScript, '--port', $port, '--pid-file', $pidFile, '--install-dir', $InstallDir) -WorkingDirectory $InstallDir -WindowStyle Hidden -RedirectStandardError $logFile
+                }
+            }
 
             Start-Sleep -Seconds 3
             try {
@@ -1686,6 +1735,12 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
         }
         "stop" {
             try { Stop-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME -ErrorAction SilentlyContinue } catch { }
+            # Cleanup Startup VBScript
+            $startupFolder = [Environment]::GetFolderPath("Startup")
+            $vbsFile = Join-Path $startupFolder "ods-host-agent.vbs"
+            if (Test-Path $vbsFile) {
+                Remove-Item $vbsFile -Force -ErrorAction SilentlyContinue
+            }
             if (Test-Path $pidFile) {
                 try {
                     $_pid = [int](Get-Content $pidFile -Raw).Trim()
@@ -1727,116 +1782,76 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
 function Update-ComposeFlags {
     <#
     .SYNOPSIS
-        Regenerate .compose-flags after an enable/disable operation.
+        Update .compose-flags in place after an enable/disable operation.
 
-        Strategy (in priority order):
-        1. If scripts/resolve-compose-stack.sh exists and bash is available,
-           delegate entirely to the canonical resolver (preserves backend
-           overlays, multi-GPU overlays, user-extension overlays, and
-           docker-compose.override.yml -- exactly the same stack the installer
-           built). This is the safe path.
-        2. Otherwise fall back to a minimal in-process swap: keep every token
-           in the existing .compose-flags that is NOT an extension service -f
-           entry, then re-scan extensions/services for enabled compose.yaml
-           fragments and append them. This preserves all backend and GPU
-           overlays (--env-file, -f docker-compose.base.yml,
-           -f docker-compose.nvidia.yml, etc.) because those paths never
-           match 'extensions/services' and are kept verbatim.
+        Only the toggled service's -f entries are rewritten. Every other token
+        is preserved verbatim and in order: --env-file, docker-compose.base.yml,
+        the backend overlay, installers/windows/docker-compose.windows-amd.yml,
+        docker-compose.tier0.yml, docker-compose.override.yml, and the compose
+        fragments of every other extension.
 
-        The fallback intentionally mirrors only what the Windows installer
-        writes: base + GPU overlay + enabled extension compose.yaml entries.
-        It does NOT add GPU-specific per-extension overlays (compose.nvidia.yaml
-        etc.) because those are the canonical resolver's responsibility and
-        we must not silently diverge from it.
+        Editing rather than regenerating is deliberate. The Windows installer
+        records a per-extension GPU overlay (compose.nvidia.yaml /
+        compose.amd.yaml) next to each compose.yaml, and gates some of them on
+        the detected driver -- Whisper's CUDA overlay is skipped below driver
+        575. Rebuilding the extension entries by re-scanning the filesystem
+        cannot see those decisions and would silently drop or resurrect them.
+
+        scripts/resolve-compose-stack.sh is intentionally not consulted here.
+        Its output is not a superset of the Windows stack: it emits neither
+        docker-compose.tier0.yml nor the Windows AMD overlay, and it selects
+        compose.local.yaml overlays from its own --ods-mode default.
     #>
+    param(
+        [Parameter(Mandatory=$true)][string]$ServiceId,
+        [Parameter(Mandatory=$true)][ValidateSet("enable", "disable")][string]$Action
+    )
+
     $flagsFile = Join-Path $InstallDir ".compose-flags"
     if (-not (Test-Path $flagsFile)) {
-        Write-AIWarn "No .compose-flags file found -- skipping regeneration."
+        Write-AIWarn "No .compose-flags file found -- skipping update."
         return
     }
 
-    # ── Path 1: delegate to the canonical resolver ────────────────────────────
-    $resolverScript = Join-Path (Join-Path $InstallDir "scripts") "resolve-compose-stack.sh"
-    $bashExe = Get-Command bash -ErrorAction SilentlyContinue
-    if ((Test-Path $resolverScript) -and $bashExe) {
-        # Read GPU_BACKEND and TIER from .env so the resolver uses the same
-        # parameters that the installer originally selected.
-        $gpuBackend = "nvidia"
-        $tier = "1"
-        try {
-            $envMap = Read-ODSEnv
-            if ($envMap.ContainsKey("GPU_BACKEND") -and $envMap["GPU_BACKEND"]) {
-                $gpuBackend = $envMap["GPU_BACKEND"].ToLower()
-            }
-            if ($envMap.ContainsKey("TIER") -and $envMap["TIER"]) {
-                $tier = $envMap["TIER"]
-            }
-        } catch { }
+    $existing = @((Get-Content $flagsFile -Raw).Trim() -split "\s+" | Where-Object { $_ })
 
-        $wslInstallDir = $InstallDir -replace "\\", "/" -replace "^([A-Za-z]):", "/mnt/`$1"
-        $wslInstallDir = $wslInstallDir.ToLower() -replace "^/mnt/([a-z])", { "/mnt/$($_.Groups[1].Value.ToLower())" }
+    # Every fragment under extensions/services/<ServiceId>/ belongs to the
+    # toggled service: compose.yaml and any per-backend overlay beside it.
+    $ownedByService = "extensions[/\\]services[/\\]$([regex]::Escape($ServiceId))[/\\]"
 
-        $resolvedFlagsRaw = & $bashExe.Source "$resolverScript" `
-            --script-dir "$InstallDir" `
-            --gpu-backend "$gpuBackend" `
-            --tier "$tier" `
-            2>$null
-        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($resolvedFlagsRaw)) {
-            # Prepend --env-file .env if the existing flags had it (the resolver
-            # emits only -f flags; the Windows installer adds --env-file separately).
-            $existingRaw = (Get-Content $flagsFile -Raw).Trim()
-            $newContent = $resolvedFlagsRaw.Trim()
-            if ($existingRaw -match '--env-file') {
-                $newContent = "--env-file .env " + $newContent
-            }
-            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-            [System.IO.File]::WriteAllText($flagsFile, $newContent, $utf8NoBom)
-            Write-AI "Updated .compose-flags (via resolve-compose-stack.sh)"
-            return
-        }
-        Write-AIWarn "resolve-compose-stack.sh returned non-zero or empty output; falling back to minimal swap."
-    }
-
-    # ── Path 2: minimal in-process swap (fallback) ────────────────────────────
-    # Keep all tokens that are NOT an extension service -f entry, then
-    # re-append only the enabled compose.yaml fragments.
-    # This preserves --env-file, -f docker-compose.base.yml,
-    # -f docker-compose.nvidia.yml, and any other backend overlays verbatim.
-    $existing = (Get-Content $flagsFile -Raw).Trim() -split "\s+"
-    $baseFlags = New-Object System.Collections.Generic.List[string]
-    $skipNext = $false
+    $tokens = New-Object System.Collections.Generic.List[string]
     for ($i = 0; $i -lt $existing.Count; $i++) {
-        if ($skipNext) { $skipNext = $false; continue }
         if ($existing[$i] -eq "-f" -and ($i + 1) -lt $existing.Count) {
-            $nextVal = $existing[$i + 1]
-            # Strip extension service entries (compose.yaml and per-backend
-            # overlays such as compose.nvidia.yaml, compose.local.yaml).
-            if ($nextVal -match "extensions[/\\]services[/\\]") {
-                $skipNext = $true   # also drop the path token that follows -f
-                continue
-            }
+            $path = $existing[$i + 1]
+            $i++
+            if ($path -match $ownedByService) { continue }
+            [void]$tokens.Add("-f")
+            [void]$tokens.Add($path)
+            continue
         }
-        [void]$baseFlags.Add($existing[$i])
+        [void]$tokens.Add($existing[$i])
     }
 
-    # Re-append only compose.yaml (the base fragment) for enabled extensions.
-    # Per-backend and local-mode overlays require the canonical resolver.
-    $extDir = Join-Path (Join-Path $InstallDir "extensions") "services"
-    if (Test-Path $extDir) {
-        Get-ChildItem -Path $extDir -Directory | Sort-Object Name | ForEach-Object {
-            $composePath = Join-Path $_.FullName "compose.yaml"
-            if (Test-Path $composePath) {
-                $relPath = $composePath.Substring($InstallDir.Length + 1) -replace "\\", "/"
-                [void]$baseFlags.Add("-f")
-                [void]$baseFlags.Add($relPath)
+    if ($Action -eq "enable") {
+        $svcDir = Join-Path (Join-Path (Join-Path $InstallDir "extensions") "services") $ServiceId
+        if (Test-Path (Join-Path $svcDir "compose.yaml")) {
+            # tier0 and override are appended last by the installer so they win
+            # the merge; the new fragment has to land ahead of them.
+            $insertAt = $tokens.Count
+            for ($j = 0; $j -lt $tokens.Count - 1; $j++) {
+                if ($tokens[$j] -eq "-f" -and $tokens[$j + 1] -match "docker-compose\.(tier0|override)\.yml$") {
+                    $insertAt = $j
+                    break
+                }
             }
+            $tokens.InsertRange($insertAt, [string[]]@("-f", "extensions/services/$ServiceId/compose.yaml"))
         }
     }
 
-    $newContent = $baseFlags -join " "
+    $newContent = $tokens -join " "
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($flagsFile, $newContent, $utf8NoBom)
-    Write-AI "Updated .compose-flags (fallback minimal swap)"
+    Write-AI "Updated .compose-flags ($Action $ServiceId)"
 }
 
 function Get-ExtensionServiceDir {
@@ -1877,6 +1892,94 @@ function Get-ExtensionCategory {
     return ""
 }
 
+function Get-ExtensionDependencies {
+    <#
+    .SYNOPSIS
+        Read the depends_on list from manifest.yaml for a service directory.
+        Returns an empty array when the key is absent, empty, or unreadable.
+    #>
+    param([Parameter(Mandatory=$true)][string]$ServiceDir)
+
+    foreach ($manifestName in @("manifest.yaml", "manifest.yml")) {
+        $manifestPath = Join-Path $ServiceDir $manifestName
+        if (-not (Test-Path $manifestPath)) { continue }
+        # A prose comment that merely mentions depends_on starts with '#', so
+        # anchoring the match to the key skips it.
+        $line = Get-Content $manifestPath -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match "^\s*depends_on:" } |
+            Select-Object -First 1
+        if (-not $line) { return @() }
+        # Manifests declare deps in YAML flow style: depends_on: [a, b]
+        if ($line -notmatch "\[(.*)\]") { return @() }
+        $inner = $Matches[1].Trim()
+        if (-not $inner) { return @() }
+        return @(
+            $inner -split "," |
+                ForEach-Object { $_.Trim().Trim('"').Trim("'") } |
+                Where-Object { $_ }
+        )
+    }
+    return @()
+}
+
+function Get-DisabledDependencies {
+    <#
+    .SYNOPSIS
+        Extension dependencies of $ServiceId that are currently disabled.
+
+        Core services are skipped: their compose lives in docker-compose.base.yml,
+        so they are always in the merged project and never carry a compose.yaml
+        of their own. Ids with no service directory are skipped too -- there is
+        nothing to enable.
+
+        Only a service holding a compose.yaml.disabled counts as disabled. A
+        service with neither fragment (e.g. opencode) cannot be enabled by a
+        rename, and reporting it here would abort the caller's enable.
+    #>
+    param([Parameter(Mandatory=$true)][string]$ServiceId)
+
+    $svcDir = Get-ExtensionServiceDir -ServiceId $ServiceId
+    if (-not $svcDir) { return @() }
+
+    $missing = @()
+    foreach ($dep in @(Get-ExtensionDependencies -ServiceDir $svcDir)) {
+        $depDir = Get-ExtensionServiceDir -ServiceId $dep
+        if (-not $depDir) { continue }
+        if ((Get-ExtensionCategory -ServiceDir $depDir) -eq "core") { continue }
+        if (Test-Path (Join-Path $depDir "compose.yaml")) { continue }
+        if (Test-Path (Join-Path $depDir "compose.yaml.disabled")) { $missing += $dep }
+    }
+    return $missing
+}
+
+function Get-EnabledDependents {
+    <#
+    .SYNOPSIS
+        Enabled extensions whose manifest declares $ServiceId in depends_on.
+
+        Compose rejects a project whose depends_on names a service the merged
+        files never define ("depends on undefined service"), so a dependent left
+        enabled after its dependency is disabled breaks every service in the
+        stack, not just itself.
+    #>
+    param([Parameter(Mandatory=$true)][string]$ServiceId)
+
+    $extDir = Join-Path (Join-Path $InstallDir "extensions") "services"
+    if (-not (Test-Path $extDir)) { return @() }
+
+    $dependents = @()
+    foreach ($dir in @(Get-ChildItem -LiteralPath $extDir -Directory -ErrorAction SilentlyContinue)) {
+        if ($dir.Name -eq $ServiceId) { continue }
+        # No compose.yaml means the extension is disabled -- it contributes no
+        # depends_on to the merged project.
+        if (-not (Test-Path (Join-Path $dir.FullName "compose.yaml"))) { continue }
+        if (@(Get-ExtensionDependencies -ServiceDir $dir.FullName) -contains $ServiceId) {
+            $dependents += $dir.Name
+        }
+    }
+    return $dependents
+}
+
 function Test-ODSInstallFiles {
     <#
     .SYNOPSIS
@@ -1896,23 +1999,40 @@ function Test-ODSInstallFiles {
     }
 }
 
+# Services already visited by the current 'enable' invocation, so a manifest
+# cycle cannot recurse forever.
+$script:_EnableVisited = @()
+
 function Invoke-Enable {
     <#
     .SYNOPSIS
         Enable an extension service -- mirrors 'ods enable <service>' from the Linux CLI.
         Renames compose.yaml.disabled back to compose.yaml and regenerates .compose-flags.
+        Disabled extension dependencies are enabled first so the merged compose
+        project never names a service it does not define.
         Does NOT require Docker Desktop to be running (file-only operation).
     #>
-    param([string]$ServiceId)
+    param(
+        [string]$ServiceId,
+        # Set on the recursive dependency calls: the install check and the
+        # visited-set reset already ran for the service the operator named.
+        [switch]$AsDependency
+    )
 
-    # Validate install files only -- Docker is not needed to rename a compose fragment.
-    Test-ODSInstallFiles
+    if (-not $AsDependency) {
+        # Validate install files only -- Docker is not needed to rename a compose fragment.
+        Test-ODSInstallFiles
+        $script:_EnableVisited = @()
+    }
 
     if ([string]::IsNullOrWhiteSpace($ServiceId)) {
         Write-AIError "Usage: .\ods.ps1 enable <service>"
         Write-AI "Example: .\ods.ps1 enable comfyui"
         exit 1
     }
+
+    if ($script:_EnableVisited -contains $ServiceId) { return }
+    $script:_EnableVisited += $ServiceId
 
     $svcDir = Get-ExtensionServiceDir -ServiceId $ServiceId
     if (-not $svcDir) {
@@ -1927,6 +2047,19 @@ function Invoke-Enable {
         return
     }
 
+    # Pull in disabled dependencies before touching this service's fragment.
+    # This runs ahead of the already-enabled check on purpose: an operator whose
+    # stack is already broken (dependent enabled, dependency not) repairs it by
+    # re-running enable on the dependent.
+    $missingDeps = @(Get-DisabledDependencies -ServiceId $ServiceId)
+    if ($missingDeps.Count -gt 0) {
+        Write-AIWarn "$ServiceId depends on disabled services: $($missingDeps -join ', ')"
+        foreach ($dep in $missingDeps) {
+            Write-AI "Enabling dependency: $dep"
+            Invoke-Enable -ServiceId $dep -AsDependency
+        }
+    }
+
     $composePath  = Join-Path $svcDir "compose.yaml"
     $disabledPath = Join-Path $svcDir "compose.yaml.disabled"
 
@@ -1938,7 +2071,7 @@ function Invoke-Enable {
 
     if (Test-Path $disabledPath) {
         Rename-Item -LiteralPath $disabledPath -NewName "compose.yaml" -Force
-        Update-ComposeFlags
+        Update-ComposeFlags -ServiceId $ServiceId -Action "enable"
         Write-AISuccess "$ServiceId enabled."
         Write-AI "Run '.\ods.ps1 start $ServiceId' to launch it."
         return
@@ -1956,8 +2089,16 @@ function Invoke-Disable {
         Stops the running container when Docker is available, then renames
         compose.yaml to compose.yaml.disabled and regenerates .compose-flags.
         The file/cache changes always run even when Docker Desktop is offline.
+
+        Refuses when another enabled extension declares this service in its
+        manifest depends_on, unless -Force is passed.
     #>
-    param([string]$ServiceId)
+    param(
+        [string]$ServiceId,
+        # Disable anyway, leaving the dependents pointing at a service the
+        # merged compose project no longer defines.
+        [switch]$Force
+    )
 
     # Validate install files only -- Docker stop is best-effort below.
     Test-ODSInstallFiles
@@ -1994,6 +2135,23 @@ function Invoke-Disable {
         exit 1
     }
 
+    # Compose validates depends_on against the merged project, so an enabled
+    # dependent whose dependency just vanished takes down every service, not
+    # just itself. Refuse by default; -Force is the operator's escape hatch.
+    $dependents = @(Get-EnabledDependents -ServiceId $ServiceId)
+    if ($dependents.Count -gt 0) {
+        if (-not $Force) {
+            Write-AIError "These enabled extensions depend on ${ServiceId}: $($dependents -join ', ')"
+            Write-AI "Disabling $ServiceId now would make '.\ods.ps1 start' fail for the whole stack."
+            Write-AI "Disable them first, or re-run with -Force to proceed anyway:"
+            Write-AI "  .\ods.ps1 disable $($dependents[0])"
+            Write-AI "  .\ods.ps1 disable $ServiceId -Force"
+            exit 1
+        }
+        Write-AIWarn "Forcing disable. Still enabled and depending on ${ServiceId}: $($dependents -join ', ')"
+        Write-AIWarn "'.\ods.ps1 start' will fail until those extensions are disabled too."
+    }
+
     # Best-effort container stop -- skip gracefully when Docker Desktop is
     # offline so the rename + flags update always succeeds.
     $dockerRunning = $false
@@ -2011,9 +2169,89 @@ function Invoke-Disable {
 
     # Rename and refresh flags regardless of Docker state.
     Rename-Item -LiteralPath $composePath -NewName "compose.yaml.disabled" -Force
-    Update-ComposeFlags
+    Update-ComposeFlags -ServiceId $ServiceId -Action "disable"
     Write-AISuccess "$ServiceId disabled."
     Write-AI "Data preserved. Run '.\ods.ps1 enable $ServiceId' to re-enable."
+}
+
+function Invoke-Model {
+    param(
+        [string]$Action = "current",
+        [string[]]$SubArgs
+    )
+
+    Test-ODSInstallFiles
+    Push-Location $InstallDir
+    try {
+        switch ($Action.ToLower()) {
+            "current" {
+                $envVars = Read-ODSEnv
+                $model = $envVars["LLM_MODEL"]
+                $tier = $envVars["TIER"]
+                if ([string]::IsNullOrWhiteSpace($model)) { $model = "<not set>" }
+                Write-Host "Current model: " -NoNewline
+                Write-Host $model -ForegroundColor Green
+                if (-not [string]::IsNullOrWhiteSpace($tier)) {
+                    Write-Host "Current tier: $tier"
+                }
+            }
+            "list" {
+                Write-Host '=== Available Tiers ===' -ForegroundColor Blue
+                Write-Host '  T0         - qwen3.5-2b (< 8GB RAM, any GPU)'
+                Write-Host '  T1         - qwen3.5-9b (<12GB VRAM)'
+                Write-Host '  T2         - qwen3.5-9b (12-19GB, larger context)'
+                Write-Host '  T3         - qwen3-30b-a3b (20-47GB)'
+                Write-Host '  T4         - qwen3-30b-a3b (48GB+)'
+                Write-Host '  SH         - qwen3-30b-a3b (Strix Halo unified)'
+                Write-Host '  SH_LARGE   - qwen3-coder-next (90GB+ unified)'
+                Write-Host '  NV_ULTRA   - qwen3-coder-next (amd64) / qwen3.6-35b-a3b (arm64 Spark)'
+                Write-Host ''
+                Write-Host 'Usage: .\ods.ps1 model swap <tier>'
+            }
+            "swap" {
+                $tier = ($SubArgs | Select-Object -First 1)
+                if ([string]::IsNullOrWhiteSpace($tier)) {
+                    Write-AIError "Usage: .\ods.ps1 model swap <T0|T1|T2|T3|T4|SH|SH_LARGE|NV_ULTRA>"
+                    return
+                }
+                $tier = $tier.ToUpperInvariant()
+
+                # Retrieve the model config using tier-map functions
+                $model = ConvertTo-ModelFromTier -Tier $tier
+                if ([string]::IsNullOrWhiteSpace($model)) {
+                    Write-AIError "Unknown tier: $tier"
+                    return
+                }
+
+                # Normalize aliases for Resolve-TierConfig (T0->0, T1->1, SH->SH_COMPACT)
+                $normTier = $tier
+                if ($normTier -match "^T([0-9]+)$") {
+                    $normTier = $Matches[1]
+                }
+                if ($normTier -eq "SH") {
+                    $normTier = "SH_COMPACT"
+                }
+
+                # Resolve tier config to obtain GGUF details
+                $tierConfig = Resolve-TierConfig -Tier $normTier
+
+                # Set in .env
+                Set-ODSEnvValue -Key "LLM_MODEL" -Value $model
+                Set-ODSEnvValue -Key "TIER" -Value $normTier
+                Set-ODSEnvValue -Key "GGUF_FILE" -Value $tierConfig.GgufFile
+                Set-ODSEnvValue -Key "GGUF_URL" -Value $tierConfig.GgufUrl
+                Set-ODSEnvValue -Key "CTX_SIZE" -Value $tierConfig.MaxContext
+                Set-ODSEnvValue -Key "MAX_CONTEXT" -Value $tierConfig.MaxContext
+
+                Write-AISuccess "Model set to $model (tier $tier, ctx=$($tierConfig.MaxContext)). Run '.\ods.ps1 restart' to apply."
+            }
+            default {
+                Write-AIError "Usage: .\ods.ps1 model <current|list|swap>"
+            }
+        }
+    } finally {
+        Pop-Location
+    }
 }
 
 function Show-Help {
@@ -2039,6 +2277,8 @@ function Show-Help {
     Write-Host "View .env (secrets masked)" -ForegroundColor DarkGray
     Write-Host "    config edit         " -ForegroundColor Cyan -NoNewline
     Write-Host "Open .env in notepad" -ForegroundColor DarkGray
+    Write-Host "    model [action]      " -ForegroundColor Cyan -NoNewline
+    Write-Host "Inspect/swap LLM profiles: current|list|swap" -ForegroundColor DarkGray
     Write-Host "    chat `"message`"      " -ForegroundColor Cyan -NoNewline
     Write-Host "Quick chat via API" -ForegroundColor DarkGray
     Write-Host "    update              " -ForegroundColor Cyan -NoNewline
@@ -2048,9 +2288,9 @@ function Show-Help {
     Write-Host "    repair voice        " -ForegroundColor Cyan -NoNewline
     Write-Host "Start voice services and cache STT model" -ForegroundColor DarkGray
     Write-Host "    enable <service>    " -ForegroundColor Cyan -NoNewline
-    Write-Host "Enable an extension service (e.g. comfyui, langfuse)" -ForegroundColor DarkGray
+    Write-Host "Enable an extension service and its dependencies" -ForegroundColor DarkGray
     Write-Host "    disable <service>   " -ForegroundColor Cyan -NoNewline
-    Write-Host "Disable an extension service" -ForegroundColor DarkGray
+    Write-Host "Disable an extension service (-Force skips the dependent check)" -ForegroundColor DarkGray
     Write-Host "    agent [action]      " -ForegroundColor Cyan -NoNewline
     Write-Host "Host agent: status|start|stop|restart|logs" -ForegroundColor DarkGray
     Write-Host "    report              " -ForegroundColor Cyan -NoNewline
@@ -2067,13 +2307,44 @@ function Show-Help {
     Write-Host "    .\ods.ps1 repair voice" -ForegroundColor DarkGray
     Write-Host "    .\ods.ps1 enable comfyui" -ForegroundColor DarkGray
     Write-Host "    .\ods.ps1 disable langfuse" -ForegroundColor DarkGray
+    Write-Host "    .\ods.ps1 disable hermes -Force" -ForegroundColor DarkGray
     Write-Host "    .\ods.ps1 chat `"What is quantum computing?`"" -ForegroundColor DarkGray
+    Write-Host "    .\ods.ps1 model swap T1" -ForegroundColor DarkGray
     Write-Host ""
 }
 
 # ============================================================================
 # Command Dispatch
 # ============================================================================
+
+function Get-ServiceIdArgument {
+    <#
+    .SYNOPSIS
+        First non-flag token, so 'disable -Force hermes' and 'disable hermes -Force'
+        both resolve the service id.
+    #>
+    param([string[]]$Arguments)
+
+    if (-not $Arguments) { return $null }
+    foreach ($arg in $Arguments) {
+        if ($arg -notmatch '^-') { return $arg }
+    }
+    return $null
+}
+
+function Test-ForceArgument {
+    <#
+    .SYNOPSIS
+        True when the operator passed -Force / --force among the trailing args.
+    #>
+    param([string[]]$Arguments)
+
+    if (-not $Arguments) { return $false }
+    foreach ($arg in $Arguments) {
+        if ($arg -eq "-Force" -or $arg -eq "--force") { return $true }
+    }
+    return $false
+}
 
 switch ($Command.ToLower()) {
     "status"  { Invoke-Status }
@@ -2082,7 +2353,20 @@ switch ($Command.ToLower()) {
     "restart" { Invoke-Restart -Service ($Arguments | Select-Object -First 1) }
     "logs"    {
         $svc = $Arguments | Select-Object -First 1
-        $n = $(if ($Arguments.Count -ge 2) { [int]$Arguments[1] } else { 100 })
+        # Validate the optional line count instead of a bare [int] cast, which
+        # throws an unhandled .NET conversion error on non-numeric input
+        # (e.g. `ods logs llama-server 5m`). Mirrors the [int]::TryParse guard
+        # used elsewhere in this script; the Unix CLIs pass the value straight
+        # to `docker compose --tail`, which rejects bad input gracefully too.
+        $n = 100
+        if ($Arguments.Count -ge 2) {
+            $parsedLines = 0
+            if ([int]::TryParse([string]$Arguments[1], [ref]$parsedLines) -and $parsedLines -gt 0) {
+                $n = $parsedLines
+            } else {
+                Write-AIWarn "Invalid line count '$($Arguments[1])'; using $n."
+            }
+        }
         Invoke-Logs -Service $svc -Lines $n
     }
     "config"  {
@@ -2094,12 +2378,17 @@ switch ($Command.ToLower()) {
             Invoke-ConfigShow
         }
     }
+    "model"   {
+        $action = ($Arguments | Select-Object -First 1)
+        if (-not $action) { $action = "current" }
+        Invoke-Model -Action $action -SubArgs ($Arguments | Select-Object -Skip 1)
+    }
     "chat"    { Invoke-Chat -Message ($Arguments -join " ") }
     "update"  { Invoke-Update }
     "doctor"  { Invoke-Doctor }
     "repair"  { Invoke-Repair -Target ($Arguments | Select-Object -First 1) }
-    "enable"  { Invoke-Enable -ServiceId ($Arguments | Select-Object -First 1) }
-    "disable" { Invoke-Disable -ServiceId ($Arguments | Select-Object -First 1) }
+    "enable"  { Invoke-Enable -ServiceId (Get-ServiceIdArgument -Arguments $Arguments) }
+    "disable" { Invoke-Disable -ServiceId (Get-ServiceIdArgument -Arguments $Arguments) -Force:(Test-ForceArgument -Arguments $Arguments) }
     "report"  { Invoke-Report }
     "agent"   {
         $action = ($Arguments | Select-Object -First 1)

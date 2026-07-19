@@ -89,7 +89,7 @@ async def verify_api_key(credentials: HTTPAuthorizationCredentials | None = Secu
             detail="Missing Authorization header",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if not secrets.compare_digest(credentials.credentials, SHIELD_API_KEY):
+    if not _token_valid(credentials.credentials):
         raise HTTPException(status_code=403, detail="Invalid API key.")
     return credentials.credentials
 

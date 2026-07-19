@@ -108,7 +108,12 @@ function Get-ODSComposeSensitiveEnvValues {
             if ($line -notmatch '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { continue }
             $key = $Matches[1]
             $value = $Matches[2].Trim().Trim('"').Trim("'")
-            if ($value.Length -ge 4 -and $key -match '(?i)(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)') {
+            # USER|EMAIL|BEARER cover schema secret:true keys the shorter set
+            # missed - N8N_USER, LANGFUSE_INIT_USER_EMAIL, LANGFUSE_MINIO_ROOT_USER -
+            # whose values would otherwise ship in the shareable failure report.
+            # Keep in sync with ConvertTo-ODSComposeRedactedLine below and the
+            # Linux support bundle's redaction set.
+            if ($value.Length -ge 4 -and $key -match '(?i)(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL|USER|EMAIL|BEARER)') {
                 $values += $value
             }
         }
@@ -128,7 +133,8 @@ function ConvertTo-ODSComposeRedactedLine {
     )
 
     $redacted = $Line
-    if ($redacted -match '(?i)(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)' -and $redacted -match '[:=]') {
+    # Key set kept in sync with Get-ODSComposeSensitiveEnvValues above.
+    if ($redacted -match '(?i)(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL|USER|EMAIL|BEARER)' -and $redacted -match '[:=]') {
         $separatorMatch = [regex]::Match($redacted, '[:=]\s*')
         if ($separatorMatch.Success) {
             $redacted = $redacted.Substring(0, $separatorMatch.Index + $separatorMatch.Length) + "[REDACTED]"

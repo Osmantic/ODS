@@ -118,6 +118,10 @@ def _model_aliases(model: dict[str, Any]) -> set[str]:
     for part in model.get("gguf_parts", []) or []:
         if isinstance(part, dict):
             aliases.add(str(part.get("file") or ""))
+    for alias in tuple(aliases):
+        path_name = re.split(r"[\\/]", alias)[-1]
+        if path_name.lower().endswith(".gguf"):
+            aliases.add(path_name[:-5])
     return {alias for alias in aliases if alias}
 
 

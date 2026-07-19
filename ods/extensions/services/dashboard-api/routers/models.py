@@ -187,6 +187,8 @@ async def _probe_loaded_lemonade_model(model_name: str) -> bool:
         resp = await client.post(f"{base_url}/api/v1/chat/completions", json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
+        if not isinstance(data, dict):
+            return False
         if isinstance(data.get("error"), dict):
             return False
         return bool(data.get("choices"))

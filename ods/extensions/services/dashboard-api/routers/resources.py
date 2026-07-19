@@ -88,7 +88,11 @@ def _post_agent_json(path: str, body: dict, timeout: int = 65) -> dict:
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode() or "{}")
+            raw = resp.read().decode()
+            return json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        logger.warning("Host agent returned invalid JSON for %s", path)
+        return {}
     except urllib.error.HTTPError as exc:
         try:
             detail = json.loads(exc.read().decode() or "{}").get("error")
@@ -96,7 +100,8 @@ def _post_agent_json(path: str, body: dict, timeout: int = 65) -> dict:
             detail = exc.reason
         raise HTTPException(status_code=exc.code, detail=detail or "Host agent request failed") from exc
     except (urllib.error.URLError, OSError) as exc:
-        raise HTTPException(status_code=503, detail=f"Host agent unavailable: {exc}") from exc
+        logger.warning("Host agent unavailable at %s: %s", path, exc)
+        raise HTTPException(status_code=503, detail="Host agent unavailable") from exc
 
 
 @router.get("/api/services/resources")

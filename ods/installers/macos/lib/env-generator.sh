@@ -383,6 +383,7 @@ ODS_AGENT_HOST=${ODS_AGENT_HOST:-host.docker.internal}
 #=== LLM Backend Mode ===
 ODS_MODE=local
 LLM_API_URL=${llm_api_url}
+LLM_BACKEND=llama-server
 
 #=== Cloud API Keys ===
 ANTHROPIC_API_KEY=

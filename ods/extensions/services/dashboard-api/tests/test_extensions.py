@@ -1175,6 +1175,70 @@ class TestDisableExtension:
         data = resp.json()
         assert "dependent-ext" in data["dependents_warning"]
 
+    def test_disable_warns_about_builtin_dependents(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """Disable warns when an enabled built-in extension depends on the target.
+
+        Mirrors the real hermes / hermes-proxy pair: both are built-ins, and
+        disabling hermes while hermes-proxy stays enabled breaks the merged
+        compose project.
+        """
+        builtin_root = tmp_path / "builtin"
+        ext_dir = builtin_root / "my-ext"
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "compose.yaml").write_text(_SAFE_COMPOSE)
+        dep_dir = builtin_root / "dependent-ext"
+        dep_dir.mkdir()
+        (dep_dir / "compose.yaml").write_text(_SAFE_COMPOSE)
+        (dep_dir / "manifest.yaml").write_text(
+            yaml.dump({"service": {"depends_on": ["my-ext"]}}),
+        )
+        _patch_mutation_config(monkeypatch, tmp_path)
+        monkeypatch.setattr("routers.extensions._call_agent", lambda action, sid: True)
+
+        def _mock_compose_rename(action, service_id):
+            (ext_dir / "compose.yaml").rename(ext_dir / "compose.yaml.disabled")
+            return True
+
+        monkeypatch.setattr(
+            "routers.extensions._call_agent_compose_rename",
+            _mock_compose_rename,
+        )
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/disable",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        assert "dependent-ext" in resp.json()["dependents_warning"]
+
+    def test_disable_skips_disabled_dependents(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """A dependent that is itself disabled does not trigger the warning."""
+        user_dir = tmp_path / "user"
+        user_dir.mkdir()
+        ext_dir = user_dir / "my-ext"
+        ext_dir.mkdir()
+        (ext_dir / "compose.yaml").write_text(_SAFE_COMPOSE)
+        dep_dir = user_dir / "dependent-ext"
+        dep_dir.mkdir()
+        (dep_dir / "compose.yaml.disabled").write_text(_SAFE_COMPOSE)
+        (dep_dir / "manifest.yaml").write_text(
+            yaml.dump({"service": {"depends_on": ["my-ext"]}}),
+        )
+        _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/disable",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["dependents_warning"] == []
+
     def test_disable_requires_auth(self, test_client):
         """POST disable without auth → 401."""
         resp = test_client.post("/api/extensions/my-ext/disable")
@@ -2046,6 +2110,64 @@ class TestScanComposeSkipNameCollision:
         with pytest.raises(HTTPException) as exc:
             _scan_compose_content(compose, skip_name_collision=True)
         assert "Docker socket" in exc.value.detail
+
+
+class TestScanComposeVolumeBypass:
+    """The volume guard must resolve the host source for long-form ({type:
+    bind, source: ...}) and relative-traversal entries, not just short-form
+    absolute strings."""
+
+    def _scan(self, tmp_path, compose_text):
+        from routers.extensions import _scan_compose_content
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(compose_text)
+        _scan_compose_content(compose)
+
+    def test_rejects_long_form_absolute_bind(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n    volumes:\n"
+                "      - type: bind\n        source: /\n        target: /host\n",
+            )
+        assert exc.value.status_code == 400
+        assert "absolute host path" in exc.value.detail
+
+    def test_rejects_relative_traversal_short_form(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    volumes:\n      - ../../:/host\n",
+            )
+        assert exc.value.status_code == 400
+        assert "escaping the project directory" in exc.value.detail
+
+    def test_rejects_long_form_relative_traversal(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n    volumes:\n"
+                "      - type: bind\n        source: ../..\n        target: /host\n",
+            )
+        assert exc.value.status_code == 400
+        assert "escaping the project directory" in exc.value.detail
+
+    def test_allows_named_volume(self, tmp_path):
+        # A named volume (no path separator) is not a host bind and must pass.
+        self._scan(
+            tmp_path,
+            "services:\n  svc:\n    image: test\n"
+            "    volumes:\n      - mydata:/var/lib/data\n",
+        )
+
+    def test_allows_project_relative_subdir_bind(self, tmp_path):
+        # A ./subdir bind stays inside the extension's own directory.
+        self._scan(
+            tmp_path,
+            "services:\n  svc:\n    image: test\n"
+            "    volumes:\n      - ./data:/data\n",
+        )
 
 
 # --- skip_gpu_passthrough_check flag isolation ---

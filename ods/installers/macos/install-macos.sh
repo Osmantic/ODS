@@ -677,6 +677,7 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_TIE
                 --ram-gb "${SYSTEM_RAM_GB:-0}" \
                 --profile "${MODEL_PROFILE_EFFECTIVE:-${MODEL_PROFILE:-qwen}}" \
                 --tier "$SELECTED_TIER" \
+                --max-size-mb "${LLM_MODEL_SIZE_MB:-0}" \
                 --host-arch "$(uname -m 2>/dev/null || echo unknown)" \
                 --installable-only \
                 --env 2>>"$ODS_LOG_FILE" || true)"
@@ -1813,7 +1814,7 @@ OPENCODE_EOF
         <string>127.0.0.1</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>${HOME}</string>
+    <string>${INSTALL_DIR}</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
@@ -1990,7 +1991,10 @@ for ((idx=0; idx<${#HEALTH_NAMES[@]}; idx++)); do
             fi
         else
             # Host-native service -- poll HTTP on 127.0.0.1.
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL" 2>/dev/null || echo "000")
+            # Bound each probe: a listening-but-still-loading server accepts the
+            # connection and would otherwise block past the loop's own budget
+            # (matches the --max-time 10 used elsewhere in this installer).
+            HTTP_CODE=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$URL" 2>/dev/null || echo "000")
             if [[ "$HTTP_CODE" -ge 200 ]] && [[ "$HTTP_CODE" -lt 400 ]]; then
                 HEALTHY=true
                 break

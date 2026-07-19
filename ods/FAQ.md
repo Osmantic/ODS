@@ -521,7 +521,7 @@ Then restart: `docker compose up -d`
 - Security: `SECURITY.md`
 
 ### Community
-- GitHub Issues: https://github.com/Light-Heart-Labs/ODS/issues
+- GitHub Issues: https://github.com/Osmantic/ODS/issues
 - Discord: #general channel
 
 ### Debug info for bug reports

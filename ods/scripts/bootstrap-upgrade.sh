@@ -104,7 +104,7 @@ status_percent() {
     local display_bytes="$downloaded"
     [[ "$display_bytes" -lt 0 ]] && display_bytes=0
     [[ "$display_bytes" -gt "$total" ]] && display_bytes="$total"
-    awk "BEGIN { printf \"%.1f\", ($display_bytes / $total) * 100 }"
+    LC_ALL=C awk "BEGIN { printf \"%.1f\", ($display_bytes / $total) * 100 }"
 }
 
 write_failed_download_status() {
@@ -1360,14 +1360,26 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
         read -ra COMPOSE_ARGS <<< "$(cat "$INSTALL_DIR/.compose-flags")"
     elif [[ -x "$INSTALL_DIR/scripts/resolve-compose-stack.sh" ]]; then
         _tier="1"
+        _gpu_count="1"
+        _ods_mode="local"
         if [[ -f "$ENV_FILE" ]]; then
             _tier=$(grep -E '^TIER=' "$ENV_FILE" | cut -d= -f2 | tr -d '"\047\r')
             [[ -n "$_tier" ]] || _tier="1"
+            _gpu_count=$(grep -E '^GPU_COUNT=' "$ENV_FILE" | cut -d= -f2 | tr -d '"\047\r')
+            [[ -n "$_gpu_count" ]] || _gpu_count="1"
+            _ods_mode=$(grep -E '^ODS_MODE=' "$ENV_FILE" | cut -d= -f2 | tr -d '"\047\r')
+            [[ -n "$_ods_mode" ]] || _ods_mode="local"
         fi
+        # --gpu-count gates the multigpu-{backend} overlays and --ods-mode gates
+        # the compose.local.yaml overlays. The resolver reads neither from the
+        # environment, and the flags below are persisted to .compose-flags, so
+        # omitting them writes a single-GPU local-mode stack over the real one.
         _resolved_env=$("$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
             --script-dir "$INSTALL_DIR" \
             --tier "$_tier" \
             --gpu-backend "${_gpu_backend:-cpu}" \
+            --gpu-count "$_gpu_count" \
+            --ods-mode "$_ods_mode" \
             --env 2>/dev/null || true)
         _resolved_flags=$(printf '%s\n' "$_resolved_env" | sed -n 's/^COMPOSE_FLAGS="\([^"]*\)".*/\1/p')
         if [[ -n "$_resolved_flags" ]]; then

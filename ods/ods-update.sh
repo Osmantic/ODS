@@ -258,6 +258,13 @@ snapshot_pre_update() {
         files_saved=$(( files_saved + 1 ))
     done
 
+    # Cached compose flags — records which overlays were active, so rollback
+    # can bring the restored stack up with the same file selection
+    if [[ -f "${INSTALL_DIR}/.compose-flags" ]]; then
+        cp "${INSTALL_DIR}/.compose-flags" "${snap_dir}/"
+        files_saved=$(( files_saved + 1 ))
+    fi
+
     # Per-extension config directories
     for ext_dir in litellm n8n openclaw searxng; do
         local src="${INSTALL_DIR}/config/${ext_dir}"
@@ -570,20 +577,23 @@ cmd_backup() {
     mkdir -p "$backup_path"
     
     # Backup compose files
+    # NB: x=$((x + 1)) not ((x++)) — the post-increment form evaluates to 0
+    # on the first increment, which set -e treats as failure and aborts the
+    # backup after copying a single file.
     local files_backed_up=0
     for pattern in "docker-compose*.yml" "docker-compose*.yaml" ".env" ".env.*"; do
         for file in "${INSTALL_DIR}"/${pattern}; do
             if [[ -f "$file" ]]; then
                 cp "$file" "$backup_path/"
-                ((files_backed_up++))
+                files_backed_up=$((files_backed_up + 1))
             fi
         done
     done
-    
+
     # Backup version file
     if [[ -f "$VERSION_FILE" ]]; then
         cp "$VERSION_FILE" "$backup_path/.version"
-        ((files_backed_up++))
+        files_backed_up=$((files_backed_up + 1))
     fi
     
     # Generate metadata (use jq for safe JSON construction)
@@ -604,7 +614,7 @@ cmd_backup() {
     backup_dirs=$(find "$BACKUP_DIR" -maxdepth 1 -type d -name "backup-*" | sort -r)
     local count=0
     for dir in $backup_dirs; do
-        ((count++))
+        count=$((count + 1))
         if ((count > MAX_BACKUPS)); then
             log_info "Removing old backup: $(basename "$dir")"
             rm -rf "$dir"
@@ -765,12 +775,26 @@ cmd_rollback() {
         log_info "Snapshot time    : ${btime}"
     fi
 
-    # Stop services
+    local compose_flags=""
+    local -a compose_args=()
+    compose_flags=$(resolve_compose_flags 2>/dev/null || true)
+    if [[ -n "$compose_flags" ]]; then
+        read -ra compose_args <<< "$compose_flags"
+    fi
+
+    # Stop services using the currently active compose stack.
     log_info "Stopping services..."
     cd "$INSTALL_DIR"
-    if ! docker compose down; then
-        log_warn "docker compose v2 down failed, trying v1..."
-        docker-compose down
+    if [[ ${#compose_args[@]} -gt 0 ]]; then
+        if ! docker compose "${compose_args[@]}" down; then
+            log_warn "docker compose v2 down failed, trying v1..."
+            docker-compose "${compose_args[@]}" down
+        fi
+    else
+        if ! docker compose down; then
+            log_warn "docker compose v2 down failed, trying v1..."
+            docker-compose down
+        fi
     fi
 
     # Restore — use _restore_snapshot for pre-update snapshots (they include
@@ -793,11 +817,34 @@ cmd_rollback() {
         shopt -u dotglob
     fi
 
-    # Restart services
+    # The restored .env and compose files may select a different backend or
+    # overlay than the stack that was just stopped.  If the snapshot predates
+    # .compose-flags, drop the stale cache so resolution falls back to the
+    # restored .env.
+    if [[ ! -f "${backup_path}/.compose-flags" && -f "${INSTALL_DIR}/.compose-flags" ]]; then
+        log_info "Snapshot has no .compose-flags; clearing stale cached stack."
+        rm -f "${INSTALL_DIR}/.compose-flags"
+    fi
+
+    # Restart services using the restored compose stack
     log_info "Restarting services..."
-    if ! docker compose up -d; then
-        log_warn "docker compose v2 up failed, trying v1..."
-        docker-compose up -d
+    local restored_compose_flags=""
+    local -a restored_compose_args=()
+    restored_compose_flags=$(resolve_compose_flags 2>/dev/null || true)
+    if [[ -n "$restored_compose_flags" ]]; then
+        read -ra restored_compose_args <<< "$restored_compose_flags"
+    fi
+
+    if [[ ${#restored_compose_args[@]} -gt 0 ]]; then
+        if ! docker compose "${restored_compose_args[@]}" up -d; then
+            log_warn "docker compose v2 up failed, trying v1..."
+            docker-compose "${restored_compose_args[@]}" up -d
+        fi
+    else
+        if ! docker compose up -d; then
+            log_warn "docker compose v2 up failed, trying v1..."
+            docker-compose up -d
+        fi
     fi
 
     # Verify health using the same timeout-aware poller as cmd_update
@@ -906,9 +953,9 @@ cmd_health() {
     local dashboard_api_port="${DASHBOARD_API_PORT:-}"
     [[ -n "$dashboard_api_port" ]] || dashboard_api_port="$(env_file_value DASHBOARD_API_PORT)"
     dashboard_api_port="${dashboard_api_port:-3002}"
-    if curl -sf "http://127.0.0.1:${dashboard_api_port}/health" &>/dev/null; then
+    if curl -sf --max-time 15 "http://127.0.0.1:${dashboard_api_port}/health" &>/dev/null; then
         log_ok "Dashboard API: healthy"
-    elif curl -sf "http://127.0.0.1:${dashboard_api_port}/api/status" &>/dev/null; then
+    elif curl -sf --max-time 15 "http://127.0.0.1:${dashboard_api_port}/api/status" &>/dev/null; then
         log_ok "Dashboard API: responding"
     else
         log_warn "Dashboard API: not responding on port ${dashboard_api_port}"
@@ -919,7 +966,7 @@ cmd_health() {
     [[ -n "$llama_server_port" ]] || llama_server_port="$(env_file_value OLLAMA_PORT)"
     [[ -n "$llama_server_port" ]] || llama_server_port="$(env_file_value LLAMA_SERVER_PORT)"
     llama_server_port="${llama_server_port:-8080}"
-    if curl -sf "http://127.0.0.1:${llama_server_port}/v1/models" &>/dev/null; then
+    if curl -sf --max-time 15 "http://127.0.0.1:${llama_server_port}/v1/models" &>/dev/null; then
         log_ok "llama-server: healthy"
     else
         log_warn "llama-server: not responding on port ${llama_server_port}"

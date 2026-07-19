@@ -67,3 +67,7 @@ jobs:
             }
           }
           if ($failed) { exit 1 }
+
+      - name: Windows Lemonade Task Cleanup Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-lemonade-task-cleanup.ps1

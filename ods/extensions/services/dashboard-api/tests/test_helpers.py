@@ -36,6 +36,27 @@ class TestGetModelInfo:
         assert info.size_gb == 16.0
         assert info.quantization == "AWQ"
 
+    def test_strips_only_matched_quote_pairs(self, install_dir):
+        # A double-quoted value keeps its inner single quotes, and a value
+        # that legitimately ends with a quote character is not truncated.
+        env_file = install_dir / ".env"
+        env_file.write_text(
+            "LLM_MODEL=\"Qwen2.5-7B-Instruct\"\n"
+            "GGUF_FILE=model'v2.gguf\n"
+        )
+
+        info = get_model_info()
+        assert info is not None
+        assert info.name == "Qwen2.5-7B-Instruct"
+
+    def test_keeps_mismatched_quotes_verbatim(self, install_dir):
+        env_file = install_dir / ".env"
+        env_file.write_text("LLM_MODEL=\"Qwen2.5-7B-Instruct'\n")
+
+        info = get_model_info()
+        assert info is not None
+        assert info.name == "\"Qwen2.5-7B-Instruct'"
+
     def test_parses_7b_model(self, install_dir):
         env_file = install_dir / ".env"
         env_file.write_text('LLM_MODEL=Qwen2.5-7B-Instruct\n')
@@ -62,6 +83,24 @@ class TestGetModelInfo:
         assert info is not None
         assert info.size_gb == 35.0
         assert info.quantization == "GGUF"
+
+    def test_parses_numeric_context(self, install_dir):
+        env_file = install_dir / ".env"
+        env_file.write_text('LLM_MODEL=Qwen2.5-7B-Instruct\nCTX_SIZE=8192\n')
+
+        info = get_model_info()
+        assert info is not None
+        assert info.context_length == 8192
+
+    def test_non_numeric_context_falls_back_to_default(self, install_dir):
+        # A non-numeric CTX_SIZE/MAX_CONTEXT (e.g. "auto") must not 500 every
+        # caller of get_model_info(); it falls back to the default context.
+        env_file = install_dir / ".env"
+        env_file.write_text('LLM_MODEL=Qwen2.5-7B-Instruct\nCTX_SIZE=auto\n')
+
+        info = get_model_info()
+        assert info is not None
+        assert info.context_length == 32768
 
     def test_returns_none_when_no_env(self, install_dir):
         # No .env file created
@@ -1134,3 +1173,18 @@ class TestDirSizeGb:
         invalidate_dir_size_cache(d)
         assert dir_size_gb(d) == 0.0
         assert calls["count"] == 1
+
+    def test_dir_size_cache_bound(self, tmp_path):
+        from helpers import _dir_size_cache
+        _dir_size_cache.clear()
+
+        # Fill cache with 1005 items
+        for i in range(1005):
+            path = tmp_path / f"test_dir_{i}"
+            _dir_size_cache.set(path, 1.0)
+
+        assert len(_dir_size_cache._store) == 1000
+
+        # Verify older items were evicted
+        first_path = tmp_path / "test_dir_0"
+        assert _dir_size_cache.get(first_path) is None

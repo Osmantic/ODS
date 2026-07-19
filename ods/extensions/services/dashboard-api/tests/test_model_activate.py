@@ -356,8 +356,8 @@ class TestLaunchNativeLlamaServer:
 class TestRestartWindowsLemonade:
 
     def test_refreshes_task_with_current_exe_and_falls_back_to_direct_start(self, monkeypatch, tmp_path):
-        program_files = tmp_path / "Program Files"
-        lemonade_exe = program_files / "Lemonade Server" / "bin" / "LemonadeServer.exe"
+        local_app_data = tmp_path / "AppData" / "Local"
+        lemonade_exe = local_app_data / "lemonade_server" / "bin" / "LemonadeServer.exe"
         lemonade_exe.parent.mkdir(parents=True)
         lemonade_exe.write_text("", encoding="utf-8")
 
@@ -369,7 +369,8 @@ class TestRestartWindowsLemonade:
             captured["env"] = kwargs["env"]
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        monkeypatch.setenv("ProgramFiles", str(program_files))
+        monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+        monkeypatch.delenv("ProgramFiles", raising=False)
         monkeypatch.delenv("ProgramFiles(x86)", raising=False)
         monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)

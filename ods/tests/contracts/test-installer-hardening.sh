@@ -130,6 +130,8 @@ assert_contains "$bootstrap" 'zypper --non-interactive install -y git' "bootstra
 assert_contains "$bootstrap" 'zypper --non-interactive install -y curl' "bootstrap cannot install curl on zypper distros"
 assert_contains "$bootstrap" 'ODS_REF' "bootstrap should allow PR/fleet lanes to clone a matching ref"
 assert_contains "$bootstrap" 'clone_args\+=\(--branch "\$ODS_REF"\)' "bootstrap ref override should apply to git clone"
+assert_contains "$bootstrap" 'ods_ref_is_exact_sha' "bootstrap should detect exact commit SHA refs"
+assert_contains "$bootstrap" 'checkout_requested_sha_ref "\$ODS_REF"' "bootstrap should checkout exact SHA refs after cloning"
 assert_contains "$bootstrap" 'BOOTSTRAP_FORCE=false' "bootstrap should parse --force before incomplete install prompts"
 assert_contains "$bootstrap" 'BOOTSTRAP_NON_INTERACTIVE=false' "bootstrap should parse --non-interactive before incomplete install prompts"
 assert_contains "$bootstrap" 'Removing incomplete install because --force was provided' "bootstrap --force should remove incomplete install dirs without prompting"
@@ -137,6 +139,63 @@ assert_contains "$bootstrap" 'Re-run with --force to remove it automatically' "b
 assert_contains "$bootstrap" 'remove_install_dir()' "bootstrap should centralize incomplete install cleanup"
 assert_contains "$bootstrap" 'sudo -n rm -rf -- "\$target_dir"' "bootstrap --force should retry root-owned container data cleanup with sudo -n"
 assert_contains "$bootstrap" 'root-owned container data' "bootstrap sudo fallback should explain root-owned Docker data cleanup"
+
+echo "[contract] public bootstrap can install from an exact commit SHA"
+sha_repo="$tmpdir/sha-ref-repo"
+sha_home="$tmpdir/sha-home"
+sha_install="$tmpdir/sha-install"
+sha_marker="$tmpdir/sha-marker"
+mkdir -p "$sha_repo/ods/scripts" "$sha_repo/ods/extensions/library" "$sha_home" "$tmpdir/bin"
+cat > "$sha_repo/ods/install.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' first-commit > "${ODS_TEST_BOOTSTRAP_INSTALL_MARKER:?}"
+EOF
+chmod +x "$sha_repo/ods/install.sh"
+git -C "$sha_repo" init -q
+git -C "$sha_repo" add ods
+git -C "$sha_repo" \
+  -c user.name="ODS Test" \
+  -c user.email="ods-test@example.invalid" \
+  commit -q -m "first install payload"
+sha_ref="$(git -C "$sha_repo" rev-parse HEAD)"
+cat > "$sha_repo/ods/install.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' second-commit > "${ODS_TEST_BOOTSTRAP_INSTALL_MARKER:?}"
+EOF
+git -C "$sha_repo" add ods/install.sh
+git -C "$sha_repo" \
+  -c user.name="ODS Test" \
+  -c user.email="ods-test@example.invalid" \
+  commit -q -m "second install payload"
+
+cat > "$tmpdir/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf '%s\n' "Docker version test"; exit 0 ;;
+  compose|ps) exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$tmpdir/bin/docker"
+
+if ! PATH="$tmpdir/bin:$PATH" \
+    HOME="$sha_home" \
+    ODS_BOOTSTRAP_ROOT="$sha_home" \
+    ODS_REPO_URL="file://$sha_repo" \
+    ODS_REF="$sha_ref" \
+    ODS_INSTALL_DIR="$sha_install" \
+    ODS_ALLOW_LEGACY_PARALLEL=1 \
+    ODS_TEST_BOOTSTRAP_INSTALL_MARKER="$sha_marker" \
+    bash get-ods.sh --non-interactive >"$tmpdir/bootstrap-sha.out" 2>&1; then
+  cat "$tmpdir/bootstrap-sha.out"
+  echo "[FAIL] bootstrap exact-SHA install failed"
+  exit 1
+fi
+grep -qF first-commit "$sha_marker" \
+  || { cat "$tmpdir/bootstrap-sha.out"; echo "[FAIL] bootstrap did not install the exact SHA payload"; exit 1; }
+assert_not_contains "$tmpdir/bootstrap-sha.out" 'Remote branch .* not found' "bootstrap treated an exact SHA as a branch name"
 
 echo "[contract] runtime dispatcher supports non-gnu Linux OSTYPE"
 dispatcher_common="installers/common.sh"
@@ -192,7 +251,19 @@ assert_contains "$win_installer" 'Start-Process -FilePath \$script:LEMONADE_EXE'
 assert_contains "$win_installer" 'Lemonade scheduled task did not start a server process' "Windows installer should recover when Task Scheduler reports success without a Lemonade process"
 assert_contains "$win_installer" 'Start-Process msiexec\.exe .* -PassThru' "Windows installer should capture Lemonade MSI exit codes"
 assert_contains "$win_installer" 'Lemonade MSI exited with code' "Windows installer should report failed Lemonade MSI exit codes honestly"
+assert_contains "$win_installer" 'INSTALLDIR=' "Windows installer should install Lemonade into the normal user's runtime directory"
+assert_contains "$win_installer" '/L\*V' "Windows installer should retain a verbose Lemonade MSI log for support"
+assert_not_contains "$win_installer" 'ALLUSERS=1' "Windows installer must not require an elevated all-users Lemonade MSI install"
+assert_contains "$win_installer" '\$_managedBin = if \(\$_resolvedExe\)' "Windows installer should scope Lemonade cleanup to the resolved ODS runtime directory"
+assert_not_contains "$win_installer" '\$_knownNames -contains \$_name' "Windows installer must not stop unrelated Lemonade processes by executable name alone"
 assert_contains "installers/windows/lib/backend-contract.ps1" 'Get-ODSLemonadeExeCandidatePaths' "Windows Lemonade resolver should expose candidate paths for diagnostics"
+assert_contains "installers/windows/lib/backend-contract.ps1" 'Get-ODSLemonadeUserInstallDir' "Windows Lemonade resolver should support the per-user MSI location"
+assert_contains "installers/windows/lib/backend-contract.ps1" 'LOCALAPPDATA' "Windows Lemonade resolver should probe the current user's AppData location"
+assert_contains "$win_installer" 'Get-ODSWindowsUserDockerClientArgs' "Windows Docker fallback should preserve an existing user Docker config"
+assert_contains "$win_installer" 'image validation failed with the install-scoped Docker config' "Windows Docker fallback should cover image validation before builds"
+assert_contains "$win_installer" 'Continuing Compose preflight and service launch with the user'\''s Docker config' "Windows Docker fallback should carry through Compose preflight and launch"
+assert_contains "$win_installer" 'Compose service launch failed with the install-scoped Docker config' "Windows Docker fallback should retry compose up"
+assert_contains "$win_installer" 'Managed-container inspection failed with the install-scoped Docker config' "Windows Docker fallback should retry managed-container inspection"
 assert_contains "$win_installer" 'ODSLemonadeRuntime' "Windows installer should use a stable Lemonade scheduled task name"
 assert_contains "$win_installer" 'Invoke-WindowsSttModelDownloadTrigger' "Windows installer should trigger STT preload through a bounded helper"
 assert_contains "$win_installer" '--max-time 30 -X POST' "Windows installer STT preload should use a bounded curl trigger"
@@ -206,13 +277,14 @@ assert_contains "$win_installer" 'model-upgrade.pid' "Windows installer should r
 assert_contains "$win_installer" 'ODSModelUpgrade' "Windows installer should launch full-model upgrade through a separate scheduled task"
 python3 - "$win_installer" >"$tmpdir/windows-upgrade-launcher.out" <<'PY'
 import sys
+import re
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 start = text.index('$upgradeTaskName = "ODSModelUpgrade"')
 end = text.index("if (Test-Path -LiteralPath $upgradePidFile)", start)
 block = text[start:end]
-if "Start-Process -FilePath $bashPath" in block or "-Wait" in block:
+if re.search(r"Start-Process\s+-FilePath\s+\$bashPath[^\r\n]*\s-Wait(?:\s|$)", block):
     raise SystemExit("model upgrade launcher stays in the installer process tree")
 if 'nohup bash "$bashScript"' in block or 'disown "$pid"' in block:
     raise SystemExit("model upgrade task detaches from the process it is meant to supervise")

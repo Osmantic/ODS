@@ -3,7 +3,7 @@
 
 FROM python:3.11-slim
 
-LABEL org.opencontainers.image.source="https://github.com/Light-Heart-Labs/ODS"
+LABEL org.opencontainers.image.source="https://github.com/Osmantic/ODS"
 LABEL org.opencontainers.image.description="ODS Dashboard API"
 
 WORKDIR /app

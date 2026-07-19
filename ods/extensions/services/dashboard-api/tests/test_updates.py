@@ -1,10 +1,19 @@
 """Tests for updates router endpoints."""
 
 import json
+from datetime import datetime
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import httpx
 from fastapi import HTTPException
+
+
+def test_github_release_urls_use_canonical_repository():
+    import routers.updates as updates_mod
+
+    assert updates_mod._GITHUB_REPOSITORY == "Osmantic/ODS"
+    assert updates_mod._GITHUB_RELEASES_API == "https://api.github.com/repos/Osmantic/ODS/releases"
+    assert updates_mod._GITHUB_RELEASES_PAGE == "https://github.com/Osmantic/ODS/releases"
 
 
 def test_get_version_requires_auth(test_client):
@@ -22,6 +31,7 @@ def test_get_version_authenticated(test_client):
     assert "latest" in data
     assert "update_available" in data
     assert "checked_at" in data
+    datetime.fromisoformat(data["checked_at"])  # valid ISO-8601 (regression: no trailing "Z" after the offset)
 
 
 def test_get_version_with_mock_github(test_client, monkeypatch):
@@ -127,6 +137,7 @@ def test_get_releases_manifest_authenticated(test_client):
     data = resp.json()
     assert "releases" in data
     assert "checked_at" in data
+    datetime.fromisoformat(data["checked_at"])  # valid ISO-8601 (regression: no trailing "Z" after the offset)
     assert isinstance(data["releases"], list)
     assert len(data["releases"]) == 1
     assert data["releases"][0]["version"] == "1.0.0"
@@ -202,6 +213,7 @@ def test_releases_manifest_with_mocked_github(test_client):
     assert data["releases"][0]["version"] == "1.5.0"
     assert data["releases"][1]["prerelease"] is True
     assert "checked_at" in data
+    datetime.fromisoformat(data["checked_at"])  # valid ISO-8601 (regression: no trailing "Z" after the offset)
 
 
 def test_releases_manifest_github_error_fallback(test_client, tmp_path, monkeypatch):
@@ -348,7 +360,7 @@ def test_update_dry_run_normalizes_v_prefixed_version(test_client, tmp_path, mon
     """
     import routers.updates as updates_mod
 
-    install_dir = tmp_path / "dream-server"
+    install_dir = tmp_path / "ods-install"
     install_dir.mkdir()
     (install_dir / ".version").write_text("v2.0.1")
     monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))

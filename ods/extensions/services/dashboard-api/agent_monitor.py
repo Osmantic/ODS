@@ -6,7 +6,7 @@ Collects real-time metrics on agent swarms, sessions, and throughput.
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List
 import os
 
@@ -22,7 +22,7 @@ class AgentMetrics:
     """Real-time agent monitoring metrics"""
 
     def __init__(self):
-        self.last_update = datetime.now()
+        self.last_update = datetime.now(timezone.utc)
         self.session_count = 0
         self.tokens_per_second = 0.0  # no data source located; use throughput.get_stats() for live rate
         self.error_rate_1h = 0.0
@@ -96,12 +96,12 @@ class ThroughputMetrics:
     def add_sample(self, tokens_per_sec: float):
         """Add a new throughput sample"""
         self.data_points.append({
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "tokens_per_sec": tokens_per_sec
         })
 
         # Prune old data
-        cutoff = datetime.now() - timedelta(minutes=self.history_minutes)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.history_minutes)
         self.data_points = [
             p for p in self.data_points
             if datetime.fromisoformat(p["timestamp"]) > cutoff
@@ -173,7 +173,7 @@ async def collect_metrics():
             # Update agent session count and throughput from Token Spy
             await _fetch_token_spy_metrics()
 
-            agent_metrics.last_update = datetime.now()
+            agent_metrics.last_update = datetime.now(timezone.utc)
 
         except FileNotFoundError as e:
             logger.debug("Metrics collection failed: command not found - %s", e)
@@ -190,7 +190,7 @@ async def collect_metrics():
 def get_full_agent_metrics() -> dict:
     """Get all agent monitoring metrics as a dict"""
     return {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "agent": agent_metrics.to_dict(),
         "cluster": cluster_status.to_dict(),
         "throughput": throughput.get_stats()

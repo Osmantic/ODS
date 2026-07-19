@@ -734,6 +734,96 @@ class TestUpdateWire:
             server.server_close()
             thread.join(timeout=2)
 
+    def test_backup_rejects_path_traversal_backup_id(self, tmp_path, monkeypatch):
+        import threading
+        import urllib.error
+        import urllib.request
+        from http.server import HTTPServer
+
+        install_dir = tmp_path / "ods"
+        install_dir.mkdir()
+
+        calls = []
+
+        def spy_run(action, *args, timeout):
+            calls.append((action, args))
+            return subprocess.CompletedProcess(["ods-update", action, *args], 0, "", "")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "wire-test-secret")
+        monkeypatch.setattr(_mod, "_run_update_script", spy_run)
+
+        server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/update/backup",
+                data=json.dumps({"backup_id": "../../../../tmp/exfil"}).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer wire-test-secret",
+                },
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as excinfo:
+                urllib.request.urlopen(req, timeout=2)
+
+            assert excinfo.value.code == 400
+            # The traversal id must be rejected before it ever reaches the
+            # update script that would copy .env into the escaped directory.
+            assert calls == []
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_backup_accepts_plain_backup_id(self, tmp_path, monkeypatch):
+        import threading
+        import urllib.request
+        from http.server import HTTPServer
+
+        install_dir = tmp_path / "ods"
+        install_dir.mkdir()
+
+        calls = []
+
+        def spy_run(action, *args, timeout):
+            calls.append((action, args))
+            return subprocess.CompletedProcess(
+                ["ods-update", action, *args], 0, "backed up\n", ""
+            )
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "wire-test-secret")
+        monkeypatch.setattr(_mod, "_run_update_script", spy_run)
+
+        server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/update/backup",
+                data=json.dumps({"backup_id": "dashboard-20260715-143022"}).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer wire-test-secret",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            assert resp.status == 200
+            assert data["success"] is True
+            assert calls == [("backup", ("dashboard-20260715-143022",))]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
 
 class TestComposeToggleWire:
     """End-to-end HTTP test for built-in compose toggles via the host agent."""
@@ -3370,3 +3460,17 @@ class TestModelDownloadFileIntegrity:
         assert (models_dir / "split-model-00002-of-00002.gguf").read_bytes() == b"downloaded second part"
         status = json.loads((install_dir / "data" / "model-download-status.json").read_text(encoding="utf-8"))
         assert status["status"] == "complete"
+
+
+def test_read_json_body_rejects_non_object():
+    """A syntactically-valid but non-object JSON body ([]) must be rejected with
+    400, not returned as a list — every caller immediately does body.get(...),
+    which would raise AttributeError and drop the connection."""
+    handler = _FakeHandler(b"[]")
+    assert _mod.read_json_body(handler) is None
+    assert handler.response_code == 400
+
+
+def test_read_json_body_accepts_object():
+    handler = _FakeHandler(b'{"a": 1}')
+    assert _mod.read_json_body(handler) == {"a": 1}

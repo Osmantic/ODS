@@ -249,14 +249,33 @@ def score_model(model: dict[str, Any], capacity_gb: float, profile: str) -> floa
     return specialty_weight + family_bonus + context_bonus + capability - headroom_penalty
 
 
+def size_within_ceiling(model: dict[str, Any], max_size_mb: float) -> bool:
+    """True if `model` respects an optional tier size ceiling.
+
+    `max_size_mb` <= 0 means "no ceiling" (unbounded, current behavior).
+    A small tolerance absorbs rounding differences between the tier map's
+    declared LLM_MODEL_SIZE_MB and the catalog's size_mb for the same
+    model, so the tier's own designated model is never excluded by its
+    own ceiling.
+    """
+    if max_size_mb <= 0:
+        return True
+    size_mb = float(model.get("size_mb") or 0)
+    tolerance_mb = max(max_size_mb * 0.02, 64.0)
+    return size_mb <= max_size_mb + tolerance_mb
+
+
 def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
                 installable_only: bool, backend: str, memory_type: str,
-                vram_mb: int, ram_gb: int, host_arch: str) -> list[dict[str, Any]]:
+                vram_mb: int, ram_gb: int, host_arch: str,
+                max_size_mb: float = 0) -> list[dict[str, Any]]:
     candidates = []
     for model in catalog:
         if installable_only and not model.get("gguf_url"):
             continue
         if not family_allowed(model, profile):
+            continue
+        if not size_within_ceiling(model, max_size_mb):
             continue
         runtime_profile = matching_runtime_profile(model, backend, memory_type, vram_mb, ram_gb, host_arch)
         candidate_model = {**model, "_runtime_profile": runtime_profile} if runtime_profile else model
@@ -266,6 +285,11 @@ def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
         candidates.append((score_model(candidate_model, capacity_gb, profile), candidate_model))
     if not candidates:
         fallback_pool = [
+            model for model in catalog
+            if (not installable_only or model.get("gguf_url"))
+            and family_allowed(model, profile)
+            and size_within_ceiling(model, max_size_mb)
+        ] or [
             model for model in catalog
             if (not installable_only or model.get("gguf_url")) and family_allowed(model, profile)
         ] or catalog
@@ -398,12 +422,21 @@ def main() -> int:
     parser.add_argument("--ram-gb", type=int, default=0)
     parser.add_argument("--profile", default="qwen")
     parser.add_argument("--tier", default="1")
+    parser.add_argument(
+        "--max-size-mb", type=float, default=0,
+        help="Optional ceiling on selected model size_mb, e.g. the tier map's "
+             "LLM_MODEL_SIZE_MB. 0 (default) leaves selection unbounded, "
+             "picking the largest catalog model that fits available memory.",
+    )
     parser.add_argument("--host-arch", default="unknown")
     parser.add_argument("--installable-only", action="store_true")
     parser.add_argument("--env", action="store_true", help="print shell assignments")
     args = parser.parse_args()
 
     catalog = load_catalog(args.catalog)
+    if not catalog:
+        print("error: model catalog is empty (no usable models)", file=sys.stderr)
+        return 1
     profile = effective_profile(normalize_profile(args.profile), args.backend, args.tier)
     capacity_gb, memory_label = usable_memory_gb(args.backend, args.memory_type, args.vram_mb, args.ram_gb)
     confidence = "high" if args.backend not in {"unknown", "none"} and capacity_gb > 0 else "medium"
@@ -417,6 +450,7 @@ def main() -> int:
         args.vram_mb,
         args.ram_gb,
         args.host_arch,
+        args.max_size_mb,
     )
     arch_selected, arch_policy_tag = arch_policy_model(
         catalog, args.tier, profile, args.host_arch, args.memory_type, args.installable_only, ranked[0],
@@ -436,6 +470,12 @@ def main() -> int:
         policy = POLICY
         source = "catalog_runtime_profile_pre_download" if selected.get("_runtime_profile") else "catalog_fit_pre_download"
         reason = recommendation_reason(selected, capacity_gb, memory_label, args.backend, confidence)
+        if args.max_size_mb > 0:
+            reason += (
+                f" Bounded by --tier {args.tier}'s model size ceiling "
+                f"({args.max_size_mb:g}MB); use ODS_DISABLE_CATALOG_MODEL_SELECTOR=true "
+                f"to bypass."
+            )
 
     selected_public = {key: value for key, value in selected.items() if key != "_runtime_profile"}
     payload = {
