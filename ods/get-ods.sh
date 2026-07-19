@@ -90,6 +90,16 @@ checkout_requested_sha_ref() {
     fi
 }
 
+_ods_is_install_backup_dir() {
+    local candidate_name="${1%/}"
+    candidate_name="${candidate_name##*/}"
+
+    case "$candidate_name" in
+        *.backup-[0-9]*|backup-[0-9]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 _ods_is_related_install_dir() {
     local candidate="$1"
     local compose_file=""
@@ -157,6 +167,7 @@ refuse_legacy_install() {
         while IFS= read -r -d '' candidate; do
             [[ "${candidate%/}" == "${INSTALL_DIR%/}" ]] && continue
             [[ -n "$PRE_ODS_INSTALL_DIR" && "${candidate%/}" == "${PRE_ODS_INSTALL_DIR%/}" ]] && continue
+            _ods_is_install_backup_dir "$candidate" && continue
             if _ods_is_related_install_dir "$candidate"; then
                 findings+=("related install directory: $candidate")
             fi

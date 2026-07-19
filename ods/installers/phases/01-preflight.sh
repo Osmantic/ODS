@@ -103,6 +103,16 @@ _ods_truthy() {
     esac
 }
 
+_ods_is_install_backup_dir() {
+    local candidate_name="${1%/}"
+    candidate_name="${candidate_name##*/}"
+
+    case "$candidate_name" in
+        *.backup-[0-9]*|backup-[0-9]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 _ods_is_related_install_dir() {
     local candidate="$1"
     local compose_file=""
@@ -165,6 +175,7 @@ if [[ ! -d "$INSTALL_DIR" ]] && ! _ods_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}"; 
         [[ "${_pre_ods_candidate%/}" == "${INSTALL_DIR%/}" ]] && continue
         [[ "${_pre_ods_candidate%/}" == "${SCRIPT_DIR%/}" ]] && continue
         [[ -n "$_pre_ods_install_dir" && "${_pre_ods_candidate%/}" == "${_pre_ods_install_dir%/}" ]] && continue
+        _ods_is_install_backup_dir "$_pre_ods_candidate" && continue
         if _ods_is_related_install_dir "$_pre_ods_candidate"; then
             _pre_ods_findings+=("related install directory: $_pre_ods_candidate")
         fi
