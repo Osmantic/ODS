@@ -4092,9 +4092,14 @@ def _restart_windows_lemonade(env: dict):
     independent lifecycle, which keeps fleet/dashboard activation stable.
     """
     exe = None
-    executable_names = ("lemonade-server.exe", "LemonadeServer.exe")
+    executable_names = ("LemonadeServer.exe", "lemonade-server.exe")
     install_folders = ("Lemonade Server", "lemonade_server", "LemonadeServer")
-    for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+    install_roots = (
+        os.environ.get("LOCALAPPDATA"),
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+    )
+    for root in install_roots:
         if not root:
             continue
         for folder in install_folders:
@@ -4108,7 +4113,7 @@ def _restart_windows_lemonade(env: dict):
         if exe is not None:
             break
     if exe is None:
-        raise RuntimeError("Lemonade server executable not found under Program Files")
+        raise RuntimeError("Lemonade server executable not found under supported Windows install roots")
 
     ps_env = os.environ.copy()
     ps_env.update({
