@@ -713,6 +713,13 @@ def test_setup_test_no_script_fallback(test_client, monkeypatch):
 
 def test_chat_success(test_client, monkeypatch):
     """POST /api/chat with mocked LLM → 200, returns response."""
+    import routers.setup as setup_router
+
+    monkeypatch.setattr(
+        setup_router,
+        "read_live_env_value",
+        lambda key, default="": "new-live-model" if key == "LLM_MODEL" else default,
+    )
     resp_mock = AsyncMock()
     resp_mock.status = 200
     resp_mock.json = AsyncMock(return_value={
@@ -740,6 +747,7 @@ def test_chat_success(test_client, monkeypatch):
     data = resp.json()
     assert data["success"] is True
     assert data["response"] == "Hello from the LLM!"
+    assert session_mock.post.call_args.kwargs["json"]["model"] == "new-live-model"
 
 
 def test_chat_llm_error(test_client, monkeypatch):

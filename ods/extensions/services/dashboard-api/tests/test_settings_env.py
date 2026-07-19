@@ -223,6 +223,29 @@ def test_api_settings_env_rejects_raw_mode(test_client, settings_env_fixture):
     assert payload["detail"]["message"] == "Only form-based editing is supported for security reasons."
 
 
+def test_api_settings_env_rejects_model_identity_bypass(
+    test_client, settings_env_fixture,
+):
+    env_path = settings_env_fixture["env_path"]
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8") + "LLM_MODEL=old-model\n",
+        encoding="utf-8",
+    )
+
+    response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={"mode": "form", "values": {"LLM_MODEL": "new-model"}},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["issues"] == [{
+        "key": "LLM_MODEL",
+        "message": "The active model is managed by Model Manager so model consumers stay synchronized.",
+    }]
+    assert "LLM_MODEL=old-model" in env_path.read_text(encoding="utf-8")
+
+
 def test_api_settings_env_rejects_new_unknown_keys(test_client, settings_env_fixture):
     response = test_client.put(
         "/api/settings/env",

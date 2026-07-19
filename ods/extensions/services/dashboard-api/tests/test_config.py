@@ -47,6 +47,25 @@ def test_normalize_ods_mode(value, expected):
     assert config.normalize_ods_mode(value) == expected
 
 
+def test_live_env_value_prefers_last_persisted_value(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text(
+        "LLM_MODEL=old-model\nLLM_MODEL=new-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.setenv("LLM_MODEL", "stale-process-model")
+
+    assert config.read_live_env_value("LLM_MODEL") == "new-model"
+
+
+def test_live_env_value_preserves_explicit_empty_value(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text("LEMONADE_MODEL=\n", encoding="utf-8")
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.setenv("LEMONADE_MODEL", "stale-process-model")
+
+    assert config.read_live_env_value("LEMONADE_MODEL", "fallback") == ""
+
+
 class TestReadManifestFile:
 
     def test_reads_yaml(self, tmp_path):

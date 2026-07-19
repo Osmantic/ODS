@@ -53,10 +53,13 @@
     },
     {
       "id": "opencode",
-      "label": "OpenCode provider/auth config",
+      "label": "OpenCode provider/model config",
       "target_paths": [
-        ".opencode/auth.json",
-        ".opencode/config.json"
+        "~/.config/opencode/opencode.json",
+        "~/.config/opencode/opencode.jsonc",
+        "~/.config/opencode/config.json",
+        "~/.local/share/opencode/opencode.json",
+        "~/.local/share/opencode/opencode.jsonc"
       ],
       "writers": [
         {
@@ -78,6 +81,10 @@
         {
           "platform": "upgrade",
           "path": "scripts/bootstrap-upgrade.sh"
+        },
+        {
+          "platform": "runtime",
+          "path": "bin/ods-host-agent.py"
         }
       ],
       "invariants": [

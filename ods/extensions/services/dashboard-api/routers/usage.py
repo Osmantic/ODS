@@ -17,7 +17,7 @@ from typing import Any
 import aiohttp
 from fastapi import APIRouter, Depends, Query
 
-from config import EXTENSIONS_DIR, SERVICES, USER_EXTENSIONS_DIR
+from config import EXTENSIONS_DIR, SERVICES, USER_EXTENSIONS_DIR, read_live_env_value
 from helpers import check_service_health, get_cached_services
 from security import verify_api_key
 
@@ -353,7 +353,7 @@ def _configured_local_runtime_metrics_urls() -> list[str]:
 
 
 def _runtime_model_name() -> str:
-    return os.environ.get("GGUF_FILE") or os.environ.get("LLM_MODEL") or "llama-server"
+    return read_live_env_value("GGUF_FILE") or read_live_env_value("LLM_MODEL", "llama-server")
 
 
 async def _fetch_token_spy_report(start: str, end: str) -> dict[str, Any]:

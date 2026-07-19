@@ -56,6 +56,15 @@ _MANUAL_RESTART_KEYS = {
 }
 _READ_ONLY_ENV_FIELDS = {
     "ODS_MODE": "Runtime mode is selected by the installer and cannot be changed from the dashboard.",
+    "TIER": "The active tier is managed by Model Manager so model consumers stay synchronized.",
+    "LLM_MODEL": "The active model is managed by Model Manager so model consumers stay synchronized.",
+    "GGUF_FILE": "The active model file is managed by Model Manager so activation remains transactional.",
+    "GGUF_URL": "Model artifact metadata is managed by Model Manager.",
+    "GGUF_SHA256": "Model integrity metadata is managed by Model Manager.",
+    "LEMONADE_MODEL": "The Lemonade model identity is resolved and managed during transactional activation.",
+    "MODEL_RUNTIME_PROFILE": "The runtime profile is selected and managed during model activation.",
+    "MODEL_RUNTIME_PROFILE_LABEL": "The runtime profile is selected and managed during model activation.",
+    "MODEL_RUNTIME_PROFILE_SOURCE": "The runtime profile is selected and managed during model activation.",
 }
 
 # ── Env parsing ────────────────────────────────────────────────────────────────

@@ -88,16 +88,32 @@ def normalize_llm_contract(value: Any) -> dict[str, Any] | None:
 ODS_MODE_EFFECTIVE = normalize_ods_mode(os.environ.get("ODS_MODE"))
 
 
-def _read_env_from_file(key: str) -> str:
-    """Read a variable from the .env file when not available in process environment."""
+def _find_env_file_value(key: str) -> tuple[bool, str]:
+    """Return the last persisted value and distinguish missing from empty."""
     env_path = Path(INSTALL_DIR) / ".env"
+    found = False
+    value = ""
     try:
-        for line in env_path.read_text().splitlines():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
-                return line.split("=", 1)[1].strip().strip("\"'")
-    except OSError:
+                found = True
+                value = line.split("=", 1)[1].strip().strip("\"'")
+    except (OSError, UnicodeError):
         pass
-    return ""
+    return found, value
+
+
+def _read_env_from_file(key: str) -> str:
+    """Read a variable from the persisted .env file."""
+    return _find_env_file_value(key)[1]
+
+
+def read_live_env_value(key: str, default: str = "") -> str:
+    """Read mutable ODS state from the mounted .env before process startup env."""
+    found, value = _find_env_file_value(key)
+    if found:
+        return value
+    return os.environ.get(key, "") or default
 
 
 def _apply_host_native_llm_service_override(

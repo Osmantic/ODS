@@ -119,7 +119,10 @@ _env_unset() {
 _env_get_raw() {
     local key="$1" file="$INSTALL_DIR/.env"
     [[ -f "$file" ]] || { echo ""; return 0; }
-    grep -m1 "^${key}=" "$file" 2>/dev/null | cut -d= -f2- | tr -d '\r' || true
+    awk -v k="$key" '
+        index($0, k "=") == 1 { value = substr($0, length(k) + 2); found = 1 }
+        END { if (found) print value }
+    ' "$file" 2>/dev/null | tr -d '\r' || true
 }
 
 _ods_cli_bootstrap_status() {
@@ -3366,12 +3369,14 @@ cmd_model() {
             echo "  SH         — qwen3-30b-a3b (Strix Halo unified)"
             echo "  SH_LARGE   — qwen3-coder-next (90GB+ unified)"
             echo "  NV_ULTRA   — qwen3-coder-next (amd64) / qwen3.6-35b-a3b (arm64 Spark)"
+            echo "  ARC        — Intel Arc 12GB+"
+            echo "  ARC_LITE   — Intel Arc 6-8GB"
             echo ""
             echo "Usage: ods model swap <tier>"
             ;;
         swap)
             local tier="${2:-}"
-            [[ -z "$tier" ]] && error "Usage: ods model swap <T0|T1|T2|T3|T4|SH|SH_LARGE|NV_ULTRA>"
+            [[ -z "$tier" ]] && error "Usage: ods model swap <T0|T1|T2|T3|T4|SH|SH_LARGE|NV_ULTRA|ARC|ARC_LITE>"
             tier=$(echo "$tier" | tr '[:lower:]' '[:upper:]')
             # Source tier-map and resolve full config (model, GGUF, context)
             . "$INSTALL_DIR/installers/lib/tier-map.sh"
@@ -3383,18 +3388,125 @@ cmd_model() {
             [[ "$TIER" =~ ^T([0-9]+)$ ]] && TIER="${BASH_REMATCH[1]}"
             [[ "$TIER" == "SH" ]] && TIER="SH_COMPACT"
             resolve_tier_config
-            _env_set "LLM_MODEL" "$model"
-            _env_set "TIER" "$TIER"
-            _env_set "GGUF_FILE" "$GGUF_FILE"
-            _env_set "GGUF_URL" "$GGUF_URL"
-            _env_set "CTX_SIZE" "$MAX_CONTEXT"
-            _env_set "MAX_CONTEXT" "$MAX_CONTEXT"
-            success "Model set to $model (tier $tier, ctx=$MAX_CONTEXT). Run 'ods restart llama-server' to apply."
+
+            local model_path="$INSTALL_DIR/data/models/$GGUF_FILE"
+            [[ -s "$model_path" ]] || error "Model file is not downloaded: $model_path"
+
+            command -v jq >/dev/null 2>&1 || \
+                error "jq is required to resolve the tier model catalog entry"
+            local model_id=""
+            local library="$INSTALL_DIR/config/model-library.json"
+            [[ -f "$library" ]] || error "Model catalog is missing: $library"
+            model_id=$(jq -r --arg file "$GGUF_FILE" \
+                '[.models[]? | select(.gguf_file == $file) | .id][0] // empty' \
+                "$library" 2>/dev/null || true)
+            [[ -n "$model_id" ]] || \
+                error "Tier model is missing from the model catalog: $GGUF_FILE"
+
+            local agent_key
+            agent_key="$(_env_get_raw ODS_AGENT_KEY)"
+            [[ -z "$agent_key" ]] && \
+                agent_key="$(_env_get_raw DASHBOARD_API_KEY)"
+            case "$agent_key" in
+                \"*\") agent_key="${agent_key:1:${#agent_key}-2}" ;;
+                \'*\') agent_key="${agent_key:1:${#agent_key}-2}" ;;
+            esac
+            [[ -n "$agent_key" ]] || error "ODS host-agent API key is missing from .env"
+            [[ "$agent_key" != *$'\n'* && "$agent_key" != *$'\r'* ]] || \
+                error "ODS host-agent API key contains invalid newline characters"
+
+            local agent_port agent_host
+            agent_port="$(_env_get_raw ODS_AGENT_PORT)"
+            [[ "$agent_port" =~ ^[0-9]+$ ]] || agent_port="7710"
+            agent_host="$(_agent_probe_host)"
+            local activate_url="http://${agent_host}:${agent_port}/v1/model/activate"
+            if ! curl -sf --max-time 3 "http://${agent_host}:${agent_port}/health" >/dev/null; then
+                error "ODS host agent is not reachable. Run 'ods agent restart' and retry."
+            fi
+
+            local request_json response_file http_code curl_status
+            request_json=$(jq -nc \
+                --arg model_id "$model_id" \
+                --arg tier "$TIER" \
+                --argjson context_length "$MAX_CONTEXT" \
+                '{model_id: $model_id, tier: $tier, context_length: $context_length}') || \
+                error "Could not build the model activation request"
+            response_file=$(mktemp "${TMPDIR:-/tmp}/ods-model-activate.XXXXXX") || \
+                error "Could not create a model activation response file"
+            chmod 600 "$response_file"
+            trap 'rm -f "$response_file"' INT TERM HUP
+
+            # Feed the bearer header over stdin so the key is never exposed in
+            # process arguments or left in a temporary file after interruption.
+            if http_code=$(printf 'Authorization: Bearer %s\n' "$agent_key" | \
+                curl --silent --show-error --max-time 2700 \
+                    --output "$response_file" --write-out '%{http_code}' \
+                    --request POST --header @- \
+                    --header 'Content-Type: application/json' \
+                    --data "$request_json" "$activate_url"); then
+                curl_status=0
+            else
+                curl_status=$?
+            fi
+            if [[ $curl_status -ne 0 ]]; then
+                rm -f "$response_file"
+                trap - INT TERM HUP
+                error "Model activation request failed before the host agent completed"
+            fi
+
+            if [[ "$http_code" != "200" ]]; then
+                local activation_error
+                activation_error=$(jq -r '.error // empty' "$response_file" 2>/dev/null || true)
+                [[ -z "$activation_error" ]] && activation_error=$(head -c 500 "$response_file")
+                rm -f "$response_file"
+                trap - INT TERM HUP
+                error "Model activation failed (HTTP $http_code): ${activation_error:-unknown error}"
+            fi
+            if [[ "$(jq -r '.status // empty' "$response_file" 2>/dev/null)" != "activated" ]]; then
+                rm -f "$response_file"
+                trap - INT TERM HUP
+                error "Host agent returned an invalid model activation receipt"
+            fi
+            local effective_context effective_tier
+            effective_context=$(jq -r '.context_length // empty' "$response_file" 2>/dev/null || true)
+            effective_tier=$(jq -r '.tier // empty' "$response_file" 2>/dev/null || true)
+            rm -f "$response_file"
+            trap - INT TERM HUP
+            success "Model activated everywhere: $model (tier ${effective_tier:-$tier}, ctx=${effective_context:-$MAX_CONTEXT})."
             ;;
         *)
             error "Usage: ods model <current|list|swap>"
             ;;
     esac
+}
+
+_agent_probe_host() {
+    local bind_addr="" gateway=""
+    bind_addr="$(_env_get_raw ODS_AGENT_BIND)"
+    bind_addr="${bind_addr#\"}"; bind_addr="${bind_addr%\"}"
+    bind_addr="${bind_addr#\'}"; bind_addr="${bind_addr%\'}"
+    bind_addr="$(printf '%s' "$bind_addr" | tr -d '[:space:]')"
+
+    if [[ -z "$bind_addr" && "$(uname -s)" == "Linux" ]] && command -v docker >/dev/null 2>&1; then
+        gateway="$(docker network inspect ods-network \
+            --format '{{range .IPAM.Config}}{{if .Gateway}}{{println .Gateway}}{{end}}{{end}}' \
+            2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]' || true)"
+        if [[ -z "$gateway" ]]; then
+            gateway="$(docker network inspect bridge \
+                --format '{{range .IPAM.Config}}{{if .Gateway}}{{println .Gateway}}{{end}}{{end}}' \
+                2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]' || true)"
+        fi
+        bind_addr="$gateway"
+    fi
+
+    case "$bind_addr" in
+        ""|0.0.0.0|"*") bind_addr="127.0.0.1" ;;
+        ::|"[::]") bind_addr="[::1]" ;;
+        *:*)
+            [[ "$bind_addr" == \[*\] ]] || bind_addr="[$bind_addr]"
+            ;;
+    esac
+    printf '%s\n' "$bind_addr"
 }
 
 cmd_stt() {
@@ -3585,8 +3697,7 @@ cmd_agent() {
     case "$action" in
         status)
             local bind_addr
-            bind_addr="$(grep '^ODS_AGENT_BIND=' "${INSTALL_DIR}/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)"
-            bind_addr="${bind_addr:-127.0.0.1}"
+            bind_addr="$(_agent_probe_host)"
             if curl -sf --max-time 2 "http://${bind_addr}:${port}/health" > /dev/null 2>&1; then
                 success "ODS host agent: running (port ${port}, ${daemon_type})"
             else

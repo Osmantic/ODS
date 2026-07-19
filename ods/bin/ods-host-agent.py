@@ -29,13 +29,14 @@ import socket
 import stat as stat_mod
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingMixIn
-from urllib import request as urllib_request
+from urllib import error as urllib_error, request as urllib_request
 from urllib.parse import parse_qs, urlparse
 
 VERSION = "1.0.0"
@@ -83,6 +84,13 @@ USER_EXTENSIONS_DIR: Path = Path()
 EXTENSIONS_DIR: Path = Path()
 _ODS_MODES = frozenset({"local", "cloud", "hybrid", "lemonade"})
 _LOCAL_MODEL_MODES = frozenset({"local", "hybrid", "lemonade"})
+_MODEL_TIER_RE = re.compile(r"^[A-Z0-9_]{1,32}$")
+_MODEL_TIERS = frozenset({
+    "0", "1", "2", "3", "4", "ARC", "ARC_LITE",
+    "NV_ULTRA", "SH_COMPACT", "SH_LARGE",
+})
+_MIN_MODEL_CONTEXT = 1024
+_MAX_MODEL_CONTEXT = 1048576
 
 # Per-service locks to prevent concurrent start+stop races on the same service
 _service_locks: dict[str, threading.Lock] = collections.defaultdict(threading.Lock)
@@ -577,6 +585,155 @@ def load_env(env_path: Path) -> dict:
     return env
 
 
+def _atomic_write_bytes(
+    path: Path,
+    content: bytes,
+    mode: int | None = None,
+    uid: int | None = None,
+    gid: int | None = None,
+) -> None:
+    """Durably replace a regular file without following a leaf symlink."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing_mode = None
+    existing_uid = None
+    existing_gid = None
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise RuntimeError(f"Could not inspect {path} before writing: {exc}") from exc
+    else:
+        if stat_mod.S_ISLNK(metadata.st_mode):
+            raise RuntimeError(f"Refusing to replace symlinked configuration file: {path}")
+        if not stat_mod.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"Refusing to replace non-regular configuration file: {path}")
+        existing_mode = stat_mod.S_IMODE(metadata.st_mode)
+        existing_uid = metadata.st_uid
+        existing_gid = metadata.st_gid
+
+    write_mode = mode if mode is not None else (
+        existing_mode if existing_mode is not None else 0o600
+    )
+    descriptor, raw_tmp_path = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    tmp_path = Path(raw_tmp_path)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_path, write_mode)
+        if os.name != "nt":
+            target_uid = uid if uid is not None else existing_uid
+            target_gid = gid if gid is not None else existing_gid
+            if target_uid is not None and target_gid is not None:
+                temp_metadata = tmp_path.stat()
+                if (temp_metadata.st_uid, temp_metadata.st_gid) != (
+                    target_uid,
+                    target_gid,
+                ):
+                    os.chown(tmp_path, target_uid, target_gid)
+        os.replace(tmp_path, path)
+        if os.name != "nt":
+            directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            try:
+                directory_fd = os.open(path.parent, directory_flags)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except OSError as exc:
+                logger.warning("Could not fsync configuration directory %s: %s", path.parent, exc)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _atomic_write_text(
+    path: Path,
+    text: str,
+    mode: int | None = None,
+    uid: int | None = None,
+    gid: int | None = None,
+) -> None:
+    """Atomically replace a UTF-8 text file."""
+    _atomic_write_bytes(path, text.encode("utf-8"), mode, uid, gid)
+
+
+def _snapshot_text_file(path: Path) -> dict:
+    """Capture bytes/mode/existence for exact transactional restoration."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return {
+            "exists": False,
+            "text": None,
+            "mode": None,
+            "uid": None,
+            "gid": None,
+        }
+    except OSError as exc:
+        raise RuntimeError(f"Could not snapshot {path}: {exc}") from exc
+    if stat_mod.S_ISLNK(metadata.st_mode):
+        raise RuntimeError(f"Refusing to mutate symlinked configuration file: {path}")
+    if not stat_mod.S_ISREG(metadata.st_mode):
+        raise RuntimeError(f"Refusing to mutate non-regular configuration file: {path}")
+    try:
+        content = path.read_bytes()
+        text = content.decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"Could not snapshot {path}: {exc}") from exc
+    return {
+        "exists": True,
+        "text": text,
+        "bytes": content,
+        "mode": stat_mod.S_IMODE(metadata.st_mode),
+        "uid": metadata.st_uid,
+        "gid": metadata.st_gid,
+    }
+
+
+def _restore_text_file(path: Path, snapshot: dict) -> None:
+    """Restore a text-file snapshot, including prior absence and mode."""
+    if snapshot.get("exists"):
+        content = snapshot.get("bytes")
+        if not isinstance(content, bytes):
+            content = str(snapshot.get("text") or "").encode("utf-8")
+        _atomic_write_bytes(
+            path,
+            content,
+            int(snapshot["mode"] if snapshot.get("mode") is not None else 0o600),
+            snapshot.get("uid"),
+            snapshot.get("gid"),
+        )
+    else:
+        if path.is_symlink():
+            raise RuntimeError(f"Refusing to remove unexpected symlink during rollback: {path}")
+        path.unlink(missing_ok=True)
+
+
+def _assert_text_file_matches_snapshot(path: Path, snapshot: dict) -> None:
+    """Fail before mutation when a captured config changed concurrently."""
+    current = _snapshot_text_file(path)
+    if bool(current.get("exists")) != bool(snapshot.get("exists")):
+        raise RuntimeError(f"Configuration changed during model activation: {path}")
+    if not current.get("exists"):
+        return
+    expected = snapshot.get("bytes")
+    if not isinstance(expected, bytes):
+        expected = str(snapshot.get("text") or "").encode("utf-8")
+    if (
+        current.get("bytes") != expected
+        or current.get("mode") != snapshot.get("mode")
+        or current.get("uid") != snapshot.get("uid")
+        or current.get("gid") != snapshot.get("gid")
+    ):
+        raise RuntimeError(f"Configuration changed during model activation: {path}")
+
+
 def _upsert_env_value(env_path: Path, key: str, value: str) -> None:
     """Persist one simple ``KEY=value`` entry without disturbing other lines."""
     if any(character in value for character in "\r\n\x00"):
@@ -594,7 +751,7 @@ def _upsert_env_value(env_path: Path, key: str, value: str) -> None:
         output.append(line)
     if not written:
         output.append(f"{key}={value}")
-    env_path.write_text("\n".join(output) + "\n", encoding="utf-8")
+    _atomic_write_text(env_path, "\n".join(output) + "\n")
 
 
 def _normalize_ods_mode(value) -> str:
@@ -656,6 +813,53 @@ def _model_activation_mode_denial(
         "effectiveMode": effective_mode,
         "configuredMode": configured_mode,
     }
+
+
+def _resolve_requested_tier_contract(tier: str, env: dict) -> dict[str, str]:
+    """Resolve CLI tier metadata through the installed canonical tier map."""
+    tier_map = INSTALL_DIR / "installers" / "lib" / "tier-map.sh"
+    if not tier_map.is_file():
+        raise RuntimeError(f"Installed tier map is unavailable: {tier_map}")
+    bash = _find_usable_bash()
+    if not bash:
+        raise RuntimeError("A usable Bash executable is required to validate tier metadata")
+    script = r'''
+set -euo pipefail
+error() { printf '%s\n' "$*" >&2; return 1; }
+source "$1"
+TIER="$2"
+MODEL_PROFILE="$3"
+HOST_ARCH="$4"
+resolve_tier_config
+printf 'GGUF_FILE=%s\nMAX_CONTEXT=%s\nLLM_MODEL=%s\n' \
+    "$GGUF_FILE" "$MAX_CONTEXT" "$LLM_MODEL"
+'''
+    result = subprocess.run(
+        [
+            bash,
+            "-c",
+            script,
+            "ods-tier-contract",
+            str(tier_map),
+            tier,
+            str(env.get("MODEL_PROFILE") or "qwen"),
+            str(env.get("HOST_ARCH") or platform.machine() or "amd64"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not resolve tier {tier}: {detail[:300]}")
+    values = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+    if not values.get("GGUF_FILE") or not str(values.get("MAX_CONTEXT") or "").isdigit():
+        raise RuntimeError(f"Tier {tier} produced an incomplete model contract")
+    return values
 
 
 def load_core_service_ids(config_path: Path) -> set:
@@ -1144,12 +1348,31 @@ def _local_model_name_from_gguf(gguf_file: str) -> str:
     return name or "local-gguf"
 
 
+def _valid_local_model_name(value: object) -> bool:
+    """Return true for identities safe in .env and models.ini sections."""
+    return bool(
+        isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value)
+    )
+
+
+def _valid_gguf_filename(value: object) -> bool:
+    """Return true for a single safe GGUF filename."""
+    return bool(
+        isinstance(value, str)
+        and value
+        and value.casefold().endswith(".gguf")
+        and Path(value).name == value
+        and not any(character in value for character in "\r\n\x00")
+    )
+
+
 def _local_gguf_filename_from_id(model_id: str) -> str | None:
     """Map a Dashboard/local model id to a safe GGUF filename candidate."""
     token = str(model_id or "").strip()
     if token.lower().startswith("extra."):
         token = token[6:]
-    if not token or any(sep in token for sep in ("/", "\\", "\x00")):
+    if not token or any(sep in token for sep in ("/", "\\", "\r", "\n", "\x00")):
         return None
     filename = token if token.lower().endswith(".gguf") else f"{token}.gguf"
     if filename.lower().endswith(".part") or Path(filename).name != filename:
@@ -4113,6 +4336,11 @@ class AgentHandler(BaseHTTPRequestHandler):
         """Cancel an in-progress model download."""
         if not check_auth(self):
             return
+        # Consume an optional framed body before the POST connection closes.
+        # Leaving request bytes unread can make Windows send a TCP reset and
+        # discard the otherwise valid response before the client receives it.
+        if read_optional_json_body(self) is None:
+            return
         with _model_download_lock:
             if (
                 _model_download_thread is None
@@ -4144,6 +4372,42 @@ class AgentHandler(BaseHTTPRequestHandler):
         if not isinstance(model_id, str) or not model_id.strip():
             json_response(self, 400, {"error": "model_id is required"})
             return
+        model_id = model_id.strip()
+        if any(character in model_id for character in "\r\n\x00"):
+            json_response(self, 400, {"error": "model_id contains invalid characters"})
+            return
+
+        requested_context_length = body.get("context_length")
+        if requested_context_length is not None:
+            if (
+                isinstance(requested_context_length, bool)
+                or not isinstance(requested_context_length, int)
+                or not _MIN_MODEL_CONTEXT <= requested_context_length <= _MAX_MODEL_CONTEXT
+            ):
+                json_response(
+                    self,
+                    400,
+                    {
+                        "error": (
+                            f"context_length must be an integer between "
+                            f"{_MIN_MODEL_CONTEXT} and {_MAX_MODEL_CONTEXT}"
+                        )
+                    },
+                )
+                return
+
+        requested_tier = body.get("tier")
+        if requested_tier is not None:
+            if not isinstance(requested_tier, str):
+                json_response(self, 400, {"error": "tier must be a string"})
+                return
+            requested_tier = requested_tier.strip().upper()
+            if (
+                not _MODEL_TIER_RE.fullmatch(requested_tier)
+                or requested_tier not in _MODEL_TIERS
+            ):
+                json_response(self, 400, {"error": "tier is not supported"})
+                return
 
         acquired, active_model_id = _begin_model_activation(model_id)
         if not acquired:
@@ -4166,13 +4430,31 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            self._do_model_activate(model_id)
+            activation_options = {}
+            if requested_context_length is not None:
+                activation_options["requested_context_length"] = requested_context_length
+            if requested_tier is not None:
+                activation_options["requested_tier"] = requested_tier
+            self._do_model_activate(model_id, **activation_options)
         finally:
             _end_model_activation()
 
-    def _do_model_activate(self, model_id: str):
+    def _do_model_activate(
+        self,
+        model_id: str,
+        *,
+        requested_context_length: int | None = None,
+        requested_tier: str | None = None,
+    ):
         """Inner activate logic — called with _model_activate_lock held."""
         env_path = INSTALL_DIR / ".env"
+        if not env_path.exists():
+            json_response(
+                self,
+                500,
+                {"error": f"Model activation requires the persisted environment: {env_path}"},
+            )
+            return
         try:
             persisted_env = load_env(env_path)
         except (OSError, UnicodeError) as exc:
@@ -4235,13 +4517,22 @@ class AgentHandler(BaseHTTPRequestHandler):
         if library_path.exists():
             try:
                 lib = json.loads(library_path.read_text(encoding="utf-8"))
-                for m in lib.get("models", []):
+                if not isinstance(lib, dict) or not isinstance(lib.get("models"), list):
+                    raise ValueError("root must contain a models array")
+                for m in lib["models"]:
+                    if not isinstance(m, dict):
+                        raise ValueError("models array contains a non-object entry")
                     if m.get("id") == model_id:
                         model = m
                         model_from_catalog = True
                         break
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError, UnicodeError, ValueError) as exc:
+                json_response(
+                    self,
+                    500,
+                    {"error": f"Model library is unavailable or malformed: {exc}"},
+                )
+                return
         if model is None:
             model = local_gguf_model_from_id(model_id)
             if model is None:
@@ -4250,7 +4541,31 @@ class AgentHandler(BaseHTTPRequestHandler):
 
         gguf_file = model.get("gguf_file", "")
         llm_model_name = model.get("llm_model_name", model_id)
-        context_length = model.get("context_length", 32768)
+        if not _valid_gguf_filename(gguf_file):
+            json_response(self, 400, {"error": "Model has an invalid GGUF filename"})
+            return
+        if not _valid_local_model_name(llm_model_name):
+            json_response(self, 400, {"error": "Model has an invalid local runtime identity"})
+            return
+        try:
+            catalog_context_length = int(model.get("context_length") or 32768)
+        except (TypeError, ValueError):
+            catalog_context_length = 32768
+        context_length = catalog_context_length
+        if requested_context_length is not None:
+            if model_from_catalog and requested_context_length > catalog_context_length:
+                json_response(
+                    self,
+                    400,
+                    {
+                        "error": (
+                            f"Requested context {requested_context_length} exceeds the "
+                            f"catalog limit {catalog_context_length} for {model_id}"
+                        )
+                    },
+                )
+                return
+            context_length = requested_context_length
         llama_server_image = model.get("llama_server_image")
 
         # Verify GGUF exists on disk (with path traversal protection)
@@ -4287,6 +4602,57 @@ class AgentHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+        tier_context_limit: int | None = None
+        if requested_tier is not None:
+            try:
+                tier_contract = _resolve_requested_tier_contract(requested_tier, persisted_env)
+            except RuntimeError as exc:
+                json_response(self, 500, {"error": f"Tier validation failed: {exc}"})
+                return
+            expected_gguf = str(tier_contract.get("GGUF_FILE") or "")
+            if expected_gguf.casefold() != str(gguf_file).casefold():
+                json_response(
+                    self,
+                    400,
+                    {
+                        "error": (
+                            f"Tier {requested_tier} resolves to {expected_gguf}, "
+                            f"not {gguf_file}"
+                        ),
+                        "code": "tier_model_mismatch",
+                    },
+                )
+                return
+            expected_model = str(tier_contract.get("LLM_MODEL") or "")
+            if expected_model and expected_model.casefold() != str(llm_model_name).casefold():
+                json_response(
+                    self,
+                    400,
+                    {
+                        "error": (
+                            f"Tier {requested_tier} resolves to model {expected_model}, "
+                            f"not {llm_model_name}"
+                        ),
+                        "code": "tier_model_mismatch",
+                    },
+                )
+                return
+            tier_context_limit = int(tier_contract["MAX_CONTEXT"])
+            if requested_context_length is not None and requested_context_length > tier_context_limit:
+                json_response(
+                    self,
+                    400,
+                    {
+                        "error": (
+                            f"Requested context {requested_context_length} exceeds tier "
+                            f"{requested_tier} limit {tier_context_limit}"
+                        ),
+                        "code": "tier_context_mismatch",
+                    },
+                )
+                return
+            context_length = min(context_length, tier_context_limit)
+
         models_ini = INSTALL_DIR / "config" / "llama-server" / "models.ini"
         lemonade_yaml = INSTALL_DIR / "config" / "litellm" / "lemonade.yaml"
         litellm_local_yaml = INSTALL_DIR / "config" / "litellm" / "local.yaml"
@@ -4295,45 +4661,55 @@ class AgentHandler(BaseHTTPRequestHandler):
 
         # Hoisted so the outer except's rollback can reference them safely.
         # None means the snapshot was not captured, so rollback must skip it.
-        env_backup: str | None = None
-        ini_backup: str | None = None
-        lemonade_existed: bool | None = None
-        lemonade_backup = None
-        litellm_local_existed: bool | None = None
-        litellm_local_backup: str | None = None
+        env_snapshot: dict | None = None
+        ini_snapshot: dict | None = None
+        lemonade_snapshot: dict | None = None
+        litellm_local_snapshot: dict | None = None
         hermes_live_snapshot: dict | None = None
-        hermes_backups: dict[Path, str] = {}
+        hermes_template_snapshot: dict | None = None
+        opencode_snapshot: dict | None = None
         perplexica_snapshot: dict | None = None
+        container_states: dict[str, dict[str, bool]] = {}
+        opencode_runtime_state: dict | None = None
         committed = False
+        mutation_started = False
         rollback_attempted = False
         runtime_restart_strategy: str | None = None
+        opencode_restarted = False
+        opencode_config_mutated = False
+        litellm_restart_attempted = False
+        hermes_config_mutated = False
+        hermes_restart_attempted = False
+        openclaw_recreate_attempted = False
+        perplexica_mutated = False
         apple_llama_bin: Path | None = None
         apple_llama_log: Path | None = None
         apple_pid_file: Path | None = None
 
         def restore_backups():
-            if env_backup is not None:
-                env_path.write_text(env_backup, encoding="utf-8")
-            if ini_backup is not None:
-                models_ini.write_text(ini_backup, encoding="utf-8")
-            if lemonade_existed is True:
-                lemonade_yaml.write_text(lemonade_backup, encoding="utf-8")
-            elif lemonade_existed is False:
-                lemonade_yaml.unlink(missing_ok=True)
-            if litellm_local_existed is True:
-                litellm_local_yaml.write_text(litellm_local_backup or "", encoding="utf-8")
-            elif litellm_local_existed is False:
-                litellm_local_yaml.unlink(missing_ok=True)
-            for hermes_path, hermes_text in hermes_backups.items():
-                hermes_path.write_text(hermes_text, encoding="utf-8")
+            if env_snapshot is not None:
+                _restore_text_file(env_path, env_snapshot)
+            if ini_snapshot is not None:
+                _restore_text_file(models_ini, ini_snapshot)
+            if lemonade_snapshot is not None:
+                _restore_text_file(lemonade_yaml, lemonade_snapshot)
+            if litellm_local_snapshot is not None:
+                _restore_text_file(litellm_local_yaml, litellm_local_snapshot)
+            if hermes_template_snapshot is not None:
+                _restore_text_file(hermes_template_config, hermes_template_snapshot)
             if hermes_live_snapshot and hermes_live_snapshot.get("exists"):
-                _write_hermes_live_config(
-                    hermes_live_config,
-                    str(hermes_live_snapshot.get("text") or ""),
-                    hermes_live_snapshot.get("source"),
-                )
+                if hermes_live_snapshot.get("source") == "host":
+                    _restore_text_file(hermes_live_config, hermes_live_snapshot)
+                else:
+                    _write_hermes_live_config(
+                        hermes_live_config,
+                        str(hermes_live_snapshot.get("text") or ""),
+                        hermes_live_snapshot.get("source"),
+                    )
             elif hermes_live_snapshot is not None:
                 _remove_hermes_live_config(hermes_live_config)
+            if opencode_snapshot is not None:
+                _restore_opencode_config(opencode_snapshot)
 
         def restore_previous_runtime():
             rollback_env = load_env(env_path)
@@ -4370,11 +4746,28 @@ class AgentHandler(BaseHTTPRequestHandler):
                 restore_backups()
                 restore_previous_runtime()
                 rollback_env = load_env(env_path)
-                litellm_restarted = _restart_existing_container("ods-litellm")
-                hermes_restarted = _restart_existing_container("ods-hermes")
-                openclaw_recreated = _recreate_openclaw_if_present()
-                if perplexica_snapshot is not None:
+                litellm_restarted = False
+                if litellm_restart_attempted:
+                    litellm_restarted = _restore_container_state(
+                        "ods-litellm", container_states["ods-litellm"]
+                    )
+                hermes_restarted = False
+                if hermes_restart_attempted or hermes_config_mutated:
+                    hermes_restarted = _restore_container_state(
+                        "ods-hermes", container_states["ods-hermes"]
+                    )
+                openclaw_recreated = False
+                if openclaw_recreate_attempted:
+                    openclaw_recreated = _restore_container_state(
+                        "ods-openclaw",
+                        container_states["ods-openclaw"],
+                        recreate=True,
+                    )
+                if perplexica_mutated and perplexica_snapshot is not None:
                     _restore_perplexica_config(perplexica_snapshot)
+                if opencode_config_mutated and opencode_runtime_state and opencode_runtime_state.get("active"):
+                    if not _restart_managed_opencode(opencode_runtime_state):
+                        raise RuntimeError("managed OpenCode disappeared during rollback")
                 previous_gguf = str(rollback_env.get("GGUF_FILE") or "")
                 previous_model = str(
                     rollback_env.get("LLM_MODEL")
@@ -4409,6 +4802,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         previous_base_url,
                         previous_context,
                     )
+                    _wait_for_container_health("ods-hermes")
                 if not previous_gguf:
                     raise RuntimeError("previous GGUF identity is empty")
                 if not _wait_for_model_readiness(
@@ -4425,6 +4819,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     _verify_litellm_route(rollback_env)
                 if openclaw_recreated:
                     _verify_openclaw_model_env(previous_hermes_model)
+                    _wait_for_container_health("ods-openclaw")
                 return True, ""
             except Exception as rollback_exc:
                 logger.exception("Failed to prove previous model route during rollback")
@@ -4473,36 +4868,95 @@ class AgentHandler(BaseHTTPRequestHandler):
                     pass
                 llama_server_image = runtime_profile.get("llama_server_image") or llama_server_image
                 runtime_env = runtime_profile.get("env") if isinstance(runtime_profile.get("env"), dict) else {}
+            if requested_context_length is not None:
+                context_length = min(int(context_length), requested_context_length)
+            if tier_context_limit is not None:
+                context_length = min(int(context_length), tier_context_limit)
 
-            # Save rollback snapshot
-            env_backup = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
-            ini_backup = models_ini.read_text(encoding="utf-8") if models_ini.exists() else ""
-            lemonade_existed = lemonade_yaml.exists()
-            lemonade_backup = (
-                lemonade_yaml.read_text(encoding="utf-8")
-                if lemonade_existed
-                else None
-            )
-            litellm_local_existed = litellm_local_yaml.exists()
-            if litellm_local_existed:
-                litellm_local_backup = litellm_local_yaml.read_text(encoding="utf-8")
+            if gpu_backend == "apple":
+                apple_pid_file = INSTALL_DIR / "data" / ".llama-server.pid"
+                apple_llama_bin = INSTALL_DIR / "bin" / "llama-server"
+                apple_llama_log = INSTALL_DIR / "data" / "llama-server.log"
+                if not apple_llama_bin.is_file():
+                    raise RuntimeError(
+                        "llama-server binary not found - re-run installer"
+                    )
+
+            # Capture every mutable file and service state before the first write.
+            env_snapshot = _snapshot_text_file(env_path)
+            ini_snapshot = _snapshot_text_file(models_ini)
+            lemonade_snapshot = _snapshot_text_file(lemonade_yaml)
+            litellm_local_snapshot = _snapshot_text_file(litellm_local_yaml)
             # Persisted Hermes state is commonly UID-10000-owned. Capture it
             # through the running container when host permissions deny access;
             # activation must never claim success with an unpatched live route.
             hermes_live_snapshot = _capture_hermes_live_config(hermes_live_config)
-            try:
-                hermes_backups[hermes_template_config] = (
-                    hermes_template_config.read_text(encoding="utf-8")
+            hermes_template_snapshot = _snapshot_text_file(hermes_template_config)
+            opencode_snapshot = _capture_opencode_config()
+            if opencode_snapshot is not None:
+                opencode_runtime_state = _capture_managed_opencode_state()
+            container_states = {
+                name: _capture_container_state(name)
+                for name in (
+                    "ods-litellm",
+                    "ods-hermes",
+                    "ods-openclaw",
+                    "ods-perplexica",
                 )
-            except FileNotFoundError:
-                pass
-            perplexica_snapshot = _capture_perplexica_config(env_pre)
+            }
+            perplexica_snapshot = _capture_perplexica_config(
+                env_pre,
+                container_states["ods-perplexica"],
+            )
+            active_litellm_consumers = [
+                name
+                for name in ("ods-hermes", "ods-openclaw", "ods-perplexica")
+                if container_states[name]["running"]
+            ]
+            if (
+                opencode_runtime_state
+                and opencode_runtime_state.get("active")
+                and lemonade_runtime
+                and not windows_host_lemonade
+            ):
+                active_litellm_consumers.append("OpenCode")
+            if (
+                lemonade_runtime
+                and active_litellm_consumers
+                and not container_states["ods-litellm"]["running"]
+            ):
+                raise RuntimeError(
+                    "Active Lemonade consumers require LiteLLM, but ods-litellm is "
+                    f"stopped: {', '.join(active_litellm_consumers)}"
+                )
+
+            # Fail before the first write if a config changed while the other
+            # transaction snapshots and runtime states were being captured.
+            for path, snapshot in (
+                (env_path, env_snapshot),
+                (models_ini, ini_snapshot),
+                (lemonade_yaml, lemonade_snapshot),
+                (litellm_local_yaml, litellm_local_snapshot),
+                (hermes_template_config, hermes_template_snapshot),
+            ):
+                _assert_text_file_matches_snapshot(path, snapshot)
+            if hermes_live_snapshot.get("source") == "host":
+                _assert_text_file_matches_snapshot(
+                    hermes_live_config,
+                    hermes_live_snapshot,
+                )
+            if opencode_snapshot is not None:
+                for path, snapshot in opencode_snapshot["files"].items():
+                    _assert_text_file_matches_snapshot(path, snapshot)
 
             # Update .env
+            mutation_started = True
             if env_path.exists():
-                lines = env_path.read_text(encoding="utf-8").splitlines()
+                lines = str(env_snapshot.get("text") or "").splitlines()
                 updates = {
                     "GGUF_FILE": gguf_file,
+                    "GGUF_URL": str(model.get("gguf_url") or ""),
+                    "GGUF_SHA256": str(model.get("gguf_sha256") or ""),
                     "LLM_MODEL": llm_model_name,
                     "CTX_SIZE": str(context_length),
                     "MAX_CONTEXT": str(context_length),
@@ -4510,6 +4964,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "MODEL_RUNTIME_PROFILE_LABEL": runtime_profile.get("label", "") if runtime_profile else "",
                     "MODEL_RUNTIME_PROFILE_SOURCE": runtime_profile.get("source_url", "") if runtime_profile else "",
                 }
+                if requested_tier:
+                    updates["TIER"] = requested_tier
                 if lemonade_runtime:
                     updates["LEMONADE_MODEL"] = (
                         str(env_pre.get("LEMONADE_MODEL") or "")
@@ -4564,16 +5020,16 @@ class AgentHandler(BaseHTTPRequestHandler):
                 for key, val in updates.items():
                     if key not in seen:
                         new_lines.append(f"{key}={val}")
-                env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+                _atomic_write_text(env_path, "\n".join(new_lines) + "\n")
 
             # Update models.ini
             models_ini.parent.mkdir(parents=True, exist_ok=True)
-            models_ini.write_text(
+            _atomic_write_text(
+                models_ini,
                 f"[{llm_model_name}]\n"
                 f"filename = {gguf_file}\n"
                 f"load-on-startup = true\n"
                 f"n-ctx = {context_length}\n",
-                encoding="utf-8",
             )
 
             # Restart llama-server with the new model.
@@ -4600,14 +5056,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 _restart_windows_native_llama_server(env_path, env)
             elif gpu_backend == "apple":
                 # macOS: manage native llama-server process via PID file
-                apple_pid_file = INSTALL_DIR / "data" / ".llama-server.pid"
-                apple_llama_bin = INSTALL_DIR / "bin" / "llama-server"
-                apple_llama_log = INSTALL_DIR / "data" / "llama-server.log"
-
-                if not apple_llama_bin.exists():
-                    restore_backups()
-                    json_response(self, 500, {"error": "llama-server binary not found — re-run installer"})
-                    return
+                if not all((apple_llama_bin, apple_llama_log, apple_pid_file)):
+                    raise RuntimeError("macOS native runtime preflight state is unavailable")
 
                 runtime_restart_strategy = "macos-native-llama"
                 _restart_macos_native_llama_server(
@@ -4692,6 +5142,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                             hermes_live_config,
                             patched_live,
                             hermes_live_snapshot.get("source"),
+                            hermes_live_snapshot.get("mode"),
                         )
                     verified_live = _capture_hermes_live_config(hermes_live_config)
                     if not _hermes_config_matches(
@@ -4714,29 +5165,110 @@ class AgentHandler(BaseHTTPRequestHandler):
                 hermes_patched = hermes_live_patched or (
                     hermes_template_patched and not hermes_live_exists
                 )
+                hermes_config_mutated = hermes_live_patched or hermes_template_patched
+
+                if opencode_snapshot is not None:
+                    opencode_model_id = (
+                        lemonade_model_id
+                        if windows_host_lemonade
+                        else gguf_file if windows_native_llama else llm_model_name
+                    )
+                    opencode_config_mutated = True
+                    _update_opencode_config(
+                        env,
+                        opencode_snapshot,
+                        opencode_model_id,
+                        int(context_length),
+                        display_name=llm_model_name,
+                    )
 
                 # Restart dependent services so they pick up the new model
-                litellm_restarted = _restart_existing_container("ods-litellm")
-                if hermes_patched and _restart_existing_container("ods-hermes"):
+                litellm_restart_attempted = container_states["ods-litellm"]["running"]
+                litellm_restarted = _restart_existing_container(
+                    "ods-litellm", container_states["ods-litellm"]
+                )
+                if litellm_restarted:
+                    _verify_litellm_route(env)
+                if hermes_patched:
+                    hermes_restart_attempted = container_states["ods-hermes"]["running"]
+                if hermes_patched and _restart_existing_container(
+                    "ods-hermes", container_states["ods-hermes"]
+                ):
                     _verify_running_hermes_route(
                         hermes_model_name,
                         hermes_base_url,
                         int(context_length),
                     )
-                openclaw_recreated = _recreate_openclaw_if_present()
+                    _wait_for_container_health("ods-hermes")
+                openclaw_recreate_attempted = container_states["ods-openclaw"]["running"]
+                openclaw_recreated = _recreate_openclaw_if_present(
+                    container_states["ods-openclaw"]
+                )
                 if perplexica_snapshot is not None:
+                    perplexica_mutated = True
                     _update_perplexica_model(
                         env,
                         perplexica_snapshot,
                         gguf_file=gguf_file,
                         lemonade_model_id=lemonade_model_id,
                     )
-                if litellm_restarted:
-                    _verify_litellm_route(env)
                 if openclaw_recreated:
                     _verify_openclaw_model_env(hermes_model_name)
+                    _wait_for_container_health("ods-openclaw")
+                if opencode_snapshot is not None and opencode_runtime_state is not None:
+                    opencode_restarted = _restart_managed_opencode(opencode_runtime_state)
                 committed = True  # system state is committed before the response write
-                json_response(self, 200, {"status": "activated", "model_id": model_id})
+                json_response(
+                    self,
+                    200,
+                    {
+                        "status": "activated",
+                        "model_id": model_id,
+                        "llm_model": llm_model_name,
+                        "gguf_file": gguf_file,
+                        "tier": requested_tier,
+                        "context_length": int(context_length),
+                        "consumers": {
+                            "open-webui": "dynamic_route",
+                            "dashboard": "live_env",
+                            "litellm": (
+                                "restarted"
+                                if litellm_restarted
+                                else "stopped"
+                                if container_states["ods-litellm"]["exists"]
+                                else "not_installed"
+                            ),
+                            "hermes": (
+                                "restarted"
+                                if hermes_restart_attempted
+                                else "updated_for_next_start"
+                                if hermes_config_mutated
+                                else "unchanged"
+                            ),
+                            "openclaw": (
+                                "recreated"
+                                if openclaw_recreated
+                                else "stopped"
+                                if container_states["ods-openclaw"]["exists"]
+                                else "not_installed"
+                            ),
+                            "opencode": (
+                                "restarted"
+                                if opencode_restarted
+                                else "updated_for_next_start"
+                                if opencode_config_mutated
+                                else "not_installed"
+                            ),
+                            "perplexica": (
+                                "updated"
+                                if perplexica_mutated
+                                else "stopped"
+                                if container_states["ods-perplexica"]["exists"]
+                                else "not_installed"
+                            ),
+                        },
+                    },
+                )
             else:
                 logger.warning("Model activation failed — rolling back")
                 rolled_back, rollback_error = rollback_and_prove()
@@ -4757,14 +5289,14 @@ class AgentHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             rolled_back = False
             rollback_error = ""
-            if not committed and env_backup is not None and not rollback_attempted:
+            if not committed and mutation_started and not rollback_attempted:
                 rolled_back, rollback_error = rollback_and_prove()
             logger.exception("Model activation failed")
             error = f"Model activation failed: {exc}"
             if rollback_error:
                 error += f"; rollback could not be proved: {rollback_error}"
             payload = {"error": error}
-            if env_backup is not None:
+            if mutation_started:
                 payload["rolled_back"] = rolled_back
             json_response(self, 500, payload)
 
@@ -5960,7 +6492,7 @@ def _write_lemonade_config(
         "  request_timeout: 900\n"
         "  stream_timeout: 900\n"
     )
-    config_path.write_text(content, encoding="utf-8")
+    _atomic_write_text(config_path, content)
     logger.info("Wrote lemonade.yaml for model: %s", lemonade_model_id)
 
 
@@ -5999,7 +6531,7 @@ def _write_windows_native_litellm_config(install_dir: Path, gguf_file: str, env:
         "  stream_timeout: 900\n"
     )
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(content, encoding="utf-8")
+    _atomic_write_text(config_path, content)
     logger.info("Wrote native Windows LiteLLM local.yaml for model: %s", gguf_file)
 
 
@@ -6113,7 +6645,7 @@ def _patch_hermes_model_config(
     if not changed:
         return False
     try:
-        path.write_text(patched, encoding="utf-8")
+        _atomic_write_text(path, patched)
         logger.info("Patched Hermes model.default in %s to %s", path, model_name)
         return True
     except OSError:
@@ -6155,11 +6687,79 @@ def _container_running(container: str) -> bool:
     return result.returncode == 0 and result.stdout.strip().casefold() == "true"
 
 
-def _restart_existing_container(container: str) -> bool:
-    """Restart a dependent only when that optional container exists."""
+def _capture_container_state(container: str) -> dict[str, bool]:
+    """Capture optional-container existence/running state without ambiguity."""
     if not _container_exists(container):
+        return {"exists": False, "running": False}
+    try:
+        result = subprocess.run(
+            [
+                "docker", "inspect", "--type", "container", "--format",
+                "{{.State.Running}}", container,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Could not capture runtime state for {container}: {exc}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not capture runtime state for {container}: {detail[:300]}")
+    value = result.stdout.strip().casefold()
+    if value not in {"true", "false"}:
+        raise RuntimeError(f"Docker returned an invalid running state for {container}: {value!r}")
+    return {"exists": True, "running": value == "true"}
+
+
+def _wait_for_container_health(container: str, attempts: int = 60) -> None:
+    """Wait until a restarted dependent is healthy, failing on terminal states."""
+    for attempt in range(attempts):
+        try:
+            result = subprocess.run(
+                [
+                    "docker", "inspect", "--type", "container", "--format",
+                    "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+                    container,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"Could not inspect health for {container}: {exc}") from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"Could not inspect health for {container}: {detail[:300]}")
+        status = result.stdout.strip().casefold()
+        if status in {"healthy", "none"}:
+            if _capture_container_state(container).get("running"):
+                return
+            raise RuntimeError(f"{container} exited while waiting for health")
+        if status == "unhealthy":
+            raise RuntimeError(f"{container} became unhealthy after model activation")
+        if status != "starting":
+            raise RuntimeError(f"Docker returned invalid health state for {container}: {status!r}")
+        if attempt + 1 < attempts:
+            time.sleep(2)
+    raise RuntimeError(f"{container} did not become healthy after model activation")
+
+
+def _restart_existing_container(
+    container: str,
+    expected_state: dict[str, bool] | None = None,
+) -> bool:
+    """Restart a dependent only when it was already running."""
+    state = expected_state or _capture_container_state(container)
+    if not state["exists"]:
         logger.info("Skipping restart for optional missing container %s", container)
         return False
+    if not state["running"]:
+        logger.info("Preserving stopped optional container %s", container)
+        return False
+    current = _capture_container_state(container)
+    if not current["exists"] or not current["running"]:
+        raise RuntimeError(f"{container} stopped during model activation")
     result = subprocess.run(
         ["docker", "restart", container],
         capture_output=True,
@@ -6171,6 +6771,533 @@ def _restart_existing_container(container: str) -> bool:
         raise RuntimeError(
             f"docker restart {container} failed (exit {result.returncode}): {detail[:300]}"
         )
+    return True
+
+
+def _restore_container_state(
+    container: str,
+    previous: dict[str, bool],
+    *,
+    recreate: bool = False,
+) -> bool:
+    """Restore a captured optional-container running state during rollback."""
+    if not previous.get("exists"):
+        return False
+    current = _capture_container_state(container)
+    if previous.get("running"):
+        if recreate:
+            ok, error = docker_compose_recreate([container.removeprefix("ods-")])
+            if not ok:
+                raise RuntimeError(f"Could not restore {container}: {error}")
+        else:
+            result = subprocess.run(
+                ["docker", "restart", container],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "").strip()
+                raise RuntimeError(f"Could not restore {container}: {detail[:300]}")
+        return True
+    if current.get("running"):
+        result = subprocess.run(
+            ["docker", "stop", container],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"Could not restore stopped state for {container}: {detail[:300]}")
+    return False
+
+
+def _opencode_config_paths() -> tuple[Path, ...]:
+    """Return current, ODS-compatibility, and legacy global config paths."""
+    config_dir = Path.home() / ".config" / "opencode"
+    legacy_dir = Path.home() / ".local" / "share" / "opencode"
+    return (
+        config_dir / "opencode.json",
+        config_dir / "config.json",
+        config_dir / "opencode.jsonc",
+        legacy_dir / "opencode.json",
+        legacy_dir / "opencode.jsonc",
+    )
+
+
+def _parse_jsonc(text: str) -> dict:
+    """Parse JSONC comments/trailing commas without corrupting string content."""
+    output = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(text):
+        character = text[index]
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if in_string:
+            output.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            output.append(character)
+            index += 1
+            continue
+        if character == "/" and following == "/":
+            index += 2
+            while index < len(text) and text[index] not in "\r\n":
+                index += 1
+            continue
+        if character == "/" and following == "*":
+            index += 2
+            while index + 1 < len(text) and text[index:index + 2] != "*/":
+                index += 1
+            if index + 1 >= len(text):
+                raise ValueError("unterminated block comment")
+            index += 2
+            continue
+        output.append(character)
+        index += 1
+
+    without_comments = "".join(output)
+    output = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(without_comments):
+        character = without_comments[index]
+        if in_string:
+            output.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            output.append(character)
+            index += 1
+            continue
+        if character == ",":
+            lookahead = index + 1
+            while lookahead < len(without_comments) and without_comments[lookahead].isspace():
+                lookahead += 1
+            if lookahead < len(without_comments) and without_comments[lookahead] in "}]":
+                index += 1
+                continue
+        output.append(character)
+        index += 1
+
+    parsed = json.loads("".join(output))
+    if not isinstance(parsed, dict):
+        raise ValueError("root value is not an object")
+    return parsed
+
+
+def _merge_config_objects(target: dict, source: dict) -> dict:
+    """Deep-merge OpenCode config objects in increasing precedence order."""
+    result = json.loads(json.dumps(target))
+    for key, value in source.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _merge_config_objects(result[key], value)
+        else:
+            result[key] = json.loads(json.dumps(value))
+    return result
+
+
+def _opencode_config_precedence(path: Path) -> tuple[int, int]:
+    """Sort OpenCode global configs from legacy/compatibility to current."""
+    normalized = path.as_posix().casefold()
+    legacy = "/.local/share/opencode/" in normalized
+    if legacy:
+        generation = 0
+    elif path.name.casefold() == "config.json":
+        generation = 1
+    else:
+        generation = 2
+    jsonc_priority = 1 if path.suffix.casefold() == ".jsonc" else 0
+    return generation, jsonc_priority
+
+
+def _opencode_installed() -> bool:
+    executable = "opencode.exe" if platform.system() == "Windows" else "opencode"
+    return bool(
+        shutil.which("opencode")
+        or (Path.home() / ".opencode" / "bin" / executable).is_file()
+    )
+
+
+def _capture_opencode_config() -> dict | None:
+    """Snapshot OpenCode config, using either compatibility file as a source."""
+    paths = _opencode_config_paths()
+    files: dict[Path, dict] = {}
+    parsed_sources: list[tuple[Path, dict]] = []
+    parse_errors = []
+    for position, path in enumerate(paths):
+        snapshot = _snapshot_text_file(path)
+        if not snapshot["exists"]:
+            files[path] = {
+                **snapshot,
+                "parsed": None,
+                "write": position < 2,
+            }
+            continue
+        text = str(snapshot["text"] or "")
+        parsed = None
+        try:
+            parsed = _parse_jsonc(text) if path.suffix.casefold() == ".jsonc" else json.loads(text)
+            if not isinstance(parsed, dict):
+                raise ValueError("root value is not an object")
+            parsed_sources.append((path, parsed))
+        except (json.JSONDecodeError, ValueError) as exc:
+            parse_errors.append(f"{path}: {exc}")
+        files[path] = {
+            **snapshot,
+            "parsed": parsed,
+            "write": True,
+        }
+
+    if parse_errors:
+        raise RuntimeError(
+            "OpenCode config is malformed and cannot be updated safely: "
+            + "; ".join(parse_errors)
+        )
+    if not any(item["exists"] for item in files.values()) and not _opencode_installed():
+        return None
+    source: dict = {}
+    for _path, parsed in sorted(
+        parsed_sources,
+        key=lambda item: _opencode_config_precedence(item[0]),
+    ):
+        source = _merge_config_objects(source, parsed)
+    return {"files": files, "source": source}
+
+
+def _atomic_write_json(path: Path, value: dict, mode: int = 0o600) -> None:
+    """Atomically replace a JSON file with explicit owner-only permissions."""
+    _atomic_write_text(path, json.dumps(value, indent=2) + "\n", mode)
+
+
+def _opencode_route(env: dict) -> tuple[str, str]:
+    """Return the host-visible OpenAI-compatible endpoint and API key."""
+    gpu_backend = str(env.get("GPU_BACKEND") or "nvidia").lower()
+    if _is_windows_host_lemonade(env):
+        port = str(env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080")
+        return f"http://127.0.0.1:{port}/api/v1", "no-key"
+    windows_native = _is_windows_host_llama_server(env)
+    if gpu_backend == "amd" and not windows_native:
+        port = str(env.get("LITELLM_PORT") or "4000")
+        api_key = str(env.get("LITELLM_KEY") or "")
+        if not api_key:
+            raise RuntimeError("LITELLM_KEY is required to update the OpenCode Lemonade route")
+        return f"http://127.0.0.1:{port}/v1", api_key
+
+    if gpu_backend == "apple":
+        host = _native_llama_health_host(env)
+        port = str(env.get("ODS_NATIVE_LLAMA_PORT") or env.get("OLLAMA_PORT") or "8080")
+    elif windows_native:
+        host = "127.0.0.1"
+        port = str(env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080")
+    else:
+        host = "127.0.0.1"
+        port = str(env.get("OLLAMA_PORT") or "8080")
+    return f"http://{host}:{port}/v1", "no-key"
+
+
+def _opencode_config_matches(
+    config: object,
+    model_name: str,
+    base_url: str,
+    api_key: str,
+    context_length: int,
+) -> bool:
+    if not isinstance(config, dict):
+        return False
+    provider = config.get("provider")
+    llama_provider = provider.get("llama-server") if isinstance(provider, dict) else None
+    options = llama_provider.get("options") if isinstance(llama_provider, dict) else None
+    models = llama_provider.get("models") if isinstance(llama_provider, dict) else None
+    model = models.get(model_name) if isinstance(models, dict) else None
+    limit = model.get("limit") if isinstance(model, dict) else None
+    return bool(
+        config.get("model") == f"llama-server/{model_name}"
+        and config.get("small_model") == f"llama-server/{model_name}"
+        and isinstance(options, dict)
+        and options.get("baseURL") == base_url
+        and options.get("apiKey") == api_key
+        and isinstance(limit, dict)
+        and limit.get("context") == context_length
+    )
+
+
+def _update_opencode_config(
+    env: dict,
+    snapshot: dict,
+    model_id: str,
+    context_length: int,
+    display_name: str | None = None,
+) -> None:
+    """Update both OpenCode compatibility files and verify persisted routing."""
+    base_url, api_key = _opencode_route(env)
+    display_name = display_name or model_id
+
+    for path, previous in snapshot["files"].items():
+        if not previous.get("write"):
+            continue
+        source = previous.get("parsed") or snapshot["source"]
+        config = json.loads(json.dumps(source))
+        previous_model_ref = config.get("model")
+        config["model"] = f"llama-server/{model_id}"
+        config["small_model"] = f"llama-server/{model_id}"
+        config.setdefault("$schema", "https://opencode.ai/config.json")
+
+        providers = config.setdefault("provider", {})
+        if not isinstance(providers, dict):
+            providers = {}
+            config["provider"] = providers
+        provider = providers.setdefault("llama-server", {})
+        if not isinstance(provider, dict):
+            provider = {}
+            providers["llama-server"] = provider
+        provider["npm"] = "@ai-sdk/openai-compatible"
+        provider["name"] = "llama-server (local)"
+        options = provider.setdefault("options", {})
+        if not isinstance(options, dict):
+            options = {}
+            provider["options"] = options
+        options["baseURL"] = base_url
+        options["apiKey"] = api_key
+        models = provider.setdefault("models", {})
+        if not isinstance(models, dict):
+            models = {}
+            provider["models"] = models
+        if (
+            isinstance(previous_model_ref, str)
+            and previous_model_ref.startswith("llama-server/")
+        ):
+            previous_model_id = previous_model_ref.split("/", 1)[1]
+            if previous_model_id != model_id:
+                models.pop(previous_model_id, None)
+        model = models.setdefault(model_id, {})
+        if not isinstance(model, dict):
+            model = {}
+            models[model_id] = model
+        model["name"] = display_name
+        limit = model.setdefault("limit", {})
+        if not isinstance(limit, dict):
+            limit = {}
+            model["limit"] = limit
+        limit["context"] = context_length
+        limit["output"] = min(32768, context_length)
+
+        _atomic_write_json(path, config, 0o600)
+        try:
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Could not verify OpenCode config {path}: {exc}") from exc
+        if not _opencode_config_matches(
+            persisted, model_id, base_url, api_key, context_length
+        ):
+            raise RuntimeError(f"OpenCode persisted model route is stale in {path}")
+
+
+def _restore_opencode_config(snapshot: dict) -> None:
+    """Restore exact OpenCode files after a failed downstream activation."""
+    for path, previous in snapshot["files"].items():
+        if previous.get("write") or previous.get("exists"):
+            _restore_text_file(path, previous)
+
+
+def _opencode_port() -> int:
+    raw = str(load_env(INSTALL_DIR / ".env").get("OPENCODE_PORT") or "3003")
+    try:
+        port = int(raw)
+    except ValueError:
+        port = 3003
+    return port if 1 <= port <= 65535 else 3003
+
+
+def _opencode_user_service_env() -> dict[str, str]:
+    getuid = getattr(os, "getuid", None)
+    if not callable(getuid):
+        raise RuntimeError("The current platform does not expose a user id for OpenCode")
+    uid = getuid()
+    user_env = os.environ.copy()
+    user_env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+    user_env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
+    return user_env
+
+
+def _run_windows_opencode_control(action: str) -> bool:
+    """Inspect or restart only the ODS-owned Windows OpenCode web process."""
+    executable = Path.home() / ".opencode" / "bin" / "opencode.exe"
+    port = _opencode_port()
+    ps_env = os.environ.copy()
+    ps_env.update({
+        "ODS_OPENCODE_ACTION": action,
+        "ODS_OPENCODE_EXE": str(executable),
+        "ODS_OPENCODE_PORT": str(port),
+    })
+    script = r'''
+$ErrorActionPreference = "Stop"
+$action = $env:ODS_OPENCODE_ACTION
+$exe = $env:ODS_OPENCODE_EXE
+$port = [int]$env:ODS_OPENCODE_PORT
+
+function Get-ODSOpenCodeProcesses {
+    @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+        $_.ExecutablePath -and
+        $_.ExecutablePath.Equals($exe, [StringComparison]::OrdinalIgnoreCase) -and
+        $_.CommandLine -match '(?i)\b(web|serve)\b' -and
+        $_.CommandLine -match ('(?i)--port\s+' + [regex]::Escape([string]$port))
+    })
+}
+
+$owned = @(Get-ODSOpenCodeProcesses)
+if ($action -eq 'inspect') {
+    if ($owned.Count -gt 0) { 'true' } else { 'false' }
+    exit 0
+}
+if ($action -ne 'restart') { throw "Unsupported OpenCode action: $action" }
+if ($owned.Count -eq 0) { 'false'; exit 0 }
+foreach ($process in $owned) {
+    Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction Stop
+}
+for ($attempt = 0; $attempt -lt 30; $attempt++) {
+    if (@(Get-ODSOpenCodeProcesses).Count -eq 0) { break }
+    Start-Sleep -Milliseconds 500
+}
+if (@(Get-ODSOpenCodeProcesses).Count -ne 0) { throw 'Could not stop ODS OpenCode' }
+Start-Process -FilePath $exe `
+    -ArgumentList @('web', '--port', [string]$port, '--hostname', '127.0.0.1') `
+    -WindowStyle Hidden | Out-Null
+'true'
+'''
+    command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            env=ps_env,
+        )
+    except FileNotFoundError:
+        command[0] = "pwsh.exe"
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            env=ps_env,
+        )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not {action} managed Windows OpenCode: {detail[:500]}")
+    value = result.stdout.strip().splitlines()[-1].casefold() if result.stdout.strip() else "false"
+    if value not in {"true", "false"}:
+        raise RuntimeError(f"Windows OpenCode control returned invalid state: {value!r}")
+    return value == "true"
+
+
+def _capture_managed_opencode_state() -> dict:
+    """Capture whether the ODS-managed OpenCode web process is active."""
+    system = platform.system()
+    if system == "Darwin":
+        getuid = getattr(os, "getuid", None)
+        if not callable(getuid):
+            return {"system": system, "active": False}
+        target = f"gui/{getuid()}/com.ods.opencode-web"
+        status = subprocess.run(
+            ["launchctl", "print", target],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if status.returncode != 0:
+            detail = (status.stderr or status.stdout or "").strip().casefold()
+            if "could not find service" in detail or "not found" in detail:
+                return {"system": system, "active": False, "target": target}
+            raise RuntimeError(f"Could not inspect managed OpenCode: {detail[:300]}")
+        return {"system": system, "active": True, "target": target}
+    elif system == "Linux":
+        user_env = _opencode_user_service_env()
+        status = subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", "opencode-web.service"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=user_env,
+        )
+        if status.returncode == 0:
+            return {"system": system, "active": True, "env": user_env}
+        if status.returncode in {3, 4}:
+            return {"system": system, "active": False, "env": user_env}
+        detail = (status.stderr or status.stdout or "").strip()
+        raise RuntimeError(f"Could not inspect managed OpenCode: {detail[:300]}")
+    elif system == "Windows":
+        return {"system": system, "active": _run_windows_opencode_control("inspect")}
+    return {"system": system, "active": False}
+
+
+def _wait_for_opencode_health(attempts: int = 30) -> None:
+    url = f"http://127.0.0.1:{_opencode_port()}/"
+    for attempt in range(attempts):
+        try:
+            request = urllib_request.Request(url, method="GET")
+            with urllib_request.urlopen(request, timeout=3) as response:
+                if 200 <= response.status < 500:
+                    return
+        except (OSError, urllib_error.URLError):
+            pass
+        if attempt + 1 < attempts:
+            time.sleep(1)
+    raise RuntimeError(f"Managed OpenCode did not become healthy at {url}")
+
+
+def _restart_managed_opencode(state: dict | None = None) -> bool:
+    """Restart and prove the ODS-managed OpenCode Web UI when active."""
+    state = state or _capture_managed_opencode_state()
+    if not state.get("active"):
+        return False
+    system = str(state.get("system") or platform.system())
+    if system == "Darwin":
+        result = subprocess.run(
+            ["launchctl", "kickstart", "-k", str(state["target"])],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    elif system == "Linux":
+        result = subprocess.run(
+            ["systemctl", "--user", "restart", "opencode-web.service"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=state.get("env") or _opencode_user_service_env(),
+        )
+    elif system == "Windows":
+        if not _run_windows_opencode_control("restart"):
+            raise RuntimeError("Managed Windows OpenCode disappeared before restart")
+        _wait_for_opencode_health()
+        return True
+    else:
+        return False
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not restart managed OpenCode: {detail[:300]}")
+    _wait_for_opencode_health()
     return True
 
 
@@ -6203,9 +7330,19 @@ def _perplexica_http_json(url: str, payload: dict | None = None) -> dict:
     return parsed
 
 
-def _capture_perplexica_config(env: dict) -> dict | None:
+def _capture_perplexica_config(
+    env: dict,
+    state: dict[str, bool] | None = None,
+) -> dict | None:
     """Snapshot mutable Perplexica routing state when the service is running."""
-    if not _container_running("ods-perplexica"):
+    state = state or _capture_container_state("ods-perplexica")
+    if not state["exists"]:
+        return None
+    if not state["running"]:
+        logger.info(
+            "Perplexica exists but is stopped; its next compose activation will "
+            "reconcile the model from the updated .env"
+        )
         return None
     url = _perplexica_config_url(env)
     payload = _perplexica_http_json(url)
@@ -6357,10 +7494,19 @@ def _restore_perplexica_config(snapshot: dict) -> None:
         raise RuntimeError("Perplexica rollback could not be verified")
 
 
-def _recreate_openclaw_if_present() -> bool:
-    """Recreate OpenClaw so model environment changes reach its injector."""
-    if not _container_exists("ods-openclaw"):
+def _recreate_openclaw_if_present(
+    expected_state: dict[str, bool] | None = None,
+) -> bool:
+    """Recreate OpenClaw only when the optional service is already running."""
+    state = expected_state or _capture_container_state("ods-openclaw")
+    if not state["exists"]:
         return False
+    if not state["running"]:
+        logger.info("Preserving stopped optional container ods-openclaw")
+        return False
+    current = _capture_container_state("ods-openclaw")
+    if not current["exists"] or not current["running"]:
+        raise RuntimeError("ods-openclaw stopped during model activation")
     ok, error = docker_compose_recreate(["openclaw"])
     if not ok:
         raise RuntimeError(f"Could not recreate OpenClaw after model change: {error}")
@@ -6453,29 +7599,65 @@ def _write_hermes_container_config(text: str) -> None:
 def _capture_hermes_live_config(path: Path) -> dict:
     """Capture persisted Hermes config, falling back through its running container."""
     try:
-        return {"exists": True, "text": path.read_text(encoding="utf-8"), "source": "host"}
+        metadata = path.lstat()
     except FileNotFoundError:
-        return {"exists": False, "text": None, "source": None}
+        return {
+            "exists": False,
+            "text": None,
+            "bytes": None,
+            "mode": None,
+            "source": None,
+        }
     except OSError as exc:
+        raise RuntimeError(f"Could not inspect Hermes config {path}: {exc}") from exc
+    if stat_mod.S_ISLNK(metadata.st_mode):
+        raise RuntimeError(f"Refusing to mutate symlinked Hermes config: {path}")
+    if not stat_mod.S_ISREG(metadata.st_mode):
+        raise RuntimeError(f"Refusing to mutate non-regular Hermes config: {path}")
+    try:
+        content = path.read_bytes()
+        return {
+            "exists": True,
+            "text": content.decode("utf-8"),
+            "bytes": content,
+            "mode": stat_mod.S_IMODE(metadata.st_mode),
+            "uid": metadata.st_uid,
+            "gid": metadata.st_gid,
+            "source": "host",
+        }
+    except PermissionError as exc:
         logger.info("Reading container-owned Hermes config through ods-hermes: %s", exc)
         return {
             "exists": True,
             "text": _read_hermes_container_config(),
+            "bytes": None,
+            "mode": None,
+            "uid": None,
+            "gid": None,
             "source": "container",
         }
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"Could not read Hermes config {path}: {exc}") from exc
 
 
-def _write_hermes_live_config(path: Path, text: str, source: str | None) -> None:
+def _write_hermes_live_config(
+    path: Path,
+    text: str,
+    source: str | None,
+    mode: int | None = None,
+) -> None:
     if source != "container":
         try:
-            path.write_text(text, encoding="utf-8")
+            _atomic_write_text(path, text, mode)
             return
-        except OSError as exc:
+        except PermissionError as exc:
             logger.info("Writing container-owned Hermes config through ods-hermes: %s", exc)
     _write_hermes_container_config(text)
 
 
 def _remove_hermes_live_config(path: Path) -> None:
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to remove symlinked Hermes config: {path}")
     try:
         path.unlink(missing_ok=True)
         return

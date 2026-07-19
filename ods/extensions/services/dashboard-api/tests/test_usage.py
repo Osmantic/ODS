@@ -42,6 +42,19 @@ def test_usage_readiness_requires_auth(test_client):
     assert resp.status_code == 401
 
 
+def test_runtime_model_name_uses_live_persisted_state(monkeypatch):
+    import routers.usage as usage_router
+
+    values = {"GGUF_FILE": "new-model.gguf", "LLM_MODEL": "new-model"}
+    monkeypatch.setattr(
+        usage_router,
+        "read_live_env_value",
+        lambda key, default="": values.get(key, default),
+    )
+
+    assert usage_router._runtime_model_name() == "new-model.gguf"
+
+
 def test_usage_readiness_reports_ready_token_spy(test_client, monkeypatch):
     import routers.usage as usage_router
 
