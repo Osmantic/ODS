@@ -602,14 +602,15 @@ litellm_settings:
 
     # Restrict .env to current user only (Windows ACL equivalent of chmod 600)
     try {
-        $acl = Get-Acl $envPath
+        # Retrieve only the DACL (Access) to avoid requiring SeSecurityPrivilege
+        $acl = [System.IO.File]::GetAccessControl($envPath, [System.Security.AccessControl.AccessControlSections]::Access)
         $acl.SetAccessRuleProtection($true, $false)  # Disable inheritance
         $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
             $currentUser, "FullControl", "Allow"
         )
         $acl.SetAccessRule($rule)
-        Set-Acl -Path $envPath -AclObject $acl
+        [System.IO.File]::SetAccessControl($envPath, $acl)
     } catch {
         # ACL restriction failed -- not fatal, just warn
         Write-AIWarn "Could not restrict .env permissions: $_"

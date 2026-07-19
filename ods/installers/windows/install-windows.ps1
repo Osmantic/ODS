@@ -1761,7 +1761,14 @@ exec bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($full
                         Start-ScheduledTask -TaskName $upgradeTaskName -ErrorAction Stop
                         $scheduled = $true
                     } catch {
-                        Write-AIWarn "Background full-model download task failed to start: $($_.Exception.Message)"
+                        Write-AIWarn "Could not register background upgrade task through Task Scheduler: $($_.Exception.Message)"
+                        Write-AI "Starting background upgrade task directly..."
+                        try {
+                            Start-Process -FilePath $bashPath -ArgumentList ('"{0}"' -f $wrapperScript) -WindowStyle Hidden | Out-Null
+                            $scheduled = $true
+                        } catch {
+                            Write-AIError "Failed to start background upgrade task directly: $_"
+                        }
                     }
 
                     $pidDeadline = (Get-Date).AddSeconds(10)
