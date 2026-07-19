@@ -149,7 +149,18 @@ read_ods_env() {
         if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
             local key="${BASH_REMATCH[1]}"
             local val="${BASH_REMATCH[2]}"
-            val=$(echo "$val" | sed 's/^["'"'"']//;s/["'"'"']$//')
+            # Strip exactly one matching pair of surrounding quotes. The old
+            # sed removed a leading and a trailing quote independently (either
+            # type), so KEY=abc" lost its trailing quote and "abc' was cut on
+            # both ends. Mismatched quotes stay verbatim, matching
+            # lib/safe-env.sh used by the Linux CLI.
+            if [[ "$val" == '"'*'"' ]]; then
+                val="${val#\"}"
+                val="${val%\"}"
+            elif [[ "$val" == "'"*"'" ]]; then
+                val="${val#\'}"
+                val="${val%\'}"
+            fi
             export "ENV_${key}=${val}"
         fi
     done < "$env_file"
