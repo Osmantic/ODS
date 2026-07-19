@@ -617,6 +617,28 @@ function StatusBadge({ status, statusStyle, ext, gpuBackend, onConsole }) {
   )
 }
 
+function LlmSwapBadge({ llm }) {
+  if (!llm?.consumes) return null
+
+  const safe = llm.swap_safe === true
+  const Icon = safe ? Check : X
+  const label = safe ? 'Swap-safe' : 'Not swap-safe'
+  const tone = safe
+    ? 'border-green-500/20 bg-green-500/10 text-green-300'
+    : 'border-red-500/20 bg-red-500/10 text-red-300'
+
+  return (
+    <span
+      data-testid="llm-swap-badge"
+      title={llm.swap_safe_reason || label}
+      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${tone}`}
+    >
+      <Icon size={10} />
+      {label}
+    </span>
+  )
+}
+
 function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, onAction, mutating, progressData }) {
   const iconName = ext.features?.[0]?.icon
   const Icon = (iconName && ICON_MAP[iconName]) || Package
@@ -672,7 +694,8 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <LlmSwapBadge llm={ext.llm} />
             {isCore ? (
               <span
                 className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/15 uppercase tracking-wider cursor-help"
@@ -906,6 +929,9 @@ function DetailModal({ ext, gpuBackend, onClose }) {
               >
                 {(ext.status || 'not_installed').replace('_', ' ')}
               </span>
+              <div className="mt-1">
+                <LlmSwapBadge llm={ext.llm} />
+              </div>
             </div>
           </div>
           <button onClick={onClose} autoFocus className="text-theme-text-muted hover:text-theme-text-secondary transition-colors p-1">

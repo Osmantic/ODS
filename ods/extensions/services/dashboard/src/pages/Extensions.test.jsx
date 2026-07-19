@@ -258,4 +258,52 @@ describe('Extensions page — unhealthy + install derivations', () => {
     // L760-769: Check Logs button rendered when isUserExt && isUnhealthy.
     expect(screen.getByRole('button', { name: /Check Logs/i })).toBeInTheDocument()
   })
+
+  it('renders LLM swap-safety badges from the catalog contract', async () => {
+    installFetchMock({
+      extensions: [
+        {
+          id: 'safe-llm-app',
+          name: 'Safe LLM App',
+          status: 'enabled',
+          source: 'user',
+          installable: false,
+          features: [baseFeature],
+          description: 'desc',
+          llm: {
+            consumes: true,
+            route: 'gateway',
+            pinning: 'none',
+            swap_safe: true,
+            swap_safe_reason: 'Routes through the ODS gateway alias.',
+          },
+        },
+        {
+          id: 'unsafe-llm-app',
+          name: 'Unsafe LLM App',
+          status: 'enabled',
+          source: 'user',
+          installable: false,
+          features: [baseFeature],
+          description: 'desc',
+          llm: {
+            consumes: true,
+            route: 'direct',
+            pinning: 'none',
+            swap_safe: false,
+            swap_safe_reason: 'Direct model route without a declared refresh path.',
+          },
+        },
+      ],
+      summary: baseSummary({ installed: 2, enabled: 2, total: 2 }),
+      gpu_backend: 'apple',
+      agent_available: true,
+    })
+
+    render(<Extensions />)
+    await screen.findByText('Safe LLM App')
+
+    expect(screen.getByText('Swap-safe')).toBeInTheDocument()
+    expect(screen.getByText('Not swap-safe')).toBeInTheDocument()
+  })
 })

@@ -69,6 +69,7 @@ assert_contains     "StandardOutPath uses HOME/Library/Logs/ODS"   "$stdout_val"
 assert_contains     "StandardErrorPath uses HOME/Library/Logs/ODS" "$stderr_val"  '${HOME}/Library/Logs/ODS/'
 assert_not_contains "StandardOutPath does not use INSTALL_DIR"             "$stdout_val"  'INSTALL_DIR'
 assert_not_contains "StandardErrorPath does not use INSTALL_DIR"           "$stderr_val"  'INSTALL_DIR'
+assert_contains     "WorkingDirectory uses INSTALL_DIR"                    "$workdir_val" '${INSTALL_DIR}'
 
 # --- ods-host-agent plist ---
 echo "  ods-host-agent plist:"

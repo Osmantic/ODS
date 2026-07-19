@@ -153,6 +153,29 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('Show fewer services')).toBeInTheDocument()
   })
 
+  it('renders service-level model swap safety in the services table', async () => {
+    const statusWithLlmContract = {
+      ...baseStatus,
+      services: [
+        {
+          ...services[0],
+          llm: {
+            consumes: true,
+            route: 'direct',
+            pinning: 'none',
+            swap_safe: false,
+            swap_safe_reason: 'Direct model route without a declared refresh path.',
+          },
+        },
+        ...services.slice(1),
+      ],
+    }
+
+    await renderDashboard(statusWithLlmContract)
+
+    expect(screen.getByText('Not swap-safe')).toBeInTheDocument()
+  })
+
   it('filters services by status tab and search input', async () => {
     const mixedStatus = {
       ...baseStatus,

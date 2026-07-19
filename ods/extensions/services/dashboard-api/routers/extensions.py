@@ -11,8 +11,6 @@ import stat
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -22,10 +20,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from config import (
-    AGENT_URL, ALWAYS_ON_SERVICES, CORE_SERVICE_IDS, DATA_DIR,
-    ODS_AGENT_KEY, EXTENSION_CATALOG, EXTENSIONS_DIR,
+    ALWAYS_ON_SERVICES, CORE_SERVICE_IDS, DATA_DIR,
+    EXTENSION_CATALOG, EXTENSIONS_DIR,
     EXTENSIONS_LIBRARY_DIR, GPU_BACKEND, SERVICES,
     USER_EXTENSIONS_DIR,
+)
+from host_agent_client import (
+    AgentClientError,
+    AgentHTTPError,
+    AgentProtocolError,
+    AgentUnavailable,
+    request_json as request_agent_json,
+    request_text as request_agent_text,
 )
 from security import verify_api_key
 
@@ -242,6 +248,19 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     return "not_installed"
 
 
+def _llm_contract_for_extension(ext: dict) -> dict | None:
+    """Return the manifest-derived LLM contract for a catalog row."""
+    ext_id = ext.get("id")
+    service_config = SERVICES.get(ext_id, {}) if isinstance(ext_id, str) else {}
+    service_llm = service_config.get("llm")
+    if isinstance(service_llm, dict):
+        return service_llm
+    catalog_llm = ext.get("llm")
+    if isinstance(catalog_llm, dict):
+        return catalog_llm
+    return None
+
+
 def _is_installable(ext_id: str) -> bool:
     """Check if an extension is available in the extensions library."""
     # Require a deployable compose.yaml — a directory with only compose.yaml.disabled
@@ -383,7 +402,7 @@ def _scan_compose_content(
         else:
             label_keys = []
         for lk in label_keys:
-            if lk.startswith("com.docker.compose."):
+            if lk.lower().startswith(("com.docker.compose.", "io.docker.")):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Extension rejected: reserved Docker Compose label '{lk}' in service '{svc_name}'",
@@ -397,16 +416,29 @@ def _scan_compose_content(
                         status_code=400,
                         detail=f"Extension rejected: Docker socket mount in {svc_name}",
                     )
-                vol_parts = vol_str.split(":")
-                if len(vol_parts) >= 2 and vol_parts[0].startswith("/"):
+                # Resolve the host-side source for both short-form
+                # ("source:target[:opts]") and long-form ({type: bind,
+                # source: ...}) entries, so a long-form bind can't slip an
+                # absolute/relative host path past the string-only check.
+                if isinstance(vol, dict):
+                    vol_source = str(vol.get("source", ""))
+                else:
+                    vol_source = vol_str.split(":", 1)[0]
+                if vol_source.startswith("/"):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Extension rejected: absolute host path mount '{vol_parts[0]}' in {svc_name}",
+                        detail=f"Extension rejected: absolute host path mount '{vol_source}' in {svc_name}",
+                    )
+                if ".." in vol_source.split("/"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Extension rejected: relative host path mount '{vol_source}' escaping the project directory in {svc_name}",
                     )
         cap_add = svc_def.get("cap_add", [])
         if isinstance(cap_add, list):
             for cap in cap_add:
-                if str(cap).upper() in {
+                cap_str = str(cap).upper().removeprefix("CAP_")
+                if cap_str in {
                     "SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "NET_RAW",
                     "DAC_OVERRIDE", "SETUID", "SETGID", "SYS_MODULE",
                     "SYS_RAWIO", "ALL",
@@ -616,16 +648,18 @@ _AGENT_TIMEOUT = 300  # seconds — image pulls can take several minutes on firs
 _AGENT_LOG_TIMEOUT = 30  # seconds — log fetches should be fast
 
 
-def _fetch_agent_logs(url: str, headers: dict, data: bytes, timeout: int) -> str:
+def _fetch_agent_logs(service_id: str, timeout: int) -> str:
     """Blocking POST to host agent that returns the response body as text.
 
-    Extracted so async handlers can offload the urllib call via
-    ``asyncio.to_thread``. urllib.error.HTTPError / URLError raised inside
-    propagate back to the caller and are handled there.
+    Extracted so async handlers can offload the blocking pooled request via
+    ``asyncio.to_thread``. Typed transport errors propagate to the caller.
     """
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode()
+    return request_agent_text(
+        "POST",
+        "/v1/service/logs",
+        payload={"service_id": service_id, "tail": 100},
+        timeout=timeout,
+    )
 
 
 def _call_agent(action: str, service_id: str) -> bool:
@@ -635,39 +669,35 @@ def _call_agent(action: str, service_id: str) -> bool:
     background retry — caller should let the dashboard's progress poll surface
     the eventual outcome). Mirrors _call_agent_install's contract.
     """
-    url = f"{AGENT_URL}/v1/extension/{action}"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"service_id": service_id}).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=_AGENT_TIMEOUT) as resp:
-            return resp.status in (200, 202)
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError) as exc:
+        request_agent_json(
+            "POST",
+            f"/v1/extension/{action}",
+            payload={"service_id": service_id},
+            timeout=_AGENT_TIMEOUT,
+        )
+        return True
+    except AgentClientError as exc:
         logger.warning(
             "Host agent unreachable at %s — fallback to restart_required: %s",
-            AGENT_URL, exc,
+            "shared transport", exc,
         )
         return False
 
 
 def _call_agent_invalidate_compose_cache() -> None:
     """Ask host agent to drop the .compose-flags cache after a compose mutation."""
-    url = f"{AGENT_URL}/v1/compose/invalidate-cache"
-    headers = {"Authorization": f"Bearer {ODS_AGENT_KEY}"}
-    req = urllib.request.Request(url, data=b"", headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=_AGENT_LOG_TIMEOUT) as resp:
-            if resp.status != 200:
-                logger.warning(
-                    "compose-flags cache invalidation returned HTTP %d", resp.status,
-                )
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError) as exc:
+        request_agent_json(
+            "POST",
+            "/v1/compose/invalidate-cache",
+            payload={},
+            timeout=_AGENT_LOG_TIMEOUT,
+        )
+    except AgentClientError as exc:
         logger.warning(
             "Host agent unreachable for compose-flags invalidation at %s: %s",
-            AGENT_URL, exc,
+            "shared transport", exc,
         )
 
 
@@ -682,49 +712,43 @@ def _call_agent_setup_hook(service_id: str) -> bool:
 
 def _call_agent_hook(service_id: str, hook_name: str) -> bool:
     """Call host agent to run a lifecycle hook. Returns True on success."""
-    url = f"{AGENT_URL}/v1/extension/hooks"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"service_id": service_id, "hook": hook_name}).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=_AGENT_TIMEOUT) as resp:
-            return resp.status == 200
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
+        request_agent_json(
+            "POST",
+            "/v1/extension/hooks",
+            payload={"service_id": service_id, "hook": hook_name},
+            timeout=_AGENT_TIMEOUT,
+        )
+        return True
+    except AgentHTTPError as exc:
+        if exc.status_code == 404:
             # No hook defined — not an error
             return True
-        logger.warning("%s hook failed for %s (HTTP %d)", hook_name, service_id, exc.code)
+        logger.warning(
+            "%s hook failed for %s (HTTP %d)", hook_name, service_id, exc.status_code
+        )
         return False
-    except (urllib.error.URLError, OSError, TimeoutError):
-        logger.warning("Host agent unreachable for %s hook at %s", hook_name, AGENT_URL)
+    except AgentClientError:
+        logger.warning("Host agent unreachable for %s hook", hook_name)
         return False
 
 
 def _call_agent_install(service_id: str) -> bool:
     """Call host agent combined install endpoint."""
-    url = f"{AGENT_URL}/v1/extension/install"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({
-        "service_id": service_id,
-        "run_setup_hook": True,
-    }).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=_AGENT_TIMEOUT) as resp:
-            return resp.status in (200, 202)
-    except urllib.error.HTTPError as exc:
-        logger.warning("Host agent install failed for %s (HTTP %d)", service_id, exc.code)
+        request_agent_json(
+            "POST",
+            "/v1/extension/install",
+            payload={"service_id": service_id, "run_setup_hook": True},
+            timeout=_AGENT_TIMEOUT,
+        )
+        return True
+    except AgentHTTPError as exc:
+        logger.warning(
+            "Host agent install failed for %s (HTTP %d)", service_id, exc.status_code
+        )
         return False
-    except urllib.error.URLError as exc:
-        logger.warning("Host agent unreachable for install at %s: %s", AGENT_URL, exc.reason)
-        return False
-    except OSError as exc:
+    except AgentClientError as exc:
         logger.warning("Host agent install error for %s: %s", service_id, exc)
         return False
 
@@ -740,25 +764,21 @@ def _call_agent_sync_config(service_id: str) -> bool:
     extension has no shipped config), False if the agent rejected or
     was unreachable.
     """
-    url = f"{AGENT_URL}/v1/extension/sync_config"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"service_id": service_id}).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=_AGENT_TIMEOUT) as resp:
-            return resp.status == 200
-    except urllib.error.HTTPError as exc:
+        request_agent_json(
+            "POST",
+            "/v1/extension/sync_config",
+            payload={"service_id": service_id},
+            timeout=_AGENT_TIMEOUT,
+        )
+        return True
+    except AgentHTTPError as exc:
         logger.warning(
-            "sync_config failed for %s (HTTP %d)", service_id, exc.code,
+            "sync_config failed for %s (HTTP %d)", service_id, exc.status_code,
         )
         return False
-    except (urllib.error.URLError, OSError, TimeoutError):
-        logger.warning(
-            "Host agent unreachable for sync_config at %s", AGENT_URL,
-        )
+    except AgentClientError:
+        logger.warning("Host agent unreachable for sync_config")
         return False
 
 
@@ -768,19 +788,17 @@ def _call_agent_compose_rename(action: str, service_id: str) -> bool:
     Used for built-in extensions where the extensions mount is read-only.
     action must be 'activate' or 'deactivate'.
     """
-    url = f"{AGENT_URL}/v1/extension/{action}"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"service_id": service_id}).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=_AGENT_LOG_TIMEOUT) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError) as exc:
+        request_agent_json(
+            "POST",
+            f"/v1/extension/{action}",
+            payload={"service_id": service_id},
+            timeout=_AGENT_LOG_TIMEOUT,
+        )
+        return True
+    except AgentClientError as exc:
         logger.warning(
-            "Host agent unreachable for compose rename at %s: %s", AGENT_URL, exc,
+            "Host agent unreachable for compose rename: %s", exc,
         )
         return False
 
@@ -797,10 +815,9 @@ def _check_agent_health() -> bool:
             return _agent_cache["available"]
     # Check outside lock to avoid holding it during network I/O
     try:
-        req = urllib.request.Request(f"{AGENT_URL}/health")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            available = resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError):
+        request_agent_json("GET", "/health", timeout=3)
+        available = True
+    except AgentClientError:
         available = False
     with _agent_cache_lock:
         _agent_cache.update(available=available, checked_at=time.monotonic())
@@ -932,6 +949,9 @@ async def extensions_catalog(
             "dependents": [],
             "dependency_status": {},
         }
+        llm_contract = _llm_contract_for_extension(ext)
+        if llm_contract is not None:
+            enriched["llm"] = llm_contract
         # Surface install-failure reason inline. The progress file already
         # records `error` (set by _write_error_progress) but it lives behind
         # a separate /progress endpoint, so a caller seeing `status: "error"`
@@ -1066,6 +1086,8 @@ async def extension_detail(
 
     status = _compute_extension_status(ext, services_by_id)
     installable = _is_installable(service_id)
+    llm_contract = _llm_contract_for_extension(ext)
+    manifest = {**ext, **({"llm": llm_contract} if llm_contract is not None else {})}
 
     user_dir = USER_EXTENSIONS_DIR / service_id
     source = "user" if user_dir.is_dir() else ("core" if service_id in SERVICES else "library")
@@ -1085,7 +1107,8 @@ async def extension_detail(
         "error_message": error_message,
         "source": source,
         "installable": installable,
-        "manifest": ext,
+        "llm": llm_contract,
+        "manifest": manifest,
         "env_vars": ext.get("env_vars", []),
         "features": ext.get("features", []),
         "setup_instructions": {
@@ -1111,29 +1134,20 @@ async def extension_logs(
     if not _SERVICE_ID_RE.match(service_id):
         raise HTTPException(status_code=404, detail=f"Invalid service_id: {service_id}")
 
-    url = f"{AGENT_URL}/v1/service/logs"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"service_id": service_id, "tail": 100}).encode()
     try:
         body = await asyncio.to_thread(
-            _fetch_agent_logs, url, headers, data, _AGENT_LOG_TIMEOUT,
+            _fetch_agent_logs, service_id, _AGENT_LOG_TIMEOUT,
         )
         return json.loads(body)
-    except urllib.error.HTTPError as exc:
-        try:
-            err_body = json.loads(exc.read().decode())
-            detail = err_body.get("error", f"Host agent error: HTTP {exc.code}")
-        except (json.JSONDecodeError, OSError):
-            detail = f"Host agent returned HTTP {exc.code}"
-        raise HTTPException(status_code=502, detail=detail)
-    except (urllib.error.URLError, OSError):
+    except AgentHTTPError as exc:
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
+    except AgentUnavailable as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Host agent unavailable. Use 'docker logs ods-{service_id}' in terminal.",
-        )
+        ) from exc
+    except (AgentProtocolError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail=f"Invalid host agent response: {exc}") from exc
 
 
 def _install_from_library(service_id: str) -> None:
@@ -1385,17 +1399,8 @@ def install_extension(service_id: str, api_key: str = Depends(verify_api_key)):
     }
 
 
-def _read_direct_deps(service_id: str) -> list[str]:
-    """Return direct depends_on list for a service from its manifest."""
-    ext_dir = USER_EXTENSIONS_DIR / service_id
-    manifest_path = None
-    for name in ("manifest.yaml", "manifest.yml"):
-        candidate = ext_dir / name
-        if candidate.exists():
-            manifest_path = candidate
-            break
-    if manifest_path is None:
-        return []
+def _parse_manifest_deps(manifest_path: Path) -> list[str]:
+    """Parse the service.depends_on list from a manifest file."""
     try:
         manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError):
@@ -1407,6 +1412,25 @@ def _read_direct_deps(service_id: str) -> list[str]:
     if not isinstance(depends_on, list):
         return []
     return [d for d in depends_on if isinstance(d, str) and _SERVICE_ID_RE.match(d)]
+
+
+def _read_direct_deps(service_id: str) -> list[str]:
+    """Return direct depends_on list for a service from its manifest.
+
+    Checks user-extensions first, then built-in extensions — the same
+    shadowing order as _resolve_extension_dir. A user directory without a
+    manifest still shadows a built-in of the same id.
+    """
+    for base in (USER_EXTENSIONS_DIR, EXTENSIONS_DIR):
+        ext_dir = base / service_id
+        if not ext_dir.is_dir():
+            continue
+        for name in ("manifest.yaml", "manifest.yml"):
+            candidate = ext_dir / name
+            if candidate.exists():
+                return _parse_manifest_deps(candidate)
+        return []
+    return []
 
 
 def _is_dep_satisfied(dep: str) -> bool:
@@ -1655,29 +1679,28 @@ def disable_extension(service_id: str, include_data_info: bool = Query(True), ap
             status_code=409, detail=f"Extension already disabled: {service_id}",
         )
 
-    # Check reverse dependents (warn, don't block)
+    # Check reverse dependents (warn, don't block). Scan user and built-in
+    # extensions — user dirs shadow built-ins of the same id, mirroring
+    # _resolve_extension_dir. Only currently-enabled peers (compose.yaml
+    # present) are reported: a disabled dependent is unaffected, while an
+    # enabled one is left pointing at a service the merged compose project
+    # no longer defines, which fails compose config for the whole stack.
     dependents_warning = []
-    try:
-        if USER_EXTENSIONS_DIR.is_dir():
-            for peer_dir in USER_EXTENSIONS_DIR.iterdir():
-                if not peer_dir.is_dir() or peer_dir.name == service_id:
-                    continue
-                peer_manifest = peer_dir / "manifest.yaml"
-                if not peer_manifest.exists():
-                    continue
-                try:
-                    peer_data = yaml.safe_load(
-                        peer_manifest.read_text(encoding="utf-8"),
-                    )
-                    if isinstance(peer_data, dict):
-                        peer_svc = peer_data.get("service", {})
-                        deps = peer_svc.get("depends_on", []) if isinstance(peer_svc, dict) else []
-                        if isinstance(deps, list) and service_id in deps:
-                            dependents_warning.append(peer_dir.name)
-                except (yaml.YAMLError, OSError) as e:
-                    logger.debug("Could not read peer manifest %s: %s", peer_manifest, e)
-    except OSError:
-        pass
+    seen_peers: set[str] = set()
+    for base in (USER_EXTENSIONS_DIR, EXTENSIONS_DIR):
+        try:
+            peer_dirs = list(base.iterdir()) if base.is_dir() else []
+        except OSError:
+            continue
+        for peer_dir in peer_dirs:
+            if (not peer_dir.is_dir() or peer_dir.name == service_id
+                    or peer_dir.name in seen_peers):
+                continue
+            seen_peers.add(peer_dir.name)
+            if not (peer_dir / "compose.yaml").exists():
+                continue
+            if service_id in _read_direct_deps(peer_dir.name):
+                dependents_warning.append(peer_dir.name)
 
     # Call agent to stop BEFORE renaming (prevents zombie containers)
     agent_ok = _call_agent("stop", service_id)

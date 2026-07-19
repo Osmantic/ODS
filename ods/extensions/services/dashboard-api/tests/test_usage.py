@@ -271,6 +271,41 @@ def test_usage_report_rejects_reversed_date_range(test_client):
     assert data["source"]["detail"] == "end must be on or after start"
 
 
+def test_usage_report_rejects_oversized_date_range(test_client):
+    # A span like 0001-01-01..9999-12-31 passes the shape and ordering checks
+    # but would materialize millions of daily buckets. The endpoint must
+    # reject it as invalid_range with an empty daily list, not build them.
+    resp = test_client.get(
+        "/api/usage/report?start=0001-01-01&end=9999-12-31",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"]["status"] == "invalid_range"
+    assert data["source"]["detail"] == "Date range too large (max 366 days)"
+    assert data["daily"] == []
+
+
+def test_usage_report_accepts_full_year_range(test_client, monkeypatch):
+    # 366 inclusive days (a leap year) is the documented ceiling and must
+    # still produce a normal report with per-day buckets.
+    import routers.usage as usage_router
+
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_URL", "")
+    monkeypatch.setattr(usage_router, "_fetch_local_runtime_counters", AsyncMock(return_value=[]))
+
+    resp = test_client.get(
+        "/api/usage/report?start=2024-01-01&end=2024-12-31",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"]["status"] != "invalid_range"
+    assert len(data["daily"]) == 366
+
+
 def test_usage_report_rejects_calendar_invalid_dates(test_client):
     # Month 13 and Feb 30 pass the route's YYYY-MM-DD regex but are not real
     # dates; the endpoint must answer with invalid_range, not crash with 500.

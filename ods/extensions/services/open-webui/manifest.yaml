@@ -19,3 +19,12 @@ service:
   gpu_backends: [amd, nvidia]
   category: core
   depends_on: [llama-server]
+  llm:
+    consumes: true
+    route: direct
+    pinning: dynamic
+    min_context: 0
+    probe:
+      kind: chat
+      path: /openai/v1/chat/completions
+      auth: webui-session

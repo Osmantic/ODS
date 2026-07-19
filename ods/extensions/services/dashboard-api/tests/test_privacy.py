@@ -1,10 +1,9 @@
 """Tests for privacy router endpoints."""
 
-import asyncio
-import urllib.error
-
 import aiohttp
 from unittest.mock import patch, AsyncMock, MagicMock
+
+from host_agent_client import AgentHTTPError, AgentTimeout, AgentUnavailable
 
 
 def test_privacy_shield_toggle_requires_auth(test_client):
@@ -87,12 +86,7 @@ def test_privacy_shield_status_not_running(test_client):
 
 def test_privacy_shield_toggle_enable_success(test_client):
     """POST /api/privacy-shield/toggle enable=True → success via host agent."""
-    mock_resp = MagicMock()
-    mock_resp.status = 200
-    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-    mock_resp.__exit__ = MagicMock(return_value=False)
-
-    with patch("routers.privacy.urllib.request.urlopen", return_value=mock_resp):
+    with patch("routers.privacy.request_agent_json", return_value={"status": "started"}):
         resp = test_client.post(
             "/api/privacy-shield/toggle",
             json={"enable": True},
@@ -107,12 +101,7 @@ def test_privacy_shield_toggle_enable_success(test_client):
 
 def test_privacy_shield_toggle_disable_success(test_client):
     """POST /api/privacy-shield/toggle enable=False → success via host agent."""
-    mock_resp = MagicMock()
-    mock_resp.status = 200
-    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-    mock_resp.__exit__ = MagicMock(return_value=False)
-
-    with patch("routers.privacy.urllib.request.urlopen", return_value=mock_resp):
+    with patch("routers.privacy.request_agent_json", return_value={"status": "stopped"}):
         resp = test_client.post(
             "/api/privacy-shield/toggle",
             json={"enable": False},
@@ -127,12 +116,10 @@ def test_privacy_shield_toggle_disable_success(test_client):
 
 def test_privacy_shield_toggle_agent_failure(test_client):
     """POST /api/privacy-shield/toggle when host agent returns failure."""
-    mock_resp = MagicMock()
-    mock_resp.status = 500
-    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-    mock_resp.__exit__ = MagicMock(return_value=False)
-
-    with patch("routers.privacy.urllib.request.urlopen", return_value=mock_resp):
+    with patch(
+        "routers.privacy.request_agent_json",
+        side_effect=AgentHTTPError(500, "failed", '{"error":"failed"}'),
+    ):
         resp = test_client.post(
             "/api/privacy-shield/toggle",
             json={"enable": True},
@@ -146,8 +133,10 @@ def test_privacy_shield_toggle_agent_failure(test_client):
 
 def test_privacy_shield_toggle_agent_unreachable(test_client):
     """POST /api/privacy-shield/toggle when host agent is not reachable."""
-    with patch("routers.privacy.urllib.request.urlopen",
-               side_effect=urllib.error.URLError("Connection refused")):
+    with patch(
+        "routers.privacy.request_agent_json",
+        side_effect=AgentUnavailable("Connection refused"),
+    ):
         resp = test_client.post(
             "/api/privacy-shield/toggle",
             json={"enable": True},
@@ -162,8 +151,10 @@ def test_privacy_shield_toggle_agent_unreachable(test_client):
 
 def test_privacy_shield_toggle_timeout(test_client):
     """POST /api/privacy-shield/toggle when operation times out."""
-    with patch("routers.privacy.urllib.request.urlopen",
-               side_effect=asyncio.TimeoutError()):
+    with patch(
+        "routers.privacy.request_agent_json",
+        side_effect=AgentTimeout("timed out"),
+    ):
         resp = test_client.post(
             "/api/privacy-shield/toggle",
             json={"enable": True},
@@ -178,8 +169,7 @@ def test_privacy_shield_toggle_timeout(test_client):
 
 def test_privacy_shield_toggle_os_error(test_client):
     """POST /api/privacy-shield/toggle when OS error occurs."""
-    with patch("routers.privacy.urllib.request.urlopen",
-               side_effect=OSError("broken")):
+    with patch("routers.privacy.request_agent_json", side_effect=OSError("broken")):
         resp = test_client.post(
             "/api/privacy-shield/toggle",
             json={"enable": True},

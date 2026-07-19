@@ -3,8 +3,8 @@
 # macOS installer MUST:
 #   1. force the spawn with `launchctl kickstart -p` (bootstrap alone can leave
 #      the service "pended speculative" under launchd throttling), AND
-#   2. poll /health before printing the [OK] line, so we never report success
-#      while the agent is actually down.
+#   2. poll /health on the configured bind before printing the [OK] line, and
+#   3. prove the dashboard container reaches an authenticated endpoint.
 #
 # Without both, dashboard-api hits "Host agent unreachable" on every model and
 # extension action even though the installer reports success (observed on an
@@ -53,12 +53,29 @@ grep -qE 'launchctl kickstart -p "gui/\$\(id -u\)/\$\{ODS_AGENT_PLIST_LABEL\}"' 
     || fail "host-agent bootstrap success block must call \`launchctl kickstart -p\` to defeat launchd spawn-pending throttling"
 pass "host-agent bootstrap kickstarts the service after bootstrap"
 
-grep -qE 'curl[^|]*"http://127\.0\.0\.1:\$\{ODS_AGENT_PORT\}/health"' <<<"$success_block" \
-    || fail "host-agent bootstrap success block must poll /health on 127.0.0.1:\${ODS_AGENT_PORT} before declaring [OK]"
-pass "host-agent bootstrap polls /health before declaring success"
+grep -qF '_agent_probe_host="$(macos_bind_probe_host "$_agent_native_bind")"' "$TARGET" \
+    || fail "host-agent bootstrap must derive a reachable probe from ODS_AGENT_BIND"
+grep -qF '"http://${_agent_probe_host}:${ODS_AGENT_PORT}/health"' <<<"$success_block" \
+    || fail "host-agent bootstrap success block must poll /health on the configured bind before declaring [OK]"
+pass "host-agent bootstrap polls its configured bind before declaring success"
 
 grep -qE 'ai_warn[[:space:]]+"ODS host agent loaded but not responding' <<<"$success_block" \
     || fail "host-agent bootstrap success block must surface an ai_warn when the agent fails health-check (silent false success is the bug)"
 pass "host-agent bootstrap warns on health-check timeout"
+
+verify_block="$(awk '
+    /^_verify_macos_dashboard_host_agent\(\)/ { found=1 }
+    found { print }
+    found && /^}/ { exit }
+' "$TARGET")"
+grep -qF 'container_state="$(docker inspect' <<<"$verify_block" \
+    || fail "dashboard host-agent verification must first require a running dashboard-api container"
+grep -qF '"ODS_AGENT_KEY"' <<<"$verify_block" \
+    || fail "dashboard container readiness must read ODS_AGENT_KEY"
+grep -qF -- '-H "Authorization: Bearer ${' <<<"$verify_block" \
+    || fail "dashboard container readiness must authenticate with ODS_AGENT_KEY"
+grep -qF '/v1/model/status"' <<<"$verify_block" \
+    || fail "dashboard container readiness must call the authenticated host-agent status endpoint"
+pass "dashboard container verifies authenticated host-agent reachability"
 
 echo "[OK] macOS installer verifies ods-host-agent is responding before declaring success"

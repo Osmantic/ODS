@@ -1,8 +1,14 @@
 import json
+from pathlib import Path
 
 from helpers import record_model_performance
 from models import GPUInfo
-from performance_oracle import build_models_payload, evaluate_performance, rank_pre_download_models
+from performance_oracle import (
+    build_models_payload,
+    current_model_matches,
+    evaluate_performance,
+    rank_pre_download_models,
+)
 
 
 def _gpu(name="NVIDIA GeForce RTX 4060", total_mb=8192):
@@ -30,6 +36,66 @@ def _model():
         "quantization": "Q4_K_M",
         "llm_model_name": "qwen3.5-9b",
     }
+
+
+def _official_model_catalog():
+    catalog_path = Path(__file__).resolve().parents[4] / "config" / "model-library.json"
+    return json.loads(catalog_path.read_text(encoding="utf-8"))["models"]
+
+
+def test_current_model_matches_complete_phi_aliases_and_runtime_prefixes():
+    catalog = {model["id"]: model for model in _official_model_catalog()}
+    mini = catalog["phi4-mini-q4"]
+    full = catalog["phi4-q4"]
+
+    cases = [
+        (mini, full, "phi4-mini-q4"),
+        (mini, full, "Phi-4 Mini"),
+        (mini, full, "phi-4-mini"),
+        (mini, full, "Phi-4-mini-instruct-Q4_K_M.gguf"),
+        (mini, full, "extra.Phi-4-mini-instruct-Q4_K_M.gguf"),
+        (mini, full, "user.Phi-4-mini-instruct-Q4_K_M.gguf"),
+        (mini, full, "/models/Phi-4-mini-instruct-Q4_K_M.gguf"),
+        (full, mini, "phi4-q4"),
+        (full, mini, "Phi-4 14B"),
+        (full, mini, "phi-4"),
+        (full, mini, "phi-4-Q4_K_M.gguf"),
+        (full, mini, "extra.phi-4-Q4_K_M.gguf"),
+        (full, mini, "user.phi-4-Q4_K_M.gguf"),
+        (full, mini, r"C:\models\phi-4-Q4_K_M.gguf"),
+    ]
+
+    for expected, other, runtime_name in cases:
+        assert current_model_matches(expected, runtime_name)
+        assert not current_model_matches(other, runtime_name)
+
+    assert current_model_matches(mini, None, mini["gguf_file"])
+    assert not current_model_matches(full, None, mini["gguf_file"])
+    assert not current_model_matches(full, "custom.phi-4")
+
+
+def test_real_catalog_phi_models_have_exactly_one_loaded_identity(data_dir, tmp_path):
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    catalog = _official_model_catalog()
+
+    for loaded_model, expected_id in [
+        ("phi-4-mini", "phi4-mini-q4"),
+        ("phi-4", "phi4-q4"),
+    ]:
+        payload = build_models_payload(
+            _gpu(),
+            loaded_model,
+            0,
+            install_dir,
+            data_dir,
+            catalog=catalog,
+            evidence=[],
+        )
+        loaded_rows = [model["id"] for model in payload["models"] if model["status"] == "loaded"]
+
+        assert loaded_rows == [expected_id]
+        assert payload["currentModel"] == expected_id
 
 
 def test_benchmark_required_without_measurement_or_evidence(data_dir, tmp_path):
@@ -423,3 +489,33 @@ def test_published_exact_requires_matching_signature(data_dir):
     assert perf["source"] == "published_exact"
     assert perf["tokensPerSec"] == 44.2
     assert perf["sourceUrl"] == "https://example.test/bench"
+
+
+def test_published_exact_matches_gguf_stem_identity(data_dir):
+    evidence = [{
+        "model_id": "Qwen3.5-9B-Q4_K_M",
+        "model_names": [],
+        "quantization": "Q4_K_M",
+        "backend": "nvidia",
+        "gpu_name": "NVIDIA GeForce RTX 4060",
+        "vram_gb": 8,
+        "context_length": 32768,
+        "tokens_per_second": 43.7,
+        "source_url": "https://example.test/stem-bench",
+    }]
+
+    perf = evaluate_performance(
+        _model(),
+        _gpu(),
+        {"quantization": "Q4_K_M", "readable": False},
+        False,
+        0,
+        32768,
+        {},
+        evidence,
+        True,
+    )
+
+    assert perf["source"] == "published_exact"
+    assert perf["tokensPerSec"] == 43.7
+    assert perf["sourceUrl"] == "https://example.test/stem-bench"

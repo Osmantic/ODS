@@ -130,6 +130,8 @@ assert_contains "$bootstrap" 'zypper --non-interactive install -y git' "bootstra
 assert_contains "$bootstrap" 'zypper --non-interactive install -y curl' "bootstrap cannot install curl on zypper distros"
 assert_contains "$bootstrap" 'ODS_REF' "bootstrap should allow PR/fleet lanes to clone a matching ref"
 assert_contains "$bootstrap" 'clone_args\+=\(--branch "\$ODS_REF"\)' "bootstrap ref override should apply to git clone"
+assert_contains "$bootstrap" 'ods_ref_is_exact_sha' "bootstrap should detect exact commit SHA refs"
+assert_contains "$bootstrap" 'checkout_requested_sha_ref "\$ODS_REF"' "bootstrap should checkout exact SHA refs after cloning"
 assert_contains "$bootstrap" 'BOOTSTRAP_FORCE=false' "bootstrap should parse --force before incomplete install prompts"
 assert_contains "$bootstrap" 'BOOTSTRAP_NON_INTERACTIVE=false' "bootstrap should parse --non-interactive before incomplete install prompts"
 assert_contains "$bootstrap" 'Removing incomplete install because --force was provided' "bootstrap --force should remove incomplete install dirs without prompting"
@@ -137,6 +139,63 @@ assert_contains "$bootstrap" 'Re-run with --force to remove it automatically' "b
 assert_contains "$bootstrap" 'remove_install_dir()' "bootstrap should centralize incomplete install cleanup"
 assert_contains "$bootstrap" 'sudo -n rm -rf -- "\$target_dir"' "bootstrap --force should retry root-owned container data cleanup with sudo -n"
 assert_contains "$bootstrap" 'root-owned container data' "bootstrap sudo fallback should explain root-owned Docker data cleanup"
+
+echo "[contract] public bootstrap can install from an exact commit SHA"
+sha_repo="$tmpdir/sha-ref-repo"
+sha_home="$tmpdir/sha-home"
+sha_install="$tmpdir/sha-install"
+sha_marker="$tmpdir/sha-marker"
+mkdir -p "$sha_repo/ods/scripts" "$sha_repo/ods/extensions/library" "$sha_home" "$tmpdir/bin"
+cat > "$sha_repo/ods/install.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' first-commit > "${ODS_TEST_BOOTSTRAP_INSTALL_MARKER:?}"
+EOF
+chmod +x "$sha_repo/ods/install.sh"
+git -C "$sha_repo" init -q
+git -C "$sha_repo" add ods
+git -C "$sha_repo" \
+  -c user.name="ODS Test" \
+  -c user.email="ods-test@example.invalid" \
+  commit -q -m "first install payload"
+sha_ref="$(git -C "$sha_repo" rev-parse HEAD)"
+cat > "$sha_repo/ods/install.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' second-commit > "${ODS_TEST_BOOTSTRAP_INSTALL_MARKER:?}"
+EOF
+git -C "$sha_repo" add ods/install.sh
+git -C "$sha_repo" \
+  -c user.name="ODS Test" \
+  -c user.email="ods-test@example.invalid" \
+  commit -q -m "second install payload"
+
+cat > "$tmpdir/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf '%s\n' "Docker version test"; exit 0 ;;
+  compose|ps) exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$tmpdir/bin/docker"
+
+if ! PATH="$tmpdir/bin:$PATH" \
+    HOME="$sha_home" \
+    ODS_BOOTSTRAP_ROOT="$sha_home" \
+    ODS_REPO_URL="file://$sha_repo" \
+    ODS_REF="$sha_ref" \
+    ODS_INSTALL_DIR="$sha_install" \
+    ODS_ALLOW_LEGACY_PARALLEL=1 \
+    ODS_TEST_BOOTSTRAP_INSTALL_MARKER="$sha_marker" \
+    bash get-ods.sh --non-interactive >"$tmpdir/bootstrap-sha.out" 2>&1; then
+  cat "$tmpdir/bootstrap-sha.out"
+  echo "[FAIL] bootstrap exact-SHA install failed"
+  exit 1
+fi
+grep -qF first-commit "$sha_marker" \
+  || { cat "$tmpdir/bootstrap-sha.out"; echo "[FAIL] bootstrap did not install the exact SHA payload"; exit 1; }
+assert_not_contains "$tmpdir/bootstrap-sha.out" 'Remote branch .* not found' "bootstrap treated an exact SHA as a branch name"
 
 echo "[contract] runtime dispatcher supports non-gnu Linux OSTYPE"
 dispatcher_common="installers/common.sh"
@@ -185,14 +244,35 @@ assert_not_contains "$macos_ui" '--speed-time 30 --speed-limit 10240' "macOS boo
 
 echo "[contract] Windows bootstrap model download uses retry wrapper"
 win_installer="installers/windows/install-windows.ps1"
+win_lemonade_helper="installers/windows/lib/backend-contract.ps1"
 assert_contains "$win_installer" 'Invoke-DownloadWithRetry -Url \$tierConfig\.GgufUrl' "Windows installer should retry/resume transient GGUF download failures"
 assert_not_contains "$win_installer" '\$dlOk = Show-ProgressDownload -Url \$tierConfig\.GgufUrl' "Windows installer bootstrap model path should not bypass retry wrapper"
-assert_contains "$win_installer" 'New-ScheduledTaskAction -Execute \$script:LEMONADE_EXE' "Windows installer should launch Lemonade through Task Scheduler"
-assert_contains "$win_installer" 'Start-Process -FilePath \$script:LEMONADE_EXE' "Windows installer should fall back to direct Lemonade launch when Task Scheduler is blocked"
+assert_contains "$win_installer" 'Get-ODSLemonadeLaunchContract' "Windows installer should select Lemonade arguments by executable version"
+assert_contains "$win_installer" 'New-ODSLemonadeScheduledTaskAction' "Windows installer should launch Lemonade through the shared task contract"
+assert_contains "$win_installer" 'Start-ODSLemonadeDirectProcess' "Windows installer should use the shared direct-launch fallback"
+assert_contains "$win_installer" 'Set-ODSLemonadeModernRuntimeConfig' "Windows installer should configure and verify Lemonade 10.7 after startup"
+assert_contains "$win_installer" 'Format-ODSLemonadeLaunchDiagnostics' "Windows installer should report child/task/log diagnostics before fallback"
+assert_not_contains "$win_installer" 'serve --port .*--no-tray .*--llamacpp .*--extra-models-dir' "Windows installer must not hard-code obsolete Lemonade arguments"
+assert_contains "$win_lemonade_helper" 'extra_models_dir = ' "Windows Lemonade helper should post the 10.7 extra_models_dir key"
+assert_contains "$win_lemonade_helper" 'llamacpp = \[ordered\]@\{' "Windows Lemonade helper should post the 10.7 nested llama.cpp config"
+assert_contains "$win_lemonade_helper" 'backend = "vulkan"' "Windows Lemonade helper should request the Vulkan backend"
+assert_contains "$win_lemonade_helper" 'Authorization.*Bearer' "Windows Lemonade helper should authenticate internal configuration"
 assert_contains "$win_installer" 'Lemonade scheduled task did not start a server process' "Windows installer should recover when Task Scheduler reports success without a Lemonade process"
 assert_contains "$win_installer" 'Start-Process msiexec\.exe .* -PassThru' "Windows installer should capture Lemonade MSI exit codes"
 assert_contains "$win_installer" 'Lemonade MSI exited with code' "Windows installer should report failed Lemonade MSI exit codes honestly"
+assert_contains "$win_installer" 'INSTALLDIR=' "Windows installer should install Lemonade into the normal user's runtime directory"
+assert_contains "$win_installer" '/L\*V' "Windows installer should retain a verbose Lemonade MSI log for support"
+assert_not_contains "$win_installer" 'ALLUSERS=1' "Windows installer must not require an elevated all-users Lemonade MSI install"
+assert_contains "$win_installer" '\$_managedBin = if \(\$_resolvedExe\)' "Windows installer should scope Lemonade cleanup to the resolved ODS runtime directory"
+assert_not_contains "$win_installer" '\$_knownNames -contains \$_name' "Windows installer must not stop unrelated Lemonade processes by executable name alone"
 assert_contains "installers/windows/lib/backend-contract.ps1" 'Get-ODSLemonadeExeCandidatePaths' "Windows Lemonade resolver should expose candidate paths for diagnostics"
+assert_contains "installers/windows/lib/backend-contract.ps1" 'Get-ODSLemonadeUserInstallDir' "Windows Lemonade resolver should support the per-user MSI location"
+assert_contains "installers/windows/lib/backend-contract.ps1" 'LOCALAPPDATA' "Windows Lemonade resolver should probe the current user's AppData location"
+assert_contains "$win_installer" 'Get-ODSWindowsUserDockerClientArgs' "Windows Docker fallback should preserve an existing user Docker config"
+assert_contains "$win_installer" 'image validation failed with the install-scoped Docker config' "Windows Docker fallback should cover image validation before builds"
+assert_contains "$win_installer" 'Continuing Compose preflight and service launch with the user'\''s Docker config' "Windows Docker fallback should carry through Compose preflight and launch"
+assert_contains "$win_installer" 'Compose service launch failed with the install-scoped Docker config' "Windows Docker fallback should retry compose up"
+assert_contains "$win_installer" 'Managed-container inspection failed with the install-scoped Docker config' "Windows Docker fallback should retry managed-container inspection"
 assert_contains "$win_installer" 'ODSLemonadeRuntime' "Windows installer should use a stable Lemonade scheduled task name"
 assert_contains "$win_installer" 'Invoke-WindowsSttModelDownloadTrigger' "Windows installer should trigger STT preload through a bounded helper"
 assert_contains "$win_installer" '--max-time 30 -X POST' "Windows installer STT preload should use a bounded curl trigger"
@@ -204,15 +284,17 @@ assert_not_contains "$win_installer" 'disown "\$pid"' "Windows model-upgrade tas
 assert_contains "$win_installer" '< /dev/null' "Windows installer full-model upgrade should close stdin"
 assert_contains "$win_installer" 'model-upgrade.pid' "Windows installer should record the background model-upgrade PID"
 assert_contains "$win_installer" 'ODSModelUpgrade' "Windows installer should launch full-model upgrade through a separate scheduled task"
+assert_contains "$win_installer" 'ODSNativeLlamaRuntime' "Windows installer should launch native llama-server through a managed scheduled task"
 python3 - "$win_installer" >"$tmpdir/windows-upgrade-launcher.out" <<'PY'
 import sys
+import re
 from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 start = text.index('$upgradeTaskName = "ODSModelUpgrade"')
 end = text.index("if (Test-Path -LiteralPath $upgradePidFile)", start)
 block = text[start:end]
-if "Start-Process -FilePath $bashPath" in block or "-Wait" in block:
+if re.search(r"Start-Process\s+-FilePath\s+\$bashPath[^\r\n]*\s-Wait(?:\s|$)", block):
     raise SystemExit("model upgrade launcher stays in the installer process tree")
 if 'nohup bash "$bashScript"' in block or 'disown "$pid"' in block:
     raise SystemExit("model upgrade task detaches from the process it is meant to supervise")
@@ -226,6 +308,7 @@ for needle in (
     "Register-ScheduledTask -TaskName $upgradeTaskName",
     "-Settings $upgradeSettings",
     "Start-ScheduledTask -TaskName $upgradeTaskName",
+    "-RunLevel Limited",
 ):
     if needle not in block:
         raise SystemExit(f"model upgrade launcher missing {needle}")
@@ -240,6 +323,30 @@ if 'exec bash "$bashScript"' not in wrapper:
     raise SystemExit("model upgrade wrapper does not exec the real upgrade")
 print("windows-upgrade-launcher-supervised")
 PY
+
+python3 - "$win_installer" >"$tmpdir/windows-native-llama-task.out" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = text.index('$nativeLlamaTaskName = "ODSNativeLlamaRuntime"')
+end = text.index('Write-AI "Waiting for llama-server to load model..."', start)
+block = text[start:end]
+for needle in (
+    "New-ScheduledTaskAction",
+    "-Execute $script:LLAMA_SERVER_EXE",
+    "$nativeLlamaPrincipal = New-ScheduledTaskPrincipal",
+    "-RunLevel Limited",
+    "Register-ScheduledTask -TaskName $nativeLlamaTaskName",
+    "Start-ScheduledTask -TaskName $nativeLlamaTaskName",
+    "Get-CimInstance Win32_Process",
+):
+    if needle not in block:
+        raise SystemExit(f"native llama runtime task missing {needle}")
+if "Start-Process -FilePath $script:LLAMA_SERVER_EXE" in block:
+    raise SystemExit("elevated installer still launches native llama-server directly")
+print("windows-native-llama-runtime-limited")
+PY
 assert_contains "$tmpdir/windows-upgrade-launcher.out" 'windows-upgrade-launcher-supervised' "Windows installer should supervise the full-model upgrade in the scheduled task"
 win_phase04="installers/windows/phases/04-requirements.ps1"
 assert_contains "$win_phase04" 'function Stop-WindowsODSLemonadePortConflicts' "Windows requirements phase should stop native Lemonade conflicts"
@@ -249,7 +356,9 @@ assert_contains "$win_phase04" 'Stop-Process -Id \(\[int\]\$_proc\.ProcessId\)' 
 assert_contains "$win_phase04" 'Stop-WindowsODSLemonadePortConflicts `' "Windows requirements phase should run Lemonade cleanup before port scan"
 assert_contains "installers/windows/ods.ps1" 'Invoke-ODSSttModelDownloadTrigger' "ods.ps1 repair voice should trigger STT preload through a bounded helper"
 assert_not_contains "installers/windows/ods.ps1" 'Invoke-WebRequest -Method POST -Uri \$voice\.SttModelUrl -TimeoutSec 3600' "ods.ps1 repair voice should not block on the long STT preload POST"
-assert_contains "installers/windows/ods.ps1" 'Start-Process -FilePath \$script:LEMONADE_EXE' "ods.ps1 should fall back to direct Lemonade launch when Task Scheduler is blocked"
+assert_contains "installers/windows/ods.ps1" 'Start-ODSLemonadeDirectProcess -Contract \$launchContract' "ods.ps1 should use the shared direct Lemonade fallback"
+assert_contains "installers/windows/ods.ps1" 'Set-ODSLemonadeModernRuntimeConfig' "ods.ps1 should configure Lemonade 10.7 after health"
+assert_not_contains "installers/windows/ods.ps1" 'serve --port .*--no-tray .*--llamacpp .*--extra-models-dir' "ods.ps1 must not hard-code obsolete Lemonade arguments"
 assert_contains "installers/windows/ods.ps1" 'Sync-ODSNativeInferenceConfig' "ods.ps1 should sync native runtime config from .env"
 assert_contains "installers/windows/ods.ps1" 'AMD_INFERENCE_PORT' "ods.ps1 should honor configured AMD Lemonade port"
 assert_contains "installers/windows/ods.ps1" 'LEMONADE_HEALTH_URL = "http://localhost:\$\(\$script:LEMONADE_PORT\)/api/v1/health"' "ods.ps1 should health-check the configured Lemonade port"
@@ -263,7 +372,10 @@ assert_contains "$host_agent" 'ODSLemonadeRuntime' "host-agent should launch Win
 assert_contains "$host_agent" '\$existingTask = Get-ScheduledTask -TaskName \$taskName' "host-agent should reuse an existing Windows Lemonade task when running with limited privileges"
 assert_contains "$host_agent" 'Could not refresh Lemonade scheduled task; reusing existing task' "host-agent should refresh stale Lemonade scheduled tasks when allowed"
 assert_contains "$host_agent" 'LemonadeServer.exe' "host-agent should accept current Lemonade MSI executable aliases"
-assert_contains "$host_agent" 'Start-Process -FilePath \$exe' "host-agent should fall back to direct Lemonade launch when Task Scheduler is blocked"
+assert_contains "$host_agent" 'Start-ODSLemonadeDirectProcess -Contract \$launchContract' "host-agent should use the shared direct Lemonade fallback"
+assert_contains "$host_agent" 'Set-ODSLemonadeModernRuntimeConfig' "host-agent should configure and verify Lemonade 10.7"
+assert_contains "$host_agent" '\$existingTaskMatches' "host-agent should not reuse a stale Lemonade task contract"
+assert_not_contains "$host_agent" '\$argString = "serve --port .*--no-tray' "host-agent must not embed obsolete Lemonade 10.7 arguments"
 
 echo "[contract] Windows Lemonade Hermes uses LiteLLM compact path"
 phase06_win="installers/windows/phases/06-directories.ps1"
@@ -452,6 +564,21 @@ assert_contains "installers/macos/install-macos.sh" 'ps -q' "macOS installer doe
 assert_contains "installers/macos/install-macos.sh" 'docker compose up completed but created no managed containers' "macOS installer does not fail loud on zero managed containers"
 assert_contains "installers/macos/install-macos.sh" '_macos_pre_pull_compose_images' "macOS installer does not preflight compose images before launch"
 assert_contains "installers/macos/install-macos.sh" '--pull never' "macOS installer still allows implicit compose pulls during install launch"
+assert_contains "installers/macos/install-macos.sh" 'ODS_DOCKER_BUILD_MAX_ATTEMPTS' "macOS installer does not retry transient local image build failures"
+assert_contains "installers/macos/install-macos.sh" '_macos_build_failed=\$\(\(_macos_build_failed \+ 1\)\)' "macOS installer does not count failed required local image builds"
+assert_contains "installers/macos/install-macos.sh" 'refusing to launch stale images' "macOS installer can still launch stale images after required local builds fail"
+assert_not_contains "installers/macos/install-macos.sh" 'wait .*\|\| ai_warn "Build failed' "macOS installer still treats required local build failures as warnings"
+assert_contains "installers/macos/install-macos.sh" 'colima start --network-address --network-preferred-route' "macOS installer does not prefer the private Colima vmnet route"
+assert_contains "installers/macos/install-macos.sh" 'ODS_MACOS_HOST_GATEWAY' "macOS installer does not persist the private Colima host gateway"
+assert_contains "installers/macos/install-macos.sh" '_configure_macos_host_agent_bridge' "macOS installer does not bridge host-agent actions over private Colima networking"
+assert_contains "installers/macos/install-macos.sh" 'source "\$\{LIB_DIR\}/bridge-manager\.sh"' "macOS installer does not source shared bridge lifecycle code"
+assert_contains "installers/macos/ods-macos.sh" 'source "\$\{LIB_DIR\}/bridge-manager\.sh"' "macOS CLI does not source shared bridge lifecycle code"
+assert_contains "installers/macos/lib/bridge-manager.sh" 'macos_configure_llm_bridge_from_env' "shared macOS bridge manager does not derive bridge state from .env"
+assert_contains "installers/macos/lib/bridge-manager.sh" '--allow-peer' "shared macOS bridge manager does not restrict the Colima peer"
+assert_contains "installers/macos/install-macos.sh" '/v1/model/status' "macOS installer does not verify authenticated host-agent reachability from the dashboard container"
+assert_contains "installers/macos/install-macos.sh" 'Authorization: Bearer' "macOS installer host-agent readiness probe is not authenticated"
+assert_contains "installers/macos/docker-compose.macos.yml" 'ODS_MACOS_HOST_GATEWAY:-host.docker.internal' "macOS compose does not route native inference over the private Colima gateway"
+assert_contains "extensions/services/litellm/compose.apple.yaml" 'ODS_MACOS_HOST_GATEWAY:-host-gateway' "macOS LiteLLM overlay does not route native inference over the private Colima gateway"
 assert_contains "installers/windows/install-windows.ps1" 'Assert-ODSWindowsManagedContainers' "Windows installer does not assert compose-managed containers"
 assert_contains "installers/windows/install-windows.ps1" 'Docker Compose did not create any managed Windows containers' "Windows installer does not fail loud on zero managed containers"
 assert_contains "installers/windows/install-windows.ps1" 'dashboard", "dashboard-api", "open-webui' "Windows installer does not require core container services"
@@ -489,5 +616,7 @@ if [[ "$resolver_out" != "python" ]]; then
   echo "Bash Python resolver selected '$resolver_out' instead of real python after a WindowsApps python3 alias" >&2
   exit 1
 fi
+
+bash tests/test-macos-cli-mode-routing.sh
 
 echo "[PASS] installer hardening contracts"

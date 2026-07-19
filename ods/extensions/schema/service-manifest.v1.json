@@ -132,6 +132,52 @@
           },
           "description": "Environment variables used by this service"
         },
+        "llm": {
+          "type": "object",
+          "description": "Declares whether and how this service consumes LLM inference so model swaps can be gated and probed.",
+          "required": ["consumes"],
+          "properties": {
+            "consumes": {
+              "type": "boolean",
+              "description": "True when this service sends prompts/completions to an LLM endpoint."
+            },
+            "route": {
+              "type": "string",
+              "enum": ["gateway", "direct"],
+              "description": "gateway routes through the ODS model gateway alias; direct talks to a runtime or app-specific endpoint."
+            },
+            "pinning": {
+              "type": "string",
+              "enum": ["none", "dynamic"],
+              "description": "none stores no model name; dynamic declares a refresh/reconcile path after swaps."
+            },
+            "min_context": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Optional minimum context length required for this app's LLM path."
+            },
+            "probe": {
+              "type": "object",
+              "description": "Harness probe descriptor used after every model swap.",
+              "properties": {
+                "kind": { "type": "string", "enum": ["chat", "completion", "custom"] },
+                "path": { "type": "string" },
+                "auth": { "type": "string" }
+              },
+              "additionalProperties": true
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "consumes": { "const": true } },
+                "required": ["consumes"]
+              },
+              "then": { "required": ["route", "pinning", "probe"] }
+            }
+          ],
+          "additionalProperties": true
+        },
         "setup_hook": {
           "type": "string",
           "description": "Relative path to a setup script run during installation (e.g. setup.sh)"

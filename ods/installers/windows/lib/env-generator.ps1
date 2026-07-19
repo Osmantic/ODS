@@ -34,6 +34,127 @@ function Write-Utf8NoBom {
     [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
 }
 
+function Write-WindowsODSLemonadeLiteLlmConfig {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ModelId,
+
+        [string]$Port = "8080",
+        [string]$ApiKey = "not-needed"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ModelId)) {
+        throw "Lemonade model ID is required."
+    }
+    if ($ModelId -match '[\r\n]') {
+        throw "Lemonade model ID cannot contain line breaks."
+    }
+
+    $litellmDir = Join-Path (Join-Path $InstallDir "config") "litellm"
+    New-Item -ItemType Directory -Path $litellmDir -Force | Out-Null
+    $lemonadeApiBase = "http://host.docker.internal:$Port/api/v1"
+    $lemonadeConfig = @"
+model_list:
+  - model_name: default
+    litellm_params:
+      model: openai/$ModelId
+      api_base: $lemonadeApiBase
+      api_key: $ApiKey
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+  - model_name: "*"
+    litellm_params:
+      model: openai/$ModelId
+      api_base: $lemonadeApiBase
+      api_key: $ApiKey
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  request_timeout: 900
+  stream_timeout: 900
+"@
+    $configPath = Join-Path $litellmDir "lemonade.yaml"
+    Write-Utf8NoBom -Path $configPath -Content $lemonadeConfig
+    return $configPath
+}
+
+function Set-WindowsODSLemonadeModelConfiguration {
+    <#
+    .SYNOPSIS
+        Persist the active Lemonade model ID and regenerate its LiteLLM route.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ModelId,
+
+        [string]$Port = "",
+        [string]$ApiKey = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ModelId)) {
+        throw "Lemonade model ID is required."
+    }
+    if ($ModelId -match '[\r\n]') {
+        throw "Lemonade model ID cannot contain line breaks."
+    }
+
+    $envPath = Join-Path $InstallDir ".env"
+    if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) {
+        throw "Cannot persist Lemonade model ID because .env is missing: $envPath"
+    }
+
+    $envContent = [System.IO.File]::ReadAllText($envPath)
+    $assignment = "LEMONADE_MODEL=$ModelId"
+    if ($envContent -match '(?m)^LEMONADE_MODEL=') {
+        $replacement = $assignment.Replace('$', '$$')
+        $envContent = [regex]::Replace($envContent, '(?m)^LEMONADE_MODEL=[^\r\n]*', $replacement)
+    } else {
+        $newline = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
+        if ($envContent.Length -gt 0 -and -not $envContent.EndsWith("`n")) {
+            $envContent += $newline
+        }
+        $envContent += "$assignment$newline"
+    }
+    Write-Utf8NoBom -Path $envPath -Content $envContent
+
+    if ([string]::IsNullOrWhiteSpace($Port)) {
+        $portMatch = [regex]::Match($envContent, '(?m)^AMD_INFERENCE_PORT=([^\r\n]*)')
+        if ($portMatch.Success) { $Port = $portMatch.Groups[1].Value.Trim().Trim('"').Trim("'") }
+    }
+    $parsedPort = 0
+    if (-not [int]::TryParse($Port, [ref]$parsedPort) -or $parsedPort -lt 1 -or $parsedPort -gt 65535) {
+        $Port = "8080"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ApiKey)) {
+        $keyMatch = [regex]::Match($envContent, '(?m)^LITELLM_LEMONADE_API_KEY=([^\r\n]*)')
+        if ($keyMatch.Success) { $ApiKey = $keyMatch.Groups[1].Value.Trim().Trim('"').Trim("'") }
+    }
+    if ([string]::IsNullOrWhiteSpace($ApiKey)) { $ApiKey = "not-needed" }
+
+    $configPath = Write-WindowsODSLemonadeLiteLlmConfig `
+        -InstallDir $InstallDir -ModelId $ModelId -Port $Port -ApiKey $ApiKey
+    return @{
+        ModelId = $ModelId
+        EnvPath = $envPath
+        LiteLlmConfigPath = $configPath
+    }
+}
+
 function New-SecureHex {
     <#
     .SYNOPSIS
@@ -92,6 +213,7 @@ function New-ODSEnv {
         [string]$AmdInferenceRuntimeMode = "",
         [string]$AmdInferenceManaged = "",
         [string]$LemonadeServerImage = "",
+        [string]$LemonadeModel = "",
         [int]$SystemRamGB = 0,
         # Mirror the install-time ENABLE_LANGFUSE toggle from phase 03 into
         # .env's LANGFUSE_ENABLED default. Re-install preserves whatever the
@@ -280,6 +402,22 @@ function New-ODSEnv {
     $windowsAmdHostInference = ($GpuBackend -eq "amd" -and $ODSMode -ne "cloud")
     $windowsAmdLemonade = ($windowsAmdHostInference -and $AmdInferenceRuntime -eq "lemonade")
     $effectiveODSMode = $(if ($windowsAmdLemonade) { "lemonade" } else { $ODSMode })
+    $existingLemonadeModel = Get-EnvOrNew "LEMONADE_MODEL" ""
+    $existingGgufFile = Get-EnvOrNew "GGUF_FILE" ""
+    $effectiveLemonadeModel = $existingLemonadeModel
+    if ($windowsAmdLemonade) {
+        $effectiveLemonadeModel = $(if (-not [string]::IsNullOrWhiteSpace($LemonadeModel)) {
+            $LemonadeModel
+        } elseif (-not [string]::IsNullOrWhiteSpace($existingLemonadeModel) -and
+            -not [string]::IsNullOrWhiteSpace($existingGgufFile) -and
+            $existingGgufFile.Equals([string]$TierConfig.GgufFile, [StringComparison]::OrdinalIgnoreCase)) {
+            $existingLemonadeModel
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$TierConfig.GgufFile)) {
+            "extra.$($TierConfig.GgufFile)"
+        } else {
+            $TierConfig.LlmModel
+        })
+    }
 
     # NOTE: $(if ...) syntax required for PS 5.1 compatibility
     $llmBackend = $(if ($windowsAmdLemonade) {
@@ -325,30 +463,37 @@ function New-ODSEnv {
             if ($ok -and $outIana) { $ianaId = $outIana }
         } catch { }
         if ($ianaId) { $ianaId } else {
+            # PowerShell `switch` runs *every* matching arm, and as a
+            # subexpression it collects all emitted values into an array, so
+            # multi-matching IDs (e.g. "AUS Eastern Standard Time" hits both
+            # "*AUS Eastern*" and "*Eastern*") would write an invalid
+            # "TIMEZONE=America/New_York Australia/Sydney". `break` on every arm
+            # makes the first match win; the more specific "*AUS Eastern*" is
+            # ordered ahead of "*Eastern*" so it takes precedence.
             switch -Wildcard ($tzInfo.Id) {
-                "*Eastern*"    { "America/New_York" }
-                "*Central*"    { "America/Chicago" }
-                "*Mountain*"   { "America/Denver" }
-                "*Pacific*"    { "America/Los_Angeles" }
-                "*Alaska*"     { "America/Anchorage" }
-                "*Hawaii*"     { "Pacific/Honolulu" }
-                "*UTC*"        { "UTC" }
-                "*GMT*"        { "Europe/London" }
-                "*W. Europe*"  { "Europe/Berlin" }
-                "*Romance*"    { "Europe/Paris" }
-                "*India*"      { "Asia/Kolkata" }
-                "*China*"      { "Asia/Shanghai" }
-                "*Tokyo*"      { "Asia/Tokyo" }
-                "*Korea*"      { "Asia/Seoul" }
-                "*AUS Eastern*"  { "Australia/Sydney" }
-                "*E. South America*" { "America/Sao_Paulo" }
-                "*SE Asia*"    { "Asia/Bangkok" }
-                "*Arab*"       { "Asia/Riyadh" }
-                "*Egypt*"      { "Africa/Cairo" }
-                "*South Africa*" { "Africa/Johannesburg" }
-                "*E. Europe*"  { "Europe/Bucharest" }
-                "*FLE*"        { "Europe/Kiev" }
-                default        { "UTC" }
+                "*AUS Eastern*"  { "Australia/Sydney"; break }
+                "*Eastern*"    { "America/New_York"; break }
+                "*Central*"    { "America/Chicago"; break }
+                "*Mountain*"   { "America/Denver"; break }
+                "*Pacific*"    { "America/Los_Angeles"; break }
+                "*Alaska*"     { "America/Anchorage"; break }
+                "*Hawaii*"     { "Pacific/Honolulu"; break }
+                "*UTC*"        { "UTC"; break }
+                "*GMT*"        { "Europe/London"; break }
+                "*W. Europe*"  { "Europe/Berlin"; break }
+                "*Romance*"    { "Europe/Paris"; break }
+                "*India*"      { "Asia/Kolkata"; break }
+                "*China*"      { "Asia/Shanghai"; break }
+                "*Tokyo*"      { "Asia/Tokyo"; break }
+                "*Korea*"      { "Asia/Seoul"; break }
+                "*E. South America*" { "America/Sao_Paulo"; break }
+                "*SE Asia*"    { "Asia/Bangkok"; break }
+                "*Arab*"       { "Asia/Riyadh"; break }
+                "*Egypt*"      { "Africa/Cairo"; break }
+                "*South Africa*" { "Africa/Johannesburg"; break }
+                "*E. Europe*"  { "Europe/Bucharest"; break }
+                "*FLE*"        { "Europe/Kiev"; break }
+                default        { "UTC"; break }
             }
         }
     } catch { "UTC" })
@@ -394,6 +539,7 @@ MINIMAX_API_KEY=$(Get-EnvOrNew "MINIMAX_API_KEY" "")
 MODEL_PROFILE=$(Get-EnvOrNew "MODEL_PROFILE" "$(if ($TierConfig.ModelProfileRequested) { $TierConfig.ModelProfileRequested } else { "qwen" })")
 LLM_MODEL=$($TierConfig.LlmModel)
 GGUF_FILE=$($TierConfig.GgufFile)
+LEMONADE_MODEL=$effectiveLemonadeModel
 MAX_CONTEXT=$($TierConfig.MaxContext)
 CTX_SIZE=$($TierConfig.MaxContext)
 MODEL_RECOMMENDED_MODEL=$($TierConfig.LlmModel)
@@ -559,50 +705,23 @@ litellm_settings:
     }
 
     if ($windowsAmdLemonade) {
-        $litellmDir = Join-Path (Join-Path $InstallDir "config") "litellm"
-        New-Item -ItemType Directory -Path $litellmDir -Force | Out-Null
         $lemonadePort = $(if ($AmdInferencePort) { $AmdInferencePort } else { "8080" })
-        $lemonadeModel = "extra.$($TierConfig.GgufFile)"
-        $lemonadeApiBase = "http://host.docker.internal:$lemonadePort/api/v1"
-        $lemonadeConfig = @"
-model_list:
-  - model_name: default
-    litellm_params:
-      model: openai/$lemonadeModel
-      api_base: $lemonadeApiBase
-      api_key: $litellmLemonadeApiKey
-      extra_body:
-        chat_template_kwargs:
-          enable_thinking: false
-
-  - model_name: "*"
-    litellm_params:
-      model: openai/$lemonadeModel
-      api_base: $lemonadeApiBase
-      api_key: $litellmLemonadeApiKey
-      extra_body:
-        chat_template_kwargs:
-          enable_thinking: false
-
-litellm_settings:
-  drop_params: true
-  set_verbose: false
-  request_timeout: 900
-  stream_timeout: 900
-"@
-        Write-Utf8NoBom -Path (Join-Path $litellmDir "lemonade.yaml") -Content $lemonadeConfig
+        $null = Write-WindowsODSLemonadeLiteLlmConfig `
+            -InstallDir $InstallDir -ModelId $effectiveLemonadeModel `
+            -Port $lemonadePort -ApiKey $litellmLemonadeApiKey
     }
 
     # Restrict .env to current user only (Windows ACL equivalent of chmod 600)
     try {
-        $acl = Get-Acl $envPath
+        # Retrieve only the DACL (Access) to avoid requiring SeSecurityPrivilege
+        $acl = [System.IO.File]::GetAccessControl($envPath, [System.Security.AccessControl.AccessControlSections]::Access)
         $acl.SetAccessRuleProtection($true, $false)  # Disable inheritance
         $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
             $currentUser, "FullControl", "Allow"
         )
         $acl.SetAccessRule($rule)
-        Set-Acl -Path $envPath -AclObject $acl
+        [System.IO.File]::SetAccessControl($envPath, $acl)
     } catch {
         # ACL restriction failed -- not fatal, just warn
         Write-AIWarn "Could not restrict .env permissions: $_"
@@ -611,6 +730,7 @@ litellm_settings:
     return @{
         SearxngSecret  = $searxngSecret
         OpenclawToken  = $openclawToken
+        LemonadeModel  = $effectiveLemonadeModel
     }
 }
 

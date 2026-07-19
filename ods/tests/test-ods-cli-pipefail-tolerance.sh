@@ -210,5 +210,89 @@ else
     fail "benchmark did not propagate chat failure"
 fi
 
+reset_install
+cat > "$INSTALL_DIR/.env" <<'EOF'
+ODS_MODE=local
+TIER=1
+GPU_BACKEND=cpu
+ODS_COMPOSE_STARTUP_RETRY_ATTEMPTS=1
+EOF
+
+cat > "$BIN_DIR/docker" <<'SH'
+#!/usr/bin/env bash
+if [[ "$1" == "compose" && "$*" == *" up -d"* ]]; then
+    echo "container ods-dashboard-api is unhealthy" >&2
+    exit 1
+fi
+if [[ "$1" == "compose" && "$*" == *" ps -a"* ]]; then
+    echo "ods-dashboard-api"
+    exit 0
+fi
+if [[ "$1" == "inspect" ]]; then
+    echo "running unhealthy"
+    exit 0
+fi
+if [[ "$1" == "logs" && "$2" == "--tail" && "$3" == "20" ]]; then
+    echo "STARTUP_EVIDENCE_SENTINEL"
+    exit 0
+fi
+if [[ "$1" == "ps" ]]; then
+    exit 0
+fi
+exit 0
+SH
+chmod +x "$BIN_DIR/docker"
+
+result="$(run_ods start)"
+rc="$(printf '%s\n' "$result" | sed -n '1p')"
+if [[ "$rc" != "0" ]] \
+   && grep -q 'STARTUP_EVIDENCE_SENTINEL' <<<"$result" \
+   && grep -q 'ods doctor' <<<"$result" \
+   && grep -q 'Full compose output:' <<<"$result"; then
+    pass "start failure surfaces container evidence and recovery step"
+else
+    fail "start failure diagnostics did not preserve failure evidence contract"
+fi
+
+cat > "$BIN_DIR/docker" <<'SH'
+#!/usr/bin/env bash
+if [[ "$1" == "compose" && "$*" == *" up -d"* ]]; then
+    echo "container ods-dashboard-api is unhealthy" >&2
+    exit 23
+fi
+if [[ "$1" == "compose" && "$*" == *" ps -a"* ]]; then
+    [[ "${DIAGNOSTIC_FAIL_STEP:-}" == "ps" ]] && exit 1
+    echo "ods-dashboard-api"
+    exit 0
+fi
+if [[ "$1" == "inspect" ]]; then
+    [[ "${DIAGNOSTIC_FAIL_STEP:-}" == "inspect" ]] && exit 1
+    echo "running unhealthy"
+    exit 0
+fi
+if [[ "$1" == "logs" ]]; then
+    [[ "${DIAGNOSTIC_FAIL_STEP:-}" == "logs" ]] && exit 1
+    exit 0
+fi
+if [[ "$1" == "ps" ]]; then
+    exit 0
+fi
+exit 0
+SH
+chmod +x "$BIN_DIR/docker"
+
+for fail_step in ps inspect logs; do
+    DIAGNOSTIC_FAIL_STEP="$fail_step"
+    export DIAGNOSTIC_FAIL_STEP
+    result="$(run_ods start)"
+    rc="$(printf '%s\n' "$result" | sed -n '1p')"
+    if [[ "$rc" == "23" ]] && grep -q 'Full compose output:' <<<"$result"; then
+        pass "diagnostic $fail_step failure preserves compose failure"
+    else
+        fail "diagnostic $fail_step failure masked compose failure"
+    fi
+done
+unset DIAGNOSTIC_FAIL_STEP
+
 echo "Result: $PASS passed, $FAIL failed, $SKIP skipped"
 [[ "$FAIL" -eq 0 ]]

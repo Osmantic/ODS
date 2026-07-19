@@ -4,7 +4,8 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+from urllib.parse import urlparse
 
 import yaml
 
@@ -23,6 +24,68 @@ EXTENSIONS_DIR = Path(
 
 DEFAULT_SERVICE_HOST = os.environ.get("SERVICE_HOST", "host.docker.internal")
 GPU_BACKEND = os.environ.get("GPU_BACKEND", "nvidia")
+ODS_MODES = frozenset({"local", "cloud", "hybrid", "lemonade"})
+LOCAL_MODEL_MODES = frozenset({"local", "hybrid", "lemonade"})
+LLM_CONTRACT_ROUTES = frozenset({"gateway", "direct"})
+LLM_CONTRACT_PINNING = frozenset({"none", "dynamic"})
+
+
+def normalize_ods_mode(value: Any) -> str:
+    """Return a supported ODS mode or ``unknown`` for missing/invalid input."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in ODS_MODES else "unknown"
+
+
+def normalize_llm_contract(value: Any) -> dict[str, Any] | None:
+    """Normalize a manifest ``llm`` contract for API and harness consumers."""
+    if not isinstance(value, dict):
+        return None
+
+    consumes = bool(value.get("consumes", False))
+    route = str(value.get("route") or "").strip().lower()
+    pinning = str(value.get("pinning") or "").strip().lower()
+    if route not in LLM_CONTRACT_ROUTES:
+        route = "direct" if consumes else ""
+    if pinning not in LLM_CONTRACT_PINNING:
+        pinning = "none"
+
+    normalized: dict[str, Any] = {
+        "consumes": consumes,
+        "route": route,
+        "pinning": pinning,
+    }
+
+    min_context = value.get("min_context")
+    if min_context is not None:
+        try:
+            normalized["min_context"] = max(0, int(min_context))
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid llm.min_context value: %r", min_context)
+
+    probe = value.get("probe")
+    if isinstance(probe, dict):
+        normalized["probe"] = probe.copy()
+
+    swap_safe = bool(consumes and (route == "gateway" or pinning == "dynamic"))
+    normalized["swap_safe"] = swap_safe
+    # camelCase alias: the fleet model-ui harness gates required probes on llm.swapSafe
+    normalized["swapSafe"] = swap_safe
+    normalized["badge"] = "swap-safe" if swap_safe else "not-swap-safe"
+    if not consumes:
+        normalized["swap_safe_reason"] = "This service does not declare LLM inference consumption."
+    elif route == "gateway":
+        normalized["swap_safe_reason"] = "Routes through the ODS gateway alias and follows model swaps automatically."
+    elif pinning == "dynamic":
+        normalized["swap_safe_reason"] = "Declares a dynamic model refresh path and is re-probed after swaps."
+    else:
+        normalized["swap_safe_reason"] = "Direct model route without a declared refresh path; swaps may require reconciliation."
+
+    return normalized
+
+
+# This is the mode of the running dashboard-api container. Unlike the mounted
+# .env file, the process environment is fixed until the service is recreated.
+ODS_MODE_EFFECTIVE = normalize_ods_mode(os.environ.get("ODS_MODE"))
 
 
 def _read_env_from_file(key: str) -> str:
@@ -35,6 +98,42 @@ def _read_env_from_file(key: str) -> str:
     except OSError:
         pass
     return ""
+
+
+def _apply_host_native_llm_service_override(
+    services: dict[str, dict[str, Any]],
+    gpu_backend: str,
+    environment: Mapping[str, str] | None = None,
+) -> None:
+    """Route Windows AMD dashboard probes to the host-native LLM endpoint."""
+    env = environment if environment is not None else os.environ
+    if str(gpu_backend).lower() != "amd":
+        return
+    if str(env.get("AMD_INFERENCE_LOCATION", "")).lower() != "host":
+        return
+    service = services.get("llama-server")
+    if not service:
+        return
+
+    configured_url = (
+        env.get("OLLAMA_URL")
+        or env.get("LLM_URL")
+        or env.get("LLM_API_URL")
+        or f"http://host.docker.internal:{env.get('AMD_INFERENCE_PORT', '8080')}"
+    )
+    parsed = urlparse(str(configured_url).strip())
+    if not parsed.hostname:
+        logger.warning("Ignoring invalid host-native LLM URL: %s", configured_url)
+        return
+    try:
+        port = parsed.port or int(env.get("AMD_INFERENCE_PORT", "8080"))
+    except ValueError:
+        logger.warning("Ignoring invalid host-native LLM port in URL: %s", configured_url)
+        return
+
+    service["host"] = parsed.hostname
+    service["port"] = port
+    logger.info("Host-native AMD inference detected; routing LLM probes to %s:%d", parsed.hostname, port)
 
 
 # --- Manifest Loading ---
@@ -119,7 +218,7 @@ def load_extension_manifests(
                 else:
                     external_port = int(ext_port_default)
 
-                services[service_id] = {
+                service_config = {
                     "host": host,
                     "port": int(service.get("port", 0)),
                     "external_port": external_port,
@@ -137,6 +236,10 @@ def load_extension_manifests(
                     **({"type": service["type"]} if "type" in service else {}),
                     **({"health_port": int(service["health_port"])} if "health_port" in service else {}),
                 }
+                llm_contract = normalize_llm_contract(service.get("llm"))
+                if llm_contract is not None:
+                    service_config["llm"] = llm_contract
+                services[service_id] = service_config
 
             manifest_features = manifest.get("features", [])
             if isinstance(manifest_features, list):
@@ -171,6 +274,7 @@ if not SERVICES:
 # Lemonade serves at /api/v1 instead of llama.cpp's /v1. Override the
 # health path so the dashboard poll loop hits the correct endpoint.
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "")
+_apply_host_native_llm_service_override(SERVICES, GPU_BACKEND)
 if LLM_BACKEND == "lemonade" and "llama-server" in SERVICES:
     SERVICES["llama-server"]["health"] = "/api/v1/health"
     logger.info("Lemonade backend detected — overriding llama-server health to /api/v1/health")

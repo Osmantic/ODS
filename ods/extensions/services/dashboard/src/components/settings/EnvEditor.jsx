@@ -218,6 +218,7 @@ function FieldCard({ field, value, issues, revealed, onToggleReveal, onChange })
   const isEnum = Array.isArray(field?.enum) && field.enum.length > 0
   const isBoolean = field?.type === 'boolean'
   const isInteger = field?.type === 'integer'
+  const isReadOnly = Boolean(field?.readOnly)
   const secretPlaceholder = field?.secret ? (field?.hasValue ? 'Stored locally' : 'Not set') : (field?.default !== undefined && field?.default !== null ? String(field.default) : '')
 
   return (
@@ -228,6 +229,7 @@ function FieldCard({ field, value, issues, revealed, onToggleReveal, onChange })
             <p className="text-sm font-medium text-theme-text">{field?.label}</p>
             {field?.required ? <Badge>required</Badge> : null}
             {field?.secret ? <Badge muted>{field?.hasValue ? 'stored' : 'secret'}</Badge> : null}
+            {isReadOnly ? <Badge muted>read only</Badge> : null}
           </div>
           <p className="mt-1 text-xs text-theme-text-muted">{field?.description || 'No description available.'}</p>
         </div>
@@ -245,8 +247,9 @@ function FieldCard({ field, value, issues, revealed, onToggleReveal, onChange })
               <button
                 key={option.label}
                 type="button"
+                disabled={isReadOnly}
                 onClick={() => onChange(option.id)}
-                className={`rounded-full px-3 py-1.5 text-[10px] font-mono uppercase tracking-[0.16em] transition-colors ${
+                className={`rounded-full px-3 py-1.5 text-[10px] font-mono uppercase tracking-[0.16em] transition-colors disabled:cursor-default disabled:opacity-60 ${
                   String(value).toLowerCase() === option.id ? 'bg-theme-accent text-white' : 'text-theme-text-muted hover:text-theme-text'
                 }`}
               >
@@ -257,8 +260,9 @@ function FieldCard({ field, value, issues, revealed, onToggleReveal, onChange })
         ) : isEnum ? (
           <select
             value={value}
+            disabled={isReadOnly}
             onChange={(event) => onChange(event.target.value)}
-            className="w-full rounded-xl border border-white/8 bg-black/[0.16] px-3 py-2.5 text-sm text-theme-text outline-none focus:border-theme-accent/30"
+            className="w-full rounded-xl border border-white/8 bg-black/[0.16] px-3 py-2.5 text-sm text-theme-text outline-none focus:border-theme-accent/30 disabled:cursor-default disabled:opacity-70"
           >
             <option value="">Use default</option>
             {field.enum.map((option) => <option key={option} value={option}>{option}</option>)}
@@ -268,10 +272,11 @@ function FieldCard({ field, value, issues, revealed, onToggleReveal, onChange })
             <input
               type={field?.secret && !revealed ? 'password' : (isInteger ? 'number' : 'text')}
               value={value}
+              disabled={isReadOnly}
               onChange={(event) => onChange(event.target.value)}
               placeholder={secretPlaceholder}
               autoComplete="off"
-              className="w-full rounded-xl border border-white/8 bg-black/[0.16] px-3 py-2.5 text-sm text-theme-text outline-none focus:border-theme-accent/30"
+              className="w-full rounded-xl border border-white/8 bg-black/[0.16] px-3 py-2.5 text-sm text-theme-text outline-none focus:border-theme-accent/30 disabled:cursor-default disabled:opacity-70"
             />
             {field?.secret ? (
               <button
@@ -286,6 +291,10 @@ function FieldCard({ field, value, issues, revealed, onToggleReveal, onChange })
           </div>
         )}
       </div>
+
+      {isReadOnly && field?.readOnlyReason ? (
+        <p className="mt-2 text-[11px] text-theme-text-muted">{field.readOnlyReason}</p>
+      ) : null}
 
       {field?.secret ? (
         <p className="mt-2 text-[11px] text-theme-text-muted">

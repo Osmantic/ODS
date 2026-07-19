@@ -22,8 +22,6 @@ import re
 import socket
 import shutil
 import time
-import urllib.error
-import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +50,13 @@ from helpers import (
     get_uptime, get_cpu_metrics, get_ram_metrics,
     get_llama_metrics, get_loaded_model, get_llama_context_size,
     _get_httpx_client,
+)
+from host_agent_client import (
+    AgentHTTPError,
+    AgentProtocolError,
+    AgentUnavailable,
+    request_json as request_agent_json,
+    shutdown_clients as shutdown_agent_clients,
 )
 from agent_monitor import collect_metrics
 from routers import (
@@ -178,21 +183,9 @@ def _read_installed_version() -> str:
 def _probe_host_agent_health() -> dict[str, Any]:
     """Probe the host-agent health endpoint and update diagnostic state."""
     started = time.monotonic()
-    url = f"{AGENT_URL}/health"
-    headers = {}
-    if ODS_AGENT_KEY:
-        headers["Authorization"] = f"Bearer {ODS_AGENT_KEY}"
-    request = urllib.request.Request(url, headers=headers)
-
     try:
-        with urllib.request.urlopen(request, timeout=3) as response:
-            status_code = int(getattr(response, "status", response.getcode()))
-            raw = response.read(2048).decode("utf-8", errors="replace")
-            try:
-                body: Any = json.loads(raw) if raw else None
-            except json.JSONDecodeError:
-                body = raw[:500]
-
+        body: Any = request_agent_json("GET", "/health", timeout=3)
+        status_code = 200
         latency_ms = round((time.monotonic() - started) * 1000)
         success_at = datetime.now(timezone.utc).isoformat()
         _host_agent_probe_state["last_success_at"] = success_at
@@ -204,14 +197,14 @@ def _probe_host_agent_health() -> dict[str, Any]:
             "response": body,
             "error": None,
         }
-    except urllib.error.HTTPError as exc:
+    except AgentHTTPError as exc:
         latency_ms = round((time.monotonic() - started) * 1000)
-        status_code = exc.code
-        detail = f"HTTP {exc.code}: {exc.reason}"
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        status_code = exc.status_code
+        detail = f"HTTP {exc.status_code}: {exc.detail}"
+    except (AgentUnavailable, AgentProtocolError) as exc:
         latency_ms = round((time.monotonic() - started) * 1000)
         status_code = None
-        detail = str(getattr(exc, "reason", exc))
+        detail = str(exc)
 
     _host_agent_probe_state["last_error"] = detail
     return {
@@ -522,6 +515,7 @@ HERMES_MIN_CONTEXT = 65536
 HERMES_TARGET_CONTEXT = 131072
 
 
+
 def _build_model_readiness_payload(
     *,
     model_info: Optional[ModelInfo],
@@ -624,9 +618,22 @@ def _service_semantics(service_id: str, status: str) -> dict:
     }
 
 
+def _service_public_url(service_id: str, port: int | None) -> Optional[str]:
+    if not port:
+        return None
+    config = SERVICES.get(service_id, {})
+    path = str(config.get("ui_path") or "/").strip() or "/"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"http://127.0.0.1:{port}{path}"
+
+
+
+
 def _serialize_services(service_statuses: list[ServiceStatus], uptime: int) -> list[dict]:
     serialized = []
     for service in service_statuses:
+        url = _service_public_url(service.id, service.external_port)
         item = {
             "id": service.id,
             "name": service.name,
@@ -634,6 +641,12 @@ def _serialize_services(service_statuses: list[ServiceStatus], uptime: int) -> l
             "port": service.external_port,
             "uptime": uptime if service.status == "healthy" else None,
         }
+        if url:
+            item["url"] = url
+            item["href"] = url
+        llm_contract = SERVICES.get(service.id, {}).get("llm")
+        if isinstance(llm_contract, dict):
+            item["llm"] = llm_contract
         item.update(_service_semantics(service.id, service.status))
         serialized.append(item)
     return serialized
@@ -645,6 +658,7 @@ def _fallback_services() -> list[dict]:
         external_port = config.get("external_port", config.get("port", 0))
         if not external_port:
             continue
+        url = _service_public_url(service_id, external_port)
         item = {
             "id": service_id,
             "name": config.get("name", service_id),
@@ -652,6 +666,12 @@ def _fallback_services() -> list[dict]:
             "port": external_port,
             "uptime": None,
         }
+        if url:
+            item["url"] = url
+            item["href"] = url
+        llm_contract = config.get("llm")
+        if isinstance(llm_contract, dict):
+            item["llm"] = llm_contract
         item.update(_service_semantics(service_id, "unknown"))
         links.append(item)
     return links
@@ -815,36 +835,22 @@ def _clear_settings_caches():
 
 
 def _call_agent_core_recreate(service_ids: list[str]) -> dict[str, Any]:
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"service_ids": service_ids}).encode("utf-8")
-    request = urllib.request.Request(
-        f"{AGENT_URL}/v1/core/recreate",
-        data=data,
-        headers=headers,
-        method="POST",
+    return request_agent_json(
+        "POST",
+        "/v1/core/recreate",
+        payload={"service_ids": service_ids},
+        timeout=180,
     )
-    with urllib.request.urlopen(request, timeout=180) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def _call_agent_env_update(raw_text: str) -> dict[str, Any]:
     """Route .env writes through the host agent (filesystem is :ro in container)."""
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"raw_text": raw_text, "backup": True}).encode("utf-8")
-    request = urllib.request.Request(
-        f"{AGENT_URL}/v1/env/update",
-        data=data,
-        headers=headers,
-        method="POST",
+    return request_agent_json(
+        "POST",
+        "/v1/env/update",
+        payload={"raw_text": raw_text, "backup": True},
+        timeout=60,
     )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def _build_settings_env_payload(
@@ -929,6 +935,24 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
             for key in invalid_keys
         ], _compute_env_apply_plan(current_values, current_values)
 
+    read_only_changes = []
+    for key, submitted_value in submitted_values.items():
+        field = base_fields[key]
+        if not field.get("readOnly"):
+            continue
+        current_value = current_values.get(key, "")
+        if str(submitted_value) != current_value:
+            read_only_changes.append({
+                "key": key,
+                "message": field.get("readOnlyReason") or "Field is read-only.",
+            })
+    if read_only_changes:
+        return (
+            _render_env_from_values(current_values),
+            read_only_changes,
+            _compute_env_apply_plan(current_values, current_values),
+        )
+
     normalized_values = _serialize_form_values(submitted_values, base_fields, current_values)
     merged_values = {**current_values, **normalized_values}
     for key, field in base_fields.items():
@@ -943,12 +967,17 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    asyncio.create_task(collect_metrics())
-    asyncio.create_task(_poll_service_health())
-    asyncio.create_task(gpu_router.poll_gpu_history())
+    background_tasks = [
+        asyncio.create_task(collect_metrics()),
+        asyncio.create_task(_poll_service_health()),
+        asyncio.create_task(gpu_router.poll_gpu_history()),
+    ]
     try:
         yield
     finally:
+        for task in background_tasks:
+            task.cancel()
+        await asyncio.gather(*background_tasks, return_exceptions=True)
         # Close any open Hermes WebSockets in the ODS Talk connection pool
         # so a graceful uvicorn shutdown doesn't leak FDs into stale state.
         try:
@@ -956,6 +985,7 @@ async def _lifespan(app: FastAPI):
             await hermes_bridge.shutdown_pool()
         except Exception:
             logger.debug("hermes_bridge.shutdown_pool raised at app shutdown", exc_info=True)
+        await shutdown_agent_clients()
 
 
 app = FastAPI(
@@ -1097,9 +1127,14 @@ async def preflight_gpu():
     return {"available": False, "error": "No GPU detected. Ensure NVIDIA drivers or AMD amdgpu driver is loaded."}
 
 
-@app.get("/api/preflight/required-ports")
+@app.get("/api/preflight/required-ports", dependencies=[Depends(verify_api_key)])
 async def preflight_required_ports():
-    """Return the list of service ports for preflight checking (no auth required)."""
+    """Return the list of deployed service names and ports for preflight checking.
+
+    Gated like the sibling preflight endpoints (docker/gpu/ports/disk): the
+    response enumerates which services are live and on which ports, so it must
+    not be reachable unauthenticated.
+    """
     # When health cache exists, filter out services not in the compose stack
     cached = get_cached_services()
     deployed = {s.id for s in cached if s.status != "not_deployed"} if cached else None
@@ -1330,7 +1365,14 @@ async def _build_api_status() -> dict:
 
     model_data = None
     if model_info:
-        model_data = {"name": model_info.name, "tokensPerSecond": llama_metrics_data.get("tokens_per_second") or None, "contextLength": context_size or model_info.context_length}
+        model_data = {
+            "name": model_info.name,
+            "currentModel": model_info.name,
+            "configuredModel": model_info.name,
+            "loadedModel": loaded_model or model_info.name,
+            "tokensPerSecond": llama_metrics_data.get("tokens_per_second") or None,
+            "contextLength": context_size or model_info.context_length,
+        }
 
     bootstrap_data = None
     if bootstrap_info.active:
@@ -1344,17 +1386,23 @@ async def _build_api_status() -> dict:
 
     tier = _infer_tier(gpu_info)
 
+    loaded_model_name = loaded_model or (model_data["name"] if model_data else None)
+    configured_model_name = model_data["configuredModel"] if model_data else None
+
     result = {
         "gpu": gpu_data, "services": services_data, "model": model_data,
         "bootstrap": bootstrap_data, "uptime": uptime,
         "version": app.version, "tier": tier,
+        "currentModel": configured_model_name,
+        "loadedModel": loaded_model_name,
+        "configuredModel": configured_model_name,
         "cpu": cpu_metrics, "ram": ram_metrics,
         "disk": {"used_gb": disk_info.used_gb, "total_gb": disk_info.total_gb, "percent": disk_info.percent},
         "system": {"uptime": uptime, "hostname": os.environ.get("HOSTNAME", "ods")},
         "inference": {
             "tokensPerSecond": llama_metrics_data.get("tokens_per_second", 0),
             "lifetimeTokens": llama_metrics_data.get("lifetime_tokens", 0),
-            "loadedModel": loaded_model or (model_data["name"] if model_data else None),
+            "loadedModel": loaded_model_name,
             "contextSize": context_size or (model_data["contextLength"] if model_data else None),
         },
         "manifest_errors": MANIFEST_ERRORS,
@@ -1508,23 +1556,19 @@ async def api_settings_env_save(
 
     try:
         agent_resp = await asyncio.to_thread(_call_agent_env_update, raw_text)
-    except urllib.error.HTTPError as exc:
-        detail = f"Host agent returned HTTP {exc.code}."
-        try:
-            err_payload = json.loads(exc.read().decode("utf-8"))
-            detail = err_payload.get("error", detail)
-        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-            pass
+    except AgentHTTPError as exc:
+        detail = exc.detail
         raise HTTPException(status_code=503, detail={"message": detail}) from exc
-    except urllib.error.URLError as exc:
+    except AgentUnavailable as exc:
         raise HTTPException(
             status_code=503,
             detail={"message": "ODS host agent is not reachable. Start the host agent, then try again."},
         ) from exc
-    except OSError as exc:
+    except AgentProtocolError as exc:
+        logger.error("Failed to contact host agent for env update: %s", exc)
         raise HTTPException(
             status_code=500,
-            detail={"message": "Could not contact host agent to write environment file.", "reason": str(exc)},
+            detail={"message": "Could not contact host agent to write environment file."},
         ) from exc
     backup_relative = agent_resp.get("backup_path")
 
@@ -1568,24 +1612,19 @@ async def api_settings_env_apply(
             "services": normalized,
             "message": f"Applied runtime changes to {', '.join(normalized)}.",
         }
-    except urllib.error.HTTPError as exc:
-        detail = f"Host agent returned HTTP {exc.code}."
-        try:
-            payload = json.loads(exc.read().decode("utf-8"))
-            detail = payload.get("error", detail)
-        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-            pass
+    except AgentHTTPError as exc:
+        detail = exc.detail
         raise HTTPException(status_code=503, detail={"message": detail}) from exc
-    except urllib.error.URLError as exc:
+    except AgentUnavailable as exc:
         raise HTTPException(
             status_code=503,
             detail={"message": "ODS host agent is not reachable. Start the host agent, then try Apply changes again."},
         ) from exc
-    except OSError as exc:
+    except AgentProtocolError as exc:
         logger.exception("Settings apply failed")
         raise HTTPException(
             status_code=500,
-            detail={"message": f"Could not apply runtime changes: {exc}"},
+            detail={"message": "Could not apply runtime changes via host agent."},
         ) from exc
 
 

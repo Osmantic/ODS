@@ -79,6 +79,8 @@ assert_grep "installers/macos/lib/env-generator.sh" '^MAX_CONTEXT=\$\{MAX_CONTEX
     "macOS .env generator writes MAX_CONTEXT"
 assert_grep "installers/macos/lib/env-generator.sh" '^CTX_SIZE=\$\{MAX_CONTEXT\}$' \
     "macOS .env generator writes CTX_SIZE from MAX_CONTEXT"
+assert_grep "installers/macos/lib/env-generator.sh" '^LLM_BACKEND=llama-server$' \
+    "macOS .env generator declares native llama-server backend"
 assert_grep "installers/windows/lib/env-generator.ps1" '^MAX_CONTEXT=\$\(\$TierConfig\.MaxContext\)' \
     "Windows .env generator writes MAX_CONTEXT"
 assert_grep "installers/windows/lib/env-generator.ps1" '^CTX_SIZE=\$\(\$TierConfig\.MaxContext\)' \

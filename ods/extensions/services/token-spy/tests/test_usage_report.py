@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import importlib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 
 TOKEN_SPY_DIR = Path(__file__).resolve().parent.parent
+
+
+def _stored_ts(dt: datetime) -> str:
+    """Render a timestamp the way the usage.timestamp column stores it."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def load_sqlite_db(tmp_path, monkeypatch):
@@ -115,3 +121,40 @@ def test_query_report_marks_old_positive_cost_rows_as_priced(tmp_path, monkeypat
 
     assert report["summary"]["paid_cost_usd"] == 1.5
     assert report["models"][0]["cost_source"] == "priced_from_tokens"
+
+
+def test_query_usage_excludes_rows_older_than_window(tmp_path, monkeypatch):
+    """query_usage(hours=1) must not return a row from earlier the same day.
+
+    The SQLite bound used to be datetime('now', ...) — a space-separated value
+    that byte-sorts before the stored T-separated timestamps, so every row on
+    the cutoff's calendar date leaked into the window regardless of time-of-day.
+    """
+    db = load_sqlite_db(tmp_path, monkeypatch)
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=1)
+    # A row ~hours-away but on the cutoff's calendar date — the leak case.
+    stale_same_day = cutoff.replace(hour=0, minute=0, second=1, microsecond=0)
+
+    insert_usage(db, _stored_ts(now - timedelta(minutes=10)), agent="recent")
+    insert_usage(db, _stored_ts(stale_same_day), agent="stale")
+
+    agents = {r["agent"] for r in db.query_usage(hours=1)}
+    assert "recent" in agents
+    assert "stale" not in agents
+
+
+def test_query_summary_respects_hours_window(tmp_path, monkeypatch):
+    """query_summary(hours=1) aggregates only rows inside the window."""
+    db = load_sqlite_db(tmp_path, monkeypatch)
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=1)
+    stale_same_day = cutoff.replace(hour=0, minute=0, second=1, microsecond=0)
+
+    insert_usage(db, _stored_ts(now - timedelta(minutes=5)), agent="recent")
+    insert_usage(db, _stored_ts(stale_same_day), agent="stale")
+
+    agents = {r["agent"] for r in db.query_summary(hours=1)}
+    assert agents == {"recent"}

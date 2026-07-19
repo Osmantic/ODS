@@ -93,6 +93,39 @@ class TestExtensionsCatalog:
         assert "summary" in data
         assert data["gpu_backend"] == "nvidia"
 
+    def test_catalog_merges_manifest_llm_contract(self, test_client, monkeypatch, tmp_path):
+        """Catalog rows expose the runtime manifest LLM contract."""
+        catalog = [_make_catalog_ext("llm-app", "LLM App")]
+        services = {
+            "llm-app": {
+                "host": "localhost",
+                "port": 8080,
+                "name": "LLM App",
+                "llm": {
+                    "consumes": True,
+                    "route": "direct",
+                    "pinning": "none",
+                    "swap_safe": False,
+                    "badge": "not-swap-safe",
+                },
+            },
+        }
+        _patch_extensions_config(monkeypatch, catalog, services, tmp_path=tmp_path)
+
+        mock_svc = _make_service_status("llm-app", "healthy")
+        with patch("helpers.get_all_services", new_callable=AsyncMock,
+                   return_value=[mock_svc]):
+            resp = test_client.get(
+                "/api/extensions/catalog",
+                headers=test_client.auth_headers,
+            )
+
+        assert resp.status_code == 200
+        llm = resp.json()["extensions"][0]["llm"]
+        assert llm["consumes"] is True
+        assert llm["route"] == "direct"
+        assert llm["swap_safe"] is False
+
     def test_catalog_category_filter(self, test_client, monkeypatch, tmp_path):
         """Category filter returns only matching extensions."""
         catalog = [
@@ -1175,6 +1208,70 @@ class TestDisableExtension:
         data = resp.json()
         assert "dependent-ext" in data["dependents_warning"]
 
+    def test_disable_warns_about_builtin_dependents(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """Disable warns when an enabled built-in extension depends on the target.
+
+        Mirrors the real hermes / hermes-proxy pair: both are built-ins, and
+        disabling hermes while hermes-proxy stays enabled breaks the merged
+        compose project.
+        """
+        builtin_root = tmp_path / "builtin"
+        ext_dir = builtin_root / "my-ext"
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "compose.yaml").write_text(_SAFE_COMPOSE)
+        dep_dir = builtin_root / "dependent-ext"
+        dep_dir.mkdir()
+        (dep_dir / "compose.yaml").write_text(_SAFE_COMPOSE)
+        (dep_dir / "manifest.yaml").write_text(
+            yaml.dump({"service": {"depends_on": ["my-ext"]}}),
+        )
+        _patch_mutation_config(monkeypatch, tmp_path)
+        monkeypatch.setattr("routers.extensions._call_agent", lambda action, sid: True)
+
+        def _mock_compose_rename(action, service_id):
+            (ext_dir / "compose.yaml").rename(ext_dir / "compose.yaml.disabled")
+            return True
+
+        monkeypatch.setattr(
+            "routers.extensions._call_agent_compose_rename",
+            _mock_compose_rename,
+        )
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/disable",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        assert "dependent-ext" in resp.json()["dependents_warning"]
+
+    def test_disable_skips_disabled_dependents(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """A dependent that is itself disabled does not trigger the warning."""
+        user_dir = tmp_path / "user"
+        user_dir.mkdir()
+        ext_dir = user_dir / "my-ext"
+        ext_dir.mkdir()
+        (ext_dir / "compose.yaml").write_text(_SAFE_COMPOSE)
+        dep_dir = user_dir / "dependent-ext"
+        dep_dir.mkdir()
+        (dep_dir / "compose.yaml.disabled").write_text(_SAFE_COMPOSE)
+        (dep_dir / "manifest.yaml").write_text(
+            yaml.dump({"service": {"depends_on": ["my-ext"]}}),
+        )
+        _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/disable",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["dependents_warning"] == []
+
     def test_disable_requires_auth(self, test_client):
         """POST disable without auth → 401."""
         resp = test_client.post("/api/extensions/my-ext/disable")
@@ -2046,6 +2143,64 @@ class TestScanComposeSkipNameCollision:
         with pytest.raises(HTTPException) as exc:
             _scan_compose_content(compose, skip_name_collision=True)
         assert "Docker socket" in exc.value.detail
+
+
+class TestScanComposeVolumeBypass:
+    """The volume guard must resolve the host source for long-form ({type:
+    bind, source: ...}) and relative-traversal entries, not just short-form
+    absolute strings."""
+
+    def _scan(self, tmp_path, compose_text):
+        from routers.extensions import _scan_compose_content
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(compose_text)
+        _scan_compose_content(compose)
+
+    def test_rejects_long_form_absolute_bind(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n    volumes:\n"
+                "      - type: bind\n        source: /\n        target: /host\n",
+            )
+        assert exc.value.status_code == 400
+        assert "absolute host path" in exc.value.detail
+
+    def test_rejects_relative_traversal_short_form(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    volumes:\n      - ../../:/host\n",
+            )
+        assert exc.value.status_code == 400
+        assert "escaping the project directory" in exc.value.detail
+
+    def test_rejects_long_form_relative_traversal(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n    volumes:\n"
+                "      - type: bind\n        source: ../..\n        target: /host\n",
+            )
+        assert exc.value.status_code == 400
+        assert "escaping the project directory" in exc.value.detail
+
+    def test_allows_named_volume(self, tmp_path):
+        # A named volume (no path separator) is not a host bind and must pass.
+        self._scan(
+            tmp_path,
+            "services:\n  svc:\n    image: test\n"
+            "    volumes:\n      - mydata:/var/lib/data\n",
+        )
+
+    def test_allows_project_relative_subdir_bind(self, tmp_path):
+        # A ./subdir bind stays inside the extension's own directory.
+        self._scan(
+            tmp_path,
+            "services:\n  svc:\n    image: test\n"
+            "    volumes:\n      - ./data:/data\n",
+        )
 
 
 # --- skip_gpu_passthrough_check flag isolation ---
@@ -3224,33 +3379,29 @@ class TestSyncExtensionConfig:
         assert ext_mod._sync_extension_config("my-ext") is False
 
     def test_call_agent_sync_config_sends_post(self, monkeypatch):
-        """The HTTP helper POSTs to /v1/extension/sync_config with bearer auth."""
+        """The helper POSTs the expected payload through the shared transport."""
         from routers import extensions as ext_mod
 
         captured = {}
 
-        class _FakeResp:
-            status = 200
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
+        def _fake_request_json(method, path, *, payload=None, timeout=None):
+            captured.update(
+                method=method,
+                path=path,
+                payload=payload,
+                timeout=timeout,
+            )
+            return {"success": True}
 
-        def _fake_urlopen(req, timeout=None):
-            captured["url"] = req.full_url
-            captured["method"] = req.get_method()
-            captured["auth"] = req.get_header("Authorization")
-            captured["body"] = req.data
-            return _FakeResp()
-
-        monkeypatch.setattr(ext_mod, "AGENT_URL", "http://agent:7710")
-        monkeypatch.setattr(ext_mod, "ODS_AGENT_KEY", "secret")
-        monkeypatch.setattr(ext_mod.urllib.request, "urlopen", _fake_urlopen)
+        monkeypatch.setattr(ext_mod, "request_agent_json", _fake_request_json)
 
         assert ext_mod._call_agent_sync_config("my-ext") is True
-        assert captured["url"] == "http://agent:7710/v1/extension/sync_config"
-        assert captured["method"] == "POST"
-        assert captured["auth"] == "Bearer secret"
-        assert b'"service_id"' in captured["body"]
-        assert b'"my-ext"' in captured["body"]
+        assert captured == {
+            "method": "POST",
+            "path": "/v1/extension/sync_config",
+            "payload": {"service_id": "my-ext"},
+            "timeout": ext_mod._AGENT_TIMEOUT,
+        }
 
 
 # --- Error progress ---
@@ -3422,16 +3573,16 @@ def test_production_core_service_ids_include_hermes_services():
 class TestCallAgentErrorNarrowing:
     """_call_agent swallows network errors but not programmer errors."""
 
-    def test_call_agent_returns_false_on_urlerror(self, monkeypatch, caplog):
+    def test_call_agent_returns_false_on_transport_error(self, monkeypatch, caplog):
         """Network failures produce (False, warning) — callers rely on this."""
         import logging
-        import urllib.error
+        from host_agent_client import AgentUnavailable
         from routers import extensions as ext_module
 
         def _raise(*_args, **_kwargs):
-            raise urllib.error.URLError("timeout")
+            raise AgentUnavailable("timeout")
 
-        monkeypatch.setattr(ext_module.urllib.request, "urlopen", _raise)
+        monkeypatch.setattr(ext_module, "request_agent_json", _raise)
         with caplog.at_level(logging.WARNING, logger="routers.extensions"):
             result = ext_module._call_agent("start", "svc-x")
 
@@ -3445,7 +3596,7 @@ class TestCallAgentErrorNarrowing:
         def _raise(*_args, **_kwargs):
             raise AttributeError("boom")
 
-        monkeypatch.setattr(ext_module.urllib.request, "urlopen", _raise)
+        monkeypatch.setattr(ext_module, "request_agent_json", _raise)
         with pytest.raises(AttributeError):
             ext_module._call_agent("start", "svc-x")
 

@@ -146,7 +146,7 @@ if ($sourceRoot -ne $installDir) {
     if ($LASTEXITCODE -gt 7) {
         Write-AIError "File copy failed (robocopy exit code: $LASTEXITCODE)."
         Write-AI "  Try re-running with --Force or check that $installDir is writable."
-        exit 1
+        throw "ODS_INSTALL_ABORTED"
     }
     Write-AISuccess "Source files installed to $installDir"
 } else {
@@ -315,6 +315,9 @@ if (Test-Path $_envPath) {
         }
     }
 }
+if ($_amdInferenceRuntime -eq "lemonade") {
+    $_requiredKeys += "LEMONADE_MODEL"
+}
 $_missingKeys = @()
 foreach ($_k in $_requiredKeys) {
     if (-not $_envLines.ContainsKey($_k) -or -not $_envLines[$_k]) {
@@ -325,7 +328,7 @@ if ($_missingKeys.Count -gt 0) {
     Write-AIError ".env is missing required keys: $($_missingKeys -join ', ')"
     Write-AI "  This will cause docker compose to fail. The .env file may be corrupted."
     Write-AI "  Try deleting $(Join-Path $installDir '.env') and re-running the installer."
-    exit 1
+    throw "ODS_INSTALL_ABORTED"
 }
 Write-AISuccess "Verified .env contains all required secrets"
 
@@ -520,7 +523,13 @@ function Invoke-HermesSoulRefresh {
 
 if ($enableHermes) {
     $_hermesModel = $(if ($tierConfig.GgufFile) {
-        if ($gpuInfo.Backend -eq "amd") { "extra.$($tierConfig.GgufFile)" } else { $tierConfig.GgufFile }
+        if ($gpuInfo.Backend -eq "amd" -and
+            $_envLines.ContainsKey("LEMONADE_MODEL") -and
+            -not [string]::IsNullOrWhiteSpace([string]$_envLines["LEMONADE_MODEL"])) {
+            $_envLines["LEMONADE_MODEL"].Trim().Trim('"').Trim("'")
+        } else {
+            $tierConfig.GgufFile
+        }
     } else {
         $tierConfig.LlmModel
     })
@@ -539,7 +548,7 @@ if ($enableHermes) {
     $_hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
     if (-not (Test-Path $_hermesTemplate)) {
         Write-AIError "Missing Hermes config template at $_hermesTemplate"
-        exit 1
+        throw "ODS_INSTALL_ABORTED"
     }
     if (-not (Test-Path $_hermesLive)) {
         Copy-Item -Path $_hermesTemplate -Destination $_hermesLive -Force
@@ -549,7 +558,7 @@ if ($enableHermes) {
     $_patchedHermesLive = Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
     if (-not ($_patchedHermesTemplate -and $_patchedHermesLive)) {
         Write-AIError "Failed to patch Hermes config for Windows runtime (model=$_hermesModel, base_url=$_hermesBaseUrl)"
-        exit 1
+        throw "ODS_INSTALL_ABORTED"
     }
     Invoke-HermesSoulRefresh -InstallRoot $installDir
     Write-AISuccess "Patched Hermes config (model=$_hermesModel, context=$($tierConfig.MaxContext), request_timeout=${_hermesRequestTimeout}s)"
@@ -594,7 +603,7 @@ if ($enableOpenClaw) {
             }
         } else {
             Write-AIError "Missing OpenClaw config $openClawConfig and no fallback present in repo. This is a packaging bug; please re-clone or report."
-            exit 1
+            throw "ODS_INSTALL_ABORTED"
         }
     }
 }

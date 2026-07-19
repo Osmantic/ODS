@@ -19,6 +19,8 @@ import {
   CircleHelp,
   MoreHorizontal,
   Search,
+  Check,
+  X,
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -281,6 +283,26 @@ function getServiceTabStatus(status) {
   return 'inactive'
 }
 
+function LlmSwapPill({ llm }) {
+  if (!llm?.consumes) return null
+  const safe = llm.swap_safe === true
+  const Icon = safe ? Check : X
+  const label = safe ? 'Swap-safe' : 'Not swap-safe'
+  const tone = safe
+    ? 'border-green-500/20 bg-green-500/10 text-green-300'
+    : 'border-red-500/20 bg-red-500/10 text-red-300'
+
+  return (
+    <span
+      className={`shrink-0 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-semibold ${tone}`}
+      title={llm.swap_safe_reason || label}
+    >
+      <Icon size={9} />
+      {label}
+    </span>
+  )
+}
+
 function formatRamMb(value) {
   if (value == null) return '—'
   const n = Number(value)
@@ -452,6 +474,7 @@ function buildServiceRows(statusServices, resourceServices) {
         state: service.state || null,
         severity: service.severity || null,
         countsAsIssue: service.countsAsIssue === true,
+        llm: service.llm || null,
         port: service.port,
         uptime: service.uptime,
         cpuPercent: Number.isFinite(resource?.container?.cpu_percent) ? resource.container.cpu_percent : null,
@@ -482,6 +505,7 @@ function buildServiceRows(statusServices, resourceServices) {
       state: resource.state || null,
       severity: resource.severity || null,
       countsAsIssue: resource.countsAsIssue === true,
+      llm: resource.llm || null,
       port: null,
       uptime: null,
       cpuPercent: Number.isFinite(resource?.container?.cpu_percent) ? resource.container.cpu_percent : null,
@@ -1447,6 +1471,7 @@ const ServiceTableRow = memo(function ServiceTableRow({
               Optional
             </span>
           )}
+          <LlmSwapPill llm={service.llm} />
         </div>
         <div className="mt-1 truncate pl-3.5 text-[10px] text-theme-text-muted/65">
           {service.description}

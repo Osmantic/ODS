@@ -813,6 +813,25 @@ def test_reusable_token_can_be_redeemed_multiple_times(
     assert len(redemptions) == 3
 
 
+def test_reusable_token_redemptions_are_capped_at_50(
+    magic_link_client, magic_link_module
+):
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "family", "reusable": True},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    for _ in range(55):
+        res = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+        assert res.status_code == 302
+
+    store = magic_link_module._ensure_store()
+    redemptions = store["tokens"][0]["redemptions"]
+    assert len(redemptions) == 50
+
+
 def test_owner_token_survives_pruning(magic_link_module):
     store = {
         "tokens": [

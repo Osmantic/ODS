@@ -83,6 +83,7 @@ source "$SCRIPT_DIR/installers/lib/readiness-summary.sh"
 source "$SCRIPT_DIR/installers/lib/packaging.sh"
 source "$SCRIPT_DIR/installers/lib/python-runtime.sh"
 source "$SCRIPT_DIR/installers/lib/progress.sh"
+source "$SCRIPT_DIR/installers/lib/model-lifecycle-lock.sh"
 if [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]]; then 
     source "$SCRIPT_DIR/lib/service-registry.sh" 
 fi
@@ -312,12 +313,17 @@ INSTALL_PHASE="02-detection";    source "$SCRIPT_DIR/installers/phases/02-detect
 INSTALL_PHASE="03-features";     source "$SCRIPT_DIR/installers/phases/03-features.sh"
 INSTALL_PHASE="04-requirements"; source "$SCRIPT_DIR/installers/phases/04-requirements.sh"
 INSTALL_PHASE="05-docker";       source "$SCRIPT_DIR/installers/phases/05-docker.sh"
+if ! $DRY_RUN; then
+    INSTALL_PHASE="model-lifecycle-lock"
+    ods_model_lifecycle_lock_acquire "$INSTALL_DIR" "Linux installer model configuration"
+fi
 INSTALL_PHASE="06-directories";  source "$SCRIPT_DIR/installers/phases/06-directories.sh"
 INSTALL_PHASE="07-devtools";     source "$SCRIPT_DIR/installers/phases/07-devtools.sh"
 INSTALL_PHASE="08-images";       source "$SCRIPT_DIR/installers/phases/08-images.sh"
 INSTALL_PHASE="09-offline";      source "$SCRIPT_DIR/installers/phases/09-offline.sh"
 INSTALL_PHASE="10-amd-tuning";   source "$SCRIPT_DIR/installers/phases/10-amd-tuning.sh"
 INSTALL_PHASE="11-services";     source "$SCRIPT_DIR/installers/phases/11-services.sh"
+ods_model_lifecycle_lock_release
 INSTALL_PHASE="12-health";       source "$SCRIPT_DIR/installers/phases/12-health.sh"
 # Phase 13 is informational (URLs, shortcuts, preflight). It must never fail
 # the install — any error here is cosmetic. Run with set +e to prevent

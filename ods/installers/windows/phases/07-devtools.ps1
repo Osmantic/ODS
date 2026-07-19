@@ -362,6 +362,12 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
                 -Description "ODS Host Agent -- manages extensions and bridges dashboard to host" `
                 -Force -ErrorAction Stop | Out-Null
             Start-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME
+            # Cleanup any legacy VBScript startup launcher if scheduled task succeeded
+            $startupFolder = [Environment]::GetFolderPath("Startup")
+            $vbsFile = Join-Path $startupFolder "ods-host-agent.vbs"
+            if (Test-Path $vbsFile) {
+                Remove-Item $vbsFile -Force -ErrorAction SilentlyContinue
+            }
             Write-AISuccess "Host agent scheduled and started (Task: $($script:ODS_AGENT_TASK_NAME))"
 
             Start-Sleep -Seconds 3
@@ -378,9 +384,25 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
             }
         } catch {
             $taskError = $_
-            Write-AIWarn "Could not register login task -- start manually: .\ods.ps1 agent start"
-            if ($taskError -and $taskError.Exception) {
-                Write-AI "  Scheduled Tasks error: $($taskError.Exception.Message)"
+            Write-AIWarn "Could not register login task through Task Scheduler: $($taskError.Exception.Message)"
+            Write-AI "Setting up alternative startup persistence for standard user..."
+
+            $startupFolder = [Environment]::GetFolderPath("Startup")
+            $vbsFile = Join-Path $startupFolder "ods-host-agent.vbs"
+            $vbsContent = @"
+' ODS Host Agent login startup launcher
+Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $_encodedAgentCommand", 0, False
+"@
+            try {
+                Write-Utf8NoBom -Path $vbsFile -Content $vbsContent
+                Write-AISuccess "Startup persistence configured via Start Menu Startup folder: $vbsFile"
+                # Start the agent now using the startup script
+                Start-Process wscript.exe -ArgumentList ('"{0}"' -f $vbsFile) -NoNewWindow
+            } catch {
+                Write-AIError "Failed to set up alternative startup persistence: $_"
+                Write-AIWarn "Starting host agent directly for this session..."
+                Start-Process -FilePath $_python3.FilePath -ArgumentList @($_agentScript, '--port', "$($script:ODS_AGENT_PORT)", '--pid-file', $script:ODS_AGENT_PID_FILE, '--install-dir', $installDir) -WorkingDirectory $installDir -WindowStyle Hidden -RedirectStandardError $script:ODS_AGENT_LOG_FILE
             }
         }
     } else {

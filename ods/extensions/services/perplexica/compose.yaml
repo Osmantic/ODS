@@ -7,8 +7,14 @@ services:
       - no-new-privileges:true
     environment:
       - SEARXNG_API_URL=http://searxng:8080
-      - OPENAI_BASE_URL=${LLM_API_URL:-http://llama-server:8080}/v1
-      - OPENAI_API_KEY=${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}
+      - OPENAI_BASE_URL=${HERMES_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}/v1}
+      - OPENAI_API_KEY=${HERMES_LLM_API_KEY:-${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}}
+      - ODS_MODE=${ODS_MODE:-local}
+      - LLM_BACKEND=${LLM_BACKEND:-llama-server}
+      - AMD_INFERENCE_RUNTIME=${AMD_INFERENCE_RUNTIME:-}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - GGUF_FILE=${GGUF_FILE:-}
+      - LEMONADE_MODEL=${LEMONADE_MODEL:-}
       - HOSTNAME=0.0.0.0
       - PERPLEXICA_SCRAPE_URL_MAX_CHARS=${PERPLEXICA_SCRAPE_URL_MAX_CHARS:-30000}
     entrypoint: ["/bin/sh", "-c", "until [ -f /app/ods-entrypoint.sh ]; do sleep 0.5; done; exec /bin/sh /app/ods-entrypoint.sh \"$@\"", "ods-entrypoint"]
@@ -20,6 +26,7 @@ services:
       - perplexica-data:/home/perplexica/data
       - perplexica-uploads:/home/perplexica/uploads
       - ./extensions/services/perplexica/docker-entrypoint.sh:/app/ods-entrypoint.sh:ro,z
+      - ./extensions/services/perplexica/sync-model-config.js:/app/ods-sync-model-config.js:ro,z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${PERPLEXICA_PORT:-3004}:3000"
     deploy:

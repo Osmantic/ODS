@@ -435,6 +435,69 @@ def test_hermes_bridge_pool_serializes_same_key_parallels_different_keys(monkeyp
     assert diff_creates == {"phoneA": 1, "phoneB": 1}
 
 
+def test_hermes_bridge_slow_open_does_not_block_other_keys(monkeypatch):
+    """Opening a connection is network I/O (token fetch + ws connect +
+    session.create) that can hang for the full client timeout when Hermes
+    is slow or down. That open must not hold the global pool guard:
+
+      * another phone with a warm pooled connection gets it immediately;
+      * a second call for the SAME key waits for the in-flight open and
+        shares its result instead of opening a duplicate.
+    """
+    import asyncio as _asyncio
+    import hermes_bridge
+
+    hermes_bridge._CONNECTION_POOL.clear()
+    hermes_bridge._OPENING_LOCKS.clear()
+    hermes_bridge._SWEEPER_TASK = None
+
+    class FakeWS:
+        closed = False
+        async def close(self): self.closed = True
+
+    class FakeHTTP:
+        async def close(self): pass
+
+    async def main():
+        open_started = _asyncio.Event()
+        release_open = _asyncio.Event()
+        open_calls = {"n": 0}
+
+        async def slow_open(session_key):
+            open_calls["n"] += 1
+            open_started.set()
+            await release_open.wait()
+            return hermes_bridge._HermesConnection(
+                http_session=FakeHTTP(), ws=FakeWS(), session_id=f"sid-{session_key}",
+            )
+
+        monkeypatch.setattr("hermes_bridge._open_connection", slow_open)
+
+        warm = hermes_bridge._HermesConnection(
+            http_session=FakeHTTP(), ws=FakeWS(), session_id="sid-warm",
+        )
+        hermes_bridge._CONNECTION_POOL["warm-key"] = warm
+
+        slow_task = _asyncio.create_task(hermes_bridge._get_connection("cold-key"))
+        await open_started.wait()
+
+        # While cold-key's open hangs, the warm key must still be served.
+        got = await _asyncio.wait_for(hermes_bridge._get_connection("warm-key"), timeout=1.0)
+        assert got is warm
+
+        # A concurrent same-key call shares the in-flight open's result.
+        second_task = _asyncio.create_task(hermes_bridge._get_connection("cold-key"))
+        await _asyncio.sleep(0.05)
+        release_open.set()
+        first = await _asyncio.wait_for(slow_task, timeout=1.0)
+        second = await _asyncio.wait_for(second_task, timeout=1.0)
+        assert first is second
+        assert open_calls["n"] == 1, f"expected one open for cold-key, got {open_calls['n']}"
+        return True
+
+    assert _run_with_one_loop(main)
+
+
 def test_hermes_bridge_transparent_retry_on_send_reset(monkeypatch):
     """Most insidious dead-WS pattern: ``ws.closed`` reports False, but the
     next ``send_str`` raises ClientConnectionResetError because the upstream

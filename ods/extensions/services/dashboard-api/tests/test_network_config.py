@@ -1,19 +1,18 @@
 """Tests for the Wi-Fi / network proxy endpoints in routers/setup.py.
 
-These cover the dashboard-api → host-agent forwarding path. The actual
+These cover the dashboard-api to host-agent forwarding path. The actual
 nmcli interaction is tested at the host-agent layer (which lives outside
-this test suite — Wi-Fi mutation isn't reproducible in CI).
+this test suite; Wi-Fi mutation isn't reproducible in CI).
 
 Mocked surfaces:
-  * urllib.request.urlopen — stand in for the host-agent HTTP call. The
-    proxy functions are sync (run via asyncio.to_thread), so a regular
-    MagicMock context-manager is the right shape.
+  * routers.setup.request_agent_json - stand-in for the shared host-agent
+    transport while preserving the proxy's typed-error behavior.
 """
 
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import urllib.error
+from host_agent_client import AgentHTTPError, AgentUnavailable
 
 
 # ---------------------------------------------------------------------------
@@ -46,25 +45,12 @@ def test_wifi_forget_requires_auth(test_client):
 # ---------------------------------------------------------------------------
 
 
-def _mock_agent_response(body, status=200):
-    mock_resp = MagicMock()
-    mock_resp.status = status
-    mock_resp.read = MagicMock(return_value=json.dumps(body).encode("utf-8"))
-    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-    mock_resp.__exit__ = MagicMock(return_value=False)
-    return mock_resp
-
-
 def _mock_agent_http_error(status, body):
-    err = urllib.error.HTTPError(
-        url="http://agent/v1/...",
-        code=status,
-        msg="error",
-        hdrs=None,
-        fp=None,
+    return AgentHTTPError(
+        status,
+        body.get("error", f"Host agent returned HTTP {status}"),
+        json.dumps(body),
     )
-    err.read = lambda: json.dumps(body).encode("utf-8")
-    return err
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +65,7 @@ def test_wifi_scan_happy_path(test_client):
             {"ssid": "Guest",     "signal": 50, "security": "WPA2", "in_use": False},
         ]
     }
-    with patch("routers.setup.urllib.request.urlopen", return_value=_mock_agent_response(upstream)):
+    with patch("routers.setup.request_agent_json", return_value=upstream):
         resp = test_client.get("/api/setup/wifi-scan", headers=test_client.auth_headers)
     assert resp.status_code == 200
     body = resp.json()
@@ -89,7 +75,7 @@ def test_wifi_scan_happy_path(test_client):
 
 def test_wifi_scan_translates_501_when_platform_unsupported(test_client):
     err = _mock_agent_http_error(501, {"error": "Wi-Fi management only supported on Linux (this is Windows)"})
-    with patch("routers.setup.urllib.request.urlopen", side_effect=err):
+    with patch("routers.setup.request_agent_json", side_effect=err):
         resp = test_client.get("/api/setup/wifi-scan", headers=test_client.auth_headers)
     assert resp.status_code == 501
     assert "Linux" in resp.json()["detail"]
@@ -97,8 +83,8 @@ def test_wifi_scan_translates_501_when_platform_unsupported(test_client):
 
 def test_wifi_scan_returns_503_when_agent_unreachable(test_client):
     with patch(
-        "routers.setup.urllib.request.urlopen",
-        side_effect=urllib.error.URLError("connection refused"),
+        "routers.setup.request_agent_json",
+        side_effect=AgentUnavailable("connection refused"),
     ):
         resp = test_client.get("/api/setup/wifi-scan", headers=test_client.auth_headers)
     assert resp.status_code == 503
@@ -111,8 +97,8 @@ def test_wifi_scan_returns_503_when_agent_unreachable(test_client):
 
 def test_wifi_connect_happy_path(test_client):
     with patch(
-        "routers.setup.urllib.request.urlopen",
-        return_value=_mock_agent_response({"success": True, "ssid": "Home WiFi"}),
+        "routers.setup.request_agent_json",
+        return_value={"success": True, "ssid": "Home WiFi"},
     ):
         resp = test_client.post(
             "/api/setup/wifi-connect",
@@ -152,7 +138,7 @@ def test_wifi_connect_rejects_control_chars_in_ssid(test_client):
 
 def test_wifi_connect_translates_wrong_password(test_client):
     err = _mock_agent_http_error(400, {"error": "Wrong password", "code": 7})
-    with patch("routers.setup.urllib.request.urlopen", side_effect=err):
+    with patch("routers.setup.request_agent_json", side_effect=err):
         resp = test_client.post(
             "/api/setup/wifi-connect",
             json={"ssid": "Home WiFi", "password": "wrong"},
@@ -164,7 +150,7 @@ def test_wifi_connect_translates_wrong_password(test_client):
 
 def test_wifi_connect_translates_504_timeout(test_client):
     err = _mock_agent_http_error(504, {"error": "Connection attempt timed out"})
-    with patch("routers.setup.urllib.request.urlopen", side_effect=err):
+    with patch("routers.setup.request_agent_json", side_effect=err):
         resp = test_client.post(
             "/api/setup/wifi-connect",
             json={"ssid": "Home WiFi", "password": "p"},
@@ -187,7 +173,7 @@ def test_network_status_happy_path(test_client):
         ],
         "wifi_connected": True,
     }
-    with patch("routers.setup.urllib.request.urlopen", return_value=_mock_agent_response(upstream)):
+    with patch("routers.setup.request_agent_json", return_value=upstream):
         resp = test_client.get("/api/setup/network-status", headers=test_client.auth_headers)
     assert resp.status_code == 200
     body = resp.json()
@@ -200,7 +186,7 @@ def test_network_status_unsupported_platform(test_client):
     # The host-agent returns 200 with platform_supported=false rather than 501
     # here, so the wizard can render a fallback without error-handling.
     upstream = {"platform_supported": False, "platform": "Windows", "reason": "..."}
-    with patch("routers.setup.urllib.request.urlopen", return_value=_mock_agent_response(upstream)):
+    with patch("routers.setup.request_agent_json", return_value=upstream):
         resp = test_client.get("/api/setup/network-status", headers=test_client.auth_headers)
     assert resp.status_code == 200
     assert resp.json()["platform_supported"] is False
@@ -213,8 +199,8 @@ def test_network_status_unsupported_platform(test_client):
 
 def test_wifi_forget_happy_path(test_client):
     with patch(
-        "routers.setup.urllib.request.urlopen",
-        return_value=_mock_agent_response({"success": True, "connection": "OldNetwork"}),
+        "routers.setup.request_agent_json",
+        return_value={"success": True, "connection": "OldNetwork"},
     ):
         resp = test_client.post(
             "/api/setup/wifi-forget",

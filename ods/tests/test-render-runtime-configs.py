@@ -87,6 +87,50 @@ def test_external_lemonade_uses_supplied_model_and_api_base() -> None:
     assert "api_key: lemonade-secret" in content
 
 
+def test_exact_lemonade_id_propagates_to_every_runtime_surface() -> None:
+    payload = run_renderer(
+        "--surface",
+        "all",
+        "--ods-mode",
+        "lemonade",
+        "--gpu-backend",
+        "amd",
+        "--gguf-file",
+        "Modern-Model.gguf",
+        "--lemonade-model-id",
+        "Modern-Model",
+    )
+
+    env_content = file_by_surface(payload, "env")["content"]
+    litellm_content = file_by_surface(payload, "litellm-lemonade")["content"]
+    hermes_content = file_by_surface(payload, "hermes")["content"]
+    opencode = json.loads(file_by_surface(payload, "opencode")["content"])
+    perplexica = json.loads(file_by_surface(payload, "perplexica")["content"])
+
+    assert "LEMONADE_MODEL=Modern-Model" in env_content
+    assert "model: openai/Modern-Model" in litellm_content
+    assert 'default: "Modern-Model"' in hermes_content
+    assert opencode["model"] == "Modern-Model"
+    assert perplexica["preferences"]["defaultChatModel"] == "Modern-Model"
+
+
+def test_amd_local_env_does_not_invent_a_lemonade_model() -> None:
+    payload = run_renderer(
+        "--surface",
+        "env",
+        "--ods-mode",
+        "local",
+        "--gpu-backend",
+        "amd",
+        "--gguf-file",
+        "Fallback-Model.gguf",
+    )
+
+    env_content = file_by_surface(payload, "env")["content"]
+    assert "LEMONADE_MODEL=\n" in env_content
+    assert "LEMONADE_MODEL=extra.Fallback-Model.gguf" not in env_content
+
+
 def test_hermes_uses_lemonade_model_id_for_amd() -> None:
     payload = run_renderer(
         "--surface",
@@ -161,6 +205,8 @@ def main() -> int:
         test_all_surfaces_render,
         test_lemonade_disables_thinking_and_uses_extra_alias,
         test_external_lemonade_uses_supplied_model_and_api_base,
+        test_exact_lemonade_id_propagates_to_every_runtime_surface,
+        test_amd_local_env_does_not_invent_a_lemonade_model,
         test_hermes_uses_lemonade_model_id_for_amd,
         test_perplexica_default_model_matches_route,
         test_write_mode_writes_under_output_root,

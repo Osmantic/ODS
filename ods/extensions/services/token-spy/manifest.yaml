@@ -19,3 +19,12 @@ service:
   compose_file: compose.yaml
   category: recommended
   depends_on: []
+  llm:
+    consumes: true
+    route: direct
+    pinning: none
+    min_context: 0
+    probe:
+      kind: custom
+      path: /dashboard
+      auth: env:TOKEN_SPY_API_KEY
