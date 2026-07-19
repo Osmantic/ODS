@@ -1662,9 +1662,10 @@ async def api_settings_env_save(
             detail={"message": "ODS host agent is not reachable. Start the host agent, then try again."},
         ) from exc
     except OSError as exc:
+        logger.error("Failed to contact host agent for env update: %s", exc)
         raise HTTPException(
             status_code=500,
-            detail={"message": "Could not contact host agent to write environment file.", "reason": str(exc)},
+            detail={"message": "Could not contact host agent to write environment file."},
         ) from exc
     backup_relative = agent_resp.get("backup_path")
 
@@ -1725,7 +1726,7 @@ async def api_settings_env_apply(
         logger.exception("Settings apply failed")
         raise HTTPException(
             status_code=500,
-            detail={"message": f"Could not apply runtime changes: {exc}"},
+            detail={"message": "Could not apply runtime changes via host agent."},
         ) from exc
 
 
