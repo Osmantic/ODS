@@ -47,6 +47,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "detection.ps1")
 . (Join-Path $LibDir "llm-endpoint.ps1")
 . (Join-Path $LibDir "install-report.ps1")
+. (Join-Path $LibDir "tier-map.ps1")
 
 $_resolvedLemonadeExe = Resolve-ODSLemonadeExe
 if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
@@ -2173,6 +2174,86 @@ function Invoke-Disable {
     Write-AI "Data preserved. Run '.\ods.ps1 enable $ServiceId' to re-enable."
 }
 
+function Invoke-Model {
+    param(
+        [string]$Action = "current",
+        [string[]]$SubArgs
+    )
+
+    Test-ODSInstallFiles
+    Push-Location $InstallDir
+    try {
+        switch ($Action.ToLower()) {
+            "current" {
+                $envVars = Read-ODSEnv
+                $model = $envVars["LLM_MODEL"]
+                $tier = $envVars["TIER"]
+                if ([string]::IsNullOrWhiteSpace($model)) { $model = "<not set>" }
+                Write-Host "Current model: " -NoNewline
+                Write-Host $model -ForegroundColor Green
+                if (-not [string]::IsNullOrWhiteSpace($tier)) {
+                    Write-Host "Current tier: $tier"
+                }
+            }
+            "list" {
+                Write-Host '=== Available Tiers ===' -ForegroundColor Blue
+                Write-Host '  T0         - qwen3.5-2b (< 8GB RAM, any GPU)'
+                Write-Host '  T1         - qwen3.5-9b (<12GB VRAM)'
+                Write-Host '  T2         - qwen3.5-9b (12-19GB, larger context)'
+                Write-Host '  T3         - qwen3-30b-a3b (20-47GB)'
+                Write-Host '  T4         - qwen3-30b-a3b (48GB+)'
+                Write-Host '  SH         - qwen3-30b-a3b (Strix Halo unified)'
+                Write-Host '  SH_LARGE   - qwen3-coder-next (90GB+ unified)'
+                Write-Host '  NV_ULTRA   - qwen3-coder-next (amd64) / qwen3.6-35b-a3b (arm64 Spark)'
+                Write-Host ''
+                Write-Host 'Usage: .\ods.ps1 model swap <tier>'
+            }
+            "swap" {
+                $tier = ($SubArgs | Select-Object -First 1)
+                if ([string]::IsNullOrWhiteSpace($tier)) {
+                    Write-AIError "Usage: .\ods.ps1 model swap <T0|T1|T2|T3|T4|SH|SH_LARGE|NV_ULTRA>"
+                    return
+                }
+                $tier = $tier.ToUpperInvariant()
+
+                # Retrieve the model config using tier-map functions
+                $model = ConvertTo-ModelFromTier -Tier $tier
+                if ([string]::IsNullOrWhiteSpace($model)) {
+                    Write-AIError "Unknown tier: $tier"
+                    return
+                }
+
+                # Normalize aliases for Resolve-TierConfig (T0->0, T1->1, SH->SH_COMPACT)
+                $normTier = $tier
+                if ($normTier -match "^T([0-9]+)$") {
+                    $normTier = $Matches[1]
+                }
+                if ($normTier -eq "SH") {
+                    $normTier = "SH_COMPACT"
+                }
+
+                # Resolve tier config to obtain GGUF details
+                $tierConfig = Resolve-TierConfig -Tier $normTier
+
+                # Set in .env
+                Set-ODSEnvValue -Key "LLM_MODEL" -Value $model
+                Set-ODSEnvValue -Key "TIER" -Value $normTier
+                Set-ODSEnvValue -Key "GGUF_FILE" -Value $tierConfig.GgufFile
+                Set-ODSEnvValue -Key "GGUF_URL" -Value $tierConfig.GgufUrl
+                Set-ODSEnvValue -Key "CTX_SIZE" -Value $tierConfig.MaxContext
+                Set-ODSEnvValue -Key "MAX_CONTEXT" -Value $tierConfig.MaxContext
+
+                Write-AISuccess "Model set to $model (tier $tier, ctx=$($tierConfig.MaxContext)). Run '.\ods.ps1 restart' to apply."
+            }
+            default {
+                Write-AIError "Usage: .\ods.ps1 model <current|list|swap>"
+            }
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 function Show-Help {
     Write-Host ""
     Write-Host "  ODS CLI (Windows)" -ForegroundColor Green
@@ -2196,6 +2277,8 @@ function Show-Help {
     Write-Host "View .env (secrets masked)" -ForegroundColor DarkGray
     Write-Host "    config edit         " -ForegroundColor Cyan -NoNewline
     Write-Host "Open .env in notepad" -ForegroundColor DarkGray
+    Write-Host "    model [action]      " -ForegroundColor Cyan -NoNewline
+    Write-Host "Inspect/swap LLM profiles: current|list|swap" -ForegroundColor DarkGray
     Write-Host "    chat `"message`"      " -ForegroundColor Cyan -NoNewline
     Write-Host "Quick chat via API" -ForegroundColor DarkGray
     Write-Host "    update              " -ForegroundColor Cyan -NoNewline
@@ -2226,6 +2309,7 @@ function Show-Help {
     Write-Host "    .\ods.ps1 disable langfuse" -ForegroundColor DarkGray
     Write-Host "    .\ods.ps1 disable hermes -Force" -ForegroundColor DarkGray
     Write-Host "    .\ods.ps1 chat `"What is quantum computing?`"" -ForegroundColor DarkGray
+    Write-Host "    .\ods.ps1 model swap T1" -ForegroundColor DarkGray
     Write-Host ""
 }
 
@@ -2293,6 +2377,11 @@ switch ($Command.ToLower()) {
         } else {
             Invoke-ConfigShow
         }
+    }
+    "model"   {
+        $action = ($Arguments | Select-Object -First 1)
+        if (-not $action) { $action = "current" }
+        Invoke-Model -Action $action -SubArgs ($Arguments | Select-Object -Skip 1)
     }
     "chat"    { Invoke-Chat -Message ($Arguments -join " ") }
     "update"  { Invoke-Update }
