@@ -365,9 +365,15 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
             if line.startswith("#"):
                 continue
             if "tokens_predicted_total" in line:
-                metrics["tokens_predicted_total"] = float(line.split()[-1])
+                try:
+                    metrics["tokens_predicted_total"] = float(line.split()[-1])
+                except (ValueError, IndexError):
+                    pass
             if "tokens_predicted_seconds_total" in line:
-                metrics["tokens_predicted_seconds_total"] = float(line.split()[-1])
+                try:
+                    metrics["tokens_predicted_seconds_total"] = float(line.split()[-1])
+                except (ValueError, IndexError):
+                    pass
 
         now = time.time()
         curr = metrics.get("tokens_predicted_total", 0)
