@@ -161,9 +161,9 @@ grep -qF 'related install directory' "$_pre_ods_guard_tmp/auto-path.log" \
   || { echo "[FAIL] dormant related-install rejection must identify the directory"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
 rm -rf "$_pre_ods_guard_tmp/home/related"
 
-mkdir -p "$_pre_ods_guard_tmp/home/dream-server.backup-20260518-195646/data"
-touch "$_pre_ods_guard_tmp/home/dream-server.backup-20260518-195646/.env"
-cat > "$_pre_ods_guard_tmp/home/dream-server.backup-20260518-195646/docker-compose.base.yml" <<'COMPOSE'
+mkdir -p "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646/data"
+touch "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646/.env"
+cat > "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646/docker-compose.base.yml" <<'COMPOSE'
 services:
   llama-server:
   open-webui:
@@ -178,7 +178,7 @@ if ! PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
   rm -rf "$_pre_ods_guard_tmp"
   exit 1
 fi
-rm -rf "$_pre_ods_guard_tmp/home/dream-server.backup-20260518-195646"
+rm -rf "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646"
 
 mkdir -p "$_pre_ods_guard_tmp/relocated/data"
 touch "$_pre_ods_guard_tmp/relocated/.env"
