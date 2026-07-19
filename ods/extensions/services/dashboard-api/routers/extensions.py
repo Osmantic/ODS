@@ -1398,17 +1398,8 @@ def install_extension(service_id: str, api_key: str = Depends(verify_api_key)):
     }
 
 
-def _read_direct_deps(service_id: str) -> list[str]:
-    """Return direct depends_on list for a service from its manifest."""
-    ext_dir = USER_EXTENSIONS_DIR / service_id
-    manifest_path = None
-    for name in ("manifest.yaml", "manifest.yml"):
-        candidate = ext_dir / name
-        if candidate.exists():
-            manifest_path = candidate
-            break
-    if manifest_path is None:
-        return []
+def _parse_manifest_deps(manifest_path: Path) -> list[str]:
+    """Parse the service.depends_on list from a manifest file."""
     try:
         manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError):
@@ -1420,6 +1411,25 @@ def _read_direct_deps(service_id: str) -> list[str]:
     if not isinstance(depends_on, list):
         return []
     return [d for d in depends_on if isinstance(d, str) and _SERVICE_ID_RE.match(d)]
+
+
+def _read_direct_deps(service_id: str) -> list[str]:
+    """Return direct depends_on list for a service from its manifest.
+
+    Checks user-extensions first, then built-in extensions — the same
+    shadowing order as _resolve_extension_dir. A user directory without a
+    manifest still shadows a built-in of the same id.
+    """
+    for base in (USER_EXTENSIONS_DIR, EXTENSIONS_DIR):
+        ext_dir = base / service_id
+        if not ext_dir.is_dir():
+            continue
+        for name in ("manifest.yaml", "manifest.yml"):
+            candidate = ext_dir / name
+            if candidate.exists():
+                return _parse_manifest_deps(candidate)
+        return []
+    return []
 
 
 def _is_dep_satisfied(dep: str) -> bool:
@@ -1668,29 +1678,28 @@ def disable_extension(service_id: str, include_data_info: bool = Query(True), ap
             status_code=409, detail=f"Extension already disabled: {service_id}",
         )
 
-    # Check reverse dependents (warn, don't block)
+    # Check reverse dependents (warn, don't block). Scan user and built-in
+    # extensions — user dirs shadow built-ins of the same id, mirroring
+    # _resolve_extension_dir. Only currently-enabled peers (compose.yaml
+    # present) are reported: a disabled dependent is unaffected, while an
+    # enabled one is left pointing at a service the merged compose project
+    # no longer defines, which fails compose config for the whole stack.
     dependents_warning = []
-    try:
-        if USER_EXTENSIONS_DIR.is_dir():
-            for peer_dir in USER_EXTENSIONS_DIR.iterdir():
-                if not peer_dir.is_dir() or peer_dir.name == service_id:
-                    continue
-                peer_manifest = peer_dir / "manifest.yaml"
-                if not peer_manifest.exists():
-                    continue
-                try:
-                    peer_data = yaml.safe_load(
-                        peer_manifest.read_text(encoding="utf-8"),
-                    )
-                    if isinstance(peer_data, dict):
-                        peer_svc = peer_data.get("service", {})
-                        deps = peer_svc.get("depends_on", []) if isinstance(peer_svc, dict) else []
-                        if isinstance(deps, list) and service_id in deps:
-                            dependents_warning.append(peer_dir.name)
-                except (yaml.YAMLError, OSError) as e:
-                    logger.debug("Could not read peer manifest %s: %s", peer_manifest, e)
-    except OSError:
-        pass
+    seen_peers: set[str] = set()
+    for base in (USER_EXTENSIONS_DIR, EXTENSIONS_DIR):
+        try:
+            peer_dirs = list(base.iterdir()) if base.is_dir() else []
+        except OSError:
+            continue
+        for peer_dir in peer_dirs:
+            if (not peer_dir.is_dir() or peer_dir.name == service_id
+                    or peer_dir.name in seen_peers):
+                continue
+            seen_peers.add(peer_dir.name)
+            if not (peer_dir / "compose.yaml").exists():
+                continue
+            if service_id in _read_direct_deps(peer_dir.name):
+                dependents_warning.append(peer_dir.name)
 
     # Call agent to stop BEFORE renaming (prevents zombie containers)
     agent_ok = _call_agent("stop", service_id)

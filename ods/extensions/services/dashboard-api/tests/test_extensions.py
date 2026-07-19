@@ -1175,6 +1175,70 @@ class TestDisableExtension:
         data = resp.json()
         assert "dependent-ext" in data["dependents_warning"]
 
+    def test_disable_warns_about_builtin_dependents(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """Disable warns when an enabled built-in extension depends on the target.
+
+        Mirrors the real hermes / hermes-proxy pair: both are built-ins, and
+        disabling hermes while hermes-proxy stays enabled breaks the merged
+        compose project.
+        """
+        builtin_root = tmp_path / "builtin"
+        ext_dir = builtin_root / "my-ext"
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "compose.yaml").write_text(_SAFE_COMPOSE)
+        dep_dir = builtin_root / "dependent-ext"
+        dep_dir.mkdir()
+        (dep_dir / "compose.yaml").write_text(_SAFE_COMPOSE)
+        (dep_dir / "manifest.yaml").write_text(
+            yaml.dump({"service": {"depends_on": ["my-ext"]}}),
+        )
+        _patch_mutation_config(monkeypatch, tmp_path)
+        monkeypatch.setattr("routers.extensions._call_agent", lambda action, sid: True)
+
+        def _mock_compose_rename(action, service_id):
+            (ext_dir / "compose.yaml").rename(ext_dir / "compose.yaml.disabled")
+            return True
+
+        monkeypatch.setattr(
+            "routers.extensions._call_agent_compose_rename",
+            _mock_compose_rename,
+        )
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/disable",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        assert "dependent-ext" in resp.json()["dependents_warning"]
+
+    def test_disable_skips_disabled_dependents(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """A dependent that is itself disabled does not trigger the warning."""
+        user_dir = tmp_path / "user"
+        user_dir.mkdir()
+        ext_dir = user_dir / "my-ext"
+        ext_dir.mkdir()
+        (ext_dir / "compose.yaml").write_text(_SAFE_COMPOSE)
+        dep_dir = user_dir / "dependent-ext"
+        dep_dir.mkdir()
+        (dep_dir / "compose.yaml.disabled").write_text(_SAFE_COMPOSE)
+        (dep_dir / "manifest.yaml").write_text(
+            yaml.dump({"service": {"depends_on": ["my-ext"]}}),
+        )
+        _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/disable",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["dependents_warning"] == []
+
     def test_disable_requires_auth(self, test_client):
         """POST disable without auth → 401."""
         resp = test_client.post("/api/extensions/my-ext/disable")
