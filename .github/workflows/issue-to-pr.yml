@@ -64,6 +64,8 @@ jobs:
     if: needs.validate.outputs.should_proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
     outputs:
       has_changes: ${{ steps.detect.outputs.has_changes }}
 
@@ -72,7 +74,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
@@ -114,7 +116,7 @@ jobs:
             --print \
             --model claude-sonnet-4-6-v1 \
             --max-turns 30 \
-            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(git diff *),Bash(git log *),Bash(git status),Bash(ruff *),Bash(python -m py_compile *),Bash(pytest *),Bash(shellcheck *),Bash(bash -n *),Bash(ls *)"
+            --allowedTools "Read,Edit,Write,Glob,Grep"
 
       - name: Detect changes
         id: detect
