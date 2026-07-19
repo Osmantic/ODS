@@ -2048,6 +2048,64 @@ class TestScanComposeSkipNameCollision:
         assert "Docker socket" in exc.value.detail
 
 
+class TestScanComposeVolumeBypass:
+    """The volume guard must resolve the host source for long-form ({type:
+    bind, source: ...}) and relative-traversal entries, not just short-form
+    absolute strings."""
+
+    def _scan(self, tmp_path, compose_text):
+        from routers.extensions import _scan_compose_content
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(compose_text)
+        _scan_compose_content(compose)
+
+    def test_rejects_long_form_absolute_bind(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n    volumes:\n"
+                "      - type: bind\n        source: /\n        target: /host\n",
+            )
+        assert exc.value.status_code == 400
+        assert "absolute host path" in exc.value.detail
+
+    def test_rejects_relative_traversal_short_form(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    volumes:\n      - ../../:/host\n",
+            )
+        assert exc.value.status_code == 400
+        assert "escaping the project directory" in exc.value.detail
+
+    def test_rejects_long_form_relative_traversal(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n    volumes:\n"
+                "      - type: bind\n        source: ../..\n        target: /host\n",
+            )
+        assert exc.value.status_code == 400
+        assert "escaping the project directory" in exc.value.detail
+
+    def test_allows_named_volume(self, tmp_path):
+        # A named volume (no path separator) is not a host bind and must pass.
+        self._scan(
+            tmp_path,
+            "services:\n  svc:\n    image: test\n"
+            "    volumes:\n      - mydata:/var/lib/data\n",
+        )
+
+    def test_allows_project_relative_subdir_bind(self, tmp_path):
+        # A ./subdir bind stays inside the extension's own directory.
+        self._scan(
+            tmp_path,
+            "services:\n  svc:\n    image: test\n"
+            "    volumes:\n      - ./data:/data\n",
+        )
+
+
 # --- skip_gpu_passthrough_check flag isolation ---
 
 

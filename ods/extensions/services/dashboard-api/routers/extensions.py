@@ -397,11 +397,23 @@ def _scan_compose_content(
                         status_code=400,
                         detail=f"Extension rejected: Docker socket mount in {svc_name}",
                     )
-                vol_parts = vol_str.split(":")
-                if len(vol_parts) >= 2 and vol_parts[0].startswith("/"):
+                # Resolve the host-side source for both short-form
+                # ("source:target[:opts]") and long-form ({type: bind,
+                # source: ...}) entries, so a long-form bind can't slip an
+                # absolute/relative host path past the string-only check.
+                if isinstance(vol, dict):
+                    vol_source = str(vol.get("source", ""))
+                else:
+                    vol_source = vol_str.split(":", 1)[0]
+                if vol_source.startswith("/"):
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Extension rejected: absolute host path mount '{vol_parts[0]}' in {svc_name}",
+                        detail=f"Extension rejected: absolute host path mount '{vol_source}' in {svc_name}",
+                    )
+                if ".." in vol_source.split("/"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Extension rejected: relative host path mount '{vol_source}' escaping the project directory in {svc_name}",
                     )
         cap_add = svc_def.get("cap_add", [])
         if isinstance(cap_add, list):
