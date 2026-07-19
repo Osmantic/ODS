@@ -618,7 +618,15 @@ def get_model_info() -> Optional[ModelInfo]:
                     if "=" not in line or line.lstrip().startswith("#"):
                         continue
                     key, value = line.split("=", 1)
-                    env_values[key.strip()] = value.strip().strip('"\'')
+                    value = value.strip()
+                    # Strip exactly one matching pair of surrounding quotes.
+                    # str.strip("\"'") removes any run of either quote from
+                    # both ends, so a value legitimately ending in a quote is
+                    # truncated and "'literal'" loses its inner quotes. Keep
+                    # mismatched quotes verbatim, matching lib/safe-env.sh.
+                    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                        value = value[1:-1]
+                    env_values[key.strip()] = value
 
             model_name = env_values.get("LLM_MODEL")
             if model_name:

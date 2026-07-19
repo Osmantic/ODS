@@ -36,6 +36,27 @@ class TestGetModelInfo:
         assert info.size_gb == 16.0
         assert info.quantization == "AWQ"
 
+    def test_strips_only_matched_quote_pairs(self, install_dir):
+        # A double-quoted value keeps its inner single quotes, and a value
+        # that legitimately ends with a quote character is not truncated.
+        env_file = install_dir / ".env"
+        env_file.write_text(
+            "LLM_MODEL=\"Qwen2.5-7B-Instruct\"\n"
+            "GGUF_FILE=model'v2.gguf\n"
+        )
+
+        info = get_model_info()
+        assert info is not None
+        assert info.name == "Qwen2.5-7B-Instruct"
+
+    def test_keeps_mismatched_quotes_verbatim(self, install_dir):
+        env_file = install_dir / ".env"
+        env_file.write_text("LLM_MODEL=\"Qwen2.5-7B-Instruct'\n")
+
+        info = get_model_info()
+        assert info is not None
+        assert info.name == "\"Qwen2.5-7B-Instruct'"
+
     def test_parses_7b_model(self, install_dir):
         env_file = install_dir / ".env"
         env_file.write_text('LLM_MODEL=Qwen2.5-7B-Instruct\n')
