@@ -130,6 +130,8 @@ assert_contains "$bootstrap" 'zypper --non-interactive install -y git' "bootstra
 assert_contains "$bootstrap" 'zypper --non-interactive install -y curl' "bootstrap cannot install curl on zypper distros"
 assert_contains "$bootstrap" 'ODS_REF' "bootstrap should allow PR/fleet lanes to clone a matching ref"
 assert_contains "$bootstrap" 'clone_args\+=\(--branch "\$ODS_REF"\)' "bootstrap ref override should apply to git clone"
+assert_contains "$bootstrap" 'ods_ref_is_exact_sha' "bootstrap should detect exact commit SHA refs"
+assert_contains "$bootstrap" 'checkout_requested_sha_ref "\$ODS_REF"' "bootstrap should checkout exact SHA refs after cloning"
 assert_contains "$bootstrap" 'BOOTSTRAP_FORCE=false' "bootstrap should parse --force before incomplete install prompts"
 assert_contains "$bootstrap" 'BOOTSTRAP_NON_INTERACTIVE=false' "bootstrap should parse --non-interactive before incomplete install prompts"
 assert_contains "$bootstrap" 'Removing incomplete install because --force was provided' "bootstrap --force should remove incomplete install dirs without prompting"
@@ -137,6 +139,63 @@ assert_contains "$bootstrap" 'Re-run with --force to remove it automatically' "b
 assert_contains "$bootstrap" 'remove_install_dir()' "bootstrap should centralize incomplete install cleanup"
 assert_contains "$bootstrap" 'sudo -n rm -rf -- "\$target_dir"' "bootstrap --force should retry root-owned container data cleanup with sudo -n"
 assert_contains "$bootstrap" 'root-owned container data' "bootstrap sudo fallback should explain root-owned Docker data cleanup"
+
+echo "[contract] public bootstrap can install from an exact commit SHA"
+sha_repo="$tmpdir/sha-ref-repo"
+sha_home="$tmpdir/sha-home"
+sha_install="$tmpdir/sha-install"
+sha_marker="$tmpdir/sha-marker"
+mkdir -p "$sha_repo/ods/scripts" "$sha_repo/ods/extensions/library" "$sha_home" "$tmpdir/bin"
+cat > "$sha_repo/ods/install.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' first-commit > "${ODS_TEST_BOOTSTRAP_INSTALL_MARKER:?}"
+EOF
+chmod +x "$sha_repo/ods/install.sh"
+git -C "$sha_repo" init -q
+git -C "$sha_repo" add ods
+git -C "$sha_repo" \
+  -c user.name="ODS Test" \
+  -c user.email="ods-test@example.invalid" \
+  commit -q -m "first install payload"
+sha_ref="$(git -C "$sha_repo" rev-parse HEAD)"
+cat > "$sha_repo/ods/install.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' second-commit > "${ODS_TEST_BOOTSTRAP_INSTALL_MARKER:?}"
+EOF
+git -C "$sha_repo" add ods/install.sh
+git -C "$sha_repo" \
+  -c user.name="ODS Test" \
+  -c user.email="ods-test@example.invalid" \
+  commit -q -m "second install payload"
+
+cat > "$tmpdir/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf '%s\n' "Docker version test"; exit 0 ;;
+  compose|ps) exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$tmpdir/bin/docker"
+
+if ! PATH="$tmpdir/bin:$PATH" \
+    HOME="$sha_home" \
+    ODS_BOOTSTRAP_ROOT="$sha_home" \
+    ODS_REPO_URL="file://$sha_repo" \
+    ODS_REF="$sha_ref" \
+    ODS_INSTALL_DIR="$sha_install" \
+    ODS_ALLOW_LEGACY_PARALLEL=1 \
+    ODS_TEST_BOOTSTRAP_INSTALL_MARKER="$sha_marker" \
+    bash get-ods.sh --non-interactive >"$tmpdir/bootstrap-sha.out" 2>&1; then
+  cat "$tmpdir/bootstrap-sha.out"
+  echo "[FAIL] bootstrap exact-SHA install failed"
+  exit 1
+fi
+grep -qF first-commit "$sha_marker" \
+  || { cat "$tmpdir/bootstrap-sha.out"; echo "[FAIL] bootstrap did not install the exact SHA payload"; exit 1; }
+assert_not_contains "$tmpdir/bootstrap-sha.out" 'Remote branch .* not found' "bootstrap treated an exact SHA as a branch name"
 
 echo "[contract] runtime dispatcher supports non-gnu Linux OSTYPE"
 dispatcher_common="installers/common.sh"
