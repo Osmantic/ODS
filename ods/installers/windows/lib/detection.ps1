@@ -12,10 +12,25 @@
 #   Strix Halo detection: small dedicated VRAM + large system RAM = unified memory.
 # ============================================================================
 
+function Test-WindowsAmdIntegratedGpuName {
+    param([string]$GpuName)
+
+    if ([string]::IsNullOrWhiteSpace($GpuName)) { return $false }
+    return [bool](
+        $GpuName -match '(?i)\bRadeon(?:\(TM\))?\s+Graphics$' -or
+        $GpuName -match '(?i)\bRadeon\s+\d{3,4}[MS](?:\s+Graphics)?$' -or
+        $GpuName -match '(?i)\bRadeon\s+Vega\s+\d{1,2}\s+Graphics$' -or
+        $GpuName -match '(?i)\bStrix\s+Halo\b'
+    )
+}
+
 function Test-WindowsAmdDiscreteGpuName {
     param([string]$GpuName)
 
-    return [bool]($GpuName -match '(?i)\bRadeon\s+(?:RX|PRO(?:\s+W)?|VII)\b|\bFirePro\b')
+    if (Test-WindowsAmdIntegratedGpuName -GpuName $GpuName) { return $false }
+    # Unknown Radeon model families are safer to treat as discrete. Claiming
+    # unified memory for a discrete adapter can select a model that cannot fit.
+    return [bool]($GpuName -match '(?i)\b(?:AMD\s+)?Radeon\b|\bFirePro\b')
 }
 
 function Select-WindowsAmdPrimaryGpu {
@@ -100,9 +115,7 @@ function Test-WindowsAmdUnifiedMemory {
         $GpuName -match '(?i)Strix|AI\s*(?:MAX|300|395)|Radeon\s+80[56]0S' -or
         $ProcessorNames -match '(?i)Ryzen\s+AI\s+MAX|Strix\s+Halo'
     )
-    $hasIntegratedSignature = (
-        $GpuName -match '(?i)Radeon(?:\(TM\))?\s+Graphics$|Radeon\s+(?:\d{3,4}[MS]|Vega(?:\s+\d+)?)\b'
-    )
+    $hasIntegratedSignature = Test-WindowsAmdIntegratedGpuName -GpuName $GpuName
 
     return [bool](
         $AdapterRamMB -le 4096 -and

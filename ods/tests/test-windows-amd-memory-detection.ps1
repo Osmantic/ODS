@@ -13,7 +13,11 @@ function Assert-Equal {
 
 Assert-Equal (Test-WindowsAmdDiscreteGpuName "AMD Radeon RX 9070 XT") $true "RX discrete classification"
 Assert-Equal (Test-WindowsAmdDiscreteGpuName "AMD Radeon PRO W7900") $true "Radeon PRO classification"
+Assert-Equal (Test-WindowsAmdDiscreteGpuName "AMD Radeon R9 390") $true "Legacy Radeon discrete classification"
+Assert-Equal (Test-WindowsAmdDiscreteGpuName "AMD Radeon Vega 64") $true "Vega discrete classification"
 Assert-Equal (Test-WindowsAmdDiscreteGpuName "AMD Radeon 8060S Graphics") $false "Strix integrated classification"
+Assert-Equal (Test-WindowsAmdIntegratedGpuName "AMD Radeon(TM) Graphics") $true "Generic integrated classification"
+Assert-Equal (Test-WindowsAmdIntegratedGpuName "AMD Radeon Vega 8 Graphics") $true "Vega integrated classification"
 
 $hybridAdapters = @(
     [pscustomobject]@{ Name = "AMD Radeon(TM) Graphics" },
@@ -23,6 +27,15 @@ Assert-Equal (Select-WindowsAmdPrimaryGpu -Gpus $hybridAdapters).Name `
     "AMD Radeon RX 9070 XT" "Hybrid adapter selection"
 Assert-Equal (Get-WindowsAmdComputeGpuCount -Gpus $hybridAdapters) 1 `
     "Hybrid iGPU must not trigger multi-GPU"
+
+$legacyHybridAdapters = @(
+    [pscustomobject]@{ Name = "AMD Radeon Vega 8 Graphics" },
+    [pscustomobject]@{ Name = "AMD Radeon R9 390" }
+)
+Assert-Equal (Select-WindowsAmdPrimaryGpu -Gpus $legacyHybridAdapters).Name `
+    "AMD Radeon R9 390" "Legacy hybrid adapter selection"
+Assert-Equal (Get-WindowsAmdComputeGpuCount -Gpus $legacyHybridAdapters) 1 `
+    "Legacy hybrid iGPU must not trigger multi-GPU"
 
 $dualDiscreteWithIgpu = @(
     [pscustomobject]@{ Name = "AMD Radeon(TM) Graphics" },
