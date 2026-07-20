@@ -1052,6 +1052,20 @@ class TestGetLlamaMetricsTPS:
 
 class TestLemonadeMetrics:
 
+    def test_distinct_last_use_values_count_identical_completions(self, monkeypatch, tmp_path):
+        import helpers
+
+        monkeypatch.setattr(helpers, "_TOKEN_FILE", tmp_path / "token_counter.json")
+        first = {
+            "output_tokens": 7, "tokens_per_second": 42.0,
+            "input_tokens": 3, "last_use": "2026-07-20T22:00:00Z",
+        }
+        second = {**first, "last_use": "2026-07-20T22:01:00Z"}
+
+        assert helpers._update_lemonade_lifetime_tokens(first) == 7
+        assert helpers._update_lemonade_lifetime_tokens(first) == 7
+        assert helpers._update_lemonade_lifetime_tokens(second) == 14
+
     @pytest.mark.asyncio
     async def test_host_stats_report_real_tps_and_count_each_completion_once(
         self, monkeypatch, tmp_path,

@@ -2013,7 +2013,7 @@ def _windows_llm_status() -> dict | None:
             }
             stats["sample_fingerprint"] = hashlib.sha256(
                 json.dumps(
-                    {"health": raw_health, "stats": raw_stats},
+                    raw_stats,
                     sort_keys=True,
                     separators=(",", ":"),
                 ).encode("utf-8")

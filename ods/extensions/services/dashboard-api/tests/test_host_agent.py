@@ -5320,6 +5320,46 @@ class TestWindowsObservability:
         assert "private" not in json.dumps(payload)
         assert auth_headers == ["Bearer secret-key", "Bearer secret-key"]
 
+    def test_windows_llm_sample_identity_ignores_unrelated_health_changes(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        (tmp_path / ".env").write_text("AMD_INFERENCE_PORT=8080\n")
+        health_counter = iter((1, 2))
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(self.payload).encode("utf-8")
+
+        def urlopen(url, timeout):
+            if url.full_url.endswith("/health"):
+                return Response({
+                    "status": "ok", "model_loaded": "model",
+                    "unrelated_health_counter": next(health_counter),
+                })
+            return Response({
+                "output_tokens": 7, "tokens_per_second": 42.0,
+                "last_use": "2026-07-20T22:00:00Z",
+            })
+
+        monkeypatch.setattr(_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(_mod, "_windows_llm_status_cache", (0.0, None))
+        first = _mod._windows_llm_status()
+        monkeypatch.setattr(_mod, "_windows_llm_status_cache", (0.0, None))
+        second = _mod._windows_llm_status()
+
+        assert first["stats"]["sample_fingerprint"] == second["stats"]["sample_fingerprint"]
+
 
 class TestDockerServiceHealthSnapshot:
 

@@ -224,7 +224,7 @@ def _update_lemonade_lifetime_tokens(stats: dict) -> int:
         for key in (
             "sample_fingerprint", "decode_token_times", "input_tokens",
             "output_tokens", "prompt_tokens", "time_to_first_token",
-            "tokens_per_second",
+            "tokens_per_second", "last_use", "request_id", "completed_at",
         )
     }
     signature = hashlib.sha256(
