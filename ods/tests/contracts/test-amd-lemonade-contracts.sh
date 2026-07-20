@@ -478,15 +478,20 @@ if ((${#_lemonade_ps_cmd[@]} > 0)); then
         $taskAction = New-ODSLemonadeScheduledTaskAction `
             -Contract $modern -EnvPath (Join-Path $probeRoot ".env") `
             -DiagnosticLogPath (Join-Path $probeRoot "lemonade-launch.log")
-        $encodedMatch = [regex]::Match($taskAction.Arguments, "-EncodedCommand\s+(\S+)")
-        if ($taskAction.Execute -ne "powershell.exe" -or -not $encodedMatch.Success) {
-            throw "Modern Lemonade task must use the secure PowerShell wrapper"
+        $launcherMatch = [regex]::Match($taskAction.Arguments, '-File\s+"([^"]+)"')
+        if ($taskAction.Execute -ne "powershell.exe" -or -not $launcherMatch.Success) {
+            throw "Modern Lemonade task must use the secure PowerShell launcher file"
         }
-        $wrapper = [Text.Encoding]::Unicode.GetString(
-            [Convert]::FromBase64String($encodedMatch.Groups[1].Value)
-        )
+        if ($taskAction.Arguments.Length -gt 512) {
+            throw "Modern Lemonade task arguments are too long for standard-user Task Scheduler registration"
+        }
+        $launcherPath = $launcherMatch.Groups[1].Value
+        if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) {
+            throw "Modern Lemonade task launcher file was not written"
+        }
+        $wrapper = Get-Content -LiteralPath $launcherPath -Raw
         if ($wrapper -match [regex]::Escape("contract-admin-key")) {
-            throw "Lemonade admin key leaked into Task Scheduler arguments"
+            throw "Lemonade admin key leaked into the launcher wrapper"
         }
         if ($wrapper -notmatch "LITELLM_LEMONADE_API_KEY" -or
             $wrapper -notmatch "Start-Process -FilePath.*-PassThru") {

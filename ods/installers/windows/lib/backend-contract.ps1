@@ -448,9 +448,19 @@ try {
     exit 1
 }
 "@
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapper))
+    $launcherPath = if (-not [string]::IsNullOrWhiteSpace($DiagnosticLogPath)) {
+        [IO.Path]::ChangeExtension($DiagnosticLogPath, ".task.ps1")
+    } else {
+        Join-Path ([IO.Path]::GetTempPath()) "ods-lemonade-task-launcher.ps1"
+    }
+    $launcherDir = Split-Path -Parent $launcherPath
+    if (-not [string]::IsNullOrWhiteSpace($launcherDir)) {
+        New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null
+    }
+    Set-Content -LiteralPath $launcherPath -Value $wrapper -Encoding UTF8 -Force
+    $escapedLauncherPath = ([string]$launcherPath).Replace('"', '\"')
     return New-ScheduledTaskAction -Execute "powershell.exe" `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $encoded" `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$escapedLauncherPath`"" `
         -WorkingDirectory $workingDirectory
 }
 
