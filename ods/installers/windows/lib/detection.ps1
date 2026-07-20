@@ -231,6 +231,88 @@ function Test-DockerDesktop {
     return $result
 }
 
+function Test-WslcRuntime {
+    <#
+    .SYNOPSIS
+        Verify wslc.exe is installed and its daemon is responsive.
+    .DESCRIPTION
+        wslc is a Docker-compatible OCI container runtime shipping with WSL
+        pre-release builds for Windows 11. It requires no Docker Desktop.
+
+        GPU support is inferred from host nvidia-smi presence (CDI wires the
+        GPU into the container without a separate runtime registration step).
+        The actual CDI container smoke test runs later in phase 05, matching
+        the Docker path where the container GPU test is also deferred.
+    .OUTPUTS
+        @{ Installed; Running; Version; GpuSupport; WslPreRelease }
+    #>
+    $result = @{
+        Installed     = $false
+        Running       = $false
+        Version       = ""
+        GpuSupport    = $false
+        WslPreRelease = $false
+    }
+
+    # ── CLI presence ─────────────────────────────────────────────────────────
+    $wslcCmd = Get-Command wslc -ErrorAction SilentlyContinue
+    if (-not $wslcCmd) { return $result }
+    $result.Installed = $true
+
+    # ── Version (best-effort; pre-release format may vary) ───────────────────
+    try {
+        $versionLines = & wslc --version 2>$null
+        if ($LASTEXITCODE -eq 0 -and $versionLines) {
+            $result.Version = (@($versionLines) | Select-Object -First 1).Trim()
+        }
+    } catch {
+        # --version flag behavior undefined in early pre-release; non-fatal
+    }
+
+    # ── WSL pre-release confirmation ─────────────────────────────────────────
+    # wslc ships exclusively with WSL pre-release builds, so its presence on
+    # PATH already implies pre-release is active. We additionally confirm with
+    # `wsl --version` as a sanity check, but treat any failure as non-fatal
+    # because some pre-release environments suppress that subcommand.
+    try {
+        $null = & wsl --version 2>$null
+        $result.WslPreRelease = ($LASTEXITCODE -eq 0)
+    } catch {
+        # wslc is present, so pre-release is implied even if wsl --version fails
+        $result.WslPreRelease = $true
+    }
+
+    # ── Daemon responsiveness ────────────────────────────────────────────────
+    # Mirrors Test-DockerDesktop: SilentlyContinue around the native call so
+    # PS 5.1 does not wrap stderr as a terminating error, and finally always
+    # restores ErrorActionPreference even if the call throws.
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "SilentlyContinue"
+        $null = & wslc info 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $result.Running = $true
+        }
+    } catch {
+        # Daemon not responsive
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+
+    if (-not $result.Running) { return $result }
+
+    # ── GPU support ──────────────────────────────────────────────────────────
+    # CDI exposes NVIDIA GPUs to wslc containers via --device=nvidia.com/gpu=*.
+    # No separate runtime registration is required (unlike Linux Docker Engine).
+    # We mirror Test-DockerDesktop: check host nvidia-smi; the full container
+    # smoke test (actually running nvidia-smi inside a wslc container) happens
+    # in the dedicated Docker/wslc validation phase.
+    $nvsmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if ($nvsmi) { $result.GpuSupport = $true }
+
+    return $result
+}
+
 function Get-HostLogicalCpuCount {
     <#
     .SYNOPSIS

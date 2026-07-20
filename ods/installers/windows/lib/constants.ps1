@@ -49,6 +49,11 @@ $script:MIN_DOCKER_VERSION = "4.20.0"
 # Minimum NVIDIA driver version for CUDA in Docker Desktop
 $script:MIN_NVIDIA_DRIVER = 570
 
+# wslc (WSL Container) -- Docker-free OCI runtime for Windows 11 pre-release
+# Activated via --WslcMode on the installer. Requires: wsl --update --pre-release
+$script:WSLC_NETWORK_NAME = "ods-network"
+$script:WSLC_MODE_MARKER  = ".wslc-mode"
+
 # OpenCode (host-level AI coding IDE, not a Docker service)
 $script:OPENCODE_VERSION = "1.2.18"
 $script:OPENCODE_ZIP = "opencode-windows-x64.zip"
