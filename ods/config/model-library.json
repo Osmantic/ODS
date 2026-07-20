@@ -863,7 +863,7 @@
       "gguf_sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
       "size_mb": 5760,
       "vram_required_gb": 8,
-      "context_length": 65536,
+      "context_length": 32768,
       "quantization": "Q4_K_M",
       "specialty": "General",
       "description": "Excellent general-purpose model. Default for most systems. Great at coding, reasoning, and multilingual tasks.",
@@ -1002,7 +1002,7 @@
       "context_length": 131072,
       "quantization": "Q4_K_M",
       "specialty": "Quality",
-      "description": "Successor to Qwen3 30B-A3B. MoE with 131K context — top scores on coding, math, and reasoning benchmarks.",
+      "description": "Successor to Qwen3 30B-A3B. MoE with 131K context \u2014 top scores on coding, math, and reasoning benchmarks.",
       "tokens_per_sec_estimate": 50,
       "llm_model_name": "qwen3.5-35b-a3b",
       "llama_server_image": null
