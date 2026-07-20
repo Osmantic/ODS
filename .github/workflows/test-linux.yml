@@ -56,6 +56,9 @@ jobs:
       - name: Service Registry Tests
         run: bash tests/test-service-registry.sh
 
+      - name: Switchboard Bypass Inventory
+        run: python3 tests/test-switchboard-bypass-inventory.py
+
       - name: Validate Manifests Tests
         run: bash tests/test-validate-manifests.sh
 
