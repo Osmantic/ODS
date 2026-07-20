@@ -248,3 +248,63 @@ class TestModelsAndEvidence:
         assert client.get("/health").json()["hasRoute"] is False
         write_state()
         assert client.get("/health").json()["hasRoute"] is True
+
+
+class TestSSEChunkBoundaries:
+    """SSE chunks do not align with SSE lines.
+
+    ``aiter_bytes()`` yields network-sized chunks. A ``data:`` line split
+    across two of them parses as JSON in neither half, so a per-chunk
+    rewriter passes the upstream's concrete model id straight to the client
+    and the stable public alias silently stops holding.
+    """
+
+    def test_alias_survives_a_line_split_across_chunks(self):
+        import app.main as mod
+
+        line = (b'data: {"id":"c1","model":"Concrete.gguf",'
+                b'"choices":[{"delta":{"content":"hi"}}]}\n\n')
+
+        whole = mod._SSERewriter("ods/current")
+        expected = whole.feed(line) + whole.flush()
+        assert b"Concrete.gguf" not in expected
+
+        # Every possible network boundary inside the line must agree.
+        for cut in range(1, len(line)):
+            split = mod._SSERewriter("ods/current")
+            out = split.feed(line[:cut]) + split.feed(line[cut:]) + split.flush()
+            assert out == expected, f"boundary at byte {cut} diverged"
+
+    def test_byte_at_a_time_stream_is_byte_identical(self):
+        import app.main as mod
+
+        sse = (b'data: {"id":"c1","model":"Concrete.gguf","choices":[]}\n\n'
+               b'data: {"id":"c2","model":"Concrete.gguf","choices":[]}\n\n'
+               b"data: [DONE]\n\n")
+
+        whole = mod._SSERewriter("ods/current")
+        expected = whole.feed(sse) + whole.flush()
+
+        drip = mod._SSERewriter("ods/current")
+        out = b"".join(drip.feed(sse[i:i + 1]) for i in range(len(sse))) + drip.flush()
+        assert out == expected
+        assert b"Concrete.gguf" not in out
+        assert out.count(b"ods/current") == 2
+        assert b"[DONE]" in out
+
+    def test_final_line_without_trailing_newline_is_not_dropped(self):
+        import app.main as mod
+
+        rewriter = mod._SSERewriter("ods/current")
+        out = rewriter.feed(b'data: {"model":"Concrete.gguf"}') + rewriter.flush()
+        assert b"ods/current" in out
+        assert b"Concrete.gguf" not in out
+
+    def test_pending_buffer_is_bounded_on_a_newline_free_stream(self):
+        import app.main as mod
+
+        rewriter = mod._SSERewriter("ods/current")
+        blob = b"x" * (mod._SSERewriter._MAX_PENDING // 2 + 1)
+        assert rewriter.feed(blob) == b""          # held back, still bounded
+        assert rewriter.feed(blob) == blob + blob  # cap reached, forwarded as-is
+        assert rewriter.flush() == b""

@@ -200,10 +200,10 @@ def _sanitize_headers(request: Request) -> dict[str, str]:
     return headers
 
 
-def _rewrite_sse_chunk(chunk: bytes, alias: str) -> bytes:
-    """Stamp the requested alias into every SSE data line's model field."""
+def _rewrite_sse_lines(block: bytes, alias: str) -> bytes:
+    """Stamp the requested alias into every complete SSE data line."""
     out_lines = []
-    for line in chunk.split(b"\n"):
+    for line in block.split(b"\n"):
         if line.startswith(b"data:") and b"{" in line:
             payload = line[5:].strip()
             try:
@@ -215,6 +215,45 @@ def _rewrite_sse_chunk(chunk: bytes, alias: str) -> bytes:
                 pass
         out_lines.append(line)
     return b"\n".join(out_lines)
+
+
+class _SSERewriter:
+    """Alias-stamp an SSE stream whose chunks do not align with its lines.
+
+    ``aiter_bytes()`` yields network-sized chunks; a ``data:`` line split
+    across two of them is valid JSON in neither half, so rewriting per chunk
+    silently passes the upstream's concrete model id through to the client.
+    Hold an incomplete trailing line back until its newline arrives.
+
+    ``_MAX_PENDING`` bounds the hold-back so an upstream that streams without
+    newlines cannot grow the buffer without limit; past it the pending bytes
+    are forwarded unmodified, which is exactly the old behaviour.
+    """
+
+    _MAX_PENDING = 1024 * 1024
+
+    def __init__(self, alias: str) -> None:
+        self._alias = alias
+        self._pending = b""
+
+    def feed(self, chunk: bytes) -> bytes:
+        data = self._pending + chunk
+        complete, newline, remainder = data.rpartition(b"\n")
+        if not newline:
+            if len(data) > self._MAX_PENDING:
+                self._pending = b""
+                return data
+            self._pending = data
+            return b""
+        self._pending = remainder
+        return _rewrite_sse_lines(complete, self._alias) + b"\n"
+
+    def flush(self) -> bytes:
+        """Emit a final line that arrived without a trailing newline."""
+        if not self._pending:
+            return b""
+        remainder, self._pending = self._pending, b""
+        return _rewrite_sse_lines(remainder, self._alias)
 
 
 @app.get("/health")
@@ -372,9 +411,15 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                                   "lemonadeRoute": lemonade_route})
 
             async def stream_body() -> AsyncIterator[bytes]:
+                rewriter = _SSERewriter(requested_alias)
                 try:
                     async for chunk in upstream.aiter_bytes():
-                        yield _rewrite_sse_chunk(chunk, requested_alias)
+                        rewritten = rewriter.feed(chunk)
+                        if rewritten:
+                            yield rewritten
+                    tail = rewriter.flush()
+                    if tail:
+                        yield tail
                 finally:
                     await upstream.aclose()
 
