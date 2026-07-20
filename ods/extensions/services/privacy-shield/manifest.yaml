@@ -23,6 +23,8 @@ service:
   llm:
     consumes: true
     route: direct
+    switchboard_exempt: true
+    switchboard_exempt_reason: "Inline PII-scrubbing proxy that sits in front of the LLM; it terminates the OpenAI request, scrubs, and forwards. It is a gateway-peer, not a stable-alias client, so it addresses the backend directly rather than ods/current."
     pinning: none
     min_context: 0
     probe:

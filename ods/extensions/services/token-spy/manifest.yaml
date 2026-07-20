@@ -22,6 +22,8 @@ service:
   llm:
     consumes: true
     route: direct
+    switchboard_exempt: true
+    switchboard_exempt_reason: "Observability dashboard that inspects token/usage traffic; it does not originate swappable chat generations, so it has no ods/current pointer to migrate."
     pinning: none
     min_context: 0
     probe:
