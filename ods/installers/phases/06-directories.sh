@@ -916,33 +916,37 @@ ENV_EOF
     # forwards ods/current -> model-router -> the active backend. Observe/legacy
     # append nothing, so the direct-backend defaults stay byte-identical.
     _ods_switchboard_mode="${ODS_MODEL_SWITCHBOARD:-observe}"
-    {
-        printf '
-ODS_MODEL_SWITCHBOARD=%s
-' "$_ods_switchboard_mode"
-        if [[ "$_ods_switchboard_mode" == "enabled" ]]; then
-            _sb_gateway="http://litellm:4000/v1"
-            printf 'ODS_PUBLIC_MODEL=%s
-' "ods/current"
-            printf 'OPEN_WEBUI_LLM_BASE_URL=%s
-' "$_sb_gateway"
-            printf 'PERPLEXICA_LLM_BASE_URL=%s
-' "$_sb_gateway"
-            printf 'OPENCODE_LLM_BASE_URL=%s
-' "$_sb_gateway"
-            printf 'HERMES_LLM_BASE_URL=%s
-' "$_sb_gateway"
-            printf 'OPENCLAW_LLM_BASE_URL=%s
-' "$_sb_gateway"
+    # Set-or-replace a key in .env (avoids duplicating keys the base heredoc
+    # already wrote, e.g. HERMES_LLM_BASE_URL).
+    _sb_env_set() {
+        local _k="$1" _v="$2" _f="$INSTALL_DIR/.env"
+        if grep -q "^${_k}=" "$_f" 2>/dev/null; then
+            local _tmp; _tmp="$(mktemp)"
+            grep -v "^${_k}=" "$_f" > "$_tmp" && printf '%s=%s
+' "$_k" "$_v" >> "$_tmp" && mv "$_tmp" "$_f"
+        else
+            printf '%s=%s
+' "$_k" "$_v" >> "$_f"
         fi
-    } >> "$INSTALL_DIR/.env"
+    }
+    _sb_env_set ODS_MODEL_SWITCHBOARD "$_ods_switchboard_mode"
+    if [[ "$_ods_switchboard_mode" == "enabled" ]]; then
+        _sb_gateway="http://litellm:4000/v1"
+        _sb_env_set ODS_PUBLIC_MODEL "ods/current"
+        _sb_env_set OPEN_WEBUI_LLM_BASE_URL "$_sb_gateway"
+        _sb_env_set PERPLEXICA_LLM_BASE_URL "$_sb_gateway"
+        _sb_env_set OPENCODE_LLM_BASE_URL "$_sb_gateway"
+        _sb_env_set HERMES_LLM_BASE_URL "$_sb_gateway"
+        _sb_env_set OPENCLAW_LLM_BASE_URL "$_sb_gateway"
+    fi
+    chmod 600 "$INSTALL_DIR/.env"
     if [[ "$_ods_switchboard_mode" == "enabled" ]]; then
         ai_ok "Model Switchboard enabled: consumers route through ods/current"
         # Render the file-based consumer configs (Perplexica seed, OpenCode
         # auth, Hermes config) in enabled mode so they address the gateway.
         _sb_py="${ODS_PYTHON_CMD:-python3}"
         if [[ -f "$SCRIPT_DIR/scripts/render-runtime-configs.py" ]] && command -v "$_sb_py" >/dev/null 2>&1; then
-            for _sb_surface in perplexica opencode hermes litellm-switchboard model-router-endpoints; do
+            for _sb_surface in perplexica opencode litellm-switchboard model-router-endpoints; do
                 "$_sb_py" "$SCRIPT_DIR/scripts/render-runtime-configs.py"                     --surface "$_sb_surface"                     --switchboard-mode enabled                     --ods-mode "${ODS_MODE:-local}"                     --gpu-backend "${GPU_BACKEND:-nvidia}"                     --gguf-file "${GGUF_FILE:-}"                     --llm-base-url "${LLM_API_URL_VALUE:-http://llama-server:8080}"                     --output-root "$INSTALL_DIR"                     --write >> "$LOG_FILE" 2>&1                     || warn "switchboard render failed for $_sb_surface"
             done
         fi
