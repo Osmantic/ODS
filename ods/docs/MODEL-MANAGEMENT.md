@@ -182,6 +182,14 @@ waiting too long to compact.
 
 5. For AMD/Lemonade installs, verify `config/litellm/lemonade.yaml`.
 
+This file pins the model by name on both its `default` and `"*"` entries, and
+LiteLLM is what every client talks to — if it still names the old GGUF, the swap
+has not taken effect regardless of what `.env` says. Tier swaps via
+`ods model swap` regenerate it and restart `ods-litellm` automatically; after a
+manual `.env`/GGUF edit like this one, verify it yourself (re-run
+`scripts/render-runtime-configs.py --surface litellm-lemonade` rather than
+hand-editing).
+
 Each local model alias should use the `extra.<GGUF_FILE>` form and should keep
 Qwen3 thinking disabled for clients that do not pass that flag themselves:
 
@@ -276,6 +284,11 @@ curl http://localhost:11434/v1/models
 
 If the server is correct, refresh the app. If the server is wrong, restart
 `llama-server` and verify `.env` / `models.ini`.
+
+On AMD/Lemonade installs, also check `config/litellm/lemonade.yaml`: clients go
+through LiteLLM, which pins the model by name there. If it names the old GGUF,
+regenerate it (a tier swap via `ods model swap` does this automatically) and
+restart `ods-litellm`.
 
 ### Hermes still asks for the old model
 

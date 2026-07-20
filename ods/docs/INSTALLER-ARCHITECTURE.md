@@ -123,7 +123,7 @@ done. This is the most common way install-time surprises survive a patch.
 |----------------|--------------|--------------|----------------|------------------------|
 | `.env` and core ports/secrets | `phases/06-directories.sh` | `installers/macos/lib/env-generator.sh` | `installers/windows/lib/env-generator.ps1` | `ods config`, `ods update`, installer re-runs |
 | OpenCode config | `phases/07-devtools.sh` | `installers/macos/install-macos.sh` | `installers/windows/lib/opencode-config.ps1` | `scripts/update-windows-opencode-config.ps1`, `scripts/bootstrap-upgrade.sh` |
-| LiteLLM Lemonade config | `phases/06-directories.sh` | n/a | n/a | `scripts/bootstrap-upgrade.sh`, `bin/ods-host-agent.py` |
+| LiteLLM Lemonade config | `phases/06-directories.sh` | n/a | n/a | `scripts/bootstrap-upgrade.sh`, `bin/ods-host-agent.py`, `ods model swap` (`ods-cli`) |
 | Perplexica config | `phases/12-health.sh`, `phases/13-summary.sh` | `installers/macos/lib/env-generator.sh`, `installers/macos/install-macos.sh` | `installers/windows/lib/env-generator.ps1`, `installers/windows/install-windows.ps1` | `scripts/bootstrap-upgrade.sh`, `scripts/repair/repair-perplexica.sh` |
 | Hermes config | `phases/11-services.sh`, `scripts/patch-hermes-config.py` | `installers/macos/install-macos.sh` | `installers/windows/phases/06-directories.ps1` | `scripts/bootstrap-upgrade.sh`, `bin/ods-host-agent.py` |
 

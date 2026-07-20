@@ -58,18 +58,33 @@ services:
       # other natively-supported parts, this stays empty and HSA reports the
       # real ISA. A non-empty default here would crash those hosts with
       # HSA_STATUS_ERROR_INVALID_ISA at model-load.
-      - HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-}
-      - HSA_XNACK=${HSA_XNACK:-1}
+      # NOTE the bare form (no "=..."): it passes the variable through only if it is
+      # defined, and omits it entirely otherwise. Do NOT write
+      # "HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-}" — that sets the var to
+      # an EMPTY STRING, which is not the same as unset. ROCm treats a set-but-empty
+      # HSA_OVERRIDE_GFX_VERSION as an override request, fails to parse it, and
+      # enumerates ZERO devices: "no ROCm-capable device is detected". That silently
+      # drops inference to CPU/Vulkan on every host that is not Strix Halo.
+      - HSA_OVERRIDE_GFX_VERSION
+      # HSA_XNACK is a unified-memory APU feature. Phase 06 sets it only for integrated
+      # targets; on discrete cards it must be absent. Defaulting it to 1 forced
+      # pageable-memory mode onto discrete GPUs, and meant unsetting it in .env had no
+      # effect. (An empty HSA_XNACK is harmless, unlike HSA_OVERRIDE_GFX_VERSION above,
+      # but pass it through the same way.)
+      - HSA_XNACK
       - ROCBLAS_USE_HIPBLASLT=${ROCBLAS_USE_HIPBLASLT:-1}
-      # Lemonade's backend selector accepts auto|vulkan|cpu only; "rocm" is no
-      # longer a valid value. Setting auto + LEMONADE_LLAMACPP_ROCM_BIN points
-      # Lemonade at the custom ROCm-built llama-server binary while keeping the
-      # field schema-valid.
-      - LEMONADE_LLAMACPP_BACKEND=auto
-      # Custom binary at /opt/llama-custom is gfx1151-only (Strix Halo patches +
-      # AMDGPU_TARGET=gfx1151 at build time). Phase 06 sets this env var only
-      # when the detected gfx target is gfx1151; on any other AMD architecture
-      # it stays unset and Lemonade uses its bundled ROCm-aware binary.
+      # NOTE: the backend selector is LEMONADE_LLAMACPP (-> --llamacpp), set in
+      # docker-compose.multigpu-amd.yml. LEMONADE_LLAMACPP_BACKEND, which used to be set
+      # here, is NOT a variable Lemonade reads (its recognised names are visible with
+      # `grep -aoE 'LEMONADE_[A-Z_]+' /opt/lemonade/lemond`) — it was a no-op, so the
+      # comment claiming it kept us on "auto" was describing something that never ran.
+      # "rocm" IS still a valid backend value in v10.2.0, contrary to that comment;
+      # the server accepts it and logs `"backend": "rocm"`.
+      #
+      # The custom binary at /opt/llama-custom is built for ${AMDGPU_TARGET} and is the
+      # only ROCm stack in this image — the Lemonade base image ships no ROCm userspace.
+      # Left empty, Lemonade detects no ROCm device, falls back to its Vulkan llama.cpp
+      # build on radv, and may fail to load models outright.
       - LEMONADE_LLAMACPP_ROCM_BIN=${LEMONADE_LLAMACPP_ROCM_BIN:-}
       - LEMONADE_CTX_SIZE=${CTX_SIZE:-131072}
     healthcheck:

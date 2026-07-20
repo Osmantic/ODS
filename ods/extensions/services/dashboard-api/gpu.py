@@ -60,13 +60,44 @@ def _read_meminfo_mb() -> Optional[tuple[int, int]]:
 
 
 def _find_amd_gpu_sysfs() -> Optional[str]:
-    """Find the sysfs base path for an AMD GPU device."""
+    """Find the sysfs base path for an AMD GPU device.
+
+    Prefers a discrete card (one reporting a real VRAM vendor) so that on a
+    desktop where the display APU happens to sort first, the summary reflects
+    the compute GPU rather than the iGPU. Falls back to the first AMD card,
+    which on an APU-only host (Strix Halo) is the compute device.
+    """
     import glob
+    first_amd = None
     for card_dir in sorted(glob.glob("/sys/class/drm/card*/device")):
         vendor = _read_sysfs(f"{card_dir}/vendor")
-        if vendor == "0x1002":
+        if vendor != "0x1002":
+            continue
+        if first_amd is None:
+            first_amd = card_dir
+        vram_vendor = (_read_sysfs(f"{card_dir}/mem_info_vram_vendor") or "").strip().lower()
+        if vram_vendor and vram_vendor not in ("unknown", "n/a"):
             return card_dir
-    return None
+    return first_amd
+
+
+def _amd_memory_is_unified(base: str, vram_total: int, gtt_total: int) -> bool:
+    """Classify an AMD GPU as unified-memory (APU) vs discrete.
+
+    A discrete card has dedicated VRAM from a real memory vendor and says so in
+    mem_info_vram_vendor (samsung/hynix/micron/gddr6/hbm...); an APU has no
+    dedicated VRAM and reports nothing there. Check that FIRST: GTT is *system*
+    memory the GPU may map — roughly half of host RAM — so a GTT-vs-VRAM ratio
+    alone brands any modest-VRAM discrete card on a large-RAM host as unified
+    and then reports host RAM as its "GPU memory" (observed: a 2 GB display
+    iGPU shown with 111 GB, and 32 GB R9700s would flip too on a 256 GB host).
+    The ratio heuristic is kept as the fallback for kernels/devices that do not
+    expose a vendor, so real APUs (Strix Halo) still resolve to unified.
+    """
+    vendor = (_read_sysfs(f"{base}/mem_info_vram_vendor") or "").strip().lower()
+    if vendor and vendor not in ("unknown", "n/a"):
+        return False
+    return gtt_total > vram_total * 4
 
 
 def _find_hwmon_dir(device_path: str) -> Optional[str]:
@@ -100,7 +131,7 @@ def get_gpu_info_amd() -> Optional[GPUInfo]:
         gtt_used = int(gtt_used_str) if gtt_used_str else 0
         gpu_busy = int(gpu_busy_str) if gpu_busy_str else 0
 
-        is_unified = gtt_total > vram_total * 4
+        is_unified = _amd_memory_is_unified(base, vram_total, gtt_total)
 
         if is_unified:
             mem_total = gtt_total
@@ -603,9 +634,11 @@ def get_gpu_info_amd_detailed() -> Optional[list[IndividualGPU]]:
     assignment = decode_gpu_assignment()
     uuid_service_map = _build_uuid_service_map(assignment) if assignment else {}
 
-    gpus: list[IndividualGPU] = []
-    for idx, base in enumerate(amd_cards):
-        hwmon = _find_hwmon_dir(base)
+    # Pass 1: read raw memory info per card. Whether an APU should present GTT
+    # (mappable system RAM) as "its" memory depends on the whole system, so the
+    # decision is made after all cards have been read.
+    raw: list[Optional[dict]] = []
+    for base in amd_cards:
         try:
             vram_total_str = _read_sysfs(f"{base}/mem_info_vram_total")
             vram_used_str = _read_sysfs(f"{base}/mem_info_vram_used")
@@ -614,6 +647,7 @@ def get_gpu_info_amd_detailed() -> Optional[list[IndividualGPU]]:
             gpu_busy_str = _read_sysfs(f"{base}/gpu_busy_percent")
 
             if not vram_total_str or not vram_used_str:
+                raw.append(None)
                 continue
 
             vram_total = int(vram_total_str)
@@ -621,11 +655,32 @@ def get_gpu_info_amd_detailed() -> Optional[list[IndividualGPU]]:
             gtt_total = int(gtt_total_str) if gtt_total_str else 0
             gtt_used = int(gtt_used_str) if gtt_used_str else 0
             gpu_busy = int(gpu_busy_str) if gpu_busy_str else 0
+        except (ValueError, TypeError):
+            raw.append(None)
+            continue
+        raw.append({
+            "vram_total": vram_total, "vram_used": vram_used,
+            "gtt_total": gtt_total, "gtt_used": gtt_used,
+            "gpu_busy": gpu_busy,
+            "is_unified": _amd_memory_is_unified(base, vram_total, gtt_total),
+        })
 
-            is_unified = gtt_total > vram_total * 4
-            mem_total = gtt_total if is_unified else vram_total
-            mem_used = gtt_used if is_unified else vram_used
+    # An APU's GTT is the memory pool only when the APU is the compute device
+    # (Strix Halo). Next to discrete cards it is a display adapter — presenting
+    # GTT would show host RAM as GPU memory (a 2 GB display iGPU rendered as
+    # ~111 GB), so it presents its dedicated VRAM carve-out instead.
+    any_discrete = any(r is not None and not r["is_unified"] for r in raw)
 
+    gpus: list[IndividualGPU] = []
+    for idx, (base, r) in enumerate(zip(amd_cards, raw)):
+        if r is None:
+            continue
+        try:
+            use_gtt = r["is_unified"] and not any_discrete
+            mem_total = r["gtt_total"] if use_gtt else r["vram_total"]
+            mem_used = r["gtt_used"] if use_gtt else r["vram_used"]
+
+            hwmon = _find_hwmon_dir(base)
             temp = 0
             power_w = None
             if hwmon:
@@ -646,7 +701,7 @@ def get_gpu_info_amd_detailed() -> Optional[list[IndividualGPU]]:
                 memory_used_mb=mem_used_mb,
                 memory_total_mb=mem_total_mb,
                 memory_percent=round(mem_used_mb / mem_total_mb * 100, 1) if mem_total_mb > 0 else 0.0,
-                utilization_percent=gpu_busy,
+                utilization_percent=r["gpu_busy"],
                 temperature_c=temp,
                 power_w=power_w,
                 assigned_services=uuid_service_map.get(gpu_uuid, []),

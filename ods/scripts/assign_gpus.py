@@ -91,6 +91,25 @@ def parse_gpus(topology: dict) -> list:
     return gpus
 
 
+def drop_integrated_when_discrete_present(gpus: list) -> list:
+    """
+    Remove integrated GPUs from the assignable pool when discrete GPUs are present.
+
+    A desktop AMD box commonly exposes a display iGPU (e.g. Raphael gfx1036, ~2GB)
+    alongside the real compute cards. It is a GPU by every structural test, so it lands
+    in the pool and assign_services() hands it work: with llama_server taking both
+    discrete cards, `remaining == 1` and whisper + comfyui + embeddings all get pinned
+    to the display iGPU, which has no meaningful compute and shares system RAM.
+
+    Guarded on discrete GPUs actually existing, so a pure-APU host (Strix Halo, where the
+    integrated GPU *is* the compute device) keeps every GPU and is unaffected.
+    """
+    discrete = [g for g in gpus if g.memory_type == "discrete"]
+    if not discrete or len(discrete) == len(gpus):
+        return gpus
+    return discrete
+
+
 def parse_links(topology: dict) -> list:
     links = []
     for link in topology.get("links", []):
@@ -497,7 +516,7 @@ def main():
         return
 
     #  Phase 1: Topology analysis
-    gpus        = parse_gpus(topology)
+    gpus        = drop_integrated_when_discrete_present(parse_gpus(topology))
     links       = parse_links(topology)
     rank_matrix = build_rank_matrix(links)
     ordered     = enumerate_subsets(gpus, rank_matrix)

@@ -12,7 +12,8 @@ from typing import Any
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field, field_validator
 
 from config import (
     DATA_DIR,
@@ -57,6 +58,21 @@ router = APIRouter(tags=["models"])
 _LIBRARY_PATH = Path(INSTALL_DIR) / "config" / "model-library.json"
 _MODELS_DIR = Path(DATA_DIR) / "models"
 _ENV_PATH = Path(INSTALL_DIR) / ".env"
+_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+# HF's standard split-file convention (llama.cpp's gguf-split output and
+# sharded safetensors saves both use this): every part is a piece of the SAME
+# logical file, not an independent component, so they must be pulled together
+# into the same target.
+_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})\.(?P<ext>gguf|safetensors)$", re.IGNORECASE)
+# Mirrors the host agent's own allowlist (bin/ods-host-agent.py) — kept here
+# too so bad requests 400 at this layer instead of round-tripping to the agent.
+_COMFYUI_MODEL_SUBDIRS = frozenset({
+    "audio_encoders", "checkpoints", "clip", "clip_vision", "configs",
+    "controlnet", "diffusers", "diffusion_models", "embeddings", "gligen",
+    "hypernetworks", "latent_upscale_models", "loras", "model_patches",
+    "photomaker", "style_models", "text_encoders", "unet", "upscale_models",
+    "vae", "vae_approx",
+})
 _MODEL_DISCOVERY_TIMEOUT_SECONDS = float(os.environ.get("DASHBOARD_MODEL_DISCOVERY_TIMEOUT", "15.0"))
 _AGENT_MODEL_STATUS_CACHE_TTL_SECONDS = float(
     os.environ.get("DASHBOARD_AGENT_MODEL_STATUS_CACHE_TTL", "0.5")
@@ -810,6 +826,11 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
     model = _find_model_in_library(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library")
+    if model.get("engine") == "hipfire":
+        raise HTTPException(
+            status_code=400,
+            detail="hipfire models are pulled by the hipfire engine on load — nothing to download",
+        )
 
     payload = {
         "gguf_file": model["gguf_file"],
@@ -883,6 +904,11 @@ def delete_model(model_id: str, api_key: str = Depends(verify_api_key)):
     model = _find_model_in_library(model_id) or _find_local_gguf_model(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
+    if model.get("engine") == "hipfire":
+        raise HTTPException(
+            status_code=400,
+            detail="hipfire model files are managed by the hipfire engine, not the dashboard",
+        )
 
     payload = {
         "gguf_file": model["gguf_file"],
@@ -890,4 +916,213 @@ def delete_model(model_id: str, api_key: str = Depends(verify_api_key)):
     if model.get("gguf_parts"):
         payload["gguf_parts"] = model["gguf_parts"]
     result = _call_agent_model("/v1/model/delete", payload)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Hugging Face direct pull — search/browse HF repos and pull a file straight
+# into llama-server's GGUF dir or a ComfyUI model-type subdir, bypassing the
+# fixed model-library catalog. The host agent (bin/ods-host-agent.py,
+# _handle_model_pull_hf) does the actual download and re-validates everything
+# below independently — this layer's validation is defense in depth, not a
+# substitute for it, since dashboard-api's container mount for .env is
+# read-only and can't itself write the HF token to disk.
+# ---------------------------------------------------------------------------
+
+
+class HFPullFileEntry(BaseModel):
+    # filename is the bare name the file lands as in the target dir;
+    # repo_path is the file's path within the repo (may include subfolders,
+    # e.g. "vae/diffusion_pytorch_model.safetensors") used only for the
+    # download URL. Defaults to filename when the file sits at repo root.
+    filename: str = Field(..., min_length=1, max_length=255)
+    repo_path: str | None = Field(default=None, max_length=512)
+    target: str = Field(..., min_length=1, max_length=64)
+    sha256: str | None = Field(default=None, max_length=64)
+    # Size from the HF file listing — the host agent's disk-space preflight
+    # falls back to it when a HEAD request can't determine Content-Length.
+    size: int | None = Field(default=None, ge=0)
+
+    @field_validator("filename")
+    @classmethod
+    def _valid_filename(cls, v: str) -> str:
+        if any(c in v for c in ("/", "\\", "\x00")) or v in (".", ".."):
+            raise ValueError("filename must be a bare filename")
+        return v
+
+    @field_validator("repo_path")
+    @classmethod
+    def _valid_repo_path(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not re.match(r"^[A-Za-z0-9._/-]+$", v):
+            raise ValueError("repo_path contains unsupported characters")
+        if any(seg in ("", ".", "..") for seg in v.split("/")):
+            raise ValueError("repo_path must not contain empty, '.' or '..' segments")
+        return v
+
+    @field_validator("target")
+    @classmethod
+    def _valid_target(cls, v: str) -> str:
+        if v == "llama-server":
+            return v
+        if v.startswith("comfyui:") and v.split(":", 1)[1] in _COMFYUI_MODEL_SUBDIRS:
+            return v
+        raise ValueError("target must be 'llama-server' or 'comfyui:<subdir>'")
+
+
+class HFPullRequest(BaseModel):
+    repo_id: str = Field(..., min_length=3, max_length=200)
+    revision: str = Field(default="main", max_length=200)
+    # Each file carries its own target — a repo can bundle independent
+    # components that belong in different places (main weights -> diffusion_models,
+    # a VAE -> vae, text encoders -> text_encoders). Shards of one logical file
+    # (the <name>-00001-of-00005.<ext> convention) must share the same target;
+    # the frontend is responsible for assigning that consistently.
+    files: list[HFPullFileEntry] = Field(..., min_length=1, max_length=128)
+
+    @field_validator("repo_id")
+    @classmethod
+    def _valid_repo_id(cls, v: str) -> str:
+        if not _REPO_ID_RE.match(v):
+            raise ValueError("repo_id must look like 'org/name'")
+        return v
+
+
+class HFAuthSaveRequest(BaseModel):
+    token: str = Field(..., min_length=3, max_length=200)
+
+    @field_validator("token")
+    @classmethod
+    def _no_control_chars(cls, v: str) -> str:
+        if any(ord(c) < 32 for c in v):
+            raise ValueError("token contains invalid characters")
+        return v.strip()
+
+
+def _shard_group_key(filename: str) -> tuple[str | None, int | None, int | None]:
+    """Detect HF's <base>-00001-of-00005.<ext> split-file convention.
+    Returns (group_key, part, of) — group_key is the same for every shard of
+    one logical file, so the frontend can collapse them into a single
+    selectable row. (None, None, None) if filename isn't a shard."""
+    m = _SHARD_RE.match(filename)
+    if not m:
+        return None, None, None
+    part, total = int(m.group("part")), int(m.group("total"))
+    group_key = f"{m.group('base')}-of-{total:05d}.{m.group('ext')}"
+    return group_key, part, total
+
+
+# Token saved this process lifetime. dashboard-api's .env is a single-file
+# :ro bind mount whose inode is pinned at container start; the host agent
+# writes .env via os.replace (a NEW inode), so disk reads here go stale the
+# moment any env write lands. This cache keeps a freshly-saved token usable
+# (auth status, gated search/listing) without a container restart; on
+# restart the mount re-pins to the current file and the disk read is
+# correct again.
+_hf_token_runtime: str | None = None
+
+
+def _get_hf_token() -> str:
+    if _hf_token_runtime is not None:
+        return _hf_token_runtime
+    return read_env_value("HF_TOKEN", INSTALL_DIR)
+
+
+@router.post("/api/models/pull")
+def pull_hf_model(payload: HFPullRequest, api_key: str = Depends(verify_api_key)):
+    """Pull one or more files directly from a Hugging Face repo via the host
+    agent, each to its own target (see HFPullRequest)."""
+    result = _call_agent_model("/v1/model/pull-hf", payload.model_dump())
+    return result
+
+
+@router.get("/api/models/hf/auth")
+def hf_auth_status(api_key: str = Depends(verify_api_key)):
+    """Report whether an HF_TOKEN is configured — never returns the token itself."""
+    return {"configured": bool(_get_hf_token())}
+
+
+@router.post("/api/models/hf/auth")
+def hf_auth_save(payload: HFAuthSaveRequest, api_key: str = Depends(verify_api_key)):
+    """Save an HF token. dashboard-api's .env mount is read-only (and stale —
+    see _hf_token_runtime), so the merge happens host-agent-side via
+    /v1/env/set-keys, against the live file. Never send a whole rebuilt .env
+    from here: any full-file write built from this container's snapshot
+    would silently revert keys changed since the container started."""
+    global _hf_token_runtime
+    _call_agent_model("/v1/env/set-keys", {"updates": {"HF_TOKEN": payload.token}}, timeout=60)
+    _hf_token_runtime = payload.token
+    return {"status": "ok", "configured": True}
+
+
+@router.get("/api/models/hf/search")
+async def hf_search(q: str = Query(..., min_length=1, max_length=200), api_key: str = Depends(verify_api_key)):
+    """Proxy Hugging Face Hub's public model search."""
+    headers = {}
+    token = _get_hf_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://huggingface.co/api/models",
+                params={"search": q, "limit": 20},
+                headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach Hugging Face: {exc}") from exc
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail="Hugging Face search failed")
+    return [
+        {
+            "id": m["id"],
+            "downloads": m.get("downloads", 0),
+            "likes": m.get("likes", 0),
+            "gated": bool(m.get("gated")),
+        }
+        for m in resp.json()
+    ]
+
+
+@router.get("/api/models/hf/files")
+async def hf_files(
+    repo_id: str = Query(...),
+    revision: str = Query("main", max_length=200),
+    api_key: str = Depends(verify_api_key),
+):
+    """List a Hugging Face repo's downloadable model files with sizes."""
+    if not _REPO_ID_RE.match(repo_id):
+        raise HTTPException(status_code=400, detail="Invalid repo_id")
+    if not re.match(r"^[A-Za-z0-9._-]+$", revision):
+        raise HTTPException(status_code=400, detail="Invalid revision")
+    headers = {}
+    token = _get_hf_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    url = f"https://huggingface.co/api/models/{repo_id}/revision/{revision}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, params={"blobs": "true"}, headers=headers)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach Hugging Face: {exc}") from exc
+    if resp.status_code in (401, 403):
+        raise HTTPException(status_code=403, detail="Repo is gated or private — connect your HF token first")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail="Hugging Face file listing failed")
+    siblings = resp.json().get("siblings", [])
+    result = []
+    for s in siblings:
+        filename = s["rfilename"]
+        if not filename.lower().endswith((".gguf", ".safetensors")):
+            continue
+        group_key, part, of = _shard_group_key(filename)
+        result.append({
+            "filename": filename,
+            "size": s.get("size", 0),
+            "sha256": (s.get("lfs") or {}).get("sha256"),
+            "group_key": group_key,
+            "part": part,
+            "of": of,
+        })
     return result

@@ -23,7 +23,7 @@ ComfyUI is GPU-only. The service definition is split by GPU vendor:
 | Backend | Compose file | Notes |
 |---------|-------------|-------|
 | NVIDIA (CUDA) | `compose.nvidia.yaml` | Requires NVIDIA Container Toolkit |
-| AMD (ROCm) | `compose.amd.yaml` | Targets gfx1151 (RX 9000 series); uses ROCm with flash attention |
+| AMD (ROCm) | `compose.amd.yaml` | Runs on the GPU's native arch — the bundled image ships a ROCm 7.2 PyTorch whose arch list includes gfx1151 (Strix Halo) and gfx1201 (RDNA4), among others; uses flash attention |
 
 > **Apple Silicon:** ComfyUI is not currently configured for Apple Silicon (macOS ARM). Use the native ComfyUI application instead.
 
@@ -51,8 +51,9 @@ Environment variables (set in `.env`):
 | Host Path | Container Path | Purpose |
 |-----------|---------------|---------|
 | `./data/comfyui/ComfyUI` | `/opt/ComfyUI` | Full ComfyUI installation (models, outputs, custom nodes) |
+| `./data/comfyui/miopen` | `/root/.config/miopen` | Persists MIOpen find-db so first-generation tuning survives container recreates |
 
-> **Note:** The AMD image uses a single volume containing the entire ComfyUI directory. Models go inside `./data/comfyui/ComfyUI/models/` rather than a separate `./data/comfyui/models/` mount.
+> **Note:** The AMD image keeps the entire ComfyUI directory in a single mount. Models go inside `./data/comfyui/ComfyUI/models/` rather than a separate `./data/comfyui/models/` mount.
 
 ### Model Subdirectories (NVIDIA)
 
@@ -98,7 +99,7 @@ Place model files in the appropriate subdirectory under `./data/comfyui/models/`
 - `manifest.yaml` — Service metadata (port, health endpoint, GPU backends, features)
 - `compose.yaml` — Base stub (actual definition is in GPU overlays)
 - `compose.nvidia.yaml` — NVIDIA CUDA service definition
-- `compose.amd.yaml` — AMD ROCm service definition (gfx1151)
+- `compose.amd.yaml` — AMD ROCm service definition (runs the GPU's native arch)
 - `startup.sh` — Entrypoint script: sets up model symlinks and launches ComfyUI server
 - `Dockerfile` — Container build definition (used by NVIDIA overlay)
 

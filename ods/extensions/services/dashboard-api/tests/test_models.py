@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 
 from models import GPUInfo
 
@@ -856,3 +857,466 @@ def test_load_model_rejects_local_gguf_path_separators(test_client, monkeypatch,
     )
 
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Hugging Face direct pull
+# ---------------------------------------------------------------------------
+
+import routers.models as _models_router_module
+
+HFPullRequest = _models_router_module.HFPullRequest
+HFPullFileEntry = _models_router_module.HFPullFileEntry
+HFAuthSaveRequest = _models_router_module.HFAuthSaveRequest
+
+
+@pytest.mark.parametrize("repo_id", [
+    "unsloth/Qwen3.5-27B-GGUF",
+    "org.name/repo-name_2",
+])
+def test_hf_pull_request_accepts_valid_repo_ids(repo_id):
+    req = HFPullRequest(repo_id=repo_id, files=[{"filename": "model.gguf", "target": "llama-server"}])
+    assert req.repo_id == repo_id
+
+
+@pytest.mark.parametrize("repo_id", [
+    "no-slash-at-all",
+    "too/many/slashes",
+    "/leading-slash",
+    "trailing-slash/",
+    "",
+])
+def test_hf_pull_request_rejects_malformed_repo_id(repo_id):
+    with pytest.raises(ValidationError):
+        HFPullRequest(repo_id=repo_id, files=[{"filename": "model.gguf", "target": "llama-server"}])
+
+
+def test_hf_pull_request_rejects_empty_files_list():
+    with pytest.raises(ValidationError):
+        HFPullRequest(repo_id="org/repo", files=[])
+
+
+def test_hf_pull_request_accepts_multiple_files_with_different_targets():
+    req = HFPullRequest(repo_id="org/repo", files=[
+        {"filename": "flux1-dev.safetensors", "target": "comfyui:diffusion_models"},
+        {"filename": "ae.safetensors", "target": "comfyui:vae"},
+        {"filename": "clip_l.safetensors", "target": "comfyui:text_encoders"},
+    ])
+    assert [f.target for f in req.files] == ["comfyui:diffusion_models", "comfyui:vae", "comfyui:text_encoders"]
+
+
+@pytest.mark.parametrize("filename", [
+    "../../etc/passwd",
+    "nested/path.gguf",
+    "nested\\path.gguf",
+    ".",
+    "..",
+])
+def test_hf_pull_file_entry_rejects_path_traversal_filenames(filename):
+    with pytest.raises(ValidationError):
+        HFPullFileEntry(filename=filename, target="llama-server")
+
+
+def test_hf_pull_file_entry_accepts_llama_server_target():
+    entry = HFPullFileEntry(filename="model.gguf", target="llama-server")
+    assert entry.target == "llama-server"
+
+
+def test_hf_pull_file_entry_accepts_known_comfyui_subdir():
+    entry = HFPullFileEntry(filename="model.safetensors", target="comfyui:checkpoints")
+    assert entry.target == "comfyui:checkpoints"
+
+
+@pytest.mark.parametrize("target", [
+    "comfyui:not-a-real-subdir",
+    "comfyui:",
+    "hipfire",
+    "unknown-target",
+])
+def test_hf_pull_file_entry_rejects_unknown_target(target):
+    with pytest.raises(ValidationError):
+        HFPullFileEntry(filename="model.gguf", target=target)
+
+
+def test_hf_auth_save_request_rejects_control_characters():
+    with pytest.raises(ValidationError):
+        HFAuthSaveRequest(token="hf_abc\ndef")
+
+
+def test_hf_auth_save_request_strips_whitespace():
+    req = HFAuthSaveRequest(token="  hf_abc123  ")
+    assert req.token == "hf_abc123"
+
+
+@pytest.mark.parametrize("repo_path", [
+    "vae/diffusion_pytorch_model.safetensors",
+    "text_encoder/model-00001-of-00002.safetensors",
+    "model.gguf",
+])
+def test_hf_pull_file_entry_accepts_nested_repo_paths(repo_path):
+    entry = HFPullFileEntry(filename="model.safetensors", repo_path=repo_path, target="comfyui:vae")
+    assert entry.repo_path == repo_path
+
+
+@pytest.mark.parametrize("repo_path", [
+    "../outside.safetensors",
+    "vae/../../etc/passwd",
+    "/absolute/path.gguf",
+    "vae//double.safetensors",
+    "vae/./dot.safetensors",
+    "back\\slash.gguf",
+])
+def test_hf_pull_file_entry_rejects_unsafe_repo_paths(repo_path):
+    with pytest.raises(ValidationError):
+        HFPullFileEntry(filename="model.safetensors", repo_path=repo_path, target="comfyui:vae")
+
+
+def test_pull_hf_model_delegates_to_host_agent(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        models_router,
+        "_call_agent_model",
+        lambda path, body, timeout=30: {"status": "started", "path": path, "body": body},
+    )
+
+    resp = test_client.post(
+        "/api/models/pull",
+        headers=test_client.auth_headers,
+        json={
+            "repo_id": "unsloth/Qwen3.5-27B-GGUF",
+            "files": [{"filename": "model.gguf", "target": "llama-server"}],
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["path"] == "/v1/model/pull-hf"
+    assert body["body"]["repo_id"] == "unsloth/Qwen3.5-27B-GGUF"
+    assert body["body"]["revision"] == "main"
+    assert body["body"]["files"] == [{
+        "filename": "model.gguf",
+        "repo_path": None,
+        "target": "llama-server",
+        "sha256": None,
+        "size": None,
+    }]
+
+
+def test_pull_hf_model_delegates_multi_file_request_with_distinct_targets(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        models_router,
+        "_call_agent_model",
+        lambda path, body, timeout=30: {"status": "started", "path": path, "body": body},
+    )
+
+    resp = test_client.post(
+        "/api/models/pull",
+        headers=test_client.auth_headers,
+        json={
+            "repo_id": "black-forest-labs/FLUX.1-schnell",
+            "files": [
+                {"filename": "flux1-schnell.safetensors", "target": "comfyui:diffusion_models"},
+                {"filename": "ae.safetensors", "target": "comfyui:vae"},
+                {"filename": "clip_l.safetensors", "target": "comfyui:text_encoders", "sha256": "abc123"},
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    files = resp.json()["body"]["files"]
+    assert [f["target"] for f in files] == ["comfyui:diffusion_models", "comfyui:vae", "comfyui:text_encoders"]
+    assert files[2]["sha256"] == "abc123"
+
+
+def test_pull_hf_model_rejects_bad_target(test_client, monkeypatch, tmp_path):
+    _patch_model_router_paths(monkeypatch, tmp_path)
+
+    resp = test_client.post(
+        "/api/models/pull",
+        headers=test_client.auth_headers,
+        json={
+            "repo_id": "unsloth/Qwen3.5-27B-GGUF",
+            "files": [{"filename": "model.gguf", "target": "not-a-target"}],
+        },
+    )
+
+    assert resp.status_code == 422
+
+
+def test_pull_hf_model_rejects_empty_files_list(test_client, monkeypatch, tmp_path):
+    _patch_model_router_paths(monkeypatch, tmp_path)
+
+    resp = test_client.post(
+        "/api/models/pull",
+        headers=test_client.auth_headers,
+        json={"repo_id": "unsloth/Qwen3.5-27B-GGUF", "files": []},
+    )
+
+    assert resp.status_code == 422
+
+
+def test_hf_auth_status_reports_configured_true(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "_hf_token_runtime", None)
+    (install_dir / ".env").write_text("HF_TOKEN=hf_abc123\n", encoding="utf-8")
+
+    resp = test_client.get("/api/models/hf/auth", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"configured": True}
+
+
+def test_hf_auth_status_reports_configured_false_when_unset(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "_hf_token_runtime", None)
+    (install_dir / ".env").write_text("FOO=bar\n", encoding="utf-8")
+
+    resp = test_client.get("/api/models/hf/auth", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"configured": False}
+
+
+def test_hf_auth_save_merges_key_host_agent_side_and_caches_token(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "_hf_token_runtime", None)
+    # No .env read should happen at all — the merge is host-agent-side
+    # against the live file, never a rebuilt full-file write from this
+    # container's (stale, read-only) snapshot.
+
+    seen_calls = []
+
+    def fake_call(path, body, timeout=30):
+        seen_calls.append((path, body, timeout))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(models_router, "_call_agent_model", fake_call)
+
+    resp = test_client.post(
+        "/api/models/hf/auth",
+        headers=test_client.auth_headers,
+        json={"token": "hf_newtoken"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "configured": True}
+    assert seen_calls == [("/v1/env/set-keys", {"updates": {"HF_TOKEN": "hf_newtoken"}}, 60)]
+    # The saved token is cached in-process (the :ro bind mount goes stale
+    # after any host-agent write), so status/search see it immediately.
+    assert models_router._hf_token_runtime == "hf_newtoken"
+
+    status = test_client.get("/api/models/hf/auth", headers=test_client.auth_headers)
+    assert status.json() == {"configured": True}
+
+
+def test_hf_auth_save_does_not_cache_token_when_agent_write_fails(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "_hf_token_runtime", None)
+
+    from fastapi import HTTPException
+
+    def failing_call(path, body, timeout=30):
+        raise HTTPException(status_code=503, detail="Host agent unreachable")
+
+    monkeypatch.setattr(models_router, "_call_agent_model", failing_call)
+
+    resp = test_client.post(
+        "/api/models/hf/auth",
+        headers=test_client.auth_headers,
+        json={"token": "hf_newtoken"},
+    )
+
+    assert resp.status_code == 503
+    assert models_router._hf_token_runtime is None
+
+
+def test_hf_search_proxies_hf_hub_api(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "_hf_token_runtime", None)
+    (install_dir / ".env").write_text("", encoding="utf-8")
+
+    seen = {}
+
+    class _Response:
+        status_code = 200
+
+        def json(self):
+            return [
+                {"id": "unsloth/Qwen3.5-27B-GGUF", "downloads": 1000, "likes": 42, "gated": False},
+            ]
+
+    class _Client:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            seen["url"] = url
+            seen["params"] = params
+            seen["headers"] = headers
+            return _Response()
+
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", _Client)
+
+    resp = test_client.get("/api/models/hf/search?q=qwen", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"id": "unsloth/Qwen3.5-27B-GGUF", "downloads": 1000, "likes": 42, "gated": False},
+    ]
+    assert seen["params"] == {"search": "qwen", "limit": 20}
+    assert "Authorization" not in (seen["headers"] or {})
+
+
+def test_hf_files_filters_to_model_files_and_includes_sha(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "_hf_token_runtime", None)
+    (install_dir / ".env").write_text("HF_TOKEN=hf_abc123\n", encoding="utf-8")
+
+    class _Response:
+        status_code = 200
+
+        def json(self):
+            return {
+                "siblings": [
+                    {"rfilename": "model.gguf", "size": 123, "lfs": {"sha256": "deadbeef"}},
+                    {"rfilename": "README.md", "size": 10},
+                    {"rfilename": "model.safetensors", "size": 456},
+                ]
+            }
+
+    class _Client:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            assert headers.get("Authorization") == "Bearer hf_abc123"
+            return _Response()
+
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", _Client)
+
+    resp = test_client.get(
+        "/api/models/hf/files?repo_id=unsloth%2FQwen3.5-27B-GGUF",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"filename": "model.gguf", "size": 123, "sha256": "deadbeef", "group_key": None, "part": None, "of": None},
+        {"filename": "model.safetensors", "size": 456, "sha256": None, "group_key": None, "part": None, "of": None},
+    ]
+
+
+def test_hf_files_groups_sharded_gguf_files(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "_hf_token_runtime", None)
+    (install_dir / ".env").write_text("", encoding="utf-8")
+
+    class _Response:
+        status_code = 200
+
+        def json(self):
+            return {
+                "siblings": [
+                    {"rfilename": "big-model-00001-of-00002.gguf", "size": 1000},
+                    {"rfilename": "big-model-00002-of-00002.gguf", "size": 2000},
+                    {"rfilename": "small-model.gguf", "size": 500},
+                ]
+            }
+
+    class _Client:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            return _Response()
+
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", _Client)
+
+    resp = test_client.get(
+        "/api/models/hf/files?repo_id=org%2Frepo",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    part1 = next(f for f in body if f["filename"] == "big-model-00001-of-00002.gguf")
+    part2 = next(f for f in body if f["filename"] == "big-model-00002-of-00002.gguf")
+    solo = next(f for f in body if f["filename"] == "small-model.gguf")
+    assert part1["group_key"] == part2["group_key"] == "big-model-of-00002.gguf"
+    assert (part1["part"], part1["of"]) == (1, 2)
+    assert (part2["part"], part2["of"]) == (2, 2)
+    assert solo["group_key"] is None
+
+
+@pytest.mark.parametrize("filename,expected", [
+    ("model-00001-of-00005.gguf", ("model-of-00005.gguf", 1, 5)),
+    ("model-00005-of-00005.safetensors", ("model-of-00005.safetensors", 5, 5)),
+    ("model.gguf", (None, None, None)),
+    ("model-1-of-5.gguf", (None, None, None)),  # not zero-padded to 5 digits — not a match
+])
+def test_shard_group_key_detection(filename, expected):
+    assert _models_router_module._shard_group_key(filename) == expected
+
+
+def test_hf_files_surfaces_gated_repo_as_403(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "_hf_token_runtime", None)
+    (install_dir / ".env").write_text("", encoding="utf-8")
+
+    class _Response:
+        status_code = 403
+
+        def json(self):
+            return {}
+
+    class _Client:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            return _Response()
+
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", _Client)
+
+    resp = test_client.get(
+        "/api/models/hf/files?repo_id=meta-llama%2FLlama-Guarded",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 403
+
+
+def test_hf_files_rejects_invalid_repo_id(test_client, monkeypatch, tmp_path):
+    _patch_model_router_paths(monkeypatch, tmp_path)
+
+    resp = test_client.get(
+        "/api/models/hf/files?repo_id=not-a-valid-repo-id",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 400

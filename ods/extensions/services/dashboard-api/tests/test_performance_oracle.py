@@ -7,6 +7,7 @@ from performance_oracle import (
     build_models_payload,
     current_model_matches,
     evaluate_performance,
+    normalize_catalog_entry,
     rank_pre_download_models,
 )
 
@@ -491,6 +492,85 @@ def test_published_exact_requires_matching_signature(data_dir):
     assert perf["sourceUrl"] == "https://example.test/bench"
 
 
+# --- hipfire engine catalog entries ---
+
+
+def _hipfire_model():
+    return {
+        "id": "qwen3.6-35b-a3b-hipfire-mq4",
+        "name": "Qwen 3.6 35B-A3B (hipfire)",
+        "engine": "hipfire",
+        "model_file": "qwen36-35b-a3b.mq4",
+        "size_mb": 23347,
+        "vram_required_gb": 24,
+        "context_length": 131072,
+        "quantization": "MQ4",
+        "specialty": "Fast",
+        "description": "hipfire test model",
+    }
+
+
+def test_normalize_catalog_entry_hipfire_needs_model_file():
+    assert normalize_catalog_entry({"id": "x", "engine": "hipfire"}) is None
+
+    entry = normalize_catalog_entry(_hipfire_model())
+    assert entry["engine"] == "hipfire"
+    assert entry["model_file"] == "qwen36-35b-a3b.mq4"
+    assert entry["gguf"] is None
+    assert "qwen36-35b-a3b.mq4" in entry["aliases"]
+
+
+def test_hipfire_entry_hidden_until_extension_enabled(data_dir, tmp_path, monkeypatch):
+    monkeypatch.delenv("ENABLE_HIPFIRE", raising=False)
+    install_dir = tmp_path / "ods"
+    (install_dir / "data" / "models").mkdir(parents=True)
+
+    payload = build_models_payload(
+        _gpu(), None, 0, install_dir, data_dir,
+        catalog=[_hipfire_model(), _model()], evidence=[],
+    )
+
+    assert [model["id"] for model in payload["models"]] == ["qwen3.5-9b-q4"]
+
+
+def test_hipfire_entry_loadable_when_enabled(data_dir, tmp_path, monkeypatch):
+    for key in ("ENABLE_HIPFIRE", "HIPFIRE_ACTIVE", "HIPFIRE_MODEL"):
+        monkeypatch.delenv(key, raising=False)
+    install_dir = tmp_path / "ods"
+    (install_dir / "data" / "models").mkdir(parents=True)
+    (install_dir / ".env").write_text("ENABLE_HIPFIRE=true\n", encoding="utf-8")
+
+    payload = build_models_payload(
+        _gpu(), None, 0, install_dir, data_dir,
+        catalog=[_hipfire_model(), _model()], evidence=[],
+    )
+
+    by_id = {model["id"]: model for model in payload["models"]}
+    entry = by_id["qwen3.6-35b-a3b-hipfire-mq4"]
+    # "downloaded" (= loadable), never "available": hipfire pulls its own weights.
+    assert entry["status"] == "downloaded"
+    assert entry["engine"] == "hipfire"
+    assert entry["gguf"] is None
+    assert entry["downloadUrl"] is None
+
+
+def test_hipfire_entry_loaded_when_active_default_route(data_dir, tmp_path, monkeypatch):
+    for key in ("ENABLE_HIPFIRE", "HIPFIRE_ACTIVE", "HIPFIRE_MODEL"):
+        monkeypatch.delenv(key, raising=False)
+    install_dir = tmp_path / "ods"
+    (install_dir / "data" / "models").mkdir(parents=True)
+    (install_dir / ".env").write_text(
+        "ENABLE_HIPFIRE=true\nHIPFIRE_ACTIVE=true\nHIPFIRE_MODEL=qwen36-35b-a3b.mq4\n",
+        encoding="utf-8",
+    )
+
+    payload = build_models_payload(
+        _gpu(), None, 0, install_dir, data_dir,
+        catalog=[_hipfire_model(), _model()], evidence=[],
+    )
+
+    by_id = {model["id"]: model for model in payload["models"]}
+    assert by_id["qwen3.6-35b-a3b-hipfire-mq4"]["status"] == "loaded"
 def test_published_exact_matches_gguf_stem_identity(data_dir):
     evidence = [{
         "model_id": "Qwen3.5-9B-Q4_K_M",

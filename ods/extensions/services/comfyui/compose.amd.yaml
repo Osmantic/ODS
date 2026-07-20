@@ -13,11 +13,31 @@ services:
       - no-new-privileges:true
     shm_size: 8g
     environment:
-      - HSA_OVERRIDE_GFX_VERSION=11.5.1
-      - PYTORCH_TUNABLEOP_ENABLED=1
+      # No HSA_OVERRIDE_GFX_VERSION. The image name says gfx1151, but the torch it
+      # ships is a stock ROCm 7.2 wheel whose arch list already includes gfx1201
+      # (RDNA4) — so RDNA4 cards need no spoofing. Forcing 11.5.1 here made ROCm
+      # hand gfx1151 (RDNA3.5) kernels to a gfx1201 card, which does not merely run
+      # slowly: it faults the card ("HW Exception by GPU node-N ... reason: GPU Hang").
+      # Do not "fix" this by setting the var to an empty string — ROCm checks whether
+      # it is *defined*, not whether it is non-empty, then fails parsing "".
+      # Leave it absent so each GPU is used as its native arch.
+      #
+      # No PYTORCH_TUNABLEOP_ENABLED either. On arches without a shipped tuning DB
+      # (e.g. gfx1201) it exhaustively benchmarks every GEMM shape on first use —
+      # ~8 min at full board power before the first sampling step — and the results
+      # CSV lands in the process cwd inside the container layer, so it is re-paid
+      # on every recreate. hipBLASLt's built-in heuristics are close enough; if you
+      # re-enable it, set PYTORCH_TUNABLEOP_FILENAME to a bind-mounted path.
+      #
+      # MIOPEN_FIND_MODE=FAST picks conv kernels heuristically instead of
+      # compile-and-race-every-candidate, which took 20+ min for a single SDXL VAE
+      # decode on a cold cache. What little JIT remains is persisted via the
+      # miopen volume below.
+      - MIOPEN_FIND_MODE=FAST
       - TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
     volumes:
       - ./data/comfyui/ComfyUI:/opt/ComfyUI:z
+      - ./data/comfyui/miopen:/root/.config/miopen:z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${COMFYUI_PORT:-8188}:8188"
     command: >-

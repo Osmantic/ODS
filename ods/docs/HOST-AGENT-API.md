@@ -170,6 +170,103 @@ If the container does not exist yet (e.g. image is still pulling), a 200 respons
 | 503 | Log fetch timed out (5s) |
 | 500 | Failed to fetch logs |
 
+### `POST /v1/model/pull-hf`
+
+Pull one or more files directly from a Hugging Face repo, bypassing the
+`config/model-library.json` catalog. Each file carries its own `target`,
+because one repo can bundle independent components that belong in different
+places (main diffusion weights, a VAE, text encoders). Sharded files
+(`<name>-00001-of-00005.gguf`/`.safetensors`) must all be sent in one
+request with the same target.
+
+**Authentication:** Required
+
+**Request body** (up to 256 KB — larger than the default request cap, to fit
+heavily-sharded repos):
+```json
+{
+  "repo_id": "org/name",
+  "revision": "main",
+  "files": [
+    {
+      "filename": "ae.safetensors",
+      "repo_path": "vae/ae.safetensors",
+      "target": "comfyui:vae",
+      "sha256": "…or null…",
+      "size": 334643238
+    }
+  ]
+}
+```
+
+- `filename` — bare name the file lands as in the target dir (no path
+  separators).
+- `repo_path` — path within the repo used for the download URL; defaults to
+  `filename`. Validated against traversal (`..`, absolute paths, `\`).
+- `target` — `llama-server` (→ `data/models/`) or `comfyui:<subdir>` where
+  `<subdir>` is one of the known ComfyUI model-type dirs (→
+  `data/comfyui/ComfyUI/models/<subdir>/`).
+- `sha256` — optional; verified after download (verification only covers
+  files this pull actually downloaded — pre-existing same-named files are
+  left untouched).
+- `size` — optional; used by the disk-space preflight when a HEAD request
+  can't determine Content-Length.
+- 1–128 files per request.
+
+If `HF_TOKEN` is set in `.env`, it is attached as a Bearer header on the
+download, enabling gated/private repos.
+
+The handler validates and responds immediately; sizing, the disk-space
+preflight, download (resume + 3 retries), checksum verification, and the
+manifest write all happen in a background thread that reports through
+`data/model-download-status.json` (same schema/endpoint as catalog
+downloads, `GET /v1/model/status`). On success a receipt is written to
+`data/hf-pulls/<repo>-<timestamp>.json` recording exactly which files landed
+where, so a future removal action can delete precisely what a pull placed.
+
+**Response (200):** `{"status": "started"}` or `{"status": "already_downloaded"}`
+
+**Error responses:**
+| Code | Condition |
+|------|-----------|
+| 400 | Invalid repo_id / revision / filename / repo_path / target |
+| 409 | Another download is in progress (one system-wide at a time) |
+| 413 | Request body over 256 KB |
+
+### `POST /v1/env/set-keys`
+
+Merge individual `KEY=value` updates into `.env`, reading the current file
+from disk at write time. Callers that only want to change specific keys must
+use this instead of `/v1/env/update` (a whole-file replace): dashboard-api's
+`.env` is a read-only single-file bind mount whose inode is pinned at
+container start, so any full-file text it rebuilds comes from a stale
+snapshot and would silently revert every key changed since its container
+started.
+
+**Authentication:** Required
+
+**Request body:**
+```json
+{ "updates": { "HF_TOKEN": "hf_..." } }
+```
+
+1–16 keys per request. Key names must match `^[A-Za-z_][A-Za-z0-9_]*$`;
+non-schema keys are accepted with a log (same policy as `/v1/env/update`).
+Values must be single-line strings ≤ 4096 chars (control characters are
+rejected — a value containing `\n` could smuggle extra lines into `.env`).
+A timestamped backup of `.env` is written to `data/config-backups/` before
+the merge. Writes are serialized with model activation and `/v1/env/update`
+under the same lock.
+
+**Response (200):** `{"status": "ok", "updated": ["HF_TOKEN"]}`
+
+**Error responses:**
+| Code | Condition |
+|------|-----------|
+| 400 | Malformed updates object, key name, or value |
+| 409 | Model activation or another env write in progress |
+| 500 | Schema unreadable or `.env` write failed |
+
 ## Security Boundaries
 
 The host agent is a **critical security boundary** because it can start and stop Docker containers on the host.

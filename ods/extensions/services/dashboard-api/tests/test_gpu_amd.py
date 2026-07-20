@@ -3,6 +3,8 @@
 from unittest.mock import patch
 
 from gpu import (
+    _amd_memory_is_unified,
+    _find_amd_gpu_sysfs,
     _find_hwmon_power,
     _find_hwmon_temp,
     get_gpu_info_amd,
@@ -443,3 +445,144 @@ class TestGetGpuInfoAmdDetailedMultiGpu:
         assert result is not None
         assert len(result) == 1  # card0 skipped, card1 present
         assert result[0].index == 1  # Keeps enumeration index (card1)
+
+
+# ============================================================================
+# _amd_memory_is_unified — vendor-first unified/discrete classification
+# ============================================================================
+
+
+class TestAmdMemoryIsUnified:
+    """GTT is system memory the GPU may map (~half of host RAM), so the
+    GTT-vs-VRAM ratio alone misclassifies discrete cards on large-RAM hosts.
+    A real VRAM vendor must win over the ratio heuristic."""
+
+    BASE = "/sys/class/drm/card0/device"
+    GIB = 1024**3
+
+    def _classify(self, monkeypatch, vendor, vram_gb, gtt_gb):
+        monkeypatch.setattr(
+            "gpu._read_sysfs",
+            lambda path: vendor if path.endswith("/mem_info_vram_vendor") else None,
+        )
+        return _amd_memory_is_unified(self.BASE, vram_gb * self.GIB, gtt_gb * self.GIB)
+
+    def test_real_vendor_stays_discrete_despite_huge_gtt(self, monkeypatch):
+        # R9700 on a 123 GB host: 31.9 GB VRAM, ~111 GB GTT
+        assert self._classify(monkeypatch, "samsung", 2, 111) is False
+
+    def test_no_vendor_with_huge_gtt_is_unified(self, monkeypatch):
+        # Display iGPU / APU: no dedicated-VRAM vendor reported
+        assert self._classify(monkeypatch, None, 2, 111) is True
+
+    def test_vendor_unknown_falls_back_to_ratio(self, monkeypatch):
+        assert self._classify(monkeypatch, "unknown", 2, 111) is True
+
+    def test_vendor_na_falls_back_to_ratio(self, monkeypatch):
+        assert self._classify(monkeypatch, "N/A", 2, 111) is True
+
+    def test_no_vendor_small_gtt_is_discrete(self, monkeypatch):
+        assert self._classify(monkeypatch, None, 24, 16) is False
+
+
+# ============================================================================
+# Display iGPU next to discrete cards — GTT must not be shown as GPU memory
+# ============================================================================
+
+
+class TestDisplayIgpuNextToDiscrete:
+    """Regression for a 2-discrete + display-iGPU desktop (2x R9700 + Raphael):
+    the iGPU (2 GB VRAM, ~111 GB GTT) was reported with memory_total ~111 GB
+    because GTT was presented as its memory pool."""
+
+    GIB = 1024**3
+
+    def _mixed_sysfs(self):
+        sysfs = {}
+        for card, vram_gb, vendor in (
+            ("card1", 32, "samsung"),   # discrete R9700
+            ("card2", 32, "samsung"),   # discrete R9700
+            ("card3", 2, None),         # Raphael display iGPU
+        ):
+            base = f"/sys/class/drm/{card}/device"
+            sysfs.update({
+                f"{base}/mem_info_vram_total": str(vram_gb * self.GIB),
+                f"{base}/mem_info_vram_used": str(self.GIB // 2),
+                f"{base}/mem_info_gtt_total": str(111 * self.GIB),
+                f"{base}/mem_info_gtt_used": str(self.GIB // 16),
+                f"{base}/gpu_busy_percent": "5",
+                f"{base}/product_name": f"AMD ({card})",
+            })
+            if vendor:
+                sysfs[f"{base}/mem_info_vram_vendor"] = vendor
+        return sysfs
+
+    def _run_detailed(self, monkeypatch, sysfs, cards):
+        def mock_read_sysfs(path):
+            if path.endswith("/vendor") and not path.endswith("/mem_info_vram_vendor"):
+                return "0x1002"
+            return sysfs.get(path)
+
+        monkeypatch.setattr("gpu._read_sysfs", mock_read_sysfs)
+        monkeypatch.setattr("gpu._find_hwmon_dir", lambda base: None)
+        monkeypatch.setattr("gpu.read_gpu_topology", lambda: None)
+        monkeypatch.setattr("gpu.decode_gpu_assignment", lambda: None)
+        card_paths = [f"/sys/class/drm/{c}/device" for c in cards]
+        with patch("glob.glob", return_value=card_paths):
+            return get_gpu_info_amd_detailed()
+
+    def test_igpu_reports_its_vram_carveout_not_gtt(self, monkeypatch):
+        result = self._run_detailed(
+            monkeypatch, self._mixed_sysfs(), ["card1", "card2", "card3"])
+        assert result is not None and len(result) == 3
+        igpu = result[2]
+        assert igpu.memory_total_mb == 2 * 1024      # 2 GB carve-out
+        assert igpu.memory_total_mb != 111 * 1024    # not host RAM
+
+    def test_discrete_cards_report_vram(self, monkeypatch):
+        result = self._run_detailed(
+            monkeypatch, self._mixed_sysfs(), ["card1", "card2", "card3"])
+        for gpu_entry in result[:2]:
+            assert gpu_entry.memory_total_mb == 32 * 1024
+
+    def test_apu_only_host_keeps_unified_gtt_view(self, monkeypatch):
+        """Strix Halo: a lone APU (no VRAM vendor) must still present GTT."""
+        base = "/sys/class/drm/card0/device"
+        sysfs = {
+            f"{base}/mem_info_vram_total": str(4 * self.GIB),
+            f"{base}/mem_info_vram_used": str(self.GIB),
+            f"{base}/mem_info_gtt_total": str(96 * self.GIB),
+            f"{base}/mem_info_gtt_used": str(10 * self.GIB),
+            f"{base}/gpu_busy_percent": "20",
+            f"{base}/product_name": "AMD Strix Halo",
+        }
+        result = self._run_detailed(monkeypatch, sysfs, ["card0"])
+        assert result is not None and len(result) == 1
+        assert result[0].memory_total_mb == 96 * 1024
+
+
+# ============================================================================
+# _find_amd_gpu_sysfs — summary picker prefers the compute GPU
+# ============================================================================
+
+
+class TestFindAmdGpuSysfsPrefersDiscrete:
+    def _wire(self, monkeypatch, sysfs, cards):
+        monkeypatch.setattr("gpu._read_sysfs", lambda path: sysfs.get(path))
+        return [f"/sys/class/drm/{c}/device" for c in cards]
+
+    def test_prefers_discrete_when_igpu_sorts_first(self, monkeypatch):
+        sysfs = {
+            "/sys/class/drm/card0/device/vendor": "0x1002",  # iGPU, no vram vendor
+            "/sys/class/drm/card1/device/vendor": "0x1002",
+            "/sys/class/drm/card1/device/mem_info_vram_vendor": "samsung",
+        }
+        card_paths = self._wire(monkeypatch, sysfs, ["card0", "card1"])
+        with patch("glob.glob", return_value=card_paths):
+            assert _find_amd_gpu_sysfs() == "/sys/class/drm/card1/device"
+
+    def test_falls_back_to_lone_apu(self, monkeypatch):
+        sysfs = {"/sys/class/drm/card0/device/vendor": "0x1002"}
+        card_paths = self._wire(monkeypatch, sysfs, ["card0"])
+        with patch("glob.glob", return_value=card_paths):
+            assert _find_amd_gpu_sysfs() == "/sys/class/drm/card0/device"

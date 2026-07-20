@@ -6,6 +6,7 @@ After=docker.service
 Type=simple
 User=__INSTALL_USER__
 SupplementaryGroups=docker
+ExecStartPre=+__INSTALL_DIR__/scripts/sync-host-agent-firewall.sh
 ExecStart=__PYTHON3__ __INSTALL_DIR__/bin/ods-host-agent.py
 WorkingDirectory=__INSTALL_DIR__
 Environment=ODS_HOME=__INSTALL_DIR__

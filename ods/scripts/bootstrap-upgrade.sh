@@ -2150,6 +2150,21 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
             if [[ -z "$_renderer_py" ]]; then
                 _renderer_py="python3"
             fi
+            # hipfire routing must survive the hot-swap re-render — the
+            # upgrade changes the GGUF, not the engine choice, so the pins
+            # in .env pass straight through. Without them one bootstrap
+            # upgrade silently wipes hipfire's routes (the same clobber the
+            # host-agent renderer path closes).
+            _hipfire_enabled="$(read_env_value ENABLE_HIPFIRE | tr '[:upper:]' '[:lower:]')"
+            _hipfire_model="$(read_env_value HIPFIRE_MODEL)"
+            _hipfire_active="$(read_env_value HIPFIRE_ACTIVE | tr '[:upper:]' '[:lower:]')"
+            _hipfire_render_args=()
+            if [[ "$_hipfire_enabled" == "true" && -n "$_hipfire_model" ]]; then
+                _hipfire_render_args+=(--hipfire-enabled --hipfire-model "$_hipfire_model")
+                if [[ "$_hipfire_active" == "true" ]]; then
+                    _hipfire_render_args+=(--hipfire-active)
+                fi
+            fi
             if [[ -f "$_renderer_script" ]] && command -v "$_renderer_py" >/dev/null 2>&1; then
                 if "$_renderer_py" "$_renderer_script" \
                     --surface litellm-lemonade \
@@ -2160,13 +2175,54 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
                     --lemonade-api-base "$_lemonade_api_base" \
                     --litellm-key "$LITELLM_LEMONADE_API_KEY" \
                     --output-root "$INSTALL_DIR" \
+                    "${_hipfire_render_args[@]}" \
                     --write >/dev/null 2>&1; then
                     _renderer_ok=true
                 else
                     log "WARNING: Runtime config renderer failed for LiteLLM; falling back to inline writer"
                 fi
             fi
-            if [[ "$_renderer_ok" != "true" ]]; then
+            if [[ "$_renderer_ok" != "true" && "$_hipfire_enabled" == "true" && -n "$_hipfire_model" ]]; then
+                # Inline fallback, hipfire-aware: named routes for both
+                # engines, default follows HIPFIRE_ACTIVE — mirrors the
+                # renderer and the host-agent fallback writer.
+                _hipfire_params="    litellm_params:
+      model: openai/${_hipfire_model}
+      api_base: http://hipfire:11435/v1
+      api_key: not-needed"
+                _lemonade_params="    litellm_params:
+      model: openai/extra.${FULL_GGUF_FILE}
+      api_base: ${_lemonade_api_base}
+      api_key: ${LITELLM_LEMONADE_API_KEY}
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false"
+                _default_params="$_lemonade_params"
+                if [[ "$_hipfire_active" == "true" ]]; then
+                    _default_params="$_hipfire_params"
+                fi
+                cat > "$INSTALL_DIR/config/litellm/lemonade.yaml" << LITELLM_UPGRADE_HIPFIRE_EOF
+model_list:
+  - model_name: default
+${_default_params}
+
+  - model_name: hipfire
+${_hipfire_params}
+
+  - model_name: lemonade
+${_lemonade_params}
+
+  - model_name: "*"
+${_default_params}
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  request_timeout: 900
+  stream_timeout: 900
+LITELLM_UPGRADE_HIPFIRE_EOF
+                unset _hipfire_params _lemonade_params _default_params
+            elif [[ "$_renderer_ok" != "true" ]]; then
                 cat > "$INSTALL_DIR/config/litellm/lemonade.yaml" << LITELLM_UPGRADE_EOF
 model_list:
   - model_name: default
@@ -2195,6 +2251,7 @@ litellm_settings:
 LITELLM_UPGRADE_EOF
             fi
             unset _renderer_ok _renderer_script _renderer_py _lemonade_api_base _lemonade_model_id _amd_location _amd_port
+            unset _hipfire_enabled _hipfire_model _hipfire_active _hipfire_render_args
             log "Restarting LiteLLM to pick up model change..."
             $DOCKER_CMD restart ods-litellm 2>&1 || log "WARNING: LiteLLM restart failed (non-fatal)"
         fi

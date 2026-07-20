@@ -153,6 +153,13 @@ else
         ai_ok "Rewrote .env for CPU fallback"
     }
 
+    # Install/upgrade-time only — runs once per install run. The host agent's
+    # own systemd unit also re-applies an equivalent rule on every start (boot,
+    # restart, Restart=on-failure) via scripts/sync-host-agent-firewall.sh,
+    # which re-derives the current ods-network subnet fresh each time, since a
+    # `docker compose down`/`up` can silently re-allocate a different subnet
+    # than whatever this install-time rule was scoped to. Keep the underlying
+    # ufw/firewall-cmd logic here and in that script in sync if either changes.
     _phase11_allow_container_host_firewall() {
         local network_name="${1:-ods-network}"
         local port="$2"

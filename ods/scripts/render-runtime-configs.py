@@ -36,6 +36,10 @@ class RenderInputs:
     litellm_key: str
     opencode_port: int
     context_length: int
+    hipfire_enabled: bool
+    hipfire_active: bool
+    hipfire_model: str
+    hipfire_api_base: str
 
 
 @dataclass(frozen=True)
@@ -68,31 +72,53 @@ def opencode_key(inputs: RenderInputs) -> str:
 def render_litellm_lemonade(inputs: RenderInputs) -> RenderedFile:
     model = lemonade_model_id(inputs)
     api_base = inputs.lemonade_api_base.rstrip("/") or "http://llama-server:8080/api/v1"
-    content = f"""model_list:
-  - model_name: default
-    litellm_params:
+    lemonade_params = f"""    litellm_params:
       model: openai/{model}
       api_base: {api_base}
       api_key: {inputs.litellm_key}
       extra_body:
         chat_template_kwargs:
           enable_thinking: false
-
-  - model_name: "*"
-    litellm_params:
-      model: openai/{model}
-      api_base: {api_base}
-      api_key: {inputs.litellm_key}
-      extra_body:
-        chat_template_kwargs:
-          enable_thinking: false
-
-litellm_settings:
-  drop_params: true
-  set_verbose: false
-  request_timeout: 900
-  stream_timeout: 900
 """
+    if inputs.hipfire_enabled and inputs.hipfire_model:
+        hipfire_base = inputs.hipfire_api_base.rstrip("/") or "http://hipfire:11435/v1"
+        # hipfire has no auth; the host port stays loopback-bound via BIND_ADDRESS.
+        hipfire_params = f"""    litellm_params:
+      model: openai/{inputs.hipfire_model}
+      api_base: {hipfire_base}
+      api_key: not-needed
+"""
+        default_params = hipfire_params if inputs.hipfire_active else lemonade_params
+        content = (
+            "model_list:\n"
+            f"  - model_name: default\n{default_params}"
+            "\n"
+            f"  - model_name: hipfire\n{hipfire_params}"
+            "\n"
+            f"  - model_name: lemonade\n{lemonade_params}"
+            "\n"
+            f"  - model_name: \"*\"\n{default_params}"
+            "\n"
+            "litellm_settings:\n"
+            "  drop_params: true\n"
+            "  set_verbose: false\n"
+            "  request_timeout: 900\n"
+            "  stream_timeout: 900\n"
+        )
+        return RenderedFile("litellm-lemonade", "config/litellm/lemonade.yaml", content)
+
+    content = (
+        "model_list:\n"
+        f"  - model_name: default\n{lemonade_params}"
+        "\n"
+        f"  - model_name: \"*\"\n{lemonade_params}"
+        "\n"
+        "litellm_settings:\n"
+        "  drop_params: true\n"
+        "  set_verbose: false\n"
+        "  request_timeout: 900\n"
+        "  stream_timeout: 900\n"
+    )
     return RenderedFile("litellm-lemonade", "config/litellm/lemonade.yaml", content)
 
 
@@ -207,6 +233,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--litellm-key", default=DEFAULT_LITELLM_KEY)
     parser.add_argument("--opencode-port", type=int, default=3003)
     parser.add_argument("--context-length", type=int, default=DEFAULT_CONTEXT)
+    parser.add_argument("--hipfire-enabled", action="store_true")
+    parser.add_argument("--hipfire-active", action="store_true")
+    parser.add_argument("--hipfire-model", default="")
+    parser.add_argument("--hipfire-api-base", default="http://hipfire:11435/v1")
     parser.add_argument("--format", choices=["json", "paths"], default="json")
     parser.add_argument("--output-root", default=".", help="Root directory used with --write")
     parser.add_argument("--write", action="store_true", help="Write rendered files under --output-root")
@@ -231,6 +261,10 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         litellm_key=args.litellm_key,
         opencode_port=args.opencode_port,
         context_length=args.context_length,
+        hipfire_enabled=args.hipfire_enabled,
+        hipfire_active=args.hipfire_active,
+        hipfire_model=args.hipfire_model,
+        hipfire_api_base=args.hipfire_api_base,
     )
     files = [RENDERERS[name](inputs) for name in select_surfaces(args.surface)]
     written: list[str] = []
