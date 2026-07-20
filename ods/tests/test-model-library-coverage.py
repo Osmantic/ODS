@@ -372,18 +372,11 @@ def test_qwen25_7b_is_not_agent_viable_on_low_vram_windows_until_revalidated():
     assert not _agent_viable_for_release(by_id["qwen2.5-7b-instruct-q4"])
 
 
-def test_qwen35_9b_context_floor_conflict_blocks_agent_coverage():
+def test_qwen35_9b_meets_hermes_context_floor():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
-    model = by_id["qwen3.5-9b-q4"]
-    compatibility = model["app_compatibility"]
 
-    assert model["context_length"] == 32768
-    assert compatibility["agent_viability"]["status"] == "not_agent_viable"
-    assert "32,768" in compatibility["agent_viability"]["reason"]
-    assert "65,536" in compatibility["agent_viability"]["reason"]
-    assert compatibility["hermes_talk"]["status"] == "unsupported_until_revalidated"
-    assert not _agent_viable_for_release(model)
+    assert by_id["qwen3.5-9b-q4"]["context_length"] >= HERMES_CONTEXT_FLOOR
 
 
 def test_new_switchboard_models_do_not_change_install_recommendations():

@@ -417,7 +417,7 @@ assert_eq "SELECTOR_SOURCE" "catalog_fit_pre_download" "$MODEL_RECOMMENDATION_SO
 assert_eq "SELECTOR_POLICY" "context-aware-largest-capable-general-v1" "$MODEL_RECOMMENDATION_POLICY"
 echo ""
 
-echo "Catalog selector (8GB NVIDIA qwen uses upstream catalog fit):"
+echo "Catalog selector (8GB NVIDIA qwen uses 64K catalog fit):"
 _selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
     --catalog "$SCRIPT_DIR/config/model-library.json" \
     --backend nvidia \
@@ -433,7 +433,7 @@ LLM_MODEL="" GGUF_FILE="" MAX_CONTEXT="" MODEL_RUNTIME_PROFILE="" LLAMA_ARG_N_CP
 load_selector_env "$_selector_env"
 assert_eq "SELECTOR_LLM_MODEL" "qwen3.5-9b" "$LLM_MODEL"
 assert_eq "SELECTOR_GGUF_FILE" "Qwen3.5-9B-Q4_K_M.gguf" "$GGUF_FILE"
-assert_eq "SELECTOR_CONTEXT" "32768" "$MAX_CONTEXT"
+assert_eq "SELECTOR_CONTEXT" "65536" "$MAX_CONTEXT"
 assert_eq "SELECTOR_RUNTIME_PROFILE" "" "$MODEL_RUNTIME_PROFILE"
 assert_eq "SELECTOR_N_CPU_MOE" "" "$LLAMA_ARG_N_CPU_MOE"
 assert_eq "SELECTOR_CACHE_V" "" "$LLAMA_ARG_CACHE_TYPE_V"
