@@ -320,7 +320,10 @@ def _scan_user_compose_content(compose_path):
         cap_add = svc_def.get("cap_add", [])
         if isinstance(cap_add, list):
             for cap in cap_add:
-                if str(cap).upper() in _DANGEROUS_CAPS:
+                # Docker accepts a capability with or without the CAP_ prefix,
+                # so both spellings have to normalize to the same name before
+                # the allowlist comparison.
+                if str(cap).upper().removeprefix("CAP_") in _DANGEROUS_CAPS:
                     reject(f"service '{svc_name}' adds dangerous capability: {cap}")
         security_opt = svc_def.get("security_opt", [])
         if isinstance(security_opt, list):
@@ -345,15 +348,22 @@ def _scan_user_compose_content(compose_path):
                     target = str(vol.get("target", ""))
                     if "docker.sock" in source or "docker.sock" in target:
                         reject(f"service '{svc_name}' mounts the Docker socket")
-                    if source.startswith("/"):
-                        reject(f"service '{svc_name}' bind-mounts absolute host path '{source}'")
-                    continue
-                vol_str = str(vol)
-                if "docker.sock" in vol_str:
-                    reject(f"service '{svc_name}' mounts the Docker socket")
-                vol_parts = vol_str.split(":")
-                if len(vol_parts) >= 2 and vol_parts[0].startswith("/"):
-                    reject(f"service '{svc_name}' bind-mounts absolute host path '{vol_parts[0]}'")
+                else:
+                    vol_str = str(vol)
+                    if "docker.sock" in vol_str:
+                        reject(f"service '{svc_name}' mounts the Docker socket")
+                    vol_parts = vol_str.split(":")
+                    source = vol_parts[0] if len(vol_parts) >= 2 else ""
+                if source.startswith("/"):
+                    reject(f"service '{svc_name}' bind-mounts absolute host path '{source}'")
+                # Compose resolves a relative source against the project
+                # directory, so '../../etc' reaches the same host paths the
+                # absolute check exists to deny.
+                if ".." in source.split("/"):
+                    reject(
+                        f"service '{svc_name}' bind-mounts relative host path "
+                        f"'{source}' escaping the project directory"
+                    )
         if svc_def.get("extra_hosts"):
             reject(f"service '{svc_name}' declares extra_hosts")
         if svc_def.get("sysctls"):
@@ -366,7 +376,7 @@ def _scan_user_compose_content(compose_path):
         else:
             label_keys = []
         for lk in label_keys:
-            if str(lk).startswith("com.docker.compose."):
+            if str(lk).lower().startswith(("com.docker.compose.", "io.docker.")):
                 reject(f"service '{svc_name}' uses reserved Docker Compose label '{lk}'")
         ports = svc_def.get("ports", [])
         if isinstance(ports, list):
