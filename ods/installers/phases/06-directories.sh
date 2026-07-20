@@ -455,8 +455,20 @@ raise SystemExit(1)' 2>/dev/null && return 0
     LANGFUSE_INIT_USER_PASSWORD=$(_env_get LANGFUSE_INIT_USER_PASSWORD "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
     MODEL_PROFILE_VALUE=$(_env_get MODEL_PROFILE "${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}")
     ODS_MODE_VALUE="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo "${ODS_MODE:-local}"; fi)"
+    ODS_MODEL_SWITCHBOARD_VALUE=$(_env_get ODS_MODEL_SWITCHBOARD "${ODS_MODEL_SWITCHBOARD:-observe}")
+    case "$ODS_MODEL_SWITCHBOARD_VALUE" in
+        legacy|observe|enabled) ;;
+        *) ODS_MODEL_SWITCHBOARD_VALUE="observe" ;;
+    esac
     _default_llm_api_url="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "http://litellm:4000"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "http://litellm:4000"; elif [[ "${ODS_MODE:-local}" == "local" ]]; then echo "http://llama-server:8080"; else echo "http://litellm:4000"; fi)"
     LLM_API_URL_VALUE=$(_env_get LLM_API_URL "$_default_llm_api_url")
+    if [[ "$ODS_MODEL_SWITCHBOARD_VALUE" == "enabled" ]]; then
+        OPEN_WEBUI_LLM_BASE_URL_VALUE=$(_env_get OPEN_WEBUI_LLM_BASE_URL "http://litellm:4000")
+        OPEN_WEBUI_LLM_API_KEY_VALUE=$(_env_get OPEN_WEBUI_LLM_API_KEY "${LITELLM_KEY}")
+    else
+        OPEN_WEBUI_LLM_BASE_URL_VALUE=$(_env_get OPEN_WEBUI_LLM_BASE_URL "")
+        OPEN_WEBUI_LLM_API_KEY_VALUE=$(_env_get OPEN_WEBUI_LLM_API_KEY "")
+    fi
     if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
         _default_hermes_base_url="http://litellm:4000/v1"
         _default_hermes_api_key="${LITELLM_KEY}"
@@ -466,6 +478,10 @@ raise SystemExit(1)' 2>/dev/null && return 0
     else
         _default_hermes_base_url="http://llama-server:8080/v1"
         _default_hermes_api_key="sk-ods-hermes-local"
+    fi
+    if [[ "$ODS_MODEL_SWITCHBOARD_VALUE" == "enabled" ]]; then
+        _default_hermes_base_url="http://litellm:4000/v1"
+        _default_hermes_api_key="${LITELLM_KEY}"
     fi
     HERMES_LLM_BASE_URL_VALUE=$(_env_get HERMES_LLM_BASE_URL "$_default_hermes_base_url")
     HERMES_LLM_API_KEY_VALUE=$(_env_get HERMES_LLM_API_KEY "$_default_hermes_api_key")
@@ -658,7 +674,10 @@ HOST_LAN_IP=${HOST_LAN_IP}
 
 #=== LLM Backend Mode ===
 ODS_MODE=${ODS_MODE_VALUE}
+ODS_MODEL_SWITCHBOARD=${ODS_MODEL_SWITCHBOARD_VALUE}
 LLM_API_URL=${LLM_API_URL_VALUE}
+OPEN_WEBUI_LLM_BASE_URL=${OPEN_WEBUI_LLM_BASE_URL_VALUE}
+OPEN_WEBUI_LLM_API_KEY=${OPEN_WEBUI_LLM_API_KEY_VALUE}
 LLM_BACKEND=$(if [[ "$ODS_MODE_VALUE" == "lemonade" ]]; then echo "lemonade"; else echo "llama-server"; fi)
 LLM_API_BASE_PATH=$(if [[ "$ODS_MODE_VALUE" == "lemonade" ]]; then echo "${LEMONADE_API_BASE_PATH_VALUE}"; else echo "/v1"; fi)
 AMD_INFERENCE_RUNTIME=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" || ( "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ) ]]; then echo "lemonade"; else echo ""; fi)
@@ -1017,7 +1036,7 @@ LITELLM_EOF
         return 1
     fi
     _router_common_args=(
-        --switchboard-mode "${ODS_MODEL_SWITCHBOARD:-observe}"
+        --switchboard-mode "${ODS_MODEL_SWITCHBOARD_VALUE:-observe}"
         --ods-mode "${ODS_MODE:-local}"
         --gpu-backend "${GPU_BACKEND:-nvidia}"
         --gguf-file "${GGUF_FILE:-}"

@@ -65,6 +65,8 @@ def hermes_model_id(inputs: RenderInputs) -> str:
 
 
 def opencode_key(inputs: RenderInputs) -> str:
+    if inputs.switchboard_mode == "enabled":
+        return inputs.litellm_key
     return inputs.litellm_key if inputs.ods_mode == "lemonade" else NO_KEY
 
 
@@ -121,8 +123,14 @@ compression:
 
 
 def render_perplexica(inputs: RenderInputs) -> RenderedFile:
-    model = lemonade_model_id(inputs) if inputs.ods_mode == "lemonade" else (inputs.gguf_file or inputs.model)
-    base_url = inputs.llm_base_url.rstrip("/") or "http://llama-server:8080"
+    if inputs.switchboard_mode == "enabled":
+        model = "ods/current"
+        base_url = "http://litellm:4000/v1"
+        api_key = inputs.litellm_key
+    else:
+        model = lemonade_model_id(inputs) if inputs.ods_mode == "lemonade" else (inputs.gguf_file or inputs.model)
+        base_url = inputs.llm_base_url.rstrip("/") or "http://llama-server:8080"
+        api_key = opencode_key(inputs)
     if not (base_url.endswith("/v1") or base_url.endswith("/api/v1")):
         base_url = f"{base_url}/v1"
     payload = {
@@ -132,7 +140,7 @@ def render_perplexica(inputs: RenderInputs) -> RenderedFile:
                 "type": "openai",
                 "name": "ODS",
                 "config": {
-                    "apiKey": opencode_key(inputs),
+                    "apiKey": api_key,
                     "baseURL": base_url,
                 },
                 "chatModels": [{"key": model, "name": model}],
@@ -154,11 +162,17 @@ def render_perplexica(inputs: RenderInputs) -> RenderedFile:
 
 
 def render_opencode(inputs: RenderInputs) -> RenderedFile:
+    if inputs.switchboard_mode == "enabled":
+        base_url = "http://litellm:4000/v1"
+        model = "ods/current"
+    else:
+        base_url = inputs.llm_base_url
+        model = lemonade_model_id(inputs) if inputs.ods_mode == "lemonade" else inputs.model
     payload = {
         "provider": "openai-compatible",
-        "baseURL": inputs.llm_base_url,
+        "baseURL": base_url,
         "apiKey": opencode_key(inputs),
-        "model": lemonade_model_id(inputs) if inputs.ods_mode == "lemonade" else inputs.model,
+        "model": model,
         "port": inputs.opencode_port,
     }
     return RenderedFile(
@@ -176,6 +190,7 @@ def render_env(inputs: RenderInputs) -> RenderedFile:
     )
     lines = [
         f"ODS_MODE={inputs.ods_mode}",
+        f"ODS_MODEL_SWITCHBOARD={inputs.switchboard_mode}",
         f"LLM_BACKEND={'lemonade' if inputs.ods_mode == 'lemonade' else 'llama-server'}",
         f"LLM_MODEL={inputs.model}",
         f"GGUF_FILE={inputs.gguf_file}",
@@ -185,6 +200,11 @@ def render_env(inputs: RenderInputs) -> RenderedFile:
         f"CTX_SIZE={inputs.context_length}",
         f"MAX_CONTEXT={inputs.context_length}",
     ]
+    if inputs.switchboard_mode == "enabled":
+        lines.extend([
+            "OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000",
+            f"OPEN_WEBUI_LLM_API_KEY={inputs.litellm_key}",
+        ])
     return RenderedFile("env", ".env.generated", "\n".join(lines) + "\n")
 
 

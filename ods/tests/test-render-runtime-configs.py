@@ -65,6 +65,44 @@ def test_switchboard_surface_gated_on_enabled_mode() -> None:
     assert switchboard["content"].count("http://model-router:9099/v1") == 4
 
 
+def test_enabled_env_exports_switchboard_webui_gateway() -> None:
+    payload = run_renderer(
+        "--surface",
+        "env",
+        "--switchboard-mode",
+        "enabled",
+        "--litellm-key",
+        "sk-test-litellm",
+    )
+    content = file_by_surface(payload, "env")["content"]
+    assert "ODS_MODEL_SWITCHBOARD=enabled" in content
+    assert "OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000" in content
+    assert "OPEN_WEBUI_LLM_API_KEY=sk-test-litellm" in content
+
+
+def test_enabled_perplexica_uses_stable_alias() -> None:
+    payload = run_renderer(
+        "--surface",
+        "perplexica",
+        "--switchboard-mode",
+        "enabled",
+        "--ods-mode",
+        "lemonade",
+        "--gpu-backend",
+        "amd",
+        "--gguf-file",
+        "Concrete.gguf",
+        "--litellm-key",
+        "sk-test-litellm",
+    )
+    content = json.loads(file_by_surface(payload, "perplexica")["content"])
+    openai_provider = model_provider_by_id(content, "openai")
+    assert content["preferences"]["defaultChatModel"] == "ods/current"
+    assert openai_provider["config"]["baseURL"] == "http://litellm:4000/v1"
+    assert openai_provider["config"]["apiKey"] == "sk-test-litellm"
+    assert openai_provider["chatModels"][0]["key"] == "ods/current"
+
+
 def test_router_endpoints_strip_trailing_v1() -> None:
     payload = run_renderer(
         "--surface", "model-router-endpoints",
@@ -235,6 +273,9 @@ def test_write_mode_writes_under_output_root() -> None:
 def main() -> int:
     tests = [
         test_all_surfaces_render,
+        test_switchboard_surface_gated_on_enabled_mode,
+        test_enabled_env_exports_switchboard_webui_gateway,
+        test_enabled_perplexica_uses_stable_alias,
         test_lemonade_disables_thinking_and_uses_extra_alias,
         test_external_lemonade_uses_supplied_model_and_api_base,
         test_exact_lemonade_id_propagates_to_every_runtime_surface,

@@ -300,6 +300,7 @@ $envResult = New-ODSEnv `
     -SystemRamGB    $systemRamGB `
     -WhisperCudaEnabled $whisperCudaSupported `
     -EnableLangfuse $enableLangfuse `
+    -SwitchboardMode $env:ODS_MODEL_SWITCHBOARD `
     -EnableLan      $lanFlag
 Write-AISuccess "Generated .env with secure secrets"
 

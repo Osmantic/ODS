@@ -104,9 +104,13 @@ def test_entrypoint_falls_back_to_node_server_when_no_args() -> None:
 
 def test_entrypoint_reconciles_persisted_model_route_on_every_start() -> None:
     script = ENTRYPOINT.read_text(encoding="utf-8")
+    compose = COMPOSE.read_text(encoding="utf-8")
+    sync_script = SYNC_SCRIPT.read_text(encoding="utf-8")
     assert "sync_model_route" in script
     assert "node /app/ods-sync-model-config.js" in script
     assert "PERPLEXICA_MODEL_SYNC_ATTEMPTS" in script
+    assert "ODS_MODEL_SWITCHBOARD" in compose
+    assert 'switchboardMode === "enabled"' in sync_script
 
 
 def test_sync_script_persists_exact_lemonade_route() -> None:

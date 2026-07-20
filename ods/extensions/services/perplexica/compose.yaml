@@ -10,6 +10,7 @@ services:
       - OPENAI_BASE_URL=${HERMES_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}/v1}
       - OPENAI_API_KEY=${HERMES_LLM_API_KEY:-${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}}
       - ODS_MODE=${ODS_MODE:-local}
+      - ODS_MODEL_SWITCHBOARD=${ODS_MODEL_SWITCHBOARD:-observe}
       - LLM_BACKEND=${LLM_BACKEND:-llama-server}
       - AMD_INFERENCE_RUNTIME=${AMD_INFERENCE_RUNTIME:-}
       - LLM_MODEL=${LLM_MODEL:-}
