@@ -77,15 +77,22 @@ get_last_access_days() {
     fi
     local now
     now="$(date +%s)"
-    local age_secs
-    age_secs="$(echo "$now - ${newest_atime%.*}" | bc)"
-    echo "$(( age_secs / 86400 ))"
+    # Epoch math is integer-only; bash arithmetic avoids a bc dependency
+    # (bc is absent on minimal images, and an empty result here would make
+    # every model look recent and silently disable archiving).
+    echo "$(( (now - ${newest_atime%.*}) / 86400 ))"
 }
 
 do_archive() {
     local dry_run="${1:-true}"
     local archived=0
     local skipped=0
+    local failed=0
+
+    if [[ "$dry_run" != "true" ]] && ! mkdir -p "$COLD_DIR"; then
+        log "ERROR: cannot create cold storage directory: $COLD_DIR"
+        exit 1
+    fi
 
     log "========== LLM cold storage scan started (dry_run=$dry_run) =========="
 
@@ -119,14 +126,34 @@ do_archive() {
         if (( idle_days >= MAX_IDLE_DAYS )); then
             if [[ "$dry_run" == "true" ]]; then
                 log "WOULD ARCHIVE: $name ($size, idle ${idle_days}d)"
-            else
-                log "ARCHIVING: $name ($size, idle ${idle_days}d)"
-                # Move to cold storage
-                mv "$model_dir" "$COLD_DIR/$name"
-                # Create symlink so HF cache still resolves
-                ln -s "$COLD_DIR/$name" "${model_dir%/}"
-                log "ARCHIVED: $name -> $COLD_DIR/$name"
+                ((archived++))
+                continue
             fi
+            log "ARCHIVING: $name ($size, idle ${idle_days}d)"
+            # `mv dir existing-dir` nests the source INSIDE the destination
+            # instead of replacing it, which corrupts the archive layout —
+            # refuse instead.
+            if [[ -e "$COLD_DIR/$name" ]]; then
+                log "ERROR: already exists in cold storage, skipping: $COLD_DIR/$name"
+                ((failed++))
+                continue
+            fi
+            if ! mv "$model_dir" "$COLD_DIR/$name"; then
+                log "ERROR: move failed, model left in place: $name"
+                ((failed++))
+                continue
+            fi
+            # Symlink so HF cache resolution still finds the model. If it
+            # cannot be created, move the model back — a moved model without
+            # a symlink silently breaks cache lookups.
+            if ! ln -s "$COLD_DIR/$name" "${model_dir%/}"; then
+                log "ERROR: symlink failed, moving $name back to cache"
+                mv "$COLD_DIR/$name" "${model_dir%/}" || \
+                    log "ERROR: move back failed too — model is stranded at $COLD_DIR/$name"
+                ((failed++))
+                continue
+            fi
+            log "ARCHIVED: $name -> $COLD_DIR/$name"
             ((archived++))
         else
             log "SKIP (recent, ${idle_days}d): $name ($size)"
@@ -134,7 +161,8 @@ do_archive() {
         fi
     done
 
-    log "========== Scan complete: $archived archived, $skipped skipped =========="
+    log "========== Scan complete: $archived archived, $skipped skipped, $failed failed =========="
+    (( failed == 0 )) || exit 1
 }
 
 do_restore() {
@@ -158,13 +186,24 @@ do_restore() {
         rm "$cache_path"
     fi
 
+    # A real directory here (e.g. partially re-downloaded model) would make
+    # `mv` nest the restored model inside it instead of replacing it.
+    if [[ -e "$cache_path" ]]; then
+        echo "ERROR: $cache_path already exists and is not a symlink; refusing to overwrite"
+        exit 1
+    fi
+
     log "RESTORING: $name to $cache_path"
-    mv "$cold_path" "$cache_path"
+    if ! mv "$cold_path" "$cache_path"; then
+        log "ERROR: restore move failed for $name"
+        exit 1
+    fi
     log "RESTORED: $name"
     echo "Restored: $name"
 }
 
 do_restore_all() {
+    local failed=0
     log "========== Restoring all archived models =========="
     for cold_model in "$COLD_DIR"/models--*/; do
         [[ -d "$cold_model" ]] || continue
@@ -176,11 +215,22 @@ do_restore_all() {
             rm "$cache_path"
         fi
 
+        if [[ -e "$cache_path" ]]; then
+            log "ERROR: $cache_path already exists and is not a symlink; skipping $name"
+            ((failed++))
+            continue
+        fi
+
         log "RESTORING: $name"
-        mv "$cold_model" "$cache_path"
+        if ! mv "${cold_model%/}" "$cache_path"; then
+            log "ERROR: restore move failed for $name"
+            ((failed++))
+            continue
+        fi
         log "RESTORED: $name"
     done
-    log "========== All models restored =========="
+    log "========== Restore complete ($failed failed) =========="
+    (( failed == 0 )) || exit 1
 }
 
 show_status() {
