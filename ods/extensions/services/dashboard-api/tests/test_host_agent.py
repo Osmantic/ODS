@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -4983,3 +4984,62 @@ def test_read_json_body_rejects_non_object():
 def test_read_json_body_accepts_object():
     handler = _FakeHandler(b'{"a": 1}')
     assert _mod.read_json_body(handler) == {"a": 1}
+
+
+class TestModelStatePath:
+    """The switchboard state record must live where its readers look.
+
+    Readers resolve it under ODS_DATA_DIR: the model-router bind-mount
+    (docker-compose.base.yml, ``${ODS_DATA_DIR:-./data}/model-state.json``)
+    and the dashboard-api ``/api/models/state`` endpoint. A writer anchored to
+    INSTALL_DIR/data publishes where nothing reads.
+    """
+
+    def test_tracks_data_dir_when_ods_data_dir_is_relocated(self, tmp_path, monkeypatch):
+        install_dir = tmp_path / "ods"
+        data_dir = tmp_path / "elsewhere" / "ods-data"
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "DATA_DIR", data_dir)
+
+        assert _mod._model_state_path() == data_dir / "model-state.json"
+        # The install tree must not be used as a second, divergent location.
+        assert _mod._model_state_path() != install_dir / "data" / "model-state.json"
+
+    def test_matches_install_tree_on_the_default_layout(self, tmp_path, monkeypatch):
+        install_dir = tmp_path / "ods"
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "DATA_DIR", install_dir / "data")
+
+        assert _mod._model_state_path() == install_dir / "data" / "model-state.json"
+
+    def test_falls_back_to_the_install_tree_before_data_dir_is_parsed(self, tmp_path, monkeypatch):
+        """DATA_DIR is only assigned once main() has read .env.
+
+        Resolving against the unset module default would yield a bare
+        relative path and drop the record into the working directory.
+        """
+        install_dir = tmp_path / "ods"
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "DATA_DIR", Path())
+
+        assert _mod._model_state_path() == install_dir / "data" / "model-state.json"
+        assert _mod._model_state_path().is_absolute()
+
+    def test_no_writer_anchors_the_record_to_the_install_tree(self):
+        """Both writers must go through the helper.
+
+        The startup reconstruction and the post-activation record each built
+        ``INSTALL_DIR / "data" / "model-state.json"`` inline, which silently
+        diverged from every reader once ODS_DATA_DIR was set. The helper is
+        the one place allowed to name the install-tree fallback.
+        """
+        source = _agent_path.read_text(encoding="utf-8")
+        assert source.count('INSTALL_DIR / "data" / "model-state.json"') == 0
+        for writer in ("initialize_if_missing(", "record_verified_route("):
+            first_args = re.findall(
+                re.escape(writer) + r"\s*([^,\n)]+)", source
+            )
+            assert first_args, f"{writer} call site not found"
+            for call in first_args:
+                assert "INSTALL_DIR" not in call, f"{writer} still anchors to INSTALL_DIR"
+        assert source.count("_model_state_path()") >= 2

@@ -110,6 +110,23 @@ _MODEL_TIERS = frozenset({
 _MIN_MODEL_CONTEXT = 1024
 _MAX_MODEL_CONTEXT = 1048576
 
+
+def _model_state_path() -> Path:
+    """Location of the Model Switchboard state record.
+
+    Tracks DATA_DIR, not INSTALL_DIR/data: every reader resolves the record
+    under ODS_DATA_DIR — the model-router bind-mount in
+    docker-compose.base.yml and the dashboard-api state endpoint both do —
+    so a writer anchored to the install tree publishes where nothing reads.
+
+    DATA_DIR is only assigned once main() has parsed .env. Falling back to
+    the install-tree default keeps a caller that runs before that from
+    resolving a bare relative path and dropping the record into whatever
+    the working directory happens to be.
+    """
+    base = DATA_DIR if DATA_DIR != Path() else INSTALL_DIR / "data"
+    return base / "model-state.json"
+
 # Per-service locks to prevent concurrent start+stop races on the same service
 _service_locks: dict[str, threading.Lock] = collections.defaultdict(threading.Lock)
 _ALLOWED_CORE_RECREATE_IDS = frozenset({
@@ -5700,7 +5717,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                             switchboard_run.get("capabilities") or {}
                         )
                         _switchboard_state.record_verified_route(
-                            INSTALL_DIR / "data" / "model-state.json",
+                            _model_state_path(),
                             catalog_id=str(model_id),
                             runtime_model_id=verified_runtime_identity,
                             backend_kind=(
@@ -9458,13 +9475,6 @@ def main():
         logger.error("Neither ODS_AGENT_KEY nor DASHBOARD_API_KEY set in .env")
         sys.exit(1)
     GPU_BACKEND = env.get("GPU_BACKEND", "nvidia")
-    if _switchboard_state is not None:
-        try:
-            _switchboard_state.initialize_if_missing(
-                INSTALL_DIR / "data" / "model-state.json", env
-            )
-        except Exception as exc:
-            logger.warning("switchboard state init skipped: %s", exc)
     STARTUP_ODS_MODE = _normalize_ods_mode(env.get("ODS_MODE"))
     TIER = env.get("TIER", "1")
     GPU_COUNT = env.get("GPU_COUNT", "1")
@@ -9474,6 +9484,14 @@ def main():
         "ODS_USER_EXTENSIONS_DIR",
         str(DATA_DIR / "user-extensions"),
     ))
+    # Runs after DATA_DIR is resolved: the readers (router bind-mount,
+    # dashboard-api) locate the record under ODS_DATA_DIR, so the writer has
+    # to agree before anything is written.
+    if _switchboard_state is not None:
+        try:
+            _switchboard_state.initialize_if_missing(_model_state_path(), env)
+        except Exception as exc:
+            logger.warning("switchboard state init skipped: %s", exc)
     EXTENSIONS_DIR = INSTALL_DIR / "extensions" / "services"
     ODS_VERSION = env.get("ODS_VERSION", VERSION)
 
