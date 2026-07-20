@@ -18,7 +18,6 @@ suite.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any, Callable, Protocol
 
 
@@ -26,10 +25,6 @@ def result(ok: bool, detail: str = "", **extras: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {"ok": bool(ok), "detail": str(detail)}
     payload.update(extras)
     return payload
-
-
-def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class RuntimeAdapter(Protocol):
@@ -59,6 +54,18 @@ class RuntimeAdapter(Protocol):
         """Restore the adapter's previously captured runtime state."""
 
 
+class ReadinessProbe(Protocol):
+    """Return runtime-carried identity, context, and proof time."""
+
+    def __call__(
+        self,
+        env: dict[str, str],
+        gguf_file: str,
+        context_length: int,
+        lemonade_model_id: str = "",
+    ) -> dict[str, Any]: ...
+
+
 class ContainerLlamaAdapter:
     """Compose-managed llama.cpp runtime (Linux/NVIDIA container path).
 
@@ -74,7 +81,7 @@ class ContainerLlamaAdapter:
         self,
         *,
         restart: Callable[[dict[str, str]], None],
-        wait_ready: Callable[..., bool | str],
+        wait_ready: ReadinessProbe,
         expected_gguf: str,
         context_length: int,
         lemonade_model_id: str = "",
@@ -99,6 +106,7 @@ class ContainerLlamaAdapter:
         self._delete = delete
         self._rollback = rollback
         self._verified_identity = ""
+        self._verified_context = 0
         self._verified_at = ""
 
     def _verification_result(self, detail: str) -> dict[str, Any]:
@@ -106,7 +114,7 @@ class ContainerLlamaAdapter:
             True,
             detail,
             identity=self._verified_identity,
-            contextLength=self._context_length,
+            contextLength=self._verified_context,
             capabilities=dict(self._capabilities),
             verifiedAt=self._verified_at,
         )
@@ -122,7 +130,7 @@ class ContainerLlamaAdapter:
         # Readiness in the container path proves identity and serving state
         # in one bounded wait, mirroring the pre-adapter inline behavior.
         try:
-            runtime_identity = self._wait_ready(
+            runtime_proof = self._wait_ready(
                 env,
                 self._expected_gguf,
                 self._context_length,
@@ -130,10 +138,24 @@ class ContainerLlamaAdapter:
             )
         except Exception as exc:
             return result(False, f"readiness wait failed: {exc}")
+        if not isinstance(runtime_proof, dict):
+            return result(False, "runtime did not return a proof record")
+        runtime_identity = runtime_proof.get("identity")
+        runtime_context = runtime_proof.get("contextLength")
+        verified_at = runtime_proof.get("verifiedAt")
         if not isinstance(runtime_identity, str) or not runtime_identity.strip():
             return result(False, "runtime did not report the staged model")
+        if (
+            not isinstance(runtime_context, int)
+            or isinstance(runtime_context, bool)
+            or runtime_context <= 0
+        ):
+            return result(False, "runtime did not report a valid context length")
+        if not isinstance(verified_at, str) or not verified_at.strip():
+            return result(False, "runtime proof has no timestamp")
         self._verified_identity = runtime_identity.strip()
-        self._verified_at = _utcnow_iso()
+        self._verified_context = runtime_context
+        self._verified_at = verified_at.strip()
         return self._verification_result(
             "runtime reports staged model and completed proof request"
         )

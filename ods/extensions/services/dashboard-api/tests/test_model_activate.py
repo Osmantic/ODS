@@ -496,6 +496,10 @@ class TestLemonadeCompletionReady:
             url = next((str(part) for part in cmd if str(part).startswith("http")), "")
             if url.endswith("/v1/models"):
                 body = _llama_identity_response("runtime/new-model.gguf")
+            elif url.endswith("/props"):
+                body = json.dumps({
+                    "default_generation_settings": {"n_ctx": 65536}
+                })
             else:
                 body = json.dumps({
                     "model": completion_model,
@@ -516,6 +520,77 @@ class TestLemonadeCompletionReady:
             return_identity=True,
         )
         assert identity == expected_identity
+
+    def test_readiness_proof_carries_actual_runtime_context(self, monkeypatch):
+        def fake_run(cmd, **_kwargs):
+            url = next((str(part) for part in cmd if str(part).startswith("http")), "")
+            if url.endswith("/v1/models"):
+                body = _llama_identity_response("runtime/new-model.gguf")
+            elif url.endswith("/props"):
+                body = json.dumps({
+                    "default_generation_settings": {"n_ctx": 65536}
+                })
+            else:
+                body = ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=body, stderr="")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_a, **_k: True)
+        proof = _mod._wait_for_model_readiness(
+            {
+                "GPU_BACKEND": "nvidia",
+                "OLLAMA_PORT": "8080",
+                "CTX_SIZE": "65536",
+            },
+            model_id="new-model",
+            gguf_file="new-model.gguf",
+            llm_model_name="new-model",
+            attempts=1,
+            initial_delay=0,
+            interval=0,
+            return_proof=True,
+        )
+        assert proof["identity"] == "runtime/new-model.gguf"
+        assert proof["contextLength"] == 65536
+        assert proof["verifiedAt"].endswith("+00:00")
+
+    def test_readiness_rejects_runtime_context_below_requested(self, monkeypatch):
+        completion_calls = []
+
+        def fake_run(cmd, **_kwargs):
+            url = next((str(part) for part in cmd if str(part).startswith("http")), "")
+            if url.endswith("/v1/models"):
+                body = _llama_identity_response("runtime/new-model.gguf")
+            elif url.endswith("/props"):
+                body = json.dumps({
+                    "default_generation_settings": {"n_ctx": 32768}
+                })
+            else:
+                body = ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=body, stderr="")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            _mod,
+            "_chat_completion_ready",
+            lambda *_a, **_k: completion_calls.append(True) or True,
+        )
+        proof = _mod._wait_for_model_readiness(
+            {
+                "GPU_BACKEND": "nvidia",
+                "OLLAMA_PORT": "8080",
+                "CTX_SIZE": "65536",
+            },
+            model_id="new-model",
+            gguf_file="new-model.gguf",
+            llm_model_name="new-model",
+            attempts=1,
+            initial_delay=0,
+            interval=0,
+            return_proof=True,
+        )
+        assert proof == {}
+        assert completion_calls == []
 
 
 # --- _write_lemonade_config ---
@@ -1702,9 +1777,16 @@ def _llama_identity_response(model_id):
 
 
 def _mock_verified_readiness(*_args, **kwargs):
-    """Mirror the production bool/identity readiness return contract."""
+    """Mirror the production bool/identity/proof readiness return contract."""
+    identity = str(kwargs.get("gguf_file") or "mock-runtime-model.gguf")
+    if kwargs.get("return_proof"):
+        return {
+            "identity": identity,
+            "contextLength": 65536,
+            "verifiedAt": "2026-07-20T00:00:00+00:00",
+        }
     if kwargs.get("return_identity"):
-        return str(kwargs.get("gguf_file") or "mock-runtime-model.gguf")
+        return identity
     return True
 
 
@@ -1783,6 +1865,9 @@ class TestModelActivateRollback:
     @pytest.fixture(autouse=True)
     def _successful_meaningful_completion(self, monkeypatch):
         monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(
+            _mod, "_llama_runtime_context_length", lambda *_args: 131072
+        )
         monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
         monkeypatch.setattr(_mod, "_container_exists", lambda _container: False)
         monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
@@ -2428,6 +2513,7 @@ class TestModelActivateRollback:
         _mod.AgentHandler._do_model_activate(handler, "target-model")
 
         assert handler.response_code == 200
+        assert not (install_dir / "data" / "model-state.json").exists()
         assert "LEMONADE_MODEL=Modern-Model" in env_path.read_text(encoding="utf-8")
         assert "model: openai/Modern-Model" in lemonade_yaml.read_text(encoding="utf-8")
         assert 'default: "Modern-Model"' in hermes_live.read_text(encoding="utf-8")
@@ -3271,6 +3357,12 @@ class TestModelActivateRollback:
 
         def readiness(env, **kwargs):
             events.append(f"ready:{kwargs['gguf_file']}")
+            if kwargs.get("return_proof"):
+                return {
+                    "identity": kwargs["gguf_file"],
+                    "contextLength": 65536,
+                    "verifiedAt": "2026-07-20T00:00:00+00:00",
+                }
             if kwargs.get("return_identity"):
                 return kwargs["gguf_file"]
             return True
@@ -4124,6 +4216,12 @@ class TestModelActivateRollback:
         monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: events.append("runtime"))
         def readiness(*_args, **kwargs):
             events.append("runtime-ready")
+            if kwargs.get("return_proof"):
+                return {
+                    "identity": kwargs.get("gguf_file"),
+                    "contextLength": 65536,
+                    "verifiedAt": "2026-07-20T00:00:00+00:00",
+                }
             if kwargs.get("return_identity"):
                 return kwargs.get("gguf_file")
             return True

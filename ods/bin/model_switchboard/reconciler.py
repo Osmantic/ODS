@@ -13,6 +13,7 @@ the caller's existing rollback machinery takes over.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from .adapters import RuntimeAdapter, result
@@ -29,7 +30,7 @@ def _verification_error(outcome: dict[str, Any]) -> str:
     if (
         not isinstance(context_length, int)
         or isinstance(context_length, bool)
-        or context_length < 0
+        or context_length <= 0
     ):
         return "verification returned no valid context length"
     capabilities = outcome.get("capabilities")
@@ -40,6 +41,12 @@ def _verification_error(outcome: dict[str, Any]) -> str:
     verified_at = outcome.get("verifiedAt")
     if not isinstance(verified_at, str) or not verified_at.strip():
         return "verification returned no proof timestamp"
+    try:
+        parsed_time = datetime.fromisoformat(verified_at.replace("Z", "+00:00"))
+    except ValueError:
+        return "verification returned an invalid proof timestamp"
+    if parsed_time.tzinfo is None or parsed_time.utcoffset() != timezone.utc.utcoffset(None):
+        return "verification proof timestamp is not UTC"
     return ""
 
 
@@ -93,12 +100,20 @@ def run_runtime_activation(
                     "detail": "completion proof identity does not match identity proof",
                     **proof,
                 }
-            proof = {
+            outcome_proof = {
                 "identity": outcome_identity,
                 "contextLength": int(outcome["contextLength"]),
                 "capabilities": dict(outcome["capabilities"]),
                 "verifiedAt": str(outcome["verifiedAt"]),
             }
+            if phase == "verify_completion" and outcome_proof != proof:
+                return {
+                    "ok": False,
+                    "phase": phase,
+                    "detail": "completion proof metadata does not match identity proof",
+                    **proof,
+                }
+            proof = outcome_proof
         if not outcome.get("ok"):
             return {
                 "ok": False,

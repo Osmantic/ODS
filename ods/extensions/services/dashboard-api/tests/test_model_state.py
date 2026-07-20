@@ -289,6 +289,9 @@ class TestObserveHook:
             lambda: (config_dir / "opencode.json", config_dir / "config.json"),
         )
         monkeypatch.setattr(tma._mod, "_chat_completion_ready", lambda *_a, **_k: True)
+        monkeypatch.setattr(
+            tma._mod, "_llama_runtime_context_length", lambda *_args: 65536
+        )
         monkeypatch.setattr(tma._mod, "_container_exists", lambda _c: False)
         monkeypatch.setattr(tma._mod, "_container_running", lambda _c: False)
         monkeypatch.setattr(

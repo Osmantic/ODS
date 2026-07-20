@@ -32,6 +32,14 @@ def _proof_result(identity="M.gguf", **overrides):
     return ad.result(True, **payload)
 
 
+def _readiness_proof(identity="M.gguf", context_length=65536):
+    return {
+        "identity": identity,
+        "contextLength": context_length,
+        "verifiedAt": "2026-07-20T00:00:00+00:00",
+    }
+
+
 class TestReconcilerBoundaries:
     def test_success_runs_phases_in_order(self):
         fake = ad.FakeAdapter({
@@ -107,6 +115,32 @@ class TestReconcilerBoundaries:
         assert run["phase"] == "verify_completion"
         assert "does not match" in run["detail"]
 
+    def test_completion_metadata_must_match_identity_proof(self):
+        fake = ad.FakeAdapter({
+            "verify_identity": [_proof_result()],
+            "verify_completion": [_proof_result(contextLength=32768)],
+        })
+        run = rc.run_runtime_activation(fake, {})
+        assert run["ok"] is False
+        assert "metadata does not match" in run["detail"]
+
+    @pytest.mark.parametrize("verified_at", ["not-a-time", "2026-07-20T00:00:00"])
+    def test_proof_timestamp_must_be_valid_utc(self, verified_at):
+        fake = ad.FakeAdapter({
+            "verify_identity": [_proof_result(verifiedAt=verified_at)],
+        })
+        run = rc.run_runtime_activation(fake, {})
+        assert run["ok"] is False
+        assert "timestamp" in run["detail"]
+
+    def test_zero_context_cannot_pass_verification(self):
+        fake = ad.FakeAdapter({
+            "verify_identity": [_proof_result(contextLength=0)],
+        })
+        run = rc.run_runtime_activation(fake, {})
+        assert run["ok"] is False
+        assert "context length" in run["detail"]
+
     def test_adapter_exception_is_contract_violation(self):
         class Exploding(ad.FakeAdapter):
             def stage(self, env):
@@ -135,7 +169,7 @@ class TestContainerLlamaAdapter:
 
         def wait_ready(env, gguf, ctx, lemonade_model_id=""):
             seen["wait"] = (gguf, ctx, lemonade_model_id)
-            return "runtime/Model.gguf"
+            return _readiness_proof("runtime/Model.gguf", 4096)
 
         adapter = ad.ContainerLlamaAdapter(
             restart=restart,
@@ -161,7 +195,7 @@ class TestContainerLlamaAdapter:
     def test_restart_exception_becomes_stage_failure(self):
         adapter = ad.ContainerLlamaAdapter(
             restart=lambda _env: (_ for _ in ()).throw(OSError("compose down")),
-            wait_ready=lambda *a, **k: "M.gguf",
+            wait_ready=lambda *a, **k: _readiness_proof("M.gguf", 1024),
             expected_gguf="M.gguf",
             context_length=1024,
         )
@@ -172,7 +206,7 @@ class TestContainerLlamaAdapter:
     def test_not_ready_is_identity_failure(self):
         adapter = ad.ContainerLlamaAdapter(
             restart=lambda _env: None,
-            wait_ready=lambda *a, **k: "",
+            wait_ready=lambda *a, **k: {},
             expected_gguf="M.gguf",
             context_length=1024,
         )
@@ -185,7 +219,10 @@ class TestNativeLlamaAdapter:
         calls = []
         adapter = ad.NativeLlamaAdapter(
             restart=lambda _e: calls.append("restart"),
-            wait_ready=lambda *a, **k: (calls.append("wait"), "Win.gguf")[1],
+            wait_ready=lambda *a, **k: (
+                calls.append("wait"),
+                _readiness_proof("Win.gguf", 8192),
+            )[1],
             expected_gguf="Win.gguf",
             context_length=8192,
         )
@@ -197,7 +234,7 @@ class TestNativeLlamaAdapter:
     def test_native_restart_failure_is_stage_boundary(self):
         adapter = ad.NativeLlamaAdapter(
             restart=lambda _e: (_ for _ in ()).throw(RuntimeError("launchd bootout failed")),
-            wait_ready=lambda *a, **k: "Mac.gguf",
+            wait_ready=lambda *a, **k: _readiness_proof("Mac.gguf", 8192),
             expected_gguf="Mac.gguf",
             context_length=8192,
         )
@@ -295,7 +332,15 @@ class TestHostAgentWiring:
         monkeypatch.setattr(tma._mod, "_wait_for_model_readiness", spying_wait)
 
         def fake_run(cmd, **_kwargs):
-            stdout = tma._llama_identity_response("new-model.gguf") if cmd and cmd[0] == "curl" else ""
+            url = next((str(part) for part in cmd if str(part).startswith("http")), "")
+            if url.endswith("/v1/models"):
+                stdout = tma._llama_identity_response("new-model.gguf")
+            elif url.endswith("/props"):
+                stdout = json.dumps({
+                    "default_generation_settings": {"n_ctx": 65536}
+                })
+            else:
+                stdout = ""
             return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
 
         monkeypatch.setattr(tma._mod.subprocess, "run", fake_run)
@@ -334,7 +379,49 @@ class TestHostAgentWiring:
         handler = tma._ResponseHandler()
         tma._mod.AgentHandler._do_model_activate(handler, "target-model")
         assert handler.response_code != 200
+        payload = handler.parse_response()
+        assert "Runtime verify_identity failed" in payload["error"]
+        assert "runtime did not report the staged model" in payload["error"]
+        assert "restoration could not be proved" in payload["error"]
         # rollback restored the pre-activation env exactly as before PR 2A
+        assert env_path.read_text(encoding="utf-8") == before_env
+
+    def test_completion_failure_detail_survives_successful_rollback(
+        self, tmp_path, monkeypatch
+    ):
+        import test_model_activate as tma
+
+        install_dir, env_path = tma._write_model_activation_fixture(tmp_path)[:2]
+        before_env = env_path.read_text(encoding="utf-8")
+        monkeypatch.setattr(tma._mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(
+            tma._mod, "_compose_restart_llama_server", lambda _env: None
+        )
+        monkeypatch.setattr(
+            tma._mod,
+            "_wait_for_model_readiness",
+            lambda *_args, **_kwargs: True,
+        )
+        monkeypatch.setattr(
+            tma._mod._switchboard_reconciler,
+            "run_runtime_activation",
+            lambda *_args, **_kwargs: {
+                "ok": False,
+                "phase": "verify_completion",
+                "detail": "completion response carried the previous model",
+                "identity": "new-model.gguf",
+            },
+        )
+        handler = tma._ResponseHandler()
+        tma._mod.AgentHandler._do_model_activate(handler, "target-model")
+        assert handler.response_code == 500
+        payload = handler.parse_response()
+        assert payload["rolled_back"] is True
+        assert payload["error"] == (
+            "Runtime verify_completion failed: completion response carried the "
+            "previous model — rolled back to previous model"
+        )
         assert env_path.read_text(encoding="utf-8") == before_env
 
     def test_stage_exception_keeps_existing_error_contract(self, tmp_path, monkeypatch):
@@ -368,7 +455,9 @@ class TestHostAgentWiring:
         tma._mod.AgentHandler._do_model_activate(handler, "target-model")
         assert handler.response_code == 500
         payload = handler.parse_response()
-        assert payload["error"] == "Model activation failed: compose down"
+        assert payload["error"] == (
+            "Runtime stage failed: compose down — rolled back to previous model"
+        )
         assert payload["rolled_back"] is True
 
 
@@ -384,6 +473,9 @@ def _isolation(monkeypatch, tmp_path, request):
         lambda: (config_dir / "opencode.json", config_dir / "config.json"),
     )
     monkeypatch.setattr(tma._mod, "_chat_completion_ready", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        tma._mod, "_llama_runtime_context_length", lambda *_args: 65536
+    )
     monkeypatch.setattr(tma._mod, "_container_exists", lambda _c: False)
     monkeypatch.setattr(tma._mod, "_container_running", lambda _c: False)
     monkeypatch.setattr(
