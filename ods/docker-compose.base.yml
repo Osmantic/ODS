@@ -314,6 +314,11 @@ services:
       - ODS_ROUTER_INTERNAL_KEY=${ODS_ROUTER_INTERNAL_KEY:-}
       - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-}
       - ODS_FLEET_PROBE_KEY=${ODS_FLEET_PROBE_KEY:-}
+      # File-based probe key inside the already-mounted state volume: the
+      # fleet harness can create/rotate/remove it without recreating the
+      # router (a recreate destroys in-memory route evidence). Absent file
+      # means the ODS_FLEET_PROBE_KEY env fallback applies unchanged.
+      - ODS_FLEET_PROBE_KEY_PATH=/state/fleet-probe.key
     volumes:
       - ${ODS_DATA_DIR:-./data}:/state:ro
       - ${ODS_CONFIG_DIR:-./config}/model-router/endpoints.json:/config/endpoints.json:ro

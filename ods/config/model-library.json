@@ -291,7 +291,12 @@
           "status": "unsupported_until_revalidated",
           "label": "Perplexica revalidation required",
           "reason": "Fleet model-UI run 2026-07-19T03:40Z on windows-laptop loaded this model and ODS Talk passed, but the Perplexica app probe answered with a search-style failure instead of the requested verification phrase; keep it out of all-app release coverage until Perplexica compatibility is revalidated.",
-          "evidence": "fleet-test/runs/2026-07-19T03-40-01Z-release-product-54b2f703190f-harness-2a6a4e6a55b8-hosts-windows-laptop/model-ui/cycle-003/windows-laptop"
+          "evidence": "fleet-test/runs/2026-07-19T03-40-01Z-release-product-54b2f703190f-harness-2a6a4e6a55b8-hosts-windows-laptop/model-ui/cycle-003/windows-laptop",
+          "recordedAt": "2026-07-19T03:40:01Z",
+          "productSha": "54b2f703190f",
+          "harnessSha": "2a6a4e6a55b8",
+          "hostScope": ["windows-laptop"],
+          "revalidateAgainstSha": "63949ab0ff5be385dde9977528c199b6c081c9ca"
         }
       },
       "install_recommendation": false
@@ -425,12 +430,22 @@
         "hermes_talk": {
           "status": "unsupported_until_revalidated",
           "reason": "Fleet model-UI run 2026-07-20T14:47Z on windows-laptop loaded this model successfully, but ODS Talk timed out after 180s. A targeted Talk repro on the same host streamed only a session frame and keepalives for 240s while llama-server was still processing a 19,349-token Hermes prompt.",
-          "evidence": "fleet-test/runs/2026-07-20T14-47-35Z-release-product-6b802d2d34a5-harness-d205823ca1d4-hosts-windows-laptop/model-ui/cycle-004/windows-laptop"
+          "evidence": "fleet-test/runs/2026-07-20T14-47-35Z-release-product-6b802d2d34a5-harness-d205823ca1d4-hosts-windows-laptop/model-ui/cycle-004/windows-laptop",
+          "recordedAt": "2026-07-20T14:47:35Z",
+          "productSha": "6b802d2d34a5",
+          "harnessSha": "d205823ca1d4",
+          "hostScope": ["windows-laptop"],
+          "revalidateAgainstSha": "c691f060f93cd0a255760e2749a58c5006edb0c4"
         },
         "agent_viability": {
           "status": "not_agent_viable",
           "reason": "The model can answer direct chat, but its measured 0.73 tok/s response rate and 240s ODS Talk timeout under a 19,349-token Hermes prompt make it too slow for agent-required workflows on this host class until revalidated.",
-          "evidence": "fleet-test/runs/2026-07-20T14-47-35Z-release-product-6b802d2d34a5-harness-d205823ca1d4-hosts-windows-laptop/model-ui/cycle-004/windows-laptop"
+          "evidence": "fleet-test/runs/2026-07-20T14-47-35Z-release-product-6b802d2d34a5-harness-d205823ca1d4-hosts-windows-laptop/model-ui/cycle-004/windows-laptop",
+          "recordedAt": "2026-07-20T14:47:35Z",
+          "productSha": "6b802d2d34a5",
+          "harnessSha": "d205823ca1d4",
+          "hostScope": ["windows-laptop"],
+          "revalidateAgainstSha": "c691f060f93cd0a255760e2749a58c5006edb0c4"
         }
       },
       "install_recommendation": false

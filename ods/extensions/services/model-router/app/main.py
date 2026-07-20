@@ -52,6 +52,11 @@ INTERNAL_KEY = os.environ.get("ODS_ROUTER_INTERNAL_KEY", "") or os.environ.get(
     "DASHBOARD_API_KEY", ""
 )
 PROBE_KEY = os.environ.get("ODS_FLEET_PROBE_KEY", "")
+_PROBE_KEY_PATH_VALUE = os.environ.get("ODS_FLEET_PROBE_KEY_PATH", "")
+PROBE_KEY_PATH: Path | None = (
+    Path(_PROBE_KEY_PATH_VALUE) if _PROBE_KEY_PATH_VALUE else None
+)
+INSTANCE_ID = str(uuid.uuid4())
 
 MAX_BODY_BYTES = int(os.environ.get("ODS_ROUTER_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
 MAX_QUEUE_DEPTH = int(os.environ.get("ODS_ROUTER_MAX_QUEUE_DEPTH", "64"))
@@ -93,7 +98,8 @@ _inflight = 0
 _inflight_lock = asyncio.Lock()
 
 _state_cache: dict[str, Any] = {"mtime": None, "doc": None}
-_endpoints_cache: dict[str, Any] = {"loaded": False, "endpoints": {}}
+_endpoints_cache: dict[str, Any] = {"mtime": None, "endpoints": {}}
+_probe_key_cache: dict[str, Any] = {"mtime": None, "key": ""}
 _evidence: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 
 
@@ -106,8 +112,17 @@ class RouterError(Exception):
 
 
 def _load_endpoints() -> dict[str, dict[str, Any]]:
-    """Startup-validated allowlist: endpointId -> {baseUrl, apiKeyEnv?}."""
-    if _endpoints_cache["loaded"]:
+    """Allowlist endpointId -> {baseUrl, apiKeyEnv?}, re-read when the file
+    changes on disk (activation re-renders it). Retains the last good
+    allowlist while the file is missing or invalid."""
+    try:
+        stat = ENDPOINTS_PATH.stat()
+    except OSError as exc:
+        if _endpoints_cache["mtime"] is None:
+            logger.error("endpoints allowlist unavailable: %s", exc)
+        return _endpoints_cache["endpoints"]
+    mtime = (stat.st_mtime_ns, stat.st_size)
+    if _endpoints_cache["mtime"] == mtime:
         return _endpoints_cache["endpoints"]
     endpoints: dict[str, dict[str, Any]] = {}
     try:
@@ -122,9 +137,10 @@ def _load_endpoints() -> dict[str, dict[str, Any]]:
                 "apiKeyEnv": str(entry.get("apiKeyEnv") or ""),
             }
     except (OSError, ValueError) as exc:
-        logger.error("endpoints allowlist unavailable: %s", exc)
+        logger.error("endpoints allowlist unreadable; retaining previous: %s", exc)
+        return _endpoints_cache["endpoints"]
+    _endpoints_cache["mtime"] = mtime
     _endpoints_cache["endpoints"] = endpoints
-    _endpoints_cache["loaded"] = True
     return endpoints
 
 
@@ -346,6 +362,7 @@ def _active_route() -> dict[str, Any]:
 def _record_evidence(record: dict[str, Any]) -> None:
     now = time.monotonic()
     record["storedAt"] = now
+    record["instanceId"] = INSTANCE_ID
     _evidence[record["probeId"]] = record
     while len(_evidence) > EVIDENCE_LIMIT:
         _evidence.popitem(last=False)
@@ -355,16 +372,44 @@ def _record_evidence(record: dict[str, Any]) -> None:
         _evidence.pop(key, None)
 
 
+def _current_probe_key() -> str:
+    """Fleet probe key: file-based (mtime-cached re-read) when
+    ODS_FLEET_PROBE_KEY_PATH is configured and the file holds a value,
+    falling back to the ODS_FLEET_PROBE_KEY environment value. The file
+    form lets the fleet harness rotate or remove the key without
+    recreating the router (which would destroy in-memory evidence)."""
+    if PROBE_KEY_PATH is None:
+        return PROBE_KEY
+    try:
+        stat = PROBE_KEY_PATH.stat()
+    except OSError:
+        _probe_key_cache["mtime"] = None
+        _probe_key_cache["key"] = ""
+        return PROBE_KEY
+    mtime = (stat.st_mtime_ns, stat.st_size)
+    if _probe_key_cache["mtime"] != mtime:
+        try:
+            key = PROBE_KEY_PATH.read_text(encoding="utf-8").strip()
+        except OSError:
+            _probe_key_cache["mtime"] = None
+            _probe_key_cache["key"] = ""
+            return PROBE_KEY
+        _probe_key_cache["mtime"] = mtime
+        _probe_key_cache["key"] = key
+    return _probe_key_cache["key"] or PROBE_KEY
+
+
 def _verify_probe_marker(body_text: str) -> str | None:
     """Return the probe UUID only for exactly one validly signed marker."""
-    if not PROBE_KEY:
+    probe_key = _current_probe_key()
+    if not probe_key:
         return None
     matches = _PROBE_RE.findall(body_text)
     if len(matches) != 1:
         return None
     probe_id, signature = matches[0]
     expected = base64.urlsafe_b64encode(
-        hmac.new(PROBE_KEY.encode("utf-8"), probe_id.encode("utf-8"),
+        hmac.new(probe_key.encode("utf-8"), probe_id.encode("utf-8"),
                  hashlib.sha256).digest()
     ).rstrip(b"=").decode("ascii")
     if not hmac.compare_digest(expected, signature):
@@ -467,11 +512,18 @@ async def _release_admission() -> None:
 @app.get("/health")
 async def health() -> dict[str, Any]:
     doc = _read_state()
+    endpoints = _load_endpoints()
+    # Body-level signal only: with an empty allowlist every forward answers
+    # endpoint_not_allowlisted, but the HTTP status stays 200 so the compose
+    # healthcheck does not cascade a config gap into container restarts.
     return {
-        "status": "ok",
+        "status": "ok" if endpoints else "degraded",
+        "endpointCount": len(endpoints),
         "hasRoute": bool((doc or {}).get("active")),
         "seq": (doc or {}).get("seq"),
         "routeSeq": (doc or {}).get("routeSeq"),
+        "instanceId": INSTANCE_ID,
+        "probeKeyConfigured": bool(_current_probe_key()),
     }
 
 

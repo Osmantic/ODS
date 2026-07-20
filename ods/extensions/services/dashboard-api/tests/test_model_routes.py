@@ -220,3 +220,27 @@ def test_route_evidence_rejects_mismatched_probe(test_client, monkeypatch):
     )
 
     assert resp.status_code == 502
+
+
+def test_route_evidence_passes_through_instance_id(test_client, monkeypatch):
+    probe_id = str(uuid.uuid4())
+    monkeypatch.setenv("ODS_ROUTER_INTERNAL_KEY", "internal-secret")
+    payload = {
+        "probeId": probe_id,
+        "requestedModel": "ods/current",
+        "routedModel": "Qwen.gguf",
+        "backend": "llama-server",
+        "endpointId": "llama-server-default",
+        "routeSeq": 3,
+        "path": "/v1/chat/completions",
+        "status": 200,
+        "responseModel": "Qwen.gguf",
+        "instanceId": "0b7f9d2c-8a41-4f0e-9d5b-1c2e3f4a5b6c",
+    }
+    _patch_router_client(monkeypatch, httpx.Response(200, json=payload))
+    resp = test_client.get(
+        f"/api/models/routes/{probe_id}",
+        headers=test_client.auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["instanceId"] == "0b7f9d2c-8a41-4f0e-9d5b-1c2e3f4a5b6c"

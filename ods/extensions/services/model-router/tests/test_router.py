@@ -42,7 +42,7 @@ def router(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "ENDPOINTS_PATH", endpoints_path)
     monkeypatch.setattr(mod, "INTERNAL_KEY", "internal-secret")
     monkeypatch.setattr(mod, "PROBE_KEY", "probe-secret")
-    mod._endpoints_cache.update({"loaded": False, "endpoints": {}})
+    mod._endpoints_cache.update({"mtime": None, "endpoints": {}})
     mod._state_cache.update({"mtime": None, "doc": None})
     mod._evidence.clear()
 
@@ -493,3 +493,186 @@ class TestModelsAndEvidence:
         assert client.get("/health").json()["hasRoute"] is False
         write_state()
         assert client.get("/health").json()["hasRoute"] is True
+
+
+class TestProbeKeyLifecycleAndInstance:
+    """File-based probe key: rotate/remove without recreating the router,
+    with the env value as fallback; instance identity is stable and stamped
+    into evidence so a mid-cycle replacement is detectable."""
+
+    def _use_key_file(self, mod, tmp_path, monkeypatch, env_fallback=""):
+        key_path = tmp_path / "fleet-probe.key"
+        monkeypatch.setattr(mod, "PROBE_KEY_PATH", key_path)
+        monkeypatch.setattr(mod, "PROBE_KEY", env_fallback)
+        mod._probe_key_cache.update({"mtime": None, "key": ""})
+        return key_path
+
+    def test_file_key_rotates_without_restart(self, router, tmp_path, monkeypatch):
+        mod, client, write_state, calls = router
+        write_state()
+        key_path = self._use_key_file(mod, tmp_path, monkeypatch)
+        key_path.write_text("key-a\n", encoding="utf-8")
+
+        instance_before = client.get("/health").json()["instanceId"]
+        probe_a = str(uuid.uuid4())
+        resp = client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [{"role": "user",
+                          "content": _signed_marker(probe_a, key="key-a")}],
+        })
+        assert resp.status_code == 200
+        ev = client.get(f"/internal/route-evidence/{probe_a}",
+                        headers={"Authorization": "Bearer internal-secret"})
+        assert ev.status_code == 200
+        assert ev.json()["instanceId"] == instance_before
+
+        key_path.write_text("key-b-rotated\n", encoding="utf-8")
+        stale = str(uuid.uuid4())
+        client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [{"role": "user",
+                          "content": _signed_marker(stale, key="key-a")}],
+        })
+        assert client.get(
+            f"/internal/route-evidence/{stale}",
+            headers={"Authorization": "Bearer internal-secret"},
+        ).status_code == 404
+
+        fresh = str(uuid.uuid4())
+        client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [{"role": "user",
+                          "content": _signed_marker(fresh, key="key-b-rotated")}],
+        })
+        assert client.get(
+            f"/internal/route-evidence/{fresh}",
+            headers={"Authorization": "Bearer internal-secret"},
+        ).status_code == 200
+
+        health = client.get("/health").json()
+        assert health["instanceId"] == instance_before
+        assert health["probeKeyConfigured"] is True
+
+    def test_deleted_key_file_stops_collection_then_env_fallback(
+            self, router, tmp_path, monkeypatch):
+        mod, client, write_state, calls = router
+        write_state()
+        key_path = self._use_key_file(mod, tmp_path, monkeypatch)
+        key_path.write_text("key-a", encoding="utf-8")
+        assert client.get("/health").json()["probeKeyConfigured"] is True
+
+        key_path.unlink()
+        assert client.get("/health").json()["probeKeyConfigured"] is False
+        orphan = str(uuid.uuid4())
+        client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [{"role": "user",
+                          "content": _signed_marker(orphan, key="key-a")}],
+        })
+        assert client.get(
+            f"/internal/route-evidence/{orphan}",
+            headers={"Authorization": "Bearer internal-secret"},
+        ).status_code == 404
+
+        monkeypatch.setattr(mod, "PROBE_KEY", "env-fallback-key")
+        assert client.get("/health").json()["probeKeyConfigured"] is True
+        fallback = str(uuid.uuid4())
+        client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [{"role": "user",
+                          "content": _signed_marker(fallback,
+                                                    key="env-fallback-key")}],
+        })
+        assert client.get(
+            f"/internal/route-evidence/{fallback}",
+            headers={"Authorization": "Bearer internal-secret"},
+        ).status_code == 200
+
+    def test_empty_key_file_falls_back_to_env(self, router, tmp_path, monkeypatch):
+        mod, client, write_state, calls = router
+        write_state()
+        key_path = self._use_key_file(mod, tmp_path, monkeypatch,
+                                      env_fallback="env-key")
+        key_path.write_text("   \n", encoding="utf-8")
+        assert client.get("/health").json()["probeKeyConfigured"] is True
+        probe = str(uuid.uuid4())
+        client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [{"role": "user",
+                          "content": _signed_marker(probe, key="env-key")}],
+        })
+        assert client.get(
+            f"/internal/route-evidence/{probe}",
+            headers={"Authorization": "Bearer internal-secret"},
+        ).status_code == 200
+
+    def test_health_exposes_stable_instance_and_key_state(self, router):
+        mod, client, write_state, calls = router
+        first = client.get("/health").json()
+        second = client.get("/health").json()
+        assert first["instanceId"] == second["instanceId"] == mod.INSTANCE_ID
+        assert uuid.UUID(first["instanceId"])
+        assert first["probeKeyConfigured"] is True  # fixture env key
+
+
+class TestEndpointsReload:
+    """endpoints.json is re-read on mtime/size change (activation re-renders
+    it); missing or invalid content retains the last good allowlist."""
+
+    def _endpoints_path(self, tmp_path):
+        return tmp_path / "endpoints.json"
+
+    def test_new_endpoint_visible_without_restart(self, router, tmp_path):
+        mod, client, write_state, calls = router
+        write_state(endpoint="added-later")
+        resp = client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert resp.status_code == 503
+        assert resp.json()["error"]["type"] == "endpoint_not_allowlisted"
+
+        self._endpoints_path(tmp_path).write_text(json.dumps({
+            "endpoints": [
+                {"id": "llama-server-default", "baseUrl": "http://upstream:8080"},
+                {"id": "added-later", "baseUrl": "http://late:7000"},
+            ]
+        }), encoding="utf-8")
+        ok = client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert ok.status_code == 200
+        assert calls[-1]["url"].startswith("http://late:7000")
+
+    def test_invalid_rewrite_retains_last_good_allowlist(self, router, tmp_path):
+        mod, client, write_state, calls = router
+        write_state()
+        assert client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [{"role": "user", "content": "hi"}],
+        }).status_code == 200
+
+        self._endpoints_path(tmp_path).write_text("{not-json", encoding="utf-8")
+        still_ok = client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert still_ok.status_code == 200
+        assert calls[-1]["url"].startswith("http://upstream:8080")
+
+    def test_health_reports_allowlist_health(self, router, tmp_path):
+        mod, client, write_state, calls = router
+        healthy = client.get("/health")
+        assert healthy.status_code == 200
+        assert healthy.json()["status"] == "ok"
+        assert healthy.json()["endpointCount"] == 2
+
+        self._endpoints_path(tmp_path).write_text(
+            json.dumps({"endpoints": []}), encoding="utf-8")
+        degraded = client.get("/health")
+        # HTTP 200 on purpose: the compose healthcheck must not turn a
+        # config gap into a restart cascade; the body carries the signal.
+        assert degraded.status_code == 200
+        assert degraded.json()["status"] == "degraded"
+        assert degraded.json()["endpointCount"] == 0
