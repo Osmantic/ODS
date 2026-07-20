@@ -533,7 +533,7 @@ if ($dryRun) {
                     $lemonadeSettings = New-ScheduledTaskSettingsSet `
                         -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
                         -ExecutionTimeLimit ([TimeSpan]::Zero)
-                    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+                    $principal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited
                     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $lemonadeSettings -Principal $principal -Force -ErrorAction Stop | Out-Null
                     Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
                 } catch {
@@ -724,8 +724,7 @@ if ($dryRun) {
                 $nativeLlamaSettings = New-ScheduledTaskSettingsSet `
                     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
                     -ExecutionTimeLimit ([TimeSpan]::Zero)
-                $nativeLlamaPrincipal = New-ScheduledTaskPrincipal `
-                    -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+                $nativeLlamaPrincipal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited
                 Register-ScheduledTask -TaskName $nativeLlamaTaskName `
                     -Action $nativeLlamaAction `
                     -Trigger $nativeLlamaTrigger `
@@ -1862,7 +1861,7 @@ exec bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($full
                         # The upgrade owns the native llama-server hot-swap. It
                         # must run at the same limited integrity level as the
                         # host agent so later UI model swaps can stop the child.
-                        $upgradePrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+                        $upgradePrincipal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited
                         Register-ScheduledTask -TaskName $upgradeTaskName `
                             -Action $upgradeAction `
                             -Trigger $upgradeTrigger `

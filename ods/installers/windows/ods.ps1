@@ -952,7 +952,7 @@ function Start-ODSLemonadeRuntime {
         $lemonadeSettings = New-ScheduledTaskSettingsSet `
             -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
             -ExecutionTimeLimit ([TimeSpan]::Zero)
-        $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+        $principal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited
         Register-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -Action $action -Trigger $trigger -Settings $lemonadeSettings -Principal $principal -Force -ErrorAction Stop | Out-Null
         Start-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -ErrorAction Stop
     } catch {
@@ -2123,7 +2123,7 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
             $taskSettings = New-ScheduledTaskSettingsSet `
                 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
                 -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
-            $taskPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+            $taskPrincipal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited
 
             $taskError = $null
             try {

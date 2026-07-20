@@ -378,6 +378,15 @@ assert_contains "$win_lemonade_helper" 'RedirectStandardError' "Windows Lemonade
 assert_contains "$win_lemonade_helper" 'Start-Process -FilePath \$Contract\.ExecutablePath' "Windows Lemonade direct fallback should launch in the user session"
 assert_contains "$win_lemonade_helper" 'LaunchMethod = "start-process"' "Windows Lemonade direct fallback should report the user-session launch method"
 assert_not_contains "$win_lemonade_helper" 'Invoke-CimMethod -ClassName Win32_Process -MethodName Create' "Windows Lemonade direct fallback must not create session-0 WMI orphans"
+assert_contains "$win_lemonade_helper" 'function Resolve-ODSInteractiveScheduledTaskUser' "Windows scheduled task helper should resolve the interactive user centrally"
+assert_contains "$win_lemonade_helper" 'whoami\.exe' "Windows scheduled task helper should prefer a fully qualified interactive identity"
+assert_contains "$win_lemonade_helper" 'New-ODSInteractiveScheduledTaskPrincipal' "Windows scheduled task helper should expose a shared principal constructor"
+assert_not_contains "$win_installer" 'New-ScheduledTaskPrincipal -UserId \$env:USERNAME' "Windows installer must not register interactive tasks with an unqualified USERNAME"
+assert_not_contains "installers/windows/ods.ps1" 'New-ScheduledTaskPrincipal -UserId \$env:USERNAME' "ods.ps1 must not register interactive tasks with an unqualified USERNAME"
+assert_not_contains "installers/windows/phases/07-devtools.ps1" 'New-ScheduledTaskPrincipal -UserId \$env:USERNAME' "Windows host-agent phase must not register interactive tasks with an unqualified USERNAME"
+assert_contains "$win_installer" 'New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited' "Windows installer should register limited interactive tasks through the shared principal helper"
+assert_contains "installers/windows/ods.ps1" 'New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited' "ods.ps1 should register limited interactive tasks through the shared principal helper"
+assert_contains "installers/windows/phases/07-devtools.ps1" 'New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited' "Windows host-agent phase should register limited interactive tasks through the shared principal helper"
 assert_contains "$win_installer" 'Lemonade scheduled task did not start a server process' "Windows installer should recover when Task Scheduler reports success without a Lemonade process"
 assert_contains "$win_installer" 'Start-Process msiexec\.exe .* -PassThru' "Windows installer should capture Lemonade MSI exit codes"
 assert_contains "$win_installer" 'Lemonade MSI exited with code' "Windows installer should report failed Lemonade MSI exit codes honestly"
@@ -431,6 +440,7 @@ for needle in (
     "Register-ScheduledTask -TaskName $upgradeTaskName",
     "-Settings $upgradeSettings",
     "Start-ScheduledTask -TaskName $upgradeTaskName",
+    "$upgradePrincipal = New-ODSInteractiveScheduledTaskPrincipal",
     "-RunLevel Limited",
 ):
     if needle not in block:
@@ -458,7 +468,7 @@ block = text[start:end]
 for needle in (
     "New-ScheduledTaskAction",
     "-Execute $script:LLAMA_SERVER_EXE",
-    "$nativeLlamaPrincipal = New-ScheduledTaskPrincipal",
+    "$nativeLlamaPrincipal = New-ODSInteractiveScheduledTaskPrincipal",
     "-RunLevel Limited",
     "Register-ScheduledTask -TaskName $nativeLlamaTaskName",
     "Start-ScheduledTask -TaskName $nativeLlamaTaskName",

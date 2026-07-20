@@ -334,6 +334,59 @@ function ConvertTo-ODSPowerShellSingleQuotedLiteral {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
+function Resolve-ODSInteractiveScheduledTaskUser {
+    <#
+    .SYNOPSIS
+        Return a Task Scheduler principal for the current interactive user.
+
+    .DESCRIPTION
+        Remote PowerShell sessions can expose USERNAME without the local/domain
+        qualifier that Task Scheduler needs for InteractiveToken tasks. Prefer
+        whoami's fully-qualified identity and only fall back after verifying the
+        account translates to a SID.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    try {
+        $whoami = (& "$env:SystemRoot\System32\whoami.exe" 2>$null | Select-Object -First 1)
+        if (-not [string]::IsNullOrWhiteSpace([string]$whoami)) {
+            $candidates.Add(([string]$whoami).Trim())
+        }
+    } catch { }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:USERDOMAIN) -and
+        -not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
+        $candidates.Add("$($env:USERDOMAIN)\$($env:USERNAME)")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
+        $candidates.Add([string]$env:USERNAME)
+    }
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        try {
+            $account = New-Object System.Security.Principal.NTAccount($candidate)
+            $null = $account.Translate([System.Security.Principal.SecurityIdentifier])
+            return $candidate
+        } catch { }
+    }
+
+    throw "Could not resolve the current interactive Windows user for an ODS scheduled task."
+}
+
+function New-ODSInteractiveScheduledTaskPrincipal {
+    [CmdletBinding()]
+    param(
+        [ValidateSet("Limited", "Highest")]
+        [string]$RunLevel = "Limited"
+    )
+
+    $userId = Resolve-ODSInteractiveScheduledTaskUser
+    return New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel $RunLevel
+}
+
 function New-ODSLemonadeScheduledTaskAction {
     <#
     .SYNOPSIS

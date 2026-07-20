@@ -500,6 +500,29 @@ if ((${#_lemonade_ps_cmd[@]} > 0)); then
         if (@($parseErrors).Count -gt 0) {
             throw "Generated Lemonade task wrapper has PowerShell parse errors"
         }
+
+        $contractText = Get-Content -LiteralPath (Join-Path $env:ROOT_DIR "installers/windows/lib/backend-contract.ps1") -Raw
+        if ($contractText -notmatch "whoami\.exe" -or
+            $contractText -notmatch "Translate\(\[System.Security.Principal.SecurityIdentifier\]\)") {
+            throw "Interactive scheduled task user resolver does not validate a fully qualified account"
+        }
+        function Resolve-ODSInteractiveScheduledTaskUser {
+            return "STRIXY\conta"
+        }
+        function New-ScheduledTaskPrincipal {
+            param($UserId, $LogonType, $RunLevel)
+            return [pscustomobject]@{
+                UserId = $UserId
+                LogonType = $LogonType
+                RunLevel = $RunLevel
+            }
+        }
+        $principal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited
+        if ($principal.UserId -ne "STRIXY\conta" -or
+            $principal.LogonType -ne "Interactive" -or
+            $principal.RunLevel -ne "Limited") {
+            throw "Interactive scheduled task principal did not preserve the resolved user and limited token"
+        }
     '; then
         pass "backend-contract.ps1: resolves Lemonade and enforces versioned secure launch/config contracts"
     else
