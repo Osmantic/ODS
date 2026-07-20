@@ -42,7 +42,7 @@ def router(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "ENDPOINTS_PATH", endpoints_path)
     monkeypatch.setattr(mod, "INTERNAL_KEY", "internal-secret")
     monkeypatch.setattr(mod, "PROBE_KEY", "probe-secret")
-    mod._endpoints_cache.update({"loaded": False, "endpoints": {}})
+    mod._endpoints_cache.update({"mtime": None, "endpoints": {}})
     mod._state_cache.update({"mtime": None, "doc": None})
     mod._evidence.clear()
 
@@ -660,3 +660,19 @@ class TestEndpointsReload:
         })
         assert still_ok.status_code == 200
         assert calls[-1]["url"].startswith("http://upstream:8080")
+
+    def test_health_reports_allowlist_health(self, router, tmp_path):
+        mod, client, write_state, calls = router
+        healthy = client.get("/health")
+        assert healthy.status_code == 200
+        assert healthy.json()["status"] == "ok"
+        assert healthy.json()["endpointCount"] == 2
+
+        self._endpoints_path(tmp_path).write_text(
+            json.dumps({"endpoints": []}), encoding="utf-8")
+        degraded = client.get("/health")
+        # HTTP 200 on purpose: the compose healthcheck must not turn a
+        # config gap into a restart cascade; the body carries the signal.
+        assert degraded.status_code == 200
+        assert degraded.json()["status"] == "degraded"
+        assert degraded.json()["endpointCount"] == 0

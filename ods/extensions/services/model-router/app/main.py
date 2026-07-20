@@ -512,8 +512,13 @@ async def _release_admission() -> None:
 @app.get("/health")
 async def health() -> dict[str, Any]:
     doc = _read_state()
+    endpoints = _load_endpoints()
+    # Body-level signal only: with an empty allowlist every forward answers
+    # endpoint_not_allowlisted, but the HTTP status stays 200 so the compose
+    # healthcheck does not cascade a config gap into container restarts.
     return {
-        "status": "ok",
+        "status": "ok" if endpoints else "degraded",
+        "endpointCount": len(endpoints),
         "hasRoute": bool((doc or {}).get("active")),
         "seq": (doc or {}).get("seq"),
         "routeSeq": (doc or {}).get("routeSeq"),
