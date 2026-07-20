@@ -101,6 +101,9 @@ test: ## Run unit and contract tests
 	@echo "=== macOS uninstall LaunchAgent cleanup ==="
 	@bash tests/test-macos-uninstall-launchagents.sh
 	@echo ""
+	@echo "=== token-spy session manager active-id extraction ==="
+	@bash tests/test-token-spy-session-manager.sh
+	@echo ""
 	@echo "=== fleet-multi-distro keep-going on docker pull failure ==="
 	@bash tests/test-fleet-multi-distro-keep-going.sh
 	@echo ""
