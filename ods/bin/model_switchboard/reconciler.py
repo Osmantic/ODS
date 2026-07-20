@@ -33,6 +33,8 @@ def _verification_error(outcome: dict[str, Any]) -> str:
         or context_length <= 0
     ):
         return "verification returned no valid context length"
+    if not isinstance(outcome.get("contextVerified"), bool):
+        return "verification returned no context-verification status"
     capabilities = outcome.get("capabilities")
     if not isinstance(capabilities, dict) or set(capabilities) != _CAPABILITY_KEYS:
         return "verification returned no complete capability record"
@@ -63,6 +65,7 @@ def run_runtime_activation(
     proof: dict[str, Any] = {
         "identity": None,
         "contextLength": None,
+        "contextVerified": None,
         "capabilities": None,
         "verifiedAt": None,
     }
@@ -103,10 +106,16 @@ def run_runtime_activation(
             outcome_proof = {
                 "identity": outcome_identity,
                 "contextLength": int(outcome["contextLength"]),
+                "contextVerified": bool(outcome["contextVerified"]),
                 "capabilities": dict(outcome["capabilities"]),
                 "verifiedAt": str(outcome["verifiedAt"]),
             }
-            stable_fields = ("identity", "contextLength", "capabilities")
+            stable_fields = (
+                "identity",
+                "contextLength",
+                "contextVerified",
+                "capabilities",
+            )
             if phase == "verify_completion" and any(
                 outcome_proof[field] != proof[field] for field in stable_fields
             ):

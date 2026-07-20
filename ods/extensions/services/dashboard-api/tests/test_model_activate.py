@@ -499,6 +499,53 @@ class TestLemonadeCompletionReady:
             ),
         ]
 
+    def test_legacy_lemonade_proof_marks_context_unverified(self, monkeypatch):
+        def fake_run(cmd, **_kwargs):
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps({
+                    "status": "ok",
+                    "version": "10.2.0",
+                    "model_loaded": "extra.Model.gguf",
+                }),
+                stderr="",
+            )
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_a, **_k: True)
+        proof = _mod._wait_for_model_readiness(
+            {
+                "GPU_BACKEND": "amd",
+                "OLLAMA_PORT": "8080",
+                "CTX_SIZE": "4096",
+            },
+            model_id="model",
+            gguf_file="Model.gguf",
+            llm_model_name="model",
+            lemonade_model_id="extra.Model.gguf",
+            attempts=1,
+            initial_delay=0,
+            interval=0,
+            return_proof=True,
+        )
+        assert proof == {
+            "identity": "extra.Model.gguf",
+            "contextLength": 4096,
+            "contextVerified": False,
+            "verifiedAt": proof["verifiedAt"],
+        }
+
+    def test_catalog_non_agent_viability_overrides_context_floor(self):
+        model = {
+            "app_compatibility": {
+                "agent_viability": {"status": "not_agent_viable"}
+            }
+        }
+        assert _mod._model_agent_viable(model, 131072) is False
+        assert _mod._model_agent_viable({}, 131072) is True
+        assert _mod._model_agent_viable({}, 32768) is False
+
     @pytest.mark.parametrize(
         ("completion_model", "expected_identity"),
         [
@@ -569,6 +616,7 @@ class TestLemonadeCompletionReady:
         )
         assert proof["identity"] == "runtime/new-model.gguf"
         assert proof["contextLength"] == 65536
+        assert proof["contextVerified"] is True
         assert proof["verifiedAt"].endswith("+00:00")
 
     def test_readiness_rejects_runtime_context_below_requested(self, monkeypatch):
@@ -1812,6 +1860,7 @@ def _mock_verified_readiness(*_args, **kwargs):
         return {
             "identity": identity,
             "contextLength": 65536,
+            "contextVerified": True,
             "verifiedAt": "2026-07-20T00:00:00+00:00",
         }
     if kwargs.get("return_identity"):
@@ -3400,6 +3449,7 @@ class TestModelActivateRollback:
                 return {
                     "identity": kwargs["gguf_file"],
                     "contextLength": 65536,
+                    "contextVerified": True,
                     "verifiedAt": "2026-07-20T00:00:00+00:00",
                 }
             if kwargs.get("return_identity"):
@@ -4259,6 +4309,7 @@ class TestModelActivateRollback:
                 return {
                     "identity": kwargs.get("gguf_file"),
                     "contextLength": 65536,
+                    "contextVerified": True,
                     "verifiedAt": "2026-07-20T00:00:00+00:00",
                 }
             if kwargs.get("return_identity"):

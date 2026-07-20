@@ -20,6 +20,7 @@ def _proof_result(identity="M.gguf", **overrides):
     payload = {
         "identity": identity,
         "contextLength": 65536,
+        "contextVerified": True,
         "capabilities": {
             "chat": True,
             "tools": False,
@@ -36,6 +37,7 @@ def _readiness_proof(identity="M.gguf", context_length=65536):
     return {
         "identity": identity,
         "contextLength": context_length,
+        "contextVerified": True,
         "verifiedAt": "2026-07-20T00:00:00+00:00",
     }
 
@@ -90,6 +92,7 @@ class TestReconcilerBoundaries:
         [
             ("identity", "identity"),
             ("contextLength", "context length"),
+            ("contextVerified", "context-verification"),
             ("capabilities", "capability"),
             ("verifiedAt", "timestamp"),
         ],

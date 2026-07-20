@@ -107,6 +107,7 @@ class ContainerLlamaAdapter:
         self._rollback = rollback
         self._verified_identity = ""
         self._verified_context = 0
+        self._context_verified = False
         self._verified_at = ""
 
     def _verification_result(self, detail: str) -> dict[str, Any]:
@@ -115,6 +116,7 @@ class ContainerLlamaAdapter:
             detail,
             identity=self._verified_identity,
             contextLength=self._verified_context,
+            contextVerified=self._context_verified,
             capabilities=dict(self._capabilities),
             verifiedAt=self._verified_at,
         )
@@ -142,6 +144,7 @@ class ContainerLlamaAdapter:
             return result(False, "runtime did not return a proof record")
         runtime_identity = runtime_proof.get("identity")
         runtime_context = runtime_proof.get("contextLength")
+        context_verified = runtime_proof.get("contextVerified")
         verified_at = runtime_proof.get("verifiedAt")
         if not isinstance(runtime_identity, str) or not runtime_identity.strip():
             return result(False, "runtime did not report the staged model")
@@ -151,10 +154,13 @@ class ContainerLlamaAdapter:
             or runtime_context <= 0
         ):
             return result(False, "runtime did not report a valid context length")
+        if not isinstance(context_verified, bool):
+            return result(False, "runtime proof has no context-verification status")
         if not isinstance(verified_at, str) or not verified_at.strip():
             return result(False, "runtime proof has no timestamp")
         self._verified_identity = runtime_identity.strip()
         self._verified_context = runtime_context
+        self._context_verified = context_verified
         self._verified_at = verified_at.strip()
         return self._verification_result(
             "runtime reports staged model and completed proof request"
@@ -245,6 +251,7 @@ class LemonadeAdapter:
         self._rollback = rollback
         self._verified_identity = ""
         self._verified_context = 0
+        self._context_verified = False
         self._verified_at = ""
 
     def _verification_result(self, detail: str) -> dict[str, Any]:
@@ -253,6 +260,7 @@ class LemonadeAdapter:
             detail,
             identity=self._verified_identity,
             contextLength=self._verified_context,
+            contextVerified=self._context_verified,
             capabilities=dict(self._capabilities),
             verifiedAt=self._verified_at,
         )
@@ -278,6 +286,7 @@ class LemonadeAdapter:
             return result(False, "lemonade runtime did not return a proof record")
         runtime_identity = runtime_proof.get("identity")
         runtime_context = runtime_proof.get("contextLength")
+        context_verified = runtime_proof.get("contextVerified")
         verified_at = runtime_proof.get("verifiedAt")
         if not isinstance(runtime_identity, str) or not runtime_identity.strip():
             return result(False, "lemonade runtime did not report the staged model")
@@ -287,10 +296,15 @@ class LemonadeAdapter:
             or runtime_context <= 0
         ):
             return result(False, "lemonade runtime did not report a valid context length")
+        if not isinstance(context_verified, bool):
+            return result(
+                False, "lemonade runtime proof has no context-verification status"
+            )
         if not isinstance(verified_at, str) or not verified_at.strip():
             return result(False, "lemonade runtime proof has no timestamp")
         self._verified_identity = runtime_identity.strip()
         self._verified_context = runtime_context
+        self._context_verified = context_verified
         self._verified_at = verified_at.strip()
         return self._verification_result("lemonade runtime reports staged model")
 

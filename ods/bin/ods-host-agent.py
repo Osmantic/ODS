@@ -5407,7 +5407,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 "chat": True,
                 "tools": bool(model.get("tools")),
                 "vision": bool(model.get("vision")),
-                "agentViable": int(context_length) >= 65536,
+                "agentViable": _model_agent_viable(model, int(context_length)),
             }
 
             def _sb_wait_ready(_env, _gguf, _ctx, lemonade_model_id=""):
@@ -5684,6 +5684,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     _switchboard_state is not None
                     and switchboard_run
                     and switchboard_run.get("ok")
+                    and switchboard_run.get("contextVerified") is True
                 ):
                     # Observe mode: record the proven route after the existing
                     # transaction committed. Failures are logged, never fatal,
@@ -6286,6 +6287,19 @@ def _recommended_activation_context(model_id: str, model: dict, env: dict) -> in
     return None
 
 
+def _model_agent_viable(model: dict, context_length: int) -> bool:
+    compatibility = model.get("app_compatibility")
+    if not isinstance(compatibility, dict):
+        compatibility = {}
+    viability = compatibility.get("agent_viability")
+    if not isinstance(viability, dict):
+        viability = {}
+    return (
+        int(context_length) >= 65536
+        and viability.get("status") != "not_agent_viable"
+    )
+
+
 def _lemonade_version_at_least(value: object, major: int, minor: int) -> bool:
     match = re.match(r"^\s*(\d+)\.(\d+)", str(value or ""))
     if not match:
@@ -6755,11 +6769,13 @@ def _wait_for_model_readiness(
             ):
                 logger.info("Model %s ready after %d attempts", gguf_file, attempt + 1)
                 if return_proof:
-                    if runtime_context <= 0:
+                    reported_context = runtime_context or expected_context or 0
+                    if reported_context <= 0:
                         return {}
                     return {
                         "identity": runtime_identity,
-                        "contextLength": runtime_context,
+                        "contextLength": reported_context,
+                        "contextVerified": runtime_context > 0,
                         "verifiedAt": _iso_now(),
                     }
                 return runtime_identity if return_identity else True
