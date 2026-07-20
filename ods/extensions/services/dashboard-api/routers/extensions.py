@@ -1589,6 +1589,24 @@ def _extension_backup_dir(service_id: str) -> Path:
     return USER_EXTENSIONS_DIR / ".backups" / service_id
 
 
+def _set_extension_compose_state(extension_dir: Path, *, enabled: bool) -> bool:
+    """Normalize an extension definition to the requested operational state."""
+    active = extension_dir / "compose.yaml"
+    inactive = extension_dir / "compose.yaml.disabled"
+    if active.is_symlink() or inactive.is_symlink():
+        return False
+
+    has_active = active.is_file()
+    has_inactive = inactive.is_file()
+    if has_active == has_inactive:
+        return False
+    if has_active == enabled:
+        return True
+
+    os.replace(inactive if enabled else active, active if enabled else inactive)
+    return True
+
+
 def _restore_extension_backup(service_id: str) -> bool:
     """Restore the previous definition while retaining the failed update as backup."""
     dest = USER_EXTENSIONS_DIR / service_id
@@ -1751,9 +1769,22 @@ def rollback_extension_update(
     if (not dest.is_dir() or dest.is_symlink()
             or not backup.is_dir() or backup.is_symlink()):
         raise HTTPException(status_code=404, detail="No extension update backup is available")
-    enabled = (dest / "compose.yaml").is_file()
-
     with _extensions_lock():
+        enabled = (dest / "compose.yaml").is_file()
+        disabled = (dest / "compose.yaml.disabled").is_file()
+        if enabled == disabled:
+            raise HTTPException(
+                status_code=409,
+                detail="Installed extension has an invalid compose state",
+            )
+        # Rollback changes the definition, not the user's current enablement.
+        # Normalize the backup before swapping so the restored directory and
+        # runtime start decision cannot disagree.
+        if not _set_extension_compose_state(backup, enabled=enabled):
+            raise HTTPException(
+                status_code=409,
+                detail="Extension update backup has an invalid compose state",
+            )
         if not _restore_extension_backup(service_id):
             raise HTTPException(status_code=500, detail="Could not restore extension backup")
         _call_agent_invalidate_compose_cache()

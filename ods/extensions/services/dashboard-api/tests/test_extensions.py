@@ -3620,6 +3620,37 @@ class TestUpdateExtension:
         assert response.json()["action"] == "rolled_back"
         assert (installed / "manifest.yaml").read_text() == original
 
+    def test_rollback_preserves_disabled_state_after_update(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user, installed = self._prepare(monkeypatch, tmp_path)
+        original = (installed / "manifest.yaml").read_text()
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+        agent_calls = []
+        monkeypatch.setattr(
+            ext_mod,
+            "_call_agent",
+            lambda action, sid: agent_calls.append((action, sid)) or True,
+        )
+
+        assert test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        ).status_code == 200
+        assert test_client.post(
+            "/api/extensions/my-ext/disable", headers=test_client.auth_headers,
+        ).status_code == 200
+        agent_calls.clear()
+
+        response = test_client.post(
+            "/api/extensions/my-ext/rollback", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 200
+        assert (installed / "manifest.yaml").read_text() == original
+        assert (installed / "compose.yaml.disabled").is_file()
+        assert not (installed / "compose.yaml").exists()
+        assert agent_calls == []
+
     def test_rollback_start_failure_restores_updated_definition(
         self, test_client, monkeypatch, tmp_path,
     ):
