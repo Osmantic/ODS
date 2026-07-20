@@ -68,6 +68,19 @@ def opencode_key(inputs: RenderInputs) -> str:
     return inputs.litellm_key if inputs.ods_mode == "lemonade" else NO_KEY
 
 
+def _switchboard_consumer_route(inputs: "RenderInputs") -> tuple[str, str] | None:
+    """(base_url, model) a consumer must use in enabled mode, else None.
+
+    In enabled mode every local text consumer addresses the LiteLLM gateway
+    with the stable public alias; LiteLLM forwards ods/current to the
+    model-router. In legacy/observe this returns None and each renderer keeps
+    its existing direct-backend behavior byte-identical.
+    """
+    if inputs.switchboard_mode == "enabled":
+        return ("http://litellm:4000/v1", "ods/current")
+    return None
+
+
 def render_litellm_lemonade(inputs: RenderInputs) -> RenderedFile:
     model = lemonade_model_id(inputs)
     api_base = inputs.lemonade_api_base.rstrip("/") or "http://llama-server:8080/api/v1"
@@ -100,11 +113,13 @@ litellm_settings:
 
 
 def render_hermes(inputs: RenderInputs) -> RenderedFile:
-    model = hermes_model_id(inputs)
+    _sb = _switchboard_consumer_route(inputs)
+    model = _sb[1] if _sb is not None else hermes_model_id(inputs)
+    _h_base = _sb[0] if _sb is not None else inputs.llm_base_url
     content = f"""model:
   default: "{model}"
   provider: "custom"
-  base_url: "{inputs.llm_base_url}"
+  base_url: "{_h_base}"
   context_length: {inputs.context_length}
 
 auxiliary:
@@ -121,10 +136,14 @@ compression:
 
 
 def render_perplexica(inputs: RenderInputs) -> RenderedFile:
-    model = lemonade_model_id(inputs) if inputs.ods_mode == "lemonade" else (inputs.gguf_file or inputs.model)
-    base_url = inputs.llm_base_url.rstrip("/") or "http://llama-server:8080"
-    if not (base_url.endswith("/v1") or base_url.endswith("/api/v1")):
-        base_url = f"{base_url}/v1"
+    _sb = _switchboard_consumer_route(inputs)
+    if _sb is not None:
+        base_url, model = _sb[0], _sb[1]
+    else:
+        model = lemonade_model_id(inputs) if inputs.ods_mode == "lemonade" else (inputs.gguf_file or inputs.model)
+        base_url = inputs.llm_base_url.rstrip("/") or "http://llama-server:8080"
+        if not (base_url.endswith("/v1") or base_url.endswith("/api/v1")):
+            base_url = f"{base_url}/v1"
     payload = {
         "modelProviders": [
             {
@@ -154,11 +173,16 @@ def render_perplexica(inputs: RenderInputs) -> RenderedFile:
 
 
 def render_opencode(inputs: RenderInputs) -> RenderedFile:
+    _sb = _switchboard_consumer_route(inputs)
+    _oc_base = _sb[0] if _sb is not None else inputs.llm_base_url
+    _oc_model = _sb[1] if _sb is not None else (
+        lemonade_model_id(inputs) if inputs.ods_mode == "lemonade" else inputs.model
+    )
     payload = {
         "provider": "openai-compatible",
-        "baseURL": inputs.llm_base_url,
+        "baseURL": _oc_base,
         "apiKey": opencode_key(inputs),
-        "model": lemonade_model_id(inputs) if inputs.ods_mode == "lemonade" else inputs.model,
+        "model": _oc_model,
         "port": inputs.opencode_port,
     }
     return RenderedFile(
