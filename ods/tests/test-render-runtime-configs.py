@@ -246,5 +246,25 @@ def main() -> int:
     return 0
 
 
+def test_switchboard_enabled_cuts_consumers_over_to_gateway() -> None:
+    payload = run_renderer("--surface", "env", "--switchboard-mode", "enabled")
+    env = next(f for f in payload["files"] if f["surface"] == "env")["content"]
+    assert "ODS_MODEL_SWITCHBOARD=enabled" in env
+    for var in ("OPEN_WEBUI_LLM_BASE_URL", "PERPLEXICA_LLM_BASE_URL",
+                "OPENCODE_LLM_BASE_URL", "HERMES_LLM_BASE_URL",
+                "OPENCLAW_LLM_BASE_URL"):
+        assert f"{var}=http://litellm:4000/v1" in env, var
+    assert "ODS_PUBLIC_MODEL=ods/current" in env
+
+
+def test_switchboard_observe_emits_no_consumer_overrides() -> None:
+    payload = run_renderer("--surface", "env", "--switchboard-mode", "observe")
+    env = next(f for f in payload["files"] if f["surface"] == "env")["content"]
+    assert "ODS_MODEL_SWITCHBOARD=observe" in env
+    # Byte-identical direct-backend defaults must remain authoritative.
+    assert "OPEN_WEBUI_LLM_BASE_URL" not in env
+    assert "ODS_PUBLIC_MODEL" not in env
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

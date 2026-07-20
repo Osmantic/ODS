@@ -185,6 +185,22 @@ def render_env(inputs: RenderInputs) -> RenderedFile:
         f"CTX_SIZE={inputs.context_length}",
         f"MAX_CONTEXT={inputs.context_length}",
     ]
+    # Switchboard consumer runtime cutover (PR 7): in enabled mode every local
+    # text consumer addresses the LiteLLM gateway with the stable alias, which
+    # forwards ods/current -> model-router -> active backend. Legacy/observe
+    # emit no consumer overrides, so the byte-identical direct-backend defaults
+    # in docker-compose.base.yml remain authoritative.
+    lines.append(f"ODS_MODEL_SWITCHBOARD={inputs.switchboard_mode}")
+    if inputs.switchboard_mode == "enabled":
+        gateway = "http://litellm:4000/v1"
+        lines += [
+            f"OPEN_WEBUI_LLM_BASE_URL={gateway}",
+            f"PERPLEXICA_LLM_BASE_URL={gateway}",
+            f"OPENCODE_LLM_BASE_URL={gateway}",
+            f"HERMES_LLM_BASE_URL={gateway}",
+            f"OPENCLAW_LLM_BASE_URL={gateway}",
+            "ODS_PUBLIC_MODEL=ods/current",
+        ]
     return RenderedFile("env", ".env.generated", "\n".join(lines) + "\n")
 
 
