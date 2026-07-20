@@ -287,6 +287,7 @@ async def forward(full_path: str, request: Request) -> Response:
     requested_alias = str(payload.get("model") or PUBLIC_ALIASES[0])
 
     global _inflight
+    slot = _InflightSlot()
     async with _inflight_lock:
         if _inflight >= MAX_QUEUE_DEPTH:
             return JSONResponse(
@@ -295,15 +296,45 @@ async def forward(full_path: str, request: Request) -> Response:
                 status_code=503, headers={"Retry-After": "5"},
             )
         _inflight += 1
+    streaming = False
     try:
-        return await _forward_inner(request, path, payload, requested_alias, body)
+        response = await _forward_inner(
+            request, path, payload, requested_alias, body, slot
+        )
+        # A streaming response is still open when this handler returns; it
+        # owns the slot from here and releases it when its body completes.
+        streaming = isinstance(response, StreamingResponse)
+        return response
     finally:
+        if not streaming:
+            await slot.release()
+
+
+class _InflightSlot:
+    """One occupancy of the router's concurrency bound.
+
+    A streaming response outlives the handler that built it, so releasing on
+    handler return would free the slot while the upstream request is still
+    open — leaving MAX_QUEUE_DEPTH unable to bound streaming traffic, which
+    is most of it. Streaming hands the slot to its body generator instead.
+    Release is idempotent so either owner can call it.
+    """
+
+    def __init__(self) -> None:
+        self._released = False
+
+    async def release(self) -> None:
+        global _inflight
+        if self._released:
+            return
+        self._released = True
         async with _inflight_lock:
             _inflight -= 1
 
 
 async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
-                         requested_alias: str, raw_body: bytes) -> Response:
+                         requested_alias: str, raw_body: bytes,
+                         slot: "_InflightSlot") -> Response:
     deadline = time.monotonic() + QUEUE_WAIT_SECONDS
     while True:
         try:
@@ -377,6 +408,9 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                         yield _rewrite_sse_chunk(chunk, requested_alias)
                 finally:
                     await upstream.aclose()
+                    # The slot stays occupied for the life of the stream, not
+                    # just the handler that opened it.
+                    await slot.release()
 
             media_type = upstream.headers.get("content-type",
                                               "text/event-stream")
