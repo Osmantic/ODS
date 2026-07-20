@@ -30,7 +30,7 @@ git diff --check
 python scripts/audit-extensions.py --project-dir .
 python scripts/validate-generated-configs.py
 python scripts/validate-golden-paths.py
-python scripts/validate-dependency-pins.py
+python scripts/check-dependency-pins.py
 ```
 
 Add dashboard checks when dashboard code or dashboard-api behavior changes.
