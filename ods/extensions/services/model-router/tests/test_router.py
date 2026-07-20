@@ -248,3 +248,82 @@ class TestModelsAndEvidence:
         assert client.get("/health").json()["hasRoute"] is False
         write_state()
         assert client.get("/health").json()["hasRoute"] is True
+
+
+class TestEndpointAllowlistRecovery:
+    """A failed allowlist read must not be cached.
+
+    endpoints.json is a read-only bind mount that
+    scripts/render-runtime-configs.py rewrites in place with a non-atomic
+    write_text (:315). A read landing in that window, or before the mount is
+    ready, used to cache an empty allowlist for the life of the process:
+    every request answered endpoint_not_allowlisted until the container was
+    restarted, while /health kept reporting 200.
+    """
+
+    def test_transient_read_failure_recovers_on_the_next_request(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        good = mod.ENDPOINTS_PATH.read_text(encoding="utf-8")
+
+        # Mid-rewrite: the file is truncated, so json.loads raises.
+        mod.ENDPOINTS_PATH.write_text("", encoding="utf-8")
+        mod._endpoints_cache.update({"loaded": False, "endpoints": {}})
+        blocked = client.post("/v1/chat/completions",
+                              json={"model": "ods/current", "messages": []})
+        assert blocked.status_code == 503
+        assert blocked.json()["error"]["type"] == "endpoint_not_allowlisted"
+
+        # The rewrite lands; the very next request must route.
+        mod.ENDPOINTS_PATH.write_text(good, encoding="utf-8")
+        recovered = client.post("/v1/chat/completions",
+                                json={"model": "ods/current", "messages": []})
+        assert recovered.status_code == 200
+
+    def test_missing_file_recovers_once_it_appears(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        good = mod.ENDPOINTS_PATH.read_text(encoding="utf-8")
+
+        mod.ENDPOINTS_PATH.unlink()
+        mod._endpoints_cache.update({"loaded": False, "endpoints": {}})
+        assert client.post("/v1/chat/completions",
+                           json={"model": "ods/current", "messages": []}
+                           ).status_code == 503
+
+        mod.ENDPOINTS_PATH.write_text(good, encoding="utf-8")
+        assert client.post("/v1/chat/completions",
+                           json={"model": "ods/current", "messages": []}
+                           ).status_code == 200
+
+    def test_a_good_allowlist_is_still_cached(self, router):
+        """Recovery must not turn every request into a disk read."""
+        mod, client, write_state, calls = router
+        write_state()
+        assert client.get("/health").status_code == 200
+
+        # Cache is warm; removing the file must not change the answer.
+        mod.ENDPOINTS_PATH.unlink()
+        assert client.post("/v1/chat/completions",
+                           json={"model": "ods/current", "messages": []}
+                           ).status_code == 200
+
+    def test_health_reports_degraded_without_an_allowlist(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        mod.ENDPOINTS_PATH.write_text(json.dumps({"endpoints": []}),
+                                      encoding="utf-8")
+        mod._endpoints_cache.update({"loaded": False, "endpoints": {}})
+
+        resp = client.get("/health")
+        assert resp.status_code == 503
+        assert resp.json()["status"] == "degraded"
+        assert resp.json()["endpointCount"] == 0
+
+    def test_health_is_ok_with_an_allowlist(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        assert resp.json()["endpointCount"] == 2

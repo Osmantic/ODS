@@ -95,23 +95,32 @@ class RouterError(Exception):
 
 
 def _load_endpoints() -> dict[str, dict[str, Any]]:
-    """Startup-validated allowlist: endpointId -> {baseUrl, apiKeyEnv?}."""
+    """Startup-validated allowlist: endpointId -> {baseUrl, apiKeyEnv?}.
+
+    Only a successful read is cached. The file is a read-only bind mount that
+    scripts/render-runtime-configs.py rewrites in place with a non-atomic
+    write_text, so a read can land on a partial or absent file. Caching that
+    outcome would pin an empty allowlist for the life of the process and every
+    request would answer endpoint_not_allowlisted until someone restarted the
+    container; retrying instead lets the next request recover on its own.
+    """
     if _endpoints_cache["loaded"]:
         return _endpoints_cache["endpoints"]
     endpoints: dict[str, dict[str, Any]] = {}
     try:
         raw = json.loads(ENDPOINTS_PATH.read_text(encoding="utf-8"))
-        for entry in raw.get("endpoints", []):
-            endpoint_id = str(entry.get("id") or "")
-            base_url = str(entry.get("baseUrl") or "")
-            if not endpoint_id or not base_url.startswith(("http://", "https://")):
-                continue
-            endpoints[endpoint_id] = {
-                "baseUrl": base_url.rstrip("/"),
-                "apiKeyEnv": str(entry.get("apiKeyEnv") or ""),
-            }
     except (OSError, ValueError) as exc:
-        logger.error("endpoints allowlist unavailable: %s", exc)
+        logger.error("endpoints allowlist unavailable, will retry: %s", exc)
+        return endpoints
+    for entry in raw.get("endpoints", []):
+        endpoint_id = str(entry.get("id") or "")
+        base_url = str(entry.get("baseUrl") or "")
+        if not endpoint_id or not base_url.startswith(("http://", "https://")):
+            continue
+        endpoints[endpoint_id] = {
+            "baseUrl": base_url.rstrip("/"),
+            "apiKeyEnv": str(entry.get("apiKeyEnv") or ""),
+        }
     _endpoints_cache["endpoints"] = endpoints
     _endpoints_cache["loaded"] = True
     return endpoints
@@ -218,14 +227,19 @@ def _rewrite_sse_chunk(chunk: bytes, alias: str) -> bytes:
 
 
 @app.get("/health")
-async def health() -> dict[str, Any]:
+async def health() -> Response:
     doc = _read_state()
-    return {
-        "status": "ok",
+    endpoints = _load_endpoints()
+    body = {
+        "status": "ok" if endpoints else "degraded",
         "hasRoute": bool((doc or {}).get("active")),
+        "endpointCount": len(endpoints),
         "seq": (doc or {}).get("seq"),
         "routeSeq": (doc or {}).get("routeSeq"),
     }
+    # With no allowlist the router cannot serve any request. Reporting 200
+    # here left a container that answered nothing but 503 looking healthy.
+    return JSONResponse(body, status_code=200 if endpoints else 503)
 
 
 @app.get("/v1/models")
