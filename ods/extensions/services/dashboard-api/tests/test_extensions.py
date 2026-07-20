@@ -4141,3 +4141,70 @@ def test_extensions_lock_falls_back_when_data_root_is_unwritable(
 
     with ext_module._extensions_lock():
         assert fallback_lock.exists()
+
+
+class TestUpdateHardening(TestUpdateExtension):
+    """Gates and sync-echo hardening for the transactional update path."""
+
+    def test_stale_initial_progress_does_not_block_mutations(self):
+        from datetime import datetime, timezone
+
+        from routers import extensions as ext_mod
+
+        old = "2020-01-01T00:00:00+00:00"
+        now = datetime.now(timezone.utc).isoformat()
+        assert ext_mod._progress_blocks_mutation(None) is False
+        assert ext_mod._progress_blocks_mutation(
+            {"status": "error", "started_at": old, "updated_at": old},
+        ) is False
+        # Never advanced by the agent and past the grace period: abandoned.
+        assert ext_mod._progress_blocks_mutation(
+            {"status": "pulling", "started_at": old, "updated_at": old},
+        ) is False
+        # Fresh initial record still blocks.
+        assert ext_mod._progress_blocks_mutation(
+            {"status": "pulling", "started_at": now, "updated_at": now},
+        ) is True
+        # Advancing record blocks regardless of age.
+        assert ext_mod._progress_blocks_mutation(
+            {"status": "pulling", "started_at": old, "updated_at": now},
+        ) is True
+
+    def test_update_blocks_unknown_state_without_force(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user_dir, _installed = self._prepare(
+            monkeypatch, tmp_path,
+        )
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+
+        def unreadable(_path):
+            raise OSError("unreadable install")
+
+        monkeypatch.setattr(ext_mod, "_extension_tree_digest", unreadable)
+        blocked = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["detail"]["code"] == "update_state_unknown"
+        assert blocked.json()["detail"]["force_available"] is True
+
+    def test_sync_config_requires_preserve_echo(self, monkeypatch):
+        from routers import extensions as ext_mod
+
+        monkeypatch.setattr(
+            ext_mod, "request_agent_json",
+            lambda *a, **k: {"status": "ok"},
+        )
+        assert ext_mod._call_agent_sync_config(
+            "my-ext", preserve_existing=True,
+        ) is False
+        assert ext_mod._call_agent_sync_config("my-ext") is True
+
+        monkeypatch.setattr(
+            ext_mod, "request_agent_json",
+            lambda *a, **k: {"status": "ok", "preserve_existing": True},
+        )
+        assert ext_mod._call_agent_sync_config(
+            "my-ext", preserve_existing=True,
+        ) is True

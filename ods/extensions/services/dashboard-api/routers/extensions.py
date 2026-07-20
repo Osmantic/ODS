@@ -195,6 +195,26 @@ def _is_stale(iso_timestamp: str, max_age_seconds: int) -> bool:
         return True
 
 
+def _progress_blocks_mutation(progress: dict | None) -> bool:
+    """True while an in-flight operation should block update/rollback.
+
+    A routine synchronous start writes an initial 'pulling' record that the
+    agent's sync path never advances or clears; mirroring
+    _compute_extension_status, a never-advanced record (started_at ==
+    updated_at) older than 2 minutes is treated as abandoned instead of
+    blocking mutations for the full progress TTL.
+    """
+    if not progress:
+        return False
+    if progress.get("status") not in {"pulling", "setup_hook", "starting"}:
+        return False
+    started = progress.get("started_at", "")
+    updated = progress.get("updated_at", "")
+    if started and started == updated and _is_stale(updated, max_age_seconds=120):
+        return False
+    return True
+
+
 def _read_progress(service_id: str) -> dict | None:
     """Read progress file for a service. Returns None if no active progress."""
     progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
@@ -899,7 +919,7 @@ def _call_agent_sync_config(service_id: str, *, preserve_existing: bool = False)
     was unreachable.
     """
     try:
-        request_agent_json(
+        response = request_agent_json(
             "POST",
             "/v1/extension/sync_config",
             payload={
@@ -908,6 +928,20 @@ def _call_agent_sync_config(service_id: str, *, preserve_existing: bool = False)
             },
             timeout=_AGENT_TIMEOUT,
         )
+        if preserve_existing and (
+            not isinstance(response, dict)
+            or response.get("preserve_existing") is not True
+        ):
+            # An agent that predates preserve_existing ignores the flag and
+            # full-copies definition defaults over user config (ODS
+            # self-upgrade window). Treat the missing echo as failure so the
+            # caller's recovery path runs instead of reporting a clean sync.
+            logger.warning(
+                "sync_config for %s did not confirm preserve_existing; "
+                "host agent is likely outdated — restart it and retry",
+                service_id,
+            )
+            return False
         return True
     except AgentHTTPError as exc:
         logger.warning(
@@ -1657,19 +1691,42 @@ def _restore_extension_backup(service_id: str) -> bool:
     swap_parent.mkdir(parents=True, exist_ok=True)
     swap_root = Path(tempfile.mkdtemp(prefix=f".{service_id}-rollback-", dir=swap_parent))
     current = swap_root / service_id
+    parked = False
     try:
         os.replace(dest, current)
         try:
             os.replace(backup, dest)
         except OSError:
-            os.replace(current, dest)
+            try:
+                os.replace(current, dest)
+            except OSError:
+                # Double failure: never delete the only remaining copy of
+                # the live definition — leave it parked for manual recovery.
+                parked = True
+                logger.error(
+                    "Rollback failed for %s and the live definition could "
+                    "not be re-seated; parked at %s",
+                    service_id, current,
+                )
             raise
         backup.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(current, backup)
+        try:
+            os.replace(current, backup)
+        except OSError:
+            # dest is already restored; only retaining the failed update as
+            # the new backup failed. Keep the tree for inspection and treat
+            # the restore itself as successful.
+            parked = True
+            logger.warning(
+                "Rollback restored %s but could not retain the replaced "
+                "definition; parked at %s",
+                service_id, current,
+            )
         _invalidate_extension_digest_cache(dest, backup, current)
         return True
     finally:
-        shutil.rmtree(swap_root, ignore_errors=True)
+        if not parked:
+            shutil.rmtree(swap_root, ignore_errors=True)
 
 
 def _start_extension_lifecycle(service_id: str) -> tuple[bool, list[str]]:
@@ -1763,11 +1820,20 @@ def update_extension(
     backup = _extension_backup_dir(service_id)
     with _extensions_lock():
         progress = _read_progress(service_id)
-        if progress and progress.get("status") in {"pulling", "setup_hook", "starting"}:
+        if _progress_blocks_mutation(progress):
             raise HTTPException(status_code=409, detail="Extension operation is still in progress")
         state = _library_update_state(service_id)
         if state["update_status"] == "current" and not force:
             raise HTTPException(status_code=409, detail="Extension is already current")
+        if state["update_status"] == "unknown" and not force:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Installed files could not be inspected; confirm update to replace them with the library version",
+                    "code": "update_state_unknown",
+                    "force_available": True,
+                },
+            )
         if state["update_status"] == "untracked" and not force:
             raise HTTPException(
                 status_code=409,
@@ -1811,17 +1877,40 @@ def update_extension(
                 raise HTTPException(status_code=409, detail="Extension backup path is a symlink")
             if backup.exists() and not backup.is_dir():
                 raise HTTPException(status_code=409, detail="Extension backup path is not a directory")
+            # Retire the prior rollback point aside instead of deleting it
+            # before the new update has committed: a failure between here
+            # and the staged->dest swap must leave the old backup intact.
+            retired: Path | None = None
             if backup.exists():
-                shutil.rmtree(backup)
+                retire_parent = USER_EXTENSIONS_DIR / ".tmp"
+                if retire_parent.is_symlink():
+                    raise HTTPException(status_code=409, detail="Extension tmp path is a symlink")
+                retire_parent.mkdir(parents=True, exist_ok=True)
+                retired = Path(tempfile.mkdtemp(
+                    prefix=f".{service_id}-retired-backup-", dir=retire_parent,
+                )) / service_id
+                os.replace(backup, retired)
             backup.parent.mkdir(parents=True, exist_ok=True)
             os.replace(dest, backup)
             try:
                 os.replace(staged, dest)
             except OSError:
                 os.replace(backup, dest)
+                if retired is not None:
+                    try:
+                        os.replace(retired, backup)
+                        shutil.rmtree(retired.parent, ignore_errors=True)
+                    except OSError:
+                        logger.error(
+                            "Update failed for %s and the prior backup could "
+                            "not be re-seated; parked at %s",
+                            service_id, retired,
+                        )
                 raise
             _invalidate_extension_digest_cache(dest, backup, staged)
             _call_agent_invalidate_compose_cache()
+            if retired is not None:
+                shutil.rmtree(retired.parent, ignore_errors=True)
 
     ext = next((entry for entry in EXTENSION_CATALOG if entry.get("id") == service_id), {})
     one_shot = _is_one_shot_extension(ext)
@@ -1880,7 +1969,7 @@ def rollback_extension_update(
     backup = _extension_backup_dir(service_id)
     with _extensions_lock():
         progress = _read_progress(service_id)
-        if progress and progress.get("status") in {"pulling", "setup_hook", "starting"}:
+        if _progress_blocks_mutation(progress):
             raise HTTPException(status_code=409, detail="Extension operation is still in progress")
         if (not dest.is_dir() or dest.is_symlink()
                 or not backup.is_dir() or backup.is_symlink()):

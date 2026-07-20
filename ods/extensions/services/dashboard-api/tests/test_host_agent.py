@@ -1391,6 +1391,7 @@ class TestSyncExtensionConfigWire:
         try:
             status, _body = self._post(port, "fakesvc", preserve_existing=True)
             assert status == 200
+            assert _body.get("preserve_existing") is True
             assert (target / "settings.yaml").read_text(encoding="utf-8") == "server: customized\n"
             assert (target / "new.yaml").read_text(encoding="utf-8") == "new: default\n"
         finally:

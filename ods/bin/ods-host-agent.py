@@ -3578,6 +3578,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             "service_id": sid,
             "synced": synced,
             "skipped": out_of_scope,
+            # Echo the honored mode so callers can detect an agent that
+            # predates preserve_existing instead of silently full-copying
+            # over user config during update/rollback.
+            "preserve_existing": bool(preserve_existing),
         })
 
     def _handle_logs(self):
