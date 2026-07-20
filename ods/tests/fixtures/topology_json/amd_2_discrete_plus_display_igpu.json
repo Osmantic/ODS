@@ -1,0 +1,67 @@
+{
+  "vendor": "amd",
+  "gpu_count": 3,
+  "driver_version": "6.16.13",
+  "numa": {},
+  "gpus": [
+    {
+      "index": 0,
+      "name": "AMD GPU (0x7551)",
+      "memory_gb": 31.9,
+      "pcie_gen": "32",
+      "pcie_width": "x16",
+      "uuid": "99ff7551-0000-1000-80e9-5af35d2fae9c",
+      "gfx_version": "gfx1201",
+      "render_node": "128",
+      "memory_type": "discrete",
+      "pci_bdf": "0000:03:00.0"
+    },
+    {
+      "index": 1,
+      "name": "AMD GPU (0x7551)",
+      "memory_gb": 31.9,
+      "pcie_gen": "32",
+      "pcie_width": "x16",
+      "uuid": "43ff7551-0000-1000-8099-fbcfe5fc05fd",
+      "gfx_version": "gfx1201",
+      "render_node": "129",
+      "memory_type": "discrete",
+      "pci_bdf": "0000:07:00.0"
+    },
+    {
+      "index": 2,
+      "name": "AMD GPU (0x13c0)",
+      "memory_gb": 2.0,
+      "pcie_gen": "16",
+      "pcie_width": "x16",
+      "uuid": "00ff13c0-0000-1000-8000-000000000000",
+      "gfx_version": "gfx1036",
+      "render_node": "130",
+      "memory_type": "unified",
+      "pci_bdf": "0000:7e:00.0"
+    }
+  ],
+  "links": [
+    {
+      "gpu_a": 0,
+      "gpu_b": 1,
+      "link_type": "PCIE",
+      "link_label": "PCIe-HostBridge",
+      "rank": 30
+    },
+    {
+      "gpu_a": 0,
+      "gpu_b": 2,
+      "link_type": "PCIE",
+      "link_label": "PCIe-HostBridge",
+      "rank": 30
+    },
+    {
+      "gpu_a": 1,
+      "gpu_b": 2,
+      "link_type": "PCIE",
+      "link_label": "PCIe-HostBridge",
+      "rank": 30
+    }
+  ]
+}

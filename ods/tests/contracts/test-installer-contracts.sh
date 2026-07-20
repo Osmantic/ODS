@@ -294,8 +294,16 @@ grep -q '_env_set "HSA_OVERRIDE_GFX_VERSION" "11.5.1"' ods-cli \
   || { echo "[FAIL] ods-cli must set HSA override to 11.5.1 for gfx1151"; exit 1; }
 grep -q '_env_unset "HSA_OVERRIDE_GFX_VERSION"' ods-cli \
   || { echo "[FAIL] ods-cli must remove HSA override for non-Strix AMD GPUs"; exit 1; }
-grep -q '_env_unset "LEMONADE_LLAMACPP_ROCM_BIN"' ods-cli \
-  || { echo "[FAIL] ods-cli must remove gfx1151-only custom binary for non-Strix AMD GPUs"; exit 1; }
+# LEMONADE_LLAMACPP_ROCM_BIN is NOT gfx1151-only: /opt/llama-custom is the only ROCm
+# stack in the Lemonade image and is built for the detected AMDGPU_TARGET. Unsetting it
+# sends Lemonade to rocm_bin="builtin", which guesses the arch from the GPU marketing
+# name and 404s on unrecognised targets — reassigning GPUs must never kill inference.
+if grep -q '_env_unset "LEMONADE_LLAMACPP_ROCM_BIN"' ods-cli; then
+  echo "[FAIL] ods-cli must never unset LEMONADE_LLAMACPP_ROCM_BIN on reassign"
+  exit 1
+fi
+grep -q '_env_set "LEMONADE_LLAMACPP_ROCM_BIN" "/opt/llama-custom/llama-server"' ods-cli \
+  || { echo "[FAIL] ods-cli must pin the custom ROCm llama-server binary"; exit 1; }
 if grep -q '_env_set "HSA_OVERRIDE_GFX_VERSION" "\$gfx_ver"' ods-cli; then
   echo "[FAIL] ods-cli must not write raw gfx ids such as gfx942 to HSA_OVERRIDE_GFX_VERSION"
   exit 1

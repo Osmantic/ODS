@@ -200,6 +200,61 @@ def test_write_mode_writes_under_output_root() -> None:
         assert "openai/extra.Written.gguf" in target.read_text(encoding="utf-8")
 
 
+def _hipfire_args(*extra: str) -> list[str]:
+    return [
+        "--surface", "litellm-lemonade",
+        "--ods-mode", "lemonade",
+        "--gpu-backend", "amd",
+        "--gguf-file", "Model.gguf",
+        "--litellm-key", "sk-test",
+        *extra,
+    ]
+
+
+def test_hipfire_disabled_renders_stock_routes() -> None:
+    payload = run_renderer(*_hipfire_args())
+    content = file_by_surface(payload, "litellm-lemonade")["content"]
+    assert "hipfire" not in content
+    assert content.count("model_name") == 2
+
+
+def test_hipfire_active_routes_default_to_hipfire() -> None:
+    payload = run_renderer(*_hipfire_args(
+        "--hipfire-enabled", "--hipfire-active",
+        "--hipfire-model", "qwen36-35b-a3b.mq4",
+    ))
+    content = file_by_surface(payload, "litellm-lemonade")["content"]
+    hipfire_route = (
+        "    litellm_params:\n"
+        "      model: openai/qwen36-35b-a3b.mq4\n"
+        "      api_base: http://hipfire:11435/v1\n"
+        "      api_key: not-needed\n"
+    )
+    assert f"- model_name: default\n{hipfire_route}" in content
+    assert f'- model_name: "*"\n{hipfire_route}' in content
+    assert f"- model_name: hipfire\n{hipfire_route}" in content
+    # Explicit escape hatch back to Lemonade/llama-server survives.
+    assert "- model_name: lemonade\n    litellm_params:\n      model: openai/extra.Model.gguf" in content
+    assert "api_key: sk-test" in content
+
+
+def test_hipfire_enabled_inactive_keeps_default_on_lemonade() -> None:
+    payload = run_renderer(*_hipfire_args(
+        "--hipfire-enabled",
+        "--hipfire-model", "qwen36-35b-a3b.mq4",
+    ))
+    content = file_by_surface(payload, "litellm-lemonade")["content"]
+    assert "- model_name: default\n    litellm_params:\n      model: openai/extra.Model.gguf" in content
+    # hipfire stays reachable by name even when it is not the default route.
+    assert "- model_name: hipfire\n    litellm_params:\n      model: openai/qwen36-35b-a3b.mq4" in content
+
+
+def test_hipfire_flag_without_model_renders_stock() -> None:
+    payload = run_renderer(*_hipfire_args("--hipfire-enabled"))
+    content = file_by_surface(payload, "litellm-lemonade")["content"]
+    assert "hipfire" not in content
+
+
 def main() -> int:
     tests = [
         test_all_surfaces_render,
@@ -210,6 +265,10 @@ def main() -> int:
         test_hermes_uses_lemonade_model_id_for_amd,
         test_perplexica_default_model_matches_route,
         test_write_mode_writes_under_output_root,
+        test_hipfire_disabled_renders_stock_routes,
+        test_hipfire_active_routes_default_to_hipfire,
+        test_hipfire_enabled_inactive_keeps_default_on_lemonade,
+        test_hipfire_flag_without_model_renders_stock,
     ]
     for test in tests:
         test()

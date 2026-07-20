@@ -151,6 +151,10 @@ ods model list
 ods model swap T3
 ```
 
+In lemonade mode, `ods model swap` also regenerates `config/litellm/lemonade.yaml`
+(which pins the model by name) and restarts `ods-litellm`, so clients pick up the
+new model without manual config edits.
+
 For Dashboard downloads, loading catalog models, and manual GGUF swaps, see
 [MODEL-MANAGEMENT.md](MODEL-MANAGEMENT.md).
 

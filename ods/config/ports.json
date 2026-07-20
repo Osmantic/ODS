@@ -130,6 +130,14 @@
       "internal_port": 3003,
       "compose_managed": false,
       "manifest_service": "opencode"
+    },
+    {
+      "env_var": "HIPFIRE_PORT",
+      "external_default": 11435,
+      "service_id": "hipfire",
+      "internal_port": 11435,
+      "manifest_service": "hipfire",
+      "include_in_example": false
     }
   ]
 }

@@ -114,6 +114,9 @@ ENABLE_PRIVACY_SHIELD=true
 ENABLE_ODS_PROXY=false
 ENABLE_TAILSCALE=false
 ENABLE_BRAVE_SEARCH=false
+# hipfire: RDNA-native inference engine (AMD only). Off by default — it needs a
+# hand-built image and an MQ4 model, neither of which the installer provides.
+ENABLE_HIPFIRE=false
 # Langfuse (LLM observability) defaults OFF on all tiers because its
 # clickhouse + postgres + minio stack adds ~500MB baseline memory that is
 # nontrivial even on Tier 3+ systems. Users opt in via --langfuse, --all,
@@ -163,6 +166,8 @@ Options:
     --no-openclaw     Disable OpenClaw
     --comfyui         Enable ComfyUI image generation
     --no-comfyui      Disable ComfyUI image generation (saves ~34GB)
+    --hipfire         Enable hipfire (RDNA-native LLM engine, AMD only)
+    --no-hipfire      Disable hipfire (default)
     --odsforge      Deprecated no-op; ODSForge has been removed
     --no-odsforge   Deprecated no-op; ODSForge has been removed
     --langfuse        Enable Langfuse LLM observability (off by default)
@@ -222,6 +227,8 @@ while [[ $# -gt 0 ]]; do
         --no-openclaw) ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
         --comfyui) ENABLE_COMFYUI=true; shift ;;
         --no-comfyui) ENABLE_COMFYUI=false; shift ;;
+        --hipfire) ENABLE_HIPFIRE=true; shift ;;
+        --no-hipfire) ENABLE_HIPFIRE=false; shift ;;
         --odsforge) warn "ODSForge has been removed; ignoring --odsforge"; shift ;;
         --no-odsforge) warn "ODSForge has been removed; ignoring --no-odsforge"; shift ;;
         --langfuse) ENABLE_LANGFUSE=true; shift ;;

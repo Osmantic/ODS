@@ -435,6 +435,15 @@ raise SystemExit(1)' 2>/dev/null && return 0
     OPENCODE_SERVER_PASSWORD=$(_env_get OPENCODE_SERVER_PASSWORD "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
     SEARXNG_SECRET=$(_env_get SEARXNG_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
 
+    # hipfire (RDNA-native inference engine). Same preserve-on-reinstall rule
+    # as LANGFUSE_ENABLED below; HIPFIRE_MODEL/HIPFIRE_ACTIVE are written by
+    # dashboard model activation (host-agent), never by the installer, so
+    # regenerating .env without them would disable the engine and orphan its
+    # LiteLLM routing on the next render.
+    HIPFIRE_ENABLED_VALUE=$(_env_get ENABLE_HIPFIRE "${ENABLE_HIPFIRE:-false}")
+    HIPFIRE_MODEL_VALUE=$(_env_get HIPFIRE_MODEL "")
+    HIPFIRE_ACTIVE_VALUE=$(_env_get HIPFIRE_ACTIVE "false")
+
     # Langfuse (LLM Observability). LANGFUSE_ENABLED mirrors the install-time
     # ENABLE_LANGFUSE toggle, falling back to whatever the user had in .env on
     # re-install so manual post-install `ods enable langfuse` edits survive.
@@ -734,7 +743,18 @@ COMFYUI_CPU_RESERVATION=${COMFYUI_CPU_RESERVATION}
 $(if [[ "$GPU_BACKEND" == "amd" ]]; then
     # Read gfx target from topology detection. Falls back to gfx1151 (Strix Halo)
     # if the topology probe failed — preserves prior behavior for the OG target.
-    _amd_gfx_detected=$(echo "${GPU_TOPOLOGY_JSON:-{\}}" | jq -r '[.gpus[]?.gfx_version] | unique | .[0] // "gfx1151"' 2>/dev/null || echo "gfx1151")
+    #
+    # Select the gfx of the GPU with the most VRAM, which is the card inference will
+    # actually run on. Do NOT use `unique | .[0]`: unique sorts ascending, so on a
+    # mixed iGPU + dGPU box the weakest device wins on a lexicographic accident
+    # (["gfx1036","gfx1201"] -> gfx1036, the Raphael display iGPU). That silently
+    # compiles the entire inference engine for a GPU it is never scheduled onto, and
+    # ROCm ships no BLAS kernels for those iGPU targets at all.
+    _amd_gfx_detected=$(echo "${GPU_TOPOLOGY_JSON:-{\}}" | jq -r '
+        [.gpus[]? | select(.gfx_version != null and .gfx_version != "unknown")]
+        | sort_by(.memory_gb // 0)
+        | reverse
+        | .[0].gfx_version // "gfx1151"' 2>/dev/null || echo "gfx1151")
     [[ -z "$_amd_gfx_detected" || "$_amd_gfx_detected" == "null" || "$_amd_gfx_detected" == "unknown" ]] && _amd_gfx_detected="gfx1151"
 
     # HSA_OVERRIDE_GFX_VERSION is a Strix Halo (gfx1151) workaround — that target
@@ -748,18 +768,30 @@ $(if [[ "$GPU_BACKEND" == "amd" ]]; then
         *)       _amd_hsa_override="# HSA_OVERRIDE_GFX_VERSION unset — $_amd_gfx_detected is natively supported" ;;
     esac
 
-    # The custom llama-server binary at /opt/llama-custom is built with Strix
-    # Halo-specific patches (MMQ tile size reduced from 64 to 48 for gfx1151's
-    # register file). Pointing Lemonade at it from any other architecture either
-    # ISA-faults (kernels compiled for gfx1151) or runs a perf-regressed binary.
-    # Only opt-in when the host is actually Strix Halo; otherwise leave unset so
-    # docker-compose.amd.yml's empty default lets Lemonade use its bundled
-    # ROCm-aware binary.
-    if [[ "$_amd_gfx_detected" == "gfx1151" ]]; then
-        _amd_custom_bin="LEMONADE_LLAMACPP_ROCM_BIN=/opt/llama-custom/llama-server"
-    else
-        _amd_custom_bin="# LEMONADE_LLAMACPP_ROCM_BIN unset — custom binary is gfx1151-only; Lemonade uses bundled binary on $_amd_gfx_detected"
-    fi
+    # Point Lemonade at the custom llama-server binary we build in Dockerfile.amd.
+    #
+    # This used to be gated to gfx1151 on the theory that the custom binary carried
+    # Strix-Halo-only patches, and that on other architectures "Lemonade uses its
+    # bundled ROCm-aware binary." That second half is false: the Lemonade image ships
+    # no ROCm userspace at all (no rocminfo, no HIP runtime). Left unset, Lemonade
+    # logs "failed to initialize ROCm: no ROCm-capable device is detected", downloads
+    # the *Vulkan* llama.cpp build, and runs inference on radv — or fails outright.
+    #
+    # /opt/llama-custom is the only ROCm stack in the container: Dockerfile.amd copies
+    # libhsa-runtime64, libamdhip64, librocblas and the target's Tensile kernels in
+    # alongside the binary. It is built for ${AMDGPU_TARGET} = $_amd_gfx_detected, and
+    # the gfx1151 MMQ patch is gated to gfx1151, so it is correct for every target.
+    _amd_custom_bin="LEMONADE_LLAMACPP_ROCM_BIN=/opt/llama-custom/llama-server"
+
+    # HSA_XNACK enables pageable/unified memory access. It is an APU feature — it
+    # matters on Strix Halo, where the GPU shares system RAM. On discrete cards it is
+    # meaningless at best, so only set it for the integrated targets.
+    case "$_amd_gfx_detected" in
+        gfx1151|gfx1150|gfx1103|gfx1036|gfx1035)
+            _amd_xnack="HSA_XNACK=1" ;;
+        *)
+            _amd_xnack="# HSA_XNACK unset — APU/unified-memory feature, N/A on discrete $_amd_gfx_detected" ;;
+    esac
 
     cat << AMD_ENV
 #=== GPU Group IDs (for container device access) ===
@@ -769,16 +801,21 @@ RENDER_GID=$(getent group render 2>/dev/null | cut -d: -f3 || echo 992)
 #=== AMD ROCm Settings (gfx target detected from topology) ===
 LEMONADE_SERVER_IMAGE=${LEMONADE_SERVER_IMAGE:-${BACKEND_LEMONADE_CONTAINER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0}}
 ${_amd_hsa_override}
-HSA_XNACK=1
+${_amd_xnack}
 ROCBLAS_USE_HIPBLASLT=1
 AMDGPU_TARGET=${_amd_gfx_detected}
 LLAMA_CPP_REF=b8763
 ${_amd_custom_bin}
+# Backend selector (becomes --llamacpp). NOT "auto": auto re-runs Lemonade's own gfx
+# detection, which maps GPU marketing names to arches and does not recognise every
+# card (e.g. "AMD Radeon AI PRO R9700"). On a miss it silently falls back to the
+# Vulkan build on radv. We already know the arch and ship a matching ROCm binary.
+LEMONADE_LLAMACPP=rocm
 
 #=== LiteLLM → Lemonade outbound key (AMD only) ===
 LITELLM_LEMONADE_API_KEY=${LITELLM_LEMONADE_API_KEY}
 AMD_ENV
-    unset _amd_gfx_detected _amd_hsa_override _amd_custom_bin
+    unset _amd_gfx_detected _amd_hsa_override _amd_custom_bin _amd_xnack
 fi)
 $(if [[ "$GPU_BACKEND" == "sycl" ]]; then cat << INTEL_ENV
 #=== GPU Group IDs (for container device access) ===
@@ -885,6 +922,14 @@ LANGFUSE_INIT_USER_PASSWORD=${LANGFUSE_INIT_USER_PASSWORD}
 # ── Image Generation ──
 ENABLE_IMAGE_GENERATION=${ENABLE_COMFYUI:-true}
 
+# ── hipfire (RDNA-native inference engine) ──
+ENABLE_HIPFIRE=${HIPFIRE_ENABLED_VALUE}
+$(if [[ -n "$HIPFIRE_MODEL_VALUE" ]]; then cat << HIPFIRE_ENV
+HIPFIRE_MODEL=${HIPFIRE_MODEL_VALUE}
+HIPFIRE_ACTIVE=${HIPFIRE_ACTIVE_VALUE}
+HIPFIRE_ENV
+fi)
+
 #=== Multi-GPU Settings ===
 GPU_COUNT=${GPU_COUNT:-1}
 GPU_ASSIGNMENT_JSON_B64=${GPU_ASSIGNMENT_JSON_B64:-}
@@ -953,6 +998,18 @@ ENV_EOF
         if [[ -z "$_renderer_py" ]]; then
             _renderer_py="python3"
         fi
+        # hipfire routing must survive installer re-renders exactly as it
+        # survives host-agent re-renders — pass the preserved pins through,
+        # or a re-install over a hipfire deployment silently orphans the
+        # engine's routes. Fresh installs have no HIPFIRE_MODEL, so this
+        # adds no flags there.
+        _hipfire_render_args=()
+        if [[ "$HIPFIRE_ENABLED_VALUE" == "true" && -n "$HIPFIRE_MODEL_VALUE" ]]; then
+            _hipfire_render_args+=(--hipfire-enabled --hipfire-model "$HIPFIRE_MODEL_VALUE")
+            if [[ "$HIPFIRE_ACTIVE_VALUE" == "true" ]]; then
+                _hipfire_render_args+=(--hipfire-active)
+            fi
+        fi
         if [[ -f "$SCRIPT_DIR/scripts/render-runtime-configs.py" ]] && command -v "$_renderer_py" >/dev/null 2>&1; then
             if "$_renderer_py" "$SCRIPT_DIR/scripts/render-runtime-configs.py" \
                 --surface litellm-lemonade \
@@ -963,13 +1020,58 @@ ENV_EOF
                 --lemonade-api-base "$LEMONADE_CONTAINER_API_BASE_VALUE" \
                 --litellm-key "$LITELLM_LEMONADE_API_KEY" \
                 --output-root "$INSTALL_DIR" \
+                "${_hipfire_render_args[@]}" \
                 --write >> "$LOG_FILE" 2>&1; then
                 _renderer_ok=true
             else
                 warn "Runtime config renderer failed for Lemonade; falling back to inline writer"
             fi
         fi
-        if [[ "$_renderer_ok" != "true" ]]; then
+        if [[ "$_renderer_ok" != "true" && "$HIPFIRE_ENABLED_VALUE" == "true" && -n "$HIPFIRE_MODEL_VALUE" ]]; then
+            # Inline fallback, hipfire-aware: mirrors the renderer's semantics
+            # (named routes for both engines; default follows HIPFIRE_ACTIVE)
+            # and the host-agent's own fallback writer.
+            _lemonade_model_ref="extra.${_active_gguf}"
+            if [[ -n "$_lemonade_model_id" ]]; then
+                _lemonade_model_ref="$_lemonade_model_id"
+            fi
+            _hipfire_params="    litellm_params:
+      model: openai/${HIPFIRE_MODEL_VALUE}
+      api_base: http://hipfire:11435/v1
+      api_key: not-needed"
+            _lemonade_params="    litellm_params:
+      model: openai/${_lemonade_model_ref}
+      api_base: ${LEMONADE_CONTAINER_API_BASE_VALUE}
+      api_key: ${LITELLM_LEMONADE_API_KEY}
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false"
+            _default_params="$_lemonade_params"
+            if [[ "$HIPFIRE_ACTIVE_VALUE" == "true" ]]; then
+                _default_params="$_hipfire_params"
+            fi
+            cat > "$INSTALL_DIR/config/litellm/lemonade.yaml" << LITELLM_HIPFIRE_EOF
+model_list:
+  - model_name: default
+${_default_params}
+
+  - model_name: hipfire
+${_hipfire_params}
+
+  - model_name: lemonade
+${_lemonade_params}
+
+  - model_name: "*"
+${_default_params}
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  request_timeout: 900
+  stream_timeout: 900
+LITELLM_HIPFIRE_EOF
+            unset _lemonade_model_ref _hipfire_params _lemonade_params _default_params
+        elif [[ "$_renderer_ok" != "true" ]]; then
             cat > "$INSTALL_DIR/config/litellm/lemonade.yaml" << LITELLM_EOF
 model_list:
   - model_name: default

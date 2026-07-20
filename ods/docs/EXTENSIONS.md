@@ -315,15 +315,25 @@ services:
   comfyui:
     image: ignatberesnev/comfyui-gfx1151:v0.2
     container_name: ods-comfyui
+    restart: unless-stopped
     devices:
       - /dev/dri:/dev/dri
       - /dev/kfd:/dev/kfd
     group_add:
       - "${VIDEO_GID:-44}"
       - "${RENDER_GID:-992}"
+    security_opt:
+      - no-new-privileges:true
+    shm_size: 8g
     environment:
-      - HSA_OVERRIDE_GFX_VERSION=11.5.1
-    # ... ports, volumes, healthcheck, deploy, etc.
+      # Deliberately no HSA_OVERRIDE_GFX_VERSION and no PYTORCH_TUNABLEOP_ENABLED —
+      # see the comments in compose.amd.yaml for the full rationale.
+      - MIOPEN_FIND_MODE=FAST
+      - TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+    volumes:
+      - ./data/comfyui/ComfyUI:/opt/ComfyUI:z
+      - ./data/comfyui/miopen:/root/.config/miopen:z
+    # ... ports, command, healthcheck, deploy, etc.
 ```
 
 ### GPU Overlay Quick Reference
@@ -341,7 +351,7 @@ services:
 AMD ROCm requires additional container configuration compared to NVIDIA:
 - **Device passthrough:** `/dev/dri` (rendering) and `/dev/kfd` (compute)
 - **Group membership:** Container user must be in the host's `video` and `render` groups
-- **GFX version override:** Set `HSA_OVERRIDE_GFX_VERSION` to match your GPU (check with `rocminfo | grep gfx`)
+- **GFX version override:** Leave `HSA_OVERRIDE_GFX_VERSION` unset. Never set it to an arch that is not your card's own: ROCm will hand the GPU wrong-arch kernels, which do not just run slowly — they fault the card (`HW Exception ... GPU Hang`). Never define it as an empty string either: ROCm checks whether the variable is *defined*, not whether it is non-empty, and then enumerates zero GPUs. Modern images ship kernels for the native arch (check yours with `rocminfo | grep gfx`), so the spoof is unnecessary.
 - **Security relaxation:** `cap_add: SYS_PTRACE` and `seccomp:unconfined` may be needed for ROCm profiling
 
 ## Compatibility Checklist

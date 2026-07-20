@@ -1,0 +1,45 @@
+services:
+  hipfire:
+    build:
+      context: ./extensions/services/hipfire
+      dockerfile: Dockerfile.amd
+      args:
+        AMDGPU_TARGET: "${AMDGPU_TARGET:-gfx1201}"
+        HIPFIRE_REF: "${HIPFIRE_REF:-5d3683a7847391cf91bd76304188c926737d4146}"
+    image: ods-hipfire:latest
+    container_name: ods-hipfire
+    restart: unless-stopped
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-992}"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # Bare pass-through, NO "=". Writing "HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-}"
+      # would DEFINE the var as an empty string; ROCm treats a defined-but-empty override as a
+      # malformed override request and enumerates ZERO devices. That is the exact bug that kept
+      # ODS's own llama-server on a Vulkan fallback. hipfire needs no override on gfx1201 anyway
+      # (upstream refuses to depend on lying about the hardware identity).
+      - HSA_OVERRIDE_GFX_VERSION
+      - HIPFIRE_MODEL=${HIPFIRE_MODEL:-qwen36-35b-a3b.mq4}
+      # 0 = never evict. The default (300s) frees VRAM when idle and forces a
+      # 30s-2min cold reload on the next request — wrong behind LiteLLM.
+      - HIPFIRE_IDLE_TIMEOUT=${HIPFIRE_IDLE_TIMEOUT:-0}
+    volumes:
+      - ./data/hipfire/models:/opt/hipfire/.hipfire/models:ro,z
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HIPFIRE_PORT:-11435}:11435"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:11435/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

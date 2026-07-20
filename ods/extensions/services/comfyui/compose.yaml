@@ -1,6 +1,6 @@
 # ComfyUI — Image Generation
 # This base stub is merged with a GPU-specific overlay:
-#   compose.amd.yaml   (AMD ROCm, gfx1151)
+#   compose.amd.yaml   (AMD ROCm, native GPU arch)
 #   compose.nvidia.yaml (NVIDIA CUDA)
 # The GPU overlay provides the full service definition.
 # This file exists so the registry can detect comfyui as enabled.

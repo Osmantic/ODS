@@ -4539,6 +4539,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                 json_response(self, 404, {"error": f"Model '{model_id}' not found in library or local GGUF files"})
                 return
 
+        if model.get("engine") == "hipfire":
+            self._do_hipfire_activate(model_id, model)
+            return
+
         gguf_file = model.get("gguf_file", "")
         llm_model_name = model.get("llm_model_name", model_id)
         if not _valid_gguf_filename(gguf_file):
@@ -4972,6 +4976,11 @@ class AgentHandler(BaseHTTPRequestHandler):
                         if same_lemonade_target
                         else ""
                     )
+                # Loading a GGUF is an explicit engine choice: text routes back to
+                # llama-server/Lemonade. hipfire stays resident and reachable via
+                # the "hipfire" model name; activating its catalog entry flips back.
+                if (env_pre.get("ENABLE_HIPFIRE") or "").strip().lower() == "true":
+                    updates["HIPFIRE_ACTIVE"] = "false"
                 runtime_keys = {
                     "LLAMA_PARALLEL",
                     "LLAMA_ARG_FLASH_ATTN",
@@ -5299,6 +5308,124 @@ class AgentHandler(BaseHTTPRequestHandler):
             if mutation_started:
                 payload["rolled_back"] = rolled_back
             json_response(self, 500, payload)
+
+    def _do_hipfire_activate(self, model_id: str, model: dict):
+        """Activate a hipfire-engine model — called with _model_activate_lock held.
+
+        Pins the model in .env, recreates the hipfire container (its entrypoint
+        translates HIPFIRE_MODEL into `hipfire config set` and pulls weights if
+        missing), re-renders LiteLLM routing so `default` points at hipfire, and
+        health-gates before committing. llama-server is left untouched — it keeps
+        serving vision and the explicit "lemonade" route.
+        """
+        import time
+
+        env_path = INSTALL_DIR / ".env"
+        lemonade_yaml = INSTALL_DIR / "config" / "litellm" / "lemonade.yaml"
+
+        env_pre = load_env(env_path)
+        if (env_pre.get("GPU_BACKEND") or "").lower() != "amd":
+            json_response(self, 400, {"error": "hipfire models require the AMD backend"})
+            return
+        if (env_pre.get("ENABLE_HIPFIRE") or "").strip().lower() != "true":
+            json_response(self, 400, {"error": "hipfire extension is not enabled (set ENABLE_HIPFIRE=true)"})
+            return
+        model_file = (model.get("model_file") or "").strip()
+        if not model_file:
+            json_response(self, 400, {"error": f"Model '{model_id}' has no hipfire model_file"})
+            return
+        if os.environ.get("ODS_HOST_INSTALL_DIR"):
+            # Recreating hipfire needs compose with host-resolved bind mounts;
+            # a containerized agent cannot provide that (same constraint as
+            # _recreate_llama_server, which hipfire has no equivalent of yet).
+            json_response(self, 501, {"error": "hipfire activation requires the host-native agent"})
+            return
+
+        env_backup: str | None = None
+        lemonade_backup: str | None = None
+        committed = False
+
+        def restore_backups():
+            if env_backup is not None:
+                env_path.write_text(env_backup, encoding="utf-8")
+            if lemonade_backup is not None:
+                lemonade_yaml.write_text(lemonade_backup, encoding="utf-8")
+
+        try:
+            env_backup = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+            lemonade_backup = lemonade_yaml.read_text(encoding="utf-8") if lemonade_yaml.exists() else None
+
+            _update_env_keys(env_path, {"HIPFIRE_MODEL": model_file, "HIPFIRE_ACTIVE": "true"})
+            if lemonade_yaml.exists():
+                _write_lemonade_config(INSTALL_DIR, env_pre.get("GGUF_FILE", ""))
+
+            _compose_recreate_hipfire()
+
+            # Health-gate: /health returns 503 until the model is resident.
+            # A cold MQ4 load takes minutes (manifest health_timeout: 300).
+            port = env_pre.get("HIPFIRE_PORT", "11435") or "11435"
+            health_url = f"http://127.0.0.1:{port}/health"
+            logger.info("Waiting for hipfire health at %s", health_url)
+            healthy = False
+            time.sleep(5)
+            for attempt in range(60):
+                try:
+                    result = subprocess.run(
+                        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                         "--max-time", "5", health_url],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if result.stdout.strip() == "200":
+                        healthy = True
+                        logger.info("hipfire healthy after %d attempts", attempt + 1)
+                        break
+                except subprocess.TimeoutExpired:
+                    pass
+                if attempt % 6 == 0:
+                    logger.info("hipfire health attempt %d", attempt + 1)
+                time.sleep(5)
+
+            if healthy:
+                # LiteLLM reads its config once at boot — restart to pick up
+                # routing. An unchecked failure here would report "activated"
+                # while every client still talks to the old routing.
+                result = subprocess.run(["docker", "restart", "ods-litellm"],
+                                        capture_output=True, text=True, timeout=60)
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        "LiteLLM restart failed after hipfire came up healthy: "
+                        + ((result.stderr or result.stdout) or "").strip()
+                    )
+                committed = True
+                json_response(self, 200, {"status": "activated", "model_id": model_id, "engine": "hipfire"})
+            else:
+                logger.warning("hipfire activation failed — rolling back")
+                restore_backups()
+                _compose_recreate_hipfire()
+                json_response(self, 500, {"error": "hipfire health check failed — rolled back to previous model", "rolled_back": True})
+        except Exception as exc:
+            if committed:
+                json_response(self, 500, {"error": f"hipfire model activation failed: {exc}"})
+                return
+            logger.exception("hipfire activation failed — rolling back")
+            rolled_back = False
+            try:
+                restore_backups()
+                # Restoring the files is not enough: the container may already
+                # be recreated on the new pin (or be down entirely). Recreate
+                # on the restored pin so runtime state matches the files, and
+                # give LiteLLM a best-effort restart so a half-applied restart
+                # from the commit path cannot leave it stopped.
+                _compose_recreate_hipfire()
+                rolled_back = True
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                logger.exception("Rollback failed during hipfire-activate failure handling")
+            try:
+                subprocess.run(["docker", "restart", "ods-litellm"],
+                               capture_output=True, timeout=60)
+            except (OSError, subprocess.SubprocessError):
+                logger.exception("LiteLLM restart failed during hipfire-activate rollback")
+            json_response(self, 500, {"error": f"hipfire model activation failed: {exc}", "rolled_back": rolled_back})
 
     def _handle_model_delete(self):
         """Delete a downloaded GGUF model file."""
@@ -6390,6 +6517,9 @@ def _render_runtime_config(
     lemonade_api_base: str,
     ods_mode: str,
     gpu_backend: str,
+    hipfire_enabled: bool = False,
+    hipfire_active: bool = False,
+    hipfire_model: str = "",
 ) -> bool:
     renderer = install_dir / "scripts" / "render-runtime-configs.py"
     if not renderer.exists():
@@ -6415,6 +6545,10 @@ def _render_runtime_config(
         str(install_dir),
         "--write",
     ]
+    if hipfire_enabled and hipfire_model:
+        cmd += ["--hipfire-enabled", "--hipfire-model", hipfire_model]
+        if hipfire_active:
+            cmd.append("--hipfire-active")
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -6459,6 +6593,11 @@ def _write_lemonade_config(
     if env.get("AMD_INFERENCE_LOCATION", "").lower() == "host":
         lemonade_port = env.get("AMD_INFERENCE_PORT", "8080") or "8080"
         lemonade_api_base = f"http://host.docker.internal:{lemonade_port}/api/v1"
+    # hipfire routing must survive every re-render, or a dashboard Load
+    # silently sends text back to llama-server while hipfire idles on VRAM.
+    hipfire_enabled = (env.get("ENABLE_HIPFIRE") or "").strip().lower() == "true"
+    hipfire_model = (env.get("HIPFIRE_MODEL") or "").strip()
+    hipfire_active = (env.get("HIPFIRE_ACTIVE") or "").strip().lower() == "true"
     if _render_runtime_config(
         install_dir,
         "litellm-lemonade",
@@ -6468,6 +6607,9 @@ def _write_lemonade_config(
         lemonade_api_base=lemonade_api_base,
         ods_mode=ods_mode,
         gpu_backend=gpu_backend,
+        hipfire_enabled=hipfire_enabled,
+        hipfire_active=hipfire_active,
+        hipfire_model=hipfire_model,
     ):
         logger.info(
             "Wrote lemonade.yaml via runtime renderer for model: %s",
@@ -6475,9 +6617,7 @@ def _write_lemonade_config(
         )
         return
 
-    content = (
-        "model_list:\n"
-        "  - model_name: \"*\"\n"
+    lemonade_route = (
         "    litellm_params:\n"
         f"      model: openai/{lemonade_model_id}\n"
         f"      api_base: {lemonade_api_base}\n"
@@ -6485,13 +6625,41 @@ def _write_lemonade_config(
         "      extra_body:\n"
         "        chat_template_kwargs:\n"
         "          enable_thinking: false\n"
-        "\n"
+    )
+    settings = (
         "litellm_settings:\n"
         "  drop_params: true\n"
         "  set_verbose: false\n"
         "  request_timeout: 900\n"
         "  stream_timeout: 900\n"
     )
+    if hipfire_enabled and hipfire_model:
+        hipfire_route = (
+            "    litellm_params:\n"
+            f"      model: openai/{hipfire_model}\n"
+            "      api_base: http://hipfire:11435/v1\n"
+            "      api_key: not-needed\n"
+        )
+        default_route = hipfire_route if hipfire_active else lemonade_route
+        content = (
+            "model_list:\n"
+            f"  - model_name: default\n{default_route}"
+            "\n"
+            f"  - model_name: hipfire\n{hipfire_route}"
+            "\n"
+            f"  - model_name: lemonade\n{lemonade_route}"
+            "\n"
+            f"  - model_name: \"*\"\n{default_route}"
+            "\n"
+            f"{settings}"
+        )
+    else:
+        content = (
+            "model_list:\n"
+            f"  - model_name: \"*\"\n{lemonade_route}"
+            "\n"
+            f"{settings}"
+        )
     _atomic_write_text(config_path, content)
     logger.info("Wrote lemonade.yaml for model: %s", lemonade_model_id)
 
@@ -7935,6 +8103,50 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
     logger.info("Native llama-server launched (pid %d, model %s)", proc.pid, gguf_file)
 
 
+def _update_env_keys(env_path: Path, updates: dict[str, str]):
+    """Update or append KEY=value lines in .env, preserving everything else."""
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    new_lines = []
+    seen = set()
+    for line in lines:
+        key = line.split("=", 1)[0] if "=" in line and not line.startswith("#") else None
+        if key and key in updates:
+            new_lines.append(f"{key}={updates[key]}")
+            seen.add(key)
+        else:
+            new_lines.append(line)
+    for key, val in updates.items():
+        if key not in seen:
+            new_lines.append(f"{key}={val}")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+def _compose_recreate_hipfire():
+    """Recreate the hipfire container so it picks up new .env values.
+
+    stop + up -d (not `docker restart`) because HIPFIRE_MODEL reaches the
+    container as compose-interpolated environment, which is baked in at
+    create time. Raises RuntimeError on any docker-layer failure so the
+    activate path surfaces it immediately.
+    """
+    compose_flags = resolve_compose_flags()
+    if not compose_flags:
+        raise RuntimeError("compose flags unavailable — cannot recreate hipfire")
+    for argv, timeout in (
+        (["docker", "compose"] + compose_flags + ["stop", "hipfire"], 120),
+        (["docker", "compose"] + compose_flags + ["up", "-d", "hipfire"], 300),
+    ):
+        result = subprocess.run(
+            argv, cwd=str(INSTALL_DIR),
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"{' '.join(argv[:3])} failed (exit {result.returncode}): "
+                f"{(result.stderr or '').strip()[:300]}"
+            )
+
+
 def _compose_restart_llama_server(env: dict):
     """Restart llama-server via docker compose (host-native path).
 
@@ -8477,6 +8689,50 @@ def _request_server_shutdown(server, signum=None):
     ).start()
 
 
+# Set on SIGTERM/SIGINT to distinguish a real shutdown from a rebind, which also
+# stops serve_forever(). Without this the serve loop would exit on a rebind, or
+# spin back up after a SIGTERM.
+_SHUTTING_DOWN = threading.Event()
+# Set by the rebind watchdog when the gateway moved. Under systemd, main() exits
+# nonzero instead of rebinding in place, so Restart=on-failure re-runs
+# ExecStartPre (scripts/sync-host-agent-firewall.sh) and the UFW/firewalld rule
+# gets re-scoped to the NEW ods-network subnet — an in-place rebind would leave
+# the firewall allowing only the old subnet, blocking every container call.
+_BIND_ADDRESS_MOVED = threading.Event()
+_REBIND_POLL_SECONDS = 30
+
+
+def _request_shutdown(server, signum=None):
+    """Signal handler: stop serving AND stop the outer rebind loop."""
+    _SHUTTING_DOWN.set()
+    _request_server_shutdown(server, signum)
+
+
+def _watch_for_bind_address_change(server, env, current_addr):
+    """Stop the server when the address we should be bound to changes.
+
+    `ods stop` destroys the compose networks and `ods start` recreates them, so
+    ods-network's gateway can move (e.g. 172.19.0.1 -> 172.18.0.1). We bind that
+    gateway, so when it moves we are left listening on an address no container can
+    reach us at, and every host-agent call fails with ECONNREFUSED — silently, since
+    nothing restarts us. Detect the move and let main()'s loop rebind.
+    """
+    while not _SHUTTING_DOWN.wait(_REBIND_POLL_SECONDS):
+        try:
+            resolved = _resolve_agent_bind_addr(env)
+        except Exception as exc:  # never let the watchdog kill the agent
+            logger.debug("Bind-address re-resolve failed: %s", exc)
+            continue
+        if resolved and resolved != current_addr:
+            logger.warning(
+                "Bind address changed (%s -> %s) — ods-network was probably recreated "
+                "with a new subnet. Rebinding.", current_addr, resolved,
+            )
+            _BIND_ADDRESS_MOVED.set()
+            _request_server_shutdown(server)
+            return
+
+
 def main():
     global INSTALL_DIR, DATA_DIR, AGENT_API_KEY, GPU_BACKEND, STARTUP_ODS_MODE
     global TIER, GPU_COUNT, CORE_SERVICE_IDS
@@ -8547,19 +8803,6 @@ def main():
     # containers can reach the agent without exposing it to the LAN. The bridge
     # gateway fallback keeps partial/older installs reachable until phase 11 can
     # restart the service after ods-network exists.
-    bind_addr = _resolve_agent_bind_addr(env)
-
-    server = _create_host_agent_server(env, bind_addr, port)
-    signal.signal(signal.SIGTERM, lambda signum, _frame: _request_server_shutdown(server, signum))
-    signal.signal(signal.SIGINT, lambda signum, _frame: _request_server_shutdown(server, signum))
-    logger.info("ODS Host Agent v%s listening on %s:%d", VERSION, bind_addr, port)
-    if bind_addr == "0.0.0.0":
-        logger.info(
-            "Bound to all interfaces. Bearer-auth (ODS_AGENT_KEY) is enforced "
-            "on every endpoint. To restrict to a specific interface, set "
-            "ODS_AGENT_BIND=<ip> in %s/.env.",
-            INSTALL_DIR,
-        )
     logger.info(
         "Install dir: %s | GPU: %s | Tier: %s | Effective mode: %s",
         INSTALL_DIR,
@@ -8567,12 +8810,71 @@ def main():
         TIER,
         STARTUP_ODS_MODE,
     )
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        logger.info("Shutting down")
-    finally:
-        server.server_close()
+
+    # Serve, and rebind if ods-network's gateway moves under us. `ods stop` runs
+    # `docker compose down`, which DESTROYS the compose networks; `ods start` recreates
+    # them, and Docker may hand out a different subnet. The bind address we resolved at
+    # startup then points at a gateway that is no longer ods-network's — or worse, now
+    # belongs to some other compose network — and every container calling the agent gets
+    # ECONNREFUSED. Nothing else restarts us, so we heal ourselves.
+    #
+    # Containers re-resolve their side on every start (dashboard-api reads its own default
+    # gateway from /proc/net/route), so only this end was stale.
+    while not _SHUTTING_DOWN.is_set():
+        bind_addr = _resolve_agent_bind_addr(env)
+        try:
+            server = _create_host_agent_server(env, bind_addr, port)
+        except OSError as exc:
+            logger.error("Cannot bind %s:%d (%s); retrying in %ds",
+                         bind_addr, port, exc, _REBIND_POLL_SECONDS)
+            if _SHUTTING_DOWN.wait(_REBIND_POLL_SECONDS):
+                break
+            continue
+
+        signal.signal(signal.SIGTERM, lambda signum, _frame: _request_shutdown(server, signum))
+        signal.signal(signal.SIGINT, lambda signum, _frame: _request_shutdown(server, signum))
+        logger.info("ODS Host Agent v%s listening on %s:%d", VERSION, bind_addr, port)
+        if bind_addr == "0.0.0.0":
+            logger.info(
+                "Bound to all interfaces. Bearer-auth (ODS_AGENT_KEY) is enforced "
+                "on every endpoint. To restrict to a specific interface, set "
+                "ODS_AGENT_BIND=<ip> in %s/.env.",
+                INSTALL_DIR,
+            )
+
+        watchdog = threading.Thread(
+            target=_watch_for_bind_address_change,
+            args=(server, env, bind_addr),
+            name="ods-host-agent-rebind-watchdog",
+            daemon=True,
+        )
+        watchdog.start()
+
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            _SHUTTING_DOWN.set()
+            logger.info("Shutting down")
+        finally:
+            server.server_close()
+
+        if _BIND_ADDRESS_MOVED.is_set() and not _SHUTTING_DOWN.is_set():
+            if os.environ.get("INVOCATION_ID"):
+                # Running under systemd: exit nonzero so Restart=on-failure
+                # relaunches us and ExecStartPre re-syncs the firewall rule
+                # for the new ods-network subnet. Rebinding in place would
+                # leave UFW/firewalld scoped to the old subnet and every
+                # container->agent call blocked.
+                logger.warning(
+                    "Exiting for systemd restart so the firewall rule is "
+                    "re-synced to the new ods-network subnet (ExecStartPre)."
+                )
+                sys.exit(75)
+            # Not under systemd (manual run, launchd): rebind in place —
+            # there is no ExecStartPre to re-run, so exiting gains nothing.
+            _BIND_ADDRESS_MOVED.clear()
+
+    logger.info("ODS Host Agent stopped")
 
 
 if __name__ == "__main__":
