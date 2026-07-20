@@ -1658,6 +1658,9 @@ litellm_settings:
         if (Test-ODSWindowsServiceEnabled -ServiceId "privacy-shield" -Plan $servicePlan) {
             $_buildServices += "privacy-shield"
         }
+        if (Test-ODSWindowsServiceEnabled -ServiceId "brave-search" -Plan $servicePlan) {
+            $_buildServices += "brave-search"
+        }
         if ($enableComfyui -and $currentBackend -eq "nvidia" -and -not $script:gpuPassthroughFailed) {
             $_buildServices += "comfyui"
         }

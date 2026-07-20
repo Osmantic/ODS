@@ -1,15 +1,27 @@
 #!/usr/bin/env python3
 """Local-image build coverage contract.
 
-Every service defined in docker-compose.base.yml with a ``build:`` section and
-no pull-able ``image:`` must appear in each installer's local-build list, or the
-installer runs ``docker compose up --no-build`` against an image that was never
-built and fails with "No such image" on a fresh host.
+Every service that can only exist as a locally built image must appear in each
+installer's local-build list, or the installer runs ``docker compose up
+--no-build --pull never`` against an image that was never built and fails with
+"No such image" on a fresh host.
 
 This is the negative self-test for the model-router fleet regression
 (build-only core service missing from the hardcoded installer build lists):
 CI validated compose config but never ran the real build->up flow, so the gap
 only surfaced on live hosts. This contract closes that gap.
+
+Two things make a service build-only, and both are checked here:
+
+* a ``build:`` section with no ``image:`` at all, and
+* a ``build:`` section whose ``image:`` is a local-only tag. A tag such as
+  ``ods-brave-search:local`` names nothing in any registry, so ``--pull never``
+  cannot satisfy it either. Treating any ``image:`` as pull-able is what let
+  such a service slip past this contract.
+
+Extension composes under extensions/services/*/compose.yaml are in scope too:
+they are merged into the same stack by scripts/resolve-compose-stack.sh and
+started by the same ``--no-build`` compose-up.
 
 Stdlib only. Run: python3 tests/test-local-image-build-coverage.py
 """
@@ -19,12 +31,23 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / "docker-compose.base.yml"
+EXTENSIONS = ROOT / "extensions" / "services"
 LINUX = ROOT / "installers" / "phases" / "11-services.sh"
 MACOS = ROOT / "installers" / "macos" / "install-macos.sh"
 WINDOWS = ROOT / "installers" / "windows" / "install-windows.ps1"
+
+# An image reference that no registry can serve. Compose started with
+# `--pull never` can only satisfy these from a local build.
+_LOCAL_ONLY_TAG_RE = re.compile(r":(local|latest-local|dev)\s*$")
+
+
+def _is_local_only_image(image: str) -> bool:
+    """True when `image:` names a tag that only a local build can produce."""
+    return bool(_LOCAL_ONLY_TAG_RE.search(image.strip()))
 
 # Services intentionally NOT built by the base install path (documented):
 #   llama-server  — pulled image on most backends; AMD builds it via a
@@ -33,14 +56,12 @@ WINDOWS = ROOT / "installers" / "windows" / "install-windows.ps1"
 _KNOWN_NON_BASE_BUILD = {"llama-server", "comfyui"}
 
 
-def base_build_only_services() -> set[str]:
-    """Top-level base.yml services that have build: and no image:."""
-    text = BASE.read_text(encoding="utf-8")
-    lines = text.splitlines()
+def _scan_compose(text: str) -> set[str]:
+    """Services in one compose file that only a local build can satisfy."""
     in_services = False
-    services: dict[str, dict[str, bool]] = {}
+    services: dict[str, dict[str, Any]] = {}
     current: str | None = None
-    for line in lines:
+    for line in text.splitlines():
         if re.match(r"^services:\s*$", line):
             in_services = True
             continue
@@ -49,16 +70,37 @@ def base_build_only_services() -> set[str]:
         m = re.match(r"^  ([a-z0-9][a-z0-9-]*):\s*$", line)
         if m:
             current = m.group(1)
-            services[current] = {"build": False, "image": False}
+            services[current] = {"build": False, "image": ""}
             continue
         if current and re.match(r"^    build:\s*$", line):
             services[current]["build"] = True
-        elif current and re.match(r"^    image:\s", line):
-            services[current]["image"] = True
+            continue
+        image_match = re.match(r"^    image:\s*(\S+)", line) if current else None
+        if image_match:
+            services[current]["image"] = image_match.group(1)
     return {
         name for name, flags in services.items()
-        if flags["build"] and not flags["image"]
+        if flags["build"] and (
+            not flags["image"] or _is_local_only_image(flags["image"])
+        )
     }
+
+
+def base_build_only_services() -> set[str]:
+    """Base-stack services that only a local build can satisfy."""
+    return _scan_compose(BASE.read_text(encoding="utf-8"))
+
+
+def extension_build_only_services() -> set[str]:
+    """Extension services that only a local build can satisfy.
+
+    Extension composes are merged into the same stack, so a build-only
+    extension hits the identical "No such image" failure once enabled.
+    """
+    found: set[str] = set()
+    for compose in sorted(EXTENSIONS.glob("*/compose.yaml")):
+        found |= _scan_compose(compose.read_text(encoding="utf-8"))
+    return found
 
 
 def installer_build_list(path: Path, pattern: str) -> set[str]:
@@ -71,7 +113,9 @@ def installer_build_list(path: Path, pattern: str) -> set[str]:
 
 
 def main() -> int:
-    required = base_build_only_services() - _KNOWN_NON_BASE_BUILD
+    required = (
+        base_build_only_services() | extension_build_only_services()
+    ) - _KNOWN_NON_BASE_BUILD
     errors: list[str] = []
 
     # Linux: _candidate_build_services=(...) plus any += lines
@@ -102,13 +146,13 @@ def main() -> int:
                           ("Windows install-windows.ps1", windows)):
         missing = required - present
         if missing:
-            errors.append(f"{name}: build-only base services not in build list: {sorted(missing)}")
+            errors.append(f"{name}: build-only services not in build list: {sorted(missing)}")
 
     if errors:
         print("[FAIL] local-image build coverage:")
         for e in errors:
             print(f"  - {e}")
-        print(f"  (base build-only services requiring coverage: {sorted(required)})")
+        print(f"  (build-only services requiring coverage: {sorted(required)})")
         return 1
     print(f"[OK] local-image build coverage: {sorted(required)} covered by all installers")
     return 0
