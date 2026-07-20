@@ -91,6 +91,22 @@ def main() -> int:
         "ods-cli must reject stale cloud compose caches in local/managed modes",
     )
 
+    model_function = re.search(
+        r"^cmd_model\(\) \{(?P<body>[\s\S]*?)^\}\s*$",
+        text,
+        flags=re.MULTILINE,
+    )
+    if model_function is None:
+        fail("ods-cli model function could not be parsed")
+    model_body = model_function.group("body")
+    require(
+        r"/v1/model/activate",
+        model_body,
+        "model swap must use the transactional host-agent activation endpoint",
+    )
+    if '_env_set "LLM_MODEL"' in model_body or '_env_set "GGUF_FILE"' in model_body:
+        fail("model swap must not bypass host-agent rollback with direct env writes")
+
     for command, (function_name, help_snippet) in COMMANDS.items():
         require(
             rf"^{function_name}\(\) \{{",

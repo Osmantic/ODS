@@ -29,23 +29,27 @@ curl http://localhost:11434/v1/models
 On macOS native Metal and Windows native/Lemonade installs, use
 `http://localhost:8080/v1/models` unless you changed the port.
 
-Downstream apps that talk directly to `llama-server` or LiteLLM pick up the
-active model through those services. Examples include Open WebUI, Token Spy,
-OpenCode, and OpenAI-compatible SDK clients configured against ODS.
-Perplexica also stores a persisted `defaultChatModel`; installer first boot and
-bootstrap hot-swap update it automatically, but after a manual model change you
-should verify Perplexica settings or run `scripts/repair/repair-perplexica.sh`.
+Dashboard activation and `ods model swap <tier>` use the same authenticated
+host-agent transaction. The transaction updates `.env`, `models.ini`, the
+native or container inference runtime, LiteLLM, Hermes, OpenClaw, OpenCode, and
+Perplexica when those consumers are installed. It verifies the new runtime and
+downstream routes before reporting success. A late failure restores the prior
+files, runtime, and persisted app routes and then proves the previous model is
+serving again.
 
-Hermes Agent keeps its own model name in `data/hermes/config.yaml`. If Hermes is
-enabled after a model switch, verify the `model.default` line:
+Open WebUI, Token Spy, Privacy Shield, and OpenAI-compatible SDK clients follow
+the stable ODS endpoint and do not persist a separate model route. Optional
+apps that are not installed are skipped. Optional services that were stopped
+remain stopped: persisted Hermes/OpenCode state and Compose environment are
+updated without starting them, and Perplexica reconciles its app-owned state
+from that environment the next time ODS starts it.
 
-```bash
-grep -n "default:" data/hermes/config.yaml
-docker restart ods-hermes
-```
-
-For Lemonade/AMD backends, Hermes and LiteLLM may need the model name in the
-form `extra.<GGUF_FILE>`.
+Direct edits to `.env`, `models.ini`, or app-owned settings bypass this
+transaction. The Dashboard Settings editor therefore treats active model,
+tier, artifact integrity, Lemonade identity, and runtime-profile fields as
+read-only; use Model Manager instead. Use the manual procedure below only for
+recovery or unsupported custom models, and verify every affected consumer
+afterward.
 
 ## Where Models Live
 
@@ -195,9 +199,9 @@ PERPLEXICA_PORT="$(grep -E '^PERPLEXICA_PORT=' .env | tail -n1 | cut -d= -f2 | t
 scripts/repair/repair-perplexica.sh "http://127.0.0.1:${PERPLEXICA_PORT:-3004}" "$LLM_MODEL"
 ```
 
-Bootstrap hot-swap handles this automatically. Manual GGUF edits and some
-operator-driven switches should still be verified because Perplexica stores its
-own app settings in its volume.
+Dashboard activation and `ods model swap` handle this automatically. Raw GGUF
+or `.env` edits still require verification because Perplexica stores its own app
+settings in its volume.
 
 7. Restart the affected services.
 
@@ -290,5 +294,7 @@ For AMD/Lemonade, use `extra.<GGUF_FILE>`.
 - Custom GGUF import from a local file or arbitrary URL is not yet a first-class
   Dashboard workflow.
 - `ods model swap` switches ODS tiers, not arbitrary GGUF files.
+- Windows `ods.ps1 model swap` parity is tracked separately; use the Dashboard
+  Models page for transactional activation on Windows until that command lands.
 - `scripts/upgrade-model.sh` is a legacy helper for model-directory layouts and
   should not be used as the primary GGUF switch path on current installs.

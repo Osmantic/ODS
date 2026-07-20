@@ -857,8 +857,8 @@ def load_model(model_id: str, api_key: str = Depends(verify_api_key)):
     if already_active:
         return {"status": "already_active", "model_id": model_id, "loadedModel": loaded_model}
 
-    # Long timeout — model loading can take minutes
-    result = _call_agent_model("/v1/model/activate", {"model_id": model_id}, timeout=600)
+    # Activation includes downstream synchronization and a bounded rollback.
+    result = _call_agent_model("/v1/model/activate", {"model_id": model_id}, timeout=2700)
     return result
 
 

@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
-from config import SERVICES, PERSONAS, SETUP_CONFIG_DIR, INSTALL_DIR
+from config import SERVICES, PERSONAS, SETUP_CONFIG_DIR, INSTALL_DIR, read_live_env_value
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
@@ -205,7 +205,7 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
 
     _llm = SERVICES.get("llama-server", {})
     llm_url = os.environ.get("OLLAMA_URL", f"http://{_llm.get('host', 'llama-server')}:{_llm.get('port', 0)}")
-    model = os.environ.get("LLM_MODEL", "qwen3-coder-next")
+    model = read_live_env_value("LLM_MODEL", "qwen3-coder-next")
 
     payload = {
         "model": model,
