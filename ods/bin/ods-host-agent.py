@@ -49,6 +49,12 @@ try:
     from model_switchboard import state as _switchboard_state
 except Exception:  # pragma: no cover - import environment dependent
     _switchboard_state = None
+try:
+    from model_switchboard import adapters as _switchboard_adapters
+    from model_switchboard import reconciler as _switchboard_reconciler
+except Exception:  # pragma: no cover - import environment dependent
+    _switchboard_adapters = None
+    _switchboard_reconciler = None
 
 VERSION = "1.0.0"
 ODS_VERSION = VERSION
@@ -5392,6 +5398,20 @@ class AgentHandler(BaseHTTPRequestHandler):
                 f"n-ctx = {context_length}\n",
             )
 
+            # Switchboard runtime adapter (PR 2A): the non-Lemonade container
+            # llama paths stage+verify through one reconciler sequence. All
+            # other strategies keep their inline flow until PR 2B/2C.
+            switchboard_adapter = None
+
+            def _sb_wait_ready(_env, _gguf, _ctx, lemonade_model_id=""):
+                return _wait_for_model_readiness(
+                    _env,
+                    model_id=model_id,
+                    gguf_file=_gguf,
+                    llm_model_name=llm_model_name,
+                    lemonade_model_id=lemonade_model_id,
+                )
+
             # Restart llama-server with the new model.
             # Three strategies depending on platform / agent location:
             # - apple (macOS): llama-server runs natively via Metal, not Docker.
@@ -5437,10 +5457,29 @@ class AgentHandler(BaseHTTPRequestHandler):
                     )
                 )
                 runtime_restart_strategy = "container-llama"
-                _recreate_llama_server(env, override_image=override_image)
+                if _switchboard_adapters is not None and not lemonade_runtime:
+                    _sb_override = override_image
+                    switchboard_adapter = _switchboard_adapters.ContainerLlamaAdapter(
+                        restart=lambda _e, _img=_sb_override: _recreate_llama_server(
+                            _e, override_image=_img
+                        ),
+                        wait_ready=_sb_wait_ready,
+                        expected_gguf=gguf_file,
+                        context_length=int(context_length),
+                    )
+                else:
+                    _recreate_llama_server(env, override_image=override_image)
             else:
                 runtime_restart_strategy = "compose-llama"
-                _compose_restart_llama_server(env)
+                if _switchboard_adapters is not None and not lemonade_runtime:
+                    switchboard_adapter = _switchboard_adapters.ContainerLlamaAdapter(
+                        restart=_compose_restart_llama_server,
+                        wait_ready=_sb_wait_ready,
+                        expected_gguf=gguf_file,
+                        context_length=int(context_length),
+                    )
+                else:
+                    _compose_restart_llama_server(env)
 
             if lemonade_runtime:
                 lemonade_host, lemonade_port = _lemonade_runtime_address(env)
@@ -5464,13 +5503,25 @@ class AgentHandler(BaseHTTPRequestHandler):
                 "http://litellm:4000/v1" if windows_host_lemonade else None
             )
 
-            healthy = _wait_for_model_readiness(
-                env,
-                model_id=model_id,
-                gguf_file=gguf_file,
-                llm_model_name=llm_model_name,
-                lemonade_model_id=lemonade_model_id,
-            )
+            if switchboard_adapter is not None:
+                switchboard_run = _switchboard_reconciler.run_runtime_activation(
+                    switchboard_adapter, env
+                )
+                healthy = bool(switchboard_run["ok"])
+                if not healthy:
+                    logger.error(
+                        "switchboard runtime activation failed at %s: %s",
+                        switchboard_run.get("phase"),
+                        switchboard_run.get("detail"),
+                    )
+            else:
+                healthy = _wait_for_model_readiness(
+                    env,
+                    model_id=model_id,
+                    gguf_file=gguf_file,
+                    llm_model_name=llm_model_name,
+                    lemonade_model_id=lemonade_model_id,
+                )
 
             if healthy:
                 if lemonade_runtime:
