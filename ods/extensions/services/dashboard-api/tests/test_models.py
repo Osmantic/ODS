@@ -1052,7 +1052,7 @@ def test_load_model_uses_observed_download_teardown_grace(test_client, monkeypat
     assert captured == {
         "path": "/v1/model/activate",
         "body": {"model_id": "qwen3.5-35b-a3b-q4"},
-        "timeout": 600,
+        "timeout": 2700,
         "retry_download_busy_seconds": models_router._MODEL_DOWNLOAD_BUSY_ACTIVATION_GRACE_SECONDS,
     }
     assert captured["retry_download_busy_seconds"] >= 120.0
