@@ -1028,6 +1028,44 @@ def _schedule_initial_switchboard_verification(reason: str) -> None:
         _switchboard_initial_verify_thread.start()
 
 
+def _bootstrap_status_indicates_complete() -> bool:
+    status_path = INSTALL_DIR / "data" / "bootstrap-status.json"
+    try:
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    return str(data.get("status") or "").strip().casefold() == "complete"
+
+
+def _model_status_allows_initial_route_proof(data: dict) -> bool:
+    status = str(data.get("status") or "").strip().casefold()
+    if status in {"already_downloaded", "complete"}:
+        return True
+    return _bootstrap_status_indicates_complete()
+
+
+def _verify_initial_switchboard_route_for_status(data: dict, reason: str) -> None:
+    if _switchboard_state is None:
+        return
+    state_path = _switchboard_state_path()
+    if not _switchboard_state_needs_initial_verification(state_path):
+        return
+    if _model_status_allows_initial_route_proof(data):
+        try:
+            if _publish_verified_initial_switchboard_route(
+                reason=reason,
+                attempts=1,
+                initial_delay=0,
+                interval=0,
+            ):
+                return
+        except Exception as exc:
+            logger.warning("switchboard initial route status proof failed: %s", exc)
+    _schedule_initial_switchboard_verification(reason)
+
+
 def _atomic_write_bytes(
     path: Path,
     content: bytes,
@@ -4380,17 +4418,22 @@ class AgentHandler(BaseHTTPRequestHandler):
         """Return current model download progress."""
         if not check_auth(self):
             return
-        _schedule_initial_switchboard_verification("model-status")
         status_path = INSTALL_DIR / "data" / "model-download-status.json"
         if not status_path.exists():
-            json_response(self, 200, {"status": "idle"})
+            data = {"status": "idle"}
+            _verify_initial_switchboard_route_for_status(data, "model-status")
+            json_response(self, 200, data)
             return
         try:
             data = _read_model_status(status_path)
             data = _normalize_model_download_status(status_path, data)
+            _verify_initial_switchboard_route_for_status(data, "model-status")
             json_response(self, 200, data)
         except (json.JSONDecodeError, OSError):
-            json_response(self, 200, {"status": "idle"})
+            data = {"status": "idle"}
+            _verify_initial_switchboard_route_for_status(data, "model-status")
+            json_response(self, 200, data)
+            return
 
     def _handle_model_download(self):
         """Start async model download. Only one download at a time.

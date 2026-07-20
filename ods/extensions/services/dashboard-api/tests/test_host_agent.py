@@ -4572,6 +4572,118 @@ class TestModelDownloadFileIntegrity:
         persisted = json.loads(status_path.read_text(encoding="utf-8"))
         assert persisted["status"] == "failed"
 
+    def test_model_status_promotes_bootstrap_complete_reconstructed_route(
+        self, tmp_path, monkeypatch,
+    ):
+        model = {
+            "id": "qwen3.5-9b",
+            "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+            "llm_model_name": "qwen3.5-9b",
+            "ctx_size": 65536,
+        }
+        install_dir = self._setup_env(
+            tmp_path,
+            monkeypatch,
+            library_models=[model],
+        )
+        env_path = install_dir / ".env"
+        env_path.write_text(
+            "ODS_MODE=local\n"
+            "GPU_BACKEND=nvidia\n"
+            "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n"
+            "LLM_MODEL=qwen3.5-9b\n"
+            "CTX_SIZE=65536\n",
+            encoding="utf-8",
+        )
+        state_path = install_dir / "data" / "model-state.json"
+        reconstructed = _mod._switchboard_state.initialize_if_missing(
+            state_path,
+            _mod.load_env(env_path),
+        )
+        assert reconstructed["active"]["reconstructed"] is True
+        (install_dir / "data" / "bootstrap-status.json").write_text(
+            json.dumps({"status": "complete"}),
+            encoding="utf-8",
+        )
+
+        readiness_calls = []
+
+        def readiness(*_args, **kwargs):
+            readiness_calls.append(kwargs)
+            return {
+                "identity": "Qwen3.5-9B-Q4_K_M.gguf",
+                "contextLength": 65536,
+                "contextVerified": True,
+                "verifiedAt": "2026-07-20T00:00:00Z",
+            }
+
+        scheduled = []
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", readiness)
+        monkeypatch.setattr(
+            _mod,
+            "_schedule_initial_switchboard_verification",
+            lambda reason: scheduled.append(reason),
+        )
+
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_status(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response() == {"status": "idle"}
+        assert readiness_calls
+        assert readiness_calls[0]["attempts"] == 1
+        assert readiness_calls[0]["initial_delay"] == 0
+        assert readiness_calls[0]["interval"] == 0
+        assert scheduled == []
+        doc = json.loads(state_path.read_text(encoding="utf-8"))
+        assert doc["active"].get("reconstructed") is None
+        assert doc["active"]["verifiedAt"]
+        assert doc["active"]["proof"] == {
+            "identity": "Qwen3.5-9B-Q4_K_M.gguf",
+            "completion": True,
+        }
+
+    def test_model_status_defers_initial_route_proof_until_ready_signal(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir = self._setup_env(tmp_path, monkeypatch)
+        env_path = install_dir / ".env"
+        env_path.write_text(
+            "ODS_MODE=local\n"
+            "GPU_BACKEND=nvidia\n"
+            "GGUF_FILE=test-model.gguf\n"
+            "LLM_MODEL=test-model\n"
+            "CTX_SIZE=65536\n",
+            encoding="utf-8",
+        )
+        state_path = install_dir / "data" / "model-state.json"
+        _mod._switchboard_state.initialize_if_missing(
+            state_path,
+            _mod.load_env(env_path),
+        )
+        scheduled = []
+
+        def unexpected_publish(**_kwargs):
+            raise AssertionError("status should not synchronously prove an unready route")
+
+        monkeypatch.setattr(
+            _mod,
+            "_publish_verified_initial_switchboard_route",
+            unexpected_publish,
+        )
+        monkeypatch.setattr(
+            _mod,
+            "_schedule_initial_switchboard_verification",
+            lambda reason: scheduled.append(reason),
+        )
+
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_status(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response() == {"status": "idle"}
+        assert scheduled == ["model-status"]
+
     def test_empty_finished_download_is_failed_not_complete(self, tmp_path, monkeypatch):
         install_dir = self._setup_env(tmp_path, monkeypatch)
         self._patch_curl_download(monkeypatch, b"")
