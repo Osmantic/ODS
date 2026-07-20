@@ -113,6 +113,7 @@ def _model_aliases(model: dict[str, Any]) -> set[str]:
         str(model.get("name") or ""),
         str(model.get("gguf") or ""),
         str(model.get("gguf_file") or ""),
+        str(model.get("model_file") or ""),
         str(model.get("llm_model_name") or ""),
     }
     aliases.update(str(alias or "") for alias in model.get("aliases", []))
@@ -135,8 +136,15 @@ def normalize_catalog_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
     if not gguf and gguf_parts and isinstance(gguf_parts[0], dict):
         gguf = gguf_parts[0].get("file")
 
+    engine = str(raw.get("engine") or "gguf").strip().lower()
     model_id = raw.get("id") or raw.get("llm_model_name") or raw.get("name") or gguf
-    if not model_id or not gguf:
+    if not model_id:
+        return None
+    if engine == "hipfire":
+        # hipfire entries carry the engine's own model file, not a GGUF.
+        if not raw.get("model_file"):
+            return None
+    elif not gguf:
         return None
 
     try:
@@ -160,8 +168,10 @@ def normalize_catalog_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
         "id": str(model_id),
         "name": raw.get("name") or str(model_id),
         "family": raw.get("family"),
-        "gguf": str(gguf),
-        "gguf_file": str(gguf),
+        "engine": engine,
+        "model_file": raw.get("model_file"),
+        "gguf": str(gguf) if gguf else None,
+        "gguf_file": str(gguf) if gguf else None,
         "gguf_url": raw.get("gguf_url", ""),
         "gguf_sha256": raw.get("gguf_sha256", ""),
         "gguf_parts": gguf_parts,
@@ -1008,6 +1018,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         response_models.append({
             "id": model["id"],
             "name": model["name"],
+            "engine": model.get("engine") or "gguf",
             "gguf": model.get("gguf"),
             "ggufParts": model.get("gguf_parts") or None,
             "downloadUrl": model.get("gguf_url") or None,
@@ -1049,7 +1060,21 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             "performanceLabel": perf["label"],
         })
 
+    hipfire_enabled = str(read_env_value("ENABLE_HIPFIRE", install_dir) or "").strip().lower() == "true"
+    hipfire_active = str(read_env_value("HIPFIRE_ACTIVE", install_dir) or "").strip().lower() == "true"
+    hipfire_env_model = str(read_env_value("HIPFIRE_MODEL", install_dir) or "").strip()
+
     for model in catalog:
+        if model.get("engine") == "hipfire":
+            # hipfire manages its own weights (pulled on container start), so
+            # these entries are never "available"-to-download: hidden entirely
+            # when the extension is off, loadable when it is on, and "loaded"
+            # when hipfire is the active default text route.
+            if not hipfire_enabled:
+                continue
+            is_active = hipfire_active and model.get("model_file") == hipfire_env_model
+            append_model(model, None, "loaded" if is_active else "downloaded")
+            continue
         downloaded, path, seen = _downloaded_catalog_path(model, downloaded_files)
         seen_files.update(seen)
         append_model(model, path, "downloaded" if downloaded else "available")

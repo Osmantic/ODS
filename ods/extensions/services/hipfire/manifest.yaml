@@ -1,0 +1,45 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: hipfire
+  name: hipfire (RDNA-native LLM engine)
+  aliases: []
+  container_name: ods-hipfire
+  default_host: hipfire
+  port: 11435
+  external_port_env: HIPFIRE_PORT
+  external_port_default: 11435
+  health: /health
+  # A cold start compiles/loads a 22.8 GB MQ4 onto one card; /health returns 503
+  # until the model is resident.
+  health_timeout: 300
+  type: docker
+  # AMD-only by construction: hipfire is a HIP/ROCm-direct engine with no
+  # CPU/CUDA path (upstream explicitly rejects a cross-vendor backend).
+  gpu_backends: [amd]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+
+features:
+  - id: fast-text
+    name: Fast local text inference
+    # Only gfx1201 (RDNA4) is built and validated; the image defaults to
+    # AMDGPU_TARGET=gfx1201 and its kernel-count gate is calibrated for it.
+    # Other RDNA targets need a rebuild with a different AMDGPU_TARGET.
+    description: RDNA-native text generation on Radeon GPUs (validated on gfx1201/RDNA4)
+    icon: Zap
+    category: core
+    requirements:
+      services: [hipfire]
+      vram_gb: 24
+    enabled_services_all: [hipfire]
+    setup_time: Ready
+    priority: 5
+    launch:
+      type: service
+      service: hipfire
+    gpu_backends: [amd]

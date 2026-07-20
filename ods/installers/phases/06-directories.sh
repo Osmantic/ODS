@@ -435,6 +435,15 @@ raise SystemExit(1)' 2>/dev/null && return 0
     OPENCODE_SERVER_PASSWORD=$(_env_get OPENCODE_SERVER_PASSWORD "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
     SEARXNG_SECRET=$(_env_get SEARXNG_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
 
+    # hipfire (RDNA-native inference engine). Same preserve-on-reinstall rule
+    # as LANGFUSE_ENABLED below; HIPFIRE_MODEL/HIPFIRE_ACTIVE are written by
+    # dashboard model activation (host-agent), never by the installer, so
+    # regenerating .env without them would disable the engine and orphan its
+    # LiteLLM routing on the next render.
+    HIPFIRE_ENABLED_VALUE=$(_env_get ENABLE_HIPFIRE "${ENABLE_HIPFIRE:-false}")
+    HIPFIRE_MODEL_VALUE=$(_env_get HIPFIRE_MODEL "")
+    HIPFIRE_ACTIVE_VALUE=$(_env_get HIPFIRE_ACTIVE "false")
+
     # Langfuse (LLM Observability). LANGFUSE_ENABLED mirrors the install-time
     # ENABLE_LANGFUSE toggle, falling back to whatever the user had in .env on
     # re-install so manual post-install `ods enable langfuse` edits survive.
@@ -885,6 +894,14 @@ LANGFUSE_INIT_USER_PASSWORD=${LANGFUSE_INIT_USER_PASSWORD}
 # ── Image Generation ──
 ENABLE_IMAGE_GENERATION=${ENABLE_COMFYUI:-true}
 
+# ── hipfire (RDNA-native inference engine) ──
+ENABLE_HIPFIRE=${HIPFIRE_ENABLED_VALUE}
+$(if [[ -n "$HIPFIRE_MODEL_VALUE" ]]; then cat << HIPFIRE_ENV
+HIPFIRE_MODEL=${HIPFIRE_MODEL_VALUE}
+HIPFIRE_ACTIVE=${HIPFIRE_ACTIVE_VALUE}
+HIPFIRE_ENV
+fi)
+
 #=== Multi-GPU Settings ===
 GPU_COUNT=${GPU_COUNT:-1}
 GPU_ASSIGNMENT_JSON_B64=${GPU_ASSIGNMENT_JSON_B64:-}
@@ -953,6 +970,18 @@ ENV_EOF
         if [[ -z "$_renderer_py" ]]; then
             _renderer_py="python3"
         fi
+        # hipfire routing must survive installer re-renders exactly as it
+        # survives host-agent re-renders — pass the preserved pins through,
+        # or a re-install over a hipfire deployment silently orphans the
+        # engine's routes. Fresh installs have no HIPFIRE_MODEL, so this
+        # adds no flags there.
+        _hipfire_render_args=()
+        if [[ "$HIPFIRE_ENABLED_VALUE" == "true" && -n "$HIPFIRE_MODEL_VALUE" ]]; then
+            _hipfire_render_args+=(--hipfire-enabled --hipfire-model "$HIPFIRE_MODEL_VALUE")
+            if [[ "$HIPFIRE_ACTIVE_VALUE" == "true" ]]; then
+                _hipfire_render_args+=(--hipfire-active)
+            fi
+        fi
         if [[ -f "$SCRIPT_DIR/scripts/render-runtime-configs.py" ]] && command -v "$_renderer_py" >/dev/null 2>&1; then
             if "$_renderer_py" "$SCRIPT_DIR/scripts/render-runtime-configs.py" \
                 --surface litellm-lemonade \
@@ -963,13 +992,58 @@ ENV_EOF
                 --lemonade-api-base "$LEMONADE_CONTAINER_API_BASE_VALUE" \
                 --litellm-key "$LITELLM_LEMONADE_API_KEY" \
                 --output-root "$INSTALL_DIR" \
+                "${_hipfire_render_args[@]}" \
                 --write >> "$LOG_FILE" 2>&1; then
                 _renderer_ok=true
             else
                 warn "Runtime config renderer failed for Lemonade; falling back to inline writer"
             fi
         fi
-        if [[ "$_renderer_ok" != "true" ]]; then
+        if [[ "$_renderer_ok" != "true" && "$HIPFIRE_ENABLED_VALUE" == "true" && -n "$HIPFIRE_MODEL_VALUE" ]]; then
+            # Inline fallback, hipfire-aware: mirrors the renderer's semantics
+            # (named routes for both engines; default follows HIPFIRE_ACTIVE)
+            # and the host-agent's own fallback writer.
+            _lemonade_model_ref="extra.${_active_gguf}"
+            if [[ -n "$_lemonade_model_id" ]]; then
+                _lemonade_model_ref="$_lemonade_model_id"
+            fi
+            _hipfire_params="    litellm_params:
+      model: openai/${HIPFIRE_MODEL_VALUE}
+      api_base: http://hipfire:11435/v1
+      api_key: not-needed"
+            _lemonade_params="    litellm_params:
+      model: openai/${_lemonade_model_ref}
+      api_base: ${LEMONADE_CONTAINER_API_BASE_VALUE}
+      api_key: ${LITELLM_LEMONADE_API_KEY}
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false"
+            _default_params="$_lemonade_params"
+            if [[ "$HIPFIRE_ACTIVE_VALUE" == "true" ]]; then
+                _default_params="$_hipfire_params"
+            fi
+            cat > "$INSTALL_DIR/config/litellm/lemonade.yaml" << LITELLM_HIPFIRE_EOF
+model_list:
+  - model_name: default
+${_default_params}
+
+  - model_name: hipfire
+${_hipfire_params}
+
+  - model_name: lemonade
+${_lemonade_params}
+
+  - model_name: "*"
+${_default_params}
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  request_timeout: 900
+  stream_timeout: 900
+LITELLM_HIPFIRE_EOF
+            unset _lemonade_model_ref _hipfire_params _lemonade_params _default_params
+        elif [[ "$_renderer_ok" != "true" ]]; then
             cat > "$INSTALL_DIR/config/litellm/lemonade.yaml" << LITELLM_EOF
 model_list:
   - model_name: default
