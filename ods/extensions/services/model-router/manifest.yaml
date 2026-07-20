@@ -11,8 +11,6 @@ service:
   host_env: MODEL_ROUTER_HOST
   default_host: model-router
   port: 9099
-  external_port_env: ""
-  external_port_default: 0
   external_link: false
   health: /health
   ui_path: /health
