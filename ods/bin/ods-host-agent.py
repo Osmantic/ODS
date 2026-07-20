@@ -5043,6 +5043,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         apple_llama_bin: Path | None = None
         apple_llama_log: Path | None = None
         apple_pid_file: Path | None = None
+        switchboard_run: dict | None = None
 
         def restore_backups():
             if env_snapshot is not None:
@@ -5402,7 +5403,6 @@ class AgentHandler(BaseHTTPRequestHandler):
             # llama paths stage+verify through one reconciler sequence. All
             # other strategies keep their inline flow until PR 2B/2C.
             switchboard_adapter = None
-            switchboard_run = None
             switchboard_capabilities = {
                 "chat": True,
                 "tools": bool(model.get("tools")),
@@ -5534,6 +5534,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         expected_gguf=gguf_file,
                         context_length=int(context_length),
                         lemonade_model_id=lemonade_model_id,
+                        capabilities=switchboard_capabilities,
                     )
 
             hermes_model_name = (
@@ -5556,6 +5557,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                         switchboard_run.get("phase"),
                         switchboard_run.get("detail"),
                     )
+                    if switchboard_run.get("phase") == "stage":
+                        raise RuntimeError(
+                            str(switchboard_run.get("detail") or "runtime stage failed")
+                        )
             else:
                 runtime_identity = _wait_for_model_readiness(
                     env,
@@ -5771,24 +5776,22 @@ class AgentHandler(BaseHTTPRequestHandler):
             else:
                 logger.warning("Model activation failed — rolling back")
                 rolled_back, rollback_error = rollback_and_prove()
-                failure_reason = "Health check failed"
-                if switchboard_run and not switchboard_run.get("ok"):
-                    failure_reason = (
-                        f"Runtime {switchboard_run.get('phase') or 'verification'} failed: "
-                        f"{switchboard_run.get('detail') or 'unknown failure'}"
-                    )
                 error = (
-                    f"{failure_reason} — rolled back to previous model"
+                    "Health check failed — rolled back to previous model"
                     if rolled_back
                     else (
-                        f"{failure_reason}; previous model restoration could not be proved: "
+                        "Health check failed; previous model restoration could not be proved: "
                         f"{rollback_error}"
                     )
                 )
+                payload = {"error": error, "rolled_back": rolled_back}
+                if switchboard_run and not switchboard_run.get("ok"):
+                    payload["failure_phase"] = switchboard_run.get("phase")
+                    payload["failure_detail"] = switchboard_run.get("detail")
                 json_response(
                     self,
                     500,
-                    {"error": error, "rolled_back": rolled_back},
+                    payload,
                 )
 
         except Exception as exc:
@@ -5803,6 +5806,9 @@ class AgentHandler(BaseHTTPRequestHandler):
             payload = {"error": error}
             if mutation_started:
                 payload["rolled_back"] = rolled_back
+            if switchboard_run and not switchboard_run.get("ok"):
+                payload["failure_phase"] = switchboard_run.get("phase")
+                payload["failure_detail"] = switchboard_run.get("detail")
             json_response(self, 500, payload)
 
     def _handle_model_delete(self):
@@ -6297,6 +6303,9 @@ def _lemonade_loaded_context_is_sufficient(
     expected_context = _positive_int(expected_context)
     if not expected_context:
         return True
+    loaded = data.get("all_models_loaded")
+    if not isinstance(loaded, list):
+        return not _lemonade_version_at_least(data.get("version"), 10, 7)
     actual_context = _lemonade_loaded_context_length(
         data,
         expected_gguf_file=expected_gguf_file,
@@ -6304,7 +6313,7 @@ def _lemonade_loaded_context_is_sufficient(
     )
     if actual_context is not None:
         return actual_context >= expected_context
-    return not _lemonade_version_at_least(data.get("version"), 10, 7)
+    return False
 
 
 def _lemonade_loaded_context_length(

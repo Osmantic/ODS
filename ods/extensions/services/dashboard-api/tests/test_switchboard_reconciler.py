@@ -124,6 +124,17 @@ class TestReconcilerBoundaries:
         assert run["ok"] is False
         assert "metadata does not match" in run["detail"]
 
+    def test_completion_can_carry_a_later_proof_timestamp(self):
+        fake = ad.FakeAdapter({
+            "verify_identity": [_proof_result()],
+            "verify_completion": [
+                _proof_result(verifiedAt="2026-07-20T00:00:01Z")
+            ],
+        })
+        run = rc.run_runtime_activation(fake, {})
+        assert run["ok"] is True
+        assert run["verifiedAt"] == "2026-07-20T00:00:01Z"
+
     @pytest.mark.parametrize("verified_at", ["not-a-time", "2026-07-20T00:00:00"])
     def test_proof_timestamp_must_be_valid_utc(self, verified_at):
         fake = ad.FakeAdapter({
@@ -273,7 +284,7 @@ class TestLemonadeAdapter:
 
         def wait_ready(env, gguf, ctx, lemonade_model_id=""):
             seen["args"] = (gguf, ctx, lemonade_model_id)
-            return True
+            return _readiness_proof("extra.Q.gguf", 65536)
 
         adapter = ad.LemonadeAdapter(
             wait_ready=wait_ready,
@@ -284,6 +295,7 @@ class TestLemonadeAdapter:
         run = rc.run_runtime_activation(adapter, {})
         assert run["ok"] is True
         assert run["identity"] == "extra.Q.gguf"
+        assert run["contextLength"] == 65536
         assert adapter.kind == "lemonade"
         assert seen["args"] == ("Q.gguf", 65536, "extra.Q.gguf")
 
@@ -299,13 +311,24 @@ class TestLemonadeAdapter:
 
     def test_not_ready_is_identity_failure(self):
         adapter = ad.LemonadeAdapter(
-            wait_ready=lambda *a, **k: False,
+            wait_ready=lambda *a, **k: {},
             expected_gguf="Q.gguf",
             context_length=1024,
             lemonade_model_id="extra.Q.gguf",
         )
         run = rc.run_runtime_activation(adapter, {})
         assert run["ok"] is False and run["phase"] == "verify_identity"
+
+    def test_boolean_readiness_cannot_echo_configured_lemonade_id(self):
+        adapter = ad.LemonadeAdapter(
+            wait_ready=lambda *a, **k: True,
+            expected_gguf="Q.gguf",
+            context_length=1024,
+            lemonade_model_id="extra.Q.gguf",
+        )
+        run = rc.run_runtime_activation(adapter, {})
+        assert run["ok"] is False
+        assert run["identity"] is None
 
 
 class TestHostAgentWiring:
@@ -380,9 +403,10 @@ class TestHostAgentWiring:
         tma._mod.AgentHandler._do_model_activate(handler, "target-model")
         assert handler.response_code != 200
         payload = handler.parse_response()
-        assert "Runtime verify_identity failed" in payload["error"]
-        assert "runtime did not report the staged model" in payload["error"]
+        assert payload["error"].startswith("Health check failed;")
         assert "restoration could not be proved" in payload["error"]
+        assert payload["failure_phase"] == "verify_identity"
+        assert "runtime did not report the staged model" in payload["failure_detail"]
         # rollback restored the pre-activation env exactly as before PR 2A
         assert env_path.read_text(encoding="utf-8") == before_env
 
@@ -419,8 +443,11 @@ class TestHostAgentWiring:
         payload = handler.parse_response()
         assert payload["rolled_back"] is True
         assert payload["error"] == (
-            "Runtime verify_completion failed: completion response carried the "
-            "previous model — rolled back to previous model"
+            "Health check failed — rolled back to previous model"
+        )
+        assert payload["failure_phase"] == "verify_completion"
+        assert payload["failure_detail"] == (
+            "completion response carried the previous model"
         )
         assert env_path.read_text(encoding="utf-8") == before_env
 
@@ -455,9 +482,9 @@ class TestHostAgentWiring:
         tma._mod.AgentHandler._do_model_activate(handler, "target-model")
         assert handler.response_code == 500
         payload = handler.parse_response()
-        assert payload["error"] == (
-            "Runtime stage failed: compose down — rolled back to previous model"
-        )
+        assert payload["error"] == "Model activation failed: compose down"
+        assert payload["failure_phase"] == "stage"
+        assert payload["failure_detail"] == "compose down"
         assert payload["rolled_back"] is True
 
 

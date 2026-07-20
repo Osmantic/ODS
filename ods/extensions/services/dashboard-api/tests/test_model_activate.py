@@ -213,6 +213,23 @@ class TestCheckLemonadeHealth:
             131072,
         ) is True
 
+    def test_legacy_health_with_loaded_list_requires_matching_row(self):
+        body = json.dumps({
+            "status": "ok",
+            "version": "10.6.9",
+            "model_loaded": "extra.Model.gguf",
+            "all_models_loaded": [{
+                "model_name": "different-model",
+                "recipe_options": {"ctx_size": 131072},
+            }],
+        })
+        assert _check_lemonade_health(
+            body,
+            "Model.gguf",
+            "extra.Model.gguf",
+            131072,
+        ) is False
+
 
 class TestResolveLemonadeModelId:
 
@@ -1776,6 +1793,18 @@ def _llama_identity_response(model_id):
     })
 
 
+def _lemonade_health_response(model_id, context_length=4096):
+    return json.dumps({
+        "status": "ok",
+        "version": "10.7.0",
+        "model_loaded": model_id,
+        "all_models_loaded": [{
+            "model_name": model_id,
+            "recipe_options": {"ctx_size": context_length},
+        }],
+    })
+
+
 def _mock_verified_readiness(*_args, **kwargs):
     """Mirror the production bool/identity/proof readiness return contract."""
     identity = str(kwargs.get("gguf_file") or "mock-runtime-model.gguf")
@@ -2140,7 +2169,7 @@ class TestModelActivateRollback:
         def fake_run(cmd, **_kwargs):
             if cmd and cmd[0] == "curl":
                 stdout = (
-                    '{"status": "ok", "model_loaded": "extra.new-model.gguf"}'
+                    _lemonade_health_response("extra.new-model.gguf")
                     if runtime_kind == "windows-lemonade"
                     else _llama_identity_response("new-model.gguf")
                 )
@@ -2392,11 +2421,14 @@ class TestModelActivateRollback:
         monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
 
         def fake_run(cmd, **_kwargs):
-            stdout = (
-                '{"status": "ok", "model_loaded": "extra.new-model.gguf"}'
-                if cmd and cmd[0] == "curl"
-                else ""
-            )
+            if cmd and cmd[0] == "curl" and cmd[-1].endswith("/models"):
+                stdout = json.dumps({
+                    "data": [{"id": "extra.new-model.gguf"}]
+                })
+            elif cmd and cmd[0] == "curl":
+                stdout = _lemonade_health_response("extra.new-model.gguf")
+            else:
+                stdout = ""
             return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
 
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
@@ -2513,7 +2545,11 @@ class TestModelActivateRollback:
         _mod.AgentHandler._do_model_activate(handler, "target-model")
 
         assert handler.response_code == 200
-        assert not (install_dir / "data" / "model-state.json").exists()
+        state = json.loads(
+            (install_dir / "data" / "model-state.json").read_text(encoding="utf-8")
+        )
+        assert state["active"]["runtimeModelId"] == "Modern-Model"
+        assert state["active"]["contextLength"] == 4096
         assert "LEMONADE_MODEL=Modern-Model" in env_path.read_text(encoding="utf-8")
         assert "model: openai/Modern-Model" in lemonade_yaml.read_text(encoding="utf-8")
         assert 'default: "Modern-Model"' in hermes_live.read_text(encoding="utf-8")
@@ -2629,11 +2665,14 @@ class TestModelActivateRollback:
 
         def fake_run(cmd, **_kwargs):
             calls.append(cmd)
-            stdout = (
-                '{"status": "ok", "model_loaded": "extra.new-model.gguf"}'
-                if cmd and cmd[0] == "curl"
-                else ""
-            )
+            if cmd and cmd[0] == "curl" and cmd[-1].endswith("/models"):
+                stdout = json.dumps({
+                    "data": [{"id": "extra.new-model.gguf"}]
+                })
+            elif cmd and cmd[0] == "curl":
+                stdout = _lemonade_health_response("extra.new-model.gguf")
+            else:
+                stdout = ""
             return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
 
         def fail_restart(_env):

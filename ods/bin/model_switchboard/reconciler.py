@@ -106,7 +106,10 @@ def run_runtime_activation(
                 "capabilities": dict(outcome["capabilities"]),
                 "verifiedAt": str(outcome["verifiedAt"]),
             }
-            if phase == "verify_completion" and outcome_proof != proof:
+            stable_fields = ("identity", "contextLength", "capabilities")
+            if phase == "verify_completion" and any(
+                outcome_proof[field] != proof[field] for field in stable_fields
+            ):
                 return {
                     "ok": False,
                     "phase": phase,

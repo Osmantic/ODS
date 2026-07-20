@@ -220,15 +220,42 @@ class LemonadeAdapter:
     def __init__(
         self,
         *,
-        wait_ready: Callable[..., bool],
+        wait_ready: ReadinessProbe,
         expected_gguf: str,
         context_length: int,
         lemonade_model_id: str,
+        capabilities: dict[str, bool] | None = None,
+        unload: Callable[[dict[str, str]], None] | None = None,
+        delete: Callable[[dict[str, str]], None] | None = None,
+        rollback: Callable[[dict[str, str]], None] | None = None,
     ) -> None:
         self._wait_ready = wait_ready
         self._expected_gguf = expected_gguf
         self._context_length = int(context_length)
         self._lemonade_model_id = lemonade_model_id
+        supplied_capabilities = capabilities or {}
+        self._capabilities = {
+            "chat": bool(supplied_capabilities.get("chat", True)),
+            "tools": bool(supplied_capabilities.get("tools", False)),
+            "vision": bool(supplied_capabilities.get("vision", False)),
+            "agentViable": bool(supplied_capabilities.get("agentViable", False)),
+        }
+        self._unload = unload
+        self._delete = delete
+        self._rollback = rollback
+        self._verified_identity = ""
+        self._verified_context = 0
+        self._verified_at = ""
+
+    def _verification_result(self, detail: str) -> dict[str, Any]:
+        return result(
+            True,
+            detail,
+            identity=self._verified_identity,
+            contextLength=self._verified_context,
+            capabilities=dict(self._capabilities),
+            verifiedAt=self._verified_at,
+        )
 
     def stage(self, env: dict[str, str]) -> dict[str, Any]:
         # Restart + model-ID resolution already completed inline before the
@@ -239,7 +266,7 @@ class LemonadeAdapter:
 
     def verify_identity(self, env: dict[str, str]) -> dict[str, Any]:
         try:
-            healthy = self._wait_ready(
+            runtime_proof = self._wait_ready(
                 env,
                 self._expected_gguf,
                 self._context_length,
@@ -247,14 +274,46 @@ class LemonadeAdapter:
             )
         except Exception as exc:
             return result(False, f"lemonade readiness wait failed: {exc}")
-        if not healthy:
+        if not isinstance(runtime_proof, dict):
+            return result(False, "lemonade runtime did not return a proof record")
+        runtime_identity = runtime_proof.get("identity")
+        runtime_context = runtime_proof.get("contextLength")
+        verified_at = runtime_proof.get("verifiedAt")
+        if not isinstance(runtime_identity, str) or not runtime_identity.strip():
             return result(False, "lemonade runtime did not report the staged model")
-        return result(True, "lemonade runtime reports staged model",
-                      identity=self._lemonade_model_id)
+        if (
+            not isinstance(runtime_context, int)
+            or isinstance(runtime_context, bool)
+            or runtime_context <= 0
+        ):
+            return result(False, "lemonade runtime did not report a valid context length")
+        if not isinstance(verified_at, str) or not verified_at.strip():
+            return result(False, "lemonade runtime proof has no timestamp")
+        self._verified_identity = runtime_identity.strip()
+        self._verified_context = runtime_context
+        self._verified_at = verified_at.strip()
+        return self._verification_result("lemonade runtime reports staged model")
 
     def verify_completion(self, env: dict[str, str]) -> dict[str, Any]:
-        return result(True, "completion proven during lemonade readiness wait",
-                      identity=self._lemonade_model_id)
+        if not self._verified_identity:
+            return result(False, "completion proof has no runtime identity")
+        return self._verification_result(
+            "completion proven during lemonade readiness wait"
+        )
+
+    def publish_native_alias(self, env: dict[str, str]) -> dict[str, Any]:
+        return result(True, "native Lemonade alias is deferred to the route adapter")
+
+    def unload(self, env: dict[str, str]) -> dict[str, Any]:
+        return ContainerLlamaAdapter._optional_operation("unload", self._unload, env)
+
+    def delete(self, env: dict[str, str]) -> dict[str, Any]:
+        return ContainerLlamaAdapter._optional_operation("delete", self._delete, env)
+
+    def rollback(self, env: dict[str, str]) -> dict[str, Any]:
+        return ContainerLlamaAdapter._optional_operation(
+            "rollback", self._rollback, env
+        )
 
 
 class FakeAdapter:
