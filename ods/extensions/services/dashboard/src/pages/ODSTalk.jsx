@@ -55,6 +55,9 @@ export default function ODSTalk() {
   const [status, setStatus] = useState('loading')
   const [statusText, setStatusText] = useState('Connecting to ODS Talk...')
   const [retryStatusRefresh, setRetryStatusRefresh] = useState(false)
+  // Advances after every offline retry so the polling effect re-arms; a
+  // repeated failure otherwise leaves every dependency unchanged.
+  const [statusAttempt, setStatusAttempt] = useState(0)
   const [sending, setSending] = useState(false)
   const [recording, setRecording] = useState(false)
   const [spokenReplies, setSpokenReplies] = useState(() => {
@@ -149,11 +152,25 @@ export default function ODSTalk() {
 
   useEffect(() => { refreshStatus() }, [refreshStatus])
 
+  // Poll while offline. A one-shot setTimeout does not reschedule here: a
+  // failed retry sets `status` and `retryStatusRefresh` to the values they
+  // already hold, React bails out of the re-render, no dependency changes,
+  // and the effect never runs again. Bumping an attempt counter after each
+  // attempt guarantees a changed dependency, so the retry keeps going until
+  // the backend is ready — which is the point, since it is usually a
+  // container still starting up.
   useEffect(() => {
     if (!retryStatusRefresh || status !== 'offline') return undefined
-    const timer = setTimeout(refreshStatus, TALK_STATUS_RETRY_MS)
-    return () => clearTimeout(timer)
-  }, [refreshStatus, retryStatusRefresh, status])
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      await refreshStatus()
+      if (!cancelled) setStatusAttempt(attempt => attempt + 1)
+    }, TALK_STATUS_RETRY_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [refreshStatus, retryStatusRefresh, status, statusAttempt])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ block: 'end' })

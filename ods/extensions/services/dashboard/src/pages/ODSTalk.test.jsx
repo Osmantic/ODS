@@ -153,6 +153,53 @@ describe('ODSTalk', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
+  test('keeps retrying when readiness takes more than one attempt', async () => {
+    // The retry is a one-shot setTimeout re-armed by an effect dependency. A
+    // failed attempt used to set status/retry flags to the values they already
+    // held, so React bailed out of the re-render, no dependency changed, and
+    // the effect never ran a second time — the page sat on 'offline' until a
+    // manual reload. A backend container taking longer than one interval to
+    // come up is the normal case, not an edge case.
+    const fetchMock = vi.fn(async (url) => {
+      if (url === '/api/talk/status') {
+        const ready = fetchMock.mock.calls.length > 3
+        return response({
+          capabilities: { text_chat: ready, tts: false, audio_message: false },
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ODSTalk />)
+
+    expect((await screen.findAllByText('ODS Talk text chat is not available.')).length).toBeGreaterThan(0)
+    expect(await screen.findByText('Ready', {}, { timeout: 8000 })).toBeInTheDocument()
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(3)
+  })
+
+  test('stops polling once a permanent incompatibility is reported', async () => {
+    // A compatibility reason is a settled answer, not a transient outage:
+    // retrying must stay off so the page does not poll forever.
+    const fetchMock = vi.fn(async (url) => {
+      if (url === '/api/talk/status') {
+        return response({
+          capabilities: { text_chat: false, tts: false, audio_message: false },
+          reason: 'Model does not support tool calling.',
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ODSTalk />)
+
+    expect((await screen.findAllByText('Model does not support tool calling.')).length).toBeGreaterThan(0)
+    const seen = fetchMock.mock.calls.length
+    await new Promise(resolve => setTimeout(resolve, 2500))
+    expect(fetchMock.mock.calls.length).toBe(seen)
+  })
+
   test('accumulates SSE deltas across split chunks', async () => {
     // Transport may split a single SSE frame across chunk boundaries. The
     // reader has to buffer the partial frame across reads, not drop bytes.
