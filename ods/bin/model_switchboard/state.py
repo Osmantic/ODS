@@ -39,6 +39,21 @@ _OPERATION_PHASES = {
 }
 _AVAILABILITY_MODES = {"serve_active", "queue"}
 
+_TOP_LEVEL_KEYS = {
+    "schema", "seq", "routeSeq", "operation", "desired", "active",
+    "history", "availability",
+}
+_OPERATION_KEYS = {"id", "phase", "requestedModelId", "startedAt", "error"}
+_ACTIVE_KEYS = {
+    "routeSeq", "catalogId", "runtimeModelId", "publicModel", "backend",
+    "contextLength", "capabilities", "verifiedAt", "reconstructed", "proof",
+}
+_BACKEND_KEYS = {"kind", "endpointId", "nativeRoute"}
+_CAPABILITY_KEYS = {"chat", "tools", "vision", "agentViable"}
+_PROOF_KEYS = {"identity", "completion"}
+_HISTORY_KEYS = {"routeSeq", "catalogId", "runtimeModelId", "verifiedAt"}
+_AVAILABILITY_KEYS = {"mode", "queueDeadline"}
+
 _WRITE_LOCK = threading.Lock()
 _LAST_GOOD: dict[str, dict[str, Any]] = {}
 
@@ -49,6 +64,22 @@ class StateError(RuntimeError):
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _check_keys(
+    value: dict[str, Any],
+    *,
+    allowed: set[str] | None,
+    required: set[str],
+    label: str,
+    errors: list[str],
+) -> None:
+    missing = required - set(value)
+    unexpected = set(value) - allowed if allowed is not None else set()
+    if missing:
+        errors.append(f"{label} is missing required keys: {', '.join(sorted(missing))}")
+    if unexpected:
+        errors.append(f"{label} has unexpected keys: {', '.join(sorted(unexpected))}")
 
 
 def initial_state() -> dict[str, Any]:
@@ -74,6 +105,13 @@ def validate_state(doc: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(doc, dict):
         return ["state root must be an object"]
+    _check_keys(
+        doc,
+        allowed=_TOP_LEVEL_KEYS,
+        required=_TOP_LEVEL_KEYS - {"operation"},
+        label="state",
+        errors=errors,
+    )
     if doc.get("schema") != SCHEMA_VERSION:
         errors.append(f"schema must be {SCHEMA_VERSION!r}")
     for key in ("seq", "routeSeq"):
@@ -86,6 +124,13 @@ def validate_state(doc: Any) -> list[str]:
         if not isinstance(operation, dict):
             errors.append("operation must be null or an object")
         else:
+            _check_keys(
+                operation,
+                allowed=_OPERATION_KEYS,
+                required={"id", "phase", "requestedModelId", "startedAt"},
+                label="operation",
+                errors=errors,
+            )
             if not isinstance(operation.get("id"), str) or not operation.get("id"):
                 errors.append("operation.id must be a non-empty string")
             if operation.get("phase") not in _OPERATION_PHASES:
@@ -94,20 +139,48 @@ def validate_state(doc: Any) -> list[str]:
                 errors.append("operation.requestedModelId must be a string")
             if not isinstance(operation.get("startedAt"), str):
                 errors.append("operation.startedAt must be a string")
+            if operation.get("error") is not None and not isinstance(
+                operation.get("error"), str
+            ):
+                errors.append("operation.error must be a string or null")
 
     desired = doc.get("desired")
     if desired is not None:
-        if not isinstance(desired, dict) or not isinstance(desired.get("catalogId"), str) \
-                or not desired.get("catalogId"):
+        if not isinstance(desired, dict):
             errors.append("desired must be null or {catalogId: non-empty string}")
+        else:
+            _check_keys(
+                desired,
+                allowed={"catalogId"},
+                required={"catalogId"},
+                label="desired",
+                errors=errors,
+            )
+            if (
+                not isinstance(desired.get("catalogId"), str)
+                or not desired.get("catalogId")
+            ):
+                errors.append("desired.catalogId must be a non-empty string")
 
     active = doc.get("active")
     if active is not None:
         if not isinstance(active, dict):
             errors.append("active must be null or an object")
         else:
-            if not isinstance(active.get("routeSeq"), int) or isinstance(active.get("routeSeq"), bool):
-                errors.append("active.routeSeq must be an integer")
+            _check_keys(
+                active,
+                allowed=_ACTIVE_KEYS,
+                required=_ACTIVE_KEYS - {"reconstructed"},
+                label="active",
+                errors=errors,
+            )
+            active_route_seq = active.get("routeSeq")
+            if (
+                not isinstance(active_route_seq, int)
+                or isinstance(active_route_seq, bool)
+                or active_route_seq < 0
+            ):
+                errors.append("active.routeSeq must be a non-negative integer")
             for key in ("catalogId", "runtimeModelId", "publicModel"):
                 if not isinstance(active.get(key), str) or not active.get(key):
                     errors.append(f"active.{key} must be a non-empty string")
@@ -115,9 +188,19 @@ def validate_state(doc: Any) -> list[str]:
             if not isinstance(backend, dict):
                 errors.append("active.backend must be an object")
             else:
+                _check_keys(
+                    backend,
+                    allowed=_BACKEND_KEYS,
+                    required={"kind", "endpointId"},
+                    label="active.backend",
+                    errors=errors,
+                )
                 if backend.get("kind") not in _BACKEND_KINDS:
                     errors.append("active.backend.kind is not a known backend kind")
-                if not isinstance(backend.get("endpointId"), str) or not backend.get("endpointId"):
+                if (
+                    not isinstance(backend.get("endpointId"), str)
+                    or not backend.get("endpointId")
+                ):
                     errors.append("active.backend.endpointId must be a non-empty string")
                 native_route = backend.get("nativeRoute")
                 if native_route is not None and not isinstance(native_route, str):
@@ -129,15 +212,38 @@ def validate_state(doc: Any) -> list[str]:
             if not isinstance(capabilities, dict):
                 errors.append("active.capabilities must be an object")
             else:
+                _check_keys(
+                    capabilities,
+                    allowed=_CAPABILITY_KEYS,
+                    required=_CAPABILITY_KEYS,
+                    label="active.capabilities",
+                    errors=errors,
+                )
                 for key in ("chat", "tools", "vision", "agentViable"):
                     if not isinstance(capabilities.get(key), bool):
                         errors.append(f"active.capabilities.{key} must be a boolean")
             verified_at = active.get("verifiedAt")
             if verified_at is not None and not isinstance(verified_at, str):
                 errors.append("active.verifiedAt must be a string or null")
+            if "reconstructed" in active and not isinstance(active.get("reconstructed"), bool):
+                errors.append("active.reconstructed must be a boolean")
             proof = active.get("proof")
-            if not isinstance(proof, dict) or not isinstance(proof.get("completion"), bool):
+            if not isinstance(proof, dict):
                 errors.append("active.proof must be {identity, completion: bool}")
+            else:
+                _check_keys(
+                    proof,
+                    allowed=_PROOF_KEYS,
+                    required=_PROOF_KEYS,
+                    label="active.proof",
+                    errors=errors,
+                )
+                if proof.get("identity") is not None and not isinstance(
+                    proof.get("identity"), str
+                ):
+                    errors.append("active.proof.identity must be a string or null")
+                if not isinstance(proof.get("completion"), bool):
+                    errors.append("active.proof.completion must be a boolean")
 
     history = doc.get("history")
     if not isinstance(history, list):
@@ -149,15 +255,45 @@ def validate_state(doc: Any) -> list[str]:
             if not isinstance(entry, dict):
                 errors.append(f"history[{index}] must be an object")
                 continue
-            if not isinstance(entry.get("routeSeq"), int) or isinstance(entry.get("routeSeq"), bool):
-                errors.append(f"history[{index}].routeSeq must be an integer")
+            _check_keys(
+                entry,
+                allowed=None,
+                required=_HISTORY_KEYS,
+                label=f"history[{index}]",
+                errors=errors,
+            )
+            history_route_seq = entry.get("routeSeq")
+            if (
+                not isinstance(history_route_seq, int)
+                or isinstance(history_route_seq, bool)
+                or history_route_seq < 0
+            ):
+                errors.append(f"history[{index}].routeSeq must be a non-negative integer")
             for key in ("catalogId", "runtimeModelId"):
                 if not isinstance(entry.get(key), str):
                     errors.append(f"history[{index}].{key} must be a string")
+            if entry.get("verifiedAt") is not None and not isinstance(
+                entry.get("verifiedAt"), str
+            ):
+                errors.append(f"history[{index}].verifiedAt must be a string or null")
 
     availability = doc.get("availability")
-    if not isinstance(availability, dict) or availability.get("mode") not in _AVAILABILITY_MODES:
+    if not isinstance(availability, dict):
         errors.append("availability.mode must be serve_active or queue")
+    else:
+        _check_keys(
+            availability,
+            allowed=_AVAILABILITY_KEYS,
+            required=_AVAILABILITY_KEYS,
+            label="availability",
+            errors=errors,
+        )
+        if availability.get("mode") not in _AVAILABILITY_MODES:
+            errors.append("availability.mode must be serve_active or queue")
+        if availability.get("queueDeadline") is not None and not isinstance(
+            availability.get("queueDeadline"), str
+        ):
+            errors.append("availability.queueDeadline must be a string or null")
 
     return errors
 
@@ -298,7 +434,16 @@ def record_verified_route(
         doc["seq"] = int(doc["seq"]) + 1
         if route_changed:
             doc["routeSeq"] = int(doc["routeSeq"]) + 1
-            if isinstance(previous, dict):
+            previous_proof = previous.get("proof") if isinstance(previous, dict) else None
+            previous_is_verified = bool(
+                isinstance(previous, dict)
+                and isinstance(previous_proof, dict)
+                and previous_proof.get("completion") is True
+                and isinstance(previous.get("verifiedAt"), str)
+                and previous.get("verifiedAt")
+                and previous.get("reconstructed") is not True
+            )
+            if previous_is_verified:
                 history_entry = {
                     "routeSeq": previous.get("routeSeq", 0),
                     "catalogId": previous.get("catalogId", ""),
@@ -345,6 +490,9 @@ def migrate_env_identity(env: dict[str, str]) -> dict[str, Any] | None:
     ``extra.``-prefixed Lemonade IDs, and native model names. Returns ``None``
     when the environment carries no local model identity (e.g. cloud-only).
     """
+    if str(env.get("ODS_MODE") or "").strip().casefold() == "cloud":
+        return None
+
     gguf = str(env.get("GGUF_FILE") or "").strip()
     lemonade = str(env.get("LEMONADE_MODEL") or "").strip()
     llm_model = str(env.get("LLM_MODEL") or "").strip()

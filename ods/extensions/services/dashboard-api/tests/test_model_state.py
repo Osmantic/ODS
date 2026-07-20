@@ -132,6 +132,12 @@ class TestStateModule:
         doc = _record(tmp_path / "s.json")
         doc["active"]["backend"]["kind"] = "banana"
         assert any("backend.kind" in e for e in sb.validate_state(doc))
+        doc = _record(tmp_path / "extra.json")
+        doc["unexpected"] = True
+        assert any("unexpected keys" in e for e in sb.validate_state(doc))
+        doc = _record(tmp_path / "negative.json")
+        doc["active"]["routeSeq"] = -1
+        assert any("active.routeSeq" in e for e in sb.validate_state(doc))
 
     @pytest.mark.parametrize(
         "env,expected",
@@ -152,7 +158,13 @@ class TestStateModule:
             assert got[key] == value
 
     def test_migrate_cloud_only_yields_none(self):
-        assert sb.migrate_env_identity({"ODS_MODE": "cloud"}) is None
+        env = {
+            "ODS_MODE": "cloud",
+            "LLM_MODEL": "anthropic/claude-sonnet-4-5-20250514",
+            "GGUF_FILE": "",
+            "MAX_CONTEXT": "200000",
+        }
+        assert sb.migrate_env_identity(env) is None
 
     def test_initialize_if_missing_reconstructs_once(self, tmp_path):
         path = tmp_path / "model-state.json"
@@ -168,16 +180,52 @@ class TestStateModule:
 
     def test_initialize_cloud_only_writes_nothing(self, tmp_path):
         path = tmp_path / "model-state.json"
-        assert sb.initialize_if_missing(path, {"ODS_MODE": "cloud"}) is None
+        env = {
+            "ODS_MODE": "cloud",
+            "LLM_MODEL": "anthropic/claude-sonnet-4-5-20250514",
+            "MAX_CONTEXT": "200000",
+        }
+        assert sb.initialize_if_missing(path, env) is None
         assert not path.exists()
+
+    def test_reconstructed_route_never_enters_verified_history(self, tmp_path):
+        path = tmp_path / "model-state.json"
+        reconstructed = sb.initialize_if_missing(
+            path,
+            {
+                "ODS_MODE": "local",
+                "LLM_MODEL": "stale-model",
+                "GGUF_FILE": "Stale.gguf",
+                "MAX_CONTEXT": "65536",
+            },
+        )
+        assert reconstructed["active"]["proof"]["completion"] is False
+
+        verified = _record(
+            path,
+            model="current-model",
+            runtime="Current.gguf",
+            context=65536,
+        )
+        assert verified["active"]["proof"]["completion"] is True
+        assert verified["history"] == []
 
 
 class TestModelStateEndpoint:
     def _point_at(self, monkeypatch, tmp_path):
+        data_dir = tmp_path / "mounted-data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("ODS_DATA_DIR", str(data_dir))
+        monkeypatch.setenv("ODS_MODEL_STATE_SCHEMA_PATH", str(_SCHEMA_PATH))
+        return data_dir / "model-state.json"
+
+    def test_state_path_uses_data_mount_environment(self, monkeypatch, tmp_path):
         from routers import model_state as ms
-        monkeypatch.setattr(ms, "INSTALL_DIR", str(tmp_path))
-        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
-        return tmp_path / "data" / "model-state.json"
+
+        data_dir = tmp_path / "compose-data-mount"
+        monkeypatch.setenv("ODS_DATA_DIR", str(data_dir))
+        monkeypatch.setattr(ms, "INSTALL_DIR", str(tmp_path / "ods"))
+        assert ms._state_path() == data_dir / "model-state.json"
 
     def test_missing_state(self, test_client, monkeypatch, tmp_path):
         self._point_at(monkeypatch, tmp_path)
@@ -207,6 +255,22 @@ class TestModelStateEndpoint:
         assert resp.status_code == 200
         body = resp.json()
         assert body["exists"] is True and body["valid"] is False and body["errors"]
+
+    def test_schema_invalid_state_is_diagnostic(self, test_client, monkeypatch, tmp_path):
+        path = self._point_at(monkeypatch, tmp_path)
+        doc = _record(path)
+        doc["active"]["routeSeq"] = -1
+        doc["unexpected"] = "must be rejected"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+
+        resp = test_client.get("/api/models/state", headers=test_client.auth_headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["exists"] is True
+        assert body["valid"] is False
+        assert body["active"] is None
+        assert any("routeSeq" in error for error in body["errors"])
+        assert any("unexpected" in error for error in body["errors"])
 
     def test_requires_auth(self, test_client, monkeypatch, tmp_path):
         self._point_at(monkeypatch, tmp_path)
