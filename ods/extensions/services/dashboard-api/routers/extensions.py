@@ -1013,6 +1013,8 @@ def _serialize_extension_operation(func):
     """Keep same-service portal mutations serialized through runtime proof."""
     @wraps(func)
     def wrapped(service_id: str, *args, **kwargs):
+        if not _SERVICE_ID_RE.match(service_id):
+            return func(service_id, *args, **kwargs)
         with _extension_operation_lock(service_id):
             return func(service_id, *args, **kwargs)
 

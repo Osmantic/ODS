@@ -3433,6 +3433,24 @@ class TestUpdateExtension:
             (installed / "compose.yaml").rename(installed / "compose.yaml.disabled")
         return ext_mod, lib_dir, user_dir, installed
 
+    def test_invalid_id_is_rejected_before_operation_lock(
+        self, test_client, monkeypatch,
+    ):
+        from routers import extensions as ext_mod
+
+        @contextlib.contextmanager
+        def unexpected_lock(_service_id):
+            raise AssertionError("invalid IDs must not create operation locks")
+            yield
+
+        monkeypatch.setattr(ext_mod, "_extension_operation_lock", unexpected_lock)
+
+        response = test_client.post(
+            "/api/extensions/INVALID/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 404
+
     def test_enable_disable_rename_is_not_a_local_modification(
         self, monkeypatch, tmp_path,
     ):
