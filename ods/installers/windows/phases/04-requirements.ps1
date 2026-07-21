@@ -281,9 +281,11 @@ Stop-WindowsODSLemonadePortConflicts `
 
 # ── Port conflict detection ───────────────────────────────────────────────────
 # Build list of ports to check based on enabled features.
-# Default service ports match .env.example; overridden ports are not checked here.
+# Default service ports match .env.example. Open WebUI uses the same persisted
+# or process-level override that phase 06 will write to .env.
 $_portsToCheck = [ordered]@{
-    "Open WebUI (chat)"   = 3000
+    "Open WebUI (chat)"   = Resolve-WindowsODSPort `
+        -Name "WEBUI_PORT" -DefaultPort 3000 -InstallDir $installDir
     "Dashboard"           = 3001
     "Dashboard API"       = 3002
 }
@@ -357,7 +359,7 @@ if ($_portConflicts.Count -gt 0) {
     Write-AIWarn "Port conflicts detected:"
     $_portConflicts | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
     Write-AI "  Stop the conflicting processes, or override ports via environment variables."
-    Write-AI "  Example: set WEBUI_PORT=9090 before running the installer."
+    Write-AI '  Example: $env:WEBUI_PORT = "9090" before running the installer.'
     Write-AI "  See .env.example for all configurable ports."
 } else {
     Write-AISuccess "No port conflicts detected"

@@ -75,3 +75,7 @@ jobs:
       - name: Windows Model Activation Contract
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1
+
+      - name: Windows Port Preflight Contract
+        shell: pwsh
+        run: ./tests/test-windows-port-preflight.ps1

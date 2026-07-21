@@ -12,6 +12,55 @@
 #   All secrets use cryptographic RNG -- never use Get-Random for secrets.
 # ============================================================================
 
+function Resolve-WindowsODSPort {
+    <#
+    .SYNOPSIS
+        Resolve a Windows installer port from an explicit process override,
+        persisted .env state, or the platform default.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $true)]
+        [int]$DefaultPort,
+
+        [hashtable]$ExistingEnv,
+        [string]$InstallDir = ""
+    )
+
+    $candidates = New-Object 'System.Collections.Generic.List[string]'
+    $processValue = [Environment]::GetEnvironmentVariable($Name)
+    if (-not [string]::IsNullOrWhiteSpace($processValue)) {
+        [void]$candidates.Add($processValue)
+    }
+
+    if ($ExistingEnv -and $ExistingEnv.ContainsKey($Name)) {
+        [void]$candidates.Add([string]$ExistingEnv[$Name])
+    } elseif (-not [string]::IsNullOrWhiteSpace($InstallDir)) {
+        $envPath = Join-Path $InstallDir ".env"
+        if (Test-Path -LiteralPath $envPath -PathType Leaf) {
+            $assignment = Get-Content -LiteralPath $envPath -ErrorAction SilentlyContinue |
+                Where-Object { $_ -match "^$([regex]::Escape($Name))=(.*)$" } |
+                Select-Object -First 1
+            if ($assignment -and $assignment -match "^[^=]+=(.*)$") {
+                [void]$candidates.Add([string]$Matches[1])
+            }
+        }
+    }
+
+    [void]$candidates.Add([string]$DefaultPort)
+    foreach ($candidate in $candidates) {
+        $parsedPort = 0
+        if ([int]::TryParse(([string]$candidate).Trim(), [ref]$parsedPort) -and
+            $parsedPort -ge 1 -and $parsedPort -le 65535) {
+            return $parsedPort
+        }
+    }
+
+    return $DefaultPort
+}
+
 function Write-Utf8NoBom {
     <#
     .SYNOPSIS
@@ -243,6 +292,10 @@ function New-ODSEnv {
         }
         return $Default
     }
+
+    $webuiPort = Resolve-WindowsODSPort `
+        -Name "WEBUI_PORT" -DefaultPort 3000 `
+        -ExistingEnv $existingEnv -InstallDir $InstallDir
 
     # Lemonade's native Windows router reserves host port 9000 for websockets.
     # Keep Whisper's container port unchanged, but move its host port out of the
@@ -627,7 +680,7 @@ COMFYUI_CPU_RESERVATION=$comfyuiCpuReservation
 
 #=== Ports ===
 OLLAMA_PORT=11434
-WEBUI_PORT=3000
+WEBUI_PORT=$webuiPort
 WHISPER_PORT=$whisperPort
 TTS_PORT=8880
 N8N_PORT=5678
