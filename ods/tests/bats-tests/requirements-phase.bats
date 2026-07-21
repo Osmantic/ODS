@@ -75,7 +75,12 @@ STUB
             PORT_CONFLICT=false
             PORT_CONFLICT_PID=""
             PORT_CONFLICT_PROC=""
-            if command -v ss &> /dev/null; then
+            if command -v lsof &> /dev/null; then
+                if lsof -i ":${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+                    PORT_CONFLICT=true
+                    return 0
+                fi
+            elif command -v ss &> /dev/null; then
                 if ss -tln 2>/dev/null | grep -qE ":${port}(\s|$)"; then
                     PORT_CONFLICT=true
                     return 0
@@ -94,27 +99,24 @@ STUB
 }
 
 @test "check_port_conflict: detects conflict when port is occupied" {
-    # Start a background listener on a test port
+    # Exercise the occupied lsof branch deterministically. The BATS subprocess
+    # may intentionally run with a PATH that excludes macOS /usr/sbin.
     local test_port=59877
-    python3 -c "
-import socket, time, sys
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(('127.0.0.1', $test_port))
-s.listen(1)
-time.sleep(30)
-" &
-    local bg_pid=$!
-    sleep 1
 
     run bash -c '
+        lsof() { return 0; }
         _port_check_warned=false
         check_port_conflict() {
             local port="$1"
             PORT_CONFLICT=false
             PORT_CONFLICT_PID=""
             PORT_CONFLICT_PROC=""
-            if command -v ss &> /dev/null; then
+            if command -v lsof &> /dev/null; then
+                if lsof -i ":${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+                    PORT_CONFLICT=true
+                    return 0
+                fi
+            elif command -v ss &> /dev/null; then
                 if ss -tln 2>/dev/null | grep -qE ":${port}(\s|$)"; then
                     PORT_CONFLICT=true
                     return 0
@@ -128,9 +130,6 @@ time.sleep(30)
             echo "CLEAR"
         fi
     '
-
-    kill $bg_pid 2>/dev/null || true
-    wait $bg_pid 2>/dev/null || true
 
     assert_output "CONFLICT"
 }
@@ -243,6 +242,7 @@ time.sleep(30)
 
 @test "check_ollama_conflict: returns false when ollama not running" {
     run bash -c '
+        pgrep() { return 1; }
         check_ollama_conflict() {
             OLLAMA_RUNNING=false
             OLLAMA_PID=""

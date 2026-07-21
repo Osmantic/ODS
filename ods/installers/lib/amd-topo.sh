@@ -89,7 +89,7 @@ amd_gpu_id() {
 
     # Method 3: Composite PCI BDF ID (works on all AMD GPUs)
     local pci_bdf device_id subsystem_id
-    pci_bdf=$(readlink -f "$card_dir" | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1) || pci_bdf="unknown"
+    pci_bdf=$(readlink -f "$card_dir" | grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1) || pci_bdf="unknown"
     device_id=$(cat "$card_dir/device" 2>/dev/null | sed 's/^0x//') || device_id="0000"
     subsystem_id=$(cat "$card_dir/subsystem_device" 2>/dev/null | sed 's/^0x//') || subsystem_id="0000"
     echo "AMD-${pci_bdf}-${device_id}-${subsystem_id}"
@@ -136,10 +136,10 @@ amd_gfx_version() {
     # Method 4: Parse rocminfo by PCI BDF
     if command -v rocminfo &>/dev/null; then
         local pci_bdf
-        pci_bdf=$(readlink -f "$card_dir" | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]') || pci_bdf=""
+        pci_bdf=$(readlink -f "$card_dir" | grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]') || pci_bdf=""
         if [[ -n "$pci_bdf" ]]; then
             local gfx
-            gfx=$(rocminfo 2>/dev/null | grep -A10 "$pci_bdf" | grep -oP 'gfx\d+' | head -1)
+            gfx=$(rocminfo 2>/dev/null | grep -A10 "$pci_bdf" | grep -oE 'gfx[0-9]+' | head -1)
             [[ -n "$gfx" ]] && echo "$gfx" && return 0
         fi
     fi
@@ -185,7 +185,9 @@ amd_gpu_name() {
 
     # Fallback: parse lspci for the bracketed device name
     local pci_bdf
-    pci_bdf=$(readlink -f "$card_dir" | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]') || pci_bdf=""
+    pci_bdf=$(readlink -f "$card_dir" 2>/dev/null \
+        | grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' \
+        | sed -n '1p') || pci_bdf=""
     if [[ -n "$pci_bdf" ]] && command -v lspci &>/dev/null; then
         local lspci_name
         lspci_name=$(lspci -s "$pci_bdf" 2>/dev/null | sed 's/.*: //')
@@ -353,8 +355,8 @@ _sysfs_link_type() {
 
     # Check IOMMU groups for PCIe switch proximity
     local pci_a pci_b
-    pci_a=$(readlink -f "$card_a" | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]') || pci_a=""
-    pci_b=$(readlink -f "$card_b" | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]') || pci_b=""
+    pci_a=$(readlink -f "$card_a" | grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]') || pci_a=""
+    pci_b=$(readlink -f "$card_b" | grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]') || pci_b=""
 
     if [[ -n "$pci_a" && -n "$pci_b" ]]; then
         local iommu_a="" iommu_b=""
@@ -422,13 +424,13 @@ detect_amd_topo() {
         name=$(amd_gpu_name "$card_dir" "$device_id")
 
         # PCIe info: try current, fall back to max
-        pci_bdf=$(readlink -f "$card_dir" | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1) || pci_bdf="unknown"
-        pcie_gen=$(cat "$card_dir/current_link_speed" 2>/dev/null | grep -oP '^\d+' || \
-                   cat "$card_dir/max_link_speed" 2>/dev/null | grep -oP '^\d+' || echo "unknown")
-        pcie_width=$(cat "$card_dir/current_link_width" 2>/dev/null | grep -oP '^\d+' || \
-                     cat "$card_dir/max_link_width" 2>/dev/null | grep -oP '^\d+' || echo "unknown")
+        pci_bdf=$(readlink -f "$card_dir" | grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1) || pci_bdf="unknown"
+        pcie_gen=$(cat "$card_dir/current_link_speed" 2>/dev/null | grep -oE '^[0-9]+' || \
+                   cat "$card_dir/max_link_speed" 2>/dev/null | grep -oE '^[0-9]+' || echo "unknown")
+        pcie_width=$(cat "$card_dir/current_link_width" 2>/dev/null | grep -oE '^[0-9]+' || \
+                     cat "$card_dir/max_link_width" 2>/dev/null | grep -oE '^[0-9]+' || echo "unknown")
         [[ "$pcie_width" == "0" ]] && \
-            pcie_width=$(cat "$card_dir/max_link_width" 2>/dev/null | grep -oP '^\d+' || echo "unknown")
+            pcie_width=$(cat "$card_dir/max_link_width" 2>/dev/null | grep -oE '^[0-9]+' || echo "unknown")
 
         # Detect memory type per card
         local gtt_bytes mem_type

@@ -327,8 +327,8 @@ else
 fi
 
 # Check all ai_* calls match defined functions
-DEFINED_AI_FUNCS=$(grep -ohP '^(ai|ai_ok|ai_warn|ai_bad|signal|chapter)\(' installers/lib/ui.sh 2>/dev/null | sed 's/($//' | sort -u)
-CALLED_AI_FUNCS=$(grep -ohP '\b(ai_\w+)\b' installers/phases/*.sh 2>/dev/null | sort -u)
+DEFINED_AI_FUNCS=$(sed -nE 's/^(ai|ai_ok|ai_warn|ai_bad|signal|chapter)\(.*/\1/p' installers/lib/ui.sh 2>/dev/null | sort -u)
+CALLED_AI_FUNCS=$(grep -ohE 'ai_[[:alnum:]_]+' installers/phases/*.sh 2>/dev/null | sort -u)
 UNDEFINED=""
 for func in $CALLED_AI_FUNCS; do
     # Skip ai() itself and common patterns

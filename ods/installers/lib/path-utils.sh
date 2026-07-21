@@ -31,16 +31,35 @@ normalize_path() {
     fi
     
     # Resolve symlinks and normalize (remove .., ., //)
-    if command -v realpath &>/dev/null; then
-        # GNU realpath (Linux)
+    if command -v realpath &>/dev/null && realpath -m / >/dev/null 2>&1; then
+        # GNU realpath (Linux). BSD realpath does not support -m.
         realpath -m "$path" 2>/dev/null || echo "$path"
-    elif command -v grealpath &>/dev/null; then
-        # GNU realpath via Homebrew (macOS)
-        grealpath -m "$path" 2>/dev/null || echo "$path"
     else
-        # Fallback: basic normalization without external dependencies
-        # This handles most cases but doesn't resolve all edge cases
-        echo "$path"
+        # Dependency-free lexical normalization for BSD/macOS and minimal
+        # systems. This removes '.', '..', and repeated separators even when
+        # the final path does not exist.
+        local component
+        local -a components normalized
+        IFS='/' read -r -a components <<< "$path"
+        normalized=()
+        for component in "${components[@]}"; do
+            case "$component" in
+                ""|.) continue ;;
+                ..)
+                    if (( ${#normalized[@]} > 0 )); then
+                        unset 'normalized[${#normalized[@]}-1]'
+                    fi
+                    ;;
+                *) normalized+=("$component") ;;
+            esac
+        done
+        if (( ${#normalized[@]} == 0 )); then
+            printf '/\n'
+        else
+            local joined
+            joined=$(IFS=/; printf '%s' "${normalized[*]}")
+            printf '/%s\n' "$joined"
+        fi
     fi
 }
 
