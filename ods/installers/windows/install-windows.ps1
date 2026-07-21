@@ -1518,8 +1518,36 @@ litellm_settings:
             $delays = @(5, 15, 30)
             for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
                 Write-AI "Pulling Compose image ($attempt/$MaxAttempts): $Image"
-                & docker @DockerClientArgs pull $Image *>> $LogPath
-                if ($LASTEXITCODE -eq 0) {
+                $pullExitCode = 1
+                $logWriteError = $null
+                $pullEAP = $ErrorActionPreference
+                try {
+                    # Windows PowerShell 5.1 promotes redirected native stderr
+                    # to NativeCommandError when ErrorActionPreference is Stop.
+                    # Continue keeps Docker's progress stream readable; explicit
+                    # Add-Content error handling still makes log failures visible.
+                    $ErrorActionPreference = "Continue"
+                    & docker @DockerClientArgs pull $Image 2>&1 | ForEach-Object {
+                        $line = [string]$_
+                        Write-Host $line
+                        if (-not $logWriteError) {
+                            try {
+                                Add-Content -LiteralPath $LogPath -Value $line -ErrorAction Stop
+                            } catch {
+                                $logWriteError = $_
+                            }
+                        }
+                    }
+                    $pullExitCode = $LASTEXITCODE
+                } finally {
+                    $ErrorActionPreference = $pullEAP
+                }
+
+                if ($logWriteError) {
+                    Write-AIError "Could not append Docker pull progress to ${LogPath}: $($logWriteError.Exception.Message)"
+                    return $false
+                }
+                if ($pullExitCode -eq 0) {
                     Write-AISuccess "Pulled $Image"
                     return $true
                 }

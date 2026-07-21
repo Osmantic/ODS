@@ -746,6 +746,15 @@ if grep -A16 'function Test-ODSDockerImageAvailable' installers/windows/install-
 else
     fail "install-windows.ps1: Docker image probes must not abort on missing local images"
 fi
+if command -v pwsh >/dev/null 2>&1; then
+    if pwsh -NoProfile -File tests/contracts/test-windows-docker-pull.ps1; then
+        pass "install-windows.ps1: Docker pull progress and result runtime contract"
+    else
+        fail "install-windows.ps1: Docker pull progress and result runtime contract failed"
+    fi
+else
+    pass "install-windows.ps1: Docker pull runtime test skipped (pwsh unavailable)"
+fi
 
 # ---------------------------------------------------------------------------
 # 19. AMD Docker 29.3 downgrade is Debian-aware and sudo-aware
