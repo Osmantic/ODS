@@ -1,0 +1,91 @@
+# AI-Rulez configuration for ODS health-probe governance
+# Provenance: Goldziher/ai-rulez V4 + project ADR-HEALTH-PROBE-MERGE-ORDER.md
+# Date: 2026-07-21
+
+version = "4.0"
+name = "ods-health-probe"
+default = "health-probe"
+presets = ["claude", "cursor", "codex", "grok"]
+
+[profiles]
+health-probe = ["health-probe"]
+
+[[rules]]
+name = "Registry Owns HTTP Health Probes"
+priority = "critical"
+content = """
+All HTTP service health probes for registry-managed services MUST use:
+- `sr_health_port` / `sr_health_url` / `sr_curl_health` for service ids
+- `sr_http_probe_2xx` for host-local non-manifest endpoints (e.g. host-agent)
+
+Forbidden for registry services:
+- Hand-rolled `curl -sf URL/health` (treats redirects as healthy)
+- Assembling ports from ad-hoc env without `sr_resolve_ports` after `sr_load`
+- Duplicating health URL construction outside service-registry.sh
+
+After every `sr_load`, call `sr_resolve_ports` before probing when .env may override ports.
+"""
+
+[[rules]]
+name = "Health Probe Merge Order"
+priority = "critical"
+content = """
+Merge order is normative (see ods/docs/ADR-HEALTH-PROBE-MERGE-ORDER.md):
+1. PR #1934 — HTTP health contract foundation (this branch)
+2. PR #1692 — health_type http|tcp|none (rebase onto #1934)
+3. PR #1743 — external LLM doctor (rebase after foundation)
+4. Close PR #1343 as duplicate of #1692
+
+Do not land typed-probe or external-LLM changes against pre-registry probe surfaces.
+"""
+
+[[rules]]
+name = "Dual Schema Health-Contract Parity"
+priority = "high"
+content = """
+`extensions/schema/service-manifest.v1.json` and
+`extensions/library/schema/service-manifest.v1.json` may differ overall, but
+health-contract keys MUST stay aligned:
+external_port_env, health, health_port, health_port_env, health_header, health_timeout.
+
+Gate: `tests/test-service-manifest-health-contract-drift.sh`
+Never hand-edit only one schema for health fields.
+"""
+
+[[rules]]
+name = "No Ghost Branches Without Implementation"
+priority = "high"
+content = """
+Worktrees named for a feature MUST either:
+- track the implementing branch tip, or
+- be deleted
+
+Empty feature branches (0 unique commits) are governance failures.
+Shadow worktrees and duplicate PR heads are sprawl — consolidate before merge.
+"""
+
+[[rules]]
+name = "Shadow Probe Audit Required"
+priority = "high"
+content = """
+Any change touching health/doctor/status MUST keep these green:
+- tests/test-ods-cli-health-probe-contract.sh
+- tests/test-health-probe-shadow-audit.sh
+- tests/test-service-manifest-health-contract-drift.sh
+
+When adding a new probe surface, extend the shadow audit allowlist deliberately
+or migrate the surface to registry helpers.
+"""
+
+[[rules]]
+name = "Stateless Headless Evaluation Preferred"
+priority = "medium"
+content = """
+Judgment/eval of health-probe work should use stateless transports:
+- uv run isolated scripts (no ambient venv mutation)
+- ollama-mcp / local ollama generate for multi-model scoring
+- codex exec -s read-only --ephemeral
+- grok -p single-turn with tools disabled when possible
+
+Do not rely on interactive TUI state for gate decisions.
+"""
