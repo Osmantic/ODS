@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 _HEALTH_PATH_RE = re.compile(r"^/[A-Za-z0-9/_\-.]*$")
 _HEALTH_PATH_REJECT = ("..", "@", "?", "#", "http://", "https://")
+_HEALTH_HEADER_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+:[^\r\n]+$")
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
@@ -78,6 +79,12 @@ def scan_user_extension_services(
 
             port = svc.get("port", 0)
             name = svc.get("name", service_id)
+            health_header = svc.get("health_header", "")
+            if health_header and (
+                not isinstance(health_header, str)
+                or not _HEALTH_HEADER_RE.fullmatch(health_header)
+            ):
+                raise ValueError("health_header must be one HTTP header without newlines")
 
             # Host = service_id (Docker DNS). Never trust manifest host_env/default_host.
             services[service_id] = {
@@ -91,6 +98,7 @@ def scan_user_extension_services(
                 # health_port; check_service_health() falls back to "port"
                 # when absent.
                 **({"health_port": int(svc["health_port"])} if "health_port" in svc else {}),
+                **({"health_header": health_header} if health_header else {}),
             }
         except (TypeError, ValueError) as exc:
             logger.warning("Skipping extension %s: invalid manifest value: %s", service_id, exc)

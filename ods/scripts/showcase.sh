@@ -318,12 +318,11 @@ show_status() {
     echo ""
     
     for sid in "${SERVICE_IDS[@]}"; do
-        _port="${SERVICE_PORTS[$sid]:-0}"
-        _health="${SERVICE_HEALTH[$sid]:-/health}"
+        _port="$(sr_health_port "$sid")"
         _name="${SERVICE_NAMES[$sid]:-$sid}"
         [[ "$_port" == "0" ]] && continue
-        _url="http://localhost:${_port}"
-        if check_service "$_url" "$_health"; then
+        _url="$(sr_health_url "$sid" localhost)"
+        if sr_curl_health "$sid" "${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}" localhost >/dev/null 2>&1; then
             echo -e "  ${GREEN}✓${NC} $_name ${DIM}($_url)${NC}"
         else
             echo -e "  ${RED}✗${NC} $_name ${DIM}($_url)${NC}"

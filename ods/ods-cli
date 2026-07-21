@@ -1224,11 +1224,12 @@ cmd_status() {
         local health="${SERVICE_HEALTH[$sid]}"
         local port_env="${SERVICE_PORT_ENVS[$sid]}"
         local default_port="${SERVICE_PORTS[$sid]}"
+        local default_health_port="${SERVICE_HEALTH_PORTS[$sid]:-}"
         local name="${SERVICE_NAMES[$sid]:-$sid}"
         local cat="${SERVICE_CATEGORIES[$sid]}"
 
         # Skip services with no health endpoint or port
-        [[ -z "$health" || "$default_port" == "0" ]] && continue
+        [[ -z "$health" || ( "$default_port" == "0" && -z "$default_health_port" ) ]] && continue
 
         # Resolve port from env var or default
         local port="$default_port"
@@ -1245,9 +1246,8 @@ cmd_status() {
 
         # Launch health check in background
         (
-            url="http://127.0.0.1:${port}${health}"
             timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}"
-            if curl -sf --max-time "$timeout" "$url" > /dev/null 2>&1; then
+            if sr_curl_health "$sid" "$timeout" > /dev/null 2>&1; then
                 echo "healthy|$name" > "$tmpdir/$sid"
             else
                 echo "unhealthy|$name" > "$tmpdir/$sid"
@@ -1332,10 +1332,11 @@ cmd_status_json() {
         local health="${SERVICE_HEALTH[$sid]}"
         local port_env="${SERVICE_PORT_ENVS[$sid]}"
         local default_port="${SERVICE_PORTS[$sid]}"
+        local default_health_port="${SERVICE_HEALTH_PORTS[$sid]:-}"
         local name="${SERVICE_NAMES[$sid]:-$sid}"
 
         # Skip services with no health endpoint or port configured
-        [[ -z "$health" || "$default_port" == "0" ]] && continue
+        [[ -z "$health" || ( "$default_port" == "0" && -z "$default_health_port" ) ]] && continue
 
         # Resolve port from env var or default
         local port="$default_port"
@@ -1358,8 +1359,7 @@ cmd_status_json() {
         if [[ "$cat" != "core" && "$container_status" == "stopped" ]]; then
             status="stopped"
         else
-            local url="http://127.0.0.1:${port}${health}"
-            if curl -sf --max-time 5 "$url" > /dev/null 2>&1; then
+            if sr_curl_health "$sid" "${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}" > /dev/null 2>&1; then
                 status="healthy"
             else
                 status="unhealthy"
@@ -2533,6 +2533,18 @@ cmd_audit() {
     check_install
     sr_load
 
+    if [[ ! -f "$SCRIPT_DIR/lib/python-cmd.sh" ]]; then
+        error "Python resolver not found at $SCRIPT_DIR/lib/python-cmd.sh"
+    fi
+    # The extension auditor imports PyYAML. Resolve the interpreter by module
+    # capability instead of assuming the first python3 on PATH owns it.
+    . "$SCRIPT_DIR/lib/python-cmd.sh"
+    local audit_python
+    audit_python="$(ods_detect_python_cmd_with_module yaml 2>/dev/null || true)"
+    if [[ -z "$audit_python" ]]; then
+        error "No Python interpreter with PyYAML is available for extension audit."
+    fi
+
     local -a script_args=()
     local scope="${1:-}"
     if [[ "$scope" == "extensions" || "$scope" == "extension" ]]; then
@@ -2546,7 +2558,7 @@ cmd_audit() {
                 shift
                 ;;
             --help|-h)
-                python3 "$INSTALL_DIR/scripts/audit-extensions.py" --help
+                "$audit_python" "$INSTALL_DIR/scripts/audit-extensions.py" --help
                 return 0
                 ;;
             *)
@@ -2560,7 +2572,7 @@ cmd_audit() {
         error "audit-extensions.py not found at $INSTALL_DIR/scripts/audit-extensions.py"
     fi
 
-    python3 "$INSTALL_DIR/scripts/audit-extensions.py" --project-dir "$INSTALL_DIR" "${script_args[@]}"
+    "$audit_python" "$INSTALL_DIR/scripts/audit-extensions.py" --project-dir "$INSTALL_DIR" "${script_args[@]}"
 }
 
 #=============================================================================

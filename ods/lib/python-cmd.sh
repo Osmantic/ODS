@@ -134,6 +134,21 @@ ods_detect_python_cmd_with_module() {
         return 0
     fi
 
+    # The installer owns a dependency-complete Python environment under the
+    # ODS home. Prefer it before unrelated system interpreters when it exists.
+    local ods_home="${ODS_HOME:-${HOME:-}/ods}"
+    local candidate
+    for candidate in \
+        "$ods_home/.venv/installer-python/bin/python3" \
+        "$ods_home/.venv/installer-python/bin/python" \
+        "$ods_home/.venv/installer-python/Scripts/python.exe"
+    do
+        if _ods_python_has_module "$candidate" "$module"; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+
     if [[ "${ODS_PYTHON_PREFER_SYSTEM:-}" == "1" && -x /usr/bin/python3 ]]; then
         if _ods_python_has_module /usr/bin/python3 "$module"; then
             printf '%s' "/usr/bin/python3"
@@ -141,7 +156,6 @@ ods_detect_python_cmd_with_module() {
         fi
     fi
 
-    local candidate
     for candidate in python3 python; do
         if _ods_python_has_module "$candidate" "$module"; then
             printf '%s' "$candidate"

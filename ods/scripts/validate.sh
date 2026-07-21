@@ -62,6 +62,19 @@ check() {
     fi
 }
 
+check_registry_health() {
+    local name="$1"
+    local sid="$2"
+    printf "  %-30s " "$name..."
+    if sr_curl_health "$sid" 10 >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ PASS${NC}"
+        ((PASSED++)) || true
+    else
+        echo -e "${RED}✗ FAIL${NC}"
+        ((FAILED++)) || true
+    fi
+}
+
 echo "1. Container Status"
 echo "───────────────────"
 check "llama-server running" "docker compose $COMPOSE_FLAGS ps llama-server 2>/dev/null | grep -qE 'Up|running'"
@@ -109,20 +122,15 @@ for sid in "${SERVICE_IDS[@]}"; do
 
     _container="${SERVICE_CONTAINERS[$sid]}"
     _health="${SERVICE_HEALTH[$sid]}"
-    _port_env="${SERVICE_PORT_ENVS[$sid]}"
-    _default_port="${SERVICE_PORTS[$sid]}"
+    _port="$(sr_health_port "$sid")"
     _name="${SERVICE_NAMES[$sid]:-$sid}"
-
-    # Resolve port
-    _port="$_default_port"
-    [[ -n "$_port_env" ]] && _port="${!_port_env:-$_default_port}"
 
     # Skip if no health endpoint or port
     [[ -z "$_health" || "$_port" == "0" ]] && continue
 
     # Check if container is running
     if docker compose $COMPOSE_FLAGS ps "$sid" 2>/dev/null | grep -qE "Up|running"; then
-        check "$_name" "curl -sf --max-time 10 http://127.0.0.1:${_port}${_health}"
+        check_registry_health "$_name" "$sid"
     else
         printf "  %-30s ${YELLOW}○ SKIP (not enabled)${NC}\n" "$_name..."
     fi

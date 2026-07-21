@@ -11,6 +11,7 @@ service:
   external_port_env: BASEROW_PORT
   external_port_default: 3007
   health: /api/_health/
+  health_header: "Host: localhost:3007"
   type: docker
   gpu_backends: [all]
   category: optional

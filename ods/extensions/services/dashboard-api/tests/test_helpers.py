@@ -371,11 +371,31 @@ class TestCheckServiceHealth:
         assert kwargs.get("headers", {}).get("Host") == "localhost"
 
     @pytest.mark.asyncio
+    async def test_sends_manifest_health_header(self, mock_aiohttp_session, monkeypatch):
+        session = mock_aiohttp_session(status=200)
+        monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
+        config = {**self._CONFIG, "health_header": "Host: localhost:3007"}
+
+        await check_service_health("test-svc", config)
+
+        _, kwargs = session.get.call_args
+        assert kwargs.get("headers") == {"Host": "localhost:3007"}
+
+    @pytest.mark.asyncio
     async def test_unhealthy_on_500(self, mock_aiohttp_session, monkeypatch):
         session = mock_aiohttp_session(status=500)
         monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
 
         result = await check_service_health("test-svc", self._CONFIG)
+        assert result.status == "unhealthy"
+
+    @pytest.mark.asyncio
+    async def test_unhealthy_on_redirect(self, mock_aiohttp_session, monkeypatch):
+        session = mock_aiohttp_session(status=302)
+        monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
+
+        result = await check_service_health("test-svc", self._CONFIG)
+
         assert result.status == "unhealthy"
 
     @pytest.mark.asyncio

@@ -158,14 +158,10 @@ check_container_state() {
 # Generic registry-driven service health check
 test_service() {
     local sid="$1"
-    local port_env="${SERVICE_PORT_ENVS[$sid]}"
-    local default_port="${SERVICE_PORTS[$sid]}"
     local health="${SERVICE_HEALTH[$sid]}"
     local timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-$TIMEOUT}"
-
-    # Resolve port
-    local port="$default_port"
-    [[ -n "$port_env" ]] && port="${!port_env:-$default_port}"
+    local port
+    port="$(sr_health_port "$sid")"
 
     [[ -z "$health" || "$port" == "0" ]] && return 1
 
@@ -178,7 +174,7 @@ test_service() {
         return 1
     fi
 
-    if curl -sf --max-time "$timeout" "http://127.0.0.1:${port}${health}" >/dev/null 2>&1; then
+    if sr_curl_health "$sid" "$timeout" >/dev/null 2>&1; then
         result_set "$sid" "ok"
         return 0
     fi

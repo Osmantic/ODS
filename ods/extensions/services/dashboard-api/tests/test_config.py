@@ -21,6 +21,8 @@ service:
   name: Test Service
   port: 8080
   health: /health
+  health_port: 9091
+  health_header: "Host: localhost:8080"
   gpu_backends: [amd, nvidia]
   external_port_default: 8080
 features:
@@ -180,6 +182,8 @@ class TestLoadExtensionManifests:
         assert services["test-service"]["port"] == 8080
         assert services["test-service"]["name"] == "Test Service"
         assert services["test-service"]["health"] == "/health"
+        assert services["test-service"]["health_port"] == 9091
+        assert services["test-service"]["health_header"] == "Host: localhost:8080"
         assert len(features) == 1
         assert features[0]["id"] == "test-feature"
 

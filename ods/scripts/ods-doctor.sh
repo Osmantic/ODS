@@ -240,10 +240,11 @@ collect_extension_diagnostics() {
 
             # Check health endpoint if container running
             if [[ "$container_state" == "running" ]]; then
-                local port="${SERVICE_PORTS[$sid]:-0}"
+                local port
+                port="$(sr_health_port "$sid")"
                 local health="${SERVICE_HEALTH[$sid]:-}"
                 if [[ "$port" != "0" && -n "$health" ]]; then
-                    if curl -sf --max-time 5 "http://127.0.0.1:${port}${health}" >/dev/null 2>&1; then
+                    if sr_curl_health "$sid" 5 >/dev/null 2>&1; then
                         health_status="healthy"
                     else
                         health_status="unhealthy"

@@ -261,6 +261,7 @@ def load_extension_manifests(
                     "gpu_backends": service.get("gpu_backends", []),
                     **({"type": service["type"]} if "type" in service else {}),
                     **({"health_port": int(service["health_port"])} if "health_port" in service else {}),
+                    **({"health_header": service["health_header"]} if "health_header" in service else {}),
                 }
                 llm_contract = normalize_llm_contract(service.get("llm"))
                 if llm_contract is not None:

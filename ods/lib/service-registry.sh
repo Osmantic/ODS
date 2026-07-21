@@ -34,6 +34,9 @@ declare -A SERVICE_DEPENDS      # service_id → space-separated dependency IDs
 declare -A SERVICE_HEALTH       # service_id → health endpoint path
 declare -A SERVICE_HEALTH_TIMEOUTS  # service_id → health check timeout in seconds
 declare -A SERVICE_STARTUP_CHECKS # service_id → "true" unless manifest sets startup_check: false
+declare -A SERVICE_HEALTH_PORTS # service_id → dedicated host HTTP health port
+declare -A SERVICE_HEALTH_PORT_ENVS # service_id → env var for dedicated health port
+declare -A SERVICE_HEALTH_HEADERS # service_id → optional single HTTP health header
 declare -A SERVICE_PORTS        # service_id → external port (what the user hits on localhost)
 declare -A SERVICE_PORT_ENVS    # service_id → env var name for the external port
 # Services with `host_network: true` in their manifest (Docker
@@ -186,12 +189,18 @@ for service_dir in _all_service_dirs:
         health = s.get("health", "/health")
         health_timeout = s.get("health_timeout", 5)  # Default 5 seconds
         startup_check = "false" if s.get("startup_check") is False else "true"
+        health_port = s.get("health_port", "")
+        health_port_env = s.get("health_port_env", "")
+        health_header = s.get("health_header", "")
         port = s.get("external_port_default", s.get("port", 0))
         port_env = s.get("external_port_env", "")
         host_network = "1" if s.get("host_network") else ""
         print(f'SERVICE_HEALTH["{_esc(sid)}"]="{_esc(health)}"')
         print(f'SERVICE_HEALTH_TIMEOUTS["{_esc(sid)}"]="{_esc(health_timeout)}"')
         print(f'SERVICE_STARTUP_CHECKS["{_esc(sid)}"]="{startup_check}"')
+        print(f'SERVICE_HEALTH_PORTS["{_esc(sid)}"]="{_esc(health_port)}"')
+        print(f'SERVICE_HEALTH_PORT_ENVS["{_esc(sid)}"]="{_esc(health_port_env)}"')
+        print(f'SERVICE_HEALTH_HEADERS["{_esc(sid)}"]="{_esc(health_header)}"')
         print(f'SERVICE_PORTS["{_esc(sid)}"]="{_esc(port)}"')
         print(f'SERVICE_PORT_ENVS["{_esc(sid)}"]="{_esc(port_env)}"')
         if host_network:
@@ -248,6 +257,43 @@ sr_resolve_ports() {
     if [[ "${GPU_BACKEND:-}" == "amd" ]]; then
         SERVICE_HEALTH[llama-server]="/api/v1/health"
     fi
+}
+
+# Resolve the host-side HTTP health port for a service. A dedicated health
+# port may have its own environment override; otherwise the public service
+# port (already resolved by sr_resolve_ports) is used.
+sr_health_port() {
+    local _sid="$1"
+    local _health_port_env="${SERVICE_HEALTH_PORT_ENVS[$_sid]:-}"
+    if [[ -n "$_health_port_env" && -n "${!_health_port_env:-}" ]]; then
+        printf '%s' "${!_health_port_env}"
+    elif [[ -n "${SERVICE_HEALTH_PORTS[$_sid]:-}" ]]; then
+        printf '%s' "${SERVICE_HEALTH_PORTS[$_sid]}"
+    else
+        printf '%s' "${SERVICE_PORTS[$_sid]:-0}"
+    fi
+}
+
+sr_health_url() {
+    local _sid="$1"
+    local _host="${2:-127.0.0.1}"
+    printf 'http://%s:%s%s' "$_host" "$(sr_health_port "$_sid")" "${SERVICE_HEALTH[$_sid]:-}"
+}
+
+# Probe a manifest-owned HTTP health endpoint. This keeps dedicated ports and
+# required virtual-host headers consistent across CLI and diagnostic surfaces.
+sr_curl_health() {
+    local _sid="$1"
+    local _timeout="${2:-${SERVICE_HEALTH_TIMEOUTS[$_sid]:-5}}"
+    local _host="${3:-127.0.0.1}"
+    local _health_header="${SERVICE_HEALTH_HEADERS[$_sid]:-}"
+    local -a _curl_args=(-sS --max-time "$_timeout")
+    local _status_code
+
+    [[ -n "$_health_header" ]] && _curl_args+=(-H "$_health_header")
+    _status_code="$(curl "${_curl_args[@]}" --output /dev/null --write-out '%{http_code}' -- \
+        "$(sr_health_url "$_sid" "$_host")")" || return 1
+    [[ "$_status_code" =~ ^2[0-9][0-9]$ ]]
 }
 
 # Resolve a user-provided name to a compose service ID.

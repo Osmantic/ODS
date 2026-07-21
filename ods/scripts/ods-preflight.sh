@@ -99,13 +99,13 @@ for sid in "${SERVICE_IDS[@]}"; do
     container="${SERVICE_CONTAINERS[$sid]}"
     docker compose $COMPOSE_FLAGS ps 2>/dev/null | grep -q "$container" || continue
 
-    port="${SERVICE_PORTS[$sid]:-0}"
+    port="$(sr_health_port "$sid")"
     health="${SERVICE_HEALTH[$sid]:-/}"
     name="${SERVICE_NAMES[$sid]:-$sid}"
     [[ "$port" == "0" ]] && continue
 
     echo -n "$name (port $port)... "
-    if curl -sf "${CURL_HEALTH_FLAGS[@]}" "http://127.0.0.1:${port}${health}" >/dev/null 2>&1; then
+    if sr_curl_health "$sid" 10 >/dev/null 2>&1; then
         echo -e "${GREEN}✓ ready${NC}"
     else
         echo -e "${YELLOW}⚠ not ready${NC}"
