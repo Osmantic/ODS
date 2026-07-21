@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
@@ -233,7 +235,20 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         for item in files:
             target = output_root / item.path
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(ensure_trailing_newline(item.content), encoding="utf-8")
+            content = ensure_trailing_newline(item.content)
+            fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, str(target))
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
             written.append(str(target))
     return {
         "version": "1",
