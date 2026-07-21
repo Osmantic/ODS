@@ -1263,6 +1263,7 @@ litellm_settings:
         function Invoke-ODSWindowsComposeBuildService {
             param(
                 [Parameter(Mandatory = $true)][string]$Service,
+                [AllowEmptyCollection()]
                 [Parameter(Mandatory = $true)][string[]]$DockerClientArgs,
                 [Parameter(Mandatory = $true)][string[]]$ComposeFlags,
                 [Parameter(Mandatory = $true)][string]$BuildLog,
@@ -1292,6 +1293,7 @@ litellm_settings:
         function Invoke-ODSWindowsPlainDockerBuildService {
             param(
                 [Parameter(Mandatory = $true)][string]$Service,
+                [AllowEmptyCollection()]
                 [Parameter(Mandatory = $true)][string[]]$DockerClientArgs,
                 [Parameter(Mandatory = $true)][string[]]$ComposeFlags,
                 [Parameter(Mandatory = $true)][string]$BuildLog
@@ -1446,6 +1448,7 @@ litellm_settings:
 
         function Get-ODSWindowsComposeExternalImages {
             param(
+                [AllowEmptyCollection()]
                 [Parameter(Mandatory = $true)][string[]]$DockerClientArgs,
                 [Parameter(Mandatory = $true)][string[]]$ComposeFlags
             )
@@ -1498,6 +1501,7 @@ litellm_settings:
         function Invoke-ODSWindowsDockerPullWithRetry {
             param(
                 [Parameter(Mandatory = $true)][string]$Image,
+                [AllowEmptyCollection()]
                 [Parameter(Mandatory = $true)][string[]]$DockerClientArgs,
                 [Parameter(Mandatory = $true)][string]$LogPath,
                 [int]$MaxAttempts = 4
@@ -1564,6 +1568,7 @@ litellm_settings:
 
         function Invoke-ODSWindowsComposeImagePreflight {
             param(
+                [AllowEmptyCollection()]
                 [Parameter(Mandatory = $true)][string[]]$DockerClientArgs,
                 [Parameter(Mandatory = $true)][string[]]$ComposeFlags,
                 [Parameter(Mandatory = $true)][string]$LogPath

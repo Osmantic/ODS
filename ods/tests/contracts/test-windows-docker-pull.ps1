@@ -23,15 +23,44 @@ if (-not $functionAst) {
 }
 . ([scriptblock]::Create($functionAst.Extent.Text))
 
+foreach ($functionName in @(
+    "Invoke-ODSWindowsComposeBuildService",
+    "Invoke-ODSWindowsPlainDockerBuildService",
+    "Get-ODSWindowsComposeExternalImages",
+    "Invoke-ODSWindowsDockerPullWithRetry",
+    "Invoke-ODSWindowsComposeImagePreflight"
+)) {
+    $dockerFunction = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq $functionName
+    }, $true)
+    if (-not $dockerFunction) { throw "Function not found: $functionName" }
+    $dockerArgsParameter = $dockerFunction.Body.ParamBlock.Parameters | Where-Object {
+        $_.Name.VariablePath.UserPath -eq "DockerClientArgs"
+    }
+    $allowsEmpty = @($dockerArgsParameter.Attributes | Where-Object {
+        $_.TypeName.Name -eq "AllowEmptyCollection"
+    }).Count -eq 1
+    if (-not $allowsEmpty) {
+        throw "$functionName rejects the empty Docker argument list used by the default user config"
+    }
+}
+
 function Write-AI { param([string]$Message) Write-Host $Message }
 function Write-AISuccess { param([string]$Message) Write-Host $Message }
 function Write-AIWarn { param([string]$Message) Write-Host $Message }
 function Write-AIError { param([string]$Message) Write-Host $Message }
+function Start-Sleep {
+    param([int]$Seconds)
+    $script:sleepDelays += $Seconds
+}
 
 $script:inspectExitCode = 1
 $script:pullExitCodes = @()
 $script:pullAttempts = 0
 $script:emitPullError = $false
+$script:sleepDelays = @()
 function docker {
     $commandLine = $args -join " "
     if ($commandLine -match "image inspect") {
@@ -83,6 +112,42 @@ try {
         "Docker progress was not appended to the compose log"
     Assert-True ($ErrorActionPreference -eq "Stop") `
         "Pull helper did not restore ErrorActionPreference after success"
+
+    Remove-Item -LiteralPath $logPath -Force
+    $script:inspectExitCode = 1
+    $script:pullExitCodes = @(0)
+    $script:pullAttempts = 0
+    $captured = @(& {
+        Invoke-ODSWindowsDockerPullWithRetry `
+            -Image "registry.example/default-config:latest" `
+            -DockerClientArgs @() -LogPath $logPath -MaxAttempts 1
+    } 6>&1)
+    $result = @($captured | Where-Object { $_ -is [bool] })
+    Assert-True ($result.Count -eq 1 -and $result[0]) `
+        "Pull helper rejected the empty Docker argument list used by the default user config"
+    Assert-True ($script:pullAttempts -eq 1) `
+        "Default Docker config did not execute exactly one pull"
+
+    Remove-Item -LiteralPath $logPath -Force
+    $script:inspectExitCode = 1
+    $script:pullExitCodes = @(1, 0)
+    $script:pullAttempts = 0
+    $script:sleepDelays = @()
+    $captured = @(& {
+        Invoke-ODSWindowsDockerPullWithRetry `
+            -Image "registry.example/transient:latest" `
+            -DockerClientArgs @() -LogPath $logPath -MaxAttempts 2
+    } 6>&1)
+    $result = @($captured | Where-Object { $_ -is [bool] })
+    Assert-True ($result.Count -eq 1 -and $result[0]) `
+        "Transient pull failure did not recover on retry"
+    Assert-True ($script:pullAttempts -eq 2) `
+        "Transient pull did not execute exactly two attempts"
+    Assert-True ($script:sleepDelays.Count -eq 1 -and $script:sleepDelays[0] -eq 5) `
+        "Transient pull did not retain the first retry delay"
+    $retryLog = Get-Content -LiteralPath $logPath -Raw
+    Assert-True ($retryLog -match "layer-1: downloading" -and $retryLog -match "layer-2: complete") `
+        "Transient pull did not retain output from both attempts"
 
     Remove-Item -LiteralPath $logPath -Force
     $script:inspectExitCode = 1
