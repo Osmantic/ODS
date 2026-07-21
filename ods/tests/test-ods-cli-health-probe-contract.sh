@@ -168,17 +168,18 @@ fi
 export ODS_PYTHON_CMD="$YAML_PYTHON"
 
 registry_load_rc=0
-# stderr from SKIP lines must not be captured into registry_ids; keep it on the
-# test process stderr. Do not place `2>/dev/null` inside the double quotes after
-# `)` — that would append the redirect text to the captured stdout.
+# Redirect stderr inside $() (not after the closing quote) so SKIP lines are
+# discarded without appending literal "2>/dev/null" to the captured IDs.
 registry_ids="$(
-    cd "$SANDBOX"
-    SCRIPT_DIR="$SANDBOX"
-    export ODS_PYTHON_CMD
-    # shellcheck source=/dev/null
-    source "$SANDBOX/lib/service-registry.sh"
-    sr_load
-    printf '%s\n' "${SERVICE_IDS[@]}"
+    {
+        cd "$SANDBOX"
+        SCRIPT_DIR="$SANDBOX"
+        export ODS_PYTHON_CMD
+        # shellcheck source=/dev/null
+        source "$SANDBOX/lib/service-registry.sh"
+        sr_load
+        printf '%s\n' "${SERVICE_IDS[@]}"
+    } 2>/dev/null
 )" || registry_load_rc=$?
 
 if [[ "$registry_load_rc" -ne 0 ]]; then
