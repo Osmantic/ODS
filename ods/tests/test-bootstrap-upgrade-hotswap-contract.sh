@@ -189,8 +189,14 @@ grep -qF '/v1/model/status' <<<"$host_agent_notify_block" \
     || fail "bootstrap upgrade must notify host-agent model status after full-model completion"
 grep -qF 'Authorization: Bearer $key' <<<"$host_agent_notify_block" \
     || fail "host-agent model status notification must authenticate with ODS_AGENT_KEY"
+grep -qF 'ss -ltnH' <<<"$host_agent_notify_block" \
+    || fail "host-agent model status notification must discover the actual listening bind"
+grep -qF 'ip -o -4 addr show' <<<"$host_agent_notify_block" \
+    || fail "host-agent model status notification must include docker bridge interface fallbacks"
+grep -qF 'for host in "${hosts[@]}"' <<<"$host_agent_notify_block" \
+    || fail "host-agent model status notification must use the discovered host set"
 grep -qF '172.17.0.1' <<<"$host_agent_notify_block" \
-    || fail "host-agent model status notification must try the Linux docker-bridge bind"
+    || fail "host-agent model status notification must retain the legacy Linux docker-bridge fallback"
 final_status_block="$(tail -n 90 "$TARGET" | grep -v '^[[:space:]]*#')"
 assert_in_order "$final_status_block" "full-model route reconciliation" \
     'write_status "complete" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""' \

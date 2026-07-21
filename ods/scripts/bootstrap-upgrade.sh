@@ -3093,7 +3093,47 @@ elif [[ -f "$HOME/Library/LaunchAgents/com.ods.host-agent.plist" ]]; then
 fi
 
 notify_host_agent_model_status() {
-    local key port bind host attempt
+    local key port bind host attempt url_host
+    local -a hosts=()
+
+    add_notify_host() {
+        local candidate="$1"
+        [[ -n "$candidate" ]] || return 0
+        candidate="${candidate#http://}"
+        candidate="${candidate#https://}"
+        candidate="${candidate%%/*}"
+        if [[ "$candidate" =~ ^\[(.*)\]:[0-9]+$ ]]; then
+            candidate="${BASH_REMATCH[1]}"
+        elif [[ "$candidate" == *":$port" ]]; then
+            candidate="${candidate%:$port}"
+        fi
+        candidate="${candidate#[}"
+        candidate="${candidate%]}"
+        case "$candidate" in
+            ""|"*"|"0.0.0.0"|"::")
+                candidate="127.0.0.1"
+                ;;
+        esac
+        for host in "${hosts[@]}"; do
+            [[ "$host" != "$candidate" ]] || return 0
+        done
+        hosts+=("$candidate")
+    }
+
+    discover_host_agent_hosts() {
+        local endpoint
+        if command -v ss >/dev/null 2>&1; then
+            while IFS= read -r endpoint; do
+                add_notify_host "$endpoint"
+            done < <(ss -ltnH 2>/dev/null | awk -v port=":$port" '$4 ~ port "$" { print $4 }' || true)
+        fi
+        if command -v ip >/dev/null 2>&1; then
+            while IFS= read -r endpoint; do
+                add_notify_host "$endpoint"
+            done < <(ip -o -4 addr show 2>/dev/null | awk '$2 ~ /^(docker|br-|ods)/ { split($4, ip, "/"); print ip[1] }' || true)
+        fi
+    }
+
     key="$(read_env_value ODS_AGENT_KEY)"
     [[ -n "$key" ]] || key="$(read_env_value DASHBOARD_API_KEY)"
     if [[ -z "$key" ]]; then
@@ -3103,12 +3143,21 @@ notify_host_agent_model_status() {
     port="$(read_env_value ODS_AGENT_PORT)"
     [[ -n "$port" ]] || port="7710"
     bind="$(read_env_value ODS_AGENT_BIND)"
+    add_notify_host "$bind"
+    discover_host_agent_hosts
+    add_notify_host "127.0.0.1"
+    add_notify_host "localhost"
+    add_notify_host "172.17.0.1"
+
     for attempt in {1..10}; do
-        for host in "$bind" "127.0.0.1" "localhost" "172.17.0.1"; do
-            [[ -n "$host" ]] || continue
+        for host in "${hosts[@]}"; do
+            url_host="$host"
+            if [[ "$url_host" == *:* && "$url_host" != \[*\] ]]; then
+                url_host="[$url_host]"
+            fi
             if curl -fsS --max-time 20 \
                 -H "Authorization: Bearer $key" \
-                "http://${host}:${port}/v1/model/status" >/dev/null 2>&1; then
+                "http://${url_host}:${port}/v1/model/status" >/dev/null 2>&1; then
                 log "Host agent accepted full-model route reconciliation."
                 return 0
             fi
