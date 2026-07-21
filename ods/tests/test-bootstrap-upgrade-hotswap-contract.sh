@@ -184,6 +184,19 @@ assert_in_order "$restart_windows_lemonade_block" "Windows Lemonade context prop
     'write_env_value LEMONADE_MODEL "$model_id"'
 pass "Windows Lemonade restart propagates and verifies the promoted context before commit"
 
+host_agent_notify_block="$(function_block notify_host_agent_model_status | grep -v '^[[:space:]]*#')"
+grep -qF '/v1/model/status' <<<"$host_agent_notify_block" \
+    || fail "bootstrap upgrade must notify host-agent model status after full-model completion"
+grep -qF 'Authorization: Bearer $key' <<<"$host_agent_notify_block" \
+    || fail "host-agent model status notification must authenticate with ODS_AGENT_KEY"
+grep -qF '172.17.0.1' <<<"$host_agent_notify_block" \
+    || fail "host-agent model status notification must try the Linux docker-bridge bind"
+final_status_block="$(tail -n 90 "$TARGET" | grep -v '^[[:space:]]*#')"
+assert_in_order "$final_status_block" "full-model route reconciliation" \
+    'write_status "complete" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""' \
+    'notify_host_agent_model_status || true'
+pass "bootstrap upgrade reconciles host-agent route after full-model completion"
+
 verify_context_block="$(function_block verify_windows_lemonade_loaded_context | grep -v '^[[:space:]]*#')"
 grep -qF 'all_models_loaded' <<<"$verify_context_block" \
     || fail "Windows Lemonade loaded-context verifier must inspect health all_models_loaded"

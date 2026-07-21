@@ -4654,6 +4654,98 @@ class TestModelDownloadFileIntegrity:
         persisted = json.loads(status_path.read_text(encoding="utf-8"))
         assert persisted["status"] == "failed"
 
+    def test_model_status_promotes_stale_bootstrap_route_after_full_model_ready(
+        self, tmp_path, monkeypatch,
+    ):
+        bootstrap_model = {
+            "id": "qwen3.5-2b-q4",
+            "gguf_file": "Qwen3.5-2B-Q4_K_M.gguf",
+            "llm_model_name": "qwen3.5-2b-q4",
+            "ctx_size": 65536,
+        }
+        full_model = {
+            "id": "qwen3-coder-next",
+            "gguf_file": "qwen3-coder-next-Q4_K_M.gguf",
+            "llm_model_name": "qwen3-coder-next",
+            "ctx_size": 131072,
+        }
+        install_dir = self._setup_env(
+            tmp_path,
+            monkeypatch,
+            library_models=[bootstrap_model, full_model],
+        )
+        env_path = install_dir / ".env"
+        env_path.write_text(
+            "ODS_MODE=local\n"
+            "GPU_BACKEND=nvidia\n"
+            "GGUF_FILE=qwen3-coder-next-Q4_K_M.gguf\n"
+            "LLM_MODEL=qwen3-coder-next\n"
+            "CTX_SIZE=131072\n",
+            encoding="utf-8",
+        )
+        state_path = install_dir / "data" / "model-state.json"
+        _mod._switchboard_state.record_verified_route(
+            state_path,
+            catalog_id="qwen3.5-2b-q4",
+            runtime_model_id="Qwen3.5-2B-Q4_K_M.gguf",
+            backend_kind="llama-server",
+            endpoint_id="llama-server-default",
+            context_length=65536,
+            capabilities={
+                "chat": True,
+                "tools": False,
+                "vision": False,
+                "agentViable": True,
+            },
+            proof_identity="Qwen3.5-2B-Q4_K_M.gguf",
+        )
+        (install_dir / "data" / "bootstrap-status.json").write_text(
+            json.dumps({
+                "status": "complete",
+                "model": "qwen3-coder-next-Q4_K_M.gguf",
+            }),
+            encoding="utf-8",
+        )
+
+        readiness_calls = []
+
+        def readiness(*_args, **kwargs):
+            readiness_calls.append(kwargs)
+            return {
+                "identity": "qwen3-coder-next-Q4_K_M.gguf",
+                "contextLength": 131072,
+                "contextVerified": True,
+                "verifiedAt": "2026-07-21T00:00:00Z",
+            }
+
+        scheduled = []
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", readiness)
+        monkeypatch.setattr(
+            _mod,
+            "_schedule_initial_switchboard_verification",
+            lambda reason: scheduled.append(reason),
+        )
+
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_status(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response() == {"status": "idle"}
+        assert readiness_calls
+        assert readiness_calls[0]["attempts"] == 1
+        assert readiness_calls[0]["initial_delay"] == 0
+        assert readiness_calls[0]["interval"] == 0
+        assert scheduled == []
+        doc = json.loads(state_path.read_text(encoding="utf-8"))
+        assert doc["active"]["catalogId"] == "qwen3-coder-next"
+        assert doc["active"]["runtimeModelId"] == "qwen3-coder-next-Q4_K_M.gguf"
+        assert doc["active"]["contextLength"] == 131072
+        assert doc["active"]["proof"] == {
+            "identity": "qwen3-coder-next-Q4_K_M.gguf",
+            "completion": True,
+        }
+        assert doc["history"][0]["runtimeModelId"] == "Qwen3.5-2B-Q4_K_M.gguf"
+
     def test_empty_finished_download_is_failed_not_complete(self, tmp_path, monkeypatch):
         install_dir = self._setup_env(tmp_path, monkeypatch)
         self._patch_curl_download(monkeypatch, b"")

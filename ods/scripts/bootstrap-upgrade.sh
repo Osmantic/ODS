@@ -3092,5 +3092,33 @@ elif [[ -f "$HOME/Library/LaunchAgents/com.ods.host-agent.plist" ]]; then
         log "WARNING: Could not restart host agent (non-fatal)"
 fi
 
+notify_host_agent_model_status() {
+    local key port bind host attempt
+    key="$(read_env_value ODS_AGENT_KEY)"
+    [[ -n "$key" ]] || key="$(read_env_value DASHBOARD_API_KEY)"
+    if [[ -z "$key" ]]; then
+        log "WARNING: ODS agent key missing; cannot notify host agent about full-model route"
+        return 1
+    fi
+    port="$(read_env_value ODS_AGENT_PORT)"
+    [[ -n "$port" ]] || port="7710"
+    bind="$(read_env_value ODS_AGENT_BIND)"
+    for attempt in {1..10}; do
+        for host in "$bind" "127.0.0.1" "localhost" "172.17.0.1"; do
+            [[ -n "$host" ]] || continue
+            if curl -fsS --max-time 20 \
+                -H "Authorization: Bearer $key" \
+                "http://${host}:${port}/v1/model/status" >/dev/null 2>&1; then
+                log "Host agent accepted full-model route reconciliation."
+                return 0
+            fi
+        done
+        sleep 2
+    done
+    log "WARNING: Host agent did not accept full-model route reconciliation (non-fatal)"
+    return 1
+}
+
 write_status "complete" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""
+notify_host_agent_model_status || true
 log "Bootstrap upgrade complete."

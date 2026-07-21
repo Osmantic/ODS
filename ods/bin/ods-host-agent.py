@@ -879,6 +879,54 @@ def _switchboard_state_needs_initial_verification(path: Path) -> bool:
     )
 
 
+def _switchboard_state_needs_current_env_verification(
+    path: Path,
+    env: dict | None = None,
+) -> bool:
+    """Return True when the verified route is absent or stale versus .env."""
+    if _switchboard_state is None:
+        return False
+    if env is None:
+        env = load_env(INSTALL_DIR / ".env")
+    identity = _switchboard_state.migrate_env_identity(env)
+    if not identity:
+        return False
+    doc, errors = _switchboard_state.read_state(path)
+    if errors or not isinstance(doc, dict):
+        return False
+    active = doc.get("active")
+    if not isinstance(active, dict):
+        return True
+    proof = active.get("proof")
+    if (
+        active.get("reconstructed") is True
+        or not isinstance(active.get("verifiedAt"), str)
+        or not active.get("verifiedAt")
+        or not isinstance(proof, dict)
+        or proof.get("completion") is not True
+    ):
+        return True
+
+    gguf_file = str(env.get("GGUF_FILE") or identity["runtimeModelId"])
+    llm_model_name = str(env.get("LLM_MODEL") or identity["catalogId"])
+    model_id, _model = _catalog_model_for_current_env(env)
+    if not _runtime_model_identity_matches(
+        active.get("runtimeModelId"),
+        model_id=model_id or identity["catalogId"],
+        gguf_file=gguf_file,
+        llm_model_name=llm_model_name,
+    ):
+        return True
+
+    backend_kind, endpoint_id, _native_route = _initial_switchboard_backend(env)
+    backend = active.get("backend")
+    return not (
+        isinstance(backend, dict)
+        and backend.get("kind") == backend_kind
+        and backend.get("endpointId") == endpoint_id
+    )
+
+
 def _catalog_model_for_current_env(env: dict) -> tuple[str, dict]:
     gguf_file = str(env.get("GGUF_FILE") or "").strip()
     llm_model_name = str(env.get("LLM_MODEL") or "").strip()
@@ -924,14 +972,14 @@ def _publish_verified_initial_switchboard_route(
     initial_delay: float = 0,
     interval: float = 10,
 ) -> bool:
-    """Promote reconstructed startup state only after runtime proof succeeds."""
+    """Promote current .env route only after runtime proof succeeds."""
     if _switchboard_state is None:
         return False
     state_path = _switchboard_state_path()
-    if not _switchboard_state_needs_initial_verification(state_path):
+    env = load_env(INSTALL_DIR / ".env")
+    if not _switchboard_state_needs_current_env_verification(state_path, env):
         return False
 
-    env = load_env(INSTALL_DIR / ".env")
     identity = _switchboard_state.migrate_env_identity(env)
     if not identity:
         return False
@@ -965,7 +1013,7 @@ def _publish_verified_initial_switchboard_route(
     ):
         logger.info("switchboard initial route proof discarded after env changed")
         return False
-    if not _switchboard_state_needs_initial_verification(state_path):
+    if not _switchboard_state_needs_current_env_verification(state_path, fresh_env):
         return False
 
     runtime_identity = str(proof["identity"])
@@ -1015,7 +1063,7 @@ def _schedule_initial_switchboard_verification(reason: str) -> None:
     if _switchboard_state is None:
         return
     state_path = _switchboard_state_path()
-    if not _switchboard_state_needs_initial_verification(state_path):
+    if not _switchboard_state_needs_current_env_verification(state_path):
         return
     with _switchboard_initial_verify_lock:
         thread = _switchboard_initial_verify_thread
@@ -1034,6 +1082,44 @@ def _schedule_initial_switchboard_verification(reason: str) -> None:
             daemon=True,
         )
         _switchboard_initial_verify_thread.start()
+
+
+def _bootstrap_status_indicates_complete() -> bool:
+    status_path = INSTALL_DIR / "data" / "bootstrap-status.json"
+    try:
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    return str(data.get("status") or "").strip().casefold() == "complete"
+
+
+def _model_status_allows_route_proof(data: dict) -> bool:
+    status = str(data.get("status") or "").strip().casefold()
+    if status in {"already_downloaded", "complete"}:
+        return True
+    return _bootstrap_status_indicates_complete()
+
+
+def _verify_switchboard_route_for_status(data: dict, reason: str) -> None:
+    if _switchboard_state is None:
+        return
+    state_path = _switchboard_state_path()
+    if not _switchboard_state_needs_current_env_verification(state_path):
+        return
+    if _model_status_allows_route_proof(data):
+        try:
+            if _publish_verified_initial_switchboard_route(
+                reason=reason,
+                attempts=1,
+                initial_delay=0,
+                interval=0,
+            ):
+                return
+        except Exception as exc:
+            logger.warning("switchboard route status proof failed: %s", exc)
+    _schedule_initial_switchboard_verification(reason)
 
 
 def _atomic_write_bytes(
@@ -4895,17 +4981,21 @@ class AgentHandler(BaseHTTPRequestHandler):
         """Return current model download progress."""
         if not check_auth(self):
             return
-        _schedule_initial_switchboard_verification("model-status")
         status_path = INSTALL_DIR / "data" / "model-download-status.json"
         if not status_path.exists():
-            json_response(self, 200, {"status": "idle"})
+            data = {"status": "idle"}
+            _verify_switchboard_route_for_status(data, "model-status")
+            json_response(self, 200, data)
             return
         try:
             data = _read_model_status(status_path)
             data = _normalize_model_download_status(status_path, data)
+            _verify_switchboard_route_for_status(data, "model-status")
             json_response(self, 200, data)
         except (json.JSONDecodeError, OSError):
-            json_response(self, 200, {"status": "idle"})
+            data = {"status": "idle"}
+            _verify_switchboard_route_for_status(data, "model-status")
+            json_response(self, 200, data)
 
     def _handle_model_download(self):
         """Start async model download. Only one download at a time.
