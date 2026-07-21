@@ -64,6 +64,7 @@ SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 # never contain a path separator or ".." and escape BACKUP_DIR.
 BACKUP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MAX_BODY = 16384
+MAX_TELEMETRY_RESPONSE_BYTES = 1024 * 1024
 SUBPROCESS_TIMEOUT_START = 600  # 10 min — image pulls can be slow
 SUBPROCESS_TIMEOUT_STOP = 120   # 2 min — stop should be fast
 HOOK_TIMEOUT = 120              # 2 min — hook execution timeout
@@ -94,6 +95,13 @@ STARTUP_ODS_MODE: str | None = None
 TIER: str = "1"
 GPU_COUNT: str = "1"
 CORE_SERVICE_IDS: set = set()
+_windows_gpu_metrics_cache: tuple[float, dict | None] = (0.0, None)
+_windows_dxgi_adapters_cache: tuple[float, list[dict]] = (0.0, [])
+_windows_llm_status_cache: tuple[float, dict | None] = (0.0, None)
+_service_health_cache: tuple[float, dict | None] = (0.0, None)
+_windows_gpu_metrics_lock = threading.Lock()
+_windows_llm_status_lock = threading.Lock()
+_service_health_lock = threading.Lock()
 WINDOWS_WHISPER_CUDA_MIN_DRIVER_MAJOR = 575
 # Always-on services defined in docker-compose.base.yml — never stoppable via API.
 # Distinct from CORE_SERVICE_IDS (which is the allowlist of known service IDs).
@@ -1753,6 +1761,442 @@ def _parse_mem_value(s: str) -> float:
     return 0.0
 
 
+def _normalize_gpu_name(value: str) -> str:
+    value = re.sub(r"\s*[x\u00d7]\s*\d+$", "", str(value or "").strip(), flags=re.IGNORECASE)
+    value = re.sub(r"^(amd|nvidia)\s+", "", value, flags=re.IGNORECASE)
+    return re.sub(r"[^a-z0-9]+", "", value.casefold())
+
+
+def _is_windows_amd_integrated_gpu_name(value: str) -> bool:
+    """Mirror the installer classifier used to exclude display-only iGPUs."""
+    name = str(value or "").strip()
+    return any(re.search(pattern, name, re.IGNORECASE) for pattern in (
+        r"\bRadeon(?:\(TM\))?\s+Graphics$",
+        r"\bRadeon(?:\(TM\))?\s+\d{3,4}[MS](?:\s+Graphics)?$",
+        r"\bRadeon(?:\(TM\))?\s+(?:RX\s+)?Vega\s+\d{1,2}\s+Graphics$",
+        r"\bStrix\s+Halo\b",
+    ))
+
+
+def _is_windows_amd_discrete_gpu_name(value: str) -> bool:
+    name = str(value or "").strip()
+    if _is_windows_amd_integrated_gpu_name(name):
+        return False
+    return bool(re.search(r"\b(?:AMD\s+)?Radeon\b|\bFirePro\b", name, re.IGNORECASE))
+
+
+def _select_windows_gpu_adapters(adapters: list[dict], configured_name: str = "") -> list[dict]:
+    """Select the configured hardware GPU without accidentally choosing an iGPU."""
+    hardware = [item for item in adapters if not item.get("software")]
+    backend = str(GPU_BACKEND or "").casefold()
+    vendor_id = 0x1002 if backend == "amd" else 0x10DE if backend == "nvidia" else None
+    vendor_matches = [item for item in hardware if item.get("vendor_id") == vendor_id]
+    candidates = vendor_matches or hardware
+    if not candidates:
+        return []
+
+    wanted = _normalize_gpu_name(configured_name)
+    # The Windows env historically persisted only the primary AMD name, not
+    # GPU_COUNT. Treat all discrete Radeon adapters as the compute set even if
+    # they are different models; the name still helps on integrated-only hosts.
+    if backend == "amd":
+        discrete = [
+            item for item in candidates
+            if _is_windows_amd_discrete_gpu_name(item.get("name", ""))
+        ]
+        if discrete:
+            return discrete
+        if wanted:
+            named = [
+                item for item in candidates
+                if _normalize_gpu_name(item.get("name", "")) == wanted
+            ]
+            if named:
+                return named
+        return candidates
+
+    if wanted:
+        named = [item for item in candidates if _normalize_gpu_name(item.get("name", "")) == wanted]
+        if named:
+            try:
+                expected_count = max(1, int(GPU_COUNT or "1"))
+            except ValueError:
+                expected_count = 1
+            return sorted(named, key=lambda item: item.get("memory_total_mb", 0), reverse=True)[:expected_count]
+
+    # The Windows env historically omitted GPU_COUNT/HOST_GPU_NAME. Infer the
+    # compute set from hardware rather than silently collapsing dual Radeon
+    # systems to one adapter. On hybrid laptops, integrated Radeon Graphics is
+    # display hardware and must not become a peer when a discrete Radeon exists.
+    try:
+        expected_count = max(1, int(GPU_COUNT or "1"))
+    except ValueError:
+        expected_count = 1
+    return sorted(
+        candidates, key=lambda item: item.get("memory_total_mb", 0), reverse=True,
+    )[:expected_count]
+
+
+def _windows_dxgi_adapters() -> list[dict]:
+    """Enumerate Windows hardware adapters with stable DXGI LUIDs."""
+    if platform.system() != "Windows":
+        return []
+    try:
+        import ctypes
+        import uuid
+        from ctypes import wintypes
+
+        class GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8),
+            ]
+
+        class LUID(ctypes.Structure):
+            _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+        class DXGIAdapterDesc1(ctypes.Structure):
+            _fields_ = [
+                ("Description", wintypes.WCHAR * 128),
+                ("VendorId", wintypes.UINT), ("DeviceId", wintypes.UINT),
+                ("SubSysId", wintypes.UINT), ("Revision", wintypes.UINT),
+                ("DedicatedVideoMemory", ctypes.c_size_t),
+                ("DedicatedSystemMemory", ctypes.c_size_t),
+                ("SharedSystemMemory", ctypes.c_size_t),
+                ("AdapterLuid", LUID), ("Flags", wintypes.UINT),
+            ]
+
+        def make_guid(value: str) -> GUID:
+            return GUID.from_buffer_copy(uuid.UUID(value).bytes_le)
+
+        def com_method(obj, index, restype, *argtypes):
+            vtable = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+            return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(vtable[index])
+
+        factory = ctypes.c_void_p()
+        iid = make_guid("770AAE78-F26F-4DBA-A829-253C83D1B387")
+        create_factory = ctypes.windll.dxgi.CreateDXGIFactory1
+        create_factory.argtypes = [ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)]
+        if create_factory(ctypes.byref(iid), ctypes.byref(factory)) < 0:
+            return []
+
+        adapters: list[dict] = []
+        try:
+            for index in range(32):
+                adapter = ctypes.c_void_p()
+                result = com_method(
+                    factory, 12, ctypes.c_long, wintypes.UINT,
+                    ctypes.POINTER(ctypes.c_void_p),
+                )(factory, index, ctypes.byref(adapter))
+                if result < 0:
+                    break
+                try:
+                    desc = DXGIAdapterDesc1()
+                    if com_method(
+                        adapter, 10, ctypes.c_long, ctypes.POINTER(DXGIAdapterDesc1)
+                    )(adapter, ctypes.byref(desc)) >= 0:
+                        adapters.append({
+                            "name": desc.Description.strip(),
+                            "vendor_id": int(desc.VendorId),
+                            "memory_total_mb": int(desc.DedicatedVideoMemory // (1024 * 1024)),
+                            "shared_memory_total_mb": int(desc.SharedSystemMemory // (1024 * 1024)),
+                            "luid_high": int(desc.AdapterLuid.HighPart),
+                            "luid_low": int(desc.AdapterLuid.LowPart),
+                            "software": bool(desc.Flags & 2),
+                        })
+                finally:
+                    com_method(adapter, 2, wintypes.ULONG)(adapter)
+        finally:
+            com_method(factory, 2, wintypes.ULONG)(factory)
+        return adapters
+    except (AttributeError, OSError, TypeError, ValueError):
+        logger.debug("DXGI GPU enumeration failed", exc_info=True)
+        return []
+
+
+def _windows_gpu_metrics() -> dict | None:
+    """Collect real per-adapter Windows GPU utilization and memory use."""
+    global _windows_gpu_metrics_cache, _windows_dxgi_adapters_cache
+    if platform.system() != "Windows":
+        return None
+    with _windows_gpu_metrics_lock:
+        cached_at, cached = _windows_gpu_metrics_cache
+        if time.monotonic() - cached_at < 4.0:
+            return cached
+
+        env = load_env(INSTALL_DIR / ".env")
+        adapters_cached_at, all_adapters = _windows_dxgi_adapters_cache
+        if not all_adapters or time.monotonic() - adapters_cached_at >= 300.0:
+            all_adapters = _windows_dxgi_adapters()
+            _windows_dxgi_adapters_cache = (time.monotonic(), all_adapters)
+        adapters = _select_windows_gpu_adapters(
+            all_adapters, env.get("HOST_GPU_NAME", ""),
+        )
+        if not adapters:
+            _windows_gpu_metrics_cache = (time.monotonic(), None)
+            return None
+
+        prefixes = [
+            f"luid_0x{item['luid_high'] & 0xffffffff:08x}_0x{item['luid_low'] & 0xffffffff:08x}"
+            for item in adapters
+        ]
+        powershell_prefixes = ",".join(f"'{prefix}'" for prefix in prefixes)
+        script = rf"""
+$ErrorActionPreference = 'Stop'
+$prefixes = @({powershell_prefixes})
+$metrics = @()
+foreach ($prefix in $prefixes) {{
+  $engineTotals = @{{}}
+  Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine |
+    Where-Object {{ $_.Name -like "*$prefix*" }} |
+    ForEach-Object {{
+      if ($_.Name -match '_eng_([0-9]+)_engtype_(.+)$') {{
+        $key = "$($Matches[1])|$($Matches[2])"
+        $engineTotals[$key] = [double]($engineTotals[$key] + $_.UtilizationPercentage)
+      }}
+    }}
+  $adapterUtil = 0
+  if ($engineTotals.Count -gt 0) {{
+    $adapterUtil = [Math]::Min(100, ($engineTotals.Values | Measure-Object -Maximum).Maximum)
+  }}
+  $memoryRows = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory |
+    Where-Object {{ $_.Name -like "$prefix*" }})
+  $dedicated = ($memoryRows | Measure-Object -Property DedicatedUsage -Sum).Sum
+  $shared = ($memoryRows | Measure-Object -Property SharedUsage -Sum).Sum
+  $metrics += [pscustomobject]@{{
+    prefix = $prefix
+    utilization_percent = [int][Math]::Round($adapterUtil)
+    utilization_available = ($engineTotals.Count -gt 0)
+    dedicated_used_bytes = [int64]$(if ($null -ne $dedicated) {{ $dedicated }} else {{ 0 }})
+    shared_used_bytes = [int64]$(if ($null -ne $shared) {{ $shared }} else {{ 0 }})
+    memory_usage_available = ($memoryRows.Count -gt 0)
+  }}
+}}
+[pscustomobject]@{{ adapters = @($metrics) }} |
+  ConvertTo-Json -Compress
+"""
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, timeout=8,
+            )
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout).strip())
+            counters = json.loads(result.stdout)
+            counter_rows = counters.get("adapters")
+            if not isinstance(counter_rows, list):
+                raise ValueError("GPU counter response did not contain an adapter list")
+            rows_by_prefix = {
+                str(row.get("prefix") or "").casefold(): row
+                for row in counter_rows if isinstance(row, dict)
+            }
+            try:
+                system_ram_gb = max(0, int(float(
+                    env.get("SYSTEM_RAM_GB") or env.get("HOST_RAM_GB") or 0
+                )))
+            except (TypeError, ValueError):
+                system_ram_gb = 0
+
+            gpu_rows = []
+            for index, (adapter, prefix) in enumerate(zip(adapters, prefixes)):
+                row = rows_by_prefix.get(prefix.casefold(), {})
+                dedicated_total_mb = max(0, int(adapter.get("memory_total_mb") or 0))
+                unified = (
+                    _is_windows_amd_integrated_gpu_name(adapter.get("name", ""))
+                    and dedicated_total_mb <= 4096
+                    and system_ram_gb >= 32
+                )
+                memory_type = "unified" if unified else "discrete"
+                total_mb = (
+                    int(system_ram_gb * 0.75 * 1024)
+                    if unified else dedicated_total_mb
+                )
+                dedicated_used = max(0, int(row.get("dedicated_used_bytes") or 0))
+                shared_used = max(0, int(row.get("shared_used_bytes") or 0))
+                used_bytes = dedicated_used + shared_used if unified else dedicated_used
+                used_mb = min(total_mb, used_bytes // (1024 * 1024))
+                gpu_rows.append({
+                    "index": index,
+                    "uuid": f"luid-{adapter['luid_high'] & 0xffffffff:08x}-{adapter['luid_low'] & 0xffffffff:08x}",
+                    "name": str(adapter["name"]),
+                    "memory_type": memory_type,
+                    "memory_total_mb": total_mb,
+                    "memory_used_mb": used_mb,
+                    "memory_usage_available": bool(row.get("memory_usage_available", False)),
+                    "utilization_percent": max(0, min(100, int(row.get("utilization_percent") or 0))),
+                    "utilization_available": bool(row.get("utilization_available", False)),
+                    "temperature_c": None,
+                    "temperature_available": False,
+                })
+
+            total_mb = sum(item["memory_total_mb"] for item in gpu_rows)
+            used_mb = sum(item["memory_used_mb"] for item in gpu_rows)
+            available_util = [
+                item["utilization_percent"] for item in gpu_rows
+                if item["utilization_available"]
+            ]
+            names = [item["name"] for item in gpu_rows]
+            display_name = f"{names[0]} \u00d7 {len(names)}" if len(set(names)) == 1 and len(names) > 1 else " + ".join(names)
+            payload = {
+                "schema_version": "ods.host-gpu-metrics.v1",
+                "name": display_name,
+                "gpu_count": len(gpu_rows),
+                "memory_type": "unified" if all(item["memory_type"] == "unified" for item in gpu_rows) else "discrete",
+                "memory_total_mb": total_mb,
+                "memory_used_mb": used_mb,
+                "memory_usage_available": all(item["memory_usage_available"] for item in gpu_rows),
+                "utilization_percent": round(sum(available_util) / len(available_util)) if available_util else 0,
+                "utilization_available": bool(available_util),
+                "temperature_c": None,
+                "temperature_available": False,
+                "source": "windows-dxgi-performance-counters",
+                "sampled_at": _iso_now(),
+                "gpus": gpu_rows,
+            }
+        except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired,
+                ValueError, TypeError, RuntimeError):
+            logger.debug("Windows GPU performance counters unavailable", exc_info=True)
+            payload = None
+        _windows_gpu_metrics_cache = (time.monotonic(), payload)
+        return payload
+
+
+def _windows_llm_status() -> dict | None:
+    """Read host-native Lemonade health and optional stats over loopback."""
+    global _windows_llm_status_cache
+    if platform.system() != "Windows":
+        return None
+    with _windows_llm_status_lock:
+        cached_at, cached = _windows_llm_status_cache
+        if time.monotonic() - cached_at < 1.0:
+            return cached
+
+        env = load_env(INSTALL_DIR / ".env")
+        try:
+            port = int(env.get("AMD_INFERENCE_PORT") or "8080")
+        except ValueError:
+            port = 8080
+        if port < 1 or port > 65535:
+            port = 8080
+        base = f"http://127.0.0.1:{port}"
+        api_key = str(env.get("LEMONADE_API_KEY") or "").strip()
+
+        def fetch_json(name: str) -> dict:
+            last_error: Exception | None = None
+            # ODS currently ships the /api/v1 compatibility route; newer
+            # Lemonade releases document /v1. Accept both during upgrades.
+            for prefix in ("/api/v1", "/v1"):
+                path = f"{prefix}/{name}"
+                try:
+                    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+                    request = urllib_request.Request(f"{base}{path}", headers=headers)
+                    with urllib_request.urlopen(request, timeout=4) as response:
+                        raw = response.read(MAX_TELEMETRY_RESPONSE_BYTES + 1)
+                    if len(raw) > MAX_TELEMETRY_RESPONSE_BYTES:
+                        raise ValueError(f"{path} exceeded the telemetry response limit")
+                    payload = json.loads(raw.decode("utf-8"))
+                    if not isinstance(payload, dict):
+                        raise ValueError(f"{path} returned non-object JSON")
+                    return payload
+                except (OSError, ValueError, json.JSONDecodeError, urllib_error.URLError) as exc:
+                    last_error = exc
+            raise OSError(f"Lemonade {name} endpoint is unavailable: {last_error}")
+
+        try:
+            raw_health = fetch_json("health")
+        except (OSError, ValueError, json.JSONDecodeError, urllib_error.URLError):
+            logger.debug("Windows host inference health unavailable", exc_info=True)
+            _windows_llm_status_cache = (time.monotonic(), None)
+            return None
+
+        stats = None
+        try:
+            raw_stats = fetch_json("stats")
+            stats = {
+                key: raw_stats.get(key)
+                for key in (
+                    "time_to_first_token", "tokens_per_second", "input_tokens",
+                    "output_tokens", "prompt_tokens",
+                )
+            }
+        except (OSError, ValueError, json.JSONDecodeError, urllib_error.URLError):
+            logger.debug("Windows host inference stats unavailable", exc_info=True)
+        model_loaded = raw_health.get("model_loaded")
+        if isinstance(model_loaded, str):
+            # Runtime releases may expose an absolute checkpoint path here.
+            # The dashboard needs an identity, never the host directory layout.
+            model_loaded = re.split(r"[\\/]", model_loaded.strip())[-1] or None
+        elif model_loaded is not None:
+            model_loaded = None
+        health = {
+            "status": raw_health.get("status"),
+            "version": raw_health.get("version"),
+            "model_loaded": model_loaded,
+        }
+        payload = {
+            "schema_version": "ods.host-llm-status.v1",
+            "health": health,
+            "stats": stats,
+            "source": "windows-loopback",
+            "sampled_at": _iso_now(),
+        }
+        _windows_llm_status_cache = (time.monotonic(), payload)
+        return payload
+
+
+def _docker_service_health_snapshot() -> dict:
+    """Return a cached, read-only Docker lifecycle and healthcheck snapshot."""
+    global _service_health_cache
+    with _service_health_lock:
+        cached_at, cached = _service_health_cache
+        if cached is not None and time.monotonic() - cached_at < 3.0:
+            return cached
+
+        names_result = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=8,
+        )
+        if names_result.returncode != 0:
+            raise RuntimeError((names_result.stderr or names_result.stdout).strip())
+        names = [
+            name.strip() for name in names_result.stdout.splitlines()
+            if name.strip().startswith("ods-")
+        ]
+        containers: list[dict] = []
+        if names:
+            inspect_result = subprocess.run(
+                ["docker", "inspect", *names], capture_output=True, text=True, timeout=12,
+            )
+            if inspect_result.returncode != 0:
+                raise RuntimeError((inspect_result.stderr or inspect_result.stdout).strip())
+            inspected = json.loads(inspect_result.stdout)
+            if not isinstance(inspected, list):
+                raise ValueError("docker inspect returned non-list JSON")
+            for item in inspected:
+                if not isinstance(item, dict):
+                    continue
+                state = item.get("State") if isinstance(item.get("State"), dict) else {}
+                health = state.get("Health") if isinstance(state.get("Health"), dict) else {}
+                labels = (item.get("Config") or {}).get("Labels") or {}
+                service_id = labels.get("com.docker.compose.service")
+                container_name = str(item.get("Name") or "").lstrip("/")
+                if not service_id and container_name.startswith("ods-"):
+                    service_id = container_name.removeprefix("ods-")
+                containers.append({
+                    "service_id": str(service_id or ""),
+                    "container_name": container_name,
+                    "state": str(state.get("Status") or "unknown"),
+                    "health": str(health.get("Status") or "none"),
+                })
+        payload = {
+            "schema_version": "ods.host-service-health.v1",
+            "containers": containers,
+            "sampled_at": _iso_now(),
+        }
+        _service_health_cache = (time.monotonic(), payload)
+        return payload
+
+
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -2547,6 +2991,12 @@ class AgentHandler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/health":
             json_response(self, 200, {"status": "ok", "version": VERSION})
+        elif path == "/v1/gpu/metrics":
+            self._handle_gpu_metrics()
+        elif path == "/v1/llm/status":
+            self._handle_llm_status()
+        elif path == "/v1/service/health":
+            self._handle_service_health()
         elif path == "/v1/service/stats":
             self._handle_service_stats()
         elif path == "/v1/model/list":
@@ -2847,6 +3297,36 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 503, {"error": "docker stats timed out"})
         except Exception as exc:
             json_response(self, 500, {"error": f"Failed to fetch stats: {exc}"})
+
+    def _handle_service_health(self):
+        """Return Docker's lifecycle and container-health snapshot."""
+        if not check_auth(self):
+            return
+        try:
+            json_response(self, 200, _docker_service_health_snapshot())
+        except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired,
+                ValueError, TypeError, RuntimeError) as exc:
+            json_response(self, 503, {"error": f"Docker health snapshot failed: {exc}"})
+
+    def _handle_llm_status(self):
+        """Bridge Windows host-native inference without Docker DNS/NAT."""
+        if not check_auth(self):
+            return
+        status = _windows_llm_status()
+        if status is None:
+            json_response(self, 503, {"error": "Host inference telemetry is unavailable"})
+            return
+        json_response(self, 200, status)
+
+    def _handle_gpu_metrics(self):
+        """Return host GPU counters that Docker Desktop cannot expose."""
+        if not check_auth(self):
+            return
+        metrics = _windows_gpu_metrics()
+        if metrics is None:
+            json_response(self, 503, {"error": "Host GPU telemetry is unavailable"})
+            return
+        json_response(self, 200, metrics)
 
     def do_POST(self):
         # Several legacy endpoints intentionally ignore an optional body, and

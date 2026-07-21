@@ -327,7 +327,8 @@ function readOverviewHistory() {
     return parsed.filter(sample =>
       Number.isFinite(sample?.t) &&
       Number.isFinite(sample?.tokensPerSecond) &&
-      Number.isFinite(sample?.totalTokens)
+      Number.isFinite(sample?.totalTokens) &&
+      (!sample?.tokenCountMode || typeof sample.tokenCountMode === 'string')
     )
   } catch {
     return overviewMemoryHistory
@@ -371,8 +372,10 @@ function writeServiceCpuHistory(history) {
   }
 }
 
-function useOverviewHistory(tokensPerSecond, totalTokens) {
-  const [samples, setSamples] = useState(() => readOverviewHistory())
+function useOverviewHistory(tokensPerSecond, totalTokens, tokenCountMode = 'unavailable') {
+  const [samples, setSamples] = useState(() => readOverviewHistory().filter(sample =>
+    (sample.tokenCountMode || 'cumulative') === tokenCountMode
+  ))
 
   useEffect(() => {
     const now = Date.now()
@@ -380,11 +383,15 @@ function useOverviewHistory(tokensPerSecond, totalTokens) {
       t: now,
       tokensPerSecond: normalizeMetricNumber(tokensPerSecond),
       totalTokens: normalizeMetricNumber(totalTokens),
+      tokenCountMode,
     }
 
     setSamples(current => {
       const cutoff = now - OVERVIEW_RANGES[OVERVIEW_RANGES.length - 1].ms
-      const recent = current.filter(sample => sample.t >= cutoff)
+      const recent = current.filter(sample =>
+        sample.t >= cutoff &&
+        (sample.tokenCountMode || 'cumulative') === tokenCountMode
+      )
       const last = recent[recent.length - 1]
       if (
         last &&
@@ -399,7 +406,7 @@ function useOverviewHistory(tokensPerSecond, totalTokens) {
       writeOverviewHistory(next)
       return next
     })
-  }, [tokensPerSecond, totalTokens])
+  }, [tokensPerSecond, totalTokens, tokenCountMode])
 
   return samples
 }
@@ -719,19 +726,23 @@ export default function Dashboard({ status, loading }) {
         })
       }
     } else {
+      const hasLiveUtilization = Number.isFinite(status.gpu.utilization)
+      const hasLiveVramUsage = Number.isFinite(status.gpu.vramUsed)
       systemMetrics.push({
         icon: Activity,
         label: 'GPU',
-        value: `${status.gpu.utilization}%`,
+        value: hasLiveUtilization ? `${status.gpu.utilization}%` : '—',
         subvalue: status.gpu.name.replace('NVIDIA ', '').replace('AMD ', ''),
-        percent: status.gpu.utilization,
+        percent: hasLiveUtilization ? status.gpu.utilization : undefined,
       })
       systemMetrics.push({
         icon: HardDrive,
         label: 'VRAM',
-        value: `${status.gpu.vramUsed.toFixed(1)} GB`,
+        value: hasLiveVramUsage ? `${status.gpu.vramUsed.toFixed(1)} GB` : '—',
         subvalue: `of ${status.gpu.vramTotal} GB`,
-        percent: status.gpu.vramTotal > 0 ? (status.gpu.vramUsed / status.gpu.vramTotal) * 100 : 0,
+        percent: hasLiveVramUsage && status.gpu.vramTotal > 0
+          ? (status.gpu.vramUsed / status.gpu.vramTotal) * 100
+          : undefined,
       })
     }
   }
@@ -880,6 +891,9 @@ export default function Dashboard({ status, loading }) {
         <SystemOverviewPanel
           tokensPerSecond={status?.inference?.tokensPerSecond || 0}
           totalTokens={status?.inference?.lifetimeTokens || 0}
+          tokenCountMode={status?.inference
+            ? status.inference.tokenCountMode || 'cumulative'
+            : 'unavailable'}
         />
         <SystemMetricsPanel metrics={systemMetrics} />
       </div>
@@ -968,10 +982,10 @@ const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, 
   return <Link to={href} className="block h-full liquid-metal-sequence-slot">{content}</Link>
 })
 
-const SystemOverviewPanel = memo(function SystemOverviewPanel({ tokensPerSecond, totalTokens }) {
+const SystemOverviewPanel = memo(function SystemOverviewPanel({ tokensPerSecond, totalTokens, tokenCountMode }) {
   const [rangeKey, setRangeKey] = useState('1H')
   const range = OVERVIEW_RANGES.find(item => item.key === rangeKey) || OVERVIEW_RANGES[0]
-  const history = useOverviewHistory(tokensPerSecond, totalTokens)
+  const history = useOverviewHistory(tokensPerSecond, totalTokens, tokenCountMode)
   const throughput = useMemo(
     () => buildOverviewSeries(history, range, 'tokensPerSecond'),
     [history, range]
@@ -1026,8 +1040,12 @@ const SystemOverviewPanel = memo(function SystemOverviewPanel({ tokensPerSecond,
         />
         <OverviewChart
           chartId="tokens-generated"
-          title="TOKENS GENERATED"
-          subtitle="Accumulated Output"
+          title={tokenCountMode === 'latest_completion' ? 'OUTPUT TOKENS' : 'TOKENS GENERATED'}
+          subtitle={tokenCountMode === 'latest_completion'
+            ? 'Latest Completion'
+            : tokenCountMode === 'cumulative'
+              ? 'Accumulated Output'
+              : 'Waiting for telemetry'}
           values={generated.values}
           timestamps={generated.timestamps}
           range={range}

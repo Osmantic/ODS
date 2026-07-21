@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from models import GPUInfo, IndividualGPU
+from host_agent_client import AgentClientError, request_json as request_agent_json
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,8 @@ def get_gpu_info_amd() -> Optional[GPUInfo]:
             power_w=power_w,
             memory_type=memory_type,
             gpu_backend="amd",
+            utilization_available=bool(gpu_busy_str),
+            temperature_available=temp > 0,
         )
     except (ValueError, TypeError):
         return None
@@ -195,6 +198,8 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
                 "mem_total": mem_total,
                 "util": util,
                 "temp": temp,
+                "utilization_available": parts[3] not in na_values,
+                "temperature_available": parts[4] not in na_values,
                 "power_w": power_w,
             })
 
@@ -216,6 +221,8 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
                 power_w=g["power_w"],
                 memory_type=memory_type,
                 gpu_backend="nvidia",
+                utilization_available=g["utilization_available"],
+                temperature_available=g["temperature_available"],
             )
 
         # Multi-GPU: aggregate across all GPUs
@@ -247,6 +254,9 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
             power_w=total_power,
             memory_type=memory_type,
             gpu_backend="nvidia",
+            gpu_count=len(gpus),
+            utilization_available=all(g["utilization_available"] for g in gpus),
+            temperature_available=any(g["temperature_available"] for g in gpus),
         )
     except (ValueError, IndexError):
         pass
@@ -301,6 +311,9 @@ def get_gpu_info_apple() -> Optional[GPUInfo]:
                 power_w=None,
                 memory_type="unified",
                 gpu_backend="apple",
+                memory_usage_available=False,
+                utilization_available=False,
+                temperature_available=False,
             )
         except (ValueError, TypeError) as e:
             logger.debug("Apple Silicon GPU detection failed: %s", e)
@@ -345,9 +358,101 @@ def get_gpu_info_apple() -> Optional[GPUInfo]:
             power_w=None,
             memory_type="unified",
             gpu_backend="apple",
+            memory_usage_available=False,
+            utilization_available=False,
+            temperature_available=False,
         )
 
     return None
+
+
+def _get_windows_host_gpu_payload() -> Optional[dict]:
+    """Read and minimally validate the versioned Windows host GPU payload."""
+    if os.environ.get("GPU_BACKEND", "").lower() != "amd":
+        return None
+    location = _read_env_var_from_file("AMD_INFERENCE_LOCATION") or os.environ.get(
+        "AMD_INFERENCE_LOCATION", "",
+    )
+    if location.lower() != "host":
+        return None
+    try:
+        payload = request_agent_json("GET", "/v1/gpu/metrics", timeout=10)
+        if payload.get("schema_version") != "ods.host-gpu-metrics.v1":
+            return None
+        return payload
+    except (AgentClientError, OSError, TypeError, ValueError):
+        return None
+
+
+def get_gpu_info_windows_host() -> Optional[GPUInfo]:
+    """Read aggregate Windows AMD counters through the host agent."""
+    payload = _get_windows_host_gpu_payload()
+    if payload is None:
+        return None
+    try:
+        total_mb = max(0, int(payload.get("memory_total_mb") or 0))
+        used_mb = min(total_mb, max(0, int(payload.get("memory_used_mb") or 0)))
+        utilization = max(0, min(100, int(payload.get("utilization_percent") or 0)))
+        gpu_count = max(1, min(32, int(payload.get("gpu_count") or 1)))
+    except (TypeError, ValueError):
+        return None
+    if not payload.get("name") or total_mb <= 0:
+        return None
+    return GPUInfo(
+        name=str(payload["name"]),
+        memory_used_mb=used_mb,
+        memory_total_mb=total_mb,
+        memory_percent=round(used_mb / total_mb * 100, 1),
+        utilization_percent=utilization,
+        temperature_c=int(payload.get("temperature_c") or 0),
+        power_w=None,
+        memory_type=(
+            "unified" if payload.get("memory_type") == "unified" else "discrete"
+        ),
+        gpu_backend="amd",
+        gpu_count=gpu_count,
+        memory_usage_available=bool(payload.get("memory_usage_available", False)),
+        utilization_available=bool(payload.get("utilization_available", False)),
+        temperature_available=bool(payload.get("temperature_available", False)),
+    )
+
+
+def get_gpu_info_windows_host_detailed() -> Optional[list[IndividualGPU]]:
+    """Read per-adapter Windows AMD counters when the host supports them."""
+    payload = _get_windows_host_gpu_payload()
+    if payload is None or not isinstance(payload.get("gpus"), list):
+        return None
+    result: list[IndividualGPU] = []
+    try:
+        for position, item in enumerate(payload["gpus"][:32]):
+            if not isinstance(item, dict):
+                continue
+            total_mb = max(0, int(item.get("memory_total_mb") or 0))
+            if not item.get("name") or total_mb <= 0:
+                continue
+            used_mb = min(total_mb, max(0, int(item.get("memory_used_mb") or 0)))
+            utilization = max(0, min(100, int(item.get("utilization_percent") or 0)))
+            result.append(IndividualGPU(
+                index=max(0, min(31, int(item.get("index", position)))),
+                uuid=str(item.get("uuid") or f"amd-windows-host-{position}"),
+                name=str(item["name"]),
+                memory_used_mb=used_mb,
+                memory_total_mb=total_mb,
+                memory_percent=round(used_mb / total_mb * 100, 1),
+                utilization_percent=utilization,
+                temperature_c=int(item.get("temperature_c") or 0),
+                power_w=None,
+                memory_type=(
+                    "unified" if item.get("memory_type") == "unified" else "discrete"
+                ),
+                assigned_services=["llama-server"],
+                memory_usage_available=bool(item.get("memory_usage_available", False)),
+                utilization_available=bool(item.get("utilization_available", False)),
+                temperature_available=bool(item.get("temperature_available", False)),
+            ))
+    except (TypeError, ValueError):
+        return None
+    return result or None
 
 
 def get_gpu_info() -> Optional[GPUInfo]:
@@ -355,7 +460,21 @@ def get_gpu_info() -> Optional[GPUInfo]:
     gpu_backend = os.environ.get("GPU_BACKEND", "").lower()
 
     if gpu_backend == "amd":
+        try:
+            expected_count = int(os.environ.get("GPU_COUNT", "1"))
+        except ValueError:
+            expected_count = 1
+        if expected_count > 1:
+            detailed = get_gpu_info_amd_detailed()
+            if detailed:
+                return aggregate_gpu_details(detailed, "amd")
+        detailed = get_gpu_info_windows_host_detailed()
+        if detailed:
+            return aggregate_gpu_details(detailed, "amd")
         info = get_gpu_info_amd()
+        if info:
+            return info
+        info = get_gpu_info_windows_host()
         if info:
             return info
 
@@ -541,6 +660,8 @@ def get_gpu_info_nvidia_detailed() -> Optional[list[IndividualGPU]]:
                 temperature_c=int(parts[6]) if parts[6] not in na_values else 0,
                 power_w=power_w,
                 assigned_services=uuid_service_map.get(uuid, []),
+                utilization_available=parts[5] not in na_values,
+                temperature_available=parts[6] not in na_values,
             ))
         except (ValueError, IndexError):
             logger.warning("Skipping unparseable nvidia-smi row: %s", line)
@@ -649,12 +770,60 @@ def get_gpu_info_amd_detailed() -> Optional[list[IndividualGPU]]:
                 utilization_percent=gpu_busy,
                 temperature_c=temp,
                 power_w=power_w,
+                memory_type="unified" if is_unified else "discrete",
                 assigned_services=uuid_service_map.get(gpu_uuid, []),
+                utilization_available=bool(gpu_busy_str),
+                temperature_available=temp > 0,
             ))
         except (ValueError, TypeError):
             continue
 
     return gpus or None
+
+
+def aggregate_gpu_details(gpus: list[IndividualGPU], backend: str) -> GPUInfo:
+    """Build one truthful aggregate shared by status and detailed GPU routes."""
+    if not gpus:
+        raise ValueError("at least one GPU is required")
+
+    mem_used = sum(gpu.memory_used_mb for gpu in gpus)
+    mem_total = sum(gpu.memory_total_mb for gpu in gpus)
+    available_utilization = [
+        gpu.utilization_percent for gpu in gpus if gpu.utilization_available
+    ]
+    available_temperatures = [
+        gpu.temperature_c for gpu in gpus if gpu.temperature_available
+    ]
+    available_power = [gpu.power_w for gpu in gpus if gpu.power_w is not None]
+    names = [gpu.name for gpu in gpus]
+    if len(set(names)) == 1:
+        display_name = names[0] if len(names) == 1 else f"{names[0]} \u00d7 {len(names)}"
+    else:
+        display_name = " + ".join(names[:2])
+        if len(names) > 2:
+            display_name += f" + {len(names) - 2} more"
+
+    return GPUInfo(
+        name=display_name,
+        memory_used_mb=mem_used,
+        memory_total_mb=mem_total,
+        memory_percent=round(mem_used / mem_total * 100, 1) if mem_total > 0 else 0.0,
+        utilization_percent=(
+            round(sum(available_utilization) / len(available_utilization))
+            if available_utilization else 0
+        ),
+        temperature_c=max(available_temperatures) if available_temperatures else 0,
+        power_w=round(sum(available_power), 1) if available_power else None,
+        memory_type=(
+            "unified" if all(gpu.memory_type == "unified" for gpu in gpus)
+            else "discrete"
+        ),
+        gpu_backend=backend,
+        gpu_count=len(gpus),
+        memory_usage_available=all(gpu.memory_usage_available for gpu in gpus),
+        utilization_available=bool(available_utilization),
+        temperature_available=bool(available_temperatures),
+    )
 
 
 def get_gpu_tier(vram_gb: float, memory_type: str = "discrete") -> str:

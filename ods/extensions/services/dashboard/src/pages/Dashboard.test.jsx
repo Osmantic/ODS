@@ -21,6 +21,7 @@ const baseStatus = {
   inference: {
     tokensPerSecond: 8,
     lifetimeTokens: 4500,
+    tokenCountMode: 'cumulative',
     contextSize: 32768,
     loadedModel: 'qwen',
   },
@@ -120,6 +121,67 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('TOKENS GENERATED')).toBeInTheDocument()
     expect(screen.getByText('Live Throughput')).toBeInTheDocument()
     expect(screen.getByText('Accumulated Output')).toBeInTheDocument()
+  })
+
+  it('renders unavailable host GPU counters as unavailable instead of zero', async () => {
+    await renderDashboard({
+      ...baseStatus,
+      gpu: {
+        name: 'AMD Radeon RX 9070 XT',
+        vramUsed: null,
+        vramTotal: 16,
+        utilization: null,
+        temperature: null,
+        memoryType: 'discrete',
+      },
+    })
+
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(3)
+    expect(screen.getByText('Radeon RX 9070 XT')).toBeInTheDocument()
+    expect(screen.getByText('of 16 GB')).toBeInTheDocument()
+    expect(screen.queryByText('0%')).not.toBeInTheDocument()
+  })
+
+  it('labels Lemonade output as the latest completion instead of a cumulative total', async () => {
+    await renderDashboard({
+      ...baseStatus,
+      inference: {
+        ...baseStatus.inference,
+        lifetimeTokens: 36,
+        tokenCountMode: 'latest_completion',
+      },
+    })
+
+    expect(screen.getByText('OUTPUT TOKENS')).toBeInTheDocument()
+    expect(screen.getByText('Latest Completion')).toBeInTheDocument()
+    expect(screen.queryByText('Accumulated Output')).not.toBeInTheDocument()
+  })
+
+  it('does not mix cumulative history into latest-completion charts', async () => {
+    localStorage.setItem('ods-system-overview-history-v1', JSON.stringify([{
+      t: Date.now() - 1000,
+      tokensPerSecond: 20,
+      totalTokens: 900000,
+      tokenCountMode: 'cumulative',
+    }]))
+
+    await renderDashboard({
+      ...baseStatus,
+      inference: {
+        ...baseStatus.inference,
+        lifetimeTokens: 36,
+        tokenCountMode: 'latest_completion',
+      },
+    })
+
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem('ods-system-overview-history-v1'))
+      expect(stored).toHaveLength(1)
+      expect(stored[0]).toMatchObject({
+        totalTokens: 36,
+        tokenCountMode: 'latest_completion',
+      })
+    })
   })
 
   it('does not render feature discovery suggestions as a dashboard home banner', async () => {

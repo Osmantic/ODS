@@ -18,6 +18,10 @@ class GPUInfo(BaseModel):
     power_w: Optional[float] = None
     memory_type: str = "discrete"
     gpu_backend: str = GPU_BACKEND
+    gpu_count: int = 1
+    memory_usage_available: bool = True
+    utilization_available: bool = True
+    temperature_available: bool = True
 
 
 class ServiceStatus(BaseModel):
@@ -120,7 +124,11 @@ class IndividualGPU(BaseModel):
     utilization_percent: int
     temperature_c: int
     power_w: Optional[float] = None
+    memory_type: str = "discrete"
     assigned_services: list[str] = []
+    memory_usage_available: bool = True
+    utilization_available: bool = True
+    temperature_available: bool = True
 
 
 class MultiGPUStatus(BaseModel):
