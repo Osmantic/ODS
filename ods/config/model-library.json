@@ -339,6 +339,25 @@
       "install_recommendation": false
     },
     {
+      "id": "falcon-h1-3b-instruct-q4",
+      "name": "Falcon H1 3B Instruct",
+      "family": "falcon",
+      "gguf_file": "Falcon-H1-3B-Instruct-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/tiiuae/Falcon-H1-3B-Instruct-GGUF/resolve/main/Falcon-H1-3B-Instruct-Q4_K_M.gguf",
+      "gguf_sha256": "1926265eab19b0e47f0c2739e499a18e388373a616d71a218b924d5b95bdf702",
+      "size_bytes": 1888612384,
+      "size_mb": 1889,
+      "vram_required_gb": 4,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Long Context",
+      "description": "TII's Falcon H1 3B hybrid instruct model. A long-context low-VRAM validation candidate that preserves the passing Falcon H1 family while replacing Phi-3 Mini in release coverage.",
+      "tokens_per_sec_estimate": 115,
+      "llm_model_name": "Falcon-H1-3B-Instruct",
+      "llama_server_image": null,
+      "install_recommendation": false
+    },
+    {
       "id": "granite4.1-3b-q4",
       "name": "Granite 4.1 3B",
       "family": "granite",

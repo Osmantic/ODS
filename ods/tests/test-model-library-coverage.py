@@ -73,6 +73,7 @@ def test_release_model_switchboard_catalog_ids_exist():
         "smollm3-3b-q4",
         "granite4.0-h-1b-q4",
         "falcon-h1-1.5b-instruct-q4",
+        "falcon-h1-3b-instruct-q4",
         "granite4.0-1b-q4",
         "granite4.0-h-350m-q4",
         "granite3.2-2b-instruct-q4",
