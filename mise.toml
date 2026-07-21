@@ -12,7 +12,7 @@ ruff = "0.15.22"
 pre-commit = "4.6.0"
 actionlint = "1.7.12"
 zizmor = "1.27.0"
-ajv-cli = "5.0.0"
+"npm:ajv-cli" = "5.0.0"
 
 [settings]
 experimental = true
