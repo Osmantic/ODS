@@ -86,6 +86,42 @@ else
     ok "voice repair uses sr_curl_health"
 fi
 
+# scripts/ods-preflight.sh: core health via registry (not curl -sf)
+if rg -n 'curl -sf.*LLM_HEALTH|curl -sf.*WEBUI_HEALTH|curl -sf.*\$\{LLM_PORT\}|curl -sf.*\$\{WEBUI_PORT\}' "$ROOT/scripts/ods-preflight.sh" >/dev/null; then
+    bad "scripts/ods-preflight still hand-rolls llama/webui health curls"
+else
+    ok "scripts/ods-preflight uses registry for core health"
+fi
+if ! rg -q 'sr_curl_health llama-server' "$ROOT/scripts/ods-preflight.sh" || ! rg -q 'sr_curl_health open-webui' "$ROOT/scripts/ods-preflight.sh"; then
+    bad "scripts/ods-preflight missing sr_curl_health for llama-server/open-webui"
+fi
+
+# Root ods-preflight.sh: no hand-rolled /health curls for registry services
+if rg -n 'curl -sf.*"/health"|curl -sf.*/health' "$ROOT/ods-preflight.sh" >/dev/null; then
+    bad "ods-preflight.sh still uses curl -sf for /health paths"
+else
+    ok "ods-preflight.sh registry health paths migrated"
+fi
+if ! rg -q 'preflight_sr_health' "$ROOT/ods-preflight.sh"; then
+    bad "ods-preflight.sh missing preflight_sr_health"
+fi
+if ! rg -q 'preflight_sr_health whisper' "$ROOT/ods-preflight.sh" \
+    || ! rg -q 'preflight_sr_health tts' "$ROOT/ods-preflight.sh" \
+    || ! rg -q 'preflight_sr_health embeddings' "$ROOT/ods-preflight.sh" \
+    || ! rg -q 'preflight_sr_health dashboard' "$ROOT/ods-preflight.sh"; then
+    bad "ods-preflight.sh missing registry probes for whisper/tts/embeddings/dashboard"
+fi
+
+# ods-update.sh health command
+if rg -n 'curl -sf --max-time 15 "http://127.0.0.1:\$\{dashboard_api_port\}/health"' "$ROOT/ods-update.sh" >/dev/null; then
+    bad "ods-update.sh still hand-rolls dashboard-api /health"
+else
+    ok "ods-update.sh dashboard-api uses registry helper"
+fi
+if ! rg -q 'sr_curl_health dashboard-api' "$ROOT/ods-update.sh" || ! rg -q 'sr_curl_health llama-server' "$ROOT/ods-update.sh"; then
+    bad "ods-update.sh missing sr_curl_health for dashboard-api/llama-server"
+fi
+
 # Positive presence
 for needle in sr_http_probe_2xx sr_curl_health; do
     if ! rg -q "$needle" "$ROOT/lib/service-registry.sh"; then

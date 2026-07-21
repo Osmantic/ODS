@@ -12,6 +12,9 @@ SURFACES=(
     "$ROOT/scripts/validate.sh"
     "$ROOT/scripts/first-boot-demo.sh"
     "$ROOT/scripts/extension-runtime-check.sh"
+    "$ROOT/scripts/ods-preflight.sh"
+    "$ROOT/ods-preflight.sh"
+    "$ROOT/ods-update.sh"
     "$ROOT/ods-cli"
     "$ROOT/tests/test-health-probe-shadow-audit.sh"
     "$ROOT/tests/test-ods-cli-health-probe-contract.sh"
@@ -62,7 +65,16 @@ else
 fi
 
 echo "=== registry resolve-before-probe contract ==="
-if rg -q 'sr_resolve_ports' "$ROOT/ods-cli" "$ROOT/scripts/validate.sh" "$ROOT/scripts/ods-doctor.sh" "$ROOT/scripts/showcase.sh" "$ROOT/scripts/first-boot-demo.sh"; then
+if rg -q 'sr_resolve_ports' \
+    "$ROOT/ods-cli" \
+    "$ROOT/scripts/validate.sh" \
+    "$ROOT/scripts/ods-doctor.sh" \
+    "$ROOT/scripts/showcase.sh" \
+    "$ROOT/scripts/first-boot-demo.sh" \
+    "$ROOT/scripts/ods-preflight.sh" \
+    "$ROOT/ods-preflight.sh" \
+    "$ROOT/ods-update.sh"
+then
     echo "OK sr_resolve_ports used on major surfaces"
 else
     echo "FAIL sr_resolve_ports missing from major surfaces" >&2

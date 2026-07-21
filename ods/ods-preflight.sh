@@ -22,11 +22,26 @@ LOG_FILE="$ODS_DIR/preflight-$(date +%Y%m%d-%H%M%S).log"
 [[ -f "$ODS_DIR/lib/safe-env.sh" ]] && . "$ODS_DIR/lib/safe-env.sh"
 load_env_file "$ODS_DIR/.env"
 
+# Registry owns HTTP health paths/ports/headers (2xx only).
+# shellcheck source=lib/service-registry.sh
+. "$ODS_DIR/lib/service-registry.sh"
+sr_load
+sr_resolve_ports
+
 SERVICE_HOST="${SERVICE_HOST:-localhost}"
 
-# Bound every health probe so a listening-but-wedged service can't hang the
-# preflight (mirrors scripts/ods-preflight.sh).
-CURL_HEALTH_FLAGS=(--connect-timeout 3 --max-time 10)
+# Probe a registry service on SERVICE_HOST then 127.0.0.1.
+preflight_sr_health() {
+    local sid="$1"
+    local host
+    for host in "$SERVICE_HOST" "127.0.0.1"; do
+        if sr_curl_health "$sid" 10 "$host" >/dev/null 2>&1; then
+            printf '%s' "$(sr_health_url "$sid" "$host")"
+            return 0
+        fi
+    done
+    return 1
+}
 
 # Auto-detect backend from .env or hardware probing.
 # Priority: .env setting → nvidia-smi → AMD sysfs (any card).
@@ -189,45 +204,40 @@ else
 fi
 log ""
 
-# 4. LLM Endpoint check
-# OLLAMA_PORT controls the external port for llama-server.
-# Canonical default is 8080 (config/ports.json, docker-compose.base.yml).
-# 11434 is only used on Strix Halo AMD installs where phase 06 writes
-# OLLAMA_PORT=11434 to .env automatically — it will be picked up via the
-# ${OLLAMA_PORT:-...} expansion below, so the fallback should be 8080.
+# 4. LLM Endpoint check — registry health first; /v1/models is functional fallback.
 log "[4/8] Checking LLM endpoint..."
 if is_external_lemonade; then
-    LLM_PORT="${LITELLM_PORT:-4000}"
-    LLM_ENDPOINTS=("http://${SERVICE_HOST}:${LLM_PORT}/health/readiness" "http://127.0.0.1:${LLM_PORT}/health/readiness" "http://127.0.0.1:${LLM_PORT}/v1/models")
+    LLM_SID="litellm"
     LLM_SERVICE_NAME="LiteLLM external Lemonade gateway"
     LLM_CONTAINER_MATCH="ods-litellm"
     LLM_START_CMD="docker compose up -d litellm"
 else
-    LLM_PORT="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-8080}}"
-    # Also probe the actual mapped port in case docker remapped it
-    EXTERNAL_PORT="$(docker port ods-llama-server 8080/tcp 2>/dev/null | head -1 | cut -d: -f2 || true)"
-    [[ -n "$EXTERNAL_PORT" ]] || EXTERNAL_PORT="$LLM_PORT"
-    LLM_ENDPOINTS=("http://${SERVICE_HOST}:${EXTERNAL_PORT}/health" "http://${SERVICE_HOST}:${EXTERNAL_PORT}/v1/models" "http://127.0.0.1:${EXTERNAL_PORT}/health" "http://127.0.0.1:${EXTERNAL_PORT}/v1/models" "http://127.0.0.1:${LLM_PORT}/health" "http://127.0.0.1:${LLM_PORT}/v1/models")
+    LLM_SID="llama-server"
     LLM_SERVICE_NAME="llama-server"
     LLM_CONTAINER_MATCH="ods-llama-server"
     LLM_START_CMD="docker compose up -d llama-server"
 fi
 
 LLM_FOUND=false
-for ENDPOINT in "${LLM_ENDPOINTS[@]}"; do
-    if curl -sf "${CURL_HEALTH_FLAGS[@]}" "$ENDPOINT" &> /dev/null; then
-        pass "LLM endpoint ($LLM_SERVICE_NAME) responding at $ENDPOINT"
-        LLM_FOUND=true
-        break
-    fi
-done
+if LLM_URL="$(preflight_sr_health "$LLM_SID")"; then
+    pass "LLM endpoint ($LLM_SERVICE_NAME) responding at $LLM_URL"
+    LLM_FOUND=true
+else
+    # Functional readiness (models list) — not a health-path probe.
+    for host in "$SERVICE_HOST" "127.0.0.1"; do
+        if sr_http_probe_2xx "http://${host}:$(sr_health_port "$LLM_SID")/v1/models" 10 >/dev/null 2>&1; then
+            pass "LLM endpoint ($LLM_SERVICE_NAME) models API at http://${host}:$(sr_health_port "$LLM_SID")/v1/models"
+            LLM_FOUND=true
+            break
+        fi
+    done
+fi
 
 if [ "$LLM_FOUND" = false ]; then
-    # Check if container is running but model still loading
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -qi "${LLM_CONTAINER_MATCH}"; then
         warn "$LLM_SERVICE_NAME container running but not responding yet (model may still be loading)"
     else
-        fail "No LLM endpoint found — checked: ${LLM_ENDPOINTS[*]}"
+        fail "No LLM endpoint found for registry service '$LLM_SID'"
         warn "Start $LLM_SERVICE_NAME with: $LLM_START_CMD"
     fi
 fi
@@ -235,77 +245,37 @@ log ""
 
 # 5. Whisper STT check
 log "[5/8] Checking Whisper STT..."
-WHISPER_PORT_RESOLVED="${WHISPER_PORT:-9000}"
-WHISPER_ENDPOINTS=("http://${SERVICE_HOST}:${WHISPER_PORT_RESOLVED}" "http://127.0.0.1:${WHISPER_PORT_RESOLVED}")
-WHISPER_FOUND=false
-
-for ENDPOINT in "${WHISPER_ENDPOINTS[@]}"; do
-    if curl -sf "${CURL_HEALTH_FLAGS[@]}" "$ENDPOINT/health" &> /dev/null; then
-        pass "Whisper STT responding at $ENDPOINT"
-        WHISPER_FOUND=true
-        break
-    fi
-done
-
-if [ "$WHISPER_FOUND" = false ]; then
+if WHISPER_URL="$(preflight_sr_health whisper)"; then
+    pass "Whisper STT responding at $WHISPER_URL"
+else
     warn "Whisper STT not found — voice input will be unavailable"
 fi
 log ""
 
 # 6. TTS check
 log "[6/8] Checking TTS (Kokoro)..."
-TTS_PORT_RESOLVED="${TTS_PORT:-8880}"
-TTS_ENDPOINTS=("http://${SERVICE_HOST}:${TTS_PORT_RESOLVED}" "http://127.0.0.1:${TTS_PORT_RESOLVED}")
-TTS_FOUND=false
-
-for ENDPOINT in "${TTS_ENDPOINTS[@]}"; do
-    if curl -sf "${CURL_HEALTH_FLAGS[@]}" "$ENDPOINT/health" &> /dev/null; then
-        pass "TTS endpoint responding at $ENDPOINT"
-        TTS_FOUND=true
-        break
-    fi
-done
-
-if [ "$TTS_FOUND" = false ]; then
+if TTS_URL="$(preflight_sr_health tts)"; then
+    pass "TTS endpoint responding at $TTS_URL"
+else
     warn "TTS not found — voice output will be unavailable"
 fi
 log ""
 
 # 7. Embeddings check
 log "[7/8] Checking Embeddings..."
-EMBEDDINGS_PORT_RESOLVED="${EMBEDDINGS_PORT:-8090}"
-EMBEDDING_ENDPOINTS=("http://${SERVICE_HOST}:${EMBEDDINGS_PORT_RESOLVED}" "http://127.0.0.1:${EMBEDDINGS_PORT_RESOLVED}")
-EMBEDDING_FOUND=false
-
-for ENDPOINT in "${EMBEDDING_ENDPOINTS[@]}"; do
-    if curl -sf "${CURL_HEALTH_FLAGS[@]}" "$ENDPOINT/health" &> /dev/null; then
-        pass "Embeddings endpoint responding at $ENDPOINT"
-        EMBEDDING_FOUND=true
-        break
-    fi
-done
-
-if [ "$EMBEDDING_FOUND" = false ]; then
+if EMB_URL="$(preflight_sr_health embeddings)"; then
+    pass "Embeddings endpoint responding at $EMB_URL"
+else
     warn "Embeddings not found — RAG features will be unavailable"
 fi
 log ""
 
 # 8. Dashboard check (replaces LiveKit — more useful for all backends)
 log "[8/8] Checking Dashboard..."
-DASHBOARD_PORT_RESOLVED="${DASHBOARD_PORT:-3001}"
-DASHBOARD_ENDPOINTS=("http://${SERVICE_HOST}:${DASHBOARD_PORT_RESOLVED}" "http://127.0.0.1:${DASHBOARD_PORT_RESOLVED}")
-DASHBOARD_FOUND=false
-
-for ENDPOINT in "${DASHBOARD_ENDPOINTS[@]}"; do
-    if curl -sf "${CURL_HEALTH_FLAGS[@]}" "$ENDPOINT" &> /dev/null; then
-        pass "Dashboard responding at $ENDPOINT"
-        DASHBOARD_FOUND=true
-        break
-    fi
-done
-
-if [ "$DASHBOARD_FOUND" = false ]; then
-    warn "Dashboard not found at port ${DASHBOARD_PORT_RESOLVED}"
+if DASH_URL="$(preflight_sr_health dashboard)"; then
+    pass "Dashboard responding at $DASH_URL"
+else
+    warn "Dashboard not found (registry port $(sr_health_port dashboard))"
 fi
 log ""
 

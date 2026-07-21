@@ -38,11 +38,9 @@ echo "=============================="
 echo ""
 
 # Resolve ports from registry + env overrides
-LLM_PORT="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-${SERVICE_PORTS[llama-server]:-11434}}}"
-LLM_HEALTH="${SERVICE_HEALTH[llama-server]:-/health}"
+LLM_PORT="$(sr_health_port llama-server)"
 LLM_CONTAINER="${SERVICE_CONTAINERS[llama-server]:-ods-llama-server}"
-WEBUI_PORT="${SERVICE_PORTS[open-webui]:-3000}"
-WEBUI_HEALTH="${SERVICE_HEALTH[open-webui]:-/}"
+WEBUI_PORT="$(sr_health_port open-webui)"
 
 # Check Docker is running
 echo -n "Docker daemon... "
@@ -64,11 +62,9 @@ else
     exit 1
 fi
 
-# Check llama-server health
-CURL_HEALTH_FLAGS=(--connect-timeout 3 --max-time 10)
-
-echo -n "llama-server API (port $LLM_PORT)... "
-if curl -sf "${CURL_HEALTH_FLAGS[@]}" "http://127.0.0.1:${LLM_PORT}${LLM_HEALTH}" >/dev/null 2>&1; then
+# Check llama-server + WebUI via registry-owned 2xx probes (not curl -sf).
+echo -n "llama-server API (port $(sr_health_port llama-server))... "
+if sr_curl_health llama-server 10 >/dev/null 2>&1; then
     echo -e "${GREEN}✓ healthy${NC}"
 else
     echo -e "${YELLOW}⚠ starting up${NC}"
@@ -77,8 +73,8 @@ else
 fi
 
 # Check WebUI
-echo -n "Open WebUI (port $WEBUI_PORT)... "
-if curl -sf "${CURL_HEALTH_FLAGS[@]}" "http://127.0.0.1:${WEBUI_PORT}${WEBUI_HEALTH}" >/dev/null 2>&1; then
+echo -n "Open WebUI (port $(sr_health_port open-webui))... "
+if sr_curl_health open-webui 10 >/dev/null 2>&1; then
     echo -e "${GREEN}✓ accessible${NC}"
 else
     echo -e "${YELLOW}⚠ not ready${NC}"
