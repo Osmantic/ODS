@@ -2,6 +2,9 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 $phasePath = Join-Path $root "installers\windows\phases\04-requirements.ps1"
+$installerPath = Join-Path $root "installers\windows\install-windows.ps1"
+$cliPath = Join-Path $root "installers\windows\ods.ps1"
+$reportPath = Join-Path $root "installers\windows\lib\install-report.ps1"
 . (Join-Path $root "installers\windows\lib\llm-endpoint.ps1")
 . (Join-Path $root "installers\windows\lib\detection.ps1")
 . (Join-Path $root "installers\windows\lib\env-generator.ps1")
@@ -44,6 +47,29 @@ function Assert-Equal {
 
 function Write-AIWarn {
     param([string]$Message)
+}
+
+$portMap = @{ WEBUI_PORT = "9090"; DASHBOARD_PORT = "3101" }
+Assert-Equal (Get-WindowsODSEnvPort -EnvMap $portMap -Name "WEBUI_PORT" -DefaultPort 3000) `
+    9090 "Persisted runtime WebUI port"
+Assert-Equal (Get-WindowsODSEnvPort -EnvMap $portMap -Name "DASHBOARD_PORT" -DefaultPort 3001) `
+    3101 "Persisted runtime dashboard port"
+$portMap.WEBUI_PORT = ""
+Assert-Equal (Get-WindowsODSEnvPort -EnvMap $portMap -Name "WEBUI_PORT" -DefaultPort 3000) `
+    3000 "Empty runtime WebUI port"
+$portMap.WEBUI_PORT = "70000"
+Assert-Equal (Get-WindowsODSEnvPort -EnvMap $portMap -Name "WEBUI_PORT" -DefaultPort 3000) `
+    3000 "Out-of-range runtime WebUI port"
+$portMap.WEBUI_PORT = "not-a-port"
+Assert-Equal (Get-WindowsODSEnvPort -EnvMap $portMap -Name "WEBUI_PORT" -DefaultPort 3000) `
+    3000 "Invalid runtime WebUI port"
+
+foreach ($consumerPath in @($installerPath, $cliPath, $reportPath)) {
+    $consumerText = Get-Content -LiteralPath $consumerPath -Raw
+    if ($consumerText -match 'Test-HttpEndpoint\s+-Url\s+"http://localhost:3000"' -or
+        $consumerText -match '@\{\s*Name\s*=\s*"(?:Chat UI|Chat UI \(Open WebUI\))";\s*Url\s*=\s*"http://localhost:3000"') {
+        throw "Windows runtime health consumer still hardcodes Open WebUI port 3000: $consumerPath"
+    }
 }
 
 $savedAmdPort = $env:AMD_INFERENCE_PORT

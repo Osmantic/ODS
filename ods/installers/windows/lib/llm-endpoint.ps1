@@ -77,6 +77,29 @@ function Get-WindowsODSEnvValue {
     return $Default
 }
 
+function Get-WindowsODSEnvPort {
+    <#
+    .SYNOPSIS
+        Read and validate a persisted service port from a parsed ODS .env map.
+    #>
+    param(
+        [hashtable]$EnvMap,
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [int]$DefaultPort
+    )
+
+    $candidate = Get-WindowsODSEnvValue -EnvMap $EnvMap -Keys @($Name) -Default ""
+    $parsedPort = 0
+    if ([int]::TryParse(([string]$candidate).Trim(), [ref]$parsedPort) -and
+        $parsedPort -ge 1 -and $parsedPort -le 65535) {
+        return $parsedPort
+    }
+
+    return $DefaultPort
+}
+
 function Get-WindowsLocalLlmEndpoint {
     <#
     .SYNOPSIS

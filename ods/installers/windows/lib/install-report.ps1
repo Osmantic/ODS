@@ -83,6 +83,9 @@ function New-ODSInstallReport {
     }
     $envMap = Get-WindowsODSEnvMap -InstallDir $InstallDir
     $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $InstallDir -GpuBackend $gpu.Backend -NativeBackend $nativeBackend
+    $webuiPort = Get-WindowsODSEnvPort -EnvMap $envMap -Name "WEBUI_PORT" -DefaultPort 3000
+    $dashboardPort = Get-WindowsODSEnvPort -EnvMap $envMap -Name "DASHBOARD_PORT" -DefaultPort 3001
+    $dashboardApiPort = Get-WindowsODSEnvPort -EnvMap $envMap -Name "DASHBOARD_API_PORT" -DefaultPort 3002
 
     $composeConfigArgs = @("compose") + $ComposeFlags + @("config")
     $composePsArgs = @("compose") + $ComposeFlags + @("ps", "-a")
@@ -120,9 +123,9 @@ function New-ODSInstallReport {
         }
         health = [ordered]@{
             llm_api = Test-HttpEndpoint -Url $llmEndpoint.HealthUrl
-            open_webui = Test-HttpEndpoint -Url "http://localhost:3000"
-            dashboard = Test-HttpEndpoint -Url "http://localhost:3001"
-            dashboard_api = Test-HttpEndpoint -Url "http://localhost:3002/health"
+            open_webui = Test-HttpEndpoint -Url "http://localhost:$webuiPort"
+            dashboard = Test-HttpEndpoint -Url "http://localhost:$dashboardPort"
+            dashboard_api = Test-HttpEndpoint -Url "http://localhost:$dashboardApiPort/health"
             whisper = $whisperStatus
             stt_model = [ordered]@{
                 name = $sttModel

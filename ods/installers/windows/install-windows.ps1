@@ -1996,9 +1996,11 @@ function Get-WindowsActiveModelSelection {
 }
 $activeModel = Get-WindowsActiveModelSelection -EnvMap $windowsEnvMap `
     -DefaultGgufFile $tierConfig.GgufFile -DefaultModelName $tierConfig.LlmModel
+$webuiHealthPort = Get-WindowsODSEnvPort -EnvMap $windowsEnvMap `
+    -Name "WEBUI_PORT" -DefaultPort 3000
 $healthChecks = @(
     @{ Name = $llmEndpoint.Name; Url = $llmEndpoint.HealthUrl }
-    @{ Name = "Chat UI (Open WebUI)"; Url = "http://localhost:3000" }
+    @{ Name = "Chat UI (Open WebUI)"; Url = "http://localhost:$webuiHealthPort" }
 )
 if ($enableVoice)     {
     $healthWhisperPort = if ($windowsEnvMap.ContainsKey("WHISPER_PORT") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["WHISPER_PORT"])) { $windowsEnvMap["WHISPER_PORT"] } else { "9000" }

@@ -1357,10 +1357,13 @@ function Invoke-Status {
         Write-Host ("  " + ("-" * 40)) -ForegroundColor DarkGray
 
         $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $InstallDir -NativeBackend (Get-NativeInferenceBackend)
+        $runtimeEnv = Read-ODSEnv
+        $webuiPort = Get-WindowsODSEnvPort -EnvMap $runtimeEnv -Name "WEBUI_PORT" -DefaultPort 3000
+        $dashboardPort = Get-WindowsODSEnvPort -EnvMap $runtimeEnv -Name "DASHBOARD_PORT" -DefaultPort 3001
         $endpoints = @(
             @{ Name = "LLM API";    Url = $llmEndpoint.HealthUrl }
-            @{ Name = "Chat UI";    Url = "http://localhost:3000" }
-            @{ Name = "Dashboard";  Url = "http://localhost:3001" }
+            @{ Name = "Chat UI";    Url = "http://localhost:$webuiPort" }
+            @{ Name = "Dashboard";  Url = "http://localhost:$dashboardPort" }
         )
 
         foreach ($ep in $endpoints) {
