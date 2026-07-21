@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 import threading
 import time
@@ -47,6 +48,12 @@ class TestStateModule:
         jsonschema = pytest.importorskip("jsonschema")
         schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
         jsonschema.validate(read, schema)
+
+    def test_state_file_is_readable_by_model_router_user(self, tmp_path):
+        path = tmp_path / "model-state.json"
+        _record(path)
+        if os.name != "nt":
+            assert stat.S_IMODE(path.stat().st_mode) == sb.STATE_FILE_MODE == 0o644
 
     def test_seq_monotonic_routeseq_only_on_change(self, tmp_path):
         path = tmp_path / "model-state.json"

@@ -31,6 +31,7 @@ from typing import Any
 SCHEMA_VERSION = "ods.model-state.v1"
 HISTORY_LIMIT = 10
 PUBLIC_MODEL_DEFAULT = "ods/current"
+STATE_FILE_MODE = 0o644
 
 _BACKEND_KINDS = {"llama-server", "lemonade", "hipfire", "unknown"}
 _OPERATION_PHASES = {
@@ -355,6 +356,10 @@ def atomic_write_state(path: os.PathLike | str, doc: dict[str, Any]) -> None:
                 os.fsync(handle.fileno())
             except OSError:
                 pass
+        try:
+            os.chmod(tmp_name, STATE_FILE_MODE)
+        except OSError:
+            pass
         replace_error: OSError | None = None
         for _attempt in range(40):
             try:
