@@ -172,6 +172,38 @@ class TestForwarding:
         assert resp.headers["X-ODS-Route-Seq"] == "7"
         assert resp.headers["X-Lemonade-Route"] == "route-a"
 
+    def test_chat_template_artifacts_stripped_from_json_content(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+
+        def handler(_request):
+            return httpx.Response(200, json={
+                "id": "c1",
+                "model": "Concrete.gguf",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "O<|im_start|>assistant<|im_end|>DSVAL",
+                    },
+                }],
+            })
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        )
+
+        resp = client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["choices"][0]["message"]["content"] == "ODSVAL"
+        assert "<|im_start|>" not in resp.text
+        assert body["model"] == "ods/current"
+
     def test_sse_chunks_restore_alias(self, router):
         mod, client, write_state, calls = router
         write_state()
@@ -184,6 +216,48 @@ class TestForwarding:
         assert b'"model": "default"' in raw or b'"model":"default"' in raw
         assert b"Concrete.gguf" not in raw
         assert b"[DONE]" in raw
+
+    def test_chat_template_artifacts_stripped_from_sse_delta(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        _set_stream_upstream(mod, [
+            b'data: {"id":"c1","model":"Concrete.gguf",'
+            b'"choices":[{"delta":{"content":"O<|im_start|>assistant<|im_end|>DSVAL"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ])
+
+        with client.stream("POST", "/v1/chat/completions", json={
+            "model": "ods/current",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        }) as resp:
+            raw = b"".join(resp.iter_bytes())
+
+        assert resp.status_code == 200
+        assert b'"content":"ODSVAL"' in raw
+        assert b"<|im_start|>" not in raw
+        assert b"Concrete.gguf" not in raw
+
+    def test_chat_template_artifacts_stripped_from_model_less_sse_delta(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        _set_stream_upstream(mod, [
+            b'data: {"id":"c1","model":"Concrete.gguf","choices":[]}\n\n',
+            b'data: {"id":"c1","choices":[{"delta":{"content":"A<|start_header_id|>assistant<|end_header_id|>B"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ])
+
+        with client.stream("POST", "/v1/chat/completions", json={
+            "model": "ods/current",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        }) as resp:
+            raw = b"".join(resp.iter_bytes())
+
+        assert resp.status_code == 200
+        assert b'"content":"AB"' in raw
+        assert b"<|start_header_id|>" not in raw
+        assert b"Concrete.gguf" not in raw
 
     def test_client_authorization_stripped_and_backend_key_injected(self, router):
         mod, client, write_state, calls = router

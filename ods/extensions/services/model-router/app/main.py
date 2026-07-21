@@ -90,6 +90,11 @@ _PROBE_RE = re.compile(
     r"sig=([A-Za-z0-9_-]+)\]"
 )
 _SSE_DELIMITER_RE = re.compile(rb"(?:\r\n|\r|\n)(?:\r\n|\r|\n)")
+_CHAT_TEMPLATE_ARTIFACTS = (
+    re.compile(r"<\|im_start\|>\s*(?:assistant|user|system|tool)?\s*<\|im_end\|>"),
+    re.compile(r"<\|start_header_id\|>\s*(?:assistant|user|system|tool)?\s*<\|end_header_id\|>"),
+    re.compile(r"<\|(?:im_start|im_end|eot_id|endoftext|end)\|>"),
+)
 
 app = FastAPI(title="ODS Model Router", docs_url=None, redoc_url=None,
               openapi_url=None)
@@ -427,6 +432,53 @@ def _sanitize_headers(request: Request) -> dict[str, str]:
     return headers
 
 
+def _strip_chat_template_artifacts(text: str) -> str:
+    cleaned = text
+    for pattern in _CHAT_TEMPLATE_ARTIFACTS:
+        cleaned = pattern.sub("", cleaned)
+    return cleaned
+
+
+def _sanitize_content_value(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, str):
+        cleaned = _strip_chat_template_artifacts(value)
+        return cleaned, cleaned != value
+    if isinstance(value, list):
+        changed = False
+        cleaned_items: list[Any] = []
+        for item in value:
+            if isinstance(item, dict):
+                item = dict(item)
+                for key in ("text", "content"):
+                    if isinstance(item.get(key), str):
+                        item[key], item_changed = _sanitize_content_value(item[key])
+                        changed = changed or item_changed
+            cleaned_items.append(item)
+        return cleaned_items, changed
+    return value, False
+
+
+def _sanitize_choice_content(obj: dict[str, Any]) -> bool:
+    changed = False
+    choices = obj.get("choices")
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        for container_key in ("message", "delta"):
+            container = choice.get(container_key)
+            if isinstance(container, dict) and "content" in container:
+                container["content"], item_changed = _sanitize_content_value(
+                    container["content"]
+                )
+                changed = changed or item_changed
+        if "text" in choice:
+            choice["text"], item_changed = _sanitize_content_value(choice["text"])
+            changed = changed or item_changed
+    return changed
+
+
 def _rewrite_sse_event(event: bytes, alias: str) -> tuple[bytes, list[str]]:
     """Rewrite complete SSE data lines and return concrete model identities."""
     out_lines: list[bytes] = []
@@ -441,10 +493,12 @@ def _rewrite_sse_event(event: bytes, alias: str) -> tuple[bytes, list[str]]:
                     obj = json.loads(payload)
                 except ValueError:
                     obj = None
-                if isinstance(obj, dict) and isinstance(obj.get("model"), str):
-                    if obj["model"]:
-                        models.append(obj["model"])
-                    obj["model"] = alias
+                if isinstance(obj, dict):
+                    if isinstance(obj.get("model"), str):
+                        if obj["model"]:
+                            models.append(obj["model"])
+                        obj["model"] = alias
+                    _sanitize_choice_content(obj)
                     content = (
                         b"data: "
                         + json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -738,6 +792,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             response_model = parsed.get("model")
             if "model" in parsed:
                 parsed["model"] = requested_alias
+            _sanitize_choice_content(parsed)
             lemonade_meta = parsed.get("x_lemonade_route")
             if lemonade_meta is not None:
                 ods_headers.setdefault("X-Lemonade-Route",
