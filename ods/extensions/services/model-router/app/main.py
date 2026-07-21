@@ -59,6 +59,9 @@ PROBE_KEY_PATH: Path | None = (
 INSTANCE_ID = str(uuid.uuid4())
 
 MAX_BODY_BYTES = int(os.environ.get("ODS_ROUTER_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
+# Bound the SSE rewriter's held-back partial event so a delimiter-less upstream
+# cannot grow it without limit (MAX_BODY_BYTES only guards the request body).
+MAX_SSE_HOLDBACK = int(os.environ.get("ODS_ROUTER_MAX_SSE_HOLDBACK_BYTES", str(1024 * 1024)))
 MAX_QUEUE_DEPTH = int(os.environ.get("ODS_ROUTER_MAX_QUEUE_DEPTH", "64"))
 QUEUE_WAIT_SECONDS = int(os.environ.get("ODS_ROUTER_QUEUE_WAIT_SECONDS", "60"))
 UPSTREAM_TIMEOUT_SECONDS = float(os.environ.get("ODS_ROUTER_UPSTREAM_TIMEOUT", "600"))
@@ -525,6 +528,13 @@ class _SSERewriter:
             rewritten, models = _rewrite_sse_event(event, self.alias)
             self.models.extend(models)
             output.append(rewritten + delimiter)
+        # A delimiter-less upstream must not grow the held-back partial event
+        # without bound. Flush it (best-effort rewrite, like finish()) and reset.
+        if len(self.buffer) > MAX_SSE_HOLDBACK:
+            rewritten, models = _rewrite_sse_event(self.buffer, self.alias)
+            self.models.extend(models)
+            output.append(rewritten)
+            self.buffer = b""
         return output
 
     def finish(self) -> bytes:
