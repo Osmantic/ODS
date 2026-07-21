@@ -161,6 +161,19 @@ for service_dir in _all_service_dirs:
         compose_file = s.get("compose_file", "")
         category = s.get("category", "optional")
         depends = s.get("depends_on", [])
+        health_port_env = s.get("health_port_env", "")
+        port_env = s.get("external_port_env", "")
+
+        # These names are used by Bash indirect expansion. Reject invalid
+        # names before emitting any assignments for the service so a user
+        # manifest cannot abort every registry-backed health surface.
+        env_name_re = r'^[A-Z][A-Z0-9_]*$'
+        if health_port_env and not _re.fullmatch(env_name_re, str(health_port_env)):
+            print(f'# SKIP: {manifest_path}: invalid health_port_env {health_port_env!r}', file=sys.stderr)
+            continue
+        if port_env and not _re.fullmatch(env_name_re, str(port_env)):
+            print(f'# SKIP: {manifest_path}: invalid external_port_env {port_env!r}', file=sys.stderr)
+            continue
 
         # Validate aliases
         valid_aliases = []
@@ -190,10 +203,8 @@ for service_dir in _all_service_dirs:
         health_timeout = s.get("health_timeout", 5)  # Default 5 seconds
         startup_check = "false" if s.get("startup_check") is False else "true"
         health_port = s.get("health_port", "")
-        health_port_env = s.get("health_port_env", "")
         health_header = s.get("health_header", "")
         port = s.get("external_port_default", s.get("port", 0))
-        port_env = s.get("external_port_env", "")
         host_network = "1" if s.get("host_network") else ""
         print(f'SERVICE_HEALTH["{_esc(sid)}"]="{_esc(health)}"')
         print(f'SERVICE_HEALTH_TIMEOUTS["{_esc(sid)}"]="{_esc(health_timeout)}"')
@@ -280,6 +291,23 @@ sr_health_url() {
     printf 'http://%s:%s%s' "$_host" "$(sr_health_port "$_sid")" "${SERVICE_HEALTH[$_sid]:-}"
 }
 
+# Probe an arbitrary HTTP URL and require a 2xx status. Redirects and other
+# non-2xx codes are unhealthy. Used for host-local endpoints that are not
+# registry services (e.g. ods-host-agent) and as the shared transport for
+# sr_curl_health.
+sr_http_probe_2xx() {
+    local _url="$1"
+    local _timeout="${2:-5}"
+    local _header="${3:-}"
+    local -a _curl_args=(-sS --max-time "$_timeout")
+    local _status_code
+
+    [[ -n "$_header" ]] && _curl_args+=(-H "$_header")
+    _status_code="$(curl "${_curl_args[@]}" --output /dev/null --write-out '%{http_code}' -- \
+        "$_url")" || return 1
+    [[ "$_status_code" =~ ^2[0-9][0-9]$ ]]
+}
+
 # Probe a manifest-owned HTTP health endpoint. This keeps dedicated ports and
 # required virtual-host headers consistent across CLI and diagnostic surfaces.
 sr_curl_health() {
@@ -287,13 +315,8 @@ sr_curl_health() {
     local _timeout="${2:-${SERVICE_HEALTH_TIMEOUTS[$_sid]:-5}}"
     local _host="${3:-127.0.0.1}"
     local _health_header="${SERVICE_HEALTH_HEADERS[$_sid]:-}"
-    local -a _curl_args=(-sS --max-time "$_timeout")
-    local _status_code
 
-    [[ -n "$_health_header" ]] && _curl_args+=(-H "$_health_header")
-    _status_code="$(curl "${_curl_args[@]}" --output /dev/null --write-out '%{http_code}' -- \
-        "$(sr_health_url "$_sid" "$_host")")" || return 1
-    [[ "$_status_code" =~ ^2[0-9][0-9]$ ]]
+    sr_http_probe_2xx "$(sr_health_url "$_sid" "$_host")" "$_timeout" "$_health_header"
 }
 
 # Resolve a user-provided name to a compose service ID.

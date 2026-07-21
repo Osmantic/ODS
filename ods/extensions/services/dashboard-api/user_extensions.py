@@ -13,7 +13,9 @@ logger = logging.getLogger(__name__)
 
 _HEALTH_PATH_RE = re.compile(r"^/[A-Za-z0-9/_\-.]*$")
 _HEALTH_PATH_REJECT = ("..", "@", "?", "#", "http://", "https://")
-_HEALTH_HEADER_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+:[^\r\n]+$")
+_HEALTH_HEADER_RE = re.compile(
+    r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*[^\s\r\n][^\r\n]*$"
+)
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 

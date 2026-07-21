@@ -114,6 +114,17 @@ class TestScanUserExtensions:
         result = scan_user_extension_services(user_dir)
         assert result == {}, f"Expected all bad paths rejected, got: {list(result.keys())}"
 
+    def test_scan_rejects_whitespace_only_health_header(self, tmp_path):
+        """A schema-compatible health header must contain a non-space value."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "my-ext"
+        manifest = _make_manifest("my-ext")
+        manifest["service"]["health_header"] = "Host:   "
+        _write_manifest(ext_dir, manifest)
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+
+        assert scan_user_extension_services(user_dir) == {}
+
     def test_scan_host_is_service_id(self, tmp_path):
         """Returned host must be the directory name, not manifest default_host."""
         user_dir = tmp_path / "user"
