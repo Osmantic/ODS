@@ -132,6 +132,19 @@ def test_phi4_mini_is_not_agent_viable_after_strixy_talk_probe_failure():
     assert not _agent_viable_for_release(by_id["phi4-mini-q4"])
 
 
+def test_phi3_mini_128k_is_not_agent_viable_after_tower2_talk_probe_failure():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+    compatibility = by_id["phi3-mini-128k-q4"]["app_compatibility"]
+
+    assert compatibility["agent_viability"]["status"] == "not_agent_viable"
+    assert "tower2" in compatibility["agent_viability"]["hostScope"]
+    assert "cycle-006" in compatibility["agent_viability"]["evidence"]
+    assert compatibility["hermes_talk"]["status"] == "unsupported_until_revalidated"
+    assert "generic assistant greeting" in compatibility["hermes_talk"]["reason"]
+    assert not _agent_viable_for_release(by_id["phi3-mini-128k-q4"])
+
+
 def test_llama31_8b_is_not_agent_viable_until_revalidated():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
@@ -300,7 +313,10 @@ def test_replacement_low_vram_long_context_models_are_cataloged_for_validation()
         assert model["context_length"] >= HERMES_CONTEXT_FLOOR
         assert model["gguf_sha256"] == sha256
         assert model["gguf_url"].startswith(url_prefix)
-        assert _agent_viable_for_release(model)
+        if model_id in {"granite3.1-2b-instruct-q4", "phi3-mini-128k-q4"}:
+            assert not _agent_viable_for_release(model)
+        else:
+            assert _agent_viable_for_release(model)
 
 
 def test_granite33_8b_has_visible_nvidia_8gb_release_profile():
