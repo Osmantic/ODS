@@ -40,11 +40,12 @@ for f in "${SURFACES[@]}"; do
     case "$(basename "$f")" in
         service-registry.sh) continue ;;
     esac
-    if head -n 20 "$f" | grep -Eq 'set -euo pipefail|set -eu'; then
+    # Allow Bash 4 re-exec guards before set -euo (first 40 lines).
+    if head -n 40 "$f" | grep -Eq 'set -euo pipefail|set -eu'; then
         echo "OK pipefail $(basename "$f")"
     else
-        echo "WARN missing early pipefail: $(basename "$f")" >&2
-        # warn only for libraries/tests already covered by parent
+        echo "FAIL missing pipefail in first 40 lines: $(basename "$f")" >&2
+        FAIL=1
     fi
 done
 
