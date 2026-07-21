@@ -124,10 +124,20 @@ if command -v docker >/dev/null 2>&1; then
 fi
 
 if command -v curl >/dev/null 2>&1; then
-    if curl -sf --max-time 10 "http://127.0.0.1:${_DASHBOARD_PORT}" >/dev/null 2>&1; then
+    # Prefer registry-owned health endpoints (health_port/header/2xx). Fall back
+    # only when the service id is absent from the loaded registry.
+    if declare -F sr_curl_health >/dev/null 2>&1 && [[ -n "${SERVICE_HEALTH[dashboard]:-}" ]]; then
+        if sr_curl_health dashboard 10 >/dev/null 2>&1; then
+            DASHBOARD_HTTP="true"
+        fi
+    elif sr_http_probe_2xx "http://127.0.0.1:${_DASHBOARD_PORT}/" 10 >/dev/null 2>&1; then
         DASHBOARD_HTTP="true"
     fi
-    if curl -sf --max-time 10 "http://127.0.0.1:${_WEBUI_PORT}" >/dev/null 2>&1; then
+    if declare -F sr_curl_health >/dev/null 2>&1 && [[ -n "${SERVICE_HEALTH[open-webui]:-}" ]]; then
+        if sr_curl_health open-webui 10 >/dev/null 2>&1; then
+            WEBUI_HTTP="true"
+        fi
+    elif sr_http_probe_2xx "http://127.0.0.1:${_WEBUI_PORT}/" 10 >/dev/null 2>&1; then
         WEBUI_HTTP="true"
     fi
 fi

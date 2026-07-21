@@ -83,9 +83,11 @@ check "Open WebUI running" "docker compose $COMPOSE_FLAGS ps open-webui 2>/dev/n
 echo ""
 echo "2. Health Endpoints"
 echo "───────────────────"
-check "llama-server health" "curl -sf --max-time 10 http://127.0.0.1:${LLM_PORT}${LLM_HEALTH}"
+# Registry-owned health probes (ports/headers/2xx). Models listing remains a
+# functional readiness check, not a health-path probe.
+check_registry_health "llama-server health" "llama-server"
 check "llama-server models" "curl -sf --max-time 10 http://127.0.0.1:${LLM_PORT}/v1/models | grep -q model"
-check "WebUI reachable" "curl -sf --max-time 10 http://127.0.0.1:${WEBUI_PORT}${WEBUI_HEALTH} -o /dev/null"
+check_registry_health "WebUI reachable" "open-webui"
 
 echo ""
 echo "3. Inference Test"

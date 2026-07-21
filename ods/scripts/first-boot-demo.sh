@@ -99,16 +99,22 @@ wait_key() {
     fi
 }
 
-check_service() {
+# Registry-owned readiness for a service id (2xx-only; health_port/header aware).
+check_service_id() {
     local name=$1
-    local url=$2
-    local endpoint=${3:-/health}
-    
-    if curl -sf "${url}${endpoint}" > /dev/null 2>&1; then
-        success "$name is running at $url"
+    local sid=$2
+    local url
+
+    if ! declare -F sr_curl_health >/dev/null 2>&1; then
+        fail "$name: service registry health helpers unavailable"
+        return 1
+    fi
+    url="$(sr_health_url "$sid" 127.0.0.1 2>/dev/null || true)"
+    if sr_curl_health "$sid" "${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}" 127.0.0.1 >/dev/null 2>&1; then
+        success "$name is running at ${url:-$sid}"
         return 0
     else
-        fail "$name not responding at $url"
+        fail "$name not responding at ${url:-$sid}"
         return 1
     fi
 }
@@ -141,7 +147,7 @@ SERVICES_TOTAL=0
 
 # Core services
 ((SERVICES_TOTAL++)) || true
-if check_service "LLM (llama-server)" "$LLM_URL" "/health"; then
+if check_service_id "LLM (llama-server)" "llama-server"; then
     ((SERVICES_OK++)) || true
     LLM_AVAILABLE=true
 else
@@ -149,36 +155,33 @@ else
 fi
 
 ((SERVICES_TOTAL++)) || true
-if check_service "Open WebUI" "$WEBUI_URL" "/"; then
+if check_service_id "Open WebUI" "open-webui"; then
     ((SERVICES_OK++)) || true
 fi
 
-# Optional services
-if curl -sf "${WHISPER_URL}/health" > /dev/null 2>&1; then
-    success "Whisper STT is running (voice input enabled)"
+# Optional services (registry-owned health; 2xx-only)
+((SERVICES_TOTAL++)) || true
+if check_service_id "Whisper STT" "whisper"; then
     WHISPER_AVAILABLE=true
     ((SERVICES_OK++)) || true
-    ((SERVICES_TOTAL++)) || true
 else
     info "Whisper STT not running (voice input disabled)"
     WHISPER_AVAILABLE=false
 fi
 
-if curl -sf "${PIPER_URL}" > /dev/null 2>&1; then
-    success "OpenTTS TTS is running (voice output enabled)"
+((SERVICES_TOTAL++)) || true
+if check_service_id "Kokoro TTS" "tts"; then
     PIPER_AVAILABLE=true
     ((SERVICES_OK++)) || true
-    ((SERVICES_TOTAL++)) || true
 else
-    info "OpenTTS TTS not running (voice output disabled)"
+    info "Kokoro TTS not running (voice output disabled)"
     PIPER_AVAILABLE=false
 fi
 
-if curl -sf "${N8N_URL}/healthz" > /dev/null 2>&1; then
-    success "n8n Workflows is running (automation enabled)"
+((SERVICES_TOTAL++)) || true
+if check_service_id "n8n Workflows" "n8n"; then
     N8N_AVAILABLE=true
     ((SERVICES_OK++)) || true
-    ((SERVICES_TOTAL++)) || true
 else
     info "n8n not running (automation disabled)"
     N8N_AVAILABLE=false

@@ -67,6 +67,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-ods-cli-health-probe-contract.sh
 	@bash tests/test-service-manifest-health-contract-drift.sh
 	@bash tests/test-health-probe-shadow-audit.sh
+	@bash tests/test-health-probe-path-shell-audit.sh
 	@bash tests/test-ods-cli-audit-python-routing.sh
 	@echo ""
 	@echo "=== Bash 3.2 guard contracts ==="
