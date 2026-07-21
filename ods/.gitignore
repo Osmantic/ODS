@@ -46,9 +46,6 @@ preflight-*.log
 # Internal dev
 internal/
 
-# BATS test framework (dev dependency, auto-installed by tests/run-bats.sh)
-tests/bats/
-
 # OS junk
 .DS_Store
 Thumbs.db

@@ -50,7 +50,7 @@ jobs:
             container: debian:12
             expected_pkg: apt
           - distro: linux-mint-21.3
-            container: linuxmintd/mint21.3-amd64:latest
+            container: linuxmintd/mint21.3-amd64:latest@sha256:ea01eec11aadabe0fb0290f3cf246d82e303f49ba1043b23f9fb02d426504209
             expected_pkg: apt
           - distro: fedora-41
             container: fedora:41
@@ -59,16 +59,16 @@ jobs:
             container: rockylinux:9
             expected_pkg: dnf
           - distro: archlinux
-            container: archlinux:latest
+            container: archlinux:latest@sha256:fe6972d4dc1f660c0c10f4c41b2de8986bab89e7e2955378f8beadb8ebcd7433
             expected_pkg: pacman
           - distro: manjaro
-            container: manjarolinux/base:latest
+            container: manjarolinux/base:latest@sha256:bbf1f1d746f28e138eea610e140d2f28cbb5b7c5da2fbff034b883527aa604e9
             expected_pkg: pacman
           - distro: cachyos
-            container: cachyos/cachyos:latest
+            container: cachyos/cachyos:latest@sha256:b13a9eab072889da7886d0b6fb42ada2b2cccfadc7af9a7b6ce94372dfce7c13
             expected_pkg: pacman
           - distro: opensuse-tw
-            container: opensuse/tumbleweed:latest
+            container: opensuse/tumbleweed:latest@sha256:409ae85d4cca916f2f0d4d3c5f2a1e2f812314310d4792906389ee44e94910b6
             expected_pkg: zypper
     runs-on: ubuntu-latest
     timeout-minutes: 20

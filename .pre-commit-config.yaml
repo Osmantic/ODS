@@ -1,15 +1,15 @@
 # Pre-commit hooks for secret scanning + shell hygiene.
-# Install: pip install pre-commit && pre-commit install
-# Run manually: pre-commit run --all-files
+# Install: mise install && mise exec -- pre-commit install
+# Run manually: mise exec -- pre-commit run --all-files
 
 repos:
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.21.2
+    rev: v8.30.1
     hooks:
       - id: gitleaks
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: detect-private-key
       - id: check-added-large-files
@@ -20,13 +20,13 @@ repos:
   # is the bar that already gates CI, so existing warnings on the tree
   # do not tip the pre-commit run while genuine errors are caught
   # locally before push.
-  - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.10.0.1
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.11.0
     hooks:
       - id: shellcheck
         name: shellcheck (installer + scripts, errors only)
         files: ^ods/(installers|scripts)/.*\.(sh|bash)$
-        args: ['--exclude=SC1091,SC2034', '--severity=error']
+        args: ['--rcfile=ods/.shellcheckrc', '--exclude=SC2034', '--severity=error']
 
       # Catch legacy `…` command substitution anywhere in the installer
       # surface. SC2006 is style-level so it's filtered out by the
@@ -36,7 +36,13 @@ repos:
       - id: shellcheck
         name: shellcheck SC2006 (no legacy backticks)
         files: ^ods/(installers|scripts)/.*\.(sh|bash)$
-        args: ['--include=SC2006']
+        args: ['--rcfile=ods/.shellcheckrc', '--include=SC2006']
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.22
+    hooks:
+      - id: ruff-check
+        files: ^ods/.*\.py$
 
   # Custom local hook (issue #509): forbid backticks inside the BODY of
   # unquoted here-documents. Even when the rest of the file passes
@@ -47,6 +53,20 @@ repos:
   # exempt because they suppress expansion entirely.
   - repo: local
     hooks:
+      - id: actionlint
+        name: actionlint (workflow semantics)
+        language: system
+        files: ^\.github/workflows/.*\.ya?ml$
+        entry: actionlint
+        args: ['-shellcheck', '']
+
+      - id: zizmor-security-gate
+        name: zizmor (high severity/medium+ confidence)
+        language: system
+        files: ^\.github/workflows/.*\.ya?ml$
+        entry: zizmor
+        args: ['--offline', '--min-severity=high', '--min-confidence=medium']
+
       - id: no-backticks-in-installer-heredocs
         name: no-backticks-in-installer-heredocs
         description: Forbid `…` command substitution inside unquoted heredoc bodies under ods/installers and ods/scripts.

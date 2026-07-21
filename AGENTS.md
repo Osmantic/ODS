@@ -1,18 +1,35 @@
 # ODS repository instructions
 
-These instructions apply to the entire repository. `CLAUDE.md` and documents
-under `ods/docs/` provide additional architecture and release context.
+These instructions apply to the entire repository. `CLAUDE.md` and the documents under `ods/docs/` provide additional architecture and release context; this file is the durable cross-agent policy.
 
-## Source and change discipline
+## Source of truth
 
-- Edit this repository, never a deployed copy under `~/ods`.
-- Preserve unrelated worktree changes and use an isolated worktree for scoped
-  feature work.
-- Read `ods/docs/HIGH_RISK_CHANGE_MAP.md` before behavior changes and run the
-  required validation lane.
-- Use `rg`/`rg --files` for discovery. Do not auto-format unrelated files.
-- Behavior changes require a focused failing test first, the smallest supported
-  change, and fresh focused plus regression evidence.
+- Edit this repository, not a deployed copy under `~/ods`.
+- Before changing behavior, read `ods/docs/HIGH_RISK_CHANGE_MAP.md` and run the validation lane for the affected surface.
+- Preserve unrelated working-tree changes. Never use destructive Git cleanup to make a diff look clean.
+
+## Dependency and automation policy
+
+- Generic tools belong in `mise.toml`; project Python lint policy belongs in `pyproject.toml`.
+- Use `mise install` and `mise exec -- <command>` for the pinned developer toolchain.
+- Test runners and product scripts must not install tools, clone repositories, or use `curl | sh`. Provision dependencies explicitly through a package lock, a pinned Git submodule, an image digest, or CI setup.
+- Do not add Task, just, another task runner, or a wrapper when the existing Make target or direct tool command is sufficient.
+- Do not replace first-party installer, host-agent, service, or contract behavior merely to reduce `.sh` or `.py` file counts. A replacement must preserve inputs, outputs, exit codes, supported platforms, and failure behavior.
+- Prefer upstream-maintained hooks and actions. Pin releases; pin GitHub Actions by immutable commit SHA.
+
+## Change method
+
+- For behavior changes and refactors, write a focused test first, run it to observe the expected failure, implement the smallest change, then rerun the focused and relevant existing suites.
+- Do not auto-fix or format unrelated files. `shfmt`, full-warning ShellCheck, `ty`, and findings outside the scoped zizmor gate are advisory until their repository baselines are explicitly adopted.
+- Use `rg`/`rg --files` for discovery. Use language-aware tools for validation: Ruff for Python, ShellCheck plus `bash -n` for shell, actionlint for workflows, and the configured language servers for editor diagnostics.
+
+## Secrets and external tools
+
+- Never commit, print, log, or place secret values in shell arguments, launchd variables, Codex config, fixtures, or documentation.
+- Store only 1Password secret references such as `op://Vault/Item/Field`. Inject them into the smallest child process with `op run`.
+- Noninteractive automation uses a least-privilege 1Password service account. Do not substitute the 1Password MCP server or shell plugins when a workflow forbids interactive desktop/biometric authorization.
+- Exercise MCP/app functions only when they are relevant and within scope. Read-only search and repository inspection do not authorize GitHub writes, messages, deployments, cloud mutations, or CRM changes.
+- Prefer primary official documentation for technical claims. Record a source when a version, security property, or integration decision depends on current external behavior.
 
 ## 1Password and credential governance
 
@@ -47,16 +64,20 @@ See `ods/docs/ONEPASSWORD-SERVICE-ACCOUNT.md` and
 
 ## Validation entry points
 
-Run from the repository root:
+Run from the repository root unless noted:
 
-```sh
+```bash
+mise install
 mise exec -- ajv validate --spec=draft2020 \
   -s ods/config/onepassword-scope.schema.json \
   -d ods/config/onepassword-scope.json
-make -C ods lint
+mise exec -- pre-commit run --all-files
+mise exec -- make -C ods lint
+mise exec -- make -C ods lint-workflows
+bash ods/tests/run-bats.sh
 git diff --check
 ```
 
-Use the additional lanes documented in `ods/docs/TESTING.md` for affected
-runtime surfaces. A completion claim must state commands, exits, failures, and
-any lane that could not run; partial validation is never represented as full.
+The full Bats suite contains platform-specific tests; report pre-existing platform failures separately from failures introduced by the current change. Release claims require the release-grade lanes documented under `ods/docs/`.
+
+Use the additional lanes documented in `ods/docs/TESTING.md` for affected runtime surfaces. A completion claim must state commands, exits, failures, and any lane that could not run; partial validation is never represented as full.
