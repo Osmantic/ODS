@@ -94,21 +94,23 @@ for key in HEALTH_KEYS:
             f"{key}.type: core={core_type!r} library={library_type!r}"
         )
 
-    if "pattern" in core_def or "pattern" in library_def:
-        core_pattern = core_def.get("pattern")
-        library_pattern = library_def.get("pattern")
-        if core_pattern != library_pattern:
-            mismatches.append(
-                f"{key}.pattern: core={core_pattern!r} library={library_pattern!r}"
-            )
+    # Compare constraint facets when present on either side (parity gate).
+    for facet in ("pattern", "minimum", "maximum", "minLength"):
+        if facet in core_def or facet in library_def:
+            core_val = core_def.get(facet)
+            library_val = library_def.get(facet)
+            if core_val != library_val:
+                mismatches.append(
+                    f"{key}.{facet}: core={core_val!r} library={library_val!r}"
+                )
 
 if mismatches:
     print("ERROR: service-manifest health-contract schema drift detected:", file=sys.stderr)
     for item in mismatches:
         print(f"  - {item}", file=sys.stderr)
     print(
-        "Health-contract fields must match type/pattern across "
-        "extensions/schema and extensions/library/schema "
+        "Health-contract fields must match type/pattern/minimum/maximum/minLength "
+        "across extensions/schema and extensions/library/schema "
         "(full schema equality is not required).",
         file=sys.stderr,
     )
