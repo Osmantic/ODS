@@ -59,6 +59,8 @@ def lemonade_model_id(inputs: RenderInputs) -> str:
 
 
 def hermes_model_id(inputs: RenderInputs) -> str:
+    if inputs.switchboard_mode == "enabled":
+        return "ods/current"
     if inputs.ods_mode == "lemonade" or inputs.gpu_backend == "amd":
         return lemonade_model_id(inputs)
     return inputs.gguf_file or inputs.model
@@ -103,10 +105,15 @@ litellm_settings:
 
 def render_hermes(inputs: RenderInputs) -> RenderedFile:
     model = hermes_model_id(inputs)
+    base_url = (
+        "http://litellm:4000/v1"
+        if inputs.switchboard_mode == "enabled"
+        else inputs.llm_base_url
+    )
     content = f"""model:
   default: "{model}"
   provider: "custom"
-  base_url: "{inputs.llm_base_url}"
+  base_url: "{base_url}"
   context_length: {inputs.context_length}
 
 auxiliary:

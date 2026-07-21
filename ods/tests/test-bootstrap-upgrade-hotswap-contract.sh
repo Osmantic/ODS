@@ -378,6 +378,20 @@ for injected_failure in native model-id litellm hermes openclaw openclaw-env rou
 done
 pass "Windows Lemonade activation rolls back every injected post-swap failure"
 
+grep -qF 'switchboard_mode="$(read_env_value ODS_MODEL_SWITCHBOARD' <<<"$active_code" \
+    || fail "Hermes post-swap patch helper must read switchboard mode"
+grep -qF '_hermes_switchboard_mode="$(read_env_value ODS_MODEL_SWITCHBOARD' <<<"$active_code" \
+    || fail "Docker full-model swap must read switchboard mode before patching Hermes"
+grep -qF 'new_model="ods/current"' <<<"$active_code" \
+    || fail "Hermes post-swap patch helper must use the stable switchboard alias"
+grep -qF '_hermes_new_model="ods/current"' <<<"$active_code" \
+    || fail "Docker full-model swap must patch Hermes to the stable switchboard alias"
+grep -qF 'hermes_base_url="http://litellm:4000/v1"' <<<"$active_code" \
+    || fail "Switchboard Hermes patch helper must route through LiteLLM"
+grep -qF '_hermes_base_url="http://litellm:4000/v1"' <<<"$active_code" \
+    || fail "Switchboard Docker swap must route Hermes through LiteLLM"
+pass "Hermes post-swap patch uses switchboard stable alias when enabled"
+
 perplexica_update_block="$(awk '
     /Updating Perplexica config to point at/ { in_block=1 }
     in_block { print }

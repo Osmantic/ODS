@@ -234,16 +234,23 @@ function Set-ODSWindowsHermesRuntimeModel {
     if (-not $enableHermes) { return $true }
 
     $runtimeEnv = Get-WindowsODSEnvMap -InstallDir $installDir
+    $switchboardMode = Get-WindowsODSEnvValue `
+        -EnvMap $runtimeEnv -Keys @("ODS_MODEL_SWITCHBOARD") `
+        -Default "observe"
+    $switchboardEnabled = ($switchboardMode.Trim().ToLowerInvariant() -eq "enabled")
+    if ($switchboardEnabled) {
+        $ModelId = "ods/current"
+    }
     $hermesBaseUrl = Get-WindowsODSEnvValue `
         -EnvMap $runtimeEnv -Keys @("HERMES_LLM_BASE_URL") `
-        -Default $(if ($cloudMode -or $gpuInfo.Backend -eq "amd") {
+        -Default $(if ($cloudMode -or $gpuInfo.Backend -eq "amd" -or $switchboardEnabled) {
             "http://litellm:4000/v1"
         } else {
             "http://llama-server:8080/v1"
         })
     $hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
     $hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
-    $hermesRequestTimeout = $(if ($cloudMode) { 180 } else { 900 })
+    $hermesRequestTimeout = $(if ($cloudMode -and -not $switchboardEnabled) { 180 } else { 900 })
     $templateUpdated = Update-HermesConfigFile -Path $hermesTemplate -Model $ModelId -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) `
         -RequestTimeoutSeconds $hermesRequestTimeout `
         -LemonadeCompact:($gpuInfo.Backend -eq "amd")

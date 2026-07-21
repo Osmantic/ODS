@@ -526,6 +526,11 @@ function Invoke-HermesSoulRefresh {
 }
 
 if ($enableHermes) {
+    $_switchboardMode = $(if ($_envLines.ContainsKey("ODS_MODEL_SWITCHBOARD")) {
+        ([string]$_envLines["ODS_MODEL_SWITCHBOARD"]).Trim().ToLowerInvariant()
+    } else {
+        "observe"
+    })
     $_hermesModel = $(if ($tierConfig.GgufFile) {
         if ($gpuInfo.Backend -eq "amd" -and
             $_envLines.ContainsKey("LEMONADE_MODEL") -and
@@ -537,12 +542,15 @@ if ($enableHermes) {
     } else {
         $tierConfig.LlmModel
     })
+    if ($_switchboardMode -eq "enabled") {
+        $_hermesModel = "ods/current"
+    }
     $_hermesBaseUrl = ""
     if ($_envLines.ContainsKey("HERMES_LLM_BASE_URL")) {
         $_hermesBaseUrl = $_envLines["HERMES_LLM_BASE_URL"].Trim().Trim('"').Trim("'")
     }
     if ([string]::IsNullOrWhiteSpace($_hermesBaseUrl)) {
-        $_hermesBaseUrl = $(if ($cloudMode -or $gpuInfo.Backend -eq "amd") {
+        $_hermesBaseUrl = $(if ($cloudMode -or $gpuInfo.Backend -eq "amd" -or $_switchboardMode -eq "enabled") {
             "http://litellm:4000/v1"
         } else {
             "http://llama-server:8080/v1"
@@ -557,7 +565,7 @@ if ($enableHermes) {
     if (-not (Test-Path $_hermesLive)) {
         Copy-Item -Path $_hermesTemplate -Destination $_hermesLive -Force
     }
-    $_hermesRequestTimeout = $(if ($cloudMode) { 180 } else { 900 })
+    $_hermesRequestTimeout = $(if ($cloudMode -and $_switchboardMode -ne "enabled") { 180 } else { 900 })
     $_patchedHermesTemplate = Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
     $_patchedHermesLive = Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
     if (-not ($_patchedHermesTemplate -and $_patchedHermesLive)) {

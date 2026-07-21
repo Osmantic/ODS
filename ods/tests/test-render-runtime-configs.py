@@ -103,6 +103,23 @@ def test_enabled_perplexica_uses_stable_alias() -> None:
     assert openai_provider["chatModels"][0]["key"] == "ods/current"
 
 
+def test_enabled_hermes_uses_stable_switchboard_alias() -> None:
+    payload = run_renderer(
+        "--surface",
+        "hermes",
+        "--switchboard-mode",
+        "enabled",
+        "--gguf-file",
+        "Raw-Runtime.gguf",
+        "--llm-base-url",
+        "http://llama-server:8080/v1",
+    )
+    content = file_by_surface(payload, "hermes")["content"]
+    assert 'default: "ods/current"' in content
+    assert "Raw-Runtime.gguf" not in content
+    assert 'base_url: "http://litellm:4000/v1"' in content
+
+
 def test_router_endpoints_strip_trailing_v1() -> None:
     payload = run_renderer(
         "--surface", "model-router-endpoints",

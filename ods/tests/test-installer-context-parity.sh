@@ -105,6 +105,12 @@ assert_grep "installers/phases/11-services.sh" '_hermes_context="\$\{MAX_CONTEXT
     "Linux Hermes patcher uses selected context with 64K fallback"
 assert_grep "installers/phases/11-services.sh" '--context-length "\$_hermes_context"' \
     "Linux Hermes patcher receives context length"
+assert_grep "installers/phases/11-services.sh" '_hermes_switchboard_mode=.*ODS_MODEL_SWITCHBOARD' \
+    "Linux Hermes patcher reads switchboard mode"
+assert_grep "installers/phases/11-services.sh" '_hermes_model="ods/current"' \
+    "Linux Hermes patcher uses the stable switchboard model alias"
+assert_grep "installers/phases/11-services.sh" '_hermes_base_url=.*http://litellm:4000/v1' \
+    "Linux Hermes patcher routes switchboard mode through LiteLLM"
 assert_grep "installers/macos/install-macos.sh" '--context-length "\$MAX_CONTEXT"' \
     "macOS Hermes patcher receives context length"
 assert_grep "installers/macos/ods-macos.sh" 'ENV_CTX_SIZE:-65536' \
