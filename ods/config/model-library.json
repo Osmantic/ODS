@@ -339,6 +339,25 @@
       "install_recommendation": false
     },
     {
+      "id": "granite4.1-3b-q4",
+      "name": "Granite 4.1 3B",
+      "family": "granite",
+      "gguf_file": "granite-4.1-3b-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/resolve/main/granite-4.1-3b-Q4_K_M.gguf",
+      "gguf_sha256": "662b0626cd58f443baea23559b469df6576a81d349649c59413b36a9fb32eb29",
+      "size_bytes": 2099501664,
+      "size_mb": 2100,
+      "vram_required_gb": 4,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Tool Use",
+      "description": "IBM's Granite 4.1 3B long-context instruct model quantized for GGUF. A low-VRAM candidate with improved instruction following, chat, and tool-use behavior for app and agent validation.",
+      "tokens_per_sec_estimate": 115,
+      "llm_model_name": "granite-4.1-3b",
+      "llama_server_image": null,
+      "install_recommendation": false
+    },
+    {
       "id": "granite4.0-1b-q4",
       "name": "Granite 4.0 1B",
       "family": "granite",
@@ -467,6 +486,18 @@
       "tokens_per_sec_estimate": 128,
       "llm_model_name": "granite-3.1-2b-instruct",
       "llama_server_image": null,
+      "app_compatibility": {
+        "perplexica": {
+          "status": "unsupported_until_revalidated",
+          "label": "Perplexica revalidation required",
+          "reason": "Fleet model-UI run 2026-07-21T08:59Z on tower2 loaded this model and ODS Talk, LiteLLM, Open WebUI, and OpenCode passed, but the Perplexica app probe answered with prose/search-style content instead of the requested verification phrase; keep it out of all-app release coverage until Perplexica compatibility is revalidated.",
+          "evidence": "fleet-test/runs/2026-07-21T08-59-51Z-targeted-granite31-allapps-product-73762173ae0c-harness-ecd8157a6324-hosts-tower2/cycle-001/tower2",
+          "recordedAt": "2026-07-21T08:59:51Z",
+          "productSha": "73762173ae0c",
+          "harnessSha": "ecd8157a6324",
+          "hostScope": ["tower2"]
+        }
+      },
       "install_recommendation": false
     },
     {
