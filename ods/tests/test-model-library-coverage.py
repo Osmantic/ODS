@@ -83,7 +83,10 @@ def test_release_model_switchboard_catalog_ids_exist():
         "llama3.2-3b-instruct-q4",
         "qwen2.5-3b-instruct-q4",
         "qwen3-4b-q4",
+        "qwen3-4b-instruct-2507-q4",
+        "qwen3-4b-128k-q4",
         "qwen3-1.7b-q4",
+        "qwen2.5-coder-1.5b-128k-q4",
         "qwen2.5-coder-3b-128k-q4",
         "qwen2.5-7b-instruct-q4",
         "llama3.1-8b-instruct-q4",
@@ -297,9 +300,13 @@ def test_replacement_low_vram_long_context_models_are_cataloged_for_validation()
     by_id = {model["id"]: model for model in catalog["models"]}
 
     expected = {
-        "qwen2.5-coder-1.5b-128k-q4": (
-            "https://huggingface.co/unsloth/Qwen2.5-Coder-1.5B-Instruct-128K-GGUF/",
-            "0fbff4d39395fab063c51377ba522928af2574b1f998d66012c1caed7b8f91d6",
+        "qwen3-4b-instruct-2507-q4": (
+            "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/",
+            "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+        ),
+        "qwen3-4b-128k-q4": (
+            "https://huggingface.co/unsloth/Qwen3-4B-128K-GGUF/",
+            "f145a1bd60fec420ca4d9b7645ebcdf657e301463bc4dd3af4a8c0b548b5eb1a",
         ),
         "granite3.1-2b-instruct-q4": (
             "https://huggingface.co/bartowski/granite-3.1-2b-instruct-GGUF/",
@@ -313,7 +320,7 @@ def test_replacement_low_vram_long_context_models_are_cataloged_for_validation()
 
     for model_id, (url_prefix, sha256) in expected.items():
         model = by_id[model_id]
-        assert model["vram_required_gb"] <= 4
+        assert model["vram_required_gb"] <= 5
         assert model["context_length"] >= HERMES_CONTEXT_FLOOR
         assert model["gguf_sha256"] == sha256
         assert model["gguf_url"].startswith(url_prefix)
@@ -424,15 +431,57 @@ def test_falcon_h1_15b_is_not_opencode_agent_viable_until_revalidated():
     assert not _agent_viable_for_release(by_id["falcon-h1-1.5b-instruct-q4"])
 
 
-def test_qwen25_coder_15b_128k_is_low_vram_release_candidate():
+def test_falcon_h1_3b_is_not_talk_agent_viable_until_revalidated():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+    compatibility = by_id["falcon-h1-3b-instruct-q4"]["app_compatibility"]
+
+    assert compatibility["hermes_talk"]["status"] == "unsupported_until_revalidated"
+    assert "random_uuid" in compatibility["hermes_talk"]["reason"]
+    assert "cycle-004" in compatibility["hermes_talk"]["evidence"]
+    assert compatibility["agent_viability"]["status"] == "not_agent_viable"
+    assert "tool-call payload" in compatibility["agent_viability"]["reason"]
+    assert not _agent_viable_for_release(by_id["falcon-h1-3b-instruct-q4"])
+
+
+def test_qwen25_coder_15b_128k_is_not_talk_agent_viable_until_revalidated():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
     model = by_id["qwen2.5-coder-1.5b-128k-q4"]
+    compatibility = model["app_compatibility"]
 
     assert model["gguf_sha256"] == "0fbff4d39395fab063c51377ba522928af2574b1f998d66012c1caed7b8f91d6"
     assert model["context_length"] >= HERMES_CONTEXT_FLOOR
     assert model["vram_required_gb"] <= 3
-    assert _agent_viable_for_release(model)
+    assert compatibility["hermes_talk"]["status"] == "unsupported_until_revalidated"
+    assert "generic assistant prose" in compatibility["hermes_talk"]["reason"]
+    assert "cycle-006" in compatibility["hermes_talk"]["evidence"]
+    assert compatibility["agent_viability"]["status"] == "not_agent_viable"
+    assert not _agent_viable_for_release(model)
+
+
+def test_qwen3_4b_long_context_replacements_are_release_candidates():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+
+    expected = {
+        "qwen3-4b-instruct-2507-q4": {
+            "sha": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+            "context": 262144,
+        },
+        "qwen3-4b-128k-q4": {
+            "sha": "f145a1bd60fec420ca4d9b7645ebcdf657e301463bc4dd3af4a8c0b548b5eb1a",
+            "context": 131072,
+        },
+    }
+
+    for model_id, expected_model in expected.items():
+        model = by_id[model_id]
+        assert model["gguf_sha256"] == expected_model["sha"]
+        assert model["context_length"] == expected_model["context"]
+        assert model["vram_required_gb"] <= 5
+        assert model.get("install_recommendation") is False
+        assert _agent_viable_for_release(model)
 
 
 def test_qwen25_7b_is_not_agent_viable_on_low_vram_windows_until_revalidated():
@@ -462,6 +511,7 @@ def test_new_switchboard_models_do_not_change_install_recommendations():
         "smollm3-3b-q4",
         "granite4.0-h-1b-q4",
         "falcon-h1-1.5b-instruct-q4",
+        "falcon-h1-3b-instruct-q4",
         "granite4.0-1b-q4",
         "granite4.0-h-350m-q4",
         "granite3.2-2b-instruct-q4",
@@ -471,6 +521,8 @@ def test_new_switchboard_models_do_not_change_install_recommendations():
         "llama3.2-3b-instruct-q4",
         "qwen2.5-3b-instruct-q4",
         "qwen3-4b-q4",
+        "qwen3-4b-instruct-2507-q4",
+        "qwen3-4b-128k-q4",
         "qwen3-1.7b-q4",
         "qwen2.5-coder-1.5b-128k-q4",
         "qwen2.5-coder-3b-128k-q4",

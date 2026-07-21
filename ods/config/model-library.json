@@ -377,6 +377,28 @@
       "tokens_per_sec_estimate": 115,
       "llm_model_name": "Falcon-H1-3B-Instruct",
       "llama_server_image": null,
+      "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-21T12:25Z on tower2 loaded Falcon H1 3B and reached ODS Talk through the browser, but Talk emitted a random_uuid tool-call payload instead of the requested verification phrase.",
+          "evidence": "fleet-test/runs/2026-07-21T12-25-39Z-release-product-7df3f218a06c-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-004/tower2",
+          "recordedAt": "2026-07-21T14:25:00Z",
+          "productSha": "7df3f218a06c386bdb40856c928a0618b8e16b57",
+          "harnessSha": "d2a31507fa0652dff4c8cc1892e56ccf1b9102bb",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "The model loaded and routed, but the browser-driven ODS Talk verification failed with a tool-call payload instead of the required answer; keep Falcon H1 3B out of agent-required release coverage until revalidated with a tool-aware Talk probe or updated model metadata.",
+          "evidence": "fleet-test/runs/2026-07-21T12-25-39Z-release-product-7df3f218a06c-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-004/tower2",
+          "recordedAt": "2026-07-21T14:25:00Z",
+          "productSha": "7df3f218a06c386bdb40856c928a0618b8e16b57",
+          "harnessSha": "d2a31507fa0652dff4c8cc1892e56ccf1b9102bb",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        }
+      },
       "install_recommendation": false
     },
     {
@@ -743,6 +765,44 @@
       "install_recommendation": false
     },
     {
+      "id": "qwen3-4b-instruct-2507-q4",
+      "name": "Qwen3 4B Instruct 2507",
+      "family": "qwen",
+      "gguf_file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "gguf_sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+      "size_bytes": 2497281120,
+      "size_mb": 2497,
+      "vram_required_gb": 5,
+      "context_length": 262144,
+      "quantization": "Q4_K_M",
+      "specialty": "Chat",
+      "description": "Unsloth's GGUF quant of Qwen3 4B Instruct 2507 with 262K context metadata. A low-VRAM long-context release candidate for app and Talk validation.",
+      "tokens_per_sec_estimate": 105,
+      "llm_model_name": "qwen3-4b-instruct-2507",
+      "llama_server_image": null,
+      "install_recommendation": false
+    },
+    {
+      "id": "qwen3-4b-128k-q4",
+      "name": "Qwen3 4B 128K",
+      "family": "qwen",
+      "gguf_file": "Qwen3-4B-128K-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/Qwen3-4B-128K-GGUF/resolve/main/Qwen3-4B-128K-Q4_K_M.gguf",
+      "gguf_sha256": "f145a1bd60fec420ca4d9b7645ebcdf657e301463bc4dd3af4a8c0b548b5eb1a",
+      "size_bytes": 2497281504,
+      "size_mb": 2497,
+      "vram_required_gb": 5,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Chat",
+      "description": "Unsloth's 128K GGUF build of Qwen3 4B in Q4_K_M quantization. A low-VRAM long-context candidate kept separate from the upstream 40K-context Qwen3 4B entry.",
+      "tokens_per_sec_estimate": 105,
+      "llm_model_name": "qwen3-4b-128k",
+      "llama_server_image": null,
+      "install_recommendation": false
+    },
+    {
       "id": "qwen3-1.7b-q4",
       "name": "Qwen3 1.7B",
       "family": "qwen",
@@ -789,6 +849,28 @@
       "tokens_per_sec_estimate": 145,
       "llm_model_name": "qwen2.5-coder-1.5b-instruct",
       "llama_server_image": null,
+      "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-21T12:25Z on tower2 loaded Qwen 2.5 Coder 1.5B 128K, but ODS Talk answered with generic assistant prose instead of the requested verification phrase.",
+          "evidence": "fleet-test/runs/2026-07-21T12-25-39Z-release-product-7df3f218a06c-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-006/tower2",
+          "recordedAt": "2026-07-21T14:25:00Z",
+          "productSha": "7df3f218a06c386bdb40856c928a0618b8e16b57",
+          "harnessSha": "d2a31507fa0652dff4c8cc1892e56ccf1b9102bb",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "The model loaded and routed through the browser-managed swap path, but ODS Talk did not follow the required verification instruction; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-21T12-25-39Z-release-product-7df3f218a06c-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-006/tower2",
+          "recordedAt": "2026-07-21T14:25:00Z",
+          "productSha": "7df3f218a06c386bdb40856c928a0618b8e16b57",
+          "harnessSha": "d2a31507fa0652dff4c8cc1892e56ccf1b9102bb",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        }
+      },
       "install_recommendation": false
     },
     {
