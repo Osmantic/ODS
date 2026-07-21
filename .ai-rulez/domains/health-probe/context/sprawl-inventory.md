@@ -15,6 +15,8 @@ targets: [claude, cursor, codex, grok]
 - Remaining `curl -sf` on functional API paths (models/completions) — allowed
 - bootstrap-upgrade recovery curls — migrate opportunistically
 - Dual schema copies — parity gated by health-contract drift test
+- **Cleared 2026-07-21:** `ods/ods-preflight.sh`, `scripts/ods-preflight.sh`, `ods-update.sh` health command → `sr_curl_health` / `sr_http_probe_2xx`
+- Residual dual preflight entrypoints (root + scripts/) — same registry contract; full de-dup follow-up
 
 ## Blockers
 

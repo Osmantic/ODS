@@ -31,6 +31,14 @@ sr_http_probe_2xx "$url" "$timeout" # host-local only
 - Functional API probes (`/v1/models`, chat completions) that are not health paths
 - Docker Compose healthcheck commands inside container images (image-owned)
 - Bootstrap upgrade multi-step recovery sequences after migrating primary status paths
+- Installer phase `12-health.sh` retry/backoff loops that already resolve URLs from `SERVICE_PORTS`/`SERVICE_HEALTH` (prefer `sr_curl_health` when adding new checks)
+
+## Required surfaces (must use registry)
+
+- `ods-cli`, `scripts/ods-doctor.sh`, `scripts/health-check.sh`, `scripts/validate.sh`
+- `scripts/showcase.sh`, `scripts/first-boot-demo.sh`
+- `ods/ods-preflight.sh`, `scripts/ods-preflight.sh`
+- `ods/ods-update.sh` `cmd_health`
 
 ## Gate
 
