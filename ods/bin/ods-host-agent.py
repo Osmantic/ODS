@@ -9532,6 +9532,17 @@ def _capture_hermes_live_config(path: Path) -> dict:
             "mode": None,
             "source": None,
         }
+    except PermissionError as exc:
+        logger.info("Inspecting container-owned Hermes config through ods-hermes: %s", exc)
+        return {
+            "exists": True,
+            "text": _read_hermes_container_config(),
+            "bytes": None,
+            "mode": None,
+            "uid": None,
+            "gid": None,
+            "source": "container",
+        }
     except OSError as exc:
         raise RuntimeError(f"Could not inspect Hermes config {path}: {exc}") from exc
     if stat_mod.S_ISLNK(metadata.st_mode):

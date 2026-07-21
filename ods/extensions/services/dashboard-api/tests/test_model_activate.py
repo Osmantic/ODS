@@ -3473,6 +3473,28 @@ class TestModelActivateRollback:
         assert '  default: "new-model.gguf"' in hermes_template.read_text(encoding="utf-8")
         assert ["docker", "restart", "ods-hermes"] in calls
 
+    def test_capture_hermes_config_falls_back_when_stat_is_denied(
+        self, tmp_path, monkeypatch,
+    ):
+        hermes_live = tmp_path / "data" / "hermes" / "config.yaml"
+        container_text = "model:\n  default: \"old-live\"\n"
+        original_lstat = Path.lstat
+
+        def fake_lstat(path, *args, **kwargs):
+            if path == hermes_live:
+                raise PermissionError("container-owned directory")
+            return original_lstat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "lstat", fake_lstat)
+        monkeypatch.setattr(_mod, "_container_running", lambda name: name == "ods-hermes")
+        monkeypatch.setattr(_mod, "_read_hermes_container_config", lambda: container_text)
+
+        snapshot = _mod._capture_hermes_live_config(hermes_live)
+
+        assert snapshot["exists"] is True
+        assert snapshot["source"] == "container"
+        assert snapshot["text"] == container_text
+
     def test_activation_repairs_malformed_models_ini_directory(
         self, tmp_path, monkeypatch,
     ):
