@@ -336,6 +336,28 @@
       "tokens_per_sec_estimate": 150,
       "llm_model_name": "Falcon-H1-1.5B-Instruct",
       "llama_server_image": null,
+      "app_compatibility": {
+        "opencode": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-21T11:18Z on tower2 loaded Falcon H1 1.5B successfully and routed OpenCode through ods/current, but the OpenCode UX reply emitted a skill/tool meta-response instead of the requested verification phrase.",
+          "evidence": "fleet-test/runs/2026-07-21T11-18-01Z-release-product-c43960145c39-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-004/tower2",
+          "recordedAt": "2026-07-21T12:12:38Z",
+          "productSha": "c43960145c39c5fa24627bf8b0e98b30c362cc85",
+          "harnessSha": "9804e8523a6d11ebeb86eac5f5400cf21fc25b39",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "The same run proved Talk, Open WebUI, LiteLLM, and Perplexica routing, but OpenCode did not complete the required agent verification phrase after the swap; keep Falcon H1 1.5B out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-21T11-18-01Z-release-product-c43960145c39-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-004/tower2",
+          "recordedAt": "2026-07-21T12:12:38Z",
+          "productSha": "c43960145c39c5fa24627bf8b0e98b30c362cc85",
+          "harnessSha": "9804e8523a6d11ebeb86eac5f5400cf21fc25b39",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        }
+      },
       "install_recommendation": false
     },
     {
@@ -748,6 +770,25 @@
           "evidence": "https://huggingface.co/Qwen/Qwen3-1.7B/blob/main/config.json"
         }
       },
+      "install_recommendation": false
+    },
+    {
+      "id": "qwen2.5-coder-1.5b-128k-q4",
+      "name": "Qwen 2.5 Coder 1.5B 128K",
+      "family": "qwen",
+      "gguf_file": "Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/Qwen2.5-Coder-1.5B-Instruct-128K-GGUF/resolve/main/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf",
+      "gguf_sha256": "0fbff4d39395fab063c51377ba522928af2574b1f998d66012c1caed7b8f91d6",
+      "size_bytes": 986048224,
+      "size_mb": 986,
+      "vram_required_gb": 3,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Code",
+      "description": "Small code-specialized Qwen model with a 128K GGUF context. A low-VRAM OpenCode-oriented release candidate to replace models that route correctly but fail agent UX probes.",
+      "tokens_per_sec_estimate": 145,
+      "llm_model_name": "qwen2.5-coder-1.5b-instruct",
+      "llama_server_image": null,
       "install_recommendation": false
     },
     {
