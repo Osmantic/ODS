@@ -39,6 +39,12 @@ read_env_value() {
     grep -E "^${key}=" "$env_path" 2>/dev/null | sed -n '1p' | cut -d'=' -f2- | tr -d '\r' || true
 }
 
+env_key_exists() {
+    local env_path="$1"
+    local key="$2"
+    [[ -f "$env_path" ]] && grep -q -E "^${key}=" "$env_path" 2>/dev/null
+}
+
 read_token_spy_api_key() {
     local install_dir="$1"
     local token_spy_key_path="${install_dir}/data/token-spy/token-spy-api-key.txt"
@@ -277,6 +283,24 @@ generate_ods_env() {
         if [[ -z "$(read_env_value "$env_path" "ODS_DEVICE_NAME")" ]]; then
             upsert_env_value "$env_path" "ODS_DEVICE_NAME" "$(detect_device_name)"
         fi
+        # Backfill the TEI/RAG contract without replacing persisted operator
+        # values. Explicit process env values populate keys absent from older
+        # installations, matching Linux and Windows rerun behavior.
+        if [[ -z "$(read_env_value "$env_path" "EMBEDDING_MODEL")" ]]; then
+            upsert_env_value "$env_path" "EMBEDDING_MODEL" "${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}"
+        fi
+        if ! env_key_exists "$env_path" "RAG_EMBEDDING_MODEL"; then
+            upsert_env_value "$env_path" "RAG_EMBEDDING_MODEL" "${RAG_EMBEDDING_MODEL:-}"
+        fi
+        if ! env_key_exists "$env_path" "RAG_OPENAI_API_BASE_URL"; then
+            upsert_env_value "$env_path" "RAG_OPENAI_API_BASE_URL" "${RAG_OPENAI_API_BASE_URL:-}"
+        fi
+        if ! env_key_exists "$env_path" "RAG_OPENAI_API_KEY"; then
+            upsert_env_value "$env_path" "RAG_OPENAI_API_KEY" "${RAG_OPENAI_API_KEY:-}"
+        fi
+        if [[ -z "$(read_env_value "$env_path" "EMBEDDINGS_MEMORY_LIMIT")" ]]; then
+            upsert_env_value "$env_path" "EMBEDDINGS_MEMORY_LIMIT" "${EMBEDDINGS_MEMORY_LIMIT:-4G}"
+        fi
 
         # HOST_LAN_IP backfill: the fresh-install heredoc below populates
         # HOST_LAN_IP when BIND_ADDRESS=0.0.0.0 was pre-set, so openclaw can
@@ -414,6 +438,11 @@ generate_ods_env() {
         open_webui_llm_base_url="http://litellm:4000"
         open_webui_llm_api_key="$litellm_key"
     fi
+    local embedding_model="${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}"
+    local rag_embedding_model="${RAG_EMBEDDING_MODEL:-}"
+    local rag_openai_api_base_url="${RAG_OPENAI_API_BASE_URL:-}"
+    local rag_openai_api_key="${RAG_OPENAI_API_KEY:-}"
+    local embeddings_memory_limit="${EMBEDDINGS_MEMORY_LIMIT:-4G}"
 
     # Build .env content (matches Phase 06 format)
     cat > "$env_path" << ENVEOF
@@ -542,6 +571,15 @@ WHISPER_MODEL=base
 # here and run 'ods-macos.sh restart' to use a different model.
 AUDIO_STT_MODEL=Systran/faster-whisper-base
 TTS_VOICE=en_US-lessac-medium
+
+#=== Embeddings / RAG ===
+# Open WebUI uses this canonical model at first boot unless an explicit
+# external-provider override is configured.
+EMBEDDING_MODEL=${embedding_model}
+RAG_EMBEDDING_MODEL=${rag_embedding_model}
+RAG_OPENAI_API_BASE_URL=${rag_openai_api_base_url}
+RAG_OPENAI_API_KEY=${rag_openai_api_key}
+EMBEDDINGS_MEMORY_LIMIT=${embeddings_memory_limit}
 
 #=== Web UI Settings ===
 WEBUI_AUTH=true

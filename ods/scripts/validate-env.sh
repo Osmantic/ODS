@@ -4,7 +4,8 @@
 # Senior-grade validation goals:
 #  - Correctly parse .env files including quotes and "export KEY=..." lines
 #  - Report line numbers and actionable messages
-#  - Validate required keys, unknown keys, types, enums, and numeric ranges
+#  - Validate required keys, unknown keys, types, enums, numeric ranges, and
+#    cross-service runtime contracts
 #  - Fail deterministically with a single exit code for CI
 
 # Require Bash 4+ (associative arrays used below).
@@ -182,6 +183,7 @@ type_errors=()
 enum_errors=()
 range_errors=()
 length_errors=()
+contract_errors=()
 duplicate_errors=()
 
 mapfile -t required_keys < <(jq -r '.required[]?' "$SCHEMA_FILE")
@@ -287,6 +289,70 @@ for key in "${schema_keys[@]}"; do
 done
 
 # -----------------------------
+# Cross-service runtime contracts
+# -----------------------------
+
+_valid_http_endpoint() {
+    local value="$1" remainder authority port=""
+    [[ "$value" =~ ^https?://[^[:space:]#]+$ ]] || return 1
+    remainder="${value#*://}"
+    authority="${remainder%%[/?]*}"
+    [[ -n "$authority" && "$authority" != *"@"* ]] || return 1
+
+    if [[ "$authority" =~ ^\[([0-9a-f:.]+)\](:([0-9]+))?$ ]]; then
+        port="${BASH_REMATCH[3]}"
+    elif [[ "$authority" =~ ^[a-z0-9][a-z0-9._-]*(:([0-9]+))?$ ]]; then
+        port="${BASH_REMATCH[2]}"
+    else
+        return 1
+    fi
+
+    [[ -z "$port" ]] || {
+        [[ ${#port} -le 5 ]] && (( 10#$port >= 1 && 10#$port <= 65535 ))
+    }
+}
+
+embedding_model="${ENV_MAP[EMBEDDING_MODEL]-BAAI/bge-base-en-v1.5}"
+embedding_model_lower="${embedding_model,,}"
+embedding_artifact_name="${embedding_model_lower##*/}"
+if [[ "$embedding_model_lower" == *"://"* \
+   || "$embedding_artifact_name" == *"gguf"* \
+   || "$embedding_artifact_name" == *"ggml"* \
+   || "$embedding_artifact_name" =~ (^|[-._])q[2-8](_[a-z0-9]+)*($|[-._]) ]]; then
+    contract_errors+=(
+      "EMBEDDING_MODEL: bundled embeddings require a Hugging Face TEI repository ID (for example BAAI/bge-m3); URLs and GGUF/Q4 artifacts are not supported (line ${ENV_LINE[EMBEDDING_MODEL]:-?})"
+    )
+fi
+
+embeddings_memory_limit="${ENV_MAP[EMBEDDINGS_MEMORY_LIMIT]-}"
+if [[ -n "$embeddings_memory_limit" && ! "$embeddings_memory_limit" =~ ^[1-9][0-9]*([bBkKmMgG]|[kKmMgG][bB])?$ ]]; then
+    contract_errors+=(
+      "EMBEDDINGS_MEMORY_LIMIT: expected a positive Docker memory value such as 4096M, 4G, or 6GB (line ${ENV_LINE[EMBEDDINGS_MEMORY_LIMIT]:-?})"
+    )
+fi
+
+rag_model="${ENV_MAP[RAG_EMBEDDING_MODEL]-}"
+rag_base="${ENV_MAP[RAG_OPENAI_API_BASE_URL]-}"
+rag_base="${rag_base,,}"
+while [[ "$rag_base" == */ ]]; do
+    rag_base="${rag_base%/}"
+done
+if [[ -n "$rag_base" ]] && ! _valid_http_endpoint "$rag_base"; then
+    contract_errors+=(
+      "RAG_OPENAI_API_BASE_URL: expected an HTTP(S) OpenAI-compatible embeddings base URL (line ${ENV_LINE[RAG_OPENAI_API_BASE_URL]:-?})"
+    )
+fi
+case "$rag_base" in
+    ""|http://embeddings:80/v1|http://embeddings/v1|http://ods-embeddings:80/v1|http://ods-embeddings/v1)
+        if [[ -n "$rag_model" && "$rag_model" != "$embedding_model" ]]; then
+            contract_errors+=(
+              "RAG_EMBEDDING_MODEL: bundled TEI serves EMBEDDING_MODEL only; leave this override empty or configure the matching external RAG_OPENAI_API_BASE_URL (line ${ENV_LINE[RAG_EMBEDDING_MODEL]:-?})"
+            )
+        fi
+        ;;
+esac
+
+# -----------------------------
 # Reporting
 # -----------------------------
 
@@ -336,6 +402,14 @@ if (( ${#length_errors[@]} > 0 )); then
     had_errors=true
     log_error "Length validation errors (replace placeholder/default values):"
     for err in "${length_errors[@]}"; do
+        echo "  - $err"
+    done
+fi
+
+if (( ${#contract_errors[@]} > 0 )); then
+    had_errors=true
+    log_error "Runtime contract validation errors:"
+    for err in "${contract_errors[@]}"; do
         echo "  - $err"
     done
 fi

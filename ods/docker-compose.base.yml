@@ -121,7 +121,9 @@ services:
       # Otherwise Open WebUI downloads sentence-transformers/all-MiniLM-L6-v2
       # during app startup, which can block fresh installs before port 8080 binds.
       RAG_EMBEDDING_ENGINE: "${RAG_EMBEDDING_ENGINE:-openai}"
-      RAG_EMBEDDING_MODEL: "${RAG_EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}"
+      # Use the exact model served by bundled TEI as Open WebUI's first-boot
+      # default. Existing Open WebUI ConfigVars remain database-backed.
+      RAG_EMBEDDING_MODEL: "${RAG_EMBEDDING_MODEL:-${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}}"
       RAG_OPENAI_API_BASE_URL: "${RAG_OPENAI_API_BASE_URL:-http://embeddings:80/v1}"
       RAG_OPENAI_API_KEY: "${RAG_OPENAI_API_KEY:-}"
       RAG_EMBEDDING_MODEL_AUTO_UPDATE: "${RAG_EMBEDDING_MODEL_AUTO_UPDATE:-false}"

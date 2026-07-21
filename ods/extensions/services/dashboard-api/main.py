@@ -33,7 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # --- Local modules ---
 from config import (
-    SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS,
+    SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS, ALWAYS_ON_SERVICES,
     AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
     _detect_container_default_gateway, _running_inside_container,
     _read_env_from_file,
@@ -837,6 +837,16 @@ def _clear_settings_caches():
         _cache.invalidate(key)
 
 
+def _active_settings_apply_services() -> set[str]:
+    active = set(ALWAYS_ON_SERVICES)
+    services_root = _resolve_install_root() / "extensions" / "services"
+    for service_id in _SETTINGS_APPLY_ALLOWED_SERVICES - active:
+        service_dir = services_root / service_id
+        if (service_dir / "compose.yaml").is_file() or (service_dir / "compose.yml").is_file():
+            active.add(service_id)
+    return active
+
+
 def _call_agent_core_recreate(service_ids: list[str]) -> dict[str, Any]:
     return request_agent_json(
         "POST",
@@ -928,6 +938,31 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
         )
 
     base_fields = _build_env_fields(schema_properties, required_keys, current_values)
+    clear_secrets = payload.get("clearSecrets", [])
+    if not isinstance(clear_secrets, list) or any(not isinstance(key, str) for key in clear_secrets):
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "clearSecrets must be a list of field names."},
+        )
+    clear_secrets = sorted(set(clear_secrets))
+    invalid_clear_secrets = [
+        key for key in clear_secrets
+        if key not in base_fields
+        or not base_fields[key].get("secret")
+        or not base_fields[key].get("clearable")
+    ]
+    if invalid_clear_secrets:
+        return _render_env_from_values(current_values), [
+            {
+                "key": key,
+                "message": "This secret cannot be cleared from the dashboard.",
+            }
+            for key in invalid_clear_secrets
+        ], _compute_env_apply_plan(
+            current_values,
+            current_values,
+            active_services=_active_settings_apply_services(),
+        )
     invalid_keys = sorted(set(submitted_values.keys()) - set(base_fields.keys()))
     if invalid_keys:
         return _render_env_from_values(current_values), [
@@ -936,7 +971,11 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
                 "message": "Field is not editable from the dashboard. Only schema-backed fields and existing local overrides can be changed here.",
             }
             for key in invalid_keys
-        ], _compute_env_apply_plan(current_values, current_values)
+        ], _compute_env_apply_plan(
+            current_values,
+            current_values,
+            active_services=_active_settings_apply_services(),
+        )
 
     read_only_changes = []
     for key, submitted_value in submitted_values.items():
@@ -953,17 +992,27 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
         return (
             _render_env_from_values(current_values),
             read_only_changes,
-            _compute_env_apply_plan(current_values, current_values),
+            _compute_env_apply_plan(
+                current_values,
+                current_values,
+                active_services=_active_settings_apply_services(),
+            ),
         )
 
     normalized_values = _serialize_form_values(submitted_values, base_fields, current_values)
     merged_values = {**current_values, **normalized_values}
+    for key in clear_secrets:
+        merged_values.pop(key, None)
     for key, field in base_fields.items():
         if _empty_value_unsets_env_key(key, field) and str(merged_values.get(key, "")).strip() == "":
             merged_values.pop(key, None)
     merged_fields = _build_env_fields(schema_properties, required_keys, merged_values)
     issues = _validate_env_values(merged_values, merged_fields)
-    apply_plan = _compute_env_apply_plan(current_values, merged_values)
+    apply_plan = _compute_env_apply_plan(
+        current_values,
+        merged_values,
+        active_services=_active_settings_apply_services(),
+    )
     return _render_env_from_values(merged_values), issues, apply_plan
 
 # --- App ---

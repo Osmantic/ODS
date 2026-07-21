@@ -18,6 +18,7 @@ def settings_env_fixture(tmp_path, monkeypatch):
 
     env_path.write_text(
         "OPENAI_API_KEY=sk-live-secret\n"
+        "RAG_OPENAI_API_KEY=rag-live-secret\n"
         "LLM_BACKEND=local\n"
         "WEBUI_AUTH=true\n",
         encoding="utf-8",
@@ -28,6 +29,7 @@ def settings_env_fixture(tmp_path, monkeypatch):
         "# LLM Settings\n"
         "# ════════════════════════════════\n"
         "OPENAI_API_KEY=\n"
+        "RAG_OPENAI_API_KEY=\n"
         "LLM_BACKEND=local\n"
         "WEBUI_AUTH=true\n"
         "# LLAMA_ARG_N_CPU_MOE=25\n",
@@ -43,6 +45,12 @@ def settings_env_fixture(tmp_path, monkeypatch):
                         "type": "string",
                         "description": "Key used for cloud LLM providers.",
                         "secret": True,
+                    },
+                    "RAG_OPENAI_API_KEY": {
+                        "type": "string",
+                        "description": "Optional RAG provider credential.",
+                        "secret": True,
+                        "clearable": True,
                     },
                     "LLM_BACKEND": {
                         "type": "string",
@@ -209,6 +217,53 @@ def test_api_settings_env_preserves_existing_secret_when_blank(test_client, sett
     assert payload["backupPath"].startswith("data/config-backups/.env.backup.")
     assert payload["applyPlan"]["status"] == "ready"
     assert payload["applyPlan"]["services"] == ["llama-server", "open-webui"]
+
+
+def test_api_settings_env_explicitly_clears_clearable_rag_secret(test_client, settings_env_fixture):
+    env_path = settings_env_fixture["env_path"]
+
+    response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={
+            "mode": "form",
+            "values": {"RAG_OPENAI_API_KEY": ""},
+            "clearSecrets": ["RAG_OPENAI_API_KEY"],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    updated_env = env_path.read_text(encoding="utf-8")
+    assert "RAG_OPENAI_API_KEY=\n" in updated_env
+    assert "RAG_OPENAI_API_KEY=rag-live-secret" not in updated_env
+    assert "OPENAI_API_KEY=sk-live-secret" in updated_env
+    assert payload["fields"]["RAG_OPENAI_API_KEY"]["hasValue"] is False
+    assert payload["applyPlan"]["services"] == ["open-webui"]
+    assert [action["id"] for action in payload["applyPlan"]["postApplyActions"]] == [
+        "open-webui-rag-sync",
+    ]
+
+
+def test_api_settings_env_rejects_clearing_non_clearable_secret(test_client, settings_env_fixture):
+    env_path = settings_env_fixture["env_path"]
+
+    response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={
+            "mode": "form",
+            "values": {"OPENAI_API_KEY": ""},
+            "clearSecrets": ["OPENAI_API_KEY"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["issues"] == [{
+        "key": "OPENAI_API_KEY",
+        "message": "This secret cannot be cleared from the dashboard.",
+    }]
+    assert "OPENAI_API_KEY=sk-live-secret" in env_path.read_text(encoding="utf-8")
 
 
 def test_api_settings_env_rejects_raw_mode(test_client, settings_env_fixture):
@@ -465,6 +520,23 @@ def test_api_settings_env_apply_rejects_disallowed_service(test_client):
     assert "not eligible" in response.json()["detail"]["message"].lower()
 
 
+def test_active_settings_apply_services_excludes_disabled_compose(monkeypatch, tmp_path):
+    import main
+
+    install_root = tmp_path / "ods"
+    embeddings_dir = install_root / "extensions" / "services" / "embeddings"
+    embeddings_dir.mkdir(parents=True)
+    disabled = embeddings_dir / "compose.yaml.disabled"
+    disabled.write_text("services:\n  embeddings:\n    image: test\n", encoding="utf-8")
+    monkeypatch.setattr(main, "_resolve_install_root", lambda: install_root)
+    monkeypatch.setattr(main, "ALWAYS_ON_SERVICES", frozenset({"open-webui"}))
+
+    assert "embeddings" not in main._active_settings_apply_services()
+
+    disabled.rename(embeddings_dir / "compose.yaml")
+    assert "embeddings" in main._active_settings_apply_services()
+
+
 def test_check_host_agent_available_uses_shared_transport(monkeypatch):
     import settings
 
@@ -550,6 +622,306 @@ def test_settings_apply_plan_maps_agent_and_proxy_env_keys():
     assert plan["status"] == "ready"
     assert plan["services"] == ["ape", "ods-proxy", "openclaw"]
     assert plan["manualKeys"] == []
+
+
+def test_settings_apply_plan_recreates_bundled_embedding_consumers():
+    from settings import _compute_env_apply_plan
+
+    plan = _compute_env_apply_plan(
+        {"EMBEDDING_MODEL": "BAAI/bge-base-en-v1.5"},
+        {"EMBEDDING_MODEL": "BAAI/bge-m3"},
+    )
+
+    assert plan["status"] == "ready"
+    assert plan["services"] == ["embeddings", "open-webui"]
+    assert plan["manualKeys"] == []
+    assert [action["id"] for action in plan["postApplyActions"]] == [
+        "open-webui-rag-sync",
+        "open-webui-rag-reindex",
+    ]
+
+
+def test_settings_apply_plan_preserves_external_rag_override():
+    from settings import _compute_env_apply_plan
+
+    previous = {
+        "EMBEDDING_MODEL": "BAAI/bge-base-en-v1.5",
+        "RAG_EMBEDDING_MODEL": "external-v1",
+        "RAG_OPENAI_API_BASE_URL": "https://embeddings.example.test/v1",
+    }
+    updated = {**previous, "EMBEDDING_MODEL": "BAAI/bge-m3"}
+
+    plan = _compute_env_apply_plan(previous, updated)
+
+    assert plan["services"] == ["embeddings"]
+    assert plan["postApplyActions"] == []
+
+
+def test_settings_apply_plan_recreates_external_rag_consumer_when_model_is_inherited():
+    from settings import _compute_env_apply_plan
+
+    previous = {
+        "EMBEDDING_MODEL": "BAAI/bge-base-en-v1.5",
+        "RAG_OPENAI_API_BASE_URL": "https://embeddings.example.test/v1",
+    }
+    updated = {**previous, "EMBEDDING_MODEL": "BAAI/bge-m3"}
+
+    plan = _compute_env_apply_plan(previous, updated)
+
+    assert plan["services"] == ["embeddings", "open-webui"]
+    assert [action["id"] for action in plan["postApplyActions"]] == [
+        "open-webui-rag-sync",
+        "open-webui-rag-reindex",
+    ]
+
+
+def test_settings_apply_plan_updates_consumer_and_stages_disabled_embeddings():
+    from settings import _compute_env_apply_plan
+
+    previous = {"EMBEDDING_MODEL": "BAAI/bge-base-en-v1.5"}
+    updated = {"EMBEDDING_MODEL": "BAAI/bge-m3"}
+
+    plan = _compute_env_apply_plan(previous, updated, active_services={"open-webui"})
+
+    assert plan["status"] == "partial"
+    assert plan["services"] == ["open-webui"]
+    assert plan["inactiveServices"] == ["embeddings"]
+    assert [action["id"] for action in plan["postApplyActions"]] == [
+        "open-webui-rag-sync",
+        "open-webui-rag-reindex",
+    ]
+    assert "will apply when they are enabled: embeddings" in plan["summary"]
+
+
+def test_settings_apply_plan_updates_external_consumer_when_bundled_embeddings_are_disabled():
+    from settings import _compute_env_apply_plan
+
+    previous = {
+        "EMBEDDING_MODEL": "BAAI/bge-base-en-v1.5",
+        "RAG_OPENAI_API_BASE_URL": "https://embeddings.example.test/v1",
+    }
+    updated = {**previous, "EMBEDDING_MODEL": "BAAI/bge-m3"}
+
+    plan = _compute_env_apply_plan(previous, updated, active_services={"open-webui"})
+
+    assert plan["status"] == "partial"
+    assert plan["services"] == ["open-webui"]
+    assert plan["inactiveServices"] == ["embeddings"]
+    assert [action["id"] for action in plan["postApplyActions"]] == [
+        "open-webui-rag-sync",
+        "open-webui-rag-reindex",
+    ]
+
+
+def test_settings_apply_plan_reindexes_explicit_rag_provider_change():
+    from settings import _compute_env_apply_plan
+
+    previous = {
+        "RAG_EMBEDDING_MODEL": "external-v1",
+        "RAG_OPENAI_API_BASE_URL": "https://embeddings.example.test/v1",
+    }
+    updated = {
+        "RAG_EMBEDDING_MODEL": "external-v2",
+        "RAG_OPENAI_API_BASE_URL": "https://embeddings.example.test/v2",
+    }
+
+    plan = _compute_env_apply_plan(previous, updated)
+
+    assert plan["services"] == ["open-webui"]
+    assert [action["id"] for action in plan["postApplyActions"]] == [
+        "open-webui-rag-sync",
+        "open-webui-rag-reindex",
+    ]
+
+
+def test_settings_apply_plan_returns_to_bundled_rag_after_clearing_overrides():
+    from settings import _compute_env_apply_plan, _empty_value_unsets_env_key
+
+    previous = {
+        "EMBEDDING_MODEL": "BAAI/bge-m3",
+        "RAG_EMBEDDING_MODEL": "external-v2",
+        "RAG_OPENAI_API_BASE_URL": "https://embeddings.example.test/v1",
+    }
+    updated = {"EMBEDDING_MODEL": "BAAI/bge-m3"}
+
+    assert _empty_value_unsets_env_key("RAG_EMBEDDING_MODEL", {"type": "string"}) is True
+    assert _empty_value_unsets_env_key("RAG_OPENAI_API_BASE_URL", {"type": "string"}) is True
+    plan = _compute_env_apply_plan(previous, updated)
+
+    assert plan["services"] == ["open-webui"]
+    assert [action["id"] for action in plan["postApplyActions"]] == [
+        "open-webui-rag-sync",
+        "open-webui-rag-reindex",
+    ]
+
+
+def test_settings_apply_plan_syncs_rag_credential_without_reindex():
+    from settings import _compute_env_apply_plan
+
+    plan = _compute_env_apply_plan(
+        {"RAG_OPENAI_API_KEY": "old-secret"},
+        {"RAG_OPENAI_API_KEY": "new-secret"},
+    )
+
+    assert plan["services"] == ["open-webui"]
+    assert [action["id"] for action in plan["postApplyActions"]] == [
+        "open-webui-rag-sync",
+    ]
+
+
+def test_settings_validation_rejects_gguf_embedding_artifact():
+    from settings import _build_env_fields, _validate_env_values
+
+    values = {"EMBEDDING_MODEL": "someone/bge-m3-Q4_K_M-GGUF"}
+    fields = _build_env_fields(
+        {"EMBEDDING_MODEL": {"type": "string"}}, set(), values,
+    )
+
+    issues = _validate_env_values(values, fields)
+
+    assert issues[0]["key"] == "EMBEDDING_MODEL"
+    assert "GGUF/Q4" in issues[0]["message"]
+
+
+def test_settings_validation_rejects_invalid_embeddings_memory_limit():
+    from settings import _build_env_fields, _validate_env_values
+
+    values = {"EMBEDDINGS_MEMORY_LIMIT": "lots"}
+    fields = _build_env_fields(
+        {"EMBEDDINGS_MEMORY_LIMIT": {"type": "string"}}, set(), values,
+    )
+
+    issues = _validate_env_values(values, fields)
+
+    assert issues == [{
+        "key": "EMBEDDINGS_MEMORY_LIMIT",
+        "message": "Must be a positive Docker memory value such as 4096M, 4G, or 6GB.",
+    }]
+
+
+def test_settings_validation_accepts_compose_memory_units():
+    from settings import _build_env_fields, _validate_env_values
+
+    for value in ("4096M", "4G", "6GB", "4294967296"):
+        values = {"EMBEDDINGS_MEMORY_LIMIT": value}
+        fields = _build_env_fields(
+            {"EMBEDDINGS_MEMORY_LIMIT": {"type": "string"}}, set(), values,
+        )
+        assert _validate_env_values(values, fields) == []
+
+
+def test_settings_validation_rejects_invalid_rag_base_url():
+    from settings import _build_env_fields, _validate_env_values
+
+    values = {"RAG_OPENAI_API_BASE_URL": "embeddings:80/v1"}
+    fields = _build_env_fields(
+        {"RAG_OPENAI_API_BASE_URL": {"type": "string"}}, set(), values,
+    )
+
+    assert _validate_env_values(values, fields) == [{
+        "key": "RAG_OPENAI_API_BASE_URL",
+        "message": "Must be an HTTP(S) OpenAI-compatible embeddings base URL.",
+    }]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://",
+        "https://:443/v1",
+        "https://example.test:70000/v1",
+        "https://user:secret@example.test/v1",
+        "https://example.test/v1#fragment",
+        "https://example.test\\v1",
+        "https://example.test:999999999999999999999/v1",
+    ],
+)
+def test_settings_validation_rejects_malformed_rag_endpoints(value):
+    from settings import _validate_env_values
+
+    assert _validate_env_values(
+        {"RAG_OPENAI_API_BASE_URL": value},
+        {"RAG_OPENAI_API_BASE_URL": {"type": "string"}},
+    ) == [{
+        "key": "RAG_OPENAI_API_BASE_URL",
+        "message": "Must be an HTTP(S) OpenAI-compatible embeddings base URL.",
+    }]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://embeddings:80/v1",
+        "https://embeddings.example.test/v1?tenant=ods",
+        "http://127.0.0.1:8090/v1",
+        "http://[::1]:8090/v1",
+    ],
+)
+def test_settings_validation_accepts_well_formed_rag_endpoints(value):
+    from settings import _validate_env_values
+
+    assert _validate_env_values(
+        {"RAG_OPENAI_API_BASE_URL": value},
+        {"RAG_OPENAI_API_BASE_URL": {"type": "string"}},
+    ) == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "someone/bge-m3-Q4_K_M",
+        "someone/bge-m3-q8_0",
+        "someone/bge-m3-GGML",
+    ],
+)
+def test_settings_validation_rejects_quantized_embedding_artifact_names(value):
+    from settings import _validate_env_values
+
+    issues = _validate_env_values(
+        {"EMBEDDING_MODEL": value},
+        {"EMBEDDING_MODEL": {"type": "string"}},
+    )
+
+    assert issues and issues[0]["key"] == "EMBEDDING_MODEL"
+
+
+def test_settings_validation_rejects_bundled_model_mismatch():
+    from settings import _build_env_fields, _validate_env_values
+
+    values = {
+        "EMBEDDING_MODEL": "BAAI/bge-m3",
+        "RAG_EMBEDDING_MODEL": "BAAI/bge-base-en-v1.5",
+        "RAG_OPENAI_API_BASE_URL": "http://embeddings:80/v1",
+    }
+    fields = _build_env_fields(
+        {key: {"type": "string"} for key in values}, set(), values,
+    )
+
+    issues = _validate_env_values(values, fields)
+
+    assert issues == [{
+        "key": "RAG_EMBEDDING_MODEL",
+        "message": (
+            "Bundled TEI serves EMBEDDING_MODEL only. Leave this override empty "
+            "to inherit it, or set RAG_OPENAI_API_BASE_URL to the external "
+            "provider that serves this different model."
+        ),
+    }]
+
+
+def test_settings_validation_allows_external_model_override():
+    from settings import _build_env_fields, _validate_env_values
+
+    values = {
+        "EMBEDDING_MODEL": "BAAI/bge-m3",
+        "RAG_EMBEDDING_MODEL": "external-v2",
+        "RAG_OPENAI_API_BASE_URL": "https://embeddings.example.test/v1",
+    }
+    fields = _build_env_fields(
+        {key: {"type": "string"} for key in values}, set(), values,
+    )
+
+    assert _validate_env_values(values, fields) == []
 
 
 # --- Render round-trip fidelity ---
@@ -661,6 +1033,7 @@ def test_render_env_preserves_commented_key_absent_from_values(commented_example
         "LIVEKIT_API_KEY",
         "AUDIO_STT_OPENAI_API_KEY",
         "AUDIO_TTS_OPENAI_API_KEY",
+        "RAG_OPENAI_API_KEY",
     ],
 )
 def test_production_schema_marks_provider_api_keys_secret(key):
@@ -677,6 +1050,18 @@ def test_production_schema_marks_provider_api_keys_secret(key):
     entry = schema["properties"].get(key)
     assert entry is not None, f"schema missing entry for {key}"
     assert entry.get("secret") is True, f"{key} must have 'secret': true in .env.schema.json"
+
+
+def test_production_schema_only_allows_explicit_rag_secret_removal():
+    import pathlib
+
+    schema_path = pathlib.Path(__file__).resolve().parents[4] / ".env.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    clearable = {
+        key for key, definition in schema["properties"].items()
+        if definition.get("clearable") is True
+    }
+    assert clearable == {"RAG_OPENAI_API_KEY"}
 
 
 def test_env_example_keys_are_present_in_schema():

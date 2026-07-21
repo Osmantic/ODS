@@ -1,4 +1,4 @@
-import { Search, RefreshCw, Save, Eye, EyeOff } from 'lucide-react'
+import { Search, RefreshCw, Save, Eye, EyeOff, Check, Trash2, Undo2 } from 'lucide-react'
 
 export default function EnvEditor({
   editor,
@@ -12,7 +12,9 @@ export default function EnvEditor({
   issues,
   issueMap,
   revealedSecrets,
+  clearedSecrets = [],
   onToggleReveal,
+  onClearSecret = () => {},
   onFieldChange,
   onReload,
   onSave,
@@ -20,6 +22,8 @@ export default function EnvEditor({
   dirty,
   saving,
   applyPlan = null,
+  followUpPlan = null,
+  onCompleteFollowUp = () => {},
   applying = false,
 }) {
   const activeKeys = activeSection?.keys || []
@@ -63,8 +67,36 @@ export default function EnvEditor({
 
       {applyPlan?.status && applyPlan.status !== 'none' ? (
         <div className="rounded-xl border border-theme-accent/20 bg-theme-accent/10 px-4 py-3">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-theme-accent-light">Pending runtime changes</p>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-theme-accent-light">
+            {applyPlan.status === 'post-apply' ? 'Required follow-up' : 'Pending runtime changes'}
+          </p>
           <p className="mt-1 text-sm text-theme-text">{applyPlan.summary}</p>
+          {applyPlan.postApplyActions?.map((action) => (
+            <div key={action.id} className="mt-3 border-t border-theme-accent/15 pt-3">
+              <p className="text-xs font-semibold text-theme-text">{action.title}</p>
+              <p className="mt-1 text-xs text-theme-text-muted">{action.message}</p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {followUpPlan ? (
+        <div className="rounded-xl border border-theme-accent/20 bg-theme-accent/10 px-4 py-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-theme-accent-light">
+                Required follow-up
+              </p>
+              <p className="mt-1 text-sm text-theme-text">{followUpPlan.summary}</p>
+            </div>
+            <ToolbarButton icon={Check} label="Mark complete" onClick={onCompleteFollowUp} />
+          </div>
+          {followUpPlan.postApplyActions?.map((action) => (
+            <div key={action.id} className="mt-3 border-t border-theme-accent/15 pt-3">
+              <p className="text-xs font-semibold text-theme-text">{action.title}</p>
+              <p className="mt-1 text-xs text-theme-text-muted">{action.message}</p>
+            </div>
+          ))}
         </div>
       ) : null}
 
@@ -162,7 +194,9 @@ export default function EnvEditor({
                       value={values[key] ?? ''}
                       issues={issueMap[key] || []}
                       revealed={Boolean(revealedSecrets[key])}
+                      cleared={clearedSecrets.includes(key)}
                       onToggleReveal={() => onToggleReveal(key)}
+                      onClearSecret={() => onClearSecret(key)}
                       onChange={(value) => onFieldChange(key, value)}
                     />
                   ))}
@@ -213,7 +247,7 @@ function Hint({ title, text }) {
   )
 }
 
-function FieldCard({ field, value, issues, revealed, onToggleReveal, onChange }) {
+function FieldCard({ field, value, issues, revealed, cleared, onToggleReveal, onClearSecret, onChange }) {
   const hasIssues = issues.length > 0
   const isEnum = Array.isArray(field?.enum) && field.enum.length > 0
   const isBoolean = field?.type === 'boolean'
@@ -297,9 +331,18 @@ function FieldCard({ field, value, issues, revealed, onToggleReveal, onChange })
       ) : null}
 
       {field?.secret ? (
-        <p className="mt-2 text-[11px] text-theme-text-muted">
-          {field?.hasValue ? 'Leave blank to keep the stored secret. Enter a new value to replace it.' : 'Enter a value to store this secret.'}
-        </p>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[11px] text-theme-text-muted">
+            {cleared ? 'The stored secret will be removed when you save.' : field?.hasValue ? 'Leave blank to keep the stored secret. Enter a new value to replace it.' : 'Enter a value to store this secret.'}
+          </p>
+          {field?.clearable && field?.hasValue ? (
+            <ToolbarButton
+              icon={cleared ? Undo2 : Trash2}
+              label={cleared ? 'Keep stored secret' : 'Clear stored secret'}
+              onClick={onClearSecret}
+            />
+          ) : null}
+        </div>
       ) : field?.default !== undefined && field?.default !== null ? (
         <p className="mt-2 text-[11px] text-theme-text-muted">
           Default: <span className="font-mono text-theme-text">{String(field.default)}</span>

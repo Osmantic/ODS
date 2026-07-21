@@ -268,6 +268,21 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         echo "$default"
     }
 
+    # Optional overrides use an empty value to mean "inherit the bundled
+    # provider". Preserve that explicit state across reruns; _env_get treats
+    # empty as missing for variables whose defaults must be backfilled.
+    _env_get_preserve_empty() {
+        local key="$1" default="${2:-}" val
+        if [[ -n "$_env_existing" ]] && grep -q -m1 "^${key}=" "$_env_existing" 2>/dev/null; then
+            val=$(grep -m1 "^${key}=" "$_env_existing" 2>/dev/null | cut -d= -f2- || true)
+            val="${val%\"}" && val="${val#\"}"
+            val="${val%\'}" && val="${val#\'}"
+            printf '%s\n' "$val"
+            return
+        fi
+        printf '%s\n' "$default"
+    }
+
     _env_get_explicit_first() {
         local key="$1" default="${2:-}" val
         val="${!key-}"
@@ -613,6 +628,11 @@ raise SystemExit(1)' 2>/dev/null && return 0
         _default_stt_model="Systran/faster-whisper-base"
     fi
     AUDIO_STT_MODEL=$(_env_get AUDIO_STT_MODEL "${AUDIO_STT_MODEL:-$_default_stt_model}")
+    EMBEDDING_MODEL_VALUE=$(_env_get EMBEDDING_MODEL "${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}")
+    RAG_EMBEDDING_MODEL_VALUE=$(_env_get_preserve_empty RAG_EMBEDDING_MODEL "${RAG_EMBEDDING_MODEL:-}")
+    RAG_OPENAI_API_BASE_URL_VALUE=$(_env_get_preserve_empty RAG_OPENAI_API_BASE_URL "${RAG_OPENAI_API_BASE_URL:-}")
+    RAG_OPENAI_API_KEY_VALUE=$(_env_get_preserve_empty RAG_OPENAI_API_KEY "${RAG_OPENAI_API_KEY:-}")
+    EMBEDDINGS_MEMORY_LIMIT_VALUE=$(_env_get EMBEDDINGS_MEMORY_LIMIT "${EMBEDDINGS_MEMORY_LIMIT:-4G}")
 
     _phase06_lemonade_uses_host_9000() {
         [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]] && return 0
@@ -865,6 +885,15 @@ WHISPER_MODEL=base
 # Auto-selected based on GPU backend; edit to override.
 AUDIO_STT_MODEL=${AUDIO_STT_MODEL}
 TTS_VOICE=en_US-lessac-medium
+
+#=== Embeddings / RAG ===
+# Open WebUI uses this canonical model at first boot unless an explicit
+# external-provider override is configured.
+EMBEDDING_MODEL=${EMBEDDING_MODEL_VALUE}
+RAG_EMBEDDING_MODEL=${RAG_EMBEDDING_MODEL_VALUE}
+RAG_OPENAI_API_BASE_URL=${RAG_OPENAI_API_BASE_URL_VALUE}
+RAG_OPENAI_API_KEY=${RAG_OPENAI_API_KEY_VALUE}
+EMBEDDINGS_MEMORY_LIMIT=${EMBEDDINGS_MEMORY_LIMIT_VALUE}
 
 #=== Device Name / mDNS / Proxy hostnames ===
 # Used by ods-mdns to publish <name>.local on the LAN, by ods-proxy

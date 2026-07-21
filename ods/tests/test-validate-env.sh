@@ -177,6 +177,129 @@ else
     fail "Output should report a minLength violation"
 fi
 
+# 8. Bundled TEI does not accept GGUF/Q4 artifacts.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/gguf-embedding.env"
+echo "EMBEDDING_MODEL=BAAI/bge-m3-Q4_K_M-GGUF" >> "$TMP_DIR/gguf-embedding.env"
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/gguf-embedding.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 2 ]] && echo "$out" | grep -q "GGUF/Q4"; then
+    pass "GGUF embedding artifact is rejected with an actionable error"
+else
+    fail "GGUF embedding artifact should yield exit 2 and explain TEI compatibility"
+fi
+
+# 9. Open WebUI may only name a different model when it uses an external endpoint.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/rag-mismatch.env"
+cat >> "$TMP_DIR/rag-mismatch.env" <<'EOF'
+EMBEDDING_MODEL=BAAI/bge-m3
+RAG_EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
+RAG_OPENAI_API_BASE_URL=http://embeddings:80/v1
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/rag-mismatch.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 2 ]] && echo "$out" | grep -q "bundled TEI serves EMBEDDING_MODEL only"; then
+    pass "Bundled TEI/Open WebUI model mismatch is rejected"
+else
+    fail "Bundled TEI/Open WebUI model mismatch should yield exit 2"
+fi
+
+# 10. A distinct model is valid when Open WebUI targets an external provider.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/external-rag.env"
+cat >> "$TMP_DIR/external-rag.env" <<'EOF'
+EMBEDDING_MODEL=BAAI/bge-m3
+RAG_EMBEDDING_MODEL=external-embed-v2
+RAG_OPENAI_API_BASE_URL=https://embeddings.example.test/v1
+RAG_OPENAI_API_KEY=external-test-key
+EMBEDDINGS_MEMORY_LIMIT=6GB
+EOF
+set +e
+"$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/external-rag.env" "$ROOT_DIR/.env.schema.json" >/dev/null 2>&1
+r=$?
+set -e
+if [[ $r -eq 0 ]]; then
+    pass "External RAG provider override remains valid"
+else
+    fail "External RAG provider override should yield exit 0, got $r"
+fi
+
+# 11. Invalid Docker memory values fail before compose rendering.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/invalid-memory.env"
+echo "EMBEDDINGS_MEMORY_LIMIT=lots" >> "$TMP_DIR/invalid-memory.env"
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/invalid-memory.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 2 ]] && echo "$out" | grep -q "EMBEDDINGS_MEMORY_LIMIT"; then
+    pass "Invalid embeddings memory limit is rejected before compose"
+else
+    fail "Invalid embeddings memory limit should yield exit 2"
+fi
+
+# 12. Invalid external endpoints fail before Open WebUI is recreated.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/invalid-rag-url.env"
+echo "RAG_OPENAI_API_BASE_URL=embeddings.example.test/v1" >> "$TMP_DIR/invalid-rag-url.env"
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/invalid-rag-url.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 2 ]] && echo "$out" | grep -q "HTTP(S)"; then
+    pass "Invalid RAG endpoint is rejected before Open WebUI recreation"
+else
+    fail "Invalid RAG endpoint should yield exit 2"
+fi
+
+# 13. URL validation rejects an empty/malformed authority, embedded credentials,
+# invalid ports, and fragments instead of deferring failure to Open WebUI.
+for invalid_url in 'http://' 'https://:443/v1' 'https://example.test:70000/v1' 'https://user:secret@example.test/v1' "'https://example.test/v1#fragment'" 'https://example.test\v1' 'https://example.test:999999999999999999999/v1'; do
+    display_url="${invalid_url//\\/\\\\}"
+    cp "$TMP_DIR/valid.env" "$TMP_DIR/malformed-rag-url.env"
+    printf 'RAG_OPENAI_API_BASE_URL=%s\n' "$invalid_url" >> "$TMP_DIR/malformed-rag-url.env"
+    set +e
+    out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/malformed-rag-url.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+    r=$?
+    set -e
+    if [[ $r -eq 2 ]] && echo "$out" | grep -q "RAG_OPENAI_API_BASE_URL"; then
+        pass "Malformed RAG endpoint is rejected: $display_url"
+    else
+        fail "Malformed RAG endpoint should be rejected: $display_url"
+    fi
+done
+
+# 14. Internal DNS, IPv4, bracketed IPv6, and query strings remain valid.
+for valid_url in 'http://embeddings:80/v1' 'https://embeddings.example.test/v1?tenant=ods' 'http://127.0.0.1:8090/v1' 'http://[::1]:8090/v1'; do
+    cp "$TMP_DIR/valid.env" "$TMP_DIR/well-formed-rag-url.env"
+    echo "RAG_OPENAI_API_BASE_URL=$valid_url" >> "$TMP_DIR/well-formed-rag-url.env"
+    set +e
+    out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/well-formed-rag-url.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+    r=$?
+    set -e
+    if [[ $r -eq 0 ]]; then
+        pass "Well-formed RAG endpoint is accepted: $valid_url"
+    else
+        fail "Well-formed RAG endpoint should be accepted: $valid_url"
+    fi
+done
+
+# 15. Quantization-only repository names are incompatible even when they do
+# not contain the literal GGUF suffix.
+for quantized_model in 'someone/bge-m3-Q4_K_M' 'someone/bge-m3-q8_0' 'someone/bge-m3-GGML'; do
+    cp "$TMP_DIR/valid.env" "$TMP_DIR/quantized-embedding.env"
+    echo "EMBEDDING_MODEL=$quantized_model" >> "$TMP_DIR/quantized-embedding.env"
+    set +e
+    out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/quantized-embedding.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+    r=$?
+    set -e
+    if [[ $r -eq 2 ]] && echo "$out" | grep -q "EMBEDDING_MODEL"; then
+        pass "Quantized embedding artifact is rejected: $quantized_model"
+    else
+        fail "Quantized embedding artifact should be rejected: $quantized_model"
+    fi
+done
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

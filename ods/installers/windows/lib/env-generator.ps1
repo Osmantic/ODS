@@ -293,6 +293,15 @@ function New-ODSEnv {
         return $Default
     }
 
+    # Empty is meaningful for optional provider overrides: it selects the
+    # bundled service. Distinguish it from a key missing in an older .env.
+    function Get-EnvOrNewAllowEmpty { param([string]$Key, [string]$Default)
+        if ($existingEnv.ContainsKey($Key)) {
+            return $existingEnv[$Key]
+        }
+        return $Default
+    }
+
     $webuiPort = Resolve-WindowsODSPort `
         -Name "WEBUI_PORT" -DefaultPort 3000 `
         -ExistingEnv $existingEnv -InstallDir $InstallDir
@@ -589,6 +598,15 @@ function New-ODSEnv {
     if ($whisperAcceleration -eq "cpu" -and $audioSttModel -match "(?i)large-v3|turbo") {
         $audioSttModel = $audioSttModelDefault
     }
+    $embeddingModelDefault = [Environment]::GetEnvironmentVariable("EMBEDDING_MODEL")
+    if ([string]::IsNullOrWhiteSpace($embeddingModelDefault)) { $embeddingModelDefault = "BAAI/bge-base-en-v1.5" }
+    $embeddingModel = Get-EnvOrNew "EMBEDDING_MODEL" $embeddingModelDefault
+    $ragEmbeddingModel = Get-EnvOrNewAllowEmpty "RAG_EMBEDDING_MODEL" ([Environment]::GetEnvironmentVariable("RAG_EMBEDDING_MODEL"))
+    $ragOpenAiApiBaseUrl = Get-EnvOrNewAllowEmpty "RAG_OPENAI_API_BASE_URL" ([Environment]::GetEnvironmentVariable("RAG_OPENAI_API_BASE_URL"))
+    $ragOpenAiApiKey = Get-EnvOrNewAllowEmpty "RAG_OPENAI_API_KEY" ([Environment]::GetEnvironmentVariable("RAG_OPENAI_API_KEY"))
+    $embeddingsMemoryLimitDefault = [Environment]::GetEnvironmentVariable("EMBEDDINGS_MEMORY_LIMIT")
+    if ([string]::IsNullOrWhiteSpace($embeddingsMemoryLimitDefault)) { $embeddingsMemoryLimitDefault = "4G" }
+    $embeddingsMemoryLimit = Get-EnvOrNew "EMBEDDINGS_MEMORY_LIMIT" $embeddingsMemoryLimitDefault
 
     # Build .env content (matches Phase 06 format)
     $envContent = @"
@@ -729,6 +747,15 @@ $(if ($whisperImage) { "WHISPER_IMAGE=$whisperImage" } else { "#WHISPER_IMAGE=gh
 # the same model so the first transcription works.
 AUDIO_STT_MODEL=$audioSttModel
 TTS_VOICE=en_US-lessac-medium
+
+#=== Embeddings / RAG ===
+# Open WebUI uses this canonical model at first boot unless an explicit
+# external-provider override is configured.
+EMBEDDING_MODEL=$embeddingModel
+RAG_EMBEDDING_MODEL=$ragEmbeddingModel
+RAG_OPENAI_API_BASE_URL=$ragOpenAiApiBaseUrl
+RAG_OPENAI_API_KEY=$ragOpenAiApiKey
+EMBEDDINGS_MEMORY_LIMIT=$embeddingsMemoryLimit
 
 #=== Web UI Settings ===
 WEBUI_AUTH=true
