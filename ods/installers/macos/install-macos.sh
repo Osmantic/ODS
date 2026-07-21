@@ -2619,7 +2619,16 @@ for service in (data.get("services") or {}).values():
     # local mode follows the actual native llama bind and port.
     if [[ -n "$OPENCODE_BIN" && -x "$OPENCODE_BIN" ]]; then
         mkdir -p "$OPENCODE_CONFIG_DIR"
-        if $CLOUD_MODE; then
+        _opencode_switchboard_mode="$(read_env_value "$INSTALL_DIR/.env" "ODS_MODEL_SWITCHBOARD")"
+        if [[ "${_opencode_switchboard_mode:-observe}" == "enabled" ]]; then
+            _opencode_model="ods/current"
+            _opencode_port="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_PORT")"
+            [[ "$_opencode_port" =~ ^[0-9]+$ ]] || _opencode_port="4000"
+            _opencode_bind="$(read_env_value "$INSTALL_DIR/.env" "BIND_ADDRESS")"
+            _opencode_host="$(macos_bind_probe_host "${_opencode_bind:-127.0.0.1}")"
+            _opencode_base_url="http://${_opencode_host}:${_opencode_port}/v1"
+            _opencode_api_key="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_KEY")"
+        elif $CLOUD_MODE; then
             _opencode_model="default"
             _opencode_port="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_PORT")"
             [[ "$_opencode_port" =~ ^[0-9]+$ ]] || _opencode_port="4000"
@@ -2646,6 +2655,7 @@ for service in (data.get("services") or {}).values():
         fi
         ai_ok "OpenCode configured for ${_opencode_model} at ${_opencode_base_url}"
         unset _opencode_model _opencode_port _opencode_bind _opencode_host \
+            _opencode_switchboard_mode \
             _opencode_base_url _opencode_api_key
 
         # Install as macOS LaunchAgent (auto-start on login).

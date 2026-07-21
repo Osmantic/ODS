@@ -120,6 +120,21 @@ def test_enabled_hermes_uses_stable_switchboard_alias() -> None:
     assert 'base_url: "http://litellm:4000/v1"' in content
 
 
+def test_enabled_opencode_uses_stable_switchboard_alias() -> None:
+    payload = run_renderer(
+        "--surface",
+        "opencode",
+        "--switchboard-mode",
+        "enabled",
+        "--litellm-key",
+        "switch-secret",
+    )
+    content = json.loads(file_by_surface(payload, "opencode")["content"])
+    assert content["model"] == "ods/current"
+    assert content["baseURL"] == "http://litellm:4000/v1"
+    assert content["apiKey"] == "switch-secret"
+
+
 def test_router_endpoints_strip_trailing_v1() -> None:
     payload = run_renderer(
         "--surface", "model-router-endpoints",
@@ -293,6 +308,8 @@ def main() -> int:
         test_switchboard_surface_gated_on_enabled_mode,
         test_enabled_env_exports_switchboard_webui_gateway,
         test_enabled_perplexica_uses_stable_alias,
+        test_enabled_hermes_uses_stable_switchboard_alias,
+        test_enabled_opencode_uses_stable_switchboard_alias,
         test_lemonade_disables_thinking_and_uses_extra_alias,
         test_external_lemonade_uses_supplied_model_and_api_base,
         test_exact_lemonade_id_propagates_to_every_runtime_surface,

@@ -117,6 +117,16 @@ assert_grep "installers/macos/ods-macos.sh" 'ENV_CTX_SIZE:-65536' \
     "macOS native llama restart defaults to 64K context"
 assert_grep "installers/phases/07-devtools.sh" '"context": \$\{MAX_CONTEXT:-65536\}' \
     "Linux OpenCode config defaults to 64K context"
+assert_grep "installers/phases/07-devtools.sh" 'ODS_MODEL_SWITCHBOARD' \
+    "Linux OpenCode config reads switchboard mode"
+assert_grep "installers/phases/07-devtools.sh" '_opencode_model_id="ods/current"' \
+    "Linux OpenCode config uses stable switchboard alias"
+assert_grep "installers/phases/07-devtools.sh" 'OpenCode config updated \(model, API key, and URL refreshed\)' \
+    "Linux OpenCode reinstall migrates stale model route"
+assert_grep "installers/macos/install-macos.sh" '_opencode_switchboard_mode=.*ODS_MODEL_SWITCHBOARD' \
+    "macOS OpenCode config reads switchboard mode"
+assert_grep "installers/macos/install-macos.sh" '_opencode_model="ods/current"' \
+    "macOS OpenCode config uses stable switchboard alias"
 assert_not_grep "installers/macos/install-macos.sh" '\$LOG_FILE' \
     "macOS installer uses ODS_LOG_FILE, not undefined LOG_FILE"
 assert_grep "installers/windows/install-windows.ps1" 'Update-HermesConfigFile.*ContextLength \(\[int\]\$tierConfig\.MaxContext\)' \

@@ -178,7 +178,7 @@ fi
 pass "disabled Hermes routing patches through a safe image or fails closed"
 
 # OpenCode and OpenClaw must update only their managed routes across modes.
-eval "$(extract_installer_function _write_macos_opencode_config)"
+eval "$(extract_installer_function _write_macos_opencode_config | sed "s|/usr/bin/python3|$python_cmd|g")"
 opencode_path="$TMP_DIR/opencode/opencode.json"
 mkdir -p "$(dirname "$opencode_path")"
 printf '{"custom":{"preserve":true}}\n' > "$opencode_path"
@@ -193,6 +193,16 @@ assert data["custom"]["preserve"] is True
 assert data["model"] == "llama-server/default"
 opts = data["provider"]["llama-server"]["options"]
 assert opts == {"baseURL": "http://127.0.0.1:4000/v1", "apiKey": sys.argv[2]}
+PY
+_write_macos_opencode_config "$opencode_path" "ods/current" \
+    http://127.0.0.1:4000/v1 "$opencode_secret" 131072 >/dev/null
+"$python_cmd" - "$opencode_path" "$opencode_secret" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["model"] == "llama-server/ods/current"
+provider = data["provider"]["llama-server"]
+assert provider["models"]["ods/current"]["limit"] == {"context": 131072, "output": 32768}
+assert provider["options"] == {"baseURL": "http://127.0.0.1:4000/v1", "apiKey": sys.argv[2]}
 PY
 
 # shellcheck source=/dev/null

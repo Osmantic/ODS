@@ -38,6 +38,10 @@ grep -q 'opencode-config.ps1' "$INSTALLER_PS1" && pass "installer sources OpenCo
 grep -q 'OpenCode config synced to active model' "$INSTALLER_PS1" && pass "installer resyncs OpenCode after launch" || fail "installer missing active-model OpenCode resync"
 grep -q 'update-windows-opencode-config.ps1' "$BOOTSTRAP_UPGRADE" && pass "bootstrap upgrade refreshes Windows OpenCode config" || fail "bootstrap upgrade missing Windows OpenCode refresh"
 grep -q 'OpenCode config updated' "$DEVTOOLS_PS1" && pass "existing config update message exists" || fail "existing config update message missing"
+grep -q 'ODS_MODEL_SWITCHBOARD' "$OPENCODE_LIB" && pass "switchboard mode is read from .env" || fail "switchboard mode missing from OpenCode helper"
+grep -q 'ods/current' "$OPENCODE_LIB" && pass "switchboard alias is written to OpenCode config" || fail "switchboard alias missing from OpenCode helper"
+grep -q 'LITELLM_KEY' "$OPENCODE_LIB" && pass "switchboard OpenCode route uses LiteLLM key" || fail "switchboard LiteLLM key missing from OpenCode helper"
+grep -q 'ODS switchboard' "$OPENCODE_LIB" && pass "switchboard provider is labelled" || fail "switchboard provider label missing"
 
 if grep -q 'preserving existing configuration' "$DEVTOOLS_PS1"; then
     fail "existing configs are still preserved without migration"

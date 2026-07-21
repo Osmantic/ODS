@@ -144,7 +144,9 @@ else
             # Always re-read ODS_MODE from .env — Phase 06 may have changed it
             # (e.g. "local" → "lemonade" for AMD) but the shell variable is stale.
             ODS_MODE=$(grep -m1 '^ODS_MODE=' "$INSTALL_DIR/.env" | cut -d= -f2-)
+            [[ -z "${ODS_MODEL_SWITCHBOARD:-}" ]] && ODS_MODEL_SWITCHBOARD=$(grep -m1 '^ODS_MODEL_SWITCHBOARD=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             [[ -z "${LITELLM_KEY:-}" ]] && LITELLM_KEY=$(grep -m1 '^LITELLM_KEY=' "$INSTALL_DIR/.env" | cut -d= -f2-)
+            [[ -z "${LITELLM_PORT:-}" ]] && LITELLM_PORT=$(grep -m1 '^LITELLM_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2-)
         fi
         # Route through LiteLLM on AMD/Lemonade, direct to llama-server otherwise.
         #
@@ -164,12 +166,25 @@ else
         # Use LITELLM_KEY (read above at line 122) on the lemonade branch.
         # The llama-server-direct branch keeps "no-key" — llama.cpp's OpenAI-
         # compat server doesn't validate the key.
-        if [[ "${ODS_MODE:-local}" == "lemonade" ]]; then
-            _opencode_url="http://127.0.0.1:4000/v1"
+        _opencode_model_id="${LLM_MODEL}"
+        _opencode_model_name="${LLM_MODEL}"
+        _opencode_provider_name="llama-server (local)"
+        if [[ "${ODS_MODEL_SWITCHBOARD:-observe}" == "enabled" ]]; then
+            _opencode_url="http://127.0.0.1:${LITELLM_PORT:-4000}/v1"
+            _opencode_key="${LITELLM_KEY:-}"
+            _opencode_model_id="ods/current"
+            _opencode_model_name="ods/current"
+            _opencode_provider_name="ODS switchboard"
+        elif [[ "${ODS_MODE:-local}" == "lemonade" ]]; then
+            _opencode_url="http://127.0.0.1:${LITELLM_PORT:-4000}/v1"
             _opencode_key="${LITELLM_KEY:-no-key}"
         else
             _opencode_url="http://127.0.0.1:${OLLAMA_PORT:-8080}/v1"
             _opencode_key="no-key"
+        fi
+        if [[ -z "${_opencode_key:-}" ]]; then
+            ai_err "OpenCode switchboard config requires LITELLM_KEY, but it is empty."
+            exit 1
         fi
 
         # Writes a fresh opencode.json from the template. Used for first-install
@@ -179,19 +194,19 @@ else
             cat > "$1" <<OPENCODE_EOF
 {
   "\$schema": "https://opencode.ai/config.json",
-  "model": "llama-server/${LLM_MODEL}",
-  "small_model": "llama-server/${LLM_MODEL}",
+  "model": "llama-server/${_opencode_model_id}",
+  "small_model": "llama-server/${_opencode_model_id}",
   "provider": {
     "llama-server": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "llama-server (local)",
+      "name": "${_opencode_provider_name}",
       "options": {
         "baseURL": "${_opencode_url}",
         "apiKey": "${_opencode_key}"
       },
       "models": {
-        "${LLM_MODEL}": {
-          "name": "${LLM_MODEL}",
+        "${_opencode_model_id}": {
+          "name": "${_opencode_model_name}",
           "limit": {
             "context": ${MAX_CONTEXT:-65536},
             "output": 32768
@@ -206,29 +221,42 @@ OPENCODE_EOF
 
         if [[ ! -f "$OPENCODE_CONFIG_DIR/opencode.json" ]]; then
             _opencode_write_fresh "$OPENCODE_CONFIG_DIR/opencode.json"
-            ai_ok "OpenCode configured for local llama-server (model: ${LLM_MODEL})"
+            ai_ok "OpenCode configured for local llama-server (model: ${_opencode_model_id})"
         else
             # Reinstall: update API key and URL in existing config (key may have changed)
             _opencode_updated=false
             if command -v jq >/dev/null 2>&1; then
                 _opencode_tmp="$OPENCODE_CONFIG_DIR/opencode.json.tmp.$$"
                 if jq --arg url "$_opencode_url" --arg key "$_opencode_key" \
-                    '.provider["llama-server"].options.baseURL = $url
-                     | .provider["llama-server"].options.apiKey = $key' \
+                    --arg model_id "$_opencode_model_id" \
+                    --arg model_name "$_opencode_model_name" \
+                    --arg provider_name "$_opencode_provider_name" \
+                    --argjson context "${MAX_CONTEXT:-65536}" \
+                    '.["$schema"] = "https://opencode.ai/config.json"
+                     | .model = ("llama-server/" + $model_id)
+                     | .small_model = ("llama-server/" + $model_id)
+                     | .provider = (.provider // {})
+                     | .provider["llama-server"] = (.provider["llama-server"] // {})
+                     | .provider["llama-server"].npm = "@ai-sdk/openai-compatible"
+                     | .provider["llama-server"].name = $provider_name
+                     | .provider["llama-server"].options = {"baseURL": $url, "apiKey": $key}
+                     | .provider["llama-server"].models = {
+                         ($model_id): {
+                           "name": $model_name,
+                           "limit": {"context": $context, "output": ([32768, $context] | min)}
+                         }
+                       }' \
                     "$OPENCODE_CONFIG_DIR/opencode.json" > "$_opencode_tmp" 2>/dev/null; then
                     mv "$_opencode_tmp" "$OPENCODE_CONFIG_DIR/opencode.json"
-                    ai_ok "OpenCode config updated (API key and URL refreshed)"
+                    ai_ok "OpenCode config updated (model, API key, and URL refreshed)"
                     _opencode_updated=true
                 else
                     rm -f "$_opencode_tmp"
                     ai_warn "OpenCode config jq rewrite failed (existing file unparseable) — regenerating from template"
                 fi
             else
-                # Fallback without jq: narrow sed that only matches the quoted value,
-                # preserving any trailing comma on the line
-                _sed_i "s|\"apiKey\": *\"[^\"]*\"|\"apiKey\": \"${_opencode_key}\"|" "$OPENCODE_CONFIG_DIR/opencode.json"
-                _sed_i "s|\"baseURL\": *\"[^\"]*\"|\"baseURL\": \"${_opencode_url}\"|" "$OPENCODE_CONFIG_DIR/opencode.json"
-                ai_ok "OpenCode config updated (API key and URL refreshed)"
+                _opencode_write_fresh "$OPENCODE_CONFIG_DIR/opencode.json"
+                ai_ok "OpenCode config regenerated (jq unavailable; model route refreshed)"
                 _opencode_updated=true
             fi
             # Recovery path (issue #332): if the update branch above failed to

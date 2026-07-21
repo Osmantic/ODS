@@ -8827,6 +8827,13 @@ def _atomic_write_json(path: Path, value: dict, mode: int = 0o600) -> None:
 
 def _opencode_route(env: dict) -> tuple[str, str]:
     """Return the host-visible OpenAI-compatible endpoint and API key."""
+    if _normal_switchboard_mode(env) == "enabled":
+        port = str(env.get("LITELLM_PORT") or "4000")
+        api_key = str(env.get("LITELLM_KEY") or "")
+        if not api_key:
+            raise RuntimeError("LITELLM_KEY is required to update the OpenCode switchboard route")
+        return f"http://127.0.0.1:{port}/v1", api_key
+
     gpu_backend = str(env.get("GPU_BACKEND") or "nvidia").lower()
     if _is_windows_host_lemonade(env):
         port = str(env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080")
@@ -8851,9 +8858,17 @@ def _opencode_route(env: dict) -> tuple[str, str]:
     return f"http://{host}:{port}/v1", "no-key"
 
 
+def _opencode_model_route(env: dict, model_id: str) -> tuple[str, str, str]:
+    provider_id = "llama-server"
+    if _normal_switchboard_mode(env) == "enabled":
+        return provider_id, "ods/current", "ods/current"
+    return provider_id, model_id, model_id
+
+
 def _opencode_config_matches(
     config: object,
-    model_name: str,
+    provider_id: str,
+    model_id: str,
     base_url: str,
     api_key: str,
     context_length: int,
@@ -8861,14 +8876,15 @@ def _opencode_config_matches(
     if not isinstance(config, dict):
         return False
     provider = config.get("provider")
-    llama_provider = provider.get("llama-server") if isinstance(provider, dict) else None
+    llama_provider = provider.get(provider_id) if isinstance(provider, dict) else None
     options = llama_provider.get("options") if isinstance(llama_provider, dict) else None
     models = llama_provider.get("models") if isinstance(llama_provider, dict) else None
-    model = models.get(model_name) if isinstance(models, dict) else None
+    model = models.get(model_id) if isinstance(models, dict) else None
     limit = model.get("limit") if isinstance(model, dict) else None
+    model_ref = f"{provider_id}/{model_id}"
     return bool(
-        config.get("model") == f"llama-server/{model_name}"
-        and config.get("small_model") == f"llama-server/{model_name}"
+        config.get("model") == model_ref
+        and config.get("small_model") == model_ref
         and isinstance(options, dict)
         and options.get("baseURL") == base_url
         and options.get("apiKey") == api_key
@@ -8886,7 +8902,9 @@ def _update_opencode_config(
 ) -> None:
     """Update both OpenCode compatibility files and verify persisted routing."""
     base_url, api_key = _opencode_route(env)
-    display_name = display_name or model_id
+    provider_id, route_model_id, route_display_name = _opencode_model_route(env, model_id)
+    display_name = route_display_name if route_model_id != model_id else (display_name or model_id)
+    model_ref = f"{provider_id}/{route_model_id}"
 
     for path, previous in snapshot["files"].items():
         if not previous.get("write"):
@@ -8894,20 +8912,22 @@ def _update_opencode_config(
         source = previous.get("parsed") or snapshot["source"]
         config = json.loads(json.dumps(source))
         previous_model_ref = config.get("model")
-        config["model"] = f"llama-server/{model_id}"
-        config["small_model"] = f"llama-server/{model_id}"
+        config["model"] = model_ref
+        config["small_model"] = model_ref
         config.setdefault("$schema", "https://opencode.ai/config.json")
 
         providers = config.setdefault("provider", {})
         if not isinstance(providers, dict):
             providers = {}
             config["provider"] = providers
-        provider = providers.setdefault("llama-server", {})
+        provider = providers.setdefault(provider_id, {})
         if not isinstance(provider, dict):
             provider = {}
-            providers["llama-server"] = provider
+            providers[provider_id] = provider
         provider["npm"] = "@ai-sdk/openai-compatible"
-        provider["name"] = "llama-server (local)"
+        provider["name"] = (
+            "ODS switchboard" if route_model_id == "ods/current" else "llama-server (local)"
+        )
         options = provider.setdefault("options", {})
         if not isinstance(options, dict):
             options = {}
@@ -8920,15 +8940,15 @@ def _update_opencode_config(
             provider["models"] = models
         if (
             isinstance(previous_model_ref, str)
-            and previous_model_ref.startswith("llama-server/")
+            and previous_model_ref.startswith(f"{provider_id}/")
         ):
             previous_model_id = previous_model_ref.split("/", 1)[1]
-            if previous_model_id != model_id:
+            if previous_model_id != route_model_id:
                 models.pop(previous_model_id, None)
-        model = models.setdefault(model_id, {})
+        model = models.setdefault(route_model_id, {})
         if not isinstance(model, dict):
             model = {}
-            models[model_id] = model
+            models[route_model_id] = model
         model["name"] = display_name
         limit = model.setdefault("limit", {})
         if not isinstance(limit, dict):
@@ -8943,7 +8963,7 @@ def _update_opencode_config(
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Could not verify OpenCode config {path}: {exc}") from exc
         if not _opencode_config_matches(
-            persisted, model_id, base_url, api_key, context_length
+            persisted, provider_id, route_model_id, base_url, api_key, context_length
         ):
             raise RuntimeError(f"OpenCode persisted model route is stale in {path}")
 

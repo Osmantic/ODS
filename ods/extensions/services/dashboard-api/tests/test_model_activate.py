@@ -3836,6 +3836,70 @@ class TestModelActivateRollback:
         assert primary_config["provider"]["llama-server"]["options"]["timeout"] == 900
         assert compat_config["compat_only"] is True
 
+    def test_switchboard_activation_routes_opencode_through_stable_alias(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir, env_path, env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        env_path.write_text(
+            env_text
+            + "ODS_MODEL_SWITCHBOARD=enabled\n"
+            + "LITELLM_KEY=switchboard-secret\n"
+            + "LITELLM_PORT=4100\n",
+            encoding="utf-8",
+        )
+        config_dir = tmp_path / "home" / ".config" / "opencode"
+        config_dir.mkdir(parents=True)
+        primary = config_dir / "opencode.json"
+        compat = config_dir / "config.json"
+        stale = {
+            "model": "llama-server/qwen3-coder-next",
+            "small_model": "llama-server/qwen3-coder-next",
+            "theme": "system",
+            "provider": {
+                "llama-server": {
+                    "options": {
+                        "baseURL": "http://127.0.0.1:11434/v1",
+                        "apiKey": "no-key",
+                    },
+                    "models": {
+                        "qwen3-coder-next": {"name": "Qwen 3 Coder Next"},
+                    },
+                },
+            },
+        }
+        primary.write_text(json.dumps(stale), encoding="utf-8")
+        compat.write_text(json.dumps(stale), encoding="utf-8")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_opencode_config_paths", lambda: (primary, compat))
+        monkeypatch.setattr(_mod, "_restart_managed_opencode", lambda _state=None: False)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+        monkeypatch.setattr(_mod, "_render_model_router_runtime_configs", lambda *_a, **_k: None)
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        for path in (primary, compat):
+            config = json.loads(path.read_text(encoding="utf-8"))
+            assert config["theme"] == "system"
+            assert config["model"] == "llama-server/ods/current"
+            assert config["small_model"] == "llama-server/ods/current"
+            provider = config["provider"]["llama-server"]
+            assert provider["name"] == "ODS switchboard"
+            assert provider["options"] == {
+                "baseURL": "http://127.0.0.1:4100/v1",
+                "apiKey": "switchboard-secret",
+            }
+            assert "qwen3-coder-next" not in provider["models"]
+            assert provider["models"]["ods/current"]["limit"] == {
+                "context": 4096,
+                "output": 4096,
+            }
+
     def test_opencode_update_failure_restores_exact_files(self, tmp_path, monkeypatch):
         install_dir, _env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
             _write_model_activation_fixture(tmp_path)
