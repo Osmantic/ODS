@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
   - name: "Question / Help"
-    url: "https://github.com/Light-Heart-Labs/ODS/discussions"
+    url: "https://github.com/Osmantic/ODS/discussions"
     about: "Ask questions and get help from the community"

@@ -22,8 +22,15 @@ from fastapi.responses import StreamingResponse
 
 import hermes_bridge
 import session_signer
-from config import SERVICES
+from config import INSTALL_DIR, SERVICES
 from helpers import check_service_health
+from performance_oracle import (
+    find_catalog_model,
+    load_model_catalog,
+    model_app_compatibility,
+    read_env_file_value,
+    read_env_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +69,51 @@ _TEXT_LIKE_EXTENSIONS = {  # browsers sometimes upload these as application/octe
     ".txt", ".md", ".markdown", ".csv", ".json", ".yaml", ".yml",
     ".log", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".sh",
 }
+_TALK_BLOCKING_COMPATIBILITY_STATUSES = {
+    "blocked",
+    "incompatible",
+    "not_recommended",
+    "not_supported",
+    "unsupported",
+    "unsupported_until_revalidated",
+    "not_agent_viable",
+}
+
+
+def _active_model_app_compatibility() -> dict[str, Any]:
+    model_name = read_env_file_value("LLM_MODEL", INSTALL_DIR) or read_env_value("LLM_MODEL", INSTALL_DIR)
+    gguf = read_env_file_value("GGUF_FILE", INSTALL_DIR) or read_env_value("GGUF_FILE", INSTALL_DIR)
+    entry = find_catalog_model(load_model_catalog(INSTALL_DIR), model_name, gguf)
+    compatibility = model_app_compatibility(entry or {})
+    compatibility["activeModel"] = {
+        "id": entry.get("id") if entry else None,
+        "model": model_name or None,
+        "gguf": gguf or None,
+    }
+    return compatibility
+
+
+def _hermes_talk_block_reason(compatibility: dict[str, Any]) -> str | None:
+    agent_viability = compatibility.get("agentViability") if isinstance(compatibility, dict) else {}
+    agent_status = str((agent_viability or {}).get("status") or "unknown").strip().lower()
+    if agent_status in _TALK_BLOCKING_COMPATIBILITY_STATUSES:
+        reason = str((agent_viability or {}).get("reason") or "").strip()
+        return reason or "The active model is not currently viable for ODS agent workflows."
+
+    hermes_talk = compatibility.get("hermesTalk") if isinstance(compatibility, dict) else {}
+    status = str((hermes_talk or {}).get("status") or "unknown").strip().lower()
+    if status not in _TALK_BLOCKING_COMPATIBILITY_STATUSES:
+        return None
+    reason = str((hermes_talk or {}).get("reason") or "").strip()
+    return reason or "The active model is not currently compatible with ODS Talk."
+
+
+def _require_hermes_talk_compatible() -> dict[str, Any]:
+    compatibility = _active_model_app_compatibility()
+    reason = _hermes_talk_block_reason(compatibility)
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
+    return compatibility
 
 
 def _vision_model_name() -> str:
@@ -503,27 +555,33 @@ async def talk_status(request: Request) -> dict[str, Any]:
         _service_state("whisper"),
         _service_state("tts"),
     )
+    model_compatibility = _active_model_app_compatibility()
+    talk_block_reason = _hermes_talk_block_reason(model_compatibility)
+    text_chat_ready = hermes.get("status") == "healthy" and not talk_block_reason
     voice_ready = whisper.get("status") == "healthy" and tts.get("status") == "healthy"
     return {
         "ok": True,
         "session": {"expires_at": expires_at},
+        "modelCompatibility": model_compatibility,
         "services": {
             "hermes": hermes,
             "whisper": whisper,
             "tts": tts,
         },
         "capabilities": {
-            "text_chat": hermes.get("status") == "healthy",
+            "text_chat": text_chat_ready,
             "tts": tts.get("status") == "healthy",
             "audio_message": voice_ready,
             "live_mic_requires_secure_context": True,
         },
+        "reason": talk_block_reason,
     }
 
 
 @router.post("/api/talk/session")
 async def talk_session(request: Request) -> dict[str, Any]:
     session_key, expires_at = _require_session(request)
+    _require_hermes_talk_compatible()
     try:
         session_id = await hermes_bridge.ensure_session(session_key)
     except hermes_bridge.HermesUnavailable as exc:
@@ -555,6 +613,7 @@ async def talk_message(payload: dict[str, Any], request: Request) -> dict[str, A
     visible feedback, which strands the UI on a "thinking" spinner.
     """
     session_key, _expires_at = _require_session(request)
+    _require_hermes_talk_compatible()
     text = _extract_message_text(payload)
     return await _send_to_hermes(session_key, text)
 
@@ -577,6 +636,7 @@ async def talk_message_stream(payload: dict[str, Any], request: Request) -> Stre
     than batching them.
     """
     session_key, _expires_at = _require_session(request)
+    _require_hermes_talk_compatible()
     text = _extract_message_text(payload)
     headers = {
         "Cache-Control": "no-cache",
@@ -672,6 +732,7 @@ async def talk_attachment(
         )
 
     # text-like
+    _require_hermes_talk_compatible()
     data = await file.read(MAX_DOC_BYTES + 1)
     if len(data) > MAX_DOC_BYTES:
         raise HTTPException(status_code=413, detail=f"File is too large (max {MAX_DOC_BYTES // (1024 * 1024)} MB).")
@@ -702,6 +763,7 @@ async def talk_attachment(
 @router.post("/api/talk/audio-message")
 async def talk_audio_message(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     session_key, _expires_at = _require_session(request)
+    _require_hermes_talk_compatible()
     data = await file.read(MAX_AUDIO_BYTES + 1)
     if len(data) > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail="Audio message is too large.")

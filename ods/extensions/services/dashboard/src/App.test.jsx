@@ -104,6 +104,23 @@ describe('App', () => {
     expect(document.querySelector('main')).toBeInTheDocument()
   })
 
+  test('uses the compact shell offset below the desktop sidebar breakpoint', () => {
+    render(<App />)
+
+    expect(document.querySelector('aside')).toHaveClass('w-20', 'sm:w-64')
+    expect(document.querySelector('main')).toHaveClass('ml-20', 'sm:ml-64')
+  })
+
+  test('keeps the compact shell offset when the desktop sidebar is collapsed', () => {
+    globalThis.localStorage.setItem('ods-sidebar-collapsed', 'true')
+    render(<App />)
+
+    expect(document.querySelector('aside')).toHaveClass('w-20')
+    expect(document.querySelector('aside')).not.toHaveClass('sm:w-64')
+    expect(document.querySelector('main')).toHaveClass('ml-20')
+    expect(document.querySelector('main')).not.toHaveClass('sm:ml-64')
+  })
+
   test('renders ODS Talk without dashboard chrome on /talk', async () => {
     rtlRender(
       <MemoryRouter initialEntries={['/talk']}>

@@ -339,6 +339,64 @@ assert_eq "SELECTOR_SOURCE" "catalog_fit_pre_download" "$MODEL_RECOMMENDATION_SO
 assert_eq "SELECTOR_POLICY" "context-aware-largest-capable-general-v1" "$MODEL_RECOMMENDATION_POLICY"
 echo ""
 
+echo "Catalog selector (--max-size-mb bounds tier 2 on 48GB Apple unified — issue #1881):"
+_selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
+    --catalog "$SCRIPT_DIR/config/model-library.json" \
+    --backend apple \
+    --memory-type unified \
+    --vram-mb 0 \
+    --ram-gb 48 \
+    --profile qwen \
+    --tier 2 \
+    --max-size-mb 5760 \
+    --host-arch arm64 \
+    --installable-only \
+    --env)"
+LLM_MODEL="" GGUF_FILE="" MODEL_RECOMMENDATION_SOURCE="" MODEL_RECOMMENDATION_REASON=""
+load_selector_env "$_selector_env"
+assert_eq "SELECTOR_LLM_MODEL" "qwen3.5-9b" "$LLM_MODEL"
+assert_eq "SELECTOR_GGUF_FILE" "Qwen3.5-9B-Q4_K_M.gguf" "$GGUF_FILE"
+case "$MODEL_RECOMMENDATION_REASON" in
+    *"Bounded by --tier 2's model size ceiling"*) echo "  PASS: SELECTOR_REASON mentions ceiling"; ((PASS++)) ;;
+    *) echo "  FAIL: SELECTOR_REASON missing ceiling note (got '$MODEL_RECOMMENDATION_REASON')"; ((FAIL++)) ;;
+esac
+echo ""
+
+echo "Catalog selector (--max-size-mb absent still auto-upgrades — back-compat):"
+_selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
+    --catalog "$SCRIPT_DIR/config/model-library.json" \
+    --backend apple \
+    --memory-type unified \
+    --vram-mb 0 \
+    --ram-gb 48 \
+    --profile qwen \
+    --tier 2 \
+    --host-arch arm64 \
+    --installable-only \
+    --env)"
+LLM_MODEL="" GGUF_FILE=""
+load_selector_env "$_selector_env"
+assert_eq "SELECTOR_LLM_MODEL" "qwen3.5-27b" "$LLM_MODEL"
+echo ""
+
+echo "Catalog selector (tiny --max-size-mb falls back to smallest fitting model, not smallest overall):"
+_selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
+    --catalog "$SCRIPT_DIR/config/model-library.json" \
+    --backend apple \
+    --memory-type unified \
+    --vram-mb 0 \
+    --ram-gb 48 \
+    --profile qwen \
+    --tier 0 \
+    --max-size-mb 1500 \
+    --host-arch arm64 \
+    --installable-only \
+    --env)"
+LLM_MODEL="" GGUF_FILE=""
+load_selector_env "$_selector_env"
+assert_eq "SELECTOR_LLM_MODEL" "qwen3.5-2b" "$LLM_MODEL"
+echo ""
+
 echo "Catalog selector (amd unified SH_COMPACT uses ranked A3B without override):"
 _selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
     --catalog "$SCRIPT_DIR/config/model-library.json" \
@@ -359,7 +417,7 @@ assert_eq "SELECTOR_SOURCE" "catalog_fit_pre_download" "$MODEL_RECOMMENDATION_SO
 assert_eq "SELECTOR_POLICY" "context-aware-largest-capable-general-v1" "$MODEL_RECOMMENDATION_POLICY"
 echo ""
 
-echo "Catalog selector (8GB NVIDIA qwen uses upstream catalog fit):"
+echo "Catalog selector (8GB NVIDIA qwen uses 64K catalog fit):"
 _selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
     --catalog "$SCRIPT_DIR/config/model-library.json" \
     --backend nvidia \
@@ -375,7 +433,7 @@ LLM_MODEL="" GGUF_FILE="" MAX_CONTEXT="" MODEL_RUNTIME_PROFILE="" LLAMA_ARG_N_CP
 load_selector_env "$_selector_env"
 assert_eq "SELECTOR_LLM_MODEL" "qwen3.5-9b" "$LLM_MODEL"
 assert_eq "SELECTOR_GGUF_FILE" "Qwen3.5-9B-Q4_K_M.gguf" "$GGUF_FILE"
-assert_eq "SELECTOR_CONTEXT" "32768" "$MAX_CONTEXT"
+assert_eq "SELECTOR_CONTEXT" "65536" "$MAX_CONTEXT"
 assert_eq "SELECTOR_RUNTIME_PROFILE" "" "$MODEL_RUNTIME_PROFILE"
 assert_eq "SELECTOR_N_CPU_MOE" "" "$LLAMA_ARG_N_CPU_MOE"
 assert_eq "SELECTOR_CACHE_V" "" "$LLAMA_ARG_CACHE_TYPE_V"

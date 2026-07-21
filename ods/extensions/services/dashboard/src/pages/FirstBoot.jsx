@@ -24,28 +24,26 @@ import {
 
 const PROGRESS_KEY = 'ods-firstboot-progress'
 
-// NOTE: this picker records a preference today; it does NOT enable
-// extensions or start services. The matching backend wiring lives in
-// the Extensions panel (and a follow-up PR will let Finish apply the
-// chosen preset there). Until then the blurbs describe the *intent*
-// of each stack, with the copy honest that nothing changes yet.
 const STACK_OPTIONS = [
   {
     id: 'chat',
     title: 'Chat only',
     blurb: 'Just the chat surface. This is what runs out of the box.',
+    templateId: null,
     Icon: MessageSquare,
   },
   {
     id: 'chat-agents',
     title: 'Chat + Agents',
-    blurb: 'Adds n8n workflows and the agent runtime; enable from Extensions after setup.',
+    blurb: 'Adds Hermes, web search, usage monitoring, and n8n workflows.',
+    templateId: 'onboarding-agents',
     Icon: Workflow,
   },
   {
     id: 'everything',
-    title: 'Everything',
-    blurb: 'Voice, image generation, search, the whole catalog; enable from Extensions after setup.',
+    title: 'Full ODS Stack',
+    blurb: 'Adds agents, voice, RAG, research, privacy, and observability (~16GB). Image generation installs separately from Extensions.',
+    templateId: 'onboarding-full-stack',
     Icon: Boxes,
   },
 ]
@@ -136,6 +134,47 @@ export default function FirstBoot({ onComplete }) {
     }
     setFinishing(true)
     try {
+      const selectedStack = STACK_OPTIONS.find(option => option.id === stack)
+      if (!selectedStack) {
+        throw new Error('The selected stack is no longer available. Go back and choose another option.')
+      }
+
+      if (selectedStack.templateId) {
+        const applyResp = await fetch(`/api/templates/${selectedStack.templateId}/apply`, {
+          method: 'POST',
+        })
+        if (!applyResp.ok) {
+          const body = await applyResp.json().catch(() => ({}))
+          throw new Error(body.detail || `Failed to configure ${selectedStack.title} (${applyResp.status}).`)
+        }
+
+        const applyResult = await applyResp.json()
+        const failed = applyResult.failed_services
+        const skipped = applyResult.skipped_services
+        const enabledCount = applyResult.enabled_count
+        const startedCount = applyResult.started_count
+        const invalidReceipt = !Array.isArray(failed) ||
+          !Array.isArray(skipped) ||
+          !Number.isInteger(enabledCount) || enabledCount < 0 ||
+          !Number.isInteger(startedCount) || startedCount < 0 ||
+          startedCount > enabledCount
+        if (invalidReceipt) {
+          throw new Error(`${selectedStack.title} returned an invalid apply result. Retry Finish after updating ODS.`)
+        }
+        const incompleteStart = startedCount < enabledCount
+        if (failed.length > 0 || skipped.length > 0 || incompleteStart) {
+          const details = [
+            failed.length > 0 ? `failed to start: ${failed.join(', ')}` : null,
+            skipped.length > 0 ? `not compatible or unavailable: ${skipped.join(', ')}` : null,
+            incompleteStart ? `started ${startedCount} of ${enabledCount} enabled services` : null,
+          ].filter(Boolean).join('; ')
+          const recovery = applyResult.restart_required
+            ? ' Run ods restart, then retry Finish.'
+            : ' Go back and choose another stack, or resolve the listed services and retry.'
+          throw new Error(`${selectedStack.title} was only partially configured (${details}).${recovery}`)
+        }
+      }
+
       let inviteData = null
       if (!ownerCardUnavailable) {
         // Generate the owner magic-link for the named user. Reuses the same
@@ -495,7 +534,7 @@ function ConfirmStep({
       <dl className="bg-theme-card border border-theme-border rounded-xl divide-y divide-theme-border mb-8">
         <Row label="Setup label" value={deviceName.trim() || 'ods'} hint="owner-card audit note" />
         <Row label="First user" value={username.trim()} />
-        <Row label="Stack" value={stackTitle} hint="enable extras from Extensions" />
+        <Row label="Stack" value={stackTitle} hint="services start in the background — verify on the dashboard after setup" />
       </dl>
 
       {ownerCardStatusLoading && (
@@ -536,7 +575,7 @@ function ConfirmStep({
           className="flex-1 flex items-center justify-center gap-2 bg-theme-accent text-white py-4 rounded-xl text-base font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
         >
           {finishing && <Loader2 size={18} className="animate-spin" />}
-          {finishing ? 'Finishing...' : 'Finish'}
+          {finishing ? 'Configuring...' : 'Finish'}
         </button>
       </div>
     </div>

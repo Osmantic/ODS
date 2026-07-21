@@ -284,11 +284,27 @@ def query_usage(agent: str | None = None, hours: int = 24, limit: int = 200) -> 
         _put_conn(conn)
 
 
+# Inclusive-day span cap for the report endpoint. Mirrors
+# dashboard-api/routers/usage.py:MAX_REPORT_RANGE_DAYS — both build one dict
+# per day in the requested span, so the bound belongs on each side.
+MAX_REPORT_RANGE_DAYS = 366
+
+
+
 def _parse_report_dates(start: str, end: str) -> tuple[date, date, date]:
     start_day = date.fromisoformat(start)
     end_day = date.fromisoformat(end)
     if end_day < start_day:
         raise ValueError("end must be on or after start")
+    if end_day == date.max:
+        raise ValueError("end date is out of range")
+    # The report materializes one bucket per day in the span, so an unbounded
+    # range turns a single request into millions of them. Cap it before the
+    # arithmetic below, which also overflows on date.max.
+    if (end_day - start_day).days >= MAX_REPORT_RANGE_DAYS:
+        raise ValueError(
+            f"range must be shorter than {MAX_REPORT_RANGE_DAYS} days"
+        )
     return start_day, end_day, end_day + timedelta(days=1)
 
 

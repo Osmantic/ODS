@@ -38,12 +38,20 @@ load_env_file() {
         # UID=1000 is valid for Docker Compose, but exporting it here aborts
         # lifecycle commands under set -e before they can reach compose.
         [[ "$key" == "UID" ]] && continue
-        # Strip optional surrounding quotes and one leading space
+        # Strip one leading space, then a single matching pair of surrounding
+        # quotes. Only strip when both ends carry the SAME quote character —
+        # stripping each quote type independently corrupts values whose content
+        # legitimately begins or ends with the other quote (e.g. a double-quoted
+        # "'literal'" would otherwise lose its inner single quotes, and KEY="'"
+        # would collapse to empty).
         value="${value# }"
-        value="${value%\"}"
-        value="${value#\"}"
-        value="${value%\'}"
-        value="${value#\'}"
+        if [[ "$value" == '"'*'"' ]]; then
+            value="${value#\"}"
+            value="${value%\"}"
+        elif [[ "$value" == "'"*"'" ]]; then
+            value="${value#\'}"
+            value="${value%\'}"
+        fi
         export "$key=$value"
     done < "$path"
 }

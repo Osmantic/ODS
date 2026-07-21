@@ -9,6 +9,7 @@
   "hermes-proxy",
   "litellm",
   "llama-server",
+  "model-router",
   "n8n",
   "open-webui",
   "openclaw",

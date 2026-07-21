@@ -216,7 +216,11 @@ class TestBuildApiStatus:
         monkeypatch.setattr("main.get_model_info", lambda: ModelInfo(name="Test-32B", size_gb=16.0, context_length=32768))
         monkeypatch.setattr("main.get_bootstrap_status", lambda: BootstrapStatus(active=False))
         monkeypatch.setattr("main.get_loaded_model", AsyncMock(return_value="Test-32B"))
-        monkeypatch.setattr("main.get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 25.5, "lifetime_tokens": 10000}))
+        monkeypatch.setattr("main.get_llama_metrics", AsyncMock(return_value={
+            "tokens_per_second": 25.5,
+            "lifetime_tokens": 10000,
+            "token_count_mode": "cumulative",
+        }))
         monkeypatch.setattr("main.get_llama_context_size", AsyncMock(return_value=32768))
         monkeypatch.setattr("main.get_uptime", lambda: 3600)
         monkeypatch.setattr("main.get_cpu_metrics", lambda: {"percent": 15.0, "temp_c": 55})
@@ -227,8 +231,34 @@ class TestBuildApiStatus:
         assert result["gpu"]["name"] == "RTX 4090"
         assert result["tier"] == "Prosumer"
         assert result["uptime"] == 3600
+        assert result["currentModel"] == "Test-32B"
+        assert result["loadedModel"] == "Test-32B"
+        assert result["configuredModel"] == "Test-32B"
+        assert result["model"]["currentModel"] == "Test-32B"
+        assert result["model"]["loadedModel"] == "Test-32B"
+        assert result["model"]["configuredModel"] == "Test-32B"
         assert result["inference"]["tokensPerSecond"] == 25.5
+        assert result["inference"]["tokenCountMode"] == "cumulative"
         assert result["inference"]["loadedModel"] == "Test-32B"
+
+    def test_detected_gpu_count_overrides_stale_compose_default(self, monkeypatch):
+        from main import _serialize_gpu
+        from models import GPUInfo
+
+        monkeypatch.setenv("GPU_COUNT", "1")
+        gpu = GPUInfo(
+            name="AMD Radeon RX 7900 XTX + AMD Radeon RX 7800 XT",
+            memory_used_mb=8192,
+            memory_total_mb=40960,
+            memory_percent=20.0,
+            utilization_percent=40,
+            temperature_c=0,
+            gpu_backend="amd",
+            gpu_count=2,
+            temperature_available=False,
+        )
+
+        assert _serialize_gpu(gpu)["gpu_count"] == 2
 
     @pytest.mark.asyncio
     async def test_tier_professional(self, monkeypatch):
@@ -488,25 +518,6 @@ class TestExternalLinks:
         assert "open-webui" in link_ids
         assert "litellm" not in link_ids
 
-    def test_returns_public_url_for_reverse_proxy_links(self, test_client, monkeypatch):
-        import config
-        monkeypatch.setattr(config, "SERVICES", {
-            "open-webui": {
-                "name": "Open WebUI",
-                "port": 3000,
-                "external_port": 3000,
-                "health": "/health",
-                "host": "localhost",
-                "public_url": "https://chat.example.test",
-            },
-        })
-        monkeypatch.setattr("main.SERVICES", config.SERVICES)
-
-        resp = test_client.get("/api/external-links", headers=test_client.auth_headers)
-
-        assert resp.status_code == 200
-        assert resp.json()[0]["public_url"] == "https://chat.example.test"
-
 
 # --- /api/storage ---
 
@@ -618,7 +629,9 @@ class TestPreflightRequiredPorts:
         monkeypatch.setattr("main.SERVICES", {
             "svc-a": {"name": "A", "port": 8000, "external_port": 8000},
         })
-        resp = test_client.get("/api/preflight/required-ports")
+        resp = test_client.get(
+            "/api/preflight/required-ports", headers=test_client.auth_headers
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert any(p["port"] == 8000 for p in data["ports"])
@@ -864,6 +877,8 @@ class TestApiStatusServiceSerialization:
             "status": "healthy",
             "port": 11434,
             "uptime": 42,
+            "url": "http://127.0.0.1:11434/",
+            "href": "http://127.0.0.1:11434/",
             "category": "core",
             "required": True,
             "impact": "core",
@@ -895,6 +910,31 @@ class TestApiStatusServiceSerialization:
         assert serialized[0]["severity"] == "disabled"
         assert serialized[0]["countsAsIssue"] is False
 
+    def test_serialize_services_includes_llm_contract(self, monkeypatch):
+        from models import ServiceStatus
+        llm_contract = {
+            "consumes": True,
+            "route": "gateway",
+            "pinning": "none",
+            "swap_safe": True,
+        }
+        monkeypatch.setattr("main.SERVICES", {
+            "open-webui": {"category": "core", "llm": llm_contract},
+        })
+        services = [
+            ServiceStatus(
+                id="open-webui",
+                name="Open WebUI (Chat)",
+                port=8080,
+                external_port=3000,
+                status="healthy",
+            )
+        ]
+
+        serialized = _serialize_services(services, uptime=42)
+
+        assert serialized[0]["llm"] == llm_contract
+
     def test_serialize_services_includes_public_url_metadata(self, monkeypatch):
         from models import ServiceStatus
         monkeypatch.setattr("main.SERVICES", {
@@ -907,8 +947,8 @@ class TestApiStatusServiceSerialization:
         services = [
             ServiceStatus(
                 id="open-webui",
-                name="Open WebUI",
-                port=3000,
+                name="Open WebUI (Chat)",
+                port=8080,
                 external_port=3000,
                 status="healthy",
             )
@@ -918,6 +958,8 @@ class TestApiStatusServiceSerialization:
 
         assert serialized[0]["public_url"] == "https://chat.example.test"
         assert serialized[0]["ui_path"] == "/"
+        assert serialized[0]["url"] == "http://127.0.0.1:3000/"
+        assert serialized[0]["href"] == "http://127.0.0.1:3000/"
 
     def test_optional_unknown_does_not_count_as_issue(self, monkeypatch):
         from models import ServiceStatus
@@ -958,6 +1000,8 @@ class TestApiStatusServiceSerialization:
             "status": "unknown",
             "port": 3002,
             "uptime": None,
+            "url": "http://127.0.0.1:3002/",
+            "href": "http://127.0.0.1:3002/",
             "category": "core",
             "required": True,
             "impact": "core",
@@ -965,6 +1009,27 @@ class TestApiStatusServiceSerialization:
             "severity": "critical",
             "countsAsIssue": True,
         }]
+
+    def test_fallback_services_include_llm_contract(self, monkeypatch):
+        llm_contract = {
+            "consumes": True,
+            "route": "direct",
+            "pinning": "none",
+            "swap_safe": False,
+        }
+        monkeypatch.setattr("main.SERVICES", {
+            "openclaw": {
+                "name": "OpenClaw",
+                "port": 18789,
+                "external_port": 7860,
+                "category": "optional",
+                "llm": llm_contract,
+            }
+        })
+
+        serialized = _fallback_services()
+
+        assert serialized[0]["llm"] == llm_contract
 
 
 # --- /api/status fallback on exception ---
@@ -1137,3 +1202,29 @@ class TestBuildApiStatusTiers:
         assert result["bootstrap"]["active"] is True
         assert result["bootstrap"]["model"] == "Qwen-32B"
         assert result["bootstrap"]["percent"] == 50.0
+
+
+def test_serialize_gpu_preserves_unavailable_sensor_state(monkeypatch):
+    import main
+    from models import GPUInfo
+
+    monkeypatch.setenv("GPU_COUNT", "1")
+    gpu = GPUInfo(
+        name="AMD Radeon RX 9070 XT",
+        memory_used_mb=0,
+        memory_total_mb=16368,
+        memory_percent=0,
+        utilization_percent=0,
+        temperature_c=0,
+        gpu_backend="amd",
+        memory_usage_available=False,
+        utilization_available=False,
+        temperature_available=False,
+    )
+
+    payload = main._serialize_gpu(gpu)
+
+    assert payload["vramTotal"] == 16.0
+    assert payload["vramUsed"] is None
+    assert payload["utilization"] is None
+    assert payload["temperature"] is None

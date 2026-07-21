@@ -12,17 +12,25 @@ services:
       - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
       - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
       - LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-false}
+      - ODS_MODEL_SWITCHBOARD=${ODS_MODEL_SWITCHBOARD:-observe}
     volumes:
       - ./config/litellm/${ODS_MODE:-local}.yaml:/app/config.yaml:ro,z
+      - ./config/litellm/switchboard.yaml:/app/switchboard.yaml:ro,z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${LITELLM_PORT:-4000}:4000"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
+        CONFIG_PATH=/app/config.yaml
+        if [ "$$ODS_MODEL_SWITCHBOARD" = "enabled" ]; then
+          CONFIG_PATH=/app/switchboard.yaml
+        fi
+        export CONFIG_PATH
         if [ "$$LANGFUSE_ENABLED" = "true" ]; then
           python3 -c "
+        import os
         import yaml
-        with open('/app/config.yaml') as f:
+        with open(os.environ['CONFIG_PATH']) as f:
             cfg = yaml.safe_load(f)
         cfg.setdefault('litellm_settings', {})['success_callback'] = ['langfuse']
         with open('/tmp/config.yaml', 'w') as f:
@@ -30,7 +38,7 @@ services:
         "
           exec litellm --config /tmp/config.yaml --port 4000
         else
-          exec litellm --config /app/config.yaml --port 4000
+          exec litellm --config "$$CONFIG_PATH" --port 4000
         fi
     deploy:
       resources:

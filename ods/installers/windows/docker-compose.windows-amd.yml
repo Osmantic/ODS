@@ -35,4 +35,7 @@ services:
   open-webui:
     environment:
       # LLM_API_BASE_PATH set by installer: /api/v1 for Lemonade, /v1 for llama-server
-      OPENAI_API_BASE_URL: "http://host.docker.internal:8080${LLM_API_BASE_PATH:-/v1}"
+      # Switchboard mode writes OPEN_WEBUI_LLM_BASE_URL/API_KEY in .env so
+      # Open WebUI follows the stable ods/current route through LiteLLM.
+      OPENAI_API_BASE_URL: "${OPEN_WEBUI_LLM_BASE_URL:-http://host.docker.internal:8080${LLM_API_BASE_PATH:-/v1}}"
+      OPENAI_API_KEY: "${OPEN_WEBUI_LLM_API_KEY:-${OPENAI_API_KEY:-}}"

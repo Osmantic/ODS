@@ -17,19 +17,29 @@ const token = process.env.OPENCLAW_GATEWAY_TOKEN || '';
 const EXTERNAL_PORT = process.env.OPENCLAW_EXTERNAL_PORT || '7860';
 const LLM_MODEL = process.env.LLM_MODEL || '';
 const GGUF_FILE = process.env.GGUF_FILE || '';
+const LEMONADE_MODEL = process.env.LEMONADE_MODEL || '';
 const OPENCLAW_LLM_URL = process.env.OPENCLAW_LLM_URL || '';
 const BIND_ADDRESS = (process.env.BIND_ADDRESS || '127.0.0.1').trim();
 const AUTO_TOKEN_ALLOWED = ['127.0.0.1', 'localhost', '::1'].includes(BIND_ADDRESS);
 
 // On AMD/Lemonade, compose.amd.yaml sets OLLAMA_URL to
 // "http://llama-server:8080/api" (Lemonade's Ollama-compat endpoint).
-// Models there are exposed as "extra.<GGUF_FILE>".  When going through
-// LiteLLM, LLM_MODEL is fine because the wildcard route rewrites it.
+// Prefer the exact ID persisted from Lemonade's live model catalog. Older
+// Linux releases expose local files as "extra.<GGUF_FILE>", which remains the
+// fallback when no exact ID has been persisted yet.
 // Detect Lemonade by the trailing "/api" path (NVIDIA's llama.cpp URL
 // never has it — its default is "http://llama-server:8080" or via LiteLLM).
 const OLLAMA_URL = process.env.OLLAMA_URL || '';
-const _isLemonade = /\/api\/?$/.test(OLLAMA_URL);
-const EFFECTIVE_MODEL = (_isLemonade && GGUF_FILE) ? `extra.${GGUF_FILE}` : LLM_MODEL;
+const _isLemonade = Boolean(LEMONADE_MODEL) || /\/api\/?$/.test(OLLAMA_URL);
+const EFFECTIVE_MODEL = _isLemonade
+  ? (LEMONADE_MODEL || (GGUF_FILE ? `extra.${GGUF_FILE}` : LLM_MODEL))
+  : LLM_MODEL;
+const openAiBaseUrl = (url) => {
+  const base = (url || '').replace(/\/$/, '');
+  if (!base) return '';
+  if (_isLemonade) return /\/api$/.test(base) ? `${base}/v1` : `${base}/api/v1`;
+  return `${base}/v1`;
+};
 const CONFIG_PATH = path.join(process.env.HOME || '/home/node', '.openclaw', 'openclaw.json');
 const HTML_PATH = process.env.OPENCLAW_CONTROL_UI_HTML || '/app/dist/control-ui/index.html';
 const JS_PATH = process.env.OPENCLAW_AUTO_TOKEN_JS || '/app/dist/control-ui/auto-token.js';
@@ -140,7 +150,7 @@ try {
       const ollamaUrl = process.env.OLLAMA_URL || '';
       const litellmKey = process.env.LITELLM_KEY || '';
       if (ollamaUrl) {
-        const newBase = ollamaUrl.replace(/\/$/, '') + '/v1';
+        const newBase = openAiBaseUrl(ollamaUrl);
         if (provider.baseUrl !== newBase) {
           console.log(`[inject-token] updated provider baseUrl: ${provider.baseUrl} -> ${newBase}`);
           provider.baseUrl = newBase;
@@ -323,7 +333,7 @@ try {
       for (const [name, prov] of Object.entries(provs)) {
         if (prov.baseUrl) {
           const oldUrl = prov.baseUrl;
-          prov.baseUrl = ollamaUrl.replace(/\/$/, '') + '/v1';
+          prov.baseUrl = openAiBaseUrl(ollamaUrl);
           if (oldUrl !== prov.baseUrl) {
             console.log(`[inject-token] merged config: provider ${name} baseUrl: ${oldUrl} -> ${prov.baseUrl}`);
           }

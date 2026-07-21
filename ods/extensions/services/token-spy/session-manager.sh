@@ -63,6 +63,20 @@ query_status() {
   curl -sf --max-time 5 "http://${MONITOR_HOST}:${port}/api/session-status?agent=${agent}" 2>/dev/null || echo '{"recommendation":"unavailable"}'
 }
 
+# Emit every sessionId in a sessions.json, one per line.
+#
+# Must not assume one id per line: sessions.json is written by the agent
+# framework, and a compact document puts every entry on a single line. A
+# greedy `sed 's/.*"sessionId": *"\([^"]*\)".*/\1/'` then reports only the
+# LAST id on that line, so every other live session reads as inactive and
+# gets deleted. Match each occurrence instead, as scripts/session-cleanup.sh
+# already does.
+extract_active_ids() {
+  local sessions_json="$1"
+  grep -oE '"sessionId"[[:space:]]*:[[:space:]]*"[^"]+"' "$sessions_json" 2>/dev/null \
+    | sed -E 's/.*"([^"]+)"[[:space:]]*$/\1/' || true
+}
+
 clean_inactive() {
   local sessions_dir="$1"
   local sessions_json="${sessions_dir}/sessions.json"
@@ -73,7 +87,16 @@ clean_inactive() {
   [ -f "$sessions_json" ] || return 0
 
   local active_ids
-  active_ids=$(sed -n 's/.*"sessionId":[[:space:]]*"\([^"]*\)".*/\1/p' "$sessions_json" 2>/dev/null || true)
+  active_ids=$(extract_active_ids "$sessions_json")
+
+  # No ids out of sessions.json means the parse failed or the file is a
+  # partial write (a crash mid-rewrite leaves 0 bytes), not that every
+  # session is idle. Deleting on that reading wipes live sessions, so any
+  # empty extraction fails closed — matching the remote-path guard.
+  if [ -z "$active_ids" ]; then
+    log "  [WARN] No session ids parsed from $sessions_json — skipping cleanup"
+    return 0
+  fi
 
   for f in "$sessions_dir"/*.jsonl; do
     [ -f "$f" ] || continue
@@ -192,7 +215,10 @@ manage_remote_agent() {
     echo "SESSION_LIST_END"
     if [ -f "\$SESSIONS_DIR/sessions.json" ]; then
       echo "ACTIVE_IDS_START"
-      sed -n 's/.*"sessionId":[[:space:]]*"\([^"]*\)".*/\1/p' "\$SESSIONS_DIR/sessions.json" 2>/dev/null || true
+      # Per-occurrence match: a compact sessions.json holds every entry on one
+      # line, and a greedy sed would report only the last id there.
+      grep -oE '"sessionId"[[:space:]]*:[[:space:]]*"[^"]+"' "\$SESSIONS_DIR/sessions.json" 2>/dev/null \
+        | sed -E 's/.*"([^"]+)"[[:space:]]*\$/\1/' || true
       echo "ACTIVE_IDS_END"
     fi
     echo "TOTAL_SIZE=\$(du -sb "\$SESSIONS_DIR" 2>/dev/null | cut -f1)"
@@ -218,6 +244,12 @@ REMOTESCRIPT
   local active_ids=""
   if echo "$remote_info" | grep -q "ACTIVE_IDS_START"; then
     active_ids=$(echo "$remote_info" | sed -n '/ACTIVE_IDS_START/,/ACTIVE_IDS_END/p' | grep -vE '_START|_END')
+    # The block is only emitted when the remote sessions.json exists, so an
+    # empty one means the parse failed, not that every session is idle.
+    if [ -z "$active_ids" ]; then
+      log "  [WARN] No session ids parsed from $host sessions.json — skipping $agent"
+      return 0
+    fi
   fi
 
   local now

@@ -90,6 +90,9 @@ trap cleanup EXIT
 
 run_inject() {
     local bind_address="${1:-127.0.0.1}"
+    local lemonade_model="${2:-}"
+    local gguf_file="${3:-}"
+    local ollama_url="${4:-}"
     HOME="$TEST_HOME" \
     OPENCLAW_GATEWAY_TOKEN="test-token-abc123" \
     OPENCLAW_EXTERNAL_PORT="7860" \
@@ -98,8 +101,9 @@ run_inject() {
     OPENCLAW_AUTO_TOKEN_JS="$TEST_JS" \
     BIND_ADDRESS="$bind_address" \
     LLM_MODEL="test-model" \
-    GGUF_FILE="" \
-    OLLAMA_URL="" \
+    GGUF_FILE="$gguf_file" \
+    LEMONADE_MODEL="$lemonade_model" \
+    OLLAMA_URL="$ollama_url" \
     OPENCLAW_LLM_URL="" \
     LITELLM_KEY="" \
         node "$INJECT_SCRIPT" >/dev/null 2>&1
@@ -226,6 +230,33 @@ if [[ "$(jq -r '.gateway.mode' "$MERGED_PATH")" == "local" ]]; then
 else
     fail "gateway.mode must be 'local' (required by OpenClaw v2026.3.8+)"
 fi
+
+# Exact Lemonade IDs must win over the pre-10.7 extra.<GGUF_FILE> fallback.
+rm -f "$MERGED_PATH"
+write_test_html
+run_inject "127.0.0.1" "Modern-Model" "Modern-Model.gguf" "http://host.docker.internal:8080"
+if [[ "$(jq -r '.models.providers["local-llama"].models[0].id' "$MERGED_PATH")" == "Modern-Model" ]] \
+   && [[ "$(jq -r '.models.providers["local-llama"].baseUrl' "$MERGED_PATH")" == "http://host.docker.internal:8080/api/v1" ]] \
+   && [[ "$(jq -r '.agents.defaults.model.primary' "$MERGED_PATH")" == "local-llama/Modern-Model" ]]; then
+    pass "Windows Lemonade model ID and /api/v1 route reach OpenClaw"
+else
+    fail "OpenClaw must use LEMONADE_MODEL and the Windows Lemonade /api/v1 route"
+fi
+
+# With no persisted ID, retain the current Linux/legacy naming contract.
+rm -f "$MERGED_PATH"
+write_test_html
+run_inject "127.0.0.1" "" "Legacy-Model.gguf" "http://llama-server:8080/api"
+if [[ "$(jq -r '.models.providers["local-llama"].models[0].id' "$MERGED_PATH")" == "extra.Legacy-Model.gguf" ]]; then
+    pass "OpenClaw retains extra.<GGUF_FILE> fallback without a persisted ID"
+else
+    fail "OpenClaw legacy Lemonade fallback changed unexpectedly"
+fi
+
+# Restore the default merged config for the remaining assertions.
+rm -f "$MERGED_PATH"
+write_test_html
+run_inject
 
 # Note: gateway.auth is patched into ~/.openclaw/openclaw.json (Part 1), not
 # the merged config (Part 3). Verify the Part 1 output instead.

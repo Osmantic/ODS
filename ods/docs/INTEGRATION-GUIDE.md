@@ -207,7 +207,7 @@ Key variables in `.env` (see [.env.example](../.env.example) for the full list):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OLLAMA_PORT` | 8080 | llama-server external port (maps to internal 8080) |
+| `OLLAMA_PORT` | 11434 | llama-server external port (maps to internal 8080) |
 | `WEBUI_PORT` | 3000 | Open WebUI port |
 | `N8N_PORT` | 5678 | n8n workflows port |
 | `LLM_MODEL` | *(tier-dependent)* | Model name for OpenClaw/dashboard |

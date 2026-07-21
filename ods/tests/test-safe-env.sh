@@ -122,5 +122,24 @@ load_env_file "$tmpdir/.env-crlf"
 [[ "${CRLF_QUOTED:-}" == "abc123" ]] || fail "CRLF_QUOTED not unquoted/stripped (got: '${CRLF_QUOTED:-}')"
 pass "load_env_file strips trailing CR from CRLF .env values"
 
+echo "Test 12: load_env_file only strips a matching pair of surrounding quotes"
+unset DQ_INNER_SINGLE SQ_INNER_DOUBLE DQ_ONLY_SINGLE PLAIN_DQ PLAIN_SQ 2>/dev/null || true
+# A double-quoted value whose content is itself single-quoted must keep the
+# inner single quotes; the previous independent per-quote stripping dropped them.
+cat > "$tmpdir/.env-quotes" << 'EOF'
+DQ_INNER_SINGLE="'literal'"
+SQ_INNER_DOUBLE='"json"'
+DQ_ONLY_SINGLE="'"
+PLAIN_DQ="plain"
+PLAIN_SQ='plain'
+EOF
+load_env_file "$tmpdir/.env-quotes"
+[[ "${DQ_INNER_SINGLE:-}" == "'literal'" ]] || fail "DQ_INNER_SINGLE lost inner single quotes (got: '${DQ_INNER_SINGLE:-}')"
+[[ "${SQ_INNER_DOUBLE:-}" == '"json"' ]] || fail "SQ_INNER_DOUBLE lost inner double quotes (got: '${SQ_INNER_DOUBLE:-}')"
+[[ "${DQ_ONLY_SINGLE:-}" == "'" ]] || fail "DQ_ONLY_SINGLE collapsed (got: '${DQ_ONLY_SINGLE:-}')"
+[[ "${PLAIN_DQ:-}" == "plain" ]] || fail "PLAIN_DQ not unquoted (got: '${PLAIN_DQ:-}')"
+[[ "${PLAIN_SQ:-}" == "plain" ]] || fail "PLAIN_SQ not unquoted (got: '${PLAIN_SQ:-}')"
+pass "load_env_file strips only matched surrounding quote pairs"
+
 echo ""
 echo "All safe-env tests passed."

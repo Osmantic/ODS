@@ -109,6 +109,9 @@ def extract_entry(manifest: dict) -> dict | None:
         "features": manifest.get("features") or service.get("features", []),
     }
 
+    if isinstance(service.get("llm"), dict):
+        entry["llm"] = service["llm"]
+
     if "startup_check" in service:
         entry["startup_check"] = service.get("startup_check")
     if "startup_timeout" in service:

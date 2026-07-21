@@ -93,6 +93,39 @@ class TestExtensionsCatalog:
         assert "summary" in data
         assert data["gpu_backend"] == "nvidia"
 
+    def test_catalog_merges_manifest_llm_contract(self, test_client, monkeypatch, tmp_path):
+        """Catalog rows expose the runtime manifest LLM contract."""
+        catalog = [_make_catalog_ext("llm-app", "LLM App")]
+        services = {
+            "llm-app": {
+                "host": "localhost",
+                "port": 8080,
+                "name": "LLM App",
+                "llm": {
+                    "consumes": True,
+                    "route": "direct",
+                    "pinning": "none",
+                    "swap_safe": False,
+                    "badge": "not-swap-safe",
+                },
+            },
+        }
+        _patch_extensions_config(monkeypatch, catalog, services, tmp_path=tmp_path)
+
+        mock_svc = _make_service_status("llm-app", "healthy")
+        with patch("helpers.get_all_services", new_callable=AsyncMock,
+                   return_value=[mock_svc]):
+            resp = test_client.get(
+                "/api/extensions/catalog",
+                headers=test_client.auth_headers,
+            )
+
+        assert resp.status_code == 200
+        llm = resp.json()["extensions"][0]["llm"]
+        assert llm["consumes"] is True
+        assert llm["route"] == "direct"
+        assert llm["swap_safe"] is False
+
     def test_catalog_category_filter(self, test_client, monkeypatch, tmp_path):
         """Category filter returns only matching extensions."""
         catalog = [
@@ -1175,6 +1208,70 @@ class TestDisableExtension:
         data = resp.json()
         assert "dependent-ext" in data["dependents_warning"]
 
+    def test_disable_warns_about_builtin_dependents(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """Disable warns when an enabled built-in extension depends on the target.
+
+        Mirrors the real hermes / hermes-proxy pair: both are built-ins, and
+        disabling hermes while hermes-proxy stays enabled breaks the merged
+        compose project.
+        """
+        builtin_root = tmp_path / "builtin"
+        ext_dir = builtin_root / "my-ext"
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "compose.yaml").write_text(_SAFE_COMPOSE)
+        dep_dir = builtin_root / "dependent-ext"
+        dep_dir.mkdir()
+        (dep_dir / "compose.yaml").write_text(_SAFE_COMPOSE)
+        (dep_dir / "manifest.yaml").write_text(
+            yaml.dump({"service": {"depends_on": ["my-ext"]}}),
+        )
+        _patch_mutation_config(monkeypatch, tmp_path)
+        monkeypatch.setattr("routers.extensions._call_agent", lambda action, sid: True)
+
+        def _mock_compose_rename(action, service_id):
+            (ext_dir / "compose.yaml").rename(ext_dir / "compose.yaml.disabled")
+            return True
+
+        monkeypatch.setattr(
+            "routers.extensions._call_agent_compose_rename",
+            _mock_compose_rename,
+        )
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/disable",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        assert "dependent-ext" in resp.json()["dependents_warning"]
+
+    def test_disable_skips_disabled_dependents(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """A dependent that is itself disabled does not trigger the warning."""
+        user_dir = tmp_path / "user"
+        user_dir.mkdir()
+        ext_dir = user_dir / "my-ext"
+        ext_dir.mkdir()
+        (ext_dir / "compose.yaml").write_text(_SAFE_COMPOSE)
+        dep_dir = user_dir / "dependent-ext"
+        dep_dir.mkdir()
+        (dep_dir / "compose.yaml.disabled").write_text(_SAFE_COMPOSE)
+        (dep_dir / "manifest.yaml").write_text(
+            yaml.dump({"service": {"depends_on": ["my-ext"]}}),
+        )
+        _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/disable",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["dependents_warning"] == []
+
     def test_disable_requires_auth(self, test_client):
         """POST disable without auth → 401."""
         resp = test_client.post("/api/extensions/my-ext/disable")
@@ -2046,6 +2143,64 @@ class TestScanComposeSkipNameCollision:
         with pytest.raises(HTTPException) as exc:
             _scan_compose_content(compose, skip_name_collision=True)
         assert "Docker socket" in exc.value.detail
+
+
+class TestScanComposeVolumeBypass:
+    """The volume guard must resolve the host source for long-form ({type:
+    bind, source: ...}) and relative-traversal entries, not just short-form
+    absolute strings."""
+
+    def _scan(self, tmp_path, compose_text):
+        from routers.extensions import _scan_compose_content
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(compose_text)
+        _scan_compose_content(compose)
+
+    def test_rejects_long_form_absolute_bind(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n    volumes:\n"
+                "      - type: bind\n        source: /\n        target: /host\n",
+            )
+        assert exc.value.status_code == 400
+        assert "absolute host path" in exc.value.detail
+
+    def test_rejects_relative_traversal_short_form(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    volumes:\n      - ../../:/host\n",
+            )
+        assert exc.value.status_code == 400
+        assert "escaping the project directory" in exc.value.detail
+
+    def test_rejects_long_form_relative_traversal(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n    volumes:\n"
+                "      - type: bind\n        source: ../..\n        target: /host\n",
+            )
+        assert exc.value.status_code == 400
+        assert "escaping the project directory" in exc.value.detail
+
+    def test_allows_named_volume(self, tmp_path):
+        # A named volume (no path separator) is not a host bind and must pass.
+        self._scan(
+            tmp_path,
+            "services:\n  svc:\n    image: test\n"
+            "    volumes:\n      - mydata:/var/lib/data\n",
+        )
+
+    def test_allows_project_relative_subdir_bind(self, tmp_path):
+        # A ./subdir bind stays inside the extension's own directory.
+        self._scan(
+            tmp_path,
+            "services:\n  svc:\n    image: test\n"
+            "    volumes:\n      - ./data:/data\n",
+        )
 
 
 # --- skip_gpu_passthrough_check flag isolation ---
@@ -3204,14 +3359,14 @@ class TestSyncExtensionConfig:
 
         calls = []
 
-        def _fake(sid):
-            calls.append(sid)
+        def _fake(sid, *, preserve_existing=False):
+            calls.append((sid, preserve_existing))
             return True
 
         monkeypatch.setattr(ext_mod, "_call_agent_sync_config", _fake)
         result = ext_mod._sync_extension_config("my-ext")
 
-        assert calls == ["my-ext"]
+        assert calls == [("my-ext", False)]
         assert result is True
 
     def test_returns_false_on_agent_failure(self, monkeypatch):
@@ -3219,38 +3374,528 @@ class TestSyncExtensionConfig:
         from routers import extensions as ext_mod
 
         monkeypatch.setattr(
-            ext_mod, "_call_agent_sync_config", lambda _sid: False,
+            ext_mod, "_call_agent_sync_config",
+            lambda _sid, *, preserve_existing=False: False,
         )
         assert ext_mod._sync_extension_config("my-ext") is False
 
     def test_call_agent_sync_config_sends_post(self, monkeypatch):
-        """The HTTP helper POSTs to /v1/extension/sync_config with bearer auth."""
+        """The helper POSTs the expected payload through the shared transport."""
         from routers import extensions as ext_mod
 
         captured = {}
 
-        class _FakeResp:
-            status = 200
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
+        def _fake_request_json(method, path, *, payload=None, timeout=None):
+            captured.update(
+                method=method,
+                path=path,
+                payload=payload,
+                timeout=timeout,
+            )
+            return {"success": True}
 
-        def _fake_urlopen(req, timeout=None):
-            captured["url"] = req.full_url
-            captured["method"] = req.get_method()
-            captured["auth"] = req.get_header("Authorization")
-            captured["body"] = req.data
-            return _FakeResp()
-
-        monkeypatch.setattr(ext_mod, "AGENT_URL", "http://agent:7710")
-        monkeypatch.setattr(ext_mod, "ODS_AGENT_KEY", "secret")
-        monkeypatch.setattr(ext_mod.urllib.request, "urlopen", _fake_urlopen)
+        monkeypatch.setattr(ext_mod, "request_agent_json", _fake_request_json)
 
         assert ext_mod._call_agent_sync_config("my-ext") is True
-        assert captured["url"] == "http://agent:7710/v1/extension/sync_config"
-        assert captured["method"] == "POST"
-        assert captured["auth"] == "Bearer secret"
-        assert b'"service_id"' in captured["body"]
-        assert b'"my-ext"' in captured["body"]
+        assert captured == {
+            "method": "POST",
+            "path": "/v1/extension/sync_config",
+            "payload": {"service_id": "my-ext", "preserve_existing": False},
+            "timeout": ext_mod._AGENT_TIMEOUT,
+        }
+
+
+class TestUpdateExtension:
+    def _prepare(self, monkeypatch, tmp_path, *, enabled=True):
+        from routers import extensions as ext_mod
+
+        lib_dir = _setup_library_ext(tmp_path, "my-ext")
+        user_dir = tmp_path / "user"
+        _patch_mutation_config(
+            monkeypatch, tmp_path, lib_dir=lib_dir, user_dir=user_dir,
+        )
+        monkeypatch.setattr(ext_mod, "EXTENSION_CATALOG", [{
+            "id": "my-ext", "name": "My Ext", "port": 8080,
+        }])
+        monkeypatch.setattr(
+            ext_mod, "_call_agent_invalidate_compose_cache", lambda: None,
+        )
+        monkeypatch.setattr(
+            ext_mod, "_sync_extension_config",
+            lambda _sid, *, preserve_existing=False: True,
+        )
+        monkeypatch.setattr(ext_mod, "_call_agent_hook", lambda _sid, _hook: True)
+        monkeypatch.setattr(ext_mod, "_call_agent", lambda _action, _sid: True)
+        with ext_mod._extensions_lock():
+            ext_mod._install_from_library("my-ext")
+        installed = user_dir / "my-ext"
+        if not enabled:
+            (installed / "compose.yaml").rename(installed / "compose.yaml.disabled")
+        return ext_mod, lib_dir, user_dir, installed
+
+    def test_invalid_id_is_rejected_before_operation_lock(
+        self, test_client, monkeypatch,
+    ):
+        from routers import extensions as ext_mod
+
+        @contextlib.contextmanager
+        def unexpected_lock(_service_id):
+            raise AssertionError("invalid IDs must not create operation locks")
+            yield
+
+        monkeypatch.setattr(ext_mod, "_extension_operation_lock", unexpected_lock)
+
+        response = test_client.post(
+            "/api/extensions/INVALID/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 404
+
+    def test_enable_disable_rename_is_not_a_local_modification(
+        self, monkeypatch, tmp_path,
+    ):
+        ext_mod, _lib, _user, _installed = self._prepare(
+            monkeypatch, tmp_path, enabled=False,
+        )
+        state = ext_mod._library_update_state("my-ext")
+        assert state["update_status"] == "current"
+        assert state["locally_modified"] is False
+
+    def test_install_writes_content_receipt(self, monkeypatch, tmp_path):
+        ext_mod, _lib, _user, installed = self._prepare(monkeypatch, tmp_path)
+        receipt = ext_mod._read_library_receipt(installed)
+        assert receipt is not None
+        assert receipt["installed_digest"] == ext_mod._extension_tree_digest(installed)
+        assert ext_mod._library_update_state("my-ext")["update_status"] == "current"
+
+    def test_staging_rejects_library_change_during_copy(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user, installed = self._prepare(monkeypatch, tmp_path)
+        original = (installed / "manifest.yaml").read_text()
+        source_manifest = lib_dir / "my-ext" / "manifest.yaml"
+        source_manifest.write_text("release: two\n")
+        real_copy = ext_mod._copytree_safe
+
+        def copy_then_change(source, staged):
+            real_copy(source, staged)
+            source_manifest.write_text("release: changed-during-copy\n")
+
+        monkeypatch.setattr(ext_mod, "_copytree_safe", copy_then_change)
+
+        response = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 409
+        assert "changed while" in response.json()["detail"]
+        assert (installed / "manifest.yaml").read_text() == original
+
+    def test_update_replaces_definition_and_keeps_backup(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, user_dir, installed = self._prepare(monkeypatch, tmp_path)
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+
+        response = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["action"] == "updated"
+        assert (installed / "manifest.yaml").read_text() == "release: two\n"
+        assert (user_dir / ".backups" / "my-ext").is_dir()
+        assert ext_mod._library_update_state("my-ext")["update_status"] == "current"
+
+    def test_update_blocks_local_changes_without_force(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        _ext_mod, lib_dir, user_dir, installed = self._prepare(monkeypatch, tmp_path)
+        (installed / "local.txt").write_text("keep me")
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+
+        blocked = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["detail"]["code"] == "locally_modified"
+
+        forced = test_client.post(
+            "/api/extensions/my-ext/update?force=true",
+            headers=test_client.auth_headers,
+        )
+        assert forced.status_code == 200
+        assert (user_dir / ".backups" / "my-ext" / "local.txt").read_text() == "keep me"
+
+    def test_update_start_failure_restores_previous_definition(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, user_dir, installed = self._prepare(monkeypatch, tmp_path)
+        original = (installed / "manifest.yaml").read_text()
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: broken\n")
+        start_results = iter([False, True])
+        monkeypatch.setattr(
+            ext_mod, "_call_agent",
+            lambda action, _sid: next(start_results) if action == "start" else True,
+        )
+
+        response = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 502
+        assert "previous definition restored" in response.json()["detail"]
+        assert (installed / "manifest.yaml").read_text() == original
+        assert (user_dir / ".backups" / "my-ext" / "manifest.yaml").read_text() == "release: broken\n"
+
+    def test_update_start_failure_reports_incomplete_runtime_recovery(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user, installed = self._prepare(monkeypatch, tmp_path)
+        original = (installed / "manifest.yaml").read_text()
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: broken\n")
+        monkeypatch.setattr(
+            ext_mod, "_call_agent",
+            lambda action, _sid: False if action == "start" else True,
+        )
+
+        response = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 500
+        assert "recovery incomplete" in response.json()["detail"]
+        assert "restored runtime restart failed" in response.json()["detail"]
+        assert (installed / "manifest.yaml").read_text() == original
+
+    def test_update_config_failure_restores_previous_definition(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, user_dir, installed = self._prepare(monkeypatch, tmp_path)
+        original = (installed / "manifest.yaml").read_text()
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: broken\n")
+        sync_results = iter([False, True])
+        monkeypatch.setattr(
+            ext_mod, "_sync_extension_config",
+            lambda _sid, *, preserve_existing=False: next(sync_results),
+        )
+
+        response = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 502
+        assert "previous definition restored" in response.json()["detail"]
+        assert (installed / "manifest.yaml").read_text() == original
+        assert (user_dir / ".backups" / "my-ext" / "manifest.yaml").read_text() == "release: broken\n"
+
+    def test_update_config_failure_reports_incomplete_config_recovery(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user, installed = self._prepare(monkeypatch, tmp_path)
+        original = (installed / "manifest.yaml").read_text()
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: broken\n")
+        monkeypatch.setattr(
+            ext_mod,
+            "_sync_extension_config",
+            lambda _sid, *, preserve_existing=False: False,
+        )
+
+        response = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 500
+        assert "recovery incomplete" in response.json()["detail"]
+        assert "config sync failed" in response.json()["detail"]
+        assert (installed / "manifest.yaml").read_text() == original
+
+    def test_update_reports_definition_restore_failure(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user, _installed = self._prepare(monkeypatch, tmp_path)
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: broken\n")
+        start_results = iter([False])
+        monkeypatch.setattr(
+            ext_mod, "_call_agent",
+            lambda action, _sid: next(start_results) if action == "start" else True,
+        )
+        monkeypatch.setattr(ext_mod, "_restore_extension_backup", lambda _sid: False)
+
+        response = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 500
+        assert "definition restore failed" in response.json()["detail"]
+
+    def test_update_rejects_concurrent_extension_operation(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user, installed = self._prepare(monkeypatch, tmp_path)
+        original = (installed / "manifest.yaml").read_text()
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+        monkeypatch.setattr(ext_mod, "_read_progress", lambda _sid: {"status": "pulling"})
+
+        response = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 409
+        assert "in progress" in response.json()["detail"]
+        assert (installed / "manifest.yaml").read_text() == original
+
+    def test_update_rejects_symlinked_install_directory(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        if os.name == "nt" and not can_create_symlinks(tmp_path):
+            pytest.skip("Windows symlink creation requires Developer Mode or administrator privileges")
+        _ext_mod, lib_dir, _user, installed = self._prepare(monkeypatch, tmp_path)
+        outside = tmp_path / "outside-install"
+        installed.rename(outside)
+        installed.symlink_to(outside, target_is_directory=True)
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+
+        response = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 404
+        assert (outside / "manifest.yaml").is_file()
+
+    def test_update_preserves_disabled_state_without_start(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user, installed = self._prepare(
+            monkeypatch, tmp_path, enabled=False,
+        )
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+        starts = []
+        monkeypatch.setattr(
+            ext_mod, "_call_agent", lambda action, sid: starts.append((action, sid)),
+        )
+
+        response = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 200
+        assert (installed / "compose.yaml.disabled").is_file()
+        assert not (installed / "compose.yaml").exists()
+        assert starts == []
+
+    def test_update_rejects_ambiguous_compose_state(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        _ext_mod, lib_dir, _user, installed = self._prepare(monkeypatch, tmp_path)
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+        (installed / "compose.yaml.disabled").write_text(
+            (installed / "compose.yaml").read_text(),
+        )
+
+        response = test_client.post(
+            "/api/extensions/my-ext/update?force=true",
+            headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 409
+        assert "invalid compose state" in response.json()["detail"]
+
+    def test_update_holds_service_operation_lock_through_runtime_proof(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user, _installed = self._prepare(monkeypatch, tmp_path)
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+        lock_state = {"active": False}
+
+        @contextlib.contextmanager
+        def tracked_lock(service_id):
+            assert service_id == "my-ext"
+            assert lock_state["active"] is False
+            lock_state["active"] = True
+            try:
+                yield
+            finally:
+                lock_state["active"] = False
+
+        def assert_locked_sync(_sid, *, preserve_existing=False):
+            assert lock_state["active"] is True
+            return True
+
+        def assert_locked_agent(_action, _sid):
+            assert lock_state["active"] is True
+            return True
+
+        monkeypatch.setattr(ext_mod, "_extension_operation_lock", tracked_lock)
+        monkeypatch.setattr(ext_mod, "_sync_extension_config", assert_locked_sync)
+        monkeypatch.setattr(ext_mod, "_call_agent", assert_locked_agent)
+
+        response = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 200
+        assert lock_state["active"] is False
+
+    def test_rollback_restores_previous_definition(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        _ext_mod, lib_dir, _user, installed = self._prepare(monkeypatch, tmp_path)
+        original = (installed / "manifest.yaml").read_text()
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+        assert test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        ).status_code == 200
+
+        response = test_client.post(
+            "/api/extensions/my-ext/rollback", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["action"] == "rolled_back"
+        assert (installed / "manifest.yaml").read_text() == original
+
+    def test_rollback_preserves_disabled_state_after_update(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user, installed = self._prepare(monkeypatch, tmp_path)
+        original = (installed / "manifest.yaml").read_text()
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+        agent_calls = []
+        monkeypatch.setattr(
+            ext_mod,
+            "_call_agent",
+            lambda action, sid: agent_calls.append((action, sid)) or True,
+        )
+
+        assert test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        ).status_code == 200
+        assert test_client.post(
+            "/api/extensions/my-ext/disable", headers=test_client.auth_headers,
+        ).status_code == 200
+        agent_calls.clear()
+
+        response = test_client.post(
+            "/api/extensions/my-ext/rollback", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 200
+        assert (installed / "manifest.yaml").read_text() == original
+        assert (installed / "compose.yaml.disabled").is_file()
+        assert not (installed / "compose.yaml").exists()
+        assert agent_calls == []
+
+    def test_rollback_start_failure_restores_updated_definition(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, user_dir, installed = self._prepare(monkeypatch, tmp_path)
+        original = (installed / "manifest.yaml").read_text()
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+        assert test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        ).status_code == 200
+        start_results = iter([False, True])
+        monkeypatch.setattr(
+            ext_mod, "_call_agent",
+            lambda action, _sid: next(start_results) if action == "start" else True,
+        )
+
+        response = test_client.post(
+            "/api/extensions/my-ext/rollback", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 502
+        assert "updated definition restored" in response.json()["detail"]
+        assert (installed / "manifest.yaml").read_text() == "release: two\n"
+        assert (user_dir / ".backups" / "my-ext" / "manifest.yaml").read_text() == original
+
+    def test_rollback_start_failure_reports_incomplete_runtime_recovery(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user, installed = self._prepare(monkeypatch, tmp_path)
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+        assert test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        ).status_code == 200
+        monkeypatch.setattr(
+            ext_mod, "_call_agent",
+            lambda action, _sid: False if action == "start" else True,
+        )
+
+        response = test_client.post(
+            "/api/extensions/my-ext/rollback", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 500
+        assert "recovery incomplete" in response.json()["detail"]
+        assert "restored runtime restart failed" in response.json()["detail"]
+        assert (installed / "manifest.yaml").read_text() == "release: two\n"
+
+    def test_rollback_config_failure_restores_updated_definition(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user, installed = self._prepare(monkeypatch, tmp_path)
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+        assert test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        ).status_code == 200
+        sync_results = iter([False, True])
+        monkeypatch.setattr(
+            ext_mod,
+            "_sync_extension_config",
+            lambda _sid, *, preserve_existing=False: next(sync_results),
+        )
+
+        response = test_client.post(
+            "/api/extensions/my-ext/rollback", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 502
+        assert "updated definition restored" in response.json()["detail"]
+        assert (installed / "manifest.yaml").read_text() == "release: two\n"
+
+    def test_rollback_config_failure_reports_incomplete_recovery(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user, installed = self._prepare(monkeypatch, tmp_path)
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+        assert test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        ).status_code == 200
+        monkeypatch.setattr(
+            ext_mod,
+            "_sync_extension_config",
+            lambda _sid, *, preserve_existing=False: False,
+        )
+
+        response = test_client.post(
+            "/api/extensions/my-ext/rollback", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 500
+        assert "recovery incomplete" in response.json()["detail"]
+        assert "config sync failed" in response.json()["detail"]
+        assert (installed / "manifest.yaml").read_text() == "release: two\n"
+
+    def test_uninstall_removes_definition_backup(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        _ext_mod, lib_dir, user_dir, _installed = self._prepare(
+            monkeypatch, tmp_path, enabled=False,
+        )
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+        assert test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        ).status_code == 200
+
+        response = test_client.delete(
+            "/api/extensions/my-ext", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 200
+        assert not (user_dir / "my-ext").exists()
+        assert not (user_dir / ".backups" / "my-ext").exists()
 
 
 # --- Error progress ---
@@ -3422,16 +4067,16 @@ def test_production_core_service_ids_include_hermes_services():
 class TestCallAgentErrorNarrowing:
     """_call_agent swallows network errors but not programmer errors."""
 
-    def test_call_agent_returns_false_on_urlerror(self, monkeypatch, caplog):
+    def test_call_agent_returns_false_on_transport_error(self, monkeypatch, caplog):
         """Network failures produce (False, warning) — callers rely on this."""
         import logging
-        import urllib.error
+        from host_agent_client import AgentUnavailable
         from routers import extensions as ext_module
 
         def _raise(*_args, **_kwargs):
-            raise urllib.error.URLError("timeout")
+            raise AgentUnavailable("timeout")
 
-        monkeypatch.setattr(ext_module.urllib.request, "urlopen", _raise)
+        monkeypatch.setattr(ext_module, "request_agent_json", _raise)
         with caplog.at_level(logging.WARNING, logger="routers.extensions"):
             result = ext_module._call_agent("start", "svc-x")
 
@@ -3445,7 +4090,7 @@ class TestCallAgentErrorNarrowing:
         def _raise(*_args, **_kwargs):
             raise AttributeError("boom")
 
-        monkeypatch.setattr(ext_module.urllib.request, "urlopen", _raise)
+        monkeypatch.setattr(ext_module, "request_agent_json", _raise)
         with pytest.raises(AttributeError):
             ext_module._call_agent("start", "svc-x")
 
@@ -3496,3 +4141,70 @@ def test_extensions_lock_falls_back_when_data_root_is_unwritable(
 
     with ext_module._extensions_lock():
         assert fallback_lock.exists()
+
+
+class TestUpdateHardening(TestUpdateExtension):
+    """Gates and sync-echo hardening for the transactional update path."""
+
+    def test_stale_initial_progress_does_not_block_mutations(self):
+        from datetime import datetime, timezone
+
+        from routers import extensions as ext_mod
+
+        old = "2020-01-01T00:00:00+00:00"
+        now = datetime.now(timezone.utc).isoformat()
+        assert ext_mod._progress_blocks_mutation(None) is False
+        assert ext_mod._progress_blocks_mutation(
+            {"status": "error", "started_at": old, "updated_at": old},
+        ) is False
+        # Never advanced by the agent and past the grace period: abandoned.
+        assert ext_mod._progress_blocks_mutation(
+            {"status": "pulling", "started_at": old, "updated_at": old},
+        ) is False
+        # Fresh initial record still blocks.
+        assert ext_mod._progress_blocks_mutation(
+            {"status": "pulling", "started_at": now, "updated_at": now},
+        ) is True
+        # Advancing record blocks regardless of age.
+        assert ext_mod._progress_blocks_mutation(
+            {"status": "pulling", "started_at": old, "updated_at": now},
+        ) is True
+
+    def test_update_blocks_unknown_state_without_force(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        ext_mod, lib_dir, _user_dir, _installed = self._prepare(
+            monkeypatch, tmp_path,
+        )
+        (lib_dir / "my-ext" / "manifest.yaml").write_text("release: two\n")
+
+        def unreadable(_path):
+            raise OSError("unreadable install")
+
+        monkeypatch.setattr(ext_mod, "_extension_tree_digest", unreadable)
+        blocked = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["detail"]["code"] == "update_state_unknown"
+        assert blocked.json()["detail"]["force_available"] is True
+
+    def test_sync_config_requires_preserve_echo(self, monkeypatch):
+        from routers import extensions as ext_mod
+
+        monkeypatch.setattr(
+            ext_mod, "request_agent_json",
+            lambda *a, **k: {"status": "ok"},
+        )
+        assert ext_mod._call_agent_sync_config(
+            "my-ext", preserve_existing=True,
+        ) is False
+        assert ext_mod._call_agent_sync_config("my-ext") is True
+
+        monkeypatch.setattr(
+            ext_mod, "request_agent_json",
+            lambda *a, **k: {"status": "ok", "preserve_existing": True},
+        )
+        assert ext_mod._call_agent_sync_config(
+            "my-ext", preserve_existing=True,
+        ) is True

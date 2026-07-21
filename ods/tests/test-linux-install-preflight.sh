@@ -137,6 +137,96 @@ else
     fail "ods-preflight.sh bash -n failed after edit"
 fi
 
+# --- Rootless Docker subordinate ID range validation (ROOTLESS_SUBID) ---
+# Fixture-driven: ODS_ASSUME_ROOTLESS forces the rootless path and
+# ODS_SUBUID_FILE/ODS_SUBGID_FILE point at temp files, so no rootless
+# daemon is needed to exercise the check.
+if command -v python3 >/dev/null 2>&1; then
+    SUBID_TMP="$(mktemp -d)"
+    CURRENT_USER="$(id -un)"
+    CURRENT_UID="$(id -u)"
+
+    rootless_subid_status() {
+        # $1=subuid fixture, $2=subgid fixture → echoes the check status
+        local report="$SUBID_TMP/report.json"
+        if ODS_ASSUME_ROOTLESS=1 ODS_SUBUID_FILE="$1" ODS_SUBGID_FILE="$2" \
+            "$LP" --json >"$report" 2>/dev/null || true; then
+            :
+        fi
+        python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    report = json.load(f)
+print(next(c["status"] for c in report["checks"] if c["id"] == "ROOTLESS_SUBID"))
+' "$report"
+    }
+
+    printf '%s:100000:65536\n' "$CURRENT_USER" >"$SUBID_TMP/subuid-ok"
+    printf '%s:100000:65536\n' "$CURRENT_USER" >"$SUBID_TMP/subgid-ok"
+    if [[ "$(rootless_subid_status "$SUBID_TMP/subuid-ok" "$SUBID_TMP/subgid-ok")" == "pass" ]]; then
+        pass "ROOTLESS_SUBID passes with a full 65536 range for the current user"
+    else
+        fail "ROOTLESS_SUBID should pass with a full 65536 range"
+    fi
+
+    rootless_subid_remediation() {
+        # Reads the remediation of the LAST rootless_subid_status run.
+        python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    report = json.load(f)
+print(next(c["remediation"] for c in report["checks"] if c["id"] == "ROOTLESS_SUBID"))
+' "$SUBID_TMP/report.json"
+    }
+
+    printf 'someone-else:100000:65536\n' >"$SUBID_TMP/subuid-missing"
+    printf 'someone-else:100000:65536\n' >"$SUBID_TMP/subgid-missing"
+    if [[ "$(rootless_subid_status "$SUBID_TMP/subuid-missing" "$SUBID_TMP/subgid-missing")" == "fail" ]]; then
+        pass "ROOTLESS_SUBID fails when the user has no subordinate ID entry"
+    else
+        fail "ROOTLESS_SUBID should fail when the user has no entry"
+    fi
+    if [[ "$(rootless_subid_remediation)" == *"100000-165535"* ]]; then
+        pass "missing-entry remediation suggests the standard 100000-165535 range"
+    else
+        fail "missing-entry remediation should carry the exact usermod command"
+    fi
+
+    printf '%s:100000:1000\n' "$CURRENT_USER" >"$SUBID_TMP/subuid-small"
+    if [[ "$(rootless_subid_status "$SUBID_TMP/subuid-small" "$SUBID_TMP/subgid-ok")" == "warn" ]]; then
+        pass "ROOTLESS_SUBID warns when the allocated range is below 65536"
+    else
+        fail "ROOTLESS_SUBID should warn on a small range"
+    fi
+    # The fixture already occupies 100000:1000, so the warning must NOT
+    # suggest the fixed 100000-165535 range (it would overlap); it should
+    # ask for a non-overlapping extension to at least 65536 IDs instead.
+    SMALL_FIX="$(rootless_subid_remediation)"
+    if [[ "$SMALL_FIX" != *"100000-165535"* && "$SMALL_FIX" == *"65536"* ]]; then
+        pass "small-range remediation asks for a non-overlapping extension"
+    else
+        fail "small-range remediation must not reuse the fixed 100000-165535 range"
+    fi
+
+    printf '%s:100000:30000\n%s:200000:40000\n' "$CURRENT_USER" "$CURRENT_USER" >"$SUBID_TMP/subuid-split"
+    if [[ "$(rootless_subid_status "$SUBID_TMP/subuid-split" "$SUBID_TMP/subgid-ok")" == "pass" ]]; then
+        pass "ROOTLESS_SUBID sums multiple ranges allocated to the same user"
+    else
+        fail "ROOTLESS_SUBID should sum split ranges"
+    fi
+
+    printf '%s:100000:65536\n' "$CURRENT_UID" >"$SUBID_TMP/subuid-numeric"
+    if [[ "$(rootless_subid_status "$SUBID_TMP/subuid-numeric" "$SUBID_TMP/subgid-ok")" == "pass" ]]; then
+        pass "ROOTLESS_SUBID accepts entries keyed by numeric UID"
+    else
+        fail "ROOTLESS_SUBID should accept numeric-UID-keyed entries"
+    fi
+
+    rm -rf "$SUBID_TMP"
+else
+    fail "python3 not available - skipped ROOTLESS_SUBID fixtures (unexpected on CI)"
+fi
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 echo ""

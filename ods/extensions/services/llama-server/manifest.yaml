@@ -12,7 +12,7 @@ service:
   default_host: llama-server
   port: 8080
   external_port_env: OLLAMA_PORT
-  external_port_default: 8080
+  external_port_default: 11434
   health: /health
   ui_path: /
   health_timeout: 15

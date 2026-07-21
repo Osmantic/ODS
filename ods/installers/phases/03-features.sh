@@ -269,8 +269,8 @@ fi
 # Multi-GPU Configuration
 
 # write $GPU_TOPOLOGY_JSON into a tmpfile to use by the commands
-TOPOLOGY_FILE=$(mktemp /tmp/ods_gpu_topology.XXXXXX.json)
-trap "rm -f $TOPOLOGY_FILE" EXIT
+TOPOLOGY_FILE=$(mktemp "${TMPDIR:-/tmp}/ods_gpu_topology.XXXXXX.json")
+trap 'rm -f "$TOPOLOGY_FILE"' EXIT
 echo "$GPU_TOPOLOGY_JSON" > "$TOPOLOGY_FILE"
 
 ASSIGN_GPUS_SCRIPT="$SCRIPT_DIR/scripts/assign_gpus.py"

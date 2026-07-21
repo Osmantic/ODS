@@ -8,4 +8,7 @@
 services:
   openclaw:
     environment:
-      - OLLAMA_URL=http://llama-server:8080/api
+      # Windows generates ODS_AGENT_HOST=host.docker.internal for native
+      # host services. Linux leaves it unset and keeps using the managed
+      # llama-server service on the Compose network.
+      - OLLAMA_URL=http://${ODS_AGENT_HOST:-llama-server}:${AMD_INFERENCE_PORT:-8080}/api

@@ -446,7 +446,45 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
     STT_MODEL_ENCODED="${STT_MODEL//\//%2F}"
     WHISPER_PORT_RESOLVED="${SERVICE_PORTS[whisper]:-9000}"
     WHISPER_URL="http://127.0.0.1:${WHISPER_PORT_RESOLVED}"
-    STT_RECOVERY_CMD="curl --max-time 1800 -X POST ${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}"
+    STT_MODEL_URL="${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}"
+    STT_TRIGGER_TIMEOUT_SECONDS="${ODS_STT_TRIGGER_TIMEOUT_SECONDS:-30}"
+    STT_CACHE_WAIT_SECONDS="${ODS_STT_CACHE_WAIT_SECONDS:-900}"
+    [[ "$STT_TRIGGER_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || STT_TRIGGER_TIMEOUT_SECONDS=30
+    [[ "$STT_CACHE_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] || STT_CACHE_WAIT_SECONDS=900
+    STT_RECOVERY_CMD="curl --max-time ${STT_TRIGGER_TIMEOUT_SECONDS} -X POST ${STT_MODEL_URL}"
+
+    _stt_model_cached() {
+        local _url="$1"
+        curl -sf --max-time 10 "$_url" &>/dev/null
+    }
+
+    _trigger_stt_model_download() {
+        local _url="$1"
+        local _rc=0
+
+        # Speaches can keep downloading after the request is accepted. Keep the
+        # client bounded, then use the cache endpoint as the strict source of truth.
+        curl -sS --fail --max-time "${STT_TRIGGER_TIMEOUT_SECONDS}" -X POST "$_url" \
+            >> "$LOG_FILE" 2>&1 || _rc=$?
+        if [[ "$_rc" -eq 0 || "$_rc" -eq 28 ]]; then
+            return 0
+        fi
+        ai_warn "STT model download trigger returned curl exit ${_rc}; verifying cache before failing."
+        return 1
+    }
+
+    _wait_stt_model_cached() {
+        local _url="$1"
+        local _deadline=$((SECONDS + STT_CACHE_WAIT_SECONDS))
+
+        while (( SECONDS < _deadline )); do
+            if _stt_model_cached "$_url"; then
+                return 0
+            fi
+            sleep 5
+        done
+        _stt_model_cached "$_url"
+    }
 
     # Step 1: wait briefly for the models API to be ready. Whisper's /health
     # endpoint can pass before the models endpoint responds, so we probe
@@ -464,22 +502,16 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
         printf "\r  ${AMB}⚠${NC} %-60s\n" "STT models API not ready — download manually:"
         printf "      %s\n" "$STT_RECOVERY_CMD"
     # Step 2: skip download if already cached.
-    elif curl -sf --max-time 10 "${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}" &>/dev/null; then
+    elif _stt_model_cached "$STT_MODEL_URL"; then
         printf "\r  ${BGRN}✓${NC} %-60s\n" "STT model already cached (${STT_MODEL})"
     else
         # Step 3: POST to trigger download. Log stdout/stderr to install log.
-        # max-time 600s (10 min): bounded retry budget so a stuck
-        # huggingface_hub.snapshot_download (well-known on slow links and
-        # under bufferbloat) can't consume the entire install timeout. The
-        # next step verifies cache state via GET and prints the recovery
-        # command if the timeout was hit before completion.
         ai "Downloading STT model (${STT_MODEL})..."
-        curl -s --max-time 600 -X POST "${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}" \
-            >> "$LOG_FILE" 2>&1 || true
+        _trigger_stt_model_download "$STT_MODEL_URL" || true
 
         # Step 4: verify the model is actually cached. POST can return 200
         # even if the download partially fails, so this GET is the real test.
-        if curl -sf --max-time 10 "${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}" &>/dev/null; then
+        if _wait_stt_model_cached "$STT_MODEL_URL"; then
             printf "\r  ${BGRN}✓${NC} %-60s\n" "STT model cached (${STT_MODEL})"
         else
             printf "\r  ${AMB}⚠${NC} %-60s\n" "STT model download failed — run manually:"

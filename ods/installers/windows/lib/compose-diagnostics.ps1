@@ -16,6 +16,23 @@ function Get-ODSComposeEnvFileArgs {
     return @()
 }
 
+function Initialize-ODSComposeDockerClientConfig {
+    param([string]$InstallDir)
+
+    $dockerConfigDir = Join-Path (Join-Path $InstallDir "data") "docker-client-public"
+    if (-not (Test-Path $dockerConfigDir)) {
+        New-Item -ItemType Directory -Path $dockerConfigDir -Force | Out-Null
+    }
+
+    $dockerConfigPath = Join-Path $dockerConfigDir "config.json"
+    if (-not (Test-Path $dockerConfigPath)) {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($dockerConfigPath, "{`n  `"auths`": {}`n}`n", $utf8NoBom)
+    }
+
+    return $dockerConfigDir
+}
+
 function Invoke-ODSDockerCompose {
     <#
     .SYNOPSIS
@@ -32,14 +49,27 @@ function Invoke-ODSDockerCompose {
     )
     Push-Location $InstallDir
     try {
+        $dockerConfigDir = Initialize-ODSComposeDockerClientConfig -InstallDir $InstallDir
+        $dockerClientArgs = @("--config", $dockerConfigDir)
+        $hadDockerConfig = Test-Path Env:DOCKER_CONFIG
+        $previousDockerConfig = $env:DOCKER_CONFIG
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'SilentlyContinue'
-        & docker compose @ComposeFlags @ComposeArgs 2>&1 | ForEach-Object { Write-Host "  $_" }
+        $env:DOCKER_CONFIG = $dockerConfigDir
+        & docker @dockerClientArgs compose @ComposeFlags @ComposeArgs 2>&1 | ForEach-Object { Write-Host "  $_" }
         $exitCode = $LASTEXITCODE
         $ErrorActionPreference = $prevEAP
         return $exitCode
     }
     finally {
+        if ($hadDockerConfig) {
+            $env:DOCKER_CONFIG = $previousDockerConfig
+        } else {
+            Remove-Item Env:DOCKER_CONFIG -ErrorAction SilentlyContinue
+        }
+        if ($null -ne $prevEAP) {
+            $ErrorActionPreference = $prevEAP
+        }
         Pop-Location
     }
 }
@@ -108,7 +138,12 @@ function Get-ODSComposeSensitiveEnvValues {
             if ($line -notmatch '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { continue }
             $key = $Matches[1]
             $value = $Matches[2].Trim().Trim('"').Trim("'")
-            if ($value.Length -ge 4 -and $key -match '(?i)(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)') {
+            # USER|EMAIL|BEARER cover schema secret:true keys the shorter set
+            # missed - N8N_USER, LANGFUSE_INIT_USER_EMAIL, LANGFUSE_MINIO_ROOT_USER -
+            # whose values would otherwise ship in the shareable failure report.
+            # Keep in sync with ConvertTo-ODSComposeRedactedLine below and the
+            # Linux support bundle's redaction set.
+            if ($value.Length -ge 4 -and $key -match '(?i)(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL|USER|EMAIL|BEARER)') {
                 $values += $value
             }
         }
@@ -128,7 +163,8 @@ function ConvertTo-ODSComposeRedactedLine {
     )
 
     $redacted = $Line
-    if ($redacted -match '(?i)(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)' -and $redacted -match '[:=]') {
+    # Key set kept in sync with Get-ODSComposeSensitiveEnvValues above.
+    if ($redacted -match '(?i)(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL|USER|EMAIL|BEARER)' -and $redacted -match '[:=]') {
         $separatorMatch = [regex]::Match($redacted, '[:=]\s*')
         if ($separatorMatch.Success) {
             $redacted = $redacted.Substring(0, $separatorMatch.Index + $separatorMatch.Length) + "[REDACTED]"

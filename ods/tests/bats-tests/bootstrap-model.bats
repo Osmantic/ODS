@@ -104,6 +104,10 @@ setup() {
     [[ "$BOOTSTRAP_GGUF_URL" == *"huggingface.co"* ]]
 }
 
+@test "BOOTSTRAP_GGUF_SHA256: pins the fast-start model" {
+    [[ "$BOOTSTRAP_GGUF_SHA256" =~ ^[a-f0-9]{64}$ ]]
+}
+
 @test "BOOTSTRAP_LLM_MODEL: is set and non-empty" {
     [[ -n "$BOOTSTRAP_LLM_MODEL" ]]
 }

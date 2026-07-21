@@ -1,7 +1,7 @@
 import {
   Database, Cpu, Workflow, Plug, Image, MessageSquare, Code,
   FileText, Shield, Globe, Music, Video, Search, Puzzle,
-  Box, Loader2, RefreshCw, ChevronDown, ChevronUp, Package, Info, X, Download, Trash2, ExternalLink, Terminal, Copy, Check,
+  Box, Loader2, RefreshCw, RotateCcw, ChevronDown, ChevronUp, Package, Info, X, Download, Trash2, ExternalLink, Terminal, Copy, Check,
 } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import { DependencyBadges, DependencyConfirmDialog, DisableDependentWarning } from '../components/DependencyBadges'
@@ -230,7 +230,7 @@ export default function Extensions() {
     }
   }
 
-  const handleMutation = async (serviceId, action, { autoEnableDeps = false } = {}) => {
+  const handleMutation = async (serviceId, action, { autoEnableDeps = false, force = false } = {}) => {
     setMutating(serviceId)
     setConfirm(null)
     setDepConfirm(null)
@@ -243,9 +243,12 @@ export default function Extensions() {
       if (action === 'enable' && autoEnableDeps) {
         url += '?auto_enable_deps=true'
       }
+      if (action === 'update' && force) {
+        url += '?force=true'
+      }
       const opts = {
         method: action === 'uninstall' || action === 'purge' ? 'DELETE' : 'POST',
-        signal: AbortSignal.timeout(300000),
+        signal: AbortSignal.timeout(action === 'update' || action === 'rollback' ? 30 * 60 * 1000 : 300000),
       }
       if (action === 'purge') {
         opts.headers = { 'Content-Type': 'application/json' }
@@ -302,6 +305,12 @@ export default function Extensions() {
       disable: `Disable ${ext.name}? The service will be stopped.`,
       uninstall: `Remove ${ext.name}? You can reinstall it from the library.`,
       purge: `Permanently delete all data for ${ext.name}? This cannot be undone.`,
+      update: ext.locally_modified
+        ? `Update ${ext.name} from the ODS library? Local definition changes will be replaced, but retained as a rollback backup.`
+        : ext.update_status === 'untracked'
+        ? `Refresh this legacy ${ext.name} install from the ODS library and begin tracking future updates? The current definition will be retained as a rollback backup.`
+        : `Update ${ext.name} from the ODS library? The current definition will be retained for rollback.`,
+      rollback: `Restore the previous ${ext.name} extension definition? Current service data and configuration will be preserved.`,
     }
     setConfirm({ action, ext, message: messages[action] })
   }
@@ -374,12 +383,13 @@ export default function Extensions() {
 
       {/* Summary bar */}
       <div className="bg-theme-card border border-theme-border rounded-xl p-4 mb-6 liquid-metal-frame liquid-metal-frame--soft">
-        <div className="flex items-center gap-6 text-sm">
+        <div className="flex flex-wrap items-center gap-6 text-sm">
           <SummaryItem label="Total" value={summary.total || extensions.length} color="bg-theme-text-muted" />
           <SummaryItem label="Installed" value={summary.installed ?? 0} color="bg-green-500" />
           <SummaryItem label="Stopped" value={summary.stopped ?? 0} color="bg-red-500" />
           <SummaryItem label="Unhealthy" value={summary.unhealthy ?? 0} color="bg-amber-500" />
           <SummaryItem label="Available" value={summary.not_installed ?? 0} color="bg-theme-accent" />
+          <SummaryItem label="Updates" value={summary.updates_available ?? 0} color="bg-cyan-400" />
           <SummaryItem label="Installing" value={summary.installing ?? 0} color="bg-blue-500" />
           <SummaryItem label="Error" value={summary.error ?? 0} color="bg-red-500" />
           <SummaryItem label="Incompatible" value={summary.incompatible ?? 0} color="bg-orange-500" />
@@ -532,7 +542,11 @@ export default function Extensions() {
             <div className="flex justify-end gap-3">
               <button onClick={() => setConfirm(null)} autoFocus className="px-4 py-2 text-[10px] font-mono uppercase tracking-[0.16em] text-theme-text-muted/65 hover:text-theme-text transition-colors">Cancel</button>
               <button
-                onClick={() => handleMutation(confirm.ext.id, confirm.action)}
+                onClick={() => handleMutation(confirm.ext.id, confirm.action, {
+                  force: confirm.action === 'update' && (
+                    confirm.ext.locally_modified || confirm.ext.update_status === 'untracked'
+                  ),
+                })}
                 className={`px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg transition-colors ${
                   confirm.action === 'uninstall' || confirm.action === 'purge' ? 'bg-red-500/15 text-red-400 hover:bg-red-500/25' :
                   'bg-theme-accent/15 text-theme-accent-light hover:bg-theme-accent/25'
@@ -618,6 +632,28 @@ function StatusBadge({ status, statusStyle, ext, gpuBackend, onConsole }) {
   )
 }
 
+function LlmSwapBadge({ llm }) {
+  if (!llm?.consumes) return null
+
+  const safe = llm.swap_safe === true
+  const Icon = safe ? Check : X
+  const label = safe ? 'Swap-safe' : 'Not swap-safe'
+  const tone = safe
+    ? 'border-green-500/20 bg-green-500/10 text-green-300'
+    : 'border-red-500/20 bg-red-500/10 text-red-300'
+
+  return (
+    <span
+      data-testid="llm-swap-badge"
+      title={llm.swap_safe_reason || label}
+      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${tone}`}
+    >
+      <Icon size={10} />
+      {label}
+    </span>
+  )
+}
+
 function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, onAction, mutating, progressData }) {
   const iconName = ext.features?.[0]?.icon
   const Icon = (iconName && ICON_MAP[iconName]) || Package
@@ -638,6 +674,10 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
   const isToggleable = isUserExt && (status === 'enabled' || status === 'cli_installed' || status === 'disabled' || status === 'error' || status === 'stopped' || status === 'unhealthy')
   const showRemove = isUserExt && (status === 'disabled' || isError)
   const showInstall = status === 'not_installed' && ext.installable
+  const showUpdate = isUserExt && ext.installable && (
+    ext.update_available || ext.update_status === 'untracked'
+  )
+  const showRollback = isUserExt && ext.rollback_available
 
   return (
     <div className={`bg-theme-card border rounded-xl transition-all liquid-metal-frame liquid-metal-sequence-card flex flex-col ${
@@ -673,7 +713,8 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <LlmSwapBadge llm={ext.llm} />
             {isCore ? (
               <span
                 className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/15 uppercase tracking-wider cursor-help"
@@ -747,8 +788,8 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
       })()}
 
       {/* Card footer */}
-      <div className="border-t border-theme-border/40 px-4 py-2.5 flex items-center justify-between bg-theme-bg/30">
-        <div className="flex gap-1.5">
+      <div className="border-t border-theme-border/40 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 bg-theme-bg/30">
+        <div className="flex flex-wrap gap-1.5">
           {showInstall && (
             <button
               disabled={actionDisabled}
@@ -757,6 +798,26 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-theme-accent text-white hover:bg-theme-accent-hover transition-colors disabled:opacity-50 shadow-sm shadow-theme-accent/20"
             >
               {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> Install</>}
+            </button>
+          )}
+          {showUpdate && (
+            <button
+              disabled={actionDisabled}
+              title={disabledTitle || (ext.locally_modified ? 'Local definition changes will be backed up' : 'Update from ODS library')}
+              onClick={() => onAction(ext, 'update')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25 transition-colors disabled:opacity-50"
+            >
+              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><RefreshCw size={12} /> {ext.update_status === 'untracked' ? 'Refresh' : 'Update'}</>}
+            </button>
+          )}
+          {showRollback && (
+            <button
+              disabled={actionDisabled}
+              title={disabledTitle || 'Restore previous extension definition'}
+              onClick={() => onAction(ext, 'rollback')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-theme-surface-hover/50 text-theme-text-secondary hover:text-theme-text transition-colors disabled:opacity-50"
+            >
+              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><RotateCcw size={12} /> Rollback</>}
             </button>
           )}
           {isUserExt && isStopped && (
@@ -907,6 +968,9 @@ function DetailModal({ ext, gpuBackend, onClose }) {
               >
                 {(ext.status || 'not_installed').replace('_', ' ')}
               </span>
+              <div className="mt-1">
+                <LlmSwapBadge llm={ext.llm} />
+              </div>
             </div>
           </div>
           <button onClick={onClose} autoFocus className="text-theme-text-muted hover:text-theme-text-secondary transition-colors p-1">
@@ -924,6 +988,15 @@ function DetailModal({ ext, gpuBackend, onClose }) {
               <span className="text-theme-text-muted text-xs block mb-1">Port</span>
               <span className="text-theme-text font-mono">{ext.external_port_default || ext.port || '—'}</span>
             </div>
+            {ext.source === 'user' && (
+              <div className="bg-theme-card/50 rounded-lg p-3">
+                <span className="text-theme-text-muted text-xs block mb-1">Library</span>
+                <span className="text-theme-text capitalize">{(ext.update_status || 'unavailable').replace('_', ' ')}</span>
+                {ext.locally_modified && (
+                  <span className="text-amber-400 text-[10px] block mt-1">Local definition changed</span>
+                )}
+              </div>
+            )}
             <div className="bg-theme-card/50 rounded-lg p-3">
               <span className="text-theme-text-muted text-xs block mb-1">GPU</span>
               <span className="text-theme-text">{ext.gpu_backends?.join(', ') || 'none'}</span>

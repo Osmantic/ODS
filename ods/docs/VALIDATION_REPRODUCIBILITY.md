@@ -30,7 +30,7 @@ git diff --check
 python scripts/audit-extensions.py --project-dir .
 python scripts/validate-generated-configs.py
 python scripts/validate-golden-paths.py
-python scripts/validate-dependency-pins.py
+python scripts/check-dependency-pins.py
 ```
 
 Add dashboard checks when dashboard code or dashboard-api behavior changes.
@@ -53,6 +53,16 @@ For a local fork or appliance candidate:
 If you cannot run the full fleet, say which hardware and distro classes were not
 tested.
 
+For model-management changes, also name the tier:
+
+- release tier: six distinct planned test models per reachable host, each
+  running the full discover, download, load, app-use, restore, and delete chain;
+- smoke tier: one planned test model per host running that same full chain.
+
+Smoke evidence is useful during iteration, but it is not a substitute for the
+release six-model matrix when a change can affect model routing, app probes, or
+agent viability gates.
+
 ## Capability Deferrals
 
 Capability checks should not fail just because a large model is still
@@ -66,6 +76,17 @@ downloading. A valid report distinguishes:
 
 Do not mark a release as fully validated until deferred full-model checks have
 resolved or are explicitly excluded from that release.
+
+## Model Probe Deferrals
+
+Enabled LLM apps should be discovered from manifests and known routing config,
+then probed after each model swap. A valid deferral names the app, the blocker,
+and the owner or release decision.
+
+Open WebUI needs special care because a login page can look superficially
+healthy. A release receipt should say which admin/API credential was provisioned
+for the probe. If the harness only reaches HTTP 401 or an auth wall, record the
+probe as failed or deferred; do not count it as pass.
 
 ## Owner-Card And Talk Probes
 

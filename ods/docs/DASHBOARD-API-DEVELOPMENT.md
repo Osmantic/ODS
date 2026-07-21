@@ -150,7 +150,7 @@ This is what running installs pick up the next time they pull or rebuild.
 Mapping `./extensions/services/dashboard-api:/app` would give "live edits in the container" at the cost of:
 
 1. **Writable mount required.** Python writes `__pycache__/` next to source files. A read-only bind-mount makes every import fail; a read-write mount lets the container scribble bytecode back into the contributor's working tree.
-2. **Breaks standalone use of the prebuilt image.** Anyone running `docker run light-heart-labs/dashboard-api` (or pulling the image without our compose file) would get an empty `/app/` because the bind-mount isn't there. The image would no longer be self-contained.
+2. **Breaks standalone use of the prebuilt image.** Anyone running `docker run <dashboard-api-image>` (or starting the image without our compose file) would get an empty `/app/` because the bind-mount isn't there. The image would no longer be self-contained.
 3. **Divergent dev and prod images.** Dev would import from the bind-mount; prod from the baked copy. Bugs that depend on file layout, permissions, or pycache state would only show up on one path.
 
 Native uvicorn gets the same iteration speed without any of those drawbacks.

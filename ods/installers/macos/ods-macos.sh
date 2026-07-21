@@ -73,6 +73,7 @@ export ODS_SCRIPT_HINT="$SCRIPT_DIR"
 # Source only what we need for CLI
 source "${LIB_DIR}/constants.sh"
 source "${LIB_DIR}/ui.sh"
+source "${LIB_DIR}/bridge-manager.sh"
 source "${LIB_DIR}/detection.sh"
 
 unset ODS_SCRIPT_HINT
@@ -117,6 +118,13 @@ get_compose_flags() {
     # Fallback: dynamic resolution via resolve-compose-stack.sh so user-installed
     # extensions in data/user-extensions/ are discovered when the .compose-flags
     # cache is missing or stale. Mirrors ods-cli's get_compose_flags fallback.
+    local ods_mode
+    ods_mode="$(read_env_value "${INSTALL_DIR}/.env" "ODS_MODE")"
+    ods_mode="${ods_mode#\"}"
+    ods_mode="${ods_mode%\"}"
+    ods_mode="${ods_mode#\'}"
+    ods_mode="${ods_mode%\'}"
+    [[ -n "$ods_mode" ]] || ods_mode="local"
     if [[ -x "${INSTALL_DIR}/scripts/resolve-compose-stack.sh" ]]; then
         # Pass --gpu-count for parity with the Linux paths even though there's
         # currently no docker-compose.multigpu-apple.yml — keeps the contract
@@ -125,15 +133,57 @@ get_compose_flags() {
             --script-dir "$INSTALL_DIR" \
             --tier "${TIER:-1}" \
             --gpu-backend "${GPU_BACKEND:-apple}" \
-            --gpu-count "${GPU_COUNT:-1}"
+            --gpu-count "${GPU_COUNT:-1}" \
+            --ods-mode "$ods_mode"
         return
     fi
-    # Last resort: resolver script missing — emit base + macos overlay
+    # Last resort: preserve cloud/local overlay selection on older installs.
     local flags="-f docker-compose.base.yml"
-    if [[ -f "${INSTALL_DIR}/installers/macos/docker-compose.macos.yml" ]]; then
+    if [[ "$ods_mode" == "cloud" ]] && [[ -f "${INSTALL_DIR}/docker-compose.cloud.yml" ]]; then
+        flags="$flags -f docker-compose.cloud.yml"
+    elif [[ -f "${INSTALL_DIR}/installers/macos/docker-compose.macos.yml" ]]; then
         flags="$flags -f installers/macos/docker-compose.macos.yml"
     fi
     echo "$flags"
+}
+
+compose_pull_with_retry() {
+    local flags="$1"
+    local log_file
+    log_file="$(mktemp)"
+    local max_attempts="${ODS_COMPOSE_PULL_RETRY_ATTEMPTS:-3}"
+    if ! [[ "$max_attempts" =~ ^[0-9]+$ ]] || (( max_attempts < 1 )); then
+        max_attempts=3
+    fi
+
+    local attempt=1 rc=0
+    while :; do
+        : > "$log_file"
+        rc=0
+        # shellcheck disable=SC2086
+        docker compose $flags pull --ignore-buildable >"$log_file" 2>&1 || rc=$?
+        if (( rc == 0 )); then
+            rm -f "$log_file"
+            return 0
+        fi
+
+        if (( attempt >= max_attempts )) || ! grep -Eiq 'context deadline exceeded|i/o timeout|TLS handshake timeout|connection reset by peer|connection timed out|temporary failure|network is unreachable|net/http: request canceled|unexpected EOF|failed to authorize: failed to fetch' "$log_file"; then
+            ai_err "docker compose pull failed (exit code: ${rc})"
+            tail -40 "$log_file" >&2 || true
+            rm -f "$log_file"
+            return "$rc"
+        fi
+
+        local delay
+        case "$attempt" in
+            1) delay="${ODS_COMPOSE_PULL_RETRY_DELAY_1:-5}" ;;
+            2) delay="${ODS_COMPOSE_PULL_RETRY_DELAY_2:-15}" ;;
+            *) delay="${ODS_COMPOSE_PULL_RETRY_DELAY_N:-30}" ;;
+        esac
+        ai_warn "Docker registry pull hit a transient network error; retrying (${attempt}/$((max_attempts - 1)))."
+        sleep "$delay"
+        attempt=$((attempt + 1))
+    done
 }
 
 read_ods_env() {
@@ -149,10 +199,187 @@ read_ods_env() {
         if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
             local key="${BASH_REMATCH[1]}"
             local val="${BASH_REMATCH[2]}"
-            val=$(echo "$val" | sed 's/^["'"'"']//;s/["'"'"']$//')
+            # Strip exactly one matching pair of surrounding quotes. The old
+            # sed removed a leading and a trailing quote independently (either
+            # type), so KEY=abc" lost its trailing quote and "abc' was cut on
+            # both ends. Mismatched quotes stay verbatim, matching
+            # lib/safe-env.sh used by the Linux CLI.
+            if [[ "$val" == '"'*'"' ]]; then
+                val="${val#\"}"
+                val="${val%\"}"
+            elif [[ "$val" == "'"*"'" ]]; then
+                val="${val#\'}"
+                val="${val%\'}"
+            fi
             export "ENV_${key}=${val}"
         fi
     done < "$env_file"
+}
+
+macos_bootstrap_status() {
+    local status_file="${INSTALL_DIR}/data/bootstrap-status.json"
+    [[ -f "$status_file" ]] || return 0
+    grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' "$status_file" \
+        | sed -n '1p' \
+        | sed 's/.*"status"[[:space:]]*:[[:space:]]*"//' \
+        | sed 's/"//' \
+        || true
+}
+
+macos_wait_for_bootstrap_compose_safe() {
+    local action="${1:-service operation}"
+    local status_file="${INSTALL_DIR}/data/bootstrap-status.json"
+    [[ -f "$status_file" ]] || return 0
+
+    local max_wait="${ODS_MACOS_BOOTSTRAP_COMPOSE_WAIT_SECONDS:-900}"
+    local interval="${ODS_MACOS_BOOTSTRAP_COMPOSE_WAIT_INTERVAL:-5}"
+    if ! [[ "$max_wait" =~ ^[0-9]+$ ]] || (( max_wait < 0 )); then
+        max_wait=900
+    fi
+    if ! [[ "$interval" =~ ^[0-9]+$ ]] || (( interval < 1 )); then
+        interval=5
+    fi
+
+    local waited=0 announced=false status=""
+    while true; do
+        status="$(macos_bootstrap_status)"
+        case "$status" in
+            starting|verifying|swapping)
+                if [[ "$announced" == "false" ]]; then
+                    ai "Model upgrade is ${status}; waiting before ${action} touches llama-server..."
+                    announced=true
+                fi
+                if (( waited >= max_wait )); then
+                    ai_warn "Model upgrade is still ${status} after ${max_wait}s; refusing to run ${action} against an active hot-swap."
+                    return 1
+                fi
+                sleep "$interval"
+                waited=$(( waited + interval ))
+                ;;
+            *)
+                if [[ "$announced" == "true" ]]; then
+                    ai "Model upgrade is ${status:-idle}; continuing with ${action}."
+                fi
+                return 0
+                ;;
+        esac
+    done
+}
+
+macos_launch_detached_bootstrap_upgrade() {
+    local upgrade_script="$1"
+    shift
+    local pid_file="${INSTALL_DIR}/data/bootstrap-upgrade.pid"
+    local log_file="${INSTALL_DIR}/logs/model-upgrade.log"
+    local python_cmd="${PYTHON_CMD:-/usr/bin/python3}"
+    local bash_cmd="${BASH:-bash}"
+    [[ -x "$python_cmd" ]] || python_cmd="$(command -v python3 || command -v python || true)"
+    [[ -n "$python_cmd" ]] || {
+        ai_warn "Python is unavailable; cannot launch background model-upgrade retry."
+        return 1
+    }
+    if command -v cygpath >/dev/null 2>&1; then
+        bash_cmd="$(cygpath -w "$bash_cmd" 2>/dev/null || printf '%s' "$bash_cmd")"
+    fi
+
+    BOOTSTRAP_BASH="$bash_cmd" "$python_cmd" - "$pid_file" "$log_file" "$upgrade_script" "$@" <<'BOOTSTRAP_LAUNCH_PY'
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+pid_path = Path(sys.argv[1])
+log_path = Path(sys.argv[2])
+script = sys.argv[3]
+script_args = sys.argv[4:]
+if not script_args:
+    raise SystemExit("bootstrap launcher requires the install directory")
+bash_exe = os.environ.get("BOOTSTRAP_BASH") or os.environ.get("BASH") or "bash"
+log_path.parent.mkdir(parents=True, exist_ok=True)
+pid_path.parent.mkdir(parents=True, exist_ok=True)
+with log_path.open("ab", buffering=0) as log_handle:
+    proc = subprocess.Popen(
+        [bash_exe, script, *script_args],
+        cwd=script_args[0],
+        stdin=subprocess.DEVNULL,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        close_fds=True,
+        start_new_session=True,
+    )
+tmp = pid_path.with_name(f"{pid_path.name}.{os.getpid()}.tmp")
+tmp.write_text(f"{proc.pid}\n", encoding="ascii")
+os.chmod(tmp, 0o600)
+os.replace(tmp, pid_path)
+BOOTSTRAP_LAUNCH_PY
+}
+
+macos_maybe_resume_bootstrap_upgrade() {
+    local status_file="${INSTALL_DIR}/data/bootstrap-status.json"
+    local args_file="${INSTALL_DIR}/data/bootstrap-upgrade.args"
+    local upgrade_script="${INSTALL_DIR}/scripts/bootstrap-upgrade.sh"
+    [[ -f "$status_file" && -f "$args_file" && -f "$upgrade_script" ]] || return 0
+
+    local bs_status
+    bs_status="$(macos_bootstrap_status)"
+    [[ "$bs_status" == "failed" ]] || return 0
+
+    if command -v pgrep >/dev/null 2>&1 && pgrep -f "[/]bootstrap-upgrade[.]sh.*${INSTALL_DIR}" >/dev/null 2>&1; then
+        ai "Model upgrade retry is already running."
+        return 0
+    fi
+
+    local full_gguf_file full_gguf_url full_gguf_sha256 full_llm_model full_max_context bootstrap_gguf_file
+    full_gguf_file="$(sed -n '1p' "$args_file")"
+    full_gguf_url="$(sed -n '2p' "$args_file")"
+    full_gguf_sha256="$(sed -n '3p' "$args_file")"
+    full_llm_model="$(sed -n '4p' "$args_file")"
+    full_max_context="$(sed -n '5p' "$args_file")"
+    bootstrap_gguf_file="$(sed -n '6p' "$args_file")"
+
+    if [[ -z "$full_gguf_file" || -z "$full_gguf_url" || -z "$full_llm_model" || -z "$full_max_context" || -z "$bootstrap_gguf_file" ]]; then
+        ai_warn "Bootstrap model upgrade failed previously, but retry metadata is incomplete."
+        return 0
+    fi
+
+    if macos_launch_detached_bootstrap_upgrade "$upgrade_script" \
+        "$INSTALL_DIR" "$full_gguf_file" "$full_gguf_url" \
+        "$full_gguf_sha256" "$full_llm_model" "$full_max_context" \
+        "$bootstrap_gguf_file"; then
+        ai "Model upgrade failed previously; retrying in background (${full_llm_model})."
+        ai "Check progress: tail -f ${INSTALL_DIR}/logs/model-upgrade.log"
+    else
+        ai_warn "Could not relaunch the failed background model upgrade."
+    fi
+}
+
+resolve_cli_llm_route() {
+    read_ods_env
+
+    CLI_LLM_MODE="${ENV_ODS_MODE:-local}"
+    CLI_LLM_API_KEY=""
+    if [[ "$CLI_LLM_MODE" == "cloud" ]]; then
+        local litellm_port="${ENV_LITELLM_PORT:-4000}"
+        local cloud_bind_address="${ENV_BIND_ADDRESS:-127.0.0.1}"
+        local cloud_probe_host
+        [[ "$litellm_port" =~ ^[0-9]+$ ]] || litellm_port="4000"
+        cloud_probe_host="$(macos_bind_probe_host "$cloud_bind_address")"
+        CLI_LLM_NAME="LLM API (LiteLLM)"
+        CLI_LLM_BASE_URL="http://${cloud_probe_host}:${litellm_port}"
+        # This endpoint verifies both gateway readiness and its master key.
+        CLI_LLM_HEALTH_URL="${CLI_LLM_BASE_URL}/v1/models"
+        CLI_LLM_API_KEY="${ENV_LITELLM_KEY:-}"
+        return
+    fi
+
+    local native_port="${ENV_ODS_NATIVE_LLAMA_PORT:-${ENV_OLLAMA_PORT:-8080}}"
+    [[ "$native_port" =~ ^[0-9]+$ ]] || native_port="8080"
+    local bind_address="${ENV_BIND_ADDRESS:-127.0.0.1}"
+    local probe_host
+    probe_host="$(macos_bind_probe_host "$bind_address")"
+    CLI_LLM_NAME="LLM API"
+    CLI_LLM_BASE_URL="http://${probe_host}:${native_port}"
+    CLI_LLM_HEALTH_URL="${CLI_LLM_BASE_URL}/health"
 }
 
 read_env_value() {
@@ -290,8 +517,13 @@ get_native_llama_status() {
         NATIVE_LLAMA_RUNNING=true
         NATIVE_LLAMA_PID="$saved_pid"
 
-        # Health check
-        if curl -sf --max-time 10 http://127.0.0.1:8080/health >/dev/null 2>&1; then
+        local native_port
+        native_port="$(read_env_value "${INSTALL_DIR}/.env" "ODS_NATIVE_LLAMA_PORT")"
+        [[ "$native_port" =~ ^[0-9]+$ ]] || native_port="8080"
+        local bind_address probe_host
+        bind_address="$(read_env_value "${INSTALL_DIR}/.env" "BIND_ADDRESS")"
+        probe_host="$(macos_bind_probe_host "${bind_address:-127.0.0.1}")"
+        if curl -sf --max-time 10 "http://${probe_host}:${native_port}/health" >/dev/null 2>&1; then
             NATIVE_LLAMA_HEALTHY=true
         fi
     else
@@ -301,9 +533,24 @@ get_native_llama_status() {
 }
 
 start_native_llama() {
+    read_ods_env
+    if ! macos_configure_llm_bridge_from_env "${INSTALL_DIR}/.env" "$INSTALL_DIR"; then
+        ai_err "Could not configure container access to native llama-server"
+        return 1
+    fi
+
     get_native_llama_status
+    if [[ "${ENV_ODS_MODE:-local}" == "cloud" ]]; then
+        $NATIVE_LLAMA_RUNNING && stop_native_llama
+        ai "Cloud mode uses LiteLLM; native llama-server remains stopped"
+        return 0
+    fi
     if $NATIVE_LLAMA_RUNNING; then
-        ai_ok "Native llama-server already running (PID ${NATIVE_LLAMA_PID})"
+        if $NATIVE_LLAMA_HEALTHY; then
+            ai_ok "Native llama-server already running (PID ${NATIVE_LLAMA_PID})"
+        else
+            ai "Native llama-server is already running and still loading (PID ${NATIVE_LLAMA_PID})"
+        fi
         return
     fi
 
@@ -313,9 +560,13 @@ start_native_llama() {
         return
     fi
 
-    read_ods_env
     local gguf_file="${ENV_GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}"
     local ctx_size="${ENV_CTX_SIZE:-65536}"
+    local native_port="${ENV_ODS_NATIVE_LLAMA_PORT:-8080}"
+    local bind_address="${ENV_BIND_ADDRESS:-127.0.0.1}"
+    local probe_host
+    probe_host="$(macos_bind_probe_host "$bind_address")"
+    [[ "$native_port" =~ ^[0-9]+$ ]] || native_port="8080"
     local model_path="${INSTALL_DIR}/data/models/${gguf_file}"
 
     if [[ ! -f "$model_path" ]]; then
@@ -335,7 +586,7 @@ start_native_llama() {
     esac
 
     local -a llama_args=(
-        --host "${ENV_BIND_ADDRESS:-127.0.0.1}" --port 8080
+        --host "$bind_address" --port "$native_port"
         --model "$model_path"
         --ctx-size "$ctx_size"
         --n-gpu-layers 999
@@ -364,7 +615,7 @@ start_native_llama() {
     while [[ "$waited" -lt "$max_wait" ]]; do
         sleep 2
         waited=$((waited + 2))
-        if curl -sf --max-time 10 http://127.0.0.1:8080/health >/dev/null 2>&1; then
+        if curl -sf --max-time 10 "http://${probe_host}:${native_port}/health" >/dev/null 2>&1; then
             ai_ok "Native llama-server healthy"
             return
         fi
@@ -396,6 +647,7 @@ stop_native_llama() {
 cmd_status() {
     test_install
     cd "$INSTALL_DIR"
+    resolve_cli_llm_route
 
     local flags
     flags=$(get_compose_flags)
@@ -410,14 +662,18 @@ cmd_status() {
     echo -e "  ${DGRN}Chip:${NC} ${WHT}${APPLE_CHIP}${NC}"
     echo -e "  ${DGRN}RAM:${NC}  ${WHT}${SYSTEM_RAM_GB} GB (unified memory)${NC}"
 
-    # Native llama-server status
-    get_native_llama_status
-    if $NATIVE_LLAMA_RUNNING; then
-        local health_str="loading"
-        $NATIVE_LLAMA_HEALTHY && health_str="healthy"
-        ai_ok "llama-server (native Metal): running PID ${NATIVE_LLAMA_PID} (${health_str})"
+    # Active inference backend
+    if [[ "$CLI_LLM_MODE" == "cloud" ]]; then
+        ai "Inference backend: LiteLLM cloud gateway"
     else
-        ai_warn "llama-server (native Metal): not running"
+        get_native_llama_status
+        if $NATIVE_LLAMA_RUNNING; then
+            local health_str="loading"
+            $NATIVE_LLAMA_HEALTHY && health_str="healthy"
+            ai_ok "llama-server (native Metal): running PID ${NATIVE_LLAMA_PID} (${health_str})"
+        else
+            ai_warn "llama-server (native Metal): not running"
+        fi
     fi
 
     # Docker services
@@ -431,17 +687,26 @@ cmd_status() {
     echo -e "  ${DGRN}$(printf -- '-%.0s' {1..40})${NC}"
 
     # Parallel arrays (Bash 3.2 compatible)
-    local ep_names=("LLM API" "Chat UI" "Dashboard" "OpenCode (IDE)")
-    local ep_urls=("http://127.0.0.1:8080/health" "http://127.0.0.1:3000" "http://127.0.0.1:3001" "http://127.0.0.1:3003")
+    local ep_names=("$CLI_LLM_NAME" "Chat UI" "Dashboard" "OpenCode (IDE)")
+    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:3000" "http://127.0.0.1:3001" "http://127.0.0.1:3003")
 
     for ((i=0; i<${#ep_names[@]}; i++)); do
         local name="${ep_names[$i]}"
         local url="${ep_urls[$i]}"
         local code
-        code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" 2>/dev/null || echo "000")
+        local -a auth_args=()
+        if [[ "$i" -eq 0 ]] && [[ "$CLI_LLM_MODE" == "cloud" ]]; then
+            if [[ -z "$CLI_LLM_API_KEY" ]]; then
+                ai_warn "${name}: LITELLM_KEY is missing"
+                continue
+            fi
+            auth_args=(-H "Authorization: Bearer ${CLI_LLM_API_KEY}")
+        fi
+        code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+            "${auth_args[@]}" "$url" 2>/dev/null || echo "000")
         if [[ "$code" -ge 200 ]] && [[ "$code" -lt 400 ]]; then
             ai_ok "${name}: healthy"
-        elif [[ "$code" == "401" ]] || [[ "$code" == "403" ]]; then
+        elif [[ "$i" -ne 0 ]] && { [[ "$code" == "401" ]] || [[ "$code" == "403" ]]; }; then
             ai_ok "${name}: healthy (auth-protected)"
         else
             ai_warn "${name}: not responding"
@@ -459,13 +724,17 @@ cmd_start() {
 
     # Start native llama-server first
     if [[ -z "$service" ]] && [[ -x "$LLAMA_SERVER_BIN" ]]; then
+        macos_wait_for_bootstrap_compose_safe "start" || return 1
         start_native_llama
     fi
 
     local flags
     flags=$(get_compose_flags)
 
-    if [[ -n "$service" ]]; then
+    if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
+        macos_wait_for_bootstrap_compose_safe "start" || return 1
+        start_native_llama
+    elif [[ -n "$service" ]]; then
         ai "Starting ${service}..."
         # shellcheck disable=SC2086
         docker compose $flags up -d "$service"
@@ -475,6 +744,10 @@ cmd_start() {
         # shellcheck disable=SC2086
         docker compose $flags up -d
         ai_ok "All services started"
+    fi
+
+    if [[ -z "$service" || "$service" == "llama-server" || "$service" == "llama" ]]; then
+        macos_maybe_resume_bootstrap_upgrade || true
     fi
 }
 
@@ -486,7 +759,9 @@ cmd_stop() {
     local flags
     flags=$(get_compose_flags)
 
-    if [[ -n "$service" ]]; then
+    if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
+        stop_native_llama
+    elif [[ -n "$service" ]]; then
         ai "Stopping ${service}..."
         # shellcheck disable=SC2086
         docker compose $flags stop "$service"
@@ -514,7 +789,11 @@ cmd_restart() {
     local flags
     flags=$(get_compose_flags)
 
-    if [[ -n "$service" ]]; then
+    if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
+        macos_wait_for_bootstrap_compose_safe "restart" || return 1
+        stop_native_llama
+        start_native_llama
+    elif [[ -n "$service" ]]; then
         ai "Restarting ${service}..."
         # shellcheck disable=SC2086
         docker compose $flags up -d "$service"
@@ -522,6 +801,7 @@ cmd_restart() {
     else
         # Restart native llama-server
         if [[ -f "$LLAMA_SERVER_PID_FILE" ]] || [[ -x "$LLAMA_SERVER_BIN" ]]; then
+            macos_wait_for_bootstrap_compose_safe "restart" || return 1
             stop_native_llama
             start_native_llama
         fi
@@ -530,6 +810,10 @@ cmd_restart() {
         # shellcheck disable=SC2086
         docker compose $flags up -d
         ai_ok "All services restarted"
+    fi
+
+    if [[ -z "$service" || "$service" == "llama-server" || "$service" == "llama" ]]; then
+        macos_maybe_resume_bootstrap_upgrade || true
     fi
 }
 
@@ -584,13 +868,24 @@ cmd_config_show() {
         line_trimmed=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [[ "$line_trimmed" =~ ^# ]] && echo -e "  ${DGRN}${line_trimmed}${NC}" && continue
         [[ -z "$line_trimmed" ]] && continue
-        if echo "$line_trimmed" | grep -qE "(SECRET|PASS|TOKEN|KEY)="; then
-            local key
-            key=$(echo "$line_trimmed" | cut -d= -f1)
-            echo -e "  ${DGRN}${key}=***${NC}"
-        else
-            echo -e "  ${WHT}${line_trimmed}${NC}"
-        fi
+        # Non KEY=VALUE lines: print verbatim.
+        [[ "$line_trimmed" == *=* ]] || { echo -e "  ${WHT}${line_trimmed}${NC}"; continue; }
+        # Mask by KEY NAME, not "keyword immediately before =". The old
+        # `(SECRET|PASS|TOKEN|KEY)=` regex only matched when the keyword was
+        # adjacent to `=`, so OPENCODE_SERVER_PASSWORD, LANGFUSE_DB_PASSWORD,
+        # LANGFUSE_SALT, N8N_USER, LANGFUSE_INIT_USER_EMAIL, ... printed their
+        # (auto-generated) secret values in cleartext. Match the key name
+        # against the same keyword set the Linux CLI's _cmd_config_is_secret
+        # falls back to (tr for lowercasing keeps this Bash 3.2 / macOS safe).
+        local key key_lc
+        key="${line_trimmed%%=*}"
+        key_lc=$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')
+        case "$key_lc" in
+            *secret*|*password*|*pass*|*token*|*key*|*salt*|*bearer*|*user*|*email*)
+                echo -e "  ${DGRN}${key}=***${NC}" ;;
+            *)
+                echo -e "  ${WHT}${line_trimmed}${NC}" ;;
+        esac
     done < "$env_file"
     echo ""
 }
@@ -602,18 +897,29 @@ cmd_chat() {
         return
     fi
 
+    resolve_cli_llm_route
+    if [[ "$CLI_LLM_MODE" == "cloud" ]] && [[ -z "$CLI_LLM_API_KEY" ]]; then
+        ai_err "Chat request cannot authenticate: LITELLM_KEY is missing."
+        return 1
+    fi
+
     # Use jq to safely construct JSON payload (prevents injection)
     local payload
     payload=$(jq -n --arg msg "$message" \
         '{model: "default", messages: [{role: "user", content: $msg}], max_tokens: 500}')
 
+    local -a auth_args=()
+    if [[ "$CLI_LLM_MODE" == "cloud" ]]; then
+        auth_args=(-H "Authorization: Bearer ${CLI_LLM_API_KEY}")
+    fi
     local response
-    response=$(curl -sf -X POST "http://127.0.0.1:8080/v1/chat/completions" \
+    response=$(curl -sf -X POST "${CLI_LLM_BASE_URL}/v1/chat/completions" \
         -H "Content-Type: application/json" \
+        "${auth_args[@]}" \
         -d "$payload" 2>/dev/null) || {
         ai_err "Chat request failed."
-        ai "Is llama-server running? Try: ./ods-macos.sh status"
-        return
+        ai "Check the active inference backend with: ./ods-macos.sh status"
+        return 1
     }
 
     echo ""
@@ -641,13 +947,13 @@ cmd_update() {
     flags=$(get_compose_flags)
 
     ai "Pulling latest images..."
-    # shellcheck disable=SC2086
-    docker compose $flags pull
+    compose_pull_with_retry "$flags"
 
     ai "Recreating containers..."
     # shellcheck disable=SC2086
     docker compose $flags up -d --force-recreate
     ai_ok "Update complete"
+    macos_maybe_resume_bootstrap_upgrade || true
 
     sleep 5
     cmd_status

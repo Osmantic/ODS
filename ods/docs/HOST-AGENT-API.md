@@ -26,6 +26,8 @@ The agent reads its configuration from the `.env` file in the ODS install direct
 | `ODS_AGENT_BIND` | Platform-specific | Bind address. macOS/Windows default to `127.0.0.1`; Linux uses the `ods-network` gateway when detected, then the Docker bridge gateway, otherwise `127.0.0.1`. |
 | `ODS_AGENT_PORT` | `7710` | Port the agent listens on. |
 | `GPU_BACKEND` | `nvidia` | Passed to `resolve-compose-stack.sh` when building compose flags. |
+| `AMD_INFERENCE_PORT` | `8080` | Validated loopback port used for Windows host-native Lemonade telemetry. |
+| `LEMONADE_API_KEY` | *(none)* | Optional bearer token sent only to the configured loopback Lemonade endpoint. |
 | `TIER` | `1` | Hardware tier, passed to compose stack resolution. |
 | `ODS_DATA_DIR` | `~/.ods` | Data directory root. |
 | `ODS_USER_EXTENSIONS_DIR` | `$ODS_DATA_DIR/user-extensions` | Where user-installed extensions live. |
@@ -34,7 +36,8 @@ The agent also loads `config/core-service-ids.json` to determine which services 
 
 ## Authentication
 
-All mutation endpoints (`/v1/extension/*`) require a Bearer token:
+All `/v1/*` endpoints require a Bearer token. The unversioned `/health`
+endpoint is the only unauthenticated route:
 
 ```
 Authorization: Bearer <ODS_AGENT_KEY>
@@ -55,6 +58,117 @@ Health check. No authentication required.
   "version": "1.0.0"
 }
 ```
+
+### `GET /v1/gpu/metrics`
+
+Return host GPU identity and metrics that are unavailable inside Docker
+Desktop. The current collector is active on Windows and uses DXGI adapter
+identity plus Windows GPU performance counters. Unsupported sensors are
+represented by `null` and an explicit `*_available: false` flag.
+
+**Authentication:** Required
+
+**Response (200):**
+```json
+{
+  "schema_version": "ods.host-gpu-metrics.v1",
+  "name": "AMD Radeon RX 9070 XT",
+  "gpu_count": 1,
+  "memory_type": "discrete",
+  "memory_total_mb": 16188,
+  "memory_used_mb": 4449,
+  "memory_usage_available": true,
+  "utilization_percent": 12,
+  "utilization_available": true,
+  "temperature_c": null,
+  "temperature_available": false,
+  "source": "windows-dxgi-performance-counters",
+  "sampled_at": "2026-07-20T22:00:00+00:00",
+  "gpus": [
+    {
+      "index": 0,
+      "uuid": "luid-00000000-0000abcd",
+      "name": "AMD Radeon RX 9070 XT",
+      "memory_type": "discrete",
+      "memory_total_mb": 16188,
+      "memory_used_mb": 4449,
+      "memory_usage_available": true,
+      "utilization_percent": 12,
+      "utilization_available": true,
+      "temperature_c": null,
+      "temperature_available": false
+    }
+  ]
+}
+```
+
+The top-level fields are a backward-compatible aggregate. `gpus` preserves
+per-adapter identity on multi-GPU hosts. Hybrid AMD systems exclude an
+integrated display adapter when discrete Radeon adapters are present. Unified
+memory APUs report `memory_type: "unified"` and include observed shared-memory
+use; unavailable counters remain explicit rather than being presented as zero.
+
+Returns 503 when the platform collector or required counters are unavailable.
+
+### `GET /v1/llm/status`
+
+Bridge health and last-request statistics from host-native Lemonade over the
+validated loopback port. ODS accepts the compatibility `/api/v1` routes and
+the current `/v1` routes during runtime upgrades. Raw runtime payloads and
+local checkpoint paths are not returned.
+
+**Authentication:** Required
+
+**Response (200):**
+```json
+{
+  "schema_version": "ods.host-llm-status.v1",
+  "health": {
+    "status": "ok",
+    "version": "10.0.0",
+    "model_loaded": "extra.Model.gguf"
+  },
+  "stats": {
+    "time_to_first_token": 0.2,
+    "tokens_per_second": 42.5,
+    "input_tokens": 32,
+    "output_tokens": 64,
+    "prompt_tokens": 32
+  },
+  "source": "windows-loopback",
+  "sampled_at": "2026-07-20T22:00:00+00:00"
+}
+```
+
+The statistics object describes Lemonade's most recently completed request; it
+is not a cumulative counter. It is `null` when health is available but optional
+request statistics are not. Runtime responses are bounded to 1 MiB. Returns 503
+when host inference health is unavailable.
+
+### `GET /v1/service/health`
+
+Return a read-only Docker lifecycle and declared healthcheck snapshot for ODS
+containers. Compose service labels are preferred over container-name parsing.
+
+**Authentication:** Required
+
+**Response (200):**
+```json
+{
+  "schema_version": "ods.host-service-health.v1",
+  "containers": [
+    {
+      "service_id": "dashboard",
+      "container_name": "ods-dashboard",
+      "state": "running",
+      "health": "healthy"
+    }
+  ],
+  "sampled_at": "2026-07-20T22:00:00+00:00"
+}
+```
+
+Returns 503 when Docker cannot provide a complete snapshot.
 
 ### `GET /v1/update/status`
 

@@ -29,7 +29,7 @@ services:
       - ./data/models:/models:z
       - ./config/llama-server/models.ini:/config/models.ini:ro,z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${OLLAMA_PORT:-8080}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${OLLAMA_PORT:-11434}:8080"
     command:
       - --model
       - /models/${GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}
@@ -88,8 +88,11 @@ services:
       - no-new-privileges:true
     environment:
       ENABLE_OLLAMA_API: "false"
-      OPENAI_API_BASE_URL: "${LLM_API_URL:-http://llama-server:8080}/v1"
-      OPENAI_API_KEY: ""
+      # Switchboard: OPEN_WEBUI_LLM_BASE_URL overrides to the LiteLLM gateway
+      # (ods/current) in enabled mode; default is byte-identical to the prior
+      # direct llama-server route for legacy/observe.
+      OPENAI_API_BASE_URL: "${OPEN_WEBUI_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}/v1}"
+      OPENAI_API_KEY: "${OPEN_WEBUI_LLM_API_KEY:-}"
       # PWA / branding — surfaces as the app title, page title, and PWA install name.
       # When a user adds ODS to their home screen, this is the label they see
       # next to the ODS icon. Defaults to "ODS"; users can override per-install.
@@ -114,6 +117,14 @@ services:
       SEARXNG_QUERY_URL: "http://searxng:8080/search?q=<query>&format=json"
       ENABLE_SEARCH_QUERY_GENERATION: "true"
       WEB_SEARCH_RESULT_COUNT: "5"
+      # Route Open WebUI retrieval embeddings through ODS's TEI service.
+      # Otherwise Open WebUI downloads sentence-transformers/all-MiniLM-L6-v2
+      # during app startup, which can block fresh installs before port 8080 binds.
+      RAG_EMBEDDING_ENGINE: "${RAG_EMBEDDING_ENGINE:-openai}"
+      RAG_EMBEDDING_MODEL: "${RAG_EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}"
+      RAG_OPENAI_API_BASE_URL: "${RAG_OPENAI_API_BASE_URL:-http://embeddings:80/v1}"
+      RAG_OPENAI_API_KEY: "${RAG_OPENAI_API_KEY:-}"
+      RAG_EMBEDDING_MODEL_AUTO_UPDATE: "${RAG_EMBEDDING_MODEL_AUTO_UPDATE:-false}"
       # ── ComfyUI Image Generation (SDXL Lightning 4-step) ──
       # Default OFF in base: ComfyUI ships only on GPU backends (amd/nvidia per
       # comfyui/manifest.yaml). The amd and nvidia overlays re-assert this as
@@ -192,6 +203,7 @@ services:
       - ODS_INSTALL_DIR=/ods
       - ODS_DATA_DIR=/data
       - ODS_EXTENSIONS_LIBRARY_DIR=/data/extensions-library
+      - ODS_MODE=${ODS_MODE:-local}
       - ODS_AGENT_HOST=${ODS_AGENT_HOST:-}
       - ODS_AGENT_PORT=${ODS_AGENT_PORT:-7710}
       - GPU_BACKEND=${GPU_BACKEND:-nvidia}
@@ -207,6 +219,8 @@ services:
       - N8N_URL=${N8N_URL:-http://n8n:5678}
       - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-}
       - ODS_AGENT_KEY=${ODS_AGENT_KEY:-}
+      - ODS_ROUTER_INTERNAL_KEY=${ODS_ROUTER_INTERNAL_KEY:-}
+      - MODEL_ROUTER_URL=http://model-router:9099
       - SHIELD_API_KEY=${SHIELD_API_KEY:-}
       - OPENCLAW_TOKEN=${OPENCLAW_TOKEN:-}
       - TOKEN_SPY_URL=${TOKEN_SPY_URL:-http://token-spy:8080}
@@ -273,6 +287,52 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:3002/health"]
       interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ============================================
+  # Model Router (Switchboard stable-alias data plane)
+  # ============================================
+  model-router:
+    build:
+      context: ./extensions/services/model-router
+      dockerfile: Dockerfile
+    container_name: ods-model-router
+    restart: unless-stopped
+    expose:
+      - "9099"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    logging: *default-logging
+    environment:
+      - ODS_MODEL_STATE_PATH=/state/model-state.json
+      - ODS_ROUTER_ENDPOINTS_PATH=/config/endpoints.json
+      - ODS_ROUTER_INTERNAL_KEY=${ODS_ROUTER_INTERNAL_KEY:-}
+      - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-}
+      - ODS_FLEET_PROBE_KEY=${ODS_FLEET_PROBE_KEY:-}
+      # File-based probe key inside the already-mounted state volume: the
+      # fleet harness can create/rotate/remove it without recreating the
+      # router (a recreate destroys in-memory route evidence). Absent file
+      # means the ODS_FLEET_PROBE_KEY env fallback applies unchanged.
+      - ODS_FLEET_PROBE_KEY_PATH=/state/fleet-probe.key
+    volumes:
+      - ${ODS_DATA_DIR:-./data}:/state:ro
+      - ${ODS_CONFIG_DIR:-./config}/model-router/endpoints.json:/config/endpoints.json:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9099/health',timeout=4).status==200 else 1)"]
+      interval: 15s
       timeout: 5s
       retries: 3
       start_period: 10s

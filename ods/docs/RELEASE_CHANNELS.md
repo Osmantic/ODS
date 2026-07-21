@@ -5,11 +5,11 @@ ecosystems move quickly. Treat each ref intentionally.
 
 ## Current Stable
 
-The current stable release is `v2.5.2`.
+The current stable release is `v2.5.3`.
 
-Use `v2.5.2` for normal installs, downstream appliance baselines, lab images,
+Use `v2.5.3` for normal installs, downstream appliance baselines, lab images,
 and forks that want a known-good starting point. Use `release/2.5.x` only for
-patches that should preserve the `v2.5.2` user experience while fixing a
+patches that should preserve the `v2.5.3` user experience while fixing a
 stable-user problem.
 
 ## Channels
@@ -26,7 +26,7 @@ stable-user problem.
 
 - New users can follow the README quickstart.
 - Operators who want reproducibility should pin a release tag. Today that means
-  `v2.5.2` unless a newer stable release has been published.
+  `v2.5.3` unless a newer stable release has been published.
 - Stable hotfixes should target `release/2.5.x` first, then be merged forward
   or cherry-picked into `main`.
 - Forks should either fork-and-pin or fork-and-mirror.

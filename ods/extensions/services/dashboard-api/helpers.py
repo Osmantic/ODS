@@ -3,11 +3,13 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import platform
 import re
 import shutil
 import socket
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -15,7 +17,8 @@ from typing import Optional
 import aiohttp
 import httpx
 
-from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, AGENT_URL, ODS_AGENT_KEY
+from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, read_live_env_value
+from host_agent_client import AgentClientError, async_request_json as request_agent_json
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
 
 
@@ -38,7 +41,15 @@ class _DirSizeCache:
         return value
 
     def set(self, path: Path, value: float):
-        self._store[str(path.resolve())] = (time.monotonic() + self._ttl, value)
+        now = time.monotonic()
+        expired_keys = [k for k, (expires_at, _) in self._store.items() if now > expires_at]
+        for k in expired_keys:
+            del self._store[k]
+        key = str(path.resolve())
+        if len(self._store) >= 1000 and key not in self._store:
+            oldest_key = next(iter(self._store))
+            del self._store[oldest_key]
+        self._store[key] = (now + self._ttl, value)
 
     def invalidate(self, path: Path) -> None:
         self._store.pop(str(path.resolve()), None)
@@ -126,13 +137,8 @@ async def _check_tailscale_health(service_id: str, config: dict) -> ServiceStatu
     local install look degraded.
     """
     try:
-        client = await _get_httpx_client()
-        headers = {"Authorization": f"Bearer {ODS_AGENT_KEY}"} if ODS_AGENT_KEY else {}
-        resp = await client.get(f"{AGENT_URL}/v1/tailscale/status", headers=headers)
-        if resp.status_code >= 500:
-            return _service_status_from_config(service_id, config, "not_deployed")
-        payload = resp.json()
-    except (httpx.HTTPError, httpx.TimeoutException, ValueError, OSError):
+        payload = await request_agent_json("GET", "/v1/tailscale/status", timeout=5)
+    except AgentClientError:
         return _service_status_from_config(service_id, config, "not_deployed")
 
     if not payload.get("running"):
@@ -155,18 +161,14 @@ async def _check_host_systemd_health(service_id: str, config: dict) -> ServiceSt
     if port <= 0:
         return _service_status_from_config(service_id, config, "not_deployed")
 
-    headers = {"Authorization": f"Bearer {ODS_AGENT_KEY}"} if ODS_AGENT_KEY else {}
     try:
-        client = await _get_httpx_client()
-        resp = await client.get(
-            f"{AGENT_URL}/v1/host/port",
+        payload = await request_agent_json(
+            "GET",
+            "/v1/host/port",
             params={"host": "127.0.0.1", "port": port},
-            headers=headers,
+            timeout=5,
         )
-        if resp.status_code >= 400:
-            return _service_status_from_config(service_id, config, "down")
-        payload = resp.json()
-    except (httpx.HTTPError, httpx.TimeoutException, ValueError, OSError):
+    except AgentClientError:
         return _service_status_from_config(service_id, config, "down")
 
     status = "healthy" if payload.get("reachable") else "not_deployed"
@@ -185,36 +187,43 @@ async def _check_host_systemd_health(service_id: str, config: dict) -> ServiceSt
 _TOKEN_FILE = Path(DATA_DIR) / "token_counter.json"
 _PERF_FILE = Path(DATA_DIR) / "model_performance.json"
 _prev_tokens = {"count": 0, "time": 0.0, "tps": 0.0}
+_token_counter_lock = threading.Lock()
 
 
 def _update_lifetime_tokens(server_counter: float) -> int:
     """Accumulate tokens across server restarts using a persistent file."""
-    data = {"lifetime": 0, "last_server_counter": 0}
-    try:
-        if _TOKEN_FILE.exists():
-            data = json.loads(_TOKEN_FILE.read_text())
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Failed to read token counter file %s: %s", _TOKEN_FILE, e)
+    with _token_counter_lock:
+        data = _read_json_file(_TOKEN_FILE, {})
+        if not isinstance(data, dict):
+            data = {}
 
-    prev = data.get("last_server_counter", 0)
-    delta = server_counter if server_counter < prev else server_counter - prev
+        current = _non_negative_number(server_counter)
+        prev = _non_negative_number(data.get("last_server_counter"))
+        lifetime = _non_negative_number(data.get("lifetime"))
+        delta = current if current < prev else current - prev
 
-    data["lifetime"] = int(data.get("lifetime", 0) + delta)
-    data["last_server_counter"] = server_counter
-
-    try:
-        _TOKEN_FILE.write_text(json.dumps(data))
-    except OSError as e:
-        logger.warning("Failed to write token counter file %s: %s", _TOKEN_FILE, e)
-
-    return data["lifetime"]
+        data["lifetime"] = int(lifetime + delta)
+        data["last_server_counter"] = current
+        _write_json_file(_TOKEN_FILE, data)
+        return data["lifetime"]
 
 
 def _get_lifetime_tokens() -> int:
-    try:
-        return json.loads(_TOKEN_FILE.read_text()).get("lifetime", 0)
-    except (json.JSONDecodeError, OSError):
+    data = _read_json_file(_TOKEN_FILE, {})
+    if not isinstance(data, dict):
         return 0
+    return int(_non_negative_number(data.get("lifetime")))
+
+
+def _non_negative_number(value) -> float:
+    """Return a finite non-negative number for persisted/runtime counters."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(number) or number < 0:
+        return 0.0
+    return number
 
 
 def _normalize_perf_key(value: str | None) -> str:
@@ -231,11 +240,28 @@ def _read_json_file(path: Path, default):
 
 
 def _write_json_file(path: Path, data) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        temporary.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        # Windows virus scanners and indexers can briefly retain a handle to
+        # the destination. Retry only that transient access-denied case; other
+        # filesystem failures remain fail-soft as before.
+        for attempt in range(4):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == 3:
+                    raise
+                time.sleep(0.025 * (2 ** attempt))
     except OSError as e:
         logger.debug("Failed to write JSON file %s: %s", path, e)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _performance_key(backend: str, gpu_name: str, model_name: str,
@@ -351,6 +377,48 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
     loaded model name can avoid a redundant HTTP round-trip.
     """
     try:
+        if LLM_BACKEND == "lemonade":
+            if read_live_env_value("AMD_INFERENCE_LOCATION").lower() == "host":
+                host_status = await request_agent_json("GET", "/v1/llm/status", timeout=6)
+                stats = host_status.get("stats")
+            else:
+                host = SERVICES["llama-server"]["host"]
+                port = SERVICES["llama-server"]["port"]
+                client = await _get_httpx_client()
+                stats = None
+                last_error: Exception | None = None
+                api_key = read_live_env_value("LEMONADE_API_KEY")
+                headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+                for prefix in ("/api/v1", "/v1"):
+                    try:
+                        resp = await client.get(
+                            f"http://{host}:{port}{prefix}/stats", headers=headers,
+                        )
+                        resp.raise_for_status()
+                        stats = resp.json()
+                        break
+                    except (httpx.HTTPError, ValueError) as exc:
+                        last_error = exc
+                if stats is None:
+                    raise ValueError(f"Lemonade stats endpoint is unavailable: {last_error}")
+            if not isinstance(stats, dict):
+                raise ValueError("Lemonade stats response is unavailable")
+            try:
+                tokens_per_second = float(stats.get("tokens_per_second") or 0)
+            except (TypeError, ValueError):
+                tokens_per_second = 0.0
+            if not math.isfinite(tokens_per_second):
+                tokens_per_second = 0.0
+            output_tokens = int(_non_negative_number(stats.get("output_tokens")))
+            return {
+                "tokens_per_second": round(max(0.0, tokens_per_second), 1),
+                # Lemonade /v1/stats documents only the most recent request.
+                # It has no cumulative counter or stable event sequence, so
+                # polling cannot truthfully construct a lifetime total.
+                "lifetime_tokens": output_tokens,
+                "token_count_mode": "latest_completion",
+            }
+
         host = SERVICES["llama-server"]["host"]
         port = SERVICES["llama-server"]["port"]
         metrics_port = int(os.environ.get("LLAMA_METRICS_PORT", port))
@@ -359,32 +427,71 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
         params = {"model": model_name} if model_name else {}
         client = await _get_httpx_client()
         resp = await client.get(url, params=params)
+        resp.raise_for_status()
 
         metrics = {}
         for line in resp.text.split("\n"):
-            if line.startswith("#"):
+            line = line.strip()
+            if not line or line.startswith("#"):
                 continue
-            if "tokens_predicted_total" in line:
-                metrics["tokens_predicted_total"] = float(line.split()[-1])
-            if "tokens_predicted_seconds_total" in line:
-                metrics["tokens_predicted_seconds_total"] = float(line.split()[-1])
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            metric_name = parts[0].split("{", 1)[0]
+            if metric_name.endswith("tokens_predicted_total"):
+                try:
+                    metrics["tokens_predicted_total"] = float(parts[-1])
+                except ValueError:
+                    pass
+            if metric_name.endswith("tokens_predicted_seconds_total"):
+                try:
+                    metrics["tokens_predicted_seconds_total"] = float(parts[-1])
+                except ValueError:
+                    pass
+
+        # A successful HTTP response is not sufficient proof that this is the
+        # llama.cpp Prometheus endpoint. Treat HTML, proxy error pages, and
+        # incomplete metric payloads as unavailable so they cannot reset the
+        # persistent server counter and double-count tokens after recovery.
+        if "tokens_predicted_total" not in metrics:
+            raise ValueError("llama-server metrics response has no token counter")
 
         now = time.time()
-        curr = metrics.get("tokens_predicted_total", 0)
-        gen_secs = metrics.get("tokens_predicted_seconds_total", 0)
+        curr = _non_negative_number(metrics["tokens_predicted_total"])
+        gen_secs = _non_negative_number(metrics.get("tokens_predicted_seconds_total"))
         if _prev_tokens["time"] > 0 and curr > _prev_tokens["count"]:
             delta_secs = gen_secs - _prev_tokens.get("gen_secs", 0)
             if delta_secs > 0:
                 _prev_tokens["tps"] = round((curr - _prev_tokens["count"]) / delta_secs, 1)
+            else:
+                _prev_tokens["tps"] = 0.0
+        else:
+            # The server is idle, has restarted, or reset its counters. A
+            # previous request's throughput is not live throughput.
+            _prev_tokens["tps"] = 0.0
         _prev_tokens["count"] = curr
         _prev_tokens["time"] = now
         _prev_tokens["gen_secs"] = gen_secs
 
         lifetime = _update_lifetime_tokens(curr)
-        return {"tokens_per_second": _prev_tokens["tps"], "lifetime_tokens": lifetime}
-    except (httpx.HTTPError, httpx.TimeoutException, OSError) as e:
-        logger.warning(f"get_llama_metrics failed: {e}")
-        return {"tokens_per_second": 0, "lifetime_tokens": _get_lifetime_tokens()}
+        return {
+            "tokens_per_second": _prev_tokens["tps"],
+            "lifetime_tokens": lifetime,
+            "token_count_mode": "cumulative",
+        }
+    except (AgentClientError, httpx.HTTPError, httpx.TimeoutException, OSError, ValueError) as e:
+        logger.warning("get_llama_metrics failed: %s: %s", type(e).__name__, e)
+        if LLM_BACKEND == "lemonade":
+            return {
+                "tokens_per_second": 0,
+                "lifetime_tokens": 0,
+                "token_count_mode": "unavailable",
+            }
+        return {
+            "tokens_per_second": 0,
+            "lifetime_tokens": _get_lifetime_tokens(),
+            "token_count_mode": "cumulative",
+        }
 
 
 async def get_loaded_model() -> Optional[str]:
@@ -556,7 +663,69 @@ async def get_all_services() -> list[ServiceStatus]:
             ))
         else:
             statuses.append(result)
-    return statuses
+    if not any(status.status in {"degraded", "down", "unhealthy"} for status in statuses):
+        return statuses
+
+    try:
+        snapshot = await request_agent_json("GET", "/v1/service/health", timeout=15)
+        if snapshot.get("schema_version") != "ods.host-service-health.v1":
+            raise ValueError("unsupported host service-health schema")
+        containers = snapshot.get("containers")
+        if not isinstance(containers, list):
+            raise ValueError("host service-health containers must be a list")
+        by_service = {
+            str(item.get("service_id")): item
+            for item in containers
+            if isinstance(item, dict) and item.get("service_id")
+        }
+        by_name = {
+            str(item.get("container_name")): item
+            for item in containers
+            if isinstance(item, dict) and item.get("container_name")
+        }
+    except (AgentClientError, ValueError):
+        by_service = {}
+        by_name = {}
+
+    reconciled: list[ServiceStatus] = []
+    for status in statuses:
+        config = SERVICES.get(status.id, {})
+        item = by_service.get(status.id) or by_name.get(str(config.get("container_name") or ""))
+        replacement = status.status
+        if item and config.get("type", "docker") == "docker":
+            health = str(item.get("health") or "none").casefold()
+            state = str(item.get("state") or "unknown").casefold()
+            if health == "healthy" and status.status == "degraded":
+                # A successful declared Docker healthcheck is authoritative for
+                # transient dashboard-network timeouts, but never masks HTTP
+                # errors or connection refusal from the application probe.
+                replacement = "healthy"
+            elif health == "unhealthy":
+                replacement = "unhealthy"
+            elif health == "starting" and status.status in {"down", "degraded"}:
+                replacement = "degraded"
+            elif state in {"exited", "dead", "removing"}:
+                replacement = "down"
+        if replacement != status.status:
+            status = status.model_copy(update={"status": replacement})
+        reconciled.append(status)
+
+    if LLM_BACKEND == "lemonade" and read_live_env_value("AMD_INFERENCE_LOCATION").lower() == "host":
+        llama_index = next(
+            (index for index, status in enumerate(reconciled) if status.id == "llama-server"),
+            None,
+        )
+        if llama_index is not None and reconciled[llama_index].status != "healthy":
+            try:
+                host_status = await request_agent_json("GET", "/v1/llm/status", timeout=6)
+                health = host_status.get("health")
+                if isinstance(health, dict) and str(health.get("status") or "").casefold() == "ok":
+                    reconciled[llama_index] = reconciled[llama_index].model_copy(
+                        update={"status": "healthy"},
+                    )
+            except AgentClientError:
+                pass
+    return reconciled
 
 
 # --- System Metrics ---
@@ -604,7 +773,8 @@ def get_disk_usage() -> DiskUsage:
     """Get disk usage for the ODS install directory."""
     path = INSTALL_DIR if os.path.exists(INSTALL_DIR) else os.path.expanduser("~")
     total, used, free = shutil.disk_usage(path)
-    return DiskUsage(path=path, used_gb=round(used / (1024**3), 2), total_gb=round(total / (1024**3), 2), percent=round(used / total * 100, 1))
+    percent = round(used / total * 100, 1) if total > 0 else 0.0
+    return DiskUsage(path=path, used_gb=round(used / (1024**3), 2), total_gb=round(total / (1024**3), 2), percent=percent)
 
 
 def get_model_info() -> Optional[ModelInfo]:
@@ -618,12 +788,30 @@ def get_model_info() -> Optional[ModelInfo]:
                     if "=" not in line or line.lstrip().startswith("#"):
                         continue
                     key, value = line.split("=", 1)
-                    env_values[key.strip()] = value.strip().strip('"\'')
+                    key = key.strip()
+                    if not key:
+                        continue
+                    value = value.strip()
+                    # Strip exactly one matching pair of surrounding quotes.
+                    # str.strip("\"'") removes any run of either quote from
+                    # both ends, so a value legitimately ending in a quote is
+                    # truncated and "'literal'" loses its inner quotes. Keep
+                    # mismatched quotes verbatim, matching lib/safe-env.sh.
+                    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                        value = value[1:-1]
+                    env_values[key] = value
 
             model_name = env_values.get("LLM_MODEL")
             if model_name:
                 size_gb, quant = 15.0, None
-                context = int(env_values.get("MAX_CONTEXT") or env_values.get("CTX_SIZE") or 32768)
+                # MAX_CONTEXT/CTX_SIZE come straight from .env and may be
+                # non-numeric (e.g. "auto", "8k", or a trailing comment); fall
+                # back to the default rather than 500-ing every caller. Mirrors
+                # the guard already used in routers/models.py.
+                try:
+                    context = int(env_values.get("MAX_CONTEXT") or env_values.get("CTX_SIZE") or 32768)
+                except (TypeError, ValueError):
+                    context = 32768
 
                 import re as _re
 
@@ -689,15 +877,14 @@ def get_bootstrap_status() -> BootstrapStatus:
         if status == "" and not data.get("bytesDownloaded") and not data.get("percent"):
             return BootstrapStatus(active=False)
 
-        # Reconcile with the filesystem: if the target model file is already
-        # present on disk, the download is effectively done regardless of what
-        # the status record says (covers stale "downloading" entries left by a
-        # crash or a parallel download path). Skip during "verifying" and
-        # "swapping" because the file has been renamed into place but SHA256,
-        # config updates, and the llama-server hot-swap may not have finished
-        # yet — returning inactive here would hide a subsequent failure.
+        # Reconcile with the filesystem only for non-active states. If the
+        # target model file is already present on disk and the status is
+        # non-active, the download is done enough for UI purposes. Active
+        # states remain busy because config updates and the llama-server
+        # hot-swap may not have finished yet; returning inactive here would
+        # hide a subsequent failure.
         model_name = data.get("model")
-        if model_name and status not in ("verifying", "swapping"):
+        if model_name and status not in ("downloading", "verifying", "swapping"):
             models_dir = Path(DATA_DIR) / "models"
             model_path = (models_dir / model_name).resolve()
             if model_path.is_relative_to(models_dir.resolve()):
@@ -768,7 +955,7 @@ def get_uptime() -> int:
         elif _system == "Windows":
             import ctypes
             return ctypes.windll.kernel32.GetTickCount64() // 1000
-    except (OSError, subprocess.SubprocessError, ValueError, AttributeError) as e:
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, AttributeError) as e:
         logger.debug("get_uptime failed on %s: %s", _system, e)
     return 0
 

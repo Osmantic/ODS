@@ -45,6 +45,12 @@ LLAMA_SERVER_DIR="${ODS_INSTALL_DIR}/bin"
 LLAMA_SERVER_BIN="${LLAMA_SERVER_DIR}/llama-server"
 LLAMA_SERVER_PID_FILE="${ODS_INSTALL_DIR}/data/.llama-server.pid"
 LLAMA_SERVER_LOG="${ODS_INSTALL_DIR}/data/llama-server.log"
+LLM_BRIDGE_PLIST_LABEL="com.ods.llm-bridge"
+LLM_BRIDGE_PLIST="$HOME/Library/LaunchAgents/${LLM_BRIDGE_PLIST_LABEL}.plist"
+LLM_BRIDGE_LOG="$HOME/Library/Logs/ODS/ods-llm-bridge.log"
+HOST_AGENT_BRIDGE_PLIST_LABEL="com.ods.host-agent-bridge"
+HOST_AGENT_BRIDGE_PLIST="$HOME/Library/LaunchAgents/${HOST_AGENT_BRIDGE_PLIST_LABEL}.plist"
+HOST_AGENT_BRIDGE_LOG="$HOME/Library/Logs/ODS/ods-host-agent-bridge.log"
 
 # llama.cpp release for macOS Metal build (update when new releases ship)
 LLAMA_CPP_RELEASE_TAG="b8210"
@@ -87,3 +93,44 @@ CURSOR='█'               # Block cursor for typing
 ODS_AGENT_PORT=7710
 ODS_AGENT_PLIST_LABEL="com.ods.host-agent"
 ODS_AGENT_PLIST="$HOME/Library/LaunchAgents/${ODS_AGENT_PLIST_LABEL}.plist"
+
+macos_normalize_bind_address() {
+    local bind_address="${1:-127.0.0.1}"
+    bind_address="${bind_address#\"}"
+    bind_address="${bind_address%\"}"
+    bind_address="${bind_address#\'}"
+    bind_address="${bind_address%\'}"
+    printf '%s\n' "$bind_address"
+}
+
+macos_bind_uses_direct_gateway() {
+    local bind_address gateway_address
+    bind_address="$(macos_normalize_bind_address "${1:-127.0.0.1}")"
+    gateway_address="${2:-}"
+    gateway_address="${gateway_address#\"}"
+    gateway_address="${gateway_address%\"}"
+    gateway_address="${gateway_address#\'}"
+    gateway_address="${gateway_address%\'}"
+    case "$bind_address" in
+        0.0.0.0|::) return 0 ;;
+    esac
+    [[ -n "$gateway_address" && "$bind_address" == "$gateway_address" ]]
+}
+
+macos_bind_probe_host() {
+    local bind_address
+    bind_address="$(macos_normalize_bind_address "${1:-127.0.0.1}")"
+    case "$bind_address" in
+        0.0.0.0) printf '127.0.0.1\n' ;;
+        ::) printf '[::1]\n' ;;
+        ::1) printf '[::1]\n' ;;
+        *) printf '%s\n' "$bind_address" ;;
+    esac
+}
+
+macos_normalize_agent_bind() {
+    local bind_address
+    bind_address="$(macos_normalize_bind_address "${1:-127.0.0.1}")"
+    [[ "$bind_address" == "::" ]] && bind_address="0.0.0.0"
+    printf '%s\n' "$bind_address"
+}

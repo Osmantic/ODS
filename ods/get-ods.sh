@@ -1,6 +1,6 @@
 #!/bin/bash
 # ODS Bootstrap Installer
-# curl -fsSL https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh | bash
+# curl -fsSL https://install.osmantic.com/ods.sh | bash
 #
 # Detects OS, clones repo, runs installer.
 
@@ -31,7 +31,7 @@ NC='\033[0m'
 
 REPO_URL="${ODS_REPO_URL:-https://github.com/Osmantic/ODS.git}"
 INSTALL_DIR="${ODS_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/ods}"
-LEGACY_DREAMSERVER_DIR="${DREAMSERVER_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/dream-server}"
+PRE_ODS_INSTALL_DIR="${ODS_LEGACY_INSTALL_DIR:-}"
 ODS_REF="${ODS_REF:-${ODS_BOOTSTRAP_REF:-}}"
 BOOTSTRAP_FORCE=false
 BOOTSTRAP_NON_INTERACTIVE=false
@@ -47,6 +47,23 @@ log()     { echo -e "${CYAN}[ods]${NC} $1"; }
 success() { echo -e "${GREEN}[  ok ]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[warn ]${NC} $1"; }
 error()   { echo -e "${RED}[error]${NC} $1"; exit 1; }
+
+
+format_git_clone_error() {
+    local clone_err="$1"
+
+    case "$clone_err" in
+        *"Unable to read current working directory"*|*"getcwd"*)
+            error "git could not read the current working directory. This usually means the directory you launched from has been deleted (e.g. you uninstalled ODS and re-ran the bootstrap from the same shell). Run \`cd ~\` and re-run the bootstrap." ;;
+        *"Could not resolve host"*|*"Failed to connect"*|*"Connection refused"*|*"Network is unreachable"*)
+            error "Failed to reach github.com. Check your internet connection or proxy settings.\n  git said: $clone_err" ;;
+        *"Permission denied"*|*"could not create"*)
+            error "git failed to write to $TEMP_DIR (permissions). Check that /tmp is writable.\n  git said: $clone_err" ;;
+        *)
+            error "Failed to clone repository.\n  git said: $clone_err" ;;
+    esac
+}
+
 
 remove_install_dir() {
     local target_dir="$1"
@@ -70,30 +87,120 @@ is_truthy() {
     esac
 }
 
-refuse_legacy_dreamserver_install() {
-    is_truthy "${ODS_ALLOW_DREAMSERVER_PARALLEL:-}" && return 0
+ods_ref_is_exact_sha() {
+    [[ "${1:-}" =~ ^[0-9a-fA-F]{40}$ ]]
+}
 
-    local findings=()
-    if [[ -d "$LEGACY_DREAMSERVER_DIR" ]] && {
-        [[ -f "$LEGACY_DREAMSERVER_DIR/.env" ]] ||
-        [[ -f "$LEGACY_DREAMSERVER_DIR/dream-cli" ]] ||
-        [[ -f "$LEGACY_DREAMSERVER_DIR/docker-compose.yml" ]] ||
-        [[ -d "$LEGACY_DREAMSERVER_DIR/data" ]]
-    }; then
-        findings+=("install directory: $LEGACY_DREAMSERVER_DIR")
+checkout_requested_sha_ref() {
+    local ref="${1:-}"
+    local fetch_err=""
+    local checkout_err=""
+
+    [[ -n "$ref" ]] || return 0
+    ods_ref_is_exact_sha "$ref" || return 0
+
+    fetch_err=$(git fetch --depth 1 origin "$ref" 2>&1) || true
+    if ! checkout_err=$(git checkout --detach "$ref" 2>&1); then
+        error "Failed to check out repository ref $ref after cloning.
+  git fetch said: ${fetch_err:-already present in shallow clone}
+  git checkout said: $checkout_err"
+    fi
+}
+
+_ods_is_install_backup_dir() {
+    local candidate_name="${1%/}"
+    candidate_name="${candidate_name##*/}"
+
+    case "$candidate_name" in
+        *.backup-[0-9]*|backup-[0-9]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+_ods_is_related_install_dir() {
+    local candidate="$1"
+    local compose_file=""
+
+    [[ -d "$candidate" ]] || return 1
+    [[ -f "$candidate/.env" || -d "$candidate/data" ]] || return 1
+
+    if [[ -f "$candidate/docker-compose.base.yml" ]]; then
+        compose_file="$candidate/docker-compose.base.yml"
+    elif [[ -f "$candidate/docker-compose.yml" ]]; then
+        compose_file="$candidate/docker-compose.yml"
+    else
+        return 1
     fi
 
-    if command -v docker >/dev/null 2>&1; then
-        local legacy_containers
-        legacy_containers=$(docker ps -a --filter "name=^/dream-" --format '{{.Names}}' 2>/dev/null || true)
-        [[ -n "$legacy_containers" ]] && findings+=("containers: $(echo "$legacy_containers" | tr '\n' ' ')")
+    grep -Eq '^[[:space:]]{2}open-webui:[[:space:]]*$' "$compose_file" || return 1
+    grep -Eq '^[[:space:]]{2}dashboard-api:[[:space:]]*$' "$compose_file" || return 1
+    grep -Eq '^[[:space:]]{2}(llama-server|litellm):[[:space:]]*$' "$compose_file"
+}
+
+_ods_related_compose_containers() {
+    command -v docker >/dev/null 2>&1 || return 0
+
+    docker ps -a \
+        --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}' \
+        2>/dev/null |
+        awk -F '|' '
+            $2 != "" {
+                project = $2
+                if (names[project] == "") {
+                    names[project] = $1
+                } else {
+                    names[project] = names[project] " " $1
+                }
+                if ($3 == "open-webui") open_webui[project] = 1
+                if ($3 == "dashboard-api") dashboard_api[project] = 1
+                if ($3 == "llama-server" || $3 == "litellm") inference[project] = 1
+            }
+            END {
+                for (project in names) {
+                    if (open_webui[project] && dashboard_api[project] && inference[project]) {
+                        print names[project]
+                    }
+                }
+            }
+        '
+}
+
+refuse_legacy_install() {
+    is_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}" && return 0
+
+    local findings=()
+    local candidate=""
+    local related_containers=""
+
+    if [[ -n "$PRE_ODS_INSTALL_DIR" && -d "$PRE_ODS_INSTALL_DIR" ]] && {
+        [[ -f "$PRE_ODS_INSTALL_DIR/.env" ]] ||
+        [[ -f "$PRE_ODS_INSTALL_DIR/docker-compose.yml" ]] ||
+        [[ -d "$PRE_ODS_INSTALL_DIR/data" ]]
+    }; then
+        findings+=("install directory: $PRE_ODS_INSTALL_DIR")
+    fi
+
+    if [[ -d "$ODS_BOOTSTRAP_ROOT" ]]; then
+        while IFS= read -r -d '' candidate; do
+            [[ "${candidate%/}" == "${INSTALL_DIR%/}" ]] && continue
+            [[ -n "$PRE_ODS_INSTALL_DIR" && "${candidate%/}" == "${PRE_ODS_INSTALL_DIR%/}" ]] && continue
+            _ods_is_install_backup_dir "$candidate" && continue
+            if _ods_is_related_install_dir "$candidate"; then
+                findings+=("related install directory: $candidate")
+            fi
+        done < <(find "$ODS_BOOTSTRAP_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 2>/dev/null)
+    fi
+
+    related_containers="$(_ods_related_compose_containers || true)"
+    if [[ -n "$related_containers" ]]; then
+        findings+=("related Compose containers: $(printf '%s\n' "$related_containers" | tr '\n' ' ')")
     fi
 
     if (( ${#findings[@]} > 0 )); then
         echo ""
-        warn "Existing DreamServer install detected before first ODS install."
+        warn "Existing related install detected before first ODS install."
         echo ""
-        echo "ODS uses the same default ports and service roles as DreamServer."
+        echo "ODS uses the same default ports and service roles as the older stack."
         echo "Resolve the old install intentionally before installing ODS, or run in"
         echo "parallel only after choosing separate ports and an explicit install dir."
         echo ""
@@ -101,7 +208,7 @@ refuse_legacy_dreamserver_install() {
         printf '  - %s\n' "${findings[@]}"
         echo ""
         echo "To proceed after you have isolated the old stack:"
-        echo "  ODS_ALLOW_DREAMSERVER_PARALLEL=1 ODS_INSTALL_DIR=\"$INSTALL_DIR\" bash get-ods.sh"
+        echo "  ODS_ALLOW_LEGACY_PARALLEL=1 ODS_INSTALL_DIR=\"$INSTALL_DIR\" bash get-ods.sh"
         echo ""
         exit 1
     fi
@@ -287,7 +394,7 @@ if [[ -d "$INSTALL_DIR" ]]; then
 fi
 
 # ── Clone repository ──────────────────────────────
-refuse_legacy_dreamserver_install
+refuse_legacy_install
 
 log "Cloning ODS..."
 if [[ -n "$ODS_REF" ]]; then
@@ -305,36 +412,29 @@ TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
 clone_args=(--depth 1 --filter=blob:none --sparse)
-if [[ -n "$ODS_REF" ]]; then
+if [[ -n "$ODS_REF" ]] && ! ods_ref_is_exact_sha "$ODS_REF"; then
     clone_args+=(--branch "$ODS_REF")
 fi
 
 _clone_err=$(git clone "${clone_args[@]}" "$REPO_URL" "$TEMP_DIR/repo" 2>&1) || {
-    case "$_clone_err" in
-        *"Unable to read current working directory"*|*"getcwd"*)
-            error "git could not read the current working directory. This usually means the directory you launched from has been deleted (e.g. you uninstalled ODS and re-ran the bootstrap from the same shell). Run \`cd ~\` and re-run the bootstrap." ;;
-        *"Could not resolve host"*|*"Failed to connect"*|*"Connection refused"*|*"Network is unreachable"*)
-            error "Failed to reach github.com. Check your internet connection or proxy settings.\n  git said: $_clone_err" ;;
-        *"Permission denied"*|*"could not create"*)
-            error "git failed to write to $TEMP_DIR (permissions). Check that /tmp is writable.\n  git said: $_clone_err" ;;
-        *)
-            error "Failed to clone repository.\n  git said: $_clone_err" ;;
-    esac
+    format_git_clone_error "$_clone_err"
 }
 echo "$_clone_err" | tail -1
 
 cd "$TEMP_DIR/repo"
+checkout_requested_sha_ref "$ODS_REF"
 git sparse-checkout set ods 2>/dev/null || {
     # Fallback: full clone if sparse checkout fails
     cd "$ODS_BOOTSTRAP_ROOT"
     rm -rf "$TEMP_DIR/repo"
     fallback_clone_args=(--depth 1)
-    if [[ -n "$ODS_REF" ]]; then
+    if [[ -n "$ODS_REF" ]] && ! ods_ref_is_exact_sha "$ODS_REF"; then
         fallback_clone_args+=(--branch "$ODS_REF")
     fi
     git clone "${fallback_clone_args[@]}" "$REPO_URL" "$TEMP_DIR/repo" 2>&1 | tail -1 || \
         error "Failed to clone repository (fallback full clone also failed)."
     cd "$TEMP_DIR/repo"
+    checkout_requested_sha_ref "$ODS_REF"
 }
 
 # Move ods to install location (exclude dev-only files)

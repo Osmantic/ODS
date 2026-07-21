@@ -29,7 +29,7 @@ For a durable downstream release, preserve:
 For an internal mirror:
 
 ```bash
-git clone --mirror https://github.com/Light-Heart-Labs/ODS.git
+git clone --mirror https://github.com/Osmantic/ODS.git
 cd ODS.git
 git remote set-url --push origin <your-mirror-url>
 git push --mirror
@@ -38,7 +38,7 @@ git push --mirror
 For a working fork, pin your release in `DOWNSTREAM.md`:
 
 ```text
-Upstream: Light-Heart-Labs/ODS
+Upstream: Osmantic/ODS
 Upstream ref: <commit-or-tag>
 Downstream ref: <commit-or-tag>
 Validation receipt: <date-and-run-id-or-local-report>

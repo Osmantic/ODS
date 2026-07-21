@@ -81,7 +81,7 @@ Skip this NVIDIA CUDA container check on AMD systems.
 Open **PowerShell** (not as admin) and run:
 
 ```powershell
-git clone https://github.com/Light-Heart-Labs/ODS.git
+git clone https://github.com/Osmantic/ODS.git
 cd ODS
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1

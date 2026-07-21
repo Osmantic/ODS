@@ -56,7 +56,7 @@ check '.\install.ps1 -InstallDir $_installDirHint' "$ROOT_DIR/installers/windows
 check '.\install.ps1 -InstallDir $_installDirHint' "$ROOT_DIR/installers/windows/phases/04-requirements.ps1" "Windows requirements disk gate prints install-dir rerun hint"
 check '$_installDirHint = "<path-with-enough-space>\ods"' "$ROOT_DIR/installers/windows/phases/04-requirements.ps1" "Windows disk warning uses a generic install-dir hint"
 check 'if ($continueChoice -notmatch "^[yY]")' "$ROOT_DIR/installers/windows/phases/04-requirements.ps1" "Windows requirements default prompt rejects Enter"
-check 'exit 1' "$ROOT_DIR/installers/windows/phases/04-requirements.ps1" "Windows requirements prompt aborts on default No"
+check 'throw "ODS_INSTALL_ABORTED"' "$ROOT_DIR/installers/windows/phases/04-requirements.ps1" "Windows requirements prompt aborts on default No"
 
 check '| `-NoHermes` | Disable Hermes Agent |' "$WINDOWS_QUICKSTART" "Windows quickstart documents -NoHermes"
 check '| `-NoBootstrap` | Wait for the full model before launching |' "$WINDOWS_QUICKSTART" "Windows quickstart documents -NoBootstrap"

@@ -44,6 +44,7 @@ candidate run.
 | Install Green | Enabled real-hardware hosts can fresh-install from the public bootstrap path. |
 | Product Green | Core services, cloud-mode contracts, dashboard flows, Hermes auth/chat, and UI checks pass after install. |
 | Capability Green | Full-model capability probes pass after large model downloads and swaps complete. |
+| Model Switchboard Green | Model-management release coverage proves the six-model matrix, app probes, visible agent gates, and coverage ledger for each reachable host. |
 | Lifecycle Green | Idempotent reinstall, `ods restart`, and `ods doctor` recover cleanly after state changes. |
 | User Green | The combined release gate is clean, with failures, skips, and deferrals resolved or documented. |
 
@@ -79,10 +80,63 @@ A release-grade run includes:
 - lifecycle checks: idempotent reinstall, `ods restart`, and `ods doctor`;
 - regression replay for previously fixed fleet failures.
 
+Model-management coverage has two named tiers:
+
+| Tier | Required coverage |
+|---|---|
+| Release | Six distinct planned test models per reachable host. Each model must run the full verb chain: discover, download, load, use through enabled LLM apps, restore, and delete or disclose retained state. |
+| Smoke | One planned test model per host running the same full verb chain. Smoke is suitable for iteration confidence, not for final User Green. |
+
+The release tier is a six-model matrix, not six repeats of the same model. The
+harness must record the planned target for each cycle and reject target drift or
+same-model reuse unless the report explicitly discloses and justifies the
+deviation.
+
 Capability probes can be deferred while a large model is still downloading or
 hot-swapping. The capabilities watcher polls until the model is ready, reruns
 the probes, and updates the report so a release is not marked User Green just
 because the first pass arrived before the model did.
+
+## Coverage Ledger
+
+Model-management and Switchboard runs should append a machine-readable coverage
+ledger entry for each host/cycle. The ledger is release evidence, not an
+operator scratchpad. Each entry should include:
+
+| Field | Meaning |
+|---|---|
+| `timestamp` | When the cycle result was finalized. |
+| `product_sha` | Frozen product commit under test. |
+| `harness_sha` | Harness commit used to run and adjudicate the result. |
+| `tier` | `release` or `smoke`. |
+| `host_id` | Sanitized host identifier. |
+| `platform` | OS, hardware class, GPU/backend, runtime mode, and relevant model runtime. |
+| `cycle` | Cycle number and planned target model id. |
+| `distinct_model_count` | Distinct planned test models completed for that host at the stamped SHA. |
+| `verbs` | Status and artifact links for discover, download, load, use, restore, and delete. |
+| `apps_discovered` | Enabled LLM consumers found from manifests, env/config references, or known core services. |
+| `app_probes` | Per-app probe status, endpoint, auth disposition, and model identity evidence. |
+| `gates` | Context/capability gates shown to the user, including agent viability gates. |
+| `open_webui_auth` | Credential strategy and result for Open WebUI. A 401/login wall is red or deferred, never pass. |
+| `re_adjudication` | Any recomputation after an earlier failure, with original failure path and reason. |
+| `drift` | Hand repairs, skipped cleanup, target changes, or local operator intervention. |
+| `result` | Pass, fail, or deferred with a concrete reason and owner when deferred. |
+
+The release report should fail User Green when release-tier ledger coverage is
+missing, when the host has fewer than six distinct completed test models, or
+when app probes silently skip an enabled LLM consumer.
+
+## Re-Adjudication Rules
+
+If a run is recomputed after an `OVERALL: FAIL`, the updated report must say so.
+Valid re-adjudication includes a logged false-red reproduction, the old result,
+the corrected rule, and the affected artifacts. It is not valid to relax a
+validator silently or to convert missing app authentication into a pass.
+
+Open WebUI is a required probe when enabled. The harness must either provision a
+known admin/API credential and prove the active model through Open WebUI, or
+record the lane as failed/deferred with the auth blocker. HTTP 401, a login
+page, or an unauthenticated health page does not prove model viability.
 
 ## Known Limits
 

@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlparse
 
 import yaml
@@ -25,18 +25,132 @@ EXTENSIONS_DIR = Path(
 
 DEFAULT_SERVICE_HOST = os.environ.get("SERVICE_HOST", "host.docker.internal")
 GPU_BACKEND = os.environ.get("GPU_BACKEND", "nvidia")
+ODS_MODES = frozenset({"local", "cloud", "hybrid", "lemonade"})
+LOCAL_MODEL_MODES = frozenset({"local", "hybrid", "lemonade"})
+LLM_CONTRACT_ROUTES = frozenset({"gateway", "direct"})
+LLM_CONTRACT_PINNING = frozenset({"none", "dynamic"})
 
 
-def _read_env_from_file(key: str) -> str:
-    """Read a variable from the .env file when not available in process environment."""
+def normalize_ods_mode(value: Any) -> str:
+    """Return a supported ODS mode or ``unknown`` for missing/invalid input."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in ODS_MODES else "unknown"
+
+
+def normalize_llm_contract(value: Any) -> dict[str, Any] | None:
+    """Normalize a manifest ``llm`` contract for API and harness consumers."""
+    if not isinstance(value, dict):
+        return None
+
+    consumes = bool(value.get("consumes", False))
+    route = str(value.get("route") or "").strip().lower()
+    pinning = str(value.get("pinning") or "").strip().lower()
+    if route not in LLM_CONTRACT_ROUTES:
+        route = "direct" if consumes else ""
+    if pinning not in LLM_CONTRACT_PINNING:
+        pinning = "none"
+
+    normalized: dict[str, Any] = {
+        "consumes": consumes,
+        "route": route,
+        "pinning": pinning,
+    }
+
+    min_context = value.get("min_context")
+    if min_context is not None:
+        try:
+            normalized["min_context"] = max(0, int(min_context))
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid llm.min_context value: %r", min_context)
+
+    probe = value.get("probe")
+    if isinstance(probe, dict):
+        normalized["probe"] = probe.copy()
+
+    swap_safe = bool(consumes and (route == "gateway" or pinning == "dynamic"))
+    normalized["swap_safe"] = swap_safe
+    # camelCase alias: the fleet model-ui harness gates required probes on llm.swapSafe
+    normalized["swapSafe"] = swap_safe
+    normalized["badge"] = "swap-safe" if swap_safe else "not-swap-safe"
+    if not consumes:
+        normalized["swap_safe_reason"] = "This service does not declare LLM inference consumption."
+    elif route == "gateway":
+        normalized["swap_safe_reason"] = "Routes through the ODS gateway alias and follows model swaps automatically."
+    elif pinning == "dynamic":
+        normalized["swap_safe_reason"] = "Declares a dynamic model refresh path and is re-probed after swaps."
+    else:
+        normalized["swap_safe_reason"] = "Direct model route without a declared refresh path; swaps may require reconciliation."
+
+    return normalized
+
+
+# This is the mode of the running dashboard-api container. Unlike the mounted
+# .env file, the process environment is fixed until the service is recreated.
+ODS_MODE_EFFECTIVE = normalize_ods_mode(os.environ.get("ODS_MODE"))
+
+
+def _find_env_file_value(key: str) -> tuple[bool, str]:
+    """Return the last persisted value and distinguish missing from empty."""
     env_path = Path(INSTALL_DIR) / ".env"
+    found = False
+    value = ""
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
-                return line.split("=", 1)[1].strip().strip("\"'")
+                found = True
+                value = line.split("=", 1)[1].strip().strip("\"'")
     except (OSError, UnicodeError):
         pass
-    return ""
+    return found, value
+
+
+def _read_env_from_file(key: str) -> str:
+    """Read a variable from the persisted .env file."""
+    return _find_env_file_value(key)[1]
+
+
+def read_live_env_value(key: str, default: str = "") -> str:
+    """Read mutable ODS state from the mounted .env before process startup env."""
+    found, value = _find_env_file_value(key)
+    if found:
+        return value
+    return os.environ.get(key, "") or default
+
+
+def _apply_host_native_llm_service_override(
+    services: dict[str, dict[str, Any]],
+    gpu_backend: str,
+    environment: Mapping[str, str] | None = None,
+) -> None:
+    """Route Windows AMD dashboard probes to the host-native LLM endpoint."""
+    env = environment if environment is not None else os.environ
+    if str(gpu_backend).lower() != "amd":
+        return
+    if str(env.get("AMD_INFERENCE_LOCATION", "")).lower() != "host":
+        return
+    service = services.get("llama-server")
+    if not service:
+        return
+
+    configured_url = (
+        env.get("OLLAMA_URL")
+        or env.get("LLM_URL")
+        or env.get("LLM_API_URL")
+        or f"http://host.docker.internal:{env.get('AMD_INFERENCE_PORT', '8080')}"
+    )
+    parsed = urlparse(str(configured_url).strip())
+    if not parsed.hostname:
+        logger.warning("Ignoring invalid host-native LLM URL: %s", configured_url)
+        return
+    try:
+        port = parsed.port or int(env.get("AMD_INFERENCE_PORT", "8080"))
+    except ValueError:
+        logger.warning("Ignoring invalid host-native LLM port in URL: %s", configured_url)
+        return
+
+    service["host"] = parsed.hostname
+    service["port"] = port
+    logger.info("Host-native AMD inference detected; routing LLM probes to %s:%d", parsed.hostname, port)
 
 
 def _read_env_value(key: str) -> str:
@@ -171,6 +285,16 @@ def load_extension_manifests(
                 service_id = service.get("id")
                 if not service_id:
                     raise ValueError("service.id is required")
+                compose_file = str(service.get("compose_file") or "").strip()
+                if service.get("type") == "docker" and compose_file:
+                    compose_path = ext_dir / compose_file
+                    if not compose_path.exists():
+                        logger.debug(
+                            "Skipping docker service %s because %s is not installed",
+                            service_id,
+                            compose_path,
+                        )
+                        continue
                 supported = service.get("gpu_backends", ["amd", "nvidia", "apple"])
                 if gpu_backend == "apple":
                     if service.get("type") == "host-systemd":
@@ -193,7 +317,7 @@ def load_extension_manifests(
 
                 public_url = _resolve_public_service_url(service_id, service, ext_port_env, public_url_map)
 
-                services[service_id] = {
+                service_config = {
                     "host": host,
                     "port": int(service.get("port", 0)),
                     "external_port": external_port,
@@ -212,6 +336,10 @@ def load_extension_manifests(
                     **({"type": service["type"]} if "type" in service else {}),
                     **({"health_port": int(service["health_port"])} if "health_port" in service else {}),
                 }
+                llm_contract = normalize_llm_contract(service.get("llm"))
+                if llm_contract is not None:
+                    service_config["llm"] = llm_contract
+                services[service_id] = service_config
 
             manifest_features = manifest.get("features", [])
             if isinstance(manifest_features, list):
@@ -246,6 +374,7 @@ if not SERVICES:
 # Lemonade serves at /api/v1 instead of llama.cpp's /v1. Override the
 # health path so the dashboard poll loop hits the correct endpoint.
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "")
+_apply_host_native_llm_service_override(SERVICES, GPU_BACKEND)
 if LLM_BACKEND == "lemonade" and "llama-server" in SERVICES:
     SERVICES["llama-server"]["health"] = "/api/v1/health"
     logger.info("Lemonade backend detected — overriding llama-server health to /api/v1/health")
@@ -346,7 +475,7 @@ def _load_core_service_ids() -> frozenset:
             pass
     # Fallback to hardcoded list
     return frozenset({
-        "dashboard-api", "dashboard", "llama-server", "open-webui",
+        "dashboard-api", "dashboard", "llama-server", "model-router", "open-webui",
         "litellm", "langfuse", "hermes", "hermes-proxy", "n8n", "openclaw", "opencode",
         "perplexica", "searxng", "qdrant", "tts", "whisper",
         "embeddings", "token-spy", "comfyui", "ape", "privacy-shield",
@@ -357,7 +486,9 @@ CORE_SERVICE_IDS = _load_core_service_ids()
 
 # Always-on services defined in docker-compose.base.yml — never manageable via API.
 # Distinct from CORE_SERVICE_IDS (the full built-in service allowlist).
-ALWAYS_ON_SERVICES: frozenset = frozenset({"llama-server", "open-webui", "dashboard", "dashboard-api"})
+ALWAYS_ON_SERVICES: frozenset = frozenset({
+    "llama-server", "model-router", "open-webui", "dashboard", "dashboard-api",
+})
 
 
 def load_extension_catalog() -> list[dict]:

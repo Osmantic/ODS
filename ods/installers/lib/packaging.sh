@@ -231,6 +231,7 @@ pkg_resolve() {
             case "$canonical" in
                 docker-compose-plugin) echo "docker-compose-plugin" ;;
                 python3-pyyaml)        echo "python3-yaml" ;;
+                python3-pip)           echo "python3-pip" ;;
                 *) echo "$canonical" ;;
             esac
             ;;
@@ -245,6 +246,7 @@ pkg_resolve() {
                     ;;
                 docker-compose-plugin) echo "docker-compose-plugin" ;;
                 python3-pyyaml)        echo "python3-pyyaml" ;;
+                python3-pip)           echo "python3-pip" ;;
                 build-essential)       echo "gcc gcc-c++ make" ;;
                 *) echo "$canonical" ;;
             esac
@@ -253,6 +255,7 @@ pkg_resolve() {
             case "$canonical" in
                 docker-compose-plugin) echo "docker-compose" ;;
                 python3-pyyaml)        echo "python-yaml" ;;
+                python3-pip)           echo "python-pip" ;;
                 build-essential)       echo "base-devel" ;;
                 *) echo "$canonical" ;;
             esac
@@ -261,6 +264,7 @@ pkg_resolve() {
             case "$canonical" in
                 docker-compose-plugin) echo "docker-compose" ;;
                 python3-pyyaml)        echo "python3-PyYAML" ;;
+                python3-pip)           echo "python3-pip" ;;
                 build-essential)       echo "devel_basis" ;;
                 *) echo "$canonical" ;;
             esac
@@ -269,6 +273,7 @@ pkg_resolve() {
             case "$canonical" in
                 docker-compose-plugin) echo "docker-compose" ;;
                 python3-pyyaml)        echo "python3-yaml" ;;
+                python3-pip)           echo "python3-pip" ;;
                 build-essential)       echo "base-devel" ;;
                 *) echo "$canonical" ;;
             esac
@@ -277,6 +282,7 @@ pkg_resolve() {
             case "$canonical" in
                 docker-compose-plugin) echo "docker-cli-compose" ;;
                 python3-pyyaml)        echo "py3-yaml" ;;
+                python3-pip)           echo "py3-pip" ;;
                 build-essential)       echo "build-base" ;;
                 *) echo "$canonical" ;;
             esac

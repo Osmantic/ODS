@@ -109,6 +109,12 @@ if grep -q "No services defined in docker-compose" "$TMP_DIR/health.out"; then
 fi
 pass "ods-update health uses saved compose flags in runtime installs"
 
+PATH="$BIN_DIR:$PATH" bash "$INSTALL_DIR/ods-update.sh" backup runtime-smoke > "$TMP_DIR/backup.out" 2>&1 \
+    || { cat "$TMP_DIR/backup.out"; fail "backup should not fail while counting copied files"; }
+grep -q "Backup created:" "$TMP_DIR/backup.out" \
+    || { cat "$TMP_DIR/backup.out"; fail "backup did not report created snapshot"; }
+pass "ods-update backup counts copied files under set -e"
+
 cat > "$INSTALL_DIR/.version" <<'EOF'
 {"version":"1.0.0"}
 EOF

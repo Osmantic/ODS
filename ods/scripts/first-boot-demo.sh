@@ -37,6 +37,9 @@ WHISPER_URL="${WHISPER_URL:-http://localhost:${SERVICE_PORTS[whisper]:-9000}}"
 PIPER_URL="${PIPER_URL:-http://localhost:${SERVICE_PORTS[tts]:-8880}}"
 N8N_URL="${N8N_URL:-http://localhost:${SERVICE_PORTS[n8n]:-5678}}"
 WEBUI_URL="${WEBUI_URL:-http://localhost:${SERVICE_PORTS[open-webui]:-3000}}"
+# Use the installed model from .env if available; fall back to a widely-known default
+# so the demo works out-of-the-box on any tier without hardcoding a specific model name.
+DEMO_MODEL="${LLM_MODEL:-Qwen/Qwen2.5-32B-Instruct-AWQ}"
 
 QUICK_MODE=false
 ALL_MODE=false
@@ -54,6 +57,14 @@ while [[ $# -gt 0 ]]; do
         *) shift ;;
     esac
 done
+
+# Dependency check — jq is required for parsing API responses.
+if ! command -v jq >/dev/null 2>&1; then
+    echo "Error: 'jq' is required for first-boot-demo.sh but was not found in PATH."
+    echo "Install it with:  sudo apt install jq   (Debian/Ubuntu)"
+    echo "                  brew install jq        (macOS)"
+    exit 1
+fi
 
 #=============================================================================
 # Helpers
@@ -193,12 +204,8 @@ demo "Asking your local AI a question..."
 
 RESPONSE=$(curl -sf "${LLM_URL}/v1/chat/completions" \
     -H "Content-Type: application/json" \
-    -d '{
-        "model": "Qwen/Qwen2.5-32B-Instruct-AWQ",
-        "messages": [{"role": "user", "content": "In one sentence, what makes local AI special?"}],
-        "max_tokens": 100,
-        "temperature": 0.7
-    }' 2>/dev/null | jq -r '.choices[0].message.content' 2>/dev/null || echo "")
+    -d "{\"model\": \"${DEMO_MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"In one sentence, what makes local AI special?\"}], \"max_tokens\": 100, \"temperature\": 0.7}" \
+    2>/dev/null | jq -r '.choices[0].message.content' 2>/dev/null || echo "")
 
 if [[ -n "$RESPONSE" && "$RESPONSE" != "null" ]]; then
     echo ""
@@ -221,12 +228,8 @@ demo "Asking for help with a Python function..."
 
 CODE_RESPONSE=$(curl -sf "${LLM_URL}/v1/chat/completions" \
     -H "Content-Type: application/json" \
-    -d '{
-        "model": "Qwen/Qwen2.5-32B-Instruct-AWQ",
-        "messages": [{"role": "user", "content": "Write a Python one-liner to reverse a string. Just the code, no explanation."}],
-        "max_tokens": 50,
-        "temperature": 0.3
-    }' 2>/dev/null | jq -r '.choices[0].message.content' 2>/dev/null || echo "")
+    -d "{\"model\": \"${DEMO_MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"Write a Python one-liner to reverse a string. Just the code, no explanation.\"}], \"max_tokens\": 50, \"temperature\": 0.3}" \
+    2>/dev/null | jq -r '.choices[0].message.content' 2>/dev/null || echo "")
 
 if [[ -n "$CODE_RESPONSE" && "$CODE_RESPONSE" != "null" ]]; then
     echo ""
@@ -251,13 +254,8 @@ echo ""
 # Simple streaming demo - just show it works
 curl -sN "${LLM_URL}/v1/chat/completions" \
     -H "Content-Type: application/json" \
-    -d '{
-        "model": "Qwen/Qwen2.5-32B-Instruct-AWQ",
-        "messages": [{"role": "user", "content": "Count from 1 to 5, one number per line."}],
-        "max_tokens": 50,
-        "temperature": 0,
-        "stream": true
-    }' 2>/dev/null | while read -r line; do
+    -d "{\"model\": \"${DEMO_MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"Count from 1 to 5, one number per line.\"}], \"max_tokens\": 50, \"temperature\": 0, \"stream\": true}" \
+    2>/dev/null | while read -r line; do
         if [[ "$line" == data:* ]]; then
             content=$(echo "${line#data: }" | jq -r '.choices[0].delta.content // empty' 2>/dev/null)
             if [[ -n "$content" ]]; then

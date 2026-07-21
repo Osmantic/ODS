@@ -53,8 +53,17 @@ describe('Sidebar', () => {
     expect(screen.queryByText('Dashboard')).not.toBeInTheDocument()
   })
 
+  test('uses the compact, accessible navigation treatment below the desktop breakpoint', () => {
+    render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
+
+    expect(document.querySelector('aside')).toHaveClass('w-20', 'sm:w-64')
+    expect(screen.getByRole('link', { name: 'Dashboard' })).toHaveClass('justify-center', 'sm:justify-start')
+    expect(screen.getByText('Dashboard')).toHaveClass('hidden', 'sm:inline')
+    expect(screen.getByRole('button', { name: /collapse sidebar/i })).toHaveClass('hidden', 'sm:flex')
+  })
+
   test('shows version in header', () => {
     render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
-    expect(screen.getByText(/v1\.0\.0/)).toBeInTheDocument()
+    expect(screen.getAllByText(/v1\.0\.0/)).toHaveLength(2)
   })
 })

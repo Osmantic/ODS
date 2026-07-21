@@ -230,7 +230,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - README rewritten as product landing page (feature highlights, comparison table, screenshots)
-- CONTRIBUTING.md updated from legacy "Lighthouse AI" branding to "ODS"
+- CONTRIBUTING.md updated from pre-ODS branding to "ODS"
 - Repository About section updated with new description, website, and topics
 
 ### Fixed

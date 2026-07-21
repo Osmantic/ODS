@@ -43,6 +43,11 @@
 # Listen on the proxy's internal port. Compose maps this to the external
 # HERMES_PROXY_PORT via the host port mapping.
 :9120 {
+	# Cap request body at 50 MB to protect against abuse of the Hermes
+	# proxy paths while still allowing file attachments in agent prompts.
+	request_body {
+		max_size 50MB
+	}
 	# Caddy's global directive order would otherwise run forward_auth before
 	# these local handle blocks. Keep the literal order so health, favicon,
 	# and invite-help assets remain public, while every other path is gated.

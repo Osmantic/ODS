@@ -147,7 +147,7 @@ We're not precious about style, but we have standards:
 
 ## Questions and Bugs
 
-**Got a question?** Open an issue or start a [GitHub Discussion](https://github.com/Light-Heart-Labs/ODS/discussions). Seriously — ask before you build. It's faster for everyone.
+**Got a question?** Open an issue or start a [GitHub Discussion](https://github.com/Osmantic/ODS/discussions). Seriously — ask before you build. It's faster for everyone.
 
 **Found a bug?** Open an issue with your hardware (GPU, RAM, OS), what you expected, what actually happened, and logs (`docker compose logs`). The more context you give us, the faster we fix it.
 

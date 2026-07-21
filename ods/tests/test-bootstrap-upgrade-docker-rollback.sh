@@ -59,6 +59,12 @@ printf 'Linux\n'
 EOF
 chmod +x "$fakebin/uname"
 
+cat > "$fakebin/flock" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$fakebin/flock"
+
 cat > "$fakebin/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -161,6 +167,8 @@ grep -q 'Restoring previous active model config after Docker llama-server swap f
     || fail "bootstrap-upgrade should log the Docker rollback"
 grep -q 'llama-server container exited or is restarting while loading the full model' "$tmp/bootstrap.log" \
     || fail "bootstrap-upgrade should detect a failed llama-server container before waiting for the full health timeout"
+grep -q 'continuing within restart grace' "$tmp/bootstrap.log" \
+    || fail "bootstrap-upgrade should tolerate transient llama-server restarts before rollback"
 health_attempts=$(grep -c '^health:' "$curl_calls" 2>/dev/null || true)
 [[ "$health_attempts" -lt 60 ]] \
     || fail "failed Docker hot-swap should not wait for all health attempts after the container is restarting"

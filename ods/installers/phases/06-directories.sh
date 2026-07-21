@@ -347,7 +347,7 @@ raise SystemExit(1)' 2>/dev/null && return 0
     }
 
     # Secrets: reuse existing values, generate only if missing
-    WEBUI_SECRET=$(_env_get WEBUI_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
+    WEBUI_SECRET=$(_env_get WEBUI_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
     N8N_PASS=$(_env_get N8N_PASS "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
     LITELLM_KEY=$(_env_get LITELLM_KEY "sk-ods-$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
     LITELLM_LEMONADE_API_KEY=$(_env_get LITELLM_LEMONADE_API_KEY "sk-ods-lemonade-$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
@@ -414,26 +414,26 @@ raise SystemExit(1)' 2>/dev/null && return 0
         LEMONADE_MODEL="$LEMONADE_MODEL_VALUE"
     fi
     LIVEKIT_SECRET=$(_env_get LIVEKIT_API_SECRET "$(openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64)")
-    DASHBOARD_API_KEY=$(_env_get DASHBOARD_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
-    ODS_AGENT_KEY=$(_env_get ODS_AGENT_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
+    DASHBOARD_API_KEY=$(_env_get DASHBOARD_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
+    ODS_AGENT_KEY=$(_env_get ODS_AGENT_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
     # HMAC key for signing ods-session cookies (magic-link redemption).
     # 32 random bytes hex-encoded. Rotating invalidates every issued cookie —
     # the only revocation mechanism we have today, so don't rotate casually.
-    ODS_SESSION_SECRET=$(_env_get ODS_SESSION_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
-    SHIELD_API_KEY=$(_env_get SHIELD_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
-    DIFY_SECRET_KEY=$(_env_get DIFY_SECRET_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
-    QDRANT_API_KEY=$(_env_get QDRANT_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
+    ODS_SESSION_SECRET=$(_env_get ODS_SESSION_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
+    SHIELD_API_KEY=$(_env_get SHIELD_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
+    DIFY_SECRET_KEY=$(_env_get DIFY_SECRET_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
+    QDRANT_API_KEY=$(_env_get QDRANT_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
     _token_spy_key_default=""
     if [[ -f "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt" ]]; then
         _token_spy_key_default=$(tr -d '\r\n' < "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt" 2>/dev/null || true)
     fi
     if [[ -z "$_token_spy_key_default" ]]; then
-        _token_spy_key_default=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)
+        _token_spy_key_default=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')
     fi
     TOKEN_SPY_API_KEY=$(_env_get TOKEN_SPY_API_KEY "$_token_spy_key_default")
     unset _token_spy_key_default
     OPENCODE_SERVER_PASSWORD=$(_env_get OPENCODE_SERVER_PASSWORD "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
-    SEARXNG_SECRET=$(_env_get SEARXNG_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)")
+    SEARXNG_SECRET=$(_env_get SEARXNG_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
 
     # Langfuse (LLM Observability). LANGFUSE_ENABLED mirrors the install-time
     # ENABLE_LANGFUSE toggle, falling back to whatever the user had in .env on
@@ -455,8 +455,20 @@ raise SystemExit(1)' 2>/dev/null && return 0
     LANGFUSE_INIT_USER_PASSWORD=$(_env_get LANGFUSE_INIT_USER_PASSWORD "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
     MODEL_PROFILE_VALUE=$(_env_get MODEL_PROFILE "${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}")
     ODS_MODE_VALUE="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo "${ODS_MODE:-local}"; fi)"
+    ODS_MODEL_SWITCHBOARD_VALUE=$(_env_get ODS_MODEL_SWITCHBOARD "${ODS_MODEL_SWITCHBOARD:-observe}")
+    case "$ODS_MODEL_SWITCHBOARD_VALUE" in
+        legacy|observe|enabled) ;;
+        *) ODS_MODEL_SWITCHBOARD_VALUE="observe" ;;
+    esac
     _default_llm_api_url="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "http://litellm:4000"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "http://litellm:4000"; elif [[ "${ODS_MODE:-local}" == "local" ]]; then echo "http://llama-server:8080"; else echo "http://litellm:4000"; fi)"
     LLM_API_URL_VALUE=$(_env_get LLM_API_URL "$_default_llm_api_url")
+    if [[ "$ODS_MODEL_SWITCHBOARD_VALUE" == "enabled" ]]; then
+        OPEN_WEBUI_LLM_BASE_URL_VALUE=$(_env_get OPEN_WEBUI_LLM_BASE_URL "http://litellm:4000")
+        OPEN_WEBUI_LLM_API_KEY_VALUE=$(_env_get OPEN_WEBUI_LLM_API_KEY "${LITELLM_KEY}")
+    else
+        OPEN_WEBUI_LLM_BASE_URL_VALUE=$(_env_get OPEN_WEBUI_LLM_BASE_URL "")
+        OPEN_WEBUI_LLM_API_KEY_VALUE=$(_env_get OPEN_WEBUI_LLM_API_KEY "")
+    fi
     if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
         _default_hermes_base_url="http://litellm:4000/v1"
         _default_hermes_api_key="${LITELLM_KEY}"
@@ -466,6 +478,10 @@ raise SystemExit(1)' 2>/dev/null && return 0
     else
         _default_hermes_base_url="http://llama-server:8080/v1"
         _default_hermes_api_key="sk-ods-hermes-local"
+    fi
+    if [[ "$ODS_MODEL_SWITCHBOARD_VALUE" == "enabled" ]]; then
+        _default_hermes_base_url="http://litellm:4000/v1"
+        _default_hermes_api_key="${LITELLM_KEY}"
     fi
     HERMES_LLM_BASE_URL_VALUE=$(_env_get HERMES_LLM_BASE_URL "$_default_hermes_base_url")
     HERMES_LLM_API_KEY_VALUE=$(_env_get HERMES_LLM_API_KEY "$_default_hermes_api_key")
@@ -658,7 +674,10 @@ HOST_LAN_IP=${HOST_LAN_IP}
 
 #=== LLM Backend Mode ===
 ODS_MODE=${ODS_MODE_VALUE}
+ODS_MODEL_SWITCHBOARD=${ODS_MODEL_SWITCHBOARD_VALUE}
 LLM_API_URL=${LLM_API_URL_VALUE}
+OPEN_WEBUI_LLM_BASE_URL=${OPEN_WEBUI_LLM_BASE_URL_VALUE}
+OPEN_WEBUI_LLM_API_KEY=${OPEN_WEBUI_LLM_API_KEY_VALUE}
 LLM_BACKEND=$(if [[ "$ODS_MODE_VALUE" == "lemonade" ]]; then echo "lemonade"; else echo "llama-server"; fi)
 LLM_API_BASE_PATH=$(if [[ "$ODS_MODE_VALUE" == "lemonade" ]]; then echo "${LEMONADE_API_BASE_PATH_VALUE}"; else echo "/v1"; fi)
 AMD_INFERENCE_RUNTIME=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" || ( "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ) ]]; then echo "lemonade"; else echo ""; fi)
@@ -1004,6 +1023,39 @@ LITELLM_EOF
         fi
         unset _renderer_ok _renderer_py
     fi
+
+    # Materialize router inputs before Compose can interpret file bind mounts.
+    # These files are required even in observe mode so a fresh install never
+    # turns a missing file path into a Docker-created directory.
+    _phase06_step "render-model-router-config"
+    mkdir -p "$INSTALL_DIR/config/model-router" "$INSTALL_DIR/config/litellm"
+    _router_renderer_py="${ODS_PYTHON_CMD:-python3}"
+    if [[ ! -f "$SCRIPT_DIR/scripts/render-runtime-configs.py" ]] \
+        || ! command -v "$_router_renderer_py" >/dev/null 2>&1; then
+        error "Model router config renderer is unavailable"
+        return 1
+    fi
+    _router_common_args=(
+        --switchboard-mode "${ODS_MODEL_SWITCHBOARD_VALUE:-observe}"
+        --ods-mode "${ODS_MODE:-local}"
+        --gpu-backend "${GPU_BACKEND:-nvidia}"
+        --gguf-file "${GGUF_FILE:-}"
+        --lemonade-model-id "${LEMONADE_MODEL_VALUE:-}"
+        --lemonade-api-base "${LEMONADE_CONTAINER_API_BASE_VALUE:-http://llama-server:8080/api/v1}"
+        --llm-base-url "${LLM_API_URL:-http://llama-server:8080/v1}"
+        --litellm-key "${LITELLM_KEY:-}"
+        --output-root "$INSTALL_DIR"
+        --write
+    )
+    for _router_surface in model-router-endpoints litellm-switchboard; do
+        if ! "$_router_renderer_py" "$SCRIPT_DIR/scripts/render-runtime-configs.py" \
+            --surface "$_router_surface" "${_router_common_args[@]}" \
+            >> "$LOG_FILE" 2>&1; then
+            error "Failed to render required ${_router_surface} config"
+            return 1
+        fi
+    done
+    unset _router_renderer_py _router_surface _router_common_args
 
     # Validate generated .env against schema (fails fast on missing/unknown keys).
     _phase06_step "validate-env"

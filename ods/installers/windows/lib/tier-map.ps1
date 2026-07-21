@@ -196,7 +196,7 @@ function Resolve-QwenTierConfig {
                 LlmModel   = "qwen3-30b-a3b"
                 GgufFile   = "Qwen3-30B-A3B-Q4_K_M.gguf"
                 GgufUrl    = "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/main/Qwen3-30B-A3B-Q4_K_M.gguf"
-                GgufSha256 = "84b5f7f112156d63836a01a69dc3f11a6ba63b10a23b8ca7a7efaf52d5a2d806"
+                GgufSha256 = "9f1a24700a339b09c06009b729b5c809e0b64c213b8af5b711b3dbdfd0c5ba48"
                 MaxContext = 32768
                 ModelProfileRequested = "qwen"
                 ModelProfileEffective = "qwen"
@@ -369,9 +369,12 @@ function Resolve-GemmaTierConfig {
 }
 
 function Resolve-TierConfig {
-    param([string]$Tier)
+    param(
+        [string]$Tier,
+        [string]$ModelProfile = $env:MODEL_PROFILE
+    )
 
-    $requestedProfile = Normalize-ModelProfile
+    $requestedProfile = Normalize-ModelProfile -ModelProfile $ModelProfile
     $effectiveProfile = Resolve-EffectiveModelProfile -Tier $Tier -RequestedProfile $requestedProfile
 
     switch ($effectiveProfile) {
@@ -454,6 +457,18 @@ function Test-CatalogModelFamilyAllowed {
         return ($family -eq "gemma4" -or $Model.id -eq "qwen3.5-2b-q4")
     }
     return ($family -ne "gemma4")
+}
+
+function Test-CatalogModelInstallRecommendationAllowed {
+    param([object]$Model)
+
+    $prop = $Model.PSObject.Properties["install_recommendation"]
+    if (-not $prop) { return $true }
+    $value = $prop.Value
+    if ($null -eq $value) { return $true }
+    if ($value -is [bool]) { return [bool]$value }
+    $text = "$value".Trim().ToLowerInvariant()
+    return -not ($text -in @("0", "false", "no", "off"))
 }
 
 function Get-CatalogModelEstimatedParamBillions {
@@ -649,6 +664,7 @@ function Resolve-CatalogModelRecommendation {
     $candidates = @()
     foreach ($model in $catalog.models) {
         if (-not $model.gguf_url) { continue }
+        if (-not (Test-CatalogModelInstallRecommendationAllowed -Model $model)) { continue }
         if (-not (Test-CatalogModelFamilyAllowed -Model $model -ModelProfileName $modelProfileName)) { continue }
         $runtimeProfile = Get-CatalogRuntimeProfile -Model $model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB
         $requiredGb = Get-CatalogModelSelectorRequiredGB -Model $model -RuntimeProfile $runtimeProfile
@@ -795,6 +811,7 @@ function ConvertTo-ModelFromTier {
 
 $script:BOOTSTRAP_GGUF_FILE    = "Qwen3.5-2B-Q4_K_M.gguf"
 $script:BOOTSTRAP_GGUF_URL     = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
+$script:BOOTSTRAP_GGUF_SHA256  = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
 $script:BOOTSTRAP_LLM_MODEL    = "qwen3.5-2b"
 # Hermes requires at least a 64K context window. Keep the fast-start model at
 # that floor so Hermes works during the first-run bootstrap experience too.

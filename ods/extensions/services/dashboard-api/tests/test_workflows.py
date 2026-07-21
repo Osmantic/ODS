@@ -911,3 +911,30 @@ def test_workflows_with_matching_n8n(test_client, tmp_path, monkeypatch):
     assert wf["n8nId"] == "55"
     assert wf["executions"] == 42
     assert wf["featured"] is True
+
+
+def test_workflow_enable_rejects_path_traversal_in_catalog_file(test_client, monkeypatch):
+    """A catalog 'file' that escapes WORKFLOW_DIR via .. must be refused by
+    the is_relative_to containment guard, not resolved and imported."""
+    import routers.workflows as wf_mod
+
+    async def _no_missing_deps(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(wf_mod, "load_workflow_catalog", lambda: {
+        "workflows": [{
+            "id": "evil-workflow",
+            "name": "Evil",
+            "file": "../n8n-evil/pwned.json",
+            "dependencies": [],
+        }],
+        "categories": {},
+    })
+    monkeypatch.setattr(wf_mod, "check_workflow_dependencies", _no_missing_deps)
+
+    resp = test_client.post(
+        "/api/workflows/evil-workflow/enable",
+        headers=test_client.auth_headers,
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Invalid workflow file path"

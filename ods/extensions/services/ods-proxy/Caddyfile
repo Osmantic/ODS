@@ -64,6 +64,11 @@
 # chat.<device>.local → Open WebUI (root-mounted)
 # ---------------------------------------------------------------------
 http://chat.{$ODS_DEVICE_NAME:ods}.local {
+	# Cap request body at 200 MB — enough for document uploads to Open WebUI
+	# while preventing abuse of the LLM proxy paths from runaway clients.
+	request_body {
+		max_size 200MB
+	}
 	reverse_proxy open-webui:8080 {
 		header_up X-Forwarded-Proto {scheme}
 		header_up X-Forwarded-Host {host}
@@ -119,6 +124,10 @@ http://auth.{$ODS_DEVICE_NAME:ods}.local {
 # whole hostname keeps the backend root-mounted.
 # ---------------------------------------------------------------------
 http://api.{$ODS_DEVICE_NAME:ods}.local {
+	# Cap request body at 50 MB for the admin API surface.
+	request_body {
+		max_size 50MB
+	}
 	reverse_proxy dashboard-api:3002 {
 		header_up X-Forwarded-Proto {scheme}
 		header_up X-Forwarded-Host {host}
