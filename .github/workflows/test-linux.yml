@@ -68,6 +68,12 @@ jobs:
       - name: Health Check Tests
         run: bash tests/test-health-check.sh
 
+      - name: Health Probe Contract Tests
+        run: |
+          bash tests/test-ods-cli-health-probe-contract.sh
+          bash tests/test-service-manifest-health-contract-drift.sh
+          bash tests/test-health-probe-shadow-audit.sh
+
       - name: n8n Cookie Policy Tests
         run: bash tests/test-n8n-cookie-policy.sh
 
