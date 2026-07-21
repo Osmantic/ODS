@@ -1,6 +1,7 @@
 """Dynamic user extension manifest scanner with TTL cache."""
 
 import logging
+import os
 import re
 import threading
 import time
@@ -79,7 +80,7 @@ def scan_user_extension_services(
                     logger.warning("Rejected health path for %s: %r", service_id, health)
                     continue
 
-            port = svc.get("port", 0)
+            port = int(svc.get("port", 0))
             name = svc.get("name", service_id)
             health_header = svc.get("health_header", "")
             if health_header and (
@@ -88,19 +89,38 @@ def scan_user_extension_services(
             ):
                 raise ValueError("health_header must be one HTTP header without newlines")
 
+            external_port = int(svc.get("external_port_default", port))
+            health_port_env = svc.get("health_port_env") or ""
+            if health_port_env and (
+                not isinstance(health_port_env, str)
+                or not re.fullmatch(r"^[A-Z][A-Z0-9_]*$", health_port_env)
+            ):
+                raise ValueError("health_port_env must be a valid environment variable name")
+
             # Host = service_id (Docker DNS). Never trust manifest host_env/default_host.
+            # Resolve health port with the same precedence as Bash sr_health_port
+            # (env override → static health_port → external_port → internal port).
+            # Env is read at scan time via config.resolve_health_port when available;
+            # store static fields and let check_service_health use resolved health_port.
+            resolved_health = None
+            if health_port_env:
+                env_val = os.environ.get(health_port_env)
+                if env_val:
+                    resolved_health = int(env_val)
+            if resolved_health is None and "health_port" in svc:
+                resolved_health = int(svc["health_port"])
+            if resolved_health is None:
+                resolved_health = external_port or port
+
             services[service_id] = {
                 "host": service_id,
-                "port": int(port),
-                "external_port": int(svc.get("external_port_default", port)),
+                "port": port,
+                "external_port": external_port,
                 "health": health,
                 "name": name,
-                # Optional: extensions whose health endpoint lives on a
-                # secondary port (e.g. milvus 9091) need an explicit
-                # health_port; check_service_health() falls back to "port"
-                # when absent.
-                **({"health_port": int(svc["health_port"])} if "health_port" in svc else {}),
+                "health_port": resolved_health,
                 **({"health_header": health_header} if health_header else {}),
+                **({"health_port_env": health_port_env} if health_port_env else {}),
             }
         except (TypeError, ValueError) as exc:
             logger.warning("Skipping extension %s: invalid manifest value: %s", service_id, exc)

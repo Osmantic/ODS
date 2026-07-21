@@ -59,7 +59,7 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 300,
-          "description": "Health check timeout in seconds (default: 10)"
+          "description": "Health check timeout in seconds (default: 5; matches service-registry runtime)"
         },
         "type": { "type": "string", "enum": ["docker", "host-systemd"] },
         "gpu_backends": {

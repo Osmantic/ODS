@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
@@ -10,6 +11,9 @@ from urllib.parse import urlparse
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# Bash service-registry rejects invalid names before indirect expansion.
+_ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 # --- Paths ---
 
@@ -106,6 +110,39 @@ def _find_env_file_value(key: str) -> tuple[bool, str]:
 def _read_env_from_file(key: str) -> str:
     """Read a variable from the persisted .env file."""
     return _find_env_file_value(key)[1]
+
+
+def resolve_health_port(
+    service: Mapping[str, Any],
+    *,
+    external_port: int,
+    internal_port: int,
+) -> int:
+    """Resolve the host-side HTTP health port for a service.
+
+    Mirrors Bash ``sr_health_port`` precedence:
+    1. ``health_port_env`` when set and non-empty (process env, then .env file)
+    2. static ``health_port`` from the manifest
+    3. public ``external_port``
+    4. internal ``port``
+    """
+    health_port_env = service.get("health_port_env") or ""
+    if health_port_env:
+        if not isinstance(health_port_env, str) or not _ENV_NAME_RE.fullmatch(health_port_env):
+            logger.warning(
+                "Ignoring invalid health_port_env %r for service %r",
+                health_port_env,
+                service.get("id"),
+            )
+        else:
+            val = os.environ.get(health_port_env) or _read_env_from_file(health_port_env)
+            if val:
+                return int(val)
+    if "health_port" in service and service["health_port"] is not None:
+        return int(service["health_port"])
+    if external_port:
+        return int(external_port)
+    return int(internal_port or 0)
 
 
 def read_live_env_value(key: str, default: str = "") -> str:
@@ -244,9 +281,15 @@ def load_extension_manifests(
                 else:
                     external_port = int(ext_port_default)
 
+                internal_port = int(service.get("port", 0))
+                health_port = resolve_health_port(
+                    service,
+                    external_port=external_port,
+                    internal_port=internal_port,
+                )
                 service_config = {
                     "host": host,
-                    "port": int(service.get("port", 0)),
+                    "port": internal_port,
                     "external_port": external_port,
                     "health": service.get("health", "/health"),
                     "name": service.get("name", service_id),
@@ -259,9 +302,19 @@ def load_extension_manifests(
                     "setup_hook": service.get("setup_hook", ""),
                     "hooks": service.get("hooks", {}),
                     "gpu_backends": service.get("gpu_backends", []),
+                    "health_port": health_port,
                     **({"type": service["type"]} if "type" in service else {}),
-                    **({"health_port": int(service["health_port"])} if "health_port" in service else {}),
                     **({"health_header": service["health_header"]} if "health_header" in service else {}),
+                    **(
+                        {"health_port_env": service["health_port_env"]}
+                        if service.get("health_port_env")
+                        else {}
+                    ),
+                    **(
+                        {"health_timeout": int(service["health_timeout"])}
+                        if "health_timeout" in service
+                        else {}
+                    ),
                 }
                 llm_contract = normalize_llm_contract(service.get("llm"))
                 if llm_contract is not None:

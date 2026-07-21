@@ -1,6 +1,10 @@
 #!/bin/bash
 # ods-preflight.sh — Quick health check before first chat
 # Usage: ./scripts/ods-preflight.sh
+#
+# Companion to root ./ods-preflight.sh (full install-time preflight).
+# Both entrypoints MUST use the registry health contract (sr_load →
+# sr_resolve_ports → sr_curl_health). Do not reintroduce hand-rolled curls.
 
 set -euo pipefail
 

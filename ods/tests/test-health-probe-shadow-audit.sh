@@ -102,6 +102,14 @@ if rg -n 'curl -sf.*"/health"|curl -sf.*/health' "$ROOT/ods-preflight.sh" >/dev/
 else
     ok "ods-preflight.sh registry health paths migrated"
 fi
+
+# Dual preflight entrypoints must both resolve ports before probing
+for pf in "$ROOT/ods-preflight.sh" "$ROOT/scripts/ods-preflight.sh"; do
+    if ! rg -q 'sr_resolve_ports' "$pf" || ! rg -q 'sr_curl_health' "$pf"; then
+        bad "preflight $(basename "$pf") missing sr_resolve_ports/sr_curl_health"
+    fi
+done
+ok "dual preflight entrypoints share registry resolve+probe contract"
 if ! rg -q 'preflight_sr_health' "$ROOT/ods-preflight.sh"; then
     bad "ods-preflight.sh missing preflight_sr_health"
 fi

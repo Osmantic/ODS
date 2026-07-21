@@ -33,6 +33,19 @@ features:
     gpu_backends: [amd, nvidia]
 """
 
+HEALTH_PORT_ENV_MANIFEST = """\
+schema_version: ods.services.v1
+service:
+  id: env-health-svc
+  name: Env Health Service
+  port: 8080
+  health: /health
+  health_port: 9091
+  health_port_env: TEST_HEALTH_PORT
+  gpu_backends: [amd, nvidia]
+  external_port_default: 8080
+"""
+
 
 @pytest.mark.parametrize(
     ("value", "expected"),
@@ -186,6 +199,32 @@ class TestLoadExtensionManifests:
         assert services["test-service"]["health_header"] == "Host: localhost:8080"
         assert len(features) == 1
         assert features[0]["id"] == "test-feature"
+
+    def test_health_port_env_overrides_static_health_port(self, tmp_path, monkeypatch):
+        svc_dir = tmp_path / "env-health-svc"
+        svc_dir.mkdir()
+        (svc_dir / "manifest.yaml").write_text(HEALTH_PORT_ENV_MANIFEST)
+        monkeypatch.setenv("TEST_HEALTH_PORT", "9595")
+
+        services, _, _ = load_extension_manifests(tmp_path, "nvidia")
+        assert services["env-health-svc"]["health_port"] == 9595
+        assert services["env-health-svc"]["health_port_env"] == "TEST_HEALTH_PORT"
+
+    def test_health_port_falls_back_to_external_when_unset(self, tmp_path):
+        svc_dir = tmp_path / "public-only"
+        svc_dir.mkdir()
+        (svc_dir / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: public-only\n"
+            "  name: Public Only\n"
+            "  port: 8080\n"
+            "  health: /health\n"
+            "  external_port_default: 3000\n"
+            "  gpu_backends: [nvidia]\n"
+        )
+        services, _, _ = load_extension_manifests(tmp_path, "nvidia")
+        assert services["public-only"]["health_port"] == 3000
 
     def test_normalizes_llm_contract(self, tmp_path):
         svc_dir = tmp_path / "llm-app"

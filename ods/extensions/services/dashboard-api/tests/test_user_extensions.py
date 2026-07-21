@@ -125,6 +125,22 @@ class TestScanUserExtensions:
 
         assert scan_user_extension_services(user_dir) == {}
 
+    def test_scan_health_port_env_override(self, tmp_path, monkeypatch):
+        """health_port_env overrides static health_port when set in the environment."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "my-ext"
+        manifest = _make_manifest("my-ext")
+        manifest["service"]["health_port"] = 9091
+        manifest["service"]["health_port_env"] = "USER_EXT_HEALTH_PORT"
+        manifest["service"]["external_port_default"] = 8080
+        _write_manifest(ext_dir, manifest)
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+        monkeypatch.setenv("USER_EXT_HEALTH_PORT", "9595")
+
+        result = scan_user_extension_services(user_dir)
+        assert result["my-ext"]["health_port"] == 9595
+        assert result["my-ext"]["health_port_env"] == "USER_EXT_HEALTH_PORT"
+
     def test_scan_host_is_service_id(self, tmp_path):
         """Returned host must be the directory name, not manifest default_host."""
         user_dir = tmp_path / "user"
