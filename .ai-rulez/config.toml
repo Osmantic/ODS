@@ -89,3 +89,32 @@ Judgment/eval of health-probe work should use stateless transports:
 
 Do not rely on interactive TUI state for gate decisions.
 """
+
+[[rules]]
+name = "Device Worktree Budget"
+priority = "high"
+content = """
+At most one primary checkout per product (ODS) plus one active feature worktree.
+Stale worktrees (behind tip > 1 commit or main behind origin/main > 50 commits)
+MUST be refreshed or removed. Empty feature branches are sprawl.
+"""
+
+[[rules]]
+name = "Docker Resource Budget"
+priority = "high"
+content = """
+Workstation soft budget: prefer < 80 total containers. Prefer named volumes with
+project prefixes (ods_, developer-platform_, datahub_). Never auto-prune named
+volumes. Safe auto-action: `docker container prune` for exited only.
+No second Open WebUI / Neo4j / Qdrant stack without an explicit dual-run flag.
+"""
+
+[[rules]]
+name = "API-Driven Agent Steering"
+priority = "medium"
+content = """
+When available, use Ollama HTTP API with stream:true (NDJSON chunks) for
+stateless steering of coding agents. Prefer ollama-mcp for structured tools;
+use raw /api/generate for real-time SSE-style steering loops. Do not invent
+new long-lived agent frameworks — uv + bash + native CLIs.
+"""

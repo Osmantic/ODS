@@ -1,23 +1,16 @@
----
-priority: high
-targets: [claude, cursor, codex, grok]
----
+# Sprawl inventory snapshot (2026-07-21 SSE eval)
 
-# Health Probe Sprawl Inventory (living)
+## Git
+- Active: sandboxes/ods-health-probe-fix (health-probe branch)
+- Stale: Osmantic/ODS-main (~2868 behind origin/main)
+- Shadow: Documents/Codex/.../ods-doctor-health-port
 
-## Ghosts
+## Docker
+- ~180 containers (k8s_mcp, airflow, developer-platform, datahub, ods)
+- ~120 images, ~50 volumes
+- Safe auto: container prune (exited only)
 
-- Empty feature worktrees without unique commits (retarget or delete)
-- Duplicate PRs (#1343 vs #1692)
-
-## Shadows
-
-- Remaining `curl -sf` on functional API paths (models/completions) — allowed
-- bootstrap-upgrade recovery curls — migrate opportunistically
-- Dual schema copies — parity gated by health-contract drift test
-
-## Blockers
-
-- Fork PR CI `action_required` until Osmantic maintainer approves workflows
-- `REVIEW_REQUIRED` on #1934
-- #1743 / #1343 CONFLICTING until rebased
+## Blockers outside agent control
+- Osmantic/ODS push:false
+- Fork PR workflows action_required
+- PR mergeStateStatus BLOCKED + REVIEW_REQUIRED
