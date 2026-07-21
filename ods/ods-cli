@@ -1194,6 +1194,7 @@ cmd_status() {
     cd "$INSTALL_DIR"
     load_env
     sr_load
+    sr_resolve_ports
 
     local flags_str
     flags_str=$(get_compose_flags)
@@ -1308,6 +1309,7 @@ cmd_status_json() {
     cd "$INSTALL_DIR"
     sr_load
     load_env
+    sr_resolve_ports
 
     local flags_str
     flags_str=$(get_compose_flags)

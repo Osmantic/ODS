@@ -115,6 +115,7 @@ echo "────────────────────────�
 SCRIPT_DIR_REG="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR_REG/lib/service-registry.sh"
 sr_load
+sr_resolve_ports
 
 for sid in "${SERVICE_IDS[@]}"; do
     _cat="${SERVICE_CATEGORIES[$sid]}"

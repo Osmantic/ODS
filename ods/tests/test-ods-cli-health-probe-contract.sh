@@ -12,6 +12,7 @@ mkdir -p \
     "$SANDBOX/bin" \
     "$SANDBOX/lib" \
     "$SANDBOX/extensions/services/fakeheader" \
+    "$SANDBOX/extensions/services/fakeenv" \
     "$SANDBOX/extensions/services/fakeport" \
     "$SANDBOX/extensions/services/fakeredirect"
 
@@ -42,6 +43,18 @@ service:
   health_header: "X-Health: ready"
 MANIFEST
 
+cat > "$SANDBOX/extensions/services/fakeenv/manifest.yaml" <<'MANIFEST'
+schema_version: ods.services.v1
+service:
+  id: fakeenv
+  name: Environment-port service
+  category: optional
+  container_name: ods-fakeenv
+  external_port_default: 3401
+  external_port_env: FAKE_PUBLIC_PORT
+  health: /health
+MANIFEST
+
 cat > "$SANDBOX/extensions/services/fakeredirect/manifest.yaml" <<'MANIFEST'
 schema_version: ods.services.v1
 service:
@@ -69,9 +82,9 @@ MANIFEST
 cat > "$SANDBOX/bin/docker" <<'DOCKER'
 #!/usr/bin/env bash
 if [[ "$*" == *"ps --format {{.Service}}"* ]]; then
-    printf 'fakeheader\nfakeport\nfakeredirect\n'
+    printf 'fakeheader\nfakeenv\nfakeport\nfakeredirect\n'
 elif [[ "$*" == *"ps --format {{.Name}}"* ]]; then
-    printf 'ods-fakeheader\nods-fakeport\nods-fakeredirect\n'
+    printf 'ods-fakeheader\nods-fakeenv\nods-fakeport\nods-fakeredirect\n'
 fi
 exit 0
 DOCKER
@@ -82,6 +95,7 @@ cat > "$SANDBOX/bin/curl" <<'CURL'
 printf '%s\n' "$*" >> "$CURL_LOG"
 case "$*" in
     *"-H X-Health: ready"*":3101/ready"*) printf '200'; exit 0 ;;
+    *":9494/health"*) printf '200'; exit 0 ;;
     *":9292/healthz"*) printf '204'; exit 0 ;;
     *":3301/redirect"*) printf '302'; exit 0 ;;
     *) exit 22 ;;
@@ -92,23 +106,26 @@ chmod +x "$SANDBOX/bin/curl"
 export CURL_LOG="$SANDBOX/curl.log"
 status_json="$({
     cd "$SANDBOX"
-    FAKE_HEALTH_PORT=9292 ODS_HOME="$SANDBOX" PATH="$SANDBOX/bin:$PATH" "$SANDBOX/ods-cli" status --json
+    FAKE_PUBLIC_PORT=9494 FAKE_HEALTH_PORT=9292 ODS_HOME="$SANDBOX" PATH="$SANDBOX/bin:$PATH" "$SANDBOX/ods-cli" status --json
 })"
 
 jq -e '
   (.services[] | select(.id == "fakeheader") | .status) == "healthy"
+  and (.services[] | select(.id == "fakeenv") | .status) == "healthy"
   and (.services[] | select(.id == "fakeport") | .status) == "healthy"
   and (.services[] | select(.id == "fakeredirect") | .status) == "unhealthy"
 ' <<< "$status_json" >/dev/null
 
 grep -Fq -- '-H X-Health: ready' "$CURL_LOG"
+grep -Fq -- 'http://127.0.0.1:9494/health' "$CURL_LOG"
 grep -Fq -- 'http://127.0.0.1:9292/healthz' "$CURL_LOG"
 
 status_text="$({
     cd "$SANDBOX"
-    FAKE_HEALTH_PORT=9292 ODS_HOME="$SANDBOX" PATH="$SANDBOX/bin:$PATH" "$SANDBOX/ods-cli" status
+    FAKE_PUBLIC_PORT=9494 FAKE_HEALTH_PORT=9292 ODS_HOME="$SANDBOX" PATH="$SANDBOX/bin:$PATH" "$SANDBOX/ods-cli" status
 } 2>&1)"
 grep -Fq 'Header-aware service: healthy' <<< "$status_text"
+grep -Fq 'Environment-port service: healthy' <<< "$status_text"
 grep -Fq 'Dedicated-health-port service: healthy' <<< "$status_text"
 grep -Fq 'Redirecting service: not responding' <<< "$status_text"
 
