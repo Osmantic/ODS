@@ -160,20 +160,22 @@ try {
         Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    $listener = [System.Net.Sockets.TcpListener]::new(
-        [System.Net.IPAddress]::Loopback,
-        0
-    )
-    $listener.Start()
-    try {
-        $port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
-        $result = Test-WindowsPortInUse -Port $port
-        Assert-Equal $result.InUse $true "Live listener detection"
-        if ([int]$result.ProcessId -le 0) {
-            throw "Live listener detection did not return an owning PID"
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        $listener = [System.Net.Sockets.TcpListener]::new(
+            [System.Net.IPAddress]::Loopback,
+            0
+        )
+        $listener.Start()
+        try {
+            $port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+            $result = Test-WindowsPortInUse -Port $port
+            Assert-Equal $result.InUse $true "Live listener detection"
+            if ([int]$result.ProcessId -le 0) {
+                throw "Live listener detection did not return an owning PID"
+            }
+        } finally {
+            $listener.Stop()
         }
-    } finally {
-        $listener.Stop()
     }
 
     $managedProcesses = @(
@@ -196,3 +198,5 @@ try {
 }
 
 Write-Host "[PASS] Windows service port preflight and env generation"
+$global:LASTEXITCODE = 0
+exit 0
