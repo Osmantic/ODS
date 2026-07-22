@@ -58,6 +58,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -67,7 +68,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 import session_signer
-from config import EXTENSIONS_DIR, GPU_BACKEND, SERVICES, load_extension_manifests
+from config import EXTENSIONS_DIR, GPU_BACKEND, SERVICES, _read_env_value, load_extension_manifests
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -163,7 +164,7 @@ class GenerateRequest(BaseModel):
             normalized["scope"] = normalized.get("scope") or "hermes"
             normalized["reusable"] = True
             if normalized.get("url_mode") in (None, "auto"):
-                normalized["url_mode"] = "lan"
+                normalized["url_mode"] = "public" if _public_base() else "lan"
         else:
             normalized["scope"] = normalized.get("scope") or "chat"
             if normalized.get("expires_in") is None:
@@ -419,7 +420,25 @@ def _public_base() -> str:
     that instead of the per-subdomain default. Empty → use
     `_auth_url` / `_chat_url` built from ODS_DEVICE_NAME.
     """
-    return (os.environ.get("ODS_PUBLIC_URL") or "").rstrip("/")
+    value = _read_env_value("ODS_PUBLIC_URL").rstrip("/")
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        logger.warning("Ignoring invalid ODS_PUBLIC_URL value: %s", value)
+        return ""
+    return value
+
+
+def _public_url_env(key: str) -> str:
+    value = _read_env_value(key).rstrip("/")
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        logger.warning("Ignoring invalid %s value: %s", key, value)
+        return ""
+    return value
 
 
 def _use_public_url(url_mode: str = "auto") -> bool:
@@ -447,6 +466,10 @@ def _chat_url(url_mode: str = "auto") -> str:
     works without identity claims in the cookie.
     """
     if _use_public_url(url_mode):
+        if _public_url_env("ODS_CHAT_PUBLIC_URL"):
+            return _public_url_env("ODS_CHAT_PUBLIC_URL")
+        if SERVICES.get("open-webui", {}).get("public_url"):
+            return SERVICES["open-webui"]["public_url"]
         # When ODS_PUBLIC_URL is overridden, assume /chat is the chat
         # path on that origin (mirrors WEBUI_URL=…/chat for tunnel users).
         return f"{_public_base()}/chat"
@@ -456,6 +479,10 @@ def _chat_url(url_mode: str = "auto") -> str:
 def _hermes_url(url_mode: str = "auto") -> str:
     """Where a successful Hermes redemption redirects."""
     if _use_public_url(url_mode):
+        if _public_url_env("ODS_HERMES_PUBLIC_URL"):
+            return _public_url_env("ODS_HERMES_PUBLIC_URL")
+        if SERVICES.get("hermes-proxy", {}).get("public_url"):
+            return SERVICES["hermes-proxy"]["public_url"]
         return f"{_public_base()}/hermes"
     return f"http://hermes.{_device_name()}.local"
 
@@ -468,6 +495,8 @@ def _talk_url(url_mode: str = "auto") -> str:
     Hermes interface.
     """
     if _use_public_url(url_mode):
+        if _public_url_env("ODS_TALK_PUBLIC_URL"):
+            return _public_url_env("ODS_TALK_PUBLIC_URL")
         return f"{_public_base()}/talk"
     return f"http://talk.{_device_name()}.local/talk"
 
@@ -571,12 +600,22 @@ def _owner_card_requires_lan_proxy(payload: GenerateRequest) -> bool:
 
 @router.get("/api/auth/magic-link/owner-card/status", dependencies=[Depends(verify_api_key)])
 def owner_card_status() -> dict:
-    """Report whether LAN owner-card URLs can be generated safely."""
+    """Report whether owner-card URLs can be generated safely."""
+    if _public_base():
+        return {
+            "ready": True,
+            "requires": "public-url",
+            "reason": "",
+            "url_mode": "public",
+            "public_url": _public_base(),
+        }
+
     ready, reason = _ods_proxy_lan_ready()
     return {
         "ready": ready,
         "requires": "ods-proxy",
         "reason": "" if ready else reason,
+        "url_mode": "lan",
     }
 
 

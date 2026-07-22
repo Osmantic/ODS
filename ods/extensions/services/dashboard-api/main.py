@@ -636,6 +636,7 @@ def _service_public_url(service_id: str, port: int | None) -> Optional[str]:
 def _serialize_services(service_statuses: list[ServiceStatus], uptime: int) -> list[dict]:
     serialized = []
     for service in service_statuses:
+        cfg = SERVICES.get(service.id, {})
         url = _service_public_url(service.id, service.external_port)
         item = {
             "id": service.id,
@@ -644,10 +645,14 @@ def _serialize_services(service_statuses: list[ServiceStatus], uptime: int) -> l
             "port": service.external_port,
             "uptime": uptime if service.status == "healthy" else None,
         }
+        if cfg.get("public_url"):
+            item["public_url"] = cfg["public_url"]
+        if cfg.get("ui_path"):
+            item["ui_path"] = cfg["ui_path"]
         if url:
             item["url"] = url
             item["href"] = url
-        llm_contract = SERVICES.get(service.id, {}).get("llm")
+        llm_contract = cfg.get("llm")
         if isinstance(llm_contract, dict):
             item["llm"] = llm_contract
         item.update(_service_semantics(service.id, service.status))
@@ -669,6 +674,10 @@ def _fallback_services() -> list[dict]:
             "port": external_port,
             "uptime": None,
         }
+        if config.get("public_url"):
+            item["public_url"] = config["public_url"]
+        if config.get("ui_path"):
+            item["ui_path"] = config["ui_path"]
         if url:
             item["url"] = url
             item["href"] = url
@@ -1444,6 +1453,7 @@ async def get_external_links(api_key: str = Depends(verify_api_key)):
         links.append({
             "id": sid, "label": cfg.get("name", sid), "port": ext_port,
             "ui_path": cfg.get("ui_path", "/"),
+            "public_url": cfg.get("public_url", ""),
             "icon": SIDEBAR_ICONS.get(sid, "ExternalLink"),
             "healthNeedles": [sid, cfg.get("name", sid).lower()],
         })

@@ -62,6 +62,10 @@
         "port": { "type": "integer", "minimum": 0, "maximum": 65535 },
         "external_port_env": { "type": "string" },
         "external_port_default": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "public_url_env": {
+          "type": "string",
+          "description": "Optional env var that contains the public browser URL for this service when served through an external reverse proxy."
+        },
         "host_network": {
           "type": "boolean",
           "description": "True for Docker network_mode: host services that do not declare Docker-mapped ports or HTTP health paths."

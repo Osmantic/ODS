@@ -413,7 +413,7 @@ function CreateOwnerModal({ ownerCardStatus, onClose, onCreated }) {
           target_username: trimmed,
           token_type: 'owner',
           scope: 'hermes',
-          url_mode: 'lan',
+          url_mode: ownerCardStatus?.url_mode || 'lan',
           note: note.trim() || null,
         }),
       })

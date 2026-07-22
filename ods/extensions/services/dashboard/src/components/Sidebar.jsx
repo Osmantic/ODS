@@ -7,12 +7,10 @@ import {
 } from 'lucide-react'
 import { getSidebarExternalLinks, getSidebarNavItems } from '../plugins/registry'
 import { useTheme } from '../contexts/ThemeContext'
+import { fallbackServiceUrl } from '../lib/serviceUrls'
 
 // Derive external service URLs from current host
-const getExternalUrl = (port) =>
-  typeof window !== 'undefined'
-    ? `http://${window.location.hostname}:${port}`
-    : `http://localhost:${port}`
+const getExternalUrl = (port) => fallbackServiceUrl(port)
 
 function OsmanticLogo({ compact = false }) {
   return (
