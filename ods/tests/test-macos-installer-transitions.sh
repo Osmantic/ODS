@@ -207,6 +207,39 @@ PY
 
 # shellcheck source=/dev/null
 source "$ENV_GENERATOR"
+
+(
+    calculate_llama_cpu_budget() { printf '4 1 8\n'; }
+    TIER_NAME="CI Mac"
+    ODS_VERSION="test"
+    SYSTEM_RAM_GB="128"
+    LLM_MODEL="qwen3.6-35b-a3b"
+    GGUF_FILE="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    MAX_CONTEXT="131072"
+    MODEL_PROFILE_REQUESTED="qwen"
+    MODEL_PROFILE_EFFECTIVE="qwen"
+    DOCKER_BACKEND="unknown"
+    ODS_MODEL_SWITCHBOARD="enabled"
+    env_install="$TMP_DIR/switchboard-env"
+    mkdir -p "$env_install/config/searxng"
+    generate_ods_env "$env_install" CI true
+    env_file="$env_install/.env"
+    litellm_key="$(grep '^LITELLM_KEY=' "$env_file" | cut -d= -f2-)"
+    grep -Fqx 'ODS_MODEL_SWITCHBOARD=enabled' "$env_file" \
+        || fail "macOS env did not persist enabled switchboard mode"
+    grep -Fqx 'LLM_API_URL=http://host.docker.internal:8080' "$env_file" \
+        || fail "macOS switchboard env must keep backend URL for model-router"
+    grep -Fqx 'HERMES_LLM_BASE_URL=http://litellm:4000/v1' "$env_file" \
+        || fail "macOS switchboard env must route Hermes through LiteLLM"
+    grep -Fqx "HERMES_LLM_API_KEY=${litellm_key}" "$env_file" \
+        || fail "macOS switchboard env must give Hermes the LiteLLM key"
+    grep -Fqx 'OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000' "$env_file" \
+        || fail "macOS switchboard env must route Open WebUI through LiteLLM"
+    grep -Fqx "OPEN_WEBUI_LLM_API_KEY=${litellm_key}" "$env_file" \
+        || fail "macOS switchboard env must give Open WebUI the LiteLLM key"
+)
+pass "macOS switchboard env persists gateway consumers without hiding backend URL"
+
 openclaw_dir="$TMP_DIR/openclaw-install"
 mkdir -p "$openclaw_dir/data/openclaw/home"
 printf '{"custom":{"preserve":true}}\n' > "$openclaw_dir/data/openclaw/home/openclaw.json"
