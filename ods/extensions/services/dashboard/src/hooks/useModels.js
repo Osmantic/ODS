@@ -112,12 +112,27 @@ async function errorMessageFromResponse(response, fallback) {
 
 function conflictActiveModelId(data) {
   const nested = data?.detail && typeof data.detail === 'object'
-    ? data.detail.activeModelId
+    ? data.detail.activeModelId || data.detail.activeTarget
     : null
-  for (const value of [data?.activeModelId, nested]) {
+  for (const value of [data?.activeModelId, data?.activeTarget, nested]) {
     if (typeof value === 'string' && value.trim()) return value.trim()
   }
   return null
+}
+
+function normalizeModelLifecycle(data) {
+  if (!data || typeof data !== 'object') return null
+  const operation = data.operation || data.activeOperation || null
+  const target = data.target || data.activeTarget || null
+  const modelId = data.modelId || data.activeModelId || target
+  const active = data.active === true || data.lifecycleActive === true || Boolean(operation)
+  if (!active || !operation) return null
+  return {
+    active: true,
+    operation,
+    target,
+    modelId,
+  }
 }
 
 function normalizeOdsMode(value) {
@@ -143,6 +158,7 @@ export function useModels() {
   const [gpu, setGpu] = useState(USE_MOCK_DATA ? MOCK_GPU : null)
   const [currentModel, setCurrentModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
   const [configuredModel, setConfiguredModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [modelLifecycle, setModelLifecycle] = useState(null)
   const [odsMode, setOdsMode] = useState(USE_MOCK_DATA ? MOCK_MODES.odsMode : 'unknown')
   const [configuredMode, setConfiguredMode] = useState(USE_MOCK_DATA ? MOCK_MODES.configuredMode : 'unknown')
   const [recommendationAlternatives, setRecommendationAlternatives] = useState([])
@@ -218,6 +234,7 @@ export function useModels() {
       setGpu(data.gpu)
       setCurrentModel(data.currentModel)
       setConfiguredModel(data.configuredModel ?? null)
+      setModelLifecycle(normalizeModelLifecycle(data.modelLifecycle))
       const effectiveMode = normalizeOdsMode(data.odsMode)
       setOdsMode(effectiveMode)
       setConfiguredMode(normalizeOdsMode(data.configuredMode ?? data.odsMode))
@@ -252,7 +269,11 @@ export function useModels() {
     pollModels()
   }, [pollModels])
 
-  const pollInterval = pendingActions.some(action => action.kind === 'download' || action.kind === 'delete')
+  const backendActivationModel = modelLifecycle?.operation === 'model_activation'
+    ? modelLifecycle.modelId
+    : null
+  const backendLifecycleBusy = Boolean(modelLifecycle?.active)
+  const pollInterval = pendingActions.some(action => action.kind === 'download' || action.kind === 'delete' || action.kind === 'load') || backendLifecycleBusy
     ? PENDING_MODEL_ACTION_POLL_MS
     : DEFAULT_POLL_MS
 
@@ -421,9 +442,14 @@ export function useModels() {
 
   const activationAction = pendingActions.find(action => action.kind === 'load')
   const latestAction = pendingActions[pendingActions.length - 1]
-  const activationLoading = activationAction?.modelId ?? null
+  const activationLoading = activationAction?.modelId ?? backendActivationModel ?? null
   const actionLoading = activationAction?.modelId ?? latestAction?.modelId ?? null
-  const actionLoadingModels = [...new Set(pendingActions.map(action => action.modelId))]
+  const actionLoadingModels = [
+    ...new Set([
+      ...pendingActions.map(action => action.modelId),
+      backendActivationModel,
+    ].filter(Boolean)),
+  ]
   const error = mutationError || fetchError
   const activationModeError = modelActivationModeError(odsMode, configuredMode)
 
@@ -432,6 +458,7 @@ export function useModels() {
     gpu,
     currentModel,
     configuredModel,
+    modelLifecycle,
     odsMode,
     configuredMode,
     canActivateModels: activationModeError === null,

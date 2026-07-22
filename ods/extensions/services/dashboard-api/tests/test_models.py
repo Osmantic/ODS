@@ -117,6 +117,81 @@ def test_agent_model_status_and_actions_share_transport(monkeypatch):
     ]
 
 
+def test_agent_model_status_extracts_lifecycle():
+    import routers.models as models_router
+
+    lifecycle = models_router._model_lifecycle_from_agent_status({
+        "status": "idle",
+        "lifecycleActive": True,
+        "activeOperation": "model_activation",
+        "activeTarget": "qwen3.5-9b-q4",
+        "activeModelId": "qwen3.5-9b-q4",
+    })
+
+    assert lifecycle == {
+        "active": True,
+        "operation": "model_activation",
+        "target": "qwen3.5-9b-q4",
+        "modelId": "qwen3.5-9b-q4",
+    }
+
+
+def test_api_models_marks_backend_activation_target(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, [{
+        "id": "qwen3.5-9b-q4",
+        "name": "Qwen 3.5 9B",
+        "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+        "size_mb": 5760,
+        "vram_required_gb": 8,
+        "context_length": 32768,
+        "quantization": "Q4_K_M",
+        "specialty": "General",
+        "description": "Balanced default.",
+        "llm_model_name": "qwen3.5-9b",
+    }])
+    (data_dir / "models" / "Qwen3.5-9B-Q4_K_M.gguf").write_text(
+        "model",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(models_router, "get_gpu_info", lambda: _gpu())
+    monkeypatch.setattr(models_router, "get_loaded_model", AsyncMock(return_value=None))
+    monkeypatch.setattr(models_router, "_fetch_llama_loaded_model", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        models_router,
+        "get_llama_metrics",
+        AsyncMock(return_value={"tokens_per_second": 0, "lifetime_tokens": 0}),
+    )
+    monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=32768))
+    monkeypatch.setattr(models_router, "SERVICES", {"llama-server": {"host": "localhost", "port": 8080}})
+    monkeypatch.setattr(
+        models_router,
+        "_get_agent_model_status",
+        lambda: {
+            "status": "idle",
+            "lifecycleActive": True,
+            "activeOperation": "model_activation",
+            "activeTarget": "qwen3.5-9b-q4",
+            "activeModelId": "qwen3.5-9b-q4",
+        },
+    )
+
+    resp = test_client.get("/api/models", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["currentModel"] is None
+    assert payload["modelLifecycle"] == {
+        "active": True,
+        "operation": "model_activation",
+        "target": "qwen3.5-9b-q4",
+        "modelId": "qwen3.5-9b-q4",
+    }
+    row = payload["models"][0]
+    assert row["status"] == "downloaded"
+    assert row["modelOperation"] == payload["modelLifecycle"]
+
+
 def test_agent_activation_conflict_preserves_target(monkeypatch):
     import routers.models as models_router
 
