@@ -350,6 +350,15 @@
       "llm_model_name": "Falcon-H1-1.5B-Instruct",
       "llama_server_image": null,
       "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-22T18:45Z on strixy loaded Falcon H1 1.5B through Lemonade and routed ODS Talk through ods/current, but Talk emitted a tool-call payload instead of the requested verification phrase.",
+          "evidence": "fleet-test/runs/2026-07-22T18-45-07Z-model-ui-product-31c93e53c4aa-harness-ebdb7f948190-hosts-strixy-talk-runtime-strict-6cycle/cycle-004/strixy",
+          "recordedAt": "2026-07-22T19:33:20Z",
+          "productSha": "31c93e53c4aa8f9831abdb00516639def985ef34",
+          "harnessSha": "ebdb7f9481901a35ca1e5108fe2a1769bab197e8",
+          "expiresAt": "2026-08-22T00:00:00Z"
+        },
         "opencode": {
           "status": "unsupported_until_revalidated",
           "reason": "Fleet model-UI run 2026-07-21T11:18Z on tower2 loaded Falcon H1 1.5B successfully and routed OpenCode through ods/current, but the OpenCode UX reply emitted a skill/tool meta-response instead of the requested verification phrase.",
@@ -362,13 +371,12 @@
         },
         "agent_viability": {
           "status": "not_agent_viable",
-          "reason": "The same run proved Talk, Open WebUI, LiteLLM, and Perplexica routing, but OpenCode did not complete the required agent verification phrase after the swap; keep Falcon H1 1.5B out of agent-required release coverage until revalidated.",
-          "evidence": "fleet-test/runs/2026-07-21T11-18-01Z-release-product-c43960145c39-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-004/tower2",
-          "recordedAt": "2026-07-21T12:12:38Z",
-          "productSha": "c43960145c39c5fa24627bf8b0e98b30c362cc85",
-          "harnessSha": "9804e8523a6d11ebeb86eac5f5400cf21fc25b39",
-          "hostScope": ["tower2"],
-          "expiresAt": "2026-08-21T00:00:00Z"
+          "reason": "Falcon H1 1.5B has failed agent-required browser verification in OpenCode on tower2 and ODS Talk on strixy/Lemonade by emitting tool or meta payloads instead of the requested verification phrase; keep it out of agent-required release coverage until revalidated with a tool-aware Talk/app probe.",
+          "evidence": "fleet-test/runs/2026-07-21T11-18-01Z-release-product-c43960145c39-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-004/tower2; fleet-test/runs/2026-07-22T18-45-07Z-model-ui-product-31c93e53c4aa-harness-ebdb7f948190-hosts-strixy-talk-runtime-strict-6cycle/cycle-004/strixy",
+          "recordedAt": "2026-07-22T19:33:20Z",
+          "productSha": "31c93e53c4aa8f9831abdb00516639def985ef34",
+          "harnessSha": "ebdb7f9481901a35ca1e5108fe2a1769bab197e8",
+          "expiresAt": "2026-08-22T00:00:00Z"
         }
       },
       "install_recommendation": false
@@ -398,7 +406,6 @@
           "recordedAt": "2026-07-21T14:25:00Z",
           "productSha": "7df3f218a06c386bdb40856c928a0618b8e16b57",
           "harnessSha": "d2a31507fa0652dff4c8cc1892e56ccf1b9102bb",
-          "hostScope": ["tower2"],
           "expiresAt": "2026-08-21T00:00:00Z"
         },
         "agent_viability": {
@@ -408,7 +415,6 @@
           "recordedAt": "2026-07-21T14:25:00Z",
           "productSha": "7df3f218a06c386bdb40856c928a0618b8e16b57",
           "harnessSha": "d2a31507fa0652dff4c8cc1892e56ccf1b9102bb",
-          "hostScope": ["tower2"],
           "expiresAt": "2026-08-21T00:00:00Z"
         }
       },

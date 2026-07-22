@@ -439,16 +439,21 @@ def test_qwen25_coder_3b_is_not_agent_viable_until_revalidated():
     assert not _agent_viable_for_release(by_id["qwen2.5-coder-3b-128k-q4"])
 
 
-def test_falcon_h1_15b_is_not_opencode_agent_viable_until_revalidated():
+def test_falcon_h1_15b_is_not_talk_or_opencode_agent_viable_until_revalidated():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
     compatibility = by_id["falcon-h1-1.5b-instruct-q4"]["app_compatibility"]
 
+    assert compatibility["hermes_talk"]["status"] == "unsupported_until_revalidated"
+    assert "strixy" in compatibility["hermes_talk"]["reason"]
+    assert "cycle-004" in compatibility["hermes_talk"]["evidence"]
     assert compatibility["opencode"]["status"] == "unsupported_until_revalidated"
     assert "OpenCode" in compatibility["opencode"]["reason"]
     assert "cycle-004" in compatibility["opencode"]["evidence"]
     assert compatibility["agent_viability"]["status"] == "not_agent_viable"
     assert "OpenCode" in compatibility["agent_viability"]["reason"]
+    assert "ODS Talk" in compatibility["agent_viability"]["reason"]
+    assert "hostScope" not in compatibility["agent_viability"]
     assert not _agent_viable_for_release(by_id["falcon-h1-1.5b-instruct-q4"])
 
 
@@ -460,8 +465,10 @@ def test_falcon_h1_3b_is_not_talk_agent_viable_until_revalidated():
     assert compatibility["hermes_talk"]["status"] == "unsupported_until_revalidated"
     assert "random_uuid" in compatibility["hermes_talk"]["reason"]
     assert "cycle-004" in compatibility["hermes_talk"]["evidence"]
+    assert "hostScope" not in compatibility["hermes_talk"]
     assert compatibility["agent_viability"]["status"] == "not_agent_viable"
     assert "tool-call payload" in compatibility["agent_viability"]["reason"]
+    assert "hostScope" not in compatibility["agent_viability"]
     assert not _agent_viable_for_release(by_id["falcon-h1-3b-instruct-q4"])
 
 
