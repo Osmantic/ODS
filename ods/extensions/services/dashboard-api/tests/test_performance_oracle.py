@@ -379,13 +379,14 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
 
     assert len(candidates) >= 6
     assert {
-        "granite4.0-h-1b-q4",
+        "qwen3.5-4b-q4",
         "qwen3-4b-instruct-2507-q4",
         "qwen3-4b-128k-q4",
         "granite4.1-3b-q4",
         "granite4.0-h-micro-q4",
         "granite4.0-h-tiny-q4",
     }.issubset(candidate_ids)
+    assert by_id["qwen3.5-4b-q4"]["contextLength"] == 262144
     assert by_id["qwen3-4b-instruct-2507-q4"]["contextLength"] == 262144
     assert by_id["qwen3-4b-128k-q4"]["contextLength"] == 131072
     assert by_id["granite4.1-3b-q4"]["contextLength"] == 131072
@@ -401,7 +402,11 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     assert all_by_id["granite3.1-2b-instruct-q4"]["appCompatibility"]["perplexica"]["status"] == (
         "unsupported_until_revalidated"
     )
+    assert all_by_id["granite4.0-h-1b-q4"]["appCompatibility"]["perplexica"]["status"] == (
+        "unsupported_until_revalidated"
+    )
     assert "granite3.1-2b-instruct-q4" not in candidate_ids
+    assert "granite4.0-h-1b-q4" not in candidate_ids
     assert "phi4-mini-q4" not in candidate_ids
     assert "gemma3-4b-it-q4" not in candidate_ids
     assert "falcon-h1-1.5b-instruct-q4" not in candidate_ids

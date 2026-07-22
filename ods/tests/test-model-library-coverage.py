@@ -470,13 +470,21 @@ def test_qwen3_4b_long_context_replacements_are_release_candidates():
     by_id = {model["id"]: model for model in catalog["models"]}
 
     expected = {
+        "qwen3.5-4b-q4": {
+            "sha": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+            "context": 262144,
+            "size_bytes": 2740937888,
+            "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/",
+        },
         "qwen3-4b-instruct-2507-q4": {
             "sha": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
             "context": 262144,
+            "url": "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/",
         },
         "qwen3-4b-128k-q4": {
             "sha": "f145a1bd60fec420ca4d9b7645ebcdf657e301463bc4dd3af4a8c0b548b5eb1a",
             "context": 131072,
+            "url": "https://huggingface.co/unsloth/Qwen3-4B-128K-GGUF/",
         },
     }
 
@@ -485,7 +493,11 @@ def test_qwen3_4b_long_context_replacements_are_release_candidates():
         assert model["gguf_sha256"] == expected_model["sha"]
         assert model["context_length"] == expected_model["context"]
         assert model["vram_required_gb"] <= 5
-        assert model.get("install_recommendation") is False
+        assert model["gguf_url"].startswith(expected_model["url"])
+        if "size_bytes" in expected_model:
+            assert model["size_bytes"] == expected_model["size_bytes"]
+        if model_id != "qwen3.5-4b-q4":
+            assert model.get("install_recommendation") is False
         assert _agent_viable_for_release(model)
 
 
