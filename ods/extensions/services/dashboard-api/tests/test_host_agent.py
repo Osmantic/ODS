@@ -2418,6 +2418,24 @@ class TestModelActivationOwnership:
         assert _mod._model_activate_lock.acquire(blocking=False)
         _mod._model_activate_lock.release()
 
+    def test_model_status_reports_activation_lifecycle(self, monkeypatch):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        acquired, _active = _mod._begin_model_lifecycle("model_activation", "target-a")
+        assert acquired
+        try:
+            handler = _FakeHandler(b"")
+            _mod.AgentHandler._handle_model_status(handler)
+        finally:
+            _mod._end_model_lifecycle("model_activation")
+
+        assert handler.response_code == 200
+        response = handler.parse_response()
+        assert response["status"] == "idle"
+        assert response["lifecycleActive"] is True
+        assert response["activeOperation"] == "model_activation"
+        assert response["activeTarget"] == "target-a"
+        assert response["activeModelId"] == "target-a"
+
     def test_non_activation_lock_owner_reports_unknown_target(self, monkeypatch):
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
         handler = _FakeHandler(json.dumps({"model_id": "target-a"}).encode("utf-8"))

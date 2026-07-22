@@ -355,6 +355,8 @@ if grep -qF 'proxy_pass http://dashboard-api:3002;' "$dashboard_nginx"; then
   echo "[FAIL] dashboard nginx must not pin dashboard-api at config-load time"
   exit 1
 fi
+grep -A16 -F 'location ~ ^/api/models/.+/load$ {' "$dashboard_nginx" | grep -qF 'proxy_read_timeout 2700s;' \
+  || { echo "[FAIL] dashboard nginx model activation route must cover the host-agent activation budget"; exit 1; }
 
 echo "[contract] bundled service CPU limits are env-driven"
 grep -qF "cpus: '\${TTS_CPU_LIMIT:-1.0}'" extensions/services/tts/compose.yaml \

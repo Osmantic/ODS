@@ -81,6 +81,43 @@ describe('useModels', () => {
     expect(result.current.error).toBeNull()
   })
 
+  test('surfaces backend-owned activation as a pending model action', async () => {
+    const target = 'slow-model'
+    fetch.mockResolvedValue(modelsResponse(
+      [{
+        id: target,
+        status: 'downloaded',
+        modelOperation: {
+          active: true,
+          operation: 'model_activation',
+          modelId: target,
+        },
+      }],
+      {
+        modelLifecycle: {
+          active: true,
+          operation: 'model_activation',
+          target,
+          modelId: target,
+        },
+      }
+    ))
+
+    const { result } = renderHook(() => useModels())
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false)
+    })
+    expect(result.current.modelLifecycle).toEqual({
+      active: true,
+      operation: 'model_activation',
+      target,
+      modelId: target,
+    })
+    expect(result.current.activationLoading).toBe(target)
+    expect(result.current.actionLoadingModels).toEqual([target])
+  })
+
   test('treats a missing runtime mode as unknown and blocks activation', async () => {
     fetch.mockResolvedValue({
       ok: true,
