@@ -159,6 +159,13 @@ detect_timezone() {
     echo "${tz:-UTC}"
 }
 
+normalize_ods_model_switchboard() {
+    case "${1:-observe}" in
+        legacy|observe|enabled) printf '%s\n' "$1" ;;
+        *) printf '%s\n' "observe" ;;
+    esac
+}
+
 generate_ods_env() {
     local install_dir="$1"
     local tier="$2"
@@ -218,6 +225,20 @@ generate_ods_env() {
         upsert_env_value "$env_path" "HERMES_CPU_RESERVATION" "$hermes_cpu_reservation"
         upsert_env_value "$env_path" "COMFYUI_CPU_LIMIT" "$comfyui_cpu_limit"
         upsert_env_value "$env_path" "COMFYUI_CPU_RESERVATION" "$comfyui_cpu_reservation"
+
+        local _switchboard_mode
+        _switchboard_mode="$(read_env_value "$env_path" "ODS_MODEL_SWITCHBOARD")"
+        [[ -n "$_switchboard_mode" ]] || _switchboard_mode="${ODS_MODEL_SWITCHBOARD:-observe}"
+        _switchboard_mode="$(normalize_ods_model_switchboard "$_switchboard_mode")"
+        upsert_env_value "$env_path" "ODS_MODEL_SWITCHBOARD" "$_switchboard_mode"
+        if [[ "$_switchboard_mode" == "enabled" ]]; then
+            local _litellm_key
+            _litellm_key="$(read_env_value "$env_path" "LITELLM_KEY")"
+            upsert_env_value "$env_path" "OPEN_WEBUI_LLM_BASE_URL" "http://litellm:4000"
+            upsert_env_value "$env_path" "OPEN_WEBUI_LLM_API_KEY" "$_litellm_key"
+            upsert_env_value "$env_path" "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
+            upsert_env_value "$env_path" "HERMES_LLM_API_KEY" "$_litellm_key"
+        fi
 
         # Upsert ODS_AGENT_KEY when missing (pre-PR-#979 upgrade path)
         if [[ -z "$(read_env_value "$env_path" "ODS_AGENT_KEY")" ]]; then
@@ -355,6 +376,8 @@ generate_ods_env() {
     local macos_vm_ip=""
     local agent_host="host.docker.internal"
     local llm_api_url="http://host.docker.internal:8080"
+    local switchboard_mode
+    switchboard_mode="$(normalize_ods_model_switchboard "${ODS_MODEL_SWITCHBOARD:-observe}")"
     if [[ "${DOCKER_BACKEND:-unknown}" == "colima" ]]; then
         macos_llm_bridge_enabled="true"
         macos_host_agent_bridge_enabled="true"
@@ -381,6 +404,16 @@ generate_ods_env() {
     tz=$(detect_timezone)
     local timestamp
     timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local hermes_llm_base_url="${llm_api_url}/v1"
+    local hermes_llm_api_key="sk-ods-hermes-local"
+    local open_webui_llm_base_url=""
+    local open_webui_llm_api_key=""
+    if [[ "$switchboard_mode" == "enabled" ]]; then
+        hermes_llm_base_url="http://litellm:4000/v1"
+        hermes_llm_api_key="$litellm_key"
+        open_webui_llm_base_url="http://litellm:4000"
+        open_webui_llm_api_key="$litellm_key"
+    fi
 
     # Build .env content (matches Phase 06 format)
     cat > "$env_path" << ENVEOF
@@ -401,6 +434,7 @@ ODS_AGENT_HOST=${ODS_AGENT_HOST:-${agent_host}}
 
 #=== LLM Backend Mode ===
 ODS_MODE=local
+ODS_MODEL_SWITCHBOARD=${switchboard_mode}
 LLM_BACKEND=llama-server
 LLM_API_URL=${llm_api_url}
 LLM_BACKEND=llama-server
@@ -473,9 +507,9 @@ OPENCLAW_PORT=7860
 LANGFUSE_PORT=3006
 
 #=== Hermes Agent ===
-# macOS runs llama-server natively with Metal; containers use the scoped host route above.
-HERMES_LLM_BASE_URL=${llm_api_url}/v1
-HERMES_LLM_API_KEY=sk-ods-hermes-local
+# macOS runs llama-server natively with Metal; switchboard consumers use LiteLLM.
+HERMES_LLM_BASE_URL=${hermes_llm_base_url}
+HERMES_LLM_API_KEY=${hermes_llm_api_key}
 HERMES_LANGUAGE=en
 HERMES_PROXY_PORT=9120
 HERMES_PROXY_UPSTREAM=ods-hermes:9119
@@ -513,6 +547,8 @@ TTS_VOICE=en_US-lessac-medium
 WEBUI_AUTH=true
 ENABLE_WEB_SEARCH=true
 WEB_SEARCH_ENGINE=searxng
+OPEN_WEBUI_LLM_BASE_URL=${open_webui_llm_base_url}
+OPEN_WEBUI_LLM_API_KEY=${open_webui_llm_api_key}
 
 #=== n8n Settings ===
 N8N_HOST=localhost
