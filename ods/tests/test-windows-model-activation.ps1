@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $root "installers\windows\lib\constants.ps1")
 . (Join-Path $root "installers\windows\lib\model-activation.ps1")
 . (Join-Path $root "installers\windows\lib\tier-map.ps1")
 
@@ -33,8 +34,16 @@ Set-Content -LiteralPath (Join-Path $tempRoot "data\models\model.gguf") -Value "
     models = @(@{ id = "catalog-model"; gguf_file = "model.gguf" })
 } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $tempRoot "config\model-library.json")
 
+# Create custom models directory for testing ODS_MODELS_DIR override
+$customModelsDir = Join-Path ([IO.Path]::GetTempPath()) "ods-windows-custom-models"
+Remove-Item -LiteralPath $customModelsDir -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path $customModelsDir -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $customModelsDir "model.gguf") -Value "custom-fixture"
+
 try {
     $previousModelProfile = $env:MODEL_PROFILE
+    $previousOdsModelsDir = $env:ODS_MODELS_DIR
+    $previousModelsDir    = $env:MODELS_DIR
     try {
         $env:MODEL_PROFILE = "qwen"
         Assert-Equal `
@@ -44,8 +53,28 @@ try {
         Assert-Equal $gemmaTier.LlmModel "gemma-4-e2b-it" "Explicit tier profile model"
         Assert-Equal $gemmaTier.GgufFile `
             "gemma-4-E2B-it-Q4_K_M.gguf" "Explicit tier profile GGUF"
+
+        # Test Get-ODSModelsDir precedence
+        Assert-Equal (Get-ODSModelsDir -InstallDir $tempRoot) (Join-Path $tempRoot "data\models") "Default models dir"
+        $env:ODS_MODELS_DIR = $customModelsDir
+        Assert-Equal (Get-ODSModelsDir -InstallDir $tempRoot) (Resolve-Path $customModelsDir).Path "ODS_MODELS_DIR override"
+        $env:ODS_MODELS_DIR = $null
+
+        $env:MODELS_DIR = $customModelsDir
+        Assert-Equal (Get-ODSModelsDir -InstallDir $tempRoot) (Resolve-Path $customModelsDir).Path "MODELS_DIR override"
+        $env:MODELS_DIR = $null
+
+        Assert-Equal (Get-ODSModelsDir -InstallDir $tempRoot -ModelsDirOverride $customModelsDir) `
+            (Resolve-Path $customModelsDir).Path "Explicit ModelsDir parameter override"
+
+        # Catalog resolution with custom models dir
+        Assert-Equal (Resolve-WindowsODSModelCatalogId -InstallDir $tempRoot -GgufFile "model.gguf" -ModelsDirOverride $customModelsDir) `
+            "catalog-model" "Custom models dir catalog resolution"
     } finally {
-        $env:MODEL_PROFILE = $previousModelProfile
+        $env:MODEL_PROFILE  = $previousModelProfile
+        $env:ODS_MODELS_DIR = $previousOdsModelsDir
+        $env:MODELS_DIR     = $previousModelsDir
+        Remove-Item -LiteralPath $customModelsDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     Assert-Equal (Resolve-WindowsODSModelCatalogId -InstallDir $tempRoot -GgufFile "model.gguf") `

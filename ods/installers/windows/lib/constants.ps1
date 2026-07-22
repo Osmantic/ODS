@@ -87,3 +87,49 @@ $script:C = @{
     Cyan      = "Cyan"
     Reset     = "Gray"
 }
+
+function Get-ODSModelsDir {
+    <#
+    .SYNOPSIS
+        Resolve the ODS models directory on Windows.
+    .DESCRIPTION
+        Precedence:
+          1. $ModelsDirOverride parameter
+          2. $env:ODS_MODELS_DIR
+          3. $env:MODELS_DIR
+          4. ODS_WIN_MODELS_DIR or MODELS_DIR in .env file (if present)
+          5. Default fallback: $InstallDir\data\models
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$InstallDir = $script:ODS_INSTALL_DIR,
+        [string]$ModelsDirOverride
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ModelsDirOverride)) {
+        return [System.IO.Path]::GetFullPath($ModelsDirOverride)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:ODS_MODELS_DIR)) {
+        return [System.IO.Path]::GetFullPath($env:ODS_MODELS_DIR)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:MODELS_DIR)) {
+        return [System.IO.Path]::GetFullPath($env:MODELS_DIR)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($InstallDir)) {
+        $envPath = Join-Path $InstallDir ".env"
+        if (Test-Path -LiteralPath $envPath -PathType Leaf) {
+            $lines = Get-Content -LiteralPath $envPath -ErrorAction SilentlyContinue
+            foreach ($line in $lines) {
+                if ($line -match "^(?:ODS_WIN_MODELS_DIR|MODELS_DIR)=\s*(.+)\s*$") {
+                    $val = $Matches[1].Trim().Trim('"').Trim("'")
+                    if (-not [string]::IsNullOrWhiteSpace($val)) {
+                        return [System.IO.Path]::GetFullPath($val)
+                    }
+                }
+            }
+        }
+        return Join-Path (Join-Path $InstallDir "data") "models"
+    }
+    return $null
+}
+
