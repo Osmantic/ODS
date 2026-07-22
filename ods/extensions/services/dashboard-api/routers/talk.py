@@ -28,6 +28,7 @@ from performance_oracle import (
     find_catalog_model,
     load_model_catalog,
     model_app_compatibility,
+    model_compatibility_runtime_context,
     read_env_file_value,
     read_env_value,
 )
@@ -84,7 +85,10 @@ def _active_model_app_compatibility() -> dict[str, Any]:
     model_name = read_env_file_value("LLM_MODEL", INSTALL_DIR) or read_env_value("LLM_MODEL", INSTALL_DIR)
     gguf = read_env_file_value("GGUF_FILE", INSTALL_DIR) or read_env_value("GGUF_FILE", INSTALL_DIR)
     entry = find_catalog_model(load_model_catalog(INSTALL_DIR), model_name, gguf)
-    compatibility = model_app_compatibility(entry or {})
+    compatibility = model_app_compatibility(
+        entry or {},
+        runtime_context=model_compatibility_runtime_context(INSTALL_DIR),
+    )
     compatibility["activeModel"] = {
         "id": entry.get("id") if entry else None,
         "model": model_name or None,

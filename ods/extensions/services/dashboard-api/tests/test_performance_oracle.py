@@ -8,11 +8,12 @@ from performance_oracle import (
     current_model_matches,
     evaluate_performance,
     load_evidence,
+    model_app_compatibility,
     rank_pre_download_models,
 )
 
 
-def _gpu(name="NVIDIA GeForce RTX 4060", total_mb=8192):
+def _gpu(name="NVIDIA GeForce RTX 4060", total_mb=8192, backend="nvidia"):
     return GPUInfo(
         name=name,
         memory_used_mb=1024,
@@ -20,7 +21,7 @@ def _gpu(name="NVIDIA GeForce RTX 4060", total_mb=8192):
         memory_percent=12.5,
         utilization_percent=0,
         temperature_c=40,
-        gpu_backend="nvidia",
+        gpu_backend=backend,
     )
 
 
@@ -225,6 +226,88 @@ def test_model_payload_projects_explicit_app_compatibility(data_dir, tmp_path):
     assert compatibility["perplexica"]["status"] == "unsupported_until_revalidated"
     assert compatibility["perplexica"]["reason"] == "Perplexica probe failed"
     assert compatibility["perplexica"]["evidence"] == "fleet-run/perplexica"
+
+
+def test_scoped_app_compatibility_applies_only_to_matching_runtime():
+    model = {
+        "id": "mistral-nemo-12b-instruct-q4",
+        "app_compatibility": {
+            "hermes_talk": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Mistral Talk probe failed on Apple llama-server",
+                "gpuBackendScope": ["apple"],
+                "llmBackendScope": ["llama-server"],
+            },
+        },
+    }
+
+    apple_llama = model_app_compatibility(
+        model,
+        runtime_context={"gpuBackend": "apple", "llmBackend": "llama-server", "runtime": "llama-server"},
+    )
+    lemonade_amd = model_app_compatibility(
+        model,
+        runtime_context={"gpuBackend": "amd", "llmBackend": "lemonade", "runtime": "lemonade"},
+    )
+
+    assert apple_llama["hermesTalk"]["status"] == "unsupported_until_revalidated"
+    assert apple_llama["agentViability"]["status"] == "not_agent_viable"
+    assert lemonade_amd["hermesTalk"]["status"] == "unknown"
+    assert lemonade_amd["agentViability"]["status"] == "unknown"
+
+
+def test_model_payload_applies_scoped_app_compatibility_from_install_env(data_dir, tmp_path):
+    install_dir = tmp_path / "ods"
+    (install_dir / "data" / "models").mkdir(parents=True)
+    model = {
+        "id": "mistral-nemo-12b-instruct-q4",
+        "name": "Mistral Nemo 12B Instruct",
+        "gguf_file": "Mistral-Nemo-Instruct-2407.Q4_K_M.gguf",
+        "size_mb": 7477,
+        "vram_required_gb": 12,
+        "context_length": 128000,
+        "quantization": "Q4_K_M",
+        "specialty": "Quality",
+        "description": "Mistral test model",
+        "llm_model_name": "mistral-nemo-instruct-2407",
+        "app_compatibility": {
+            "hermes_talk": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Mistral Talk probe failed on Apple llama-server",
+                "gpuBackendScope": ["apple"],
+                "llmBackendScope": ["llama-server"],
+            },
+        },
+    }
+
+    (install_dir / ".env").write_text("GPU_BACKEND=apple\nLLM_BACKEND=llama-server\n", encoding="utf-8")
+    apple_payload = build_models_payload(
+        _gpu(name="Apple M5 Max", total_mb=131072, backend="apple"),
+        None,
+        0,
+        install_dir,
+        data_dir,
+        catalog=[model],
+        evidence=[],
+    )
+
+    (install_dir / ".env").write_text("GPU_BACKEND=amd\nLLM_BACKEND=lemonade\n", encoding="utf-8")
+    lemonade_payload = build_models_payload(
+        _gpu(name="AMD Strix Halo", total_mb=126976, backend="amd"),
+        None,
+        0,
+        install_dir,
+        data_dir,
+        catalog=[model],
+        evidence=[],
+    )
+
+    assert apple_payload["models"][0]["appCompatibility"]["hermesTalk"]["status"] == (
+        "unsupported_until_revalidated"
+    )
+    assert apple_payload["models"][0]["appCompatibility"]["agentViability"]["status"] == "not_agent_viable"
+    assert lemonade_payload["models"][0]["appCompatibility"]["hermesTalk"]["status"] == "unknown"
+    assert lemonade_payload["models"][0]["appCompatibility"]["agentViability"]["status"] == "unknown"
 
 
 def test_measured_local_too_slow_blocks_agent_compatibility(data_dir, tmp_path):

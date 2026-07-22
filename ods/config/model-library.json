@@ -1054,6 +1054,21 @@
       "tokens_per_sec_estimate": 55,
       "llm_model_name": "mistral-nemo-instruct-2407",
       "llama_server_image": null,
+      "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "label": "ODS Talk unavailable on Apple llama-server",
+          "reason": "Fleet model-UI run 2026-07-22T06:12Z on m5-mbp loaded Mistral Nemo 12B successfully through the browser UI, but ODS Talk failed because llama.cpp rejected the Hermes request with the Mistral chat-template role alternation Jinja exception. The same run passed Mistral on strix-halo through Lemonade, so this verdict is scoped to Apple llama-server until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-22T06-12-53Z-release-product-cfe6addc5239-harness-8bdceb20b959-hosts-m5-mbp-strix-halo-windows-laptop-strixy/model-ui/cycle-006/m5-mbp",
+          "recordedAt": "2026-07-22T07:47:48Z",
+          "productSha": "cfe6addc523925adba4e6ab797645e83741759b0",
+          "harnessSha": "8bdceb20b9594515dae65f7f66df734ec152e1e4",
+          "hostScope": ["m5-mbp"],
+          "gpuBackendScope": ["apple"],
+          "llmBackendScope": ["llama-server"],
+          "expiresAt": "2026-08-22T00:00:00Z"
+        }
+      },
       "install_recommendation": false
     },
     {

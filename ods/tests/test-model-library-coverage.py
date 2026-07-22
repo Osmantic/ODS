@@ -31,11 +31,27 @@ BLOCKING_AGENT_STATUSES = {
 }
 
 
+def _has_runtime_scope(entry):
+    return any(
+        key in entry
+        for key in {
+            "gpuBackendScope",
+            "gpu_backend_scope",
+            "llmBackendScope",
+            "llm_backend_scope",
+            "runtimeScope",
+            "runtime_scope",
+            "odsModeScope",
+            "ods_mode_scope",
+        }
+    )
+
+
 def _agent_viable_for_release(model):
     compatibility = model.get("app_compatibility") or {}
     for entry in compatibility.values():
         status = str((entry or {}).get("status") or "").strip().lower()
-        if status in BLOCKING_AGENT_STATUSES:
+        if status in BLOCKING_AGENT_STATUSES and not _has_runtime_scope(entry or {}):
             return False
     return True
 
@@ -463,6 +479,20 @@ def test_qwen25_coder_15b_128k_is_not_talk_agent_viable_until_revalidated():
     assert "cycle-006" in compatibility["hermes_talk"]["evidence"]
     assert compatibility["agent_viability"]["status"] == "not_agent_viable"
     assert not _agent_viable_for_release(model)
+
+
+def test_mistral_nemo_talk_block_is_scoped_to_apple_llama_server():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+    model = by_id["mistral-nemo-12b-instruct-q4"]
+    compatibility = model["app_compatibility"]
+
+    assert compatibility["hermes_talk"]["status"] == "unsupported_until_revalidated"
+    assert compatibility["hermes_talk"]["gpuBackendScope"] == ["apple"]
+    assert compatibility["hermes_talk"]["llmBackendScope"] == ["llama-server"]
+    assert "m5-mbp" in compatibility["hermes_talk"]["hostScope"]
+    assert "cycle-006" in compatibility["hermes_talk"]["evidence"]
+    assert _agent_viable_for_release(model)
 
 
 def test_qwen3_4b_long_context_replacements_are_release_candidates():

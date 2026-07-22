@@ -196,7 +196,68 @@ def normalize_catalog_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
     return model
 
 
-def _app_compatibility_entry(raw: Any, default_label: str) -> dict[str, Any]:
+def _scope_values(raw: dict[str, Any], *keys: str) -> list[str]:
+    for key in keys:
+        if key in raw:
+            return [normalize_key(item) for item in _list_value(raw.get(key)) if normalize_key(item)]
+    return []
+
+
+def model_compatibility_runtime_context(
+    install_dir: str | Path | None = None,
+    gpu_info: Optional[GPUInfo] = None,
+    runtime: str | None = None,
+) -> dict[str, str]:
+    def runtime_value(key: str) -> str:
+        if install_dir is not None:
+            value = read_env_file_value(key, install_dir) or read_env_value(key, install_dir)
+            if value:
+                return value
+        return os.environ.get(key, "")
+
+    llm_backend = runtime or runtime_value("LLM_BACKEND")
+    gpu_backend = (
+        getattr(gpu_info, "gpu_backend", None)
+        or runtime_value("GPU_BACKEND")
+    )
+    return {
+        "llmBackend": normalize_key(llm_backend),
+        "runtime": normalize_key(llm_backend),
+        "gpuBackend": normalize_key(gpu_backend),
+        "odsMode": normalize_key(runtime_value("ODS_MODE")),
+    }
+
+
+def _compatibility_scope_matches(raw: Any, runtime_context: Optional[dict[str, str]]) -> bool:
+    if not isinstance(raw, dict):
+        return True
+    context = runtime_context or model_compatibility_runtime_context()
+    checks = [
+        (_scope_values(raw, "llmBackendScope", "llm_backend_scope", "runtimeScope", "runtime_scope"),
+         {context.get("llmBackend", ""), context.get("runtime", "")}),
+        (_scope_values(raw, "gpuBackendScope", "gpu_backend_scope"),
+         {context.get("gpuBackend", "")}),
+        (_scope_values(raw, "odsModeScope", "ods_mode_scope"),
+         {context.get("odsMode", "")}),
+    ]
+    for allowed, actual_values in checks:
+        if allowed and not (set(allowed) & {value for value in actual_values if value}):
+            return False
+    return True
+
+
+def _app_compatibility_entry(
+    raw: Any,
+    default_label: str,
+    runtime_context: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    if isinstance(raw, dict) and not _compatibility_scope_matches(raw, runtime_context):
+        return {
+            "status": "unknown",
+            "label": default_label,
+            "reason": "",
+        }
+
     if isinstance(raw, dict):
         status = str(raw.get("status") or "unknown").strip() or "unknown"
         label = str(raw.get("label") or default_label).strip() or default_label
@@ -274,13 +335,14 @@ def _exact_performance_agent_block(performance: Optional[dict[str, Any]]) -> dic
 def model_app_compatibility(
     model: dict[str, Any],
     performance: Optional[dict[str, Any]] = None,
+    runtime_context: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     raw = model.get("app_compatibility") if isinstance(model.get("app_compatibility"), dict) else {}
-    hermes_talk = _app_compatibility_entry(raw.get("hermes_talk"), "ODS Talk untested")
+    hermes_talk = _app_compatibility_entry(raw.get("hermes_talk"), "ODS Talk untested", runtime_context)
     compatibility = {
-        "openaiChat": _app_compatibility_entry(raw.get("openai_chat"), "Direct chat untested"),
+        "openaiChat": _app_compatibility_entry(raw.get("openai_chat"), "Direct chat untested", runtime_context),
         "hermesTalk": hermes_talk,
-        "agentViability": _agent_viability_entry(raw.get("agent_viability"), hermes_talk),
+        "agentViability": _agent_viability_entry(raw.get("agent_viability"), hermes_talk, runtime_context),
     }
     for raw_key, raw_value in raw.items():
         payload_key = _app_compatibility_payload_key(raw_key)
@@ -289,6 +351,7 @@ def model_app_compatibility(
         compatibility[payload_key] = _app_compatibility_entry(
             raw_value,
             _app_compatibility_default_label(raw_key),
+            runtime_context,
         )
     exact_speed_block = _exact_performance_agent_block(performance)
     if exact_speed_block:
@@ -305,9 +368,13 @@ def model_app_compatibility(
     return compatibility
 
 
-def _agent_viability_entry(raw: Any, hermes_talk: dict[str, Any]) -> dict[str, Any]:
+def _agent_viability_entry(
+    raw: Any,
+    hermes_talk: dict[str, Any],
+    runtime_context: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
     if raw:
-        return _app_compatibility_entry(raw, "Agent viability untested")
+        return _app_compatibility_entry(raw, "Agent viability untested", runtime_context)
 
     hermes_status = str((hermes_talk or {}).get("status") or "unknown").strip().lower()
     hermes_reason = str((hermes_talk or {}).get("reason") or "").strip()
@@ -1198,7 +1265,11 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
                 "expertCount": metadata.get("expert_count"),
                 "expertUsedCount": metadata.get("expert_used_count"),
             },
-            "appCompatibility": model_app_compatibility(model, perf),
+            "appCompatibility": model_app_compatibility(
+                model,
+                perf,
+                model_compatibility_runtime_context(install_dir, gpu_info, runtime),
+            ),
             "status": "loaded" if is_loaded else status_if_not_loaded,
             "recommended": is_recommended,
             "configured": is_configured,
