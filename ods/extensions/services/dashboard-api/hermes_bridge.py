@@ -27,6 +27,7 @@ visitors doesn't pin Hermes resources forever.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -35,6 +36,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -83,6 +85,17 @@ class HermesReply:
     warning: str | None = None
 
 
+def _get_hermes_auth_header(url_str: str) -> dict[str, str]:
+    """Extract BasicAuth header from URL or environment variables."""
+    parsed = urlparse(url_str)
+    username = parsed.username or os.environ.get("HERMES_DASHBOARD_BASIC_AUTH_USERNAME") or os.environ.get("HERMES_BASIC_AUTH_USER")
+    password = parsed.password or os.environ.get("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD") or os.environ.get("HERMES_BASIC_AUTH_PASS") or ""
+    if username:
+        creds = f"{username}:{password}".encode("utf-8")
+        return {"Authorization": f"Basic {base64.b64encode(creds).decode('ascii')}"}
+    return {}
+
+
 def _base_url() -> str:
     return (os.environ.get("HERMES_INTERNAL_URL") or DEFAULT_HERMES_URL).rstrip("/")
 
@@ -101,8 +114,9 @@ def talk_session_key(cookie_value: str) -> str:
 
 async def _fetch_hermes_token(session: aiohttp.ClientSession) -> str:
     url = _base_url()
+    headers = _get_hermes_auth_header(url)
     try:
-        async with session.get(url) as resp:
+        async with session.get(url, headers=headers) as resp:
             if resp.status >= 400:
                 raise HermesUnavailable(f"Hermes dashboard returned HTTP {resp.status}")
             html = await resp.text()
@@ -119,8 +133,9 @@ async def _connect_ws(session: aiohttp.ClientSession) -> aiohttp.ClientWebSocket
     token = await _fetch_hermes_token(session)
     ws_base = _base_url().replace("http://", "ws://", 1).replace("https://", "wss://", 1)
     url = f"{ws_base}/api/ws?token={token}"
+    headers = _get_hermes_auth_header(_base_url())
     try:
-        return await session.ws_connect(url)
+        return await session.ws_connect(url, headers=headers)
     except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
         raise HermesUnavailable("Hermes JSON-RPC websocket is not reachable") from exc
 

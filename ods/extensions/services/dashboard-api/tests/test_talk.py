@@ -1096,3 +1096,23 @@ def test_ods_talk_hermes_timeout_is_env_configurable(monkeypatch):
 
     monkeypatch.setenv("ODS_TALK_HERMES_TIMEOUT", "5")
     assert hermes_bridge._request_timeout() == 10
+
+
+def test_hermes_bridge_get_auth_from_url_and_env(monkeypatch):
+    """Hermes bridge extracts BasicAuth credentials from HERMES_INTERNAL_URL or env vars."""
+    import base64
+    import hermes_bridge
+
+    monkeypatch.delenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", raising=False)
+    monkeypatch.delenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", raising=False)
+
+    headers = hermes_bridge._get_hermes_auth_header("http://admin:secret123@hermes:9119")
+    expected = "Basic " + base64.b64encode(b"admin:secret123").decode("ascii")
+    assert headers.get("Authorization") == expected
+
+    monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "envuser")
+    monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "envpass")
+
+    headers_env = hermes_bridge._get_hermes_auth_header("http://hermes:9119")
+    expected_env = "Basic " + base64.b64encode(b"envuser:envpass").decode("ascii")
+    assert headers_env.get("Authorization") == expected_env

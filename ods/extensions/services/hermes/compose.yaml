@@ -46,8 +46,10 @@ services:
       # Upstream reads these env vars to configure the dashboard listener
       # without separate CLI flags.
       - HERMES_DASHBOARD=1
-      - HERMES_DASHBOARD_HOST=0.0.0.0
+      - HERMES_DASHBOARD_HOST=${HERMES_DASHBOARD_HOST:-0.0.0.0}
       - HERMES_DASHBOARD_PORT=9119
+      - HERMES_DASHBOARD_BASIC_AUTH_USERNAME
+      - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
       # --insecure equivalent: dashboard refuses non-loopback binds without
       # this since it stores API keys. The trusted-LAN posture is the v1
       # trade-off (documented in docs/HERMES.md).
