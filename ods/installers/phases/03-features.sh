@@ -360,7 +360,7 @@ run_custom() {
   for svc in whisper comfyui embeddings; do
     local valid=false
     while ! $valid; do
-      read -rp "  GPU for ${WHT}${svc}${NC} (0-$((GPU_COUNT-1))): " chosen
+      read -rp "  GPU for ${WHT}${svc}${NC} (0-$((GPU_COUNT-1))): " chosen < /dev/tty
       if [[ "$chosen" =~ ^[0-9]+$ ]] && [[ $chosen -ge 0 ]] && [[ $chosen -lt $GPU_COUNT ]]; then
         CUSTOM_ASSIGNMENT[$svc]=$chosen; valid=true
       else
@@ -379,7 +379,7 @@ run_custom() {
   done
   default_llama="${default_llama%,}"
 
-  read -rp "  GPUs for ${WHT}llama_server${NC} [${default_llama}]: " llama_input
+  read -rp "  GPUs for ${WHT}llama_server${NC} [${default_llama}]: " llama_input < /dev/tty
   llama_input="${llama_input:-$default_llama}"
   IFS=',' read -ra LLAMA_GPUS_CUSTOM <<< "$llama_input"
   for g in "${LLAMA_GPUS_CUSTOM[@]}"; do
@@ -429,7 +429,7 @@ run_custom() {
   echo -e "  ${WHT}Llama parallelism:${NC}  mode=${BGRN}${mode}${NC}  TP=${tp}  PP=${pp}  mem_util=${mem_util}  ${DIM}(min_rank=${min_rank})${NC}"
   echo ""
 
-  read -rp "  Apply this configuration? [Y/n]: " confirm
+  read -rp "  Apply this configuration? [Y/n]: " confirm < /dev/tty
   confirm="${confirm:-Y}"
   [[ ! $confirm =~ ^[Yy]$ ]] && warn "Cancelled." && return
 
@@ -541,7 +541,7 @@ else
     echo -e "      ${DIM}Assign GPUs to services manually${NC}"
     echo ""
 
-    read -rp "  Selection [1]: " choice
+    read -rp "  Selection [1]: " choice < /dev/tty
     choice="${choice:-1}"
     case "$choice" in
     1) run_automatic ;;
