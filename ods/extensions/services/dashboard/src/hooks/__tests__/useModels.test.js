@@ -571,6 +571,57 @@ describe('useModels', () => {
     }
   })
 
+  test('keeps activation pending while backend activation lifecycle is still active', async () => {
+    vi.useFakeTimers()
+    const target = 'warmup-model'
+    let currentModel = null
+    let activationActive = false
+    fetch.mockImplementation((_url, opts) => {
+      if (opts?.method === 'POST') return Promise.resolve({ ok: true })
+      return Promise.resolve(modelsResponse(
+        [{ id: target, status: currentModel ? 'loaded' : 'downloaded' }],
+        {
+          currentModel,
+          modelLifecycle: activationActive
+            ? {
+                active: true,
+                operation: 'model_activation',
+                target,
+                modelId: target,
+              }
+            : null,
+        }
+      ))
+    })
+
+    try {
+      const { result } = renderHook(() => useModels())
+      await act(async () => {})
+
+      let loadPromise
+      act(() => {
+        loadPromise = result.current.loadModel(target)
+      })
+
+      currentModel = target
+      activationActive = true
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(result.current.currentModel).toBe(target)
+      expect(result.current.actionLoading).toBe(target)
+      expect(result.current.error).toBeNull()
+
+      activationActive = false
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+        await loadPromise
+      })
+      expect(result.current.actionLoading).toBeNull()
+      expect(result.current.error).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   test('holds the activation lock through 600 seconds and then reports a terminal timeout', async () => {
     vi.useFakeTimers()
     const target = 'never-loads'

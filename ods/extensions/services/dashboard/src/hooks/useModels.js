@@ -135,6 +135,11 @@ function normalizeModelLifecycle(data) {
   }
 }
 
+function hasActiveModelActivation(data) {
+  const lifecycle = normalizeModelLifecycle(data?.modelLifecycle)
+  return lifecycle?.operation === 'model_activation'
+}
+
 function normalizeOdsMode(value) {
   const mode = typeof value === 'string' ? value.trim().toLowerCase() : ''
   return ODS_MODES.has(mode) ? mode : 'unknown'
@@ -381,7 +386,7 @@ export function useModels() {
 
         if (activationError) break
         const data = await fetchModels()
-        if (data?.currentModel === modelId) {
+        if (data?.currentModel === modelId && !hasActiveModelActivation(data)) {
           targetLoaded = true
           break
         }
@@ -390,7 +395,7 @@ export function useModels() {
       // Take one final authoritative snapshot at the deadline or after a POST
       // failure. This cannot turn an unverified 409 into same-target success.
       const finalData = await fetchModels()
-      if (!activationError && finalData?.currentModel === modelId) targetLoaded = true
+      if (!activationError && finalData?.currentModel === modelId && !hasActiveModelActivation(finalData)) targetLoaded = true
 
       if (!targetLoaded) {
         setMutationError(activationError ||
