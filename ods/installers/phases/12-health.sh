@@ -304,6 +304,7 @@ fi
 # (especially if it was stuck in "Created" state and started late).
 if $DOCKER_CMD inspect ods-perplexica &>/dev/null; then
     PERPLEXICA_URL="http://127.0.0.1:${SERVICE_PORTS[perplexica]:-3004}"
+    _perplexica_switchboard_mode="$(printf '%s' "${ODS_MODEL_SWITCHBOARD:-observe}" | tr '[:upper:]' '[:lower:]')"
     PERPLEXICA_MODEL="${LLM_MODEL:-default}"
     if [[ -n "${GGUF_FILE:-}" ]]; then
         PERPLEXICA_MODEL="$GGUF_FILE"
@@ -313,6 +314,10 @@ if $DOCKER_CMD inspect ods-perplexica &>/dev/null; then
         fi
     fi
     PERPLEXICA_LLM_BASE_URL="${LLM_API_URL:-http://llama-server:8080}"
+    if [[ "$_perplexica_switchboard_mode" == "enabled" ]]; then
+        PERPLEXICA_MODEL="ods/current"
+        PERPLEXICA_LLM_BASE_URL="http://litellm:4000/v1"
+    fi
     case "$PERPLEXICA_LLM_BASE_URL" in
         */v1|*/api/v1) ;;
         *) PERPLEXICA_LLM_BASE_URL="${PERPLEXICA_LLM_BASE_URL%/}/v1" ;;

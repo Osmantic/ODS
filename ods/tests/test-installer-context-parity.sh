@@ -141,6 +141,22 @@ assert_grep "installers/macos/install-macos.sh" 'PERPLEXICA_MODEL="ods/current"'
     "macOS Perplexica config uses stable switchboard alias"
 assert_grep "installers/macos/install-macos.sh" 'PERPLEXICA_BASE_URL="http://litellm:4000"' \
     "macOS Perplexica config routes switchboard mode through LiteLLM"
+assert_grep "installers/phases/12-health.sh" 'ODS_MODEL_SWITCHBOARD' \
+    "Linux Perplexica config reads switchboard mode"
+assert_grep "installers/phases/12-health.sh" 'PERPLEXICA_MODEL="ods/current"' \
+    "Linux Perplexica config uses stable switchboard alias"
+assert_grep "installers/phases/12-health.sh" 'PERPLEXICA_LLM_BASE_URL="http://litellm:4000/v1"' \
+    "Linux Perplexica config routes switchboard mode through LiteLLM"
+assert_grep "installers/windows/install-windows.ps1" 'ODS_MODEL_SWITCHBOARD' \
+    "Windows Perplexica config reads switchboard mode"
+assert_grep "installers/windows/install-windows.ps1" '\$perplexicaModel = "ods/current"' \
+    "Windows Perplexica config uses stable switchboard alias"
+assert_grep "installers/windows/install-windows.ps1" '\$perplexicaBaseUrl = "http://litellm:4000/v1"' \
+    "Windows Perplexica config routes switchboard mode through LiteLLM"
+assert_grep "scripts/repair/repair-perplexica.sh" 'ODS_MODEL_SWITCHBOARD' \
+    "Perplexica repair reads switchboard mode"
+assert_grep "scripts/repair/repair-perplexica.sh" 'PERPLEXICA_MODEL:=ods/current' \
+    "Perplexica repair uses stable switchboard alias"
 assert_not_grep "installers/macos/install-macos.sh" '\$LOG_FILE' \
     "macOS installer uses ODS_LOG_FILE, not undefined LOG_FILE"
 assert_grep "installers/windows/install-windows.ps1" 'Update-HermesConfigFile.*ContextLength \(\[int\]\$tierConfig\.MaxContext\)' \

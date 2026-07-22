@@ -9,6 +9,12 @@ LLM_MODEL="${2:-qwen3-30b-a3b}"
 PERPLEXICA_MODEL="${PERPLEXICA_MODEL:-}"
 PERPLEXICA_LLM_BASE_URL="${PERPLEXICA_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}}"
 PERPLEXICA_API_KEY="${PERPLEXICA_API_KEY:-${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}}"
+_perplexica_switchboard_mode="$(printf '%s' "${ODS_MODEL_SWITCHBOARD:-observe}" | tr '[:upper:]' '[:lower:]')"
+if [[ "$_perplexica_switchboard_mode" == "enabled" ]]; then
+    : "${PERPLEXICA_MODEL:=ods/current}"
+    PERPLEXICA_LLM_BASE_URL="http://litellm:4000/v1"
+    PERPLEXICA_API_KEY="${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}"
+fi
 case "$PERPLEXICA_LLM_BASE_URL" in
     */v1|*/api/v1) ;;
     *) PERPLEXICA_LLM_BASE_URL="${PERPLEXICA_LLM_BASE_URL%/}/v1" ;;

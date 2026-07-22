@@ -2227,6 +2227,11 @@ if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $servicePlan) {
         -UseLemonade:$useLemonade -GpuBackend $gpuInfo.Backend -CloudMode:$cloudMode
     $activeModel = Get-WindowsActiveModelSelection -EnvMap $windowsEnvMap `
         -DefaultGgufFile $tierConfig.GgufFile -DefaultModelName $tierConfig.LlmModel
+    $switchboardMode = ""
+    if ($windowsEnvMap.ContainsKey("ODS_MODEL_SWITCHBOARD")) {
+        $switchboardMode = [string]$windowsEnvMap["ODS_MODEL_SWITCHBOARD"]
+    }
+    $switchboardMode = $switchboardMode.Trim().ToLowerInvariant()
     $perplexicaModel = $(if ($activeModel.GgufFile) {
         if ($useLemonade -and -not [string]::IsNullOrWhiteSpace($lemonadeModel)) {
             $lemonadeModel
@@ -2236,6 +2241,9 @@ if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $servicePlan) {
     } else {
         $activeModel.LlmModel
     })
+    if ($switchboardMode -eq "enabled") {
+        $perplexicaModel = "ods/current"
+    }
     $perplexicaBaseUrl = $(if ($useLemonade -or $cloudMode) {
         "http://litellm:4000/v1"
     } elseif ([string]$llmEndpoint["Backend"] -eq "native-llama-server") {
@@ -2243,8 +2251,11 @@ if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $servicePlan) {
     } else {
         "http://llama-server:8080/v1"
     })
+    if ($switchboardMode -eq "enabled") {
+        $perplexicaBaseUrl = "http://litellm:4000/v1"
+    }
     $perplexicaApiKey = "no-key"
-    if (($useLemonade -or $cloudMode) -and $windowsEnvMap.ContainsKey("LITELLM_KEY") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["LITELLM_KEY"])) {
+    if (($useLemonade -or $cloudMode -or $switchboardMode -eq "enabled") -and $windowsEnvMap.ContainsKey("LITELLM_KEY") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["LITELLM_KEY"])) {
         $perplexicaApiKey = $windowsEnvMap["LITELLM_KEY"]
     }
     $perplexicaOk = Set-PerplexicaConfig -PerplexicaPort 3004 -LlmModel $perplexicaModel -LlmBaseUrl $perplexicaBaseUrl -ApiKey $perplexicaApiKey

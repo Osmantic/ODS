@@ -90,6 +90,14 @@ if awk '/Configuring Perplexica/{f=1} f&&/Set-PerplexicaConfig/{print; exit}' "$
 else
     fail "Perplexica configuration must use refreshed active model selection"
 fi
+perplexica_config_block="$(awk '/Configuring Perplexica/{f=1} f{print} f&&/Set-PerplexicaConfig/{exit}' "$INSTALLER")"
+if grep -q 'ODS_MODEL_SWITCHBOARD' <<<"$perplexica_config_block" \
+    && grep -q '\$perplexicaModel = "ods/current"' <<<"$perplexica_config_block" \
+    && grep -q '\$perplexicaBaseUrl = "http://litellm:4000/v1"' <<<"$perplexica_config_block"; then
+    pass "Perplexica configuration keeps switchboard installs on the stable alias"
+else
+    fail "Perplexica switchboard installs must configure ods/current through LiteLLM"
+fi
 if grep -Eq 'model\s*=\s*\$activeModel\.LlmModel' "$INSTALLER"; then
     pass "summary JSON records the active env model"
 else

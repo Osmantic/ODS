@@ -191,6 +191,85 @@ def test_sync_script_persists_exact_lemonade_route() -> None:
     assert state["preferences"]["defaultChatModel"] == "Modern-Model"
 
 
+def test_sync_script_uses_stable_alias_when_switchboard_enabled() -> None:
+    node = _node_cmd_or_skip()
+    if node is None:
+        return
+
+    state = {
+        "modelProviders": [{
+            "id": "openai-provider",
+            "type": "openai",
+            "chatModels": [{"key": "Qwen3.5-2B-Q4_K_M", "name": "Qwen3.5-2B-Q4_K_M"}],
+            "config": {"baseURL": "http://litellm:4000/v1", "apiKey": "old-key"},
+        }],
+        "preferences": {
+            "defaultChatModel": "Qwen3.5-2B-Q4_K_M",
+            "defaultChatProvider": "openai-provider",
+        },
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({"values": state}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length))
+            state[payload["key"]] = payload["value"]
+            body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        env = os.environ.copy()
+        env.update({
+            "PERPLEXICA_CONFIG_URL": f"http://127.0.0.1:{server.server_port}/api/config",
+            "ODS_MODEL_SWITCHBOARD": "enabled",
+            "ODS_MODE": "lemonade",
+            "AMD_INFERENCE_RUNTIME": "lemonade",
+            "LEMONADE_MODEL": "Qwen3.5-2B-Q4_K_M",
+            "GGUF_FILE": "Qwen3.5-2B-Q4_K_M.gguf",
+            "OPENAI_BASE_URL": "http://litellm:4000",
+            "OPENAI_API_KEY": "litellm-key",
+        })
+        result = subprocess.run(
+            [node, str(SYNC_SCRIPT)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ods/current"
+    provider = state["modelProviders"][0]
+    assert provider["chatModels"] == [{"key": "ods/current", "name": "ods/current"}]
+    assert provider["config"] == {
+        "baseURL": "http://litellm:4000/v1",
+        "apiKey": "litellm-key",
+    }
+    assert state["preferences"]["defaultChatModel"] == "ods/current"
+
+
 def test_sync_script_falls_back_to_extra_gguf_when_exact_lemonade_id_is_absent() -> None:
     node = _node_cmd_or_skip()
     if node is None:
@@ -341,5 +420,6 @@ if __name__ == "__main__":
     test_entrypoint_falls_back_to_node_server_when_no_args()
     test_entrypoint_reconciles_persisted_model_route_on_every_start()
     test_sync_script_persists_exact_lemonade_route()
+    test_sync_script_uses_stable_alias_when_switchboard_enabled()
     test_sync_script_falls_back_to_extra_gguf_when_exact_lemonade_id_is_absent()
     test_sync_script_normalizes_base_url_without_v1_suffix()
