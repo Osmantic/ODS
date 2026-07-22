@@ -207,7 +207,7 @@ def model_compatibility_runtime_context(
     install_dir: str | Path | None = None,
     gpu_info: Optional[GPUInfo] = None,
     runtime: str | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     def runtime_value(key: str) -> str:
         if install_dir is not None:
             value = read_env_file_value(key, install_dir) or read_env_value(key, install_dir)
@@ -220,25 +220,63 @@ def model_compatibility_runtime_context(
         getattr(gpu_info, "gpu_backend", None)
         or runtime_value("GPU_BACKEND")
     )
+    explicit_host_values = {
+        normalize_key(value)
+        for value in (
+            runtime_value("ODS_FLEET_HOST_ID"),
+            runtime_value("ODS_COMPATIBILITY_HOST"),
+        )
+        if normalize_key(value)
+    }
+    host_values = explicit_host_values or {
+        normalize_key(value)
+        for value in (
+            runtime_value("ODS_DEVICE_NAME"),
+            runtime_value("COMPUTERNAME"),
+            runtime_value("HOSTNAME"),
+            platform.node(),
+        )
+        if normalize_key(value)
+    }
     return {
         "llmBackend": normalize_key(llm_backend),
         "runtime": normalize_key(llm_backend),
         "gpuBackend": normalize_key(gpu_backend),
         "odsMode": normalize_key(runtime_value("ODS_MODE")),
+        "host": sorted(host_values)[0] if host_values else "",
+        "hosts": sorted(host_values),
     }
 
 
-def _compatibility_scope_matches(raw: Any, runtime_context: Optional[dict[str, str]]) -> bool:
+def _context_values(context: dict[str, Any], *keys: str) -> set[str]:
+    values: set[str] = set()
+    for key in keys:
+        value = context.get(key)
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                normalized = normalize_key(item)
+                if normalized:
+                    values.add(normalized)
+            continue
+        normalized = normalize_key(value)
+        if normalized:
+            values.add(normalized)
+    return values
+
+
+def _compatibility_scope_matches(raw: Any, runtime_context: Optional[dict[str, Any]]) -> bool:
     if not isinstance(raw, dict):
         return True
     context = runtime_context or model_compatibility_runtime_context()
     checks = [
         (_scope_values(raw, "llmBackendScope", "llm_backend_scope", "runtimeScope", "runtime_scope"),
-         {context.get("llmBackend", ""), context.get("runtime", "")}),
+         _context_values(context, "llmBackend", "runtime")),
         (_scope_values(raw, "gpuBackendScope", "gpu_backend_scope"),
-         {context.get("gpuBackend", "")}),
+         _context_values(context, "gpuBackend")),
         (_scope_values(raw, "odsModeScope", "ods_mode_scope"),
-         {context.get("odsMode", "")}),
+         _context_values(context, "odsMode")),
+        (_scope_values(raw, "hostScope", "host_scope", "fleetHostScope", "fleet_host_scope"),
+         _context_values(context, "host", "hosts")),
     ]
     for allowed, actual_values in checks:
         if allowed and not (set(allowed) & {value for value in actual_values if value}):
@@ -249,7 +287,7 @@ def _compatibility_scope_matches(raw: Any, runtime_context: Optional[dict[str, s
 def _app_compatibility_entry(
     raw: Any,
     default_label: str,
-    runtime_context: Optional[dict[str, str]] = None,
+    runtime_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     if isinstance(raw, dict) and not _compatibility_scope_matches(raw, runtime_context):
         return {
@@ -335,7 +373,7 @@ def _exact_performance_agent_block(performance: Optional[dict[str, Any]]) -> dic
 def model_app_compatibility(
     model: dict[str, Any],
     performance: Optional[dict[str, Any]] = None,
-    runtime_context: Optional[dict[str, str]] = None,
+    runtime_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     raw = model.get("app_compatibility") if isinstance(model.get("app_compatibility"), dict) else {}
     hermes_talk = _app_compatibility_entry(raw.get("hermes_talk"), "ODS Talk untested", runtime_context)
@@ -371,7 +409,7 @@ def model_app_compatibility(
 def _agent_viability_entry(
     raw: Any,
     hermes_talk: dict[str, Any],
-    runtime_context: Optional[dict[str, str]] = None,
+    runtime_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     if raw:
         return _app_compatibility_entry(raw, "Agent viability untested", runtime_context)

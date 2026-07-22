@@ -431,6 +431,28 @@
       "tokens_per_sec_estimate": 115,
       "llm_model_name": "granite-4.1-3b",
       "llama_server_image": null,
+      "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-22T08:31Z on windows-laptop loaded Granite 4.1 3B and ODS Talk accepted the stream request, but the browser stayed in the Thinking state until the 180s inference timeout while dashboard-api reported repeated llama metrics read timeouts.",
+          "evidence": "fleet-test/runs/2026-07-22T08-31-37Z-release-product-52559816f964-harness-ef040aeb79ab-hosts-windows-laptop-strixy-m5-mbp/model-ui/cycle-003/windows-laptop",
+          "recordedAt": "2026-07-22T09:18:55Z",
+          "productSha": "52559816f964364a63bdbc000722dbbccefec4f9",
+          "harnessSha": "ef040aeb79ab1619e8d3d0c7da59baac150e95c6",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-08-22T00:00:00Z"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "The model loaded and routed through the browser-managed swap path on windows-laptop, but ODS Talk did not complete a user-facing answer within the release inference window; keep it out of agent-required release coverage on that host until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-22T08-31-37Z-release-product-52559816f964-harness-ef040aeb79ab-hosts-windows-laptop-strixy-m5-mbp/model-ui/cycle-003/windows-laptop",
+          "recordedAt": "2026-07-22T09:18:55Z",
+          "productSha": "52559816f964364a63bdbc000722dbbccefec4f9",
+          "harnessSha": "ef040aeb79ab1619e8d3d0c7da59baac150e95c6",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-08-22T00:00:00Z"
+        }
+      },
       "install_recommendation": false
     },
     {
