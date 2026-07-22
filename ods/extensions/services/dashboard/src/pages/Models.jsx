@@ -8,11 +8,9 @@ import {
   HardDrive,
   Library,
   Loader2,
-  PackageCheck,
   Play,
   RefreshCw,
   Search,
-  Sparkles,
   Trash2,
   X,
 } from 'lucide-react'
@@ -509,7 +507,7 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
       label: 'Installed',
       detail: 'Local files',
       count: installedCount,
-      icon: PackageCheck,
+      icon: HardDrive,
       tone: 'emerald',
     },
     {
@@ -517,7 +515,7 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
       label: 'ODS Recommended',
       detail: 'Curated catalog',
       count: recommendedCount,
-      icon: Sparkles,
+      image: '/osmantic-os-icon-192.png',
       tone: 'purple',
     },
     {
@@ -529,13 +527,48 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
       tone: 'amber',
     },
   ]
-  const tones = {
-    emerald: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200',
-    purple: 'border-theme-accent/35 bg-theme-accent/12 text-white',
-    amber: 'border-amber-300/30 bg-amber-300/8 text-amber-100',
+  const activeStyles = {
+    emerald: {
+      borderColor: 'rgba(52, 211, 153, 0.48)',
+      background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(76, 29, 149, 0.14))',
+      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), 0 0 28px rgba(16,185,129,0.1)',
+    },
+    purple: {
+      borderColor: 'rgba(184, 100, 255, 0.58)',
+      background: 'linear-gradient(135deg, rgba(126, 34, 206, 0.22), rgba(71, 25, 120, 0.16))',
+      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), 0 0 30px rgba(157,0,255,0.15)',
+    },
+    amber: {
+      borderColor: 'rgba(251, 191, 106, 0.72)',
+      background: 'linear-gradient(135deg, rgba(120, 53, 15, 0.2), rgba(126, 34, 206, 0.22))',
+      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1), 0 0 32px rgba(251,191,36,0.14)',
+    },
+  }
+  const iconStyles = {
+    emerald: 'border-emerald-300/20 bg-emerald-400/10 text-emerald-200',
+    purple: 'border-theme-accent/25 bg-theme-accent/10 text-theme-accent-light',
+    amber: 'border-amber-300/20 bg-amber-300/10 text-amber-100',
+  }
+  const indicatorStyles = {
+    emerald: 'bg-emerald-300 shadow-[0_0_10px_rgba(110,231,183,0.75)]',
+    purple: 'bg-theme-accent-light shadow-[0_0_10px_rgba(192,132,252,0.8)]',
+    amber: 'bg-amber-200 shadow-[0_0_12px_rgba(253,230,138,0.9)]',
   }
   return (
-    <div className="mb-4 grid gap-2 rounded-lg border border-white/[0.07] bg-black/15 p-1.5 sm:grid-cols-3" role="tablist" aria-label="Model sources">
+    <div
+      className="mb-5 grid gap-2.5 rounded-lg border p-2.5 sm:grid-cols-3 sm:p-3"
+      style={{
+        background: `
+          linear-gradient(135deg, rgba(12,10,22,0.96), rgba(25,12,38,0.9)),
+          repeating-linear-gradient(90deg, transparent 0 35px, rgba(255,255,255,0.022) 35px 36px),
+          repeating-linear-gradient(180deg, transparent 0 35px, rgba(255,255,255,0.02) 35px 36px)
+        `,
+        borderColor: 'rgba(190, 150, 255, 0.22)',
+        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 18px 50px rgba(0,0,0,0.22)',
+      }}
+      role="tablist"
+      aria-label="Model sources"
+    >
       {tabs.map(({ id, label, detail, count, icon: Icon, image, tone }) => {
         const active = value === id
         return (
@@ -545,14 +578,24 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
             role="tab"
             aria-selected={active}
             onClick={() => onChange(id)}
-            className={`flex min-h-14 items-center gap-3 rounded-md border px-3 text-left transition-colors ${active ? tones[tone] : 'border-transparent text-theme-text-muted hover:border-white/[0.07] hover:bg-white/[0.035] hover:text-theme-text'}`}
+            style={active ? activeStyles[tone] : undefined}
+            className={`group relative flex min-h-[86px] items-center gap-3 overflow-hidden rounded-lg border px-3.5 text-left transition-[border-color,background-color,box-shadow,transform] duration-200 sm:px-4 ${active ? 'text-theme-text' : 'border-white/[0.075] bg-black/20 text-theme-text-muted hover:-translate-y-px hover:border-white/[0.16] hover:bg-white/[0.035] hover:text-theme-text'}`}
           >
-            {image ? <img src={image} alt="" className="h-[19px] w-[19px] shrink-0 object-contain" /> : <Icon size={17} className="shrink-0" />}
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-semibold">{label}</span>
-              <span className="mt-0.5 block truncate text-[10px] opacity-65">{detail}</span>
+            <span className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ${iconStyles[tone]}`}>
+              {image
+                ? <img src={image} alt="" className={image === '/osmantic-os-icon-192.png' ? 'h-10 w-10 object-contain' : 'h-8 w-8 object-contain'} />
+                : <Icon size={27} strokeWidth={1.75} />}
             </span>
-            {count !== null && <span className="font-mono text-[11px] font-semibold opacity-80">{count}</span>}
+            <span className="min-w-0 flex-1">
+              <span className="block text-[13px] font-semibold leading-4 text-theme-text sm:text-[15px] sm:leading-5">{label}</span>
+              <span className={`mt-1 block truncate text-xs ${active && tone === 'amber' ? 'text-amber-200/80' : 'text-theme-text-muted/70'}`}>{detail}</span>
+            </span>
+            {count !== null && (
+              <span className="flex h-10 min-w-10 shrink-0 items-center justify-end border-l border-white/[0.07] pl-3 font-mono text-lg font-semibold text-theme-accent-light">
+                {count}
+              </span>
+            )}
+            {active && <span className={`absolute bottom-0 left-1/2 h-px w-10 -translate-x-1/2 ${indicatorStyles[tone]}`} />}
           </button>
         )
       })}
