@@ -43,6 +43,7 @@ from models import ModelLibraryGpu, ModelLibraryResponse
 from performance_oracle import (
     build_models_payload,
     build_sample_signature,
+    current_model_matches,
     find_catalog_model,
     load_model_catalog,
     model_files_dir,
@@ -79,6 +80,38 @@ _GPU_VRAM_EXCEPTIONS = (
     KeyError,
     AttributeError,
 )
+
+
+def _model_lifecycle_from_agent_status(status: Optional[dict]) -> Optional[dict[str, Any]]:
+    if not isinstance(status, dict):
+        return None
+    operation = status.get("activeOperation")
+    active = bool(status.get("lifecycleActive") or operation)
+    if not active or not isinstance(operation, str) or not operation:
+        return None
+    target = status.get("activeTarget")
+    model_id = status.get("activeModelId") or target
+    return {
+        "active": True,
+        "operation": operation,
+        "target": target,
+        "modelId": model_id,
+    }
+
+
+def _annotate_model_lifecycle(payload: dict[str, Any], lifecycle: Optional[dict[str, Any]]) -> None:
+    if not lifecycle:
+        return
+    payload["modelLifecycle"] = lifecycle
+    if lifecycle.get("operation") != "model_activation":
+        return
+    target = lifecycle.get("modelId") or lifecycle.get("target")
+    if not target:
+        return
+    for model in payload.get("models") or []:
+        if isinstance(model, dict) and current_model_matches(model, str(target), str(target)):
+            model["modelOperation"] = lifecycle
+            return
 
 
 def _configured_ods_mode() -> str:
@@ -349,7 +382,7 @@ def _format_size(size_mb: int) -> str:
 @router.get("/api/models", response_model=ModelLibraryResponse)
 async def list_models(api_key: str = Depends(verify_api_key)):
     """List model catalog entries with source-labelled performance metadata."""
-    gpu_info, loaded_model = await asyncio.gather(
+    gpu_info, loaded_model, agent_status = await asyncio.gather(
         asyncio.to_thread(get_gpu_info),
         _await_or_default(
             get_loaded_model(),
@@ -357,6 +390,7 @@ async def list_models(api_key: str = Depends(verify_api_key)):
             "loaded model",
             timeout_seconds=_MODEL_DISCOVERY_TIMEOUT_SECONDS,
         ),
+        asyncio.to_thread(_get_agent_model_status),
     )
     if not loaded_model:
         service = SERVICES.get("llama-server", {})
@@ -393,6 +427,10 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         catalog=_load_library(),
         downloaded_files_override=_scan_downloaded_models(),
     )
+    _annotate_model_lifecycle(
+        payload,
+        _model_lifecycle_from_agent_status(agent_status),
+    )
     if gpu_info and loaded_model and live_tps > 0:
         loaded_entry = next((m for m in payload["models"] if m["status"] == "loaded"), None) or {}
         signature = build_sample_signature(
@@ -427,9 +465,13 @@ async def list_models(api_key: str = Depends(verify_api_key)):
 def model_download_status(api_key: str = Depends(verify_api_key)):
     """Get current model download progress (if any)."""
     agent_status = _get_agent_model_status()
+    lifecycle = _model_lifecycle_from_agent_status(agent_status)
     if agent_status and agent_status.get("status") != "idle":
         if _is_cancelled_download_status(agent_status) or _is_stale_terminal_download_status(agent_status):
-            return _idle_download_status(last_terminal_status=agent_status)
+            idle_status = _idle_download_status(last_terminal_status=agent_status)
+            if lifecycle:
+                idle_status["modelLifecycle"] = lifecycle
+            return idle_status
         return agent_status
 
     status_path = Path(DATA_DIR) / "model-download-status.json"
@@ -439,7 +481,10 @@ def model_download_status(api_key: str = Depends(verify_api_key)):
             return _stale_bootstrap_download_status(bootstrap_status)
         bootstrap_info = get_bootstrap_status()
         if not bootstrap_info.active:
-            return {"status": "idle", "active": False, "isDownloading": False}
+            status = {"status": "idle", "active": False, "isDownloading": False}
+            if lifecycle:
+                status["modelLifecycle"] = lifecycle
+            return status
         return {
             "status": "downloading",
             "active": True,
@@ -454,10 +499,18 @@ def model_download_status(api_key: str = Depends(verify_api_key)):
     try:
         status = json.loads(status_path.read_text(encoding="utf-8"))
         if _is_cancelled_download_status(status) or _is_stale_terminal_download_status(status):
-            return _idle_download_status(last_terminal_status=status)
+            idle_status = _idle_download_status(last_terminal_status=status)
+            if lifecycle:
+                idle_status["modelLifecycle"] = lifecycle
+            return idle_status
+        if lifecycle:
+            status["modelLifecycle"] = lifecycle
         return status
     except (json.JSONDecodeError, OSError):
-        return {"status": "idle"}
+        status = {"status": "idle"}
+        if lifecycle:
+            status["modelLifecycle"] = lifecycle
+        return status
 
 
 def _idle_download_status(last_terminal_status: Optional[dict] = None) -> dict:
