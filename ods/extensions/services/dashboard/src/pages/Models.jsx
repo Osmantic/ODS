@@ -1055,7 +1055,7 @@ function getRunDisabledReason({
   if (isOpenAiChatBlocked(openAiChat)) {
     return openAiChat.reason || 'This model is not currently validated for direct local chat.'
   }
-  if (model.fitsVram !== true) {
+  if (model.fitsVram !== true && !model.recommended) {
     const required = Number(model.estimatedRequired || model.vramRequired || 0)
     const total = Number(gpu?.vramTotal || 0)
     if (required > 0 && total > 0) {

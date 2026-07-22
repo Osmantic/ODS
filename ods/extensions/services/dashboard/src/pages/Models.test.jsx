@@ -586,6 +586,28 @@ test('keeps Run visible with the VRAM requirement when the model does not fit', 
   expect(loadModel).not.toHaveBeenCalled()
 })
 
+test('allows the selected install model to run even when the VRAM estimate is high', () => {
+  const loadModel = vi.fn()
+  useModelsMock.mockReturnValue(baseState({
+    loadModel,
+    models: [model({
+      status: 'downloaded',
+      fitsVram: false,
+      vramRequired: 12,
+      recommended: true,
+    })],
+  }))
+
+  renderModels()
+
+  expect(screen.getByText('Selected install')).toBeInTheDocument()
+  const runButton = screen.getByRole('button', { name: /^run$/i })
+  expect(runButton).toBeEnabled()
+  expect(runButton).toHaveAttribute('title', 'Run Qwen 3.5 9B')
+  fireEvent.click(runButton)
+  expect(loadModel).toHaveBeenCalledWith('qwen3.5-9b-q4')
+})
+
 test('shows effective and configured runtime modes when they differ', () => {
   useModelsMock.mockReturnValue(baseState({
     odsMode: 'local',
