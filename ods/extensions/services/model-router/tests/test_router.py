@@ -497,17 +497,16 @@ class TestModelsAndEvidence:
         assert ev.status_code == 200
         assert ev.json()["responseModel"] == "Concrete.gguf"
 
-    @pytest.mark.parametrize("sse", [
-        b'data: {"model":"Wrong.gguf","choices":[]}\n\ndata: [DONE]\n\n',
-        b'data: {"choices":[{"delta":{"content":"no identity"}}]}\n\n'
-        b'data: [DONE]\n\n',
-    ])
-    def test_stream_without_matching_concrete_identity_records_no_evidence(
-            self, router, sse):
+    def test_stream_with_wrong_concrete_identity_records_no_evidence(
+            self, router):
         mod, client, write_state, calls = router
         write_state()
         probe_id = str(uuid.uuid4())
-        _set_stream_upstream(mod, [sse])
+        _set_stream_upstream(
+            mod,
+            [b'data: {"model":"Wrong.gguf","choices":[]}\n\n'
+             b'data: [DONE]\n\n'],
+        )
         resp = client.post("/v1/chat/completions", json={
             "model": "ods/current", "stream": True,
             "messages": [{"role": "user", "content": _signed_marker(probe_id)}],
@@ -518,6 +517,31 @@ class TestModelsAndEvidence:
             headers={"Authorization": "Bearer internal-secret"},
         )
         assert ev.status_code == 404
+
+    def test_completed_stream_without_identity_records_routed_evidence(
+            self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        probe_id = str(uuid.uuid4())
+        _set_stream_upstream(
+            mod,
+            [b'data: {"choices":[{"delta":{"content":"no identity"}}]}\n\n'
+             b'data: [DONE]\n\n'],
+        )
+        resp = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True,
+            "messages": [{"role": "user", "content": _signed_marker(probe_id)}],
+        })
+        assert resp.status_code == 200
+        ev = client.get(
+            f"/internal/route-evidence/{probe_id}",
+            headers={"Authorization": "Bearer internal-secret"},
+        )
+        assert ev.status_code == 200
+        record = ev.json()
+        assert record["requestedModel"] == "ods/current"
+        assert record["routedModel"] == "Concrete.gguf"
+        assert record["responseModel"] == "Concrete.gguf"
 
     def test_failed_stream_records_no_evidence_and_releases_admission(self, router):
         mod, client, write_state, calls = router

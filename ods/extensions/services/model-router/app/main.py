@@ -742,7 +742,6 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                         completed
                         and probe_id
                         and 200 <= upstream.status_code < 300
-                        and bool(rewriter.models)
                         and all(
                             model == route["runtimeModelId"]
                             for model in rewriter.models
