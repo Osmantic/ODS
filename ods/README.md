@@ -90,7 +90,7 @@ swap keeps the tier selector's chosen context for the full model. On capable
 tiers that may still be 128K; constrained tiers stay at the smaller selected
 context instead of being forced higher.
 
-Model download, switching, and manual GGUF notes: [docs/MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md)
+Curated and Hugging Face GGUF discovery, verified imports, switching, and recovery: [docs/MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md)
 
 To skip bootstrap and wait for the full model: `./install.sh --no-bootstrap`
 
@@ -361,7 +361,7 @@ ods preset load <name>  # Restore a saved preset
 ```
 
 Full mode-switching documentation: [docs/MODE-SWITCH.md](docs/MODE-SWITCH.md)
-Model download and manual GGUF documentation: [docs/MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md)
+Model discovery, verified Hugging Face imports, switching, and recovery: [docs/MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md)
 
 ## Showcase & Demos
 
@@ -458,7 +458,7 @@ ods mode                               # Show current mode
 - [BUILD-ON-ODS-SERVER.md](docs/BUILD-ON-ODS-SERVER.md) — Forking, custom editions, extension templates, and downstream validation
 - [QUICKSTART.md](QUICKSTART.md) — Detailed setup guide
 - [HEADLESS-SETUP.md](docs/HEADLESS-SETUP.md) — QR onboarding, first-boot setup, AP mode, mDNS, and local agent access
-- [MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md) — Dashboard model downloads, switching, and manual GGUF use
+- [MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md) — Curated and Hugging Face GGUF discovery, verified imports, switching, and recovery
 - [HARDWARE-GUIDE.md](docs/HARDWARE-GUIDE.md) — What to buy
 - [EXTENSIONS.md](docs/EXTENSIONS.md) — Add services, manifests, dashboard plugins
 - [INSTALLER-ARCHITECTURE.md](docs/INSTALLER-ARCHITECTURE.md) — Modding the installer

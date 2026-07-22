@@ -181,6 +181,85 @@ async def test_huggingface_get_retries_one_transient_transport_failure(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_huggingface_get_sends_token_only_as_bearer_header(monkeypatch):
+    import routers.models as models_router
+
+    seen_headers = []
+
+    class Response:
+        status_code = 200
+        headers = httpx.Headers()
+
+        @staticmethod
+        def json():
+            return {"id": "org/private-model"}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, _url, **kwargs):
+            seen_headers.append(kwargs["headers"])
+            return Response()
+
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "hf_private_read_token")
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", Client)
+
+    payload, _headers = await models_router._hf_get_json("/api/models/org/private-model")
+
+    assert payload == {"id": "org/private-model"}
+    assert seen_headers == [{
+        "User-Agent": "ODS-dashboard/2.5 model-library",
+        "Authorization": "Bearer hf_private_read_token",
+    }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status_code", "expected_status", "detail"), [
+    (401, 403, "accepted license and a valid HF_TOKEN"),
+    (403, 403, "accepted license and a valid HF_TOKEN"),
+    (429, 429, "rate limit reached"),
+])
+async def test_huggingface_get_maps_auth_and_rate_limit_failures(
+    monkeypatch, status_code, expected_status, detail,
+):
+    import routers.models as models_router
+
+    class Response:
+        headers = httpx.Headers()
+
+        def __init__(self):
+            self.status_code = status_code
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, _url, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", Client)
+
+    with pytest.raises(models_router.HTTPException) as exc_info:
+        await models_router._hf_get_json("/api/models/org/restricted-model")
+
+    assert exc_info.value.status_code == expected_status
+    assert detail in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
 async def test_huggingface_search_returns_stale_cache_on_transient_hub_failure(monkeypatch):
     import routers.models as models_router
 
@@ -511,6 +590,38 @@ def test_huggingface_import_retains_retry_state_after_agent_failure(
     second_registry = json.loads(registry_path.read_text(encoding="utf-8"))
     assert second_registry == first_registry
     assert attempts == 2
+
+
+@pytest.mark.parametrize("restricted_field", ["private", "gated"])
+def test_huggingface_restricted_import_requires_token_before_registry_write(
+    test_client, monkeypatch, tmp_path, restricted_field,
+):
+    import routers.models as models_router
+
+    details = _hf_import_details()
+    details[restricted_field] = True
+
+    async def fake_details(_repo_id):
+        return details
+
+    monkeypatch.setattr(models_router, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(models_router, "_hf_repo_details", fake_details)
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "")
+    monkeypatch.setattr(
+        models_router,
+        "_call_agent_model",
+        lambda *_args, **_kwargs: pytest.fail("host agent must not receive an unauthorized import"),
+    )
+
+    response = test_client.post(
+        "/api/models/huggingface/import",
+        headers=test_client.auth_headers,
+        json={"repoId": "org/repo", "artifactId": "d" * 20},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Private or gated repositories require HF_TOKEN"
+    assert not (tmp_path / "model-imports.json").exists()
 
 
 def test_huggingface_import_does_not_overwrite_corrupt_registry(

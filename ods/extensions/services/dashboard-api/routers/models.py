@@ -1079,8 +1079,11 @@ async def import_huggingface_model(
     artifact = next((item for item in details["artifacts"] if item["id"] == artifact_id), None)
     if artifact is None:
         raise HTTPException(status_code=409, detail="The selected GGUF artifact is no longer available at this revision")
-    if details["private"] and not _hf_token():
-        raise HTTPException(status_code=403, detail="Private repositories require HF_TOKEN")
+    if (details.get("private") or details.get("gated")) and not _hf_token():
+        raise HTTPException(
+            status_code=403,
+            detail="Private or gated repositories require HF_TOKEN",
+        )
     record = _hf_import_record(details, artifact)
 
     bootstrap_conflict = _bootstrap_upgrade_download_conflict()

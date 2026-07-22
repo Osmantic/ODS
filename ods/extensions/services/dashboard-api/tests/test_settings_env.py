@@ -111,6 +111,8 @@ def settings_env_fixture(tmp_path, monkeypatch):
         "install_root": install_root,
         "data_root": data_root,
         "env_path": env_path,
+        "example_path": example_path,
+        "schema_path": schema_path,
     }
 
 
@@ -129,6 +131,74 @@ def test_api_settings_env_masks_secret_values(test_client, settings_env_fixture)
     assert payload["values"]["LLM_BACKEND"] == "local"
     assert payload["fields"]["LLM_BACKEND"]["value"] == "local"
     assert payload["agentAvailable"] is True
+
+
+def test_api_settings_env_masks_saves_and_live_reads_hf_token(
+    test_client, settings_env_fixture,
+):
+    env_path = settings_env_fixture["env_path"]
+    example_path = settings_env_fixture["example_path"]
+    schema_path = settings_env_fixture["schema_path"]
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8") + "HF_TOKEN=hf_existing_read_token\n",
+        encoding="utf-8",
+    )
+    example_path.write_text(
+        example_path.read_text(encoding="utf-8")
+        + "# ════════════════════════════════\n"
+        + "# Provider and Hub Credentials\n"
+        + "# ════════════════════════════════\n"
+        + "HF_TOKEN=\n",
+        encoding="utf-8",
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema["properties"]["HF_TOKEN"] = {
+        "type": "string",
+        "description": "Optional read token for private or gated Hugging Face repositories.",
+        "secret": True,
+    }
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+
+    read_response = test_client.get(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+    )
+
+    assert read_response.status_code == 200
+    read_payload = read_response.json()
+    assert read_payload["values"]["HF_TOKEN"] == ""
+    assert read_payload["fields"]["HF_TOKEN"]["value"] == ""
+    assert read_payload["fields"]["HF_TOKEN"]["hasValue"] is True
+    assert read_payload["fields"]["HF_TOKEN"]["secret"] is True
+    credentials = next(
+        section
+        for section in read_payload["sections"]
+        if section["title"] == "Provider and Hub Credentials"
+    )
+    assert "HF_TOKEN" in credentials["keys"]
+
+    save_response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={"mode": "form", "values": {"HF_TOKEN": "hf_replaced_read_token"}},
+    )
+
+    assert save_response.status_code == 200
+    save_payload = save_response.json()
+    assert "HF_TOKEN=hf_replaced_read_token" in env_path.read_text(encoding="utf-8")
+    assert save_payload["values"]["HF_TOKEN"] == ""
+    assert save_payload["fields"]["HF_TOKEN"]["hasValue"] is True
+    assert save_payload["applyPlan"]["status"] == "none"
+    assert save_payload["applyPlan"]["services"] == []
+
+    preserve_response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={"mode": "form", "values": {"HF_TOKEN": ""}},
+    )
+
+    assert preserve_response.status_code == 200
+    assert "HF_TOKEN=hf_replaced_read_token" in env_path.read_text(encoding="utf-8")
 
 
 def test_api_settings_env_marks_runtime_mode_read_only(test_client, settings_env_fixture):

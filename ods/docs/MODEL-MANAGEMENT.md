@@ -49,11 +49,25 @@ Public repositories require no configuration. For a private or gated
 repository, accept its upstream license first and set `HF_TOKEN` in `.env` or
 in the Dashboard environment editor. The token is read at request time, is
 never returned to the browser, and is not written into the import registry.
+In **Settings → Environment Editor**, the field is under **Provider and Hub
+Credentials**. A stored token is shown only as a masked placeholder; leaving
+the field blank preserves the existing value. Saving a replacement does not
+restart the stack because dashboard-api and the host agent read the mounted
+`.env` when each Hub request or fallback download starts.
+
+Cancelling a download stops the active transfer and removes job-only temporary
+files. Any previously verified shards remain available for a later retry. A
+retry re-reads the immutable Hub revision and verifies every retained or newly
+downloaded file before the model can become installed. An incomplete or
+cancelled transfer is never eligible for activation.
 
 Imported metadata is stored separately in `data/model-imports.json`, so a
 source update or installer rerun does not modify `config/model-library.json` or
 discard community imports. Deleting a downloaded file keeps the import record,
 allowing the same pinned artifact to be downloaded again.
+The registry and completed model files are also independent of dashboard-api
+and host-agent process lifetime: restarting either service reloads the same
+pinned records and on-disk artifacts.
 
 When a catalog model is loaded, ODS updates the active GGUF settings
 and restarts the local inference service so OpenAI-compatible clients use the

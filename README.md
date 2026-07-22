@@ -428,7 +428,7 @@ Other tools get you part of the way. ODS gets you the whole way.
 | [Validation Reproducibility](ods/docs/VALIDATION_REPRODUCIBILITY.md) | How forks and operators can reproduce the validation story on their own hardware |
 | [Offline And Mirroring](ods/docs/OFFLINE_AND_MIRRORING.md) | Pinning, mirroring, and preserving release artifacts for independent operation |
 | [Installer Trust](ods/docs/INSTALLER_TRUST.md) | Inspect-first install paths, ref pinning, and current provenance limits |
-| [Model Management](ods/docs/MODEL-MANAGEMENT.md) | Dashboard model downloads, switching, and manual GGUF workflows |
+| [Model Management](ods/docs/MODEL-MANAGEMENT.md) | Curated and Hugging Face GGUF discovery, verified imports, switching, and recovery |
 | [Hardware Guide](ods/docs/HARDWARE-GUIDE.md) | What to buy, tier recommendations |
 | [FAQ](ods/FAQ.md) | Common questions and configuration |
 | [Extensions](ods/docs/EXTENSIONS.md) | How to add custom services |

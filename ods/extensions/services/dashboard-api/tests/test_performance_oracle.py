@@ -1044,6 +1044,14 @@ def test_official_catalog_families_expose_their_real_hugging_face_identity():
         }
 
 
+def test_publisher_identity_does_not_match_family_substrings_inside_other_words():
+    assert model_publisher({"name": "Dolphin 2.9 Mixtral 8x7B"}) == {
+        "name": "Mistral AI",
+        "huggingFaceAuthor": "mistralai",
+    }
+    assert model_publisher({"name": "OpenPhind Code Model"}) is None
+
+
 def test_calibrated_prediction_above_single_request_ceiling_requires_benchmark(data_dir):
     record_model_performance(
         "calibration-model",

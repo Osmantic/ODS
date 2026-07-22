@@ -128,7 +128,7 @@ canonical source and treat older recipes as context.
 | [HARDWARE-GUIDE.md](HARDWARE-GUIDE.md) | Buyers | GPU buying advice, tier recommendations |
 | [HARDWARE-CLASSES.md](HARDWARE-CLASSES.md) | Developers | GPU-to-tier classification logic |
 | [SUPPORT-MATRIX.md](SUPPORT-MATRIX.md) | Operators | Platform/GPU support status |
-| [MODEL-MANAGEMENT.md](MODEL-MANAGEMENT.md) | Operators | Dashboard model downloads, switching, and manual GGUF workflows |
+| [MODEL-MANAGEMENT.md](MODEL-MANAGEMENT.md) | Operators | Curated and Hugging Face GGUF discovery, verified imports, switching, and recovery |
 | [MODEL-SWITCHBOARD.md](MODEL-SWITCHBOARD.md) | Contributors | Model Switchboard architecture, PR series plan, state/route contracts, and rollout gates |
 | [CAPABILITY-PROFILE.md](CAPABILITY-PROFILE.md) | Developers | Machine capability profiling schema |
 | [MULTI-USER-SETUP.md](MULTI-USER-SETUP.md) | Operators | Expose and tune one install for multiple users |

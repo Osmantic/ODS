@@ -67,8 +67,14 @@ def model_publisher(model: dict[str, Any]) -> dict[str, str] | None:
     identity = normalize_key(" ".join(
         str(model.get(key) or "") for key in ("id", "name", "llm_model_name")
     ))
+    identity_tokens = identity.split("-")
     for family_markers, name, author in _MODEL_PUBLISHERS:
-        if any(marker in identity for marker in family_markers):
+        if any(
+            token == marker
+            or (token.startswith(marker) and token[len(marker):len(marker) + 1].isdigit())
+            for marker in family_markers
+            for token in identity_tokens
+        ):
             return {"name": name, "huggingFaceAuthor": author}
     source_repo = str(model.get("source_repo") or "")
     if "/" in source_repo:

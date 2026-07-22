@@ -4958,6 +4958,11 @@ class TestModelDownloadFileIntegrity:
             library_models=[model],
             expected_payload=payload,
         )
+        (install_dir / ".env").write_text(
+            "HF_TOKEN=hf_persisted_read_token\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("HF_TOKEN", raising=False)
         monkeypatch.delenv("HF_HUB_ETAG_TIMEOUT", raising=False)
         monkeypatch.delenv("HF_HUB_DOWNLOAD_TIMEOUT", raising=False)
         child_envs = []
@@ -5002,6 +5007,7 @@ class TestModelDownloadFileIntegrity:
         assert error == ""
         assert child_envs[0]["HF_HUB_ETAG_TIMEOUT"] == "30"
         assert child_envs[0]["HF_HUB_DOWNLOAD_TIMEOUT"] == "30"
+        assert child_envs[0]["HF_TOKEN"] == "hf_persisted_read_token"
         status = json.loads(status_path.read_text(encoding="utf-8"))
         assert status["status"] == "downloading"
         assert status["model"] == "hf-model.gguf"
