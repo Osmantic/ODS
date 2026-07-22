@@ -80,7 +80,9 @@ function Write-Utf8NoBom {
         Write-AIWarn "Removed malformed $Path directory from a previous partial install."
     }
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+    $tmpPath = "$Path.$PID.tmp"
+    [System.IO.File]::WriteAllText($tmpPath, $Content, $utf8NoBom)
+    Move-Item -LiteralPath $tmpPath -Destination $Path -Force
 }
 
 function Write-WindowsODSLemonadeLiteLlmConfig {
