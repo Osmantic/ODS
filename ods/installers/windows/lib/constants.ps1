@@ -31,7 +31,7 @@ $script:LEMONADE_VERSION     = "10.0.0"
 $script:LEMONADE_MSI_FILE    = "lemonade-server-minimal.msi"
 $script:LEMONADE_MSI_URL     = "https://github.com/lemonade-sdk/lemonade/releases/download/v$($script:LEMONADE_VERSION)/$($script:LEMONADE_MSI_FILE)"
 # Default path; install-windows.ps1 resolves both Program Files roots at runtime.
-$script:ODS_PROGRAM_FILES    = $(if ($env:ProgramFiles) { $env:ProgramFiles } else { "C:\Program Files" })
+$script:ODS_PROGRAM_FILES    = $(if ($env:ProgramFiles) { $env:ProgramFiles } else { $script:ODS_TEMP_DIR })
 $script:LEMONADE_INSTALL_DIR = Join-Path $script:ODS_PROGRAM_FILES "Lemonade Server"
 $script:LEMONADE_EXE         = Join-Path (Join-Path $script:LEMONADE_INSTALL_DIR "bin") "lemonade-server.exe"
 $script:LEMONADE_PORT        = 8080
