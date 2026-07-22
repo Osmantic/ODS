@@ -109,7 +109,53 @@ Which harnesses make sense fully local:
 | `claude-sdk` / `claude-native` | Partly | Best with Anthropic keys or a Claude subscription; local via gateway is possible but harness features assume Claude models |
 | `cursor`, `pi` | Cloud-leaning | Expect their own accounts/keys |
 
-## 4. Policies
+## 4. Multi-agent orchestration (needs a frontier brain)
+
+Omnigent can run an *orchestrator* agent that decomposes a goal and
+delegates each piece to coding sub-agents — the multi-agent use case.
+On ODS there is one hard rule, verified the hard way:
+
+**The orchestrator brain cannot be a local model.** Small local models
+(tested on Qwen3.5-9B) do not reliably drive the sub-agent dispatch
+tools — they either answer conversationally or *hallucinate* a
+delegation (emit a convincing "worker dispatched…" narration while
+doing the work themselves, spawning no child session). Orchestration
+depends on strong tool-use the local tier doesn't have. This is why the
+bundled orchestrators (`polly`, `debby`) hardcode a `claude-sdk` brain.
+
+**The working pattern is a frontier brain + local workers.** Point the
+orchestrator's brain at a frontier model (a Claude subscription or API
+key via `omnigent setup`) and let its coding sub-agents run `opencode`
+against ODS's local llama-server. Verified end-to-end on ODS: `polly`
+(brain on a Claude subscription) dispatched a child session to an
+`opencode` worker running on the local model, which wrote and ran the
+code — confirmed by a distinct `child_sessions` dispatch in the runner
+logs, a real `opencode serve` worker process, and the file it produced.
+
+```bash
+omnigent setup                 # configure a Claude subscription/key for the brain
+omnigent polly -p "…your task…" --server http://localhost:6767
+```
+
+Practical notes from that run:
+
+- **Use the bundled orchestrators, don't hand-roll one.** A bare
+  `spawn: true` agent without polly's dispatch scaffolding does *not*
+  delegate — it silently does the work in the brain. `polly` /`debby`
+  carry the machinery; start from them.
+- **Install the harness CLIs you want delegated to.** `polly` runs a
+  roster preflight and only dispatches to harnesses whose CLI is on
+  PATH. A stock ODS host has `opencode` (and `claude` if installed);
+  `codex`, `cursor`, `hermes`, and `pi` need installing for
+  cross-vendor review to reach them.
+- Local workers still need the [runner prerequisites](#2-install-a-runner-on-the-host)
+  (tmux, the OpenCode version pin).
+
+Bottom line: single-agent coding sessions run great fully local;
+multi-agent orchestration is a **hybrid-mode** capability — frontier
+brain, local hands.
+
+## 5. Policies
 
 Omnigent policies are **stateful and enforced in code**, not prompts:
 spend budgets that pause an agent at a threshold, permission rules,
