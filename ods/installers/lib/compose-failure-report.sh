@@ -99,9 +99,10 @@ write_compose_failure_report() {
 
     mkdir -p "$install_dir" "$install_dir/logs" 2>/dev/null || true
 
-    local stamp report env_file compose_flags_file
+    local stamp report tmp_report env_file compose_flags_file
     stamp="$(date '+%Y-%m-%d-%H%M%S')"
     report="$install_dir/install-report-${stamp}.txt"
+    tmp_report="$(mktemp "${report}.tmp.XXXXXX")"
     env_file="$install_dir/.env"
     compose_flags_file="$install_dir/.compose-flags"
     local report_compose_flags="${COMPOSE_FLAGS_REPORT:-${COMPOSE_FLAGS:-}}"
@@ -176,7 +177,8 @@ write_compose_failure_report() {
         else
             echo "installer log unavailable"
         fi
-    } > "$report" 2>&1
+    } > "$tmp_report" 2>&1
+    mv -f "$tmp_report" "$report"
 
     if command -v ai_warn >/dev/null 2>&1; then
         ai_warn "Compose failure report saved: $report"
