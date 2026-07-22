@@ -9924,7 +9924,7 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
             cwd=str(INSTALL_DIR),
             **popen_kwargs,
         )
-    pid_file.write_text(str(proc.pid), encoding="utf-8")
+    _atomic_write_text(pid_file, f"{proc.pid}\n")
     logger.info("Native llama-server launched (pid %d, model %s)", proc.pid, gguf_file)
 
 
@@ -10540,7 +10540,7 @@ def main():
 
     if args.pid_file:
         pid_path = Path(args.pid_file)
-        pid_path.write_text(str(os.getpid()), encoding="utf-8")
+        _atomic_write_text(pid_path, f"{os.getpid()}\n")
         atexit.register(lambda: pid_path.unlink(missing_ok=True))
 
     # Determine bind address: explicit env override, or a platform-aware safe
