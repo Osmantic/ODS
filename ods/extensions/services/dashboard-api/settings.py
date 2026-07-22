@@ -60,6 +60,11 @@ _MANUAL_RESTART_KEYS = {
     "DASHBOARD_API_KEY", "ODS_AGENT_KEY", "DASHBOARD_PORT",
     "DASHBOARD_API_PORT", "ODS_AGENT_PORT", "ODS_AGENT_HOST",
 }
+_LIVE_READ_ENV_KEYS = {
+    # Read directly from the bind-mounted .env on each Hub request and host
+    # agent fallback, so recreating services would only add downtime.
+    "HF_TOKEN",
+}
 _READ_ONLY_ENV_FIELDS = {
     "ODS_MODE": "Runtime mode is selected by the installer and cannot be changed from the dashboard.",
     "TIER": "The active tier is managed by Model Manager so model consumers stay synchronized.",
@@ -448,6 +453,8 @@ def _compute_env_apply_plan(
         return False
 
     for key in changed_keys:
+        if key in _LIVE_READ_ENV_KEYS:
+            continue
         if key == "EMBEDDING_MODEL":
             schedule("embeddings")
             if open_webui_inherits_embedding_model:
@@ -477,7 +484,7 @@ def _compute_env_apply_plan(
     services_list = sorted(services)
     inactive_list = sorted(inactive_services)
     manual_list = sorted(set(manual_keys))
-    if not changed_keys:
+    if not changed_keys or (not services_list and not manual_list):
         status = "none"
     elif services_list and (manual_list or inactive_list):
         status = "partial"

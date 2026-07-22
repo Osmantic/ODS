@@ -153,6 +153,19 @@ def test_dashboard_csp_allows_ods_talk_tts_blob_audio() -> None:
     assert_true("media-src 'self' blob:" in nginx_conf, "ODS Talk TTS playback uses blob: audio URLs")
 
 
+def test_dashboard_csp_allows_huggingface_author_avatars_only_as_images() -> None:
+    nginx_conf = read(SERVICES / "dashboard" / "nginx.conf")
+
+    assert_true(
+        "img-src 'self' data: https://huggingface.co https://cdn-avatars.huggingface.co;" in nginx_conf,
+        "the Models library renders Hugging Face author avatars",
+    )
+    assert_true(
+        "connect-src 'self';" in nginx_conf,
+        "Hub API access must remain server-side instead of exposing HF_TOKEN to the browser",
+    )
+
+
 def test_ods_proxy_caps_request_body_sizes() -> None:
     caddyfile = read(SERVICES / "ods-proxy" / "Caddyfile")
 

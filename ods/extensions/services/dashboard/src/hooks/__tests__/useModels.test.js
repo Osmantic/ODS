@@ -23,6 +23,9 @@ const modelsResponse = (models, overrides = {}) => ({
     models,
     gpu: null,
     currentModel: null,
+    activationReadyModel: Object.prototype.hasOwnProperty.call(overrides, 'activationReadyModel')
+      ? overrides.activationReadyModel
+      : (overrides.currentModel ?? null),
     odsMode: 'local',
     configuredMode: 'local',
     ...overrides,
@@ -242,6 +245,49 @@ describe('useModels', () => {
         await vi.advanceTimersByTimeAsync(5000)
         await loadPromise
       })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test('keeps activation pending until downstream synchronization is receipted', async () => {
+    vi.useFakeTimers()
+    const target = 'qwen-model'
+    let currentModel = null
+    let activationReadyModel = null
+    fetch.mockImplementation((_url, options) => {
+      if (options?.method === 'POST') {
+        currentModel = target
+        return Promise.resolve({ ok: true })
+      }
+      return Promise.resolve(modelsResponse(
+        [{ id: target, status: currentModel ? 'loaded' : 'downloaded' }],
+        { currentModel, activationReadyModel }
+      ))
+    })
+
+    try {
+      const { result } = renderHook(() => useModels())
+      await act(async () => {})
+
+      let loadPromise
+      act(() => {
+        loadPromise = result.current.loadModel(target)
+      })
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(result.current.currentModel).toBe(target)
+      expect(result.current.activationReadyModel).toBeNull()
+      expect(result.current.actionLoading).toBe(target)
+
+      activationReadyModel = target
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+        await loadPromise
+      })
+      expect(result.current.activationReadyModel).toBe(target)
+      expect(result.current.actionLoading).toBeNull()
+      expect(result.current.error).toBeNull()
     } finally {
       vi.useRealTimers()
     }

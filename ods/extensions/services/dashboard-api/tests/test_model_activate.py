@@ -213,6 +213,42 @@ class TestCheckLemonadeHealth:
             131072,
         ) is True
 
+    def test_legacy_health_matching_loaded_row_without_context_is_not_a_false_red(self):
+        body = json.dumps({
+            "status": "ok",
+            "version": "10.0.0",
+            "model_loaded": "extra.Model.gguf",
+            "all_models_loaded": [{
+                "model_name": "extra.Model.gguf",
+                "checkpoint": r"C:\ods\data\models\Model.gguf",
+                "recipe_options": {"llamacpp_backend": "vulkan"},
+            }],
+        })
+        assert _check_lemonade_health(
+            body,
+            "Model.gguf",
+            "extra.Model.gguf",
+            8192,
+        ) is True
+
+    def test_modern_health_matching_loaded_row_without_context_is_rejected(self):
+        body = json.dumps({
+            "status": "ok",
+            "version": "10.7.0",
+            "model_loaded": "Model",
+            "all_models_loaded": [{
+                "model_name": "Model",
+                "checkpoint": r"C:\ods\data\models\Model.gguf",
+                "recipe_options": {"llamacpp_backend": "vulkan"},
+            }],
+        })
+        assert _check_lemonade_health(
+            body,
+            "Model.gguf",
+            "Model",
+            8192,
+        ) is False
+
     def test_legacy_health_with_loaded_list_requires_matching_row(self):
         body = json.dumps({
             "status": "ok",
@@ -4066,6 +4102,17 @@ class TestModelActivateRollback:
         assert receipt["context_length"] == 2048
         assert receipt["consumers"]["dashboard"] == "live_env"
         assert receipt["consumers"]["open-webui"] == "dynamic_route"
+        completion_receipt = json.loads(
+            (install_dir / "data" / "model-activation-receipt.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert completion_receipt["schema"] == "ods.model-activation-receipt.v1"
+        assert completion_receipt["status"] == "complete"
+        assert completion_receipt["modelId"] == "target-model"
+        assert completion_receipt["ggufFile"] == "new-model.gguf"
+        assert completion_receipt["runtimeModelId"] == "new-model.gguf"
+        assert completion_receipt["consumers"] == receipt["consumers"]
         env = _mod.load_env(env_path)
         assert env["TIER"] == "0"
         assert env["CTX_SIZE"] == "2048"
@@ -4364,6 +4411,16 @@ class TestModelActivateRollback:
         )
         hermes_live.write_text(old_config, encoding="utf-8")
         hermes_template.write_text(old_config, encoding="utf-8")
+        completion_receipt = install_dir / "data" / "model-activation-receipt.json"
+        old_receipt = {
+            "schema": "ods.model-activation-receipt.v1",
+            "status": "complete",
+            "modelId": "old-model",
+            "ggufFile": "old-model.gguf",
+            "runtimeModelId": "old-model.gguf",
+            "consumers": {"hermes": "restarted"},
+        }
+        completion_receipt.write_text(json.dumps(old_receipt), encoding="utf-8")
         states = {
             "ods-litellm": {"exists": False, "running": False},
             "ods-hermes": {"exists": True, "running": True},
@@ -4412,6 +4469,7 @@ class TestModelActivateRollback:
         assert health_checks == 2
         assert env_path.read_text(encoding="utf-8") == env_text
         assert hermes_live.read_text(encoding="utf-8") == old_config
+        assert json.loads(completion_receipt.read_text(encoding="utf-8")) == old_receipt
 
     def test_runtime_profile_cannot_exceed_requested_tier_context(
         self, tmp_path, monkeypatch,

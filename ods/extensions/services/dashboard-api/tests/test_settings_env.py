@@ -922,6 +922,18 @@ def test_settings_validation_allows_external_model_override():
     )
 
     assert _validate_env_values(values, fields) == []
+def test_settings_apply_plan_treats_hf_token_as_live_read():
+    from settings import _compute_env_apply_plan
+
+    plan = _compute_env_apply_plan(
+        {"HF_TOKEN": "hf_old_token"},
+        {"HF_TOKEN": "hf_new_token"},
+    )
+
+    assert plan["status"] == "none"
+    assert plan["services"] == []
+    assert plan["manualKeys"] == []
+    assert plan["summary"] == "No service recreation is required for the saved keys."
 
 
 # --- Render round-trip fidelity ---

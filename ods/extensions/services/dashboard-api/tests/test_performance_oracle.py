@@ -10,6 +10,7 @@ from performance_oracle import (
     load_evidence,
     model_compatibility_runtime_context,
     model_app_compatibility,
+    model_publisher,
     rank_pre_download_models,
 )
 
@@ -938,6 +939,27 @@ def test_measured_local_from_live_loaded_model(data_dir, tmp_path):
     assert loaded["tokensPerSec"] == 41.8
 
 
+def test_implausible_live_counter_is_not_emitted_as_measured_speed(data_dir, tmp_path):
+    install_dir = tmp_path / "ods"
+    (install_dir / "data" / "models").mkdir(parents=True)
+
+    payload = build_models_payload(
+        _gpu(),
+        "qwen3.5-9b",
+        1_000_000,
+        install_dir,
+        data_dir,
+        context_length=32768,
+        catalog=[_model()],
+        evidence=[],
+    )
+
+    loaded = payload["models"][0]
+    assert loaded["status"] == "loaded"
+    assert loaded["performance"]["source"] == "benchmark_required"
+    assert loaded["tokensPerSec"] is None
+
+
 def test_predicted_calibrated_requires_local_sample(data_dir, tmp_path):
     record_model_performance(
         "qwen3.5-4b",
@@ -968,6 +990,82 @@ def test_predicted_calibrated_requires_local_sample(data_dir, tmp_path):
     assert perf["source"] == "predicted_calibrated"
     assert perf["tokensPerSec"] is not None
     assert perf["confidence"] == "low"
+
+
+def test_polluted_history_is_ignored_in_favor_of_a_valid_exact_alias(
+    data_dir, tmp_path, monkeypatch,
+):
+    import performance_oracle
+
+    samples = iter([
+        {"tokens_per_second": 1_000_000, "sample_count": 336},
+        {"tokens_per_second": 240.5, "sample_count": 1},
+    ])
+    monkeypatch.setattr(
+        performance_oracle,
+        "get_recorded_model_performance",
+        lambda *args, **kwargs: next(samples, None),
+    )
+    install_dir = tmp_path / "ods"
+    (install_dir / "data" / "models").mkdir(parents=True)
+
+    payload = build_models_payload(
+        _gpu(),
+        None,
+        0,
+        install_dir,
+        data_dir,
+        context_length=32768,
+        catalog=[_model()],
+        evidence=[],
+    )
+
+    assert payload["models"][0]["performance"]["source"] == "measured_local"
+    assert payload["models"][0]["tokensPerSec"] == 240.5
+
+
+def test_official_catalog_families_expose_their_real_hugging_face_identity():
+    cases = {
+        "Qwen 3.5 2B": ("Qwen", "Qwen"),
+        "Phi-4 Mini": ("Microsoft", "microsoft"),
+        "Granite 3.3 2B": ("IBM Granite", "ibm-granite"),
+        "SmolLM3 3B": ("Hugging Face", "HuggingFaceTB"),
+        "Gemma 3 4B": ("Google", "google"),
+        "Falcon H1 7B": ("Technology Innovation Institute", "tiiuae"),
+        "Ministral 3B": ("Mistral AI", "mistralai"),
+        "Llama 3.2 3B": ("Meta", "meta-llama"),
+        "DeepSeek R1 7B": ("DeepSeek", "deepseek-ai"),
+    }
+
+    for name, (publisher, author) in cases.items():
+        assert model_publisher({"name": name}) == {
+            "name": publisher,
+            "huggingFaceAuthor": author,
+        }
+
+
+def test_calibrated_prediction_above_single_request_ceiling_requires_benchmark(data_dir):
+    record_model_performance(
+        "calibration-model",
+        "NVIDIA GeForce RTX 4060",
+        "nvidia",
+        5_000,
+        decode_read_mb=10_000,
+        vram_total_mb=8192,
+    )
+    performance = evaluate_performance(
+        {**_model(), "decode_read_mb": 1},
+        _gpu(),
+        {"quantization": "Q4_K_M", "readable": False},
+        False,
+        0,
+        32768,
+        {},
+        [],
+        True,
+    )
+
+    assert performance["source"] == "benchmark_required"
 
 
 def test_published_exact_requires_matching_signature(data_dir):

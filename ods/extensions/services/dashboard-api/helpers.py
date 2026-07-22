@@ -186,6 +186,7 @@ async def _check_host_systemd_health(service_id: str, config: dict) -> ServiceSt
 
 _TOKEN_FILE = Path(DATA_DIR) / "token_counter.json"
 _PERF_FILE = Path(DATA_DIR) / "model_performance.json"
+MAX_SINGLE_REQUEST_TOKENS_PER_SECOND = 10_000.0
 _prev_tokens = {"count": 0, "time": 0.0, "tps": 0.0}
 _token_counter_lock = threading.Lock()
 
@@ -228,6 +229,15 @@ def _non_negative_number(value) -> float:
 
 def _normalize_perf_key(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+
+
+def is_plausible_single_request_tps(value) -> bool:
+    """Validate interactive single-request decode throughput, not batched capacity."""
+    try:
+        tokens_per_second = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(tokens_per_second) and 0 < tokens_per_second <= MAX_SINGLE_REQUEST_TOKENS_PER_SECOND
 
 
 def _read_json_file(path: Path, default):
@@ -306,7 +316,8 @@ def record_model_performance(
         tps = float(tokens_per_second)
     except (TypeError, ValueError):
         return
-    if tps <= 0:
+    if not is_plausible_single_request_tps(tps):
+        logger.warning("Ignoring implausible single-request throughput sample: %s tok/s", tps)
         return
 
     data = _read_json_file(_PERF_FILE, {"schema_version": "ods.model-performance.v1", "samples": {}})
@@ -315,6 +326,9 @@ def record_model_performance(
     previous = samples.get(key, {})
     previous_avg = float(previous.get("tokens_per_second", tps))
     previous_count = int(previous.get("sample_count", 0))
+    if not is_plausible_single_request_tps(previous_avg):
+        previous_avg = tps
+        previous_count = 0
     avg = (previous_avg * 0.8) + (tps * 0.2) if previous_count else tps
     samples[key] = {
         "model": model_name,
@@ -407,7 +421,11 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
                 tokens_per_second = float(stats.get("tokens_per_second") or 0)
             except (TypeError, ValueError):
                 tokens_per_second = 0.0
-            if not math.isfinite(tokens_per_second):
+            if tokens_per_second and not is_plausible_single_request_tps(tokens_per_second):
+                logger.warning(
+                    "Ignoring implausible Lemonade single-request throughput: %s tok/s",
+                    tokens_per_second,
+                )
                 tokens_per_second = 0.0
             output_tokens = int(_non_negative_number(stats.get("output_tokens")))
             return {

@@ -5,16 +5,538 @@ from __future__ import annotations
 import importlib
 import asyncio
 import json
+import os
 import sys
 import threading
 import time
 import types
+import httpx
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock
 
 import pytest
 
 from models import BootstrapStatus, GPUInfo
+
+
+def _hf_sibling(filename: str, size: int, sha: str) -> dict:
+    return {
+        "rfilename": filename,
+        "size": size,
+        "lfs": {"size": size, "sha256": sha},
+    }
+
+
+def test_huggingface_artifacts_group_complete_shards_and_require_integrity():
+    import routers.models as models_router
+
+    sha_a = "a" * 64
+    sha_b = "b" * 64
+    payload = {
+        "siblings": [
+            _hf_sibling("model-Q4_K_M.gguf", 1024, sha_a),
+            _hf_sibling("model-Q5_K_M-00001-of-00002.gguf", 2048, sha_a),
+            _hf_sibling("model-Q5_K_M-00002-of-00002.gguf", 4096, sha_b),
+            _hf_sibling("broken-Q6_K-00001-of-00002.gguf", 2048, sha_a),
+            _hf_sibling("mmproj-model-f16.gguf", 512, sha_a),
+            _hf_sibling("vision-projector.gguf", 512, sha_a),
+            _hf_sibling("model-lora-Q8_0.gguf", 512, sha_a),
+            {"rfilename": "missing-integrity.gguf", "size": 100},
+            _hf_sibling("config.json", 200, sha_a),
+        ],
+    }
+
+    artifacts = models_router._hf_gguf_artifacts(payload)
+
+    assert len(artifacts) == 2
+    assert artifacts[0]["label"] == "model-Q4_K_M.gguf"
+    assert artifacts[0]["quantization"] == "Q4_K_M"
+    assert artifacts[1]["split"] is True
+    assert artifacts[1]["sizeBytes"] == 6144
+    assert [item["filename"] for item in artifacts[1]["files"]] == [
+        "model-Q5_K_M-00001-of-00002.gguf",
+        "model-Q5_K_M-00002-of-00002.gguf",
+    ]
+
+
+def test_huggingface_split_artifacts_do_not_mix_matching_nested_directories():
+    import routers.models as models_router
+
+    payload = {
+        "siblings": [
+            _hf_sibling(f"{folder}/model-Q4-0000{part}-of-00002.gguf", 1024, char * 64)
+            for folder, char in (("one", "a"), ("two", "b"))
+            for part in (1, 2)
+        ],
+    }
+
+    artifacts = models_router._hf_gguf_artifacts(payload)
+
+    assert [artifact["label"] for artifact in artifacts] == [
+        "one/model-Q4 (2 parts)",
+        "two/model-Q4 (2 parts)",
+    ]
+    assert all(len(artifact["files"]) == 2 for artifact in artifacts)
+
+
+def test_huggingface_search_count_excludes_non_model_gguf_artifacts():
+    import routers.models as models_router
+
+    result = models_router._hf_search_item({
+        "id": "org/model",
+        "siblings": [
+            {"rfilename": "model-Q4_K_M.gguf"},
+            {"rfilename": "mmproj-model-f16.gguf"},
+            {"rfilename": "vision-projector.gguf"},
+            {"rfilename": "adapter-lora.gguf"},
+        ],
+    })
+
+    assert result is not None
+    assert result["ggufFileCount"] == 1
+
+
+def test_huggingface_search_tolerates_malformed_activity_counts():
+    import routers.models as models_router
+
+    result = models_router._hf_search_item({
+        "id": "org/model",
+        "downloads": "unknown",
+        "likes": {"unexpected": True},
+        "siblings": 42,
+        "tags": 42,
+    })
+
+    assert result is not None
+    assert result["downloads"] == 0
+    assert result["likes"] == 0
+    assert result["tags"] == []
+
+
+@pytest.mark.parametrize("payload", [
+    {"id": "org/speech-model", "pipeline_tag": "automatic-speech-recognition"},
+    {"id": "org/embed-model", "pipeline_tag": "text-generation"},
+    {"id": "org/model", "pipeline_tag": "feature-extraction"},
+    {"id": "org/model", "tags": ["sentence-transformers"]},
+])
+def test_huggingface_non_llm_repositories_are_browse_only(payload):
+    import routers.models as models_router
+
+    compatible, reason = models_router._hf_llm_runtime_compatibility(payload)
+
+    assert compatible is False
+    assert reason
+
+
+def test_huggingface_text_generation_repository_is_importable():
+    import routers.models as models_router
+
+    compatible, reason = models_router._hf_llm_runtime_compatibility({
+        "id": "org/chat-model",
+        "pipeline_tag": "text-generation",
+        "tags": ["conversational"],
+    })
+
+    assert compatible is True
+    assert reason is None
+
+
+@pytest.mark.asyncio
+async def test_huggingface_get_retries_one_transient_transport_failure(monkeypatch):
+    import routers.models as models_router
+
+    attempts = 0
+
+    class Response:
+        status_code = 200
+        headers = httpx.Headers()
+
+        @staticmethod
+        def json():
+            return {"id": "org/model"}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise httpx.ConnectError("temporary", request=httpx.Request("GET", url))
+            return Response()
+
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", Client)
+
+    payload, _headers = await models_router._hf_get_json("/api/models/org/model")
+
+    assert attempts == 2
+    assert payload == {"id": "org/model"}
+
+
+@pytest.mark.asyncio
+async def test_huggingface_search_returns_stale_cache_on_transient_hub_failure(monkeypatch):
+    import routers.models as models_router
+
+    cache_key = ("qwen", "downloads", 20, "public")
+    cached = {
+        "models": [{"id": "org/model"}],
+        "query": "qwen",
+        "sort": "downloads",
+        "authenticated": False,
+        "source": "huggingface",
+    }
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "")
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE", {
+        cache_key: (time.monotonic() - models_router._HF_SEARCH_CACHE_TTL_SECONDS - 1, cached),
+    })
+
+    async def fail_request(*_args, **_kwargs):
+        raise models_router.HTTPException(status_code=504, detail="Hub timeout")
+
+    monkeypatch.setattr(models_router, "_hf_get_json", fail_request)
+
+    result = await models_router.search_huggingface_models(
+        q="qwen",
+        sort="downloads",
+        limit=20,
+        api_key="test",
+    )
+
+    assert result == {**cached, "stale": True}
+
+
+def test_huggingface_cache_identity_changes_without_exposing_token(monkeypatch):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "hf_first_secret")
+    first = models_router._hf_cache_identity()
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "hf_second_secret")
+    second = models_router._hf_cache_identity()
+
+    assert first != second
+    assert "hf_first_secret" not in first
+    assert "hf_second_secret" not in second
+
+
+@pytest.mark.parametrize(("raw_url", "expected"), [
+    (
+        "https://cdn-avatars.huggingface.co/v1/production/uploads/avatar.png",
+        "https://cdn-avatars.huggingface.co/v1/production/uploads/avatar.png",
+    ),
+    ("/avatars/user.svg", "https://huggingface.co/avatars/user.svg"),
+    ("https://example.test/avatar.png", None),
+    ("https://huggingface.co.evil.test/avatar.png", None),
+    ("http://huggingface.co/avatar.png", None),
+    ("", None),
+])
+def test_huggingface_avatar_url_only_allows_official_hosts(raw_url, expected):
+    import routers.models as models_router
+
+    assert models_router._hf_trusted_avatar_url(raw_url) == expected
+
+
+@pytest.mark.asyncio
+async def test_huggingface_avatar_resolves_organization_then_user_and_caches(monkeypatch):
+    import routers.models as models_router
+
+    requests = []
+
+    async def profile(path, **_kwargs):
+        requests.append(path)
+        if "/organizations/" in path:
+            raise models_router.HTTPException(status_code=404, detail="not found")
+        return {
+            "avatarUrl": "https://cdn-avatars.huggingface.co/v1/production/uploads/real.png",
+        }, httpx.Headers()
+
+    monkeypatch.setattr(models_router, "_HF_AVATAR_CACHE", {})
+    monkeypatch.setattr(models_router, "_hf_cache_identity", lambda: "public")
+    monkeypatch.setattr(models_router, "_hf_get_json", profile)
+
+    first = await models_router._hf_author_avatar_url("unsloth")
+    second = await models_router._hf_author_avatar_url("unsloth")
+
+    assert first == "https://cdn-avatars.huggingface.co/v1/production/uploads/real.png"
+    assert second == first
+    assert requests == [
+        "/api/organizations/unsloth/overview",
+        "/api/users/unsloth/overview",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_huggingface_avatar_does_not_cache_transient_hub_failure(monkeypatch):
+    import routers.models as models_router
+
+    requests = 0
+
+    async def unavailable(_path, **_kwargs):
+        nonlocal requests
+        requests += 1
+        raise models_router.HTTPException(status_code=504, detail="timeout")
+
+    monkeypatch.setattr(models_router, "_HF_AVATAR_CACHE", {})
+    monkeypatch.setattr(models_router, "_hf_get_json", unavailable)
+
+    assert await models_router._hf_author_avatar_url("org") is None
+    assert await models_router._hf_author_avatar_url("org") is None
+    assert requests == 2
+
+
+@pytest.mark.asyncio
+async def test_huggingface_avatar_does_not_redirect_to_untrusted_profile_value(monkeypatch):
+    import routers.models as models_router
+
+    async def profile(_path, **_kwargs):
+        return {"avatarUrl": "https://attacker.test/tracker.png"}, httpx.Headers()
+
+    monkeypatch.setattr(models_router, "_HF_AVATAR_CACHE", {})
+    monkeypatch.setattr(models_router, "_hf_get_json", profile)
+
+    assert await models_router._hf_author_avatar_url("org") is None
+
+
+def test_huggingface_avatar_endpoint_redirects_to_verified_profile_image(test_client, monkeypatch):
+    import routers.models as models_router
+
+    monkeypatch.setattr(
+        models_router,
+        "_hf_author_avatar_url",
+        AsyncMock(return_value="https://cdn-avatars.huggingface.co/avatar.png"),
+    )
+
+    response = test_client.get(
+        "/api/models/huggingface/authors/unsloth/avatar",
+        headers=test_client.auth_headers,
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "https://cdn-avatars.huggingface.co/avatar.png"
+    assert response.headers["cache-control"] == "public, max-age=3600"
+
+
+def test_huggingface_search_cache_is_lru_bounded(monkeypatch):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE", {})
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE_MAX_ENTRIES", 2)
+    keys = [(name, "downloads", 20, "public") for name in ("a", "b", "c")]
+
+    models_router._hf_cache_put(keys[0], {"models": ["a"]})
+    models_router._hf_cache_put(keys[1], {"models": ["b"]})
+    assert models_router._hf_cache_get(keys[0]) is not None
+    models_router._hf_cache_put(keys[2], {"models": ["c"]})
+
+    assert len(models_router._HF_SEARCH_CACHE) == 2
+    assert keys[0] in models_router._HF_SEARCH_CACHE
+    assert keys[1] not in models_router._HF_SEARCH_CACHE
+    assert keys[2] in models_router._HF_SEARCH_CACHE
+
+
+def test_import_registry_is_shared_readable_on_posix(monkeypatch, tmp_path):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "DATA_DIR", str(tmp_path))
+    models_router._write_imported_library([{"id": "model", "source": "huggingface"}])
+
+    registry = tmp_path / "model-imports.json"
+    assert registry.exists()
+    if os.name != "nt":
+        assert registry.stat().st_mode & 0o777 == 0o644
+
+
+def test_huggingface_import_record_pins_revision_and_renames_remote_paths():
+    import routers.models as models_router
+
+    details = {
+        "id": "org/repo",
+        "sha": "c" * 40,
+        "contextLength": 65536,
+        "contextSource": "hub_config",
+        "license": "apache-2.0",
+        "url": "https://huggingface.co/org/repo",
+    }
+    artifact = {
+        "id": "d" * 20,
+        "quantization": "Q4_K_M",
+        "files": [{
+            "filename": "quant/model-Q4_K_M.gguf",
+            "sizeBytes": 2 * 1024**3,
+            "sha256": "e" * 64,
+        }],
+    }
+
+    record = models_router._hf_import_record(details, artifact)
+
+    assert record["source"] == "huggingface"
+    assert record["source_revision"] == "c" * 40
+    assert record["context_length"] == 65536
+    assert "/resolve/" + ("c" * 40) + "/quant/model-Q4_K_M.gguf" in record["gguf_url"]
+    assert "/" not in record["gguf_file"]
+    assert record["gguf_sha256"] == "e" * 64
+    assert record["size_bytes"] == 2 * 1024**3
+
+
+def test_huggingface_import_uses_distinct_local_files_for_distinct_revisions():
+    import routers.models as models_router
+
+    artifact = {
+        "id": "d" * 20,
+        "quantization": "Q4_K_M",
+        "files": [{
+            "filename": "model-Q4_K_M.gguf",
+            "sizeBytes": 1024,
+            "sha256": "e" * 64,
+        }],
+    }
+    base_details = {
+        "id": "org/repo",
+        "contextLength": 32768,
+        "contextSource": "hub_config",
+        "license": "apache-2.0",
+        "url": "https://huggingface.co/org/repo",
+    }
+
+    first = models_router._hf_import_record(
+        {**base_details, "sha": "a" * 40},
+        artifact,
+    )
+    second = models_router._hf_import_record(
+        {**base_details, "sha": "b" * 40},
+        artifact,
+    )
+
+    assert first["id"] != second["id"]
+    assert first["gguf_file"] != second["gguf_file"]
+    assert first["gguf_file"].endswith(".gguf")
+    assert second["gguf_file"].endswith(".gguf")
+
+
+def test_model_library_merges_hub_imports_without_curated_override(monkeypatch, tmp_path):
+    import routers.models as models_router
+
+    curated_path = tmp_path / "model-library.json"
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    curated_path.write_text(json.dumps({"models": [{"id": "curated", "gguf_file": "curated.gguf"}]}))
+    (data_dir / "model-imports.json").write_text(json.dumps({"models": [
+        {"id": "community", "gguf_file": "community.gguf", "source": "huggingface"},
+        {"id": "curated", "gguf_file": "override.gguf", "source": "huggingface"},
+        {"id": "wrong-source", "gguf_file": "wrong.gguf", "source": "local"},
+    ]}))
+    monkeypatch.setattr(models_router, "_LIBRARY_PATH", curated_path)
+    monkeypatch.setattr(models_router, "DATA_DIR", str(data_dir))
+
+    merged = models_router._load_library()
+
+    assert [item["id"] for item in merged] == ["curated", "community"]
+
+
+def _hf_import_details() -> dict:
+    return {
+        "id": "org/repo",
+        "sha": "c" * 40,
+        "contextLength": 65536,
+        "contextSource": "hub_config",
+        "license": "apache-2.0",
+        "url": "https://huggingface.co/org/repo",
+        "private": False,
+        "runtimeCompatible": True,
+        "runtimeReason": None,
+        "artifacts": [{
+            "id": "d" * 20,
+            "label": "model-Q4_K_M.gguf",
+            "quantization": "Q4_K_M",
+            "files": [{
+                "filename": "model-Q4_K_M.gguf",
+                "sizeBytes": 1024,
+                "sha256": "e" * 64,
+            }],
+        }],
+    }
+
+
+def test_huggingface_import_retains_retry_state_after_agent_failure(
+    test_client, monkeypatch, tmp_path,
+):
+    import routers.models as models_router
+
+    async def fake_details(_repo_id):
+        return _hf_import_details()
+
+    attempts = 0
+
+    def flaky_agent(_path, payload):
+        nonlocal attempts
+        attempts += 1
+        assert payload["gguf_sha256"] == "e" * 64
+        if attempts == 1:
+            raise models_router.HTTPException(status_code=503, detail="agent unavailable")
+        return {"status": "started"}
+
+    monkeypatch.setattr(models_router, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(models_router, "_hf_repo_details", fake_details)
+    monkeypatch.setattr(models_router, "_call_agent_model", flaky_agent)
+    monkeypatch.setattr(models_router, "_bootstrap_upgrade_download_conflict", lambda: None)
+
+    request = {
+        "repoId": "org/repo",
+        "artifactId": "d" * 20,
+    }
+    first = test_client.post(
+        "/api/models/huggingface/import",
+        headers=test_client.auth_headers,
+        json=request,
+    )
+    assert first.status_code == 503
+    registry_path = tmp_path / "model-imports.json"
+    first_registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    assert len(first_registry["models"]) == 1
+
+    second = test_client.post(
+        "/api/models/huggingface/import",
+        headers=test_client.auth_headers,
+        json=request,
+    )
+    assert second.status_code == 200
+    assert second.json()["status"] == "started"
+    second_registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    assert second_registry == first_registry
+    assert attempts == 2
+
+
+def test_huggingface_import_does_not_overwrite_corrupt_registry(
+    test_client, monkeypatch, tmp_path,
+):
+    import routers.models as models_router
+
+    async def fake_details(_repo_id):
+        return _hf_import_details()
+
+    registry_path = tmp_path / "model-imports.json"
+    original = '{"version": 1, "models": ['
+    registry_path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(models_router, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(models_router, "_hf_repo_details", fake_details)
+    monkeypatch.setattr(models_router, "_bootstrap_upgrade_download_conflict", lambda: None)
+
+    response = test_client.post(
+        "/api/models/huggingface/import",
+        headers=test_client.auth_headers,
+        json={"repoId": "org/repo", "artifactId": "d" * 20},
+    )
+
+    assert response.status_code == 409
+    assert "not overwritten" in response.json()["detail"]
+    assert registry_path.read_text(encoding="utf-8") == original
 
 
 def test_fetch_loaded_model_uses_configured_llm_url(monkeypatch):
@@ -460,6 +982,12 @@ def test_already_active_model_uses_env_file_before_stale_process_env(
         lambda: "extra.Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
     )
     monkeypatch.setattr(models_router, "_loaded_model_backend_ready_sync", lambda _model: True)
+    _write_activation_receipt(
+        data_dir,
+        "qwen3.6-35b-a3b-ud-q4",
+        "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+        "extra.Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    )
 
     already_active, loaded_model = models_router._already_active_model(
         "qwen3.6-35b-a3b-ud-q4",
@@ -508,6 +1036,12 @@ def test_load_model_noops_lemonade_active_identity_without_chat_probe(
         models_router,
         "_fetch_loaded_model_sync",
         lambda: "Qwen3.6-35B-A3B-UD-Q4_K_M",
+    )
+    _write_activation_receipt(
+        data_dir,
+        "qwen3.6-35b-a3b-ud-q4",
+        "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+        "Qwen3.6-35B-A3B-UD-Q4_K_M",
     )
 
     def fail_backend_probe(_loaded):
@@ -573,6 +1107,20 @@ def _write_model_library(install_dir, models):
         encoding="utf-8",
     )
     (install_dir / "data" / "models").mkdir(parents=True)
+
+
+def _write_activation_receipt(data_dir, model_id, gguf_file, runtime_model_id=None):
+    (data_dir / "model-activation-receipt.json").write_text(
+        json.dumps({
+            "schema": "ods.model-activation-receipt.v1",
+            "status": "complete",
+            "modelId": model_id,
+            "ggufFile": gguf_file,
+            "runtimeModelId": runtime_model_id or gguf_file,
+            "consumers": {"dashboard": "live_env"},
+        }),
+        encoding="utf-8",
+    )
 
 
 def _patch_model_router_paths(monkeypatch, tmp_path):
@@ -1040,6 +1588,12 @@ def test_load_model_noops_when_requested_model_already_loaded(test_client, monke
     )
     monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: "extra.Qwen3.5-9B-Q4_K_M.gguf")
     monkeypatch.setattr(models_router, "_loaded_model_backend_ready_sync", lambda loaded: True)
+    _write_activation_receipt(
+        data_dir,
+        "qwen3.5-9b-q4",
+        "Qwen3.5-9B-Q4_K_M.gguf",
+        "extra.Qwen3.5-9B-Q4_K_M.gguf",
+    )
 
     def fail_agent_call(*_args, **_kwargs):
         raise AssertionError("already-active model should not call host-agent activate")
@@ -1054,6 +1608,51 @@ def test_load_model_noops_when_requested_model_already_loaded(test_client, monke
         "model_id": "qwen3.5-9b-q4",
         "loadedModel": "extra.Qwen3.5-9B-Q4_K_M.gguf",
     }
+
+
+def test_load_model_reconciles_matching_runtime_without_completion_receipt(
+    test_client,
+    monkeypatch,
+    tmp_path,
+):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    model = {
+        "id": "qwen3.5-9b-q4",
+        "name": "Qwen 3.5 9B",
+        "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+        "size_mb": 5760,
+        "vram_required_gb": 8,
+        "context_length": 32768,
+        "quantization": "Q4_K_M",
+        "specialty": "General",
+        "description": "Balanced default.",
+        "llm_model_name": "qwen3.5-9b",
+    }
+    _write_model_library(install_dir, [model])
+    (data_dir / "models" / model["gguf_file"]).write_text("model", encoding="utf-8")
+    (install_dir / ".env").write_text(
+        "ODS_MODE=local\nLLM_MODEL=qwen3.5-9b\nGGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        models_router,
+        "_fetch_loaded_model_sync",
+        lambda: "extra.Qwen3.5-9B-Q4_K_M.gguf",
+    )
+    monkeypatch.setattr(models_router, "_loaded_model_backend_ready_sync", lambda _loaded: True)
+    calls = []
+    monkeypatch.setattr(
+        models_router,
+        "_call_agent_model",
+        lambda path, body, timeout=30, **_kwargs: calls.append((path, body, timeout))
+        or {"status": "activated"},
+    )
+
+    resp = test_client.post("/api/models/qwen3.5-9b-q4/load", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "activated"
+    assert calls and calls[0][0] == "/v1/model/activate"
 
 
 def test_load_model_delegates_when_live_backend_reports_different_model(test_client, monkeypatch, tmp_path):

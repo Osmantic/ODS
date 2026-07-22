@@ -10,9 +10,11 @@ Open the Dashboard and go to **Models**.
 
 From there you can:
 
-- See the curated ODS model catalog.
+- Separate models already installed from the curated ODS catalog.
+- Search compatible GGUF repositories on Hugging Face without leaving ODS.
 - Check approximate model size, VRAM requirement, context length, and specialty.
 - Download a catalog model into `data/models/`.
+- Import an integrity-qualified Hugging Face GGUF into `data/models/`.
 - Load a downloaded model.
 - Load a manually copied single-file GGUF discovered in `data/models/`.
 - Delete a downloaded catalog model.
@@ -32,6 +34,26 @@ declares a context floor such as `65536`, models below that floor should be
 shown as gated or warned before the swap. Badges should distinguish downloaded,
 loaded, swap-safe, not-swap-safe, gated, and probe-failed states so a model
 cannot look ready while an enabled app is known to be incompatible.
+
+### Hugging Face imports
+
+The **Hugging Face** source searches the live Hub and only offers complete GGUF
+artifacts with exact byte-size and SHA-256 metadata. Before download, ODS
+re-reads the selected repository, pins its immutable revision, rejects
+projectors, adapters, incomplete split files, and repositories intended for a
+different runtime, then asks the host agent to download and verify every file.
+Community imports are labelled as unvalidated until they have been benchmarked
+on the local machine; they are not added to the ODS recommended catalog.
+
+Public repositories require no configuration. For a private or gated
+repository, accept its upstream license first and set `HF_TOKEN` in `.env` or
+in the Dashboard environment editor. The token is read at request time, is
+never returned to the browser, and is not written into the import registry.
+
+Imported metadata is stored separately in `data/model-imports.json`, so a
+source update or installer rerun does not modify `config/model-library.json` or
+discard community imports. Deleting a downloaded file keeps the import record,
+allowing the same pinned artifact to be downloaded again.
 
 When a catalog model is loaded, ODS updates the active GGUF settings
 and restarts the local inference service so OpenAI-compatible clients use the
@@ -327,9 +349,10 @@ For AMD/Lemonade, use `extra.<GGUF_FILE>`.
 
 ## Current Limitations
 
-- Dashboard model download and load are catalog-based.
-- Custom GGUF import from a local file or arbitrary URL is not yet a first-class
-  Dashboard workflow.
+- Dashboard download and load support the ODS catalog and integrity-qualified
+  GGUF artifacts discovered through the Hugging Face source.
+- Import from an arbitrary URL is not a first-class Dashboard workflow. Local
+  single-file GGUFs are discovered after they are copied into `data/models/`.
 - `ods model swap` switches ODS tiers, not arbitrary GGUF files.
 - `scripts/upgrade-model.sh` is a legacy helper for model-directory layouts and
   should not be used as the primary GGUF switch path on current installs.

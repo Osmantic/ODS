@@ -16,7 +16,7 @@ from helpers import (
     get_llama_metrics, get_loaded_model, get_llama_context_size,
     get_disk_usage, dir_size_gb, invalidate_dir_size_cache, clear_dir_size_cache,
     _get_aio_session, set_services_cache, get_cached_services,
-    _get_httpx_client, _get_lifetime_tokens,
+    _get_httpx_client, _get_lifetime_tokens, record_model_performance,
 )
 from models import BootstrapStatus, ServiceStatus, DiskUsage
 
@@ -1189,6 +1189,33 @@ class TestLemonadeMetrics:
         assert not token_file.exists()
 
     @pytest.mark.asyncio
+    async def test_implausible_runtime_tps_is_not_exposed_as_real_throughput(
+        self, monkeypatch, tmp_path,
+    ):
+        import helpers
+
+        monkeypatch.setattr(helpers, "_TOKEN_FILE", tmp_path / "token_counter.json")
+        monkeypatch.setattr(helpers, "LLM_BACKEND", "lemonade")
+        monkeypatch.setattr(helpers, "read_live_env_value", lambda key: "host")
+        monkeypatch.setattr(
+            helpers,
+            "request_agent_json",
+            AsyncMock(return_value={
+                "schema_version": "ods.host-llm-status.v1",
+                "health": {"status": "ok"},
+                "stats": {"output_tokens": 36, "tokens_per_second": 1_000_000},
+            }),
+        )
+
+        result = await helpers.get_llama_metrics()
+
+        assert result == {
+            "tokens_per_second": 0.0,
+            "lifetime_tokens": 36,
+            "token_count_mode": "latest_completion",
+        }
+
+    @pytest.mark.asyncio
     async def test_unavailable_host_stats_do_not_relabel_stale_llama_total(
         self, monkeypatch, tmp_path,
     ):
@@ -1255,6 +1282,49 @@ class TestLemonadeMetrics:
             call.kwargs["headers"] == {"Authorization": "Bearer test-key"}
             for call in client.get.await_args_list
         )
+
+
+def test_performance_recorder_rejects_implausible_sample(data_dir):
+    record_model_performance(
+        "qwen3.5-2b",
+        "AMD Radeon RX 9070 XT",
+        "lemonade",
+        1_000_000,
+    )
+
+    assert not (data_dir / "model_performance.json").exists()
+
+
+def test_valid_sample_repairs_a_polluted_existing_average(data_dir):
+    import helpers
+
+    key = helpers._performance_key(
+        "lemonade", "AMD Radeon RX 9070 XT", "qwen3.5-2b",
+    )
+    helpers._PERF_FILE.write_text(json.dumps({
+        "schema_version": "ods.model-performance.v1",
+        "samples": {
+            key: {
+                "model": "qwen3.5-2b",
+                "gpu": "AMD Radeon RX 9070 XT",
+                "backend": "lemonade",
+                "tokens_per_second": 527_885.7,
+                "sample_count": 336,
+            },
+        },
+    }))
+
+    record_model_performance(
+        "qwen3.5-2b",
+        "AMD Radeon RX 9070 XT",
+        "lemonade",
+        240.5,
+    )
+
+    repaired = json.loads(helpers._PERF_FILE.read_text())["samples"][key]
+    assert repaired["tokens_per_second"] == 240.5
+    assert repaired["last_tokens_per_second"] == 240.5
+    assert repaired["sample_count"] == 1
 
 
 class TestServiceHealthReconciliation:

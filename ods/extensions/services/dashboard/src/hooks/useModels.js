@@ -162,6 +162,7 @@ export function useModels() {
   const [models, setModels] = useState(USE_MOCK_DATA ? getMockModels() : [])
   const [gpu, setGpu] = useState(USE_MOCK_DATA ? MOCK_GPU : null)
   const [currentModel, setCurrentModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [activationReadyModel, setActivationReadyModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
   const [configuredModel, setConfiguredModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
   const [modelLifecycle, setModelLifecycle] = useState(null)
   const [odsMode, setOdsMode] = useState(USE_MOCK_DATA ? MOCK_MODES.odsMode : 'unknown')
@@ -238,6 +239,7 @@ export function useModels() {
       setModels(data.models)
       setGpu(data.gpu)
       setCurrentModel(data.currentModel)
+      setActivationReadyModel(data.activationReadyModel ?? null)
       setConfiguredModel(data.configuredModel ?? null)
       setModelLifecycle(normalizeModelLifecycle(data.modelLifecycle))
       const effectiveMode = normalizeOdsMode(data.odsMode)
@@ -386,7 +388,11 @@ export function useModels() {
 
         if (activationError) break
         const data = await fetchModels()
-        if (data?.currentModel === modelId && !hasActiveModelActivation(data)) {
+        if (
+          data?.currentModel === modelId &&
+          data?.activationReadyModel === modelId &&
+          !hasActiveModelActivation(data)
+        ) {
           targetLoaded = true
           break
         }
@@ -395,7 +401,12 @@ export function useModels() {
       // Take one final authoritative snapshot at the deadline or after a POST
       // failure. This cannot turn an unverified 409 into same-target success.
       const finalData = await fetchModels()
-      if (!activationError && finalData?.currentModel === modelId && !hasActiveModelActivation(finalData)) targetLoaded = true
+      if (
+        !activationError &&
+        finalData?.currentModel === modelId &&
+        finalData?.activationReadyModel === modelId &&
+        !hasActiveModelActivation(finalData)
+      ) targetLoaded = true
 
       if (!targetLoaded) {
         setMutationError(activationError ||
@@ -462,6 +473,7 @@ export function useModels() {
     models,
     gpu,
     currentModel,
+    activationReadyModel,
     configuredModel,
     modelLifecycle,
     odsMode,

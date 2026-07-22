@@ -20,7 +20,11 @@ from typing import Any, Optional
 
 from gguf_inspector import inspect_gguf
 from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
-from helpers import get_model_performance_samples, get_recorded_model_performance
+from helpers import (
+    get_model_performance_samples,
+    get_recorded_model_performance,
+    is_plausible_single_request_tps,
+)
 from models import GPUInfo
 
 
@@ -30,6 +34,17 @@ _VRAM_FIT_TOLERANCE_GB = 0.25
 _MODEL_SELECTOR_POLICY = "context-aware-largest-capable-general-v1"
 _RUNTIME_MODEL_PREFIXES = ("extra.", "user.")
 _AGENT_MIN_LOCAL_TOKENS_PER_SEC = 2.0
+_MODEL_PUBLISHERS = (
+    (("qwen",), "Qwen", "Qwen"),
+    (("phi",), "Microsoft", "microsoft"),
+    (("granite",), "IBM Granite", "ibm-granite"),
+    (("smollm",), "Hugging Face", "HuggingFaceTB"),
+    (("gemma",), "Google", "google"),
+    (("falcon",), "Technology Innovation Institute", "tiiuae"),
+    (("ministral", "mistral", "mixtral"), "Mistral AI", "mistralai"),
+    (("llama",), "Meta", "meta-llama"),
+    (("deepseek",), "DeepSeek", "deepseek-ai"),
+)
 
 
 def normalize_key(value: Any) -> str:
@@ -39,6 +54,27 @@ def normalize_key(value: Any) -> str:
 def local_model_id(value: Any) -> str:
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "")).strip("-._")
     return name or "local-gguf"
+
+
+def model_publisher(model: dict[str, Any]) -> dict[str, str] | None:
+    """Return the official model-family publisher used for dashboard identity."""
+    explicit = model.get("publisher")
+    if isinstance(explicit, dict) and explicit.get("huggingface_author"):
+        return {
+            "name": str(explicit.get("name") or explicit["huggingface_author"]),
+            "huggingFaceAuthor": str(explicit["huggingface_author"]),
+        }
+    identity = normalize_key(" ".join(
+        str(model.get(key) or "") for key in ("id", "name", "llm_model_name")
+    ))
+    for family_markers, name, author in _MODEL_PUBLISHERS:
+        if any(marker in identity for marker in family_markers):
+            return {"name": name, "huggingFaceAuthor": author}
+    source_repo = str(model.get("source_repo") or "")
+    if "/" in source_repo:
+        author = source_repo.split("/", 1)[0]
+        return {"name": author, "huggingFaceAuthor": author}
+    return None
 
 
 def _list_value(value: Any) -> list[str]:
@@ -189,6 +225,13 @@ def normalize_catalog_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
         "tokens_per_sec_estimate": raw.get("tokens_per_sec_estimate"),
         "runtime_profiles": raw.get("runtime_profiles") if isinstance(raw.get("runtime_profiles"), list) else [],
         "app_compatibility": raw.get("app_compatibility") if isinstance(raw.get("app_compatibility"), dict) else {},
+        "catalog_source": raw.get("source") or "ods",
+        "source_repo": raw.get("source_repo"),
+        "source_revision": raw.get("source_revision"),
+        "source_url": raw.get("source_url"),
+        "license": raw.get("license"),
+        "imported_at": raw.get("imported_at"),
+        "context_source": raw.get("context_source"),
         "aliases": sorted(aliases),
     }
     if raw.get("decode_read_mb"):
@@ -726,7 +769,7 @@ def _sample_tps(sample: Optional[dict[str, Any]]) -> Optional[float]:
         tps = float(sample.get("tokens_per_second") or sample.get("tokensPerSecond") or 0)
     except (TypeError, ValueError):
         return None
-    return tps if tps > 0 else None
+    return tps if is_plausible_single_request_tps(tps) else None
 
 
 def _exact_sample(model: dict[str, Any], gpu_info: Optional[GPUInfo], context_length: Optional[int]) -> Optional[dict[str, Any]]:
@@ -741,7 +784,7 @@ def _exact_sample(model: dict[str, Any], gpu_info: Optional[GPUInfo], context_le
             gguf=model.get("gguf"),
             vram_total_mb=gpu_info.memory_total_mb,
         )
-        if sample:
+        if sample and _sample_tps(sample) is not None:
             return sample
     return None
 
@@ -818,6 +861,8 @@ def _predicted_from_calibration(model: dict[str, Any], metadata: dict[str, Any],
         return None
     target_mb = _model_decode_mb(model, metadata)
     predicted = max(base_tps * (calibration_mb / target_mb), 1.0)
+    if not is_plausible_single_request_tps(predicted):
+        return None
     count = int(calibration.get("sample_count", 1))
     confidence = "medium" if count >= 3 else "low"
     spread = 0.2 if confidence == "medium" else 0.35
@@ -844,11 +889,12 @@ def evaluate_performance(model: dict[str, Any], gpu_info: Optional[GPUInfo], met
     if gpu_info and not fits_total and not is_loaded:
         return _default_performance("incompatible", "does not fit this GPU", hardware_match)
 
-    if is_loaded and live_tps > 0:
+    live_sample_tps = _sample_tps({"tokens_per_second": live_tps})
+    if is_loaded and live_sample_tps is not None:
         return _tokens_performance(
             "measured_local",
             "{tps} tok/s measured locally",
-            live_tps,
+            live_sample_tps,
             "high",
             hardware_match,
             sample_count=1,
@@ -867,11 +913,12 @@ def evaluate_performance(model: dict[str, Any], gpu_info: Optional[GPUInfo], met
         )
 
     published = _published_exact(model, gpu_info, context_length, quantization, flags, runtime, evidence)
-    if published:
+    published_tps = _sample_tps(published)
+    if published and published_tps is not None:
         return _tokens_performance(
             "published_exact",
             "{tps} tok/s published exact",
-            float(published["tokens_per_second"]),
+            published_tps,
             "medium",
             hardware_match,
             sample_count=1,
@@ -1296,8 +1343,16 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             "quantization": quantization,
             "architecture": metadata.get("architecture") if metadata.get("architecture") != "unknown" else model.get("architecture", "dense"),
             "activeParamsB": model.get("active_params_b"),
+            "publisher": model_publisher(model),
             "metadata": {
                 "source": "gguf" if metadata.get("readable") else "catalog",
+                "catalogSource": model.get("catalog_source") or "ods",
+                "sourceRepo": model.get("source_repo"),
+                "sourceRevision": model.get("source_revision"),
+                "sourceUrl": model.get("source_url"),
+                "license": model.get("license"),
+                "importedAt": model.get("imported_at"),
+                "contextSource": model.get("context_source"),
                 "readable": bool(metadata.get("readable")),
                 "blockCount": metadata.get("block_count"),
                 "expertCount": metadata.get("expert_count"),

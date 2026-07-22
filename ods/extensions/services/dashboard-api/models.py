@@ -182,6 +182,7 @@ class ModelLibraryEntry(BaseModel):
     quantization: Optional[str] = None
     architecture: Optional[str] = None
     activeParamsB: Optional[float] = None
+    publisher: Optional[dict[str, str]] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     appCompatibility: dict[str, Any] = Field(default_factory=dict)
     status: str  # "loaded", "downloaded", "available"
@@ -205,6 +206,7 @@ class ModelLibraryResponse(BaseModel):
     models: list[ModelLibraryEntry]
     gpu: Optional[ModelLibraryGpu] = None
     currentModel: Optional[str] = None
+    activationReadyModel: Optional[str] = None
     loadedModel: Optional[str] = None
     configuredModel: Optional[str] = None
     hermesMinimumContext: int = HERMES_MIN_CONTEXT

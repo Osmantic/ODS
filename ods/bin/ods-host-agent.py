@@ -539,6 +539,9 @@ shutil.copyfile(path, dest_path)
     ]
     try:
         child_env = os.environ.copy()
+        persisted_hf_token = load_env(INSTALL_DIR / ".env").get("HF_TOKEN", "").strip()
+        if persisted_hf_token and not child_env.get("HF_TOKEN"):
+            child_env["HF_TOKEN"] = persisted_hf_token
         child_env.setdefault("HF_HUB_ETAG_TIMEOUT", str(response_timeout))
         child_env.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", str(response_timeout))
         logger.info(
@@ -681,6 +684,46 @@ def _model_download_manifest(model: dict) -> dict | None:
     return {"gguf_file": gguf_file, "artifacts": artifacts}
 
 
+def _load_model_library_records() -> list[dict]:
+    """Load curated models plus the dashboard's integrity-pinned Hub imports."""
+    catalog_path = INSTALL_DIR / "config" / "model-library.json"
+    try:
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeError) as exc:
+        raise RuntimeError("Model catalog unavailable") from exc
+    curated = catalog.get("models") if isinstance(catalog, dict) else None
+    if not isinstance(curated, list) or not all(isinstance(item, dict) for item in curated):
+        raise RuntimeError("Model catalog unavailable")
+
+    merged = list(curated)
+    seen_ids = {str(item.get("id") or "") for item in curated}
+    seen_files = {str(item.get("gguf_file") or "").lower() for item in curated}
+    imported_path = INSTALL_DIR / "data" / "model-imports.json"
+    if not imported_path.exists():
+        return merged
+    try:
+        imported_payload = json.loads(imported_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeError) as exc:
+        raise RuntimeError(f"Model import registry unavailable: {exc}") from exc
+    imported = imported_payload.get("models") if isinstance(imported_payload, dict) else None
+    if not isinstance(imported, list) or not all(isinstance(item, dict) for item in imported):
+        raise RuntimeError("Model import registry must contain a models array of objects")
+
+    for item in imported:
+        model_id = str(item.get("id") or "")
+        filename = str(item.get("gguf_file") or "").lower()
+        if item.get("source") != "huggingface" or not model_id or not filename:
+            raise RuntimeError("Model import registry contains an invalid Hugging Face record")
+        if model_id in seen_ids or filename in seen_files:
+            raise RuntimeError("Model import registry collides with an existing model")
+        if _model_download_manifest(item) is None:
+            raise RuntimeError(f"Model import registry contains an invalid manifest for {model_id}")
+        merged.append(item)
+        seen_ids.add(model_id)
+        seen_files.add(filename)
+    return merged
+
+
 def _safe_model_artifact_path(models_dir: Path, filename: object) -> Path | None:
     """Resolve a catalog artifact while keeping it directly in models_dir."""
     token = str(filename or "").strip()
@@ -768,13 +811,10 @@ def _verify_model_manifest(
 def _catalog_manifest_for_status(model_label: object) -> tuple[dict | None, str]:
     """Resolve a stale status label to its complete catalog manifest."""
     token = _download_status_model_token(model_label)
-    library_path = INSTALL_DIR / "config" / "model-library.json"
     try:
-        library = json.loads(library_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        return None, f"model catalog unavailable: {exc}"
-
-    models = library.get("models", []) if isinstance(library, dict) else []
+        models = _load_model_library_records()
+    except RuntimeError as exc:
+        return None, str(exc)
     for model in models:
         if not isinstance(model, dict):
             continue
@@ -965,24 +1005,22 @@ def _switchboard_state_needs_current_env_verification(
 def _catalog_model_for_current_env(env: dict) -> tuple[str, dict]:
     gguf_file = str(env.get("GGUF_FILE") or "").strip()
     llm_model_name = str(env.get("LLM_MODEL") or "").strip()
-    library_path = INSTALL_DIR / "config" / "model-library.json"
-    if library_path.exists():
-        try:
-            library = json.loads(library_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            library = {}
-        for entry in library.get("models", []) if isinstance(library, dict) else []:
-            if not isinstance(entry, dict):
-                continue
-            entry_id = str(entry.get("id") or "")
-            entry_gguf = str(entry.get("gguf_file") or "")
-            entry_llm = str(entry.get("llm_model_name") or entry_id)
-            if (
-                (llm_model_name and entry_id == llm_model_name)
-                or (llm_model_name and entry_llm == llm_model_name)
-                or (gguf_file and entry_gguf == gguf_file)
-            ):
-                return entry_id or llm_model_name or gguf_file, entry
+    try:
+        library = _load_model_library_records()
+    except RuntimeError:
+        library = []
+    for entry in library:
+        if not isinstance(entry, dict):
+            continue
+        entry_id = str(entry.get("id") or "")
+        entry_gguf = str(entry.get("gguf_file") or "")
+        entry_llm = str(entry.get("llm_model_name") or entry_id)
+        if (
+            (llm_model_name and entry_id == llm_model_name)
+            or (llm_model_name and entry_llm == llm_model_name)
+            or (gguf_file and entry_gguf == gguf_file)
+        ):
+            return entry_id or llm_model_name or gguf_file, entry
     return llm_model_name or gguf_file, {}
 
 
@@ -4994,20 +5032,14 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         try:
             models_dir = INSTALL_DIR / "data" / "models"
-            library_path = INSTALL_DIR / "config" / "model-library.json"
             env_path = INSTALL_DIR / ".env"
 
-            # Load library. A missing file is fine (fresh install); an
-            # unreadable/malformed file is a real error — surface it as 500
-            # rather than silently returning an empty catalog.
-            library = []
-            if library_path.exists():
-                try:
-                    library = json.loads(library_path.read_text(encoding="utf-8")).get("models", [])
-                except (json.JSONDecodeError, OSError):
-                    logger.exception("Model library catalog unavailable")
-                    json_response(self, 500, {"error": "Model catalog unavailable"})
-                    return
+            try:
+                library = _load_model_library_records()
+            except RuntimeError as exc:
+                logger.exception("Model library catalog unavailable")
+                json_response(self, 500, {"error": str(exc)})
+                return
 
             # Scan downloaded GGUFs
             downloaded = {}
@@ -5091,47 +5123,35 @@ class AgentHandler(BaseHTTPRequestHandler):
         # Validate the complete request against the library. A split request
         # must include every catalog part; accepting a subset can otherwise
         # create a false-complete model that llama.cpp cannot load.
-        library_path = INSTALL_DIR / "config" / "model-library.json"
         allowed = False
-        # Sentinel: distinguishes "catalog unreadable/missing" (500) from
-        # "catalog readable but model not listed" (403). Conflating the two
-        # masks broken installs as policy denials.
-        catalog_ok = False
         manifest = None
-        if library_path.exists():
-            try:
-                lib = json.loads(library_path.read_text(encoding="utf-8"))
-                catalog_ok = True
-                for m in lib.get("models", []):
-                    if not isinstance(m, dict):
-                        continue
-                    if m.get("gguf_file") != gguf_file:
-                        continue
-                    candidate_manifest = _model_download_manifest(m)
-                    if candidate_manifest is None:
-                        break
-                    if gguf_parts:
-                        catalog_plan = [
-                            (artifact["file"], artifact["url"])
-                            for artifact in candidate_manifest["artifacts"]
-                        ]
-                        if download_plan == catalog_plan:
-                            allowed = True
-                            manifest = candidate_manifest
-                    elif (
-                        len(candidate_manifest["artifacts"]) == 1
-                        and candidate_manifest["artifacts"][0]["url"] == gguf_url
-                    ):
-                        allowed = True
-                        manifest = candidate_manifest
-                    break
-            except (json.JSONDecodeError, OSError):
-                logger.exception("Model library catalog unavailable")
-                json_response(self, 500, {"error": "Model catalog unavailable"})
-                return
-        if not catalog_ok:
-            json_response(self, 500, {"error": "Model catalog unavailable"})
+        try:
+            library = _load_model_library_records()
+        except RuntimeError as exc:
+            logger.exception("Model library catalog unavailable")
+            json_response(self, 500, {"error": str(exc)})
             return
+        for m in library:
+            if m.get("gguf_file") != gguf_file:
+                continue
+            candidate_manifest = _model_download_manifest(m)
+            if candidate_manifest is None:
+                break
+            if gguf_parts:
+                catalog_plan = [
+                    (artifact["file"], artifact["url"])
+                    for artifact in candidate_manifest["artifacts"]
+                ]
+                if download_plan == catalog_plan:
+                    allowed = True
+                    manifest = candidate_manifest
+            elif (
+                len(candidate_manifest["artifacts"]) == 1
+                and candidate_manifest["artifacts"][0]["url"] == gguf_url
+            ):
+                allowed = True
+                manifest = candidate_manifest
+            break
         if not allowed:
             json_response(self, 403, {"error": "Model not in library catalog"})
             return
@@ -5826,28 +5846,22 @@ class AgentHandler(BaseHTTPRequestHandler):
             }
 
         # Look up model in library
-        library_path = INSTALL_DIR / "config" / "model-library.json"
         model = None
         model_from_catalog = False
-        if library_path.exists():
-            try:
-                lib = json.loads(library_path.read_text(encoding="utf-8"))
-                if not isinstance(lib, dict) or not isinstance(lib.get("models"), list):
-                    raise ValueError("root must contain a models array")
-                for m in lib["models"]:
-                    if not isinstance(m, dict):
-                        raise ValueError("models array contains a non-object entry")
-                    if m.get("id") == model_id:
-                        model = m
-                        model_from_catalog = True
-                        break
-            except (json.JSONDecodeError, OSError, UnicodeError, ValueError) as exc:
-                json_response(
-                    self,
-                    500,
-                    {"error": f"Model library is unavailable or malformed: {exc}"},
-                )
-                return
+        try:
+            library = _load_model_library_records()
+        except RuntimeError as exc:
+            json_response(
+                self,
+                500,
+                {"error": f"Model library is unavailable or malformed: {exc}"},
+            )
+            return
+        for entry in library:
+            if entry.get("id") == model_id:
+                model = entry
+                model_from_catalog = True
+                break
         if model is None:
             model = local_gguf_model_from_id(model_id)
             if model is None:
@@ -5973,6 +5987,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         litellm_local_yaml = INSTALL_DIR / "config" / "litellm" / "local.yaml"
         litellm_switchboard_yaml = INSTALL_DIR / "config" / "litellm" / "switchboard.yaml"
         model_router_endpoints = INSTALL_DIR / "config" / "model-router" / "endpoints.json"
+        activation_receipt = INSTALL_DIR / "data" / "model-activation-receipt.json"
         hermes_live_config = INSTALL_DIR / "data" / "hermes" / "config.yaml"
         hermes_template_config = INSTALL_DIR / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
 
@@ -5984,6 +5999,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         litellm_local_snapshot: dict | None = None
         litellm_switchboard_snapshot: dict | None = None
         model_router_endpoints_snapshot: dict | None = None
+        activation_receipt_snapshot: dict | None = None
         hermes_live_snapshot: dict | None = None
         hermes_template_snapshot: dict | None = None
         opencode_snapshot: dict | None = None
@@ -6020,6 +6036,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 _restore_text_file(litellm_switchboard_yaml, litellm_switchboard_snapshot)
             if model_router_endpoints_snapshot is not None:
                 _restore_text_file(model_router_endpoints, model_router_endpoints_snapshot)
+            if activation_receipt_snapshot is not None:
+                _restore_text_file(activation_receipt, activation_receipt_snapshot)
             if hermes_template_snapshot is not None:
                 _restore_text_file(hermes_template_config, hermes_template_snapshot)
             if hermes_live_snapshot and hermes_live_snapshot.get("exists"):
@@ -6226,6 +6244,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             litellm_local_snapshot = _snapshot_text_file(litellm_local_yaml)
             litellm_switchboard_snapshot = _snapshot_text_file(litellm_switchboard_yaml)
             model_router_endpoints_snapshot = _snapshot_text_file(model_router_endpoints)
+            activation_receipt_snapshot = _snapshot_text_file(activation_receipt)
             # Persisted Hermes state is commonly UID-10000-owned. Capture it
             # through the running container when host permissions deny access;
             # activation must never claim success with an unpatched live route.
@@ -6675,6 +6694,60 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "Final runtime proof failed for activated model "
                         f"{gguf_file}; rolling back to previous model"
                     )
+                consumers = {
+                    "open-webui": "dynamic_route",
+                    "dashboard": "live_env",
+                    "litellm": (
+                        "restarted"
+                        if litellm_restarted
+                        else "stopped"
+                        if container_states["ods-litellm"]["exists"]
+                        else "not_installed"
+                    ),
+                    "hermes": (
+                        "restarted"
+                        if hermes_restart_attempted
+                        else "updated_for_next_start"
+                        if hermes_config_mutated
+                        else "unchanged"
+                    ),
+                    "openclaw": (
+                        "recreated"
+                        if openclaw_recreated
+                        else "stopped"
+                        if container_states["ods-openclaw"]["exists"]
+                        else "not_installed"
+                    ),
+                    "opencode": (
+                        "restarted"
+                        if opencode_restarted
+                        else "updated_for_next_start"
+                        if opencode_config_mutated
+                        else "not_installed"
+                    ),
+                    "perplexica": (
+                        "updated"
+                        if perplexica_mutated
+                        else "stopped"
+                        if container_states["ods-perplexica"]["exists"]
+                        else "not_installed"
+                    ),
+                }
+                _atomic_write_json(
+                    activation_receipt,
+                    {
+                        "schema": "ods.model-activation-receipt.v1",
+                        "status": "complete",
+                        "modelId": str(model_id),
+                        "llmModel": str(llm_model_name),
+                        "ggufFile": str(gguf_file),
+                        "runtimeModelId": str(final_runtime_proof.get("identity") or ""),
+                        "contextLength": int(final_runtime_proof.get("contextLength") or context_length),
+                        "contextVerified": final_runtime_proof.get("contextVerified") is True,
+                        "consumers": consumers,
+                        "verifiedAt": str(final_runtime_proof.get("verifiedAt") or _iso_now()),
+                    },
+                )
                 committed = True  # system state is committed before the response write
                 if (
                     _switchboard_state is not None
@@ -6728,45 +6801,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "gguf_file": gguf_file,
                         "tier": requested_tier,
                         "context_length": int(context_length),
-                        "consumers": {
-                            "open-webui": "dynamic_route",
-                            "dashboard": "live_env",
-                            "litellm": (
-                                "restarted"
-                                if litellm_restarted
-                                else "stopped"
-                                if container_states["ods-litellm"]["exists"]
-                                else "not_installed"
-                            ),
-                            "hermes": (
-                                "restarted"
-                                if hermes_restart_attempted
-                                else "updated_for_next_start"
-                                if hermes_config_mutated
-                                else "unchanged"
-                            ),
-                            "openclaw": (
-                                "recreated"
-                                if openclaw_recreated
-                                else "stopped"
-                                if container_states["ods-openclaw"]["exists"]
-                                else "not_installed"
-                            ),
-                            "opencode": (
-                                "restarted"
-                                if opencode_restarted
-                                else "updated_for_next_start"
-                                if opencode_config_mutated
-                                else "not_installed"
-                            ),
-                            "perplexica": (
-                                "updated"
-                                if perplexica_mutated
-                                else "stopped"
-                                if container_states["ods-perplexica"]["exists"]
-                                else "not_installed"
-                            ),
-                        },
+                        "consumers": consumers,
                     },
                 )
             else:
@@ -6839,21 +6874,19 @@ class AgentHandler(BaseHTTPRequestHandler):
             if not target.exists():
                 json_response(self, 404, {"error": f"File not found: {gguf_file}"})
                 return
-            library_path = INSTALL_DIR / "config" / "model-library.json"
             parts_to_delete = [target]
-            if library_path.exists():
-                try:
-                    lib = json.loads(library_path.read_text(encoding="utf-8"))
-                    for m in lib.get("models", []):
-                        if m.get("gguf_file") == gguf_file and m.get("gguf_parts"):
-                            parts_to_delete = []
-                            for p in m["gguf_parts"]:
-                                pf = _safe_model_artifact_path(models_dir, p.get("file"))
-                                if pf is not None and pf.exists():
-                                    parts_to_delete.append(pf)
-                            break
-                except (json.JSONDecodeError, OSError):
-                    pass
+            try:
+                library = _load_model_library_records()
+            except RuntimeError:
+                library = []
+            for entry in library:
+                if entry.get("gguf_file") == gguf_file and entry.get("gguf_parts"):
+                    parts_to_delete = []
+                    for part in entry["gguf_parts"]:
+                        part_file = _safe_model_artifact_path(models_dir, part.get("file"))
+                        if part_file is not None and part_file.exists():
+                            parts_to_delete.append(part_file)
+                    break
 
             deleted_names = {path.name for path in parts_to_delete}
             deleted_names.add(gguf_file)
@@ -7315,14 +7348,51 @@ def _lemonade_loaded_context_is_sufficient(
     loaded = data.get("all_models_loaded")
     if not isinstance(loaded, list):
         return not _lemonade_version_at_least(data.get("version"), 10, 7)
-    actual_context = _lemonade_loaded_context_length(
-        data,
+    loaded_entry = _lemonade_loaded_model_entry(
+        loaded,
         expected_gguf_file=expected_gguf_file,
         expected_model_id=expected_model_id,
     )
+    if loaded_entry is None:
+        return False
+    recipe_options = loaded_entry.get("recipe_options")
+    if not isinstance(recipe_options, dict):
+        recipe_options = {}
+    actual_context = _positive_int(
+        recipe_options.get("ctx_size") or loaded_entry.get("ctx_size")
+    )
     if actual_context is not None:
         return actual_context >= expected_context
-    return False
+    # Lemonade before 10.7 reports the exact loaded checkpoint but does not
+    # expose its context size. Preserve compatibility for those versions while
+    # requiring modern runtimes to carry the context proof they advertise.
+    return not _lemonade_version_at_least(data.get("version"), 10, 7)
+
+
+def _lemonade_loaded_model_entry(
+    loaded: list,
+    *,
+    expected_gguf_file: str,
+    expected_model_id: str,
+) -> dict | None:
+    """Return the exact loaded Lemonade row for the requested model."""
+    for entry in loaded:
+        if not isinstance(entry, dict):
+            continue
+        if (
+            _runtime_model_identity_matches(
+                entry.get("model_name"),
+                model_id=expected_model_id,
+                gguf_file=expected_gguf_file,
+            )
+            or _runtime_model_identity_matches(
+                entry.get("checkpoint"),
+                model_id=expected_model_id,
+                gguf_file=expected_gguf_file,
+            )
+        ):
+            return entry
+    return None
 
 
 def _lemonade_loaded_context_length(
@@ -7341,28 +7411,17 @@ def _lemonade_loaded_context_length(
     loaded = data.get("all_models_loaded")
     if not isinstance(loaded, list):
         return None
-    for entry in loaded:
-        if not isinstance(entry, dict):
-            continue
-        matches_entry = (
-            _runtime_model_identity_matches(
-                entry.get("model_name"),
-                model_id=expected_model_id,
-                gguf_file=expected_gguf_file,
-            )
-            or _runtime_model_identity_matches(
-                entry.get("checkpoint"),
-                model_id=expected_model_id,
-                gguf_file=expected_gguf_file,
-            )
-        )
-        if not matches_entry:
-            continue
-        recipe_options = entry.get("recipe_options")
-        if not isinstance(recipe_options, dict):
-            recipe_options = {}
-        return _positive_int(recipe_options.get("ctx_size") or entry.get("ctx_size"))
-    return None
+    entry = _lemonade_loaded_model_entry(
+        loaded,
+        expected_gguf_file=expected_gguf_file,
+        expected_model_id=expected_model_id,
+    )
+    if entry is None:
+        return None
+    recipe_options = entry.get("recipe_options")
+    if not isinstance(recipe_options, dict):
+        recipe_options = {}
+    return _positive_int(recipe_options.get("ctx_size") or entry.get("ctx_size"))
 
 
 def _llama_runtime_context_length(host: str, port: str) -> int:
