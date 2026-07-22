@@ -317,6 +317,19 @@
       "tokens_per_sec_estimate": 155,
       "llm_model_name": "granite-4.0-h-1b",
       "llama_server_image": null,
+      "app_compatibility": {
+        "perplexica": {
+          "status": "unsupported_until_revalidated",
+          "label": "Perplexica revalidation required",
+          "reason": "Fleet model-UI run 2026-07-22T04:37Z on m5-mbp loaded this model and ODS Talk passed, but the Perplexica app probe emitted only a partial verification phrase while the same cycle on strix-halo passed. Keep it out of all-app release coverage until m5-mbp Perplexica compatibility is revalidated.",
+          "evidence": "fleet-test/runs/2026-07-22T04-37-32Z-release-product-0334416e344c-harness-8bdceb20b959-hosts-m5-mbp-strix-halo-windows-laptop-strixy/model-ui/cycle-003/m5-mbp",
+          "recordedAt": "2026-07-22T05:32:17Z",
+          "productSha": "0334416e344c2cdb9124bed88b7a71b98eea9fc4",
+          "harnessSha": "8bdceb20b9594515dae65f7f66df734ec152e1e4",
+          "hostScope": ["m5-mbp"],
+          "revalidateAgainstSha": "892df74a769cf8aa9530e8e10d319281e063483f"
+        }
+      },
       "install_recommendation": false
     },
     {

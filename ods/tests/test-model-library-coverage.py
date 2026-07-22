@@ -234,16 +234,21 @@ def test_smollm3_3b_is_not_agent_viable_until_app_revalidated():
     assert not _agent_viable_for_release(by_id["smollm3-3b-q4"])
 
 
-def test_granite4_1b_models_are_low_vram_agent_viable_candidates():
+def test_granite4_h_1b_requires_perplexica_revalidation_after_m5_partial_reply():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
 
     model = by_id["granite4.0-h-1b-q4"]
+    compatibility = model["app_compatibility"]
     assert model["vram_required_gb"] <= 3
     assert model["context_length"] >= HERMES_CONTEXT_FLOOR
     assert model["gguf_sha256"] == "da3d737121a96f3c9a316685212376257a7f167b74380855666dd488d6af3bcb"
     assert model["gguf_url"].startswith("https://huggingface.co/ibm-granite/granite-4.0-h-1b-GGUF/")
-    assert _agent_viable_for_release(model)
+    assert compatibility["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert "m5-mbp" in compatibility["perplexica"]["reason"]
+    assert "Perplexica" in compatibility["perplexica"]["reason"]
+    assert "cycle-003" in compatibility["perplexica"]["evidence"]
+    assert not _agent_viable_for_release(model)
 
 
 def test_falcon_h1_15b_is_not_low_vram_agent_viable_after_opencode_failure():
