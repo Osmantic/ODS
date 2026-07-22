@@ -1194,7 +1194,21 @@ def _atomic_write_bytes(
                     target_gid,
                 ):
                     os.chown(tmp_path, target_uid, target_gid)
-        os.replace(tmp_path, path)
+        last_error: PermissionError | None = None
+        for attempt in range(10):
+            try:
+                os.replace(tmp_path, path)
+                last_error = None
+                break
+            except PermissionError as exc:
+                last_error = exc
+                if attempt == 9:
+                    break
+                # Windows can briefly hold configuration files open while
+                # dashboard-api polls host-agent during model activation.
+                time.sleep(0.05 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
         if os.name != "nt":
             directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
             try:

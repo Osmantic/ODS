@@ -2043,6 +2043,51 @@ def test_text_snapshot_restores_exact_line_endings(tmp_path):
     assert (path.stat().st_uid, path.stat().st_gid) == original_owner
 
 
+def test_atomic_write_text_retries_windows_replace_race(tmp_path, monkeypatch):
+    path = tmp_path / ".env"
+    path.write_text("MODEL=old\n", encoding="utf-8")
+    monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+    real_replace = _mod.os.replace
+    calls = []
+
+    def flaky_replace(src, dst):
+        calls.append((src, dst))
+        if len(calls) < 3:
+            raise PermissionError("[WinError 5] Access is denied")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(_mod.os, "replace", flaky_replace)
+
+    _mod._atomic_write_text(path, "MODEL=new\n")
+
+    assert len(calls) == 3
+    assert path.read_text(encoding="utf-8") == "MODEL=new\n"
+    assert list(tmp_path.glob(".*.tmp")) == []
+
+
+def test_atomic_write_text_cleans_temp_after_replace_race_exhausted(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / ".env"
+    path.write_text("MODEL=old\n", encoding="utf-8")
+    monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+    calls = []
+
+    def locked_replace(src, dst):
+        calls.append((src, dst))
+        raise PermissionError("[WinError 5] Access is denied")
+
+    monkeypatch.setattr(_mod.os, "replace", locked_replace)
+
+    with pytest.raises(PermissionError):
+        _mod._atomic_write_text(path, "MODEL=new\n")
+
+    assert len(calls) == 10
+    assert path.read_text(encoding="utf-8") == "MODEL=old\n"
+    assert list(tmp_path.glob(".*.tmp")) == []
+
+
 class TestModelActivateRollback:
 
     @pytest.fixture(autouse=True)
