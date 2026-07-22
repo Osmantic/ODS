@@ -2350,11 +2350,13 @@ for service in (data.get("services") or {}).values():
     if service.get("build") is not None:
         continue
     image = str(service.get("image") or "").strip()
-    if image:
-        print(image)
-' | while IFS= read -r _image; do
+    if not image:
+        continue
+    platform = str(service.get("platform") or "").strip()
+    print(image + "\t" + platform)
+' | while IFS=$'\t' read -r _image _platform; do
                 _macos_is_local_image "$_image" && continue
-                printf '%s\n' "$_image"
+                printf '%s\t%s\n' "$_image" "$_platform"
             done | awk '!seen[$0]++'; then
                 return 0
             fi
@@ -2367,8 +2369,14 @@ for service in (data.get("services") or {}).values():
     }
 
     _macos_pull_image_with_retry() {
-        local image="$1" attempt max_attempts delay
+        # $2 is the compose service's platform pin (may be empty). Without it,
+        # docker pull resolves the host platform (linux/arm64 on Apple
+        # Silicon), which hard-fails for amd64-only images like TEI even
+        # though compose would run them pinned under emulation.
+        local image="$1" platform="${2:-}" attempt max_attempts delay
         local -a delays=(5 15 30)
+        local -a pull_cmd=(docker pull "$image")
+        [[ -n "$platform" ]] && pull_cmd=(docker pull --platform "$platform" "$image")
 
         if docker image inspect "$image" >/dev/null 2>&1; then
             log "Compose image already cached: $image"
@@ -2377,8 +2385,8 @@ for service in (data.get("services") or {}).values():
 
         max_attempts="${ODS_DOCKER_PULL_MAX_ATTEMPTS:-4}"
         for ((attempt=1; attempt<=max_attempts; attempt++)); do
-            ai "Pulling Compose image ($attempt/$max_attempts): $image"
-            if docker pull "$image" >>"$ODS_LOG_FILE" 2>&1; then
+            ai "Pulling Compose image ($attempt/$max_attempts): $image${platform:+ [$platform]}"
+            if "${pull_cmd[@]}" >>"$ODS_LOG_FILE" 2>&1; then
                 ai_ok "Pulled $image"
                 return 0
             fi
@@ -2394,7 +2402,7 @@ for service in (data.get("services") or {}).values():
     }
 
     _macos_pre_pull_compose_images() {
-        local image_output image failed
+        local image_output image platform failed
         image_output="$(_macos_compose_external_images)" || {
             ai_err "Could not resolve macOS Docker Compose images before service launch"
             ai "Inspect compose config with: cd '$INSTALL_DIR' && docker compose ${COMPOSE_FLAGS[*]} config --images"
@@ -2404,9 +2412,9 @@ for service in (data.get("services") or {}).values():
 
         ai "Verifying Compose image cache before launch..."
         failed=0
-        while IFS= read -r image; do
+        while IFS=$'\t' read -r image platform; do
             [[ -n "$image" ]] || continue
-            _macos_pull_image_with_retry "$image" || failed=$((failed + 1))
+            _macos_pull_image_with_retry "$image" "$platform" || failed=$((failed + 1))
         done <<< "$image_output"
 
         if [[ "$failed" -eq 0 ]]; then
