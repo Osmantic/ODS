@@ -61,4 +61,5 @@ services:
       llama-server-ready:
         condition: service_healthy
     environment:
-      OPENAI_API_BASE_URL: "http://${ODS_MACOS_HOST_GATEWAY:-host.docker.internal}:8080/v1"
+      OPENAI_API_BASE_URL: "${OPEN_WEBUI_LLM_BASE_URL:-http://${ODS_MACOS_HOST_GATEWAY:-host.docker.internal}:8080/v1}"
+      OPENAI_API_KEY: "${OPEN_WEBUI_LLM_API_KEY:-}"
