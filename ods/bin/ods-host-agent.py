@@ -359,6 +359,26 @@ def _model_lifecycle_conflict(requested_operation: str, active: dict) -> dict:
     return payload
 
 
+def _model_lifecycle_status() -> dict:
+    """Return the currently-owned model lifecycle operation, if any."""
+    with _model_lifecycle_state_lock:
+        operation = _model_lifecycle_operation
+        target = _model_lifecycle_target
+        activation_target = _model_activation_target
+    if not operation:
+        return {}
+    payload = {
+        "lifecycleActive": True,
+        "activeOperation": operation,
+        "activeTarget": target,
+    }
+    if operation == "model_activation":
+        payload["activeModelId"] = activation_target or target
+    else:
+        payload["activeModelId"] = None
+    return payload
+
+
 def _begin_model_activation(model_id: str) -> tuple[bool, str | None]:
     """Atomically acquire activation ownership and publish its target."""
     global _model_activation_target
@@ -4984,16 +5004,19 @@ class AgentHandler(BaseHTTPRequestHandler):
         status_path = INSTALL_DIR / "data" / "model-download-status.json"
         if not status_path.exists():
             data = {"status": "idle"}
+            data.update(_model_lifecycle_status())
             _verify_switchboard_route_for_status(data, "model-status")
             json_response(self, 200, data)
             return
         try:
             data = _read_model_status(status_path)
             data = _normalize_model_download_status(status_path, data)
+            data.update(_model_lifecycle_status())
             _verify_switchboard_route_for_status(data, "model-status")
             json_response(self, 200, data)
         except (json.JSONDecodeError, OSError):
             data = {"status": "idle"}
+            data.update(_model_lifecycle_status())
             _verify_switchboard_route_for_status(data, "model-status")
             json_response(self, 200, data)
 

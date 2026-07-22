@@ -185,6 +185,7 @@ class ModelLibraryEntry(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     appCompatibility: dict[str, Any] = Field(default_factory=dict)
     status: str  # "loaded", "downloaded", "available"
+    modelOperation: Optional[dict[str, Any]] = None
     recommended: bool = False
     configured: bool = False
     recommendation: Optional[dict[str, Any]] = None
@@ -210,5 +211,6 @@ class ModelLibraryResponse(BaseModel):
     hermesTargetContext: int = HERMES_TARGET_CONTEXT
     recommendationPolicy: Optional[str] = None
     recommendationAlternatives: list[dict[str, Any]] = Field(default_factory=list)
+    modelLifecycle: Optional[dict[str, Any]] = None
     odsMode: str = "unknown"
     configuredMode: str = "unknown"
