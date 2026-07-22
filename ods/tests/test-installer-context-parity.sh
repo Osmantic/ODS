@@ -131,6 +131,10 @@ assert_grep "installers/macos/lib/env-generator.sh" 'ODS_MODEL_SWITCHBOARD=\$\{s
     "macOS .env generation persists switchboard mode"
 assert_grep "installers/macos/lib/env-generator.sh" 'OPEN_WEBUI_LLM_BASE_URL=\$\{open_webui_llm_base_url\}' \
     "macOS .env generation carries the Open WebUI switchboard route"
+assert_grep "installers/macos/docker-compose.macos.yml" 'OPENAI_API_BASE_URL: "\$\{OPEN_WEBUI_LLM_BASE_URL:-http://\$\{ODS_MACOS_HOST_GATEWAY:-host\.docker\.internal\}:8080/v1\}"' \
+    "macOS Open WebUI compose route honors switchboard override"
+assert_grep "installers/macos/docker-compose.macos.yml" 'OPENAI_API_KEY: "\$\{OPEN_WEBUI_LLM_API_KEY:-\}"' \
+    "macOS Open WebUI compose route carries switchboard API key"
 assert_grep "installers/macos/install-macos.sh" 'render-runtime-configs\.py' \
     "macOS installer renders model-router runtime configs"
 assert_grep "installers/macos/install-macos.sh" 'PERPLEXICA_MODEL="ods/current"' \
