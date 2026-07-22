@@ -595,9 +595,11 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     assert all_by_id["granite4.1-3b-q4"]["appCompatibility"]["hermesTalk"]["status"] == (
         "unsupported_until_revalidated"
     )
-    assert all_by_id["granite3.1-2b-instruct-q4"]["appCompatibility"]["perplexica"]["status"] == "unknown"
+    assert all_by_id["granite3.1-2b-instruct-q4"]["appCompatibility"]["perplexica"]["status"] == (
+        "unsupported_until_revalidated"
+    )
     assert all_by_id["granite4.0-h-1b-q4"]["appCompatibility"]["perplexica"]["status"] == "unknown"
-    assert "granite3.1-2b-instruct-q4" in candidate_ids
+    assert "granite3.1-2b-instruct-q4" not in candidate_ids
     assert "granite4.0-h-1b-q4" in candidate_ids
     assert "phi4-mini-q4" not in candidate_ids
     assert "gemma3-4b-it-q4" not in candidate_ids

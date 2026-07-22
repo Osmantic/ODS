@@ -594,13 +594,12 @@
         "perplexica": {
           "status": "unsupported_until_revalidated",
           "label": "Perplexica revalidation required",
-          "reason": "Fleet model-UI run 2026-07-21T08:59Z on tower2 loaded this model and ODS Talk, LiteLLM, Open WebUI, and OpenCode passed, but the Perplexica app probe answered with prose/search-style content instead of the requested verification phrase; keep it out of all-app release coverage until Perplexica compatibility is revalidated.",
-          "evidence": "fleet-test/runs/2026-07-21T08-59-51Z-targeted-granite31-allapps-product-73762173ae0c-harness-ecd8157a6324-hosts-tower2/cycle-001/tower2",
-          "recordedAt": "2026-07-21T08:59:51Z",
-          "productSha": "73762173ae0c",
-          "harnessSha": "ecd8157a6324",
-          "hostScope": ["tower2"],
-          "expiresAt": "2026-08-21T00:00:00Z"
+          "reason": "Fleet model-UI runs on tower2 and strixy loaded this model and ODS Talk, LiteLLM, Open WebUI, and OpenCode passed where deployed, but the Perplexica app probe answered with prose/search-style content instead of the requested verification phrase; keep it out of all-app release coverage until Perplexica compatibility is revalidated.",
+          "evidence": "fleet-test/runs/2026-07-21T08-59-51Z-targeted-granite31-allapps-product-73762173ae0c-harness-ecd8157a6324-hosts-tower2/cycle-001/tower2; fleet-test/runs/2026-07-22T21-13-08Z-model-ui-product-39164d8c5bc3-harness-18e2bd60437f-hosts-strixy-switchboard-enabled-6cycle/cycle-006/strixy",
+          "recordedAt": "2026-07-22T22:21:04Z",
+          "productSha": "39164d8c5bc3306dd4e7ac3e884dcc8574b9930a",
+          "harnessSha": "18e2bd60437f4e5ba7b3cd461a37d99ab524ef6a",
+          "expiresAt": "2026-08-22T00:00:00Z"
         }
       },
       "install_recommendation": false

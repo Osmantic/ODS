@@ -250,6 +250,21 @@ def test_smollm3_3b_is_not_agent_viable_until_app_revalidated():
     assert not _agent_viable_for_release(by_id["smollm3-3b-q4"])
 
 
+def test_granite31_requires_global_perplexica_revalidation_after_strixy_failure():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+
+    model = by_id["granite3.1-2b-instruct-q4"]
+    compatibility = model["app_compatibility"]["perplexica"]
+
+    assert compatibility["status"] == "unsupported_until_revalidated"
+    assert "hostScope" not in compatibility
+    assert "tower2" in compatibility["reason"]
+    assert "strixy" in compatibility["reason"]
+    assert "cycle-006/strixy" in compatibility["evidence"]
+    assert not _agent_viable_for_release(model)
+
+
 def test_granite4_h_1b_requires_perplexica_revalidation_after_m5_partial_reply():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
