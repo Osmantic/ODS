@@ -142,6 +142,7 @@ export function TroubleshootingAssistant({ serviceStatus }) {
       <input
         type="text"
         placeholder="Search issues..."
+        aria-label="Search troubleshooting issues"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         className="w-full px-3 py-2 bg-theme-card border border-theme-border rounded-lg text-sm text-theme-text placeholder-theme-text-muted focus:outline-none focus:border-theme-accent"

@@ -28,7 +28,9 @@ function New-WindowsOpenCodeConfigObject {
         [hashtable]$LlmEndpoint,
         [string]$ModelId,
         [string]$ModelName,
-        [int]$ContextLimit
+        [int]$ContextLimit,
+        [string]$ApiKey = "no-key",
+        [string]$ProviderName = "llama-server (local)"
     )
 
     return [pscustomobject]@{
@@ -38,10 +40,10 @@ function New-WindowsOpenCodeConfigObject {
         provider = [pscustomobject]@{
             'llama-server' = [pscustomobject]@{
                 npm = "@ai-sdk/openai-compatible"
-                name = "llama-server (local)"
+                name = $ProviderName
                 options = [pscustomobject]@{
                     baseURL = $LlmEndpoint.BaseUrl
-                    apiKey = "no-key"
+                    apiKey = $ApiKey
                 }
                 models = [pscustomobject]@{
                     $ModelId = [pscustomobject]@{
@@ -63,11 +65,19 @@ function Update-WindowsOpenCodeConfigObject {
         [hashtable]$LlmEndpoint,
         [string]$ModelId,
         [string]$ModelName,
-        [int]$ContextLimit
+        [int]$ContextLimit,
+        [string]$ApiKey = "no-key",
+        [string]$ProviderName = "llama-server (local)"
     )
 
     if ($null -eq $Config) {
-        return New-WindowsOpenCodeConfigObject -LlmEndpoint $LlmEndpoint -ModelId $ModelId -ModelName $ModelName -ContextLimit $ContextLimit
+        return New-WindowsOpenCodeConfigObject `
+            -LlmEndpoint $LlmEndpoint `
+            -ModelId $ModelId `
+            -ModelName $ModelName `
+            -ContextLimit $ContextLimit `
+            -ApiKey $ApiKey `
+            -ProviderName $ProviderName
     }
 
     Set-OpenCodeObjectProperty -Target $Config -Name '$schema' -Value "https://opencode.ai/config.json"
@@ -85,13 +95,13 @@ function Update-WindowsOpenCodeConfigObject {
     $llamaProvider = $provider.'llama-server'
 
     Set-OpenCodeObjectProperty -Target $llamaProvider -Name 'npm' -Value "@ai-sdk/openai-compatible"
-    Set-OpenCodeObjectProperty -Target $llamaProvider -Name 'name' -Value "llama-server (local)"
+    Set-OpenCodeObjectProperty -Target $llamaProvider -Name 'name' -Value $ProviderName
 
     if (-not $llamaProvider.PSObject.Properties['options'] -or $null -eq $llamaProvider.options) {
         Set-OpenCodeObjectProperty -Target $llamaProvider -Name 'options' -Value ([pscustomobject]@{})
     }
     Set-OpenCodeObjectProperty -Target $llamaProvider.options -Name 'baseURL' -Value $LlmEndpoint.BaseUrl
-    Set-OpenCodeObjectProperty -Target $llamaProvider.options -Name 'apiKey' -Value "no-key"
+    Set-OpenCodeObjectProperty -Target $llamaProvider.options -Name 'apiKey' -Value $ApiKey
 
     if (-not $llamaProvider.PSObject.Properties['models'] -or $null -eq $llamaProvider.models) {
         Set-OpenCodeObjectProperty -Target $llamaProvider -Name 'models' -Value ([pscustomobject]@{})
@@ -120,6 +130,8 @@ function Sync-WindowsOpenCodeConfig {
         [string]$ModelName,
         [int]$ContextLimit,
         [string]$ConfigDir = $script:OPENCODE_CONFIG_DIR,
+        [string]$ApiKey = "no-key",
+        [string]$ProviderName = "llama-server (local)",
         [switch]$SkipIfUnavailable
     )
 
@@ -163,7 +175,9 @@ function Sync-WindowsOpenCodeConfig {
         -LlmEndpoint $LlmEndpoint `
         -ModelId $ModelId `
         -ModelName $ModelName `
-        -ContextLimit $ContextLimit
+        -ContextLimit $ContextLimit `
+        -ApiKey $ApiKey `
+        -ProviderName $ProviderName
 
     $_configJson = $_configObject | ConvertTo-Json -Depth 12
     $_utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -201,6 +215,29 @@ function Sync-WindowsOpenCodeConfigFromEnv {
     $_modelId = Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("GGUF_FILE") -Default $DefaultModelId
     $_modelName = Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("LLM_MODEL") -Default $DefaultModelName
     $_contextRaw = Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("MAX_CONTEXT", "CTX_SIZE") -Default "$DefaultContextLimit"
+    $_apiKey = "no-key"
+    $_providerName = "llama-server (local)"
+    $_switchboardMode = (Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("ODS_MODEL_SWITCHBOARD") -Default "observe").ToLowerInvariant()
+    if ($_switchboardMode -eq "enabled") {
+        $_litellmPort = Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("LITELLM_PORT") -Default "4000"
+        $_litellmKey = Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("LITELLM_KEY") -Default ""
+        if ([string]::IsNullOrWhiteSpace($_litellmKey)) {
+            throw "OpenCode switchboard config requires LITELLM_KEY, but it is empty."
+        }
+        $_llmEndpoint = @{
+            Name = "LLM (ODS switchboard)"
+            Backend = "litellm-switchboard"
+            Port = $_litellmPort
+            ApiBasePath = "/v1"
+            HealthUrl = "http://127.0.0.1:${_litellmPort}/health"
+            BaseUrl = "http://127.0.0.1:${_litellmPort}/v1"
+            ChatCompletionsUrl = "http://127.0.0.1:${_litellmPort}/v1/chat/completions"
+        }
+        $_modelId = "ods/current"
+        $_modelName = "ods/current"
+        $_apiKey = $_litellmKey
+        $_providerName = "ODS switchboard"
+    }
     $_contextLimit = 0
     if (-not [int]::TryParse($_contextRaw, [ref]$_contextLimit)) {
         $_contextLimit = $DefaultContextLimit
@@ -212,5 +249,7 @@ function Sync-WindowsOpenCodeConfigFromEnv {
         -ModelName $_modelName `
         -ContextLimit $_contextLimit `
         -ConfigDir $ConfigDir `
+        -ApiKey $_apiKey `
+        -ProviderName $_providerName `
         -SkipIfUnavailable:$SkipIfUnavailable
 }

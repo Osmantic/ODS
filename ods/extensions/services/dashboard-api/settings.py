@@ -7,14 +7,12 @@ remain in main.py so that test monkeypatches continue to intercept them.
 """
 
 import re
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import HTTPException
 
-from config import AGENT_URL
+from host_agent_client import AgentClientError, request_json as request_agent_json
 
 # ── Regex constants ────────────────────────────────────────────────────────────
 
@@ -30,7 +28,7 @@ _SETTINGS_APPLY_ALLOWED_SERVICES = frozenset({
     "llama-server", "open-webui", "litellm", "langfuse", "n8n",
     "hermes", "hermes-proxy", "openclaw", "opencode", "perplexica", "searxng", "qdrant",
     "tts", "whisper", "embeddings", "token-spy", "comfyui",
-    "ape", "privacy-shield", "ods-proxy",
+    "ape", "privacy-shield", "ods-proxy", "model-router",
 })
 _LLAMA_APPLY_KEYS = {
     "CTX_SIZE", "MAX_CONTEXT", "GGUF_FILE", "GGUF_URL", "GGUF_SHA256",
@@ -55,6 +53,18 @@ _MANUAL_RESTART_KEYS = {
     "BIND_ADDRESS",
     "DASHBOARD_API_KEY", "ODS_AGENT_KEY", "DASHBOARD_PORT",
     "DASHBOARD_API_PORT", "ODS_AGENT_PORT", "ODS_AGENT_HOST",
+}
+_READ_ONLY_ENV_FIELDS = {
+    "ODS_MODE": "Runtime mode is selected by the installer and cannot be changed from the dashboard.",
+    "TIER": "The active tier is managed by Model Manager so model consumers stay synchronized.",
+    "LLM_MODEL": "The active model is managed by Model Manager so model consumers stay synchronized.",
+    "GGUF_FILE": "The active model file is managed by Model Manager so activation remains transactional.",
+    "GGUF_URL": "Model artifact metadata is managed by Model Manager.",
+    "GGUF_SHA256": "Model integrity metadata is managed by Model Manager.",
+    "LEMONADE_MODEL": "The Lemonade model identity is resolved and managed during transactional activation.",
+    "MODEL_RUNTIME_PROFILE": "The runtime profile is selected and managed during model activation.",
+    "MODEL_RUNTIME_PROFILE_LABEL": "The runtime profile is selected and managed during model activation.",
+    "MODEL_RUNTIME_PROFILE_SOURCE": "The runtime profile is selected and managed during model activation.",
 }
 
 # ── Env parsing ────────────────────────────────────────────────────────────────
@@ -152,6 +162,8 @@ def _build_env_fields(
             "default": definition.get("default"),
             "value": value,
             "hasValue": value != "",
+            "readOnly": key in _READ_ONLY_ENV_FIELDS,
+            "readOnlyReason": _READ_ONLY_ENV_FIELDS.get(key, ""),
         }
 
     for key, value in values.items():
@@ -170,6 +182,8 @@ def _build_env_fields(
             "default": None,
             "value": value,
             "hasValue": value != "",
+            "readOnly": key in _READ_ONLY_ENV_FIELDS,
+            "readOnlyReason": _READ_ONLY_ENV_FIELDS.get(key, ""),
         }
 
     return fields
@@ -361,7 +375,7 @@ def _compute_env_apply_plan(previous_values: dict[str, str], next_values: dict[s
 
 def _check_host_agent_available() -> bool:
     try:
-        with urllib.request.urlopen(f"{AGENT_URL}/health", timeout=3) as response:
-            return response.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+        request_agent_json("GET", "/health", timeout=3)
+        return True
+    except AgentClientError:
         return False

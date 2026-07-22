@@ -45,6 +45,12 @@ _STRUCTS = {
     12: "<d",
 }
 
+# GGUF arrays may nest (item type 9 is itself "array"), so a crafted file can
+# chain arrays deep enough to exhaust the interpreter stack. Real exporters emit
+# flat arrays, so bound the depth and degrade gracefully instead of letting a
+# RecursionError escape this parser's failure contract.
+_MAX_ARRAY_DEPTH = 64
+
 _FILE_TYPE_LABELS = {
     0: "F32",
     1: "F16",
@@ -105,17 +111,17 @@ class _Reader:
         return self.read(length).decode("utf-8", errors="replace")
 
 
-def _read_value(reader: _Reader, value_type: int) -> Any:
+def _read_value(reader: _Reader, value_type: int, depth: int = 0) -> Any:
     if value_type in _STRUCTS:
         return reader.unpack(_STRUCTS[value_type])
     if value_type == 8:
         return reader.string()
     if value_type == 9:
-        return _read_array(reader)
+        return _read_array(reader, depth)
     raise ValueError(f"unsupported GGUF value type: {value_type}")
 
 
-def _skip_value(reader: _Reader, value_type: int) -> None:
+def _skip_value(reader: _Reader, value_type: int, depth: int = 0) -> None:
     if value_type in _STRUCTS:
         reader.skip(struct.calcsize(_STRUCTS[value_type]))
         return
@@ -124,24 +130,28 @@ def _skip_value(reader: _Reader, value_type: int) -> None:
         reader.skip(length)
         return
     if value_type == 9:
+        if depth >= _MAX_ARRAY_DEPTH:
+            raise ValueError("GGUF array nesting too deep")
         item_type = reader.unpack("<I")
         length = reader.unpack("<Q")
         for _ in range(length):
-            _skip_value(reader, item_type)
+            _skip_value(reader, item_type, depth + 1)
         return
     raise ValueError(f"unsupported GGUF value type: {value_type}")
 
 
-def _read_array(reader: _Reader) -> Any:
+def _read_array(reader: _Reader, depth: int = 0) -> Any:
+    if depth >= _MAX_ARRAY_DEPTH:
+        raise ValueError("GGUF array nesting too deep")
     item_type = reader.unpack("<I")
     length = reader.unpack("<Q")
     if item_type not in _STRUCTS and item_type not in (8, 9):
         raise ValueError(f"unsupported GGUF array type: {item_type}")
 
     sample_limit = 64
-    sample = [_read_value(reader, item_type) for _ in range(min(length, sample_limit))]
+    sample = [_read_value(reader, item_type, depth + 1) for _ in range(min(length, sample_limit))]
     for _ in range(max(length - sample_limit, 0)):
-        _skip_value(reader, item_type)
+        _skip_value(reader, item_type, depth + 1)
 
     if length <= sample_limit:
         return sample

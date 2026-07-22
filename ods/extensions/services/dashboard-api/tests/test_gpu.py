@@ -7,7 +7,8 @@ import pytest
 
 from gpu import (
     get_gpu_tier, get_gpu_info_nvidia, get_gpu_info_apple,
-    get_gpu_info_amd, get_gpu_info, run_command,
+    get_gpu_info_amd, get_gpu_info, get_gpu_info_windows_host,
+    get_gpu_info_windows_host_detailed, run_command,
 )
 
 
@@ -74,6 +75,18 @@ class TestGetGpuInfoNvidia:
         assert info is not None
         assert info.power_w is None
 
+    def test_marks_unsupported_sensors_unavailable(self, monkeypatch):
+        csv = "NVIDIA A100, 2048, 40536, [N/A], [N/A], 100.0"
+        monkeypatch.setattr("gpu.run_command", lambda cmd, **kw: (True, csv))
+
+        info = get_gpu_info_nvidia()
+
+        assert info is not None
+        assert info.utilization_percent == 0
+        assert info.temperature_c == 0
+        assert info.utilization_available is False
+        assert info.temperature_available is False
+
     def test_returns_none_on_command_failure(self, monkeypatch):
         monkeypatch.setattr("gpu.run_command", lambda cmd, **kw: (False, ""))
 
@@ -101,6 +114,7 @@ class TestGetGpuInfoNvidia:
         assert "× 2" in info.name
         assert info.memory_used_mb == 2048 + 4096
         assert info.memory_total_mb == 24564 * 2
+        assert info.gpu_count == 2
 
     def test_unified_memory_fallback_for_na_memory(self, monkeypatch):
         # GB10 / GB200 unified-memory: nvidia-smi reports [N/A] for memory.
@@ -124,6 +138,107 @@ class TestGetGpuInfoNvidia:
         monkeypatch.setattr("gpu._read_meminfo_mb", lambda: None)
 
         assert get_gpu_info_nvidia() is None
+
+
+class TestWindowsHostGpuInfo:
+
+    def test_maps_valid_host_agent_payload(self, monkeypatch):
+        monkeypatch.setenv("GPU_BACKEND", "amd")
+        monkeypatch.setattr("gpu._read_env_var_from_file", lambda key: "host")
+        monkeypatch.setattr("gpu.request_agent_json", lambda *args, **kwargs: {
+            "schema_version": "ods.host-gpu-metrics.v1",
+            "name": "AMD Radeon RX 9070 XT",
+            "memory_total_mb": 16368,
+            "memory_used_mb": 4400,
+            "memory_usage_available": True,
+            "utilization_percent": 37,
+            "utilization_available": True,
+            "temperature_c": None,
+            "temperature_available": False,
+        })
+
+        info = get_gpu_info_windows_host()
+
+        assert info is not None
+        assert info.name == "AMD Radeon RX 9070 XT"
+        assert info.memory_used_mb == 4400
+        assert info.utilization_percent == 37
+        assert info.temperature_available is False
+
+    def test_maps_unified_memory_type(self, monkeypatch):
+        monkeypatch.setenv("GPU_BACKEND", "amd")
+        monkeypatch.setattr("gpu._read_env_var_from_file", lambda key: "host")
+        monkeypatch.setattr("gpu.request_agent_json", lambda *args, **kwargs: {
+            "schema_version": "ods.host-gpu-metrics.v1",
+            "name": "AMD Radeon 8060S Graphics",
+            "memory_type": "unified",
+            "memory_total_mb": 98304,
+            "memory_used_mb": 8192,
+            "utilization_percent": 42,
+        })
+
+        info = get_gpu_info_windows_host()
+
+        assert info is not None
+        assert info.memory_type == "unified"
+
+    def test_maps_per_adapter_host_payload(self, monkeypatch):
+        monkeypatch.setenv("GPU_BACKEND", "amd")
+        monkeypatch.setattr("gpu._read_env_var_from_file", lambda key: "host")
+        monkeypatch.setattr("gpu.request_agent_json", lambda *args, **kwargs: {
+            "schema_version": "ods.host-gpu-metrics.v1",
+            "gpus": [
+                {
+                    "index": 0, "uuid": "luid-a", "name": "AMD Radeon RX 7900 XTX",
+                    "memory_total_mb": 24560, "memory_used_mb": 4096,
+                    "utilization_percent": 30, "memory_usage_available": True,
+                    "utilization_available": True,
+                },
+                {
+                    "index": 1, "uuid": "luid-b", "name": "AMD Radeon RX 7900 XTX",
+                    "memory_total_mb": 24560, "memory_used_mb": 8192,
+                    "utilization_percent": 70, "memory_usage_available": True,
+                    "utilization_available": True,
+                },
+            ],
+        })
+
+        gpus = get_gpu_info_windows_host_detailed()
+
+        assert gpus is not None
+        assert [gpu.uuid for gpu in gpus] == ["luid-a", "luid-b"]
+        assert [gpu.utilization_percent for gpu in gpus] == [30, 70]
+
+    def test_rejects_invalid_aggregate_count(self, monkeypatch):
+        monkeypatch.setenv("GPU_BACKEND", "amd")
+        monkeypatch.setattr("gpu._read_env_var_from_file", lambda key: "host")
+        monkeypatch.setattr("gpu.request_agent_json", lambda *args, **kwargs: {
+            "schema_version": "ods.host-gpu-metrics.v1",
+            "name": "AMD Radeon",
+            "memory_total_mb": 16384,
+            "gpu_count": "not-a-number",
+        })
+
+        assert get_gpu_info_windows_host() is None
+
+    def test_non_host_amd_does_not_call_agent(self, monkeypatch):
+        monkeypatch.setenv("GPU_BACKEND", "amd")
+        monkeypatch.setattr("gpu._read_env_var_from_file", lambda key: "container")
+        monkeypatch.setattr(
+            "gpu.request_agent_json",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected host-agent call")),
+        )
+
+        assert get_gpu_info_windows_host() is None
+
+    def test_nvidia_path_does_not_call_agent(self, monkeypatch):
+        monkeypatch.setenv("GPU_BACKEND", "nvidia")
+        monkeypatch.setattr(
+            "gpu.request_agent_json",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected host-agent call")),
+        )
+
+        assert get_gpu_info_windows_host() is None
 
 
 # --- get_gpu_info_apple (mock subprocess) ---
@@ -161,6 +276,9 @@ class TestGetGpuInfoApple:
         assert info.gpu_backend == "apple"
         assert info.memory_type == "unified"
         assert info.memory_used_mb > 0
+        assert info.memory_usage_available is False
+        assert info.utilization_available is False
+        assert info.temperature_available is False
 
     def test_returns_none_when_sysctl_fails(self, monkeypatch):
         monkeypatch.setattr("gpu.platform.system", lambda: "Darwin")
@@ -365,6 +483,36 @@ class TestGetGpuInfoDispatcher:
         result = get_gpu_info()
         assert result is not None
         assert result.name == "Radeon RX 7900"
+
+    def test_amd_multi_gpu_uses_detailed_aggregate(self, monkeypatch):
+        from models import IndividualGPU
+
+        monkeypatch.setattr("gpu.os.environ", {"GPU_BACKEND": "amd", "GPU_COUNT": "2"})
+        details = [
+            IndividualGPU(
+                index=index,
+                uuid=f"card{index}",
+                name="AMD Radeon RX 7900 XTX",
+                memory_used_mb=2048,
+                memory_total_mb=24576,
+                memory_percent=8.3,
+                utilization_percent=30 + index * 20,
+                temperature_c=60 + index,
+            )
+            for index in range(2)
+        ]
+        monkeypatch.setattr("gpu.get_gpu_info_amd_detailed", lambda: details)
+        monkeypatch.setattr(
+            "gpu.get_gpu_info_amd",
+            lambda: (_ for _ in ()).throw(AssertionError("single-GPU fallback should not run")),
+        )
+
+        result = get_gpu_info()
+
+        assert result is not None
+        assert result.gpu_count == 2
+        assert result.memory_total_mb == 49152
+        assert result.utilization_percent == 40
 
     def test_apple_on_darwin_autodetects(self, monkeypatch):
         monkeypatch.setattr("gpu.os.environ", {"GPU_BACKEND": ""})

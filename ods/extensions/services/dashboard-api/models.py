@@ -5,6 +5,7 @@ from typing import Annotated, Any, Optional
 from pydantic import BaseModel, Field
 
 from config import GPU_BACKEND
+from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 
 
 class GPUInfo(BaseModel):
@@ -17,6 +18,10 @@ class GPUInfo(BaseModel):
     power_w: Optional[float] = None
     memory_type: str = "discrete"
     gpu_backend: str = GPU_BACKEND
+    gpu_count: int = 1
+    memory_usage_available: bool = True
+    utilization_available: bool = True
+    temperature_available: bool = True
 
 
 class ServiceStatus(BaseModel):
@@ -119,7 +124,11 @@ class IndividualGPU(BaseModel):
     utilization_percent: int
     temperature_c: int
     power_w: Optional[float] = None
+    memory_type: str = "discrete"
     assigned_services: list[str] = []
+    memory_usage_available: bool = True
+    utilization_available: bool = True
+    temperature_available: bool = True
 
 
 class MultiGPUStatus(BaseModel):
@@ -174,7 +183,9 @@ class ModelLibraryEntry(BaseModel):
     architecture: Optional[str] = None
     activeParamsB: Optional[float] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    appCompatibility: dict[str, Any] = Field(default_factory=dict)
     status: str  # "loaded", "downloaded", "available"
+    modelOperation: Optional[dict[str, Any]] = None
     recommended: bool = False
     configured: bool = False
     recommendation: Optional[dict[str, Any]] = None
@@ -196,5 +207,10 @@ class ModelLibraryResponse(BaseModel):
     currentModel: Optional[str] = None
     loadedModel: Optional[str] = None
     configuredModel: Optional[str] = None
+    hermesMinimumContext: int = HERMES_MIN_CONTEXT
+    hermesTargetContext: int = HERMES_TARGET_CONTEXT
     recommendationPolicy: Optional[str] = None
     recommendationAlternatives: list[dict[str, Any]] = Field(default_factory=list)
+    modelLifecycle: Optional[dict[str, Any]] = None
+    odsMode: str = "unknown"
+    configuredMode: str = "unknown"

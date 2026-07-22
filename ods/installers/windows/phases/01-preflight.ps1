@@ -17,7 +17,8 @@
 #
 # Modder notes:
 #   Add new pre-flight checks (e.g., minimum Windows build) here.
-#   All fatal exits use `exit 1`. Non-fatal issues use Write-AIWarn.
+#   All fatal exits use `throw "ODS_INSTALL_ABORTED"` (caught by the
+#   orchestrator, which exits 1). Non-fatal issues use Write-AIWarn.
 # ============================================================================
 
 Write-Phase -Phase 1 -Total 13 -Name "PRE-FLIGHT CHECKS" -Estimate "~30 seconds"
@@ -50,7 +51,7 @@ Write-InfoBox "PowerShell:" "$($_psVer.Version)"
 if (-not $_psVer.Sufficient) {
     Write-AIError "PowerShell 5.1 or later is required."
     Write-AI "  Download: https://github.com/PowerShell/PowerShell/releases"
-    exit 1
+    throw "ODS_INSTALL_ABORTED"
 }
 Write-AISuccess "PowerShell $($_psVer.Version) OK"
 
@@ -61,11 +62,12 @@ try {
     if ($_build -lt 18362) {
         Write-AIError "Windows 10 build 18362 (version 1903) or later is required for WSL2."
         Write-AI "  Your build: $_build. Update Windows and re-run."
-        exit 1
+        throw "ODS_INSTALL_ABORTED"
     }
     $_winVer = [System.Environment]::OSVersion.Version
     Write-AISuccess "Windows $($_winVer.Major).$($_winVer.Minor) (build $_build) OK"
 } catch {
+    if ($_.FullyQualifiedErrorId -eq "ODS_INSTALL_ABORTED") { throw }
     Write-AIWarn "Could not determine Windows build -- continuing"
 }
 
@@ -89,7 +91,7 @@ if (-not $preflight_docker.Installed) {
     Write-AIError "Docker Desktop is not installed."
     Write-AI "  Download: https://docs.docker.com/desktop/install/windows-install/"
     Write-AI "  After installing, enable WSL2: Docker Desktop > Settings > General > Use WSL 2 based engine"
-    exit 1
+    throw "ODS_INSTALL_ABORTED"
 }
 Write-AISuccess "Docker CLI found"
 
@@ -97,14 +99,14 @@ if (-not $preflight_docker.Running) {
     Write-AIError "Docker Desktop is not running."
     Write-AI "  Start it from the Start Menu, then re-run this installer."
     Write-Host "  & 'C:\Program Files\Docker\Docker\Docker Desktop.exe'" -ForegroundColor Cyan
-    exit 1
+    throw "ODS_INSTALL_ABORTED"
 }
 Write-AISuccess "Docker Desktop running (v$($preflight_docker.Version))"
 
 if (-not $preflight_docker.WSL2Backend) {
     Write-AIWarn "WSL2 backend not detected. GPU passthrough requires WSL2."
     Write-AI "  Enable: Docker Desktop > Settings > General > Use WSL 2 based engine"
-    if (-not $force) { exit 1 }
+    if (-not $force) { throw "ODS_INSTALL_ABORTED" }
     Write-AIWarn "--Force specified, continuing without confirmed WSL2 backend."
 }
 
@@ -151,7 +153,7 @@ if ($_fsFatal) {
     Write-AIError "permissions. $_fsType cannot represent per-user permissions,"
     Write-AIError "which would leave secrets readable by every account on this machine."
     Write-AI "  Pick a path on an NTFS/ReFS volume (e.g. C:\Users\<you>\ods) and re-run."
-    exit 1
+    throw "ODS_INSTALL_ABORTED"
 }
 Write-AISuccess "Filesystem supports POSIX-style permissions"
 
@@ -282,7 +284,7 @@ if (-not $_disk.Sufficient) {
     }
     Write-AI "  Free up space on $($_disk.Drive), or rerun from the source checkout with:"
     Write-AI "  .\install.ps1 -InstallDir $_installDirHint"
-    exit 1
+    throw "ODS_INSTALL_ABORTED"
 }
 Write-AISuccess "Disk space OK ($($_disk.FreeGB) GB free)"
 
@@ -294,7 +296,7 @@ if (-not (Test-Path $_composeBase)) {
     Write-AI "  Make sure you are running this installer from the ODS clone:"
     Write-AI "  git clone https://github.com/Osmantic/ODS.git"
     Write-AI "  cd ODS && .\install.ps1"
-    exit 1
+    throw "ODS_INSTALL_ABORTED"
 }
 Write-AISuccess "Source tree OK"
 

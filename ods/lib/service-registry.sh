@@ -33,6 +33,7 @@ declare -A SERVICE_CATEGORIES   # service_id → core|recommended|optional
 declare -A SERVICE_DEPENDS      # service_id → space-separated dependency IDs
 declare -A SERVICE_HEALTH       # service_id → health endpoint path
 declare -A SERVICE_HEALTH_TIMEOUTS  # service_id → health check timeout in seconds
+declare -A SERVICE_STARTUP_CHECKS # service_id → "true" unless manifest sets startup_check: false
 declare -A SERVICE_PORTS        # service_id → external port (what the user hits on localhost)
 declare -A SERVICE_PORT_ENVS    # service_id → env var name for the external port
 # Services with `host_network: true` in their manifest (Docker
@@ -184,11 +185,13 @@ for service_dir in _all_service_dirs:
         print(f'SERVICE_DEPENDS["{_esc(sid)}"]="{_esc(" ".join(str(d) for d in depends))}"')
         health = s.get("health", "/health")
         health_timeout = s.get("health_timeout", 5)  # Default 5 seconds
+        startup_check = "false" if s.get("startup_check") is False else "true"
         port = s.get("external_port_default", s.get("port", 0))
         port_env = s.get("external_port_env", "")
         host_network = "1" if s.get("host_network") else ""
         print(f'SERVICE_HEALTH["{_esc(sid)}"]="{_esc(health)}"')
         print(f'SERVICE_HEALTH_TIMEOUTS["{_esc(sid)}"]="{_esc(health_timeout)}"')
+        print(f'SERVICE_STARTUP_CHECKS["{_esc(sid)}"]="{startup_check}"')
         print(f'SERVICE_PORTS["{_esc(sid)}"]="{_esc(port)}"')
         print(f'SERVICE_PORT_ENVS["{_esc(sid)}"]="{_esc(port_env)}"')
         if host_network:
@@ -294,6 +297,13 @@ sr_list_enabled() {
         local cf="${SERVICE_COMPOSE[$sid]}"
         [[ -n "$cf" && -f "$cf" ]] && echo "$sid"
     done
+}
+
+sr_requires_startup_check() {
+    sr_load
+    local sid
+    sid=$(sr_resolve "$1")
+    [[ "${SERVICE_STARTUP_CHECKS[$sid]:-true}" != "false" ]]
 }
 
 # Get display name for a service ID

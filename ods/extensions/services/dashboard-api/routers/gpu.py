@@ -16,10 +16,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from security import verify_api_key
 
 from gpu import (
+    aggregate_gpu_details,
     decode_gpu_assignment,
     get_gpu_info_amd_detailed,
     get_gpu_info_apple,
     get_gpu_info_nvidia_detailed,
+    get_gpu_info_windows_host,
+    get_gpu_info_windows_host_detailed,
     read_gpu_topology,
 )
 from models import GPUInfo, IndividualGPU, MultiGPUStatus
@@ -57,7 +60,11 @@ def _apple_info_to_individual(info: GPUInfo) -> IndividualGPU:
         utilization_percent=info.utilization_percent,
         temperature_c=info.temperature_c,
         power_w=info.power_w,
+        memory_type="unified",
         assigned_services=[],
+        memory_usage_available=info.memory_usage_available,
+        utilization_available=info.utilization_available,
+        temperature_available=info.temperature_available,
     )
 
 
@@ -105,9 +112,30 @@ def _amd_host_runtime_fallback_gpus() -> Optional[list[IndividualGPU]]:
     if not runtime_mode.startswith("windows"):
         return None
 
+    detailed = get_gpu_info_windows_host_detailed()
+    if detailed:
+        return detailed
+
+    host_info = get_gpu_info_windows_host()
+    if host_info is not None:
+        return [IndividualGPU(
+            index=0,
+            uuid="amd-windows-host-0",
+            name=host_info.name,
+            memory_used_mb=host_info.memory_used_mb,
+            memory_total_mb=host_info.memory_total_mb,
+            memory_percent=host_info.memory_percent,
+            utilization_percent=host_info.utilization_percent,
+            temperature_c=host_info.temperature_c,
+            power_w=host_info.power_w,
+            memory_type=host_info.memory_type,
+            assigned_services=["llama-server"],
+            memory_usage_available=host_info.memory_usage_available,
+            utilization_available=host_info.utilization_available,
+            temperature_available=host_info.temperature_available,
+        )]
+
     count = max(1, _env_int("GPU_COUNT", 1))
-    host_ram_gb = max(0, _env_int("HOST_RAM_GB", 0))
-    memory_total_mb = host_ram_gb * 1024
     backend = _clean_env("AMD_INFERENCE_BACKEND").lower() or "unknown"
     runtime_label = "Lemonade" if runtime == "lemonade" else "llama-server"
     name = f"AMD {runtime_label} host runtime"
@@ -120,57 +148,19 @@ def _amd_host_runtime_fallback_gpus() -> Optional[list[IndividualGPU]]:
             uuid=f"amd-host-runtime-{idx}",
             name=name,
             memory_used_mb=0,
-            memory_total_mb=memory_total_mb,
+            memory_total_mb=0,
             memory_percent=0.0,
             utilization_percent=0,
             temperature_c=0,
             power_w=None,
+            memory_type="discrete",
             assigned_services=["llama-server"],
+            memory_usage_available=False,
+            utilization_available=False,
+            temperature_available=False,
         )
         for idx in range(count)
     ]
-
-
-def _build_aggregate(gpus: list[IndividualGPU], backend: str) -> GPUInfo:
-    """Compute an aggregate GPUInfo from a list of IndividualGPU objects."""
-    if len(gpus) == 1:
-        g = gpus[0]
-        return GPUInfo(
-            name=g.name,
-            memory_used_mb=g.memory_used_mb,
-            memory_total_mb=g.memory_total_mb,
-            memory_percent=g.memory_percent,
-            utilization_percent=g.utilization_percent,
-            temperature_c=g.temperature_c,
-            power_w=g.power_w,
-            gpu_backend=backend,
-        )
-
-    mem_used = sum(g.memory_used_mb for g in gpus)
-    mem_total = sum(g.memory_total_mb for g in gpus)
-    avg_util = round(sum(g.utilization_percent for g in gpus) / len(gpus))
-    max_temp = max(g.temperature_c for g in gpus)
-    pw_values = [g.power_w for g in gpus if g.power_w is not None]
-    total_power: Optional[float] = round(sum(pw_values), 1) if pw_values else None
-
-    names = [g.name for g in gpus]
-    if len(set(names)) == 1:
-        display_name = f"{names[0]} \u00d7 {len(gpus)}"
-    else:
-        display_name = " + ".join(names[:2])
-        if len(names) > 2:
-            display_name += f" + {len(names) - 2} more"
-
-    return GPUInfo(
-        name=display_name,
-        memory_used_mb=mem_used,
-        memory_total_mb=mem_total,
-        memory_percent=round(mem_used / mem_total * 100, 1) if mem_total > 0 else 0.0,
-        utilization_percent=avg_util,
-        temperature_c=max_temp,
-        power_w=total_power,
-        gpu_backend=backend,
-    )
 
 
 def _clean_env(name: str) -> str:
@@ -347,7 +337,7 @@ async def gpu_detailed():
     if not gpus:
         raise HTTPException(status_code=503, detail="No GPU data available")
 
-    aggregate = _build_aggregate(gpus, gpu_backend)
+    aggregate = aggregate_gpu_details(gpus, gpu_backend)
 
     assignment_full = decode_gpu_assignment()
     assignment_data = assignment_full.get("gpu_assignment") if assignment_full else None
@@ -520,9 +510,9 @@ async def gpu_history():
         }
         for sample in _GPU_HISTORY:
             g = sample["gpus"].get(gpu_key, {})
-            gpus_data[gpu_key]["utilization"].append(g.get("utilization", 0))
-            gpus_data[gpu_key]["memory_percent"].append(g.get("memory_percent", 0))
-            gpus_data[gpu_key]["temperature"].append(g.get("temperature", 0))
+            gpus_data[gpu_key]["utilization"].append(g.get("utilization"))
+            gpus_data[gpu_key]["memory_percent"].append(g.get("memory_percent"))
+            gpus_data[gpu_key]["temperature"].append(g.get("temperature"))
             gpus_data[gpu_key]["power_w"].append(g.get("power_w"))
 
     return {"timestamps": timestamps, "gpus": gpus_data}
@@ -543,9 +533,9 @@ async def poll_gpu_history() -> None:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "gpus": {
                         str(g.index): {
-                            "utilization": g.utilization_percent,
-                            "memory_percent": g.memory_percent,
-                            "temperature": g.temperature_c,
+                            "utilization": g.utilization_percent if g.utilization_available else None,
+                            "memory_percent": g.memory_percent if g.memory_usage_available else None,
+                            "temperature": g.temperature_c if g.temperature_available else None,
                             "power_w": g.power_w,
                         }
                         for g in gpus

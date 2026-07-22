@@ -43,11 +43,15 @@ bash tests/contracts/test-port-contracts.sh
 echo "[contract] Windows AMD local compose readiness"
 bash tests/contracts/test-windows-amd-local-compose.sh
 
+echo "[contract] Windows restart recreates env-backed containers"
+bash tests/test-windows-restart-recreate-env.sh
+
 echo "[contract] external Lemonade compose overlay readiness"
 bash tests/contracts/test-external-lemonade-contracts.sh
 
 echo "[contract] bootstrap hot-swap force-recreate"
 bash tests/test-bootstrap-upgrade-hotswap-contract.sh
+bash tests/contracts/test-windows-lemonade-swap-wait.sh
 
 echo "[contract] bootstrap Docker hot-swap rollback"
 bash tests/test-bootstrap-upgrade-docker-rollback.sh
@@ -79,7 +83,7 @@ grep -qF 'ods/ods-cli text eol=lf' ../.gitattributes \
 
 _pre_ods_guard_tmp="$(mktemp -d)"
 _pre_ods_guard_harness="$_pre_ods_guard_tmp/bootstrap-guard.sh"
-for _pre_ods_helper in _ods_is_related_install_dir _ods_related_compose_containers; do
+for _pre_ods_helper in _ods_is_install_backup_dir _ods_is_related_install_dir _ods_related_compose_containers; do
   sed -n "/^${_pre_ods_helper}() {/,/^}/p" get-ods.sh \
     > "$_pre_ods_guard_tmp/bootstrap-${_pre_ods_helper}.sh"
   sed -n "/^${_pre_ods_helper}() {/,/^}/p" installers/phases/01-preflight.sh \
@@ -160,6 +164,25 @@ fi
 grep -qF 'related install directory' "$_pre_ods_guard_tmp/auto-path.log" \
   || { echo "[FAIL] dormant related-install rejection must identify the directory"; rm -rf "$_pre_ods_guard_tmp"; exit 1; }
 rm -rf "$_pre_ods_guard_tmp/home/related"
+
+mkdir -p "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646/data"
+touch "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646/.env"
+cat > "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646/docker-compose.base.yml" <<'COMPOSE'
+services:
+  llama-server:
+  open-webui:
+  dashboard-api:
+COMPOSE
+if ! PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
+    ODS_BOOTSTRAP_ROOT="$_pre_ods_guard_tmp/home" \
+    INSTALL_DIR="$_pre_ods_guard_tmp/new-install" \
+    bash "$_pre_ods_guard_harness" >"$_pre_ods_guard_tmp/backup-path.log" 2>&1; then
+  cat "$_pre_ods_guard_tmp/backup-path.log"
+  echo "[FAIL] bootstrap guard must ignore timestamped dormant backup directories"
+  rm -rf "$_pre_ods_guard_tmp"
+  exit 1
+fi
+rm -rf "$_pre_ods_guard_tmp/home/older-stack.backup-20260518-195646"
 
 mkdir -p "$_pre_ods_guard_tmp/relocated/data"
 touch "$_pre_ods_guard_tmp/relocated/.env"
@@ -245,13 +268,45 @@ awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_maybe_resume_bootstrap_up
   || { echo "[FAIL] ods start must retry failed bootstrap upgrades"; exit 1; }
 awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_wait_for_bootstrap_compose_safe' \
   || { echo "[FAIL] ods restart must wait for active bootstrap hot-swaps before compose"; exit 1; }
+awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_reload_model_env' \
+  || { echo "[FAIL] ods restart must reload model env after bootstrap hot-swap wait"; exit 1; }
 awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_wait_for_bootstrap_compose_safe' \
   || { echo "[FAIL] ods start must wait for active bootstrap hot-swaps before compose"; exit 1; }
+awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_reload_model_env' \
+  || { echo "[FAIL] ods start must reload model env after bootstrap hot-swap wait"; exit 1; }
+grep -q '_macos_persist_bootstrap_upgrade_args' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must persist bootstrap-upgrade retry metadata"; exit 1; }
+grep -q '"$BOOTSTRAP_GGUF_FILE"' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must pass the bootstrap GGUF into bootstrap-upgrade"; exit 1; }
+grep -q '\$script:BOOTSTRAP_GGUF_FILE' installers/windows/install-windows.ps1 \
+  || { echo "[FAIL] Windows installer must pass the bootstrap GGUF into bootstrap-upgrade"; exit 1; }
+awk '/cmd_restart\(\)/,/^}/' installers/macos/ods-macos.sh | grep -q 'macos_maybe_resume_bootstrap_upgrade' \
+  || { echo "[FAIL] macOS ods restart must retry failed bootstrap upgrades"; exit 1; }
+awk '/cmd_start\(\)/,/^}/' installers/macos/ods-macos.sh | grep -q 'macos_maybe_resume_bootstrap_upgrade' \
+  || { echo "[FAIL] macOS ods start must retry failed bootstrap upgrades"; exit 1; }
+awk '/cmd_restart\(\)/,/^}/' installers/macos/ods-macos.sh | grep -q 'macos_wait_for_bootstrap_compose_safe' \
+  || { echo "[FAIL] macOS ods restart must wait for active bootstrap hot-swaps"; exit 1; }
+awk '/cmd_start\(\)/,/^}/' installers/macos/ods-macos.sh | grep -q 'macos_wait_for_bootstrap_compose_safe' \
+  || { echo "[FAIL] macOS ods start must wait for active bootstrap hot-swaps"; exit 1; }
+awk '/cmd_update\(\)/,/^}/' installers/macos/ods-macos.sh | grep -q 'macos_maybe_resume_bootstrap_upgrade' \
+  || { echo "[FAIL] macOS ods update must retry failed bootstrap upgrades after compose is back"; exit 1; }
 grep -q 'starting|verifying|swapping' ods-cli \
   || { echo "[FAIL] ods-cli bootstrap compose guard must include swapping"; exit 1; }
 
 echo "[contract] macOS host-agent LaunchAgent install-dir"
 bash tests/test-macos-host-agent-verification.sh
+
+echo "[contract] macOS direct binds replace conflicting Colima bridges"
+bash tests/test-macos-direct-bind-bridge.sh
+
+echo "[contract] macOS CLI preserves cloud/local model routing"
+bash tests/test-macos-cli-mode-routing.sh
+
+echo "[contract] macOS cloud resolver preserves selected extension state"
+bash tests/test-macos-cloud-resolver.sh
+
+echo "[contract] macOS installer preserves authenticated local/cloud transitions"
+bash tests/test-macos-installer-transitions.sh
 
 echo "[contract] AMD reassign keeps HSA override Strix-only"
 grep -q '_env_set "HSA_OVERRIDE_GFX_VERSION" "11.5.1"' ods-cli \
@@ -300,6 +355,8 @@ if grep -qF 'proxy_pass http://dashboard-api:3002;' "$dashboard_nginx"; then
   echo "[FAIL] dashboard nginx must not pin dashboard-api at config-load time"
   exit 1
 fi
+grep -A16 -F 'location ~ ^/api/models/.+/load$ {' "$dashboard_nginx" | grep -qF 'proxy_read_timeout 2700s;' \
+  || { echo "[FAIL] dashboard nginx model activation route must cover the host-agent activation budget"; exit 1; }
 
 echo "[contract] bundled service CPU limits are env-driven"
 grep -qF "cpus: '\${TTS_CPU_LIMIT:-1.0}'" extensions/services/tts/compose.yaml \
@@ -529,6 +586,9 @@ if grep -q '^[[:space:]]*_build_services=(dashboard dashboard-api ape token-spy 
   exit 1
 fi
 
+echo "[contract] failed requested local builds cannot reuse stale images"
+bash tests/test-phase11-local-build-failure.sh
+
 echo "[contract] OpenClaw deprecation preserves actual installs only"
 for installer in install-core.sh installers/macos/install-macos.sh; do
   grep -Fq 'name=^/ods-openclaw$' "$installer" \
@@ -710,5 +770,8 @@ fi
 
 echo "[contract] Hermes context defaults are installer-wide"
 bash tests/test-installer-context-parity.sh
+
+echo "[contract] Linux installer/background model lifecycle serialization"
+bash tests/test-linux-installer-model-lifecycle-lock.sh
 
 echo "[PASS] installer contracts"

@@ -25,6 +25,7 @@ matches the work in front of them.
 | Change installer behavior | [INSTALLER-ARCHITECTURE.md](INSTALLER-ARCHITECTURE.md) | [BACKEND-CONTRACT.md](BACKEND-CONTRACT.md), [PREFLIGHT-ENGINE.md](PREFLIGHT-ENGINE.md) |
 | Change model routing | [MODEL-MANAGEMENT.md](MODEL-MANAGEMENT.md) | [MODE-SWITCH.md](MODE-SWITCH.md), [ENGINE-PROVIDER-MODES.md](ENGINE-PROVIDER-MODES.md), [BACKEND-CONTRACT.md](BACKEND-CONTRACT.md) |
 | Add or harden a service | [EXTENSIONS.md](EXTENSIONS.md) | [../extensions/CATALOG.md](../extensions/CATALOG.md), [../extensions/schema/README.md](../extensions/schema/README.md) |
+| Add an app that uses the local LLM | [SWAP-SAFE-EXTENSIONS.md](SWAP-SAFE-EXTENSIONS.md) | [EXTENSIONS.md](EXTENSIONS.md), [MODEL-MANAGEMENT.md](MODEL-MANAGEMENT.md), [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) |
 | Build a custom edition or fork | [FORKABILITY.md](FORKABILITY.md) | [RELEASE_CHANNELS.md](RELEASE_CHANNELS.md), [BUILD-ON-ODS-SERVER.md](BUILD-ON-ODS-SERVER.md), [OFFLINE_AND_MIRRORING.md](OFFLINE_AND_MIRRORING.md), [VALIDATION_REPRODUCIBILITY.md](VALIDATION_REPRODUCIBILITY.md) |
 | Review a PR | [../CONTRIBUTING.md](../CONTRIBUTING.md) | [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md), [TESTING.md](TESTING.md), [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md), [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) |
 | Maintain a release or fork | [MAINTAINER_RUNBOOK.md](MAINTAINER_RUNBOOK.md) | [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md), [INSTALLER_PHASE_CONTRACTS.md](INSTALLER_PHASE_CONTRACTS.md), [COMPOSE_RESOLVER_CONTRACTS.md](COMPOSE_RESOLVER_CONTRACTS.md), [BRANCH_HYGIENE.md](BRANCH_HYGIENE.md) |
@@ -105,6 +106,7 @@ canonical source and treat older recipes as context.
 | [OFFLINE_AND_MIRRORING.md](OFFLINE_AND_MIRRORING.md) | Fork operators / appliance builders | Pinning, mirroring, and preserving release artifacts for offline or independent operation |
 | [VALIDATION_REPRODUCIBILITY.md](VALIDATION_REPRODUCIBILITY.md) | Fork operators / release reviewers | How to reproduce upstream validation layers on local hardware and record receipts |
 | [EXTENSIONS.md](EXTENSIONS.md) | Builders | Add Docker services, manifests, dashboard plugins |
+| [SWAP-SAFE-EXTENSIONS.md](SWAP-SAFE-EXTENSIONS.md) | Builders / reviewers | Make LLM-consuming extensions model-swap-safe with the gateway alias and `service.llm` contract |
 | [../extensions/templates/README.md](../extensions/templates/README.md) | Builders | Starter manifest, compose, GPU overlay, and dashboard plugin templates |
 | [../extensions/CATALOG.md](../extensions/CATALOG.md) | Builders / reviewers | Current bundled service manifest catalog |
 | [SERVICE_MANIFEST_V2_PLAN.md](SERVICE_MANIFEST_V2_PLAN.md) | Maintainers / extension reviewers | Non-breaking plan for future manifest schema evolution |
@@ -127,6 +129,7 @@ canonical source and treat older recipes as context.
 | [HARDWARE-CLASSES.md](HARDWARE-CLASSES.md) | Developers | GPU-to-tier classification logic |
 | [SUPPORT-MATRIX.md](SUPPORT-MATRIX.md) | Operators | Platform/GPU support status |
 | [MODEL-MANAGEMENT.md](MODEL-MANAGEMENT.md) | Operators | Dashboard model downloads, switching, and manual GGUF workflows |
+| [MODEL-SWITCHBOARD.md](MODEL-SWITCHBOARD.md) | Contributors | Model Switchboard architecture, PR series plan, state/route contracts, and rollout gates |
 | [CAPABILITY-PROFILE.md](CAPABILITY-PROFILE.md) | Developers | Machine capability profiling schema |
 | [MULTI-USER-SETUP.md](MULTI-USER-SETUP.md) | Operators | Expose and tune one install for multiple users |
 | [PROFILES.md](PROFILES.md) | Reference | Docker Compose profiles (historical reference) |

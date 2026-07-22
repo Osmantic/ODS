@@ -98,6 +98,19 @@ service:
   # ── Environment Variables (optional) ──
   # Documents env vars this service uses. Helps "ods enable" prompt for values.
   env_vars: []
+
+  # --- Model swap contract (optional, REQUIRED if your service uses an LLM) ---
+  # Tier 1 apps should route through the ODS gateway alias and never store a
+  # specific model name. Direct routes must declare how they refresh after swaps.
+  # llm:
+  #   consumes: true
+  #   route: gateway              # gateway | direct
+  #   pinning: none               # none | dynamic
+  #   min_context: 65536          # optional capability floor
+  #   probe:
+  #     kind: chat                # chat | completion | custom
+  #     path: /v1/chat/completions
+  #     auth: env:LITELLM_KEY
   # env_vars:
   #   - key: MY_API_KEY
   #     required: true

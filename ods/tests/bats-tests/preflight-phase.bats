@@ -165,6 +165,7 @@ MOCK
         export DRY_RUN=false
         export PKG_MANAGER="apt"
         export VERSION="2.3.0"
+        export ODS_ALLOW_LEGACY_PARALLEL=1
 
         log() { :; }
         warn() { :; }

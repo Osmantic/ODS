@@ -25,6 +25,7 @@
       "gguf_file": "Phi-4-mini-instruct-Q4_K_M.gguf",
       "gguf_url": "https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf",
       "gguf_sha256": "88c00229914083cd112853aab84ed51b87bdf6b9ce42f532d8c85c7c63b1730a",
+      "size_bytes": 2491874272,
       "size_mb": 2490,
       "vram_required_gb": 4,
       "context_length": 128000,
@@ -33,7 +34,1064 @@
       "description": "Microsoft's compact model with 128K context. Punches above its weight on reasoning and code.",
       "tokens_per_sec_estimate": 130,
       "llm_model_name": "phi-4-mini",
-      "llama_server_image": null
+      "llama_server_image": null,
+      "app_compatibility": {
+        "openai_chat": {
+          "status": "verified",
+          "reason": "Fleet diagnostic on m5-mbp at 42b3a95c returned the requested verification code in 4/4 direct OpenAI-compatible chat completions."
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-20T10:45Z on strixy loaded Phi-4 Mini successfully, but ODS Talk returned a corrupted verification phrase during release app probing; keep it out of Talk and all-app release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-20T10-45-12Z-release-product-6b152663c2e3-harness-ec9ada8148fa-hosts-windows-laptop-strixy/model-ui/cycle-001/strixy"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "ODS Talk release probe failed exact verification after successful Phi-4 Mini load; not agent-viable until a Talk revalidation passes.",
+          "evidence": "fleet-test/runs/2026-07-20T10-45-12Z-release-product-6b152663c2e3-harness-ec9ada8148fa-hosts-windows-laptop-strixy/model-ui/cycle-001/strixy"
+        }
+      }
+    },
+    {
+      "id": "phi3.5-mini-q4",
+      "name": "Phi-3.5 Mini",
+      "family": "phi",
+      "gguf_file": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf",
+      "gguf_sha256": "e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5",
+      "size_bytes": 2393232672,
+      "size_mb": 2393,
+      "vram_required_gb": 4,
+      "context_length": 128000,
+      "quantization": "Q4_K_M",
+      "specialty": "Long Context",
+      "description": "Microsoft's previous-generation compact Phi model with 128K context. Useful as a lightweight long-context fallback.",
+      "tokens_per_sec_estimate": 125,
+      "llm_model_name": "phi-3.5-mini-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "openai_chat": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-16T11-44Z on windows-laptop downloaded this model with a valid SHA, but llama.cpp never reported the requested Phi-3.5 runtime identity during activation; keep it out of direct-chat and release switch coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-16T11-44-05Z-release-affected-product-d11ef611-harness-a7745b8-windows-pair/model-ui/cycle-002/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "phi4-mini-reasoning-q4",
+      "name": "Phi-4 Mini Reasoning",
+      "family": "phi",
+      "gguf_file": "Phi-4-mini-reasoning-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/SandLogicTechnologies/Phi-4-mini-reasoning-GGUF/resolve/main/Phi-4-mini-reasoning-Q4_K_M.gguf",
+      "gguf_sha256": "81878401a2f8160473649af89560a7fc0932f3623e4f6e58143d5dcbf71d6480",
+      "size_bytes": 2491875232,
+      "size_mb": 2490,
+      "vram_required_gb": 4,
+      "context_length": 128000,
+      "quantization": "Q4_K_M",
+      "specialty": "Reasoning",
+      "description": "Microsoft's compact Phi reasoning model with 128K context. A low-VRAM candidate for math-heavy and logic-heavy chat workflows.",
+      "tokens_per_sec_estimate": 110,
+      "llm_model_name": "phi-4-mini-reasoning",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-17T00-45Z on windows-laptop loaded this model successfully and the runtime reported phi4-mini-reasoning-q4, but ODS Talk timed out after the model returned no usable agent response; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-17T00-45-33Z/model-ui/cycle-002/windows-laptop"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-17T00-45Z on windows-laptop loaded this model successfully and direct route readiness passed, but ODS Talk did not complete the streamed verification prompt before timeout; keep it out of ODS Talk release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-17T00-45-33Z/model-ui/cycle-002/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "qwen2.5-1.5b-instruct-q4",
+      "name": "Qwen 2.5 1.5B Instruct",
+      "family": "qwen",
+      "gguf_file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+      "gguf_url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+      "gguf_sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+      "size_mb": 1120,
+      "vram_required_gb": 3,
+      "context_length": 128000,
+      "quantization": "Q4_K_M",
+      "specialty": "Fast",
+      "description": "Qwen's compact 1.5B instruct model. Good as a very low-VRAM long-context smoke and chat model.",
+      "tokens_per_sec_estimate": 160,
+      "llm_model_name": "qwen2.5-1.5b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-16T22-53Z on windows-laptop loaded this model successfully and runtime reported qwen2.5-1.5b-instruct-q4, but ODS Talk returned a generic tool-style response instead of the requested verification phrase; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-16T22-53-30Z-release-affected-product-223c18ff-harness-1faf0d8-windows-laptop/model-ui/cycle-002/windows-laptop"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-16T22-53Z on windows-laptop loaded this model successfully and runtime reported qwen2.5-1.5b-instruct-q4, but ODS Talk returned a generic tool-style response instead of the requested verification phrase; keep it out of ODS Talk release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-16T22-53-30Z-release-affected-product-223c18ff-harness-1faf0d8-windows-laptop/model-ui/cycle-002/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "qwen2.5-0.5b-instruct-q4",
+      "name": "Qwen 2.5 0.5B Instruct",
+      "family": "qwen",
+      "gguf_file": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+      "gguf_url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+      "gguf_sha256": "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
+      "size_mb": 491,
+      "vram_required_gb": 2,
+      "context_length": 128000,
+      "quantization": "Q4_K_M",
+      "specialty": "Fast",
+      "description": "Qwen's smallest instruct GGUF. Useful as a fast, low-risk long-context smoke model on very constrained GPUs.",
+      "tokens_per_sec_estimate": 190,
+      "llm_model_name": "qwen2.5-0.5b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-16T16-05Z on windows-laptop loaded this model successfully, but ODS Talk did not return the requested verification phrase and asked for clarification instead; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-16T16-05-53Z-release-affected-product-f22eb7f-harness-c991431-windows-laptop/model-ui/cycle-003/windows-laptop"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-16T16-05Z on windows-laptop loaded this model successfully, but ODS Talk did not return the requested verification phrase and asked for clarification instead; keep it out of ODS Talk release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-16T16-05-53Z-release-affected-product-f22eb7f-harness-c991431-windows-laptop/model-ui/cycle-003/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "granite3.3-2b-instruct-q4",
+      "name": "Granite 3.3 2B Instruct",
+      "family": "granite",
+      "gguf_file": "granite-3.3-2b-instruct-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/granite-3.3-2b-instruct-GGUF/resolve/main/granite-3.3-2b-instruct-Q4_K_M.gguf",
+      "gguf_sha256": "8ec7f401c35853115d1d94cd7c350f4405f7468589759958eea54bd430c30963",
+      "size_bytes": 1545303296,
+      "size_mb": 1545,
+      "vram_required_gb": 3,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Chat",
+      "description": "IBM's compact Granite instruct model with 131K context. Candidate low-VRAM agent model pending fleet validation.",
+      "tokens_per_sec_estimate": 145,
+      "llm_model_name": "granite-3.3-2b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-16T18-10Z on windows-laptop loaded this model successfully and the runtime reported granite3.3-2b-instruct-q4, but ODS Talk returned a Hermes websocket closed error and then fetch failed during the streamed verification prompt; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-16T18-10-30Z-release-affected-product-bc4f77d-harness-7630b69-windows-laptop/model-ui/cycle-003/windows-laptop"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-16T18-10Z on windows-laptop loaded this model successfully and the runtime reported granite3.3-2b-instruct-q4, but ODS Talk returned a Hermes websocket closed error and then fetch failed during the streamed verification prompt; keep it out of ODS Talk release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-16T18-10-30Z-release-affected-product-bc4f77d-harness-7630b69-windows-laptop/model-ui/cycle-003/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "granite4.0-h-micro-q4",
+      "name": "Granite 4.0 H-Micro",
+      "family": "granite",
+      "gguf_file": "granite-4.0-h-micro-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/ibm-granite/granite-4.0-h-micro-GGUF/resolve/main/granite-4.0-h-micro-Q4_K_M.gguf",
+      "gguf_sha256": "bcc78b9b25450101d1ad90d4b9a264e1bac892f534dfb76066f4eec792fdf023",
+      "size_bytes": 1942564512,
+      "size_mb": 1943,
+      "vram_required_gb": 4,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Chat",
+      "description": "IBM's compact Granite 4 hybrid instruction model with long-context support. A low-VRAM alternative family for agent and chat validation.",
+      "tokens_per_sec_estimate": 115,
+      "llm_model_name": "granite-4.0-h-micro",
+      "llama_server_image": null,
+      "install_recommendation": false
+    },
+    {
+      "id": "granite4.0-h-tiny-q4",
+      "name": "Granite 4.0 H-Tiny",
+      "family": "granite",
+      "gguf_file": "granite-4.0-h-tiny-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/ibm-granite/granite-4.0-h-tiny-GGUF/resolve/main/granite-4.0-h-tiny-Q4_K_M.gguf",
+      "gguf_sha256": "5a38b08c441ae1adbafb1d2b8a7167e0d48734d83af68b268cefea1eec553dcd",
+      "size_bytes": 4230976352,
+      "size_mb": 4231,
+      "vram_required_gb": 8,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Chat",
+      "description": "IBM's larger Granite 4 hybrid instruction model with long-context support. A higher-capacity 8GB-class candidate for agent and chat validation.",
+      "tokens_per_sec_estimate": 80,
+      "llm_model_name": "granite-4.0-h-tiny",
+      "llama_server_image": null,
+      "install_recommendation": false
+    },
+    {
+      "id": "smollm3-3b-q4",
+      "name": "SmolLM3 3B",
+      "family": "smollm",
+      "gguf_file": "SmolLM3-3B-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/SmolLM3-3B-GGUF/resolve/main/SmolLM3-3B-Q4_K_M.gguf",
+      "gguf_sha256": "4de907d2d388a5508fb7cb443a06effe14cce3518b0a78d3bdd9e74d9edce989",
+      "size_bytes": 1915306528,
+      "size_mb": 1915,
+      "vram_required_gb": 4,
+      "context_length": 128000,
+      "quantization": "Q4_K_M",
+      "specialty": "Chat",
+      "description": "Hugging Face's small multilingual long-context instruct model. Candidate low-VRAM agent model pending fleet validation.",
+      "tokens_per_sec_estimate": 125,
+      "llm_model_name": "smollm3-3b",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "openai_chat": {
+          "status": "verified",
+          "reason": "Fleet model-UI run 2026-07-18T16-52Z on windows-laptop loaded this model and direct OpenAI-compatible consumers returned requested verification phrases, but all-app release coverage remains blocked pending Perplexica and Privacy Shield revalidation.",
+          "evidence": "fleet-test/runs/2026-07-18T16-52-17Z-model-ui-product-e0a48a80627d-harness-c56304ac9040-hosts-windows-laptop/cycle-003/windows-laptop"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-18T16-52Z on windows-laptop loaded this model and ODS Talk completed, but the required all-app probes did not complete: Perplexica timed out and Privacy Shield returned HTTP 504 while the runtime was producing very slow responses; keep it out of release-grade agent/app coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-18T16-52-17Z-model-ui-product-e0a48a80627d-harness-c56304ac9040-hosts-windows-laptop/cycle-003/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "gemma3-4b-it-q4",
+      "name": "Gemma 3 4B IT",
+      "family": "gemma",
+      "gguf_file": "gemma-3-4b-it-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf",
+      "gguf_sha256": "882e8d2db44dc554fb0ea5077cb7e4bc49e7342a1f0da57901c0802ea21a0863",
+      "size_bytes": 2489757856,
+      "size_mb": 2490,
+      "vram_required_gb": 4,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Balanced",
+      "description": "Google's compact Gemma 3 instruction model with 131K context. A lightweight chat candidate for modest GPUs.",
+      "tokens_per_sec_estimate": 110,
+      "llm_model_name": "gemma-3-4b-it",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "perplexica": {
+          "status": "unsupported_until_revalidated",
+          "label": "Perplexica revalidation required",
+          "reason": "Fleet model-UI runs on windows-laptop and strixy loaded this model and ODS Talk passed, but the Perplexica app probe failed instead of returning the requested verification phrase; keep it out of all-app release coverage on those hosts until Perplexica compatibility is revalidated.",
+          "evidence": "fleet-test/runs/2026-07-19T03-40-01Z-release-product-54b2f703190f-harness-2a6a4e6a55b8-hosts-windows-laptop/model-ui/cycle-003/windows-laptop; fleet-test/runs/2026-07-22T09-42-12Z-release-product-b5bb39f2c0f2-harness-cc7b6148eb2c-hosts-windows-laptop-strixy-m5-mbp/model-ui/cycle-003/strixy",
+          "recordedAt": "2026-07-22T10:26:21Z",
+          "productSha": "b5bb39f2c0f2a7a3dfa5f98547e469b6eaf0acfd",
+          "harnessSha": "cc7b6148eb2cd6e667e6a9dd3d36dff6f8928052",
+          "hostScope": ["windows-laptop", "strixy"],
+          "expiresAt": "2026-08-22T00:00:00Z"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "granite4.0-h-1b-q4",
+      "name": "Granite 4.0 H-1B",
+      "family": "granite",
+      "gguf_file": "granite-4.0-h-1b-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/ibm-granite/granite-4.0-h-1b-GGUF/resolve/main/granite-4.0-h-1b-Q4_K_M.gguf",
+      "gguf_sha256": "da3d737121a96f3c9a316685212376257a7f167b74380855666dd488d6af3bcb",
+      "size_mb": 901,
+      "vram_required_gb": 3,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Fast",
+      "description": "IBM's small Granite 4 hybrid instruction model with validated long-context support. A very low-VRAM Granite-family candidate for app and agent validation.",
+      "tokens_per_sec_estimate": 155,
+      "llm_model_name": "granite-4.0-h-1b",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "perplexica": {
+          "status": "unsupported_until_revalidated",
+          "label": "Perplexica revalidation required",
+          "reason": "Fleet model-UI run 2026-07-22T04:37Z on m5-mbp loaded this model and ODS Talk passed, but the Perplexica app probe emitted only a partial verification phrase while the same cycle on strix-halo passed. Keep it out of all-app release coverage until m5-mbp Perplexica compatibility is revalidated.",
+          "evidence": "fleet-test/runs/2026-07-22T04-37-32Z-release-product-0334416e344c-harness-8bdceb20b959-hosts-m5-mbp-strix-halo-windows-laptop-strixy/model-ui/cycle-003/m5-mbp",
+          "recordedAt": "2026-07-22T05:32:17Z",
+          "productSha": "0334416e344c2cdb9124bed88b7a71b98eea9fc4",
+          "harnessSha": "8bdceb20b9594515dae65f7f66df734ec152e1e4",
+          "hostScope": ["m5-mbp"],
+          "revalidateAgainstSha": "892df74a769cf8aa9530e8e10d319281e063483f"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "falcon-h1-1.5b-instruct-q4",
+      "name": "Falcon H1 1.5B Instruct",
+      "family": "falcon",
+      "gguf_file": "Falcon-H1-1.5B-Instruct-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/tiiuae/Falcon-H1-1.5B-Instruct-GGUF/resolve/main/Falcon-H1-1.5B-Instruct-Q4_K_M.gguf",
+      "gguf_sha256": "8b51aa2aa34a0373fd0cd64c02eb91d1bc1da681c09e955ad769d4a9b2d8385f",
+      "size_bytes": 944786656,
+      "size_mb": 945,
+      "vram_required_gb": 3,
+      "context_length": 65536,
+      "quantization": "Q4_K_M",
+      "specialty": "Long Context",
+      "description": "TII's compact Falcon H1 hybrid instruct model. A 64K low-VRAM validation candidate with a 256K-capable base model.",
+      "tokens_per_sec_estimate": 150,
+      "llm_model_name": "Falcon-H1-1.5B-Instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "opencode": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-21T11:18Z on tower2 loaded Falcon H1 1.5B successfully and routed OpenCode through ods/current, but the OpenCode UX reply emitted a skill/tool meta-response instead of the requested verification phrase.",
+          "evidence": "fleet-test/runs/2026-07-21T11-18-01Z-release-product-c43960145c39-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-004/tower2",
+          "recordedAt": "2026-07-21T12:12:38Z",
+          "productSha": "c43960145c39c5fa24627bf8b0e98b30c362cc85",
+          "harnessSha": "9804e8523a6d11ebeb86eac5f5400cf21fc25b39",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "The same run proved Talk, Open WebUI, LiteLLM, and Perplexica routing, but OpenCode did not complete the required agent verification phrase after the swap; keep Falcon H1 1.5B out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-21T11-18-01Z-release-product-c43960145c39-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-004/tower2",
+          "recordedAt": "2026-07-21T12:12:38Z",
+          "productSha": "c43960145c39c5fa24627bf8b0e98b30c362cc85",
+          "harnessSha": "9804e8523a6d11ebeb86eac5f5400cf21fc25b39",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "falcon-h1-3b-instruct-q4",
+      "name": "Falcon H1 3B Instruct",
+      "family": "falcon",
+      "gguf_file": "Falcon-H1-3B-Instruct-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/tiiuae/Falcon-H1-3B-Instruct-GGUF/resolve/main/Falcon-H1-3B-Instruct-Q4_K_M.gguf",
+      "gguf_sha256": "1926265eab19b0e47f0c2739e499a18e388373a616d71a218b924d5b95bdf702",
+      "size_bytes": 1888612384,
+      "size_mb": 1889,
+      "vram_required_gb": 4,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Long Context",
+      "description": "TII's Falcon H1 3B hybrid instruct model. A long-context low-VRAM validation candidate that preserves the passing Falcon H1 family while replacing Phi-3 Mini in release coverage.",
+      "tokens_per_sec_estimate": 115,
+      "llm_model_name": "Falcon-H1-3B-Instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-21T12:25Z on tower2 loaded Falcon H1 3B and reached ODS Talk through the browser, but Talk emitted a random_uuid tool-call payload instead of the requested verification phrase.",
+          "evidence": "fleet-test/runs/2026-07-21T12-25-39Z-release-product-7df3f218a06c-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-004/tower2",
+          "recordedAt": "2026-07-21T14:25:00Z",
+          "productSha": "7df3f218a06c386bdb40856c928a0618b8e16b57",
+          "harnessSha": "d2a31507fa0652dff4c8cc1892e56ccf1b9102bb",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "The model loaded and routed, but the browser-driven ODS Talk verification failed with a tool-call payload instead of the required answer; keep Falcon H1 3B out of agent-required release coverage until revalidated with a tool-aware Talk probe or updated model metadata.",
+          "evidence": "fleet-test/runs/2026-07-21T12-25-39Z-release-product-7df3f218a06c-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-004/tower2",
+          "recordedAt": "2026-07-21T14:25:00Z",
+          "productSha": "7df3f218a06c386bdb40856c928a0618b8e16b57",
+          "harnessSha": "d2a31507fa0652dff4c8cc1892e56ccf1b9102bb",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "granite4.1-3b-q4",
+      "name": "Granite 4.1 3B",
+      "family": "granite",
+      "gguf_file": "granite-4.1-3b-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/resolve/main/granite-4.1-3b-Q4_K_M.gguf",
+      "gguf_sha256": "662b0626cd58f443baea23559b469df6576a81d349649c59413b36a9fb32eb29",
+      "size_bytes": 2099501664,
+      "size_mb": 2100,
+      "vram_required_gb": 4,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Tool Use",
+      "description": "IBM's Granite 4.1 3B long-context instruct model quantized for GGUF. A low-VRAM candidate with improved instruction following, chat, and tool-use behavior for app and agent validation.",
+      "tokens_per_sec_estimate": 115,
+      "llm_model_name": "granite-4.1-3b",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-22T08:31Z on windows-laptop loaded Granite 4.1 3B and ODS Talk accepted the stream request, but the browser stayed in the Thinking state until the 180s inference timeout while dashboard-api reported repeated llama metrics read timeouts.",
+          "evidence": "fleet-test/runs/2026-07-22T08-31-37Z-release-product-52559816f964-harness-ef040aeb79ab-hosts-windows-laptop-strixy-m5-mbp/model-ui/cycle-003/windows-laptop",
+          "recordedAt": "2026-07-22T09:18:55Z",
+          "productSha": "52559816f964364a63bdbc000722dbbccefec4f9",
+          "harnessSha": "ef040aeb79ab1619e8d3d0c7da59baac150e95c6",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-08-22T00:00:00Z"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "The model loaded and routed through the browser-managed swap path on windows-laptop, but ODS Talk did not complete a user-facing answer within the release inference window; keep it out of agent-required release coverage on that host until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-22T08-31-37Z-release-product-52559816f964-harness-ef040aeb79ab-hosts-windows-laptop-strixy-m5-mbp/model-ui/cycle-003/windows-laptop",
+          "recordedAt": "2026-07-22T09:18:55Z",
+          "productSha": "52559816f964364a63bdbc000722dbbccefec4f9",
+          "harnessSha": "ef040aeb79ab1619e8d3d0c7da59baac150e95c6",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-08-22T00:00:00Z"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "granite4.0-1b-q4",
+      "name": "Granite 4.0 1B",
+      "family": "granite",
+      "gguf_file": "granite-4.0-1b-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/ibm-granite/granite-4.0-1b-GGUF/resolve/main/granite-4.0-1b-Q4_K_M.gguf",
+      "gguf_sha256": "22ec0f9cc99a90185312de3c882c84e7bd6789bdd050389844380a01a831d7f1",
+      "size_mb": 1020,
+      "vram_required_gb": 3,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Fast",
+      "description": "IBM's compact Granite 4 dense instruction model with validated long-context support. A second small Granite-family candidate for low-VRAM app and agent validation.",
+      "tokens_per_sec_estimate": 150,
+      "llm_model_name": "granite-4.0-1b",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "openai_chat": {
+          "status": "verified",
+          "reason": "Targeted windows-laptop diagnostic on 2026-07-19 loaded granite4.0-1b-q4 and llama-server returned the requested verification phrase through the OpenAI-compatible chat API, but measured only 0.93 tok/s.",
+          "evidence": "fleet-test/runs/2026-07-18T23-55-56Z-release-product-741c5a5360ae-harness-46275424f31d-hosts-windows-laptop/model-ui/cycle-005/windows-laptop plus targeted repro at 2026-07-19T01:15Z"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-18T23-55Z on windows-laptop loaded this model successfully, but ODS Talk timed out after 180s. A targeted direct-chat repro returned the verification phrase at 0.93 tok/s, below the 2.0 tok/s floor for ODS Talk.",
+          "evidence": "fleet-test/runs/2026-07-18T23-55-56Z-release-product-741c5a5360ae-harness-46275424f31d-hosts-windows-laptop/model-ui/cycle-005/windows-laptop"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "The model can answer direct chat, but its measured 0.93 tok/s response rate is below the 2.0 tok/s floor for agent-required workflows and ODS Talk timed out in release coverage.",
+          "evidence": "fleet-test/runs/2026-07-18T23-55-56Z-release-product-741c5a5360ae-harness-46275424f31d-hosts-windows-laptop/model-ui/cycle-005/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "granite4.0-h-350m-q4",
+      "name": "Granite 4.0 H-350M",
+      "family": "granite",
+      "gguf_file": "granite-4.0-h-350m-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/ibm-granite/granite-4.0-h-350m-GGUF/resolve/main/granite-4.0-h-350m-Q4_K_M.gguf",
+      "gguf_sha256": "0a8d6a7373602fadfba274a640ba784b86cc6847f1c67f1b0a90fa2ec266b7fb",
+      "size_bytes": 222662560,
+      "size_mb": 223,
+      "vram_required_gb": 2,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Fast",
+      "description": "IBM's tiny Granite 4 hybrid instruction model. A smallest-footprint long-context candidate for low-VRAM app and agent validation.",
+      "tokens_per_sec_estimate": 190,
+      "llm_model_name": "granite-4.0-h-350m",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-19T03:40Z on windows-laptop loaded this model successfully, but ODS Talk returned only \"ODS\" instead of the requested ODSVAL verification phrase; classify it as not agent-viable until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-19T03-40-01Z-release-product-54b2f703190f-harness-2a6a4e6a55b8-hosts-windows-laptop/model-ui/cycle-005/windows-laptop"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-19T03:40Z on windows-laptop loaded this model successfully, but ODS Talk could not echo the requested ODSVAL verification phrase.",
+          "evidence": "fleet-test/runs/2026-07-19T03-40-01Z-release-product-54b2f703190f-harness-2a6a4e6a55b8-hosts-windows-laptop/model-ui/cycle-005/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "granite3.2-2b-instruct-q4",
+      "name": "Granite 3.2 2B Instruct",
+      "family": "granite",
+      "gguf_file": "granite-3.2-2b-instruct-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/ibm-research/granite-3.2-2b-instruct-GGUF/resolve/main/granite-3.2-2b-instruct-Q4_K_M.gguf",
+      "gguf_sha256": "9bc086149f093169fb8e3e7517cd31752bfd9d70e0e7bb3ab351c0a5386cf8c9",
+      "size_bytes": 1545296256,
+      "size_mb": 1546,
+      "vram_required_gb": 4,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Tool Use",
+      "description": "IBM Research's compact Granite 3.2 instruct model with 131K context and tool-use oriented chat template. A low-VRAM long-context candidate for app and agent validation.",
+      "tokens_per_sec_estimate": 130,
+      "llm_model_name": "granite-3.2-2b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "openai_chat": {
+          "status": "verified",
+          "reason": "Targeted windows-laptop repro on 2026-07-20 loaded granite3.2-2b-instruct-q4 and the OpenAI-compatible chat API returned the requested verification phrase, but measured only 0.73 tok/s.",
+          "evidence": "fleet-test/runs/2026-07-20T14-47-35Z-release-product-6b802d2d34a5-harness-d205823ca1d4-hosts-windows-laptop/model-ui/cycle-004/windows-laptop plus targeted repro at 2026-07-20T16:13Z"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-20T14:47Z on windows-laptop loaded this model successfully, but ODS Talk timed out after 180s. A targeted Talk repro on the same host streamed only a session frame and keepalives for 240s while llama-server was still processing a 19,349-token Hermes prompt.",
+          "evidence": "fleet-test/runs/2026-07-20T14-47-35Z-release-product-6b802d2d34a5-harness-d205823ca1d4-hosts-windows-laptop/model-ui/cycle-004/windows-laptop",
+          "recordedAt": "2026-07-20T14:47:35Z",
+          "productSha": "6b802d2d34a5",
+          "harnessSha": "d205823ca1d4",
+          "hostScope": ["windows-laptop"],
+          "revalidateAgainstSha": "c691f060f93cd0a255760e2749a58c5006edb0c4"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "The model can answer direct chat, but its measured 0.73 tok/s response rate and 240s ODS Talk timeout under a 19,349-token Hermes prompt make it too slow for agent-required workflows on this host class until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-20T14-47-35Z-release-product-6b802d2d34a5-harness-d205823ca1d4-hosts-windows-laptop/model-ui/cycle-004/windows-laptop",
+          "recordedAt": "2026-07-20T14:47:35Z",
+          "productSha": "6b802d2d34a5",
+          "harnessSha": "d205823ca1d4",
+          "hostScope": ["windows-laptop"],
+          "revalidateAgainstSha": "c691f060f93cd0a255760e2749a58c5006edb0c4"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "granite3.1-2b-instruct-q4",
+      "name": "Granite 3.1 2B Instruct",
+      "family": "granite",
+      "gguf_file": "granite-3.1-2b-instruct-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/bartowski/granite-3.1-2b-instruct-GGUF/resolve/main/granite-3.1-2b-instruct-Q4_K_M.gguf",
+      "gguf_sha256": "774269c82fde2720ea18dcf457fb5bd028fe096139a0735f4ad59c0a270cfc9c",
+      "size_bytes": 1545295424,
+      "size_mb": 1546,
+      "vram_required_gb": 4,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Tool Use",
+      "description": "A compact Granite 3.1 instruct quant with 131K context. A same-family fallback candidate for low-VRAM app and agent validation.",
+      "tokens_per_sec_estimate": 128,
+      "llm_model_name": "granite-3.1-2b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "perplexica": {
+          "status": "unsupported_until_revalidated",
+          "label": "Perplexica revalidation required",
+          "reason": "Fleet model-UI run 2026-07-21T08:59Z on tower2 loaded this model and ODS Talk, LiteLLM, Open WebUI, and OpenCode passed, but the Perplexica app probe answered with prose/search-style content instead of the requested verification phrase; keep it out of all-app release coverage until Perplexica compatibility is revalidated.",
+          "evidence": "fleet-test/runs/2026-07-21T08-59-51Z-targeted-granite31-allapps-product-73762173ae0c-harness-ecd8157a6324-hosts-tower2/cycle-001/tower2",
+          "recordedAt": "2026-07-21T08:59:51Z",
+          "productSha": "73762173ae0c",
+          "harnessSha": "ecd8157a6324",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "phi3-mini-128k-q4",
+      "name": "Phi-3 Mini 128K",
+      "family": "phi",
+      "gguf_file": "Phi-3-mini-128k-instruct.Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/QuantFactory/Phi-3-mini-128k-instruct-GGUF/resolve/main/Phi-3-mini-128k-instruct.Q4_K_M.gguf",
+      "gguf_sha256": "3b27c1a245243b3eadf6db453ddefd419a31e388820824beeba1c60eee17d05e",
+      "size_bytes": 2393231712,
+      "size_mb": 2393,
+      "vram_required_gb": 4,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Long Context",
+      "description": "Microsoft Phi-3 Mini 128K instruction model quantized for GGUF. A compact long-context fallback candidate for low-VRAM app and agent validation.",
+      "tokens_per_sec_estimate": 105,
+      "llm_model_name": "Phi-3-mini-128k-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-21T09:52Z on tower2 loaded Phi-3 Mini 128K successfully, but ODS Talk returned a generic assistant greeting instead of the requested verification phrase; keep it out of ODS Talk release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-21T09-52-42Z-release-product-5d4e805fab79-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-006/tower2",
+          "recordedAt": "2026-07-21T11:04:41Z",
+          "productSha": "5d4e805fab795bd6c71a805a1c6188852ebb0963",
+          "harnessSha": "9804e8523a6d11ebeb86eac5f5400cf21fc25b39",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "ODS Talk release probe failed exact verification after successful Phi-3 Mini 128K load; not agent-viable until a Talk revalidation passes.",
+          "evidence": "fleet-test/runs/2026-07-21T09-52-42Z-release-product-5d4e805fab79-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-006/tower2",
+          "recordedAt": "2026-07-21T11:04:41Z",
+          "productSha": "5d4e805fab795bd6c71a805a1c6188852ebb0963",
+          "harnessSha": "9804e8523a6d11ebeb86eac5f5400cf21fc25b39",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "ministral-3b-instruct-q4",
+      "name": "Ministral 3B Instruct",
+      "family": "mistral",
+      "gguf_file": "Ministral-3b-instruct.Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/mradermacher/Ministral-3b-instruct-GGUF/resolve/main/Ministral-3b-instruct.Q4_K_M.gguf",
+      "gguf_sha256": "eb97f59f4fa2f53b1e585eb36f5388d1ded29a0a167e2d371f2765811853ecb4",
+      "size_bytes": 1997338016,
+      "size_mb": 1997,
+      "vram_required_gb": 4,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Chat",
+      "description": "A compact Ministral instruct model with 131K context. A lightweight alternative family for low-VRAM chat validation.",
+      "tokens_per_sec_estimate": 120,
+      "llm_model_name": "ministral-3b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-17T00-45Z on windows-laptop loaded this model successfully, but ODS Talk returned malformed repetitive output instead of the requested verification phrase; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-17T00-45-33Z/model-ui/cycle-005/windows-laptop"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-17T00-45Z on windows-laptop loaded this model successfully, but ODS Talk returned malformed repetitive output instead of the requested verification phrase; keep it out of ODS Talk release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-17T00-45-33Z/model-ui/cycle-005/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "llama3.2-1b-instruct-q4",
+      "name": "Llama 3.2 1B Instruct",
+      "family": "llama",
+      "gguf_file": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+      "gguf_sha256": "3f5a22426976ab26cfe84dba63c1d08391717abb1af893e10f1b2968d862dcc1",
+      "size_bytes": 807694368,
+      "size_mb": 808,
+      "vram_required_gb": 2,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Fast",
+      "description": "Meta's smallest Llama 3.2 instruct model with 131K context. Candidate low-VRAM agent model pending fleet validation.",
+      "tokens_per_sec_estimate": 170,
+      "llm_model_name": "llama-3.2-1b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-16T20-22Z on windows-laptop loaded this model successfully, but ODS Talk returned an invalid tool/function-style payload instead of the requested verification phrase; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-16T20-22-58Z-release-affected-product-712d2c0e-harness-1faf0d8-windows-laptop/model-ui/cycle-004/windows-laptop"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-16T20-22Z on windows-laptop loaded this model successfully, but ODS Talk returned an invalid tool/function-style payload instead of the requested verification phrase; keep it out of ODS Talk release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-16T20-22-58Z-release-affected-product-712d2c0e-harness-1faf0d8-windows-laptop/model-ui/cycle-004/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "llama3.2-3b-instruct-q4",
+      "name": "Llama 3.2 3B Instruct",
+      "family": "llama",
+      "gguf_file": "llama-3.2-3b-instruct-q4_k_m.gguf",
+      "gguf_url": "https://huggingface.co/hugging-quants/Llama-3.2-3B-Instruct-Q4_K_M-GGUF/resolve/main/llama-3.2-3b-instruct-q4_k_m.gguf",
+      "gguf_sha256": "c55a83bfb6396799337853ca69918a0b9bbb2917621078c34570bc17d20fd7a1",
+      "size_bytes": 2019373920,
+      "size_mb": 2020,
+      "vram_required_gb": 4,
+      "context_length": 128000,
+      "quantization": "Q4_K_M",
+      "specialty": "Fast",
+      "description": "Meta's small instruction model. Good for fast chat and compatibility checks on low-VRAM machines.",
+      "tokens_per_sec_estimate": 120,
+      "llm_model_name": "llama-3.2-3b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-14T01-31Z on strix-halo loaded this model successfully but ODS Talk refused the verification-code prompt instead of answering; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-14T01-31-17Z-release-affected-product-4ca225b8-harness-09f8f6f-tower2-strixhalo"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-14T01-31Z on strix-halo loaded this model successfully but ODS Talk refused the verification-code prompt instead of answering; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-14T01-31-17Z-release-affected-product-4ca225b8-harness-09f8f6f-tower2-strixhalo"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "qwen2.5-3b-instruct-q4",
+      "name": "Qwen 2.5 3B Instruct",
+      "family": "qwen",
+      "gguf_file": "qwen2.5-3b-instruct-q4_k_m.gguf",
+      "gguf_url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+      "gguf_sha256": "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
+      "size_bytes": 2104932768,
+      "size_mb": 2105,
+      "vram_required_gb": 4,
+      "context_length": 32768,
+      "quantization": "Q4_K_M",
+      "specialty": "Chat",
+      "description": "Compact general-purpose Qwen instruction model with 32K runtime context in the current ODS llama.cpp path. Useful for direct chat, but below the 64K floor for agent-required release coverage.",
+      "tokens_per_sec_estimate": 112,
+      "llm_model_name": "qwen2.5-3b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "openai_chat": {
+          "status": "verified",
+          "reason": "Fleet model-UI run 2026-07-18T21-03Z on windows-laptop loaded this model and completed the required OpenAI-compatible app probes, but runtime metadata reported 32,768 context instead of the previous cataloged 128K value.",
+          "evidence": "fleet-test/runs/2026-07-18T21-03-13Z-model-ui-product-137d335d3231-harness-46275424f31d-hosts-windows-laptop/cycle-004/windows-laptop"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "The same fleet run reported only 32,768 runtime context for this GGUF on the Windows llama.cpp path, below the 64K ODS agent-release floor; keep it out of agent-required release coverage until the context source of truth is resolved.",
+          "evidence": "fleet-test/runs/2026-07-18T21-03-13Z-model-ui-product-137d335d3231-harness-46275424f31d-hosts-windows-laptop/cycle-004/windows-laptop"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Runtime context is below the 64K ODS Talk release floor on the Windows llama.cpp path, even though short app probes completed.",
+          "evidence": "fleet-test/runs/2026-07-18T21-03-13Z-model-ui-product-137d335d3231-harness-46275424f31d-hosts-windows-laptop/cycle-004/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "qwen3-4b-q4",
+      "name": "Qwen3 4B",
+      "family": "qwen",
+      "gguf_file": "Qwen3-4B-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf",
+      "gguf_sha256": "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
+      "size_mb": 2500,
+      "vram_required_gb": 5,
+      "context_length": 40960,
+      "quantization": "Q4_K_M",
+      "specialty": "Chat",
+      "description": "Qwen's compact 4B chat model with a 40K runtime context cap in the current ODS llama.cpp path. It remains available for manual testing, but is blocked from agent-required release coverage until long-context and app behavior are revalidated.",
+      "tokens_per_sec_estimate": 1,
+      "llm_model_name": "qwen3-4b",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-18T21-03Z on windows-laptop loaded and routed this model correctly, but llama.cpp capped context at 40,960 and ODS Talk timed out after 180s while runtime decode was about 0.5 tok/s; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-18T21-03-13Z-model-ui-product-137d335d3231-harness-46275424f31d-hosts-windows-laptop/cycle-005/windows-laptop"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "ODS Talk timed out after the model loaded and routed correctly on windows-laptop, with runtime context capped at 40,960 and decode around 0.5 tok/s.",
+          "evidence": "fleet-test/runs/2026-07-18T21-03-13Z-model-ui-product-137d335d3231-harness-46275424f31d-hosts-windows-laptop/cycle-005/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "qwen3-4b-instruct-2507-q4",
+      "name": "Qwen3 4B Instruct 2507",
+      "family": "qwen",
+      "gguf_file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "gguf_sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+      "size_bytes": 2497281120,
+      "size_mb": 2497,
+      "vram_required_gb": 5,
+      "context_length": 262144,
+      "quantization": "Q4_K_M",
+      "specialty": "Chat",
+      "description": "Unsloth's GGUF quant of Qwen3 4B Instruct 2507 with 262K context metadata. A low-VRAM long-context release candidate for app and Talk validation.",
+      "tokens_per_sec_estimate": 105,
+      "llm_model_name": "qwen3-4b-instruct-2507",
+      "llama_server_image": null,
+      "install_recommendation": false
+    },
+    {
+      "id": "qwen3-4b-128k-q4",
+      "name": "Qwen3 4B 128K",
+      "family": "qwen",
+      "gguf_file": "Qwen3-4B-128K-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/Qwen3-4B-128K-GGUF/resolve/main/Qwen3-4B-128K-Q4_K_M.gguf",
+      "gguf_sha256": "f145a1bd60fec420ca4d9b7645ebcdf657e301463bc4dd3af4a8c0b548b5eb1a",
+      "size_bytes": 2497281504,
+      "size_mb": 2497,
+      "vram_required_gb": 5,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Chat",
+      "description": "Unsloth's 128K GGUF build of Qwen3 4B in Q4_K_M quantization. A low-VRAM long-context candidate kept separate from the upstream 40K-context Qwen3 4B entry.",
+      "tokens_per_sec_estimate": 105,
+      "llm_model_name": "qwen3-4b-128k",
+      "llama_server_image": null,
+      "install_recommendation": false
+    },
+    {
+      "id": "qwen3-1.7b-q4",
+      "name": "Qwen3 1.7B",
+      "family": "qwen",
+      "gguf_file": "Qwen3-1.7B-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/ggml-org/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf",
+      "gguf_sha256": "d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5",
+      "size_mb": 1282,
+      "vram_required_gb": 3,
+      "context_length": 40960,
+      "quantization": "Q4_K_M",
+      "specialty": "Fast",
+      "description": "Qwen3's compact 1.7B chat model in Q4_K_M quantization. The upstream config advertises 40K default context without YaRN, below the 64K ODS agent-release floor.",
+      "tokens_per_sec_estimate": 145,
+      "llm_model_name": "qwen3-1.7b",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Upstream Qwen3 1.7B config reports max_position_embeddings=40960 and no rope_scaling; keep it out of agent-required release coverage until ODS has a product-visible YaRN/runtime policy for this model family.",
+          "evidence": "https://huggingface.co/Qwen/Qwen3-1.7B/blob/main/config.json"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Default runtime context is below the 64K ODS Talk release floor until a YaRN/runtime policy is implemented and fleet-validated.",
+          "evidence": "https://huggingface.co/Qwen/Qwen3-1.7B/blob/main/config.json"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "qwen2.5-coder-1.5b-128k-q4",
+      "name": "Qwen 2.5 Coder 1.5B 128K",
+      "family": "qwen",
+      "gguf_file": "Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/Qwen2.5-Coder-1.5B-Instruct-128K-GGUF/resolve/main/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf",
+      "gguf_sha256": "0fbff4d39395fab063c51377ba522928af2574b1f998d66012c1caed7b8f91d6",
+      "size_bytes": 986048224,
+      "size_mb": 986,
+      "vram_required_gb": 3,
+      "context_length": 131072,
+      "quantization": "Q4_K_M",
+      "specialty": "Code",
+      "description": "Small code-specialized Qwen model with a 128K GGUF context. A low-VRAM OpenCode-oriented release candidate to replace models that route correctly but fail agent UX probes.",
+      "tokens_per_sec_estimate": 145,
+      "llm_model_name": "qwen2.5-coder-1.5b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-21T12:25Z on tower2 loaded Qwen 2.5 Coder 1.5B 128K, but ODS Talk answered with generic assistant prose instead of the requested verification phrase.",
+          "evidence": "fleet-test/runs/2026-07-21T12-25-39Z-release-product-7df3f218a06c-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-006/tower2",
+          "recordedAt": "2026-07-21T14:25:00Z",
+          "productSha": "7df3f218a06c386bdb40856c928a0618b8e16b57",
+          "harnessSha": "d2a31507fa0652dff4c8cc1892e56ccf1b9102bb",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "The model loaded and routed through the browser-managed swap path, but ODS Talk did not follow the required verification instruction; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-21T12-25-39Z-release-product-7df3f218a06c-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-006/tower2",
+          "recordedAt": "2026-07-21T14:25:00Z",
+          "productSha": "7df3f218a06c386bdb40856c928a0618b8e16b57",
+          "harnessSha": "d2a31507fa0652dff4c8cc1892e56ccf1b9102bb",
+          "hostScope": ["tower2"],
+          "expiresAt": "2026-08-21T00:00:00Z"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "qwen2.5-coder-3b-128k-q4",
+      "name": "Qwen 2.5 Coder 3B 128K",
+      "family": "qwen",
+      "gguf_file": "Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/Qwen2.5-Coder-3B-Instruct-128K-GGUF/resolve/main/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf",
+      "gguf_sha256": "a77ce2f29052145ce425f2e3bb6f7359be66ae8eb2a73ab032bebe2f6bf22e9d",
+      "size_bytes": 1929902688,
+      "size_mb": 1930,
+      "vram_required_gb": 4,
+      "context_length": 128000,
+      "quantization": "Q4_K_M",
+      "specialty": "Code",
+      "description": "Compact code-specialized Qwen model with 128K context. Strong candidate for developer workflows on modest GPUs.",
+      "tokens_per_sec_estimate": 115,
+      "llm_model_name": "qwen2.5-coder-3b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-16T11-44Z on windows-laptop loaded this model successfully, but ODS Talk never returned the requested verification phrase; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-16T11-44-05Z-release-affected-product-d11ef611-harness-a7745b8-windows-pair/model-ui/cycle-004/windows-laptop"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-16T11-44Z on windows-laptop loaded this model successfully, but ODS Talk never returned the requested verification phrase; keep it out of ODS Talk release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-16T11-44-05Z-release-affected-product-d11ef611-harness-a7745b8-windows-pair/model-ui/cycle-004/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "qwen2.5-7b-instruct-q4",
+      "name": "Qwen 2.5 7B Instruct",
+      "family": "qwen",
+      "gguf_file": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+      "gguf_url": "",
+      "gguf_sha256": "",
+      "gguf_parts": [
+        {
+          "file": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+          "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+          "sha256": "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db",
+          "size_bytes": 3993201344
+        },
+        {
+          "file": "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf",
+          "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf",
+          "sha256": "539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a",
+          "size_bytes": 689872288
+        }
+      ],
+      "size_bytes": 4683073632,
+      "size_mb": 4683,
+      "vram_required_gb": 8,
+      "context_length": 128000,
+      "quantization": "Q4_K_M",
+      "specialty": "Balanced",
+      "description": "General-purpose Qwen instruction model with 128K context. A mid-size option for 8GB-class systems.",
+      "tokens_per_sec_estimate": 80,
+      "llm_model_name": "qwen2.5-7b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-16T11-44Z on windows-laptop loaded this model successfully, but ODS Talk timed out and the 8GB Windows host stopped responding on dashboard-api, llama-server, and SSH before cleanup; keep it out of agent-required release coverage until revalidated on 8GB-class Windows hardware.",
+          "evidence": "fleet-test/runs/2026-07-16T11-44-05Z-release-affected-product-d11ef611-harness-a7745b8-windows-pair/model-ui/cycle-005/windows-laptop"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-16T11-44Z on windows-laptop loaded this model successfully, but ODS Talk timed out and the 8GB Windows host stopped responding before cleanup; keep it out of ODS Talk release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-16T11-44-05Z-release-affected-product-d11ef611-harness-a7745b8-windows-pair/model-ui/cycle-005/windows-laptop"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "llama3.1-8b-instruct-q4",
+      "name": "Llama 3.1 8B Instruct",
+      "family": "llama",
+      "gguf_file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+      "gguf_sha256": "7b064f5842bf9532c91456deda288a1b672397a54fa729aa665952863033557c",
+      "size_bytes": 4920739232,
+      "size_mb": 4921,
+      "vram_required_gb": 8,
+      "context_length": 128000,
+      "quantization": "Q4_K_M",
+      "specialty": "General",
+      "description": "Meta's 8B long-context instruct model. Good general chat quality while still fitting mainstream GPUs.",
+      "tokens_per_sec_estimate": 75,
+      "llm_model_name": "llama-3.1-8b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-14T08-31Z on strix-halo loaded this model successfully on the correct Lemonade route, but ODS Talk answered the neutral repeat prompt with a session/tool meta-response instead of the requested phrase; keep it out of agent-required release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-14T08-31-52Z-release-affected-product-2b74ffc7-harness-dbf0068-strixhalo/model-ui/cycle-005/strix-halo"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-14T08-31Z on strix-halo loaded this model successfully on the correct Lemonade route, but ODS Talk answered the neutral repeat prompt with a session/tool meta-response instead of the requested phrase; keep it out of ODS Talk release coverage until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-14T08-31-52Z-release-affected-product-2b74ffc7-harness-dbf0068-strixhalo/model-ui/cycle-005/strix-halo"
+        }
+      },
+      "install_recommendation": false
+    },
+    {
+      "id": "granite3.3-8b-instruct-q4",
+      "name": "Granite 3.3 8B Instruct",
+      "family": "granite",
+      "gguf_file": "granite-3.3-8b-instruct-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/ibm-granite/granite-3.3-8b-instruct-GGUF/resolve/main/granite-3.3-8b-instruct-Q4_K_M.gguf",
+      "gguf_sha256": "77bcee066a76dcdd10d0d123c87e32c8ec2c74e31b6ffd87ebee49c9ac215dca",
+      "size_bytes": 4942873344,
+      "size_mb": 4943,
+      "vram_required_gb": 8,
+      "context_length": 128000,
+      "quantization": "Q4_K_M",
+      "specialty": "Enterprise",
+      "description": "IBM's efficient 8B instruct model with 128K context. Useful for business and tool-heavy tasks.",
+      "tokens_per_sec_estimate": 72,
+      "llm_model_name": "granite-3.3-8b-instruct",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "reason": "Fleet model-UI run 2026-07-19T03:40Z on windows-laptop loaded this model through the NVIDIA 8GB 64K profile, but ODS Talk timed out after 180s; keep it out of release-grade agent/app coverage until revalidated or profiled differently.",
+          "evidence": "fleet-test/runs/2026-07-19T03-40-01Z-release-product-54b2f703190f-harness-2a6a4e6a55b8-hosts-windows-laptop/model-ui/cycle-006/windows-laptop"
+        },
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "reason": "Fleet model-UI run 2026-07-19T03:40Z on windows-laptop loaded this model through the NVIDIA 8GB 64K profile, but ODS Talk timed out after 180s.",
+          "evidence": "fleet-test/runs/2026-07-19T03-40-01Z-release-product-54b2f703190f-harness-2a6a4e6a55b8-hosts-windows-laptop/model-ui/cycle-006/windows-laptop"
+        }
+      },
+      "runtime_profiles": [
+        {
+          "id": "nvidia-8gb-64k",
+          "label": "NVIDIA 8GB 64K context",
+          "backend": "nvidia",
+          "memory_type": "discrete",
+          "vram_min_gb": 7.5,
+          "vram_max_gb": 8.5,
+          "context_length": 65536,
+          "estimated_required_gb": 6.8,
+          "fit_label": "64K 8GB profile"
+        }
+      ],
+      "install_recommendation": false
+    },
+    {
+      "id": "mistral-nemo-12b-instruct-q4",
+      "name": "Mistral Nemo 12B Instruct",
+      "family": "mistral",
+      "gguf_file": "Mistral-Nemo-Instruct-2407.Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/QuantFactory/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407.Q4_K_M.gguf",
+      "gguf_sha256": "cbe6b246b096352563579207b499aae8da5e9b590b63e72a89dd17db590840d7",
+      "size_bytes": 7477204512,
+      "size_mb": 7477,
+      "vram_required_gb": 12,
+      "context_length": 128000,
+      "quantization": "Q4_K_M",
+      "specialty": "Quality",
+      "description": "Mistral's 12B long-context model. A higher-quality option for 12GB+ GPUs and Apple unified memory systems.",
+      "tokens_per_sec_estimate": 55,
+      "llm_model_name": "mistral-nemo-instruct-2407",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "label": "ODS Talk unavailable on Apple llama-server",
+          "reason": "Fleet model-UI run 2026-07-22T06:12Z on m5-mbp loaded Mistral Nemo 12B successfully through the browser UI, but ODS Talk failed because llama.cpp rejected the Hermes request with the Mistral chat-template role alternation Jinja exception. The same run passed Mistral on strix-halo through Lemonade, so this verdict is scoped to Apple llama-server until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-22T06-12-53Z-release-product-cfe6addc5239-harness-8bdceb20b959-hosts-m5-mbp-strix-halo-windows-laptop-strixy/model-ui/cycle-006/m5-mbp",
+          "recordedAt": "2026-07-22T07:47:48Z",
+          "productSha": "cfe6addc523925adba4e6ab797645e83741759b0",
+          "harnessSha": "8bdceb20b9594515dae65f7f66df734ec152e1e4",
+          "hostScope": ["m5-mbp"],
+          "gpuBackendScope": ["apple"],
+          "llmBackendScope": ["llama-server"],
+          "expiresAt": "2026-08-22T00:00:00Z"
+        }
+      },
+      "install_recommendation": false
     },
     {
       "id": "qwen3.5-4b-q4",
@@ -42,12 +1100,13 @@
       "gguf_file": "Qwen3.5-4B-Q4_K_M.gguf",
       "gguf_url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
       "gguf_sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
-      "size_mb": 2870,
+      "size_bytes": 2740937888,
+      "size_mb": 2741,
       "vram_required_gb": 5,
-      "context_length": 16384,
+      "context_length": 262144,
       "quantization": "Q4_K_M",
       "specialty": "Balanced",
-      "description": "Good balance of speed and capability for Intel Arc and budget GPUs.",
+      "description": "Unsloth's GGUF quant of Qwen3.5 4B with native 262K context metadata. A low-VRAM long-context release candidate for app and Talk validation.",
       "tokens_per_sec_estimate": 100,
       "llm_model_name": "qwen3.5-4b",
       "llama_server_image": null
@@ -112,7 +1171,7 @@
       "gguf_sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
       "size_mb": 5760,
       "vram_required_gb": 8,
-      "context_length": 32768,
+      "context_length": 65536,
       "quantization": "Q4_K_M",
       "specialty": "General",
       "description": "Excellent general-purpose model. Default for most systems. Great at coding, reasoning, and multilingual tasks.",
@@ -251,7 +1310,7 @@
       "context_length": 131072,
       "quantization": "Q4_K_M",
       "specialty": "Quality",
-      "description": "Successor to Qwen3 30B-A3B. MoE with 131K context — top scores on coding, math, and reasoning benchmarks.",
+      "description": "Successor to Qwen3 30B-A3B. MoE with 131K context \u2014 top scores on coding, math, and reasoning benchmarks.",
       "tokens_per_sec_estimate": 50,
       "llm_model_name": "qwen3.5-35b-a3b",
       "llama_server_image": null

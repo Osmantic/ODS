@@ -295,7 +295,11 @@ async def verify_api_key(
             detail="Authentication required. Provide Bearer token in Authorization header.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if not secrets.compare_digest(credentials.credentials, TOKEN_SPY_API_KEY):
+    # Compared as UTF-8 bytes: compare_digest raises TypeError on non-ASCII
+    # str, which would turn an unauthenticated request into a 500 not a 403.
+    if not secrets.compare_digest(
+        credentials.credentials.encode("utf-8"), TOKEN_SPY_API_KEY.encode("utf-8")
+    ):
         raise HTTPException(status_code=403, detail="Invalid API key.")
     return credentials.credentials
 

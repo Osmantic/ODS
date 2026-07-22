@@ -10,13 +10,16 @@ const response = (body, status = 200) => ({
 
 const ownerCardReady = { ready: true, requires: 'ods-proxy', reason: '' }
 
-async function finishWizard() {
+async function finishWizard(stackName = null) {
   fireEvent.change(screen.getByDisplayValue('ods'), { target: { value: 'spark' } })
   fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
 
   fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: 'sam' } })
   fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
 
+  if (stackName) {
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(stackName, 'i') }))
+  }
   fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
   const finishButton = screen.getByRole('button', { name: /^finish$/i })
   await waitFor(() => expect(finishButton).toBeEnabled())
@@ -79,6 +82,178 @@ describe('FirstBoot', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /open dashboard/i }))
     expect(onComplete).toHaveBeenCalledTimes(1)
+  })
+
+  test('applies the selected agent stack before creating credentials or completing setup', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardReady)
+      }
+      if (url === '/api/templates/onboarding-agents/apply' && options.method === 'POST') {
+        return response({
+          enabled_count: 4,
+          started_count: 4,
+          failed_services: [],
+          skipped_services: [],
+          warnings: [],
+          restart_required: false,
+        })
+      }
+      if (url === '/api/auth/magic-link/generate' && options.method === 'POST') {
+        return response({
+          url: 'http://auth.spark.local/magic-link/agent-token',
+          target_username: 'sam',
+        })
+      }
+      if (url === '/api/setup/complete' && options.method === 'POST') {
+        return response({ success: true })
+      }
+      if (String(url).startsWith('/api/auth/magic-link/qr?url=')) {
+        return response({ data_url: 'data:image/png;base64,qrpayload' })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<FirstBoot onComplete={vi.fn()} />)
+    await finishWizard('Chat \\+ Agents')
+
+    expect(await screen.findByRole('heading', { name: /you're set/i })).toBeInTheDocument()
+    const urls = fetchMock.mock.calls.map(([url]) => String(url))
+    expect(urls.indexOf('/api/templates/onboarding-agents/apply')).toBeLessThan(
+      urls.indexOf('/api/auth/magic-link/generate'),
+    )
+    expect(urls.indexOf('/api/auth/magic-link/generate')).toBeLessThan(
+      urls.indexOf('/api/setup/complete'),
+    )
+  })
+
+  test('keeps first-run active when a selected stack is only partially applied', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardReady)
+      }
+      if (url === '/api/templates/onboarding-full-stack/apply' && options.method === 'POST') {
+        return response({
+          enabled_count: 8,
+          started_count: 8,
+          failed_services: [],
+          skipped_services: ['comfyui'],
+          warnings: ['comfyui requires a compatible GPU'],
+          restart_required: false,
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<FirstBoot onComplete={vi.fn()} />)
+    await finishWizard('Full ODS Stack')
+
+    expect(await screen.findByText(/only partially configured/i)).toBeInTheDocument()
+    expect(screen.getByText(/not compatible or unavailable: comfyui/i)).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/setup/complete', expect.anything())
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/auth/magic-link/generate', expect.anything())
+    expect(screen.queryByRole('heading', { name: /you're set/i })).not.toBeInTheDocument()
+  })
+
+  test('keeps first-run active when apply counts report an unlisted start failure', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardReady)
+      }
+      if (url === '/api/templates/onboarding-agents/apply' && options.method === 'POST') {
+        return response({
+          enabled_count: 4,
+          started_count: 3,
+          failed_services: [],
+          skipped_services: [],
+          warnings: [],
+          restart_required: true,
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<FirstBoot onComplete={vi.fn()} />)
+    await finishWizard('Chat \\+ Agents')
+
+    expect(await screen.findByText(/started 3 of 4 enabled services/i)).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/setup/complete', expect.anything())
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/auth/magic-link/generate', expect.anything())
+  })
+
+  test('rejects malformed template apply failure lists', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardReady)
+      }
+      if (url === '/api/templates/onboarding-agents/apply' && options.method === 'POST') {
+        return response({
+          enabled_count: 4,
+          started_count: 4,
+          failed_services: 'none',
+          skipped_services: [],
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<FirstBoot onComplete={vi.fn()} />)
+    await finishWizard('Chat \\+ Agents')
+
+    expect(await screen.findByText(/invalid apply result/i)).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/setup/complete', expect.anything())
+  })
+
+  test('rejects an incomplete template apply receipt', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardReady)
+      }
+      if (url === '/api/templates/onboarding-agents/apply' && options.method === 'POST') {
+        return response({
+          failed_services: [],
+          skipped_services: [],
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<FirstBoot onComplete={vi.fn()} />)
+    await finishWizard('Chat \\+ Agents')
+
+    expect(await screen.findByText(/invalid apply result/i)).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/setup/complete', expect.anything())
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/auth/magic-link/generate', expect.anything())
+  })
+
+  test('rejects impossible template apply counts', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardReady)
+      }
+      if (url === '/api/templates/onboarding-agents/apply' && options.method === 'POST') {
+        return response({
+          enabled_count: 3,
+          started_count: 4,
+          failed_services: [],
+          skipped_services: [],
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<FirstBoot onComplete={vi.fn()} />)
+    await finishWizard('Chat \\+ Agents')
+
+    expect(await screen.findByText(/invalid apply result/i)).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/setup/complete', expect.anything())
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/auth/magic-link/generate', expect.anything())
   })
 
   test('does not show success when setup completion fails', async () => {

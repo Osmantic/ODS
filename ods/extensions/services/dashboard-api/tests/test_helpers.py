@@ -36,6 +36,27 @@ class TestGetModelInfo:
         assert info.size_gb == 16.0
         assert info.quantization == "AWQ"
 
+    def test_strips_only_matched_quote_pairs(self, install_dir):
+        # A double-quoted value keeps its inner single quotes, and a value
+        # that legitimately ends with a quote character is not truncated.
+        env_file = install_dir / ".env"
+        env_file.write_text(
+            "LLM_MODEL=\"Qwen2.5-7B-Instruct\"\n"
+            "GGUF_FILE=model'v2.gguf\n"
+        )
+
+        info = get_model_info()
+        assert info is not None
+        assert info.name == "Qwen2.5-7B-Instruct"
+
+    def test_keeps_mismatched_quotes_verbatim(self, install_dir):
+        env_file = install_dir / ".env"
+        env_file.write_text("LLM_MODEL=\"Qwen2.5-7B-Instruct'\n")
+
+        info = get_model_info()
+        assert info is not None
+        assert info.name == "\"Qwen2.5-7B-Instruct'"
+
     def test_parses_7b_model(self, install_dir):
         env_file = install_dir / ".env"
         env_file.write_text('LLM_MODEL=Qwen2.5-7B-Instruct\n')
@@ -62,6 +83,24 @@ class TestGetModelInfo:
         assert info is not None
         assert info.size_gb == 35.0
         assert info.quantization == "GGUF"
+
+    def test_parses_numeric_context(self, install_dir):
+        env_file = install_dir / ".env"
+        env_file.write_text('LLM_MODEL=Qwen2.5-7B-Instruct\nCTX_SIZE=8192\n')
+
+        info = get_model_info()
+        assert info is not None
+        assert info.context_length == 8192
+
+    def test_non_numeric_context_falls_back_to_default(self, install_dir):
+        # A non-numeric CTX_SIZE/MAX_CONTEXT (e.g. "auto") must not 500 every
+        # caller of get_model_info(); it falls back to the default context.
+        env_file = install_dir / ".env"
+        env_file.write_text('LLM_MODEL=Qwen2.5-7B-Instruct\nCTX_SIZE=auto\n')
+
+        info = get_model_info()
+        assert info is not None
+        assert info.context_length == 32768
 
     def test_returns_none_when_no_env(self, install_dir):
         # No .env file created
@@ -150,7 +189,7 @@ class TestGetBootstrapStatus:
         status = get_bootstrap_status()
         assert status.active is False
 
-    def test_inactive_when_model_file_on_disk(self, data_dir):
+    def test_active_when_downloading_model_file_on_disk(self, data_dir):
         models_dir = data_dir / "models"
         models_dir.mkdir(exist_ok=True)
         (models_dir / "present.gguf").write_bytes(b"\x00" * 1024)
@@ -158,6 +197,20 @@ class TestGetBootstrapStatus:
         status_file = data_dir / "bootstrap-status.json"
         status_file.write_text(json.dumps({
             "status": "downloading", "model": "present.gguf",
+            "percent": 50, "bytesDownloaded": 500, "bytesTotal": 1024,
+        }))
+
+        status = get_bootstrap_status()
+        assert status.active is True
+
+    def test_inactive_when_non_active_status_model_file_on_disk(self, data_dir):
+        models_dir = data_dir / "models"
+        models_dir.mkdir(exist_ok=True)
+        (models_dir / "present.gguf").write_bytes(b"\x00" * 1024)
+
+        status_file = data_dir / "bootstrap-status.json"
+        status_file.write_text(json.dumps({
+            "status": "stale", "model": "present.gguf",
             "percent": 50, "bytesDownloaded": 500, "bytesTotal": 1024,
         }))
 
@@ -231,6 +284,37 @@ class TestUpdateLifetimeTokens:
         token_file.write_text("not valid json{{{")
         result = _update_lifetime_tokens(100.0)
         assert result == 100
+
+    @pytest.mark.parametrize("payload", [
+        [],
+        {"lifetime": "not-a-number", "last_server_counter": "bad"},
+        {"lifetime": -50, "last_server_counter": float("inf")},
+    ])
+    def test_normalizes_valid_json_with_invalid_counter_types(self, data_dir, payload):
+        token_file = data_dir / "token_counter.json"
+        token_file.write_text(json.dumps(payload))
+
+        assert _update_lifetime_tokens(25.0) == 25
+        assert _get_lifetime_tokens() == 25
+
+    def test_retries_transient_windows_replace_failure(self, data_dir, monkeypatch):
+        import helpers
+
+        real_replace = helpers.os.replace
+        calls = {"count": 0}
+
+        def transient_replace(source, destination):
+            calls["count"] += 1
+            if calls["count"] < 3:
+                raise PermissionError("temporarily locked")
+            return real_replace(source, destination)
+
+        monkeypatch.setattr(helpers.os, "replace", transient_replace)
+        monkeypatch.setattr(helpers.time, "sleep", lambda _seconds: None)
+
+        assert _update_lifetime_tokens(12.0) == 12
+        assert calls["count"] == 3
+        assert _get_lifetime_tokens() == 12
 
     def test_handles_unwritable_token_file(self, data_dir, monkeypatch):
         """When the token file cannot be written, should not raise."""
@@ -393,12 +477,10 @@ class TestCheckServiceHealth:
             "host": "localhost",
             "host_network": True,
         }
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = {"running": False}
-        client = MagicMock()
-        client.get = AsyncMock(return_value=response)
-        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=client))
+        monkeypatch.setattr(
+            "helpers.request_agent_json",
+            AsyncMock(return_value={"running": False}),
+        )
 
         result = await check_service_health("tailscale", config)
         assert result.status == "not_deployed"
@@ -413,12 +495,10 @@ class TestCheckServiceHealth:
             "host": "localhost",
             "host_network": True,
         }
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = {"running": True, "authenticated": True}
-        client = MagicMock()
-        client.get = AsyncMock(return_value=response)
-        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=client))
+        monkeypatch.setattr(
+            "helpers.request_agent_json",
+            AsyncMock(return_value={"running": True, "authenticated": True}),
+        )
 
         result = await check_service_health("tailscale", config)
         assert result.status == "healthy"
@@ -529,6 +609,39 @@ class TestGetLlamaMetrics:
 
         result = await get_llama_metrics(model_hint="test-model")
         assert result["tokens_per_second"] == 0
+
+    @pytest.mark.asyncio
+    async def test_invalid_success_payload_does_not_reset_persistent_counter(
+        self, monkeypatch, tmp_path,
+    ):
+        import helpers
+
+        monkeypatch.setattr(
+            "helpers.SERVICES",
+            {"llama-server": {"host": "localhost", "port": 8080}},
+        )
+        monkeypatch.setattr(helpers, "_TOKEN_FILE", tmp_path / "token_counter.json")
+        helpers._prev_tokens.update(
+            {"count": 100, "time": helpers.time.time() - 1, "tps": 20.0, "gen_secs": 5.0},
+        )
+        assert helpers._update_lifetime_tokens(100) == 100
+
+        mock_response = MagicMock()
+        mock_response.text = "<html>proxy is starting</html>"
+        mock_response.raise_for_status.return_value = None
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=mock_client))
+
+        result = await get_llama_metrics(model_hint="test-model")
+
+        assert result == {
+            "tokens_per_second": 0,
+            "lifetime_tokens": 100,
+            "token_count_mode": "cumulative",
+        }
+        assert helpers._get_lifetime_tokens() == 100
+        assert json.loads(helpers._TOKEN_FILE.read_text())["last_server_counter"] == 100
 
 
 # --- get_loaded_model ---
@@ -825,22 +938,14 @@ class TestCheckServiceHealthSystemd:
 
     @pytest.mark.asyncio
     async def test_host_systemd_returns_healthy_when_host_agent_proves_port(self, monkeypatch):
-        class FakeResponse:
-            status_code = 200
+        async def fake_request(method, path, *, params, timeout):
+            assert method == "GET"
+            assert path == "/v1/host/port"
+            assert params == {"host": "127.0.0.1", "port": 3003}
+            assert timeout == 5
+            return {"reachable": True, "response_time_ms": 12.3}
 
-            def json(self):
-                return {"reachable": True, "response_time_ms": 12.3}
-
-        class FakeClient:
-            async def get(self, url, *, params=None, headers=None):
-                assert url.endswith("/v1/host/port")
-                assert params == {"host": "127.0.0.1", "port": 3003}
-                return FakeResponse()
-
-        async def fake_client():
-            return FakeClient()
-
-        monkeypatch.setattr("helpers._get_httpx_client", fake_client)
+        monkeypatch.setattr("helpers.request_agent_json", fake_request)
 
         config = {
             "name": "opencode", "port": 3003, "external_port": 3003,
@@ -852,20 +957,10 @@ class TestCheckServiceHealthSystemd:
 
     @pytest.mark.asyncio
     async def test_host_systemd_returns_not_deployed_when_host_port_closed(self, monkeypatch):
-        class FakeResponse:
-            status_code = 200
-
-            def json(self):
-                return {"reachable": False, "response_time_ms": 2.0}
-
-        class FakeClient:
-            async def get(self, url, *, params=None, headers=None):
-                return FakeResponse()
-
-        async def fake_client():
-            return FakeClient()
-
-        monkeypatch.setattr("helpers._get_httpx_client", fake_client)
+        monkeypatch.setattr(
+            "helpers.request_agent_json",
+            AsyncMock(return_value={"reachable": False, "response_time_ms": 2.0}),
+        )
 
         config = {
             "name": "opencode", "port": 3003, "external_port": 3003,
@@ -1018,6 +1113,256 @@ class TestGetLlamaMetricsTPS:
         # 100 tokens / 5 seconds = 20.0 tps
         assert result["tokens_per_second"] == 20.0
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("previous_count", "current_count"),
+        [(200, 200), (200, 25)],
+        ids=["idle", "server-counter-reset"],
+    )
+    async def test_idle_or_reset_counter_clears_stale_throughput(
+        self, monkeypatch, tmp_path, previous_count, current_count,
+    ):
+        import helpers
+
+        monkeypatch.setattr(
+            "helpers.SERVICES",
+            {"llama-server": {"host": "localhost", "port": 8080}},
+        )
+        monkeypatch.setattr(helpers, "_TOKEN_FILE", tmp_path / "token_counter.json")
+        helpers._prev_tokens.update(
+            {
+                "count": previous_count,
+                "time": helpers.time.time() - 1,
+                "tps": 42.0,
+                "gen_secs": 10.0,
+            },
+        )
+
+        mock_response = MagicMock()
+        mock_response.text = (
+            f"llamacpp_tokens_predicted_total {current_count}\n"
+            "llamacpp_tokens_predicted_seconds_total 10.0\n"
+        )
+        mock_response.raise_for_status.return_value = None
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=mock_client))
+
+        result = await get_llama_metrics(model_hint="test")
+
+        assert result["tokens_per_second"] == 0.0
+
+
+class TestLemonadeMetrics:
+    @pytest.mark.asyncio
+    async def test_host_stats_report_real_tps_and_latest_completion_tokens(
+        self, monkeypatch, tmp_path,
+    ):
+        import helpers
+
+        token_file = tmp_path / "token_counter.json"
+        monkeypatch.setattr(helpers, "_TOKEN_FILE", token_file)
+        monkeypatch.setattr(helpers, "LLM_BACKEND", "lemonade")
+        monkeypatch.setattr(helpers, "read_live_env_value", lambda key: "host")
+        stats = {
+            "input_tokens": 24,
+            "output_tokens": 7,
+            "prompt_tokens": 24,
+            "decode_token_times": [0.01, 0.02],
+            "time_to_first_token": 0.04,
+            "tokens_per_second": 188.49,
+        }
+        request = AsyncMock(return_value={
+            "schema_version": "ods.host-llm-status.v1",
+            "health": {"status": "ok"},
+            "stats": stats,
+        })
+        monkeypatch.setattr(helpers, "request_agent_json", request)
+
+        result = await helpers.get_llama_metrics()
+
+        assert result == {
+            "tokens_per_second": 188.5,
+            "lifetime_tokens": 7,
+            "token_count_mode": "latest_completion",
+        }
+        assert not token_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_unavailable_host_stats_do_not_relabel_stale_llama_total(
+        self, monkeypatch, tmp_path,
+    ):
+        import helpers
+
+        token_file = tmp_path / "token_counter.json"
+        token_file.write_text(json.dumps({"lifetime": 42}))
+        monkeypatch.setattr(helpers, "_TOKEN_FILE", token_file)
+        monkeypatch.setattr(helpers, "LLM_BACKEND", "lemonade")
+        monkeypatch.setattr(helpers, "read_live_env_value", lambda key: "host")
+        monkeypatch.setattr(
+            helpers, "request_agent_json",
+            AsyncMock(return_value={"health": {"status": "ok"}, "stats": None}),
+        )
+
+        result = await helpers.get_llama_metrics()
+
+        assert result == {
+            "tokens_per_second": 0,
+            "lifetime_tokens": 0,
+            "token_count_mode": "unavailable",
+        }
+
+    @pytest.mark.asyncio
+    async def test_container_runtime_accepts_new_v1_stats_route(self, monkeypatch, tmp_path):
+        import helpers
+
+        monkeypatch.setattr(helpers, "_TOKEN_FILE", tmp_path / "token_counter.json")
+        monkeypatch.setattr(helpers, "LLM_BACKEND", "lemonade")
+        monkeypatch.setattr(
+            helpers, "read_live_env_value",
+            lambda key: "container" if key == "AMD_INFERENCE_LOCATION" else "test-key",
+        )
+        monkeypatch.setattr(helpers, "SERVICES", {
+            "llama-server": {"host": "llama-server", "port": 8080},
+        })
+        legacy = MagicMock()
+        legacy.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "not found", request=MagicMock(), response=MagicMock(status_code=404),
+        )
+        current = MagicMock()
+        current.raise_for_status.return_value = None
+        current.json.return_value = {
+            "output_tokens": 5,
+            "tokens_per_second": 33.33,
+            "time_to_first_token": 0.2,
+        }
+        client = AsyncMock()
+        client.get = AsyncMock(side_effect=[legacy, current])
+        monkeypatch.setattr(helpers, "_get_httpx_client", AsyncMock(return_value=client))
+
+        result = await helpers.get_llama_metrics()
+
+        assert result == {
+            "tokens_per_second": 33.3,
+            "lifetime_tokens": 5,
+            "token_count_mode": "latest_completion",
+        }
+        assert [call.args[0] for call in client.get.await_args_list] == [
+            "http://llama-server:8080/api/v1/stats",
+            "http://llama-server:8080/v1/stats",
+        ]
+        assert all(
+            call.kwargs["headers"] == {"Authorization": "Bearer test-key"}
+            for call in client.get.await_args_list
+        )
+
+
+class TestServiceHealthReconciliation:
+
+    @pytest.mark.asyncio
+    async def test_docker_health_repairs_only_transient_timeout(self, monkeypatch):
+        import helpers
+
+        services = {
+            "dashboard": {
+                "name": "Dashboard", "port": 3001, "external_port": 3001,
+                "type": "docker", "container_name": "ods-dashboard",
+            },
+            "open-webui": {
+                "name": "Open WebUI", "port": 3000, "external_port": 3000,
+                "type": "docker", "container_name": "ods-open-webui",
+            },
+        }
+        monkeypatch.setattr(helpers, "SERVICES", services)
+
+        async def probe(service_id, config):
+            return ServiceStatus(
+                id=service_id, name=config["name"], port=config["port"],
+                external_port=config["external_port"],
+                status="degraded" if service_id == "dashboard" else "unhealthy",
+            )
+
+        monkeypatch.setattr(helpers, "check_service_health", probe)
+        monkeypatch.setattr(helpers, "LLM_BACKEND", "llama")
+        monkeypatch.setattr(helpers, "request_agent_json", AsyncMock(return_value={
+            "schema_version": "ods.host-service-health.v1",
+            "containers": [
+                {"service_id": "dashboard", "container_name": "ods-dashboard", "state": "running", "health": "healthy"},
+                {"service_id": "open-webui", "container_name": "ods-open-webui", "state": "running", "health": "healthy"},
+            ],
+        }))
+
+        statuses = {status.id: status.status for status in await helpers.get_all_services()}
+
+        assert statuses == {"dashboard": "healthy", "open-webui": "unhealthy"}
+
+    @pytest.mark.asyncio
+    async def test_all_healthy_path_does_not_call_host_agent(self, monkeypatch):
+        import helpers
+
+        services = {
+            "dashboard": {"name": "Dashboard", "port": 3001, "external_port": 3001},
+        }
+        monkeypatch.setattr(helpers, "SERVICES", services)
+
+        async def probe(service_id, config):
+            return ServiceStatus(
+                id=service_id, name=config["name"], port=config["port"],
+                external_port=config["external_port"], status="healthy",
+            )
+
+        request = AsyncMock()
+        monkeypatch.setattr(helpers, "check_service_health", probe)
+        monkeypatch.setattr(helpers, "request_agent_json", request)
+
+        statuses = await helpers.get_all_services()
+
+        assert statuses[0].status == "healthy"
+        request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "runtime_health,expected",
+        [
+            ({"status": "ok", "model_loaded": "model.gguf"}, "healthy"),
+            ({"status": "error", "model_loaded": "model.gguf"}, "down"),
+        ],
+    )
+    async def test_host_lemonade_requires_explicit_ok_status(
+        self, monkeypatch, runtime_health, expected,
+    ):
+        import helpers
+
+        services = {
+            "llama-server": {
+                "name": "LLM", "port": 8080, "external_port": 8080,
+                "type": "docker", "container_name": "ods-llama-server",
+            },
+        }
+        monkeypatch.setattr(helpers, "SERVICES", services)
+        monkeypatch.setattr(helpers, "LLM_BACKEND", "lemonade")
+        monkeypatch.setattr(
+            helpers, "read_live_env_value",
+            lambda key: "host" if key == "AMD_INFERENCE_LOCATION" else "",
+        )
+
+        async def probe(service_id, config):
+            return ServiceStatus(
+                id=service_id, name=config["name"], port=config["port"],
+                external_port=config["external_port"], status="down",
+            )
+
+        request = AsyncMock(side_effect=[
+            {"schema_version": "ods.host-service-health.v1", "containers": []},
+            {"schema_version": "ods.host-llm-status.v1", "health": runtime_health},
+        ])
+        monkeypatch.setattr(helpers, "check_service_health", probe)
+        monkeypatch.setattr(helpers, "request_agent_json", request)
+
+        statuses = await helpers.get_all_services()
+
+        assert statuses[0].status == expected
+
 
 # --- bootstrap status ETA edge cases ---
 
@@ -1134,3 +1479,18 @@ class TestDirSizeGb:
         invalidate_dir_size_cache(d)
         assert dir_size_gb(d) == 0.0
         assert calls["count"] == 1
+
+    def test_dir_size_cache_bound(self, tmp_path):
+        from helpers import _dir_size_cache
+        _dir_size_cache.clear()
+
+        # Fill cache with 1005 items
+        for i in range(1005):
+            path = tmp_path / f"test_dir_{i}"
+            _dir_size_cache.set(path, 1.0)
+
+        assert len(_dir_size_cache._store) == 1000
+
+        # Verify older items were evicted
+        first_path = tmp_path / "test_dir_0"
+        assert _dir_size_cache.get(first_path) is None

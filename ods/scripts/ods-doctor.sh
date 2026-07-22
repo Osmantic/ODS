@@ -329,6 +329,44 @@ if [[ "$DOCKER_DAEMON" == "true" ]]; then
     )"
 fi
 
+# Rootless Docker subordinate ID ranges — runtime half of the install
+# preflight's ROOTLESS_SUBID check. A rootless daemon maps in-container
+# users through /etc/subuid + /etc/subgid; a missing entry or a range under
+# 65536 IDs breaks layer extraction for non-root images with cryptic
+# "uid/gid map out of range" errors, so doctor surfaces it with the fix.
+ROOTLESS_DOCKER="false"
+ROOTLESS_SUBID_STATUS="skipped"
+ROOTLESS_SUBUID_TOTAL="0"
+ROOTLESS_SUBGID_TOTAL="0"
+ROOTLESS_SUBID_USER="$(id -un 2>/dev/null || echo unknown)"
+if [[ "${ODS_ASSUME_ROOTLESS:-0}" == "1" ]] || { [[ "$DOCKER_DAEMON" == "true" ]] \
+    && docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q 'rootless'; }; then
+    ROOTLESS_DOCKER="true"
+    subid_range_total() {
+        # Sum every range allocated to the user; entries may be keyed by
+        # name or numeric UID (subgid is also keyed by user, not group).
+        local file="$1" user="$2" numeric_uid="$3" total=0 owner start count
+        [[ -r "$file" ]] || { echo 0; return; }
+        while IFS=: read -r owner start count; do
+            if [[ "$owner" == "$user" || "$owner" == "$numeric_uid" ]]; then
+                [[ "$count" =~ ^[0-9]+$ ]] && total=$((total + count))
+            fi
+        done <"$file"
+        echo "$total"
+    }
+    _subid_uid="$(id -u)"
+    ROOTLESS_SUBUID_TOTAL="$(subid_range_total "${ODS_SUBUID_FILE:-/etc/subuid}" "$ROOTLESS_SUBID_USER" "$_subid_uid")"
+    ROOTLESS_SUBGID_TOTAL="$(subid_range_total "${ODS_SUBGID_FILE:-/etc/subgid}" "$ROOTLESS_SUBID_USER" "$_subid_uid")"
+    if [[ "$ROOTLESS_SUBUID_TOTAL" -eq 0 || "$ROOTLESS_SUBGID_TOTAL" -eq 0 ]]; then
+        ROOTLESS_SUBID_STATUS="fail"
+    elif [[ "$ROOTLESS_SUBUID_TOTAL" -lt 65536 || "$ROOTLESS_SUBGID_TOTAL" -lt 65536 ]]; then
+        ROOTLESS_SUBID_STATUS="warn"
+    else
+        ROOTLESS_SUBID_STATUS="pass"
+    fi
+fi
+export ROOTLESS_DOCKER ROOTLESS_SUBID_STATUS ROOTLESS_SUBUID_TOTAL ROOTLESS_SUBGID_TOTAL ROOTLESS_SUBID_USER
+
 # Collect extension diagnostics if service registry loaded
 EXT_DIAGNOSTICS="[]"
 if [[ "${#SERVICE_IDS[@]}" -gt 0 ]]; then
@@ -1285,6 +1323,13 @@ report = {
             if hermes_slash_worker_count_num > hermes_slash_worker_max_count_num
             else "pass",
         },
+        "rootless_docker": os.environ.get("ROOTLESS_DOCKER") == "true",
+        "rootless_subid_check": {
+            "status": os.environ.get("ROOTLESS_SUBID_STATUS", "skipped"),
+            "user": os.environ.get("ROOTLESS_SUBID_USER", ""),
+            "subuid_total": _int_value(os.environ.get("ROOTLESS_SUBUID_TOTAL")),
+            "subgid_total": _int_value(os.environ.get("ROOTLESS_SUBGID_TOTAL")),
+        },
         "amd_runtime": amd_runtime,
         "inference_contract": inference_contract_public,
     },
@@ -1297,6 +1342,7 @@ report = {
             + (1 if stt_cached in {"false", "service_down"} else 0)
             + (1 if tts_http == "false" else 0)
             + (1 if hermes_slash_worker_count_num > hermes_slash_worker_max_count_num else 0)
+            + (1 if os.environ.get("ROOTLESS_SUBID_STATUS") in {"warn", "fail"} else 0)
             + len(amd_runtime.get("warnings", []))
             + inference_contract.get("issue_counts", {}).get("warnings", 0)
         ),
@@ -1333,6 +1379,32 @@ if runtime["docker_daemon"] and not runtime["dashboard_http"]:
     fix_hints.append(f"Run installer/start command, then verify dashboard on http://127.0.0.1:{dashboard_port}.")
 if runtime["docker_daemon"] and not runtime["webui_http"]:
     fix_hints.append(f"Verify Open WebUI container and port {webui_port} mapping.")
+
+# Rootless daemon without (enough) subordinate IDs: images fail to extract
+# with "uid/gid map out of range" long after doctor reports healthy Docker.
+# Two hints: the fixed 100000-165535 range is only safe to suggest when the
+# user has NO allocation; with an existing-but-small range that command
+# could overlap what is already allocated, so ask for a non-overlapping
+# extension instead.
+_rootless_subid = report["runtime"]["rootless_subid_check"]
+if _rootless_subid["status"] == "fail":
+    fix_hints.append(
+        "Rootless Docker: no subordinate ID allocation for "
+        f"{_rootless_subid['user']} "
+        f"(subuids={_rootless_subid['subuid_total']}, subgids={_rootless_subid['subgid_total']}). "
+        f"Run: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 {_rootless_subid['user']} "
+        "then restart the rootless Docker daemon (systemctl --user restart docker)."
+    )
+elif _rootless_subid["status"] == "warn":
+    fix_hints.append(
+        "Rootless Docker: subordinate ID allocation for "
+        f"{_rootless_subid['user']} is below 65536 "
+        f"(subuids={_rootless_subid['subuid_total']}, subgids={_rootless_subid['subgid_total']}). "
+        "Extend it to at least 65536 IDs with a range that does not overlap "
+        "existing entries in /etc/subuid and /etc/subgid "
+        f"(sudo usermod --add-subuids <start>-<start+65535> --add-subgids <start>-<start+65535> {_rootless_subid['user']}), "
+        "then restart the rootless Docker daemon (systemctl --user restart docker)."
+    )
 
 # STT model cache: service up but model missing is a common silent failure
 if stt_cached == "false" and stt_recovery:

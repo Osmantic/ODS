@@ -5,9 +5,9 @@ import json
 import logging
 import os
 import re
+import threading
 import time
-import urllib.request
-import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from typing import Optional
@@ -15,7 +15,15 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
-from config import AGENT_URL, DATA_DIR, ODS_AGENT_KEY, INSTALL_DIR, LLM_BACKEND, SERVICES
+from config import (
+    DATA_DIR,
+    INSTALL_DIR,
+    LLM_BACKEND,
+    LOCAL_MODEL_MODES,
+    ODS_MODE_EFFECTIVE,
+    SERVICES,
+    normalize_ods_mode,
+)
 from gpu import get_gpu_info
 from helpers import (
     get_bootstrap_status,
@@ -24,10 +32,18 @@ from helpers import (
     get_loaded_model,
     record_model_performance,
 )
+from host_agent_client import (
+    AgentClientError,
+    AgentHTTPError,
+    AgentProtocolError,
+    AgentUnavailable,
+    request_json as request_agent_json,
+)
 from models import ModelLibraryGpu, ModelLibraryResponse
 from performance_oracle import (
     build_models_payload,
     build_sample_signature,
+    current_model_matches,
     find_catalog_model,
     load_model_catalog,
     model_files_dir,
@@ -44,6 +60,19 @@ _LIBRARY_PATH = Path(INSTALL_DIR) / "config" / "model-library.json"
 _MODELS_DIR = Path(DATA_DIR) / "models"
 _ENV_PATH = Path(INSTALL_DIR) / ".env"
 _MODEL_DISCOVERY_TIMEOUT_SECONDS = float(os.environ.get("DASHBOARD_MODEL_DISCOVERY_TIMEOUT", "15.0"))
+_AGENT_MODEL_STATUS_CACHE_TTL_SECONDS = float(
+    os.environ.get("DASHBOARD_AGENT_MODEL_STATUS_CACHE_TTL", "0.5")
+)
+_STALE_TERMINAL_DOWNLOAD_STATUS_SECONDS = float(
+    os.environ.get("DASHBOARD_STALE_TERMINAL_DOWNLOAD_STATUS_SECONDS", "1800")
+)
+_STALE_ACTIVE_BOOTSTRAP_STATUS_SECONDS = float(
+    os.environ.get("DASHBOARD_STALE_ACTIVE_BOOTSTRAP_STATUS_SECONDS", "900")
+)
+_ACTIVE_BOOTSTRAP_STATUSES = {"starting", "downloading", "verifying", "swapping"}
+_agent_model_status_cache_lock = threading.Lock()
+_agent_model_status_cache_at = 0.0
+_agent_model_status_cache_value: Optional[dict] = None
 _GPU_VRAM_EXCEPTIONS = (
     ImportError,
     FileNotFoundError,
@@ -51,6 +80,84 @@ _GPU_VRAM_EXCEPTIONS = (
     KeyError,
     AttributeError,
 )
+
+
+def _model_lifecycle_from_agent_status(status: Optional[dict]) -> Optional[dict[str, Any]]:
+    if not isinstance(status, dict):
+        return None
+    operation = status.get("activeOperation")
+    active = bool(status.get("lifecycleActive") or operation)
+    if not active or not isinstance(operation, str) or not operation:
+        return None
+    target = status.get("activeTarget")
+    model_id = status.get("activeModelId") or target
+    return {
+        "active": True,
+        "operation": operation,
+        "target": target,
+        "modelId": model_id,
+    }
+
+
+def _annotate_model_lifecycle(payload: dict[str, Any], lifecycle: Optional[dict[str, Any]]) -> None:
+    if not lifecycle:
+        return
+    payload["modelLifecycle"] = lifecycle
+    if lifecycle.get("operation") != "model_activation":
+        return
+    target = lifecycle.get("modelId") or lifecycle.get("target")
+    if not target:
+        return
+    for model in payload.get("models") or []:
+        if isinstance(model, dict) and current_model_matches(model, str(target), str(target)):
+            model["modelOperation"] = lifecycle
+            return
+
+
+def _configured_ods_mode() -> str:
+    """Return the current persisted mode without treating process env as config."""
+    return normalize_ods_mode(read_env_file_value("ODS_MODE", INSTALL_DIR))
+
+
+def _model_activation_mode_denial(
+    effective_mode: str,
+    configured_mode: str,
+) -> dict[str, str] | None:
+    """Describe why this runtime cannot safely perform a local model swap."""
+    effective_mode = normalize_ods_mode(effective_mode)
+    configured_mode = normalize_ods_mode(configured_mode)
+    if "unknown" in {effective_mode, configured_mode}:
+        code = "ods_mode_unknown"
+        reason = "mode_unknown"
+        message = (
+            "Local model activation is unavailable because the effective or "
+            "configured ODS mode is unknown."
+        )
+    elif effective_mode != configured_mode:
+        code = "ods_mode_mismatch"
+        reason = "mode_mismatch"
+        message = (
+            f"Local model activation is unavailable because effective mode "
+            f"'{effective_mode}' does not match configured mode '{configured_mode}'."
+        )
+    elif effective_mode not in LOCAL_MODEL_MODES:
+        code = "local_mode_required"
+        reason = "effective_mode_not_local"
+        message = (
+            f"Local model activation is unavailable while effective ODS mode "
+            f"is '{effective_mode}'."
+        )
+    else:
+        return None
+
+    return {
+        "error": "local_mode_required",
+        "code": code,
+        "reason": reason,
+        "message": message,
+        "effectiveMode": effective_mode,
+        "configuredMode": configured_mode,
+    }
 
 try:
     import pynvml
@@ -137,9 +244,13 @@ def _model_name_tokens(value: str | None) -> set[str]:
     token = Path(str(value).strip()).name
     if not token:
         return set()
-    tokens = {token.lower()}
-    if token.lower().startswith("extra."):
-        tokens.add(token[6:].lower())
+    lower = token.lower()
+    tokens = {lower}
+    if lower.startswith("extra."):
+        tokens.add(lower[6:])
+    for candidate in tuple(tokens):
+        if candidate.endswith(".gguf"):
+            tokens.add(candidate[:-5])
     return tokens
 
 
@@ -187,6 +298,8 @@ async def _probe_loaded_lemonade_model(model_name: str) -> bool:
         resp = await client.post(f"{base_url}/api/v1/chat/completions", json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
+        if not isinstance(data, dict):
+            return False
         if isinstance(data.get("error"), dict):
             return False
         return bool(data.get("choices"))
@@ -222,11 +335,13 @@ def _already_active_model(model_id: str, model: dict) -> tuple[bool, str | None]
         return False, None
 
     loaded_model = _fetch_loaded_model_sync()
-    if (
-        _model_name_tokens(loaded_model) & _catalog_model_tokens(model)
-        and _loaded_model_backend_ready_sync(loaded_model)
-    ):
-        return True, loaded_model
+    if _model_name_tokens(loaded_model) & _catalog_model_tokens(model):
+        # Lemonade's health endpoint is the authoritative loaded-model source.
+        # A one-token chat probe against a large already-active model can take
+        # longer than dashboard/UI clients will wait, which turns an idempotent
+        # Run click into an unnecessary activation.
+        if LLM_BACKEND == "lemonade" or _loaded_model_backend_ready_sync(loaded_model):
+            return True, loaded_model
     return False, loaded_model
 
 
@@ -267,7 +382,7 @@ def _format_size(size_mb: int) -> str:
 @router.get("/api/models", response_model=ModelLibraryResponse)
 async def list_models(api_key: str = Depends(verify_api_key)):
     """List model catalog entries with source-labelled performance metadata."""
-    gpu_info, loaded_model = await asyncio.gather(
+    gpu_info, loaded_model, agent_status = await asyncio.gather(
         asyncio.to_thread(get_gpu_info),
         _await_or_default(
             get_loaded_model(),
@@ -275,6 +390,7 @@ async def list_models(api_key: str = Depends(verify_api_key)):
             "loaded model",
             timeout_seconds=_MODEL_DISCOVERY_TIMEOUT_SECONDS,
         ),
+        asyncio.to_thread(_get_agent_model_status),
     )
     if not loaded_model:
         service = SERVICES.get("llama-server", {})
@@ -311,6 +427,10 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         catalog=_load_library(),
         downloaded_files_override=_scan_downloaded_models(),
     )
+    _annotate_model_lifecycle(
+        payload,
+        _model_lifecycle_from_agent_status(agent_status),
+    )
     if gpu_info and loaded_model and live_tps > 0:
         loaded_entry = next((m for m in payload["models"] if m["status"] == "loaded"), None) or {}
         signature = build_sample_signature(
@@ -336,17 +456,35 @@ async def list_models(api_key: str = Depends(verify_api_key)):
             os_name=signature.get("os"),
             flags=signature.get("flags"),
         )
+    payload["odsMode"] = ODS_MODE_EFFECTIVE
+    payload["configuredMode"] = _configured_ods_mode()
     return payload
 
 
 @router.get("/api/models/download-status")
 def model_download_status(api_key: str = Depends(verify_api_key)):
     """Get current model download progress (if any)."""
+    agent_status = _get_agent_model_status()
+    lifecycle = _model_lifecycle_from_agent_status(agent_status)
+    if agent_status and agent_status.get("status") != "idle":
+        if _is_cancelled_download_status(agent_status) or _is_stale_terminal_download_status(agent_status):
+            idle_status = _idle_download_status(last_terminal_status=agent_status)
+            if lifecycle:
+                idle_status["modelLifecycle"] = lifecycle
+            return idle_status
+        return agent_status
+
     status_path = Path(DATA_DIR) / "model-download-status.json"
     if not status_path.exists():
+        bootstrap_status = _read_bootstrap_status_file()
+        if _is_stale_active_bootstrap_status(bootstrap_status):
+            return _stale_bootstrap_download_status(bootstrap_status)
         bootstrap_info = get_bootstrap_status()
         if not bootstrap_info.active:
-            return {"status": "idle", "active": False, "isDownloading": False}
+            status = {"status": "idle", "active": False, "isDownloading": False}
+            if lifecycle:
+                status["modelLifecycle"] = lifecycle
+            return status
         return {
             "status": "downloading",
             "active": True,
@@ -359,34 +497,232 @@ def model_download_status(api_key: str = Depends(verify_api_key)):
             "eta": bootstrap_info.eta_seconds,
         }
     try:
-        return json.loads(status_path.read_text(encoding="utf-8"))
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        if _is_cancelled_download_status(status) or _is_stale_terminal_download_status(status):
+            idle_status = _idle_download_status(last_terminal_status=status)
+            if lifecycle:
+                idle_status["modelLifecycle"] = lifecycle
+            return idle_status
+        if lifecycle:
+            status["modelLifecycle"] = lifecycle
+        return status
     except (json.JSONDecodeError, OSError):
-        return {"status": "idle"}
+        status = {"status": "idle"}
+        if lifecycle:
+            status["modelLifecycle"] = lifecycle
+        return status
 
 
-def _call_agent_model(path: str, body: dict, timeout: int = 30) -> dict:
-    """Call the host agent model endpoint."""
-    url = f"{AGENT_URL}{path}"
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=data, method="POST",
-        headers={
-            "Authorization": f"Bearer {ODS_AGENT_KEY}",
-            "Content-Type": "application/json",
-        },
-    )
+def _idle_download_status(last_terminal_status: Optional[dict] = None) -> dict:
+    status = {"status": "idle", "active": False, "isDownloading": False}
+    if last_terminal_status:
+        status["lastTerminalStatus"] = last_terminal_status
+    return status
+
+
+def _parse_status_updated_at(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value.strip():
+        return None
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as exc:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _is_stale_terminal_download_status(status: Any) -> bool:
+    if not isinstance(status, dict):
+        return False
+    key = str(status.get("status") or "").casefold()
+    if key not in {"failed", "error", "cancelled", "canceled"}:
+        return False
+    updated_at = _parse_status_updated_at(status.get("updatedAt"))
+    if not updated_at:
+        return False
+    age = (datetime.now(timezone.utc) - updated_at).total_seconds()
+    return age > _STALE_TERMINAL_DOWNLOAD_STATUS_SECONDS
+
+
+def _is_cancelled_download_status(status: Any) -> bool:
+    if not isinstance(status, dict):
+        return False
+    key = str(status.get("status") or "").casefold()
+    return key in {"cancelled", "canceled"}
+
+
+def _read_bootstrap_status_file() -> Optional[dict[str, Any]]:
+    status_path = Path(DATA_DIR) / "bootstrap-status.json"
+    if not status_path.exists():
+        return None
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return status if isinstance(status, dict) else None
+
+
+def _is_stale_active_bootstrap_status(status: Any) -> bool:
+    if not isinstance(status, dict):
+        return False
+    state = str(status.get("status") or "").casefold()
+    if state not in _ACTIVE_BOOTSTRAP_STATUSES:
+        return False
+    updated_at = _parse_status_updated_at(status.get("updatedAt"))
+    if not updated_at:
+        return False
+    age = (datetime.now(timezone.utc) - updated_at).total_seconds()
+    return age > _STALE_ACTIVE_BOOTSTRAP_STATUS_SECONDS
+
+
+def _stale_bootstrap_download_status(status: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "active": False,
+        "isDownloading": False,
+        "bootstrapStale": True,
+        "model": status.get("model"),
+        "percent": status.get("percent"),
+        "bytesDownloaded": status.get("bytesDownloaded", 0),
+        "bytesTotal": status.get("bytesTotal", 0),
+        "speedBytesPerSec": status.get("speedBytesPerSec", 0),
+        "eta": status.get("eta"),
+        "updatedAt": status.get("updatedAt"),
+        "error": "Bootstrap full-model upgrade appears stalled. Run ods restart to resume it.",
+    }
+
+
+def _bootstrap_upgrade_download_conflict() -> dict[str, Any] | None:
+    """Return a lifecycle-busy payload when bootstrap upgrade owns download priority."""
+    bootstrap_status = _read_bootstrap_status_file()
+    if _is_stale_active_bootstrap_status(bootstrap_status):
+        return {
+            "error": "Cannot start model download while bootstrap full-model upgrade is pending retry",
+            "code": "model_lifecycle_busy",
+            "activeOperation": "bootstrap_upgrade_retry_pending",
+            "activeTarget": bootstrap_status.get("model") if bootstrap_status else None,
+        }
+
+    bootstrap_info = get_bootstrap_status()
+    if bootstrap_info.active:
+        return {
+            "error": "Cannot start model download while bootstrap full-model upgrade is in progress",
+            "code": "model_lifecycle_busy",
+            "activeOperation": "bootstrap_upgrade",
+            "activeTarget": bootstrap_info.model_name,
+        }
+
+    args_path = Path(DATA_DIR) / "bootstrap-upgrade.args"
+    if bootstrap_status is None or not args_path.exists():
+        return None
+
+    state = str(bootstrap_status.get("status") or "").casefold()
+    model_name = str(bootstrap_status.get("model") or "").strip()
+    if state not in {"failed", "error"} or not model_name:
+        return None
+    if "\x00" in model_name or "/" in model_name or "\\" in model_name or Path(model_name).name != model_name:
+        return None
+
+    try:
+        final_path = (Path(DATA_DIR) / "models" / model_name).resolve()
+        models_root = (Path(DATA_DIR) / "models").resolve()
+        if not final_path.is_relative_to(models_root):
+            return None
+        if final_path.exists() and final_path.stat().st_size > 0:
+            return None
+    except OSError:
+        return None
+
+    return {
+        "error": "Cannot start model download while bootstrap full-model upgrade is pending retry",
+        "code": "model_lifecycle_busy",
+        "activeOperation": "bootstrap_upgrade_retry_pending",
+        "activeTarget": model_name,
+    }
+
+
+def _get_agent_model_status(timeout: int = 5) -> Optional[dict]:
+    """Return host-agent-normalized model download status when reachable."""
+    global _agent_model_status_cache_at, _agent_model_status_cache_value
+
+    now = time.monotonic()
+    if now - _agent_model_status_cache_at < _AGENT_MODEL_STATUS_CACHE_TTL_SECONDS:
+        return _agent_model_status_cache_value
+
+    with _agent_model_status_cache_lock:
+        now = time.monotonic()
+        if now - _agent_model_status_cache_at < _AGENT_MODEL_STATUS_CACHE_TTL_SECONDS:
+            return _agent_model_status_cache_value
+
         try:
-            err_body = json.loads(exc.read().decode())
-            detail = err_body.get("error", f"Host agent returned HTTP {exc.code}")
-        except (json.JSONDecodeError, OSError):
-            detail = f"Host agent returned HTTP {exc.code}"
-        raise HTTPException(status_code=502, detail=detail)
-    except (urllib.error.URLError, OSError) as exc:
-        raise HTTPException(status_code=503, detail=f"Host agent unreachable: {exc}")
+            status = request_agent_json("GET", "/v1/model/status", timeout=timeout)
+        except AgentClientError:
+            status = None
+
+        _agent_model_status_cache_value = status
+        _agent_model_status_cache_at = time.monotonic()
+        return status
+
+
+# Large GGUF downloads can report the row as downloaded before the host-agent
+# releases the model_download lifecycle lock. Keep this finite so unrelated
+# conflicts still surface, but cover observed 30s+ multipart teardown lag.
+_MODEL_DOWNLOAD_BUSY_ACTIVATION_GRACE_SECONDS = 120.0
+
+
+def _agent_http_detail(exc: AgentHTTPError) -> Any:
+    detail: Any = exc.detail
+    try:
+        payload = json.loads(exc.response_text)
+        if isinstance(payload, dict):
+            detail = payload
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return detail
+
+
+def _is_download_lifecycle_busy(detail: Any) -> bool:
+    return (
+        isinstance(detail, dict)
+        and detail.get("code") == "model_lifecycle_busy"
+        and detail.get("activeOperation") == "model_download"
+    )
+
+
+def _call_agent_model(
+    path: str,
+    body: dict,
+    timeout: int = 30,
+    *,
+    retry_download_busy_seconds: float = 0.0,
+) -> dict:
+    """Call the host agent model endpoint."""
+    deadline = time.monotonic() + max(float(retry_download_busy_seconds or 0.0), 0.0)
+    try:
+        while True:
+            try:
+                return request_agent_json("POST", path, payload=body, timeout=timeout)
+            except AgentHTTPError as exc:
+                if exc.status_code != 409:
+                    raise
+                detail = _agent_http_detail(exc)
+                if (
+                    retry_download_busy_seconds > 0
+                    and _is_download_lifecycle_busy(detail)
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.5)
+                    continue
+                raise HTTPException(status_code=409, detail=detail) from exc
+    except AgentHTTPError as exc:
+        if exc.status_code == 409:
+            raise HTTPException(status_code=409, detail=_agent_http_detail(exc)) from exc
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
+    except AgentUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"Host agent unreachable: {exc}") from exc
+    except AgentProtocolError as exc:
+        raise HTTPException(status_code=502, detail=f"Invalid host agent response: {exc}") from exc
 
 
 def _find_model_in_library(model_id: str) -> Optional[dict]:
@@ -419,6 +755,8 @@ def _resolve_local_gguf_filename(model_id: str) -> str | None:
     candidate_stem = Path(candidate).stem.lower()
     exact_matches: list[Path] = []
     stem_matches: list[Path] = []
+    logical_matches: list[Path] = []
+    candidate_logical = _local_model_name_from_gguf(candidate).lower()
     try:
         for path in _MODELS_DIR.iterdir():
             if not _is_final_gguf_file(path):
@@ -427,11 +765,13 @@ def _resolve_local_gguf_filename(model_id: str) -> str | None:
                 exact_matches.append(path)
             elif path.stem.lower() == candidate_stem:
                 stem_matches.append(path)
+            elif _local_model_name_from_gguf(path.name).lower() == candidate_logical:
+                logical_matches.append(path)
     except OSError as exc:
         logger.warning("Failed to resolve local GGUF %s: %s", model_id, exc)
         return None
 
-    matches = exact_matches or stem_matches
+    matches = exact_matches or stem_matches or logical_matches
     if len(matches) == 1:
         return matches[0].name
     if len(matches) > 1:
@@ -513,14 +853,18 @@ async def _fetch_llama_counters(host: str, port: int, model_name: str) -> dict:
 
 async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> str | None:
     base_url = _configured_llm_base_url(host, port)
+    lemonade_api = api_prefix == "/api/v1"
     async with httpx.AsyncClient(timeout=10.0) as client:
-        if api_prefix == "/api/v1":
+        if lemonade_api:
             try:
                 resp = await client.get(f"{base_url}{api_prefix}/health")
                 resp.raise_for_status()
-                loaded = resp.json().get("model_loaded")
+                health = resp.json()
+                loaded = health.get("model_loaded")
                 if loaded:
                     return loaded
+                if "model_loaded" in health:
+                    return None
             except (httpx.HTTPError, ValueError):
                 pass
 
@@ -532,20 +876,8 @@ async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> st
                 status = model.get("status", {})
                 if isinstance(status, dict) and status.get("value") == "loaded":
                     return model.get("id")
-            desired_tokens = (
-                _model_name_tokens(_read_active_model())
-                | _model_name_tokens(read_env_value("LLM_MODEL", INSTALL_DIR))
-            )
-            if api_prefix == "/api/v1" and desired_tokens:
-                for model in data:
-                    model_tokens = _model_name_tokens(model.get("id"))
-                    model_tokens.update(_model_name_tokens(model.get("checkpoint")))
-                    checkpoints = model.get("checkpoints")
-                    if isinstance(checkpoints, dict):
-                        for checkpoint in checkpoints.values():
-                            model_tokens.update(_model_name_tokens(checkpoint))
-                    if desired_tokens & model_tokens:
-                        return model.get("id")
+            if lemonade_api:
+                return None
             if data and data[0].get("id"):
                 return data[0]["id"]
         except (httpx.HTTPError, ValueError):
@@ -714,6 +1046,13 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library")
 
+    bootstrap_conflict = _bootstrap_upgrade_download_conflict()
+    if bootstrap_conflict is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={**bootstrap_conflict, "requestedModelId": model_id},
+        )
+
     payload = {
         "gguf_file": model["gguf_file"],
         "gguf_url": model.get("gguf_url", ""),
@@ -737,6 +1076,16 @@ def cancel_download(api_key: str = Depends(verify_api_key)):
 @router.post("/api/models/{model_id}/load")
 def load_model(model_id: str, api_key: str = Depends(verify_api_key)):
     """Activate a model — update config and restart llama-server."""
+    mode_denial = _model_activation_mode_denial(
+        ODS_MODE_EFFECTIVE,
+        _configured_ods_mode(),
+    )
+    if mode_denial is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={**mode_denial, "requestedModelId": model_id},
+        )
+
     model = _find_loadable_model(model_id)
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
@@ -745,8 +1094,20 @@ def load_model(model_id: str, api_key: str = Depends(verify_api_key)):
     if already_active:
         return {"status": "already_active", "model_id": model_id, "loadedModel": loaded_model}
 
-    # Long timeout — model loading can take minutes
-    result = _call_agent_model("/v1/model/activate", {"model_id": model_id}, timeout=600)
+    bootstrap_conflict = _bootstrap_upgrade_download_conflict()
+    if bootstrap_conflict is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={**bootstrap_conflict, "requestedModelId": model_id},
+        )
+
+    # Activation includes downstream synchronization and a bounded rollback.
+    result = _call_agent_model(
+        "/v1/model/activate",
+        {"model_id": model_id},
+        timeout=2700,
+        retry_download_busy_seconds=_MODEL_DOWNLOAD_BUSY_ACTIVATION_GRACE_SECONDS,
+    )
     return result
 
 
@@ -773,9 +1134,9 @@ async def benchmark_model(model_id: str, body: dict[str, Any] | None = None, api
 @router.delete("/api/models/{model_id}")
 def delete_model(model_id: str, api_key: str = Depends(verify_api_key)):
     """Delete a downloaded model file."""
-    model = _find_model_in_library(model_id)
+    model = _find_model_in_library(model_id) or _find_local_gguf_model(model_id)
     if model is None:
-        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library")
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
 
     payload = {
         "gguf_file": model["gguf_file"],

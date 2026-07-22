@@ -1,11 +1,17 @@
 """Tests for config.py — manifest loading and service discovery."""
 
 import logging
+from pathlib import Path
 
 import pytest
 
 import config
-from config import _detect_container_default_gateway, load_extension_manifests, _read_manifest_file
+from config import (
+    _apply_host_native_llm_service_override,
+    _detect_container_default_gateway,
+    load_extension_manifests,
+    _read_manifest_file,
+)
 
 
 VALID_MANIFEST = """\
@@ -24,6 +30,41 @@ features:
     category: inference
     gpu_backends: [amd, nvidia]
 """
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, "unknown"),
+        ("", "unknown"),
+        (" LOCAL ", "local"),
+        ("cloud", "cloud"),
+        ("HYBRID", "hybrid"),
+        ("lemonade", "lemonade"),
+        ("core", "unknown"),
+    ],
+)
+def test_normalize_ods_mode(value, expected):
+    assert config.normalize_ods_mode(value) == expected
+
+
+def test_live_env_value_prefers_last_persisted_value(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text(
+        "LLM_MODEL=old-model\nLLM_MODEL=new-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.setenv("LLM_MODEL", "stale-process-model")
+
+    assert config.read_live_env_value("LLM_MODEL") == "new-model"
+
+
+def test_live_env_value_preserves_explicit_empty_value(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text("LEMONADE_MODEL=\n", encoding="utf-8")
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.setenv("LEMONADE_MODEL", "stale-process-model")
+
+    assert config.read_live_env_value("LEMONADE_MODEL", "fallback") == ""
 
 
 class TestReadManifestFile:
@@ -96,6 +137,37 @@ class TestHostAgentResolution:
         assert config._resolve_agent_host() == "host.docker.internal"
 
 
+class TestHostNativeLlmResolution:
+
+    def test_routes_windows_amd_host_runtime_to_ollama_url(self):
+        services = {"llama-server": {"host": "llama-server", "port": 8080}}
+        env = {
+            "AMD_INFERENCE_LOCATION": "host",
+            "AMD_INFERENCE_PORT": "9090",
+            "OLLAMA_URL": "http://host.docker.internal:9090/v1",
+        }
+
+        _apply_host_native_llm_service_override(services, "amd", env)
+
+        assert services["llama-server"]["host"] == "host.docker.internal"
+        assert services["llama-server"]["port"] == 9090
+
+    @pytest.mark.parametrize(
+        ("backend", "location"),
+        [("nvidia", "host"), ("amd", "container"), ("amd", "external")],
+    )
+    def test_leaves_non_host_native_services_unchanged(self, backend, location):
+        services = {"llama-server": {"host": "llama-server", "port": 8080}}
+
+        _apply_host_native_llm_service_override(
+            services,
+            backend,
+            {"AMD_INFERENCE_LOCATION": location, "OLLAMA_URL": "http://host.docker.internal:9090"},
+        )
+
+        assert services["llama-server"] == {"host": "llama-server", "port": 8080}
+
+
 class TestLoadExtensionManifests:
 
     def test_loads_valid_manifest(self, tmp_path):
@@ -110,6 +182,91 @@ class TestLoadExtensionManifests:
         assert services["test-service"]["health"] == "/health"
         assert len(features) == 1
         assert features[0]["id"] == "test-feature"
+
+    def test_normalizes_llm_contract(self, tmp_path):
+        svc_dir = tmp_path / "llm-app"
+        svc_dir.mkdir()
+        (svc_dir / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: llm-app\n"
+            "  name: LLM App\n"
+            "  port: 8080\n"
+            "  health: /health\n"
+            "  llm:\n"
+            "    consumes: true\n"
+            "    route: direct\n"
+            "    pinning: none\n"
+            "    min_context: 65536\n"
+            "    probe:\n"
+            "      kind: chat\n"
+            "      path: /v1/chat/completions\n"
+        )
+
+        services, _, _ = load_extension_manifests(tmp_path, "nvidia")
+
+        llm = services["llm-app"]["llm"]
+        assert llm["consumes"] is True
+        assert llm["route"] == "direct"
+        assert llm["pinning"] == "none"
+        assert llm["min_context"] == 65536
+        assert llm["probe"]["kind"] == "chat"
+        assert llm["swap_safe"] is False
+        assert llm["badge"] == "not-swap-safe"
+
+    def test_skips_docker_service_when_declared_compose_file_is_absent(self, tmp_path):
+        svc_dir = tmp_path / "openclaw"
+        svc_dir.mkdir()
+        (svc_dir / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: openclaw\n"
+            "  name: OpenClaw\n"
+            "  type: docker\n"
+            "  compose_file: compose.yaml\n"
+            "  port: 18789\n"
+            "  health: /\n"
+            "  llm:\n"
+            "    consumes: true\n"
+            "    route: direct\n"
+            "    pinning: none\n"
+            "features:\n"
+            "  - id: openclaw-feature\n"
+            "    name: OpenClaw Feature\n"
+        )
+
+        services, features, _ = load_extension_manifests(tmp_path, "nvidia")
+
+        assert "openclaw" not in services
+        assert features == []
+
+    def test_loads_docker_service_when_declared_compose_file_exists(self, tmp_path):
+        svc_dir = tmp_path / "openclaw"
+        svc_dir.mkdir()
+        (svc_dir / "compose.yaml").write_text("services:\n  openclaw:\n    image: test\n")
+        (svc_dir / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: openclaw\n"
+            "  name: OpenClaw\n"
+            "  type: docker\n"
+            "  compose_file: compose.yaml\n"
+            "  port: 18789\n"
+            "  health: /\n"
+        )
+
+        services, _, _ = load_extension_manifests(tmp_path, "nvidia")
+
+        assert "openclaw" in services
+
+    def test_builtin_llm_probe_paths_match_live_service_routes(self):
+        services_dir = Path(__file__).resolve().parents[2]
+
+        services, _, _ = load_extension_manifests(services_dir, "nvidia")
+
+        assert services["open-webui"]["llm"]["probe"]["path"] == "/openai/v1/chat/completions"
+        assert services["perplexica"]["llm"]["probe"]["path"] == "/api/search"
+        assert services["privacy-shield"]["llm"]["probe"]["path"] == "/v1/chat/completions"
 
     def test_external_port_default_zero_disables_external_port_fallback(self, tmp_path):
         svc_dir = tmp_path / "internal-service"

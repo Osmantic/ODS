@@ -33,7 +33,7 @@ $script:LEMONADE_INSTALL_DIR = Join-Path $env:ProgramFiles "Lemonade Server"
 $script:LEMONADE_EXE         = Join-Path (Join-Path $script:LEMONADE_INSTALL_DIR "bin") "lemonade-server.exe"
 $script:LEMONADE_PORT        = 8080
 $script:LEMONADE_API_KEY     = "lemonade"
-$script:LEMONADE_HEALTH_URL  = "http://localhost:8080/api/v1/health"
+$script:LEMONADE_HEALTH_URL  = "http://127.0.0.1:8080/api/v1/health"
 
 # llama-server fallback (Vulkan build, used if Lemonade install is declined/fails)
 $script:LLAMA_SERVER_DIR = Join-Path $script:ODS_INSTALL_DIR "llama-server"
@@ -48,6 +48,11 @@ $script:MIN_DOCKER_VERSION = "4.20.0"
 
 # Minimum NVIDIA driver version for CUDA in Docker Desktop
 $script:MIN_NVIDIA_DRIVER = 570
+
+# Speaches CUDA images can require a newer driver than llama.cpp's CUDA image.
+# Keep this separate so NVIDIA LLM installs can remain available on R570 drivers
+# while Whisper falls back to its CPU image.
+$script:MIN_WINDOWS_WHISPER_CUDA_DRIVER = 575
 
 # OpenCode (host-level AI coding IDE, not a Docker service)
 $script:OPENCODE_VERSION = "1.2.18"

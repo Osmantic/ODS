@@ -35,7 +35,8 @@ usage() {
     echo "  SESSIONS_DIR   Sessions directory (default: \$OPENCLAW_DIR/agents/main/sessions)"
     echo "  MAX_SIZE       Max session file size in bytes (default: 256000)"
     echo ""
-    echo "Exit: 0 (always; missing paths are skipped with a log message)."
+    echo "Exit: 0 on success or when paths are missing (skipped with a log message);"
+    echo "      1 when no usable Python is found (refused before touching any session)."
 }
 
 case "${1:-}" in
@@ -80,6 +81,23 @@ fi
 
 if [ "$DELETED_COUNT" -gt 0 ] || [ "$BAK_COUNT" -gt 0 ]; then
     echo "[$(date)] Cleaned up $DELETED_COUNT .deleted files, $BAK_COUNT .bak files"
+fi
+
+# ── Python (needed to update sessions.json after wipes) ───────
+# Resolved BEFORE any session file is deleted: under set -e, a failed
+# detection inside the wipe loop used to kill the script after a bloated
+# session file was already removed but before its reference was cleared
+# from sessions.json — leaving the gateway pointing at a missing file.
+PYTHON_CMD="python3"
+if [[ -f "$(dirname "$0")/../lib/python-cmd.sh" ]]; then
+    . "$(dirname "$0")/../lib/python-cmd.sh"
+    PYTHON_CMD="$(ods_detect_python_cmd)" || PYTHON_CMD=""
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_CMD="python"
+fi
+if [[ -z "$PYTHON_CMD" ]] || ! "$PYTHON_CMD" -c 'import json' >/dev/null 2>&1; then
+    echo "[$(date)] ERROR: no usable Python found; refusing to prune sessions (sessions.json updates need it)" >&2
+    exit 1
 fi
 
 # ── Process session files ──────────────────────────────────────
@@ -133,14 +151,6 @@ if [ -n "$WIPE_IDS" ]; then
     cp "$SESSIONS_JSON" "$SESSIONS_JSON.bak-cleanup"
 
     for ID in $WIPE_IDS; do
-        PYTHON_CMD="python3"
-        if [[ -f "$(dirname "$0")/../lib/python-cmd.sh" ]]; then
-            . "$(dirname "$0")/../lib/python-cmd.sh"
-            PYTHON_CMD="$(ods_detect_python_cmd)"
-        elif command -v python >/dev/null 2>&1; then
-            PYTHON_CMD="python"
-        fi
-
         "$PYTHON_CMD" -c "
 import json, sys
 sessions_file = sys.argv[1]

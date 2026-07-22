@@ -99,7 +99,7 @@ export default function Sidebar({ status, collapsed, onToggle }) {
 
   return (
     <aside
-      className={`fixed left-0 top-0 h-screen ${collapsed ? 'w-20' : 'w-64'} flex flex-col transition-all duration-200`}
+      className={`fixed left-0 top-0 flex h-screen flex-col transition-all duration-200 ${collapsed ? 'w-20' : 'w-20 sm:w-64'}`}
       style={{
         background: `var(--sidebar-bg-glow), var(--sidebar-bg)`,
         borderRight: '1px solid var(--sidebar-border)',
@@ -119,13 +119,23 @@ export default function Sidebar({ status, collapsed, onToggle }) {
           </div>
         ) : (
           <>
-            <OsmanticLogo />
-            <p className="text-[8px] font-mono tracking-[0.16em] mt-2.5 uppercase" style={{ color: 'var(--sidebar-accent-soft)' }}>
-              OSMANTIC DEPLOYMENT SYSTEM
-            </p>
-            <p className="text-[10px] mt-1" style={{ color: 'var(--sidebar-text-secondary)' }}>
-              {status?.tier || 'Minimal'} • v{status?.version || '...'}
-            </p>
+            <div className="flex flex-col items-center sm:hidden">
+              <div className="osmantic-logo-tile">
+                <OsmanticLogo compact />
+              </div>
+              <p className="mt-2 font-mono text-[8px] uppercase tracking-[0.18em]" style={{ color: 'var(--sidebar-text-muted)' }}>
+                v{status?.version || '...'}
+              </p>
+            </div>
+            <div className="hidden sm:block">
+              <OsmanticLogo />
+              <p className="mt-2.5 font-mono text-[8px] uppercase tracking-[0.16em]" style={{ color: 'var(--sidebar-accent-soft)' }}>
+                OSMANTIC DEPLOYMENT SYSTEM
+              </p>
+              <p className="mt-1 text-[10px]" style={{ color: 'var(--sidebar-text-secondary)' }}>
+                {status?.tier || 'Minimal'} • v{status?.version || '...'}
+              </p>
+            </div>
           </>
         )}
       </div>
@@ -138,9 +148,10 @@ export default function Sidebar({ status, collapsed, onToggle }) {
               <NavLink
                 to={path}
                 end
-                title={collapsed ? label : undefined}
+                aria-label={label}
+                title={label}
                 className={({ isActive }) =>
-                  `flex items-center ${collapsed ? 'justify-center' : ''} gap-3 px-3 py-2.5 rounded-lg transition-colors ${
+                  `flex items-center ${collapsed ? 'justify-center' : 'justify-center sm:justify-start'} gap-3 px-3 py-2.5 rounded-lg transition-colors ${
                     isActive
                       ? 'liquid-metal-nav text-white shadow-lg'
                       : 'text-theme-text-muted hover:text-theme-text'
@@ -157,7 +168,7 @@ export default function Sidebar({ status, collapsed, onToggle }) {
                 }
               >
                 <Icon size={20} />
-                {!collapsed && <span>{label}</span>}
+                {!collapsed && <span className="hidden sm:inline">{label}</span>}
               </NavLink>
             </li>
           ))}
@@ -165,7 +176,7 @@ export default function Sidebar({ status, collapsed, onToggle }) {
 
         {/* External Links — hidden when collapsed */}
         {!collapsed && (
-          <div className="mt-4 pt-4 border-t" style={{ borderColor: 'var(--sidebar-border)' }}>
+          <div className="mt-4 hidden border-t pt-4 sm:block" style={{ borderColor: 'var(--sidebar-border)' }}>
             <div className="mb-2 flex items-center justify-between px-3">
               <p className="text-[10px] font-semibold uppercase tracking-[0.24em]" style={{ color: 'var(--sidebar-accent-soft)' }}>
                 Quick Links
@@ -231,7 +242,7 @@ export default function Sidebar({ status, collapsed, onToggle }) {
         )} */}
         <button
           onClick={onToggle}
-          className={`${collapsed ? '' : 'ml-auto'} flex items-center justify-center p-2 rounded-lg text-theme-text-muted hover:text-theme-text transition-colors`}
+          className={`${collapsed ? '' : 'ml-auto'} hidden items-center justify-center rounded-lg p-2 text-theme-text-muted transition-colors hover:text-theme-text sm:flex`}
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           style={{ background: 'var(--sidebar-hover-bg)' }}
         >
@@ -242,7 +253,7 @@ export default function Sidebar({ status, collapsed, onToggle }) {
       {/* Status Footer */}
       <div className="p-4 border-t" style={{ borderColor: 'var(--sidebar-border)' }}>
         {!collapsed && (
-          <div className="flex items-center justify-between text-sm mb-2">
+          <div className="mb-2 hidden items-center justify-between text-sm sm:flex">
             <span className="text-theme-text-muted">Services</span>
             <span className={footerColor}>
               {degradedCount > 0
@@ -255,7 +266,7 @@ export default function Sidebar({ status, collapsed, onToggle }) {
         {(status?.gpu || (isUnified && status?.ram)) && (
           <div>
             {!collapsed && (
-              <div className="flex items-center justify-between text-xs text-theme-text-muted mb-1">
+              <div className="mb-1 hidden items-center justify-between text-xs text-theme-text-muted sm:flex">
                 <span>{memLabel}</span>
                 <span className="font-mono">{memUsed.toFixed ? memUsed.toFixed(1) : memUsed}/{memTotal.toFixed ? memTotal.toFixed(0) : memTotal} GB</span>
               </div>

@@ -262,6 +262,16 @@ else
     fail "amd.json: Windows Lemonade MSI contract missing"
 fi
 
+echo "[contract] Windows Lemonade follows the normal per-user install contract"
+if grep -q 'INSTALLDIR=' installers/windows/install-windows.ps1 \
+   && ! grep -q 'ALLUSERS=1' installers/windows/install-windows.ps1 \
+   && grep -q 'LOCALAPPDATA' installers/windows/lib/backend-contract.ps1 \
+   && grep -q 'LOCALAPPDATA' bin/ods-host-agent.py; then
+    pass "Windows Lemonade uses and resolves the per-user MSI install location"
+else
+    fail "Windows Lemonade must use the non-elevated per-user MSI install location across lifecycle paths"
+fi
+
 # ---------------------------------------------------------------------------
 # 14. Linux AMD image consumers use the same Lemonade image pin
 # ---------------------------------------------------------------------------
@@ -316,9 +326,15 @@ if [[ -f installers/windows/lib/backend-contract.ps1 ]]; then
 else
     fail "backend-contract.ps1 missing"
 fi
+_lemonade_ps_cmd=()
 if command -v pwsh >/dev/null 2>&1; then
+    _lemonade_ps_cmd=(pwsh -NoProfile)
+elif command -v powershell.exe >/dev/null 2>&1; then
+    _lemonade_ps_cmd=(powershell.exe -NoProfile -ExecutionPolicy Bypass)
+fi
+if ((${#_lemonade_ps_cmd[@]} > 0)); then
     _ps_tmp="${TMPDIR:-/tmp}"
-    if ROOT_DIR="$ROOT_DIR" AMD_LEMONADE_IMAGE="$AMD_LEMONADE_IMAGE" TEMP="$_ps_tmp" ProgramFiles="$_ps_tmp" USERPROFILE="$_ps_tmp" pwsh -NoProfile -Command '
+    if ROOT_DIR="$ROOT_DIR" AMD_LEMONADE_IMAGE="$AMD_LEMONADE_IMAGE" TEMP="$_ps_tmp" ProgramFiles="$_ps_tmp" USERPROFILE="$_ps_tmp" "${_lemonade_ps_cmd[@]}" -Command '
         $ErrorActionPreference = "Stop"
         . (Join-Path $env:ROOT_DIR "installers/windows/lib/backend-contract.ps1")
         $runtime = Get-ODSAmdLemonadeRuntime -RootPath $env:ROOT_DIR
@@ -350,13 +366,175 @@ if command -v pwsh >/dev/null 2>&1; then
         if ($resolved -ne $x86Exe) {
             throw "Expected Program Files (x86) LemonadeServer.exe path, got: $resolved"
         }
+
+        $modelsDir = Join-Path $probeRoot "models"
+        New-Item -ItemType Directory -Path $modelsDir -Force | Out-Null
+        $modern = Get-ODSLemonadeLaunchContract `
+            -ExecutablePath $x86Exe -VersionOverride "10.7.0.0" `
+            -Port 8080 -BindAddress "0.0.0.0" -ModelsDir $modelsDir `
+            -AdminApiKey "contract-admin-key"
+        if (-not $modern.Modern -or $modern.ArgumentString -ne "--port 8080 --host 0.0.0.0") {
+            throw "Unexpected Lemonade 10.7 launch arguments: $($modern.ArgumentString)"
+        }
+        foreach ($obsolete in @("serve", "--no-tray", "--llamacpp", "--extra-models-dir")) {
+            if ($modern.ArgumentList -contains $obsolete) {
+                throw "Lemonade 10.7 contract retained obsolete argument: $obsolete"
+            }
+        }
+
+        $legacy = Get-ODSLemonadeLaunchContract `
+            -ExecutablePath $x86Exe -VersionOverride "10.6.9" `
+            -Port 8080 -BindAddress "127.0.0.1" -ModelsDir $modelsDir
+        foreach ($required in @("serve", "--no-tray", "--llamacpp", "--extra-models-dir")) {
+            if ($legacy.ArgumentList -notcontains $required) {
+                throw "Legacy Lemonade contract lost required argument: $required"
+            }
+        }
+
+        try {
+            $null = Get-ODSLemonadeLaunchContract `
+                -ExecutablePath $x86Exe -VersionOverride "10.7.0" `
+                -Port 8080 -BindAddress "0.0.0.0" -ModelsDir $modelsDir
+            throw "Modern Lemonade accepted an unauthenticated non-loopback bind"
+        } catch {
+            if ($_.Exception.Message -notmatch "requires an admin API key") { throw }
+        }
+        $loopbackWithoutKey = Get-ODSLemonadeLaunchContract `
+            -ExecutablePath $x86Exe -VersionOverride "10.7.0" `
+            -Port 8080 -BindAddress "127.0.0.1" -ModelsDir $modelsDir
+        if ($loopbackWithoutKey.BindAddress -ne "127.0.0.1") {
+            throw "Modern Lemonade loopback launch changed its bind address"
+        }
+
+        $script:configPost = $null
+        $script:expectedModelsDir = [System.IO.Path]::GetFullPath($modelsDir)
+        function Invoke-RestMethod {
+            param($Method, $Uri, $Headers, $ContentType, $Body, $TimeoutSec, $ErrorAction)
+            if ($Method -eq "Post") {
+                $script:configPost = [pscustomobject]@{
+                    Uri = $Uri
+                    Headers = $Headers
+                    Body = $Body | ConvertFrom-Json
+                }
+                return [pscustomobject]@{ status = "success" }
+            }
+            if ($Uri -match "/api/v1/models$") {
+                return [pscustomobject]@{
+                    data = @(
+                        [pscustomobject]@{
+                            id = "Modern-Model"
+                            checkpoint = (Join-Path $script:expectedModelsDir "Modern-Model.gguf")
+                            checkpoints = [pscustomobject]@{}
+                        }
+                    )
+                }
+            }
+            if ($Uri -match "/api/v1/health$") {
+                return [pscustomobject]@{ version = "10.7.0" }
+            }
+            return [pscustomobject]@{
+                ctx_size = 4096
+                extra_models_dir = $script:expectedModelsDir
+                llamacpp = [pscustomobject]@{ backend = "vulkan" }
+            }
+        }
+        $null = Set-ODSLemonadeModernRuntimeConfig `
+            -Port 8080 -ModelsDir $modelsDir -AdminApiKey "contract-admin-key" `
+            -ContextSize 4096
+        if ($script:configPost.Uri -ne "http://127.0.0.1:8080/internal/set") {
+            throw "Modern Lemonade config did not use loopback /internal/set"
+        }
+        if ($script:configPost.Headers.Authorization -ne "Bearer contract-admin-key") {
+            throw "Modern Lemonade config did not send the admin Bearer token"
+        }
+        $postedProperties = @($script:configPost.Body.PSObject.Properties.Name | Sort-Object)
+        if (($postedProperties -join ",") -ne "ctx_size,extra_models_dir,llamacpp") {
+            throw "Unexpected Lemonade config schema: $($postedProperties -join ",")"
+        }
+        if ($script:configPost.Body.extra_models_dir -ne $script:expectedModelsDir -or
+            $script:configPost.Body.llamacpp.backend -ne "vulkan" -or
+            [int]$script:configPost.Body.ctx_size -ne 4096) {
+            throw "Lemonade 10.7 config payload values are incorrect"
+        }
+        $resolvedModernModel = Resolve-ODSLemonadeModelId `
+            -Port 8080 -GgufFile "Modern-Model.gguf"
+        if ($resolvedModernModel -ne "Modern-Model") {
+            throw "Modern Lemonade model ID resolution failed: $resolvedModernModel"
+        }
+        $legacyFallbackModel = Resolve-ODSLemonadeModelId `
+            -Port 8080 -GgufFile "Legacy-Model.gguf" -VersionOverride "10.6.9"
+        if ($legacyFallbackModel -ne "extra.Legacy-Model.gguf") {
+            throw "Legacy Lemonade model ID fallback failed: $legacyFallbackModel"
+        }
+
+        function New-ScheduledTaskAction {
+            param($Execute, $Argument, $WorkingDirectory)
+            return [pscustomobject]@{
+                Execute = $Execute
+                Arguments = $Argument
+                WorkingDirectory = $WorkingDirectory
+            }
+        }
+        $taskAction = New-ODSLemonadeScheduledTaskAction `
+            -Contract $modern -EnvPath (Join-Path $probeRoot ".env") `
+            -DiagnosticLogPath (Join-Path $probeRoot "lemonade-launch.log")
+        $launcherMatch = [regex]::Match($taskAction.Arguments, "-File\s+`"([^`"]+)`"")
+        if ($taskAction.Execute -ne "powershell.exe" -or -not $launcherMatch.Success) {
+            throw "Modern Lemonade task must use the secure PowerShell launcher file"
+        }
+        if ($taskAction.Arguments.Length -gt 512) {
+            throw "Modern Lemonade task arguments are too long for standard-user Task Scheduler registration"
+        }
+        $launcherPath = $launcherMatch.Groups[1].Value
+        if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) {
+            throw "Modern Lemonade task launcher file was not written"
+        }
+        $wrapper = Get-Content -LiteralPath $launcherPath -Raw
+        if ($wrapper -match [regex]::Escape("contract-admin-key")) {
+            throw "Lemonade admin key leaked into the launcher wrapper"
+        }
+        if ($wrapper -notmatch "LITELLM_LEMONADE_API_KEY" -or
+            $wrapper -notmatch "Start-Process -FilePath.*-PassThru") {
+            throw "Modern Lemonade task wrapper does not securely supervise the child"
+        }
+        $tokens = $null
+        $parseErrors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseInput(
+            $wrapper, [ref]$tokens, [ref]$parseErrors
+        )
+        if (@($parseErrors).Count -gt 0) {
+            throw "Generated Lemonade task wrapper has PowerShell parse errors"
+        }
+
+        $contractText = Get-Content -LiteralPath (Join-Path $env:ROOT_DIR "installers/windows/lib/backend-contract.ps1") -Raw
+        if ($contractText -notmatch "whoami\.exe" -or
+            $contractText -notmatch "Translate\(\[System.Security.Principal.SecurityIdentifier\]\)") {
+            throw "Interactive scheduled task user resolver does not validate a fully qualified account"
+        }
+        function Resolve-ODSInteractiveScheduledTaskUser {
+            return "STRIXY\conta"
+        }
+        function New-ScheduledTaskPrincipal {
+            param($UserId, $LogonType, $RunLevel)
+            return [pscustomobject]@{
+                UserId = $UserId
+                LogonType = $LogonType
+                RunLevel = $RunLevel
+            }
+        }
+        $principal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited
+        if ($principal.UserId -ne "STRIXY\conta" -or
+            $principal.LogonType -ne "Interactive" -or
+            $principal.RunLevel -ne "Limited") {
+            throw "Interactive scheduled task principal did not preserve the resolved user and limited token"
+        }
     '; then
-        pass "backend-contract.ps1: reads explicit root, stays standalone, resolves x86 Lemonade aliases"
+        pass "backend-contract.ps1: resolves Lemonade and enforces versioned secure launch/config contracts"
     else
         fail "backend-contract.ps1: PowerShell contract failed"
     fi
 else
-    pass "backend-contract.ps1: runtime test skipped (pwsh unavailable)"
+    pass "backend-contract.ps1: runtime test skipped (PowerShell unavailable)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -389,17 +567,17 @@ if command -v pwsh >/dev/null 2>&1; then
         }
         New-ODSEnv -InstallDir $installDir -TierConfig $tier -Tier "SH" -GpuBackend "amd" -AmdInferenceRuntime "lemonade" -AmdInferenceLocation "host" | Out-Null
         $envText = Get-Content -LiteralPath (Join-Path $installDir ".env") -Raw
-        if ($envText -notmatch "(?m)^ODS_MODE=lemonade$") {
+        if ($envText -notmatch "(?m)^ODS_MODE=lemonade\r?$") {
             throw "Expected Windows AMD Lemonade installs to write ODS_MODE=lemonade"
         }
-        if ($envText -notmatch "(?m)^LLM_BACKEND=lemonade$") {
+        if ($envText -notmatch "(?m)^LLM_BACKEND=lemonade\r?$") {
             throw "Expected Windows AMD Lemonade installs to write LLM_BACKEND=lemonade"
         }
         $litellmKey = [regex]::Match($envText, "(?m)^LITELLM_KEY=([^\r\n]+)\r?$").Groups[1].Value
         if ([string]::IsNullOrWhiteSpace($litellmKey)) {
             throw "Expected Windows AMD Lemonade installs to generate LITELLM_KEY"
         }
-        if ($envText -notmatch "(?m)^HERMES_LLM_BASE_URL=http://litellm:4000/v1$") {
+        if ($envText -notmatch "(?m)^HERMES_LLM_BASE_URL=http://litellm:4000/v1\r?$") {
             throw "Expected Windows AMD Lemonade Hermes to route through LiteLLM"
         }
         if ($envText -notmatch "(?m)^HERMES_LLM_API_KEY=$([regex]::Escape($litellmKey))\r?$") {
@@ -408,7 +586,7 @@ if command -v pwsh >/dev/null 2>&1; then
         if ($envText -match "(?m)^HERMES_LLM_BASE_URL=http://host\.docker\.internal:8080/api/v1$") {
             throw "Windows AMD Lemonade Hermes must not stream directly against native Lemonade"
         }
-        if ($envText -notmatch "(?m)^WHISPER_PORT=9100$") {
+        if ($envText -notmatch "(?m)^WHISPER_PORT=9100\r?$") {
             throw "Expected WHISPER_PORT=9100 for Windows AMD managed Lemonade"
         }
         $litellmConfig = Join-Path (Join-Path (Join-Path $installDir "config") "litellm") "lemonade.yaml"
@@ -422,21 +600,21 @@ if command -v pwsh >/dev/null 2>&1; then
         if ($litellmText -match "api_base: http://llama-server:8080/api/v1") {
             throw "Windows AMD Lemonade LiteLLM config must not route to in-container llama-server"
         }
-        if ($litellmText -notmatch "(?m)^  request_timeout: 900$" -or $litellmText -notmatch "(?m)^  stream_timeout: 900$") {
+        if ($litellmText -notmatch "(?m)^  request_timeout: 900\r?$" -or $litellmText -notmatch "(?m)^  stream_timeout: 900\r?$") {
             throw "Windows AMD Lemonade LiteLLM config must keep long-model proxy timeouts at 900s"
         }
 
         Set-Content -LiteralPath (Join-Path $installDir ".env") -Value "WHISPER_PORT=9000`n" -NoNewline
         New-ODSEnv -InstallDir $installDir -TierConfig $tier -Tier "SH" -GpuBackend "amd" -AmdInferenceRuntime "lemonade" -AmdInferenceLocation "host" | Out-Null
         $envText = Get-Content -LiteralPath (Join-Path $installDir ".env") -Raw
-        if ($envText -notmatch "(?m)^WHISPER_PORT=9100$") {
+        if ($envText -notmatch "(?m)^WHISPER_PORT=9100\r?$") {
             throw "Expected unsafe WHISPER_PORT=9000 to be remapped for Lemonade"
         }
 
         Set-Content -LiteralPath (Join-Path $installDir ".env") -Value "WHISPER_PORT=9200`n" -NoNewline
         New-ODSEnv -InstallDir $installDir -TierConfig $tier -Tier "SH" -GpuBackend "amd" -AmdInferenceRuntime "lemonade" -AmdInferenceLocation "host" | Out-Null
         $envText = Get-Content -LiteralPath (Join-Path $installDir ".env") -Raw
-        if ($envText -notmatch "(?m)^WHISPER_PORT=9200$") {
+        if ($envText -notmatch "(?m)^WHISPER_PORT=9200\r?$") {
             throw "Expected existing WHISPER_PORT override to be preserved"
         }
     '; then
@@ -457,6 +635,7 @@ if command -v pwsh >/dev/null 2>&1; then
     if ROOT_DIR="$ROOT_DIR" TEMP="$_ps_tmp" USERPROFILE="$_ps_tmp" pwsh -NoProfile -Command '
         $ErrorActionPreference = "Stop"
         function Write-AIWarn { param([string]$Message) Write-Host "WARN: $Message" }
+        . (Join-Path $env:ROOT_DIR "installers/windows/lib/detection.ps1")
         . (Join-Path $env:ROOT_DIR "installers/windows/lib/env-generator.ps1")
         $installDir = Join-Path $env:TEMP "ods-env-generator-windows-local-contract"
         Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -481,8 +660,11 @@ if command -v pwsh >/dev/null 2>&1; then
         if ($localText -notmatch "api_base: http://llama-server:8080/v1") {
             throw "Expected Windows NVIDIA local LiteLLM config to route through llama-server:8080/v1"
         }
-        if ($localText -notmatch "(?m)^  request_timeout: 900$" -or $localText -notmatch "(?m)^  stream_timeout: 900$") {
+        if ($localText -notmatch "(?m)^  request_timeout: 900\r?$" -or $localText -notmatch "(?m)^  stream_timeout: 900\r?$") {
             throw "Windows local LiteLLM config must keep long-model proxy timeouts at 900s"
+        }
+        if ($localText -notmatch "(?m)^general_settings:\r?$" -or $localText -notmatch "(?m)^  master_key: os\.environ/LITELLM_MASTER_KEY\r?$") {
+            throw "Windows local LiteLLM config must enforce the generated LiteLLM master key"
         }
     '; then
         pass "env-generator.ps1: Windows local writes local.yaml and repairs malformed bind-mount directories"

@@ -26,7 +26,7 @@ Environment variables (set in `.env`):
 |----------|---------|-------------|
 | `GGUF_FILE` | `Qwen3.5-9B-Q4_K_M.gguf` | Model filename inside `data/models/` |
 | `CTX_SIZE` | `16384` | Context window size in tokens |
-| `OLLAMA_PORT` | `8080` | External port (maps to internal 8080) |
+| `OLLAMA_PORT` | `11434` | External host port (maps to internal 8080) |
 | `GPU_BACKEND` | `nvidia` | GPU backend: `nvidia` or `amd` |
 | `LLAMA_ARG_FLASH_ATTN` | `auto` | llama.cpp Flash Attention mode: `auto`, `on`, or `off` |
 | `LLAMA_ARG_CACHE_TYPE_K` | `f16` | KV cache key precision. Use `q8_0` to reduce long-context memory pressure |

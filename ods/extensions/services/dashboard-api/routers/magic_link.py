@@ -721,6 +721,10 @@ def redeem_magic_link(token: str, request: Request, response: Response) -> Redir
             "ip": ip,
             "user_agent": user_agent,
         })
+        # Prevent unbounded storage bloat for reusable tokens
+        if len(record["redemptions"]) > 50:
+            record["redemptions"] = record["redemptions"][-50:]
+
         _write_store(store)
 
     # Build the response. The session cookie is HMAC-signed via

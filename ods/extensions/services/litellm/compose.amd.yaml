@@ -1,25 +1,11 @@
-# LiteLLM AMD overlay — Langfuse-aware entrypoint for Lemonade installs.
+# LiteLLM AMD overlay.
 # Inherits LITELLM_MASTER_KEY from base compose.yaml so proxy auth is enforced;
 # the literal `${LITELLM_KEY}` written to .env at install time is non-empty.
-# All LiteLLM ports bind to 127.0.0.1 — no external exposure.
+# The base LiteLLM command also handles Langfuse and selects switchboard.yaml
+# when ODS_MODEL_SWITCHBOARD=enabled; this overlay must not replace it.
+# All LiteLLM ports bind to 127.0.0.1 -- no external exposure.
 services:
   litellm:
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        if [ "$$LANGFUSE_ENABLED" = "true" ]; then
-          python3 -c "
-        import yaml
-        with open('/app/config.yaml') as f:
-            cfg = yaml.safe_load(f)
-        cfg.setdefault('litellm_settings', {})['success_callback'] = ['langfuse']
-        with open('/tmp/config.yaml', 'w') as f:
-            yaml.dump(cfg, f, default_flow_style=False)
-        "
-          exec litellm --config /tmp/config.yaml --port 4000
-        else
-          exec litellm --config /app/config.yaml --port 4000
-        fi
     logging:
       driver: "json-file"
       options:

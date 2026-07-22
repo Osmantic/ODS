@@ -232,6 +232,12 @@ test_file_has_timeout \
 
 test_file_has_timeout \
     "$ROOT_DIR/installers/macos/install-macos.sh" \
+    'curl.*HTTP_CODE.*\|HTTP_CODE=.*curl' \
+    "--max-time" \
+    "macOS final host-service health checks"
+
+test_file_has_timeout \
+    "$ROOT_DIR/installers/macos/install-macos.sh" \
     "curl.*opencode.ai/install" \
     "--max-time" \
     "macOS OpenCode install"

@@ -5,6 +5,7 @@
 | I want to... | Type | Start here |
 |---|---|---|
 | Add a Docker service (new container, health check, dashboard tile) | Service extension | This guide (below) |
+| Add an app that uses the local LLM | Swap-safe LLM extension | [SWAP-SAFE-EXTENSIONS.md](SWAP-SAFE-EXTENSIONS.md) |
 | Change the installer itself (new tier, swap theme, add/skip phase) | Installer mod | [INSTALLER-ARCHITECTURE.md](INSTALLER-ARCHITECTURE.md) |
 | Build a custom downstream edition or appliance | Fork / downstream build | [BUILD-ON-ODS-SERVER.md](BUILD-ON-ODS-SERVER.md) |
 
@@ -138,6 +139,30 @@ ods disable my-service   # Stops container, renames compose.yaml → compose.yam
 ods list                 # Shows all services with status
 ```
 
+## Portal Updates and Rollback
+
+Extensions installed from the bundled library receive a content receipt. The
+Dashboard Extensions page compares that receipt with both the current library
+definition and the installed definition:
+
+- `current`: installed files still match the receipt and the library
+- `available`: ODS ships a newer library definition
+- `modified`: installed definition files changed locally after installation
+- `untracked`: legacy install created before content receipts were introduced
+
+An update is staged and security-scanned on the same filesystem before the
+installed directory is atomically replaced. Enabled services are reconciled
+through the host agent; disabled and one-shot CLI extensions remain disabled.
+Existing service configuration is preserved, while new default config files
+may be added when they do not already exist. Those newly added defaults are
+also preserved if the definition is rolled back.
+
+Local definition changes are never overwritten without an explicit
+confirmation. The previous definition is retained as a single rollback backup,
+and the portal exposes **Rollback** after a successful update. Update and
+rollback replace extension definitions only: service data, Docker volumes,
+secrets, and existing configuration remain in place.
+
 ## Audit Extensions Before You Ship
 
 ODS now includes an extension audit workflow so new services can be
@@ -197,6 +222,18 @@ Service section:
 Feature section (optional list):
 - required per feature: `id`, `name`, `description`, `icon`, `category`, `requirements`, `priority`
 - optional: `enabled_services_all`, `enabled_services_any`, `setup_time`, `gpu_backends`
+
+LLM section (optional under `service`, required for LLM consumers):
+- `llm.consumes`: `true` when the service sends prompts or completions to a language model
+- `llm.route`: `gateway` for `http://litellm:4000/v1` with model `ods/current`, or `direct` for app-specific runtime coupling
+- `llm.pinning`: `none` when no concrete model id is stored, or `dynamic` when the app has a refresh/reconcile path after swaps
+- `llm.min_context`: optional context floor used for visible model gates
+- `llm.probe`: harness probe descriptor with `kind`, `path`, and `auth`
+
+For the extension-author workflow and examples, see
+[SWAP-SAFE-EXTENSIONS.md](SWAP-SAFE-EXTENSIONS.md). Apps that speak the
+OpenAI protocol should use the gateway alias by default and avoid persisting
+GGUF filenames, Lemonade ids, or other concrete model names.
 
 ## Service Categories
 
@@ -348,6 +385,8 @@ AMD ROCm requires additional container configuration compared to NVIDIA:
 
 - Service ID is unique and stable
 - Health endpoint is cheap and deterministic
+- LLM-consuming services declare `service.llm` or use the documented gateway
+  default from [SWAP-SAFE-EXTENSIONS.md](SWAP-SAFE-EXTENSIONS.md)
 - Feature requirements use real service IDs
 - AMD/NVIDIA support is explicitly declared
 - Docs/examples reference canonical paths (`config/n8n`, `docker compose`)

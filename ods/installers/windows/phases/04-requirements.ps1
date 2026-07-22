@@ -69,6 +69,55 @@ function Test-WindowsPortInUse {
     return @{ InUse = $false; ProcessName = ""; ProcessId = 0 }
 }
 
+function Resolve-WindowsLlmPreflightPort {
+    <#
+    .SYNOPSIS
+        Resolve the host LLM port that the selected Windows backend will bind.
+    .OUTPUTS
+        Port number, or 0 when cloud mode does not bind a local inference port.
+    #>
+    param(
+        [string]$GpuBackend,
+        [switch]$CloudMode,
+        [int]$LemonadeDefaultPort = 8080,
+        [string]$InstallDir = ""
+    )
+
+    if ($CloudMode) { return 0 }
+
+    $defaultPort = 11434
+    $candidate = $null
+    $persistedEnv = @{}
+    if ($InstallDir -and (Get-Command Get-WindowsODSEnvMap -ErrorAction SilentlyContinue)) {
+        $persistedEnv = Get-WindowsODSEnvMap -InstallDir $InstallDir
+    }
+    if ($GpuBackend -eq "amd") {
+        $defaultPort = $LemonadeDefaultPort
+        $candidate = $env:AMD_INFERENCE_PORT
+        if (-not $candidate -and $persistedEnv.ContainsKey("AMD_INFERENCE_PORT")) {
+            $candidate = $persistedEnv["AMD_INFERENCE_PORT"]
+        }
+    } elseif ($env:OLLAMA_PORT) {
+        $candidate = $env:OLLAMA_PORT
+    } elseif ($env:LLAMA_SERVER_PORT) {
+        $candidate = $env:LLAMA_SERVER_PORT
+    } elseif ($persistedEnv.ContainsKey("OLLAMA_PORT")) {
+        $candidate = $persistedEnv["OLLAMA_PORT"]
+    } elseif ($persistedEnv.ContainsKey("LLAMA_SERVER_PORT")) {
+        $candidate = $persistedEnv["LLAMA_SERVER_PORT"]
+    }
+
+    if ($candidate) {
+        $parsedPort = 0
+        if ([int]::TryParse(([string]$candidate).Trim(), [ref]$parsedPort) -and
+            $parsedPort -ge 1 -and $parsedPort -le 65535) {
+            return $parsedPort
+        }
+    }
+
+    return $defaultPort
+}
+
 function Get-WindowsODSLemonadeProcesses {
     <#
     .SYNOPSIS
@@ -87,6 +136,26 @@ function Get-WindowsODSLemonadeProcesses {
     } catch {
         return @()
     }
+}
+
+function Test-WindowsODSLemonadeOwnsPort {
+    <#
+    .SYNOPSIS
+        Return true when a listening port belongs to a known Lemonade process.
+    #>
+    param(
+        [hashtable]$PortResult,
+        [object[]]$LemonadeProcesses = @()
+    )
+
+    if (-not $PortResult -or -not $PortResult.InUse -or [int]$PortResult.ProcessId -le 0) {
+        return $false
+    }
+
+    $listenerPid = [int]$PortResult.ProcessId
+    return [bool]@($LemonadeProcesses | Where-Object {
+        $_.ProcessId -and [int]$_.ProcessId -eq $listenerPid
+    }).Count
 }
 
 function Stop-WindowsODSLemonadePortConflicts {
@@ -214,10 +283,18 @@ Stop-WindowsODSLemonadePortConflicts `
 # Build list of ports to check based on enabled features.
 # Default service ports match .env.example; overridden ports are not checked here.
 $_portsToCheck = [ordered]@{
-    "llama-server (LLM)"  = 11434
     "Open WebUI (chat)"   = 3000
     "Dashboard"           = 3001
     "Dashboard API"       = 3002
+}
+$_llmPortToCheck = Resolve-WindowsLlmPreflightPort `
+    -GpuBackend ([string]$gpuInfo.Backend) `
+    -CloudMode:$cloudMode `
+    -LemonadeDefaultPort ([int]$script:LEMONADE_PORT) `
+    -InstallDir $installDir
+if ($_llmPortToCheck -gt 0) {
+    $_llmServiceLabel = $(if ($gpuInfo.Backend -eq "amd") { "Lemonade (LLM)" } else { "llama-server (LLM)" })
+    $_portsToCheck[$_llmServiceLabel] = $_llmPortToCheck
 }
 if ($enableRecommended) {
     $_portsToCheck["LiteLLM (API gateway)"] = 4000
@@ -256,10 +333,21 @@ if ($enablePrivacyShield) {
 }
 
 $_portConflicts = @()
+$_managedLemonadeProcesses = @()
+if ($_usesNativeLemonade) {
+    $_managedLemonadeProcesses = @(Get-WindowsODSLemonadeProcesses)
+}
 foreach ($svc in $_portsToCheck.Keys) {
     $port   = $_portsToCheck[$svc]
     $result = Test-WindowsPortInUse -Port $port
     if ($result.InUse) {
+        if ($svc -eq "Lemonade (LLM)" -and
+            (Test-WindowsODSLemonadeOwnsPort `
+                -PortResult $result `
+                -LemonadeProcesses $_managedLemonadeProcesses)) {
+            Write-AI "  Port $port is already owned by the managed Lemonade runtime; it will be reused."
+            continue
+        }
         $_portConflicts += "  Port $port ($svc) in use by: $($result.ProcessName) (PID $($result.ProcessId))"
         $requirementsMet = $false
     }
@@ -287,7 +375,7 @@ if (-not $requirementsMet) {
         $continueChoice = Read-Host "  Continue anyway? [y/N]"
         if ($continueChoice -notmatch "^[yY]") {
             Write-AI "Resolve the issues above and re-run the installer."
-            exit 1
+            throw "ODS_INSTALL_ABORTED"
         }
     }
 } else {

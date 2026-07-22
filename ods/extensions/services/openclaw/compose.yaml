@@ -12,6 +12,7 @@ services:
       - LLM_MODEL=${LLM_MODEL:-qwen3:30b-a3b}
       - BOOTSTRAP_MODEL=${BOOTSTRAP_MODEL:-qwen3:8b-q4_K_M}
       - GGUF_FILE=${GGUF_FILE:-}
+      - LEMONADE_MODEL=${LEMONADE_MODEL:-}
       - OLLAMA_URL=${LLM_API_URL:-http://llama-server:8080}
       - OPENCLAW_LLM_URL=${OPENCLAW_LLM_URL:-}
       - OPENCLAW_HTTP_API=${OPENCLAW_HTTP_API:-}

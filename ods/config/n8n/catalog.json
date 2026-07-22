@@ -568,6 +568,20 @@
       }
     },
     {
+      "id": "hermes-agent-trigger",
+      "file": "hermes-agent-trigger.json",
+      "name": "Hermes Agent Trigger",
+      "description": "Dispatch a goal to a Hermes Agent session via its OpenAI-compatible endpoint, stream the response, and store the final result.",
+      "icon": "Bot",
+      "category": "agents",
+      "dependencies": [
+        "hermes",
+        "llama-server"
+      ],
+      "setupTime": "3 minutes",
+      "featured": true
+    },
+    {
       "id": "openclaw-agent-trigger",
       "file": "openclaw-agent-trigger.json",
       "name": "OpenClaw Agent Trigger",

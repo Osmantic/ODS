@@ -1,7 +1,14 @@
 # ComfyUI — Image Generation
-# This base stub is merged with a GPU-specific overlay:
-#   compose.amd.yaml   (AMD ROCm, gfx1151)
-#   compose.nvidia.yaml (NVIDIA CUDA)
-# The GPU overlay provides the full service definition.
-# This file exists so the registry can detect comfyui as enabled.
+#
+# This stub exists so the service registry can detect ComfyUI as installed.
+# The actual container definition lives in GPU-specific overlay files that are
+# merged with this stub at runtime by the installer/compose resolver:
+#
+#   compose.amd.yaml             — AMD ROCm (single GPU, gfx1151)
+#   compose.nvidia.yaml          — NVIDIA CUDA (single GPU, builds local Dockerfile)
+#   compose.multigpu-amd.yaml    — AMD ROCm multi-GPU
+#   compose.multigpu-nvidia.yaml — NVIDIA multi-GPU
+#
+# The correct overlay is selected by the installer based on the detected GPU backend.
+# Do NOT add a service definition here; add it to the appropriate overlay file.
 services: {}

@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 
 const ICON_MAP = { MessageSquare, Image, Code, Shield, Layers, Package }
+const TEMPLATE_APPLY_TIMEOUT_MS = 30 * 60 * 1000
 
 const fetchJson = async (url, options = {}) => {
   const c = new AbortController()
@@ -123,6 +124,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   const [applying, setApplying] = useState(false)
   const [error, setError] = useState(null)
   const [applied, setApplied] = useState(false)
+  const [applyResult, setApplyResult] = useState(null)
 
   const Icon = ICON_MAP[template.icon] || Package
 
@@ -146,11 +148,14 @@ export function TemplatePreview({ template, onClose, onApplied }) {
     try {
       const res = await fetchJson(`/api/templates/${template.id}/apply`, {
         method: 'POST',
-        timeout: 120000,
+        timeout: TEMPLATE_APPLY_TIMEOUT_MS,
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
-      if (data.enabled_count > 0) {
+      setApplyResult(data)
+      if (data.failed_services?.length > 0 || data.skipped_services?.length > 0) {
+        setApplied('partial')
+      } else if (data.enabled_count > 0) {
         setApplied(data.restart_required ? 'restart_required' : 'enabled')
       } else {
         setApplied('already_active')
@@ -265,7 +270,9 @@ export function TemplatePreview({ template, onClose, onApplied }) {
         {/* Applied success */}
         {applied && (
           <div className="py-6 text-center">
-            <Check size={32} className="text-green-400 mx-auto mb-2" />
+            {applied === 'partial'
+              ? <AlertTriangle size={32} className="text-orange-400 mx-auto mb-2" />
+              : <Check size={32} className="text-green-400 mx-auto mb-2" />}
             {applied === 'enabled' && (
               <p className="text-sm text-green-400">Template applied — check extension cards for installation progress</p>
             )}
@@ -280,6 +287,25 @@ export function TemplatePreview({ template, onClose, onApplied }) {
                   <p className="text-xs text-orange-200/80">Run <code className="px-1.5 py-0.5 rounded bg-theme-card text-orange-100">ods restart</code> in your terminal to start the newly enabled services.</p>
                 </div>
               </>
+            )}
+            {applied === 'partial' && (
+              <div className="p-3 rounded-lg bg-orange-500/10 border border-orange-500/20 text-left">
+                <p className="text-sm text-orange-300 font-medium mb-1">Template applied with exceptions</p>
+                {applyResult?.failed_services?.length > 0 && (
+                  <p className="text-xs text-orange-200/80">
+                    Failed to start: {applyResult.failed_services.join(', ')}.
+                    {applyResult.restart_required ? ' Run ods restart to retry.' : ''}
+                  </p>
+                )}
+                {applyResult?.skipped_services?.length > 0 && (
+                  <p className="text-xs text-orange-200/80">
+                    Skipped: {applyResult.skipped_services.join(', ')}.
+                  </p>
+                )}
+                {applyResult?.warnings?.map((warning, index) => (
+                  <p key={index} className="text-xs text-orange-200/80 mt-1">{warning}</p>
+                ))}
+              </div>
             )}
           </div>
         )}
