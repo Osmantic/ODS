@@ -442,3 +442,65 @@ class TestObserveHook:
             reason="test", attempts=1, initial_delay=0, interval=0
         ) is False
         assert state_path.read_text(encoding="utf-8") == before
+
+    def test_initial_route_proof_defers_during_model_activation(
+        self, tmp_path, monkeypatch
+    ):
+        import test_model_activate as tma
+
+        install_dir = tma._write_model_activation_fixture(tmp_path)[0]
+        state_path = install_dir / "data" / "model-state.json"
+        monkeypatch.setattr(tma._mod, "INSTALL_DIR", install_dir)
+        sb.initialize_if_missing(state_path, tma._mod.load_env(install_dir / ".env"))
+        monkeypatch.setattr(
+            tma._mod,
+            "_wait_for_model_readiness",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("active lifecycle reached initial route readiness")
+            ),
+        )
+        monkeypatch.setattr(
+            tma._mod,
+            "_switchboard_initial_verify_cancel",
+            tma._mod.threading.Event(),
+        )
+        monkeypatch.setattr(tma._mod, "_model_lifecycle_operation", "model_activation")
+        monkeypatch.setattr(tma._mod, "_model_lifecycle_target", "target-model")
+
+        assert tma._mod._publish_verified_initial_switchboard_route(
+            reason="test", attempts=1, initial_delay=0, interval=0
+        ) is False
+
+    def test_cancelled_initial_route_readiness_never_warms_lemonade(
+        self, tmp_path, monkeypatch
+    ):
+        import test_model_activate as tma
+
+        install_dir = tma._write_model_activation_fixture(tmp_path)[0]
+        monkeypatch.setattr(tma._mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(
+            tma._mod.subprocess,
+            "run",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("cancelled readiness reached a runtime probe")
+            ),
+        )
+        cancel_event = tma._mod.threading.Event()
+        cancel_event.set()
+
+        assert tma._mod._wait_for_model_readiness(
+            {
+                "GPU_BACKEND": "amd",
+                "AMD_INFERENCE_LOCATION": "host",
+                "AMD_INFERENCE_PORT": "8080",
+            },
+            model_id="qwen3-4b-instruct-2507-q4",
+            gguf_file="Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+            llm_model_name="Qwen3-4B-Instruct-2507-Q4_K_M",
+            lemonade_model_id="Qwen3-4B-Instruct-2507-Q4_K_M",
+            attempts=60,
+            initial_delay=0,
+            interval=5,
+            return_proof=True,
+            cancel_event=cancel_event,
+        ) == {}

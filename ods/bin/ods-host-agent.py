@@ -304,6 +304,7 @@ _model_activation_target: str | None = None
 _model_status_verify_thread: threading.Thread | None = None
 _switchboard_initial_verify_lock = threading.Lock()
 _switchboard_initial_verify_thread: threading.Thread | None = None
+_switchboard_initial_verify_cancel = threading.Event()
 # Update lock/state: only one background ods-update run at a time.
 _update_lock = threading.Lock()
 _update_status_lock = threading.Lock()
@@ -379,6 +380,16 @@ def _model_lifecycle_status() -> dict:
     return payload
 
 
+def _prepare_initial_switchboard_verification() -> bool:
+    """Reset route-proof cancellation only while no lifecycle owner exists."""
+    with _model_lifecycle_state_lock:
+        if _model_lifecycle_operation:
+            _switchboard_initial_verify_cancel.set()
+            return False
+        _switchboard_initial_verify_cancel.clear()
+        return True
+
+
 def _begin_model_activation(model_id: str) -> tuple[bool, str | None]:
     """Atomically acquire activation ownership and publish its target."""
     global _model_activation_target
@@ -386,6 +397,10 @@ def _begin_model_activation(model_id: str) -> tuple[bool, str | None]:
     if not acquired:
         active_target = active.get("target")
         return False, active_target if active.get("operation") == "model_activation" else None
+    # Initial route reconstruction is observational work. Once an explicit
+    # activation owns the lifecycle it must stop probing/warming the previous
+    # route, or those requests can race and starve the selected model load.
+    _switchboard_initial_verify_cancel.set()
     with _model_lifecycle_state_lock:
         _model_activation_target = model_id
         return True, model_id
@@ -995,6 +1010,12 @@ def _publish_verified_initial_switchboard_route(
     """Promote current .env route only after runtime proof succeeds."""
     if _switchboard_state is None:
         return False
+    if not _prepare_initial_switchboard_verification():
+        logger.info(
+            "switchboard initial route proof deferred (%s; model lifecycle active)",
+            reason,
+        )
+        return False
     state_path = _switchboard_state_path()
     env = load_env(INSTALL_DIR / ".env")
     if not _switchboard_state_needs_current_env_verification(state_path, env):
@@ -1021,6 +1042,7 @@ def _publish_verified_initial_switchboard_route(
         initial_delay=initial_delay,
         interval=interval,
         return_proof=True,
+        cancel_event=_switchboard_initial_verify_cancel,
     )
     if not isinstance(proof, dict) or not proof.get("identity"):
         logger.info("switchboard initial route proof deferred (%s)", reason)
@@ -1125,21 +1147,18 @@ def _model_status_allows_route_proof(data: dict) -> bool:
 def _verify_switchboard_route_for_status(data: dict, reason: str) -> None:
     if _switchboard_state is None:
         return
+    if _model_lifecycle_status():
+        _switchboard_initial_verify_cancel.set()
+        return
     state_path = _switchboard_state_path()
     if not _switchboard_state_needs_current_env_verification(state_path):
         return
     if _model_status_allows_route_proof(data):
-        try:
-            if _publish_verified_initial_switchboard_route(
-                reason=reason,
-                attempts=1,
-                initial_delay=0,
-                interval=0,
-            ):
-                return
-        except Exception as exc:
-            logger.warning("switchboard route status proof failed: %s", exc)
-    _schedule_initial_switchboard_verification(reason)
+        # A read-only status request must never perform a potentially 30-second
+        # Lemonade warm-up inline. The single background worker de-duplicates
+        # concurrent dashboard polls and is cancelled by explicit lifecycle
+        # operations.
+        _schedule_initial_switchboard_verification(reason)
 
 
 def _atomic_write_bytes(
@@ -7646,6 +7665,7 @@ def _wait_for_model_readiness(
     interval: float = 5,
     return_identity: bool = False,
     return_proof: bool = False,
+    cancel_event: threading.Event | None = None,
 ) -> bool | str | dict[str, object]:
     """Prove exact runtime identity and one matching meaningful completion.
 
@@ -7687,9 +7707,20 @@ def _wait_for_model_readiness(
 
     logger.info("Waiting for requested model identity %s at %s", gguf_file, identity_url)
     warmup_sent = False
+    if cancel_event is not None and cancel_event.is_set():
+        logger.info("Model readiness cancelled before probing %s", gguf_file)
+        return {} if return_proof else "" if return_identity else False
     if initial_delay > 0:
-        time.sleep(initial_delay)
+        if cancel_event is not None:
+            if cancel_event.wait(initial_delay):
+                logger.info("Model readiness cancelled before probing %s", gguf_file)
+                return {} if return_proof else "" if return_identity else False
+        else:
+            time.sleep(initial_delay)
     for attempt in range(max(1, attempts)):
+        if cancel_event is not None and cancel_event.is_set():
+            logger.info("Model readiness cancelled while probing %s", gguf_file)
+            return {} if return_proof else "" if return_identity else False
         runtime_identity = ""
         runtime_context = 0
         try:
@@ -7768,7 +7799,12 @@ def _wait_for_model_readiness(
             if attempt % 6 == 0:
                 logger.info("Model readiness attempt %d timed out", attempt + 1)
         if attempt + 1 < attempts and interval > 0:
-            time.sleep(interval)
+            if cancel_event is not None:
+                if cancel_event.wait(interval):
+                    logger.info("Model readiness cancelled while probing %s", gguf_file)
+                    return {} if return_proof else "" if return_identity else False
+            else:
+                time.sleep(interval)
     if return_proof:
         return {}
     return "" if return_identity else False

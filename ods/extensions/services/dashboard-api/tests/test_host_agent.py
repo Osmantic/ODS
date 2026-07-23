@@ -4672,7 +4672,7 @@ class TestModelDownloadFileIntegrity:
         persisted = json.loads(status_path.read_text(encoding="utf-8"))
         assert persisted["status"] == "failed"
 
-    def test_model_status_promotes_stale_bootstrap_route_after_full_model_ready(
+    def test_model_status_schedules_stale_bootstrap_route_proof_without_inline_warmup(
         self, tmp_path, monkeypatch,
     ):
         bootstrap_model = {
@@ -4749,20 +4749,17 @@ class TestModelDownloadFileIntegrity:
 
         assert handler.response_code == 200
         assert handler.parse_response() == {"status": "idle"}
-        assert readiness_calls
-        assert readiness_calls[0]["attempts"] == 1
-        assert readiness_calls[0]["initial_delay"] == 0
-        assert readiness_calls[0]["interval"] == 0
-        assert scheduled == []
+        assert readiness_calls == []
+        assert scheduled == ["model-status"]
         doc = json.loads(state_path.read_text(encoding="utf-8"))
-        assert doc["active"]["catalogId"] == "qwen3-coder-next"
-        assert doc["active"]["runtimeModelId"] == "qwen3-coder-next-Q4_K_M.gguf"
-        assert doc["active"]["contextLength"] == 131072
+        assert doc["active"]["catalogId"] == "qwen3.5-2b-q4"
+        assert doc["active"]["runtimeModelId"] == "Qwen3.5-2B-Q4_K_M.gguf"
+        assert doc["active"]["contextLength"] == 65536
         assert doc["active"]["proof"] == {
-            "identity": "qwen3-coder-next-Q4_K_M.gguf",
+            "identity": "Qwen3.5-2B-Q4_K_M.gguf",
             "completion": True,
         }
-        assert doc["history"][0]["runtimeModelId"] == "Qwen3.5-2B-Q4_K_M.gguf"
+        assert doc["history"] == []
 
     def test_empty_finished_download_is_failed_not_complete(self, tmp_path, monkeypatch):
         install_dir = self._setup_env(tmp_path, monkeypatch)
