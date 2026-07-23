@@ -355,3 +355,25 @@ class TestServiceResources:
             "/v1/service/restart",
             {"service_id": "dashboard-api", "delay_seconds": 1},
         )
+
+    def test_null_metrics_in_stats_do_not_crash_resource_totals(self, test_client, monkeypatch):
+        """Container stats or disk payloads containing None values for metrics do not cause TypeError."""
+        self._clear_resource_cache()
+        monkeypatch.setattr("routers.resources.SERVICES", {"llama-server": {"name": "Llama Server"}})
+        monkeypatch.setattr("routers.resources.GPU_BACKEND", "nvidia")
+
+        fake_stats = [{"service_id": "llama-server", "cpu_percent": None, "memory_used_mb": None}]
+        fake_disk = {"llama-server": {"data_gb": None}}
+
+        with patch("routers.resources._fetch_container_stats", return_value=fake_stats), \
+             patch("routers.resources._scan_service_disk", return_value=fake_disk):
+            resp = test_client.get(
+                "/api/services/resources",
+                headers=test_client.auth_headers,
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["totals"]["cpu_percent"] == 0
+        assert data["totals"]["memory_used_mb"] == 0
+        assert data["totals"]["disk_data_gb"] == 0
