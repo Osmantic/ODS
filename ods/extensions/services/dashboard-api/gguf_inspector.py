@@ -165,7 +165,7 @@ def _read_array(reader: _Reader, depth: int = 0) -> Any:
 
 def _first_int(metadata: dict[str, Any], suffixes: tuple[str, ...]) -> int | None:
     for key, value in metadata.items():
-        if key.endswith(suffixes) and isinstance(value, int):
+        if key.endswith(suffixes) and isinstance(value, int) and not isinstance(value, bool):
             return value
     return None
 

@@ -315,3 +315,15 @@ def test_accepts_str_path_as_well_as_path_object(tmp_path):
 
     assert result["readable"] is True
     assert result["path"] == str(path)
+
+
+def test_boolean_metadata_value_is_ignored_for_integer_fields(tmp_path):
+    path = _write(tmp_path, "boolmeta.gguf", build_gguf([
+        ("general.architecture", STR, "llama"),
+        ("is_enabled.context_length", BOOL, True),
+    ]))
+
+    result = inspect_gguf(path)
+
+    assert result["readable"] is True
+    assert result["context_length"] is None
