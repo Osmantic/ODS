@@ -5819,3 +5819,20 @@ class TestObservabilityWire:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+
+def test_load_env_strips_only_matched_quote_pairs(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("\n".join([
+        'QUOTED_DOUBLE="value_with_\'single\'_quotes"',
+        "QUOTED_SINGLE='value_with_\"double\"_quotes'",
+        'MISMATCHED="mismatched\'',
+        'PLAIN=plain_value',
+    ]), encoding="utf-8")
+
+    parsed = _mod.load_env(env_file)
+
+    assert parsed["QUOTED_DOUBLE"] == "value_with_'single'_quotes"
+    assert parsed["QUOTED_SINGLE"] == 'value_with_"double"_quotes'
+    assert parsed["MISMATCHED"] == '"mismatched\''
+    assert parsed["PLAIN"] == "plain_value"

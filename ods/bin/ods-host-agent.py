@@ -952,6 +952,13 @@ def _normalize_model_download_status(status_path: Path, data: dict) -> dict:
         return {"status": "idle"}
 
 
+def _strip_env_quotes(value: str) -> str:
+    v = value.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in {"'", '"'}:
+        return v[1:-1]
+    return v
+
+
 def load_env(env_path: Path) -> dict:
     """Parse .env file, return dict of key=value pairs."""
     env = {}
@@ -963,7 +970,7 @@ def load_env(env_path: Path) -> dict:
             continue
         if "=" in line:
             key, _, val = line.partition("=")
-            env[key.strip()] = val.strip().strip("'\"")
+            env[key.strip()] = _strip_env_quotes(val)
     return env
 
 
