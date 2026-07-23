@@ -537,7 +537,9 @@ function AppearanceCard({ theme, themes, labels, onThemeChange, className = '' }
 
 function AccountUsageCard({ usageReport, className = '' }) {
   const summary = usageReport?.summary || {}
-  const modelsUsed = Array.isArray(usageReport?.models) ? usageReport.models.length : 0
+  const modelsUsed = Array.isArray(usageReport?.models)
+    ? new Set(usageReport.models.map(row => row?.model).filter(Boolean)).size
+    : 0
   const hasActivity = Number(summary.requests || 0) > 0 || Number(summary.total_tokens || 0) > 0
   const usageSource = formatUsageSource(usageReport?.source)
   const lastActivity = hasActivity ? 'Today' : 'No activity today'

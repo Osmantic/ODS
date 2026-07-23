@@ -119,6 +119,26 @@ describe('Settings', () => {
     expect(container.innerHTML).not.toContain('Infinity')
   })
 
+  test('counts unique model identities instead of per-service report rows', async () => {
+    renderSettings((url) => (
+      String(url).startsWith('/api/usage/report?')
+        ? response({
+            summary: { total_tokens: 100, requests: 3 },
+            models: [
+              { model: 'qwen', service: 'litellm' },
+              { model: 'qwen', service: 'model-router' },
+              { model: 'phi', service: 'hermes' },
+            ],
+            source: { status: 'ok' },
+          })
+        : null
+    ))
+
+    const accountCard = await screen.findByRole('link', { name: /Account Usage/ })
+    const modelMetric = within(accountCard).getByText('Models Used').parentElement
+    expect(within(modelMetric).getByText('2')).toBeInTheDocument()
+  })
+
   test('keeps successfully loaded settings visible when storage is unavailable', async () => {
     renderSettings((url) => (
       url === '/api/storage'
