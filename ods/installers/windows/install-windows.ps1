@@ -90,6 +90,19 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "readiness-summary.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
 
+# Preserve the caller's Docker client configuration before any installer phase
+# changes location. Docker accepts relative DOCKER_CONFIG values, whose meaning
+# must remain anchored to the directory from which the installer was launched.
+$script:ODSWindowsOriginalDockerConfigDefined = (
+    (Test-Path Env:DOCKER_CONFIG) -and
+    -not [string]::IsNullOrWhiteSpace($env:DOCKER_CONFIG)
+)
+$script:ODSWindowsOriginalDockerConfig = if ($script:ODSWindowsOriginalDockerConfigDefined) {
+    Get-ODSUserDockerConfigDir -DockerConfigOverride $env:DOCKER_CONFIG
+} else {
+    ""
+}
+
 # ── Phase context variables ───────────────────────────────────────────────────
 # These are plain (non-$script:) variables set in the orchestrator scope.
 # Because phases are dot-sourced, they run in this same scope and can both
@@ -210,7 +223,14 @@ if ($gpuInfo.Backend -eq "amd") {
     $script:LEMONADE_EXE = Join-Path (Join-Path $script:LEMONADE_INSTALL_DIR "bin") ([string]$amdLemonadeRuntime.windows_executable)
     $_resolvedLemonadeExe = Resolve-ODSLemonadeExe -ExecutableName ([string]$amdLemonadeRuntime.windows_executable)
     if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
-    $script:LEMONADE_PORT = [int]$amdLemonadeRuntime.api_port
+    $script:LEMONADE_PORT = if ($cloudMode) {
+        [int]$amdLemonadeRuntime.api_port
+    } else {
+        Resolve-WindowsLlmPreflightPort `
+            -GpuBackend "amd" `
+            -LemonadeDefaultPort ([int]$amdLemonadeRuntime.api_port) `
+            -InstallDir $installDir
+    }
     $script:LEMONADE_HEALTH_URL = "http://127.0.0.1:$($script:LEMONADE_PORT)$($amdLemonadeRuntime.health_path)"
 }
 . (Join-Path $PhasesDir "06-directories.ps1")
@@ -514,11 +534,6 @@ if ($dryRun) {
                 $taskName = "ODSLemonadeRuntime"
                 $taskNames = @($taskName, (Get-ODSPriorLemonadeTaskName))
                 Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames $taskNames
-                foreach ($listener in @(Get-NetTCPConnection -LocalPort $script:LEMONADE_PORT -State Listen -ErrorAction SilentlyContinue)) {
-                    if ($listener.OwningProcess -gt 0) {
-                        Stop-Process -Id ([int]$listener.OwningProcess) -Force -ErrorAction SilentlyContinue
-                    }
-                }
                 $pidDir = Split-Path $script:INFERENCE_PID_FILE
                 New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
 
@@ -690,7 +705,7 @@ if ($dryRun) {
                 $llamaArgs = @(
                     "--model", $modelFullPath,
                     "--host", $bindAddr,
-                    "--port", "8080",
+                    "--port", [string]$script:LEMONADE_PORT,
                     "--n-gpu-layers", "999",
                     "--ctx-size", "$($tierConfig.MaxContext)"
                 )
@@ -767,7 +782,7 @@ if ($dryRun) {
                 while ($waited -lt $maxWait) {
                     Start-Sleep -Seconds 2; $waited += 2
                     try {
-                        $req = [System.Net.HttpWebRequest]::Create("http://localhost:8080/health")
+                        $req = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:$($script:LEMONADE_PORT)/health")
                         $req.Timeout = 3000; $req.Method = "GET"
                         $resp = $req.GetResponse(); $code = [int]$resp.StatusCode; $resp.Close()
                         if ($code -eq 200) { $healthy = $true; break }
@@ -791,7 +806,7 @@ if ($dryRun) {
                     $envContent = $envContent -replace "(?m)^AMD_INFERENCE_RUNTIME=.*$", "AMD_INFERENCE_RUNTIME=llama-server"
                     $envContent = $envContent -replace "(?m)^AMD_INFERENCE_BACKEND=.*$", "AMD_INFERENCE_BACKEND=vulkan"
                     $envContent = $envContent -replace "(?m)^AMD_INFERENCE_LOCATION=.*$", "AMD_INFERENCE_LOCATION=host"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_PORT=.*$", "AMD_INFERENCE_PORT=8080"
+                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_PORT=.*$", "AMD_INFERENCE_PORT=$($script:LEMONADE_PORT)"
                     $envContent = $envContent -replace "(?m)^AMD_INFERENCE_SUPPORTED_BACKENDS=.*$", "AMD_INFERENCE_SUPPORTED_BACKENDS=vulkan"
                     $envContent = $envContent -replace "(?m)^AMD_INFERENCE_RUNTIME_MODE=.*$", "AMD_INFERENCE_RUNTIME_MODE=windows-llama-server-fallback"
                     $envContent = $envContent -replace "(?m)^AMD_INFERENCE_MANAGED=.*$", "AMD_INFERENCE_MANAGED=true"
@@ -802,7 +817,7 @@ if ($dryRun) {
                     $nativeModel = ([regex]::Match($envContent, "(?m)^GGUF_FILE=([^\r\n]+)\r?$")).Groups[1].Value.Trim().Trim('"').Trim("'")
                     if ([string]::IsNullOrWhiteSpace($nativeModel)) { $nativeModel = $tierConfig.GgufFile }
                     $nativePort = ([regex]::Match($envContent, "(?m)^AMD_INFERENCE_PORT=([^\r\n]+)\r?$")).Groups[1].Value.Trim().Trim('"').Trim("'")
-                    if ([string]::IsNullOrWhiteSpace($nativePort)) { $nativePort = "8080" }
+                    if ([string]::IsNullOrWhiteSpace($nativePort)) { $nativePort = [string]$script:LEMONADE_PORT }
                     $nativeApiBase = "http://host.docker.internal:$nativePort/v1"
                     $litellmDir = Join-Path (Join-Path $installDir "config") "litellm"
                     New-Item -ItemType Directory -Path $litellmDir -Force | Out-Null
@@ -1040,16 +1055,14 @@ litellm_settings:
         function Initialize-ODSWindowsDockerClientConfig {
             param([string]$InstallDir)
 
-            $dockerConfigDir = Join-Path (Join-Path $InstallDir "data") "docker-client-public"
-            if (-not (Test-Path $dockerConfigDir)) {
-                New-Item -ItemType Directory -Path $dockerConfigDir -Force | Out-Null
+            $userDockerConfigDir = if ($script:ODSWindowsOriginalDockerConfigDefined -and
+                -not [string]::IsNullOrWhiteSpace($script:ODSWindowsOriginalDockerConfig)) {
+                $script:ODSWindowsOriginalDockerConfig
+            } else {
+                Get-ODSUserDockerConfigDir -DockerConfigOverride ""
             }
-
-            $dockerConfigPath = Join-Path $dockerConfigDir "config.json"
-            if (-not (Test-Path $dockerConfigPath)) {
-                Write-Utf8NoBom -Path $dockerConfigPath -Content "{`n  `"auths`": {}`n}`n"
-            }
-
+            $dockerConfigDir = Initialize-ODSComposeDockerClientConfig `
+                -InstallDir $InstallDir -UserDockerConfigDir $userDockerConfigDir
             $env:DOCKER_CONFIG = $dockerConfigDir
             Write-AI "Using install-scoped Docker client config: $dockerConfigDir"
         }
@@ -1211,8 +1224,6 @@ litellm_settings:
             exit 1
         }
 
-        $script:ODSWindowsOriginalDockerConfigDefined = Test-Path Env:DOCKER_CONFIG
-        $script:ODSWindowsOriginalDockerConfig = if ($script:ODSWindowsOriginalDockerConfigDefined) { $env:DOCKER_CONFIG } else { "" }
         Initialize-ODSWindowsDockerClientConfig -InstallDir $installDir
         $script:ODSWindowsDockerClientArgs = @("--config", $env:DOCKER_CONFIG)
         $script:ODSWindowsUserDockerClientArgs = @(Get-ODSWindowsUserDockerClientArgs)
@@ -2282,7 +2293,7 @@ if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $servicePlan) {
     $perplexicaBaseUrl = $(if ($useLemonade -or $cloudMode) {
         "http://litellm:4000/v1"
     } elseif ([string]$llmEndpoint["Backend"] -eq "native-llama-server") {
-        "http://host.docker.internal:8080/v1"
+        "http://host.docker.internal:$($llmEndpoint['Port'])/v1"
     } else {
         "http://llama-server:8080/v1"
     })

@@ -64,6 +64,13 @@ check 'Validating Hermes Agent image tag before startup' "$INSTALL_PS1" "install
 check 'ImageEnvName = "LLAMA_SERVER_IMAGE"' "$INSTALL_PS1" "image validation labels override env var"
 check 'Get-ODSWindowsUserDockerClientArgs' "$INSTALL_PS1" "installer preserves the user Docker config for recovery"
 check 'ODSWindowsOriginalDockerConfigDefined' "$INSTALL_PS1" "installer snapshots an existing DOCKER_CONFIG before isolation"
+snapshot_line="$(grep -nF '$script:ODSWindowsOriginalDockerConfigDefined = (' "$INSTALL_PS1" | head -1 | cut -d: -f1)"
+push_line="$(grep -nF 'Push-Location $installDir' "$INSTALL_PS1" | head -1 | cut -d: -f1)"
+if [[ -n "$snapshot_line" && -n "$push_line" && "$snapshot_line" -lt "$push_line" ]]; then
+    pass "installer resolves the original DOCKER_CONFIG before changing directories"
+else
+    fail "installer must resolve the original DOCKER_CONFIG before changing directories"
+fi
 check 'image validation failed with the install-scoped Docker config' "$INSTALL_PS1" "image validation retries outside the installer-scoped Docker config"
 check 'Write-AIWarn "Using $source for $Reason."' "$INSTALL_PS1" "installer records Docker config promotion reason"
 check 'Continuing Compose preflight and service launch with the user'\''s Docker config' "$INSTALL_PS1" "installer carries Docker fallback through preflight and launch"
@@ -203,8 +210,9 @@ EOF
         fail "PowerShell report writer runtime behavior failed"
     fi
 
-    if INSTALL_PS1="$INSTALL_PS1" INSTALL_DIR="$INSTALL_DIR" pwsh -NoProfile -Command '
+    if INSTALL_PS1="$INSTALL_PS1" DIAG_LIB="$DIAG_LIB" INSTALL_DIR="$INSTALL_DIR" pwsh -NoProfile -Command '
         $ErrorActionPreference = "Stop"
+        . $env:DIAG_LIB
         $code = Get-Content $env:INSTALL_PS1 -Raw
          $assertStart = $code.IndexOf("function Assert-ODSWindowsComposeCwd")
          $recordStart = $code.IndexOf("function Write-ODSWindowsComposeLaunchRecord")

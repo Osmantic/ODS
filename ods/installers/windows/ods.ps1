@@ -90,6 +90,23 @@ function Test-Install {
     if (-not (Test-DockerRunning)) { exit 1 }
 }
 
+function Write-ODSUtf8NoBomFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Content
+    )
+
+    $parent = Split-Path -Parent $Path
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+}
+
 function Get-ComposeFlags {
     <#
     .SYNOPSIS
@@ -764,45 +781,153 @@ function Get-NativeInferenceStatus {
     #>
     Sync-ODSNativeInferenceConfig
     $backend = Get-NativeInferenceBackend
-    $result = @{ Running = $false; Pid = 0; Healthy = $false; Backend = $backend }
+    $result = @{ Running = $false; Pid = 0; Healthy = $false; Backend = $backend; Recovered = $false }
+    if ($backend -eq "none") { return $result }
 
-    if (-not (Test-Path $script:INFERENCE_PID_FILE)) { return $result }
+    $expectedExecutable = if ($backend -eq "lemonade") { $script:LEMONADE_EXE } else { $script:LLAMA_SERVER_EXE }
+    $healthUrl = if ($backend -eq "lemonade") {
+        $script:LEMONADE_HEALTH_URL
+    } else {
+        "http://127.0.0.1:$($script:LEMONADE_PORT)/health"
+    }
 
-    # Guard the PID parse: this runs with $ErrorActionPreference = "Stop", so
-    # casting an empty or non-numeric PID file to [int] throws a terminating
-    # error and crashes `ods status`/`start`/`stop`. Mirror the numeric guard
-    # used elsewhere and treat a bad PID file as "not running" (and clear it).
-    $rawPid = (Get-Content $script:INFERENCE_PID_FILE -Raw)
-    if (-not $rawPid) { $rawPid = "" }
-    if ($rawPid.Trim() -notmatch '^\d+$') {
-        Remove-Item $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
+    $savedPid = 0
+    $pidFileValid = $false
+    if (Test-Path -LiteralPath $script:INFERENCE_PID_FILE -PathType Leaf) {
+        $rawPid = Get-Content -LiteralPath $script:INFERENCE_PID_FILE -Raw -ErrorAction SilentlyContinue
+        if ($rawPid -and $rawPid.Trim() -match '^\d+$') {
+            $savedPid = [int]$rawPid.Trim()
+            $pidFileValid = Test-ODSNativeProcessExecutable `
+                -ProcessId $savedPid -ExpectedExecutable $expectedExecutable
+        }
+        if (-not $pidFileValid) {
+            Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if ($pidFileValid) {
+        $result.Running = $true
+        $result.Pid = $savedPid
+        $result.Healthy = Test-ODSNativeInferenceHealth -HealthUrl $healthUrl
         return $result
     }
-    $savedPid = [int]$rawPid.Trim()
-    try {
-        $proc = Get-Process -Id $savedPid -ErrorAction SilentlyContinue
-        if ($proc -and -not $proc.HasExited) {
-            $result.Running = $true
-            $result.Pid = $savedPid
 
-            # Health check (Lemonade uses /api/v1/health, llama-server uses /health)
-            $healthUrl = $(if ($backend -eq "lemonade") { $script:LEMONADE_HEALTH_URL } else { "http://localhost:8080/health" })
-            try {
-                $resp = Invoke-WebRequest -Uri $healthUrl `
-                    -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue
-                if ($resp.StatusCode -eq 200) {
-                    $result.Healthy = $true
-                }
-            } catch { }
+    # A scheduled task can be restarted outside ods.ps1, leaving a stale PID.
+    # Recover only from a healthy listener owned by the configured executable.
+    if (Test-ODSNativeInferenceHealth -HealthUrl $healthUrl) {
+        $listenerOwnerPid = Get-ODSNativeInferencePortOwnerProcessId `
+            -Port $script:LEMONADE_PORT
+        $listenerPid = if (Test-ODSNativeProcessExecutable `
+            -ProcessId $listenerOwnerPid -ExpectedExecutable $expectedExecutable) {
+            $listenerOwnerPid
+        } else {
+            0
         }
-    } catch { }
-
-    # Clean up stale PID file
-    if (-not $result.Running -and (Test-Path $script:INFERENCE_PID_FILE)) {
-        Remove-Item $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
+        if ($listenerPid -le 0 -and $backend -eq "lemonade") {
+            $listenerPid = Get-ODSManagedLemonadeTaskProcessId `
+                -TaskName $script:LEMONADE_TASK_NAME `
+                -ExpectedExecutable $expectedExecutable `
+                -ListenerProcessId $listenerOwnerPid
+        }
+        if ($listenerPid -gt 0) {
+            $pidDir = Split-Path -Parent $script:INFERENCE_PID_FILE
+            New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
+            Set-Content -LiteralPath $script:INFERENCE_PID_FILE -Value $listenerPid
+            $result.Running = $true
+            $result.Pid = $listenerPid
+            $result.Healthy = $true
+            $result.Recovered = $true
+        }
     }
 
     return $result
+}
+
+function Test-ODSNativeProcessExecutable {
+    param(
+        [int]$ProcessId,
+        [string]$ExpectedExecutable
+    )
+
+    if ($ProcessId -le 0 -or [string]::IsNullOrWhiteSpace($ExpectedExecutable)) { return $false }
+    try {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        if (-not $process -or [string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) { return $false }
+        $actualPath = [System.IO.Path]::GetFullPath([string]$process.ExecutablePath)
+        $expectedPath = [System.IO.Path]::GetFullPath($ExpectedExecutable)
+        return $actualPath.Equals($expectedPath, [StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
+    }
+}
+
+function Get-ODSNativeInferencePortOwnerProcessId {
+    param([int]$Port)
+
+    if ($Port -lt 1 -or $Port -gt 65535) { return 0 }
+    $owners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        ForEach-Object { [int]$_.OwningProcess } |
+        Where-Object { $_ -gt 0 } |
+        Select-Object -Unique)
+    if ($owners.Count -eq 1) { return $owners[0] }
+    return 0
+}
+
+function Get-ODSManagedLemonadeTaskProcessId {
+    param(
+        [string]$TaskName,
+        [string]$ExpectedExecutable,
+        [int]$ListenerProcessId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TaskName) -or
+        [string]::IsNullOrWhiteSpace($ExpectedExecutable) -or
+        $ListenerProcessId -le 0) { return 0 }
+    try {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        if (-not $task -or [string]$task.State -ne "Running") { return 0 }
+
+        $expectedPath = [System.IO.Path]::GetFullPath($ExpectedExecutable)
+        $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+        $byPid = @{}
+        $matchingPids = @{}
+        foreach ($process in $processes) {
+            $processId = [int]$process.ProcessId
+            if ($processId -le 0) { continue }
+            $byPid[$processId] = $process
+            try {
+                if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) { continue }
+                $actualPath = [System.IO.Path]::GetFullPath([string]$process.ExecutablePath)
+                if ($actualPath.Equals($expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+                    $matchingPids[$processId] = $true
+                }
+            } catch { }
+        }
+
+        $currentPid = $ListenerProcessId
+        $visited = @{}
+        for ($depth = 0; $depth -lt 64 -and $currentPid -gt 0; $depth++) {
+            if ($visited.ContainsKey($currentPid)) { return 0 }
+            $visited[$currentPid] = $true
+            if ($matchingPids.ContainsKey($currentPid)) { return $currentPid }
+            if (-not $byPid.ContainsKey($currentPid)) { return 0 }
+            $currentPid = [int]$byPid[$currentPid].ParentProcessId
+        }
+    } catch { }
+    return 0
+}
+
+function Test-ODSNativeInferenceHealth {
+    param([string]$HealthUrl)
+
+    if ([string]::IsNullOrWhiteSpace($HealthUrl)) { return $false }
+    try {
+        $response = Invoke-WebRequest -Uri $HealthUrl `
+            -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+        return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300)
+    } catch {
+        return $false
+    }
 }
 
 function Stop-ODSNativeProcessId {
@@ -901,14 +1026,18 @@ function Stop-ODSLemonadeRuntime {
     if (Test-Path $script:INFERENCE_PID_FILE) {
         $rawPid = (Get-Content -LiteralPath $script:INFERENCE_PID_FILE -Raw).Trim()
         if ($rawPid -match '^\d+$') {
-            Stop-ODSNativeProcessId -ProcessId ([int]$rawPid)
+            $savedPid = [int]$rawPid
+            if (Test-ODSNativeProcessExecutable -ProcessId $savedPid -ExpectedExecutable $script:LEMONADE_EXE) {
+                Stop-ODSNativeProcessId -ProcessId $savedPid
+            }
         }
         Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
     }
 
     foreach ($listener in @(Get-NetTCPConnection -LocalPort $script:LEMONADE_PORT -State Listen -ErrorAction SilentlyContinue)) {
-        if ($listener.OwningProcess -gt 0) {
-            Stop-ODSNativeProcessId -ProcessId ([int]$listener.OwningProcess)
+        $ownerPid = [int]$listener.OwningProcess
+        if (Test-ODSNativeProcessExecutable -ProcessId $ownerPid -ExpectedExecutable $script:LEMONADE_EXE) {
+            Stop-ODSNativeProcessId -ProcessId $ownerPid
         }
     }
 
@@ -1237,7 +1366,7 @@ function Start-NativeInferenceServer {
         $llamaArgs = @(
             "--model", $modelPath,
             "--host", $bindAddr,
-            "--port", "8080",
+            "--port", [string]$script:LEMONADE_PORT,
             "--n-gpu-layers", "999",
             "--ctx-size", $ctxSize
         )
@@ -1265,7 +1394,7 @@ function Start-NativeInferenceServer {
         while ($waited -lt $maxWait) {
             Start-Sleep -Seconds 2; $waited += 2
             try {
-                $resp = Invoke-WebRequest -Uri "http://localhost:8080/health" `
+                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$($script:LEMONADE_PORT)/health" `
                     -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue
                 if ($resp.StatusCode -eq 200) {
                     Write-AISuccess "Native llama-server healthy"
@@ -1324,13 +1453,14 @@ function Invoke-Status {
         Write-Host ("  " + ("-" * 40)) -ForegroundColor DarkGray
 
         # Native inference server status (AMD: Lemonade or llama-server)
-        if (Test-Path $script:INFERENCE_PID_FILE) {
-            $nativeStatus = Get-NativeInferenceStatus
+        $nativeStatus = Get-NativeInferenceStatus
+        if ($nativeStatus.Backend -ne "none") {
             if ($nativeStatus.Running) {
                 $healthStr = $(if ($nativeStatus.Healthy) { "healthy" } else { "loading" })
-                Write-AISuccess "$($nativeStatus.Backend) (native): running PID $($nativeStatus.Pid) ($healthStr)"
+                $recoveredStr = $(if ($nativeStatus.Recovered) { ", state reconciled" } else { "" })
+                Write-AISuccess "$($nativeStatus.Backend) (native): running PID $($nativeStatus.Pid) ($healthStr$recoveredStr)"
             } else {
-                Write-AIWarn "$($nativeStatus.Backend) (native): not running (stale PID cleaned)"
+                Write-AIWarn "$($nativeStatus.Backend) (native): not running"
             }
         }
 
@@ -2155,7 +2285,7 @@ Set WshShell = CreateObject("WScript.Shell")
 WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $_encodedAgentCommand", 0, False
 "@
                 try {
-                    Write-Utf8NoBom -Path $vbsFile -Content $vbsContent
+                    Write-ODSUtf8NoBomFile -Path $vbsFile -Content $vbsContent
                     Write-AISuccess "Startup persistence configured via Start Menu Startup folder: $vbsFile"
                     # Start the agent now using the startup script
                     Start-Process wscript.exe -ArgumentList ('"{0}"' -f $vbsFile) -NoNewWindow

@@ -98,12 +98,13 @@ $amdNativeFallback = @{
     "AMD_INFERENCE_RUNTIME" = "llama-server"
     "AMD_INFERENCE_LOCATION" = "host"
     "AMD_INFERENCE_RUNTIME_MODE" = "windows-llama-server-fallback"
+    "AMD_INFERENCE_PORT" = "18080"
 }
 Assert-ResolvedEndpoint -Label "AMD native llama-server fallback" `
     -EnvMap $amdNativeFallback -GpuBackend "amd" -NativeBackend "llama-server" `
     -ExpectedBackend "native-llama-server" `
-    -ExpectedHealthUrl "http://localhost:8080/health" `
-    -ExpectedChatUrl "http://localhost:8080/v1/chat/completions"
+    -ExpectedHealthUrl "http://localhost:18080/health" `
+    -ExpectedChatUrl "http://localhost:18080/v1/chat/completions"
 
 $legacyAmdNative = @{
     "ODS_MODE" = "local"
@@ -125,12 +126,13 @@ $amdLemonade = @{
     "AMD_INFERENCE_RUNTIME" = "lemonade"
     "AMD_INFERENCE_LOCATION" = "host"
     "AMD_INFERENCE_RUNTIME_MODE" = "external-lemonade"
+    "AMD_INFERENCE_PORT" = "19080"
 }
 Assert-ResolvedEndpoint -Label "AMD Lemonade endpoint" `
     -EnvMap $amdLemonade -GpuBackend "amd" -NativeBackend "lemonade" -UseLemonade `
     -ExpectedBackend "lemonade" `
-    -ExpectedHealthUrl "http://127.0.0.1:8080/api/v1/health" `
-    -ExpectedChatUrl "http://localhost:8080/api/v1/chat/completions"
+    -ExpectedHealthUrl "http://127.0.0.1:19080/api/v1/health" `
+    -ExpectedChatUrl "http://localhost:19080/api/v1/chat/completions"
 
 function Write-AIWarn { param([string]$Message) }
 function Get-LlamaCpuBudget {

@@ -474,6 +474,12 @@ function New-ODSEnv {
     # llama-server route.
     $windowsAmdHostInference = ($GpuBackend -eq "amd" -and $ODSMode -ne "cloud")
     $windowsAmdLemonade = ($windowsAmdHostInference -and $AmdInferenceRuntime -eq "lemonade")
+    $nativeInferencePort = "8080"
+    $parsedNativeInferencePort = 0
+    if ([int]::TryParse([string]$AmdInferencePort, [ref]$parsedNativeInferencePort) -and
+        $parsedNativeInferencePort -ge 1 -and $parsedNativeInferencePort -le 65535) {
+        $nativeInferencePort = [string]$parsedNativeInferencePort
+    }
     $effectiveODSMode = $(if ($windowsAmdLemonade) { "lemonade" } else { $ODSMode })
     $existingLemonadeModel = Get-EnvOrNew "LEMONADE_MODEL" ""
     $existingGgufFile = Get-EnvOrNew "GGUF_FILE" ""
@@ -507,7 +513,7 @@ function New-ODSEnv {
     $llmApiBasePath = $(if ($windowsAmdLemonade) { "/api/v1" } else { "/v1" })
 
     $llmApiUrl = $(if ($windowsAmdHostInference) {
-        "http://host.docker.internal:8080"
+        "http://host.docker.internal:$nativeInferencePort"
     } elseif ($ODSMode -eq "cloud") {
         "http://litellm:4000"
     } else {
@@ -635,7 +641,7 @@ LLM_API_BASE_PATH=$llmApiBasePath
 AMD_INFERENCE_RUNTIME=$AmdInferenceRuntime
 AMD_INFERENCE_BACKEND=$AmdInferenceBackend
 AMD_INFERENCE_LOCATION=$AmdInferenceLocation
-AMD_INFERENCE_PORT=$AmdInferencePort
+AMD_INFERENCE_PORT=$(if ($windowsAmdHostInference) { $nativeInferencePort } else { $AmdInferencePort })
 AMD_INFERENCE_SUPPORTED_BACKENDS=$AmdInferenceSupportedBackends
 AMD_INFERENCE_RUNTIME_MODE=$AmdInferenceRuntimeMode
 AMD_INFERENCE_MANAGED=$AmdInferenceManaged
@@ -832,7 +838,7 @@ litellm_settings:
     }
 
     if ($windowsAmdLemonade) {
-        $lemonadePort = $(if ($AmdInferencePort) { $AmdInferencePort } else { "8080" })
+        $lemonadePort = $nativeInferencePort
         $null = Write-WindowsODSLemonadeLiteLlmConfig `
             -InstallDir $InstallDir -ModelId $effectiveLemonadeModel `
             -Port $lemonadePort -ApiKey $litellmLemonadeApiKey
@@ -856,7 +862,7 @@ litellm_settings:
         [ordered]@{ id = "llama-server-default"; baseUrl = $routerLlamaBase }
     )
     if ($windowsAmdLemonade) {
-        $lemonadePort = $(if ($AmdInferencePort) { $AmdInferencePort } else { "8080" })
+        $lemonadePort = $nativeInferencePort
         $routerEndpoints += [ordered]@{
             id = "lemonade-default"
             baseUrl = "http://host.docker.internal:$lemonadePort/api"

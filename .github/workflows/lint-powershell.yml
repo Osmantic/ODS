@@ -83,3 +83,7 @@ jobs:
       - name: Windows Port Preflight Contract
         shell: pwsh
         run: ./tests/test-windows-port-preflight.ps1
+
+      - name: Windows Runtime Recovery Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-runtime-recovery.ps1

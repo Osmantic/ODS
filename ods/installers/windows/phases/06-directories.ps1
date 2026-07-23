@@ -275,7 +275,7 @@ if ($gpuInfo.Backend -eq "amd" -and -not $cloudMode) {
     $_amdInferenceRuntime = "lemonade"
     $_amdInferenceBackend = $(if ($amdLemonadeRuntime -and $amdLemonadeRuntime.windows_backend) { $amdLemonadeRuntime.windows_backend } else { "vulkan" })
     $_amdInferenceLocation = "host"
-    $_amdInferencePort = $(if ($amdLemonadeRuntime -and $amdLemonadeRuntime.api_port) { [string]$amdLemonadeRuntime.api_port } else { "8080" })
+    $_amdInferencePort = [string]$script:LEMONADE_PORT
     $_amdInferenceSupportedBackends = $_amdInferenceBackend
     $_amdInferenceRuntimeMode = "windows-legacy-lemonade"
     $_amdInferenceManaged = "true"
@@ -588,7 +588,7 @@ if ($enableOpenClaw) {
     # Lemonade serves at /api/v1, so OpenClaw base URL needs /api prefix
     # (OpenClaw appends /v1/chat/completions to the base URL)
     $_providerUrl = $(if ($gpuInfo.Backend -eq "amd") {
-        "http://host.docker.internal:8080/api"
+        "http://host.docker.internal:$($script:LEMONADE_PORT)/api"
     } else {
         "http://llama-server:8080"
     })

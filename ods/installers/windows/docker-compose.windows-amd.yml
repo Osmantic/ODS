@@ -15,7 +15,7 @@ services:
 
   dashboard-api:
     environment:
-      - OLLAMA_URL=http://host.docker.internal:8080
+      - OLLAMA_URL=http://host.docker.internal:${AMD_INFERENCE_PORT:-8080}
       - LLM_BACKEND=${LLM_BACKEND:-lemonade}
       - LLM_API_BASE_PATH=${LLM_API_BASE_PATH:-/v1}
       - AMD_INFERENCE_RUNTIME=${AMD_INFERENCE_RUNTIME:-}
@@ -37,5 +37,5 @@ services:
       # LLM_API_BASE_PATH set by installer: /api/v1 for Lemonade, /v1 for llama-server
       # Switchboard mode writes OPEN_WEBUI_LLM_BASE_URL/API_KEY in .env so
       # Open WebUI follows the stable ods/current route through LiteLLM.
-      OPENAI_API_BASE_URL: "${OPEN_WEBUI_LLM_BASE_URL:-http://host.docker.internal:8080${LLM_API_BASE_PATH:-/v1}}"
+      OPENAI_API_BASE_URL: "${OPEN_WEBUI_LLM_BASE_URL:-http://host.docker.internal:${AMD_INFERENCE_PORT:-8080}${LLM_API_BASE_PATH:-/v1}}"
       OPENAI_API_KEY: "${OPEN_WEBUI_LLM_API_KEY:-${OPENAI_API_KEY:-}}"

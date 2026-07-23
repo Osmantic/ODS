@@ -155,15 +155,30 @@ function Get-WindowsLocalLlmEndpoint {
         $amdInferenceRuntimeMode = $amdInferenceRuntimeMode.ToLowerInvariant()
     }
 
+    $defaultNativePort = "8080"
+    $configuredConstant = Get-Variable -Name LEMONADE_PORT -Scope Script -ErrorAction SilentlyContinue
+    if ($configuredConstant -and [string]$configuredConstant.Value -match '^\d+$') {
+        $defaultNativePort = [string]$configuredConstant.Value
+    }
+    $nativePort = Get-WindowsODSEnvValue `
+        -EnvMap $EnvMap -Keys @("AMD_INFERENCE_PORT") -Default $defaultNativePort
+    $parsedNativePort = 0
+    if (-not [int]::TryParse($nativePort, [ref]$parsedNativePort) -or
+        $parsedNativePort -lt 1 -or $parsedNativePort -gt 65535) {
+        $nativePort = $defaultNativePort
+    } else {
+        $nativePort = [string]$parsedNativePort
+    }
+
     if ($UseLemonade -or $resolvedNativeBackend -eq "lemonade" -or $llmBackend -eq "lemonade") {
         return @{
             Name = "LLM (Lemonade)"
             Backend = "lemonade"
-            Port = "$($script:LEMONADE_PORT)"
+            Port = $nativePort
             ApiBasePath = "/api/v1"
-            HealthUrl = $script:LEMONADE_HEALTH_URL
-            BaseUrl = "http://localhost:$($script:LEMONADE_PORT)/api/v1"
-            ChatCompletionsUrl = "http://localhost:$($script:LEMONADE_PORT)/api/v1/chat/completions"
+            HealthUrl = "http://127.0.0.1:${nativePort}/api/v1/health"
+            BaseUrl = "http://localhost:${nativePort}/api/v1"
+            ChatCompletionsUrl = "http://localhost:${nativePort}/api/v1/chat/completions"
         }
     }
 
@@ -179,11 +194,11 @@ function Get-WindowsLocalLlmEndpoint {
         return @{
             Name = "LLM (llama-server)"
             Backend = "native-llama-server"
-            Port = "8080"
+            Port = $nativePort
             ApiBasePath = "/v1"
-            HealthUrl = "http://localhost:8080/health"
-            BaseUrl = "http://localhost:8080/v1"
-            ChatCompletionsUrl = "http://localhost:8080/v1/chat/completions"
+            HealthUrl = "http://localhost:${nativePort}/health"
+            BaseUrl = "http://localhost:${nativePort}/v1"
+            ChatCompletionsUrl = "http://localhost:${nativePort}/v1/chat/completions"
         }
     }
 
