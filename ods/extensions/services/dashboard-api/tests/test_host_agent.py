@@ -4613,6 +4613,7 @@ class TestModelDownloadFileIntegrity:
         monkeypatch.setattr(_mod, "_model_download_proc", None)
         monkeypatch.setattr(_mod, "_model_download_cancelable", False)
         monkeypatch.setattr(_mod, "_model_download_cancel", self._NoCancel())
+        monkeypatch.setenv("ODS_MODEL_DOWNLOAD_ALLOWED_HOSTS", "huggingface.co,example.com")
         monkeypatch.setattr(
             _mod.subprocess,
             "run",
@@ -4656,6 +4657,85 @@ class TestModelDownloadFileIntegrity:
 
         monkeypatch.setattr(_mod.subprocess, "Popen", FakeProc)
         return outputs
+
+    @pytest.mark.parametrize(
+        ("url", "expected_error"),
+        [
+            (
+                "http://huggingface.co/org/repo/resolve/main/test-model.gguf",
+                "must use HTTPS",
+            ),
+            (
+                "https://models.example.com/test-model.gguf",
+                "host 'models.example.com' is not allowed",
+            ),
+        ],
+    )
+    def test_unsafe_artifact_url_is_rejected_before_download(
+        self,
+        tmp_path,
+        monkeypatch,
+        url,
+        expected_error,
+    ):
+        model = {
+            "gguf_file": "unsafe-model.gguf",
+            "gguf_url": url,
+            "gguf_sha256": "a" * 64,
+        }
+        install_dir = self._setup_env(
+            tmp_path,
+            monkeypatch,
+            library_models=[model],
+        )
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            lambda *_args, **_kwargs: pytest.fail("HEAD request must not start"),
+        )
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "Popen",
+            lambda *_args, **_kwargs: pytest.fail("curl download must not start"),
+        )
+
+        handler = _FakeHandler(json.dumps(model).encode("utf-8"))
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response()["status"] == "started"
+        _mod._model_download_thread.join(timeout=2)
+        assert not _mod._model_download_thread.is_alive()
+        status = json.loads(
+            (install_dir / "data" / "model-download-status.json").read_text(encoding="utf-8")
+        )
+        assert status["status"] == "failed"
+        assert expected_error in status["error"]
+
+    def test_artifact_url_policy_defaults_to_hugging_face_and_allows_env_override(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        install_dir = tmp_path / "install"
+        install_dir.mkdir()
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delenv("ODS_MODEL_DOWNLOAD_ALLOWED_HOSTS", raising=False)
+
+        assert _mod._model_download_url_error(
+            "https://huggingface.co/org/repo/resolve/main/model.gguf"
+        ) == ""
+        assert "not allowed" in _mod._model_download_url_error(
+            "https://models.example.com/model.gguf"
+        )
+
+        (install_dir / ".env").write_text(
+            "ODS_MODEL_DOWNLOAD_ALLOWED_HOSTS=models.example.com\n",
+            encoding="utf-8",
+        )
+        assert _mod._model_download_url_error(
+            "https://models.example.com/model.gguf"
+        ) == ""
 
     def test_empty_existing_model_is_redownloaded(self, tmp_path, monkeypatch):
         install_dir = self._setup_env(tmp_path, monkeypatch)

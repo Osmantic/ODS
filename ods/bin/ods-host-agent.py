@@ -431,13 +431,49 @@ def _format_curl_download_error(returncode: int | None, stderr_text: object) -> 
     return f"{message}: {details}"
 
 
+_DEFAULT_MODEL_DOWNLOAD_HOSTS = frozenset({
+    "huggingface.co",
+    "www.huggingface.co",
+    "hf.co",
+})
+_MODEL_DOWNLOAD_HOSTS_ENV = "ODS_MODEL_DOWNLOAD_ALLOWED_HOSTS"
+
+
+def _model_download_allowed_hosts() -> frozenset[str]:
+    raw = os.environ.get(_MODEL_DOWNLOAD_HOSTS_ENV, "").strip()
+    if not raw:
+        raw = load_env(INSTALL_DIR / ".env").get(_MODEL_DOWNLOAD_HOSTS_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_MODEL_DOWNLOAD_HOSTS
+    return frozenset(
+        host.lower()
+        for host in re.split(r"[\s,]+", raw)
+        if host
+    )
+
+
+def _model_download_url_error(url: object) -> str:
+    """Return a policy error for an unsafe model artifact URL."""
+    try:
+        parsed = urlparse(str(url or "").strip())
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return "Model artifact URL is malformed"
+    if parsed.scheme.lower() != "https":
+        return "Model artifact URL must use HTTPS"
+    if host not in _model_download_allowed_hosts():
+        return (
+            f"Model artifact host '{host or '(missing)'}' is not allowed; "
+            f"configure {_MODEL_DOWNLOAD_HOSTS_ENV} to permit it"
+        )
+    return ""
+
+
 def _parse_huggingface_resolve_url(url: object) -> tuple[str, str, str] | None:
     """Return repo_id, revision, and filename for a Hugging Face resolve URL."""
+    if _model_download_url_error(url):
+        return None
     parsed = urlparse(str(url or "").strip())
-    if parsed.scheme not in {"http", "https"}:
-        return None
-    if parsed.netloc.lower() not in {"huggingface.co", "www.huggingface.co", "hf.co"}:
-        return None
     parts = [unquote(part) for part in parsed.path.strip("/").split("/") if part]
     if len(parts) < 5 or parts[2] != "resolve":
         return None
@@ -5291,6 +5327,19 @@ class AgentHandler(BaseHTTPRequestHandler):
 
                 try:
                     models_dir.mkdir(parents=True, exist_ok=True)
+                    for _part_idx, part_file_name, part_url in pending_download_plan:
+                        url_error = _model_download_url_error(part_url)
+                        if url_error:
+                            logger.error("Model download rejected for %s: %s", part_file_name, url_error)
+                            _write_model_status(
+                                status_path,
+                                "failed",
+                                part_file_name,
+                                0,
+                                0,
+                                url_error,
+                            )
+                            return
                     label = gguf_file if len(download_plan) == 1 else f"{gguf_file} ({len(download_plan)} parts)"
                     _write_model_status(status_path, "downloading", label, 0, 0)
 
