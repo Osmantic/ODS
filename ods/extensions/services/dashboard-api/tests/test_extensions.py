@@ -4143,6 +4143,41 @@ def test_extensions_lock_falls_back_when_data_root_is_unwritable(
         assert fallback_lock.exists()
 
 
+def test_extension_operation_lock_falls_back_when_primary_lock_parent_cannot_create(
+    tmp_path, monkeypatch,
+):
+    """A stale root lock must not select a parent that cannot hold service locks."""
+    from routers import extensions as ext_module
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    primary_lock = data_dir / ".extensions-lock"
+    primary_lock.touch()
+    fallback_lock = data_dir / "config" / ".extensions-lock"
+    primary_operation_dir = data_dir / ".extension-operation-locks"
+    original_named_temporary_file = ext_module.tempfile.NamedTemporaryFile
+
+    def fail_primary_write_probe(*args, **kwargs):
+        if Path(kwargs["dir"]) == primary_operation_dir:
+            raise PermissionError("primary operation lock directory is not writable")
+        return original_named_temporary_file(*args, **kwargs)
+
+    monkeypatch.setattr(
+        ext_module,
+        "_extensions_lock_candidates",
+        lambda: [primary_lock, fallback_lock],
+    )
+    monkeypatch.setattr(
+        ext_module.tempfile,
+        "NamedTemporaryFile",
+        fail_primary_write_probe,
+    )
+
+    with ext_module._extension_operation_lock("aider"):
+        assert fallback_lock.exists()
+        assert (fallback_lock.parent / ".extension-operation-locks").is_dir()
+
+
 class TestUpdateHardening(TestUpdateExtension):
     """Gates and sync-echo hardening for the transactional update path."""
 
