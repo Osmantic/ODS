@@ -31,7 +31,12 @@ function baseDownloadState(overrides = {}) {
 }
 
 beforeEach(() => {
+  document.documentElement.dataset.theme = 'light'
   useDownloadProgressMock.mockReturnValue(baseDownloadState())
+})
+
+afterEach(() => {
+  delete document.documentElement.dataset.theme
 })
 
 function baseState(overrides = {}) {
@@ -125,6 +130,24 @@ test('renders the model library layout from catalog fields only', () => {
   expect(screen.getByText('~3.2 GB incl. KV')).toBeInTheDocument()
   expect(screen.getAllByAltText('Qwen logo')).toHaveLength(2)
   expect(screen.getByAltText('Microsoft logo')).toBeInTheDocument()
+})
+
+test('uses theme-responsive surfaces instead of fixed dark model panels', () => {
+  useModelsMock.mockReturnValue(baseState({
+    currentModel: 'qwen3.5-9b-q4',
+    models: [model({ status: 'loaded', recommended: true })],
+  }))
+
+  renderModels()
+
+  const currentModelPanel = screen.getByText('Currently running: qwen3.5-9b-q4').closest('section')
+  const sourceTabs = screen.getByRole('tablist', { name: 'Model sources' })
+
+  expect(currentModelPanel.getAttribute('style')).toContain('background: var(--tech-tile-fill)')
+  expect(currentModelPanel.getAttribute('style')).toContain('border-color: var(--tech-tile-border)')
+  expect(sourceTabs.getAttribute('style')).toContain('background: var(--tech-tabs-fill)')
+  expect(sourceTabs.getAttribute('style')).toContain('border-color: var(--tech-tabs-border)')
+  expect(currentModelPanel.getAttribute('style')).not.toContain('rgba(10, 10, 18')
 })
 
 test('does not present impossible runtime counters as measured model speed', () => {

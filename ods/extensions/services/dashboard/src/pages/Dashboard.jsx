@@ -190,19 +190,14 @@ const SERVICE_TABS = [
   { key: 'inactive', label: 'Inactive' },
 ]
 const TECH_PANEL_STYLE = {
-  background: 'linear-gradient(180deg, rgba(10,10,18,0.96), rgba(7,7,13,0.92))',
-  borderColor: 'rgba(255,255,255,0.08)',
-  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035), 0 20px 60px rgba(0,0,0,0.22)',
+  background: 'var(--tech-panel-fill)',
+  borderColor: 'var(--tech-panel-border)',
+  boxShadow: 'var(--tech-panel-shadow)',
 }
 const TECH_TILE_STYLE = {
-  background: `
-    linear-gradient(180deg, rgba(14,14,21,0.88), rgba(8,8,14,0.92)),
-    repeating-linear-gradient(90deg, transparent 0 31px, rgba(255,255,255,0.028) 31px 32px),
-    repeating-linear-gradient(180deg, transparent 0 31px, rgba(255,255,255,0.024) 31px 32px),
-    radial-gradient(circle at 18% 0%, rgba(157,0,255,0.08), transparent 30%)
-  `,
-  borderColor: 'rgba(255,255,255,0.11)',
-  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.045), inset 0 -18px 34px rgba(0,0,0,0.18)',
+  background: 'var(--tech-tile-fill)',
+  borderColor: 'var(--tech-tile-border)',
+  boxShadow: 'var(--tech-tile-shadow)',
 }
 let overviewMemoryHistory = []
 let serviceCpuMemoryHistory = {}
@@ -934,7 +929,7 @@ const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, 
       style={{ ...TECH_TILE_STYLE, overflow: 'visible' }}
     >
       <div className="min-w-0 flex items-center gap-2">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-black/20">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-theme-border bg-theme-bg/45">
           <Icon size={16} className="text-theme-text-secondary" />
         </div>
 
@@ -953,11 +948,11 @@ const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, 
       </div>
 
       <div className="relative shrink-0 group/info" title={detailText}>
-        <div className="flex h-6.5 w-6.5 items-center justify-center rounded-full border border-white/10 bg-black/25 text-theme-text-muted/75 transition-colors group-hover:text-theme-text-secondary group-hover:border-theme-accent/20">
+        <div className="flex h-6.5 w-6.5 items-center justify-center rounded-full border border-theme-border bg-theme-bg/45 text-theme-text-muted/75 transition-colors group-hover:border-theme-accent/20 group-hover:text-theme-text-secondary">
           <CircleHelp size={13} />
         </div>
 
-        <div className="pointer-events-none absolute bottom-[calc(100%+0.45rem)] right-0 z-20 w-52 rounded-lg border border-white/10 bg-theme-card/95 px-3 py-2 text-[11px] leading-4 text-theme-text-muted opacity-0 shadow-2xl transition-all duration-150 group-hover/info:translate-y-0 group-hover/info:opacity-100 translate-y-1">
+        <div className="pointer-events-none absolute bottom-[calc(100%+0.45rem)] right-0 z-20 w-52 translate-y-1 rounded-lg border border-theme-border bg-theme-card/95 px-3 py-2 text-[11px] leading-4 text-theme-text-muted opacity-0 shadow-2xl transition-all duration-150 group-hover/info:translate-y-0 group-hover/info:opacity-100">
           {description}
           {status === 'disabled' && hint && (
             <p className="mt-2 font-mono text-[10px] text-theme-text-secondary">{hint}</p>
@@ -1002,7 +997,7 @@ const SystemOverviewPanel = memo(function SystemOverviewPanel({ tokensPerSecond,
     >
       <div className="mb-4 flex items-center justify-between gap-4">
         <h2 className="text-base font-semibold text-theme-text sm:text-lg">System Overview</h2>
-        <div className="flex h-7 shrink-0 items-center rounded-md border border-white/[0.08] bg-white/[0.025] p-0.5">
+        <div className="flex h-7 shrink-0 items-center rounded-md border border-theme-border bg-theme-bg/35 p-0.5">
           {OVERVIEW_RANGES.map(item => (
             <button
               key={item.key}
@@ -1097,7 +1092,7 @@ const OverviewChart = memo(function OverviewChart({
   const deltaTone = delta != null && delta < 0 ? 'text-red-400' : 'text-emerald-400'
 
   return (
-    <div className={`min-w-0 ${divided ? 'lg:border-l lg:border-white/10 lg:pl-8' : 'lg:pr-8'}`}>
+    <div className={`min-w-0 ${divided ? 'lg:border-l lg:border-theme-border lg:pl-8' : 'lg:pr-8'}`}>
       <div className="mb-3 flex min-h-[64px] flex-wrap items-end justify-between gap-x-4 gap-y-2">
         <div className="min-w-[210px]">
           <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-theme-text-muted/70">
@@ -1338,7 +1333,7 @@ const ServicesPanel = memo(function ServicesPanel({ services }) {
       <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <h2 className="text-lg font-semibold text-theme-text">Services</h2>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <div className="flex min-h-8 items-center gap-1 border-b border-white/10 sm:border-b-0">
+          <div className="flex min-h-8 items-center gap-1 border-b border-theme-border sm:border-b-0">
             {SERVICE_TABS.map(tab => (
               <button
                 key={tab.key}
@@ -1375,14 +1370,14 @@ const ServicesPanel = memo(function ServicesPanel({ services }) {
                 setOpenMenuId(null)
               }}
               placeholder="Search services..."
-              className="h-8 w-full rounded-lg border border-white/[0.08] bg-black/20 pl-8 pr-3 text-xs text-theme-text outline-none transition-colors placeholder:text-theme-text-muted/45 focus:border-theme-accent/45"
+              className="h-8 w-full rounded-lg border border-theme-border bg-theme-bg/45 pl-8 pr-3 text-xs text-theme-text outline-none transition-colors placeholder:text-theme-text-muted/60 focus:border-theme-accent/45"
             />
           </label>
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-xl border border-white/[0.045]" style={TECH_TILE_STYLE}>
-        <div className="hidden grid-cols-[minmax(220px,1.5fr)_108px_96px_132px_112px_32px] gap-4 border-b border-white/[0.045] px-4 py-2.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/55 md:grid">
+      <div className="overflow-hidden rounded-xl border border-theme-border" style={TECH_TILE_STYLE}>
+        <div className="hidden grid-cols-[minmax(220px,1.5fr)_108px_96px_132px_112px_32px] gap-4 border-b border-theme-border px-4 py-2.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/75 md:grid">
           <span>Service</span>
           <span>Status</span>
           <span>Uptime</span>
@@ -1391,7 +1386,7 @@ const ServicesPanel = memo(function ServicesPanel({ services }) {
           <span />
         </div>
 
-        <div className="divide-y divide-white/[0.035]">
+        <div className="divide-y divide-theme-border">
           {visibleServices.length > 0 ? (
             visibleServices.map(service => (
               <ServiceTableRow
@@ -1439,7 +1434,7 @@ const ServicesPanel = memo(function ServicesPanel({ services }) {
               setExpanded(true)
               setOpenMenuId(null)
             }}
-            className="flex w-full items-center gap-2 border-t border-white/[0.045] px-4 py-2 text-left text-[11px] font-medium text-theme-text-muted transition-colors hover:text-theme-text-secondary"
+            className="flex w-full items-center gap-2 border-t border-theme-border px-4 py-2 text-left text-[11px] font-medium text-theme-text-muted transition-colors hover:text-theme-text-secondary"
           >
             +{hiddenCount} more services
             <ChevronDown size={13} />
@@ -1453,7 +1448,7 @@ const ServicesPanel = memo(function ServicesPanel({ services }) {
               setExpanded(false)
               setOpenMenuId(null)
             }}
-            className="flex w-full items-center gap-2 border-t border-white/[0.045] px-4 py-2 text-left text-[11px] font-medium text-theme-text-muted transition-colors hover:text-theme-text-secondary"
+            className="flex w-full items-center gap-2 border-t border-theme-border px-4 py-2 text-left text-[11px] font-medium text-theme-text-muted transition-colors hover:text-theme-text-secondary"
           >
             Show fewer services
           </button>
@@ -1477,7 +1472,7 @@ const ServiceTableRow = memo(function ServiceTableRow({
 
   return (
     <div
-      className="grid gap-3 px-4 py-3 transition-colors hover:bg-white/[0.025] md:grid-cols-[minmax(220px,1.5fr)_108px_96px_132px_112px_32px] md:items-center md:gap-4"
+      className="grid gap-3 px-4 py-3 transition-colors hover:bg-theme-surface-hover/70 md:grid-cols-[minmax(220px,1.5fr)_108px_96px_132px_112px_32px] md:items-center md:gap-4"
       data-testid={`service-row-${service.id}`}
     >
       <div className="min-w-0">
@@ -1485,7 +1480,7 @@ const ServiceTableRow = memo(function ServiceTableRow({
           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${status.dot}`} />
           <span className="truncate text-xs font-semibold text-theme-text">{service.name}</span>
           {service.hasSemantics && !service.required && (
-            <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.035] px-1.5 py-0.5 text-[8px] font-semibold uppercase text-theme-text-muted/70">
+            <span className="shrink-0 rounded border border-theme-border bg-theme-bg/35 px-1.5 py-0.5 text-[8px] font-semibold uppercase text-theme-text-muted/70">
               Optional
             </span>
           )}
@@ -1533,7 +1528,7 @@ const ServiceTableRow = memo(function ServiceTableRow({
           <button
             type="button"
             onClick={onToggleMenu}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-theme-text-muted transition-colors hover:bg-white/5 hover:text-theme-text-secondary"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-theme-text-muted transition-colors hover:bg-theme-surface-hover hover:text-theme-text-secondary"
             aria-label={`${service.name} actions`}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
@@ -1550,7 +1545,7 @@ const ServiceTableRow = memo(function ServiceTableRow({
         {isRestartable && menuOpen && (
           <div
             role="menu"
-            className="absolute right-0 top-8 z-20 w-44 overflow-hidden rounded-lg border border-white/[0.08] bg-[#080810] py-1 shadow-2xl shadow-black/50"
+            className="absolute right-0 top-8 z-20 w-44 overflow-hidden rounded-lg border border-theme-border bg-theme-card py-1 shadow-2xl shadow-black/30"
             style={TECH_TILE_STYLE}
           >
             <button
@@ -1558,7 +1553,7 @@ const ServiceTableRow = memo(function ServiceTableRow({
               role="menuitem"
               onClick={onRestart}
               disabled={isRestarting}
-              className="flex w-full items-center justify-between px-3 py-2 text-left text-[11px] font-semibold text-theme-text-secondary transition-colors hover:bg-white/[0.045] hover:text-theme-text disabled:cursor-wait disabled:opacity-60"
+              className="flex w-full items-center justify-between px-3 py-2 text-left text-[11px] font-semibold text-theme-text-secondary transition-colors hover:bg-theme-surface-hover hover:text-theme-text disabled:cursor-wait disabled:opacity-60"
             >
               <span>{isRestarting ? 'Restarting...' : 'Restart service'}</span>
               <Power size={12} />

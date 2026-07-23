@@ -23,19 +23,14 @@ const PAGE_SIZE = 10
 const DOWNLOAD_STATUS_TIMEOUT_MS = 15000
 const MAX_SINGLE_REQUEST_TOKENS_PER_SECOND = 10000
 const TECH_PANEL_STYLE = {
-  background: 'linear-gradient(180deg, rgba(10,10,18,0.96), rgba(7,7,13,0.92))',
-  borderColor: 'rgba(255,255,255,0.08)',
-  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035), 0 20px 60px rgba(0,0,0,0.22)',
+  background: 'var(--tech-panel-fill)',
+  borderColor: 'var(--tech-panel-border)',
+  boxShadow: 'var(--tech-panel-shadow)',
 }
 const TECH_TILE_STYLE = {
-  background: `
-    linear-gradient(180deg, rgba(14,14,21,0.88), rgba(8,8,14,0.92)),
-    repeating-linear-gradient(90deg, transparent 0 31px, rgba(255,255,255,0.028) 31px 32px),
-    repeating-linear-gradient(180deg, transparent 0 31px, rgba(255,255,255,0.024) 31px 32px),
-    radial-gradient(circle at 18% 0%, rgba(157,0,255,0.08), transparent 30%)
-  `,
-  borderColor: 'rgba(255,255,255,0.11)',
-  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.045), inset 0 -18px 34px rgba(0,0,0,0.18)',
+  background: 'var(--tech-tile-fill)',
+  borderColor: 'var(--tech-tile-border)',
+  boxShadow: 'var(--tech-tile-shadow)',
 }
 
 function catalogModelIdForProgress(models, progressModel) {
@@ -263,14 +258,14 @@ export default function Models() {
         </div>
 
         <div className="flex max-w-full flex-wrap items-center gap-2">
-          <span className="inline-flex min-h-9 max-w-full items-center rounded-lg border border-white/[0.08] bg-black/20 px-3 py-2 text-center text-xs font-medium text-theme-text-secondary">
+          <span className="inline-flex min-h-9 max-w-full items-center rounded-lg border border-theme-border bg-theme-bg/45 px-3 py-2 text-center text-xs font-medium text-theme-text-secondary">
             Runtime: {formatModeLabel(odsMode)}
             {configuredMode !== odsMode ? ` / configured ${formatModeLabel(configuredMode)}` : ''}
           </span>
           <button
             type="button"
             onClick={() => libraryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-            className="inline-flex h-9 items-center gap-2 rounded-lg border border-white/[0.08] bg-black/20 px-3 text-xs font-medium text-theme-text-secondary transition-colors hover:border-theme-accent/35 hover:text-theme-text"
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-theme-border bg-theme-bg/45 px-3 text-xs font-medium text-theme-text-secondary transition-colors hover:border-theme-accent/35 hover:text-theme-text"
           >
             <Library size={14} />
             Model Library
@@ -278,7 +273,7 @@ export default function Models() {
           <button
             type="button"
             onClick={refresh}
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/[0.08] bg-black/20 text-theme-text-muted transition-colors hover:border-theme-accent/35 hover:text-theme-text"
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-theme-border bg-theme-bg/45 text-theme-text-muted transition-colors hover:border-theme-accent/35 hover:text-theme-text"
             title="Refresh models"
           >
             <RefreshCw size={16} />
@@ -304,7 +299,7 @@ export default function Models() {
           </div>
           <Link
             to="/settings"
-            className="inline-flex h-8 shrink-0 items-center justify-center rounded-md border border-amber-200/20 bg-black/20 px-3 text-xs font-semibold text-amber-100 transition-colors hover:border-amber-200/40"
+            className="inline-flex h-8 shrink-0 items-center justify-center rounded-md border border-amber-500/25 bg-theme-bg/45 px-3 text-xs font-semibold text-amber-500 transition-colors hover:border-amber-500/45"
           >
             Review runtime settings
           </Link>
@@ -394,7 +389,7 @@ export default function Models() {
         >
           <div className="min-w-full overflow-x-auto">
             <div className="lg:min-w-[1034px]">
-              <div className="hidden grid-cols-[minmax(250px,1.7fr)_144px_70px_110px_120px_90px_130px] gap-5 border-b border-white/[0.055] px-5 py-3 text-[9px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/55 lg:grid">
+              <div className="hidden grid-cols-[minmax(250px,1.7fr)_144px_70px_110px_120px_90px_130px] gap-5 border-b border-theme-border px-5 py-3 text-[9px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/75 lg:grid">
                 <span>Model</span>
                 <span>Actions</span>
                 <span>Size</span>
@@ -404,7 +399,7 @@ export default function Models() {
                 <span>Compatibility</span>
               </div>
 
-              <div className="divide-y divide-white/[0.04]">
+              <div className="divide-y divide-theme-border">
                 {visibleModels.map((model, index) => {
                   const rowId = `${model.id || model.name || 'model'}:${startIndex + index}`
                   return (
@@ -438,7 +433,7 @@ export default function Models() {
             </div>
           </div>
 
-          <div className="flex flex-col gap-3 border-t border-white/[0.055] px-4 py-3 text-xs text-theme-text-muted sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-3 border-t border-theme-border px-4 py-3 text-xs text-theme-text-muted sm:flex-row sm:items-center sm:justify-between">
             <span>
               Showing {startIndex}-{endIndex} of {filteredModels.length} models
             </span>
@@ -491,7 +486,7 @@ function CurrentModelPanel({ model, currentModel, gpu }) {
 
         <Link
           to="/"
-          className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/[0.08] bg-black/20 px-3 text-xs font-semibold text-theme-text transition-colors hover:border-theme-accent/35 hover:bg-theme-accent/10"
+          className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-theme-border bg-theme-bg/45 px-3 text-xs font-semibold text-theme-text transition-colors hover:border-theme-accent/35 hover:bg-theme-accent/10"
         >
           Dashboard
         </Link>
@@ -558,13 +553,9 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
     <div
       className="mb-5 grid gap-2.5 rounded-lg border p-2.5 sm:grid-cols-3 sm:p-3"
       style={{
-        background: `
-          linear-gradient(135deg, rgba(12,10,22,0.96), rgba(25,12,38,0.9)),
-          repeating-linear-gradient(90deg, transparent 0 35px, rgba(255,255,255,0.022) 35px 36px),
-          repeating-linear-gradient(180deg, transparent 0 35px, rgba(255,255,255,0.02) 35px 36px)
-        `,
-        borderColor: 'rgba(190, 150, 255, 0.22)',
-        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 18px 50px rgba(0,0,0,0.22)',
+        background: 'var(--tech-tabs-fill)',
+        borderColor: 'var(--tech-tabs-border)',
+        boxShadow: 'var(--tech-tabs-shadow)',
       }}
       role="tablist"
       aria-label="Model sources"
@@ -579,7 +570,7 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
             aria-selected={active}
             onClick={() => onChange(id)}
             style={active ? activeStyles[tone] : undefined}
-            className={`group relative flex min-h-[86px] items-center gap-3 overflow-hidden rounded-lg border px-3.5 text-left transition-[border-color,background-color,box-shadow,transform] duration-200 sm:px-4 ${active ? 'text-theme-text' : 'border-white/[0.075] bg-black/20 text-theme-text-muted hover:-translate-y-px hover:border-white/[0.16] hover:bg-white/[0.035] hover:text-theme-text'}`}
+            className={`group relative flex min-h-[86px] items-center gap-3 overflow-hidden rounded-lg border px-3.5 text-left transition-[border-color,background-color,box-shadow,transform] duration-200 sm:px-4 ${active ? 'text-theme-text' : 'border-theme-border bg-theme-bg/45 text-theme-text-muted hover:-translate-y-px hover:border-theme-accent/30 hover:bg-theme-surface-hover hover:text-theme-text'}`}
           >
             <span className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ${iconStyles[tone]}`}>
               {image
@@ -591,7 +582,7 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
               <span className={`mt-1 block truncate text-xs ${active && tone === 'amber' ? 'text-amber-200/80' : 'text-theme-text-muted/70'}`}>{detail}</span>
             </span>
             {count !== null && (
-              <span className="flex h-10 min-w-10 shrink-0 items-center justify-end border-l border-white/[0.07] pl-3 font-mono text-lg font-semibold text-theme-accent-light">
+              <span className="flex h-10 min-w-10 shrink-0 items-center justify-end border-l border-theme-border pl-3 font-mono text-lg font-semibold text-theme-accent">
                 {count}
               </span>
             )}
@@ -639,7 +630,7 @@ function ModelsFilterPanel({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search models..."
-            className="h-9 w-full rounded-lg border border-white/[0.08] bg-black/25 pl-9 pr-3 text-xs text-theme-text outline-none transition-colors placeholder:text-theme-text-muted/60 focus:border-theme-accent/45"
+            className="h-9 w-full rounded-lg border border-theme-border bg-theme-bg/45 pl-9 pr-3 text-xs text-theme-text outline-none transition-colors placeholder:text-theme-text-muted/60 focus:border-theme-accent/45"
           />
         </label>
 
@@ -655,7 +646,7 @@ function ModelsFilterPanel({
                 className={`flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-xs transition-colors ${
                   categoryFilter === option.id
                     ? 'bg-theme-accent text-white shadow-[0_0_18px_rgba(168,85,247,0.26)]'
-                    : 'text-theme-text-secondary hover:bg-white/[0.045] hover:text-theme-text'
+                    : 'text-theme-text-secondary hover:bg-theme-surface-hover hover:text-theme-text'
                 }`}
               >
                 <span>{option.label}</span>
@@ -669,7 +660,7 @@ function ModelsFilterPanel({
 
         <div className="mt-5">
           <SectionLabel>Compatibility</SectionLabel>
-          <div className="mt-2 grid grid-cols-2 gap-1 overflow-hidden rounded-lg border border-white/[0.06] bg-black/20 p-1">
+          <div className="mt-2 grid grid-cols-2 gap-1 overflow-hidden rounded-lg border border-theme-border bg-theme-bg/45 p-1">
             {[
               ['all', 'All'],
               ['fits', 'Fits GPU'],
@@ -706,7 +697,7 @@ function ModelsFilterPanel({
 
         <div className="mt-5">
           <SectionLabel>Speed Preference</SectionLabel>
-          <div className="mt-2 grid grid-cols-4 gap-1 overflow-hidden rounded-lg border border-white/[0.06] bg-black/20 p-1">
+          <div className="mt-2 grid grid-cols-4 gap-1 overflow-hidden rounded-lg border border-theme-border bg-theme-bg/45 p-1">
             {[
               ['any', 'Any'],
               ['fast', 'Fast'],
@@ -737,7 +728,7 @@ function ModelsFilterPanel({
           {insights.map(item => (
             <div
               key={item.label}
-              className="flex items-center justify-between rounded-lg border border-white/[0.055] bg-black/18 px-3 py-2 text-xs"
+              className="flex items-center justify-between rounded-lg border border-theme-border bg-theme-bg/35 px-3 py-2 text-xs"
             >
               <span className="text-theme-text-muted">{item.label}</span>
               <span className="font-mono font-semibold text-theme-accent-light">{item.value}</span>
@@ -761,7 +752,7 @@ function FilterChip({ active, onClick, children }) {
       className={`rounded-md px-2 py-1.5 text-[10px] font-semibold transition-colors ${
         active
           ? 'bg-theme-accent text-white'
-          : 'text-theme-text-muted hover:bg-white/[0.045] hover:text-theme-text'
+          : 'text-theme-text-muted hover:bg-theme-surface-hover hover:text-theme-text'
       }`}
     >
       {children}
@@ -805,7 +796,7 @@ function ModelTableRow({
   })
 
   return (
-    <div className="grid grid-cols-2 gap-x-3 gap-y-4 px-3 py-4 transition-colors hover:bg-white/[0.025] sm:grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(250px,1.7fr)_144px_70px_110px_120px_90px_130px] lg:gap-5 lg:px-5 lg:py-3.5">
+    <div className="grid grid-cols-2 gap-x-3 gap-y-4 px-3 py-4 transition-colors hover:bg-theme-surface-hover/70 sm:grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(250px,1.7fr)_144px_70px_110px_120px_90px_130px] lg:gap-5 lg:px-5 lg:py-3.5">
       <div className="col-span-2 min-w-0 sm:col-span-1 lg:col-span-1">
         <div className="flex min-w-0 items-start gap-3">
           <ModelPublisherIcon model={model} tone={iconTone} />
@@ -941,7 +932,7 @@ function PrimaryAction({
           className={`inline-flex h-8 min-w-24 items-center justify-center gap-2 rounded-md px-3 text-xs font-semibold transition-colors ${
             !runDisabled
               ? 'bg-theme-accent text-white shadow-[0_0_18px_rgba(168,85,247,0.32)] hover:bg-theme-accent-hover'
-              : 'cursor-not-allowed border border-white/[0.08] bg-black/20 text-theme-text-muted'
+              : 'cursor-not-allowed border border-theme-border bg-theme-bg/45 text-theme-text-muted'
           }`}
         >
           {directChatBlocked ? <AlertCircle size={13} /> : <Play size={13} />}
@@ -967,8 +958,8 @@ function PrimaryAction({
       disabled={downloadBusy || activationBusy}
       className={`inline-flex h-8 min-w-24 items-center justify-center gap-2 rounded-md border px-3 text-xs font-semibold transition-colors ${
         downloadBusy || activationBusy
-          ? 'cursor-not-allowed border-white/[0.08] bg-black/20 text-theme-text-muted'
-          : 'border-white/[0.08] bg-black/20 text-theme-text-secondary hover:border-theme-accent/35 hover:text-theme-text'
+          ? 'cursor-not-allowed border-theme-border bg-theme-bg/45 text-theme-text-muted'
+          : 'border-theme-border bg-theme-bg/45 text-theme-text-secondary hover:border-theme-accent/35 hover:text-theme-text'
       }`}
     >
       <Download size={13} />
@@ -999,7 +990,7 @@ function DeleteAction({ model, isLoaded, isDownloaded, isLoading, activationBusy
         title={title}
         className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border transition-colors ${
           disabledReason
-            ? 'cursor-not-allowed border-white/[0.07] bg-black/20 text-theme-text-muted/45'
+            ? 'cursor-not-allowed border-theme-border bg-theme-bg/45 text-theme-text-muted/45'
             : 'border-red-400/20 bg-red-500/[0.07] text-red-300 hover:border-red-300/40 hover:bg-red-500/15'
         }`}
       >
@@ -1018,7 +1009,7 @@ function DeleteModelDialog({ model, onCancel, onConfirm }) {
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="w-full max-w-md rounded-xl border border-red-300/20 bg-[#08080d] p-5 shadow-[0_24px_80px_rgba(0,0,0,0.45)]"
+        className="w-full max-w-md rounded-xl border border-red-400/25 bg-theme-card p-5 shadow-[0_24px_80px_rgba(0,0,0,0.32)]"
       >
         <div className="flex items-start gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-red-300/20 bg-red-500/10 text-red-300">
@@ -1038,7 +1029,7 @@ function DeleteModelDialog({ model, onCancel, onConfirm }) {
           <button
             type="button"
             onClick={onCancel}
-            className="inline-flex h-9 items-center justify-center rounded-md border border-white/[0.08] bg-black/20 px-3 text-xs font-semibold text-theme-text-secondary transition-colors hover:border-theme-accent/35 hover:text-theme-text"
+            className="inline-flex h-9 items-center justify-center rounded-md border border-theme-border bg-theme-bg/45 px-3 text-xs font-semibold text-theme-text-secondary transition-colors hover:border-theme-accent/35 hover:text-theme-text"
           >
             Cancel
           </button>
@@ -1078,7 +1069,7 @@ function DownloadProgressBar({ progress, helpers, onRetry }) {
             <button
               type="button"
               onClick={onRetry}
-              className="inline-flex h-8 shrink-0 items-center justify-center gap-2 rounded-md border border-red-400/25 bg-black/20 px-3 text-xs font-semibold text-red-200 transition-colors hover:border-red-300/45 hover:bg-red-500/10"
+              className="inline-flex h-8 shrink-0 items-center justify-center gap-2 rounded-md border border-red-400/25 bg-theme-bg/45 px-3 text-xs font-semibold text-red-400 transition-colors hover:border-red-400/45 hover:bg-red-500/10"
             >
               <RefreshCw size={13} />
               Retry
@@ -1116,7 +1107,7 @@ function DownloadProgressBar({ progress, helpers, onRetry }) {
             type="button"
             onClick={cancelDownload}
             disabled={isCancelling}
-            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-white/[0.1] bg-black/20 px-2.5 text-xs font-semibold text-theme-text-secondary transition-colors hover:border-red-400/35 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-theme-border bg-theme-bg/45 px-2.5 text-xs font-semibold text-theme-text-secondary transition-colors hover:border-red-400/35 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isCancelling ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
             {isCancelling ? 'Cancelling' : 'Cancel'}
@@ -1148,7 +1139,7 @@ function Pagination({ page, pageCount, onChange }) {
         type="button"
         onClick={() => onChange(Math.max(1, page - 1))}
         disabled={page <= 1}
-        className="flex h-7 w-7 items-center justify-center rounded-md border border-white/[0.06] text-theme-text-muted transition-colors hover:text-theme-text disabled:opacity-35"
+        className="flex h-7 w-7 items-center justify-center rounded-md border border-theme-border text-theme-text-muted transition-colors hover:text-theme-text disabled:opacity-35"
         title="Previous page"
       >
         <ChevronLeft size={14} />
@@ -1163,7 +1154,7 @@ function Pagination({ page, pageCount, onChange }) {
           className={`h-7 min-w-7 rounded-md border px-2 text-xs font-semibold transition-colors ${
             item === page
               ? 'border-theme-accent/40 bg-theme-accent text-white'
-              : 'border-white/[0.06] text-theme-text-muted hover:text-theme-text'
+              : 'border-theme-border text-theme-text-muted hover:text-theme-text'
           }`}
           aria-current={item === page ? 'page' : undefined}
         >
@@ -1174,7 +1165,7 @@ function Pagination({ page, pageCount, onChange }) {
         type="button"
         onClick={() => onChange(Math.min(pageCount, page + 1))}
         disabled={page >= pageCount}
-        className="flex h-7 w-7 items-center justify-center rounded-md border border-white/[0.06] text-theme-text-muted transition-colors hover:text-theme-text disabled:opacity-35"
+        className="flex h-7 w-7 items-center justify-center rounded-md border border-theme-border text-theme-text-muted transition-colors hover:text-theme-text disabled:opacity-35"
         title="Next page"
       >
         <ChevronRight size={14} />
@@ -1225,8 +1216,8 @@ function ModelSpeedVisual({ model, speed, compact = false }) {
 
   if (!points.length) {
     return (
-      <div className={`${compact ? 'h-11 w-52' : 'h-7 w-24'} rounded bg-white/[0.025]`}>
-        <div className="mx-2 h-full border-b border-dashed border-white/[0.08]" />
+      <div className={`${compact ? 'h-11 w-52' : 'h-7 w-24'} rounded bg-theme-surface-hover`}>
+        <div className="mx-2 h-full border-b border-dashed border-theme-border" />
       </div>
     )
   }
@@ -1252,8 +1243,8 @@ function ModelSpeedVisual({ model, speed, compact = false }) {
 function Badge({ children, tone = 'neutral', subdued = false }) {
   const classes = {
     neutral: subdued
-      ? 'border-white/[0.08] bg-white/[0.035] text-theme-text-muted'
-      : 'border-white/[0.08] bg-white/[0.055] text-theme-text-secondary',
+      ? 'border-theme-border bg-theme-bg/35 text-theme-text-muted'
+      : 'border-theme-border bg-theme-surface-hover text-theme-text-secondary',
     green: 'border-emerald-400/20 bg-emerald-500/12 text-emerald-300',
     amber: 'border-amber-400/25 bg-amber-500/12 text-amber-300',
     red: 'border-red-400/25 bg-red-500/12 text-red-300',
@@ -1633,7 +1624,7 @@ function ModelPublisherIcon({ model, tone, size = 'row' }) {
           loading="lazy"
           referrerPolicy="no-referrer"
           onError={() => setImageFailed(true)}
-          className="absolute inset-0 h-full w-full bg-[#111118] object-cover"
+          className="absolute inset-0 h-full w-full bg-theme-surface-hover object-cover"
         />
       )}
     </div>
