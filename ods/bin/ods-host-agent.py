@@ -1126,7 +1126,7 @@ def _schedule_initial_switchboard_verification(reason: str) -> None:
         _switchboard_initial_verify_thread.start()
 
 
-def _bootstrap_status_indicates_complete() -> bool:
+def _bootstrap_status_allows_route_proof() -> bool:
     status_path = INSTALL_DIR / "data" / "bootstrap-status.json"
     try:
         data = json.loads(status_path.read_text(encoding="utf-8"))
@@ -1134,14 +1134,17 @@ def _bootstrap_status_indicates_complete() -> bool:
         return False
     if not isinstance(data, dict):
         return False
-    return str(data.get("status") or "").strip().casefold() == "complete"
+    return str(data.get("status") or "").strip().casefold() in {
+        "swapping",
+        "complete",
+    }
 
 
 def _model_status_allows_route_proof(data: dict) -> bool:
     status = str(data.get("status") or "").strip().casefold()
     if status in {"already_downloaded", "complete"}:
         return True
-    return _bootstrap_status_indicates_complete()
+    return _bootstrap_status_allows_route_proof()
 
 
 def _verify_switchboard_route_for_status(data: dict, reason: str) -> None:

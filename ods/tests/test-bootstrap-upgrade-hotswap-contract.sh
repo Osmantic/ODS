@@ -224,7 +224,16 @@ assert_in_order "$windows_activation_block" "Windows Lemonade activation" \
     'patch_hermes_model_after_swap' \
     'recreate_windows_lemonade_openclaw' \
     'verify_windows_lemonade_openclaw_model_env "$model_id"' \
+    'request_windows_switchboard_route_reconciliation' \
     'verify_windows_lemonade_downstream_route "$model_id" "full model route"'
+
+switchboard_reconcile_block="$(function_block request_windows_switchboard_route_reconciliation | grep -v '^[[:space:]]*#')"
+grep -qF 'ODS_MODEL_SWITCHBOARD' <<<"$switchboard_reconcile_block" \
+    || fail "Windows Lemonade bootstrap reconciliation must be gated by enabled switchboard mode"
+grep -qF '/v1/model/status' <<<"$switchboard_reconcile_block" \
+    || fail "Windows Lemonade bootstrap reconciliation must schedule host-agent route proof"
+grep -qF 'Authorization: Bearer $key' <<<"$switchboard_reconcile_block" \
+    || fail "Windows Lemonade bootstrap reconciliation must authenticate with ODS_AGENT_KEY"
 
 windows_lemonade_block="$(awk '
     /^if \[\[ "\$_windows_lemonade_swap_applies" == "true" \]\]; then/ { in_block=1 }
@@ -313,7 +322,7 @@ assert_in_order "$rollback_block" "Windows Lemonade rollback" \
     'Rollback verified: the previous model completed through the restored downstream route.'
 pass "Windows Lemonade rollback restarts and proves the previous routed model"
 
-for injected_failure in native model-id litellm hermes openclaw openclaw-env route; do
+for injected_failure in native model-id litellm hermes openclaw openclaw-env reconcile route; do
     if ! (
         eval "$windows_activation_block"
         failure_stage="$injected_failure"
@@ -344,6 +353,10 @@ for injected_failure in native model-id litellm hermes openclaw openclaw-env rou
             calls+=(openclaw-env)
             [[ "$failure_stage" != "openclaw-env" ]]
         }
+        request_windows_switchboard_route_reconciliation() {
+            calls+=(reconcile)
+            [[ "$failure_stage" != "reconcile" ]]
+        }
         verify_windows_lemonade_downstream_route() {
             calls+=(route)
             [[ "$failure_stage" != "route" ]]
@@ -368,7 +381,8 @@ for injected_failure in native model-id litellm hermes openclaw openclaw-env rou
             hermes) expected+=(litellm hermes) ;;
             openclaw) expected+=(litellm hermes openclaw) ;;
             openclaw-env) expected+=(litellm hermes openclaw openclaw-env) ;;
-            route) expected+=(litellm hermes openclaw openclaw-env route) ;;
+            reconcile) expected+=(litellm hermes openclaw openclaw-env reconcile) ;;
+            route) expected+=(litellm hermes openclaw openclaw-env reconcile route) ;;
         esac
         expected+=(rollback)
         [[ "${calls[*]}" == "${expected[*]}" ]]

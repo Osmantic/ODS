@@ -4761,6 +4761,36 @@ class TestModelDownloadFileIntegrity:
         }
         assert doc["history"] == []
 
+    def test_model_status_schedules_route_proof_while_bootstrap_swap_is_verifying(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir = self._setup_env(tmp_path, monkeypatch)
+        (install_dir / "data" / "bootstrap-status.json").write_text(
+            json.dumps({
+                "status": "swapping",
+                "model": "test-model.gguf",
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            _mod,
+            "_switchboard_state_needs_current_env_verification",
+            lambda _path: True,
+        )
+        scheduled = []
+        monkeypatch.setattr(
+            _mod,
+            "_schedule_initial_switchboard_verification",
+            lambda reason: scheduled.append(reason),
+        )
+
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_status(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response() == {"status": "idle"}
+        assert scheduled == ["model-status"]
+
     def test_empty_finished_download_is_failed_not_complete(self, tmp_path, monkeypatch):
         install_dir = self._setup_env(tmp_path, monkeypatch)
         self._patch_curl_download(monkeypatch, b"")

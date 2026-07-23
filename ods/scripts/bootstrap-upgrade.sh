@@ -1581,6 +1581,34 @@ verify_windows_lemonade_downstream_route() {
     return 1
 }
 
+request_windows_switchboard_route_reconciliation() {
+    local switchboard_mode key port
+    switchboard_mode="$(read_env_value ODS_MODEL_SWITCHBOARD | tr '[:upper:]' '[:lower:]')"
+    [[ "$switchboard_mode" == "enabled" ]] || return 0
+
+    key="$(read_env_value ODS_AGENT_KEY)"
+    [[ -n "$key" ]] || key="$(read_env_value DASHBOARD_API_KEY)"
+    if [[ -z "$key" ]]; then
+        log "ERROR: ODS agent key missing; cannot reconcile the promoted switchboard route."
+        return 1
+    fi
+    port="$(read_env_value ODS_AGENT_PORT)"
+    [[ -n "$port" ]] || port="7710"
+
+    # The upgrader is host-native on Windows, so loopback is authoritative.
+    # GET /v1/model/status remains read-only for callers: it schedules the
+    # host agent's single-flight runtime proof, and only that agent may publish
+    # the verified switchboard state.
+    if curl -fsS --max-time 20 \
+        -H "Authorization: Bearer $key" \
+        "http://127.0.0.1:${port}/v1/model/status" >/dev/null 2>&1; then
+        log "Host agent accepted promoted switchboard route reconciliation."
+        return 0
+    fi
+    log "ERROR: Host agent did not accept promoted switchboard route reconciliation."
+    return 1
+}
+
 restart_windows_lemonade_dependents_after_rollback() {
     local dependents_ok=true
     if [[ "$WINDOWS_LEMONADE_LITELLM_PRESENT" == "true" ]]; then
@@ -1677,6 +1705,10 @@ activate_windows_lemonade_full_model() {
     fi
     if ! verify_windows_lemonade_openclaw_model_env "$model_id"; then
         windows_lemonade_swap_failed "OpenClaw recreated with a stale model environment"
+        return 1
+    fi
+    if ! request_windows_switchboard_route_reconciliation; then
+        windows_lemonade_swap_failed "the host agent could not reconcile the promoted switchboard route"
         return 1
     fi
     if ! verify_windows_lemonade_downstream_route "$model_id" "full model route"; then
