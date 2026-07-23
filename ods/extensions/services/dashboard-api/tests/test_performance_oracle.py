@@ -592,6 +592,9 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     )
     assert all_by_id["qwen2.5-coder-1.5b-128k-q4"]["appCompatibility"]["hermesTalk"]["status"] == "unknown"
     assert all_by_id["phi3-mini-128k-q4"]["appCompatibility"]["hermesTalk"]["status"] == "unknown"
+    assert all_by_id["phi3-mini-128k-q4"]["appCompatibility"]["perplexica"]["status"] == (
+        "unsupported_until_revalidated"
+    )
     assert all_by_id["granite4.1-3b-q4"]["appCompatibility"]["hermesTalk"]["status"] == (
         "unsupported_until_revalidated"
     )
@@ -608,7 +611,7 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     assert "granite4.1-3b-q4" not in candidate_ids
     assert "granite4.0-h-350m-q4" not in candidate_ids
     assert "granite4.0-1b-q4" not in candidate_ids
-    assert "phi3-mini-128k-q4" in candidate_ids
+    assert "phi3-mini-128k-q4" not in candidate_ids
     assert "granite3.3-8b-instruct-q4" not in candidate_ids
     assert "smollm3-3b-q4" not in candidate_ids
     assert "qwen2.5-3b-instruct-q4" not in candidate_ids
