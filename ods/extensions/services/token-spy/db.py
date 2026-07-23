@@ -483,6 +483,14 @@ def query_recent_events(limit: int = 100, after_id: str = None):
     conn.row_factory = sqlite3.Row
 
     if after_id:
+        # Forward pagination for the SSE tail: return the OLDEST unseen rows
+        # first and let the caller advance its cursor to the last (largest)
+        # id. Ordering by timestamp DESC here made the caller's cursor walk
+        # backwards — it set last_id to the oldest row of each batch, so the
+        # next `id > last_id` re-selected everything newer than that, resending
+        # the whole batch every poll. `id` is the AUTOINCREMENT key, so ASC is
+        # insertion order and a burst larger than one page is drained across
+        # polls without skips.
         rows = conn.execute(
             """
             SELECT
@@ -492,7 +500,7 @@ def query_recent_events(limit: int = 100, after_id: str = None):
                 estimated_cost_usd as cost_usd, timestamp
             FROM usage
             WHERE id > ?
-            ORDER BY timestamp DESC
+            ORDER BY id ASC
             LIMIT ?
             """,
             (after_id, limit)

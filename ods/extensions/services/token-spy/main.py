@@ -2403,6 +2403,16 @@ async def token_events(request: Request):
                 # Query recent events
                 events = query_recent_events(limit=50, after_id=last_id)
 
+                # Advance the cursor to the highest id in the batch, not the
+                # last one iterated. The initial (after_id=None) query returns
+                # the newest rows in timestamp-DESC order, so the last row is
+                # the OLDEST; seeding the cursor from it would re-stream the
+                # whole backlog on the next poll.
+                batch_max_id = max(
+                    (event["id"] for event in events if event.get("id") is not None),
+                    default=None,
+                )
+
                 for event in events:
                     # Format event as SSE
                     event_data = {
@@ -2419,7 +2429,9 @@ async def token_events(request: Request):
                     }
 
                     yield f"data: {json.dumps(event_data)}\n\n"
-                    last_id = event.get("id")
+
+                if batch_max_id is not None:
+                    last_id = batch_max_id
 
                 # Heartbeat to keep connection alive
                 yield ":heartbeat\n\n"
