@@ -53,6 +53,14 @@ function Get-HostArchitecture {
     }
 }
 
+function Test-CatalogModelSourceAllowed {
+    param([object]$Model)
+
+    $prop = $Model.PSObject.Properties["source"]
+    if (-not $prop -or $null -eq $prop.Value) { return $true }
+    return ("$($prop.Value)".Trim().ToLowerInvariant() -in @("", "curated"))
+}
+
 function Get-CatalogModelById {
     param(
         [object]$Catalog,
@@ -60,6 +68,7 @@ function Get-CatalogModelById {
     )
 
     foreach ($model in $Catalog.models) {
+        if (-not (Test-CatalogModelSourceAllowed -Model $model)) { continue }
         if ("$($model.id)".ToLowerInvariant() -eq $ModelId) {
             return $model
         }
@@ -663,6 +672,7 @@ function Resolve-CatalogModelRecommendation {
 
     $candidates = @()
     foreach ($model in $catalog.models) {
+        if (-not (Test-CatalogModelSourceAllowed -Model $model)) { continue }
         if (-not $model.gguf_url) { continue }
         if (-not (Test-CatalogModelInstallRecommendationAllowed -Model $model)) { continue }
         if (-not (Test-CatalogModelFamilyAllowed -Model $model -ModelProfileName $modelProfileName)) { continue }

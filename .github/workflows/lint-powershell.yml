@@ -76,6 +76,10 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1
 
+      - name: Windows Catalog Source Boundary Contract
+        shell: pwsh
+        run: ./tests/test-windows-catalog-selector.ps1
+
       - name: Windows Port Preflight Contract
         shell: pwsh
         run: ./tests/test-windows-port-preflight.ps1
