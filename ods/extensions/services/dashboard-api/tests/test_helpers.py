@@ -1564,3 +1564,24 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+@pytest.mark.asyncio
+async def test_get_llama_metrics_ignores_nan_and_inf_prometheus_values(monkeypatch):
+    from helpers import get_llama_metrics
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_services = {"llama-server": {"host": "localhost", "port": 8080}}
+    monkeypatch.setattr("helpers.SERVICES", fake_services)
+    monkeypatch.setattr("helpers.LLM_BACKEND", "llama.cpp")
+    monkeypatch.setattr("helpers.get_loaded_model", AsyncMock(return_value="test-model"))
+
+    mock_resp = MagicMock()
+    mock_resp.text = "llamacpp:tokens_predicted_total NaN\nllamacpp:tokens_predicted_seconds_total Inf\n"
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+    monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=mock_client))
+
+    res = await get_llama_metrics()
+    assert res["token_count_mode"] == "cumulative"
+    assert res["tokens_per_second"] == 0.0
