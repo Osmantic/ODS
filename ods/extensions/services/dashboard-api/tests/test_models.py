@@ -2181,3 +2181,14 @@ def test_load_model_rejects_local_gguf_path_separators(test_client, monkeypatch,
     )
 
     assert resp.status_code == 404
+
+
+def test_fetch_loaded_model_sync_handles_none_port_and_type_errors(monkeypatch):
+    import routers.models as models_module
+
+    fake_services = {"llama-server": {"host": "localhost", "port": None}}
+    monkeypatch.setattr(models_module, "SERVICES", fake_services)
+    monkeypatch.setattr(models_module, "LLM_BACKEND", "lemonade")
+
+    assert models_module._fetch_loaded_model_sync() is None
+    assert models_module._loaded_model_backend_ready_sync("test-model") is False
