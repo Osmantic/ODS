@@ -165,3 +165,16 @@ async def test_async_request_and_shutdown_close_both_pools(monkeypatch):
     assert sync_client.is_closed
     assert agent_client._async_client is None
     assert agent_client._sync_client is None
+
+
+def test_error_detail_handles_unicode_decode_error():
+    from unittest.mock import MagicMock, PropertyMock
+
+    mock_resp = MagicMock()
+    type(mock_resp).text = PropertyMock(side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "bad"))
+    mock_resp.status_code = 500
+    mock_resp.json.side_effect = ValueError()
+
+    detail, text = agent_client._error_detail(mock_resp)
+    assert detail == "Host agent returned HTTP 500"
+    assert text == "<non-text response>"

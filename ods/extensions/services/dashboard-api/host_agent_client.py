@@ -106,13 +106,16 @@ async def _get_async_client() -> httpx.AsyncClient:
 
 
 def _error_detail(response: httpx.Response) -> tuple[str, str]:
-    text = response.text
+    try:
+        text = response.text
+    except (UnicodeDecodeError, httpx.ResponseNotRead):
+        text = "<non-text response>"
     detail: Any = None
     try:
         payload = response.json()
         if isinstance(payload, dict):
             detail = payload.get("error") or payload.get("detail")
-    except ValueError:
+    except (ValueError, UnicodeDecodeError, httpx.ResponseNotRead):
         pass
     if isinstance(detail, (dict, list)):
         detail = json.dumps(detail, separators=(",", ":"))
