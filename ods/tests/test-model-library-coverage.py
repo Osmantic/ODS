@@ -152,7 +152,7 @@ def test_phi4_mini_is_not_agent_viable_after_strixy_talk_probe_failure():
     assert not _agent_viable_for_release(by_id["phi4-mini-q4"])
 
 
-def test_phi3_mini_128k_is_not_agent_viable_after_tower2_talk_probe_failure():
+def test_phi3_mini_128k_requires_perplexica_revalidation_after_strixy_failure():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
     compatibility = by_id["phi3-mini-128k-q4"]["app_compatibility"]
@@ -162,6 +162,11 @@ def test_phi3_mini_128k_is_not_agent_viable_after_tower2_talk_probe_failure():
     assert "cycle-006" in compatibility["agent_viability"]["evidence"]
     assert compatibility["hermes_talk"]["status"] == "unsupported_until_revalidated"
     assert "generic assistant greeting" in compatibility["hermes_talk"]["reason"]
+    assert compatibility["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert "hostScope" not in compatibility["perplexica"]
+    assert "strixy" in compatibility["perplexica"]["reason"].lower()
+    assert "apology prose" in compatibility["perplexica"]["reason"]
+    assert "cycle-006/strixy" in compatibility["perplexica"]["evidence"]
     assert not _agent_viable_for_release(by_id["phi3-mini-128k-q4"])
 
 

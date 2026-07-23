@@ -632,6 +632,16 @@
           "hostScope": ["tower2"],
           "expiresAt": "2026-08-21T00:00:00Z"
         },
+        "perplexica": {
+          "status": "unsupported_until_revalidated",
+          "label": "Perplexica revalidation required",
+          "reason": "Strixy browser model-UI coverage loaded Phi-3 Mini 128K and passed ODS Talk, LiteLLM, and Open WebUI, but the Perplexica HTTP 200 reply began with apology prose and omitted the requested verification phrase; keep it out of all-app release coverage until Perplexica compatibility is revalidated.",
+          "evidence": "fleet-test/runs/2026-07-23T01-27-32Z-model-ui-product-98d5a50cd5b5-harness-18e2bd60437f-hosts-strixy-switchboard-enabled-6cycle-rerun/cycle-006/strixy",
+          "recordedAt": "2026-07-23T02:25:29Z",
+          "productSha": "98d5a50cd5b527cb8dbd6117ba2d158538b73a9e",
+          "harnessSha": "18e2bd60437f4e5ba7b3cd461a37d99ab524ef6a",
+          "expiresAt": "2026-08-23T00:00:00Z"
+        },
         "agent_viability": {
           "status": "not_agent_viable",
           "reason": "ODS Talk release probe failed exact verification after successful Phi-3 Mini 128K load; not agent-viable until a Talk revalidation passes.",
