@@ -393,7 +393,7 @@ def test_model_payload_applies_host_scoped_app_compatibility_from_install_env(da
     assert strixy_payload["models"][0]["appCompatibility"]["agentViability"]["status"] == "unknown"
 
 
-def test_real_catalog_gemma_perplexica_block_is_host_scoped():
+def test_real_catalog_gemma_perplexica_block_is_global():
     by_id = {model["id"]: model for model in _official_model_catalog()}
     model = by_id["gemma3-4b-it-q4"]
 
@@ -412,7 +412,7 @@ def test_real_catalog_gemma_perplexica_block_is_host_scoped():
 
     assert windows_laptop["perplexica"]["status"] == "unsupported_until_revalidated"
     assert strixy["perplexica"]["status"] == "unsupported_until_revalidated"
-    assert tower2["perplexica"]["status"] == "unknown"
+    assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
 
 
 def test_measured_local_too_slow_blocks_agent_compatibility(data_dir, tmp_path):

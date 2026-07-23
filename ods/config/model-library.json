@@ -290,12 +290,11 @@
         "perplexica": {
           "status": "unsupported_until_revalidated",
           "label": "Perplexica revalidation required",
-          "reason": "Fleet model-UI runs on windows-laptop and strixy loaded this model and ODS Talk passed, but the Perplexica app probe failed instead of returning the requested verification phrase; keep it out of all-app release coverage on those hosts until Perplexica compatibility is revalidated.",
-          "evidence": "fleet-test/runs/2026-07-19T03-40-01Z-release-product-54b2f703190f-harness-2a6a4e6a55b8-hosts-windows-laptop/model-ui/cycle-003/windows-laptop; fleet-test/runs/2026-07-22T09-42-12Z-release-product-b5bb39f2c0f2-harness-cc7b6148eb2c-hosts-windows-laptop-strixy-m5-mbp/model-ui/cycle-003/strixy",
-          "recordedAt": "2026-07-22T10:26:21Z",
-          "productSha": "b5bb39f2c0f2a7a3dfa5f98547e469b6eaf0acfd",
-          "harnessSha": "cc7b6148eb2cd6e667e6a9dd3d36dff6f8928052",
-          "hostScope": ["windows-laptop", "strixy"],
+          "reason": "Independent fleet model-UI runs on windows-laptop, strixy, and tower2 loaded this model and ODS Talk passed, but the Perplexica app probe failed instead of returning the requested verification phrase. The repeated cross-platform semantic failure makes this a model-level incompatibility; keep it out of all-app release coverage until Perplexica compatibility is revalidated.",
+          "evidence": "fleet-test/runs/2026-07-19T03-40-01Z-release-product-54b2f703190f-harness-2a6a4e6a55b8-hosts-windows-laptop/model-ui/cycle-003/windows-laptop; fleet-test/runs/2026-07-22T09-42-12Z-release-product-b5bb39f2c0f2-harness-cc7b6148eb2c-hosts-windows-laptop-strixy-m5-mbp/model-ui/cycle-003/strixy; fleet-test/runs/2026-07-23T20-06-24Z-release-product-3675af793193-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-003/tower2",
+          "recordedAt": "2026-07-23T21:21:17Z",
+          "productSha": "3675af7931935ae0d435a6498c98bc114be209ca",
+          "harnessSha": "47eedd6c0b40908272ad6ba324868f4acec2f308",
           "expiresAt": "2026-08-22T00:00:00Z"
         }
       },
