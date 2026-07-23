@@ -182,12 +182,21 @@ async def _token_spy_service_status() -> dict[str, Any] | None:
 
 def _find_token_spy_service(services: list[Any] | None) -> dict[str, Any] | None:
     for service in services or []:
-        if getattr(service, "id", None) == TOKEN_SPY_SERVICE_ID:
+        service_id = service.get("id") if isinstance(service, dict) else getattr(service, "id", None)
+        if service_id == TOKEN_SPY_SERVICE_ID:
             return _service_status_to_dict(service)
     return None
 
 
 def _service_status_to_dict(service: Any) -> dict[str, Any]:
+    if isinstance(service, dict):
+        return {
+            "id": service.get("id"),
+            "name": service.get("name"),
+            "status": service.get("status"),
+            "port": service.get("port"),
+            "external_port": service.get("external_port", service.get("port")),
+        }
     return {
         "id": service.id,
         "name": service.name,

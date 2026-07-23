@@ -500,3 +500,18 @@ def test_usage_token_spy_key_falls_back_to_shared_data_file(tmp_path, monkeypatc
     monkeypatch.setattr(usage_router, "TOKEN_SPY_KEY_FILE", key_file)
 
     assert usage_router._token_spy_api_key() == "file-key"
+
+
+def test_find_token_spy_service_supports_dict_objects():
+    import routers.usage as usage_router
+
+    dict_services = [
+        {"id": "open-webui", "name": "Open WebUI", "status": "healthy", "port": 3000},
+        {"id": "token-spy", "name": "Token Spy", "status": "healthy", "port": 8088},
+    ]
+
+    res = usage_router._find_token_spy_service(dict_services)
+
+    assert res is not None
+    assert res["id"] == "token-spy"
+    assert res["status"] == "healthy"
