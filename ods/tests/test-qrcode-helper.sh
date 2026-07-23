@@ -29,6 +29,34 @@ fi
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
+# ── `ip route get` shapes ──────────────────────────────────────────────────
+# The source address must be read from the `src` field by name. A route with
+# no gateway omits `via <gw>`, which shifts every later column left by two.
+
+route_shim() {
+    # route_shim <route line>
+    cat > "$tmpdir/ip" <<SH
+#!/usr/bin/env bash
+echo "$1"
+SH
+    chmod +x "$tmpdir/ip"
+}
+
+route_shim "1.1.1.1 via 192.168.1.1 dev eth0 src 192.168.1.50 uid 1000"
+lan_ip=$(PATH="$tmpdir:$PATH" _ods_lan_ip)
+[[ "$lan_ip" == "192.168.1.50" ]] \
+    || fail "_ods_lan_ip misread a gateway route: got '$lan_ip'"
+
+route_shim "1.1.1.1 dev eth0 src 172.28.112.1 uid 1000"
+lan_ip=$(PATH="$tmpdir:$PATH" _ods_lan_ip)
+[[ "$lan_ip" == "172.28.112.1" ]] \
+    || fail "_ods_lan_ip misread an on-link (gateway-less) route: got '$lan_ip'"
+
+route_shim "1.1.1.1 dev tun0 src 10.8.0.6 uid 1000"
+default_output=$(PATH="$tmpdir:$PATH" print_dashboard_qr)
+grep -Fq "http://10.8.0.6:3001" <<< "$default_output" \
+    || fail "print_dashboard_qr did not use the on-link route's source address"
+
 cat > "$tmpdir/ip" <<'SH'
 #!/usr/bin/env bash
 exit 1
