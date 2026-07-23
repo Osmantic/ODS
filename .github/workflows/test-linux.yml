@@ -92,6 +92,9 @@ jobs:
       - name: Windows Missing Service Hint Tests
         run: bash tests/test-windows-missing-service-hints.sh
 
+      - name: Background Task Registry Tests
+        run: bash tests/test-background-tasks.sh
+
       - name: Install Readiness Summary Tests
         run: bash tests/test-install-readiness-summary.sh
 
