@@ -53,6 +53,7 @@ check 'docker rm -f @_odsContainerNames' "$PHASE05" "phase 5 removes stale ODS c
 check 'file bind mounts' "$PHASE05" "phase 5 documents stale bind-mount directory hazard"
 
 check '$_expectedRegularFiles = @(' "$PHASE06" "phase 6 uses explicit owned regular-file cleanup list"
+check 'config\litellm\switchboard.yaml' "$PHASE06" "phase 6 repairs malformed LiteLLM switchboard config directory"
 check 'extensions\services\hermes\cli-config.yaml.template' "$PHASE06" "phase 6 repairs malformed Hermes config template directory"
 check 'extensions\services\hermes\SOUL.md.template' "$PHASE06" "phase 6 repairs malformed Hermes SOUL template directory"
 check 'data\persona\SOUL.md' "$PHASE06" "phase 6 repairs malformed generated persona file directory"

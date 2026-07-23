@@ -94,6 +94,7 @@ $_expectedRegularFiles = @(
     "config\llama-server\models.ini",
     "config\litellm\local.yaml",
     "config\litellm\lemonade.yaml",
+    "config\litellm\switchboard.yaml",
     "data\.extensions-lock",
     "extensions\services\hermes\cli-config.yaml.template",
     "extensions\services\hermes\SOUL.md.template",
