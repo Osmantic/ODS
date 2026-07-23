@@ -13,7 +13,10 @@ Covers:
 """
 
 import importlib
+import os
+import stat
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -1044,3 +1047,33 @@ def test_store_falls_back_when_primary_parent_is_unwritable(
 
     assert fallback_store.exists()
     assert magic_link_module._ensure_store() == {"tokens": []}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are POSIX-only")
+def test_store_is_owner_only_before_it_is_published(magic_link_module, monkeypatch):
+    """The rename must publish a file that is already 0600.
+
+    The store holds the SHA-256 hashes that back redemption. Tightening the
+    destination after the rename leaves it at the process umask (0644 on a
+    default Linux host) for the window in between, and the tmp file sits in
+    the same directory at that mode for the whole write.
+    """
+    published_modes = []
+    real_replace = Path.replace
+
+    def spy_replace(self, target):
+        if self.name.endswith(".json.tmp"):
+            published_modes.append(stat.S_IMODE(self.stat().st_mode))
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", spy_replace)
+
+    magic_link_module._write_store({"tokens": []})
+
+    assert published_modes, "store was never written through the tmp+rename path"
+    assert all(mode == 0o600 for mode in published_modes), (
+        "token store was published at "
+        f"{[oct(m) for m in published_modes]} and only tightened afterwards"
+    )
+    store_path = magic_link_module._writable_store_path()
+    assert stat.S_IMODE(store_path.stat().st_mode) == 0o600
