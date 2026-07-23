@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Optional
+from typing import Optional, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -14,6 +14,15 @@ from security import verify_api_key
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["features"])
+
+
+def _svc_id(s: Any) -> str | None:
+    return s.get("id") if isinstance(s, dict) else getattr(s, "id", None)
+
+
+def _svc_healthy(s: Any) -> bool:
+    status = s.get("status") if isinstance(s, dict) else getattr(s, "status", None)
+    return status == "healthy"
 
 
 def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[GPUInfo]) -> dict:
@@ -42,8 +51,8 @@ def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[G
     services_missing = []
 
     for svc_id in all_required:
-        svc_status = next((s for s in services if s.id == svc_id), None)
-        if svc_status and svc_status.status == "healthy":
+        svc_status = next((s for s in services if _svc_id(s) == svc_id), None)
+        if svc_status and _svc_healthy(svc_status):
             services_available.append(svc_id)
         else:
             services_missing.append(svc_id)
@@ -55,10 +64,10 @@ def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[G
     enabled_all = feature.get("enabled_services_all", required_services)
     enabled_any = feature.get("enabled_services_any", required_services_any)
     enabled_all_ok = all(
-        any(s.id == svc and s.status == "healthy" for s in services) for svc in enabled_all
+        any(_svc_id(s) == svc and _svc_healthy(s) for s in services) for svc in enabled_all
     )
     enabled_any_ok = (not enabled_any) or any(
-        any(s.id == svc and s.status == "healthy" for s in services) for svc in enabled_any
+        any(_svc_id(s) == svc and _svc_healthy(s) for s in services) for svc in enabled_any
     )
     is_enabled = enabled_all_ok and enabled_any_ok
 
