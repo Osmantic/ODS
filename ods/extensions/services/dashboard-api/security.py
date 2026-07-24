@@ -10,7 +10,11 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 logger = logging.getLogger(__name__)
 
-DASHBOARD_API_KEY = os.environ.get("DASHBOARD_API_KEY")
+raw_key = (os.environ.get("DASHBOARD_API_KEY") or "").strip()
+if len(raw_key) >= 2 and raw_key[0] == raw_key[-1] and raw_key[0] in {"'", '"'}:
+    raw_key = raw_key[1:-1].strip()
+
+DASHBOARD_API_KEY = raw_key
 if not DASHBOARD_API_KEY:
     DASHBOARD_API_KEY = secrets.token_urlsafe(32)
     key_file = Path("/data/dashboard-api-key.txt")
