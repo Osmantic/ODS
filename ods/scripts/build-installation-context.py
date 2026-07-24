@@ -26,10 +26,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import socket
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Service-id → (display name, one-line "what it does and how the user
@@ -410,7 +412,19 @@ def build_soul(
     previous = output_path.read_text(encoding="utf-8") if output_path.is_file() else ""
     if previous == assembled:
         return False
-    output_path.write_text(assembled, encoding="utf-8")
+    fd, tmp_path = tempfile.mkstemp(dir=str(output_path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(assembled)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(output_path))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     return True
 
 

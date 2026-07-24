@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -163,7 +165,19 @@ def main() -> None:
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(catalog, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    fd, tmp_path = tempfile.mkstemp(dir=str(output_path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(catalog, indent=2, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(output_path))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     print(f"Generated catalog with {len(entries)} extensions at {output_path}")
 
