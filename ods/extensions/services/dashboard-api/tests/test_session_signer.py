@@ -172,15 +172,16 @@ class TestVerify:
         assert ok is False
         assert reason == "no-secret"
 
-    def test_non_integer_expiry(self):
-        """A malformed expiry field that survives split should be caught."""
-        # Sign a payload with a non-integer expiry. Signature will be valid
-        # but the int() parse will fail.
-        random_id = "abc123"
-        bad_expiry = "not-a-number"
-        payload = f"{random_id}.{bad_expiry}"
-        sig = session_signer._sign(payload)
-        cookie = f"{payload}.{sig}"
-        ok, reason = session_signer.verify(cookie)
+    def test_non_integer_expiry(self, monkeypatch):
+        """A malformed non-integer expiry returns (False, 'malformed')
+        BEFORE computing an HMAC signature."""
+        monkeypatch.setattr(
+            session_signer,
+            "_sign",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("_sign should not be called when expiry is non-integer")
+            ),
+        )
+        ok, reason = session_signer.verify("random_id.not-a-number.claimed_sig")
         assert ok is False
         assert reason == "malformed"
