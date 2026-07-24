@@ -46,7 +46,12 @@ async def voice_status(api_key: str = Depends(verify_api_key)):
     else:
         services_status["livekit"] = {"status": "not_configured"}
 
-    all_healthy = all(s.get("status") == "healthy" for s in services_status.values())
+    availability_statuses = [
+        status
+        for service, status in services_status.items()
+        if not (service == "livekit" and status.get("status") == "not_configured")
+    ]
+    all_healthy = all(s.get("status") == "healthy" for s in availability_statuses)
 
     return {
         "available": all_healthy,
