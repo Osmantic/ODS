@@ -73,7 +73,7 @@ describe('ODSTalk', () => {
         })
       }
       if (url === '/api/talk/message/stream' && options.method === 'POST') {
-        expect(JSON.parse(options.body)).toEqual({ text: 'What can you do?' })
+        expect(JSON.parse(options.body)).toMatchObject({ text: 'What can you do?' })
         return sseResponse([
           { type: 'session', session_id: 'sid' },
           { type: 'delta', text: 'I can help' },

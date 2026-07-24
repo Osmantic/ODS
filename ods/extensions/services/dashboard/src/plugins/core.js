@@ -8,6 +8,7 @@ import {
   Network,
   UserPlus,
   CreditCard,
+  BookOpen,
 } from 'lucide-react'
 
 const Dashboard = lazy(() => import('../pages/Dashboard'))
@@ -18,6 +19,7 @@ const Models = lazy(() => import('../pages/Models'))
 const ServiceMap = lazy(() => import('../pages/ServiceMap'))
 const Invites = lazy(() => import('../pages/Invites'))
 const Usage = lazy(() => import('../pages/Usage'))
+const Knowledge = lazy(() => import('../pages/Knowledge'))
 
 export const coreRoutes = [
   {
@@ -60,6 +62,16 @@ export const coreRoutes = [
     getProps: () => ({}),
     sidebar: true,
     order: 2.1,
+  },
+  {
+    id: 'knowledge',
+    path: '/knowledge',
+    label: 'Knowledge',
+    icon: BookOpen,
+    component: Knowledge,
+    getProps: () => ({}),
+    sidebar: true,
+    order: 2.2,
   },
   {
     id: 'models',
