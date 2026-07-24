@@ -40,6 +40,13 @@
       "manifest_service": "whisper"
     },
     {
+      "env_var": "SENSEVOICE_PORT",
+      "external_default": 9100,
+      "service_id": "sensevoice",
+      "internal_port": 8000,
+      "manifest_service": "sensevoice"
+    },
+    {
       "env_var": "TTS_PORT",
       "external_default": 8880,
       "service_id": "tts",
