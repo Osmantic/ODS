@@ -1,6 +1,6 @@
 """Tests for routers/voice.py — voice status endpoints."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 from dataclasses import dataclass
 
 
@@ -15,8 +15,6 @@ def test_voice_status_requires_auth(test_client):
 
 
 def test_voice_status_handles_dict_or_missing_status(test_client, monkeypatch):
-    import routers.voice as voice_router
-
     monkeypatch.setattr("config.SERVICES", {"whisper": {"host": "localhost"}})
 
     async def fake_health(svc_key, cfg):

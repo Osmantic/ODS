@@ -1,6 +1,7 @@
 """Voice services status endpoint (stub)."""
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends
 
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["voice"])
 
 
-def _extract_status(result: any) -> str:
+def _extract_status(result: Any) -> str:
     if hasattr(result, "status"):
         return str(result.status)
     if isinstance(result, dict) and "status" in result:
