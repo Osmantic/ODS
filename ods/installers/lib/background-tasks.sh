@@ -22,12 +22,12 @@ bg_task_start() {
     local pid="$2"
     local description="$3"
     local log_file="$4"
-    
+
     # Create registry if it doesn't exist
     if [[ ! -f "$BG_TASK_REGISTRY" ]]; then
         echo "[]" > "$BG_TASK_REGISTRY"
     fi
-    
+
     # Add task to registry
     python3 - "$BG_TASK_REGISTRY" "$task_id" "$pid" "$description" "$log_file" <<'PY'
 import json
@@ -40,7 +40,23 @@ pid = int(sys.argv[3])
 description = sys.argv[4]
 log_file = sys.argv[5]
 
-tasks = json.loads(registry_path.read_text())
+# The registry is a scratch file under /tmp shared by every run on the host.
+# A leftover from an earlier boot, a truncated write, or an unrelated file at
+# the same path must not abort the installer that is calling us — start over
+# instead. Nothing durable lives here; the tasks are re-registered by the run
+# that owns them.
+try:
+    tasks = json.loads(registry_path.read_text())
+except (OSError, ValueError):
+    tasks = []
+if not isinstance(tasks, list):
+    tasks = []
+
+# Replace any record carrying this id. A previous install registers the same
+# well-known ids ("sdxl-download", "full-model-download") with pids that are
+# now dead or, worse, recycled by an unrelated process; a lookup that found
+# one of those would report the wrong state for the task this run started.
+tasks = [t for t in tasks if not (isinstance(t, dict) and t.get("id") == task_id)]
 tasks.append({
     "id": task_id,
     "pid": pid,
@@ -74,8 +90,20 @@ task_id = sys.argv[2]
 if not registry_path.exists():
     sys.exit(3)
 
-tasks = json.loads(registry_path.read_text())
-task = next((t for t in tasks if t["id"] == task_id), None)
+try:
+    tasks = json.loads(registry_path.read_text())
+except (OSError, ValueError):
+    sys.exit(3)  # unreadable scratch file — same answer as "no such task"
+if not isinstance(tasks, list):
+    sys.exit(3)
+
+# Newest record wins: a registry written before ids were deduplicated can
+# still hold a stale entry for this id from an earlier run.
+task = next(
+    (t for t in reversed(tasks)
+     if isinstance(t, dict) and t.get("id") == task_id and "pid" in t),
+    None,
+)
 
 if not task:
     sys.exit(3)
