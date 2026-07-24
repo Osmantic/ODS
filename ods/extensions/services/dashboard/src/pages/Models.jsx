@@ -459,12 +459,34 @@ export default function Models() {
   )
 }
 
+// Compact architecture facts parsed straight from the model's GGUF header.
+// Returned only when the file was actually readable so catalog-only entries
+// never show fabricated structure.
+function getArchitectureSummary(model) {
+  const meta = model?.metadata
+  if (!meta || !meta.readable) return []
+  const parts = []
+  if (Number(meta.blockCount) > 0) parts.push(`${meta.blockCount} layers`)
+  if (Number(meta.embeddingLength) > 0) parts.push(`${meta.embeddingLength} hidden`)
+  if (Number(meta.attentionHeadCount) > 0) {
+    const kv = Number(meta.attentionHeadCountKv) > 0 && meta.attentionHeadCountKv !== meta.attentionHeadCount
+      ? ` (${meta.attentionHeadCountKv} KV)` : ''
+    parts.push(`${meta.attentionHeadCount} heads${kv}`)
+  }
+  if (Number(meta.expertCount) > 0) {
+    const used = Number(meta.expertUsedCount) > 0 ? `${meta.expertUsedCount}/${meta.expertCount}` : `${meta.expertCount}`
+    parts.push(`${used} experts`)
+  }
+  return parts
+}
+
 function CurrentModelPanel({ model, currentModel, gpu }) {
   const modelLabel = currentModel || model?.id
   const speed = getSpeedDisplay(model)
   const context = model ? formatContext(model.contextLength) : '--'
   const memory = model ? getMemoryMeta(model, gpu) : null
   const statusLabel = currentModel ? 'Currently running' : 'Model runtime'
+  const architecture = getArchitectureSummary(model)
 
   return (
     <section className="mb-4 rounded-xl border p-4" style={TECH_TILE_STYLE}>
@@ -484,6 +506,11 @@ function CurrentModelPanel({ model, currentModel, gpu }) {
               {memory && <span>{memory.label} VRAM ({memory.percent}%)</span>}
               <span>{context} context</span>
             </div>
+            {architecture.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] text-theme-text-muted/70">
+                {architecture.map(part => <span key={part}>{part}</span>)}
+              </div>
+            )}
           </div>
         </div>
 

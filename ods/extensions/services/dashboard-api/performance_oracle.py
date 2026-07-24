@@ -1363,6 +1363,10 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
                 "blockCount": metadata.get("block_count"),
                 "expertCount": metadata.get("expert_count"),
                 "expertUsedCount": metadata.get("expert_used_count"),
+                "embeddingLength": metadata.get("embedding_length"),
+                "attentionHeadCount": metadata.get("attention_head_count"),
+                "attentionHeadCountKv": metadata.get("attention_head_count_kv"),
+                "tensorCount": metadata.get("tensor_count"),
             },
             "appCompatibility": model_app_compatibility(
                 model,
