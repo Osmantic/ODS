@@ -274,3 +274,12 @@ def test_diagnostics_fallback_uses_client_timeout(test_client, monkeypatch):
         assert isinstance(t, aiohttp.ClientTimeout), (
             f"Expected aiohttp.ClientTimeout but got {type(t).__name__}: {t}"
         )
+
+
+def test_get_active_persona_prompt_handles_directory_and_unicode_error(setup_config_dir):
+    from routers.setup import get_active_persona_prompt
+
+    bad_file = setup_config_dir / "persona.json"
+    bad_file.write_bytes(b"\x80\x81\x82")
+
+    assert "assistant" in get_active_persona_prompt().lower()
