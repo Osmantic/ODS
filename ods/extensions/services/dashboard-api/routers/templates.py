@@ -41,17 +41,19 @@ def _runtime_dependency_order(
         return _order
 
     _visiting.add(service_id)
-    for dep in read_direct_deps(service_id):
-        _runtime_dependency_order(
-            dep,
-            read_direct_deps,
-            _visiting=_visiting,
-            _visited=_visited,
-            _order=_order,
-        )
-        if dep not in _order:
-            _order.append(dep)
-    _visiting.remove(service_id)
+    try:
+        for dep in read_direct_deps(service_id):
+            _runtime_dependency_order(
+                dep,
+                read_direct_deps,
+                _visiting=_visiting,
+                _visited=_visited,
+                _order=_order,
+            )
+            if dep not in _order:
+                _order.append(dep)
+    finally:
+        _visiting.remove(service_id)
     _visited.add(service_id)
     return _order
 
