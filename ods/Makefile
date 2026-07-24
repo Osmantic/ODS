@@ -113,6 +113,9 @@ test: ## Run unit and contract tests
 	@echo "=== fleet host lock behavior ==="
 	@bash tests/test-fleet-host-lock.sh
 	@echo ""
+	@echo "=== resolver user-extension compose guard parity ==="
+	@bash tests/test-resolver-compose-guard-parity.sh
+	@echo ""
 	@echo "=== issue-to-pr security check ==="
 	@bash tests/test-issue-to-pr-security.sh
 	@echo ""
