@@ -2838,6 +2838,9 @@ class TestModelActivationModeAndMacosBridge:
 
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
         monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+        # This bridge-focused fixture must not discover or restart a managed
+        # OpenCode instance from the developer host.
+        monkeypatch.setattr(_mod, "_capture_opencode_config", lambda: None)
         monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
         monkeypatch.setattr(_mod, "_require_macos_bridge_manager", record_preflight)
         monkeypatch.setattr(_mod, "_stop_macos_native_llama_server", record_stop)
@@ -3009,6 +3012,9 @@ class TestModelActivationLemonadePersistence:
 
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
         monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+        # Keep the Lemonade persistence transaction isolated from any real
+        # OpenCode configuration installed on the test host.
+        monkeypatch.setattr(_mod, "_capture_opencode_config", lambda: None)
         monkeypatch.setattr(
             _mod,
             "_resolve_lemonade_model_id",
