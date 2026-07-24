@@ -164,7 +164,10 @@ def _amd_host_runtime_fallback_gpus() -> Optional[list[IndividualGPU]]:
 
 
 def _clean_env(name: str) -> str:
-    return os.environ.get(name, "").strip()
+    val = os.environ.get(name, "").strip()
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in {"'", '"'}:
+        return val[1:-1].strip()
+    return val
 
 
 def _join_url(base_url: str, path: str) -> str:

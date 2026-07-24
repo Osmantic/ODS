@@ -549,3 +549,13 @@ class TestGetGpuInfoDispatcher:
 
         result = get_gpu_info()
         assert result is None
+
+
+def test_clean_env_strips_matched_quotes(monkeypatch):
+    import routers.gpu as gpu_router
+
+    monkeypatch.setenv("AMD_INFERENCE_BACKEND", '"rocm"')
+    assert gpu_router._clean_env("AMD_INFERENCE_BACKEND") == "rocm"
+
+    monkeypatch.setenv("AMD_INFERENCE_BACKEND", "'vulkan'")
+    assert gpu_router._clean_env("AMD_INFERENCE_BACKEND") == "vulkan"
