@@ -442,6 +442,35 @@ def test_real_catalog_granite32_perplexica_block_is_tower2_and_m5_scoped():
     assert m5_mbp["perplexica"]["status"] == "unsupported_until_revalidated"
 
 
+def test_real_catalog_smollm3_perplexica_block_is_global():
+    by_id = {model["id"]: model for model in _official_model_catalog()}
+    model = by_id["smollm3-3b-q4"]
+
+    lemonade = model_app_compatibility(
+        model,
+        runtime_context={
+            "host": "strix-halo",
+            "hosts": ["strix-halo"],
+            "llmBackend": "lemonade",
+            "runtime": "lemonade",
+        },
+    )
+    llama_server = model_app_compatibility(
+        model,
+        runtime_context={
+            "host": "tower2",
+            "hosts": ["tower2"],
+            "llmBackend": "llama-server",
+            "runtime": "llama-server",
+        },
+    )
+
+    assert lemonade["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert lemonade["agentViability"]["status"] == "agent_viable"
+    assert llama_server["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert llama_server["agentViability"]["status"] == "agent_viable"
+
+
 def test_real_catalog_granite41_opencode_block_is_strix_halo_scoped():
     by_id = {model["id"]: model for model in _official_model_catalog()}
     model = by_id["granite4.1-3b-q4"]
@@ -503,6 +532,25 @@ def test_real_catalog_qwen35_4b_talk_block_is_windows_scoped():
     assert windows_laptop["agentViability"]["status"] == "not_agent_viable"
     assert strix_halo["hermesTalk"]["status"] == "unknown"
     assert strix_halo["agentViability"]["status"] == "unknown"
+
+
+def test_real_catalog_qwen3_4b_128k_talk_block_is_m5_and_windows_scoped():
+    by_id = {model["id"]: model for model in _official_model_catalog()}
+    model = by_id["qwen3-4b-128k-q4"]
+
+    m5_mbp = model_app_compatibility(
+        model,
+        runtime_context={"host": "m5-mbp", "hosts": ["m5-mbp"]},
+    )
+    windows_laptop = model_app_compatibility(
+        model,
+        runtime_context={"host": "windows-laptop", "hosts": ["windows-laptop"]},
+    )
+
+    assert m5_mbp["hermesTalk"]["status"] == "unsupported_until_revalidated"
+    assert m5_mbp["agentViability"]["status"] == "not_agent_viable"
+    assert windows_laptop["hermesTalk"]["status"] == "unsupported_until_revalidated"
+    assert windows_laptop["agentViability"]["status"] == "not_agent_viable"
 
 
 def test_measured_local_too_slow_blocks_agent_compatibility(data_dir, tmp_path):

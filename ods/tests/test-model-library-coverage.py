@@ -266,8 +266,61 @@ def test_smollm3_3b_runtime_context_is_64k_and_it_remains_a_revalidation_candida
     assert "58944ba461fb" in compatibility["openai_chat"]["evidence"]
     assert compatibility["hermes_talk"]["status"] == "verified"
     assert compatibility["hermes_talk"]["productSha"] == "58944ba461fb87b87b1ce6fa854e32d15aeb8efa"
+    assert compatibility["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert "llmBackendScope" not in compatibility["perplexica"]
+    assert "hostScope" not in compatibility["perplexica"]
+    assert "cycle-003/tower2" in compatibility["perplexica"]["evidence"]
+    assert "cycle-003/strix-halo" in compatibility["perplexica"]["evidence"]
+    assert "cycle-003/spark" in compatibility["perplexica"]["evidence"]
+    assert "cycle-003/m5-mbp" in compatibility["perplexica"]["evidence"]
+    assert "cycle-003/windows-laptop" in compatibility["perplexica"]["evidence"]
+    assert "cycle-003/strixy" in compatibility["perplexica"]["evidence"]
     assert "agent_viability" not in compatibility
+    assert not _agent_viable_for_release(model)
+
+
+def test_qwen3_4b_128k_talk_block_is_m5_and_windows_scoped():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+    model = by_id["qwen3-4b-128k-q4"]
+    compatibility = model["app_compatibility"]["hermes_talk"]
+
+    assert compatibility["status"] == "unsupported_until_revalidated"
+    assert compatibility["hostScope"] == ["m5-mbp", "windows-laptop"]
+    assert "cycle-006/m5-mbp" in compatibility["evidence"]
+    assert "cycle-005/windows-laptop" in compatibility["evidence"]
+    assert ".MEDIA" in compatibility["reason"]
+    assert "180-second" in compatibility["reason"]
     assert _agent_viable_for_release(model)
+    assert not _agent_viable_for_release(model, host="m5-mbp")
+    assert not _agent_viable_for_release(model, host="windows-laptop")
+
+
+def test_windows_8gb_revalidation_models_have_64k_compressed_kv_profiles():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+
+    expected = {
+        "qwen3-4b-instruct-2507-q4": ("nvidia-8gb-64k-q8-kv", "q8_0", 7.6),
+        "phi3.5-mini-q4": ("nvidia-8gb-64k-q4-kv", "q4_0", 7.2),
+    }
+    for model_id, (profile_id, cache_type, required_gb) in expected.items():
+        model = by_id[model_id]
+        profiles = {profile["id"]: profile for profile in model["runtime_profiles"]}
+        profile = profiles[profile_id]
+
+        assert profile["backend"] == "nvidia"
+        assert profile["host_arch"] == ["amd64"]
+        assert profile["memory_type"] == "discrete"
+        assert profile["vram_min_gb"] == 7.5
+        assert profile["vram_max_gb"] == 8.5
+        assert profile["system_ram_min_gb"] == 31
+        assert profile["context_length"] == HERMES_CONTEXT_FLOOR
+        assert profile["estimated_required_gb"] == required_gb
+        assert profile["env"]["LLAMA_PARALLEL"] == "1"
+        assert profile["env"]["LLAMA_ARG_FLASH_ATTN"] == "on"
+        assert profile["env"]["LLAMA_ARG_CACHE_TYPE_K"] == cache_type
+        assert profile["env"]["LLAMA_ARG_CACHE_TYPE_V"] == cache_type
 
 
 def test_granite31_requires_global_perplexica_revalidation_after_strixy_failure():

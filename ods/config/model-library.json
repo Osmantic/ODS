@@ -76,6 +76,27 @@
           "evidence": "fleet-test/runs/2026-07-16T11-44-05Z-release-affected-product-d11ef611-harness-a7745b8-windows-pair/model-ui/cycle-002/windows-laptop"
         }
       },
+      "runtime_profiles": [
+        {
+          "id": "nvidia-8gb-64k-q4-kv",
+          "label": "NVIDIA 8GB 64K context with Q4 KV cache",
+          "backend": "nvidia",
+          "host_arch": ["amd64"],
+          "memory_type": "discrete",
+          "vram_min_gb": 7.5,
+          "vram_max_gb": 8.5,
+          "system_ram_min_gb": 31,
+          "context_length": 65536,
+          "estimated_required_gb": 7.2,
+          "fit_label": "64K 8GB Q4 KV profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q4_0"
+          }
+        }
+      ],
       "install_recommendation": false
     },
     {
@@ -272,6 +293,16 @@
           "recordedAt": "2026-07-24T02:40:33Z",
           "productSha": "58944ba461fb87b87b1ce6fa854e32d15aeb8efa",
           "harnessSha": "b838abf5a87b32c3f7ab8eaef43ea97133fb43d9"
+        },
+        "perplexica": {
+          "status": "unsupported_until_revalidated",
+          "label": "Perplexica revalidation required",
+          "reason": "A fresh exact-commit release run loaded SmolLM3 on all six in-scope hosts. It passed every required app on tower2 and strixy, but Perplexica returned unrelated prose instead of its requested challenge token on strix-halo through Lemonade, spark through Linux llama-server, m5-mbp through Apple llama-server, and windows-laptop through Windows llama-server; those four hosts still passed challenge-bound ODS Talk and every other deployed required LLM consumer, with route evidence naming the exact SmolLM3 runtime. Because the semantic failure spans four hosts and multiple platforms/backends without a stable runtime scope, keep SmolLM3 out of all-app release coverage until Perplexica compatibility is revalidated.",
+          "evidence": "fleet-test/runs/2026-07-24T02-46-53Z-release-product-faaf5af99c89-harness-b838abf5a87b-hosts-six-scope-6cycle-switchboard/model-ui/cycle-003/tower2; fleet-test/runs/2026-07-24T02-46-53Z-release-product-faaf5af99c89-harness-b838abf5a87b-hosts-six-scope-6cycle-switchboard/model-ui/cycle-003/strix-halo; fleet-test/runs/2026-07-24T02-46-53Z-release-product-faaf5af99c89-harness-b838abf5a87b-hosts-six-scope-6cycle-switchboard/model-ui/cycle-003/spark; fleet-test/runs/2026-07-24T02-46-53Z-release-product-faaf5af99c89-harness-b838abf5a87b-hosts-six-scope-6cycle-switchboard/model-ui/cycle-003/m5-mbp; fleet-test/runs/2026-07-24T02-46-53Z-release-product-faaf5af99c89-harness-b838abf5a87b-hosts-six-scope-6cycle-switchboard/model-ui/cycle-003/windows-laptop; fleet-test/runs/2026-07-24T02-46-53Z-release-product-faaf5af99c89-harness-b838abf5a87b-hosts-six-scope-6cycle-switchboard/model-ui/cycle-003/strixy",
+          "recordedAt": "2026-07-24T04:23:49Z",
+          "productSha": "faaf5af99c89e38cc43f18239ea94747f62bf16b",
+          "harnessSha": "b838abf5a87b32c3f7ab8eaef43ea97133fb43d9",
+          "expiresAt": "2026-08-24T00:00:00Z"
         }
       },
       "install_recommendation": false
@@ -872,6 +903,27 @@
           "expiresAt": "2026-08-24T00:00:00Z"
         }
       },
+      "runtime_profiles": [
+        {
+          "id": "nvidia-8gb-64k-q8-kv",
+          "label": "NVIDIA 8GB 64K context with Q8 KV cache",
+          "backend": "nvidia",
+          "host_arch": ["amd64"],
+          "memory_type": "discrete",
+          "vram_min_gb": 7.5,
+          "vram_max_gb": 8.5,
+          "system_ram_min_gb": 31,
+          "context_length": 65536,
+          "estimated_required_gb": 7.6,
+          "fit_label": "64K 8GB Q8 KV profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0"
+          }
+        }
+      ],
       "install_recommendation": false
     },
     {
@@ -891,6 +943,19 @@
       "tokens_per_sec_estimate": 105,
       "llm_model_name": "qwen3-4b-128k",
       "llama_server_image": null,
+      "app_compatibility": {
+        "hermes_talk": {
+          "status": "unsupported_until_revalidated",
+          "label": "ODS Talk revalidation required on M5 and Windows",
+          "reason": "A fresh exact-commit release run loaded Qwen3 4B 128K through Apple llama-server on m5-mbp and Windows llama-server on windows-laptop. On M5, ODS Talk's final user-facing reply contained only a generated .MEDIA audio marker and omitted the required challenge text; on Windows, the exact model loaded and routed correctly but Talk did not finish within the enforced 180-second inference limit. Keep this model out of M5 and Windows Talk/all-app release coverage until both response paths are revalidated.",
+          "evidence": "fleet-test/runs/2026-07-24T02-46-53Z-release-product-faaf5af99c89-harness-b838abf5a87b-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/m5-mbp; fleet-test/runs/2026-07-24T02-46-53Z-release-product-faaf5af99c89-harness-b838abf5a87b-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/windows-laptop",
+          "recordedAt": "2026-07-24T05:25:20Z",
+          "productSha": "faaf5af99c89e38cc43f18239ea94747f62bf16b",
+          "harnessSha": "b838abf5a87b32c3f7ab8eaef43ea97133fb43d9",
+          "hostScope": ["m5-mbp", "windows-laptop"],
+          "expiresAt": "2026-08-24T00:00:00Z"
+        }
+      },
       "install_recommendation": false
     },
     {
