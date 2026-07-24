@@ -396,6 +396,12 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
                 host_status = await request_agent_json("GET", "/v1/llm/status", timeout=6)
                 stats = host_status.get("stats")
             else:
+                if "llama-server" not in SERVICES:
+                    return {
+                        "tokens_per_second": 0,
+                        "lifetime_tokens": 0,
+                        "token_count_mode": "unavailable",
+                    }
                 host = SERVICES["llama-server"]["host"]
                 port = SERVICES["llama-server"]["port"]
                 client = await _get_httpx_client()
@@ -435,6 +441,13 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
                 # polling cannot truthfully construct a lifetime total.
                 "lifetime_tokens": output_tokens,
                 "token_count_mode": "latest_completion",
+            }
+
+        if "llama-server" not in SERVICES:
+            return {
+                "tokens_per_second": 0,
+                "lifetime_tokens": _get_lifetime_tokens(),
+                "token_count_mode": "cumulative",
             }
 
         host = SERVICES["llama-server"]["host"]
@@ -497,7 +510,7 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
             "lifetime_tokens": lifetime,
             "token_count_mode": "cumulative",
         }
-    except (AgentClientError, httpx.HTTPError, httpx.TimeoutException, OSError, ValueError) as e:
+    except (AgentClientError, httpx.HTTPError, httpx.TimeoutException, OSError, ValueError, KeyError) as e:
         logger.warning("get_llama_metrics failed: %s: %s", type(e).__name__, e)
         if LLM_BACKEND == "lemonade":
             return {
@@ -514,6 +527,8 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
 
 async def get_loaded_model() -> Optional[str]:
     """Query llama-server for actually loaded model name."""
+    if "llama-server" not in SERVICES:
+        return None
     try:
         host = SERVICES["llama-server"]["host"]
         port = SERVICES["llama-server"]["port"]
@@ -536,7 +551,7 @@ async def get_loaded_model() -> Optional[str]:
                 return m.get("id")
         if models:
             return models[0].get("id")
-    except (httpx.HTTPError, httpx.TimeoutException, ValueError) as e:
+    except (httpx.HTTPError, httpx.TimeoutException, ValueError, KeyError) as e:
         logger.debug("get_loaded_model failed: %s", e)
     return None
 
@@ -547,6 +562,8 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
     Accepts an optional *model_hint* to skip the redundant
     ``get_loaded_model()`` call when the caller already has it.
     """
+    if "llama-server" not in SERVICES:
+        return None
     try:
         host = SERVICES["llama-server"]["host"]
         port = SERVICES["llama-server"]["port"]
@@ -558,7 +575,7 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
         resp = await client.get(url)
         n_ctx = resp.json().get("default_generation_settings", {}).get("n_ctx")
         return int(n_ctx) if n_ctx else None
-    except (httpx.HTTPError, httpx.TimeoutException, ValueError) as e:
+    except (httpx.HTTPError, httpx.TimeoutException, ValueError, KeyError) as e:
         logger.debug("get_llama_context_size failed: %s", e)
         return None
 
