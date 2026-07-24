@@ -623,8 +623,48 @@ async def check_service_health(
             return await _check_tailscale_health(service_id, config)
         return _service_status_from_config(service_id, config, "not_deployed")
 
+    health_type = config.get("health_type", "http")
+
+    # health_type=none: skip health check (CLI tools, one-shot containers)
+    if health_type == "none":
+        return ServiceStatus(
+            id=service_id, name=config["name"], port=config["port"],
+            external_port=config.get("external_port", config["port"]),
+            status="not_applicable", response_time_ms=None,
+        )
+
     host = config.get('host', 'localhost')
     health_port = config.get('health_port', config['port'])
+    # Use health_timeout from manifest, falling back to the per-call override,
+    # then to the default 5s. This keeps dashboard TCP probes aligned with
+    # the shell health check which uses SERVICE_HEALTH_TIMEOUTS.
+    health_timeout = config.get('health_timeout', timeout if timeout is not None else 5.0)
+
+    # health_type=tcp: check port is open (Wyoming, raw TCP services)
+    if health_type == "tcp":
+        status = "unknown"
+        try:
+            loop = asyncio.get_event_loop()
+            start = loop.time()
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, health_port),
+                timeout=health_timeout,
+            )
+            writer.close()
+            await writer.wait_closed()
+            response_time = (loop.time() - start) * 1000
+            status = "healthy"
+        except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
+            status = "down"
+            response_time = None
+
+        return ServiceStatus(
+            id=service_id, name=config["name"], port=config["port"],
+            external_port=config.get("external_port", config["port"]),
+            status=status, response_time_ms=round(response_time, 1) if response_time else None,
+        )
+
+    # health_type=http (default): current HTTP behavior
     url = f"http://{host}:{health_port}{config['health']}"
     status = "unknown"
     response_time = None

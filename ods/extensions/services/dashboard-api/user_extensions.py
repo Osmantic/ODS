@@ -80,11 +80,21 @@ def scan_user_extension_services(
             name = svc.get("name", service_id)
 
             # Host = service_id (Docker DNS). Never trust manifest host_env/default_host.
+            health_type = svc.get("health_type", "http")
+
+            if health_type not in ("http", "tcp", "none"):
+                logger.warning(
+                    "Rejected invalid health_type for %s: %r", service_id, health_type,
+                )
+                continue
+
             services[service_id] = {
                 "host": service_id,
                 "port": int(port),
                 "external_port": int(svc.get("external_port_default", port)),
                 "health": health,
+                "health_type": health_type,
+                "health_timeout": int(svc.get("health_timeout", 5)),
                 "name": name,
                 # Optional: extensions whose health endpoint lives on a
                 # secondary port (e.g. milvus 9091) need an explicit

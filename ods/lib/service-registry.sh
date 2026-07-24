@@ -32,6 +32,7 @@ declare -A SERVICE_COMPOSE      # service_id → compose file path
 declare -A SERVICE_CATEGORIES   # service_id → core|recommended|optional
 declare -A SERVICE_DEPENDS      # service_id → space-separated dependency IDs
 declare -A SERVICE_HEALTH       # service_id → health endpoint path
+declare -A SERVICE_HEALTH_TYPE   # service_id → http|tcp|none (default: http)
 declare -A SERVICE_HEALTH_TIMEOUTS  # service_id → health check timeout in seconds
 declare -A SERVICE_STARTUP_CHECKS # service_id → "true" unless manifest sets startup_check: false
 declare -A SERVICE_PORTS        # service_id → external port (what the user hits on localhost)
@@ -184,12 +185,14 @@ for service_dir in _all_service_dirs:
         print(f'SERVICE_CATEGORIES["{_esc(sid)}"]="{_esc(category)}"')
         print(f'SERVICE_DEPENDS["{_esc(sid)}"]="{_esc(" ".join(str(d) for d in depends))}"')
         health = s.get("health", "/health")
+        health_type = s.get("health_type", "http")
         health_timeout = s.get("health_timeout", 5)  # Default 5 seconds
         startup_check = "false" if s.get("startup_check") is False else "true"
         port = s.get("external_port_default", s.get("port", 0))
         port_env = s.get("external_port_env", "")
         host_network = "1" if s.get("host_network") else ""
         print(f'SERVICE_HEALTH["{_esc(sid)}"]="{_esc(health)}"')
+        print(f'SERVICE_HEALTH_TYPE["{_esc(sid)}"]="{_esc(health_type)}"')
         print(f'SERVICE_HEALTH_TIMEOUTS["{_esc(sid)}"]="{_esc(health_timeout)}"')
         print(f'SERVICE_STARTUP_CHECKS["{_esc(sid)}"]="{startup_check}"')
         print(f'SERVICE_PORTS["{_esc(sid)}"]="{_esc(port)}"')

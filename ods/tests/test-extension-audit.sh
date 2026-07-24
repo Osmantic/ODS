@@ -185,6 +185,107 @@ service:
 EOF
 }
 
+# Health type: tcp (Wyoming-style TCP service, no HTTP health path)
+service_health_type_tcp() {
+    local dir="$1"
+    local sid
+    sid=$(basename "$dir")
+    cat > "$dir/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+
+service:
+  id: SERVICE_ID
+  name: tcp-test
+  container_name: ods-tcp-test
+  port: 10200
+  external_port_default: 10200
+  health: ""
+  health_type: tcp
+  compose_file: compose.yaml
+  type: docker
+  gpu_backends: [amd, nvidia]
+  category: optional
+  depends_on: []
+EOF
+    sed -i "s/SERVICE_ID/$sid/" "$dir/manifest.yaml"
+    cat > "$dir/compose.yaml" <<'EOF'
+services:
+  SERVICE_NAME:
+    image: example/test:latest
+    container_name: ods-tcp-test
+    ports:
+      - "10200:10200"
+EOF
+    sed -i "s/SERVICE_NAME/$sid/" "$dir/compose.yaml"
+}
+
+# Health type: none (CLI tool, no server to check)
+service_health_type_none() {
+    local dir="$1"
+    local sid
+    sid=$(basename "$dir")
+    cat > "$dir/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+
+service:
+  id: SERVICE_ID
+  name: none-test
+  container_name: ods-none-test
+  port: 0
+  external_port_default: 0
+  health: ""
+  health_type: none
+  startup_check: false
+  compose_file: compose.yaml
+  type: docker
+  gpu_backends: [amd, nvidia]
+  category: optional
+  depends_on: []
+EOF
+    sed -i "s/SERVICE_ID/$sid/" "$dir/manifest.yaml"
+    cat > "$dir/compose.yaml" <<'EOF'
+services:
+  SERVICE_NAME:
+    image: example/test:latest
+    container_name: ods-none-test
+EOF
+    sed -i "s/SERVICE_NAME/$sid/" "$dir/compose.yaml"
+}
+
+# Health type: invalid enum value — should fail audit
+service_health_type_invalid() {
+    local dir="$1"
+    local sid
+    sid=$(basename "$dir")
+    cat > "$dir/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+
+service:
+  id: SERVICE_ID
+  name: invalid-test
+  container_name: ods-invalid-test
+  port: 8080
+  external_port_default: 8080
+  health: /health
+  health_type: invalid_value
+  compose_file: compose.yaml
+  type: docker
+  gpu_backends: [amd, nvidia]
+  category: optional
+  depends_on: []
+EOF
+    sed -i "s/SERVICE_ID/$sid/" "$dir/manifest.yaml"
+    cat > "$dir/compose.yaml" <<'EOF'
+services:
+  SERVICE_NAME:
+    image: example/test:latest
+    container_name: ods-invalid-test
+    ports:
+      - "8080:8080"
+EOF
+    sed -i "s/SERVICE_NAME/$sid/" "$dir/compose.yaml"
+}
+
 create_valid_project() {
     local root="$1"
     write_service "$root" "llama-server" service_core_llm
@@ -362,6 +463,44 @@ if run_audit "$root7" --json > "$report7" 2>/dev/null; then
     pass "external_port_default=0 fixture audits successfully"
 else
     fail "external_port_default=0 should be allowed for internal-only services"
+fi
+
+header "8" "Health Type Enum Validation"
+
+# Health type: tcp — should pass cleanly
+root8=$(make_fixture_root)
+trap 'rm -rf "${root8:-}" "${root9:-}" "${root10:-}"' EXIT
+write_service "$root8" "tcp-service" service_health_type_tcp
+report8=$(mktemp)
+if run_audit "$root8" --json > "$report8" 2>/dev/null; then
+    pass "health_type=tcp passes audit"
+else
+    fail "health_type=tcp should pass cleanly"
+fi
+
+# Health type: none — should pass cleanly
+root9=$(make_fixture_root)
+write_service "$root9" "cli-service" service_health_type_none
+report9=$(mktemp)
+if run_audit "$root9" --json > "$report9" 2>/dev/null; then
+    pass "health_type=none passes audit"
+else
+    fail "health_type=none should pass cleanly"
+fi
+
+# Health type: invalid value — should fail with correct error code
+root10=$(make_fixture_root)
+write_service "$root10" "bad-service" service_health_type_invalid
+report10=$(mktemp)
+if run_audit "$root10" --json > "$report10" 2>/dev/null; then
+    fail "health_type=invalid_value should fail audit"
+else
+    pass "health_type=invalid_value fails audit"
+fi
+if assert_json_value "$report10" "any(issue['code'] == 'service-health-type-invalid' for svc in payload['services'] for issue in svc['issues'])" >/dev/null; then
+    pass "invalid health_type reports service-health-type-invalid code"
+else
+    fail "invalid health_type code was not reported"
 fi
 
 echo ""
