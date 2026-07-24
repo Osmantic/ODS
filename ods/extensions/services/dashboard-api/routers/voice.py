@@ -11,13 +11,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["voice"])
 
 
+def _extract_status(result: any) -> str:
+    if hasattr(result, "status"):
+        return str(result.status)
+    if isinstance(result, dict) and "status" in result:
+        return str(result["status"])
+    return "unavailable"
+
+
 @router.get("/api/voice/status")
 async def voice_status(api_key: str = Depends(verify_api_key)):
-    """Return voice services availability status.
-
-    Stub implementation — returns service health based on the existing
-    service health infrastructure. Full voice API is not yet implemented.
-    """
+    """Return voice services availability status."""
     from helpers import check_service_health
     from config import SERVICES
 
@@ -27,7 +31,7 @@ async def voice_status(api_key: str = Depends(verify_api_key)):
         if cfg:
             try:
                 result = await check_service_health(svc_key, cfg)
-                services_status[display_name] = {"status": result.status}
+                services_status[display_name] = {"status": _extract_status(result)}
             except Exception:
                 logger.warning("Health check failed for %s", svc_key, exc_info=True)
                 services_status[display_name] = {"status": "unavailable"}
@@ -39,7 +43,7 @@ async def voice_status(api_key: str = Depends(verify_api_key)):
     if livekit_cfg:
         try:
             result = await check_service_health("livekit", livekit_cfg)
-            services_status["livekit"] = {"status": result.status}
+            services_status["livekit"] = {"status": _extract_status(result)}
         except Exception:
             logger.warning("Health check failed for livekit", exc_info=True)
             services_status["livekit"] = {"status": "unavailable"}
