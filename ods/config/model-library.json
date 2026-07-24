@@ -71,9 +71,15 @@
       "llama_server_image": null,
       "app_compatibility": {
         "openai_chat": {
-          "status": "unsupported_until_revalidated",
-          "reason": "Fleet model-UI run 2026-07-16T11-44Z on windows-laptop downloaded this model with a valid SHA, but llama.cpp never reported the requested Phi-3.5 runtime identity during activation; keep it out of direct-chat and release switch coverage until revalidated.",
-          "evidence": "fleet-test/runs/2026-07-16T11-44-05Z-release-affected-product-d11ef611-harness-a7745b8-windows-pair/model-ui/cycle-002/windows-laptop"
+          "status": "unknown",
+          "label": "Windows app revalidation in progress",
+          "reason": "The prior Windows activation verdict predates the NVIDIA 8GB 64K Q4-KV runtime profile. A fresh exact-commit run downloaded and verified Phi-3.5 Mini, but the stale unsupported record prevented the Models UI from offering Run; keep direct-chat compatibility unclaimed until the new profile completes the required app probes.",
+          "evidence": "fleet-test/runs/2026-07-24T06-38-00Z-windows-profile-candidates-route-validation/cycle-002/windows-laptop",
+          "recordedAt": "2026-07-24T06:51:00Z",
+          "productSha": "969c463f0b17251f3d373c7ae48859287023d0d3",
+          "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-08-24T00:00:00Z"
         }
       },
       "runtime_profiles": [
@@ -892,13 +898,13 @@
       "llama_server_image": null,
       "app_compatibility": {
         "agent_viability": {
-          "status": "not_agent_viable",
-          "label": "Agent viability revalidation required",
-          "reason": "A fresh release-grade fleet model-UI run loaded and passed this model through all required apps on tower2, strix-halo, spark, m5-mbp, and strixy. On windows-laptop, the browser-triggered load returned 502 after llama-server metrics stayed unavailable, the product rolled back to the baseline model, and the UI timed out with Qwen3 4B Instruct still downloaded rather than loaded. Keep this model out of Windows agent-required release coverage until activation is revalidated.",
-          "evidence": "fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-004/windows-laptop; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/tower2; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/strix-halo; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/spark; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/m5-mbp; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/strixy",
-          "recordedAt": "2026-07-24T00:26:53Z",
-          "productSha": "cf6dffb8e8bbf60f418caeab47d7ae3ef8815307",
-          "harnessSha": "47eedd6c0b40908272ad6ba324868f4acec2f308",
+          "status": "unknown",
+          "label": "Windows app revalidation in progress",
+          "reason": "Fresh exact-commit Windows validation loaded Qwen3 4B Instruct successfully with the NVIDIA 8GB 64K runtime profile and served challenge-bound direct completions. The prior activation failure is no longer reproducible; keep agent viability unclaimed until the same run can exercise ODS Talk and all required app routes.",
+          "evidence": "fleet-test/runs/2026-07-24T06-38-00Z-windows-profile-candidates-route-validation/cycle-001/windows-laptop",
+          "recordedAt": "2026-07-24T06:49:26Z",
+          "productSha": "969c463f0b17251f3d373c7ae48859287023d0d3",
+          "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
           "hostScope": ["windows-laptop"],
           "expiresAt": "2026-08-24T00:00:00Z"
         }
