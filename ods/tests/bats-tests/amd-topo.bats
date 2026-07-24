@@ -49,6 +49,69 @@ setup() {
     assert_output "unified"
 }
 
+# Regression: GTT is *system* memory the GPU may map (~half of host RAM), so a
+# discrete card on a large-RAM host reports a large GTT too. Before the vendor
+# check, `gtt >= 32` branded every discrete AMD GPU on a >=64GB host "unified"
+# (observed: 2x Radeon AI PRO R9700, 31GB VRAM, GTT 61GB on a 123GB host).
+@test "amd_memory_type: real VRAM vendor keeps discrete card discrete despite large GTT" {
+    run amd_memory_type $((31 * 1073741824)) $((61 * 1073741824)) "samsung"
+    assert_success
+    assert_output "discrete"
+}
+
+@test "amd_memory_type: no vendor + large GTT still resolves unified (Strix Halo fallback)" {
+    # A real unified-memory APU reports no dedicated-VRAM vendor; the GTT
+    # heuristics must keep resolving it to unified, including a large VRAM carve-out.
+    run amd_memory_type $((48 * 1073741824)) $((96 * 1073741824)) ""
+    assert_success
+    assert_output "unified"
+}
+
+@test "amd_memory_type: vendor 'unknown' falls through to GTT heuristics" {
+    run amd_memory_type $((8 * 1073741824)) $((96 * 1073741824)) "unknown"
+    assert_success
+    assert_output "unified"
+}
+
+@test "amd_memory_type: vendor 'N/A' falls through to GTT heuristics" {
+    run amd_memory_type $((8 * 1073741824)) $((96 * 1073741824)) "N/A"
+    assert_success
+    assert_output "unified"
+}
+
+@test "detect_amd_topo: mem_info_vram_vendor drives memory_type per card" {
+    local drm="$BATS_TEST_TMPDIR/sys/class/drm"
+
+    # card0: discrete card on a large-RAM host — big GTT, but a real VRAM vendor
+    local card_dir="$drm/card0/device"
+    mkdir -p "$card_dir"
+    echo "0x1002" > "$card_dir/vendor"
+    echo "0x7551" > "$card_dir/device"
+    echo "$((31 * 1073741824))" > "$card_dir/mem_info_vram_total"
+    echo "$((61 * 1073741824))" > "$card_dir/mem_info_gtt_total"
+    echo "samsung" > "$card_dir/mem_info_vram_vendor"
+    echo "Discrete card" > "$card_dir/product_name"
+
+    # card1: APU — no vendor file, big GTT
+    card_dir="$drm/card1/device"
+    mkdir -p "$card_dir"
+    echo "0x1002" > "$card_dir/vendor"
+    echo "0x13c0" > "$card_dir/device"
+    echo "$((2 * 1073741824))" > "$card_dir/mem_info_vram_total"
+    echo "$((61 * 1073741824))" > "$card_dir/mem_info_gtt_total"
+    echo "Display iGPU" > "$card_dir/product_name"
+
+    amd-smi() { return 1; }
+    rocm-smi() { return 1; }
+    rocminfo() { return 1; }
+    export ODS_DRM_SYS="$drm"
+
+    local output types
+    output=$(detect_amd_topo)
+    types=$(echo "$output" | jq -r '.gpus[].memory_type' | paste -sd ',' -)
+    assert_equal "$types" "discrete,unified"
+}
+
 @test "detect_amd_topo: emits GPUs in numeric DRM card order" {
     local drm="$BATS_TEST_TMPDIR/sys/class/drm"
     local card

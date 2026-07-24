@@ -629,3 +629,39 @@ class TestParallelismModeSelection:
     def test_mem_util_pipeline_is_095(self):
         _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_4gpus_soc.json"), 100000)
         assert parallelism(out)["gpu_memory_utilization"] == 0.95
+
+
+# ── AMD: display iGPU alongside discrete cards ────────────────────────────────
+
+class TestDiscreteWithDisplayIgpu:
+    """
+    A desktop AMD box exposes a display iGPU (Raphael gfx1036, 2GB) next to the real
+    compute cards. It is a GPU by every structural test, so it used to land in the
+    assignable pool: llama_server took both discrete cards, leaving `remaining == 1`,
+    and whisper + comfyui + embeddings were all pinned to the display iGPU — which has
+    no meaningful compute and shares system RAM.
+    """
+    TOPO = fixture_path("amd_2_discrete_plus_display_igpu.json")
+    IGPU_UUID = "00ff13c0-0000-1000-8000-000000000000"
+    DGPU_UUIDS = {
+        "99ff7551-0000-1000-80e9-5af35d2fae9c",
+        "43ff7551-0000-1000-8099-fbcfe5fc05fd",
+    }
+
+    def test_no_service_is_assigned_to_the_display_igpu(self):
+        _, out, _ = run(self.TOPO, 20000)
+        assert self.IGPU_UUID not in all_assigned_uuids(out)
+
+    def test_every_assignment_lands_on_a_discrete_gpu(self):
+        _, out, _ = run(self.TOPO, 20000)
+        assert all_assigned_uuids(out) <= self.DGPU_UUIDS
+
+    def test_llama_uses_both_discrete_gpus(self):
+        _, out, _ = run(self.TOPO, 40000)
+        assert set(llama(out)["gpus"]) == self.DGPU_UUIDS
+
+    def test_igpu_is_not_counted_toward_model_capacity(self):
+        # 60GB model fits the two 31.9GB cards only if the 2GB iGPU is excluded from
+        # the pool but the pair is still used; it must never be padded with the iGPU.
+        _, out, _ = run(self.TOPO, 60000)
+        assert self.IGPU_UUID not in all_assigned_uuids(out)

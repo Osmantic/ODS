@@ -191,7 +191,7 @@ Rule: 2x your model size minimum
 ## What NOT to Buy
 
 ❌ **GTX 16xx/10xx** — No FP16 tensor cores
-❌ **AMD discrete GPUs (RX 7900 etc.)** — ROCm support limited; AMD Strix Halo APUs are fully supported (see README)
+⚠️ **AMD discrete GPUs** — supported via the ROCm path and scheduled like any discrete card (validated end-to-end on Radeon AI PRO R9700 / RDNA4); consumer cards (RX 7900 etc.) are not yet benchmarked. AMD Strix Halo APUs are fully supported (see README)
 ❌ **Intel Arc** — Driver problems, limited support
 ❌ **Cloud GPUs (H100/A100)** — Can't buy, rental only
 ⚠️ **8GB cards** — Limited to smaller models (2B-7B) but functional with Tier 0
