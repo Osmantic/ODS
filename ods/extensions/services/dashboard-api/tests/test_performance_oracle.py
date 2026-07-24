@@ -1301,3 +1301,12 @@ def test_published_exact_matches_gguf_stem_identity(data_dir):
     assert perf["source"] == "published_exact"
     assert perf["tokensPerSec"] == 43.7
     assert perf["sourceUrl"] == "https://example.test/stem-bench"
+
+
+def test_read_env_file_value_handles_leading_whitespace_and_matched_quotes(tmp_path):
+    from performance_oracle import read_env_file_value
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("  KEY=\"'quoted_val'\"\n", encoding="utf-8")
+
+    assert read_env_file_value("KEY", tmp_path) == "'quoted_val'"
