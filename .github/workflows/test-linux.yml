@@ -137,6 +137,7 @@ jobs:
       - name: Installer Contract Checks
         run: |
           bash tests/contracts/test-installer-contracts.sh
+          bash tests/test-phase03-multigpu-tty.sh
           bash tests/contracts/test-preflight-fixtures.sh
           bash tests/test-preflight-resolver-bug.sh
           python3 tests/contracts/test-network-exposure-contracts.py
