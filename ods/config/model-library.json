@@ -248,7 +248,7 @@
       "size_bytes": 1915306528,
       "size_mb": 1915,
       "vram_required_gb": 4,
-      "context_length": 128000,
+      "context_length": 65536,
       "quantization": "Q4_K_M",
       "specialty": "Chat",
       "description": "Hugging Face's small multilingual long-context instruct model. Candidate low-VRAM agent model pending fleet validation.",
@@ -437,6 +437,17 @@
       "llm_model_name": "granite-4.1-3b",
       "llama_server_image": null,
       "app_compatibility": {
+        "opencode": {
+          "status": "unsupported_until_revalidated",
+          "label": "OpenCode revalidation required",
+          "reason": "A fresh release-grade fleet model-UI run loaded Granite 4.1 3B on tower2, strix-halo, spark, m5-mbp, and strixy. Tower2, Spark, M5, and Strixy passed OpenCode, while strix-halo routed correctly through Lemonade but OpenCode received only the first character of the requested verification phrase. Keep this model out of all-app release coverage on strix-halo until the Lemonade/OpenCode path is revalidated.",
+          "evidence": "fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-004/tower2; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-004/strix-halo; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-004/spark; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-004/m5-mbp; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-004/strixy",
+          "recordedAt": "2026-07-23T23:10:16Z",
+          "productSha": "cf6dffb8e8bbf60f418caeab47d7ae3ef8815307",
+          "harnessSha": "47eedd6c0b40908272ad6ba324868f4acec2f308",
+          "hostScope": ["strix-halo"],
+          "expiresAt": "2026-08-23T00:00:00Z"
+        },
         "hermes_talk": {
           "status": "unsupported_until_revalidated",
           "reason": "Fleet model-UI run 2026-07-22T08:31Z on windows-laptop loaded Granite 4.1 3B and ODS Talk accepted the stream request, but the browser stayed in the Thinking state until the 180s inference timeout while dashboard-api reported repeated llama metrics read timeouts.",
@@ -548,6 +559,17 @@
           "status": "verified",
           "reason": "Targeted windows-laptop repro on 2026-07-20 loaded granite3.2-2b-instruct-q4 and the OpenAI-compatible chat API returned the requested verification phrase, but measured only 0.73 tok/s.",
           "evidence": "fleet-test/runs/2026-07-20T14-47-35Z-release-product-6b802d2d34a5-harness-d205823ca1d4-hosts-windows-laptop/model-ui/cycle-004/windows-laptop plus targeted repro at 2026-07-20T16:13Z"
+        },
+        "perplexica": {
+          "status": "unsupported_until_revalidated",
+          "label": "Perplexica revalidation required",
+          "reason": "A fresh release-grade fleet model-UI run loaded this model on tower2, strix-halo, spark, m5-mbp, and strixy. Strix Halo, Spark, and Strixy passed Perplexica, while Tower2 and M5 passed ODS Talk, LiteLLM, Open WebUI, and OpenCode but Perplexica did not return the requested verification phrase. Keep this model out of all-app release coverage on tower2 and m5-mbp until that path is revalidated.",
+          "evidence": "fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/tower2; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/strix-halo; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/spark; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/m5-mbp; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/strixy",
+          "recordedAt": "2026-07-23T23:04:18Z",
+          "productSha": "cf6dffb8e8bbf60f418caeab47d7ae3ef8815307",
+          "harnessSha": "47eedd6c0b40908272ad6ba324868f4acec2f308",
+          "hostScope": ["tower2", "m5-mbp"],
+          "expiresAt": "2026-08-23T00:00:00Z"
         },
         "hermes_talk": {
           "status": "unsupported_until_revalidated",
@@ -830,6 +852,19 @@
       "tokens_per_sec_estimate": 105,
       "llm_model_name": "qwen3-4b-instruct-2507",
       "llama_server_image": null,
+      "app_compatibility": {
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "label": "Agent viability revalidation required",
+          "reason": "A fresh release-grade fleet model-UI run loaded and passed this model through all required apps on tower2, strix-halo, spark, m5-mbp, and strixy. On windows-laptop, the browser-triggered load returned 502 after llama-server metrics stayed unavailable, the product rolled back to the baseline model, and the UI timed out with Qwen3 4B Instruct still downloaded rather than loaded. Keep this model out of Windows agent-required release coverage until activation is revalidated.",
+          "evidence": "fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-004/windows-laptop; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/tower2; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/strix-halo; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/spark; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/m5-mbp; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/strixy",
+          "recordedAt": "2026-07-24T00:26:53Z",
+          "productSha": "cf6dffb8e8bbf60f418caeab47d7ae3ef8815307",
+          "harnessSha": "47eedd6c0b40908272ad6ba324868f4acec2f308",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-08-24T00:00:00Z"
+        }
+      },
       "install_recommendation": false
     },
     {
@@ -1185,7 +1220,7 @@
       "gguf_sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
       "size_mb": 5760,
       "vram_required_gb": 8,
-      "context_length": 65536,
+      "context_length": 128000,
       "quantization": "Q4_K_M",
       "specialty": "General",
       "description": "Excellent general-purpose model. Default for most systems. Great at coding, reasoning, and multilingual tasks.",

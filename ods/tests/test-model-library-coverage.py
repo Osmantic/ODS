@@ -47,14 +47,22 @@ def _has_runtime_scope(entry):
     )
 
 
-def _agent_viable_for_release(model):
+def _agent_viable_for_release(model, host=None):
     if str(model.get("source") or "").strip().lower() not in {"", "curated"}:
         return False
     compatibility = model.get("app_compatibility") or {}
     for entry in compatibility.values():
+        entry = entry or {}
         status = str((entry or {}).get("status") or "").strip().lower()
-        if status in BLOCKING_AGENT_STATUSES and not _has_runtime_scope(entry or {}):
-            return False
+        if status not in BLOCKING_AGENT_STATUSES or _has_runtime_scope(entry):
+            continue
+        host_scope = entry.get("hostScope") or entry.get("host_scope")
+        if host_scope:
+            scoped_hosts = {str(value).strip().lower() for value in host_scope}
+            if host is not None and str(host).strip().lower() in scoped_hosts:
+                return False
+            continue
+        return False
     return True
 
 
@@ -250,8 +258,10 @@ def test_granite33_2b_is_not_agent_viable_until_revalidated():
 def test_smollm3_3b_is_not_agent_viable_until_app_revalidated():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
-    compatibility = by_id["smollm3-3b-q4"]["app_compatibility"]
+    model = by_id["smollm3-3b-q4"]
+    compatibility = model["app_compatibility"]
 
+    assert model["context_length"] == 65536
     assert compatibility["openai_chat"]["status"] == "verified"
     assert "cycle-003" in compatibility["openai_chat"]["evidence"]
     assert compatibility["agent_viability"]["status"] == "not_agent_viable"
@@ -290,7 +300,8 @@ def test_granite4_h_1b_requires_perplexica_revalidation_after_m5_partial_reply()
     assert "m5-mbp" in compatibility["perplexica"]["reason"]
     assert "Perplexica" in compatibility["perplexica"]["reason"]
     assert "cycle-003" in compatibility["perplexica"]["evidence"]
-    assert not _agent_viable_for_release(model)
+    assert _agent_viable_for_release(model)
+    assert not _agent_viable_for_release(model, host="m5-mbp")
 
 
 def test_falcon_h1_15b_is_not_low_vram_agent_viable_after_opencode_failure():
@@ -322,7 +333,8 @@ def test_granite32_2b_is_direct_chat_only_after_windows_talk_timeout():
     assert "19,349-token Hermes prompt" in compatibility["agent_viability"]["reason"]
     assert compatibility["hermes_talk"]["status"] == "unsupported_until_revalidated"
     assert "cycle-004" in compatibility["hermes_talk"]["evidence"]
-    assert not _agent_viable_for_release(model)
+    assert _agent_viable_for_release(model)
+    assert not _agent_viable_for_release(model, host="windows-laptop")
 
 
 def test_granite4_h_350m_is_not_agent_viable_after_talk_probe_failure():
@@ -511,7 +523,8 @@ def test_qwen25_coder_15b_128k_is_not_talk_agent_viable_until_revalidated():
     assert "generic assistant prose" in compatibility["hermes_talk"]["reason"]
     assert "cycle-006" in compatibility["hermes_talk"]["evidence"]
     assert compatibility["agent_viability"]["status"] == "not_agent_viable"
-    assert not _agent_viable_for_release(model)
+    assert _agent_viable_for_release(model)
+    assert not _agent_viable_for_release(model, host="tower2")
 
 
 def test_mistral_nemo_talk_block_is_scoped_to_apple_llama_server():
