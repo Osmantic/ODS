@@ -180,9 +180,21 @@ function Set-WindowsODSLemonadeModelConfiguration {
     }
     Write-Utf8NoBom -Path $envPath -Content $envContent
 
+if (-not (Get-Command Strip-MatchedQuotePair -ErrorAction SilentlyContinue)) {
+    function Strip-MatchedQuotePair {
+        param([string]$Value)
+        if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+        $v = $Value.Trim()
+        if ($v.Length -ge 2 -and (($v.StartsWith('"') -and $v.EndsWith('"')) -or ($v.StartsWith("'") -and $v.EndsWith("'")))) {
+            return $v.Substring(1, $v.Length - 2)
+        }
+        return $v
+    }
+}
+
     if ([string]::IsNullOrWhiteSpace($Port)) {
         $portMatch = [regex]::Match($envContent, '(?m)^AMD_INFERENCE_PORT=([^\r\n]*)')
-        if ($portMatch.Success) { $Port = $portMatch.Groups[1].Value.Trim().Trim('"').Trim("'") }
+        if ($portMatch.Success) { $Port = Strip-MatchedQuotePair $portMatch.Groups[1].Value }
     }
     $parsedPort = 0
     if (-not [int]::TryParse($Port, [ref]$parsedPort) -or $parsedPort -lt 1 -or $parsedPort -gt 65535) {
@@ -191,7 +203,7 @@ function Set-WindowsODSLemonadeModelConfiguration {
 
     if ([string]::IsNullOrWhiteSpace($ApiKey)) {
         $keyMatch = [regex]::Match($envContent, '(?m)^LITELLM_LEMONADE_API_KEY=([^\r\n]*)')
-        if ($keyMatch.Success) { $ApiKey = $keyMatch.Groups[1].Value.Trim().Trim('"').Trim("'") }
+        if ($keyMatch.Success) { $ApiKey = Strip-MatchedQuotePair $keyMatch.Groups[1].Value }
     }
     if ([string]::IsNullOrWhiteSpace($ApiKey)) { $ApiKey = "not-needed" }
 

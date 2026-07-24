@@ -254,6 +254,36 @@ finally {
     Remove-Item -LiteralPath $envFixture -Force -ErrorAction SilentlyContinue
 }
 
+# --- Set-WindowsODSLemonadeModelConfiguration & Strip-MatchedQuotePair quote handling ---
+$lemonadeTestDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ods-lemonade-test-" + [System.IO.Path]::GetRandomFileName())
+New-Item -ItemType Directory -Path $lemonadeTestDir | Out-Null
+$lemonadeEnv = Join-Path $lemonadeTestDir ".env"
+@'
+AMD_INFERENCE_PORT="8085"
+LITELLM_LEMONADE_API_KEY="'secret-key'"
+'@ | Set-Content -LiteralPath $lemonadeEnv -Encoding Ascii
+
+try {
+    $res = Set-WindowsODSLemonadeModelConfiguration -InstallDir $lemonadeTestDir -ModelId "test-model"
+    $yamlContent = Get-Content -LiteralPath $res.LiteLlmConfigPath -Raw
+    if ($yamlContent -notmatch "api_base: http://127.0.0.1:8085/api/v1") {
+        throw "Set-WindowsODSLemonadeModelConfiguration failed to parse quoted AMD_INFERENCE_PORT"
+    }
+    if ($yamlContent -notmatch "api_key: 'secret-key'") {
+        throw "Set-WindowsODSLemonadeModelConfiguration failed to preserve inner quotes in LITELLM_LEMONADE_API_KEY"
+    }
+
+    # Verify Strip-MatchedQuotePair preservation cases
+    if ((Strip-MatchedQuotePair '"hello"') -ne "hello") { throw "Strip-MatchedQuotePair double quote fail" }
+    if ((Strip-MatchedQuotePair "'hello'") -ne "hello") { throw "Strip-MatchedQuotePair single quote fail" }
+    if ((Strip-MatchedQuotePair '"''literal''"') -ne "'literal'") { throw "Strip-MatchedQuotePair inner quote fail" }
+    if ((Strip-MatchedQuotePair 'trailing"') -ne 'trailing"') { throw "Strip-MatchedQuotePair mismatched quote fail" }
+
+    Write-Host "[PASS] Set-WindowsODSLemonadeModelConfiguration & Strip-MatchedQuotePair quote handling"
+} finally {
+    Remove-Item -LiteralPath $lemonadeTestDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "[PASS] Windows local LLM endpoint resolver"
 PS_EOF
 
