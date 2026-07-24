@@ -107,6 +107,86 @@ def test_post_never_retries_transport_failure(monkeypatch):
         client.close()
 
 
+def test_post_retries_connect_failure_before_request_is_sent(monkeypatch):
+    calls = 0
+    sleeps = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise httpx.ConnectError(
+                "[Errno 101] Network is unreachable", request=request
+            )
+        return httpx.Response(200, json={"status": "accepted"})
+
+    client = httpx.Client(base_url="http://agent", transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    monkeypatch.setattr(agent_client.time, "sleep", sleeps.append)
+    try:
+        result = agent_client.request_json(
+            "POST", "/v1/extension/install", payload={"service_id": "aider"}
+        )
+        assert result == {"status": "accepted"}
+        assert calls == 3
+        assert sleeps == list(agent_client._CONNECT_RETRY_DELAYS_SECONDS[:2])
+    finally:
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_post_retries_connect_failure_before_request_is_sent(monkeypatch):
+    calls = 0
+    sleeps = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectError(
+                "[Errno 101] Network is unreachable", request=request
+            )
+        return httpx.Response(200, json={"status": "accepted"})
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    client = httpx.AsyncClient(
+        base_url="http://agent", transport=httpx.MockTransport(handler)
+    )
+    monkeypatch.setattr(agent_client, "_async_client", client)
+    monkeypatch.setattr(agent_client.asyncio, "sleep", fake_sleep)
+    try:
+        result = await agent_client.async_request_json(
+            "POST", "/v1/model/download", payload={"model": "x"}
+        )
+        assert result == {"status": "accepted"}
+        assert calls == 2
+        assert sleeps == [agent_client._CONNECT_RETRY_DELAYS_SECONDS[0]]
+    finally:
+        await client.aclose()
+
+
+def test_post_does_not_retry_generic_connect_failure(monkeypatch):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = httpx.Client(base_url="http://agent", transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    try:
+        with pytest.raises(agent_client.AgentUnavailable):
+            agent_client.request_json(
+                "POST", "/v1/extension/install", payload={"service_id": "aider"}
+            )
+        assert calls == 1
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize(
     ("response", "error_type"),
     [

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import threading
+import time
 from typing import Any
 
 import httpx
@@ -52,6 +54,44 @@ _sync_client: httpx.Client | None = None
 _async_client: httpx.AsyncClient | None = None
 _sync_client_lock = threading.Lock()
 _async_client_lock = threading.Lock()
+
+# Docker Desktop can briefly withdraw the synthetic host.docker.internal route
+# while native model operations are changing container state.  A connect error
+# is safe to retry even for POST because no connection was established and no
+# request bytes reached the host agent.  Read/write/protocol failures remain
+# non-retryable for POST so model activations and extension operations cannot be
+# duplicated after the agent may have accepted them.
+_CONNECT_RETRY_DELAYS_SECONDS = (0.25, 1.0, 3.0, 6.0)
+_TRANSIENT_ROUTE_ERRNOS = {
+    errno.ENETUNREACH,
+    errno.EHOSTUNREACH,
+    10051,  # WSAENETUNREACH
+    10065,  # WSAEHOSTUNREACH
+}
+_TRANSIENT_ROUTE_MESSAGES = (
+    "network is unreachable",
+    "no route to host",
+)
+
+
+def _is_transient_route_connect_error(exc: BaseException) -> bool:
+    """Return True only for a pre-connect host-route withdrawal.
+
+    Connection refused, DNS errors, and generic mocked ConnectErrors still
+    fail immediately.  The bounded retry is reserved for Docker Desktop's
+    observed ENETUNREACH/EHOSTUNREACH route flap.
+    """
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, "errno", None) in _TRANSIENT_ROUTE_ERRNOS:
+            return True
+        message = str(current).casefold()
+        if any(token in message for token in _TRANSIENT_ROUTE_MESSAGES):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _headers() -> dict[str, str]:
@@ -147,8 +187,9 @@ def _sync_request(
     timeout: float,
 ) -> httpx.Response:
     method = method.upper()
-    attempts = 2 if method == "GET" else 1
-    for attempt in range(attempts):
+    stale_connection_retries = 1 if method == "GET" else 0
+    connect_retry_index = 0
+    while True:
         try:
             return _get_sync_client().request(
                 method,
@@ -159,13 +200,22 @@ def _sync_request(
             )
         except httpx.TimeoutException as exc:
             raise AgentTimeout(f"Host agent {method} {path} timed out") from exc
+        except httpx.ConnectError as exc:
+            if (
+                _is_transient_route_connect_error(exc)
+                and connect_retry_index < len(_CONNECT_RETRY_DELAYS_SECONDS)
+            ):
+                time.sleep(_CONNECT_RETRY_DELAYS_SECONDS[connect_retry_index])
+                connect_retry_index += 1
+                continue
+            raise AgentUnavailable(f"Host agent {method} {path} is unreachable: {exc}") from exc
         except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
-            if attempt + 1 < attempts:
+            if stale_connection_retries:
+                stale_connection_retries -= 1
                 continue
             raise AgentUnavailable(f"Host agent {method} {path} is unreachable: {exc}") from exc
         except httpx.RequestError as exc:
             raise AgentUnavailable(f"Host agent {method} {path} is unreachable: {exc}") from exc
-    raise AssertionError("unreachable")
 
 
 async def _async_request(
@@ -177,8 +227,9 @@ async def _async_request(
     timeout: float,
 ) -> httpx.Response:
     method = method.upper()
-    attempts = 2 if method == "GET" else 1
-    for attempt in range(attempts):
+    stale_connection_retries = 1 if method == "GET" else 0
+    connect_retry_index = 0
+    while True:
         try:
             client = await _get_async_client()
             return await client.request(
@@ -190,13 +241,22 @@ async def _async_request(
             )
         except httpx.TimeoutException as exc:
             raise AgentTimeout(f"Host agent {method} {path} timed out") from exc
+        except httpx.ConnectError as exc:
+            if (
+                _is_transient_route_connect_error(exc)
+                and connect_retry_index < len(_CONNECT_RETRY_DELAYS_SECONDS)
+            ):
+                await asyncio.sleep(_CONNECT_RETRY_DELAYS_SECONDS[connect_retry_index])
+                connect_retry_index += 1
+                continue
+            raise AgentUnavailable(f"Host agent {method} {path} is unreachable: {exc}") from exc
         except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
-            if attempt + 1 < attempts:
+            if stale_connection_retries:
+                stale_connection_retries -= 1
                 continue
             raise AgentUnavailable(f"Host agent {method} {path} is unreachable: {exc}") from exc
         except httpx.RequestError as exc:
             raise AgentUnavailable(f"Host agent {method} {path} is unreachable: {exc}") from exc
-    raise AssertionError("unreachable")
 
 
 def request_json(
