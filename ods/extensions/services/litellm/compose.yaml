@@ -13,9 +13,14 @@ services:
       - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
       - LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-false}
       - ODS_MODEL_SWITCHBOARD=${ODS_MODEL_SWITCHBOARD:-observe}
+      - TOKEN_SPY_URL=${TOKEN_SPY_URL:-http://token-spy:8080}
+      - TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY:-}
     volumes:
       - ./config/litellm/${ODS_MODE:-local}.yaml:/app/config.yaml:ro,z
       - ./config/litellm/switchboard.yaml:/app/switchboard.yaml:ro,z
+      # LiteLLM resolves custom callback modules relative to the generated
+      # /tmp/config.yaml, so the callback must be mounted alongside it.
+      - ./extensions/services/litellm/ods_token_spy_callback.py:/tmp/ods_token_spy_callback.py:ro,z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${LITELLM_PORT:-4000}:4000"
     entrypoint: ["/bin/sh", "-c"]
@@ -26,20 +31,28 @@ services:
           CONFIG_PATH=/app/switchboard.yaml
         fi
         export CONFIG_PATH
-        if [ "$$LANGFUSE_ENABLED" = "true" ]; then
-          python3 -c "
+        python3 -c "
         import os
         import yaml
         with open(os.environ['CONFIG_PATH']) as f:
             cfg = yaml.safe_load(f)
-        cfg.setdefault('litellm_settings', {})['success_callback'] = ['langfuse']
+        settings = cfg.setdefault('litellm_settings', {})
+        callbacks = settings.get('callbacks', [])
+        if not isinstance(callbacks, list):
+            callbacks = []
+        if os.environ.get('TOKEN_SPY_URL') and os.environ.get('TOKEN_SPY_API_KEY'):
+            callbacks.append('ods_token_spy_callback.ods_token_spy_callback')
+        settings['callbacks'] = list(dict.fromkeys(callbacks))
+        if os.environ.get('LANGFUSE_ENABLED') == 'true':
+            success_callbacks = settings.get('success_callback', [])
+            if not isinstance(success_callbacks, list):
+                success_callbacks = []
+            success_callbacks.append('langfuse')
+            settings['success_callback'] = list(dict.fromkeys(success_callbacks))
         with open('/tmp/config.yaml', 'w') as f:
             yaml.dump(cfg, f, default_flow_style=False)
         "
-          exec litellm --config /tmp/config.yaml --port 4000
-        else
-          exec litellm --config "$$CONFIG_PATH" --port 4000
-        fi
+        exec litellm --config /tmp/config.yaml --port 4000
     deploy:
       resources:
         limits:

@@ -155,6 +155,21 @@ def _set_stream_upstream(mod, chunks, *, model_error=None, started=None,
     mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
+class _RecordingTelemetry:
+    def __init__(self, *, raises=False):
+        self.events = []
+        self.raises = raises
+
+    def emit(self, event):
+        if self.raises:
+            raise RuntimeError("telemetry unavailable")
+        self.events.append(event)
+        return True
+
+    async def stop(self):
+        return None
+
+
 class TestForwarding:
     def test_alias_rewritten_in_and_out(self, router):
         mod, client, write_state, calls = router
@@ -774,3 +789,216 @@ class TestEndpointsReload:
         assert degraded.status_code == 200
         assert degraded.json()["status"] == "degraded"
         assert degraded.json()["endpointCount"] == 0
+
+
+class TestRoutedTelemetry:
+    def test_router_event_bounds_upstream_usage_to_ingest_contract(self, router):
+        mod, client, write_state, calls = router
+        event = mod._build_telemetry_event(
+            {"messages": [{}] * 100_001},
+            raw_body_bytes=mod.MAX_BODY_BYTES + 1,
+            model="Concrete.gguf",
+            backend="llama-server",
+            path="/v1/chat/completions",
+            duration_ms=100_000_000,
+            usage={
+                "input_tokens": 3_000_000_000,
+                "output_tokens": -1,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+            },
+            stop_reason="stop",
+        )
+
+        assert event["request_body_bytes"] == mod.MAX_BODY_BYTES
+        assert event["message_count"] == 100_000
+        assert event["input_tokens"] == 2_000_000_000
+        assert event["output_tokens"] == 0
+        assert event["duration_ms"] == 86_400_000
+
+    def test_nonstream_usage_is_emitted_without_message_content(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        recorder = _RecordingTelemetry()
+        mod.app.state.telemetry = recorder
+
+        def handler(_request):
+            return httpx.Response(200, json={
+                "id": "c1",
+                "model": "Concrete.gguf",
+                "choices": [{
+                    "message": {"role": "assistant", "content": "secret answer"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {
+                    "prompt_tokens": 20,
+                    "completion_tokens": 5,
+                    "prompt_tokens_details": {"cached_tokens": 3},
+                },
+            })
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        )
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [
+                {"role": "user", "content": "secret prompt"},
+                {"role": "assistant", "content": "prior secret"},
+            ],
+            "tools": [{"type": "function", "function": {"name": "private"}}],
+        })
+
+        assert response.status_code == 200
+        assert len(recorder.events) == 1
+        event = recorder.events[0]
+        assert event["model"] == "Concrete.gguf"
+        assert event["provider_name"] == "llama-server"
+        assert event["message_count"] == 2
+        assert event["user_message_count"] == 1
+        assert event["assistant_message_count"] == 1
+        assert event["tool_count"] == 1
+        assert event["input_tokens"] == 20
+        assert event["output_tokens"] == 5
+        assert event["cache_read_tokens"] == 3
+        assert event["stop_reason"] == "stop"
+        serialized = json.dumps(event)
+        assert "secret prompt" not in serialized
+        assert "secret answer" not in serialized
+        assert "prior secret" not in serialized
+        assert "private" not in serialized
+
+    def test_stream_usage_is_emitted_only_after_complete_stream(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        recorder = _RecordingTelemetry()
+        mod.app.state.telemetry = recorder
+        _set_stream_upstream(mod, [
+            (
+                b'data: {"model":"Concrete.gguf","choices":'
+                b'[{"delta":{"content":"hi"},"finish_reason":null}]}\n\n'
+            ),
+            (
+                b'data: {"model":"Concrete.gguf","choices":'
+                b'[{"delta":{},"finish_reason":"stop"}],'
+                b'"usage":{"prompt_tokens":11,"completion_tokens":7}}\n\n'
+                b"data: [DONE]\n\n"
+            ),
+        ])
+
+        with client.stream("POST", "/v1/chat/completions", json={
+            "model": "default",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        }) as response:
+            assert response.status_code == 200
+            b"".join(response.iter_bytes())
+
+        assert len(recorder.events) == 1
+        assert recorder.events[0]["input_tokens"] == 11
+        assert recorder.events[0]["output_tokens"] == 7
+        assert recorder.events[0]["stop_reason"] == "stop"
+
+    def test_truncated_stream_without_terminal_event_is_not_emitted(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        recorder = _RecordingTelemetry()
+        mod.app.state.telemetry = recorder
+        _set_stream_upstream(mod, [
+            (
+                b'data: {"model":"Concrete.gguf","choices":'
+                b'[{"delta":{"content":"partial"},"finish_reason":null}],'
+                b'"usage":{"prompt_tokens":11,"completion_tokens":1}}\n\n'
+            ),
+        ])
+
+        with client.stream("POST", "/v1/chat/completions", json={
+            "model": "default",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        }) as response:
+            assert response.status_code == 200
+            raw = b"".join(response.iter_bytes())
+
+        assert b"partial" in raw
+        assert recorder.events == []
+
+    def test_responses_completed_event_emits_stream_usage(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        recorder = _RecordingTelemetry()
+        mod.app.state.telemetry = recorder
+        _set_stream_upstream(mod, [
+            (
+                b'data: {"type":"response.output_text.delta",'
+                b'"response":{"model":"Concrete.gguf"},'
+                b'"delta":"hi"}\n\n'
+            ),
+            (
+                b'data: {"type":"response.completed","response":'
+                b'{"model":"Concrete.gguf","status":"completed",'
+                b'"usage":{"input_tokens":9,"output_tokens":4}}}\n\n'
+            ),
+        ])
+
+        with client.stream("POST", "/v1/responses", json={
+            "model": "default",
+            "stream": True,
+            "input": "hi",
+        }) as response:
+            assert response.status_code == 200
+            b"".join(response.iter_bytes())
+
+        assert len(recorder.events) == 1
+        assert recorder.events[0]["input_tokens"] == 9
+        assert recorder.events[0]["output_tokens"] == 4
+        assert recorder.events[0]["stop_reason"] == "completed"
+
+    def test_telemetry_failure_never_changes_model_response(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        mod.app.state.telemetry = _RecordingTelemetry(raises=True)
+
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+
+        assert response.status_code == 200
+        assert response.json()["choices"][0]["message"]["content"] == "hello"
+
+    def test_sink_posts_authenticated_event_and_drains(self, monkeypatch):
+        import app.main as mod
+
+        received = []
+
+        def handler(request):
+            received.append({
+                "url": str(request.url),
+                "authorization": request.headers.get("authorization"),
+                "body": json.loads(request.content),
+            })
+            return httpx.Response(202, json={"status": "accepted"})
+
+        async def scenario():
+            client = httpx.AsyncClient(
+                transport=httpx.MockTransport(handler)
+            )
+            sink = mod._TelemetrySink(
+                "http://token-spy:8080",
+                "shared-secret",
+                client=client,
+            )
+            await sink.start()
+            assert sink.emit({"model": "Concrete.gguf"}) is True
+            await asyncio.wait_for(sink.queue.join(), timeout=1)
+            await sink.stop()
+
+        asyncio.run(scenario())
+
+        assert received == [{
+            "url": "http://token-spy:8080/api/ingest/routed",
+            "authorization": "Bearer shared-secret",
+            "body": {"model": "Concrete.gguf"},
+        }]

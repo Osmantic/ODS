@@ -70,6 +70,14 @@ UPSTREAM_MAX_CONNECTIONS = max(
 UPSTREAM_MAX_KEEPALIVE = max(
     0, int(os.environ.get("ODS_ROUTER_UPSTREAM_MAX_KEEPALIVE", "20"))
 )
+TOKEN_SPY_URL = os.environ.get("TOKEN_SPY_URL", "").rstrip("/")
+TOKEN_SPY_API_KEY = os.environ.get("TOKEN_SPY_API_KEY", "")
+TELEMETRY_QUEUE_DEPTH = max(
+    1, int(os.environ.get("ODS_ROUTER_TELEMETRY_QUEUE_DEPTH", "1024"))
+)
+TELEMETRY_TIMEOUT_SECONDS = max(
+    0.1, float(os.environ.get("ODS_ROUTER_TELEMETRY_TIMEOUT", "3"))
+)
 EVIDENCE_LIMIT = 2048
 EVIDENCE_TTL_SECONDS = 15 * 60
 
@@ -106,6 +114,196 @@ _state_cache: dict[str, Any] = {"mtime": None, "doc": None}
 _endpoints_cache: dict[str, Any] = {"mtime": None, "endpoints": {}}
 _probe_key_cache: dict[str, Any] = {"mtime": None, "key": ""}
 _evidence: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+
+
+class _TelemetrySink:
+    """Best-effort telemetry transport that never blocks model responses."""
+
+    def __init__(
+        self,
+        url: str,
+        api_key: str,
+        *,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self.url = url.rstrip("/")
+        self.api_key = api_key
+        self.enabled = bool(self.url and self.api_key)
+        self.queue: asyncio.Queue[dict[str, Any]] | None = (
+            asyncio.Queue(maxsize=TELEMETRY_QUEUE_DEPTH)
+            if self.enabled
+            else None
+        )
+        self.client = client
+        self.task: asyncio.Task[None] | None = None
+        self._last_warning = 0.0
+
+    async def start(self) -> None:
+        if not self.enabled:
+            return
+        if self.client is None:
+            self.client = httpx.AsyncClient(
+                follow_redirects=False,
+                timeout=TELEMETRY_TIMEOUT_SECONDS,
+            )
+        self.task = asyncio.create_task(
+            self._run(), name="model-router-token-spy"
+        )
+
+    def emit(self, event: dict[str, Any]) -> bool:
+        if self.queue is None:
+            return False
+        try:
+            self.queue.put_nowait(event)
+            return True
+        except asyncio.QueueFull:
+            self._warn("Token Spy telemetry queue is full; dropping event")
+            return False
+
+    async def _run(self) -> None:
+        assert self.queue is not None
+        assert self.client is not None
+        while True:
+            event = await self.queue.get()
+            try:
+                response = await self.client.post(
+                    f"{self.url}/api/ingest/routed",
+                    json=event,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                )
+                if response.status_code != 202:
+                    self._warn(
+                        "Token Spy rejected routed telemetry "
+                        f"with HTTP {response.status_code}"
+                    )
+            except (httpx.HTTPError, RuntimeError) as exc:
+                self._warn(f"Token Spy telemetry unavailable: {exc}")
+            finally:
+                self.queue.task_done()
+
+    def _warn(self, message: str) -> None:
+        now = time.monotonic()
+        if now - self._last_warning >= 60:
+            logger.warning(message)
+            self._last_warning = now
+
+    async def stop(self) -> None:
+        if self.queue is not None:
+            try:
+                await asyncio.wait_for(self.queue.join(), timeout=1.0)
+            except asyncio.TimeoutError:
+                self._warn("Timed out draining Token Spy telemetry queue")
+        if self.task is not None:
+            self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+        if self.client is not None:
+            await self.client.aclose()
+
+
+def _usage_from_response(payload: Any) -> tuple[dict[str, int], str]:
+    """Normalize OpenAI Chat/Completions and Responses API usage fields."""
+    if not isinstance(payload, dict):
+        payload = {}
+    response = payload.get("response")
+    source = response if isinstance(response, dict) else payload
+    usage = source.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+
+    prompt_details = usage.get("prompt_tokens_details")
+    if not isinstance(prompt_details, dict):
+        prompt_details = usage.get("input_tokens_details")
+    prompt_details = prompt_details if isinstance(prompt_details, dict) else {}
+
+    normalized = {
+        "input_tokens": _nonnegative_int(
+            usage.get("prompt_tokens", usage.get("input_tokens", 0))
+        ),
+        "output_tokens": _nonnegative_int(
+            usage.get("completion_tokens", usage.get("output_tokens", 0))
+        ),
+        "cache_read_tokens": _nonnegative_int(
+            prompt_details.get("cached_tokens", usage.get("cache_read_tokens", 0))
+        ),
+        "cache_write_tokens": _nonnegative_int(
+            usage.get("cache_write_tokens", 0)
+        ),
+    }
+
+    stop_reason = source.get("stop_reason") or source.get("status") or ""
+    choices = source.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        stop_reason = choices[0].get("finish_reason") or stop_reason
+    return normalized, str(stop_reason)[:128]
+
+
+def _nonnegative_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _build_telemetry_event(
+    payload: dict[str, Any],
+    *,
+    raw_body_bytes: int,
+    model: str,
+    backend: str,
+    path: str,
+    duration_ms: int,
+    usage: dict[str, int],
+    stop_reason: str,
+) -> dict[str, Any]:
+    messages = payload.get("messages")
+    messages = messages if isinstance(messages, list) else []
+    roles = [
+        item.get("role")
+        for item in messages
+        if isinstance(item, dict)
+    ]
+    tools = payload.get("tools")
+    tools = tools if isinstance(tools, list) else []
+    return {
+        "agent": "model-router",
+        "model": str(model)[:512],
+        "provider_name": str(backend or "unknown")[:128],
+        "path": path,
+        "request_body_bytes": min(max(raw_body_bytes, 0), MAX_BODY_BYTES),
+        "message_count": min(len(messages), 100_000),
+        "user_message_count": min(roles.count("user"), 100_000),
+        "assistant_message_count": min(roles.count("assistant"), 100_000),
+        "tool_count": min(len(tools), 100_000),
+        "input_tokens": min(
+            _nonnegative_int(usage.get("input_tokens")), 2_000_000_000
+        ),
+        "output_tokens": min(
+            _nonnegative_int(usage.get("output_tokens")), 2_000_000_000
+        ),
+        "cache_read_tokens": min(
+            _nonnegative_int(usage.get("cache_read_tokens")), 2_000_000_000
+        ),
+        "cache_write_tokens": min(
+            _nonnegative_int(usage.get("cache_write_tokens")), 2_000_000_000
+        ),
+        "duration_ms": min(max(duration_ms, 0), 86_400_000),
+        "stop_reason": str(stop_reason or "")[:128],
+    }
+
+
+def _emit_telemetry(event: dict[str, Any]) -> bool:
+    sink: _TelemetrySink | None = getattr(app.state, "telemetry", None)
+    if sink is None:
+        return False
+    try:
+        return sink.emit(event)
+    except Exception as exc:
+        logger.warning("Token Spy telemetry enqueue failed: %s", exc)
+        return False
 
 
 class RouterError(Exception):
@@ -479,21 +677,28 @@ def _sanitize_choice_content(obj: dict[str, Any]) -> bool:
     return changed
 
 
-def _rewrite_sse_event(event: bytes, alias: str) -> tuple[bytes, list[str]]:
-    """Rewrite complete SSE data lines and return concrete model identities."""
+def _rewrite_sse_event(
+    event: bytes, alias: str
+) -> tuple[bytes, list[str], list[dict[str, Any]], bool]:
+    """Rewrite complete SSE data lines and return observable response metadata."""
     out_lines: list[bytes] = []
     models: list[str] = []
+    payloads: list[dict[str, Any]] = []
+    saw_done = False
     for line in event.splitlines(keepends=True):
         content = line.rstrip(b"\r\n")
         ending = line[len(content):]
         if content.startswith(b"data:"):
             payload = content[5:].strip()
-            if payload and payload != b"[DONE]":
+            if payload == b"[DONE]":
+                saw_done = True
+            elif payload:
                 try:
                     obj = json.loads(payload)
                 except ValueError:
                     obj = None
                 if isinstance(obj, dict):
+                    payloads.append(obj)
                     if isinstance(obj.get("model"), str):
                         if obj["model"]:
                             models.append(obj["model"])
@@ -504,7 +709,25 @@ def _rewrite_sse_event(event: bytes, alias: str) -> tuple[bytes, list[str]]:
                         + json.dumps(obj, separators=(",", ":")).encode("utf-8")
                     )
         out_lines.append(content + ending)
-    return b"".join(out_lines), models
+    return b"".join(out_lines), models, payloads, saw_done
+
+
+def _is_terminal_stream_payload(payload: dict[str, Any]) -> bool:
+    """Recognize terminal Chat/Completions and Responses API stream events."""
+    choices = payload.get("choices")
+    if isinstance(choices, list) and any(
+        isinstance(choice, dict) and choice.get("finish_reason") is not None
+        for choice in choices
+    ):
+        return True
+
+    event_type = payload.get("type")
+    if event_type == "response.completed":
+        return True
+    response = payload.get("response")
+    if isinstance(response, dict) and response.get("status") == "completed":
+        return True
+    return payload.get("status") == "completed"
 
 
 class _SSERewriter:
@@ -514,6 +737,26 @@ class _SSERewriter:
         self.alias = alias
         self.buffer = b""
         self.models: list[str] = []
+        self.usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        }
+        self.stop_reason = ""
+        self.completed = False
+
+    def _observe(
+        self, payloads: list[dict[str, Any]], *, saw_done: bool = False
+    ) -> None:
+        self.completed = self.completed or saw_done
+        for payload in payloads:
+            usage, stop_reason = _usage_from_response(payload)
+            for key, value in usage.items():
+                self.usage[key] = max(self.usage[key], value)
+            if stop_reason:
+                self.stop_reason = stop_reason
+            self.completed = self.completed or _is_terminal_stream_payload(payload)
 
     def feed(self, chunk: bytes) -> list[bytes]:
         self.buffer += chunk
@@ -522,16 +765,22 @@ class _SSERewriter:
             event = self.buffer[:match.start()]
             delimiter = self.buffer[match.start():match.end()]
             self.buffer = self.buffer[match.end():]
-            rewritten, models = _rewrite_sse_event(event, self.alias)
+            rewritten, models, payloads, saw_done = _rewrite_sse_event(
+                event, self.alias
+            )
             self.models.extend(models)
+            self._observe(payloads, saw_done=saw_done)
             output.append(rewritten + delimiter)
         return output
 
     def finish(self) -> bytes:
         if not self.buffer:
             return b""
-        rewritten, models = _rewrite_sse_event(self.buffer, self.alias)
+        rewritten, models, payloads, saw_done = _rewrite_sse_event(
+            self.buffer, self.alias
+        )
         self.models.extend(models)
+        self._observe(payloads, saw_done=saw_done)
         self.buffer = b""
         return rewritten
 
@@ -704,6 +953,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
 
     url = route["baseUrl"] + path
     client: httpx.AsyncClient = app.state.http
+    telemetry_started = time.monotonic()
     evidence_base = {
         "probeId": probe_id,
         "requestedModel": requested_alias,
@@ -740,6 +990,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     await upstream.aclose()
                     if (
                         completed
+                        and rewriter.completed
                         and probe_id
                         and 200 <= upstream.status_code < 300
                         and all(
@@ -753,6 +1004,23 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                             "responseModel": route["runtimeModelId"],
                             "lemonadeRoute": lemonade_route,
                         })
+                    if (
+                        completed
+                        and rewriter.completed
+                        and 200 <= upstream.status_code < 300
+                    ):
+                        _emit_telemetry(_build_telemetry_event(
+                            payload,
+                            raw_body_bytes=len(raw_body),
+                            model=route["runtimeModelId"],
+                            backend=route["backendKind"],
+                            path=path,
+                            duration_ms=int(
+                                (time.monotonic() - telemetry_started) * 1000
+                            ),
+                            usage=rewriter.usage,
+                            stop_reason=rewriter.stop_reason,
+                        ))
                     await _release_admission()
 
             media_type = upstream.headers.get("content-type",
@@ -784,10 +1052,18 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
         ods_headers["X-Lemonade-Route"] = lemonade_route
 
     response_model = None
+    response_usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+    }
+    stop_reason = ""
     content = upstream.content
     try:
         parsed = json.loads(content.decode("utf-8"))
         if isinstance(parsed, dict):
+            response_usage, stop_reason = _usage_from_response(parsed)
             response_model = parsed.get("model")
             if "model" in parsed:
                 parsed["model"] = requested_alias
@@ -808,6 +1084,18 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                           "responseModel": str(response_model or ""),
                           "lemonadeRoute": lemonade_route})
 
+    if 200 <= upstream.status_code < 300:
+        _emit_telemetry(_build_telemetry_event(
+            payload,
+            raw_body_bytes=len(raw_body),
+            model=route["runtimeModelId"],
+            backend=route["backendKind"],
+            path=path,
+            duration_ms=int((time.monotonic() - telemetry_started) * 1000),
+            usage=response_usage,
+            stop_reason=stop_reason,
+        ))
+
     media_type = upstream.headers.get("content-type", "application/json")
     return Response(content=content, status_code=upstream.status_code,
                     media_type=media_type, headers=ods_headers), False
@@ -824,9 +1112,14 @@ async def _startup() -> None:
             ),
         ),
     )
+    app.state.telemetry = _TelemetrySink(TOKEN_SPY_URL, TOKEN_SPY_API_KEY)
+    await app.state.telemetry.start()
     _load_endpoints()
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
+    telemetry: _TelemetrySink | None = getattr(app.state, "telemetry", None)
+    if telemetry is not None:
+        await telemetry.stop()
     await app.state.http.aclose()

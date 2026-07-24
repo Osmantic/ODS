@@ -26,6 +26,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from filters import apply_filters
 from providers import ProviderRegistry
+from routed_telemetry import (
+    TelemetryValidationError,
+    routed_event_to_usage,
+    validate_routed_event,
+)
 
 # Database backend selection: sqlite (default) or postgres
 DB_BACKEND = os.environ.get("DB_BACKEND", "sqlite").lower()
@@ -1532,6 +1537,27 @@ def health():
 
 
 # ── API Endpoints ────────────────────────────────────────────────────────────
+
+
+@app.post("/api/ingest/routed", dependencies=[Depends(verify_api_key)])
+async def ingest_routed_telemetry(request: Request):
+    """Store metadata-only usage emitted by the ODS model router."""
+    raw_body = await request.body()
+    if len(raw_body) > 16 * 1024:
+        raise HTTPException(status_code=413, detail="Telemetry event is too large.")
+    try:
+        payload = json.loads(raw_body)
+        event = validate_routed_event(payload)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.") from exc
+    except TelemetryValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if not _db_available:
+        raise HTTPException(status_code=503, detail="Usage database is unavailable.")
+
+    await asyncio.to_thread(log_usage, routed_event_to_usage(event))
+    return JSONResponse({"status": "accepted"}, status_code=202)
 
 
 @app.get("/api/filter-stats", dependencies=[Depends(verify_api_key)])
