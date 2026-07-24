@@ -57,6 +57,16 @@ class TestGetAgentMetricsHtml:
         # Restore original
         agent_metrics.last_update = original_last_update
 
+    def test_handles_null_last_update_timestamp(self, test_client, monkeypatch):
+        """Null or missing last_update should render N/A instead of crashing."""
+        from agent_monitor import agent_metrics
+
+        monkeypatch.setattr(agent_metrics, "last_update", None)
+
+        resp = test_client.get("/api/agents/metrics.html", headers=test_client.auth_headers)
+        assert resp.status_code == 200
+        assert "Updated: N/A" in resp.text
+
 
 # --- GET /api/agents/cluster ---
 
