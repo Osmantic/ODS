@@ -87,3 +87,7 @@ jobs:
       - name: Windows Runtime Recovery Contract
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
+
+      - name: Windows Env Generator Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-env-generator.ps1
