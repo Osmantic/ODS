@@ -699,10 +699,18 @@ _regenerate_compose_flags() {
         # --gpu-count gates the multigpu-{backend}.yml overlay; without it,
         # toggling any extension would silently strip multi-GPU plumbing
         # from the persisted cache.
-        "$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
+        # Capture the resolver's stderr instead of discarding it: it reports
+        # actionable causes (e.g. missing PyYAML) that would otherwise only
+        # surface commands later as compose's "no configuration file provided".
+        local resolver_err=""
+        if ! resolver_err=$("$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
             --script-dir "$INSTALL_DIR" --tier "${TIER:-1}" --gpu-backend "${GPU_BACKEND:-nvidia}" \
             --gpu-count "${GPU_COUNT:-1}" --ods-mode "${ODS_MODE:-local}" \
-            > "$INSTALL_DIR/.compose-flags" 2>/dev/null || rm -f "$INSTALL_DIR/.compose-flags"
+            2>&1 > "$INSTALL_DIR/.compose-flags"); then
+            rm -f "$INSTALL_DIR/.compose-flags"
+            warn "Could not regenerate the compose stack cache. 'ods start' will fail until this is resolved:"
+            [[ -n "$resolver_err" ]] && printf '%s\n' "$resolver_err" >&2
+        fi
     else
         rm -f "$INSTALL_DIR/.compose-flags"
     fi

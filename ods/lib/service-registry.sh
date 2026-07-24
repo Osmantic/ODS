@@ -75,7 +75,7 @@ sr_load() {
             pkg_install $(pkg_resolve python3-pyyaml) 2>>"${LOG_FILE:-/dev/null}" || true
         fi
         if ! "$PYTHON_CMD" -c "import yaml" 2>/dev/null; then
-            declare -f warn &>/dev/null && warn "PyYAML not available. Service registry will be incomplete."
+            declare -f warn &>/dev/null && warn "PyYAML not available. Service registry will be incomplete and lifecycle commands ('ods enable', 'ods start') will fail."
             declare -f warn &>/dev/null && warn "Install manually: pip3 install pyyaml"
             _SR_LOADED=true  # Prevent repeated retries
             _SR_FAILED=true
