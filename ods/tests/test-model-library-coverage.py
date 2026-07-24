@@ -255,7 +255,7 @@ def test_granite33_2b_is_not_agent_viable_until_revalidated():
     assert not _agent_viable_for_release(by_id["granite3.3-2b-instruct-q4"])
 
 
-def test_smollm3_3b_is_not_agent_viable_until_app_revalidated():
+def test_smollm3_3b_runtime_context_is_64k_and_it_remains_a_revalidation_candidate():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
     model = by_id["smollm3-3b-q4"]
@@ -264,11 +264,8 @@ def test_smollm3_3b_is_not_agent_viable_until_app_revalidated():
     assert model["context_length"] == 65536
     assert compatibility["openai_chat"]["status"] == "verified"
     assert "cycle-003" in compatibility["openai_chat"]["evidence"]
-    assert compatibility["agent_viability"]["status"] == "not_agent_viable"
-    assert "Perplexica" in compatibility["agent_viability"]["reason"]
-    assert "Privacy Shield" in compatibility["agent_viability"]["reason"]
-    assert "cycle-003" in compatibility["agent_viability"]["evidence"]
-    assert not _agent_viable_for_release(by_id["smollm3-3b-q4"])
+    assert "agent_viability" not in compatibility
+    assert _agent_viable_for_release(model)
 
 
 def test_granite31_requires_global_perplexica_revalidation_after_strixy_failure():
