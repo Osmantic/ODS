@@ -1564,3 +1564,16 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+def test_read_json_file_handles_unicode_decode_error_and_directories(tmp_path):
+    from helpers import _read_json_file
+
+    bad_json = tmp_path / "corrupt.json"
+    bad_json.write_bytes(b"\x80\x81\x82")
+
+    dir_path = tmp_path / "subdir"
+    dir_path.mkdir()
+
+    assert _read_json_file(bad_json, {"fallback": True}) == {"fallback": True}
+    assert _read_json_file(dir_path, {"fallback": True}) == {"fallback": True}
