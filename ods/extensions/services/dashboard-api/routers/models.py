@@ -367,45 +367,65 @@ def _catalog_model_tokens(model: dict) -> set[str]:
     return tokens
 
 
+def _safe_service_port(service: dict | None, default: int = 8080) -> int:
+    if not service or not isinstance(service, dict):
+        return default
+    try:
+        raw = service.get("port")
+        if raw is None or raw == "":
+            return default
+        val_str = str(raw).strip()
+        if len(val_str) >= 2 and val_str[0] == val_str[-1] and val_str[0] in {"'", '"'}:
+            val_str = val_str[1:-1].strip()
+        port = int(val_str)
+        return port if 1 <= port <= 65535 else default
+    except (ValueError, TypeError, AttributeError):
+        return default
+
+
 def _fetch_loaded_model_sync() -> str | None:
     service = SERVICES.get("llama-server", {})
     host = service.get("host", "llama-server")
-    port = int(service.get("port", 8080))
+    port = _safe_service_port(service)
     api_prefix = "/api/v1" if LLM_BACKEND == "lemonade" else "/v1"
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(_fetch_llama_loaded_model(host, port, api_prefix))
-    except (httpx.HTTPError, OSError, RuntimeError, ValueError):
+    except (httpx.HTTPError, OSError, RuntimeError, ValueError, TypeError, KeyError):
         return None
     finally:
         loop.close()
 
 
 async def _probe_loaded_lemonade_model(model_name: str) -> bool:
-    service = SERVICES.get("llama-server", {})
-    host = service.get("host", "llama-server")
-    port = int(service.get("port", 8080))
-    base_url = _configured_llm_base_url(host, port)
-    headers = {}
-    api_key = read_env_value("LEMONADE_API_KEY", INSTALL_DIR) or "lemonade"
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    payload = {
-        "model": model_name,
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 1,
-        "temperature": 0,
-        "stream": False,
-    }
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        resp = await client.post(f"{base_url}/api/v1/chat/completions", json=payload, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
-        if not isinstance(data, dict):
-            return False
-        if isinstance(data.get("error"), dict):
-            return False
-        return bool(data.get("choices"))
+    try:
+        service = SERVICES.get("llama-server", {})
+        host = service.get("host", "llama-server")
+        port = _safe_service_port(service)
+        base_url = _configured_llm_base_url(host, port)
+        headers = {}
+        api_key = read_env_value("LEMONADE_API_KEY", INSTALL_DIR) or "lemonade"
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+            "temperature": 0,
+            "stream": False,
+        }
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(f"{base_url}/api/v1/chat/completions", json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, dict):
+                return False
+            if isinstance(data.get("error"), dict):
+                return False
+            return bool(data.get("choices"))
+    except (httpx.HTTPError, OSError, RuntimeError, ValueError, TypeError, KeyError) as e:
+        logger.debug("_probe_loaded_lemonade_model failed: %s", e)
+        return False
 
 
 def _loaded_model_backend_ready_sync(loaded_model: str | None) -> bool:
@@ -416,7 +436,7 @@ def _loaded_model_backend_ready_sync(loaded_model: str | None) -> bool:
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(_probe_loaded_lemonade_model(loaded_model))
-    except (httpx.HTTPError, OSError, RuntimeError, ValueError):
+    except (httpx.HTTPError, OSError, RuntimeError, ValueError, TypeError, KeyError):
         return False
     finally:
         loop.close()
@@ -1159,7 +1179,7 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     if not loaded_model:
         service = SERVICES.get("llama-server", {})
         host = service.get("host", "llama-server")
-        port = int(service.get("port", 8080))
+        port = _safe_service_port(service)
         api_prefix = "/api/v1" if LLM_BACKEND == "lemonade" else "/v1"
         loaded_model = await _await_or_default(
             _fetch_llama_loaded_model(host, port, api_prefix),
@@ -1688,7 +1708,7 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
     if not service:
         raise HTTPException(status_code=503, detail="llama-server service is not configured")
     host = service.get("host", "llama-server")
-    port = int(service.get("port", 8080))
+    port = _safe_service_port(service)
     api_prefix = "/api/v1" if LLM_BACKEND == "lemonade" else "/v1"
 
     loaded_model = await get_loaded_model()
