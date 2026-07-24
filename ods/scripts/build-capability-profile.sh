@@ -72,6 +72,7 @@ import json
 import os
 import pathlib
 import sys
+import tempfile
 
 hardware = json.loads(sys.argv[1])
 output_path = pathlib.Path(sys.argv[2])
@@ -171,7 +172,19 @@ profile = {
 }
 
 output_path.parent.mkdir(parents=True, exist_ok=True)
-output_path.write_text(json.dumps(profile, indent=2) + "\n", encoding="utf-8")
+fd, tmp_path = tempfile.mkstemp(dir=str(output_path.parent), suffix=".tmp")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(profile, indent=2) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, str(output_path))
+except BaseException:
+    try:
+        os.unlink(tmp_path)
+    except OSError:
+        pass
+    raise
 
 if env_mode:
     env = {
