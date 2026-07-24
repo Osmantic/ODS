@@ -82,8 +82,10 @@ fi
 
 "$PYTHON_CMD" - "$REPORT_FILE" "$TIER" "$RAM_GB" "$DISK_GB" "$GPU_BACKEND" "$GPU_VRAM_MB" "$GPU_NAME" "$PLATFORM_ID" "$COMPOSE_OVERLAYS" "$SCRIPT_DIR" "$ENV_MODE" "$STRICT" <<'PY'
 import json
+import os
 import pathlib
 import sys
+import tempfile
 from datetime import datetime, timezone
 
 (
@@ -344,7 +346,19 @@ report = {
 
 report_path = pathlib.Path(report_file)
 report_path.parent.mkdir(parents=True, exist_ok=True)
-report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+fd, tmp_path = tempfile.mkstemp(dir=str(report_path.parent), suffix=".tmp")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(report, indent=2) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, str(report_path))
+except BaseException:
+    try:
+        os.unlink(tmp_path)
+    except OSError:
+        pass
+    raise
 
 if env_mode:
     def out(key, value):
