@@ -80,7 +80,7 @@ services:
   # Chat UI
   # ============================================
   open-webui:
-    image: ghcr.io/open-webui/open-webui:v0.7.2
+    image: ghcr.io/open-webui/open-webui:v0.10.2
     container_name: ods-webui
     restart: unless-stopped
     logging: *default-logging
