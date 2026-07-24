@@ -181,8 +181,11 @@ function Sync-WindowsOpenCodeConfig {
 
     $_configJson = $_configObject | ConvertTo-Json -Depth 12
     $_utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($_ocConfigFile, $_configJson, $_utf8NoBom)
-    [System.IO.File]::WriteAllText($_ocCompatConfigFile, $_configJson, $_utf8NoBom)
+    foreach ($_targetFile in @($_ocConfigFile, $_ocCompatConfigFile)) {
+        $_tmpFile = "$_targetFile.$PID.tmp"
+        [System.IO.File]::WriteAllText($_tmpFile, $_configJson, $_utf8NoBom)
+        Move-Item -Path $_tmpFile -Destination $_targetFile -Force
+    }
 
     return @{
         Status = $_configStatus
