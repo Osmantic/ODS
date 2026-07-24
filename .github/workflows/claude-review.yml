@@ -27,13 +27,14 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
 
 jobs:
   # ─── Phase 1: Basic comment-only review ───────────────────────────
   basic-review:
     name: Basic Review
+    permissions:
+      contents: read
+      pull-requests: write
     if: |
       github.event.action != 'labeled' &&
       github.actor != 'claude[bot]' &&
@@ -53,19 +54,22 @@ jobs:
       - name: Check if fork PR
         id: fork_check
         env:
+          EVENT_NAME: ${{ github.event_name }}
           HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           IS_FORK="false"
 
           # For pull_request events, check head repo
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+          if [ "$EVENT_NAME" == "pull_request" ]; then
+            if [ "$HEAD_REPOSITORY" != "$REPOSITORY" ]; then
               IS_FORK="true"
             fi
           fi
 
           # For issue_comment events, API key absence signals fork PR
-          if [ "${{ github.event_name }}" == "issue_comment" ] && [ "$HAS_API_KEY" != "true" ]; then
+          if [ "$EVENT_NAME" == "issue_comment" ] && [ "$HAS_API_KEY" != "true" ]; then
             IS_FORK="true"
           fi
 
@@ -83,10 +87,11 @@ jobs:
       - name: Check PR size (cost control)
         if: steps.fork_check.outputs.is_fork != 'true'
         id: pr_size
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.repository.default_branch || 'main' }}
         run: |
-          BASE_REF="${{ github.base_ref || github.event.repository.default_branch || 'main' }}"
-          FILES_CHANGED=$(git diff --name-only origin/${BASE_REF}...HEAD | wc -l)
-          LINES_CHANGED=$(git diff --stat origin/${BASE_REF}...HEAD | tail -1 | awk '{print $4+$6}')
+          FILES_CHANGED=$(git diff --name-only "origin/${BASE_REF}...HEAD" | wc -l)
+          LINES_CHANGED=$(git diff --stat "origin/${BASE_REF}...HEAD" | tail -1 | awk '{print $4+$6}')
 
           echo "files_changed=$FILES_CHANGED" >> $GITHUB_OUTPUT
           echo "lines_changed=$LINES_CHANGED" >> $GITHUB_OUTPUT
@@ -141,6 +146,8 @@ jobs:
   # ─── Phase 2: Sensitive file detection ────────────────────────────
   detect-high-stakes:
     name: Detect High-Stakes Changes
+    permissions:
+      contents: read
     if: github.event_name == 'pull_request' && github.event.action != 'labeled'
     runs-on: ubuntu-latest
     outputs:
@@ -152,8 +159,11 @@ jobs:
     steps:
       - name: Check if fork PR
         id: fork-check
+        env:
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+          if [ "$HEAD_REPOSITORY" != "$REPOSITORY" ]; then
             echo "is_fork=true" >> $GITHUB_OUTPUT
             echo "::notice::Fork PR detected — some review features will be skipped"
           else
@@ -167,6 +177,8 @@ jobs:
 
       - name: Check for high-stakes changes
         id: check
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.repository.default_branch || 'main' }}
         run: |
           HIGH_STAKES_PATTERNS=(
             "ods/installers/"
@@ -178,7 +190,7 @@ jobs:
             "docker-compose"
           )
 
-          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref || github.event.repository.default_branch || 'main' }}...HEAD)
+          CHANGED_FILES=$(git diff --name-only "origin/${BASE_REF}...HEAD")
 
           IS_HIGH_STAKES="false"
           SENSITIVE_FILES=""
@@ -210,6 +222,9 @@ jobs:
 
   review-summary:
     name: Review Summary
+    permissions:
+      contents: read
+      pull-requests: write
     needs: [detect-high-stakes]
     if: |
       always() &&
@@ -248,6 +263,8 @@ jobs:
   # ─── Phase 3: Auto-fix (opt-in via 'ai-fix' label) ───────────────
   security-check:
     name: Pre-flight Security Check
+    permissions:
+      contents: read
     if: |
       github.event.action == 'labeled' &&
       contains(github.event.pull_request.labels.*.name, 'ai-fix') &&
@@ -265,11 +282,15 @@ jobs:
 
       - name: Security validation
         id: check
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.repository.default_branch || 'main' }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           SAFE="true"
           REASON=""
 
-          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref || github.event.repository.default_branch || 'main' }}...HEAD)
+          CHANGED_FILES=$(git diff --name-only "origin/${BASE_REF}...HEAD")
 
           BLOCKED_PATTERNS=(
             ".github/workflows/"
@@ -292,7 +313,7 @@ jobs:
             fi
           done
 
-          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+          if [ "$HEAD_REPOSITORY" != "$REPOSITORY" ]; then
             SAFE="false"
             REASON="PR from fork — AI patch generation disabled for security"
           fi
@@ -306,6 +327,9 @@ jobs:
 
   claude-fix:
     name: Claude Code Review + Patch Generation
+    permissions:
+      contents: write
+      pull-requests: write
     needs: security-check
     if: |
       needs.security-check.outputs.safe_to_proceed == 'true' &&
@@ -452,6 +476,9 @@ jobs:
 
   blocked-security:
     name: Security Block Notice
+    permissions:
+      contents: read
+      pull-requests: write
     needs: security-check
     if: |
       needs.security-check.outputs.safe_to_proceed == 'false' &&
