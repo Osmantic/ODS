@@ -1,6 +1,6 @@
 # ODS Support Matrix
 
-Last updated: 2026-05-25
+Last updated: 2026-07-19
 
 ## What Works Today
 
@@ -21,6 +21,7 @@ classes, and any deferred or skipped phases.
 | **Windows (Docker Desktop + WSL2)** | **Supported** | Complete install and runtime via `.\install.ps1`. GPU auto-detection (NVIDIA/AMD). Count Windows as current release-fleet evidence only when the Windows target is enabled and produces artifacts for that candidate. |
 | **macOS (Apple Silicon)** | **Supported** | Complete install and runtime via `./install.sh`. Native Metal inference + Docker services. |
 | **Linux + Intel Arc (SYCL)** | **Experimental** | Installer auto-detects Arc, assigns ARC/ARC\_LITE tier, and selects `docker-compose.arc.yml`. End-to-end runtime on A770/A750. See [INTEL-ARC-GUIDE.md](INTEL-ARC-GUIDE.md). |
+| **Android (Termux) — "Android Lite"** | **Experimental** | Native CPU llama.cpp runtime + `ods-mobile` CLI only — no Docker stack. Termux-only, aarch64, unmeasured on real phones. See [ANDROID-LITE.md](ANDROID-LITE.md). |
 
 ## Support Tiers
 
@@ -37,6 +38,7 @@ classes, and any deferred or skipped phases.
 | Linux (Intel Arc A770/A750) | Intel SYCL (llama-server/oneAPI) | **Tier C** | `docker-compose.arc.yml`; builds llama.cpp from `intel/oneapi-basekit`; see [INTEL-ARC-GUIDE.md](INTEL-ARC-GUIDE.md) |
 | Windows (Docker Desktop + WSL2) | NVIDIA via Docker Desktop; AMD via host Vulkan runtime | Tier B | Standalone installer (`.\install.ps1`) with GPU auto-detection, Docker orchestration, health checks, and desktop shortcuts; Windows laptop fleet target tracks Docker Desktop/WSL2 evidence |
 | macOS (Apple Silicon) | Metal (native llama-server) | Tier B | Standalone installer (`./install.sh`) with chip detection, native Metal inference, Docker services, and LaunchAgent auto-start; validated on constrained and high-memory Apple Silicon lab hosts |
+| Android (Termux, aarch64) | CPU only (native llama.cpp, pinned tag) | **Tier C** | Experimental "Android Lite" profile: native runtime + `ods-mobile` CLI, model-agnostic mobile catalog (Bonsai 8B Q1_0 default). No Docker/compose stack on Android. Unmeasured on real devices — see [ANDROID-LITE.md](ANDROID-LITE.md) |
 
 ## GPU Tier Map
 
@@ -64,6 +66,7 @@ classes, and any deferred or skipped phases.
 - AMD runtime diagnostics are explicit: `.env` records runtime, location, selected backend, supported backends, and whether ODS manages the process. ODS supports its managed AMD Lemonade path and a Linux external Lemonade SDK wrapper path for existing Lemonade installs; see [LEMONADE-SDK-COMPAT.md](LEMONADE-SDK-COMPAT.md).
 - AMD discrete GPUs beyond the documented Strix Halo path should be treated as validation-required until the repo has tier/model benchmarks for that hardware.
 - **Intel Arc (SYCL) is Tier C / experimental.** The installer auto-detects and selects the correct compose overlay and tier. Runtime works on A770/A750 (Linux). ComfyUI and Whisper GPU acceleration are not yet available for Arc. See [INTEL-ARC-GUIDE.md](INTEL-ARC-GUIDE.md) for limitations.
+- **Android Lite (Termux) is Tier C / experimental — Android is NOT "supported."** It installs a native CPU llama.cpp runtime and the `ods-mobile` CLI only; the Docker stack does not run on Android. No performance numbers exist for this profile until real-device benchmarks with full provenance (device, SoC, RAM, backend, llama.cpp commit, model file + SHA, context, thermal state, run length) are recorded. See [ANDROID-LITE.md](ANDROID-LITE.md).
 - Release-readiness claims should cite a matching version/tag, relevant distro-lab evidence, and a real-hardware fleet receipt from [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md).
 - A supported platform can have code and installer support even when it is not included in every default private release-fleet run. Release notes should cite which hardware classes actually ran, which phases passed, and which surfaces were deferred or skipped.
 - Version baselines for triage are in `docs/KNOWN-GOOD-VERSIONS.md`.
@@ -74,6 +77,8 @@ classes, and any deferred or skipped phases.
 |--------|-----------|
 | **Now** | Linux AMD + NVIDIA + Windows + macOS fully supported |
 | **Now** | Intel Arc (SYCL) experimental — installer + runtime on A770/A750 |
+| **Now** | Android Lite (Termux) experimental — native CPU runtime + `ods-mobile` CLI, pending real-device measurement |
+| **Planned** | Android Lite: measured CPU baselines on Snapdragon 8 Gen 3 / 8 Elite devices, then OpenCL/Adreno evaluation |
 | **Ongoing** | CI smoke matrix expansion for all platforms |
 | **Planned** | Promote Intel Arc to Tier B after broader A770/B580 validation |
 | **Planned** | Arc-accelerated Whisper STT overlay |
