@@ -17,6 +17,7 @@ pass() {
 }
 
 tmp="$(mktemp -d)"
+tmp="$(cd "$tmp" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 
 fakebin="$tmp/bin"
