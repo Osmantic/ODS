@@ -598,3 +598,13 @@ def test_trigger_update_action_backup(test_client, monkeypatch):
     assert calls[0][0:2] == ("POST", "/v1/update/backup")
     assert calls[0][2]["backup_id"].startswith("dashboard-")
     assert calls[0][3] == 65
+
+
+def test_read_current_version_handles_leading_whitespace_and_matched_quotes(tmp_path, monkeypatch):
+    import routers.updates as updates_mod
+
+    monkeypatch.setattr(updates_mod, "INSTALL_DIR", tmp_path)
+    env_file = tmp_path / ".env"
+    env_file.write_text('  ODS_VERSION="\'2.1.0\'"\n', encoding="utf-8")
+
+    assert updates_mod._read_current_version() == "'2.1.0'"
