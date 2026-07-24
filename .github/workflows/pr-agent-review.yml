@@ -1,0 +1,30 @@
+name: pr-agent-review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+jobs:
+  pr_agent_job:
+    name: PR-Agent (DeepSeek)
+    runs-on: ubuntu-latest
+    if: ${{ github.event.sender.type != 'Bot' && secrets.DEEPSEEK_API_KEY != '' }}
+    steps:
+      - name: PR Agent review
+        uses: the-pr-agent/pr-agent@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          config.model: "deepseek/deepseek-chat"
+          config.fallback_models: '["deepseek/deepseek-chat"]'
+          github_action_config.auto_review: "true"
+          github_action_config.auto_describe: "true"
+          github_action_config.auto_improve: "true"
+          pr_description.publish_labels: "true"
+          pr_description.publish_description_as: "suggestion"
+          pr_reviewer.require_score_review: "false"
+          pr_reviewer.num_code_suggestions: "4"
