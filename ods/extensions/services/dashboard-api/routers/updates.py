@@ -44,24 +44,32 @@ def _read_utf8(path: Path) -> str:
 def _read_current_version() -> str:
     """Read installed version from .env (preferred) or .version file."""
     env_file = Path(INSTALL_DIR) / ".env"
-    if env_file.exists():
+    if env_file.is_file():
         try:
             for line in _read_utf8(env_file).splitlines():
-                if line.startswith("ODS_VERSION="):
-                    return line.split("=", 1)[1].strip().strip("\"'")
-        except OSError:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if stripped.startswith("ODS_VERSION="):
+                    val = stripped.split("=", 1)[1].strip()
+                    if len(val) >= 2 and val[0] == val[-1] and val[0] in {"'", '"'}:
+                        return val[1:-1]
+                    return val
+        except (OSError, UnicodeError):
             pass
     version_file = Path(INSTALL_DIR) / ".version"
-    if version_file.exists():
+    if version_file.is_file():
         try:
             raw = _read_utf8(version_file).strip()
             if raw:
                 if raw.startswith("{"):
                     data = json.loads(raw)
                     if isinstance(data, dict) and data.get("version"):
-                        return str(data["version"])
+                        return str(data["version"]).strip()
+                if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+                    return raw[1:-1].strip()
                 return raw
-        except (OSError, json.JSONDecodeError, ValueError):
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
             pass
     manifest_file = Path(INSTALL_DIR) / "manifest.json"
     if manifest_file.exists():
