@@ -86,6 +86,9 @@ test: ## Run unit and contract tests
 	@echo "=== ods-update.sh backup command ==="
 	@bash tests/test-update-script-backup.sh
 	@echo ""
+	@echo "=== resolver compose guard parity ==="
+	@bash tests/test-resolver-compose-guard-parity.sh
+	@echo ""
 	@echo "=== bootstrap-upgrade spawn closes inherited FDs ==="
 	@bash tests/test-bootstrap-upgrade-close-inherited-fds.sh
 	@echo ""
