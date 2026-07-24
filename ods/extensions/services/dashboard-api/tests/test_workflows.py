@@ -938,3 +938,17 @@ def test_workflow_enable_rejects_path_traversal_in_catalog_file(test_client, mon
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Invalid workflow file path"
+
+
+def test_load_workflow_catalog_handles_directory_and_unicode_error(tmp_path, monkeypatch):
+    import routers.workflows as wf_mod
+
+    dir_path = tmp_path / "catalog_dir.json"
+    dir_path.mkdir()
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", dir_path)
+    assert wf_mod.load_workflow_catalog() == wf_mod.DEFAULT_WORKFLOW_CATALOG
+
+    binary_file = tmp_path / "catalog_bin.json"
+    binary_file.write_bytes(b"\x80\x81\x82")
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", binary_file)
+    assert wf_mod.load_workflow_catalog() == wf_mod.DEFAULT_WORKFLOW_CATALOG
