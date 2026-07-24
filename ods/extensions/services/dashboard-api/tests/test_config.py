@@ -67,6 +67,16 @@ def test_live_env_value_preserves_explicit_empty_value(monkeypatch, tmp_path):
     assert config.read_live_env_value("LEMONADE_MODEL", "fallback") == ""
 
 
+def test_live_env_value_handles_leading_whitespace_and_matched_quotes(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text(
+        "  LLM_MODEL=\"'llama-3.2-1b'\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+
+    assert config.read_live_env_value("LLM_MODEL") == "'llama-3.2-1b'"
+
+
 class TestReadManifestFile:
 
     def test_reads_yaml(self, tmp_path):

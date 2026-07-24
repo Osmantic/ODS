@@ -93,11 +93,18 @@ def _find_env_file_value(key: str) -> tuple[bool, str]:
     env_path = Path(INSTALL_DIR) / ".env"
     found = False
     value = ""
+    prefix = f"{key}="
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
-            if line.startswith(f"{key}="):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith(prefix):
                 found = True
-                value = line.split("=", 1)[1].strip().strip("\"'")
+                val = stripped.split("=", 1)[1].strip()
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in {"'", '"'}:
+                    val = val[1:-1]
+                value = val
     except (OSError, UnicodeError):
         pass
     return found, value
