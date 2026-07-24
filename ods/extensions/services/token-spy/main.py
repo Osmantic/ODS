@@ -922,6 +922,36 @@ async def proxy_chat_completions(request: Request):
         )
 
 
+def _describe_upstream_error(status_code, body):
+    """Summarize an upstream error body for the log without echoing caller content.
+
+    Provider error messages routinely quote the offending request, so the body is
+    never logged. Only the structured identifiers (`error.type`, `error.code`) are
+    recorded, capped in length because they come from an untrusted upstream. The
+    full body is still streamed to the client, which is where it should be read.
+    """
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        parsed = None
+
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    identifiers = ""
+    if isinstance(error, dict):
+        fields = [
+            f"{key}={str(error[key])[:64]}"
+            for key in ("type", "code")
+            if isinstance(error.get(key), (str, int))
+        ]
+        if fields:
+            identifiers = " ".join(fields) + ", "
+
+    return (
+        f"Upstream {status_code} streaming request failed "
+        f"({identifiers}{len(body)} byte body withheld from logs)"
+    )
+
+
 async def _handle_openai_streaming(client, raw_body, headers, model, sys_analysis,
                                    msg_analysis, tools, start_time, filter_result=None):
     """Stream OpenAI SSE response through while capturing token metrics."""
@@ -945,7 +975,7 @@ async def _handle_openai_streaming(client, raw_body, headers, model, sys_analysi
                     err_body = b""
                     async for chunk in upstream.aiter_bytes():
                         err_body += chunk
-                    log.error(f"Upstream {upstream.status_code}: {err_body[:2000].decode(errors='replace')}")
+                    log.error(_describe_upstream_error(upstream.status_code, err_body))
                     yield f"data: {err_body.decode(errors='replace')}\n\n"
                     return
                 async for line in upstream.aiter_lines():
