@@ -1220,7 +1220,7 @@
       "gguf_sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
       "size_mb": 5760,
       "vram_required_gb": 8,
-      "context_length": 128000,
+      "context_length": 65536,
       "quantization": "Q4_K_M",
       "specialty": "General",
       "description": "Excellent general-purpose model. Default for most systems. Great at coding, reasoning, and multilingual tasks.",
