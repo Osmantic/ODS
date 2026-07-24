@@ -180,14 +180,16 @@ function Set-WindowsODSLemonadeModelConfiguration {
     }
     Write-Utf8NoBom -Path $envPath -Content $envContent
 
-function Strip-MatchedQuotePair {
-    param([string]$Value)
-    if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
-    $v = $Value.Trim()
-    if ($v.Length -ge 2 -and (($v.StartsWith('"') -and $v.EndsWith('"')) -or ($v.StartsWith("'") -and $v.EndsWith("'")))) {
-        return $v.Substring(1, $v.Length - 2)
+if (-not (Get-Command Strip-MatchedQuotePair -ErrorAction SilentlyContinue)) {
+    function Strip-MatchedQuotePair {
+        param([string]$Value)
+        if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+        $v = $Value.Trim()
+        if ($v.Length -ge 2 -and (($v.StartsWith('"') -and $v.EndsWith('"')) -or ($v.StartsWith("'") -and $v.EndsWith("'")))) {
+            return $v.Substring(1, $v.Length - 2)
+        }
+        return $v
     }
-    return $v
 }
 
     if ([string]::IsNullOrWhiteSpace($Port)) {
