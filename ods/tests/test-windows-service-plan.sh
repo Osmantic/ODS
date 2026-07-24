@@ -37,6 +37,7 @@ check 'service-plan.ps1' "$INSTALL_PS1" "Windows installer sources service-plan 
 check 'New-ODSWindowsServicePlan' "$PLAN_LIB" "service-plan constructor exists"
 check 'Get-ODSWindowsServicePlanDecision' "$PLAN_LIB" "service-plan decision function exists"
 check 'Test-ODSWindowsServiceEnabled' "$PLAN_LIB" "service-plan enabled helper exists"
+check 'Set-ODSWindowsExtensionComposeState' "$PLAN_LIB" "service-plan compose-state helper exists"
 check 'OpenClaw is deprecated' "$PLAN_LIB" "OpenClaw is documented as opt-in legacy"
 check 'elseif ($currentBackend -eq "amd")' "$INSTALL_PS1" "Windows installer has AMD extension overlay branch"
 check 'compose.amd.yaml' "$INSTALL_PS1" "Windows installer includes AMD extension overlays"
@@ -116,6 +117,29 @@ if command -v pwsh >/dev/null 2>&1; then
         Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "ape" -Plan $legacy) "OpenClaw opt-in enables APE"
         Assert-Plan (-not $unknownOptional.Enabled) "Unknown optional is disabled"
         Assert-Plan ($unknownRecommended.Enabled) "Unknown recommended follows recommended flag"
+
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ods-service-plan-" + [guid]::NewGuid())
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $composePath = Join-Path $tempRoot "compose.yaml"
+            Set-Content -LiteralPath $composePath -Value "services: {}" -Encoding Ascii
+
+            $disabledResult = Set-ODSWindowsExtensionComposeState `
+                -ComposePath $composePath `
+                -Enabled $false
+            Assert-Plan (-not $disabledResult) "Disabled compose state reports unavailable"
+            Assert-Plan (-not (Test-Path -LiteralPath $composePath)) "Disabled compose fragment is hidden"
+            Assert-Plan (Test-Path -LiteralPath "$composePath.disabled") "Disabled compose marker is created"
+
+            $enabledResult = Set-ODSWindowsExtensionComposeState `
+                -ComposePath $composePath `
+                -Enabled $true
+            Assert-Plan $enabledResult "Enabled compose state reports available"
+            Assert-Plan (Test-Path -LiteralPath $composePath) "Enabled compose fragment is restored"
+            Assert-Plan (-not (Test-Path -LiteralPath "$composePath.disabled")) "Enabled compose marker is removed"
+        } finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
     ')"
 
     while IFS= read -r line; do

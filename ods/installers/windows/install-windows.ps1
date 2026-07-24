@@ -953,7 +953,9 @@ litellm_settings:
                 }
 
                 $composePath = Join-Path $svcDir.FullName $composeFile
-                if (-not (Test-Path $composePath)) { continue }
+                $disabledComposePath = "$composePath.disabled"
+                if (-not (Test-Path -LiteralPath $composePath) -and
+                    -not (Test-Path -LiteralPath $disabledComposePath)) { continue }
 
                 $svcName = $svcDir.Name
                 $decision = Get-ODSWindowsServicePlanDecision `
@@ -961,8 +963,15 @@ litellm_settings:
                     -Category $category `
                     -Plan $servicePlan `
                     -EnableRecommended $enableRecommended
+                $composeEnabled = Set-ODSWindowsExtensionComposeState `
+                    -ComposePath $composePath `
+                    -Enabled $decision.Enabled
                 if (-not $decision.Enabled) {
                     $skippedExtensionServices += "$svcName ($($decision.DisabledReason))"
+                    continue
+                }
+                if (-not $composeEnabled) {
+                    Write-AIWarn "Skipping $svcName because its compose fragment is unavailable."
                     continue
                 }
 
