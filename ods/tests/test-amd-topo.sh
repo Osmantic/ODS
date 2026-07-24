@@ -283,6 +283,81 @@ test_gfx_version_mixed() {
     assert_eq "GPU[1] gfx1101" "gfx1101" "$gfx1"
 }
 
+# ── Test: PCIe link fields match the nvidia-topo.sh schema ─────────────────
+#
+# `gpus[].pcie_gen` / `gpus[].pcie_width` are consumed vendor-agnostically,
+# and nvidia-topo.sh fills them from nvidia-smi's pcie.link.gen.current /
+# pcie.link.width.current — a generation number (1-6) and a bare lane count.
+# sysfs reports a transfer rate instead ("16.0 GT/s PCIe"), so it has to be
+# converted rather than passed through.
+
+test_pcie_gen_from_speed() {
+    echo -e "${BLU}Testing: amd_pcie_gen_from_speed maps GT/s to a PCIe generation${NC}"
+
+    source "$TOPO_SCRIPT"
+
+    assert_eq "2.5 GT/s -> gen 1"  "1"       "$(amd_pcie_gen_from_speed '2.5 GT/s PCIe')"
+    assert_eq "5.0 GT/s -> gen 2"  "2"       "$(amd_pcie_gen_from_speed '5.0 GT/s PCIe')"
+    assert_eq "8.0 GT/s -> gen 3"  "3"       "$(amd_pcie_gen_from_speed '8.0 GT/s PCIe')"
+    assert_eq "16.0 GT/s -> gen 4" "4"       "$(amd_pcie_gen_from_speed '16.0 GT/s PCIe')"
+    assert_eq "32.0 GT/s -> gen 5" "5"       "$(amd_pcie_gen_from_speed '32.0 GT/s PCIe')"
+    assert_eq "64.0 GT/s -> gen 6" "6"       "$(amd_pcie_gen_from_speed '64.0 GT/s PCIe')"
+    assert_eq "no decimal point"   "3"       "$(amd_pcie_gen_from_speed '8 GT/s')"
+    assert_eq "Unknown -> unknown" "unknown" "$(amd_pcie_gen_from_speed 'Unknown')"
+    assert_eq "empty -> unknown"   "unknown" "$(amd_pcie_gen_from_speed '')"
+}
+
+_write_fake_amd_card() {
+    # _write_fake_amd_card <drm_root> <card_index> <current_speed> <current_width>
+    local root="$1" idx="$2" speed="$3" width="$4"
+    local dev="$root/card$idx/device"
+    mkdir -p "$dev"
+    echo "0x1002"     > "$dev/vendor"
+    echo "0x744c"     > "$dev/device"
+    echo "0x0e3b"     > "$dev/subsystem_device"
+    echo "25757220864" > "$dev/mem_info_vram_total"
+    echo "0"          > "$dev/mem_info_gtt_total"
+    echo "Radeon RX 7900 XTX" > "$dev/product_name"
+    echo "$speed"     > "$dev/current_link_speed"
+    echo "16.0 GT/s PCIe" > "$dev/max_link_speed"
+    echo "$width"     > "$dev/current_link_width"
+    echo "16"         > "$dev/max_link_width"
+}
+
+test_detect_pcie_link_fields() {
+    echo -e "${BLU}Testing: detect_amd_topo emits nvidia-compatible PCIe fields${NC}"
+
+    local drm_root
+    drm_root=$(mktemp -d)
+    _write_fake_amd_card "$drm_root" 0 "16.0 GT/s PCIe" "16"
+    # Card parked in a low-power link state: current_* unusable, max_* valid.
+    _write_fake_amd_card "$drm_root" 1 "Unknown" "0"
+
+    amd-smi() { return 1; }
+    rocm-smi() { return 1; }
+    rocminfo() { return 1; }
+    numactl() { return 1; }
+    modinfo() { return 1; }
+    warn() { :; }
+
+    source "$TOPO_SCRIPT"
+
+    local topo
+    topo=$(ODS_DRM_SYS="$drm_root" detect_amd_topo)
+    rm -rf "$drm_root"
+
+    assert_eq "gpu 0 pcie_gen is a generation, not GT/s" "4" \
+        "$(echo "$topo" | jq -r '.gpus[0].pcie_gen')"
+    assert_eq "gpu 0 pcie_width has no 'x' prefix" "16" \
+        "$(echo "$topo" | jq -r '.gpus[0].pcie_width')"
+    assert_eq "gpu 1 falls back to max_link_speed" "4" \
+        "$(echo "$topo" | jq -r '.gpus[1].pcie_gen')"
+    assert_eq "gpu 1 falls back to max_link_width" "16" \
+        "$(echo "$topo" | jq -r '.gpus[1].pcie_width')"
+
+    unset -f amd-smi rocm-smi rocminfo numactl modinfo warn
+}
+
 # ── Main test runner ───────────────────────────────────────────────────────
 
 echo -e "${MAG}=== AMD Topology Detection Tests ===${NC}\n"
@@ -302,6 +377,10 @@ echo
 test_gfx_version_parsing
 echo
 test_gfx_version_mixed
+echo
+test_pcie_gen_from_speed
+echo
+test_detect_pcie_link_fields
 
 echo -e "\n${MAG}=== Test Summary ===${NC}"
 echo -e "Tests run:    $TESTS_RUN"

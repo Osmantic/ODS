@@ -9,7 +9,7 @@
 #
 # Expects: jq, warn(), log()
 # Provides: detect_amd_topo(), amd_gpu_id(), amd_gfx_version(),
-#           amd_render_node()
+#           amd_render_node(), amd_pcie_gen_from_speed()
 #
 # Modder notes:
 #   Detection fallback chain:
@@ -42,6 +42,58 @@ _amd_sort_card_dirs() {
     for card_dir in "$@"; do
         printf '%s\t%s\n' "$(_amd_card_id "$card_dir")" "$card_dir"
     done | sort -n -k1,1 | cut -f2-
+}
+
+# Map a sysfs PCIe link speed to the PCIe *generation* number.
+#
+# nvidia-topo.sh reports `pcie_gen` from nvidia-smi's pcie.link.gen.current,
+# which is a generation (1-6). sysfs exposes the transfer rate instead
+# ("16.0 GT/s PCIe"), so it has to be converted or the same field means two
+# different things depending on the vendor.
+amd_pcie_gen_from_speed() {
+    local raw="${1:-}"
+    local gts="${raw#"${raw%%[![:space:]]*}"}"   # drop leading whitespace
+    gts="${gts%%[!0-9.]*}"                       # keep the leading number
+    case "$gts" in
+        2.5|2.5000) echo "1" ;;
+        5|5.0|5.0000) echo "2" ;;
+        8|8.0|8.0000) echo "3" ;;
+        16|16.0|16.0000) echo "4" ;;
+        32|32.0|32.0000) echo "5" ;;
+        64|64.0|64.0000) echo "6" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+# Read the negotiated PCIe generation for a card, falling back to the link's
+# maximum when the current speed is missing or unparseable (cards parked in a
+# low-power link state report "Unknown" in current_link_speed).
+_amd_pcie_gen() {
+    local card_dir="$1"
+    local gen
+    gen=$(amd_pcie_gen_from_speed "$(cat "$card_dir/current_link_speed" 2>/dev/null || true)")
+    if [[ "$gen" == "unknown" ]]; then
+        gen=$(amd_pcie_gen_from_speed "$(cat "$card_dir/max_link_speed" 2>/dev/null || true)")
+    fi
+    echo "$gen"
+}
+
+# Read the negotiated PCIe lane count as a bare number, matching the shape
+# nvidia-topo.sh emits from pcie.link.width.current.
+_amd_pcie_width() {
+    local card_dir="$1"
+    local width
+    width=$(cat "$card_dir/current_link_width" 2>/dev/null || true)
+    width="${width%%[!0-9]*}"
+    if [[ -z "$width" || "$width" == "0" ]]; then
+        width=$(cat "$card_dir/max_link_width" 2>/dev/null || true)
+        width="${width%%[!0-9]*}"
+    fi
+    if [[ -z "$width" || "$width" == "0" ]]; then
+        echo "unknown"
+    else
+        echo "$width"
+    fi
 }
 
 amd_memory_type() {
@@ -423,19 +475,15 @@ detect_amd_topo() {
 
         # PCIe info: try current, fall back to max
         pci_bdf=$(readlink -f "$card_dir" | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1) || pci_bdf="unknown"
-        pcie_gen=$(cat "$card_dir/current_link_speed" 2>/dev/null | grep -oP '^\d+' || \
-                   cat "$card_dir/max_link_speed" 2>/dev/null | grep -oP '^\d+' || echo "unknown")
-        pcie_width=$(cat "$card_dir/current_link_width" 2>/dev/null | grep -oP '^\d+' || \
-                     cat "$card_dir/max_link_width" 2>/dev/null | grep -oP '^\d+' || echo "unknown")
-        [[ "$pcie_width" == "0" ]] && \
-            pcie_width=$(cat "$card_dir/max_link_width" 2>/dev/null | grep -oP '^\d+' || echo "unknown")
+        pcie_gen=$(_amd_pcie_gen "$card_dir")
+        pcie_width=$(_amd_pcie_width "$card_dir")
 
         # Detect memory type per card
         local gtt_bytes mem_type
         gtt_bytes=$(cat "$card_dir/mem_info_gtt_total" 2>/dev/null) || gtt_bytes=0
         mem_type=$(amd_memory_type "$vram_bytes" "$gtt_bytes")
 
-        gpus_tsv+="${idx}	${name}	${vram_gb}	${pcie_gen}	x${pcie_width}	${uuid}	${gfx_ver}	${render_node}	${mem_type}	${pci_bdf}"$'\n'
+        gpus_tsv+="${idx}	${name}	${vram_gb}	${pcie_gen}	${pcie_width}	${uuid}	${gfx_ver}	${render_node}	${mem_type}	${pci_bdf}"$'\n'
         idx=$((idx + 1))
     done
 
