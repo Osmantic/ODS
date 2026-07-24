@@ -23,6 +23,8 @@ FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete AS builder
 
 ARG AMDGPU_TARGET=gfx1151
 ARG LLAMA_CPP_REF=b8763
+# Re-declared after FROM: the pre-FROM ARG is global and not visible inside this stage.
+ARG ROCM_VERSION
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake ninja-build git ca-certificates \
@@ -37,13 +39,20 @@ WORKDIR /build/llama.cpp
 # ── Apply halo-ai-core performance patches ──
 # MMQ kernel fix for RDNA 3.5 register pressure (ggml-org/llama.cpp#21284)
 # Reduces mmq tile size and warp count to fit gfx1151 register file → ~20% prefill gain
+# gfx1151 ONLY: this trades throughput away to relieve register pressure specific to the
+# RDNA 3.5 register file. On other targets (e.g. RDNA4/gfx1201) that pressure does not
+# exist, so the smaller tiles and halved warp count are a straight performance loss.
 # NOTE: These patches are validated against the pinned LLAMA_CPP_REF. When bumping
 # the ref, verify the sed targets still exist: grep -n 'mmq_x = ' ggml/src/ggml-cuda/mmq.cu
-RUN sed -i 's/mmq_x = 64/mmq_x = 48/g' ggml/src/ggml-cuda/mmq.cu 2>/dev/null || true && \
-    sed -i 's/mmq_y = 128/mmq_y = 64/g' ggml/src/ggml-cuda/mmq.cu 2>/dev/null || true && \
-    sed -i 's/nwarps = 8/nwarps = 4/g'  ggml/src/ggml-cuda/mmq.cu 2>/dev/null || true && \
-    if [ -f ggml/src/ggml-cuda/mmq.cu ] && ! grep -q 'mmq_x = 48' ggml/src/ggml-cuda/mmq.cu; then \
-        echo "WARNING: MMQ patch did not apply — upstream may have changed. Build continues without patch."; \
+RUN if [ "${AMDGPU_TARGET}" = "gfx1151" ]; then \
+        sed -i 's/mmq_x = 64/mmq_x = 48/g' ggml/src/ggml-cuda/mmq.cu 2>/dev/null || true; \
+        sed -i 's/mmq_y = 128/mmq_y = 64/g' ggml/src/ggml-cuda/mmq.cu 2>/dev/null || true; \
+        sed -i 's/nwarps = 8/nwarps = 4/g'  ggml/src/ggml-cuda/mmq.cu 2>/dev/null || true; \
+        if [ -f ggml/src/ggml-cuda/mmq.cu ] && ! grep -q 'mmq_x = 48' ggml/src/ggml-cuda/mmq.cu; then \
+            echo "WARNING: MMQ patch did not apply — upstream may have changed. Build continues without patch."; \
+        fi; \
+    else \
+        echo "AMDGPU_TARGET=${AMDGPU_TARGET} is not gfx1151 — skipping Strix Halo MMQ patch."; \
     fi
 
 # Fast math intrinsics for MoE routing / SiLU — measurable speedup, negligible quality loss
@@ -61,6 +70,14 @@ RUN cmake -B build -G Ninja \
 
 # ── Collect binary + runtime dependencies into /opt/llama-dist/ ──
 # Note: newer llama.cpp puts all binaries AND shared libs in build/bin/, not build/lib/
+#
+# The kernel-copy globs below are validated up front, and the only tolerated
+# failure (hipblasltTransform.hsaco, absent from some ROCm builds) keeps its
+# `|| true` parenthesized around that single cp. Do NOT put a bare `|| true`
+# in the middle of the && chain: `A && B || true && C` parses as
+# `((A && B) || true) && C`, which swallows a failure in A — that is exactly
+# how an image with EMPTY rocblas/hipblaslt kernel dirs once shipped green
+# when the glob matched nothing.
 RUN mkdir -p /opt/llama-dist && \
     cp build/bin/llama-server /opt/llama-dist/ && \
     cp -a build/bin/lib*.so* /opt/llama-dist/ && \
@@ -69,13 +86,20 @@ RUN mkdir -p /opt/llama-dist && \
         | awk '{print $3}' | sort -u \
         | xargs -I{} cp -L {} /opt/llama-dist/ && \
     mkdir -p /opt/llama-dist/rocblas/library && \
+    for _lib in rocblas hipblaslt; do \
+        if ! ls /opt/rocm/lib/$_lib/library/*${AMDGPU_TARGET}* >/dev/null 2>&1; then \
+            echo "ERROR: ROCm ${ROCM_VERSION} ships no $_lib kernels for AMDGPU_TARGET=${AMDGPU_TARGET}." >&2; \
+            echo "       Supported targets in this image:" >&2; \
+            ls /opt/rocm/lib/$_lib/library/ | grep -oE 'gfx[0-9a-z]+' | sort -u | sed 's/^/         /' >&2; \
+            exit 1; \
+        fi; \
+    done && \
     cp /opt/rocm/lib/rocblas/library/*${AMDGPU_TARGET}* /opt/llama-dist/rocblas/library/ && \
-    cp /opt/rocm/lib/rocblas/library/TensileLibrary_lazy_${AMDGPU_TARGET}.dat /opt/llama-dist/rocblas/library/ 2>/dev/null || true && \
     mkdir -p /opt/llama-dist/hipblaslt/library && \
     cp /opt/rocm/lib/hipblaslt/library/*${AMDGPU_TARGET}* /opt/llama-dist/hipblaslt/library/ && \
     cp /opt/rocm/lib/hipblaslt/library/TensileLiteLibrary_lazy_Mapping.dat /opt/llama-dist/hipblaslt/library/ && \
     cp /opt/rocm/lib/hipblaslt/library/hipblasltExtOpLibrary.dat /opt/llama-dist/hipblaslt/library/ && \
-    cp /opt/rocm/lib/hipblaslt/library/hipblasltTransform.hsaco /opt/llama-dist/hipblaslt/library/ 2>/dev/null || true
+    (cp /opt/rocm/lib/hipblaslt/library/hipblasltTransform.hsaco /opt/llama-dist/hipblaslt/library/ 2>/dev/null || true)
 
 
 # ── Stage 2: Lemonade runtime with custom binary ────────────────────────────
