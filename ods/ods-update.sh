@@ -949,27 +949,39 @@ cmd_health() {
         fi
     done
     
-    # Check dashboard API health endpoint
-    local dashboard_api_port="${DASHBOARD_API_PORT:-}"
-    [[ -n "$dashboard_api_port" ]] || dashboard_api_port="$(env_file_value DASHBOARD_API_PORT)"
-    dashboard_api_port="${dashboard_api_port:-3002}"
-    if curl -sf --max-time 15 "http://127.0.0.1:${dashboard_api_port}/health" &>/dev/null; then
-        log_ok "Dashboard API: healthy"
-    elif curl -sf --max-time 15 "http://127.0.0.1:${dashboard_api_port}/api/status" &>/dev/null; then
-        log_ok "Dashboard API: responding"
+    # Registry-owned HTTP health (2xx only). Functional /v1/models is separate.
+    if [[ -f "${INSTALL_DIR}/lib/service-registry.sh" ]]; then
+        # shellcheck source=lib/service-registry.sh
+        . "${INSTALL_DIR}/lib/service-registry.sh"
+        sr_load
+        if [[ -f "${INSTALL_DIR}/lib/safe-env.sh" ]]; then
+            # shellcheck source=lib/safe-env.sh
+            . "${INSTALL_DIR}/lib/safe-env.sh"
+            load_env_file "${INSTALL_DIR}/.env" 2>/dev/null || true
+        fi
+        # Ensure port env vars are set for sr_resolve_ports (env_file fallback).
+        export DASHBOARD_API_PORT="${DASHBOARD_API_PORT:-$(env_file_value DASHBOARD_API_PORT)}"
+        export OLLAMA_PORT="${OLLAMA_PORT:-$(env_file_value OLLAMA_PORT)}"
+        export LLAMA_SERVER_PORT="${LLAMA_SERVER_PORT:-$(env_file_value LLAMA_SERVER_PORT)}"
+        sr_resolve_ports
+
+        if sr_curl_health dashboard-api 15 >/dev/null 2>&1; then
+            log_ok "Dashboard API: healthy"
+        elif sr_http_probe_2xx "http://127.0.0.1:$(sr_health_port dashboard-api)/api/status" 15 >/dev/null 2>&1; then
+            log_ok "Dashboard API: responding"
+        else
+            log_warn "Dashboard API: not responding on port $(sr_health_port dashboard-api)"
+        fi
+
+        if sr_curl_health llama-server 15 >/dev/null 2>&1; then
+            log_ok "llama-server: healthy"
+        elif sr_http_probe_2xx "http://127.0.0.1:$(sr_health_port llama-server)/v1/models" 15 >/dev/null 2>&1; then
+            log_ok "llama-server: models API responding"
+        else
+            log_warn "llama-server: not responding on port $(sr_health_port llama-server)"
+        fi
     else
-        log_warn "Dashboard API: not responding on port ${dashboard_api_port}"
-    fi
-    
-    # Check llama-server health
-    local llama_server_port="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-}}"
-    [[ -n "$llama_server_port" ]] || llama_server_port="$(env_file_value OLLAMA_PORT)"
-    [[ -n "$llama_server_port" ]] || llama_server_port="$(env_file_value LLAMA_SERVER_PORT)"
-    llama_server_port="${llama_server_port:-8080}"
-    if curl -sf --max-time 15 "http://127.0.0.1:${llama_server_port}/v1/models" &>/dev/null; then
-        log_ok "llama-server: healthy"
-    else
-        log_warn "llama-server: not responding on port ${llama_server_port}"
+        log_warn "service-registry.sh missing — cannot run centralized health probes"
     fi
     
     if $all_healthy; then

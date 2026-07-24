@@ -124,10 +124,20 @@ if command -v docker >/dev/null 2>&1; then
 fi
 
 if command -v curl >/dev/null 2>&1; then
-    if curl -sf --max-time 10 "http://127.0.0.1:${_DASHBOARD_PORT}" >/dev/null 2>&1; then
+    # Prefer registry-owned health endpoints (health_port/header/2xx). Fall back
+    # only when the service id is absent from the loaded registry.
+    if declare -F sr_curl_health >/dev/null 2>&1 && [[ -n "${SERVICE_HEALTH[dashboard]:-}" ]]; then
+        if sr_curl_health dashboard 10 >/dev/null 2>&1; then
+            DASHBOARD_HTTP="true"
+        fi
+    elif sr_http_probe_2xx "http://127.0.0.1:${_DASHBOARD_PORT}/" 10 >/dev/null 2>&1; then
         DASHBOARD_HTTP="true"
     fi
-    if curl -sf --max-time 10 "http://127.0.0.1:${_WEBUI_PORT}" >/dev/null 2>&1; then
+    if declare -F sr_curl_health >/dev/null 2>&1 && [[ -n "${SERVICE_HEALTH[open-webui]:-}" ]]; then
+        if sr_curl_health open-webui 10 >/dev/null 2>&1; then
+            WEBUI_HTTP="true"
+        fi
+    elif sr_http_probe_2xx "http://127.0.0.1:${_WEBUI_PORT}/" 10 >/dev/null 2>&1; then
         WEBUI_HTTP="true"
     fi
 fi
@@ -143,14 +153,15 @@ TTS_HTTP="unknown"
 TTS_PORT=""
 if [[ "${ENABLE_VOICE:-false}" == "true" ]] && command -v curl >/dev/null 2>&1; then
     STT_MODEL_NAME="${AUDIO_STT_MODEL:-Systran/faster-whisper-base}"
-    _stt_whisper_port="${SERVICE_PORTS[whisper]:-9000}"
+    _stt_whisper_port="$(sr_health_port whisper 2>/dev/null || printf '%s' "${SERVICE_PORTS[whisper]:-9000}")"
     _stt_model_encoded="${STT_MODEL_NAME//\//%2F}"
     _stt_whisper_url="http://127.0.0.1:${_stt_whisper_port}"
-    if curl -sf --max-time 5 "${_stt_whisper_url}/v1/models/${_stt_model_encoded}" >/dev/null 2>&1; then
+    # Model-cache probe is a resource endpoint, not the service health path.
+    if sr_http_probe_2xx "${_stt_whisper_url}/v1/models/${_stt_model_encoded}" 5 >/dev/null 2>&1; then
         STT_MODEL_CACHED="true"
     else
         # Distinguish "service down" from "model missing" for the hint.
-        if curl -sf --max-time 5 "${_stt_whisper_url}/health" >/dev/null 2>&1; then
+        if sr_curl_health whisper 5 >/dev/null 2>&1; then
             STT_MODEL_CACHED="false"
             STT_RECOVERY_HINT="curl --max-time 3600 -X POST ${_stt_whisper_url}/v1/models/${_stt_model_encoded}"
         else
@@ -158,8 +169,8 @@ if [[ "${ENABLE_VOICE:-false}" == "true" ]] && command -v curl >/dev/null 2>&1; 
         fi
     fi
 
-    TTS_PORT="${SERVICE_PORTS[tts]:-8880}"
-    if curl -sf --max-time 5 "http://127.0.0.1:${TTS_PORT}/health" >/dev/null 2>&1; then
+    TTS_PORT="$(sr_health_port tts 2>/dev/null || printf '%s' "${SERVICE_PORTS[tts]:-8880}")"
+    if sr_curl_health tts 5 >/dev/null 2>&1; then
         TTS_HTTP="true"
     else
         TTS_HTTP="false"
@@ -240,10 +251,11 @@ collect_extension_diagnostics() {
 
             # Check health endpoint if container running
             if [[ "$container_state" == "running" ]]; then
-                local port="${SERVICE_PORTS[$sid]:-0}"
+                local port
+                port="$(sr_health_port "$sid")"
                 local health="${SERVICE_HEALTH[$sid]:-}"
                 if [[ "$port" != "0" && -n "$health" ]]; then
-                    if curl -sf --max-time 5 "http://127.0.0.1:${port}${health}" >/dev/null 2>&1; then
+                    if sr_curl_health "$sid" 5 >/dev/null 2>&1; then
                         health_status="healthy"
                     else
                         health_status="unhealthy"

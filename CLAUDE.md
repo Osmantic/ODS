@@ -30,6 +30,17 @@ Within `ods/`:
 - **`tests/`** — shell-based tests (tier map, contracts, smoke tests, integration)
 - **`lib/`** — shared Bash utilities (safe-env, service-registry, progress, QR code)
 
+## Health Probe Governance (agents)
+
+Normative contract for service health probing:
+
+- **Registry owns HTTP health** — use `sr_health_port` / `sr_health_url` / `sr_curl_health` / `sr_http_probe_2xx` from `lib/service-registry.sh`. Do not hand-roll `curl -sf .../health` for registry services.
+- **Always** `sr_load` then load env then `sr_resolve_ports` before probing.
+- **Merge order** (ADR): `#1934` foundation → `#1692` `health_type` → `#1743` external LLM doctor; close `#1343` as duplicate. See `ods/docs/ADR-HEALTH-PROBE-MERGE-ORDER.md`.
+- **Dual schema parity**: core + library `service-manifest.v1.json` health fields must stay aligned (`tests/test-service-manifest-health-contract-drift.sh`).
+- **Gates before merge**: `test-ods-cli-health-probe-contract.sh`, `test-health-probe-shadow-audit.sh`, `test-service-manifest-health-contract-drift.sh`, `test-health-probe-path-shell-audit.sh`.
+- **Agent rules**: `.ai-rulez/config.toml` + `.ai-rulez/domains/health-probe/`.
+
 ## Build & Development Commands
 
 All commands run from `ods/` directory unless noted.

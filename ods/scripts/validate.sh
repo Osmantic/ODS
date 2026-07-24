@@ -23,11 +23,10 @@ sr_load
 load_env_file "$PROJECT_DIR/.env"
 sr_resolve_ports
 
-# Resolve core ports from registry (honoring any env overrides)
+# Resolve core ports from registry (honoring any env overrides).
+# Health paths come from sr_curl_health; ports remain for models/API checks.
 LLM_PORT="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-${SERVICE_PORTS[llama-server]:-11434}}}"
-LLM_HEALTH="${SERVICE_HEALTH[llama-server]:-/health}"
 WEBUI_PORT="${WEBUI_PORT:-${SERVICE_PORTS[open-webui]:-3000}}"
-WEBUI_HEALTH="${WEBUI_HEALTH:-${SERVICE_HEALTH[open-webui]:-/}}"
 
 # Resolve compose flags to match actual stack
 COMPOSE_FLAGS=""
@@ -62,6 +61,19 @@ check() {
     fi
 }
 
+check_registry_health() {
+    local name="$1"
+    local sid="$2"
+    printf "  %-30s " "$name..."
+    if sr_curl_health "$sid" 10 >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ PASS${NC}"
+        ((PASSED++)) || true
+    else
+        echo -e "${RED}✗ FAIL${NC}"
+        ((FAILED++)) || true
+    fi
+}
+
 echo "1. Container Status"
 echo "───────────────────"
 check "llama-server running" "docker compose $COMPOSE_FLAGS ps llama-server 2>/dev/null | grep -qE 'Up|running'"
@@ -70,9 +82,11 @@ check "Open WebUI running" "docker compose $COMPOSE_FLAGS ps open-webui 2>/dev/n
 echo ""
 echo "2. Health Endpoints"
 echo "───────────────────"
-check "llama-server health" "curl -sf --max-time 10 http://127.0.0.1:${LLM_PORT}${LLM_HEALTH}"
+# Registry-owned health probes (ports/headers/2xx). Models listing remains a
+# functional readiness check, not a health-path probe.
+check_registry_health "llama-server health" "llama-server"
 check "llama-server models" "curl -sf --max-time 10 http://127.0.0.1:${LLM_PORT}/v1/models | grep -q model"
-check "WebUI reachable" "curl -sf --max-time 10 http://127.0.0.1:${WEBUI_PORT}${WEBUI_HEALTH} -o /dev/null"
+check_registry_health "WebUI reachable" "open-webui"
 
 echo ""
 echo "3. Inference Test"
@@ -102,6 +116,7 @@ echo "────────────────────────�
 SCRIPT_DIR_REG="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR_REG/lib/service-registry.sh"
 sr_load
+sr_resolve_ports
 
 for sid in "${SERVICE_IDS[@]}"; do
     _cat="${SERVICE_CATEGORIES[$sid]}"
@@ -109,20 +124,15 @@ for sid in "${SERVICE_IDS[@]}"; do
 
     _container="${SERVICE_CONTAINERS[$sid]}"
     _health="${SERVICE_HEALTH[$sid]}"
-    _port_env="${SERVICE_PORT_ENVS[$sid]}"
-    _default_port="${SERVICE_PORTS[$sid]}"
+    _port="$(sr_health_port "$sid")"
     _name="${SERVICE_NAMES[$sid]:-$sid}"
-
-    # Resolve port
-    _port="$_default_port"
-    [[ -n "$_port_env" ]] && _port="${!_port_env:-$_default_port}"
 
     # Skip if no health endpoint or port
     [[ -z "$_health" || "$_port" == "0" ]] && continue
 
     # Check if container is running
     if docker compose $COMPOSE_FLAGS ps "$sid" 2>/dev/null | grep -qE "Up|running"; then
-        check "$_name" "curl -sf --max-time 10 http://127.0.0.1:${_port}${_health}"
+        check_registry_health "$_name" "$sid"
     else
         printf "  %-30s ${YELLOW}○ SKIP (not enabled)${NC}\n" "$_name..."
     fi

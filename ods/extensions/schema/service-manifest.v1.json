@@ -60,7 +60,7 @@
         "host_env": { "type": "string" },
         "default_host": { "type": "string" },
         "port": { "type": "integer", "minimum": 0, "maximum": 65535 },
-        "external_port_env": { "type": "string" },
+        "external_port_env": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
         "external_port_default": { "type": "integer", "minimum": 0, "maximum": 65535 },
         "host_network": {
           "type": "boolean",
@@ -71,11 +71,28 @@
           "minLength": 0,
           "description": "HTTP health path. Use an empty string for non-HTTP or one-shot services whose readiness is represented by container state/startup_check."
         },
+        "health_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Optional dedicated host port for HTTP health checks when the service's public port uses a different protocol."
+        },
+        "health_port_env": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "description": "Optional environment variable overriding health_port."
+        },
+        "health_header": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+:[^\\r\\n]*[^\\s\\r\\n][^\\r\\n]*$",
+          "description": "Optional single HTTP header required by the health endpoint, for example a virtual-host Host header."
+        },
         "health_timeout": {
           "type": "integer",
           "minimum": 1,
           "maximum": 300,
-          "description": "Health check timeout in seconds (default: 10)"
+          "description": "Health check timeout in seconds (default: 5; matches service-registry runtime)"
         },
         "ui_path": {
           "type": "string",

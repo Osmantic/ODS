@@ -61,10 +61,10 @@ print_menu() {
     echo -ne "${BOLD}Select an option: ${NC}"
 }
 
+# Registry-owned health probe for a service id (2xx only; respects health_port/header).
 check_service() {
-    local url=$1
-    local endpoint=$2
-    curl -sf "${url}${endpoint}" > /dev/null 2>&1
+    local sid=$1
+    sr_curl_health "$sid" "${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}" 127.0.0.1 >/dev/null 2>&1
 }
 
 demo_chat() {
@@ -73,7 +73,7 @@ demo_chat() {
     echo -e "${DIM}────────────────────────────────────────${NC}"
     echo ""
     
-    if ! check_service "$LLM_URL" "/health"; then
+    if ! check_service "llama-server"; then
         echo -e "${RED}Error: LLM is not running${NC}"
         echo "Start ODS first: docker compose up -d"
         return
@@ -116,13 +116,13 @@ demo_voice() {
     echo -e "${DIM}────────────────────────────────────────${NC}"
     echo ""
     
-    if ! check_service "$WHISPER_URL" "/health"; then
+    if ! check_service "whisper"; then
         echo -e "${YELLOW}Whisper (STT) not running. Voice input disabled.${NC}"
         echo -e "${DIM}Enable with: docker compose ps whisper  # Voice services start with the stack${NC}"
         echo ""
     fi
     
-    if ! check_service "$TTS_URL" "/health"; then
+    if ! check_service "tts"; then
         echo -e "${YELLOW}Kokoro (TTS) not running. Voice output disabled.${NC}"
         echo -e "${DIM}Enable with: docker compose ps whisper  # Voice services start with the stack${NC}"
         echo ""
@@ -165,12 +165,12 @@ demo_rag() {
     echo -e "${DIM}────────────────────────────────────────${NC}"
     echo ""
     
-    if ! check_service "$LLM_URL" "/health"; then
+    if ! check_service "llama-server"; then
         echo -e "${RED}Error: LLM is not running${NC}"
         return
     fi
     
-    if ! check_service "$QDRANT_URL" "/healthz"; then
+    if ! check_service "qdrant"; then
         echo -e "${YELLOW}Qdrant not running. Enable with: docker compose ps qdrant  # RAG services start with the stack${NC}"
         echo ""
         echo -e "${DIM}Press Enter to return to menu...${NC}"
@@ -239,7 +239,7 @@ demo_code() {
     echo -e "${DIM}────────────────────────────────────────${NC}"
     echo ""
     
-    if ! check_service "$LLM_URL" "/health"; then
+    if ! check_service "llama-server"; then
         echo -e "${RED}Error: LLM is not running${NC}"
         return
     fi
@@ -318,12 +318,11 @@ show_status() {
     echo ""
     
     for sid in "${SERVICE_IDS[@]}"; do
-        _port="${SERVICE_PORTS[$sid]:-0}"
-        _health="${SERVICE_HEALTH[$sid]:-/health}"
+        _port="$(sr_health_port "$sid")"
         _name="${SERVICE_NAMES[$sid]:-$sid}"
         [[ "$_port" == "0" ]] && continue
-        _url="http://localhost:${_port}"
-        if check_service "$_url" "$_health"; then
+        _url="$(sr_health_url "$sid" localhost)"
+        if sr_curl_health "$sid" "${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}" localhost >/dev/null 2>&1; then
             echo -e "  ${GREEN}✓${NC} $_name ${DIM}($_url)${NC}"
         else
             echo -e "  ${RED}✗${NC} $_name ${DIM}($_url)${NC}"

@@ -139,6 +139,7 @@ teardown() {
 }
 
 @test "preflight: passes when compose files exist" {
+    [[ "$(uname -s)" == "Linux" ]] || skip "Linux installer integration test"
     touch "$SCRIPT_DIR/docker-compose.base.yml"
     # Create a fake curl in PATH
     mkdir -p "$BATS_TEST_TMPDIR/bin"
@@ -187,6 +188,7 @@ MOCK
 # ── Existing installation detection ─────────────────────────────────────────
 
 @test "preflight: detects existing installation" {
+    [[ "$(uname -s)" == "Linux" ]] || skip "Linux installer integration test"
     touch "$SCRIPT_DIR/docker-compose.base.yml"
     mkdir -p "$INSTALL_DIR"
 
@@ -226,6 +228,7 @@ MOCK
 # ── Optional tools warning ──────────────────────────────────────────────────
 
 @test "preflight: warns about missing optional tools" {
+    [[ "$(uname -s)" == "Linux" ]] || skip "Linux installer integration test"
     touch "$SCRIPT_DIR/docker-compose.base.yml"
     mkdir -p "$BATS_TEST_TMPDIR/bin"
 

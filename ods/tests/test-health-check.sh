@@ -178,7 +178,7 @@ MANIFEST
 for a in "$@"; do
   case "$a" in
     *"/v1/completions"*) echo '{"text":"ok"}'; exit 0 ;;
-    *":9999/health"*) echo 'ok'; exit 0 ;;
+    *":9999/health"*) printf '200'; exit 0 ;;
   esac
 done
 exit 7

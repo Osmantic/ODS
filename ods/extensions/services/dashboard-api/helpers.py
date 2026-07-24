@@ -624,7 +624,14 @@ async def check_service_health(
         return _service_status_from_config(service_id, config, "not_deployed")
 
     host = config.get('host', 'localhost')
-    health_port = config.get('health_port', config['port'])
+    # Prefer resolved health_port (config load applies health_port_env).
+    # Fall back external_port then internal port — matches Bash sr_health_port.
+    health_port = int(
+        config.get("health_port")
+        or config.get("external_port")
+        or config.get("port")
+        or 0
+    )
     url = f"http://{host}:{health_port}{config['health']}"
     status = "unknown"
     response_time = None
@@ -632,15 +639,27 @@ async def check_service_health(
     try:
         session = await _get_aio_session()
         start = asyncio.get_event_loop().time()
-        # Send Host header so reverse-proxy services (e.g. Caddy in Baserow)
-        # route the request correctly instead of returning 404.
-        headers = {"Host": "localhost"}
-        get_kwargs: dict = {"headers": headers}
+        # Send the manifest-owned header when a reverse-proxy service needs a
+        # specific virtual host. Keep localhost as the backward-compatible
+        # default for existing services.
+        health_header = config.get("health_header", "")
+        if health_header:
+            header_name, separator, header_value = health_header.partition(":")
+            if not separator or not header_name or not header_value.strip():
+                raise ValueError(f"Invalid health_header for {service_id!r}")
+            headers = {header_name: header_value.strip()}
+        else:
+            headers = {"Host": "localhost"}
+        get_kwargs: dict = {"headers": headers, "allow_redirects": False}
+        # Prefer caller override; else manifest health_timeout; else session default.
+        # Runtime default of 5s matches service-registry when health_timeout is unset.
         if timeout is not None:
             get_kwargs["timeout"] = timeout
+        elif config.get("health_timeout") is not None:
+            get_kwargs["timeout"] = aiohttp.ClientTimeout(total=float(config["health_timeout"]))
         async with session.get(url, **get_kwargs) as resp:
             response_time = (asyncio.get_event_loop().time() - start) * 1000
-            status = "healthy" if resp.status < 400 else "unhealthy"
+            status = "healthy" if 200 <= resp.status < 300 else "unhealthy"
     except asyncio.TimeoutError:
         # Service is reachable but slow — report degraded rather than down
         # to avoid false "offline" flashes during startup or heavy load.

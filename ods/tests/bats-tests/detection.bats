@@ -4,7 +4,7 @@
 # ============================================================================
 # Tests: normalize_profile_tier(), tier_rank()
 # Also tests detect_gpu() with mocked nvidia-smi on Linux (skipped on macOS
-# because detect_gpu uses GNU grep -oP for VRAM parsing).
+# with mocked hardware and native portable parsing).
 
 load '../bats/bats-support/load'
 load '../bats/bats-assert/load'
@@ -127,14 +127,9 @@ STUB
     [[ $rank4 -lt $rank5 ]]
 }
 
-# ── detect_gpu (requires GNU grep for -oP; skip on macOS) ──────────────────
+# ── detect_gpu ─────────────────────────────────────────────────────────────
 
 @test "detect_gpu: detects single NVIDIA GPU via mock nvidia-smi" {
-    # grep -oP (Perl regex) is used inside detect_gpu; only available with GNU grep
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        skip "detect_gpu uses GNU grep -oP, not available on macOS"
-    fi
-
     mkdir -p "$BATS_TEST_TMPDIR/bin"
     cat > "$BATS_TEST_TMPDIR/bin/nvidia-smi" << 'MOCK'
 #!/bin/bash
@@ -160,10 +155,6 @@ MOCK
 }
 
 @test "detect_gpu: sums VRAM for multi-GPU and formats display name" {
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        skip "detect_gpu uses GNU grep -oP, not available on macOS"
-    fi
-
     mkdir -p "$BATS_TEST_TMPDIR/bin"
     cat > "$BATS_TEST_TMPDIR/bin/nvidia-smi" << 'MOCK'
 #!/bin/bash
@@ -190,10 +181,6 @@ MOCK
 }
 
 @test "detect_gpu: returns failure when no GPU found" {
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        skip "detect_gpu uses GNU grep -oP, not available on macOS"
-    fi
-
     # Place a broken nvidia-smi on PATH that always fails
     mkdir -p "$BATS_TEST_TMPDIR/bin"
     cat > "$BATS_TEST_TMPDIR/bin/nvidia-smi" << 'MOCK'

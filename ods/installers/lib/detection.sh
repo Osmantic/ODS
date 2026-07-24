@@ -353,7 +353,9 @@ detect_gpu() {
             GPU_MEMORY_TYPE="discrete"
             GPU_INFO="$raw"
             GPU_NAME=$(echo "$GPU_INFO" | head -1 | cut -d',' -f1 | xargs)
-            GPU_COUNT=$(echo "$GPU_INFO" | wc -l)
+            # awk avoids BSD wc's padded output, which otherwise leaks spaces
+            # into GPU_COUNT and breaks exact status/JSON consumers.
+            GPU_COUNT=$(printf '%s\n' "$GPU_INFO" | awk 'END {print NR}')
             # Sum VRAM across all GPUs (each line = one GPU)
             GPU_VRAM=$(echo "$GPU_INFO" | cut -d',' -f2 | grep -oE '[0-9]+' | awk '{s+=$1} END {print s+0}')
             # Check for unified memory (GB10, GB200): nvidia-smi reports [N/A]

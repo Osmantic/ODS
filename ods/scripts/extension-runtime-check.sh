@@ -91,7 +91,7 @@ for sid in "${SERVICE_IDS[@]}"; do
         continue
     fi
 
-    port="${SERVICE_PORTS[$sid]:-0}"
+    port="$(sr_health_port "$sid")"
     health="${SERVICE_HEALTH[$sid]:-}"
     timeout_sec="${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}"
 
@@ -110,8 +110,8 @@ for sid in "${SERVICE_IDS[@]}"; do
         continue
     fi
 
-    url="http://127.0.0.1:${port}${health}"
-    if curl -sf --max-time "$timeout_sec" "$url" >/dev/null; then
+    url="$(sr_health_url "$sid")"
+    if sr_curl_health "$sid" "$timeout_sec" >/dev/null; then
         ok_line "[$sid] $disp — running, health OK ($url)"
     else
         bad_line "[$sid] $disp — running but health failed ($url) — try: docker compose logs $sid"
