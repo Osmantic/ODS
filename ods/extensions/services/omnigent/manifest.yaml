@@ -1,0 +1,72 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: omnigent
+  name: Omnigent (Agent Meta-Harness)
+  aliases: [meta-harness, agents-hub]
+  container_name: ods-omnigent
+  default_host: omnigent
+  # Upstream server listens on 8000 inside the container. Externally we
+  # default to 6767 — Omnigent's well-known local-CLI port — so host-side
+  # runner docs (`omnigent run … --server http://localhost:6767`) match
+  # what users see elsewhere in the Omnigent ecosystem.
+  port: 8000
+  external_port_env: OMNIGENT_PORT
+  external_port_default: 6767
+  health: /health
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: >
+    Omnigent server — a meta-harness that coordinates sandboxed sessions
+    of CLI coding agents (Claude Code, Codex, OpenCode, Cursor, Pi)
+    behind one API, with stateful policies (cost budgets, permissions)
+    and live session sharing. ODS ships only the coordinator container
+    (SQLite lite tier); agent runners install on the host and register
+    against this server, pointing their harnesses at the local LLM
+    gateway (LiteLLM or llama-server). See docs/OMNIGENT.md.
+
+  env_vars:
+    - key: OMNIGENT_IMAGE_TAG
+      default: "v0.5.1"
+      description: |
+        Pinned upstream server image tag. Omnigent is alpha; bump
+        deliberately and re-run the smoke checks in docs/OMNIGENT.md.
+    - key: OMNIGENT_AUTH_ENABLED
+      default: "1"
+      description: |
+        Multi-user auth switch. "1" (default) uses Omnigent's built-in
+        accounts flow — first boot writes the admin password to
+        data/omnigent/admin-credentials. "0" runs single-user local
+        mode with no login; acceptable only because ODS binds the port
+        to 127.0.0.1, never for LAN-exposed deployments.
+    - key: OMNIGENT_ACCOUNTS_COOKIE_SECRET
+      default: ""
+      description: |
+        Session cookie signing secret for accounts mode. Generate with
+        `openssl rand -hex 32` and set it in .env so logins survive
+        container restarts.
+
+features:
+  - id: meta-harness
+    name: Agent Meta-Harness
+    description: Run any CLI coding agent (Claude Code, Codex, OpenCode) against local models — sandboxed, policy-governed, shareable sessions
+    icon: Bot
+    category: productivity
+    requirements:
+      services: [omnigent]
+      services_any: [litellm, llama-server]
+    enabled_services_all: [omnigent]
+    enabled_services_any: [litellm, llama-server]
+    setup_time: ~2 minutes (image pull + host runner install)
+    priority: 12
+    launch:
+      type: service
+      service: omnigent
+    gpu_backends: [all]

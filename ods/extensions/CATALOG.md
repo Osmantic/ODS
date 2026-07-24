@@ -24,6 +24,7 @@ For adding or authoring extensions, see [EXTENSIONS.md](../docs/EXTENSIONS.md) a
 | embeddings      | TEI (Embeddings)         | optional   | 8090        | all            | Text embeddings service for RAG. |
 | langfuse        | Langfuse (LLM Observability) | optional | 3006      | all            | LLM tracing, evaluations, and prompt management. |
 | n8n             | n8n (Workflows)          | optional   | 5678        | all            | Workflow automation. |
+| omnigent        | Omnigent (Agent Meta-Harness) | optional | 6767       | all            | Meta-harness server coordinating sandboxed CLI coding-agent sessions (Claude Code, Codex, OpenCode) with policies and sharing. Runners install on the host — see [OMNIGENT.md](../docs/OMNIGENT.md). |
 | openclaw        | OpenClaw (Agents) **(deprecated)** | optional | 7860 | all | Legacy agent framework. **DEPRECATED** — removal planned in the next release. Use `hermes` instead. See [MIGRATION-OPENCLAW-TO-HERMES.md](../docs/MIGRATION-OPENCLAW-TO-HERMES.md). |
 | opencode        | OpenCode (IDE)           | optional   | 3003        | all            | Host-managed browser IDE / coding assistant wired to local inference. |
 | perplexica      | Perplexica (Deep Research) | optional | 3004        | all            | Deep research UI backed by SearXNG and local inference. |
@@ -37,7 +38,7 @@ For adding or authoring extensions, see [EXTENSIONS.md](../docs/EXTENSIONS.md) a
 
 - **core** — Always part of the base stack (llama-server, open-webui, dashboard, dashboard-api).
 - **recommended** — Enabled by default in the installer; can be disabled (litellm, searxng, token-spy, hermes, hermes-proxy).
-- **optional** — User opts in during install or later (APE, Brave Search, ComfyUI, ods-proxy, embeddings, Langfuse, n8n, OpenCode, Perplexica, Privacy Shield, Qdrant, Tailscale, TTS, Whisper). `openclaw` is also in this category but is **deprecated** as of 2026-05-12.
+- **optional** — User opts in during install or later (APE, Brave Search, ComfyUI, ods-proxy, embeddings, Langfuse, n8n, Omnigent, OpenCode, Perplexica, Privacy Shield, Qdrant, Tailscale, TTS, Whisper). `openclaw` is also in this category but is **deprecated** as of 2026-05-12.
 
 ## Ports and .env
 
@@ -72,6 +73,7 @@ extensions/services/
   comfyui/manifest.yaml
   hermes/manifest.yaml
   hermes-proxy/manifest.yaml
+  omnigent/manifest.yaml
   openclaw/manifest.yaml      # deprecated; removal planned next release
   perplexica/manifest.yaml
   embeddings/manifest.yaml
