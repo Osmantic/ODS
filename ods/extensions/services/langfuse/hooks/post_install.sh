@@ -58,6 +58,21 @@ if [[ "$(id -u)" -ne 0 ]]; then
     fi
 fi
 
+# In rootless Docker mode, sudo chown cannot reach container UIDs.
+# Use a helper container running as root instead (root in container = host user).
+_is_rootless_docker() {
+    docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q "rootless"
+}
+
+_rootless_chown_dir() {
+    local dir="$1" owner="$2"  # owner format: uid:gid
+    [[ -d "$dir" ]] || return 0
+    docker run --rm --user 0:0 \
+        -v "$dir:/data" \
+        alpine sh -c "chown -R ${owner} /data" 2>/dev/null || \
+        log "WARNING: rootless chown failed for $dir (non-fatal)"
+}
+
 is_container_running() {
     # Returns:
     #   0 = container is running
@@ -142,10 +157,18 @@ chown_dir() {
 }
 
 # postgres official image: uid 70 (postgres user baked into image)
-chown_dir "$POSTGRES_DIR" "70:70" "ods-langfuse-postgres"
+if _is_rootless_docker; then
+    _rootless_chown_dir "$POSTGRES_DIR" "70:70"
+else
+    chown_dir "$POSTGRES_DIR" "70:70" "ods-langfuse-postgres"
+fi
 
 # clickhouse-server image: uid 101 (clickhouse user)
-chown_dir "$CLICKHOUSE_DIR" "101:101" "ods-langfuse-clickhouse"
+if _is_rootless_docker; then
+    _rootless_chown_dir "$CLICKHOUSE_DIR" "101:101"
+else
+    chown_dir "$CLICKHOUSE_DIR" "101:101" "ods-langfuse-clickhouse"
+fi
 
 log "done"
 exit 0
