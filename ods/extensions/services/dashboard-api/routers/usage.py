@@ -330,12 +330,20 @@ async def usage_readiness(api_key: str = Depends(verify_api_key)):
 
 
 def _token_spy_api_key() -> str:
-    if TOKEN_SPY_API_KEY:
-        return TOKEN_SPY_API_KEY
+    raw_key = (TOKEN_SPY_API_KEY or "").strip()
+    if len(raw_key) >= 2 and raw_key[0] == raw_key[-1] and raw_key[0] in {"'", '"'}:
+        raw_key = raw_key[1:-1].strip()
+    if raw_key:
+        return raw_key
     try:
-        return TOKEN_SPY_KEY_FILE.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+        if TOKEN_SPY_KEY_FILE.is_file():
+            val = TOKEN_SPY_KEY_FILE.read_text(encoding="utf-8").strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in {"'", '"'}:
+                return val[1:-1].strip()
+            return val
+    except (OSError, UnicodeError):
+        pass
+    return ""
 
 
 def _configured_local_runtime_metrics_urls() -> list[str]:
