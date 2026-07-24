@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -302,6 +303,88 @@ def test_write_mode_writes_under_output_root() -> None:
         assert "openai/extra.Written.gguf" in target.read_text(encoding="utf-8")
 
 
+def test_written_bytes_are_unchanged() -> None:
+    # Get dry-run output
+    payload = run_renderer("--surface", "litellm-lemonade")
+    dry_run_content = file_by_surface(payload, "litellm-lemonade")["content"]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        run_renderer(
+            "--surface", "litellm-lemonade",
+            "--output-root", tmp,
+            "--write"
+        )
+        target = Path(tmp) / "config" / "litellm" / "lemonade.yaml"
+        assert target.exists()
+        assert target.read_text(encoding="utf-8") == dry_run_content
+
+
+def test_write_never_exposes_a_truncated_config() -> None:
+    import importlib.util
+    from unittest.mock import patch
+
+    spec = importlib.util.spec_from_file_location("renderer", str(SCRIPT))
+    renderer = importlib.util.module_from_spec(spec)
+    sys.modules["renderer"] = renderer
+    spec.loader.exec_module(renderer)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config" / "litellm" / "lemonade.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("original content", encoding="utf-8")
+
+        args = renderer.parse_args([
+            "--surface", "litellm-lemonade",
+            "--output-root", tmp,
+            "--write"
+        ])
+
+        with patch("os.fsync", side_effect=RuntimeError("disk full")):
+            try:
+                renderer.render(args)
+            except RuntimeError:
+                pass
+
+        assert target.read_text(encoding="utf-8") == "original content"
+        tmp_files = list(target.parent.glob("*.tmp"))
+        assert len(tmp_files) == 0
+
+
+def test_write_path_never_truncates_in_place() -> None:
+    import importlib.util
+    from unittest.mock import patch
+
+    spec = importlib.util.spec_from_file_location("renderer", str(SCRIPT))
+    renderer = importlib.util.module_from_spec(spec)
+    sys.modules["renderer"] = renderer
+    spec.loader.exec_module(renderer)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config" / "litellm" / "lemonade.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("original content", encoding="utf-8")
+
+        args = renderer.parse_args([
+            "--surface", "litellm-lemonade",
+            "--output-root", tmp,
+            "--write"
+        ])
+
+        original_replace = os.replace
+        replace_called = False
+
+        def mock_replace(src, dst):
+            nonlocal replace_called
+            replace_called = True
+            assert Path(dst).read_text(encoding="utf-8") == "original content"
+            original_replace(src, dst)
+
+        with patch("os.replace", side_effect=mock_replace):
+            renderer.render(args)
+
+        assert replace_called
+
+
 def main() -> int:
     tests = [
         test_all_surfaces_render,
@@ -317,6 +400,9 @@ def main() -> int:
         test_hermes_uses_lemonade_model_id_for_amd,
         test_perplexica_default_model_matches_route,
         test_write_mode_writes_under_output_root,
+        test_written_bytes_are_unchanged,
+        test_write_never_exposes_a_truncated_config,
+        test_write_path_never_truncates_in_place,
     ]
     for test in tests:
         test()
