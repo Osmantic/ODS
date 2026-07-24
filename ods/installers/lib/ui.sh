@@ -231,10 +231,18 @@ _docker_pull_retry_delay() {
 
 # Pull wrapper that prints consistent success/fail lines with retry logic
 pull_with_progress() {
-  local img=$1
+  local entry=$1
   local label=$2
   local count=$3
   local total=$4
+  local img platform
+  if [[ "$entry" == *"|"* ]]; then
+    img="${entry%%|*}"
+    platform="${entry#*|}"
+  else
+    img="$entry"
+    platform=""
+  fi
   local configured_max_attempts="${ODS_DOCKER_PULL_MAX_ATTEMPTS:-4}"
   local max_attempts=4
   local pull_timeout=3600  # 60 minutes for large images (CUDA is ~10GB)
@@ -255,8 +263,14 @@ pull_with_progress() {
     local attempt_log
     attempt_log=$(mktemp)
 
+    local -a pull_cmd=($DOCKER_CMD pull)
+    if [[ -n "$platform" ]]; then
+      pull_cmd+=(--platform "$platform")
+    fi
+    pull_cmd+=("$img")
+
     # Wrap docker pull with timeout to prevent indefinite hangs
-    timeout "$pull_timeout" $DOCKER_CMD pull "$img" >"$attempt_log" 2>&1 &
+    timeout "$pull_timeout" "${pull_cmd[@]}" >"$attempt_log" 2>&1 &
     pull_pid=$!
 
     if spin_task "$pull_pid" "[$count/$total] $label"; then

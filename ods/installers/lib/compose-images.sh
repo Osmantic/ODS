@@ -18,7 +18,8 @@ _ods_compose_python_cmd() {
 }
 
 _ods_compose_is_local_image() {
-    local image="${1:-}"
+    local entry="${1:-}"
+    local image="${entry%%|*}"
     case "$image" in
         ""|ods-*|ods-*:*|docker.io/library/ods-*|localhost/*|localhost:*/*|127.0.0.1:*/*)
             return 0
@@ -58,8 +59,12 @@ for service in (data.get("services") or {}).values():
     if service.get("build") is not None:
         continue
     image = str(service.get("image") or "").strip()
+    platform = str(service.get("platform") or "").strip()
     if image:
-        print(image)
+        if platform:
+            print(f"{image}|{platform}")
+        else:
+            print(image)
 ' | _ods_compose_filter_external_images; then
             return 0
         fi

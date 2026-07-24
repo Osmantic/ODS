@@ -2325,7 +2325,8 @@ else
     _macos_compose_up_args=(up -d --remove-orphans --no-build --pull never)
 
     _macos_is_local_image() {
-        local image="${1:-}"
+        local entry="${1:-}"
+        local image="${entry%%|*}"
         case "$image" in
             ""|ods-*|ods-*:*|docker.io/library/ods-*|localhost/*|localhost:*/*|127.0.0.1:*/*)
                 return 0
@@ -2350,8 +2351,12 @@ for service in (data.get("services") or {}).values():
     if service.get("build") is not None:
         continue
     image = str(service.get("image") or "").strip()
+    platform = str(service.get("platform") or "").strip()
     if image:
-        print(image)
+        if platform:
+            print(f"{image}|{platform}")
+        else:
+            print(image)
 ' | while IFS= read -r _image; do
                 _macos_is_local_image "$_image" && continue
                 printf '%s\n' "$_image"
@@ -2367,8 +2372,16 @@ for service in (data.get("services") or {}).values():
     }
 
     _macos_pull_image_with_retry() {
-        local image="$1" attempt max_attempts delay
+        local entry="$1" image platform attempt max_attempts delay
         local -a delays=(5 15 30)
+
+        if [[ "$entry" == *"|"* ]]; then
+            image="${entry%%|*}"
+            platform="${entry#*|}"
+        else
+            image="$entry"
+            platform=""
+        fi
 
         if docker image inspect "$image" >/dev/null 2>&1; then
             log "Compose image already cached: $image"
@@ -2377,19 +2390,42 @@ for service in (data.get("services") or {}).values():
 
         max_attempts="${ODS_DOCKER_PULL_MAX_ATTEMPTS:-4}"
         for ((attempt=1; attempt<=max_attempts; attempt++)); do
-            ai "Pulling Compose image ($attempt/$max_attempts): $image"
-            if docker pull "$image" >>"$ODS_LOG_FILE" 2>&1; then
-                ai_ok "Pulled $image"
+            local -a pull_cmd=(docker pull)
+            if [[ -n "$platform" ]]; then
+                pull_cmd+=(--platform "$platform")
+            fi
+            pull_cmd+=("$image")
+
+            if [[ -n "$platform" ]]; then
+                ai "Pulling Compose image ($attempt/$max_attempts): $image (platform: $platform)"
+            else
+                ai "Pulling Compose image ($attempt/$max_attempts): $image"
+            fi
+
+            if "${pull_cmd[@]}" >>"$ODS_LOG_FILE" 2>&1; then
+                if [[ -n "$platform" ]]; then
+                    ai_ok "Pulled $image (platform: $platform)"
+                else
+                    ai_ok "Pulled $image"
+                fi
                 return 0
             fi
             if (( attempt < max_attempts )); then
                 delay="${delays[$((attempt - 1))]:-30}"
-                ai_warn "Pull failed for $image; retrying in ${delay}s"
+                if [[ -n "$platform" ]]; then
+                    ai_warn "Pull failed for $image (platform: $platform); retrying in ${delay}s"
+                else
+                    ai_warn "Pull failed for $image; retrying in ${delay}s"
+                fi
                 sleep "$delay"
             fi
         done
 
-        ai_err "Failed to pull Compose image after retries: $image"
+        if [[ -n "$platform" ]]; then
+            ai_err "Failed to pull Compose image after retries: $image (platform: $platform)"
+        else
+            ai_err "Failed to pull Compose image after retries: $image"
+        fi
         return 1
     }
 
