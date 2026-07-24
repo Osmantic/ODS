@@ -1053,15 +1053,37 @@
           "hostScope": ["tower2"],
           "expiresAt": "2026-08-21T00:00:00Z"
         },
+        "opencode": {
+          "status": "unsupported_until_revalidated",
+          "label": "OpenCode revalidation required",
+          "reason": "Fresh exact-commit release coverage on strix-halo loaded Qwen 2.5 Coder 1.5B 128K through Lemonade and passed challenge-bound ODS Talk, LiteLLM, and Open WebUI. OpenCode routed to the exact model but emitted a webfetch tool payload with a mangled verification token instead of the requested phrase. Keep this model out of OpenCode release coverage on strix-halo until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-24T12-22-22Z-release-product-9ad366f47050-harness-954deb755b07-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/strix-halo",
+          "recordedAt": "2026-07-24T13:57:35Z",
+          "productSha": "9ad366f47050b81121c832de353cd799ad9dbfdf",
+          "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
+          "hostScope": ["strix-halo"],
+          "expiresAt": "2026-08-24T00:00:00Z"
+        },
+        "perplexica": {
+          "status": "unsupported_until_revalidated",
+          "label": "Perplexica revalidation required",
+          "reason": "Fresh exact-commit release coverage on strix-halo loaded Qwen 2.5 Coder 1.5B 128K through Lemonade and passed challenge-bound ODS Talk, LiteLLM, and Open WebUI. Perplexica routed to the exact model but answered with unrelated Eiffel Tower prose and omitted its requested verification phrase. Keep this model out of Perplexica release coverage on strix-halo until revalidated.",
+          "evidence": "fleet-test/runs/2026-07-24T12-22-22Z-release-product-9ad366f47050-harness-954deb755b07-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/strix-halo",
+          "recordedAt": "2026-07-24T13:57:35Z",
+          "productSha": "9ad366f47050b81121c832de353cd799ad9dbfdf",
+          "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
+          "hostScope": ["strix-halo"],
+          "expiresAt": "2026-08-24T00:00:00Z"
+        },
         "agent_viability": {
           "status": "not_agent_viable",
-          "reason": "The model loaded and routed through the browser-managed swap path, but ODS Talk did not follow the required verification instruction; keep it out of agent-required release coverage until revalidated.",
-          "evidence": "fleet-test/runs/2026-07-21T12-25-39Z-release-product-7df3f218a06c-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-006/tower2",
-          "recordedAt": "2026-07-21T14:25:00Z",
-          "productSha": "7df3f218a06c386bdb40856c928a0618b8e16b57",
-          "harnessSha": "d2a31507fa0652dff4c8cc1892e56ccf1b9102bb",
-          "hostScope": ["tower2"],
-          "expiresAt": "2026-08-21T00:00:00Z"
+          "reason": "The model failed agent-required browser verification on tower2 in ODS Talk and on strix-halo in OpenCode and Perplexica after exact-model routing. Keep it out of agent-required release coverage on those hosts until the affected app paths are revalidated.",
+          "evidence": "fleet-test/runs/2026-07-21T12-25-39Z-release-product-7df3f218a06c-harness-9804e8523a6d-hosts-tower2/model-ui/cycle-006/tower2; fleet-test/runs/2026-07-24T12-22-22Z-release-product-9ad366f47050-harness-954deb755b07-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/strix-halo",
+          "recordedAt": "2026-07-24T13:57:35Z",
+          "productSha": "9ad366f47050b81121c832de353cd799ad9dbfdf",
+          "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
+          "hostScope": ["tower2", "strix-halo"],
+          "expiresAt": "2026-08-24T00:00:00Z"
         }
       },
       "install_recommendation": false

@@ -594,7 +594,7 @@ def test_falcon_h1_3b_is_not_talk_agent_viable_until_revalidated():
     assert not _agent_viable_for_release(by_id["falcon-h1-3b-instruct-q4"])
 
 
-def test_qwen25_coder_15b_128k_is_not_talk_agent_viable_until_revalidated():
+def test_qwen25_coder_15b_128k_has_scoped_app_blocks_until_revalidated():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
     model = by_id["qwen2.5-coder-1.5b-128k-q4"]
@@ -606,9 +606,18 @@ def test_qwen25_coder_15b_128k_is_not_talk_agent_viable_until_revalidated():
     assert compatibility["hermes_talk"]["status"] == "unsupported_until_revalidated"
     assert "generic assistant prose" in compatibility["hermes_talk"]["reason"]
     assert "cycle-006" in compatibility["hermes_talk"]["evidence"]
+    assert compatibility["hermes_talk"]["hostScope"] == ["tower2"]
+    assert compatibility["opencode"]["status"] == "unsupported_until_revalidated"
+    assert "webfetch tool payload" in compatibility["opencode"]["reason"]
+    assert compatibility["opencode"]["hostScope"] == ["strix-halo"]
+    assert compatibility["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert "Eiffel Tower" in compatibility["perplexica"]["reason"]
+    assert compatibility["perplexica"]["hostScope"] == ["strix-halo"]
     assert compatibility["agent_viability"]["status"] == "not_agent_viable"
+    assert compatibility["agent_viability"]["hostScope"] == ["tower2", "strix-halo"]
     assert _agent_viable_for_release(model)
     assert not _agent_viable_for_release(model, host="tower2")
+    assert not _agent_viable_for_release(model, host="strix-halo")
 
 
 def test_mistral_nemo_talk_block_is_scoped_to_apple_llama_server():
