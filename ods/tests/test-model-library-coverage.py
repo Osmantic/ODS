@@ -196,14 +196,15 @@ def test_llama31_8b_is_not_agent_viable_until_revalidated():
     assert not _agent_viable_for_release(by_id["llama3.1-8b-instruct-q4"])
 
 
-def test_phi35_mini_windows_revalidation_is_unclaimed():
+def test_phi35_mini_is_unsupported_on_windows_8gb_after_profile_revalidation():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
     compatibility = by_id["phi3.5-mini-q4"]["app_compatibility"]
 
-    assert compatibility["openai_chat"]["status"] == "unknown"
+    assert compatibility["openai_chat"]["status"] == "unsupported_until_revalidated"
     assert compatibility["openai_chat"]["evidence"]
     assert _agent_viable_for_release(by_id["phi3.5-mini-q4"])
+    assert not _agent_viable_for_release(by_id["phi3.5-mini-q4"], host="windows-laptop")
 
 
 def test_qwen25_15b_is_not_agent_viable_until_revalidated():
@@ -301,8 +302,8 @@ def test_windows_8gb_revalidation_models_have_64k_compressed_kv_profiles():
     by_id = {model["id"]: model for model in catalog["models"]}
 
     expected = {
-        "qwen3-4b-instruct-2507-q4": ("nvidia-8gb-64k-q8-kv", "q8_0", 7.6),
-        "phi3.5-mini-q4": ("nvidia-8gb-64k-q4-kv", "q4_0", 7.2),
+        "qwen3-4b-instruct-2507-q4": ("nvidia-8gb-64k-q4-kv", "q4_0", 7.2),
+        "qwen3.5-4b-q4": ("nvidia-8gb-64k-q4-kv", "q4_0", 7.2),
     }
     for model_id, (profile_id, cache_type, required_gb) in expected.items():
         model = by_id[model_id]

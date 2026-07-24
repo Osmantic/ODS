@@ -71,38 +71,17 @@
       "llama_server_image": null,
       "app_compatibility": {
         "openai_chat": {
-          "status": "unknown",
-          "label": "Windows app revalidation in progress",
-          "reason": "The prior Windows activation verdict predates the NVIDIA 8GB 64K Q4-KV runtime profile. A fresh exact-commit run downloaded and verified Phi-3.5 Mini, but the stale unsupported record prevented the Models UI from offering Run; keep direct-chat compatibility unclaimed until the new profile completes the required app probes.",
-          "evidence": "fleet-test/runs/2026-07-24T06-38-00Z-windows-profile-candidates-route-validation/cycle-002/windows-laptop",
-          "recordedAt": "2026-07-24T06:51:00Z",
-          "productSha": "969c463f0b17251f3d373c7ae48859287023d0d3",
+          "status": "unsupported_until_revalidated",
+          "label": "Windows 8GB runtime unsupported",
+          "reason": "Fresh exact-commit Windows revalidation loaded Phi-3.5 Mini at the required 65,536-token context with Q4 KV cache, but llama.cpp projected 9,344 MiB of device memory against 6,912 MiB free and challenge-bound direct probes decoded at only 0.47-0.49 tok/s before the Hermes prompt. Keep this model out of Windows 8GB release coverage until a viable partial-offload or lower-memory runtime is implemented.",
+          "evidence": "fleet-test/runs/2026-07-24T07-04-00Z-windows-profile-candidates-route-validation/cycle-002/windows-laptop",
+          "recordedAt": "2026-07-24T07:16:00Z",
+          "productSha": "011bbabd74b72476862ad9a741dc4876b57e9521",
           "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
           "hostScope": ["windows-laptop"],
           "expiresAt": "2026-08-24T00:00:00Z"
         }
       },
-      "runtime_profiles": [
-        {
-          "id": "nvidia-8gb-64k-q4-kv",
-          "label": "NVIDIA 8GB 64K context with Q4 KV cache",
-          "backend": "nvidia",
-          "host_arch": ["amd64"],
-          "memory_type": "discrete",
-          "vram_min_gb": 7.5,
-          "vram_max_gb": 8.5,
-          "system_ram_min_gb": 31,
-          "context_length": 65536,
-          "estimated_required_gb": 7.2,
-          "fit_label": "64K 8GB Q4 KV profile",
-          "env": {
-            "LLAMA_PARALLEL": "1",
-            "LLAMA_ARG_FLASH_ATTN": "on",
-            "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
-            "LLAMA_ARG_CACHE_TYPE_V": "q4_0"
-          }
-        }
-      ],
       "install_recommendation": false
     },
     {
@@ -911,8 +890,8 @@
       },
       "runtime_profiles": [
         {
-          "id": "nvidia-8gb-64k-q8-kv",
-          "label": "NVIDIA 8GB 64K context with Q8 KV cache",
+          "id": "nvidia-8gb-64k-q4-kv",
+          "label": "NVIDIA 8GB 64K context with Q4 KV cache",
           "backend": "nvidia",
           "host_arch": ["amd64"],
           "memory_type": "discrete",
@@ -920,13 +899,13 @@
           "vram_max_gb": 8.5,
           "system_ram_min_gb": 31,
           "context_length": 65536,
-          "estimated_required_gb": 7.6,
-          "fit_label": "64K 8GB Q8 KV profile",
+          "estimated_required_gb": 7.2,
+          "fit_label": "64K 8GB Q4 KV profile",
           "env": {
             "LLAMA_PARALLEL": "1",
             "LLAMA_ARG_FLASH_ATTN": "on",
-            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
-            "LLAMA_ARG_CACHE_TYPE_V": "q8_0"
+            "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q4_0"
           }
         }
       ],
@@ -1239,28 +1218,49 @@
       "llama_server_image": null,
       "app_compatibility": {
         "hermes_talk": {
-          "status": "unsupported_until_revalidated",
-          "label": "ODS Talk revalidation required",
-          "reason": "A fresh release-grade fleet model-UI run loaded this model on windows-laptop and verified the exact llama-server route, but ODS Talk remained in the Thinking state until the 180-second inference timeout. Keep it out of Windows Talk and all-app release coverage until revalidated.",
+          "status": "unknown",
+          "label": "Windows app revalidation in progress",
+          "reason": "The prior Windows Talk timeout used this model's native 262K context. A new NVIDIA 8GB 64K Q4-KV profile removes that invalid runtime precondition; keep Talk compatibility unclaimed until the profiled route completes the required app probes.",
           "evidence": "fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/windows-laptop",
-          "recordedAt": "2026-07-24T00:42:20Z",
-          "productSha": "cf6dffb8e8bbf60f418caeab47d7ae3ef8815307",
-          "harnessSha": "47eedd6c0b40908272ad6ba324868f4acec2f308",
+          "recordedAt": "2026-07-24T07:16:00Z",
+          "productSha": "011bbabd74b72476862ad9a741dc4876b57e9521",
+          "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
           "hostScope": ["windows-laptop"],
           "expiresAt": "2026-08-24T00:00:00Z"
         },
         "agent_viability": {
-          "status": "not_agent_viable",
-          "label": "Agent viability revalidation required",
-          "reason": "A fresh release-grade fleet model-UI run loaded this model on windows-laptop and verified the exact llama-server route, but ODS Talk did not finish within the 180-second inference timeout. Keep it out of Windows agent-required release coverage until revalidated.",
+          "status": "unknown",
+          "label": "Windows app revalidation in progress",
+          "reason": "The prior Windows agent timeout used this model's native 262K context. A new NVIDIA 8GB 64K Q4-KV profile removes that invalid runtime precondition; keep agent viability unclaimed until the profiled route completes ODS Talk and all required app probes.",
           "evidence": "fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/windows-laptop",
-          "recordedAt": "2026-07-24T00:42:20Z",
-          "productSha": "cf6dffb8e8bbf60f418caeab47d7ae3ef8815307",
-          "harnessSha": "47eedd6c0b40908272ad6ba324868f4acec2f308",
+          "recordedAt": "2026-07-24T07:16:00Z",
+          "productSha": "011bbabd74b72476862ad9a741dc4876b57e9521",
+          "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
           "hostScope": ["windows-laptop"],
           "expiresAt": "2026-08-24T00:00:00Z"
         }
-      }
+      },
+      "runtime_profiles": [
+        {
+          "id": "nvidia-8gb-64k-q4-kv",
+          "label": "NVIDIA 8GB 64K context with Q4 KV cache",
+          "backend": "nvidia",
+          "host_arch": ["amd64"],
+          "memory_type": "discrete",
+          "vram_min_gb": 7.5,
+          "vram_max_gb": 8.5,
+          "system_ram_min_gb": 31,
+          "context_length": 65536,
+          "estimated_required_gb": 7.2,
+          "fit_label": "64K 8GB Q4 KV profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q4_0"
+          }
+        }
+      ]
     },
     {
       "id": "gemma4-e2b-q4",

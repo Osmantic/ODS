@@ -516,7 +516,7 @@ def test_real_catalog_qwen3_4b_instruct_windows_revalidation_is_unclaimed():
     assert tower2["agentViability"]["status"] == "unknown"
 
 
-def test_real_catalog_qwen35_4b_talk_block_is_windows_scoped():
+def test_real_catalog_qwen35_4b_windows_revalidation_is_unclaimed():
     by_id = {model["id"]: model for model in _official_model_catalog()}
     model = by_id["qwen3.5-4b-q4"]
 
@@ -529,8 +529,8 @@ def test_real_catalog_qwen35_4b_talk_block_is_windows_scoped():
         runtime_context={"host": "strix-halo", "hosts": ["strix-halo"]},
     )
 
-    assert windows_laptop["hermesTalk"]["status"] == "unsupported_until_revalidated"
-    assert windows_laptop["agentViability"]["status"] == "not_agent_viable"
+    assert windows_laptop["hermesTalk"]["status"] == "unknown"
+    assert windows_laptop["agentViability"]["status"] == "unknown"
     assert strix_halo["hermesTalk"]["status"] == "unknown"
     assert strix_halo["agentViability"]["status"] == "unknown"
 
@@ -712,12 +712,12 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
         "granite4.0-h-tiny-q4",
         "granite4.0-h-1b-q4",
         "qwen3-4b-instruct-2507-q4",
-        "phi3.5-mini-q4",
+        "qwen3.5-4b-q4",
     }.issubset(candidate_ids)
-    assert "qwen3.5-4b-q4" not in candidate_ids
-    assert all_by_id["qwen3.5-4b-q4"]["contextLength"] == 262144
-    assert all_by_id["qwen3.5-4b-q4"]["appCompatibility"]["agentViability"]["status"] == (
-        "not_agent_viable"
+    assert "qwen3.5-4b-q4" in candidate_ids
+    assert by_id["qwen3.5-4b-q4"]["contextLength"] >= 64000
+    assert by_id["qwen3.5-4b-q4"]["appCompatibility"]["agentViability"]["status"] == (
+        "unknown"
     )
     assert all_by_id["smollm3-3b-q4"]["contextLength"] == 65536
     assert all_by_id["qwen3-4b-128k-q4"]["contextLength"] == 131072
@@ -727,9 +727,11 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     assert by_id["qwen3-4b-instruct-2507-q4"]["appCompatibility"]["agentViability"]["status"] == (
         "unknown"
     )
-    assert "phi3.5-mini-q4" in candidate_ids
-    assert by_id["phi3.5-mini-q4"]["contextLength"] >= 64000
-    assert by_id["phi3.5-mini-q4"]["appCompatibility"]["openaiChat"]["status"] == "unknown"
+    assert "phi3.5-mini-q4" not in candidate_ids
+    assert (
+        all_by_id["phi3.5-mini-q4"]["appCompatibility"]["openaiChat"]["status"]
+        == "unsupported_until_revalidated"
+    )
     assert all_by_id["falcon-h1-1.5b-instruct-q4"]["appCompatibility"]["hermesTalk"]["status"] == (
         "unsupported_until_revalidated"
     )
