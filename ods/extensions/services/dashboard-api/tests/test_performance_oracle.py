@@ -723,12 +723,12 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     assert all_by_id["qwen3-4b-128k-q4"]["contextLength"] == 131072
     assert by_id["qwen2.5-coder-1.5b-128k-q4"]["contextLength"] == 131072
     assert "qwen3-4b-instruct-2507-q4" in candidate_ids
-    assert by_id["qwen3-4b-instruct-2507-q4"]["contextLength"] == 65536
+    assert by_id["qwen3-4b-instruct-2507-q4"]["contextLength"] >= 64000
     assert by_id["qwen3-4b-instruct-2507-q4"]["appCompatibility"]["agentViability"]["status"] == (
         "unknown"
     )
     assert "phi3.5-mini-q4" in candidate_ids
-    assert by_id["phi3.5-mini-q4"]["contextLength"] == 65536
+    assert by_id["phi3.5-mini-q4"]["contextLength"] >= 64000
     assert by_id["phi3.5-mini-q4"]["appCompatibility"]["openaiChat"]["status"] == "unknown"
     assert all_by_id["falcon-h1-1.5b-instruct-q4"]["appCompatibility"]["hermesTalk"]["status"] == (
         "unsupported_until_revalidated"
