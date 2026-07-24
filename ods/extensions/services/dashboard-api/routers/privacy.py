@@ -23,11 +23,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["privacy"])
 
 
+def _safe_port(val: any, default: int = 0) -> int:
+    try:
+        raw = str(val or "").strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+            raw = raw[1:-1].strip()
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
 @router.get("/api/privacy-shield/status", response_model=PrivacyShieldStatus)
 async def get_privacy_shield_status(api_key: str = Depends(verify_api_key)):
     """Get Privacy Shield status and configuration."""
     _ps = SERVICES.get("privacy-shield", {})
-    shield_port = int(os.environ.get("SHIELD_PORT", str(_ps.get("port", 0))))
+    shield_port = _safe_port(os.environ.get("SHIELD_PORT"), _ps.get("port", 0))
     shield_url = f"http://{_ps.get('host', 'privacy-shield')}:{shield_port}"
 
     # Check health directly — no Docker socket needed
@@ -94,7 +104,7 @@ async def toggle_privacy_shield(request: PrivacyShieldToggle, api_key: str = Dep
 async def get_privacy_shield_stats(api_key: str = Depends(verify_api_key)):
     """Get Privacy Shield usage statistics."""
     _ps = SERVICES.get("privacy-shield", {})
-    shield_port = int(os.environ.get("SHIELD_PORT", str(_ps.get("port", 0))))
+    shield_port = _safe_port(os.environ.get("SHIELD_PORT"), _ps.get("port", 0))
     shield_url = f"http://{_ps.get('host', 'privacy-shield')}:{shield_port}"
     shield_api_key = os.environ.get("SHIELD_API_KEY", "")
     if not shield_api_key:
