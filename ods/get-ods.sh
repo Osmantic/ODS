@@ -382,7 +382,7 @@ if [[ -d "$INSTALL_DIR" ]]; then
             exit 1
         else
             echo -n "  Remove and reinstall? [y/N] "
-            read -r response
+            read -r response < /dev/tty
             if [[ "$response" =~ ^[Yy]$ ]]; then
                 remove_install_dir "$INSTALL_DIR" || error "Failed to remove incomplete install at $INSTALL_DIR. Try: sudo rm -rf \"$INSTALL_DIR\""
             else
