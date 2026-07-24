@@ -1578,6 +1578,28 @@ else
     # Copy source tree (skip .git, data, logs, .env, models)
     if [[ "$SOURCE_ROOT" != "$INSTALL_DIR" ]]; then
         ai "Copying source files to ${INSTALL_DIR}..."
+        _ods_dev_only_dirs=(tests docs examples .github)
+        _ods_dev_only_files=(
+            CHANGELOG.md
+            CODE_OF_CONDUCT.md
+            CONTRIBUTING.md
+            EDGE-QUICKSTART.md
+            FAQ.md
+            QUICKSTART.md
+            SECURITY.md
+            README.md
+            .shellcheckrc
+            PSScriptAnalyzerSettings.psd1
+            test-stack.sh
+            .gitignore
+        )
+        _ods_dev_rsync_excludes=()
+        for _ods_dev_path in "${_ods_dev_only_dirs[@]}"; do
+            _ods_dev_rsync_excludes+=(--exclude="/${_ods_dev_path}/")
+        done
+        for _ods_dev_path in "${_ods_dev_only_files[@]}"; do
+            _ods_dev_rsync_excludes+=(--exclude="/${_ods_dev_path}")
+        done
         rsync -a --quiet \
             --exclude='.git' \
             --exclude='data' \
@@ -1592,7 +1614,16 @@ else
             --exclude='.target-model' \
             --exclude='.target-quantization' \
             --exclude='.offline-mode' \
+            "${_ods_dev_rsync_excludes[@]}" \
             "$SOURCE_ROOT/" "$INSTALL_DIR/"
+
+        # Excludes do not delete files copied by an older installer. Prune only
+        # product-owned development paths from deployed installs; never do this
+        # when the installer is running in-place from a developer checkout.
+        for _ods_dev_path in "${_ods_dev_only_dirs[@]}" "${_ods_dev_only_files[@]}"; do
+            rm -rf -- "${INSTALL_DIR:?}/${_ods_dev_path}"
+        done
+        unset _ods_dev_only_dirs _ods_dev_only_files _ods_dev_rsync_excludes _ods_dev_path
         ai_ok "Source files installed"
     else
         ai "Running in-place, skipping file copy"

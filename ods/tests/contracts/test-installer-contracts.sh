@@ -30,6 +30,9 @@ echo "[contract] capability profile schema has hardware_class"
 jq -e '.properties.hardware_class and (.required | index("hardware_class"))' config/capability-profile.schema.json >/dev/null \
   || { echo "[FAIL] capability profile schema missing hardware_class"; exit 1; }
 
+echo "[contract] cross-platform installed footprint"
+python3 tests/test-install-footprint-contract.py
+
 echo "[contract] AMD phase-06 env keys exist in schema"
 for key in HSA_XNACK AMDGPU_TARGET LLAMA_CPP_REF; do
   jq -e --arg key "$key" '.properties[$key]' .env.schema.json >/dev/null \

@@ -136,20 +136,46 @@ if (-not (Test-Path -LiteralPath $_extensionsLock -PathType Leaf)) {
 if ($sourceRoot -ne $installDir) {
     Write-AI "Copying source files to $installDir..."
 
+    $devOnlyDirectories = @("tests", "docs", "examples", ".github")
+    $devOnlyFiles = @(
+        "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md",
+        "EDGE-QUICKSTART.md", "FAQ.md", "QUICKSTART.md",
+        "SECURITY.md", "README.md",
+        ".shellcheckrc", "PSScriptAnalyzerSettings.psd1",
+        "test-stack.sh", ".gitignore"
+    )
+
     # robocopy exit codes 0-7 are success (bits for files copied, extras, etc.)
     $robocopyArgs = @(
         $sourceRoot, $installDir,
         "/E",                                  # Copy subdirectories including empty ones
         "/NFL", "/NDL", "/NJH", "/NJS",        # Suppress file/dir/job headers (clean output)
-        "/XD", ".git", "data", "logs", "models", "node_modules", "dist",
+        "/XD", ".git", "data", "logs", "models", "node_modules", "dist"
+    )
+    $robocopyArgs += @($devOnlyDirectories | ForEach-Object {
+        Join-Path $sourceRoot $_
+    })
+    $robocopyArgs += @(
         "/XF", ".env", "*.log", ".current-mode", ".profiles",
                ".target-model", ".target-quantization", ".offline-mode"
     )
+    $robocopyArgs += @($devOnlyFiles | ForEach-Object {
+        Join-Path $sourceRoot $_
+    })
     & robocopy @robocopyArgs | Out-Null
     if ($LASTEXITCODE -gt 7) {
         Write-AIError "File copy failed (robocopy exit code: $LASTEXITCODE)."
         Write-AI "  Try re-running with --Force or check that $installDir is writable."
         throw "ODS_INSTALL_ABORTED"
+    }
+
+    # Robocopy exclusions leave files copied by older installers in place.
+    # Prune only product-owned development paths from deployed installs.
+    foreach ($devOnlyPath in @($devOnlyDirectories + $devOnlyFiles)) {
+        $stalePath = Join-Path $installDir $devOnlyPath
+        if (Test-Path -LiteralPath $stalePath) {
+            Remove-Item -LiteralPath $stalePath -Recurse -Force
+        }
     }
     Write-AISuccess "Source files installed to $installDir"
 } else {

@@ -87,3 +87,8 @@ jobs:
       - name: Windows Runtime Recovery Contract
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
+
+      - name: Windows Installed Footprint Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-install-footprint-windows.ps1
