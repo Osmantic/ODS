@@ -244,16 +244,23 @@ def _ensure_store() -> dict:
 
 
 def _write_store(store: dict) -> None:
-    """Persist the store atomically (write-tmp + rename)."""
+    """Persist the store atomically (write-tmp + rename).
+
+    The tmp file is tightened *before* the rename, the way
+    oauth_passthrough._atomic_write_0600 does it. Chmod-ing the destination
+    afterwards publishes the store at the process umask (0644 on a default
+    Linux host) for the window in between, and this file holds the SHA-256
+    token hashes that back magic-link redemption.
+    """
     store_path = _writable_store_path()
     tmp = store_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(store, indent=2), encoding="utf-8")
-    tmp.replace(store_path)
     try:
-        store_path.chmod(0o600)
+        tmp.chmod(0o600)
     except OSError:
         # Best-effort; some filesystems (Docker volumes) don't honor chmod.
-        pass
+        logger.debug("could not chmod %s to 0600", tmp, exc_info=True)
+    tmp.replace(store_path)
 
 
 def _hash_token(token: str) -> str:

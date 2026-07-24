@@ -24,16 +24,30 @@ def load_persisted_key(path: str) -> Optional[str]:
 
 
 def persist_key(path: str, key: str) -> None:
+    """Write the generated key, created owner-readable only.
+
+    The mode is set when the file is created rather than by a chmod after the
+    write. Writing first leaves the credential at the process umask (0644 on
+    a default Linux host) for the window between the two calls, and the
+    directory is a bind mount shared with the host — and a chmod that fails
+    used to be swallowed, leaving the key world-readable permanently.
+    """
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(key)
         try:
+            # O_CREAT leaves an existing file's mode alone, so tighten it too.
             os.chmod(path, 0o600)
-        except Exception:
-            # Best-effort only (may fail on some mounts/platforms)
-            pass
-    except Exception:
+        except OSError:
+            # Some mounts (Docker volumes on non-POSIX hosts) don't honour
+            # chmod. Say so instead of hiding it — the file may be readable.
+            logging.warning(
+                "Could not set 0600 on %s; the shield API key may be readable "
+                "by other users on this host", path,
+            )
+    except OSError:
         logging.exception("Failed to persist generated SHIELD_API_KEY")
 
 
