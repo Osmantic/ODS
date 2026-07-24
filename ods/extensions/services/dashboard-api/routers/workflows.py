@@ -28,10 +28,10 @@ def _validate_workflow_id(workflow_id: str) -> None:
 
 def load_workflow_catalog() -> dict:
     """Load workflow catalog from JSON file."""
-    if not WORKFLOW_CATALOG_FILE.exists():
+    if not WORKFLOW_CATALOG_FILE.is_file():
         return DEFAULT_WORKFLOW_CATALOG
     try:
-        with open(WORKFLOW_CATALOG_FILE) as f:
+        with open(WORKFLOW_CATALOG_FILE, encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict):
             logger.warning("Workflow catalog must be a JSON object: %s", WORKFLOW_CATALOG_FILE)
@@ -43,7 +43,7 @@ def load_workflow_catalog() -> dict:
         if not isinstance(categories, dict):
             categories = {}
         return {"workflows": workflows, "categories": categories}
-    except (json.JSONDecodeError, OSError, KeyError) as e:
+    except (json.JSONDecodeError, OSError, UnicodeError, KeyError) as e:
         logger.warning("Failed to load workflow catalog from %s: %s", WORKFLOW_CATALOG_FILE, e)
         return DEFAULT_WORKFLOW_CATALOG
 
