@@ -500,3 +500,16 @@ def test_usage_token_spy_key_falls_back_to_shared_data_file(tmp_path, monkeypatc
     monkeypatch.setattr(usage_router, "TOKEN_SPY_KEY_FILE", key_file)
 
     assert usage_router._token_spy_api_key() == "file-key"
+
+
+def test_token_spy_api_key_unquotes_and_handles_unicode_error(tmp_path, monkeypatch):
+    import routers.usage as usage_router
+
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_API_KEY", ' "quoted-env-key" ')
+    assert usage_router._token_spy_api_key() == "quoted-env-key"
+
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_API_KEY", "")
+    bad_key_file = tmp_path / "bad.txt"
+    bad_key_file.write_bytes(b"\x80\x81\x82")
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_KEY_FILE", bad_key_file)
+    assert usage_router._token_spy_api_key() == ""
