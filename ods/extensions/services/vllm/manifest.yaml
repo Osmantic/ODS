@@ -1,0 +1,34 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: vllm
+  name: vLLM (High-Throughput Engine)
+  aliases: [vllm, fast-llm]
+  container_name: ods-vllm
+  host_env: VLLM_HOST
+  default_host: vllm
+  port: 8000
+  external_port_env: VLLM_PORT
+  external_port_default: 8008
+  health: /health
+  type: docker
+  gpu_backends: [amd, nvidia]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  env_vars:
+    - key: VLLM_MODEL
+      required: false
+      default: "meta-llama/Meta-Llama-3-8B-Instruct"
+      description: "HuggingFace Model ID to serve"
+    - key: HUGGING_FACE_HUB_TOKEN
+      required: false
+      secret: true
+      description: "Required for gated models (e.g., Llama 3)"
+    - key: VLLM_TP_SIZE
+      required: false
+      default: "1"
+      description: "Tensor parallelism size (number of GPUs to use)"

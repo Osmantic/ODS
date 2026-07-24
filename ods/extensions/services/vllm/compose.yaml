@@ -1,0 +1,3 @@
+# vLLM requires a GPU to run efficiently, so the base compose is an empty stub.
+# The full configuration is provided by compose.nvidia.yaml and compose.amd.yaml.
+services: {}
