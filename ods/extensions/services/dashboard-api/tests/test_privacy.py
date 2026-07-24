@@ -291,3 +291,11 @@ def test_privacy_shield_stats_empty_shield_api_key(test_client, monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {"error": "SHIELD_API_KEY not configured", "enabled": False}
     session_factory.assert_not_called()
+
+
+def test_privacy_shield_status_handles_invalid_and_quoted_port(test_client, monkeypatch):
+    import routers.privacy as privacy_router
+
+    assert privacy_router._safe_port('"8080"') == 8080
+    assert privacy_router._safe_port("invalid") == 0
+    assert privacy_router._safe_port(None) == 0
