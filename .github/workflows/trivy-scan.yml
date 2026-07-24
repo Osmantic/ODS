@@ -1,0 +1,52 @@
+name: Trivy Container Scan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"  # every Monday 06:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  trivy:
+    name: Scan Dockerfiles for CVEs
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile:
+          - dream-server/extensions/services/dashboard/Dockerfile
+          - dream-server/extensions/services/dashboard-api/Dockerfile
+          - dream-server/extensions/services/comfyui/Dockerfile
+          - dream-server/extensions/services/brave-search/Dockerfile
+          - dream-server/extensions/services/privacy-shield/Dockerfile
+          - dream-server/extensions/services/token-spy/Dockerfile
+          - dream-server/extensions/services/ape/Dockerfile
+          - dream-server/extensions/services/llama-server/Dockerfile.amd
+          - dream-server/images/llama-sycl/Dockerfile
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Run Trivy on ${{ matrix.dockerfile }}
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "config"
+          scan-ref: "${{ matrix.dockerfile }}"
+          format: "sarif"
+          output: "trivy-results-${{ strategy.job-index }}.sarif"
+          severity: "HIGH,CRITICAL"
+          exit-code: "1"
+          hide-progress: true
+          limit-severities: true
+          skip-dirs: "node_modules,.git"
+
+      - name: Upload SARIF to GitHub
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: "trivy-results-${{ strategy.job-index }}.sarif"
+          category: "trivy-${{ strategy.job-index }}"
