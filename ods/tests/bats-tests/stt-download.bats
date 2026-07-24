@@ -87,7 +87,7 @@ _run_stt_block() {
         if [[ "$ENABLE_VOICE" == "true" ]]; then
             if [[ -n "${AUDIO_STT_MODEL:-}" ]]; then
                 STT_MODEL="$AUDIO_STT_MODEL"
-            elif [[ "$GPU_BACKEND" == "nvidia" ]]; then
+            elif [[ "$GPU_BACKEND" == "nvidia" || "$GPU_BACKEND" == "jetson" ]]; then
                 STT_MODEL="deepdml/faster-whisper-large-v3-turbo-ct2"
             else
                 STT_MODEL="Systran/faster-whisper-base"
@@ -147,7 +147,18 @@ _run_stt_block() {
     assert_output --partial "deepdml/faster-whisper-large-v3-turbo-ct2"
 }
 
-@test "stt: falls back to base model when AUDIO_STT_MODEL unset and GPU_BACKEND != nvidia" {
+@test "stt: falls back to CUDA turbo when AUDIO_STT_MODEL unset and GPU_BACKEND=jetson" {
+    export ENABLE_VOICE=true
+    export GPU_BACKEND=jetson
+    unset AUDIO_STT_MODEL
+    export STT_STUB_MODE=cache-hit
+
+    run _run_stt_block
+    assert_success
+    assert_output --partial "deepdml/faster-whisper-large-v3-turbo-ct2"
+}
+
+@test "stt: falls back to base model when AUDIO_STT_MODEL unset and GPU_BACKEND is not CUDA-capable" {
     export ENABLE_VOICE=true
     export GPU_BACKEND=amd
     unset AUDIO_STT_MODEL

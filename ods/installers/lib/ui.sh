@@ -433,27 +433,90 @@ show_tier_recommendation() {
 
 # Show installation menu
 show_install_menu() {
+    local default_choice="1"
+    local full_choice="1"
+    local core_choice="2"
+    local default_label="Full Stack"
+
+    if [[ "${GPU_BACKEND:-}" == "jetson" ]]; then
+        default_label="Core Only"
+        full_choice="2"
+        core_choice="1"
+    fi
+
     echo ""
     ai "Choose how deep you want to go. I can install everything, or keep it minimal."
     echo ""
-    echo -e "  ${BGRN}[1]${NC} Full Stack ${AMB}(recommended — just press Enter)${NC}"
-    echo "      Chat + Voice + Workflows + Document Q&A + AI Agents"
-    echo "      ~16GB download, all features enabled"
-    echo ""
-    echo -e "  ${BGRN}[2]${NC} Core Only"
-    echo "      Chat interface + API"
-    echo "      ~12GB download, minimal footprint"
+    if [[ "${GPU_BACKEND:-}" == "jetson" ]]; then
+        echo -e "  ${BGRN}[1]${NC} Core Only ${AMB}(recommended for Jetson — just press Enter)${NC}"
+        echo "      Chat interface + API"
+        echo "      Minimal footprint for 8GB unified-memory edge devices"
+        echo ""
+        echo -e "  ${BGRN}[2]${NC} Full Stack ${AMB}(experimental on Jetson)${NC}"
+        echo "      Chat + Voice + Workflows + Document Q&A + AI Agents"
+        echo "      Best tested service-by-service on Jetson Orin Nano"
+    else
+        echo -e "  ${BGRN}[1]${NC} Full Stack ${AMB}(recommended — just press Enter)${NC}"
+        echo "      Chat + Voice + Workflows + Document Q&A + AI Agents"
+        echo "      ~16GB download, all features enabled"
+        echo ""
+        echo -e "  ${BGRN}[2]${NC} Core Only"
+        echo "      Chat interface + API"
+        echo "      ~12GB download, minimal footprint"
+    fi
     echo ""
     echo -e "  ${BGRN}[3]${NC} Custom"
     echo "      Choose exactly what you want"
     echo ""
-    read -p "  Select an option [1]: " -r INSTALL_CHOICE < /dev/tty
-    INSTALL_CHOICE="${INSTALL_CHOICE:-1}"
+    read -p "  Select an option [${default_choice}]: " -r INSTALL_CHOICE < /dev/tty
+    INSTALL_CHOICE="${INSTALL_CHOICE:-$default_choice}"
     echo ""
-    case "$INSTALL_CHOICE" in
-        1)
-            signal "Acknowledged."
-            log "Selected: Full Stack"
+
+    if [[ "$INSTALL_CHOICE" == "$full_choice" ]]; then
+        signal "Acknowledged."
+        log "Selected: Full Stack"
+        ENABLE_VOICE=true
+        ENABLE_WORKFLOWS=true
+        ENABLE_RAG=true
+        ENABLE_RECOMMENDED=true
+        ENABLE_HERMES=true
+        ENABLE_OPENCLAW=false  # deprecated; Hermes is the new default
+        ENABLE_COMFYUI=true
+        ENABLE_APE=true
+        ENABLE_PERPLEXICA=true
+        ENABLE_PRIVACY_SHIELD=true
+        ENABLE_LANGFUSE=true
+
+        # Disable image generation on low-tier systems (insufficient RAM/VRAM)
+        # ComfyUI requires shm_size 8GB + 24GB memory limit
+        case "${TIER:-}" in
+            0|1)
+                ENABLE_COMFYUI=false
+                log "ComfyUI auto-disabled for Tier $TIER (insufficient RAM/VRAM)"
+                ai_warn "Image generation (ComfyUI) disabled — your hardware doesn't have enough RAM."
+                ai "  You can enable it later with: ods enable comfyui"
+                ;;
+        esac
+    elif [[ "$INSTALL_CHOICE" == "$core_choice" ]]; then
+        signal "Acknowledged."
+        log "Selected: Core Only"
+        ENABLE_VOICE=false
+        ENABLE_WORKFLOWS=false
+        ENABLE_RAG=false
+        ENABLE_RECOMMENDED=false
+        ENABLE_HERMES=false
+        ENABLE_OPENCLAW=false
+        ENABLE_COMFYUI=false
+        ENABLE_APE=false
+        ENABLE_PERPLEXICA=false
+        ENABLE_PRIVACY_SHIELD=false
+        ENABLE_LANGFUSE=false
+    elif [[ "$INSTALL_CHOICE" == "3" ]]; then
+        signal "Acknowledged."
+        log "Selected: Custom"
+    else
+        warn "Invalid choice '$INSTALL_CHOICE', defaulting to $default_label"
+        if [[ "$default_choice" == "$full_choice" ]]; then
             ENABLE_VOICE=true
             ENABLE_WORKFLOWS=true
             ENABLE_RAG=true
@@ -476,10 +539,7 @@ show_install_menu() {
                     ai "  You can enable it later with: ods enable comfyui"
                     ;;
             esac
-            ;;
-        2)
-            signal "Acknowledged."
-            log "Selected: Core Only"
+        else
             ENABLE_VOICE=false
             ENABLE_WORKFLOWS=false
             ENABLE_RAG=false
@@ -491,37 +551,8 @@ show_install_menu() {
             ENABLE_PERPLEXICA=false
             ENABLE_PRIVACY_SHIELD=false
             ENABLE_LANGFUSE=false
-            ;;
-        3)
-            signal "Acknowledged."
-            log "Selected: Custom"
-            ;;
-        *)
-            warn "Invalid choice '$INSTALL_CHOICE', defaulting to Full Stack"
-            ENABLE_VOICE=true
-            ENABLE_WORKFLOWS=true
-            ENABLE_RAG=true
-            ENABLE_RECOMMENDED=true
-            ENABLE_HERMES=true
-            ENABLE_OPENCLAW=false  # deprecated; Hermes is the new default
-            ENABLE_COMFYUI=true
-            ENABLE_APE=true
-            ENABLE_PERPLEXICA=true
-            ENABLE_PRIVACY_SHIELD=true
-            ENABLE_LANGFUSE=true
-
-            # Disable image generation on low-tier systems (insufficient RAM/VRAM)
-            # ComfyUI requires shm_size 8GB + 24GB memory limit
-            case "${TIER:-}" in
-                0|1)
-                    ENABLE_COMFYUI=false
-                    log "ComfyUI auto-disabled for Tier $TIER (insufficient RAM/VRAM)"
-                    ai_warn "Image generation (ComfyUI) disabled — your hardware doesn't have enough RAM."
-                    ai "  You can enable it later with: ods enable comfyui"
-                    ;;
-            esac
-            ;;
-    esac
+        fi
+    fi
 }
 
 # Final success card — dramatic "GATEWAY IS OPEN" finale

@@ -44,7 +44,7 @@ fi
 PULL_LIST+=("ghcr.io/open-webui/open-webui:v0.7.2|OPEN WEBUI — interface module")
 PULL_LIST+=("itzcrazykns1337/perplexica:slim-latest@sha256:6e399abf4ff587822b0ef0df11f36088fb928e17ac61556fe89beb68d48c378e|PERPLEXICA — deep research engine")
 if [[ "$ENABLE_VOICE" == "true" ]]; then
-    if [[ "$GPU_BACKEND" == "nvidia" ]]; then
+    if [[ "$GPU_BACKEND" == "nvidia" || "$GPU_BACKEND" == "jetson" ]]; then
         PULL_LIST+=("ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda|WHISPER — ears online (Speaches STT, CUDA)")
     else
         PULL_LIST+=("ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu|WHISPER — ears online (Speaches STT)")

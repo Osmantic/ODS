@@ -145,6 +145,16 @@ elif gpu_backend == "cpu":
     elif existing(["docker-compose.base.yml"]):
         resolved = ["docker-compose.base.yml"]
         primary = "docker-compose.base.yml"
+elif gpu_backend == "jetson":
+    if existing(["docker-compose.base.yml", "docker-compose.jetson.yml"]):
+        resolved = ["docker-compose.base.yml", "docker-compose.jetson.yml"]
+        primary = "docker-compose.jetson.yml"
+    elif existing(["docker-compose.base.yml", "docker-compose.nvidia.yml"]):
+        resolved = ["docker-compose.base.yml", "docker-compose.nvidia.yml"]
+        primary = "docker-compose.nvidia.yml"
+    elif existing(["docker-compose.base.yml"]):
+        resolved = ["docker-compose.base.yml"]
+        primary = "docker-compose.base.yml"
 elif tier in {"SH_LARGE", "SH_COMPACT"}:
     if existing(["docker-compose.base.yml", "docker-compose.amd.yml"]):
         resolved = ["docker-compose.base.yml", "docker-compose.amd.yml"]

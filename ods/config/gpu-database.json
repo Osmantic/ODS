@@ -388,6 +388,11 @@
   },
   "heuristic_classes": [
     {
+      "id": "jetson_orin_nano",
+      "match": { "vendor": "jetson", "memory_type": "unified", "min_ram_mb": 0 },
+      "recommended": { "backend": "jetson", "tier": "T1" }
+    },
+    {
       "id": "nvidia_ultra",
       "match": { "vendor": "nvidia", "memory_type": "discrete", "min_vram_mb": 92160 },
       "recommended": { "backend": "nvidia", "tier": "NV_ULTRA" }

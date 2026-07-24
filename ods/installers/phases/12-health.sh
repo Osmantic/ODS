@@ -443,7 +443,7 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
     # GPU_BACKEND switch for backward compat with older .env files missing it.
     if [[ -n "${AUDIO_STT_MODEL:-}" ]]; then
         STT_MODEL="$AUDIO_STT_MODEL"
-    elif [[ "$GPU_BACKEND" == "nvidia" ]]; then
+    elif [[ "$GPU_BACKEND" == "nvidia" || "$GPU_BACKEND" == "jetson" ]]; then
         STT_MODEL="deepdml/faster-whisper-large-v3-turbo-ct2"
     else
         STT_MODEL="Systran/faster-whisper-base"

@@ -44,6 +44,12 @@
       "value": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014"
     },
     {
+      "id": "jetson.llama-server",
+      "type": "image",
+      "path": "docker-compose.jetson.yml",
+      "value": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014"
+    },
+    {
       "id": "ape.python",
       "type": "image",
       "path": "extensions/services/ape/Dockerfile",
@@ -246,6 +252,13 @@
       "value": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda"
     },
     {
+      "id": "whisper.jetson",
+      "type": "image",
+      "path": "extensions/services/whisper/compose.jetson.yaml",
+      "raw": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda}",
+      "value": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda"
+    },
+    {
       "id": "macos.placeholder-api",
       "type": "image",
       "path": "installers/macos/docker-compose.macos.yml",
@@ -296,6 +309,12 @@
       "reason": "NVIDIA llama.cpp image can be overridden for testing, but the shipped default is locked."
     },
     {
+      "path": "docker-compose.jetson.yml",
+      "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014}",
+      "default": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014",
+      "reason": "Jetson uses the CUDA llama.cpp server image on arm64/Tegra; the shipped default is locked and can be overridden for testing."
+    },
+    {
       "path": "docker-compose.cpu.yml",
       "value": "${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b8248}",
       "default": "ghcr.io/ggml-org/llama.cpp:server-b8248",
@@ -344,6 +363,12 @@
       "value": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda}",
       "default": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda",
       "reason": "Whisper CUDA image can be overridden by operators, but the shipped default is locked."
+    },
+    {
+      "path": "extensions/services/whisper/compose.jetson.yaml",
+      "value": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda}",
+      "default": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda",
+      "reason": "Jetson Whisper uses the same multi-arch CUDA image as NVIDIA, with a Jetson-specific runtime overlay."
     }
   ]
 }
