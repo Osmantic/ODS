@@ -68,4 +68,9 @@ async def tailscale_status() -> dict:
         dns_name, ips, online}, "magic_dns_suffix": "...", "tailnet_name": "..."}`
         — fully on the tailnet
     """
-    return await asyncio.to_thread(_proxy_agent, "/v1/tailscale/status", 15)
+    try:
+        return await asyncio.to_thread(_proxy_agent, "/v1/tailscale/status", 15)
+    except HTTPException as exc:
+        if exc.status_code in {503, 504}:
+            return {"running": False, "authenticated": False, "detail": exc.detail}
+        raise
