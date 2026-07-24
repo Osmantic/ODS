@@ -17,15 +17,34 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _display_path(path: Path) -> str:
+    """Repo-relative path for messages, tolerant of paths outside ROOT.
+
+    ARCHITECTURE.md lives at ROOT.parent, so a plain path.relative_to(ROOT)
+    would raise ValueError and mask the real error.
+    """
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 def first_match(path: Path, pattern: str, label: str) -> str:
-    match = re.search(pattern, read_text(path), re.MULTILINE | re.DOTALL)
+    try:
+        text = read_text(path)
+    except OSError as exc:
+        raise ValueError(f"{label}: cannot read {_display_path(path)}: {exc}") from exc
+    match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
     if not match:
-        raise ValueError(f"{label}: could not find version in {path.relative_to(ROOT)}")
+        raise ValueError(f"{label}: could not find version in {_display_path(path)}")
     return match.group(1)
 
 
 def latest_changelog_release() -> tuple[str, str]:
-    changelog = read_text(ROOT / "CHANGELOG.md")
+    try:
+        changelog = read_text(ROOT / "CHANGELOG.md")
+    except OSError as exc:
+        raise ValueError(f"CHANGELOG.md: cannot read file: {exc}") from exc
     for match in re.finditer(r"^## \[([^\]]+)\](?: - ([0-9]{4}-[0-9]{2}-[0-9]{2}))?", changelog, re.MULTILINE):
         version, date = match.group(1), match.group(2) or ""
         if version.lower() != "unreleased":
