@@ -1096,3 +1096,10 @@ def test_ods_talk_hermes_timeout_is_env_configurable(monkeypatch):
 
     monkeypatch.setenv("ODS_TALK_HERMES_TIMEOUT", "5")
     assert hermes_bridge._request_timeout() == 10
+
+
+def test_vision_model_name_strips_matched_quotes(monkeypatch):
+    import routers.talk as talk_router
+
+    monkeypatch.setenv("ODS_TALK_VISION_MODEL", '"user.Custom-Vision"')
+    assert talk_router._vision_model_name() == "user.Custom-Vision"

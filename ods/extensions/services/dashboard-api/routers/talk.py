@@ -123,7 +123,10 @@ def _require_hermes_talk_compatible() -> dict[str, Any]:
 def _vision_model_name() -> str:
     """Lemonade name of the vision-capable model. Defaults match the strix
     user.* registration we ship; operators can override per-host via env."""
-    return os.environ.get("ODS_TALK_VISION_MODEL", "user.Qwen3.6-35B-A3B-Vision")
+    raw = (os.environ.get("ODS_TALK_VISION_MODEL") or "user.Qwen3.6-35B-A3B-Vision").strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+        return raw[1:-1].strip()
+    return raw
 
 
 def _vision_backend_base_url() -> str:
