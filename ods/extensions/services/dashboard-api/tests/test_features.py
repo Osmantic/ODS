@@ -408,3 +408,18 @@ class TestFeatureEnableInstructions:
             headers=test_client.auth_headers,
         )
         assert resp.status_code == 404
+
+
+def test_calculate_feature_status_handles_quoted_host_ram_gb(monkeypatch):
+    from routers.features import calculate_feature_status
+
+    feature = {
+        "id": "test-feature",
+        "name": "Test Feature",
+        "requirements": {"vram_gb": 16, "services": []},
+        "enabled_services_all": [],
+    }
+    monkeypatch.setenv("HOST_RAM_GB", '"32"')
+    with patch("routers.features.GPU_BACKEND", "apple"):
+        res = calculate_feature_status(feature, [], None)
+        assert res["requirements"]["vramOk"] is True
