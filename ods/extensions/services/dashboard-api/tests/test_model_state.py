@@ -504,3 +504,15 @@ class TestObserveHook:
             return_proof=True,
             cancel_event=cancel_event,
         ) == {}
+
+
+def test_get_model_state_handles_unicode_decode_error(tmp_path, monkeypatch, test_client):
+    state_file = tmp_path / "model-state.json"
+    state_file.write_bytes(b"\x80\x81\x82")
+    monkeypatch.setenv("ODS_DATA_DIR", str(tmp_path))
+
+    resp = test_client.get("/api/models/state", headers=test_client.auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"] is False
+    assert any("read failed" in err for err in data["errors"])
