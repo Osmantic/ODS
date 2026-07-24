@@ -458,12 +458,16 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
             metric_name = parts[0].split("{", 1)[0]
             if metric_name.endswith("tokens_predicted_total"):
                 try:
-                    metrics["tokens_predicted_total"] = float(parts[-1])
+                    val = float(parts[-1])
+                    if math.isfinite(val):
+                        metrics["tokens_predicted_total"] = val
                 except ValueError:
                     pass
             if metric_name.endswith("tokens_predicted_seconds_total"):
                 try:
-                    metrics["tokens_predicted_seconds_total"] = float(parts[-1])
+                    val = float(parts[-1])
+                    if math.isfinite(val):
+                        metrics["tokens_predicted_seconds_total"] = val
                 except ValueError:
                     pass
 
