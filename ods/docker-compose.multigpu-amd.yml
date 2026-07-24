@@ -39,7 +39,11 @@ services:
       # Tensor split ratio (e.g. "0.5,0.5") — passed via env var because it may
       # be empty (auto-split). Inherited by inner llama-server via fork()+execv().
       LLAMA_ARG_TENSOR_SPLIT: "${LLAMA_ARG_TENSOR_SPLIT:-}"
-      HSA_OVERRIDE_GFX_VERSION: "${HSA_OVERRIDE_GFX_VERSION:-}"
+      # Null value (no ": value") = pass through only if defined, omit otherwise.
+      # "${HSA_OVERRIDE_GFX_VERSION:-}" would set it to an empty string, which ROCm
+      # treats as a malformed override and responds to by enumerating zero devices.
+      # See the longer note in docker-compose.amd.yml.
+      HSA_OVERRIDE_GFX_VERSION:
 
   dashboard-api:
     devices:

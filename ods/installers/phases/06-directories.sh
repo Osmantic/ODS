@@ -800,6 +800,16 @@ $(if [[ "$GPU_BACKEND" == "amd" ]]; then
         _amd_custom_bin="# LEMONADE_LLAMACPP_ROCM_BIN unset — custom binary is gfx1151-only; Lemonade uses bundled binary on $_amd_gfx_detected"
     fi
 
+    # HSA_XNACK enables pageable/unified memory access. It is an APU feature — it
+    # matters on Strix Halo, where the GPU shares system RAM. On discrete cards it is
+    # meaningless at best, so only set it for the integrated targets.
+    case "$_amd_gfx_detected" in
+        gfx1151|gfx1150|gfx1103|gfx1036|gfx1035)
+            _amd_xnack="HSA_XNACK=1" ;;
+        *)
+            _amd_xnack="# HSA_XNACK unset — APU/unified-memory feature, N/A on discrete $_amd_gfx_detected" ;;
+    esac
+
     cat << AMD_ENV
 #=== GPU Group IDs (for container device access) ===
 VIDEO_GID=$(getent group video 2>/dev/null | cut -d: -f3 || echo 44)
@@ -808,7 +818,7 @@ RENDER_GID=$(getent group render 2>/dev/null | cut -d: -f3 || echo 992)
 #=== AMD ROCm Settings (gfx target detected from topology) ===
 LEMONADE_SERVER_IMAGE=${LEMONADE_SERVER_IMAGE:-${BACKEND_LEMONADE_CONTAINER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0}}
 ${_amd_hsa_override}
-HSA_XNACK=1
+${_amd_xnack}
 ROCBLAS_USE_HIPBLASLT=1
 AMDGPU_TARGET=${_amd_gfx_detected}
 LLAMA_CPP_REF=b8763
@@ -817,7 +827,7 @@ ${_amd_custom_bin}
 #=== LiteLLM → Lemonade outbound key (AMD only) ===
 LITELLM_LEMONADE_API_KEY=${LITELLM_LEMONADE_API_KEY}
 AMD_ENV
-    unset _amd_gfx_detected _amd_hsa_override _amd_custom_bin
+    unset _amd_gfx_detected _amd_hsa_override _amd_custom_bin _amd_xnack
 fi)
 $(if [[ "$GPU_BACKEND" == "sycl" ]]; then cat << INTEL_ENV
 #=== GPU Group IDs (for container device access) ===

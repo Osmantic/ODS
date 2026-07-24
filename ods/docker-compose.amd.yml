@@ -58,8 +58,20 @@ services:
       # other natively-supported parts, this stays empty and HSA reports the
       # real ISA. A non-empty default here would crash those hosts with
       # HSA_STATUS_ERROR_INVALID_ISA at model-load.
-      - HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-}
-      - HSA_XNACK=${HSA_XNACK:-1}
+      # NOTE the bare form (no "=..."): it passes the variable through only if it is
+      # defined, and omits it entirely otherwise. Do NOT write
+      # "HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-}" — that sets the var to
+      # an EMPTY STRING, which is not the same as unset. ROCm treats a set-but-empty
+      # HSA_OVERRIDE_GFX_VERSION as an override request, fails to parse it, and
+      # enumerates ZERO devices: "no ROCm-capable device is detected". That silently
+      # drops inference to CPU/Vulkan on every host that is not Strix Halo.
+      - HSA_OVERRIDE_GFX_VERSION
+      # HSA_XNACK is a unified-memory APU feature. Phase 06 sets it only for integrated
+      # targets; on discrete cards it must be absent. Defaulting it to 1 forced
+      # pageable-memory mode onto discrete GPUs, and meant unsetting it in .env had no
+      # effect. (An empty HSA_XNACK is harmless, unlike HSA_OVERRIDE_GFX_VERSION above,
+      # but pass it through the same way.)
+      - HSA_XNACK
       - ROCBLAS_USE_HIPBLASLT=${ROCBLAS_USE_HIPBLASLT:-1}
       # Lemonade's backend selector accepts auto|vulkan|cpu only; "rocm" is no
       # longer a valid value. Setting auto + LEMONADE_LLAMACPP_ROCM_BIN points
