@@ -62,6 +62,7 @@ param(
     [switch]$NoLangfuse,
     [switch]$NoBootstrap,
     [string]$InstallDir = "",
+    [string]$ModelsDir = "",
     [string]$SummaryJsonPath = ""
 )
 
@@ -311,7 +312,7 @@ if ($dryRun) {
 
         if (Should-UseBootstrap -Tier $selectedTier -InstallDir $installDir `
                 -GgufFile $tierConfig.GgufFile -CloudMode $cloudMode `
-                -NoBootstrap $noBootstrapFlag) {
+                -NoBootstrap $noBootstrapFlag -ModelsDirOverride $ModelsDir) {
             $bootstrapActive = $true
             $fullTierConfig = @{}
             foreach ($k in $tierConfig.Keys) { $fullTierConfig[$k] = $tierConfig[$k] }
@@ -326,7 +327,8 @@ if ($dryRun) {
 
         # ── Download GGUF model ───────────────────────────────────────────────
         if ($tierConfig.GgufUrl -and -not $cloudMode) {
-            $modelPath    = Join-Path (Join-Path $installDir "data\models") $tierConfig.GgufFile
+            $resolvedModelsDir = Get-ODSModelsDir -InstallDir $installDir -ModelsDirOverride $ModelsDir
+            $modelPath    = Join-Path $resolvedModelsDir $tierConfig.GgufFile
             $needsDownload = -not (Test-Path $modelPath)
 
             if ((Test-Path $modelPath) -and $tierConfig.GgufSha256) {
@@ -530,7 +532,7 @@ if ($dryRun) {
                 # releases and configures models/Vulkan through Lemonade 10.7's
                 # authenticated internal API. Models load on first chat request.
                 Write-AI "Starting Lemonade server..."
-                $modelsDir = Join-Path (Join-Path $installDir "data") "models"
+                $modelsDir = Get-ODSModelsDir -InstallDir $installDir -ModelsDirOverride $ModelsDir
                 $taskName = "ODSLemonadeRuntime"
                 $taskNames = @($taskName, (Get-ODSPriorLemonadeTaskName))
                 Stop-ODSWindowsLemonadeProcesses -ExePath $script:LEMONADE_EXE -TaskNames $taskNames
@@ -701,7 +703,8 @@ if ($dryRun) {
 
                 # Start native llama-server
                 Write-AI "Starting native llama-server (Vulkan)..."
-                $modelFullPath = Join-Path (Join-Path $installDir "data\models") $tierConfig.GgufFile
+                $resolvedModelsDir = Get-ODSModelsDir -InstallDir $installDir -ModelsDirOverride $ModelsDir
+                $modelFullPath = Join-Path $resolvedModelsDir $tierConfig.GgufFile
                 $llamaArgs = @(
                     "--model", $modelFullPath,
                     "--host", $bindAddr,

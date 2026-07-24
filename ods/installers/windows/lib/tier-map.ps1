@@ -847,13 +847,15 @@ function Should-UseBootstrap {
         [string]$GgufFile,
         [bool]$CloudMode = $false,
         [bool]$OfflineMode = $false,
-        [bool]$NoBootstrap = $false
+        [bool]$NoBootstrap = $false,
+        [string]$ModelsDirOverride
     )
     if ($NoBootstrap)  { return $false }
     if ($CloudMode)    { return $false }
     if ($OfflineMode)  { return $false }
     if ((Get-TierRank $Tier) -le 0) { return $false }
-    $modelPath = Join-Path (Join-Path $InstallDir "data\models") $GgufFile
+    $modelsDir = Get-ODSModelsDir -InstallDir $InstallDir -ModelsDirOverride $ModelsDirOverride
+    $modelPath = Join-Path $modelsDir $GgufFile
     if (Test-Path $modelPath) { return $false }
     return $true
 }

@@ -271,7 +271,8 @@ function New-ODSEnv {
         # user already had in .env (via Get-EnvOrNew), so manual
         # `ods enable langfuse` edits survive.
         [bool]$EnableLangfuse = $false,
-        [bool]$EnableLan = $false
+        [bool]$EnableLan = $false,
+        [string]$ModelsDir = ""
     )
 
     # Preserve existing secrets on re-install (mirrors Linux _env_get logic)
@@ -656,6 +657,8 @@ MINIMAX_API_KEY=$(Get-EnvOrNew "MINIMAX_API_KEY" "")
 MODEL_PROFILE=$(Get-EnvOrNew "MODEL_PROFILE" "$(if ($TierConfig.ModelProfileRequested) { $TierConfig.ModelProfileRequested } else { "qwen" })")
 LLM_MODEL=$($TierConfig.LlmModel)
 GGUF_FILE=$($TierConfig.GgufFile)
+MODELS_DIR=$(Get-EnvOrNew "MODELS_DIR" "$(Get-ODSModelsDir -InstallDir $InstallDir -ModelsDirOverride $ModelsDir)")
+ODS_WIN_MODELS_DIR=$(Get-EnvOrNew "ODS_WIN_MODELS_DIR" "$(Get-ODSModelsDir -InstallDir $InstallDir -ModelsDirOverride $ModelsDir)")
 LEMONADE_MODEL=$effectiveLemonadeModel
 MAX_CONTEXT=$($TierConfig.MaxContext)
 CTX_SIZE=$($TierConfig.MaxContext)

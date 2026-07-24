@@ -34,7 +34,8 @@ function Resolve-WindowsODSAgentBaseUri {
 function Resolve-WindowsODSModelCatalogId {
     param(
         [Parameter(Mandatory = $true)][string]$InstallDir,
-        [Parameter(Mandatory = $true)][string]$GgufFile
+        [Parameter(Mandatory = $true)][string]$GgufFile,
+        [string]$ModelsDirOverride
     )
 
     if ([IO.Path]::GetFileName($GgufFile) -ne $GgufFile -or
@@ -42,7 +43,8 @@ function Resolve-WindowsODSModelCatalogId {
         throw "Tier model contains an invalid GGUF filename"
     }
 
-    $modelPath = Join-Path (Join-Path $InstallDir "data\models") $GgufFile
+    $modelsDir = Get-ODSModelsDir -InstallDir $InstallDir -ModelsDirOverride $ModelsDirOverride
+    $modelPath = Join-Path $modelsDir $GgufFile
     if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf) -or
         (Get-Item -LiteralPath $modelPath).Length -le 0) {
         throw "Model file is not downloaded: $modelPath"

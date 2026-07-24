@@ -1044,7 +1044,7 @@ function Stop-ODSLemonadeRuntime {
     $binDir = Split-Path -Parent $script:LEMONADE_EXE
     $userProfile = [Environment]::GetFolderPath("UserProfile")
     $cacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
-    $modelsDir = Join-Path (Join-Path $InstallDir "data") "models"
+    $modelsDir = Get-ODSModelsDir -InstallDir $InstallDir
     foreach ($child in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
         ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase)) -or
         ($cacheBin -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($cacheBin, [StringComparison]::OrdinalIgnoreCase)) -or
@@ -1058,7 +1058,7 @@ function Start-ODSLemonadeRuntime {
     param([string]$BindAddress)
 
     Sync-ODSNativeInferenceConfig
-    $modelsDir = Join-Path (Join-Path $InstallDir "data") "models"
+    $modelsDir = Get-ODSModelsDir -InstallDir $InstallDir
     $envPath = Join-Path $InstallDir ".env"
     $contextRaw = Get-ODSEnvValue -Name "CTX_SIZE" -Default (Get-ODSEnvValue -Name "MAX_CONTEXT" -Default "0")
     $contextSize = 0
@@ -1197,7 +1197,8 @@ function Wait-ODSLemonadeConfiguredModel {
     $ggufFile = $EnvVars["GGUF_FILE"]
     if ([string]::IsNullOrWhiteSpace($ggufFile)) { return }
 
-    $modelPath = Join-Path (Join-Path $InstallDir "data\models") $ggufFile
+    $modelsDir = Get-ODSModelsDir -InstallDir $InstallDir
+    $modelPath = Join-Path $modelsDir $ggufFile
     if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
         throw "Configured Lemonade model file is missing: $modelPath"
     }
@@ -1357,7 +1358,8 @@ function Start-NativeInferenceServer {
         if (-not $ggufFile) { $ggufFile = "Qwen3.5-9B-Q4_K_M.gguf" }
         if (-not $ctxSize)  { $ctxSize = "16384" }
 
-        $modelPath = Join-Path (Join-Path $InstallDir "data\models") $ggufFile
+        $modelsDir = Get-ODSModelsDir -InstallDir $InstallDir
+        $modelPath = Join-Path $modelsDir $ggufFile
         if (-not (Test-Path $modelPath)) {
             Write-AIError "Model not found: $modelPath"
             return
