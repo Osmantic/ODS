@@ -20,6 +20,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MDNS_SCRIPT = REPO_ROOT / "bin" / "ods-mdns.py"
@@ -97,3 +99,39 @@ if __name__ == "__main__":
     test_announcer_publishes_all_required_subdomains()
     test_announcer_does_not_advertise_unknown_subdomains()
     print("OK")
+
+
+def test_strip_env_quotes_preserves_inner_and_mismatched_quotes() -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("ods_mdns", MDNS_SCRIPT)
+    mdns = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mdns)
+
+    assert mdns._strip_env_quotes('"hello"') == "hello"
+    assert mdns._strip_env_quotes("'hello'") == "hello"
+    assert mdns._strip_env_quotes('"\'device\'"') == "'device'"
+    assert mdns._strip_env_quotes('trailing"') == 'trailing"'
+    assert mdns._strip_env_quotes('"') == '"'
+
+
+def test_read_env_strips_matched_quotes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        'ODS_DEVICE_NAME="\'my-device\'"\n'
+        'MISMATCHED_VAL=val"\n'
+        'PLAIN_VAL=plain\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ODS_INSTALL_DIR", str(tmp_path))
+
+    spec = importlib.util.spec_from_file_location("ods_mdns", MDNS_SCRIPT)
+    mdns = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mdns)
+
+    env = mdns._read_env()
+    assert env["ODS_DEVICE_NAME"] == "'my-device'"
+    assert env["MISMATCHED_VAL"] == 'val"'
+    assert env["PLAIN_VAL"] == "plain"
