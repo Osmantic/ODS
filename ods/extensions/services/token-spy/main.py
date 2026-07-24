@@ -1332,7 +1332,7 @@ def _kill_remote_session(agent: str, reason: str = "dashboard") -> dict:
     sessions_dir = remote["sessions_dir"]
 
     script = (
-        "import os, glob, json, sys\n"
+        "import os, glob, json, sys, tempfile\n"
         "sdir = sys.argv[1]\n"
         "files = sorted(glob.glob(os.path.join(sdir, '*.jsonl')), key=os.path.getsize, reverse=True)\n"
         "if not files:\n"
@@ -1347,7 +1347,14 @@ def _kill_remote_session(agent: str, reason: str = "dashboard") -> dict:
         "        with open(sj) as fh: data = json.load(fh)\n"
         "        for k in list(data.keys()):\n"
         "            if isinstance(data[k], dict) and data[k].get('sessionId') == sid: del data[k]\n"
-        "        with open(sj, 'w') as fh: json.dump(data, fh, indent=2)\n"
+        "        fd, tmp = tempfile.mkstemp(dir=sdir, suffix='.tmp')\n"
+        "        try:\n"
+        "            with os.fdopen(fd, 'w') as fh: json.dump(data, fh, indent=2)\n"
+        "            os.replace(tmp, sj)\n"
+        "        except Exception:\n"
+        "            try: os.unlink(tmp)\n"
+        "            except Exception: pass\n"
+        "            raise\n"
         "    except Exception as e:\n"
         "        print(json.dumps({'warn': 'sessions.json update failed', 'error': str(e)}))\n"
         "    print(json.dumps({'action': 'killed', 'session_id': sid, 'size_bytes': size}))"
