@@ -31,12 +31,12 @@ router = APIRouter(tags=["setup"])
 def get_active_persona_prompt() -> str:
     """Get the system prompt for the active persona."""
     persona_file = SETUP_CONFIG_DIR / "persona.json"
-    if persona_file.exists():
+    if persona_file.is_file():
         try:
-            with open(persona_file) as f:
-                data = json.load(f)
-                return data.get("system_prompt", PERSONAS["general"]["system_prompt"])
-        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+            data = json.loads(persona_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("system_prompt"):
+                return str(data["system_prompt"])
+        except (OSError, UnicodeError, json.JSONDecodeError):
             logger.debug("Failed to read persona.json, using default prompt")
     return PERSONAS["general"]["system_prompt"]
 
