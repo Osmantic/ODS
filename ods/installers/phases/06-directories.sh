@@ -787,18 +787,20 @@ $(if [[ "$GPU_BACKEND" == "amd" ]]; then
         *)       _amd_hsa_override="# HSA_OVERRIDE_GFX_VERSION unset — $_amd_gfx_detected is natively supported" ;;
     esac
 
-    # The custom llama-server binary at /opt/llama-custom is built with Strix
-    # Halo-specific patches (MMQ tile size reduced from 64 to 48 for gfx1151's
-    # register file). Pointing Lemonade at it from any other architecture either
-    # ISA-faults (kernels compiled for gfx1151) or runs a perf-regressed binary.
-    # Only opt-in when the host is actually Strix Halo; otherwise leave unset so
-    # docker-compose.amd.yml's empty default lets Lemonade use its bundled
-    # ROCm-aware binary.
-    if [[ "$_amd_gfx_detected" == "gfx1151" ]]; then
-        _amd_custom_bin="LEMONADE_LLAMACPP_ROCM_BIN=/opt/llama-custom/llama-server"
-    else
-        _amd_custom_bin="# LEMONADE_LLAMACPP_ROCM_BIN unset — custom binary is gfx1151-only; Lemonade uses bundled binary on $_amd_gfx_detected"
-    fi
+    # Point Lemonade at the custom llama-server binary we build in Dockerfile.amd.
+    #
+    # This used to be gated to gfx1151 on the theory that the custom binary carried
+    # Strix-Halo-only patches, and that on other architectures "Lemonade uses its
+    # bundled ROCm-aware binary." That second half is false: the Lemonade image ships
+    # no ROCm userspace at all (no rocminfo, no HIP runtime). Left unset, Lemonade
+    # logs "failed to initialize ROCm: no ROCm-capable device is detected", downloads
+    # the *Vulkan* llama.cpp build, and runs inference on radv — or fails outright.
+    #
+    # /opt/llama-custom is the only ROCm stack in the container: Dockerfile.amd copies
+    # libhsa-runtime64, libamdhip64, librocblas and the target's Tensile kernels in
+    # alongside the binary. It is built for ${AMDGPU_TARGET} = $_amd_gfx_detected, and
+    # the gfx1151 MMQ patch is gated to gfx1151, so it is correct for every target.
+    _amd_custom_bin="LEMONADE_LLAMACPP_ROCM_BIN=/opt/llama-custom/llama-server"
 
     cat << AMD_ENV
 #=== GPU Group IDs (for container device access) ===
@@ -813,6 +815,11 @@ ROCBLAS_USE_HIPBLASLT=1
 AMDGPU_TARGET=${_amd_gfx_detected}
 LLAMA_CPP_REF=b8763
 ${_amd_custom_bin}
+# Backend selector (becomes --llamacpp). NOT "auto": auto re-runs Lemonade's own gfx
+# detection, which maps GPU marketing names to arches and does not recognise every
+# card (e.g. "AMD Radeon AI PRO R9700"). On a miss it silently falls back to the
+# Vulkan build on radv. We already know the arch and ship a matching ROCm binary.
+LEMONADE_LLAMACPP=rocm
 
 #=== LiteLLM → Lemonade outbound key (AMD only) ===
 LITELLM_LEMONADE_API_KEY=${LITELLM_LEMONADE_API_KEY}
