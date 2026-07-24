@@ -335,6 +335,19 @@ class TestForwarding:
         assert b"Concrete.gguf" not in raw
         assert raw.endswith(b"data: [DONE]\r\n\r\n")
 
+    def test_sse_holdback_is_bounded_without_delimiter(self, router):
+        mod, client, write_state, calls = router
+        # A delimiter-less upstream must not grow the rewriter's held-back
+        # partial event without bound; feed() flushes it once it exceeds
+        # MAX_SSE_HOLDBACK instead of buffering indefinitely.
+        rewriter = mod._SSERewriter("ods/current")
+        out = rewriter.feed(b"data: " + b"x" * (mod.MAX_SSE_HOLDBACK + 4096))
+        assert out, "oversized delimiter-less partial event should be flushed"
+        assert len(rewriter.buffer) <= mod.MAX_SSE_HOLDBACK
+        # framing still works after a forced flush
+        framed = b"".join(rewriter.feed(b"\n\ndata: [DONE]\n\n"))
+        assert b"data: [DONE]" in framed
+
     def test_stream_holds_admission_until_teardown(self, router, monkeypatch):
         mod, client, write_state, calls = router
         write_state()
