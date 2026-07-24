@@ -983,13 +983,13 @@
       "app_compatibility": {
         "hermes_talk": {
           "status": "unsupported_until_revalidated",
-          "label": "ODS Talk revalidation required on M5 and Windows",
-          "reason": "A fresh exact-commit release run loaded Qwen3 4B 128K through Apple llama-server on m5-mbp and Windows llama-server on windows-laptop. On M5, ODS Talk's final user-facing reply contained only a generated .MEDIA audio marker and omitted the required challenge text; on Windows, the exact model loaded and routed correctly but Talk did not finish within the enforced 180-second inference limit. Keep this model out of M5 and Windows Talk/all-app release coverage until both response paths are revalidated.",
-          "evidence": "fleet-test/runs/2026-07-24T02-46-53Z-release-product-faaf5af99c89-harness-b838abf5a87b-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/m5-mbp; fleet-test/runs/2026-07-24T02-46-53Z-release-product-faaf5af99c89-harness-b838abf5a87b-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/windows-laptop",
-          "recordedAt": "2026-07-24T05:25:20Z",
-          "productSha": "faaf5af99c89e38cc43f18239ea94747f62bf16b",
-          "harnessSha": "b838abf5a87b32c3f7ab8eaef43ea97133fb43d9",
-          "hostScope": ["m5-mbp", "windows-laptop"],
+          "label": "ODS Talk revalidation required",
+          "reason": "Fresh exact-commit release runs loaded Qwen3 4B 128K through Linux llama-server on tower2, Apple llama-server on m5-mbp, and Windows llama-server on windows-laptop. Tower2 loaded and routed the exact model in 3.9 seconds, but Talk replied that it generated the challenge phrase without actually returning it. M5 returned only a generated .MEDIA audio marker and omitted the challenge text, while Windows did not finish within the enforced 180-second inference limit. Keep this model out of Talk/all-app release coverage globally until challenge-bound response behavior is revalidated.",
+          "evidence": "fleet-test/runs/2026-07-24T02-46-53Z-release-product-faaf5af99c89-harness-b838abf5a87b-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/m5-mbp; fleet-test/runs/2026-07-24T02-46-53Z-release-product-faaf5af99c89-harness-b838abf5a87b-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/windows-laptop; fleet-test/runs/2026-07-24T10-53-17Z-release-product-68d41e774eb1-harness-954deb755b07-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/tower2",
+          "recordedAt": "2026-07-24T12:06:17Z",
+          "productSha": "68d41e774eb13be334aa8cd3904ecbadaf69f4bf",
+          "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
+          "globalScope": true,
           "expiresAt": "2026-08-24T00:00:00Z"
         }
       },

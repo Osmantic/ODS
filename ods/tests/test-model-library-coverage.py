@@ -285,19 +285,22 @@ def test_smollm3_3b_runtime_context_is_64k_and_it_remains_a_revalidation_candida
     assert not _agent_viable_for_release(model)
 
 
-def test_qwen3_4b_128k_talk_block_is_m5_and_windows_scoped():
+def test_qwen3_4b_128k_talk_block_is_global_after_linux_revalidation():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
     model = by_id["qwen3-4b-128k-q4"]
     compatibility = model["app_compatibility"]["hermes_talk"]
 
     assert compatibility["status"] == "unsupported_until_revalidated"
-    assert compatibility["hostScope"] == ["m5-mbp", "windows-laptop"]
+    assert compatibility["globalScope"] is True
+    assert "hostScope" not in compatibility
     assert "cycle-006/m5-mbp" in compatibility["evidence"]
     assert "cycle-005/windows-laptop" in compatibility["evidence"]
+    assert "cycle-006/tower2" in compatibility["evidence"]
     assert ".MEDIA" in compatibility["reason"]
     assert "180-second" in compatibility["reason"]
-    assert _agent_viable_for_release(model)
+    assert "3.9 seconds" in compatibility["reason"]
+    assert not _agent_viable_for_release(model)
     assert not _agent_viable_for_release(model, host="m5-mbp")
     assert not _agent_viable_for_release(model, host="windows-laptop")
 
@@ -460,7 +463,11 @@ def test_replacement_low_vram_long_context_models_are_cataloged_for_validation()
         assert model["context_length"] >= HERMES_CONTEXT_FLOOR
         assert model["gguf_sha256"] == sha256
         assert model["gguf_url"].startswith(url_prefix)
-        if model_id in {"granite3.1-2b-instruct-q4", "phi3-mini-128k-q4"}:
+        if model_id in {
+            "granite3.1-2b-instruct-q4",
+            "phi3-mini-128k-q4",
+            "qwen3-4b-128k-q4",
+        }:
             assert not _agent_viable_for_release(model)
         else:
             assert _agent_viable_for_release(model)
@@ -651,7 +658,10 @@ def test_qwen3_4b_long_context_replacements_are_release_candidates():
             assert model["size_bytes"] == expected_model["size_bytes"]
         if model_id != "qwen3.5-4b-q4":
             assert model.get("install_recommendation") is False
-        assert _agent_viable_for_release(model)
+        if model_id == "qwen3-4b-128k-q4":
+            assert not _agent_viable_for_release(model)
+        else:
+            assert _agent_viable_for_release(model)
 
 
 def test_qwen25_7b_is_not_agent_viable_on_low_vram_windows_until_revalidated():
