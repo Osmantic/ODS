@@ -1,0 +1,35 @@
+services:
+  reranker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ods-reranker:latest
+    container_name: ods-reranker
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${RERANKER_PORT:-3010}:3010"
+    environment:
+      - RERANKER_MODEL=${RERANKER_MODEL:-BAAI/bge-reranker-base}
+      # Higher quality option (~1.1GB RAM): set RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+      - RERANKER_MAX_DOCUMENTS=${RERANKER_MAX_DOCUMENTS:-25}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3010/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1500M
+        reservations:
+          cpus: '0.1'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
