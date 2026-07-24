@@ -202,13 +202,18 @@ function buildSparkShape(values, width = 126, height = 46) {
 }
 
 const USAGE_HISTORY_KEY = 'ods-usage-summary-history-v1'
+// Per-period sparkline depth, and an overall guard so the entry never grows
+// without limit once several periods share the store.
+const HISTORY_SAMPLES_PER_PERIOD = 240
+const HISTORY_SAMPLES_TOTAL = 960
 let memoryUsageHistory = []
 
 function readUsageHistory() {
   if (typeof window === 'undefined') return memoryUsageHistory
   try {
     const raw = window.localStorage?.getItem(USAGE_HISTORY_KEY)
-    return raw ? JSON.parse(raw) : memoryUsageHistory
+    const parsed = raw ? JSON.parse(raw) : memoryUsageHistory
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : memoryUsageHistory
   } catch {
     return memoryUsageHistory
   }
@@ -242,16 +247,24 @@ function usageSampleFromReport(report) {
 function appendUsageHistory(report) {
   const sample = usageSampleFromReport(report)
   const cutoff = Date.now() - 24 * 60 * 60 * 1000
-  const samples = readUsageHistory()
-    .filter(item => item && item.ts >= cutoff && item.period === sample.period)
+  // Age out everything first, then split by period. Samples belonging to other
+  // periods are carried through untouched: the store is keyed by period (the
+  // month selector reads it back that way), so persisting only the period we
+  // just fetched would erase the sparkline history of the month the user
+  // navigated away from.
+  const live = readUsageHistory().filter(item => item && item.ts >= cutoff)
+  const samples = live.filter(item => item.period === sample.period)
+  const others = live.filter(item => item.period !== sample.period)
   const previous = samples[samples.length - 1]
   const changed = !previous ||
     previous.spend_usd !== sample.spend_usd ||
     previous.total_tokens !== sample.total_tokens ||
     previous.requests !== sample.requests ||
     previous.tracked_providers !== sample.tracked_providers
-  const next = changed ? [...samples, sample].slice(-240) : samples
-  writeUsageHistory(next)
+  const next = changed
+    ? [...samples, sample].slice(-HISTORY_SAMPLES_PER_PERIOD)
+    : samples
+  writeUsageHistory([...others, ...next].slice(-HISTORY_SAMPLES_TOTAL))
   return next
 }
 
@@ -266,7 +279,9 @@ function useUsageReport(range, reloadToken = 0) {
   const [report, setReport] = useState(() => emptyReport(range.start, range.end))
   const [previousReport, setPreviousReport] = useState(null)
   const [readiness, setReadiness] = useState(EMPTY_READINESS)
-  const [history, setHistory] = useState(() => readUsageHistory().filter(item => item.period === `${range.start}:${range.end}`))
+  const [history, setHistory] = useState(
+    () => readUsageHistory().filter(item => item.period === `${range.start}:${range.end}`),
+  )
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
