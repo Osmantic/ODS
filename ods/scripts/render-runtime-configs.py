@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
@@ -46,6 +47,37 @@ class RenderedFile:
     surface: str
     path: str
     content: str
+
+
+def atomic_write(target: Path, content: str) -> None:
+    """Replace ``target`` in one step: temp file in the same dir, then rename.
+
+    Several of these surfaces are bind-mounted read-only into running
+    containers — config/litellm/<mode>.yaml into litellm,
+    config/model-router/endpoints.json into model-router. A plain write_text
+    truncates first, so a re-render leaves a window in which a reader sees an
+    empty or half-written config, and an interrupted write leaves it that way
+    for good. os.replace is atomic on POSIX and on Windows, so a reader sees
+    either the previous file or the new one.
+
+    Same temp-and-replace shape the model-state writer already uses
+    (bin/model_switchboard/state.py:atomic_write_state).
+    """
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=target.name + ".", suffix=".tmp", dir=str(target.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, target)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def ensure_trailing_newline(text: str) -> str:
@@ -365,7 +397,7 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         for item in files:
             target = output_root / item.path
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(ensure_trailing_newline(item.content), encoding="utf-8")
+            atomic_write(target, ensure_trailing_newline(item.content))
             written.append(str(target))
     return {
         "version": "1",

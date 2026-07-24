@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -302,6 +304,99 @@ def test_write_mode_writes_under_output_root() -> None:
         assert "openai/extra.Written.gguf" in target.read_text(encoding="utf-8")
 
 
+def _load_renderer_module():
+    """Import the renderer by path — its filename is not a Python identifier."""
+    name = "ods_render_runtime_configs"
+    spec = importlib.util.spec_from_file_location(name, SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    # Register before exec: @dataclass resolves annotations through
+    # sys.modules[cls.__module__] and fails on an unregistered module.
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_write_never_exposes_a_truncated_config() -> None:
+    """A reader must never observe a half-written config.
+
+    config/litellm/<mode>.yaml and config/model-router/endpoints.json are
+    bind-mounted read-only into running containers. A truncate-then-write
+    leaves a window where the container reads an empty or partial file, and
+    an interrupted write leaves it that way permanently.
+    """
+    render = _load_renderer_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config" / "model-router" / "endpoints.json"
+        target.parent.mkdir(parents=True)
+        target.write_text('{"endpoints": [{"id": "old"}]}\n', encoding="utf-8")
+        previous = target.read_text(encoding="utf-8")
+
+        class Interrupted(Exception):
+            pass
+
+        real_replace = os.replace
+
+        def exploding_replace(*args, **kwargs):
+            raise Interrupted("died before the rename")
+
+        os.replace = exploding_replace
+        try:
+            render.atomic_write(target, '{"endpoints": [{"id": "new"}]}\n')
+        except Interrupted:
+            pass
+        finally:
+            os.replace = real_replace
+
+        assert target.read_text(encoding="utf-8") == previous, (
+            "an interrupted write damaged the live config"
+        )
+        leftovers = [f.name for f in target.parent.iterdir() if f.name.endswith(".tmp")]
+        assert not leftovers, f"temp file left behind: {leftovers}"
+
+        render.atomic_write(target, '{"endpoints": [{"id": "new"}]}\n')
+        assert '"new"' in target.read_text(encoding="utf-8")
+        leftovers = [f.name for f in target.parent.iterdir() if f.name.endswith(".tmp")]
+        assert not leftovers, f"temp file left behind: {leftovers}"
+
+
+def test_written_bytes_are_unchanged() -> None:
+    """Only how the file lands changes — never its content."""
+    with tempfile.TemporaryDirectory() as tmp:
+        proc = subprocess.run(
+            [
+                sys.executable, str(SCRIPT),
+                "--surface", "model-router-endpoints",
+                "--switchboard-mode", "enabled",
+                "--output-root", tmp,
+                "--write",
+            ],
+            cwd=ROOT, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=True,
+        )
+        payload = json.loads(proc.stdout)
+        assert payload["written"], "nothing was written"
+        for written in payload["written"]:
+            path = Path(written)
+            expected = next(
+                item["content"] for item in payload["files"]
+                if str(Path(tmp) / item["path"]) == written
+            )
+            assert path.read_text(encoding="utf-8") == expected, written
+
+
+def test_write_path_never_truncates_in_place() -> None:
+    """The defect itself: a truncate-then-write on a live, mounted config.
+
+    Structural because the truncation window is a race — it cannot be
+    observed deterministically from outside the process, but its cause can.
+    """
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "target.write_text(" not in source, (
+        "the write loop truncates the live config in place"
+    )
+    assert "os.replace(" in source, "replacement is not atomic"
+
+
 def main() -> int:
     tests = [
         test_all_surfaces_render,
@@ -317,6 +412,9 @@ def main() -> int:
         test_hermes_uses_lemonade_model_id_for_amd,
         test_perplexica_default_model_matches_route,
         test_write_mode_writes_under_output_root,
+        test_write_never_exposes_a_truncated_config,
+        test_written_bytes_are_unchanged,
+        test_write_path_never_truncates_in_place,
     ]
     for test in tests:
         test()
