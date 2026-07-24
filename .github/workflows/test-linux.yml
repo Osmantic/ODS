@@ -68,6 +68,9 @@ jobs:
       - name: Health Check Tests
         run: bash tests/test-health-check.sh
 
+      - name: QR Code Helper Tests
+        run: bash tests/test-qrcode-helper.sh
+
       - name: n8n Cookie Policy Tests
         run: bash tests/test-n8n-cookie-policy.sh
 
