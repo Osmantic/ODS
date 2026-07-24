@@ -324,6 +324,25 @@ def test_windows_8gb_revalidation_models_have_64k_compressed_kv_profiles():
         assert profile["env"]["LLAMA_ARG_CACHE_TYPE_V"] == cache_type
 
 
+def test_windows_8gb_revalidation_models_have_verified_app_evidence():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+    expected_cycles = {
+        "qwen3-4b-instruct-2507-q4": "cycle-001/windows-laptop",
+        "qwen3.5-4b-q4": "cycle-002/windows-laptop",
+    }
+
+    for model_id, cycle_path in expected_cycles.items():
+        compatibility = by_id[model_id]["app_compatibility"]
+        for app in ("openai_chat", "hermes_talk", "perplexica", "agent_viability"):
+            verdict = compatibility[app]
+            assert verdict["status"] == "verified"
+            assert verdict["hostScope"] == ["windows-laptop"]
+            assert verdict["productSha"] == "449cf84d866d8bdedd8046d3c58faab6c07b5f03"
+            assert verdict["harnessSha"] == "954deb755b0730719512ac3675a748474180e01c"
+            assert cycle_path in verdict["evidence"]
+
+
 def test_granite31_requires_global_perplexica_revalidation_after_strixy_failure():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}

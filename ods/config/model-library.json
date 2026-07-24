@@ -287,6 +287,7 @@
           "recordedAt": "2026-07-24T04:23:49Z",
           "productSha": "faaf5af99c89e38cc43f18239ea94747f62bf16b",
           "harnessSha": "b838abf5a87b32c3f7ab8eaef43ea97133fb43d9",
+          "globalScope": true,
           "expiresAt": "2026-08-24T00:00:00Z"
         }
       },
@@ -318,6 +319,7 @@
           "recordedAt": "2026-07-23T21:21:17Z",
           "productSha": "3675af7931935ae0d435a6498c98bc114be209ca",
           "harnessSha": "47eedd6c0b40908272ad6ba324868f4acec2f308",
+          "globalScope": true,
           "expiresAt": "2026-08-22T00:00:00Z"
         }
       },
@@ -379,6 +381,7 @@
           "recordedAt": "2026-07-22T19:33:20Z",
           "productSha": "31c93e53c4aa8f9831abdb00516639def985ef34",
           "harnessSha": "ebdb7f9481901a35ca1e5108fe2a1769bab197e8",
+          "globalScope": true,
           "expiresAt": "2026-08-22T00:00:00Z"
         },
         "opencode": {
@@ -398,6 +401,7 @@
           "recordedAt": "2026-07-22T19:33:20Z",
           "productSha": "31c93e53c4aa8f9831abdb00516639def985ef34",
           "harnessSha": "ebdb7f9481901a35ca1e5108fe2a1769bab197e8",
+          "globalScope": true,
           "expiresAt": "2026-08-22T00:00:00Z"
         }
       },
@@ -428,6 +432,7 @@
           "recordedAt": "2026-07-21T14:25:00Z",
           "productSha": "7df3f218a06c386bdb40856c928a0618b8e16b57",
           "harnessSha": "d2a31507fa0652dff4c8cc1892e56ccf1b9102bb",
+          "globalScope": true,
           "expiresAt": "2026-08-21T00:00:00Z"
         },
         "agent_viability": {
@@ -437,6 +442,7 @@
           "recordedAt": "2026-07-21T14:25:00Z",
           "productSha": "7df3f218a06c386bdb40856c928a0618b8e16b57",
           "harnessSha": "d2a31507fa0652dff4c8cc1892e56ccf1b9102bb",
+          "globalScope": true,
           "expiresAt": "2026-08-21T00:00:00Z"
         }
       },
@@ -643,6 +649,7 @@
           "recordedAt": "2026-07-22T22:21:04Z",
           "productSha": "39164d8c5bc3306dd4e7ac3e884dcc8574b9930a",
           "harnessSha": "18e2bd60437f4e5ba7b3cd461a37d99ab524ef6a",
+          "globalScope": true,
           "expiresAt": "2026-08-22T00:00:00Z"
         }
       },
@@ -684,6 +691,7 @@
           "recordedAt": "2026-07-23T02:25:29Z",
           "productSha": "98d5a50cd5b527cb8dbd6117ba2d158538b73a9e",
           "harnessSha": "18e2bd60437f4e5ba7b3cd461a37d99ab524ef6a",
+          "globalScope": true,
           "expiresAt": "2026-08-23T00:00:00Z"
         },
         "agent_viability": {
@@ -876,13 +884,46 @@
       "llm_model_name": "qwen3-4b-instruct-2507",
       "llama_server_image": null,
       "app_compatibility": {
+        "openai_chat": {
+          "status": "verified",
+          "label": "Direct chat verified on Windows",
+          "reason": "Fresh exact-commit Windows fleet validation loaded the profiled model through the UI and passed challenge-bound LiteLLM and Open WebUI routes with exact model-route evidence.",
+          "evidence": "fleet-test/runs/2026-07-24T07-55-00Z-windows-profile-candidates-route-validation/cycle-001/windows-laptop",
+          "recordedAt": "2026-07-24T08:03:57Z",
+          "productSha": "449cf84d866d8bdedd8046d3c58faab6c07b5f03",
+          "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-08-24T00:00:00Z"
+        },
+        "hermes_talk": {
+          "status": "verified",
+          "label": "ODS Talk verified on Windows",
+          "reason": "Fresh exact-commit Windows fleet validation passed challenge-bound ODS Talk with the NVIDIA 8GB 64K Q4-KV profile, then restored the original model and passed Talk again.",
+          "evidence": "fleet-test/runs/2026-07-24T07-55-00Z-windows-profile-candidates-route-validation/cycle-001/windows-laptop",
+          "recordedAt": "2026-07-24T08:03:57Z",
+          "productSha": "449cf84d866d8bdedd8046d3c58faab6c07b5f03",
+          "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-08-24T00:00:00Z"
+        },
+        "perplexica": {
+          "status": "verified",
+          "label": "Perplexica verified on Windows",
+          "reason": "Fresh exact-commit Windows fleet validation passed the challenge-bound Perplexica app route with exact Qwen3 4B Instruct route evidence before clean baseline restore and candidate deletion.",
+          "evidence": "fleet-test/runs/2026-07-24T07-55-00Z-windows-profile-candidates-route-validation/cycle-001/windows-laptop",
+          "recordedAt": "2026-07-24T08:03:57Z",
+          "productSha": "449cf84d866d8bdedd8046d3c58faab6c07b5f03",
+          "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-08-24T00:00:00Z"
+        },
         "agent_viability": {
-          "status": "unknown",
-          "label": "Windows app revalidation in progress",
-          "reason": "Fresh exact-commit Windows validation loaded Qwen3 4B Instruct successfully with the NVIDIA 8GB 64K runtime profile and served challenge-bound direct completions. The prior activation failure is no longer reproducible; keep agent viability unclaimed until the same run can exercise ODS Talk and all required app routes.",
-          "evidence": "fleet-test/runs/2026-07-24T06-38-00Z-windows-profile-candidates-route-validation/cycle-001/windows-laptop",
-          "recordedAt": "2026-07-24T06:49:26Z",
-          "productSha": "969c463f0b17251f3d373c7ae48859287023d0d3",
+          "status": "verified",
+          "label": "Agent workflow verified on Windows",
+          "reason": "Fresh exact-commit Windows fleet validation loaded Qwen3 4B Instruct with the NVIDIA 8GB 64K Q4-KV profile and passed ODS Talk plus every required deployed LLM-consumer probe in test and restored-baseline phases, with clean candidate deletion and final inventory.",
+          "evidence": "fleet-test/runs/2026-07-24T07-55-00Z-windows-profile-candidates-route-validation/cycle-001/windows-laptop",
+          "recordedAt": "2026-07-24T08:03:57Z",
+          "productSha": "449cf84d866d8bdedd8046d3c58faab6c07b5f03",
           "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
           "hostScope": ["windows-laptop"],
           "expiresAt": "2026-08-24T00:00:00Z"
@@ -1217,24 +1258,46 @@
       "llm_model_name": "qwen3.5-4b",
       "llama_server_image": null,
       "app_compatibility": {
+        "openai_chat": {
+          "status": "verified",
+          "label": "Direct chat verified on Windows",
+          "reason": "Fresh exact-commit Windows fleet validation loaded the profiled model through the UI and passed challenge-bound LiteLLM and Open WebUI routes with exact model-route evidence.",
+          "evidence": "fleet-test/runs/2026-07-24T07-55-00Z-windows-profile-candidates-route-validation/cycle-002/windows-laptop",
+          "recordedAt": "2026-07-24T08:03:57Z",
+          "productSha": "449cf84d866d8bdedd8046d3c58faab6c07b5f03",
+          "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-08-24T00:00:00Z"
+        },
         "hermes_talk": {
-          "status": "unknown",
-          "label": "Windows app revalidation in progress",
-          "reason": "The prior Windows Talk timeout used this model's native 262K context. A new NVIDIA 8GB 64K Q4-KV profile removes that invalid runtime precondition; keep Talk compatibility unclaimed until the profiled route completes the required app probes.",
-          "evidence": "fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/windows-laptop",
-          "recordedAt": "2026-07-24T07:16:00Z",
-          "productSha": "011bbabd74b72476862ad9a741dc4876b57e9521",
+          "status": "verified",
+          "label": "ODS Talk verified on Windows",
+          "reason": "Fresh exact-commit Windows fleet validation passed challenge-bound ODS Talk with the NVIDIA 8GB 64K Q4-KV profile, then restored the original model and passed Talk again.",
+          "evidence": "fleet-test/runs/2026-07-24T07-55-00Z-windows-profile-candidates-route-validation/cycle-002/windows-laptop",
+          "recordedAt": "2026-07-24T08:03:57Z",
+          "productSha": "449cf84d866d8bdedd8046d3c58faab6c07b5f03",
+          "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-08-24T00:00:00Z"
+        },
+        "perplexica": {
+          "status": "verified",
+          "label": "Perplexica verified on Windows",
+          "reason": "Fresh exact-commit Windows fleet validation passed the challenge-bound Perplexica app route with exact Qwen3.5 4B route evidence before clean baseline restore and candidate deletion.",
+          "evidence": "fleet-test/runs/2026-07-24T07-55-00Z-windows-profile-candidates-route-validation/cycle-002/windows-laptop",
+          "recordedAt": "2026-07-24T08:03:57Z",
+          "productSha": "449cf84d866d8bdedd8046d3c58faab6c07b5f03",
           "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
           "hostScope": ["windows-laptop"],
           "expiresAt": "2026-08-24T00:00:00Z"
         },
         "agent_viability": {
-          "status": "unknown",
-          "label": "Windows app revalidation in progress",
-          "reason": "The prior Windows agent timeout used this model's native 262K context. A new NVIDIA 8GB 64K Q4-KV profile removes that invalid runtime precondition; keep agent viability unclaimed until the profiled route completes ODS Talk and all required app probes.",
-          "evidence": "fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-006/windows-laptop",
-          "recordedAt": "2026-07-24T07:16:00Z",
-          "productSha": "011bbabd74b72476862ad9a741dc4876b57e9521",
+          "status": "verified",
+          "label": "Agent workflow verified on Windows",
+          "reason": "Fresh exact-commit Windows fleet validation loaded Qwen3.5 4B with the NVIDIA 8GB 64K Q4-KV profile and passed ODS Talk plus every required deployed LLM-consumer probe in test and restored-baseline phases, with clean candidate deletion and final inventory.",
+          "evidence": "fleet-test/runs/2026-07-24T07-55-00Z-windows-profile-candidates-route-validation/cycle-002/windows-laptop",
+          "recordedAt": "2026-07-24T08:03:57Z",
+          "productSha": "449cf84d866d8bdedd8046d3c58faab6c07b5f03",
           "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
           "hostScope": ["windows-laptop"],
           "expiresAt": "2026-08-24T00:00:00Z"

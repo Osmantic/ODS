@@ -10,7 +10,8 @@ was recorded, against what, where it applies, and what invalidates it:
   recordedAt            ISO-8601 UTC timestamp of the recording run
   productSha            product commit the verdict was recorded against
   harnessSha            harness commit that recorded it
-  hostScope             non-empty list of fleet host names it applies to
+  hostScope             non-empty list of fleet host names it applies to, or
+  globalScope           true when the verdict intentionally applies globally
   revalidateAgainstSha  product commit at/after which the verdict must be
                         re-earned before it may keep blocking
   expiresAt             (alternative trigger) ISO-8601 UTC expiry
@@ -36,7 +37,7 @@ BLOCKING_STATUSES = {
     "unsupported_until_revalidated",
 }
 
-LIFECYCLE_REQUIRED = {"recordedAt", "productSha", "harnessSha", "hostScope"}
+LIFECYCLE_REQUIRED = {"recordedAt", "productSha", "harnessSha"}
 REVALIDATION_TRIGGERS = {"revalidateAgainstSha", "expiresAt"}
 
 # Blocking verdicts recorded before the lifecycle contract existed.
@@ -62,7 +63,8 @@ def _is_blocking(verdict):
 
 
 def _has_lifecycle(verdict):
-    return LIFECYCLE_REQUIRED <= set(verdict)
+    has_scope = "hostScope" in verdict or verdict.get("globalScope") is True
+    return LIFECYCLE_REQUIRED <= set(verdict) and has_scope
 
 
 def test_lifecycle_bearing_verdicts_are_well_formed():
@@ -78,10 +80,15 @@ def test_lifecycle_bearing_verdicts_are_well_formed():
             f"{where}: productSha must be 12-40 hex chars"
         assert _SHA_RE.match(str(verdict["harnessSha"])), \
             f"{where}: harnessSha must be 12-40 hex chars"
-        hosts = verdict["hostScope"]
-        assert isinstance(hosts, list) and hosts and all(
-            isinstance(h, str) and h for h in hosts
-        ), f"{where}: hostScope must be a non-empty list of host names"
+        if verdict.get("globalScope") is True:
+            assert "hostScope" not in verdict, (
+                f"{where}: use either globalScope or hostScope, not both"
+            )
+        else:
+            hosts = verdict["hostScope"]
+            assert isinstance(hosts, list) and hosts and all(
+                isinstance(h, str) and h for h in hosts
+            ), f"{where}: hostScope must be a non-empty list of host names"
         if _is_blocking(verdict):
             triggers = REVALIDATION_TRIGGERS & set(verdict)
             assert len(triggers) == 1, (
@@ -107,7 +114,7 @@ def test_unmigrated_blocking_verdicts_only_shrink():
     ]
     assert len(legacy) <= LEGACY_UNMIGRATED_RATCHET, (
         "New blocking app_compatibility verdicts must carry lifecycle "
-        "metadata (recordedAt/productSha/harnessSha/hostScope plus a "
+        "metadata (recordedAt/productSha/harnessSha and hostScope/globalScope plus a "
         "revalidation trigger). Unmigrated legacy verdicts may only "
         f"shrink from {LEGACY_UNMIGRATED_RATCHET}; found {len(legacy)}: "
         + ", ".join(sorted(legacy))

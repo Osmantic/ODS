@@ -493,7 +493,7 @@ def test_real_catalog_granite41_opencode_block_is_strix_halo_scoped():
     assert tower2["opencode"]["status"] == "unknown"
 
 
-def test_real_catalog_qwen3_4b_instruct_windows_revalidation_is_unclaimed():
+def test_real_catalog_qwen3_4b_instruct_windows_revalidation_is_verified():
     by_id = {model["id"]: model for model in _official_model_catalog()}
     model = by_id["qwen3-4b-instruct-2507-q4"]
 
@@ -510,13 +510,16 @@ def test_real_catalog_qwen3_4b_instruct_windows_revalidation_is_unclaimed():
         runtime_context={"host": "tower2", "hosts": ["tower2"]},
     )
 
-    assert windows_laptop["agentViability"]["status"] == "unknown"
-    assert "loaded Qwen3 4B Instruct successfully" in windows_laptop["agentViability"]["reason"]
+    assert windows_laptop["openaiChat"]["status"] == "verified"
+    assert windows_laptop["hermesTalk"]["status"] == "verified"
+    assert windows_laptop["perplexica"]["status"] == "verified"
+    assert windows_laptop["agentViability"]["status"] == "verified"
+    assert "Q4-KV profile" in windows_laptop["agentViability"]["reason"]
     assert strix_halo["agentViability"]["status"] == "unknown"
     assert tower2["agentViability"]["status"] == "unknown"
 
 
-def test_real_catalog_qwen35_4b_windows_revalidation_is_unclaimed():
+def test_real_catalog_qwen35_4b_windows_revalidation_is_verified():
     by_id = {model["id"]: model for model in _official_model_catalog()}
     model = by_id["qwen3.5-4b-q4"]
 
@@ -529,8 +532,10 @@ def test_real_catalog_qwen35_4b_windows_revalidation_is_unclaimed():
         runtime_context={"host": "strix-halo", "hosts": ["strix-halo"]},
     )
 
-    assert windows_laptop["hermesTalk"]["status"] == "unknown"
-    assert windows_laptop["agentViability"]["status"] == "unknown"
+    assert windows_laptop["openaiChat"]["status"] == "verified"
+    assert windows_laptop["hermesTalk"]["status"] == "verified"
+    assert windows_laptop["perplexica"]["status"] == "verified"
+    assert windows_laptop["agentViability"]["status"] == "verified"
     assert strix_halo["hermesTalk"]["status"] == "unknown"
     assert strix_halo["agentViability"]["status"] == "unknown"
 
@@ -717,7 +722,7 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     assert "qwen3.5-4b-q4" in candidate_ids
     assert by_id["qwen3.5-4b-q4"]["contextLength"] >= 64000
     assert by_id["qwen3.5-4b-q4"]["appCompatibility"]["agentViability"]["status"] == (
-        "unknown"
+        "verified"
     )
     assert all_by_id["smollm3-3b-q4"]["contextLength"] == 65536
     assert all_by_id["qwen3-4b-128k-q4"]["contextLength"] == 131072
@@ -725,7 +730,7 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     assert "qwen3-4b-instruct-2507-q4" in candidate_ids
     assert by_id["qwen3-4b-instruct-2507-q4"]["contextLength"] >= 64000
     assert by_id["qwen3-4b-instruct-2507-q4"]["appCompatibility"]["agentViability"]["status"] == (
-        "unknown"
+        "verified"
     )
     assert "phi3.5-mini-q4" not in candidate_ids
     assert (
