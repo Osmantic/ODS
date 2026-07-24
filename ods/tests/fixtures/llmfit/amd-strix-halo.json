@@ -1,0 +1,16 @@
+{
+  "hardware": {
+    "gpu_vendor": "amd",
+    "vram_gb": 96.0,
+    "ram_gb": 128.0
+  },
+  "recommendations": [
+    {
+      "model_id": "Qwen/Qwen3-30B-A3B-GGUF",
+      "quantization": "Q4_K_M",
+      "estimated_tokens_per_sec": 28.3,
+      "score": 0.88,
+      "fits": true
+    }
+  ]
+}
