@@ -29,6 +29,17 @@ def test_read_installed_version_parses_json_version_file(tmp_path, monkeypatch):
     assert _read_installed_version() == "3.1.4"
 
 
+def test_read_installed_version_ignores_empty_env_override(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("ODS_VERSION=\n", encoding="utf-8")
+    (tmp_path / ".version").write_text(
+        json.dumps({"version": "3.1.4"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("main._resolve_install_root", lambda: tmp_path)
+
+    assert _read_installed_version() == "3.1.4"
+
+
 class TestGetAllowedOrigins:
 
     def test_returns_env_origins_when_set(self, monkeypatch):

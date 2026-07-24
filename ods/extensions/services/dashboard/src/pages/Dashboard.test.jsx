@@ -90,6 +90,7 @@ async function renderDashboard(status = baseStatus) {
 
 describe('Dashboard system overview', () => {
   beforeEach(() => {
+    document.documentElement.dataset.theme = 'light'
     mockFeatures = []
     mockFeatureSuggestions = []
     mockResources = {
@@ -108,6 +109,7 @@ describe('Dashboard system overview', () => {
   })
 
   afterEach(() => {
+    delete document.documentElement.dataset.theme
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -121,6 +123,19 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('TOKENS GENERATED')).toBeInTheDocument()
     expect(screen.getByText('Live Throughput')).toBeInTheDocument()
     expect(screen.getByText('Accumulated Output')).toBeInTheDocument()
+  })
+
+  it('uses theme-responsive surfaces instead of fixed dark dashboard panels', async () => {
+    await renderDashboard()
+
+    const overviewPanel = screen.getByText('System Overview').closest('section')
+    const servicesPanel = screen.getByText('Services').closest('section')
+
+    expect(overviewPanel.getAttribute('style')).toContain('background: var(--tech-panel-fill)')
+    expect(overviewPanel.getAttribute('style')).toContain('border-color: var(--tech-panel-border)')
+    expect(servicesPanel.getAttribute('style')).toContain('background: var(--tech-panel-fill)')
+    expect(servicesPanel.getAttribute('style')).toContain('border-color: var(--tech-panel-border)')
+    expect(overviewPanel.getAttribute('style')).not.toContain('rgba(10, 10, 18')
   })
 
   it('renders unavailable host GPU counters as unavailable instead of zero', async () => {

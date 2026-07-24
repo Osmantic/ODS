@@ -133,6 +133,34 @@ def test_api_settings_env_masks_secret_values(test_client, settings_env_fixture)
     assert payload["agentAvailable"] is True
 
 
+def test_api_settings_env_does_not_treat_plural_tokens_as_a_secret(
+    test_client,
+    settings_env_fixture,
+):
+    env_path = settings_env_fixture["env_path"]
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=-1\n",
+        encoding="utf-8",
+    )
+    schema_path = settings_env_fixture["schema_path"]
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema["properties"]["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"] = {
+        "type": "integer",
+    }
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+
+    response = test_client.get(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["fields"]["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]["secret"] is False
+    assert payload["values"]["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"] == "-1"
+
+
 def test_api_settings_env_masks_saves_and_live_reads_hf_token(
     test_client, settings_env_fixture,
 ):
@@ -214,6 +242,81 @@ def test_api_settings_env_marks_runtime_mode_read_only(test_client, settings_env
     field = response.json()["fields"]["ODS_MODE"]
     assert field["readOnly"] is True
     assert "installer" in field["readOnlyReason"].lower()
+
+
+def test_api_settings_env_marks_model_context_and_recommendation_read_only(
+    test_client,
+    settings_env_fixture,
+):
+    keys = (
+        "CTX_SIZE",
+        "MAX_CONTEXT",
+        "MODEL_RECOMMENDED_MODEL",
+        "MODEL_RECOMMENDED_GGUF",
+        "MODEL_RECOMMENDED_CONTEXT",
+        "MODEL_RECOMMENDATION_SOURCE",
+        "MODEL_RECOMMENDATION_POLICY",
+        "MODEL_RECOMMENDATION_CONFIDENCE",
+        "MODEL_RECOMMENDATION_REASON",
+        "MODEL_RECOMMENDED_ALTERNATIVES",
+    )
+    schema_path = settings_env_fixture["schema_path"]
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema["properties"].update({
+        key: {"type": "integer" if "CONTEXT" in key else "string"}
+        for key in keys
+    })
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+
+    response = test_client.get(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+    )
+
+    assert response.status_code == 200
+    fields = response.json()["fields"]
+    for key in keys:
+        assert fields[key]["readOnly"] is True
+        assert fields[key]["readOnlyReason"]
+
+
+def test_api_settings_env_rejects_direct_context_override(
+    test_client,
+    settings_env_fixture,
+):
+    env_path = settings_env_fixture["env_path"]
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8") + "CTX_SIZE=8192\n",
+        encoding="utf-8",
+    )
+    schema_path = settings_env_fixture["schema_path"]
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema["properties"]["CTX_SIZE"] = {"type": "integer"}
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    current = test_client.get(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+    ).json()["values"]
+
+    response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={
+            "mode": "form",
+            "values": {**current, "CTX_SIZE": "65536"},
+        },
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["issues"] == [{
+        "key": "CTX_SIZE",
+        "message": (
+            "The active context is managed by Model Manager so the runtime "
+            "and every model consumer remain synchronized."
+        ),
+    }]
+    assert "CTX_SIZE=65536" not in env_path.read_text(encoding="utf-8")
 
 
 def test_api_settings_env_rejects_runtime_mode_change(test_client, settings_env_fixture):
@@ -453,7 +556,7 @@ def test_api_settings_env_rejects_null_byte_in_value(test_client, settings_env_f
 def test_api_settings_env_save_returns_llama_apply_plan(test_client, settings_env_fixture):
     env_path = settings_env_fixture["env_path"]
     env_path.write_text(
-        env_path.read_text(encoding="utf-8") + "CTX_SIZE=8192\n",
+        env_path.read_text(encoding="utf-8") + "LLAMA_BATCH_SIZE=1024\n",
         encoding="utf-8",
     )
 
@@ -463,7 +566,7 @@ def test_api_settings_env_save_returns_llama_apply_plan(test_client, settings_en
         json={
             "mode": "form",
             "values": {
-                "CTX_SIZE": "16384",
+                "LLAMA_BATCH_SIZE": "2048",
             },
         },
     )

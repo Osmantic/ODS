@@ -20,7 +20,7 @@ from host_agent_client import AgentClientError, request_json as request_agent_js
 _ENV_ASSIGNMENT_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 _ENV_COMMENTED_ASSIGNMENT_RE = re.compile(r"^\s*#\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 _SENSITIVE_ENV_KEY_RE = re.compile(
-    r"(SECRET|TOKEN|PASSWORD|(?:^|_)PASS(?:$|_)|API_KEY|PRIVATE_KEY|ENCRYPTION_KEY|(?:^|_)SALT(?:$|_))"
+    r"(SECRET|(?:^|_)TOKEN(?:$|_)|PASSWORD|(?:^|_)PASS(?:$|_)|API_KEY|PRIVATE_KEY|ENCRYPTION_KEY|(?:^|_)SALT(?:$|_))"
 )
 _GGUF_QUANTIZED_MODEL_RE = re.compile(
     r"(?:^|[-_.])q[2-8](?:_[a-z0-9]+)*(?:$|[-_.])",
@@ -72,10 +72,20 @@ _READ_ONLY_ENV_FIELDS = {
     "GGUF_FILE": "The active model file is managed by Model Manager so activation remains transactional.",
     "GGUF_URL": "Model artifact metadata is managed by Model Manager.",
     "GGUF_SHA256": "Model integrity metadata is managed by Model Manager.",
+    "CTX_SIZE": "The active context is managed by Model Manager so the runtime and every model consumer remain synchronized.",
+    "MAX_CONTEXT": "The active context is managed by Model Manager so the runtime and every model consumer remain synchronized.",
     "LEMONADE_MODEL": "The Lemonade model identity is resolved and managed during transactional activation.",
     "MODEL_RUNTIME_PROFILE": "The runtime profile is selected and managed during model activation.",
     "MODEL_RUNTIME_PROFILE_LABEL": "The runtime profile is selected and managed during model activation.",
     "MODEL_RUNTIME_PROFILE_SOURCE": "The runtime profile is selected and managed during model activation.",
+    "MODEL_RECOMMENDED_MODEL": "The recommended model is selected by the installer for the detected hardware.",
+    "MODEL_RECOMMENDED_GGUF": "The recommended model artifact is selected by the installer for the detected hardware.",
+    "MODEL_RECOMMENDED_CONTEXT": "The recommended context is selected by the installer for the recommended model.",
+    "MODEL_RECOMMENDATION_SOURCE": "Recommendation provenance is managed by the installer.",
+    "MODEL_RECOMMENDATION_POLICY": "Recommendation policy metadata is managed by the installer.",
+    "MODEL_RECOMMENDATION_CONFIDENCE": "Recommendation confidence is managed by the installer.",
+    "MODEL_RECOMMENDATION_REASON": "Recommendation rationale is managed by the installer.",
+    "MODEL_RECOMMENDED_ALTERNATIVES": "Recommended alternatives are managed by the installer.",
 }
 
 # ── Env parsing ────────────────────────────────────────────────────────────────

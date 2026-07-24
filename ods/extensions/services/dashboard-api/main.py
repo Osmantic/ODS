@@ -148,7 +148,9 @@ def _read_installed_version() -> str:
         try:
             for line in env_file.read_text().splitlines():
                 if line.startswith("ODS_VERSION="):
-                    return line.split("=", 1)[1].strip().strip("\"'")
+                    env_version = line.split("=", 1)[1].strip().strip("\"'")
+                    if env_version:
+                        return env_version
         except OSError:
             pass
 
