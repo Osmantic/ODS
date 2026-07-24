@@ -258,8 +258,20 @@
       "app_compatibility": {
         "openai_chat": {
           "status": "verified",
-          "reason": "Fleet model-UI run 2026-07-18T16-52Z on windows-laptop loaded this model, ODS Talk completed, and direct OpenAI-compatible consumers returned requested verification phrases. The later all-app failure was caused by slow Perplexica and Privacy Shield probes rather than a model load or Talk incompatibility, so this remains a release revalidation candidate.",
-          "evidence": "fleet-test/runs/2026-07-18T16-52-17Z-model-ui-product-e0a48a80627d-harness-c56304ac9040-hosts-windows-laptop/cycle-003/windows-laptop"
+          "reason": "Fresh exact-commit fleet revalidation on windows-laptop loaded SmolLM3 with its observed 65,536-token runtime context, passed challenge-bound ODS Talk and required deployed LLM-consumer probes, restored the original model and repeated Talk/app probes, then deleted the test model with a clean final inventory.",
+          "evidence": "fleet-test/runs/2026-07-24T02-33-53Z-targeted-windows-smollm3-product-58944ba461fb-harness-b838abf5a87b/model-ui/cycle-001/windows-laptop",
+          "recordedAt": "2026-07-24T02:40:33Z",
+          "productSha": "58944ba461fb87b87b1ce6fa854e32d15aeb8efa",
+          "harnessSha": "b838abf5a87b32c3f7ab8eaef43ea97133fb43d9"
+        },
+        "hermes_talk": {
+          "status": "verified",
+          "label": "ODS Talk verified",
+          "reason": "Fresh exact-commit fleet revalidation on windows-laptop passed challenge-bound ODS Talk on SmolLM3 and again after restoring the original model; all required deployed LLM-consumer probes and cleanup checks also passed.",
+          "evidence": "fleet-test/runs/2026-07-24T02-33-53Z-targeted-windows-smollm3-product-58944ba461fb-harness-b838abf5a87b/model-ui/cycle-001/windows-laptop",
+          "recordedAt": "2026-07-24T02:40:33Z",
+          "productSha": "58944ba461fb87b87b1ce6fa854e32d15aeb8efa",
+          "harnessSha": "b838abf5a87b32c3f7ab8eaef43ea97133fb43d9"
         }
       },
       "install_recommendation": false

@@ -263,7 +263,9 @@ def test_smollm3_3b_runtime_context_is_64k_and_it_remains_a_revalidation_candida
 
     assert model["context_length"] == 65536
     assert compatibility["openai_chat"]["status"] == "verified"
-    assert "cycle-003" in compatibility["openai_chat"]["evidence"]
+    assert "58944ba461fb" in compatibility["openai_chat"]["evidence"]
+    assert compatibility["hermes_talk"]["status"] == "verified"
+    assert compatibility["hermes_talk"]["productSha"] == "58944ba461fb87b87b1ce6fa854e32d15aeb8efa"
     assert "agent_viability" not in compatibility
     assert _agent_viable_for_release(model)
 
