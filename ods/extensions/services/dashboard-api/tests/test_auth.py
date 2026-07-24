@@ -1,8 +1,5 @@
 """Tests for routers/auth.py — session verification & admin session minting."""
 
-import os
-from unittest.mock import patch
-
 
 def test_verify_session_requires_cookie(test_client):
     resp = test_client.get("/api/auth/verify-session")
