@@ -24,7 +24,7 @@ if [[ -z "$existing" ]]; then
         # Update empty value in place. Use awk to dodge sed delimiter pitfalls.
         awk -v v="$new_key" '
             { if (index($0, "SHIELD_API_KEY=") == 1) print "SHIELD_API_KEY=" v; else print }
-        ' "$ENV_FILE" > "${ENV_FILE}.tmp" && cat "${ENV_FILE}.tmp" > "$ENV_FILE" && rm -f "${ENV_FILE}.tmp"
+        ' "$ENV_FILE" > "${ENV_FILE}.tmp" && mv -f "${ENV_FILE}.tmp" "$ENV_FILE"
     else
         echo "" >> "$ENV_FILE"
         echo "# Privacy Shield cross-service auth (PR #1069)" >> "$ENV_FILE"
