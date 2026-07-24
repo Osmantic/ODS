@@ -10,7 +10,7 @@ command -v jq >/dev/null 2>&1 || {
 }
 
 echo "[contract] backend contract files"
-for f in config/backends/amd.json config/backends/nvidia.json config/backends/cpu.json config/backends/apple.json; do
+for f in config/backends/amd.json config/backends/nvidia.json config/backends/cpu.json config/backends/apple.json config/backends/intel.json; do
   test -f "$f" || { echo "[FAIL] missing $f"; exit 1; }
   jq -e '.id and .llm_engine and .service_name and .public_api_port and .public_health_url and .provider_name and .provider_url' "$f" >/dev/null \
     || { echo "[FAIL] invalid backend contract: $f"; exit 1; }
