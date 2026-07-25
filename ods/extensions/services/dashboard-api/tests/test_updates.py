@@ -598,3 +598,98 @@ def test_trigger_update_action_backup(test_client, monkeypatch):
     assert calls[0][0:2] == ("POST", "/v1/update/backup")
     assert calls[0][2]["backup_id"].startswith("dashboard-")
     assert calls[0][3] == 65
+
+
+def _mock_github_client(json_body, *, status_error=None):
+    """An httpx.AsyncClient stand-in returning one canned release response."""
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = json_body
+    if status_error is not None:
+        mock_resp.raise_for_status.side_effect = status_error
+
+    async def mock_get(url, **kwargs):
+        return mock_resp
+
+    mock_client = AsyncMock()
+    mock_client.get = mock_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    return mock_client
+
+
+def _reset_version_cache(monkeypatch, updates_mod, payload=None, expires_at=0.0):
+    monkeypatch.setattr(
+        updates_mod, "_version_cache",
+        {"expires_at": expires_at, "payload": payload},
+    )
+    monkeypatch.setattr(updates_mod, "_version_refresh_task", None)
+
+
+class TestReleaseCacheRejectsNonReleases:
+    """A GitHub error body is valid JSON and must not be cached as a release.
+
+    The unauthenticated API is limited to 60 requests/hour/IP and answers an
+    exhausted budget with 403 and a JSON {"message": ...}. Treating that as a
+    lookup pins latest to empty for the whole TTL and poisons the stale
+    fallback, so the dashboard reports no update while one exists.
+    """
+
+    def test_error_status_does_not_populate_the_cache(self, test_client, monkeypatch):
+        import routers.updates as updates_mod
+
+        _reset_version_cache(monkeypatch, updates_mod)
+        client = _mock_github_client(
+            {"message": "API rate limit exceeded", "documentation_url": "https://docs"},
+            status_error=httpx.HTTPStatusError(
+                "403", request=MagicMock(), response=MagicMock()
+            ),
+        )
+
+        with patch("routers.updates.httpx.AsyncClient", return_value=client):
+            resp = test_client.get("/api/version", headers=test_client.auth_headers)
+
+        assert resp.status_code == 200
+        assert resp.json()["latest"] is None
+        assert updates_mod._version_cache["payload"] is None
+
+    def test_body_without_a_tag_does_not_populate_the_cache(self, test_client, monkeypatch):
+        import routers.updates as updates_mod
+
+        _reset_version_cache(monkeypatch, updates_mod)
+        client = _mock_github_client({"message": "Not Found"})
+
+        with patch("routers.updates.httpx.AsyncClient", return_value=client):
+            resp = test_client.get("/api/version", headers=test_client.auth_headers)
+
+        assert resp.status_code == 200
+        assert resp.json()["latest"] is None
+        assert updates_mod._version_cache["payload"] is None
+
+    def test_a_list_body_does_not_crash_the_refresh(self, test_client, monkeypatch):
+        """`.get` on a list would raise AttributeError, which the refresh's
+        except clause does not cover."""
+        import routers.updates as updates_mod
+
+        _reset_version_cache(monkeypatch, updates_mod)
+        client = _mock_github_client([{"tag_name": "v9.9.9"}])
+
+        with patch("routers.updates.httpx.AsyncClient", return_value=client):
+            resp = test_client.get("/api/version", headers=test_client.auth_headers)
+
+        assert resp.status_code == 200
+        assert resp.json()["latest"] is None
+        assert updates_mod._version_cache["payload"] is None
+
+    def test_a_real_release_still_populates_the_cache(self, test_client, monkeypatch):
+        import routers.updates as updates_mod
+
+        _reset_version_cache(monkeypatch, updates_mod)
+        client = _mock_github_client(
+            {"tag_name": "v3.1.4", "html_url": "https://github.com/test/3.1.4"}
+        )
+
+        with patch("routers.updates.httpx.AsyncClient", return_value=client):
+            resp = test_client.get("/api/version", headers=test_client.auth_headers)
+
+        assert resp.json()["latest"] == "3.1.4"
+        assert updates_mod._version_cache["payload"]["latest"] == "3.1.4"
