@@ -89,8 +89,10 @@ def _active_model_app_compatibility() -> dict[str, Any]:
         entry or {},
         runtime_context=model_compatibility_runtime_context(INSTALL_DIR),
     )
+    if not isinstance(compatibility, dict):
+        compatibility = {}
     compatibility["activeModel"] = {
-        "id": entry.get("id") if entry else None,
+        "id": entry.get("id") if isinstance(entry, dict) else None,
         "model": model_name or None,
         "gguf": gguf or None,
     }
