@@ -228,3 +228,25 @@ class TestCaching:
 
         r2 = get_user_services_cached(user_dir, ttl=300.0)
         assert r2 == {}
+
+    def test_scan_non_string_name_and_health_port_coercion(self, tmp_path):
+        """Non-string names fall back safely and health_port is handled cleanly."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "custom-ext"
+        manifest = {
+            "schema_version": "ods.services.v1",
+            "service": {
+                "id": "custom-ext",
+                "port": 8080,
+                "name": {"invalid": "dict"},
+                "health_port": 9091,
+                "health": "/health",
+            },
+        }
+        _write_manifest(ext_dir, manifest)
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+
+        result = scan_user_extension_services(user_dir)
+        assert "custom-ext" in result
+        assert result["custom-ext"]["name"] == "custom-ext"
+        assert result["custom-ext"]["health_port"] == 9091
