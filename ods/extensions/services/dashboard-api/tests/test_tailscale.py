@@ -130,3 +130,10 @@ def test_status_passes_through_500_when_agent_errors(test_client):
     with patch("routers.tailscale.request_agent_json", side_effect=err):
         resp = test_client.get("/api/tailscale/status", headers=test_client.auth_headers)
     assert resp.status_code == 500
+
+
+def test_status_handles_non_dict_agent_response(test_client):
+    with patch("routers.tailscale.request_agent_json", return_value="not a dict"):
+        resp = test_client.get("/api/tailscale/status", headers=test_client.auth_headers)
+    assert resp.status_code == 200
+    assert resp.json() == {"running": False}
