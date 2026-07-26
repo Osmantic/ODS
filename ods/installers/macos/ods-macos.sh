@@ -593,6 +593,7 @@ start_native_llama() {
         --reasoning-format "$reasoning_fmt"
         --metrics
     )
+    [[ -n "${ENV_LLAMA_PARALLEL:-}" ]] && llama_args+=(--parallel "$ENV_LLAMA_PARALLEL")
     [[ -n "${ENV_LLAMA_ARG_FLASH_ATTN:-}" ]] && llama_args+=(--flash-attn "$ENV_LLAMA_ARG_FLASH_ATTN")
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_K:-}" ]] && llama_args+=(--cache-type-k "$ENV_LLAMA_ARG_CACHE_TYPE_K")
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_V:-}" ]] && llama_args+=(--cache-type-v "$ENV_LLAMA_ARG_CACHE_TYPE_V")

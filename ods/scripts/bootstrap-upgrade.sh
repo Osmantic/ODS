@@ -2915,6 +2915,7 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             [[ -z "$_bind" ]] && _bind="127.0.0.1"
             _native_port=$(grep '^ODS_NATIVE_LLAMA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             [[ "$_native_port" =~ ^[0-9]+$ ]] || _native_port="8080"
+            _parallel=$(grep '^LLAMA_PARALLEL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _flash_attn=$(grep '^LLAMA_ARG_FLASH_ATTN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
@@ -2929,6 +2930,7 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
                 --reasoning-format "$_reasoning_fmt"
                 --metrics
             )
+            [[ -n "$_parallel" ]] && _llama_args+=(--parallel "$_parallel")
             [[ -n "$_flash_attn" ]] && _llama_args+=(--flash-attn "$_flash_attn")
             [[ -n "$_cache_type_k" ]] && _llama_args+=(--cache-type-k "$_cache_type_k")
             [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")
