@@ -293,8 +293,6 @@ def patch_config(
         updated += "\n"
     if updated == original:
         return False
-    import stat
-    import tempfile
     fd, tmp_str = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
     tmp_path = Path(tmp_str)
     try:
