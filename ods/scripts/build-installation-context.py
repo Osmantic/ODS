@@ -419,6 +419,8 @@ def build_soul(
         import shutil
         shutil.rmtree(output_path)
     previous = output_path.read_text(encoding="utf-8") if output_path.is_file() else ""
+    if previous == assembled:
+        return False
     fd, tmp_str = tempfile.mkstemp(dir=str(output_path.parent), prefix=f".{output_path.name}.", suffix=".tmp")
     tmp_path = Path(tmp_str)
     try:
