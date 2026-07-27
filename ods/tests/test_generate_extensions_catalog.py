@@ -1,12 +1,8 @@
 """Tests for generate-extensions-catalog.py atomic generation."""
 
 import json
-import os
 import sys
-import tempfile
 from pathlib import Path
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 import importlib.util

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -163,8 +165,6 @@ def main() -> None:
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    import os
-    import tempfile
     fd, tmp_str = tempfile.mkstemp(dir=str(output_path.parent), prefix=f".{output_path.name}.", suffix=".tmp")
     tmp_path = Path(tmp_str)
     content = json.dumps(catalog, indent=2, ensure_ascii=False) + "\n"
