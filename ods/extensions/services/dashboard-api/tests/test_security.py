@@ -55,8 +55,6 @@ class TestVerifyApiKey:
 class TestGeneratedApiKeyFile:
 
     def test_generated_key_written_atomically_with_restricted_permissions(self, tmp_path):
-        import importlib
-        import os
         key_file = tmp_path / "dashboard-api-key.txt"
         orig_key = os.environ.pop("DASHBOARD_API_KEY", None)
         try:
