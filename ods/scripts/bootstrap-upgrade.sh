@@ -2965,10 +2965,13 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             [[ -z "$_bind" ]] && _bind="127.0.0.1"
             _native_port=$(grep '^ODS_NATIVE_LLAMA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             [[ "$_native_port" =~ ^[0-9]+$ ]] || _native_port="8080"
+            _parallel=$(grep '^LLAMA_PARALLEL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _flash_attn=$(grep '^LLAMA_ARG_FLASH_ATTN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _n_cpu_moe=$(grep '^LLAMA_ARG_N_CPU_MOE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+            _checkpoint_every_n=$(grep '^LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+            _no_cache_prompt=$(grep '^LLAMA_ARG_NO_CACHE_PROMPT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _spec_draft_n_max=$(grep '^LLAMA_ARG_SPEC_DRAFT_N_MAX=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _llama_args=(
@@ -2979,12 +2982,19 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
                 --reasoning-format "$_reasoning_fmt"
                 --metrics
             )
+            [[ -n "$_parallel" ]] && _llama_args+=(--parallel "$_parallel")
             [[ -n "$_flash_attn" ]] && _llama_args+=(--flash-attn "$_flash_attn")
             [[ -n "$_cache_type_k" ]] && _llama_args+=(--cache-type-k "$_cache_type_k")
             [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")
             [[ -n "$_n_cpu_moe" ]] && _llama_args+=(--n-cpu-moe "$_n_cpu_moe")
             [[ -n "$_spec_type" ]] && _llama_args+=(--spec-type "$_spec_type")
             [[ -n "$_spec_draft_n_max" ]] && _llama_args+=(--spec-draft-n-max "$_spec_draft_n_max")
+            [[ -n "$_checkpoint_every_n" ]] && _llama_args+=(--checkpoint-every-n-tokens "$_checkpoint_every_n")
+            # Boolean flag: takes no value, and the falsey spellings must not enable it.
+            case "$_no_cache_prompt" in
+                ""|0|false|off|no) ;;
+                *) _llama_args+=(--no-cache-prompt) ;;
+            esac
 
             # Relaunch with new model
             log "Starting native llama-server with ${_gguf_file}..."

@@ -619,12 +619,19 @@ start_native_llama() {
         --reasoning-format "$reasoning_fmt"
         --metrics
     )
+    [[ -n "${ENV_LLAMA_PARALLEL:-}" ]] && llama_args+=(--parallel "$ENV_LLAMA_PARALLEL")
     [[ -n "${ENV_LLAMA_ARG_FLASH_ATTN:-}" ]] && llama_args+=(--flash-attn "$ENV_LLAMA_ARG_FLASH_ATTN")
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_K:-}" ]] && llama_args+=(--cache-type-k "$ENV_LLAMA_ARG_CACHE_TYPE_K")
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_V:-}" ]] && llama_args+=(--cache-type-v "$ENV_LLAMA_ARG_CACHE_TYPE_V")
     [[ -n "${ENV_LLAMA_ARG_N_CPU_MOE:-}" ]] && llama_args+=(--n-cpu-moe "$ENV_LLAMA_ARG_N_CPU_MOE")
     [[ -n "${ENV_LLAMA_ARG_SPEC_TYPE:-}" ]] && llama_args+=(--spec-type "$ENV_LLAMA_ARG_SPEC_TYPE")
     [[ -n "${ENV_LLAMA_ARG_SPEC_DRAFT_N_MAX:-}" ]] && llama_args+=(--spec-draft-n-max "$ENV_LLAMA_ARG_SPEC_DRAFT_N_MAX")
+    [[ -n "${ENV_LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS:-}" ]] && llama_args+=(--checkpoint-every-n-tokens "$ENV_LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS")
+    # Boolean flag: takes no value, and the falsey spellings must not enable it.
+    case "${ENV_LLAMA_ARG_NO_CACHE_PROMPT:-}" in
+        ""|0|false|off|no) ;;
+        *) llama_args+=(--no-cache-prompt) ;;
+    esac
 
     (
         cd "$INSTALL_DIR" || exit 1
