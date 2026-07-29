@@ -1692,6 +1692,42 @@
       "llama_server_image": null
     },
     {
+      "id": "gemma4-12b-qat-q4",
+      "name": "Gemma 4 12B",
+      "family": "gemma4",
+      "gguf_file": "gemma-4-12b-it-qat-q4_0.gguf",
+      "gguf_url": "https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf/resolve/29d097773436b69ff9feafd636ab4cf873786537/gemma-4-12b-it-qat-q4_0.gguf",
+      "gguf_sha256": "93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b",
+      "size_bytes": 6975879296,
+      "size_mb": 6976,
+      "vram_required_gb": 10,
+      "context_length": 65536,
+      "max_context_length": 262144,
+      "total_params_b": 12,
+      "architecture": "dense",
+      "quantization": "Q4_0",
+      "specialty": "Reasoning, Coding & Agents",
+      "description": "Google's first-party Apache-2.0 QAT Q4_0 release of Gemma 4 12B. It scores 22 on the independently evaluated Artificial Analysis Intelligence Index, supports a native 256K context ceiling, and is staged at the 64K minimum required for ODS agent and research workflows.",
+      "tokens_per_sec_estimate": 55,
+      "llm_model_name": "gemma-4-12b-it",
+      "llama_server_image": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014",
+      "install_recommendation": false,
+      "quality_evidence": {
+        "source": "Artificial Analysis Intelligence Index v4.1",
+        "source_url": "https://artificialanalysis.ai/models/gemma-4-12b/",
+        "score": 22,
+        "assessed_at": "2026-07-28",
+        "note": "Gemma 4 12B is independently evaluated, scores above Qwen 3.5 9B's 21, and provides a current Google-family alternative to the higher-scoring Qwen 3.6 27B large-tier candidate."
+      },
+      "source_evidence": {
+        "model_card": "https://huggingface.co/google/gemma-4-12B-it",
+        "model_revision": "707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7",
+        "gguf_repository": "google/gemma-4-12B-it-qat-q4_0-gguf",
+        "gguf_revision": "29d097773436b69ff9feafd636ab4cf873786537",
+        "license": "apache-2.0"
+      }
+    },
+    {
       "id": "phi4-q4",
       "name": "Phi-4 14B",
       "family": "phi",
