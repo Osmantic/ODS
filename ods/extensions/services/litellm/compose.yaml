@@ -6,6 +6,8 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
+      # NOTE: API keys in env vars are visible via `docker inspect` and
+      # `ps aux`. Consider Docker secrets for production deployments.
       - LITELLM_MASTER_KEY=${LITELLM_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}

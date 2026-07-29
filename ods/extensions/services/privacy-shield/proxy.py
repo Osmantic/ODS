@@ -27,10 +27,18 @@ logger = logging.getLogger("privacy-shield")
 # (RFC 7230 6.1). Content-Length / Content-Encoding are dropped on the
 # response side because PII restore changes the body length and we never
 # re-compress, so a stale length/encoding header would corrupt the stream.
-_HOP_BY_HOP = frozenset({
-    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-    "te", "trailers", "transfer-encoding", "upgrade",
-})
+_HOP_BY_HOP = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
 _DROP_RESPONSE_HEADERS = _HOP_BY_HOP | {"content-length", "content-encoding"}
 
 # Content types we will decode + run PII restore over. Everything else
@@ -71,9 +79,12 @@ def _sanitize_error(exc: Exception) -> str:
     )
     return error_str
 
+
 # Security: API Key Authentication
 DEFAULT_KEY_PATH = os.environ.get("SHIELD_API_KEY_PATH", "/data/shield_api_key")
-SHIELD_API_KEY = resolve_shield_api_key(os.environ.get("SHIELD_API_KEY"), DEFAULT_KEY_PATH)
+SHIELD_API_KEY = resolve_shield_api_key(
+    os.environ.get("SHIELD_API_KEY"), DEFAULT_KEY_PATH
+)
 
 # auto_error=False so we return 401 (not FastAPI's default 403) for missing
 # credentials. REST convention: 401 = "you must authenticate", 403 =
@@ -81,7 +92,10 @@ SHIELD_API_KEY = resolve_shield_api_key(os.environ.get("SHIELD_API_KEY"), DEFAUL
 # tests/test_proxy_auth.py::test_stats_no_auth_returns_401.
 security_scheme = HTTPBearer(auto_error=False)
 
-async def verify_api_key(credentials: HTTPAuthorizationCredentials | None = Security(security_scheme)):
+
+async def verify_api_key(
+    credentials: HTTPAuthorizationCredentials | None = Security(security_scheme),
+):
     """Verify API key for protected endpoints."""
     if credentials is None:
         raise HTTPException(
@@ -115,7 +129,7 @@ CACHE_TTL = int(os.getenv("PII_CACHE_TTL", "300"))
 # Connection pool for better performance
 http_client = httpx.AsyncClient(
     limits=httpx.Limits(max_keepalive_connections=100, max_connections=200),
-    timeout=httpx.Timeout(60.0, connect=5.0)
+    timeout=httpx.Timeout(60.0, connect=5.0),
 )
 
 # Session store (TTL cache with auto-eviction to prevent unbounded growth)
@@ -228,8 +242,6 @@ async def health(request: Request):
             "status": "ok",
             "service": "api-privacy-shield",
             "version": "0.2.0",
-            "target_api": TARGET_API_BASE,
-            "cache_enabled": CACHE_ENABLED,
             "active_sessions": len(sessions),
         }
     return {"status": "ok"}
@@ -239,8 +251,7 @@ async def health(request: Request):
 async def stats():
     """Session statistics."""
     total_pii = sum(
-        s.detector.get_stats()['unique_pii_count']
-        for s in sessions.values()
+        s.detector.get_stats()["unique_pii_count"] for s in sessions.values()
     )
     return {
         "cache_enabled": CACHE_ENABLED,
@@ -255,8 +266,7 @@ def _build_upstream_headers(request: Request, scrubbed_len: int | None) -> dict:
     headers = {
         k: v
         for k, v in request.headers.items()
-        if k.lower() not in _HOP_BY_HOP
-        and k.lower() not in ("host", "content-length")
+        if k.lower() not in _HOP_BY_HOP and k.lower() not in ("host", "content-length")
     }
     headers["host"] = TARGET_API_BASE.split("//")[-1].split("/")[0]
     if scrubbed_len is not None:
@@ -522,6 +532,8 @@ if __name__ == "__main__":
 
     print(f"🔒 API Privacy Shield starting on port {PORT}")
     print(f"📡 Proxying to: {TARGET_API_BASE}")
-    print(f"💾 Cache: {'enabled' if CACHE_ENABLED else 'disabled'} (size={CACHE_SIZE}, ttl={CACHE_TTL}s)")
+    print(
+        f"💾 Cache: {'enabled' if CACHE_ENABLED else 'disabled'} (size={CACHE_SIZE}, ttl={CACHE_TTL}s)"
+    )
     print(f"🧪 Test with: curl http://localhost:{PORT}/health")
     uvicorn.run(app, host="0.0.0.0", port=PORT)
