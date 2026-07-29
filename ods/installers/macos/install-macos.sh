@@ -2178,6 +2178,7 @@ else
         [[ "$_native_llama_port" =~ ^[0-9]+$ ]] || _native_llama_port="8080"
         _llama_probe_host="$(macos_bind_probe_host "$_bind")"
 
+        _parallel=$(grep '^LLAMA_PARALLEL=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _flash_attn=$(grep '^LLAMA_ARG_FLASH_ATTN=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
@@ -2192,6 +2193,7 @@ else
             --reasoning-format "$_reasoning_fmt"
             --metrics
         )
+        [[ -n "$_parallel" ]] && _llama_args+=(--parallel "$_parallel")
         [[ -n "$_flash_attn" ]] && _llama_args+=(--flash-attn "$_flash_attn")
         [[ -n "$_cache_type_k" ]] && _llama_args+=(--cache-type-k "$_cache_type_k")
         [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")

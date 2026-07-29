@@ -63,6 +63,7 @@ test: ## Run unit and contract tests
 	@bash tests/contracts/test-overlay-map-coherence.sh
 	@bash tests/contracts/test-plist-log-paths.sh
 	@python3 tests/contracts/test-llama-runtime-tunables.py
+	@bash tests/contracts/test-llama-parallel-flag.sh
 	@echo ""
 	@echo "=== safe .env loading (quote/CRLF handling) ==="
 	@bash tests/test-safe-env.sh
