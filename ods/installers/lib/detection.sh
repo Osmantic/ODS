@@ -723,7 +723,7 @@ fix_nvidia_secure_boot() {
 
     # Sign every nvidia DKMS module (handles .ko, .ko.zst, .ko.xz)
     local signed_count=0
-    for mod_path in /lib/modules/${kver}/updates/dkms/nvidia*.ko*; do
+    for mod_path in /lib/modules/"${kver}"/updates/dkms/nvidia*.ko*; do
         [[ -f "$mod_path" ]] || continue
         case "$mod_path" in
             *.zst)

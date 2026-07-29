@@ -202,8 +202,11 @@ pkg_install() {
     for pkg in "${requested[@]}"; do
         resolved="$(pkg_resolve "$pkg")"
         # Some canonical packages intentionally expand to multiple packages.
+        # Disable glob expansion to prevent pathname expansion on $resolved
+        set -f
         # shellcheck disable=SC2206
         pkgs+=($resolved)
+        set +f
     done
     [[ ${#pkgs[@]} -eq 0 ]] && return 0
 
