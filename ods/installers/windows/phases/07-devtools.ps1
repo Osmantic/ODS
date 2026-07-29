@@ -344,10 +344,8 @@ function Resolve-ODSHostAgentPython {
     }
 
     foreach ($name in @("python3", "python")) {
-        # Get-Command returns an array when multiple executables share a name
-        # across PATH entries; iterate so .Source is always a single string.
-        foreach ($cmd in @(Get-Command $name -CommandType Application -All -ErrorAction SilentlyContinue)) {
-            if ($cmd.Source) {
+        foreach ($cmd in @(Get-Command $name -CommandType Application -ErrorAction SilentlyContinue)) {
+            if ($cmd -and $cmd.Source) {
                 $candidateFiles.Add($cmd.Source)
             }
         }
