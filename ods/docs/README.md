@@ -130,6 +130,7 @@ canonical source and treat older recipes as context.
 | [SUPPORT-MATRIX.md](SUPPORT-MATRIX.md) | Operators | Platform/GPU support status |
 | [MODEL-MANAGEMENT.md](MODEL-MANAGEMENT.md) | Operators | Curated and Hugging Face GGUF discovery, verified imports, switching, and recovery |
 | [MODEL-SWITCHBOARD.md](MODEL-SWITCHBOARD.md) | Contributors | Model Switchboard architecture, PR series plan, state/route contracts, and rollout gates |
+| [REMOTE-GPU-BACKEND-PLAN.md](REMOTE-GPU-BACKEND-PLAN.md) | Contributors | Remote inference, private transport, paired ODS model lifecycle, and fleet release plan |
 | [CAPABILITY-PROFILE.md](CAPABILITY-PROFILE.md) | Developers | Machine capability profiling schema |
 | [MULTI-USER-SETUP.md](MULTI-USER-SETUP.md) | Operators | Expose and tune one install for multiple users |
 | [PROFILES.md](PROFILES.md) | Reference | Docker Compose profiles (historical reference) |
