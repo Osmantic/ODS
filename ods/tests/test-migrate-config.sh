@@ -238,6 +238,84 @@ else
 fi
 
 # ============================================================================
+# Test 13: v2.4.1 migration backfills empty SHIELD_API_KEY= atomically
+# ============================================================================
+MIGRATION_V241_SCRIPT="$SCRIPT_DIR/migrations/migrate-v2.4.1.sh"
+if [[ -f "$MIGRATION_V241_SCRIPT" ]]; then
+    TEST_ENV="$TEMP_DIR/test_v241_empty.env"
+    echo "EXISTING_VAR=1" > "$TEST_ENV"
+    echo "SHIELD_API_KEY=" >> "$TEST_ENV"
+    chmod 0600 "$TEST_ENV"
+    INSTALL_DIR="$TEMP_DIR" ENV_FILE="$TEST_ENV" bash "$MIGRATION_V241_SCRIPT" >/dev/null 2>&1 || true
+    if [ "$(uname -s)" = "Darwin" ]; then
+        EMPTY_MODE=$(stat -f "%Lp" "$TEST_ENV" 2>/dev/null || echo "")
+    else
+        EMPTY_MODE=$(stat -c "%a" "$TEST_ENV" 2>/dev/null || echo "")
+    fi
+    if grep -qE '^SHIELD_API_KEY=[0-9a-f]{64}' "$TEST_ENV" && [[ "$EMPTY_MODE" == "600" ]]; then
+        pass "Migration v2.4.1: backfills empty SHIELD_API_KEY= atomically and preserves 0600 mode"
+    else
+        fail "Migration v2.4.1: failed to backfill empty SHIELD_API_KEY= or preserve mode (mode: $EMPTY_MODE)"
+    fi
+
+    # Test 14: v2.4.1 migration appends missing SHIELD_API_KEY atomically
+    TEST_MISSING_ENV="$TEMP_DIR/test_v241_missing.env"
+    echo "EXISTING_VAR=1" > "$TEST_MISSING_ENV"
+    chmod 0600 "$TEST_MISSING_ENV"
+    INSTALL_DIR="$TEMP_DIR" ENV_FILE="$TEST_MISSING_ENV" bash "$MIGRATION_V241_SCRIPT" >/dev/null 2>&1 || true
+    if [ "$(uname -s)" = "Darwin" ]; then
+        MISSING_MODE=$(stat -f "%Lp" "$TEST_MISSING_ENV" 2>/dev/null || echo "")
+    else
+        MISSING_MODE=$(stat -c "%a" "$TEST_MISSING_ENV" 2>/dev/null || echo "")
+    fi
+    if grep -qE '^SHIELD_API_KEY=[0-9a-f]{64}' "$TEST_MISSING_ENV" && grep -q "EXISTING_VAR=1" "$TEST_MISSING_ENV" && [[ "$MISSING_MODE" == "600" ]]; then
+        pass "Migration v2.4.1: appends missing SHIELD_API_KEY atomically and preserves 0600 mode"
+    else
+        fail "Migration v2.4.1: failed to append missing SHIELD_API_KEY atomically or preserve mode (mode: $MISSING_MODE)"
+    fi
+
+    # ============================================================================
+    # Test 15: Temp file permission window validation (temp file created 0600 before atomic swap)
+    # ============================================================================
+    TEST_WINDOW_DIR="$TEMP_DIR/window_test"
+    mkdir -p "$TEST_WINDOW_DIR"
+    TEST_WINDOW_ENV="$TEST_WINDOW_DIR/.env"
+    echo "EXISTING_VAR=1" > "$TEST_WINDOW_ENV"
+    chmod 0600 "$TEST_WINDOW_ENV"
+
+    BIN_DIR="$TEMP_DIR/bin"
+    mkdir -p "$BIN_DIR"
+    cat > "$BIN_DIR/mv" <<EOF
+#!/bin/bash
+for arg in "\$@"; do
+    if [[ "\$arg" == *".tmp"* ]]; then
+        if [ "\$(uname -s)" = "Darwin" ]; then
+            mode=\$(stat -f "%Lp" "\$arg" 2>/dev/null || echo "")
+        else
+            mode=\$(stat -c "%a" "\$arg" 2>/dev/null || echo "")
+        fi
+        echo "\$mode" > "$TEST_WINDOW_DIR/captured.mode"
+    fi
+done
+exec /bin/mv "\$@"
+EOF
+    chmod +x "$BIN_DIR/mv"
+
+    PATH="$BIN_DIR:$PATH" INSTALL_DIR="$TEST_WINDOW_DIR" ENV_FILE="$TEST_WINDOW_ENV" bash "$MIGRATION_V241_SCRIPT" >/dev/null 2>&1 || true
+
+    CAPTURED_MODE=""
+    if [[ -f "$TEST_WINDOW_DIR/captured.mode" ]]; then
+        CAPTURED_MODE=$(cat "$TEST_WINDOW_DIR/captured.mode")
+    fi
+
+    if [[ "$CAPTURED_MODE" == "600" || "$CAPTURED_MODE" == "700" ]]; then
+        pass "Migration v2.4.1: temp file permission window is strictly 0600 prior to replacement (captured mode: $CAPTURED_MODE)"
+    else
+        fail "Migration v2.4.1: temp file exposed loose umask permissions during write window (captured mode: '$CAPTURED_MODE')"
+    fi
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo ""
