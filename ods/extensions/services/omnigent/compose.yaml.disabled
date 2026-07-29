@@ -1,0 +1,59 @@
+# Omnigent server (coordinator only) — ODS lite-tier deployment.
+#
+# Deliberate deviations from upstream deploy/docker/docker-compose.yaml:
+#   - SQLite instead of Postgres. Single-instance homelab install; the
+#     upstream lite tier (DATABASE_URL=sqlite:...) avoids a second
+#     database container. Multi-user installs that outgrow this should
+#     follow upstream's Postgres stack (tracked in Osmantic/ODS#1867).
+#   - Bind mount ./data/omnigent instead of a named volume, matching
+#     every other ODS service so backups and `ods doctor` see it.
+#   - Port bound to 127.0.0.1 (ODS default) — upstream binds 0.0.0.0.
+#
+# Runners are NOT in this container by upstream design: the server image
+# ships no harness SDKs, tmux, or LLM API keys. Install the runner on
+# the host and register it against this server — see docs/OMNIGENT.md.
+
+services:
+  omnigent:
+    image: ghcr.io/omnigent-ai/omnigent-server:${OMNIGENT_IMAGE_TAG:-v0.5.1}
+    container_name: ods-omnigent
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - DATABASE_URL=sqlite:////data/artifacts/chat.db
+      - ARTIFACT_DIR=/data/artifacts
+      - HOST=0.0.0.0
+      - PORT=8000
+      # Persist admin credentials on the data mount — the default path
+      # (/root/.omnigent/) is ephemeral and loses the bootstrap admin
+      # password on every container recreate.
+      - OMNIGENT_ADMIN_CREDENTIALS_PATH=/data/admin-credentials
+      - OMNIGENT_AUTH_ENABLED=${OMNIGENT_AUTH_ENABLED:-1}
+      - OMNIGENT_ACCOUNTS_COOKIE_SECRET=${OMNIGENT_ACCOUNTS_COOKIE_SECRET:-}
+      # No display in the container; also silences the unclickable
+      # "open this URL" log line upstream emits when set to 1.
+      - OMNIGENT_ACCOUNTS_AUTO_OPEN=0
+    volumes:
+      - ./data/omnigent:/data:z
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${OMNIGENT_PORT:-6767}:8000"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

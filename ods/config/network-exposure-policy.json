@@ -62,6 +62,12 @@
       "auth_required": true,
       "notes": "May contain prompts, traces, and evaluation data."
     },
+    "omnigent": {
+      "risk": "agent-orchestration-control-plane",
+      "lan_exposure": "operator-controlled",
+      "auth_required": true,
+      "notes": "Coordinates host-side agent runners and holds session artifacts/policies; keep local unless deliberately publishing with accounts auth enabled."
+    },
     "litellm": {
       "risk": "llm-api-gateway",
       "lan_exposure": "operator-controlled",
