@@ -287,7 +287,7 @@ ods status
    df -h
    ```
 
-5. **Open an issue:** https://github.com/Light-Heart-Labs/ODS/issues
+5. **Open an issue:** https://github.com/Osmantic/ODS/issues
 
 ---
 

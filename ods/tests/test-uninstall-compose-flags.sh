@@ -19,13 +19,38 @@ pass() {
 make_stub_bin() {
     local stub_dir="$1"
 
+    # The discovery fallback feeds these listings straight into `docker rm -f`
+    # and `docker volume rm`, so the stub reports unrelated names that merely
+    # contain "ods" next to this project's own.
     cat > "$stub_dir/docker" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+
+# Emit names the way `docker ps` / `docker volume ls` would, honouring
+# `--filter name=<expr>` with Docker's own semantics: the expression is matched
+# anywhere in the name, so an unanchored "ods" also matches "k3s_pods".
+emit_filtered() {
+    local expr="" arg name
+    for arg in "$@"; do
+        case "$arg" in
+            name=*) expr="${arg#name=}" ;;
+        esac
+    done
+    for name in $NAMES; do
+        if [[ -z "$expr" || "$name" =~ $expr ]]; then
+            printf '%s\n' "$name"
+        fi
+    done
+}
+
 if [[ "${1:-}" == "ps" ]]; then
+    NAMES="ods-litellm ods-llama-server kube-pods-proxy methods-runner"
+    emit_filtered "$@"
     exit 0
 fi
 if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
+    NAMES="ods_perplexica-data ods-legacy-cache k3s_pods methods_cache"
+    emit_filtered "$@"
     exit 0
 fi
 exit 0
@@ -137,6 +162,34 @@ EOF
         fail "uninstall must not execute command substitutions from .env"
     fi
     pass "uninstall loads .env without executing shell substitutions"
+
+    # Docker's `--filter name=` matches anywhere in the name, so the discovery
+    # fallback must select on the project prefix (containers ods-<service>,
+    # compose volumes ods_<volume>) and leave unrelated names alone.
+    local removed_containers removed_volumes
+    removed_containers="$(grep -E '^rm -f ' "$log_purge" || true)"
+    removed_volumes="$(grep -E '^volume rm ' "$log_purge" || true)"
+
+    local name
+    for name in ods-litellm ods-llama-server; do
+        [[ "$removed_containers" == *"$name"* ]] \
+            || fail "uninstall must remove project container $name (got: '$removed_containers')"
+    done
+    for name in kube-pods-proxy methods-runner; do
+        [[ "$removed_containers" != *"$name"* ]] \
+            || fail "uninstall must not remove unrelated container $name (got: '$removed_containers')"
+    done
+    pass "container discovery stays on the ods- prefix"
+
+    for name in ods_perplexica-data ods-legacy-cache; do
+        [[ "$removed_volumes" == *"$name"* ]] \
+            || fail "uninstall must remove project volume $name (got: '$removed_volumes')"
+    done
+    for name in k3s_pods methods_cache; do
+        [[ "$removed_volumes" != *"$name"* ]] \
+            || fail "uninstall must not remove unrelated volume $name (got: '$removed_volumes')"
+    done
+    pass "volume discovery stays on the ods project prefix"
 }
 
 main "$@"

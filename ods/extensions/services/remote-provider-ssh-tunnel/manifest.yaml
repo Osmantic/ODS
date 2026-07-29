@@ -1,0 +1,47 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: remote-provider-ssh-tunnel
+  name: Remote Provider SSH Tunnel
+  aliases: []
+  container_name: ods-remote-provider-ssh-tunnel
+  default_host: remote-provider-ssh-tunnel
+  port: 18090
+  external_port_default: 0
+  health: /health
+  ui_path: /health
+  external_link: false
+  type: docker
+  gpu_backends: [all]
+  category: core
+  depends_on: []
+  startup_check: true
+  description: >
+    Internal-only SSH transport supervisor scaffold for optional remote LLM
+    providers. It reads generated remote routing state and private SSH custody
+    files, reports a redacted fail-closed plan, and exposes no host port.
+  env_vars:
+    - key: ODS_REMOTE_PROVIDER_ROUTE_PATH
+      default: /state/remote-provider/routing-state.json
+      description: Generated remote routing-state path mounted read-only into the SSH tunnel service.
+    - key: ODS_REMOTE_PROVIDER_SECRET_DIR
+      default: /state/remote-provider/secrets
+      description: Private SSH identity and known_hosts custody directory mounted read-only into the SSH tunnel service.
+    - key: ODS_REMOTE_PROVIDER_SSH_STATUS_PORT
+      default: "18090"
+      description: Internal-only health/status port for the SSH tunnel supervisor scaffold.
+    - key: ODS_REMOTE_PROVIDER_SSH_RECONCILE_INTERVAL
+      default: "5"
+      description: Seconds between route/secret custody reconciliation loops.
+    - key: ODS_REMOTE_PROVIDER_SSH_START_GRACE
+      default: "1"
+      description: Seconds a newly started SSH child must stay alive before health reports ready.
+    - key: ODS_REMOTE_PROVIDER_SSH_RESTART_COOLDOWN
+      default: "5"
+      description: Seconds to wait before restarting an exited SSH child.
+    - key: ODS_REMOTE_PROVIDER_SSH_STOP_TIMEOUT
+      default: "5"
+      description: Seconds to wait for an old SSH child to terminate before killing it.

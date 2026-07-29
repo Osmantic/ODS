@@ -1,6 +1,8 @@
 # Token Spy — LLM usage monitoring service
 services:
   token-spy:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     build:
       context: ./extensions/services/token-spy
       dockerfile: Dockerfile

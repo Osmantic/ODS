@@ -184,7 +184,7 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
     workflow_file = WORKFLOW_DIR / wf_info["file"]
     try:
         workflow_file = workflow_file.resolve()
-        if not str(workflow_file).startswith(str(WORKFLOW_DIR.resolve())):
+        if not workflow_file.is_relative_to(WORKFLOW_DIR.resolve()):
             raise HTTPException(status_code=400, detail="Invalid workflow file path")
     except HTTPException:
         raise

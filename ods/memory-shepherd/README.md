@@ -52,7 +52,7 @@ Each reset cycle:
 
 ```bash
 # Clone the repo
-git clone https://github.com/Light-Heart-Labs/ODS.git
+git clone https://github.com/Osmantic/ODS.git
 cd ODS/memory-shepherd
 
 # Create your config from the example

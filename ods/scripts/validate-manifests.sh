@@ -212,7 +212,7 @@ for service_dir in sorted(ext_dir.iterdir()):
 # Print human-readable summary
 print()
 print("Extension manifest validation")
-print("────────────────────────────")
+print("-" * 28)
 if not results:
     print("No extension manifests found.")
     sys.exit(0)
@@ -267,4 +267,3 @@ if [[ "$py_exit" -eq 0 ]]; then
 else
   fail "Extension manifest validation failed"
 fi
-

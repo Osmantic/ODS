@@ -9,6 +9,12 @@ LLM_MODEL="${2:-qwen3-30b-a3b}"
 PERPLEXICA_MODEL="${PERPLEXICA_MODEL:-}"
 PERPLEXICA_LLM_BASE_URL="${PERPLEXICA_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}}"
 PERPLEXICA_API_KEY="${PERPLEXICA_API_KEY:-${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}}"
+_perplexica_switchboard_mode="$(printf '%s' "${ODS_MODEL_SWITCHBOARD:-observe}" | tr '[:upper:]' '[:lower:]')"
+if [[ "$_perplexica_switchboard_mode" == "enabled" ]]; then
+    : "${PERPLEXICA_MODEL:=ods/current}"
+    PERPLEXICA_LLM_BASE_URL="http://litellm:4000/v1"
+    PERPLEXICA_API_KEY="${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}"
+fi
 case "$PERPLEXICA_LLM_BASE_URL" in
     */v1|*/api/v1) ;;
     *) PERPLEXICA_LLM_BASE_URL="${PERPLEXICA_LLM_BASE_URL%/}/v1" ;;
@@ -17,9 +23,15 @@ esac
 if [[ -z "$PERPLEXICA_MODEL" ]]; then
     if [[ -n "${GGUF_FILE:-}" ]]; then
         PERPLEXICA_MODEL="$GGUF_FILE"
-        _perplexica_backend="$(printf '%s' "${LLM_BACKEND:-${AMD_INFERENCE_RUNTIME:-}}" | tr '[:upper:]' '[:lower:]')"
-        if [[ "$_perplexica_backend" == "lemonade" ]]; then
-            PERPLEXICA_MODEL="extra.$GGUF_FILE"
+        # An AMD local install runs Lemonade while LLM_BACKEND stays
+        # "llama-server", so the runtime and the backend have to be checked
+        # independently — same rule as scripts/bootstrap-upgrade.sh and the
+        # container-side extensions/services/perplexica/sync-model-config.js.
+        _perplexica_runtime="$(printf '%s' "${AMD_INFERENCE_RUNTIME:-}" | tr '[:upper:]' '[:lower:]')"
+        _perplexica_backend="$(printf '%s' "${LLM_BACKEND:-}" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$_perplexica_runtime" == "lemonade" || "$_perplexica_backend" == "lemonade" ]]; then
+            PERPLEXICA_MODEL="${LEMONADE_MODEL:-}"
+            [[ -n "$PERPLEXICA_MODEL" ]] || PERPLEXICA_MODEL="extra.$GGUF_FILE"
         fi
     else
         PERPLEXICA_MODEL="$LLM_MODEL"

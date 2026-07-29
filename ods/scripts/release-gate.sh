@@ -27,12 +27,17 @@ bash scripts/check-release-claims.sh
 "$PYTHON_CMD" scripts/check-dependency-pins.py
 
 echo "[gate] contracts"
+bash tests/test-install-docs.sh
+bash tests/test-hosted-bootstrap-verifier.sh
 bash tests/contracts/test-installer-contracts.sh
 bash tests/contracts/test-preflight-fixtures.sh
 bash tests/contracts/test-installer-hardening.sh
 bash tests/test-uninstall-compose-flags.sh
 bash tests/test-windows-missing-service-hints.sh
 "$PYTHON_CMD" tests/contracts/test-network-exposure-contracts.py
+"$PYTHON_CMD" tests/contracts/test-remote-provider-egress-policy.py
+"$PYTHON_CMD" tests/contracts/test-remote-provider-egress-service.py
+"$PYTHON_CMD" tests/contracts/test-remote-provider-ssh-tunnel-service.py
 
 echo "[gate] smoke"
 bash tests/smoke/linux-amd.sh

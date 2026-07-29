@@ -37,14 +37,17 @@ check 'service-plan.ps1' "$INSTALL_PS1" "Windows installer sources service-plan 
 check 'New-ODSWindowsServicePlan' "$PLAN_LIB" "service-plan constructor exists"
 check 'Get-ODSWindowsServicePlanDecision' "$PLAN_LIB" "service-plan decision function exists"
 check 'Test-ODSWindowsServiceEnabled' "$PLAN_LIB" "service-plan enabled helper exists"
+check 'Set-ODSWindowsExtensionComposeState' "$PLAN_LIB" "service-plan compose-state helper exists"
 check 'OpenClaw is deprecated' "$PLAN_LIB" "OpenClaw is documented as opt-in legacy"
 check 'elseif ($currentBackend -eq "amd")' "$INSTALL_PS1" "Windows installer has AMD extension overlay branch"
 check 'compose.amd.yaml' "$INSTALL_PS1" "Windows installer includes AMD extension overlays"
 check 'function Test-ODSWindowsDockerCredentialHelperFailure' "$INSTALL_PS1" "Windows installer detects Docker credential-helper failures"
 check '$text = $text.Replace([string][char]0, "")' "$INSTALL_PS1" "Windows installer normalizes null-separated Docker output"
 check 'DOCKER_BUILDKIT=0' "$INSTALL_PS1" "Windows installer can retry builds with legacy Docker builder"
+check 'Get-ODSWindowsUserDockerClientArgs' "$INSTALL_PS1" "Windows installer can retry builds with the preserved user Docker config"
 check 'function Invoke-ODSWindowsPlainDockerBuildService' "$INSTALL_PS1" "Windows installer has plain docker build fallback"
 check 'plain docker build and DOCKER_BUILDKIT=0' "$INSTALL_PS1" "Windows installer bypasses Compose build on credential-helper failure"
+check "retrying \$_svc with user's Docker config" "$INSTALL_PS1" "Windows installer retries scoped Docker config build failures with the preserved user config"
 check '$enableComfyui -and $currentBackend -eq "nvidia"' "$INSTALL_PS1" "Windows installer only locally builds ComfyUI on NVIDIA"
 check 'ComfyUI disabled on Windows AMD' "$ROOT_DIR/installers/windows/phases/03-features.ps1" "Windows AMD disables Dockerized ComfyUI"
 check '/dev/dri and /dev/kfd' "$ROOT_DIR/installers/windows/phases/03-features.ps1" "Windows AMD ComfyUI warning names unsupported ROCm devices"
@@ -114,6 +117,29 @@ if command -v pwsh >/dev/null 2>&1; then
         Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "ape" -Plan $legacy) "OpenClaw opt-in enables APE"
         Assert-Plan (-not $unknownOptional.Enabled) "Unknown optional is disabled"
         Assert-Plan ($unknownRecommended.Enabled) "Unknown recommended follows recommended flag"
+
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ods-service-plan-" + [guid]::NewGuid())
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $composePath = Join-Path $tempRoot "compose.yaml"
+            Set-Content -LiteralPath $composePath -Value "services: {}" -Encoding Ascii
+
+            $disabledResult = Set-ODSWindowsExtensionComposeState `
+                -ComposePath $composePath `
+                -Enabled $false
+            Assert-Plan (-not $disabledResult) "Disabled compose state reports unavailable"
+            Assert-Plan (-not (Test-Path -LiteralPath $composePath)) "Disabled compose fragment is hidden"
+            Assert-Plan (Test-Path -LiteralPath "$composePath.disabled") "Disabled compose marker is created"
+
+            $enabledResult = Set-ODSWindowsExtensionComposeState `
+                -ComposePath $composePath `
+                -Enabled $true
+            Assert-Plan $enabledResult "Enabled compose state reports available"
+            Assert-Plan (Test-Path -LiteralPath $composePath) "Enabled compose fragment is restored"
+            Assert-Plan (-not (Test-Path -LiteralPath "$composePath.disabled")) "Enabled compose marker is removed"
+        } finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
     ')"
 
     while IFS= read -r line; do

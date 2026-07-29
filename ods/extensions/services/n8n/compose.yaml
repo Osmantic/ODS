@@ -6,7 +6,7 @@ services:
     user: "${UID:-1000}:${GID:-1000}"
     security_opt:
       - no-new-privileges:true
-    entrypoint: ["tini", "--", "/opt/ods/n8n-entrypoint.sh"]
+    entrypoint: ["tini", "--", "/bin/sh", "/opt/ods/n8n-entrypoint.sh"]
     environment:
       - N8N_DEFAULT_ADMIN_EMAIL=${N8N_USER:?N8N_USER must be set in .env}
       - N8N_DEFAULT_ADMIN_PASSWORD=${N8N_PASS:?N8N_PASS must be set in .env}

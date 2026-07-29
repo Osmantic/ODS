@@ -202,11 +202,19 @@ class _HermesConnection:
 
 _CONNECTION_POOL: dict[str, _HermesConnection] = {}
 _POOL_GUARD = asyncio.Lock()
+# Per-key creation locks: two concurrent first-messages from the same phone
+# share one open instead of racing, without holding the global guard.
+_OPENING_LOCKS: dict[str, asyncio.Lock] = {}
 _SWEEPER_TASK: asyncio.Task | None = None
 
 
 async def _open_connection(session_key: str) -> _HermesConnection:
-    """Open one fresh WS + run session.create. Caller holds _POOL_GUARD."""
+    """Open one fresh WS + run session.create.
+
+    Caller holds the per-key opening lock, NOT _POOL_GUARD — this does
+    network I/O that can hang for the full client timeout when Hermes is
+    slow or down, and must never stall other phones' pool lookups.
+    """
     timeout_seconds = _request_timeout()
     timeout = aiohttp.ClientTimeout(total=timeout_seconds + 20)
     http_session = aiohttp.ClientSession(timeout=timeout)
@@ -231,17 +239,35 @@ async def _get_connection(session_key: str) -> _HermesConnection:
 
     Caller must use ``async with conn.lock:`` around any send/receive cycle
     to keep concurrent same-key prompts from interleaving on the same WS.
+
+    _POOL_GUARD is held only for dict bookkeeping. Opening a connection
+    (token fetch + ws connect + session.create) is network I/O that can
+    hang for the full client timeout when Hermes is slow or down; holding
+    the global guard across it would head-of-line block every other
+    phone's warm-connection lookup behind one cold open. The per-key
+    opening lock keeps concurrent same-key calls from opening duplicates.
     """
     async with _POOL_GUARD:
         conn = _CONNECTION_POOL.get(session_key)
         if conn is not None and not conn.closed and not conn.ws.closed:
             return conn
-        # Either no entry, marked closed, or the underlying ws died. Drop
-        # whatever is in the slot and open fresh.
-        if conn is not None:
-            await conn.aclose()
+        opening = _OPENING_LOCKS.setdefault(session_key, asyncio.Lock())
+
+    async with opening:
+        # Re-check under the guard: another same-key call may have finished
+        # opening while this one waited on the opening lock.
+        async with _POOL_GUARD:
+            conn = _CONNECTION_POOL.get(session_key)
+            if conn is not None and not conn.closed and not conn.ws.closed:
+                return conn
+            # Either no entry, marked closed, or the underlying ws died.
+            # Drop whatever is in the slot and open fresh.
+            stale = _CONNECTION_POOL.pop(session_key, None)
+        if stale is not None:
+            await stale.aclose()
         new_conn = await _open_connection(session_key)
-        _CONNECTION_POOL[session_key] = new_conn
+        async with _POOL_GUARD:
+            _CONNECTION_POOL[session_key] = new_conn
         return new_conn
 
 
@@ -279,6 +305,11 @@ async def _sweep_idle_connections() -> None:
                     if now - conn.last_used > _IDLE_EXPIRY_SECONDS:
                         stale.append((key, conn))
                         _CONNECTION_POOL.pop(key, None)
+                # Opening locks are keyed by cookie hash and would otherwise
+                # grow forever; drop the ones that are idle and unpooled.
+                for key, lock in list(_OPENING_LOCKS.items()):
+                    if not lock.locked() and key not in _CONNECTION_POOL:
+                        del _OPENING_LOCKS[key]
             for key, conn in stale:
                 logger.info("hermes-bridge: evicting idle connection for %s", key[:8])
                 await conn.aclose()
@@ -314,6 +345,7 @@ async def shutdown_pool() -> None:
     async with _POOL_GUARD:
         connections = list(_CONNECTION_POOL.values())
         _CONNECTION_POOL.clear()
+        _OPENING_LOCKS.clear()
     for conn in connections:
         await conn.aclose()
 

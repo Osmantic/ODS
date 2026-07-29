@@ -23,7 +23,15 @@ rsync_with_progress() {
     local dest="$2"
     local label="${3:-Copying}"
 
-    [[ -n "${log_info:-}" ]] && log_info "$label..." || echo "[INFO] $label..."
+    # Prefer the caller's styled logger when it exists. log_info is a *function*
+    # in the scripts that source this lib (ods-backup.sh, ods-restore.sh), so it
+    # must be probed with `declare -F`, not `${log_info:-}` (which only ever sees
+    # a variable and is always empty — the styled path was previously dead code).
+    if declare -F log_info >/dev/null 2>&1; then
+        log_info "$label..."
+    else
+        echo "[INFO] $label..."
+    fi
 
     # Use --info=progress2 for compact single-line progress updates
     # Fallback to basic rsync if progress2 not supported

@@ -12,6 +12,55 @@
 #   All secrets use cryptographic RNG -- never use Get-Random for secrets.
 # ============================================================================
 
+function Resolve-WindowsODSPort {
+    <#
+    .SYNOPSIS
+        Resolve a Windows installer port from an explicit process override,
+        persisted .env state, or the platform default.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $true)]
+        [int]$DefaultPort,
+
+        [hashtable]$ExistingEnv,
+        [string]$InstallDir = ""
+    )
+
+    $candidates = New-Object 'System.Collections.Generic.List[string]'
+    $processValue = [Environment]::GetEnvironmentVariable($Name)
+    if (-not [string]::IsNullOrWhiteSpace($processValue)) {
+        [void]$candidates.Add($processValue)
+    }
+
+    if ($ExistingEnv -and $ExistingEnv.ContainsKey($Name)) {
+        [void]$candidates.Add([string]$ExistingEnv[$Name])
+    } elseif (-not [string]::IsNullOrWhiteSpace($InstallDir)) {
+        $envPath = Join-Path $InstallDir ".env"
+        if (Test-Path -LiteralPath $envPath -PathType Leaf) {
+            $assignment = Get-Content -LiteralPath $envPath -ErrorAction SilentlyContinue |
+                Where-Object { $_ -match "^$([regex]::Escape($Name))=(.*)$" } |
+                Select-Object -First 1
+            if ($assignment -and $assignment -match "^[^=]+=(.*)$") {
+                [void]$candidates.Add([string]$Matches[1])
+            }
+        }
+    }
+
+    [void]$candidates.Add([string]$DefaultPort)
+    foreach ($candidate in $candidates) {
+        $parsedPort = 0
+        if ([int]::TryParse(([string]$candidate).Trim(), [ref]$parsedPort) -and
+            $parsedPort -ge 1 -and $parsedPort -le 65535) {
+            return $parsedPort
+        }
+    }
+
+    return $DefaultPort
+}
+
 function Write-Utf8NoBom {
     <#
     .SYNOPSIS
@@ -32,6 +81,313 @@ function Write-Utf8NoBom {
     }
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+}
+
+function Get-WindowsODSRuntimeConfigRenderer {
+    [CmdletBinding()]
+    param(
+        [string]$InstallDir = ""
+    )
+
+    $candidates = New-Object 'System.Collections.Generic.List[string]'
+    if (-not [string]::IsNullOrWhiteSpace($InstallDir)) {
+        [void]$candidates.Add((Join-Path (Join-Path $InstallDir "scripts") "render-runtime-configs.py"))
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+        [void]$candidates.Add((Join-Path (Join-Path $repoRoot "scripts") "render-runtime-configs.py"))
+    }
+
+    $seen = @{}
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        if ($seen.ContainsKey($candidate)) { continue }
+        $seen[$candidate] = $true
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+
+    throw "Runtime config renderer not found for Windows Lemonade route."
+}
+
+function Test-WindowsODSRuntimeConfigPythonCandidate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [string[]]$PrefixArgs = @()
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FilePath)) {
+        return $false
+    }
+
+    $commandPath = $FilePath
+    $resolvedCommand = Get-Command $FilePath -CommandType Application -ErrorAction SilentlyContinue
+    if ($resolvedCommand -and $resolvedCommand.Source) {
+        $commandPath = $resolvedCommand.Source
+    }
+    if ($commandPath -match '\\WindowsApps\\python3?\.exe$') {
+        return $false
+    }
+
+    $probeArgs = @($PrefixArgs) + @("-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)")
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "SilentlyContinue"
+        & $FilePath @probeArgs 2>&1 | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+}
+
+function New-WindowsODSRuntimeConfigPythonCandidate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [string[]]$PrefixArgs = @()
+    )
+
+    [pscustomobject]@{
+        FilePath = $FilePath
+        PrefixArgs = @($PrefixArgs)
+    }
+}
+
+function Resolve-WindowsODSRuntimeConfigPython {
+    [CmdletBinding()]
+    param()
+
+    $candidateFiles = New-Object 'System.Collections.Generic.List[string]'
+    $candidateRoots = New-Object 'System.Collections.Generic.List[string]'
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        [void]$candidateRoots.Add((Join-Path $env:LOCALAPPDATA "Programs\Python"))
+    }
+    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if (-not [string]::IsNullOrWhiteSpace($root)) { [void]$candidateRoots.Add($root) }
+    }
+
+    foreach ($root in $candidateRoots) {
+        if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path -LiteralPath $root)) { continue }
+        Get-ChildItem -LiteralPath $root -Directory -Filter "Python*" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $exe = Join-Path $_.FullName "python.exe"
+                if (Test-Path -LiteralPath $exe -PathType Leaf) { [void]$candidateFiles.Add($exe) }
+            }
+    }
+
+    $sharedResolver = Get-Command Get-ODSPythonDownloadCommand -ErrorAction SilentlyContinue
+    if ($sharedResolver) {
+        $resolved = Get-ODSPythonDownloadCommand
+        if ($resolved -and (Test-WindowsODSRuntimeConfigPythonCandidate -FilePath $resolved.FilePath -PrefixArgs @($resolved.PrefixArgs))) {
+            return (New-WindowsODSRuntimeConfigPythonCandidate -FilePath $resolved.FilePath -PrefixArgs @($resolved.PrefixArgs))
+        }
+    }
+
+    $candidates = @(
+        @{ FilePath = "python3"; PrefixArgs = @() },
+        @{ FilePath = "python"; PrefixArgs = @() },
+        @{ FilePath = "py"; PrefixArgs = @("-3") }
+    )
+
+    $seen = @{}
+    foreach ($candidateFile in $candidateFiles) {
+        $key = $candidateFile.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        if (Test-WindowsODSRuntimeConfigPythonCandidate -FilePath $candidateFile) {
+            return (New-WindowsODSRuntimeConfigPythonCandidate -FilePath $candidateFile)
+        }
+    }
+
+    foreach ($candidate in $candidates) {
+        $filePath = [string]$candidate.FilePath
+        $prefixArgs = @($candidate.PrefixArgs)
+        if (Test-WindowsODSRuntimeConfigPythonCandidate -FilePath $filePath -PrefixArgs $prefixArgs) {
+            return (New-WindowsODSRuntimeConfigPythonCandidate -FilePath $filePath -PrefixArgs $prefixArgs)
+        }
+    }
+
+    return $null
+}
+
+function Install-WindowsODSRuntimeConfigPython {
+    [CmdletBinding()]
+    param()
+
+    $sharedInstaller = Get-Command Install-ODSHostAgentPython -ErrorAction SilentlyContinue
+    if ($sharedInstaller) {
+        $resolved = Install-ODSHostAgentPython
+        if ($resolved -and (Test-WindowsODSRuntimeConfigPythonCandidate -FilePath $resolved.FilePath -PrefixArgs @($resolved.PrefixArgs))) {
+            return (New-WindowsODSRuntimeConfigPythonCandidate -FilePath $resolved.FilePath -PrefixArgs @($resolved.PrefixArgs))
+        }
+    }
+
+    $winget = Get-Command winget -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        return $null
+    }
+
+    if (Get-Command Write-AIWarn -ErrorAction SilentlyContinue) {
+        Write-AIWarn "Python 3 not found. Installing Python 3.12 via winget for runtime config rendering..."
+    } else {
+        Write-Warning "Python 3 not found. Installing Python 3.12 via winget for runtime config rendering..."
+    }
+
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "SilentlyContinue"
+        & winget install --exact --id Python.Python.3.12 --silent --disable-interactivity --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+
+    $machinePath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
+    $userPath = [System.Environment]::GetEnvironmentVariable("PATH", "User")
+    $env:PATH = "$machinePath;$userPath"
+    return (Resolve-WindowsODSRuntimeConfigPython)
+}
+
+function Get-WindowsODSRuntimeConfigPython {
+    [CmdletBinding()]
+    param()
+
+    $resolved = Resolve-WindowsODSRuntimeConfigPython
+    if ($resolved) { return $resolved }
+
+    $installed = Install-WindowsODSRuntimeConfigPython
+    if ($installed) { return $installed }
+
+    throw "Python 3 is required to render Windows Lemonade LiteLLM config and could not be installed automatically."
+}
+
+function Write-WindowsODSLemonadeLiteLlmConfig {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ModelId,
+
+        [string]$Port = "8080",
+        [string]$ApiKey = "not-needed"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ModelId)) {
+        throw "Lemonade model ID is required."
+    }
+    if ($ModelId -match '[\r\n]') {
+        throw "Lemonade model ID cannot contain line breaks."
+    }
+    if ($ApiKey -match '[\r\n]') {
+        throw "Lemonade API key cannot contain line breaks."
+    }
+    $parsedPort = 0
+    if (-not [int]::TryParse($Port, [ref]$parsedPort) -or $parsedPort -lt 1 -or $parsedPort -gt 65535) {
+        throw "Lemonade port must be an integer in 1..65535."
+    }
+
+    $litellmDir = Join-Path (Join-Path $InstallDir "config") "litellm"
+    New-Item -ItemType Directory -Path $litellmDir -Force | Out-Null
+    $renderer = Get-WindowsODSRuntimeConfigRenderer -InstallDir $InstallDir
+    $python = Get-WindowsODSRuntimeConfigPython
+    $lemonadeApiBase = "http://host.docker.internal:$parsedPort/api/v1"
+    $renderArgs = @($python.PrefixArgs) + @(
+        $renderer,
+        "--surface", "litellm-lemonade",
+        "--ods-mode", "lemonade",
+        "--gpu-backend", "amd",
+        "--lemonade-model-id", $ModelId,
+        "--lemonade-api-base", $lemonadeApiBase,
+        "--litellm-key", $ApiKey,
+        "--output-root", $InstallDir,
+        "--write"
+    )
+    $renderOutput = & $python.FilePath @renderArgs 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Runtime config renderer failed for Windows Lemonade route: $($renderOutput -join "`n")"
+    }
+
+    $configPath = Join-Path $litellmDir "lemonade.yaml"
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        throw "Runtime config renderer did not create $configPath"
+    }
+    return $configPath
+}
+
+function Set-WindowsODSLemonadeModelConfiguration {
+    <#
+    .SYNOPSIS
+        Persist the active Lemonade model ID and regenerate its LiteLLM route.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ModelId,
+
+        [string]$Port = "",
+        [string]$ApiKey = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ModelId)) {
+        throw "Lemonade model ID is required."
+    }
+    if ($ModelId -match '[\r\n]') {
+        throw "Lemonade model ID cannot contain line breaks."
+    }
+
+    $envPath = Join-Path $InstallDir ".env"
+    if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) {
+        throw "Cannot persist Lemonade model ID because .env is missing: $envPath"
+    }
+
+    $envContent = [System.IO.File]::ReadAllText($envPath)
+    $assignment = "LEMONADE_MODEL=$ModelId"
+    if ($envContent -match '(?m)^LEMONADE_MODEL=') {
+        $replacement = $assignment.Replace('$', '$$')
+        $envContent = [regex]::Replace($envContent, '(?m)^LEMONADE_MODEL=[^\r\n]*', $replacement)
+    } else {
+        $newline = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
+        if ($envContent.Length -gt 0 -and -not $envContent.EndsWith("`n")) {
+            $envContent += $newline
+        }
+        $envContent += "$assignment$newline"
+    }
+    Write-Utf8NoBom -Path $envPath -Content $envContent
+
+    if ([string]::IsNullOrWhiteSpace($Port)) {
+        $portMatch = [regex]::Match($envContent, '(?m)^AMD_INFERENCE_PORT=([^\r\n]*)')
+        if ($portMatch.Success) { $Port = $portMatch.Groups[1].Value.Trim().Trim('"').Trim("'") }
+    }
+    $parsedPort = 0
+    if (-not [int]::TryParse($Port, [ref]$parsedPort) -or $parsedPort -lt 1 -or $parsedPort -gt 65535) {
+        $Port = "8080"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ApiKey)) {
+        $keyMatch = [regex]::Match($envContent, '(?m)^LITELLM_LEMONADE_API_KEY=([^\r\n]*)')
+        if ($keyMatch.Success) { $ApiKey = $keyMatch.Groups[1].Value.Trim().Trim('"').Trim("'") }
+    }
+    if ([string]::IsNullOrWhiteSpace($ApiKey)) { $ApiKey = "not-needed" }
+
+    $configPath = Write-WindowsODSLemonadeLiteLlmConfig `
+        -InstallDir $InstallDir -ModelId $ModelId -Port $Port -ApiKey $ApiKey
+    return @{
+        ModelId = $ModelId
+        EnvPath = $envPath
+        LiteLlmConfigPath = $configPath
+    }
 }
 
 function New-SecureHex {
@@ -92,13 +448,17 @@ function New-ODSEnv {
         [string]$AmdInferenceRuntimeMode = "",
         [string]$AmdInferenceManaged = "",
         [string]$LemonadeServerImage = "",
+        [string]$LemonadeModel = "",
         [int]$SystemRamGB = 0,
+        [bool]$WhisperCudaEnabled = $true,
+        [string]$SwitchboardMode = "",
         # Mirror the install-time ENABLE_LANGFUSE toggle from phase 03 into
         # .env's LANGFUSE_ENABLED default. Re-install preserves whatever the
         # user already had in .env (via Get-EnvOrNew), so manual
         # `ods enable langfuse` edits survive.
         [bool]$EnableLangfuse = $false,
-        [bool]$EnableLan = $false
+        [bool]$EnableLan = $false,
+        [bool]$EnableODSProxy = $false
     )
 
     # Preserve existing secrets on re-install (mirrors Linux _env_get logic)
@@ -119,6 +479,38 @@ function New-ODSEnv {
         }
         return $Default
     }
+
+    # Empty is meaningful for optional provider overrides: it selects the
+    # bundled service. Distinguish it from a key missing in an older .env.
+    function Get-EnvOrNewAllowEmpty { param([string]$Key, [string]$Default)
+        if ($existingEnv.ContainsKey($Key)) {
+            return $existingEnv[$Key]
+        }
+        return $Default
+    }
+
+    $bindAddressDefault = if ($EnableLan) { "0.0.0.0" } else { "127.0.0.1" }
+    $bindAddress = if ($EnableLan) {
+        # An explicit -Lan rerun must override a stale loopback-only .env.
+        $bindAddressDefault
+    } else {
+        Get-EnvOrNew "BIND_ADDRESS" $bindAddressDefault
+    }
+    $networkExposed = (
+        $bindAddress -notin @("127.0.0.1", "::1", "localhost") -or
+        $EnableODSProxy
+    )
+    if ($networkExposed) {
+        # Never carry an authless localhost value into a network-exposed rerun.
+        $webuiAuth = "true"
+    } else {
+        # On loopback, preserve an operator's explicit opt-in to authentication.
+        $webuiAuth = Get-EnvOrNew "WEBUI_AUTH" "false"
+    }
+
+    $webuiPort = Resolve-WindowsODSPort `
+        -Name "WEBUI_PORT" -DefaultPort 3000 `
+        -ExistingEnv $existingEnv -InstallDir $InstallDir
 
     # Lemonade's native Windows router reserves host port 9000 for websockets.
     # Keep Whisper's container port unchanged, but move its host port out of the
@@ -233,6 +625,15 @@ function New-ODSEnv {
     $difySecretKey    = Get-EnvOrNew "DIFY_SECRET_KEY"           (New-SecureHex -Bytes 32)
     $qdrantApiKey     = Get-EnvOrNew "QDRANT_API_KEY"            (New-SecureHex -Bytes 32)
     $opencodePassword = Get-EnvOrNew "OPENCODE_SERVER_PASSWORD"  (New-SecureBase64 -Bytes 16)
+    $switchboardModeDefault = if ([string]::IsNullOrWhiteSpace($SwitchboardMode)) { "observe" } else { $SwitchboardMode.Trim().ToLowerInvariant() }
+    if ($switchboardModeDefault -notin @("legacy", "observe", "enabled")) {
+        $switchboardModeDefault = "observe"
+    }
+    $switchboardMode = Get-EnvOrNew "ODS_MODEL_SWITCHBOARD" $switchboardModeDefault
+    $switchboardMode = $switchboardMode.Trim().ToLowerInvariant()
+    if ($switchboardMode -notin @("legacy", "observe", "enabled")) {
+        $switchboardMode = "observe"
+    }
     $cpuBudget = Get-LlamaCpuBudget -GpuBackend $(if ($GpuBackend -eq "none") { "cpu" } else { $GpuBackend })
     $llamaCpuLimit = Select-AutoCpuValue -Key "LLAMA_CPU_LIMIT" -Detected $cpuBudget.Limit
     $llamaCpuReservation = Select-AutoCpuValue -Key "LLAMA_CPU_RESERVATION" -Detected $cpuBudget.Reservation
@@ -279,7 +680,29 @@ function New-ODSEnv {
     # llama-server route.
     $windowsAmdHostInference = ($GpuBackend -eq "amd" -and $ODSMode -ne "cloud")
     $windowsAmdLemonade = ($windowsAmdHostInference -and $AmdInferenceRuntime -eq "lemonade")
+    $nativeInferencePort = "8080"
+    $parsedNativeInferencePort = 0
+    if ([int]::TryParse([string]$AmdInferencePort, [ref]$parsedNativeInferencePort) -and
+        $parsedNativeInferencePort -ge 1 -and $parsedNativeInferencePort -le 65535) {
+        $nativeInferencePort = [string]$parsedNativeInferencePort
+    }
     $effectiveODSMode = $(if ($windowsAmdLemonade) { "lemonade" } else { $ODSMode })
+    $existingLemonadeModel = Get-EnvOrNew "LEMONADE_MODEL" ""
+    $existingGgufFile = Get-EnvOrNew "GGUF_FILE" ""
+    $effectiveLemonadeModel = $existingLemonadeModel
+    if ($windowsAmdLemonade) {
+        $effectiveLemonadeModel = $(if (-not [string]::IsNullOrWhiteSpace($LemonadeModel)) {
+            $LemonadeModel
+        } elseif (-not [string]::IsNullOrWhiteSpace($existingLemonadeModel) -and
+            -not [string]::IsNullOrWhiteSpace($existingGgufFile) -and
+            $existingGgufFile.Equals([string]$TierConfig.GgufFile, [StringComparison]::OrdinalIgnoreCase)) {
+            $existingLemonadeModel
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$TierConfig.GgufFile)) {
+            "extra.$($TierConfig.GgufFile)"
+        } else {
+            $TierConfig.LlmModel
+        })
+    }
 
     # NOTE: $(if ...) syntax required for PS 5.1 compatibility
     $llmBackend = $(if ($windowsAmdLemonade) {
@@ -296,7 +719,7 @@ function New-ODSEnv {
     $llmApiBasePath = $(if ($windowsAmdLemonade) { "/api/v1" } else { "/v1" })
 
     $llmApiUrl = $(if ($windowsAmdHostInference) {
-        "http://host.docker.internal:8080"
+        "http://host.docker.internal:$nativeInferencePort"
     } elseif ($ODSMode -eq "cloud") {
         "http://litellm:4000"
     } else {
@@ -309,8 +732,13 @@ function New-ODSEnv {
     # for Open WebUI. Match the Linux AMD behavior and authenticate with the
     # LiteLLM master key whenever Hermes targets LiteLLM.
     $hermesUsesLiteLlm = ($windowsAmdLemonade -or $ODSMode -eq "cloud")
+    if ($switchboardMode -eq "enabled") {
+        $hermesUsesLiteLlm = $true
+    }
     $hermesLlmBaseUrl = $(if ($hermesUsesLiteLlm) { "http://litellm:4000/v1" } else { "$llmApiUrl$llmApiBasePath" })
     $hermesLlmApiKey = $(if ($hermesUsesLiteLlm) { $litellmKey } else { "sk-ods-hermes-local" })
+    $openWebuiLlmBaseUrl = Get-EnvOrNew "OPEN_WEBUI_LLM_BASE_URL" $(if ($switchboardMode -eq "enabled") { "http://litellm:4000" } else { "" })
+    $openWebuiLlmApiKey = Get-EnvOrNew "OPEN_WEBUI_LLM_API_KEY" $(if ($switchboardMode -eq "enabled") { $litellmKey } else { "" })
 
     # Timezone -- convert Windows timezone ID to IANA for Docker containers
     $tz = $(try {
@@ -325,35 +753,72 @@ function New-ODSEnv {
             if ($ok -and $outIana) { $ianaId = $outIana }
         } catch { }
         if ($ianaId) { $ianaId } else {
+            # PowerShell `switch` runs *every* matching arm, and as a
+            # subexpression it collects all emitted values into an array, so
+            # multi-matching IDs (e.g. "AUS Eastern Standard Time" hits both
+            # "*AUS Eastern*" and "*Eastern*") would write an invalid
+            # "TIMEZONE=America/New_York Australia/Sydney". `break` on every arm
+            # makes the first match win; the more specific "*AUS Eastern*" is
+            # ordered ahead of "*Eastern*" so it takes precedence.
             switch -Wildcard ($tzInfo.Id) {
-                "*Eastern*"    { "America/New_York" }
-                "*Central*"    { "America/Chicago" }
-                "*Mountain*"   { "America/Denver" }
-                "*Pacific*"    { "America/Los_Angeles" }
-                "*Alaska*"     { "America/Anchorage" }
-                "*Hawaii*"     { "Pacific/Honolulu" }
-                "*UTC*"        { "UTC" }
-                "*GMT*"        { "Europe/London" }
-                "*W. Europe*"  { "Europe/Berlin" }
-                "*Romance*"    { "Europe/Paris" }
-                "*India*"      { "Asia/Kolkata" }
-                "*China*"      { "Asia/Shanghai" }
-                "*Tokyo*"      { "Asia/Tokyo" }
-                "*Korea*"      { "Asia/Seoul" }
-                "*AUS Eastern*"  { "Australia/Sydney" }
-                "*E. South America*" { "America/Sao_Paulo" }
-                "*SE Asia*"    { "Asia/Bangkok" }
-                "*Arab*"       { "Asia/Riyadh" }
-                "*Egypt*"      { "Africa/Cairo" }
-                "*South Africa*" { "Africa/Johannesburg" }
-                "*E. Europe*"  { "Europe/Bucharest" }
-                "*FLE*"        { "Europe/Kiev" }
-                default        { "UTC" }
+                "*AUS Eastern*"  { "Australia/Sydney"; break }
+                "*Eastern*"    { "America/New_York"; break }
+                "*Central*"    { "America/Chicago"; break }
+                "*Mountain*"   { "America/Denver"; break }
+                "*Pacific*"    { "America/Los_Angeles"; break }
+                "*Alaska*"     { "America/Anchorage"; break }
+                "*Hawaii*"     { "Pacific/Honolulu"; break }
+                "*UTC*"        { "UTC"; break }
+                "*GMT*"        { "Europe/London"; break }
+                "*W. Europe*"  { "Europe/Berlin"; break }
+                "*Romance*"    { "Europe/Paris"; break }
+                "*India*"      { "Asia/Kolkata"; break }
+                "*China*"      { "Asia/Shanghai"; break }
+                "*Tokyo*"      { "Asia/Tokyo"; break }
+                "*Korea*"      { "Asia/Seoul"; break }
+                "*E. South America*" { "America/Sao_Paulo"; break }
+                "*SE Asia*"    { "Asia/Bangkok"; break }
+                "*Arab*"       { "Asia/Riyadh"; break }
+                "*Egypt*"      { "Africa/Cairo"; break }
+                "*South Africa*" { "Africa/Johannesburg"; break }
+                "*E. Europe*"  { "Europe/Bucharest"; break }
+                "*FLE*"        { "Europe/Kiev"; break }
+                default        { "UTC"; break }
             }
         }
     } catch { "UTC" })
 
     $timestamp = Get-Date -Format "o"
+    $whisperAccelerationDefault = $(if ($GpuBackend -eq "nvidia" -and $WhisperCudaEnabled) { "cuda" } else { "cpu" })
+    $whisperAcceleration = Get-EnvOrNew "WHISPER_ACCELERATION" $whisperAccelerationDefault
+    if ($GpuBackend -eq "nvidia" -and -not $WhisperCudaEnabled) {
+        $whisperAcceleration = "cpu"
+    }
+    if ($whisperAcceleration -notin @("cpu", "cuda")) {
+        $whisperAcceleration = $whisperAccelerationDefault
+    }
+
+    $whisperImageDefault = $(if ($whisperAcceleration -eq "cuda") { "" } else { "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu" })
+    $whisperImage = Get-EnvOrNew "WHISPER_IMAGE" $whisperImageDefault
+    if ($whisperAcceleration -eq "cpu" -and
+        ([string]::IsNullOrWhiteSpace($whisperImage) -or $whisperImage -match "(?i)cuda")) {
+        $whisperImage = "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu"
+    }
+
+    $audioSttModelDefault = $(if ($whisperAcceleration -eq "cuda") { "deepdml/faster-whisper-large-v3-turbo-ct2" } else { "Systran/faster-whisper-base" })
+    $audioSttModel = Get-EnvOrNew "AUDIO_STT_MODEL" $audioSttModelDefault
+    if ($whisperAcceleration -eq "cpu" -and $audioSttModel -match "(?i)large-v3|turbo") {
+        $audioSttModel = $audioSttModelDefault
+    }
+    $embeddingModelDefault = [Environment]::GetEnvironmentVariable("EMBEDDING_MODEL")
+    if ([string]::IsNullOrWhiteSpace($embeddingModelDefault)) { $embeddingModelDefault = "BAAI/bge-base-en-v1.5" }
+    $embeddingModel = Get-EnvOrNew "EMBEDDING_MODEL" $embeddingModelDefault
+    $ragEmbeddingModel = Get-EnvOrNewAllowEmpty "RAG_EMBEDDING_MODEL" ([Environment]::GetEnvironmentVariable("RAG_EMBEDDING_MODEL"))
+    $ragOpenAiApiBaseUrl = Get-EnvOrNewAllowEmpty "RAG_OPENAI_API_BASE_URL" ([Environment]::GetEnvironmentVariable("RAG_OPENAI_API_BASE_URL"))
+    $ragOpenAiApiKey = Get-EnvOrNewAllowEmpty "RAG_OPENAI_API_KEY" ([Environment]::GetEnvironmentVariable("RAG_OPENAI_API_KEY"))
+    $embeddingsMemoryLimitDefault = [Environment]::GetEnvironmentVariable("EMBEDDINGS_MEMORY_LIMIT")
+    if ([string]::IsNullOrWhiteSpace($embeddingsMemoryLimitDefault)) { $embeddingsMemoryLimitDefault = "4G" }
+    $embeddingsMemoryLimit = Get-EnvOrNew "EMBEDDINGS_MEMORY_LIMIT" $embeddingsMemoryLimitDefault
 
     # Build .env content (matches Phase 06 format)
     $envContent = @"
@@ -364,7 +829,7 @@ function New-ODSEnv {
 #=== Network Binding ===
 # 127.0.0.1 = localhost only (secure default)
 # 0.0.0.0   = accessible from LAN (install with -Lan or set manually)
-BIND_ADDRESS=$(Get-EnvOrNew "BIND_ADDRESS" "$(if ($EnableLan) { "0.0.0.0" } else { "127.0.0.1" })")
+BIND_ADDRESS=$bindAddress
 # Docker Desktop containers reach loopback-only host services through this name.
 ODS_AGENT_HOST=$(Get-EnvOrNew "ODS_AGENT_HOST" "host.docker.internal")
 # The dashboard-api container must call the host agent over Docker Desktop's
@@ -373,13 +838,16 @@ ODS_AGENT_BIND=$(Get-EnvOrNew "ODS_AGENT_BIND" "0.0.0.0")
 
 #=== LLM Backend Mode ===
 ODS_MODE=$effectiveODSMode
+ODS_MODEL_SWITCHBOARD=$switchboardMode
 LLM_BACKEND=$llmBackend
 LLM_API_URL=$llmApiUrl
+OPEN_WEBUI_LLM_BASE_URL=$openWebuiLlmBaseUrl
+OPEN_WEBUI_LLM_API_KEY=$openWebuiLlmApiKey
 LLM_API_BASE_PATH=$llmApiBasePath
 AMD_INFERENCE_RUNTIME=$AmdInferenceRuntime
 AMD_INFERENCE_BACKEND=$AmdInferenceBackend
 AMD_INFERENCE_LOCATION=$AmdInferenceLocation
-AMD_INFERENCE_PORT=$AmdInferencePort
+AMD_INFERENCE_PORT=$(if ($windowsAmdHostInference) { $nativeInferencePort } else { $AmdInferencePort })
 AMD_INFERENCE_SUPPORTED_BACKENDS=$AmdInferenceSupportedBackends
 AMD_INFERENCE_RUNTIME_MODE=$AmdInferenceRuntimeMode
 AMD_INFERENCE_MANAGED=$AmdInferenceManaged
@@ -394,6 +862,7 @@ MINIMAX_API_KEY=$(Get-EnvOrNew "MINIMAX_API_KEY" "")
 MODEL_PROFILE=$(Get-EnvOrNew "MODEL_PROFILE" "$(if ($TierConfig.ModelProfileRequested) { $TierConfig.ModelProfileRequested } else { "qwen" })")
 LLM_MODEL=$($TierConfig.LlmModel)
 GGUF_FILE=$($TierConfig.GgufFile)
+LEMONADE_MODEL=$effectiveLemonadeModel
 MAX_CONTEXT=$($TierConfig.MaxContext)
 CTX_SIZE=$($TierConfig.MaxContext)
 MODEL_RECOMMENDED_MODEL=$($TierConfig.LlmModel)
@@ -441,7 +910,7 @@ COMFYUI_CPU_RESERVATION=$comfyuiCpuReservation
 
 #=== Ports ===
 OLLAMA_PORT=11434
-WEBUI_PORT=3000
+WEBUI_PORT=$webuiPort
 WHISPER_PORT=$whisperPort
 TTS_PORT=8880
 N8N_PORT=5678
@@ -481,14 +950,28 @@ DIFY_SECRET_KEY=$difySecretKey
 
 #=== Voice Settings ===
 WHISPER_MODEL=base
-# Whisper STT model — NVIDIA uses the larger turbo model, others use base.
+# Whisper STT runtime. Windows NVIDIA uses CUDA only when the driver supports
+# the bundled Speaches CUDA image; otherwise Whisper stays on the CPU image.
+WHISPER_ACCELERATION=$whisperAcceleration
+$(if ($whisperImage) { "WHISPER_IMAGE=$whisperImage" } else { "#WHISPER_IMAGE=ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu" })
+# Whisper STT model — CUDA uses the larger turbo model, CPU uses base.
 # Open WebUI reads this to request transcription; installer pre-downloads
 # the same model so the first transcription works.
-AUDIO_STT_MODEL=$(Get-EnvOrNew "AUDIO_STT_MODEL" $(if ($GpuBackend -eq "nvidia") { "deepdml/faster-whisper-large-v3-turbo-ct2" } else { "Systran/faster-whisper-base" }))
+AUDIO_STT_MODEL=$audioSttModel
 TTS_VOICE=en_US-lessac-medium
 
+#=== Embeddings / RAG ===
+# Open WebUI uses this canonical model at first boot unless an explicit
+# external-provider override is configured.
+EMBEDDING_MODEL=$embeddingModel
+RAG_EMBEDDING_MODEL=$ragEmbeddingModel
+RAG_OPENAI_API_BASE_URL=$ragOpenAiApiBaseUrl
+RAG_OPENAI_API_KEY=$ragOpenAiApiKey
+EMBEDDINGS_MEMORY_LIMIT=$embeddingsMemoryLimit
+
 #=== Web UI Settings ===
-WEBUI_AUTH=true
+# Loopback installs open directly. LAN installs require a login by default.
+WEBUI_AUTH=$webuiAuth
 ENABLE_WEB_SEARCH=true
 WEB_SEARCH_ENGINE=searxng
 
@@ -549,60 +1032,64 @@ model_list:
         chat_template_kwargs:
           enable_thinking: false
 
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
 litellm_settings:
   drop_params: true
   set_verbose: false
   request_timeout: 900
   stream_timeout: 900
 "@
+        # ODS-CONTRACT-WRITER: litellm-local-native
         Write-Utf8NoBom -Path (Join-Path $litellmDir "local.yaml") -Content $localConfig
     }
 
     if ($windowsAmdLemonade) {
-        $litellmDir = Join-Path (Join-Path $InstallDir "config") "litellm"
-        New-Item -ItemType Directory -Path $litellmDir -Force | Out-Null
-        $lemonadePort = $(if ($AmdInferencePort) { $AmdInferencePort } else { "8080" })
-        $lemonadeModel = "extra.$($TierConfig.GgufFile)"
-        $lemonadeApiBase = "http://host.docker.internal:$lemonadePort/api/v1"
-        $lemonadeConfig = @"
-model_list:
-  - model_name: default
-    litellm_params:
-      model: openai/$lemonadeModel
-      api_base: $lemonadeApiBase
-      api_key: $litellmLemonadeApiKey
-      extra_body:
-        chat_template_kwargs:
-          enable_thinking: false
-
-  - model_name: "*"
-    litellm_params:
-      model: openai/$lemonadeModel
-      api_base: $lemonadeApiBase
-      api_key: $litellmLemonadeApiKey
-      extra_body:
-        chat_template_kwargs:
-          enable_thinking: false
-
-litellm_settings:
-  drop_params: true
-  set_verbose: false
-  request_timeout: 900
-  stream_timeout: 900
-"@
-        Write-Utf8NoBom -Path (Join-Path $litellmDir "lemonade.yaml") -Content $lemonadeConfig
+        $lemonadePort = $nativeInferencePort
+        $null = Write-WindowsODSLemonadeLiteLlmConfig `
+            -InstallDir $InstallDir -ModelId $effectiveLemonadeModel `
+            -Port $lemonadePort -ApiKey $litellmLemonadeApiKey
     }
+
+    $modelRouterDir = Join-Path (Join-Path $InstallDir "config") "model-router"
+    New-Item -ItemType Directory -Path $modelRouterDir -Force | Out-Null
+    function ConvertTo-RouterOrigin {
+        param([string]$Url, [string]$Fallback)
+        $value = if ([string]::IsNullOrWhiteSpace($Url)) { $Fallback } else { $Url.TrimEnd("/") }
+        if ($value.EndsWith("/api/v1", [StringComparison]::OrdinalIgnoreCase)) {
+            return $value.Substring(0, $value.Length - "/v1".Length)
+        }
+        if ($value.EndsWith("/v1", [StringComparison]::OrdinalIgnoreCase)) {
+            return $value.Substring(0, $value.Length - "/v1".Length)
+        }
+        return $value
+    }
+    $routerLlamaBase = ConvertTo-RouterOrigin -Url "$llmApiUrl$llmApiBasePath" -Fallback "http://llama-server:8080"
+    $routerEndpoints = @(
+        [ordered]@{ id = "llama-server-default"; baseUrl = $routerLlamaBase }
+    )
+    if ($windowsAmdLemonade) {
+        $lemonadePort = $nativeInferencePort
+        $routerEndpoints += [ordered]@{
+            id = "lemonade-default"
+            baseUrl = "http://host.docker.internal:$lemonadePort/api"
+        }
+    }
+    $routerPayload = [ordered]@{ endpoints = $routerEndpoints }
+    Write-Utf8NoBom -Path (Join-Path $modelRouterDir "endpoints.json") -Content (($routerPayload | ConvertTo-Json -Depth 6) + "`n")
 
     # Restrict .env to current user only (Windows ACL equivalent of chmod 600)
     try {
-        $acl = Get-Acl $envPath
+        # Retrieve only the DACL (Access) to avoid requiring SeSecurityPrivilege
+        $acl = [System.IO.File]::GetAccessControl($envPath, [System.Security.AccessControl.AccessControlSections]::Access)
         $acl.SetAccessRuleProtection($true, $false)  # Disable inheritance
         $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
             $currentUser, "FullControl", "Allow"
         )
         $acl.SetAccessRule($rule)
-        Set-Acl -Path $envPath -AclObject $acl
+        [System.IO.File]::SetAccessControl($envPath, $acl)
     } catch {
         # ACL restriction failed -- not fatal, just warn
         Write-AIWarn "Could not restrict .env permissions: $_"
@@ -611,6 +1098,7 @@ litellm_settings:
     return @{
         SearxngSecret  = $searxngSecret
         OpenclawToken  = $openclawToken
+        LemonadeModel  = $effectiveLemonadeModel
     }
 }
 

@@ -1,8 +1,8 @@
 """Tests for routers/resources.py — per-service resource metrics."""
 
-import json
-import urllib.error
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
+from host_agent_client import AgentHTTPError, AgentUnavailable
 
 from routers.resources import _scan_service_disk, _fetch_container_stats
 
@@ -76,37 +76,37 @@ class TestFetchContainerStats:
     def test_valid_json_response(self):
         """Valid JSON with containers key returns the list."""
         containers = [{"container_name": "ods-llama", "cpu_percent": 45.0}]
-        body = json.dumps({"containers": containers}).encode()
-
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = body
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("routers.resources.urllib.request.urlopen", return_value=mock_resp):
+        with patch(
+            "routers.resources.request_agent_json",
+            return_value={"containers": containers},
+        ):
             result = _fetch_container_stats()
         assert result == containers
 
     def test_host_agent_unreachable(self):
         """URLError (host agent unreachable) returns empty list."""
-        with patch("routers.resources.urllib.request.urlopen",
-                   side_effect=urllib.error.URLError("Connection refused")):
+        with patch(
+            "routers.resources.request_agent_json",
+            side_effect=AgentUnavailable("Connection refused"),
+        ):
             result = _fetch_container_stats()
         assert result == []
 
     def test_http_500_error(self):
         """HTTPError (server error) returns empty list."""
-        with patch("routers.resources.urllib.request.urlopen",
-                   side_effect=urllib.error.HTTPError(
-                       url="http://test", code=500, msg="Internal Server Error",
-                       hdrs=None, fp=None)):
+        with patch(
+            "routers.resources.request_agent_json",
+            side_effect=AgentHTTPError(500, "Internal Server Error"),
+        ):
             result = _fetch_container_stats()
         assert result == []
 
     def test_os_error(self):
         """OSError (network unreachable) returns empty list."""
-        with patch("routers.resources.urllib.request.urlopen",
-                   side_effect=OSError("Network is unreachable")):
+        with patch(
+            "routers.resources.request_agent_json",
+            side_effect=OSError("Network is unreachable"),
+        ):
             result = _fetch_container_stats()
         assert result == []
 

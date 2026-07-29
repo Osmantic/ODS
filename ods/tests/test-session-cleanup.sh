@@ -154,6 +154,72 @@ else
 fi
 
 # ============================================================================
+# Test 8b: Bloated wipe clears its sessions.json reference, keeps others
+# ============================================================================
+SDIR2="$TEMP_DIR/sessions2"
+mkdir -p "$SDIR2"
+cat > "$SDIR2/sessions.json" <<'EOF'
+{
+  "agent:main:main": {"sessionId": "keep-me"},
+  "agent:main:talk": {"sessionId": "bloated-one"}
+}
+EOF
+printf 'x%.0s' {1..50} > "$SDIR2/keep-me.jsonl"
+dd if=/dev/zero of="$SDIR2/bloated-one.jsonl" bs=1024 count=2 2>/dev/null
+
+cleanup_exit=0
+SESSIONS_DIR="$SDIR2" MAX_SIZE=100 bash "$SESSION_CLEANUP_SCRIPT" >/dev/null 2>&1 || cleanup_exit=$?
+if [[ $cleanup_exit -eq 0 && ! -f "$SDIR2/bloated-one.jsonl" ]] \
+    && ! grep -q 'bloated-one' "$SDIR2/sessions.json" \
+    && grep -q 'keep-me' "$SDIR2/sessions.json" \
+    && [[ -f "$SDIR2/keep-me.jsonl" ]]; then
+    pass "Bloated wipe clears its sessions.json reference and keeps healthy ones"
+else
+    fail "Bloated wipe did not update sessions.json correctly (exit $cleanup_exit)"
+fi
+
+if [[ ! -f "$SDIR2/sessions.json.bak-cleanup" ]]; then
+    pass "Temporary .bak-cleanup backup removed after successful wipe"
+else
+    fail ".bak-cleanup backup left behind"
+fi
+
+# ============================================================================
+# Test 8c: No usable Python → refuse to delete ANYTHING (ordering guard)
+# ============================================================================
+# A mid-loop Python failure used to kill the script (set -e) after a bloated
+# session file was deleted but before sessions.json was updated, leaving the
+# gateway pointing at a missing file. The guard must fail BEFORE any rm.
+SDIR3="$TEMP_DIR/sessions3"
+mkdir -p "$SDIR3"
+cat > "$SDIR3/sessions.json" <<'EOF'
+{"agent:main:talk": {"sessionId": "bloated-one"}}
+EOF
+dd if=/dev/zero of="$SDIR3/bloated-one.jsonl" bs=1024 count=2 2>/dev/null
+echo '{"x":1}' > "$SDIR3/inactive.jsonl"
+
+NOPY_BIN="$TEMP_DIR/nopy-bin"
+mkdir -p "$NOPY_BIN"
+for tool in bash sh grep sed find date basename dirname cut wc du stat rm cp mv cat ls tr uname sort head tail touch mkdir; do
+    src="$(command -v "$tool" 2>/dev/null)" || continue
+    ln -s "$src" "$NOPY_BIN/$tool" 2>/dev/null || cp "$src" "$NOPY_BIN/$tool"
+done
+
+nopy_exit=0
+PATH="$NOPY_BIN" ODS_PYTHON_CMD="" SESSIONS_DIR="$SDIR3" MAX_SIZE=100 \
+    bash "$SESSION_CLEANUP_SCRIPT" >"$TEMP_DIR/nopy.log" 2>&1 || nopy_exit=$?
+if [[ $nopy_exit -ne 0 ]]; then
+    pass "Missing Python fails loudly instead of half-completing"
+    if [[ -f "$SDIR3/bloated-one.jsonl" && -f "$SDIR3/inactive.jsonl" ]] && grep -q 'bloated-one' "$SDIR3/sessions.json"; then
+        pass "No files deleted and sessions.json untouched when Python is missing"
+    else
+        fail "Sessions were mutated despite missing Python (exit $nopy_exit)"
+    fi
+else
+    skip "Missing-Python guard (a python binary is still reachable on this host)"
+fi
+
+# ============================================================================
 # Test 9: Script does not use silent error suppression
 # ============================================================================
 suppression_count=0

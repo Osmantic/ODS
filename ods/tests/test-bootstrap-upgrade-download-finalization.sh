@@ -55,7 +55,7 @@ printf 'bootstrap model\n' > "$install_dir/data/models/Bootstrap.gguf"
 printf '999999\n' > "$install_dir/data/.llama-server.pid"
 
 set +e
-PATH="$fakebin:$PATH" bash "$TARGET" \
+PATH="$fakebin:$PATH" ODS_BOOTSTRAP_DOWNLOAD_MAX_SECONDS=0 bash "$TARGET" \
     "$install_dir" \
     "Full.gguf" \
     "https://example.invalid/Full.gguf" \

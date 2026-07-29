@@ -22,8 +22,6 @@ import re
 import socket
 import shutil
 import time
-import urllib.error
-import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,7 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # --- Local modules ---
 from config import (
-    SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS,
+    SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS, ALWAYS_ON_SERVICES,
     AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
     _detect_container_default_gateway, _running_inside_container,
     _read_env_from_file,
@@ -53,16 +51,26 @@ from helpers import (
     get_llama_metrics, get_loaded_model, get_llama_context_size,
     _get_httpx_client,
 )
+from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
+from host_agent_client import (
+    AgentHTTPError,
+    AgentProtocolError,
+    AgentUnavailable,
+    request_json as request_agent_json,
+    shutdown_clients as shutdown_agent_clients,
+)
 from agent_monitor import collect_metrics
 from routers import (
     workflows, features, setup, updates, agents, privacy, extensions,
-    gpu as gpu_router, resources, voice, models as models_router, templates,
+    gpu as gpu_router, resources, voice, models as models_router, model_state as model_state_router,
+    model_routes as model_routes_router, remote_provider_status, templates,
     auth as auth_router,
     magic_link,
     oauth_passthrough,
     talk,
     tailscale,
     usage,
+    node,
 )
 from settings import (
     _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text, _read_env_map_from_path,
@@ -141,7 +149,9 @@ def _read_installed_version() -> str:
         try:
             for line in env_file.read_text().splitlines():
                 if line.startswith("ODS_VERSION="):
-                    return line.split("=", 1)[1].strip().strip("\"'")
+                    env_version = line.split("=", 1)[1].strip().strip("\"'")
+                    if env_version:
+                        return env_version
         except OSError:
             pass
 
@@ -178,21 +188,9 @@ def _read_installed_version() -> str:
 def _probe_host_agent_health() -> dict[str, Any]:
     """Probe the host-agent health endpoint and update diagnostic state."""
     started = time.monotonic()
-    url = f"{AGENT_URL}/health"
-    headers = {}
-    if ODS_AGENT_KEY:
-        headers["Authorization"] = f"Bearer {ODS_AGENT_KEY}"
-    request = urllib.request.Request(url, headers=headers)
-
     try:
-        with urllib.request.urlopen(request, timeout=3) as response:
-            status_code = int(getattr(response, "status", response.getcode()))
-            raw = response.read(2048).decode("utf-8", errors="replace")
-            try:
-                body: Any = json.loads(raw) if raw else None
-            except json.JSONDecodeError:
-                body = raw[:500]
-
+        body: Any = request_agent_json("GET", "/health", timeout=3)
+        status_code = 200
         latency_ms = round((time.monotonic() - started) * 1000)
         success_at = datetime.now(timezone.utc).isoformat()
         _host_agent_probe_state["last_success_at"] = success_at
@@ -204,14 +202,14 @@ def _probe_host_agent_health() -> dict[str, Any]:
             "response": body,
             "error": None,
         }
-    except urllib.error.HTTPError as exc:
+    except AgentHTTPError as exc:
         latency_ms = round((time.monotonic() - started) * 1000)
-        status_code = exc.code
-        detail = f"HTTP {exc.code}: {exc.reason}"
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        status_code = exc.status_code
+        detail = f"HTTP {exc.status_code}: {exc.detail}"
+    except (AgentUnavailable, AgentProtocolError) as exc:
         latency_ms = round((time.monotonic() - started) * 1000)
         status_code = None
-        detail = str(getattr(exc, "reason", exc))
+        detail = str(exc)
 
     _host_agent_probe_state["last_error"] = detail
     return {
@@ -474,6 +472,9 @@ def _infer_tier(gpu_info) -> str:
 
 def _infer_gpu_count(gpu_info) -> int:
     """Infer GPU count from the GPU_COUNT env var or the display name."""
+    observed_count = int(getattr(gpu_info, "gpu_count", 1) or 1)
+    if observed_count > 1:
+        return observed_count
     gpu_count_env = os.environ.get("GPU_COUNT", "")
     if gpu_count_env.isdigit():
         return int(gpu_count_env)
@@ -495,10 +496,13 @@ def _serialize_gpu(gpu_info) -> Optional[dict]:
 
     gpu_data = {
         "name": gpu_info.name,
-        "vramUsed": round(gpu_info.memory_used_mb / 1024, 1),
+        "vramUsed": (
+            round(gpu_info.memory_used_mb / 1024, 1)
+            if gpu_info.memory_usage_available else None
+        ),
         "vramTotal": round(gpu_info.memory_total_mb / 1024, 1),
-        "utilization": gpu_info.utilization_percent,
-        "temperature": gpu_info.temperature_c,
+        "utilization": gpu_info.utilization_percent if gpu_info.utilization_available else None,
+        "temperature": gpu_info.temperature_c if gpu_info.temperature_available else None,
         "memoryType": gpu_info.memory_type,
         "backend": gpu_info.gpu_backend,
         "gpu_count": gpu_count,
@@ -516,10 +520,6 @@ def _serialize_model(model_info) -> Optional[dict]:
         "name": model_info.name,
         "contextLength": model_info.context_length,
     }
-
-
-HERMES_MIN_CONTEXT = 65536
-HERMES_TARGET_CONTEXT = 131072
 
 
 def _build_model_readiness_payload(
@@ -624,9 +624,23 @@ def _service_semantics(service_id: str, status: str) -> dict:
     }
 
 
+def _service_public_url(service_id: str, port: int | None) -> Optional[str]:
+    if not port:
+        return None
+    config = SERVICES.get(service_id, {})
+    path = str(config.get("ui_path") or "/").strip() or "/"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"http://127.0.0.1:{port}{path}"
+
+
+
+
 def _serialize_services(service_statuses: list[ServiceStatus], uptime: int) -> list[dict]:
     serialized = []
     for service in service_statuses:
+        config = SERVICES.get(service.id, {})
+        url = _service_public_url(service.id, service.external_port)
         item = {
             "id": service.id,
             "name": service.name,
@@ -634,6 +648,16 @@ def _serialize_services(service_statuses: list[ServiceStatus], uptime: int) -> l
             "port": service.external_port,
             "uptime": uptime if service.status == "healthy" else None,
         }
+        if url:
+            item["url"] = url
+            item["href"] = url
+        if config.get("public_url"):
+            item["public_url"] = config["public_url"]
+        if config.get("ui_path"):
+            item["ui_path"] = config["ui_path"]
+        llm_contract = config.get("llm")
+        if isinstance(llm_contract, dict):
+            item["llm"] = llm_contract
         item.update(_service_semantics(service.id, service.status))
         serialized.append(item)
     return serialized
@@ -645,6 +669,7 @@ def _fallback_services() -> list[dict]:
         external_port = config.get("external_port", config.get("port", 0))
         if not external_port:
             continue
+        url = _service_public_url(service_id, external_port)
         item = {
             "id": service_id,
             "name": config.get("name", service_id),
@@ -652,6 +677,16 @@ def _fallback_services() -> list[dict]:
             "port": external_port,
             "uptime": None,
         }
+        if url:
+            item["url"] = url
+            item["href"] = url
+        if config.get("public_url"):
+            item["public_url"] = config["public_url"]
+        if config.get("ui_path"):
+            item["ui_path"] = config["ui_path"]
+        llm_contract = config.get("llm")
+        if isinstance(llm_contract, dict):
+            item["llm"] = llm_contract
         item.update(_service_semantics(service_id, "unknown"))
         links.append(item)
     return links
@@ -814,37 +849,33 @@ def _clear_settings_caches():
         _cache.invalidate(key)
 
 
+def _active_settings_apply_services() -> set[str]:
+    active = set(ALWAYS_ON_SERVICES)
+    services_root = _resolve_install_root() / "extensions" / "services"
+    for service_id in _SETTINGS_APPLY_ALLOWED_SERVICES - active:
+        service_dir = services_root / service_id
+        if (service_dir / "compose.yaml").is_file() or (service_dir / "compose.yml").is_file():
+            active.add(service_id)
+    return active
+
+
 def _call_agent_core_recreate(service_ids: list[str]) -> dict[str, Any]:
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"service_ids": service_ids}).encode("utf-8")
-    request = urllib.request.Request(
-        f"{AGENT_URL}/v1/core/recreate",
-        data=data,
-        headers=headers,
-        method="POST",
+    return request_agent_json(
+        "POST",
+        "/v1/core/recreate",
+        payload={"service_ids": service_ids},
+        timeout=180,
     )
-    with urllib.request.urlopen(request, timeout=180) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def _call_agent_env_update(raw_text: str) -> dict[str, Any]:
     """Route .env writes through the host agent (filesystem is :ro in container)."""
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ODS_AGENT_KEY}",
-    }
-    data = json.dumps({"raw_text": raw_text, "backup": True}).encode("utf-8")
-    request = urllib.request.Request(
-        f"{AGENT_URL}/v1/env/update",
-        data=data,
-        headers=headers,
-        method="POST",
+    return request_agent_json(
+        "POST",
+        "/v1/env/update",
+        payload={"raw_text": raw_text, "backup": True},
+        timeout=60,
     )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        return json.loads(response.read().decode("utf-8"))
 
 
 def _build_settings_env_payload(
@@ -919,6 +950,31 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
         )
 
     base_fields = _build_env_fields(schema_properties, required_keys, current_values)
+    clear_secrets = payload.get("clearSecrets", [])
+    if not isinstance(clear_secrets, list) or any(not isinstance(key, str) for key in clear_secrets):
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "clearSecrets must be a list of field names."},
+        )
+    clear_secrets = sorted(set(clear_secrets))
+    invalid_clear_secrets = [
+        key for key in clear_secrets
+        if key not in base_fields
+        or not base_fields[key].get("secret")
+        or not base_fields[key].get("clearable")
+    ]
+    if invalid_clear_secrets:
+        return _render_env_from_values(current_values), [
+            {
+                "key": key,
+                "message": "This secret cannot be cleared from the dashboard.",
+            }
+            for key in invalid_clear_secrets
+        ], _compute_env_apply_plan(
+            current_values,
+            current_values,
+            active_services=_active_settings_apply_services(),
+        )
     invalid_keys = sorted(set(submitted_values.keys()) - set(base_fields.keys()))
     if invalid_keys:
         return _render_env_from_values(current_values), [
@@ -927,28 +983,65 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
                 "message": "Field is not editable from the dashboard. Only schema-backed fields and existing local overrides can be changed here.",
             }
             for key in invalid_keys
-        ], _compute_env_apply_plan(current_values, current_values)
+        ], _compute_env_apply_plan(
+            current_values,
+            current_values,
+            active_services=_active_settings_apply_services(),
+        )
+
+    read_only_changes = []
+    for key, submitted_value in submitted_values.items():
+        field = base_fields[key]
+        if not field.get("readOnly"):
+            continue
+        current_value = current_values.get(key, "")
+        if str(submitted_value) != current_value:
+            read_only_changes.append({
+                "key": key,
+                "message": field.get("readOnlyReason") or "Field is read-only.",
+            })
+    if read_only_changes:
+        return (
+            _render_env_from_values(current_values),
+            read_only_changes,
+            _compute_env_apply_plan(
+                current_values,
+                current_values,
+                active_services=_active_settings_apply_services(),
+            ),
+        )
 
     normalized_values = _serialize_form_values(submitted_values, base_fields, current_values)
     merged_values = {**current_values, **normalized_values}
+    for key in clear_secrets:
+        merged_values.pop(key, None)
     for key, field in base_fields.items():
         if _empty_value_unsets_env_key(key, field) and str(merged_values.get(key, "")).strip() == "":
             merged_values.pop(key, None)
     merged_fields = _build_env_fields(schema_properties, required_keys, merged_values)
     issues = _validate_env_values(merged_values, merged_fields)
-    apply_plan = _compute_env_apply_plan(current_values, merged_values)
+    apply_plan = _compute_env_apply_plan(
+        current_values,
+        merged_values,
+        active_services=_active_settings_apply_services(),
+    )
     return _render_env_from_values(merged_values), issues, apply_plan
 
 # --- App ---
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    asyncio.create_task(collect_metrics())
-    asyncio.create_task(_poll_service_health())
-    asyncio.create_task(gpu_router.poll_gpu_history())
+    background_tasks = [
+        asyncio.create_task(collect_metrics()),
+        asyncio.create_task(_poll_service_health()),
+        asyncio.create_task(gpu_router.poll_gpu_history()),
+    ]
     try:
         yield
     finally:
+        for task in background_tasks:
+            task.cancel()
+        await asyncio.gather(*background_tasks, return_exceptions=True)
         # Close any open Hermes WebSockets in the ODS Talk connection pool
         # so a graceful uvicorn shutdown doesn't leak FDs into stale state.
         try:
@@ -956,11 +1049,12 @@ async def _lifespan(app: FastAPI):
             await hermes_bridge.shutdown_pool()
         except Exception:
             logger.debug("hermes_bridge.shutdown_pool raised at app shutdown", exc_info=True)
+        await shutdown_agent_clients()
 
 
 app = FastAPI(
     title="ODS Dashboard API",
-    version="2.5.3",
+    version="2.6.0",
     description="System status API for ODS Dashboard",
     lifespan=_lifespan,
 )
@@ -1006,6 +1100,10 @@ app.include_router(extensions.router)
 app.include_router(gpu_router.router)
 app.include_router(resources.router)
 app.include_router(voice.router)
+# Static switchboard state route registers before the dynamic model-ID routes.
+app.include_router(model_state_router.router)
+app.include_router(model_routes_router.router)
+app.include_router(remote_provider_status.router)
 app.include_router(models_router.router)
 app.include_router(templates.router)
 app.include_router(auth_router.router)
@@ -1014,6 +1112,7 @@ app.include_router(oauth_passthrough.router)
 app.include_router(talk.router)
 app.include_router(tailscale.router)
 app.include_router(usage.router)
+app.include_router(node.router)
 
 
 # ================================================================
@@ -1097,9 +1196,14 @@ async def preflight_gpu():
     return {"available": False, "error": "No GPU detected. Ensure NVIDIA drivers or AMD amdgpu driver is loaded."}
 
 
-@app.get("/api/preflight/required-ports")
+@app.get("/api/preflight/required-ports", dependencies=[Depends(verify_api_key)])
 async def preflight_required_ports():
-    """Return the list of service ports for preflight checking (no auth required)."""
+    """Return the list of deployed service names and ports for preflight checking.
+
+    Gated like the sibling preflight endpoints (docker/gpu/ports/disk): the
+    response enumerates which services are live and on which ports, so it must
+    not be reachable unauthenticated.
+    """
     # When health cache exists, filter out services not in the compose stack
     cached = get_cached_services()
     deployed = {s.id for s in cached if s.status != "not_deployed"} if cached else None
@@ -1245,6 +1349,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
             "disk": {"used_gb": 0, "total_gb": 0, "percent": 0},
             "system": {"uptime": 0, "hostname": os.environ.get("HOSTNAME", "ods")},
             "inference": {"tokensPerSecond": 0, "lifetimeTokens": 0,
+                          "tokenCountMode": "unavailable",
                           "loadedModel": None, "contextSize": None},
             "manifest_errors": MANIFEST_ERRORS,
         }
@@ -1310,27 +1415,20 @@ async def _build_api_status() -> dict:
         get_llama_context_size(model_hint=loaded_model),
     )
 
-    gpu_data = None
-    if gpu_info:
-        gpu_data = {
-            "name": gpu_info.name,
-            "vramUsed": round(gpu_info.memory_used_mb / 1024, 1),
-            "vramTotal": round(gpu_info.memory_total_mb / 1024, 1),
-            "utilization": gpu_info.utilization_percent,
-            "temperature": gpu_info.temperature_c,
-            "memoryType": gpu_info.memory_type,
-            "backend": gpu_info.gpu_backend,
-            "gpu_count": _infer_gpu_count(gpu_info),
-        }
-        if gpu_info.power_w is not None:
-            gpu_data["powerDraw"] = gpu_info.power_w
-        gpu_data["memoryLabel"] = "VRAM Partition" if gpu_info.memory_type == "unified" else "VRAM"
+    gpu_data = _serialize_gpu(gpu_info)
 
     services_data = _serialize_services(service_statuses, uptime)
 
     model_data = None
     if model_info:
-        model_data = {"name": model_info.name, "tokensPerSecond": llama_metrics_data.get("tokens_per_second") or None, "contextLength": context_size or model_info.context_length}
+        model_data = {
+            "name": model_info.name,
+            "currentModel": model_info.name,
+            "configuredModel": model_info.name,
+            "loadedModel": loaded_model or model_info.name,
+            "tokensPerSecond": llama_metrics_data.get("tokens_per_second") or None,
+            "contextLength": context_size or model_info.context_length,
+        }
 
     bootstrap_data = None
     if bootstrap_info.active:
@@ -1344,17 +1442,24 @@ async def _build_api_status() -> dict:
 
     tier = _infer_tier(gpu_info)
 
+    loaded_model_name = loaded_model or (model_data["name"] if model_data else None)
+    configured_model_name = model_data["configuredModel"] if model_data else None
+
     result = {
         "gpu": gpu_data, "services": services_data, "model": model_data,
         "bootstrap": bootstrap_data, "uptime": uptime,
         "version": app.version, "tier": tier,
+        "currentModel": configured_model_name,
+        "loadedModel": loaded_model_name,
+        "configuredModel": configured_model_name,
         "cpu": cpu_metrics, "ram": ram_metrics,
         "disk": {"used_gb": disk_info.used_gb, "total_gb": disk_info.total_gb, "percent": disk_info.percent},
         "system": {"uptime": uptime, "hostname": os.environ.get("HOSTNAME", "ods")},
         "inference": {
             "tokensPerSecond": llama_metrics_data.get("tokens_per_second", 0),
             "lifetimeTokens": llama_metrics_data.get("lifetime_tokens", 0),
-            "loadedModel": loaded_model or (model_data["name"] if model_data else None),
+            "tokenCountMode": llama_metrics_data.get("token_count_mode", "unavailable"),
+            "loadedModel": loaded_model_name,
             "contextSize": context_size or (model_data["contextLength"] if model_data else None),
         },
         "manifest_errors": MANIFEST_ERRORS,
@@ -1402,6 +1507,7 @@ async def get_external_links(api_key: str = Depends(verify_api_key)):
         links.append({
             "id": sid, "label": cfg.get("name", sid), "port": ext_port,
             "ui_path": cfg.get("ui_path", "/"),
+            "public_url": cfg.get("public_url", ""),
             "icon": SIDEBAR_ICONS.get(sid, "ExternalLink"),
             "healthNeedles": [sid, cfg.get("name", sid).lower()],
         })
@@ -1508,30 +1614,34 @@ async def api_settings_env_save(
 
     try:
         agent_resp = await asyncio.to_thread(_call_agent_env_update, raw_text)
-    except urllib.error.HTTPError as exc:
-        detail = f"Host agent returned HTTP {exc.code}."
-        try:
-            err_payload = json.loads(exc.read().decode("utf-8"))
-            detail = err_payload.get("error", detail)
-        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-            pass
+    except AgentHTTPError as exc:
+        detail = exc.detail
         raise HTTPException(status_code=503, detail={"message": detail}) from exc
-    except urllib.error.URLError as exc:
+    except AgentUnavailable as exc:
         raise HTTPException(
             status_code=503,
             detail={"message": "ODS host agent is not reachable. Start the host agent, then try again."},
         ) from exc
-    except OSError as exc:
+    except AgentProtocolError as exc:
+        logger.error("Failed to contact host agent for env update: %s", exc)
         raise HTTPException(
             status_code=500,
-            detail={"message": "Could not contact host agent to write environment file.", "reason": str(exc)},
+            detail={"message": "Could not contact host agent to write environment file."},
         ) from exc
     backup_relative = agent_resp.get("backup_path")
+    saved_raw_text = raw_text
+    enforced_values = agent_resp.get("enforced_values")
+    if isinstance(enforced_values, dict):
+        saved_values, _ = _parse_env_text(raw_text)
+        for key, value in enforced_values.items():
+            if isinstance(key, str) and isinstance(value, str):
+                saved_values[key] = value
+        saved_raw_text = _render_env_from_values(saved_values)
 
     _clear_settings_caches()
     result = await asyncio.to_thread(
         _build_settings_env_payload,
-        raw_text=raw_text,
+        raw_text=saved_raw_text,
         backup_path=backup_relative,
         apply_plan=apply_plan,
     )
@@ -1568,24 +1678,19 @@ async def api_settings_env_apply(
             "services": normalized,
             "message": f"Applied runtime changes to {', '.join(normalized)}.",
         }
-    except urllib.error.HTTPError as exc:
-        detail = f"Host agent returned HTTP {exc.code}."
-        try:
-            payload = json.loads(exc.read().decode("utf-8"))
-            detail = payload.get("error", detail)
-        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-            pass
+    except AgentHTTPError as exc:
+        detail = exc.detail
         raise HTTPException(status_code=503, detail={"message": detail}) from exc
-    except urllib.error.URLError as exc:
+    except AgentUnavailable as exc:
         raise HTTPException(
             status_code=503,
             detail={"message": "ODS host agent is not reachable. Start the host agent, then try Apply changes again."},
         ) from exc
-    except OSError as exc:
+    except AgentProtocolError as exc:
         logger.exception("Settings apply failed")
         raise HTTPException(
             status_code=500,
-            detail={"message": f"Could not apply runtime changes: {exc}"},
+            detail={"message": "Could not apply runtime changes via host agent."},
         ) from exc
 
 

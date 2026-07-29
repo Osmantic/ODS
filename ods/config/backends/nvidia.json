@@ -3,7 +3,7 @@
   "llm_engine": "llama-server",
   "service_name": "llama-server",
   "public_api_port": 8080,
-  "public_health_url": "http://localhost:8080/health",
+  "public_health_url": "http://127.0.0.1:8080/health",
   "provider_name": "local-llama",
   "provider_url": "http://llama-server:8080/v1"
 }

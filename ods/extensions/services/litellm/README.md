@@ -18,10 +18,16 @@ ODS does not expose LiteLLM as a normal dashboard quicklink. The upstream LiteLL
 - **Multi-provider routing**: Anthropic, OpenAI, Together AI, MiniMax, and local llama-server
 - **Master key auth**: Secure all requests with `LITELLM_KEY`
 - **Drop params**: Unsupported parameters silently ignored across backends
+- **Usage telemetry**: Reports metadata-only completion usage to Token Spy
+  asynchronously when that recommended service is available
 
 ## Operating Modes
 
 The active mode is controlled by `ODS_MODE` in `.env`. The corresponding config file is loaded automatically from `config/litellm/`.
+
+`ODS_MODEL_SWITCHBOARD=enabled` selects the local Switchboard route only when
+the active mode has a local runtime. `ODS_MODE=cloud` always keeps
+`config/litellm/cloud.yaml` authoritative.
 
 ### local (default)
 
@@ -72,6 +78,8 @@ Environment variables (set in `.env`):
 | `LITELLM_KEY` | *(required)* | Master API key — generate with `echo "sk-ods-$(openssl rand -hex 16)"` |
 | `LITELLM_PORT` | `4000` | External + internal port |
 | `ODS_MODE` | `local` | Operating mode: `local`, `cloud`, or `hybrid` |
+| `TOKEN_SPY_URL` | `http://token-spy:8080` | Optional internal usage ingest target |
+| `TOKEN_SPY_API_KEY` | *(generated)* | Shared key used for authenticated usage ingest |
 | `ANTHROPIC_API_KEY` | *(empty)* | Required for `cloud` and `hybrid` modes |
 | `OPENAI_API_KEY` | *(empty)* | Required for OpenAI models in `cloud` mode |
 | `TOGETHER_API_KEY` | *(empty)* | Required for Together AI models in `cloud` mode |

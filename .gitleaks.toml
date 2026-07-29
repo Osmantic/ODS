@@ -1,13 +1,13 @@
 [[rules]]
   id = "langfuse-project-public-key"
   description = "Langfuse project public key"
-  regex = '''pk-lf-[0-9a-f]+'''
+  regex = '''pk-lf-[0-9a-f]+\b'''
   keywords = ["pk-lf-"]
 
 [[rules]]
   id = "langfuse-project-secret-key"
   description = "Langfuse project secret key"
-  regex = '''sk-lf-[0-9a-f]+'''
+  regex = '''sk-lf-[0-9a-f]+\b'''
   keywords = ["sk-lf-"]
 
 [allowlist]

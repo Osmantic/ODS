@@ -9,3 +9,10 @@ services:
     profiles:
       - local-inference
     restart: "no"
+
+  # Model Router only routes to a local runtime; cloud-only mode has no local
+  # model to switch, so gate it behind the same local-inference profile.
+  model-router:
+    profiles:
+      - local-inference
+    restart: "no"

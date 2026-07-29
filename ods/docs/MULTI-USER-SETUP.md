@@ -175,7 +175,7 @@ Run through this before declaring multi-user ready:
 - [ ] `BIND_ADDRESS` set appropriately; `ods restart` run after the change.
 - [ ] Firewall rules limit each open port to the intended subnet or VPN interface.
 - [ ] Dashboard, dashboard-api, n8n, opencode are *not* reachable from the user-facing network.
-- [ ] open-webui has `WEBUI_AUTH=true` (the default) and a strong `WEBUI_SECRET`.
+- [ ] open-webui has `WEBUI_AUTH=true` (the network-deployment default) and a strong `WEBUI_SECRET`.
 - [ ] Inference backend matches user count: llama-server up to ~10–15, vLLM beyond.
 - [ ] Reverse proxy or VPN in place for any remote access.
 - [ ] Capacity claim from `HARDWARE-GUIDE.md` reality-checked under load before announcing.

@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "schema": "ods.remote-provider-egress-policy.v1",
+  "description": "Dormant remote-provider egress policy. ODS consumers route through the internal egress service; provider URLs, API keys, peer tokens, and SSH/TLS material must not be projected into public config surfaces.",
+  "egress_service": {
+    "service_id": "remote-provider-egress",
+    "internal_base_url": "http://remote-provider-egress:8091/v1",
+    "public_model_alias": "ods/current",
+    "bind_policy": "internal-only",
+    "network_effects_in_policy_module": false
+  },
+  "transports": {
+    "direct": {
+      "description": "Direct provider egress from the ODS egress service to an OpenAI-compatible HTTPS provider.",
+      "provider_base_url": {
+        "schemes": [
+          "https"
+        ],
+        "default_path": "/v1",
+        "allowed_paths": [
+          "/v1",
+          "/api/v1"
+        ],
+        "forbid_credentials": true,
+        "forbid_query": true,
+        "forbid_fragment": true,
+        "forbid_local_hostnames": true,
+        "forbid_ip_literal_classes": [
+          "broadcast",
+          "link_local",
+          "loopback",
+          "multicast",
+          "non_global",
+          "private",
+          "reserved",
+          "unspecified"
+        ],
+        "dns_resolution_required_by_policy_module": false
+      }
+    },
+    "ssh": {
+      "description": "SSH transport reaches the provider from the remote host side. HTTP provider URLs are allowed only inside the SSH transport boundary.",
+      "required_env": [
+        "REMOTE_LLM_SSH_HOST",
+        "REMOTE_LLM_SSH_USER",
+        "REMOTE_LLM_SSH_PORT",
+        "REMOTE_LLM_SSH_INFERENCE_HOST",
+        "REMOTE_LLM_SSH_INFERENCE_PORT"
+      ],
+      "provider_base_url": {
+        "schemes": [
+          "http",
+          "https"
+        ],
+        "default_path": "/v1",
+        "allowed_paths": [
+          "/v1",
+          "/api/v1"
+        ],
+        "forbid_credentials": true,
+        "forbid_query": true,
+        "forbid_fragment": true,
+        "remote_side_loopback_allowed": true
+      },
+      "tunnel": {
+        "service_id": "remote-provider-ssh-tunnel",
+        "local_bind_host": "0.0.0.0",
+        "inference_listen_port": 18091,
+        "control_listen_port": 18092,
+        "identity_file": "/state/remote-provider/secrets/ssh-identity",
+        "known_hosts_file": "/state/remote-provider/secrets/known_hosts",
+        "forbid_user_ssh_config": true,
+        "strict_host_key_checking": true,
+        "batch_mode": true,
+        "exit_on_forward_failure": true,
+        "forward_agent": false
+      }
+    }
+  },
+  "secret_custody": {
+    "public_env_forbidden": [
+      "REMOTE_LLM_API_KEY",
+      "REMOTE_ODS_PEER_TOKEN",
+      "REMOTE_LLM_SSH_PRIVATE_KEY",
+      "REMOTE_LLM_SSH_KEY_FILE",
+      "REMOTE_LLM_SSH_KNOWN_HOSTS",
+      "REMOTE_LLM_TLS_CA_PEM",
+      "REMOTE_LLM_TLS_CLIENT_CERT",
+      "REMOTE_LLM_TLS_CLIENT_KEY"
+    ],
+    "public_env_allowed": [
+      "REMOTE_LLM_ENABLED",
+      "REMOTE_LLM_TRANSPORT",
+      "REMOTE_LLM_BASE_URL",
+      "REMOTE_LLM_MODEL",
+      "REMOTE_LLM_TLS_CA_FILE",
+      "REMOTE_LLM_SSH_HOST",
+      "REMOTE_LLM_SSH_USER",
+      "REMOTE_LLM_SSH_PORT",
+      "REMOTE_LLM_SSH_INFERENCE_HOST",
+      "REMOTE_LLM_SSH_INFERENCE_PORT",
+      "REMOTE_LLM_SSH_CONTROL_HOST",
+      "REMOTE_LLM_SSH_CONTROL_PORT",
+      "REMOTE_ODS_PEER_URL"
+    ],
+    "redaction_token": "[REDACTED]",
+    "public_receipts_must_redact": true
+  },
+  "activation": {
+    "phases": [
+      "stage",
+      "validate",
+      "commit",
+      "prove"
+    ],
+    "fail_closed_before_commit": true,
+    "rollback_required_after_commit_failure": true,
+    "public_receipt_schema": "ods.remote-provider-activation-receipt.v1"
+  },
+  "evidence": {
+    "safe_public_fields": [
+      "schema",
+      "enabled",
+      "mode",
+      "transport",
+      "provider.capability",
+      "provider.baseUrl",
+      "provider.model",
+      "egress.internalBaseUrl",
+      "egress.publicModel",
+      "phase",
+      "ok",
+      "detail",
+      "secretRefs"
+    ]
+  }
+}

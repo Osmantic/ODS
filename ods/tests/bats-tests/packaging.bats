@@ -105,6 +105,30 @@ setup() {
     assert_output "devel_basis"
 }
 
+@test "zypper CI network config writes bounded timeouts" {
+    PKG_MANAGER="zypper"
+    GITHUB_ACTIONS="true"
+    CI="true"
+    _SUDO=""
+    ODS_ZYPPER_CI_CONF_DIR="$BATS_TEST_TMPDIR/zypp.conf.d"
+    ODS_ZYPPER_CI_TRANSFER_TIMEOUT="999"
+    ODS_ZYPPER_CI_CONNECT_TIMEOUT="999"
+    ODS_ZYPPER_CI_MAX_SILENT_TRIES="999"
+
+    run _pkg_configure_zypper_ci_network
+    assert_success
+
+    config_file="$ODS_ZYPPER_CI_CONF_DIR/99-ods-ci-network.conf"
+    [ -f "$config_file" ]
+
+    run grep -F "download.transfer_timeout = 180" "$config_file"
+    assert_success
+    run grep -F "download.connect_timeout = 30" "$config_file"
+    assert_success
+    run grep -F "download.max_silent_tries = 3" "$config_file"
+    assert_success
+}
+
 # ── pkg_resolve: apk ───────────────────────────────────────────────────────
 
 @test "pkg_resolve: apk maps docker-compose-plugin to docker-cli-compose" {

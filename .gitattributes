@@ -11,6 +11,7 @@ docker-entrypoint* text eol=lf
 *.yml text eol=lf
 *.json text eol=lf
 *.env text eol=lf
+*.shellcheckrc text eol=lf
 
 # PowerShell scripts can use CRLF (native Windows)
 *.ps1 text eol=crlf

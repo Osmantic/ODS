@@ -32,17 +32,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Validate required secrets
+      - name: Check AI release notes secret
+        id: ai_notes
         env:
           HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         run: |
           if [ "$HAS_API_KEY" != "true" ]; then
-            echo "::error::ANTHROPIC_API_KEY not configured"
-            exit 1
+            echo "::notice::ANTHROPIC_API_KEY is not configured; keeping the manually authored release notes."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "Required secrets present"
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "AI release notes secret present"
 
       - name: Validate release tag format
+        if: steps.ai_notes.outputs.enabled == 'true'
         run: |
           if ! echo "$RELEASE_TAG" | grep -qE '^v?[0-9]+\.[0-9]+'; then
             echo "::error::Invalid release tag format: $RELEASE_TAG (expected vX.Y.Z or X.Y.Z)"
@@ -50,6 +54,7 @@ jobs:
           fi
 
       - name: Get previous release tag
+        if: steps.ai_notes.outputs.enabled == 'true'
         id: prev_tag
         run: |
           PREV_TAG=$(git tag --sort=-v:refname | grep -Fxv "$RELEASE_TAG" | head -1)
@@ -61,6 +66,7 @@ jobs:
           echo "Previous release: $PREV_TAG"
 
       - name: Generate Release Notes
+        if: steps.ai_notes.outputs.enabled == 'true'
         uses: anthropics/claude-code-action@9db782c3a17ef2bfc274cd17411bc3e0a5ba1345 # v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

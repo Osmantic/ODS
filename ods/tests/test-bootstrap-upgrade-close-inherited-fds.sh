@@ -32,7 +32,7 @@ assert_fd_close_spawn() {
     awk '
         /Start the long-lived downloader from a child shell/ { in_block=1; close_seen=0; exec_seen=0 }
         in_block && /close_inherited_fds_for_daemon/ { close_seen=1 }
-        in_block && /exec[[:space:]]+nohup[[:space:]]+bash/ && close_seen { exec_seen=1 }
+        in_block && (/exec[[:space:]]+nohup[[:space:]]+bash/ || /_macos_launch_detached_bootstrap_upgrade/) && close_seen { exec_seen=1 }
         in_block && /^[[:space:]]*\)[[:space:]]*&/ { exit(exec_seen ? 0 : 1) }
         END { if (!exec_seen) exit 1 }
     ' "$target" || fail "$label: bootstrap-upgrade.sh must be spawned from a child shell after closing inherited FDs"

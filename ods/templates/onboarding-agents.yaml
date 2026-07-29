@@ -1,0 +1,13 @@
+schema_version: ods.templates.v1
+template:
+  id: onboarding-agents
+  name: Chat + Agents
+  description: "ODS chat, Hermes Agent, web search, workflow automation, and usage monitoring."
+  icon: Bot
+  tags: [onboarding, chat, agents, workflows]
+  services: [litellm, searxng, token-spy, hermes, hermes-proxy, n8n]
+  tier_minimum: T1
+  estimated_disk_gb: 4
+  service_notes:
+    hermes: "General-purpose agent with tools, memory, and scheduled tasks"
+    n8n: "Workflow automation for agent and service integrations"

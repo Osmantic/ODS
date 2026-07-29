@@ -122,25 +122,25 @@ flowchart LR
 ## Slide 9: Code Proof Points
 
 - Setup card QR generation:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/scripts/generate-setup-card.py#L51>
+  <https://github.com/Osmantic/ODS/blob/main/ods/scripts/generate-setup-card.py#L59>
 - First-boot wizard:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/extensions/services/dashboard/src/pages/FirstBoot.jsx#L80>
+  <https://github.com/Osmantic/ODS/blob/main/ods/extensions/services/dashboard/src/pages/FirstBoot.jsx#L80>
 - Setup and Wi-Fi API:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/extensions/services/dashboard-api/routers/setup.py#L315>
+  <https://github.com/Osmantic/ODS/blob/main/ods/extensions/services/dashboard-api/routers/setup.py#L315>
 - Host-side Wi-Fi control:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/bin/ods-host-agent.py#L1216>
+  <https://github.com/Osmantic/ODS/blob/main/ods/bin/ods-host-agent.py#L1830>
 - Magic-link QR and redemption:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/extensions/services/dashboard-api/routers/magic_link.py#L382>
+  <https://github.com/Osmantic/ODS/blob/main/ods/extensions/services/dashboard-api/routers/magic_link.py#L382>
 - First-boot AP mode:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/scripts/ap-mode.sh#L2>
+  <https://github.com/Osmantic/ODS/blob/main/ods/scripts/ap-mode.sh#L258>
 - LAN discovery:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/bin/ods-mdns.py#L4>
+  <https://github.com/Osmantic/ODS/blob/main/ods/bin/ods-mdns.py#L173>
 - Local reverse proxy:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/extensions/services/ods-proxy/Caddyfile#L65>
+  <https://github.com/Osmantic/ODS/blob/main/ods/extensions/services/ods-proxy/Caddyfile#L65>
 - Hermes authenticated entry path:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/extensions/services/hermes-proxy/Caddyfile#L1>
+  <https://github.com/Osmantic/ODS/blob/main/ods/extensions/services/hermes-proxy/Caddyfile#L96>
 - OpenClaw integration:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/docs/OPENCLAW-INTEGRATION.md>
+  <https://github.com/Osmantic/ODS/blob/main/ods/docs/OPENCLAW-INTEGRATION.md>
 
 ## Slide 10: Demo Plan
 
@@ -190,23 +190,23 @@ ODS2 turns preinstalled AMD systems into ready-to-use local AI appliances.
 Use full GitHub URLs. Do not convert them into relative links.
 
 - ODS repo:
-  <https://github.com/Light-Heart-Labs/ODS>
+  <https://github.com/Osmantic/ODS>
 - Hardware-neutral ODS2 / headless setup doc:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/docs/HEADLESS-SETUP.md>
+  <https://github.com/Osmantic/ODS/blob/main/ods/docs/HEADLESS-SETUP.md>
 - Setup card operator doc:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/docs/SETUP-CARD.md>
+  <https://github.com/Osmantic/ODS/blob/main/ods/docs/SETUP-CARD.md>
 - Hermes integration:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/docs/HERMES.md>
+  <https://github.com/Osmantic/ODS/blob/main/ods/docs/HERMES.md>
 - Hermes SSO:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/docs/HERMES-SSO.md>
+  <https://github.com/Osmantic/ODS/blob/main/ods/docs/HERMES-SSO.md>
 - OpenClaw integration:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/docs/OPENCLAW-INTEGRATION.md>
+  <https://github.com/Osmantic/ODS/blob/main/ods/docs/OPENCLAW-INTEGRATION.md>
 - AP mode:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/docs/AP-MODE.md>
+  <https://github.com/Osmantic/ODS/blob/main/ods/docs/AP-MODE.md>
 - Local proxy:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/docs/ODS-PROXY.md>
+  <https://github.com/Osmantic/ODS/blob/main/ods/docs/ODS-PROXY.md>
 - mDNS:
-  <https://github.com/Light-Heart-Labs/ODS/blob/main/ods/docs/MDNS.md>
+  <https://github.com/Osmantic/ODS/blob/main/ods/docs/MDNS.md>
 
 ## Closing Message
 

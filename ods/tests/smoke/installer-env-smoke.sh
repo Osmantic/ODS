@@ -57,8 +57,14 @@ INSTALL_DIR="$TMPDIR_SMOKE/ods"
 mkdir -p "$INSTALL_DIR"/{config,data,models}
 mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,openclaw,searxng}
 
-# Copy source tree so phase 06 can find compose files and schemas
-cp -a "$ROOT_DIR"/* "$INSTALL_DIR/" 2>/dev/null || true
+# Copy source inputs so phase 06 can find compose files and schemas. Exclude
+# local frontend build artifacts; copying node_modules across WSL/NTFS can turn
+# this smoke test into a multi-minute filesystem benchmark.
+tar -C "$ROOT_DIR" \
+    --exclude='./.env' \
+    --exclude='./extensions/services/dashboard/node_modules' \
+    --exclude='./extensions/services/dashboard/dist' \
+    -cf - . | tar -C "$INSTALL_DIR" -xf -
 
 # Set up minimal environment that phase 06 expects
 export INSTALL_DIR
@@ -106,7 +112,10 @@ spin_task() { :; }
 ENV_GENERATED=false
 if bash -c "
     export INSTALL_DIR='$INSTALL_DIR'
-    export SCRIPT_DIR='$ROOT_DIR'
+    # The tracked source inputs were copied above. Treat that copy as an
+    # in-place install so this env-generation smoke does not recopy the whole
+    # developer checkout when rsync is unavailable.
+    export SCRIPT_DIR='$INSTALL_DIR'
     export LOG_FILE='/dev/null'
     export DRY_RUN=false
     export INTERACTIVE=false
@@ -122,6 +131,11 @@ if bash -c "
     export ENABLE_RAG=true
     export ENABLE_HERMES=true
 export ENABLE_OPENCLAW=true
+    export EMBEDDING_MODEL=BAAI/bge-m3
+    export RAG_EMBEDDING_MODEL=
+    export RAG_OPENAI_API_BASE_URL=https://embeddings.example.test/v1
+    export RAG_OPENAI_API_KEY=external-test-key
+    export EMBEDDINGS_MEMORY_LIMIT=6GB
 
     # Source libs
     source installers/lib/constants.sh
@@ -139,6 +153,7 @@ export ENABLE_OPENCLAW=true
     chapter() { :; }
     signal() { :; }
     show_phase() { :; }
+    sudo() { return 0; }
 
     docker() {
         if [[ \"\$1\" == \"info\" && \"\${2:-}\" == \"--format\" ]]; then
@@ -149,6 +164,15 @@ export ENABLE_OPENCLAW=true
     }
 
     # Run phase 06 (generates .env, configs)
+    source installers/phases/06-directories.sh
+
+    # A second installer run must retain the values written by the first run,
+    # even when the invoking process now carries different defaults.
+    export EMBEDDING_MODEL=BAAI/should-not-replace-existing
+    export RAG_EMBEDDING_MODEL=should-not-replace-existing
+    export RAG_OPENAI_API_BASE_URL=https://replacement.example.test/v1
+    export RAG_OPENAI_API_KEY=replacement-secret
+    export EMBEDDINGS_MEMORY_LIMIT=8GB
     source installers/phases/06-directories.sh
 " 2>/dev/null; then
     ENV_GENERATED=true
@@ -173,6 +197,16 @@ else
 fi
 
 if [[ "$ENV_GENERATED" == true && -f "$INSTALL_DIR/.env" ]]; then
+    if grep -q '^EMBEDDING_MODEL=BAAI/bge-m3$' "$INSTALL_DIR/.env" \
+        && grep -q '^RAG_EMBEDDING_MODEL=$' "$INSTALL_DIR/.env" \
+        && grep -q '^RAG_OPENAI_API_BASE_URL=https://embeddings.example.test/v1$' "$INSTALL_DIR/.env" \
+        && grep -q '^RAG_OPENAI_API_KEY=external-test-key$' "$INSTALL_DIR/.env" \
+        && grep -q '^EMBEDDINGS_MEMORY_LIMIT=6GB$' "$INSTALL_DIR/.env"; then
+        pass "Embedding/RAG values survive a Linux installer rerun"
+    else
+        fail "Embedding/RAG values were not preserved across a Linux installer rerun"
+    fi
+
     if grep -q '^LLAMA_CPU_LIMIT=4.0$' "$INSTALL_DIR/.env"; then
         pass "LLAMA_CPU_LIMIT auto-caps to Docker CPU count"
     else

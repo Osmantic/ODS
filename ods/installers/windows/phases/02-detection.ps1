@@ -21,6 +21,7 @@
 #   $tierConfig      -- hashtable: TierName, LlmModel, GgufFile, GgufUrl,
 #                       GgufSha256, MaxContext
 #   $llamaServerImage -- string: custom llama-server image override (usually "")
+#   $whisperCudaSupported -- bool: default Speaches CUDA Whisper image support
 #
 # Modder notes:
 #   Add new GPU vendors (e.g., Intel Arc) in detection.ps1, not here.
@@ -49,7 +50,7 @@ if ($gpuInfo.Backend -eq "nvidia") {
         Write-AIError "NVIDIA driver $($gpuInfo.DriverVersion) is below the required minimum ($($script:MIN_NVIDIA_DRIVER))."
         Write-AI "  Update your driver: https://www.nvidia.com/Download/index.aspx"
         Write-AI "  After updating, re-run this installer."
-        if (-not $force) { exit 1 }
+        if (-not $force) { throw "ODS_INSTALL_ABORTED" }
         Write-AIWarn "--Force specified, continuing with outdated driver (may fail at inference)."
     } else {
         Write-AISuccess "NVIDIA driver $($gpuInfo.DriverVersion) OK (>= $($script:MIN_NVIDIA_DRIVER) required)"
@@ -118,6 +119,7 @@ $tierConfig = Resolve-CatalogModelRecommendation `
     -SystemRamGB $systemRamGB `
     -SourceRoot $sourceRoot
 $llamaServerImage = if ($tierConfig.LlamaServerImage) { $tierConfig.LlamaServerImage } else { "" }
+$whisperCudaSupported = Test-ODSWindowsWhisperCudaSupported -GpuInfo $gpuInfo
 if ($tierConfig.LlamaCppReleaseTag) {
     $script:LLAMA_CPP_RELEASE_TAG = $tierConfig.LlamaCppReleaseTag
     $script:LLAMA_CPP_VULKAN_ASSET = "llama-$($script:LLAMA_CPP_RELEASE_TAG)-bin-win-vulkan-x64.zip"
@@ -165,7 +167,7 @@ if (-not $_tierDisk.Sufficient) {
     Write-AI "  .\install.ps1 -InstallDir $_installDirHint"
     if (-not $force) {
         Write-AIError "Insufficient disk space. Free up space and re-run, or use --Force to override."
-        exit 1
+        throw "ODS_INSTALL_ABORTED"
     }
     Write-AIWarn "--Force specified, continuing with limited disk space."
 }

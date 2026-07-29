@@ -14,10 +14,19 @@ service:
   external_port_default: 3003
   health: /
   type: host-systemd
+  macos_host_supported: true
   gpu_backends: [all]
   category: optional
   depends_on: []
   sidebar_icon: Code
+  llm:
+    consumes: true
+    route: gateway
+    pinning: none
+    min_context: 65536
+    probe:
+      kind: custom
+      path: /
 
 features:
   - id: coding

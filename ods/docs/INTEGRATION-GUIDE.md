@@ -207,7 +207,7 @@ Key variables in `.env` (see [.env.example](../.env.example) for the full list):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OLLAMA_PORT` | 8080 | llama-server external port (maps to internal 8080) |
+| `OLLAMA_PORT` | 11434 | llama-server external port (maps to internal 8080) |
 | `WEBUI_PORT` | 3000 | Open WebUI port |
 | `N8N_PORT` | 5678 | n8n workflows port |
 | `LLM_MODEL` | *(tier-dependent)* | Model name for OpenClaw/dashboard |
@@ -239,10 +239,12 @@ client = OpenAI(
 
 ### Open WebUI Auth
 
-WebUI has built-in user management:
-1. First user becomes admin
-2. Configure auth in WebUI settings
-3. Set `WEBUI_AUTH=true` in `.env`
+Loopback-only ODS installs open directly. For a network deployment, Open WebUI
+has built-in user management:
+
+1. Set `WEBUI_AUTH=true` in `.env`
+2. Restart Open WebUI
+3. The first user becomes admin and can configure auth in Open WebUI settings
 
 ---
 

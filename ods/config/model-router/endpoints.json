@@ -1,0 +1,12 @@
+{
+  "endpoints": [
+    {
+      "id": "llama-server-default",
+      "baseUrl": "http://llama-server:8080"
+    },
+    {
+      "id": "lemonade-default",
+      "baseUrl": "http://llama-server:8080/api"
+    }
+  ]
+}

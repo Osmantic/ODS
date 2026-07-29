@@ -18,17 +18,33 @@ except ImportError:
     sys.exit(2)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-SCHEMA_PATH = SCRIPT_DIR / "schema" / "service-manifest.v1.json"
+ROOT_DIR = SCRIPT_DIR.parent.parent
+MANIFEST_FILE = ROOT_DIR / "manifest.json"
+LOCAL_SCHEMA_PATH = SCRIPT_DIR / "schema" / "service-manifest.v1.json"
 SERVICES_DIR = SCRIPT_DIR / "services"
+
+
+def schema_path():
+    """Use the repository contract when available, with a standalone fallback."""
+    if not MANIFEST_FILE.is_file():
+        return LOCAL_SCHEMA_PATH
+
+    manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
+    return ROOT_DIR / manifest["contracts"]["extensions"]["serviceManifestSchema"]
 
 
 def main():
     # Load schema
-    if not SCHEMA_PATH.exists():
-        print(f"ERROR: Schema not found at {SCHEMA_PATH}")
+    try:
+        schema_path_value = schema_path()
+    except (KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
+        print(f"ERROR: Cannot resolve canonical schema from {MANIFEST_FILE}: {exc}")
+        sys.exit(2)
+    if not schema_path_value.exists():
+        print(f"ERROR: Schema not found at {schema_path_value}")
         sys.exit(2)
 
-    with open(SCHEMA_PATH) as f:
+    with open(schema_path_value, encoding="utf-8") as f:
         schema = json.load(f)
 
     if not SERVICES_DIR.is_dir():
@@ -50,7 +66,7 @@ def main():
         total += 1
 
         try:
-            with open(manifest_path) as f:
+            with open(manifest_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
         except yaml.YAMLError as e:
             print(f"FAIL  {service_name}: YAML parse error: {e}")
@@ -62,7 +78,9 @@ def main():
             failed += 1
             continue
 
-        errors = list(jsonschema.Draft7Validator(schema).iter_errors(data))
+        validator_cls = jsonschema.validators.validator_for(schema)
+        validator_cls.check_schema(schema)
+        errors = list(validator_cls(schema).iter_errors(data))
         if errors:
             failed += 1
             print(f"FAIL  {service_name}:")

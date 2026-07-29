@@ -14,17 +14,23 @@ code and hands it to the agent automatically — that's this module.
 
 How it slots in:
 
-  1. Agent runs ``setup.py --auth-url`` (via its terminal_tool). The
+  1. Agent calls ``POST /api/oauth/init`` with the skill it wants to
+     authorise. dashboard-api generates a high-entropy nonce, persists
+     ``{nonce, skill_id, return_url, created_at, ttl}`` under
+     ``data/persona/oauth-nonces/<nonce>.json``, and returns the nonce
+     as ``state``.
+  2. Agent runs ``setup.py --auth-url --state <NONCE>``. The
      ``redirect_uri`` baked into the OAuth client points at this module's
      ``/api/oauth/callback`` route on the operator's ODS host.
-  2. Agent sends the auth URL to the user as a markdown link. The user
+  3. Agent sends the auth URL to the user as a markdown link. The user
      taps it, authorises in Google/Spotify/etc., and the provider
-     redirects to ``/api/oauth/callback?code=...&state=<skill-id>``.
-  3. This handler writes the ``{code, state, ts}`` payload to
-     ``data/persona/oauth_callback.json`` (operator-owned, both Hermes
-     and dashboard-api can read it) and returns a friendly success page
-     the user sees in their browser.
-  4. The agent (per persona) checks for the callback file after sending
+     redirects to ``/api/oauth/callback?code=...&state=<nonce>``.
+  4. This handler looks up the nonce, refuses the callback if state is
+     missing/unknown/expired/replayed, and only on a valid nonce writes
+     the ``{code, state, ts}`` payload to ``data/persona/oauth_callback.json``
+     (operator-owned; Hermes reads it) and returns a friendly success
+     page. The nonce is deleted on write, making it single-use.
+  5. The agent (per persona) checks for the callback file after sending
      the URL — when present, it consumes the code, runs the skill's
      ``setup.py --auth-code <CODE>`` to finalise, deletes the file, and
      confirms to the user.
@@ -36,16 +42,25 @@ can't write into ``/opt/data`` either. ``data/persona/`` is the
 operator-owned shared mount (same one the install-context SOUL.md
 lives in) that both containers can read.
 
-Security:
-  * No authentication on the callback route (it's a redirect target —
+Security model:
+  * The callback route stays unauthenticated (it's a redirect target —
     we can't enforce session cookies from a provider redirect). Protection
-    comes from the ``state`` parameter the agent passes through, which is
-    a randomly-generated nonce stored alongside the pending request.
-    The agent should reject any callback whose state doesn't match the
-    one it issued.
-  * Codes have very short TTLs at the provider (~10 min) so a leaked
-    callback file isn't long-exploitable.
-  * Codes are single-use — re-exchange attempts fail at the provider.
+    comes from the ``state`` parameter, which MUST match a server-issued
+    nonce created via ``/api/oauth/init``. Callbacks with missing,
+    malformed, unknown, expired, or already-consumed states are rejected
+    outright and never touch ``oauth_callback.json``.
+  * Nonces are single-use: consumed (deleted) BEFORE the callback payload
+    is written, so a race between two callbacks with the same state
+    resolves to one winner even under concurrent load.
+  * Nonces bind the ``return_url`` at init time. The callback endpoint
+    never accepts a ``return_url`` query param — that eliminates the
+    open-redirect surface a provider redirect could otherwise expose.
+  * ``skill_id`` is resolved server-side from the nonce, not from the
+    incoming callback. Attackers can no longer influence which skill
+    the agent later exchanges the code against.
+  * Codes have very short TTLs at the provider (~10 min); nonces default
+    to 15 min. Expired nonces are opportunistically pruned on each init
+    so we don't accumulate garbage.
 """
 
 from __future__ import annotations
@@ -54,18 +69,33 @@ import html
 import json
 import logging
 import os
+import re
+import secrets
 import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["oauth"])
+
+# base64url alphabet (RFC 4648 §5). token_urlsafe(32) yields 43 chars; we
+# accept 22..128 to allow for future entropy tweaks without a breaking
+# change. The strict charset is the primary defense against path traversal
+# via the state parameter.
+_STATE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{22,128}$")
+
+# Skill ids are rendered into the success page and echoed back into the
+# callback payload the agent consumes; keep the charset boring.
+_SKILL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+_DEFAULT_NONCE_TTL_SECONDS = 900  # 15 min; OAuth provider codes usually expire in ~10 min
 
 
 def _callback_dir() -> Path:
@@ -77,6 +107,14 @@ def _callback_dir() -> Path:
     # In-container path: dashboard-api mounts ./data → /data, so
     # ./data/persona/ is /data/persona/ from here.
     base = Path(os.environ.get("ODS_PERSONA_DIR", "/data/persona"))
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _nonce_dir() -> Path:
+    """Per-nonce metadata files. Kept next to (not inside) the callback
+    file so a listing operation on the persona dir doesn't get noisy."""
+    base = _callback_dir() / "oauth-nonces"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -147,12 +185,94 @@ def _safe_return_path(return_url: str) -> str | None:
 
     OAuth callbacks are public redirect targets, so never reflect arbitrary
     absolute URLs or javascript: links into the success page. The agent can
-    pass "/talk" when it wants a button back into ODS Talk.
+    pass "/talk" at init time when it wants a button back into ODS Talk.
     """
     candidate = (return_url or "").strip()
-    if not candidate.startswith("/") or candidate.startswith("//"):
+    if not candidate.startswith("/"):
+        return None
+    # Reject protocol-relative URLs. Browsers fold backslashes to forward
+    # slashes in the authority, so "/\evil.com" and "/\\evil.com" resolve to
+    # "//evil.com" — a same-looking prefix that is really an off-origin
+    # redirect. Treat the character after the leading slash as the guard, and
+    # reject backslashes anywhere since a same-origin path never needs one.
+    if candidate[1:2] in ("/", "\\") or "\\" in candidate:
         return None
     return candidate
+
+
+def _nonce_path(state: str) -> Optional[Path]:
+    """Resolve ``state`` to a nonce file path, or ``None`` if the state
+    is malformed or would escape the nonce directory.
+
+    The regex is the primary defense against path traversal (``..``, ``/``
+    and ``.`` are all forbidden by the charset); the ``relative_to`` check
+    is defense in depth against symlink shenanigans in the persona dir.
+    """
+    if not state or not _STATE_PATTERN.fullmatch(state):
+        return None
+    nonce_dir = _nonce_dir()
+    candidate = nonce_dir / f"{state}.json"
+    try:
+        candidate.resolve(strict=False).relative_to(nonce_dir.resolve(strict=False))
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def _consume_nonce(state: str) -> None:
+    """Best-effort delete of a nonce file. Never raises. Used on error
+    paths (provider error, missing code) so a denied or malformed flow
+    can't leave a nonce lying around for replay."""
+    path = _nonce_path(state)
+    if not path:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.debug("could not unlink nonce %s", path, exc_info=True)
+
+
+def _prune_expired_nonces(nonce_dir: Path) -> None:
+    """Best-effort cleanup of expired nonces. Called opportunistically on
+    init so a long-running deployment doesn't accumulate stale files.
+    Never raises."""
+    now = int(time.time())
+    try:
+        entries = list(nonce_dir.glob("*.json"))
+    except OSError:
+        return
+    for path in entries:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            # Unreadable/corrupt — clean it up too.
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            continue
+        created = int(payload.get("created_at", 0) or 0)
+        ttl = int(payload.get("ttl_seconds", 0) or 0)
+        if not created or not ttl or (now - created) > ttl:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _atomic_write_0600(target: Path, data: str) -> None:
+    """Write ``data`` to ``target`` atomically with mode 0600 on POSIX.
+    The chmod is best-effort on filesystems that don't honour it
+    (Windows dev boxes, some overlayfs setups). Uses ``with_name`` rather
+    than ``with_suffix`` because Path.with_suffix rejects suffixes that
+    contain embedded dots on some Python versions."""
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(data, encoding="utf-8")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        logger.debug("could not chmod %s to 0600", tmp, exc_info=True)
+    tmp.replace(target)
 
 
 def _success_page(skill: str, return_url: Optional[str] = None) -> str:
@@ -198,50 +318,191 @@ def _error_page(reason: str) -> str:
 <p>Head back to ODS Talk and ask your assistant to try again.</p></body></html>"""
 
 
+class OAuthInitRequest(BaseModel):
+    """Body for ``POST /api/oauth/init``.
+
+    The agent calls this before generating an OAuth auth URL. The returned
+    ``state`` becomes the nonce baked into the auth URL, and the callback
+    handler will only accept a callback whose ``state`` matches.
+    """
+
+    skill_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="Skill the agent is authorising (e.g. 'google-workspace'). Echoed back to the agent on callback so it knows which skill to finalise.",
+    )
+    return_url: str = Field(
+        "",
+        max_length=512,
+        description="Optional same-origin path (e.g. '/talk') rendered as a 'Back to ODS Talk' button on the success page. Bound at init time; ignored on the callback.",
+    )
+    ttl_seconds: int = Field(
+        _DEFAULT_NONCE_TTL_SECONDS,
+        ge=60,
+        le=1800,
+        description="How long the nonce is valid, in seconds. Default 900 (15 min) matches typical provider code TTLs.",
+    )
+
+
+@router.post("/api/oauth/init")
+async def oauth_init(
+    request: OAuthInitRequest,
+    api_key: str = Depends(verify_api_key),
+):
+    """Issue a single-use OAuth state nonce.
+
+    Only the agent (which holds the dashboard API key) can call this.
+    The nonce is the ONLY value the callback handler will accept as
+    ``state`` — everything else is rejected outright.
+    """
+    skill_id = request.skill_id.strip()
+    if not _SKILL_ID_PATTERN.fullmatch(skill_id):
+        raise HTTPException(
+            status_code=422,
+            detail="skill_id must match [A-Za-z0-9._-]{1,64}",
+        )
+
+    return_url = request.return_url.strip()
+    bound_return_url = ""
+    if return_url:
+        safe = _safe_return_path(return_url)
+        if not safe:
+            raise HTTPException(
+                status_code=422,
+                detail="return_url must be a same-origin path starting with '/' (not '//').",
+            )
+        bound_return_url = safe
+
+    nonce_dir = _nonce_dir()
+    _prune_expired_nonces(nonce_dir)
+
+    now = int(time.time())
+    state = secrets.token_urlsafe(32)
+    payload = {
+        "nonce": state,
+        "skill_id": skill_id,
+        "return_url": bound_return_url,
+        "created_at": now,
+        "ttl_seconds": request.ttl_seconds,
+    }
+    target = nonce_dir / f"{state}.json"
+    _atomic_write_0600(target, json.dumps(payload, indent=2))
+
+    logger.info("oauth init issued nonce for skill=%s ttl=%ds", skill_id, request.ttl_seconds)
+    return {
+        "state": state,
+        "skill_id": skill_id,
+        "expires_at": now + request.ttl_seconds,
+    }
+
+
 @router.get("/api/oauth/callback")
 async def oauth_callback(
     code: str = Query("", description="Authorisation code returned by the OAuth provider."),
-    state: str = Query("", description="Opaque state token the agent issued when generating the auth URL. Used to identify which skill the callback belongs to."),
+    state: str = Query("", description="Nonce previously issued by /api/oauth/init. Callbacks whose state doesn't match a live nonce are rejected."),
     error: str = Query("", description="Set by the provider if the user denied or auth failed."),
-    return_url: str = Query("", description="Optional deep link back into ODS Talk after success."),
 ):
     """OAuth redirect target.
 
-    Writes the captured ``code`` + ``state`` to a file at
-    ``data/persona/oauth_callback.json`` for the agent to consume on its
-    next turn, then returns a friendly success page. No JSON response —
-    the user lands here via a browser redirect, so HTML is the right
-    affordance.
-
-    The agent (per persona) polls for this file after sending the auth
-    URL: when it appears, the agent runs the relevant skill's
-    ``setup.py --auth-code`` to finalise, deletes the file, and
-    confirms to the user.
+    Validates ``state`` against a server-issued nonce, and only on a
+    successful match writes the captured ``code`` to
+    ``data/persona/oauth_callback.json`` for the agent to consume. Nonces
+    are single-use and consumed BEFORE the callback file is written, so
+    a race between two callbacks with the same state resolves to one
+    winner.
     """
     if error:
+        # Consume the nonce even on error so a denied flow can't be
+        # replayed. State may be missing on error redirects; _consume_nonce
+        # is a no-op in that case.
+        _consume_nonce(state)
         logger.warning("oauth callback received provider error: %s", error[:200])
         return HTMLResponse(_error_page(f"The provider sent back an error: {error}"), status_code=400)
-    if not code:
-        return HTMLResponse(_error_page("No authorisation code was returned. You may have denied the request, or the provider's redirect was malformed."), status_code=400)
 
-    skill = state.strip() or "google-workspace"
+    if not code:
+        _consume_nonce(state)
+        return HTMLResponse(
+            _error_page("No authorisation code was returned. You may have denied the request, or the provider's redirect was malformed."),
+            status_code=400,
+        )
+
+    # State validation is the security boundary. If the incoming state
+    # doesn't map to a live nonce, refuse — do NOT write anything the
+    # agent might later consume.
+    nonce_path = _nonce_path(state)
+    if not nonce_path or not nonce_path.exists():
+        logger.warning("oauth callback with unknown/invalid state (len=%d)", len(state))
+        return HTMLResponse(
+            _error_page(
+                "This authorisation link is not recognised. It may have already been used, "
+                "or it wasn't issued by ODS. Head back to the chat and start the setup again."
+            ),
+            status_code=400,
+        )
+
+    try:
+        nonce_payload = json.loads(nonce_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("oauth callback saw unreadable nonce %s: %s", nonce_path, exc)
+        try:
+            nonce_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return HTMLResponse(
+            _error_page("ODS caught the redirect but the pending authorisation state was unreadable. Restart the flow from the chat."),
+            status_code=400,
+        )
+
+    now = int(time.time())
+    created = int(nonce_payload.get("created_at", 0) or 0)
+    ttl = int(nonce_payload.get("ttl_seconds", 0) or 0)
+    if not created or not ttl or (now - created) > ttl:
+        try:
+            nonce_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return HTMLResponse(
+            _error_page("This authorisation link has expired. Head back to the chat and start the setup again."),
+            status_code=400,
+        )
+
+    skill_id_raw = str(nonce_payload.get("skill_id") or "").strip()
+    skill_id = skill_id_raw if _SKILL_ID_PATTERN.fullmatch(skill_id_raw) else "service"
+    bound_return_url = str(nonce_payload.get("return_url") or "").strip() or None
+
+    # Consume the nonce BEFORE writing the callback file. If two callbacks
+    # race with the same state, only one unlink succeeds; the second one
+    # sees the file missing and bails at the nonce_path.exists() check on
+    # the next request. On this request, a failed unlink means the file
+    # vanished between our exists()/read and unlink() — treat that as
+    # someone else winning the race and refuse.
+    try:
+        nonce_path.unlink()
+    except FileNotFoundError:
+        logger.warning("oauth callback lost nonce race for state (len=%d)", len(state))
+        return HTMLResponse(
+            _error_page("Another authorisation for the same link is already in flight. Head back to the chat and try again."),
+            status_code=409,
+        )
+    except OSError as exc:
+        logger.exception("failed to consume oauth nonce %s: %s", nonce_path, exc)
+        return HTMLResponse(
+            _error_page("ODS caught the redirect but couldn't consume the pending state. The operator may need to check filesystem permissions on data/persona/oauth-nonces/."),
+            status_code=500,
+        )
+
     payload = {
         "code": code,
-        "state": skill,
+        "state": skill_id,
         # Unix epoch so the agent can detect stale callbacks (>15 min)
         # and decline rather than trying to exchange a definitely-
         # expired code at the provider.
-        "captured_at": int(time.time()),
+        "captured_at": now,
     }
     target = _callback_dir() / "oauth_callback.json"
     try:
-        tmp = target.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        try:
-            tmp.chmod(0o600)
-        except OSError:
-            logger.debug("oauth callback could not chmod temp file %s", tmp, exc_info=True)
-        tmp.replace(target)
+        _atomic_write_0600(target, json.dumps(payload, indent=2))
     except OSError as exc:
         logger.exception("oauth callback failed to write %s: %s", target, exc)
         return HTMLResponse(
@@ -249,8 +510,8 @@ async def oauth_callback(
             status_code=500,
         )
 
-    logger.info("oauth callback captured for skill=%s (code length %d)", skill, len(code))
-    return HTMLResponse(_success_page(skill, return_url or None))
+    logger.info("oauth callback captured for skill=%s (code length %d)", skill_id, len(code))
+    return HTMLResponse(_success_page(skill_id, bound_return_url))
 
 
 @router.get("/api/oauth/pending")

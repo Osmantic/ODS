@@ -1,6 +1,6 @@
 """Tests for agent_monitor.py — throughput metrics and data classes."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -35,8 +35,10 @@ class TestThroughputMetrics:
     def test_prunes_old_data(self):
         tm = ThroughputMetrics(history_minutes=5)
 
-        # Insert an old data point by manipulating the list directly
-        old_time = (datetime.now() - timedelta(minutes=10)).isoformat()
+        # Insert an old data point by manipulating the list directly. The
+        # fixture must be UTC-aware like real samples: the prune cutoff is
+        # aware, and comparing it against a naive timestamp raises TypeError.
+        old_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
         tm.data_points.append({"timestamp": old_time, "tokens_per_sec": 99.0})
 
         # Adding a new sample triggers pruning
@@ -127,8 +129,9 @@ class TestFetchTokenSpyMetrics:
 
         assert agent_monitor.agent_metrics.session_count == 2
         assert len(agent_monitor.throughput.data_points) == 1
-        # total_out = 10800 tokens; avg tps = 10800 / 3600 = 3.0
-        assert agent_monitor.throughput.data_points[0]["tokens_per_sec"] == pytest.approx(3.0)
+        # total_out = 10800 tokens over the 24 h summary window;
+        # avg tps = 10800 / 86400 = 0.125
+        assert agent_monitor.throughput.data_points[0]["tokens_per_sec"] == pytest.approx(0.125)
 
     @pytest.mark.asyncio
     async def test_no_url_skips_fetch(self, monkeypatch):

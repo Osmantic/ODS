@@ -71,7 +71,7 @@ count_file="$tmp/curl-count"
 expected_sha="$(printf 'good' | sha256sum | awk '{print $1}')"
 
 set +e
-PATH="$fakebin:$PATH" ODS_FAKE_CURL_COUNT="$count_file" ODS_BOOTSTRAP_DOWNLOAD_ATTEMPTS=2 bash "$TARGET" \
+PATH="$fakebin:$PATH" ODS_FAKE_CURL_COUNT="$count_file" ODS_BOOTSTRAP_DOWNLOAD_ATTEMPTS=2 ODS_BOOTSTRAP_DOWNLOAD_MAX_SECONDS=0 bash "$TARGET" \
     "$install_dir" \
     "Full.gguf" \
     "https://example.invalid/Full.gguf" \

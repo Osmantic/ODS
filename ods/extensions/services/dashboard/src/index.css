@@ -31,6 +31,22 @@
   --dashboard-shell-accent-soft: rgba(215, 164, 255, 0.08);
   --theme-card-shadow: none;
   --theme-card-radius: 12px;
+  --tech-panel-fill: linear-gradient(180deg, rgba(10,10,18,0.96), rgba(7,7,13,0.92));
+  --tech-panel-border: rgba(255,255,255,0.08);
+  --tech-panel-shadow: inset 0 1px 0 rgba(255,255,255,0.035), 0 20px 60px rgba(0,0,0,0.22);
+  --tech-tile-fill:
+    linear-gradient(180deg, rgba(14,14,21,0.88), rgba(8,8,14,0.92)),
+    repeating-linear-gradient(90deg, transparent 0 31px, rgba(255,255,255,0.028) 31px 32px),
+    repeating-linear-gradient(180deg, transparent 0 31px, rgba(255,255,255,0.024) 31px 32px),
+    radial-gradient(circle at 18% 0%, rgba(157,0,255,0.08), transparent 30%);
+  --tech-tile-border: rgba(255,255,255,0.11);
+  --tech-tile-shadow: inset 0 1px 0 rgba(255,255,255,0.045), inset 0 -18px 34px rgba(0,0,0,0.18);
+  --tech-tabs-fill:
+    linear-gradient(135deg, rgba(12,10,22,0.96), rgba(25,12,38,0.9)),
+    repeating-linear-gradient(90deg, transparent 0 35px, rgba(255,255,255,0.022) 35px 36px),
+    repeating-linear-gradient(180deg, transparent 0 35px, rgba(255,255,255,0.02) 35px 36px);
+  --tech-tabs-border: rgba(190,150,255,0.22);
+  --tech-tabs-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 18px 50px rgba(0,0,0,0.22);
   --liquid-border-size: 1px;
   --liquid-card-fill: linear-gradient(rgb(var(--theme-card)), rgb(var(--theme-card)));
   --liquid-soft-fill: linear-gradient(rgb(var(--theme-card)), rgb(var(--theme-card)));
@@ -474,6 +490,30 @@ a, button, input, select, textarea,
 
 .liquid-metal-frame--soft {
   background: var(--liquid-soft-fill, linear-gradient(rgb(var(--theme-card)), rgb(var(--theme-card))));
+}
+
+:root[data-theme="lemonade"],
+:root[data-theme="light"],
+:root[data-theme="arctic"] {
+  --tech-panel-fill: linear-gradient(rgb(var(--theme-card)), rgb(var(--theme-card)));
+  --tech-panel-border: rgb(var(--theme-border));
+  --tech-panel-shadow: var(--theme-card-shadow);
+  --tech-tile-fill: linear-gradient(rgb(var(--theme-card)), rgb(var(--theme-card)));
+  --tech-tile-border: rgb(var(--theme-border));
+  --tech-tile-shadow: var(--theme-card-shadow);
+  --tech-tabs-fill: linear-gradient(rgb(var(--theme-card)), rgb(var(--theme-card)));
+  --tech-tabs-border: rgb(var(--theme-border));
+  --tech-tabs-shadow: var(--theme-card-shadow);
+}
+
+:root:not([data-theme]) .settings-premium-card,
+:root[data-theme="ods"] .settings-premium-card {
+  background:
+    linear-gradient(180deg, rgba(18, 18, 25, 0.94), rgba(8, 8, 16, 0.96)),
+    repeating-linear-gradient(90deg, transparent 0 47px, rgba(255, 255, 255, 0.025) 47px 48px),
+    repeating-linear-gradient(180deg, transparent 0 47px, rgba(255, 255, 255, 0.025) 47px 48px);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 18px 40px rgba(0, 0, 0, 0.22);
 }
 
 .liquid-metal-frame--soft::after {

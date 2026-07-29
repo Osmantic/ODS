@@ -33,6 +33,11 @@ async def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(se
             detail="Authentication required. Provide Bearer token in Authorization header.",
             headers={"WWW-Authenticate": "Bearer"}
         )
-    if not secrets.compare_digest(credentials.credentials, DASHBOARD_API_KEY):
+    # Compared as UTF-8 bytes: compare_digest raises TypeError on non-ASCII
+    # str, and the presented token is attacker-controlled, so a str compare
+    # turns an unauthenticated request into a 500 instead of a 403.
+    if not secrets.compare_digest(
+        credentials.credentials.encode("utf-8"), DASHBOARD_API_KEY.encode("utf-8")
+    ):
         raise HTTPException(status_code=403, detail="Invalid API key.")
     return credentials.credentials

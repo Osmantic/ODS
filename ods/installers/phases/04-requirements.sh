@@ -136,7 +136,7 @@ else
     fi
 fi
 
-if [[ "${LLM_MODEL_SIZE_MB:-0}" =~ ^[0-9]+$ && "${LLM_MODEL_SIZE_MB:-0}" -gt 0 && "${TIER:-}" != "CLOUD" ]]; then
+if [[ -z "${EXTERNAL_LLM_URL:-}" && "${LLM_MODEL_SIZE_MB:-0}" =~ ^[0-9]+$ && "${LLM_MODEL_SIZE_MB:-0}" -gt 0 && "${TIER:-}" != "CLOUD" ]]; then
     _model_disk_gb=$(( (LLM_MODEL_SIZE_MB + 1023) / 1024 ))
     _model_needed_gb=$(( _model_disk_gb + 15 ))
     if [[ "${DISK_AVAIL:-0}" -lt "$_model_needed_gb" ]]; then
@@ -221,7 +221,7 @@ check_ollama_conflict() {
 
 # Ollama conflict detection (must happen before port checks)
 check_ollama_conflict
-if $OLLAMA_RUNNING; then
+if $OLLAMA_RUNNING && [[ "${EXTERNAL_LLM_PROVIDER:-}" != "ollama" ]]; then
     ai_warn "Ollama is running (PID ${OLLAMA_PID}) and may conflict with ODS."
     ai "  Note: this is usually not a port collision. Open WebUI may auto-discover Ollama (11434) and prefer it over the local llama-server (8080)."
     if $INTERACTIVE && ! $DRY_RUN; then
@@ -263,7 +263,8 @@ if [[ "${ENABLE_VOICE:-false}" == "true" ]] && _phase04_lemonade_uses_host_9000;
 fi
 
 # Port conflict detection with detailed process information
-PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-8080} ${SERVICE_PORTS[open-webui]:-3000}"
+PORTS_TO_CHECK="${SERVICE_PORTS[open-webui]:-3000}"
+[[ -z "${EXTERNAL_LLM_URL:-}" ]] && PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-8080} ${PORTS_TO_CHECK}"
 [[ "$ENABLE_VOICE" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[whisper]:-9000} ${SERVICE_PORTS[tts]:-8880}"
 [[ "$ENABLE_WORKFLOWS" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[n8n]:-5678}"
 [[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[qdrant]:-6333}"

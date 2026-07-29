@@ -6,9 +6,9 @@ Set DB_BACKEND=postgres to use this module.
 
 import os
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Tuple
 from uuid import UUID, uuid4
 
 from psycopg2.extras import RealDictCursor, register_uuid
@@ -34,6 +34,8 @@ SINGLE_TENANT_SLUG = os.environ.get("SINGLE_TENANT_SLUG", "default")
 _pool: Optional[pool.ThreadedConnectionPool] = None
 _tenant_id: Optional[UUID] = None
 _agent_cache: dict[str, UUID] = {}
+
+EventCursor = Tuple[datetime, UUID]
 
 
 def _get_pool() -> pool.ThreadedConnectionPool:
@@ -284,11 +286,27 @@ def query_usage(agent: str | None = None, hours: int = 24, limit: int = 200) -> 
         _put_conn(conn)
 
 
+# Inclusive-day span cap for the report endpoint. Mirrors
+# dashboard-api/routers/usage.py:MAX_REPORT_RANGE_DAYS — both build one dict
+# per day in the requested span, so the bound belongs on each side.
+MAX_REPORT_RANGE_DAYS = 366
+
+
+
 def _parse_report_dates(start: str, end: str) -> tuple[date, date, date]:
     start_day = date.fromisoformat(start)
     end_day = date.fromisoformat(end)
     if end_day < start_day:
         raise ValueError("end must be on or after start")
+    if end_day == date.max:
+        raise ValueError("end date is out of range")
+    # The report materializes one bucket per day in the span, so an unbounded
+    # range turns a single request into millions of them. Cap it before the
+    # arithmetic below, which also overflows on date.max.
+    if (end_day - start_day).days >= MAX_REPORT_RANGE_DAYS:
+        raise ValueError(
+            f"range must be shorter than {MAX_REPORT_RANGE_DAYS} days"
+        )
     return start_day, end_day, end_day + timedelta(days=1)
 
 
@@ -608,12 +626,31 @@ def query_session_status(agent: str, char_limit: int = 200_000) -> dict:
         _put_conn(conn)
 
 
-def query_recent_events(limit: int = 100, after_id: Optional[UUID] = None):
+def query_recent_events(limit: int = 100, after_id=None):
     """Query recent token usage events for SSE streaming."""
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             if after_id:
+                if isinstance(after_id, tuple):
+                    cursor_timestamp, cursor_id = after_id
+                else:
+                    # Backward compatibility for callers that still hold a
+                    # request UUID. New streams carry the composite cursor
+                    # directly, so retention cannot invalidate their cursor.
+                    cur.execute(
+                        """
+                        SELECT timestamp, id
+                        FROM requests
+                        WHERE tenant_id = %s AND id = %s
+                        """,
+                        (_tenant_id, after_id),
+                    )
+                    cursor_row = cur.fetchone()
+                    if cursor_row is None:
+                        return []
+                    cursor_timestamp = cursor_row["timestamp"]
+                    cursor_id = cursor_row["id"]
                 cur.execute(
                     """
                     SELECT
@@ -630,11 +667,11 @@ def query_recent_events(limit: int = 100, after_id: Optional[UUID] = None):
                     FROM requests r
                     LEFT JOIN agents a ON r.agent_id = a.id
                     WHERE r.tenant_id = %s
-                    AND r.id > %s
-                    ORDER BY r.timestamp DESC
+                    AND (r.timestamp, r.id) > (%s, %s)
+                    ORDER BY r.timestamp ASC, r.id ASC
                     LIMIT %s
                     """,
-                    (_tenant_id, after_id, limit)
+                    (_tenant_id, cursor_timestamp, cursor_id, limit),
                 )
             else:
                 cur.execute(
@@ -653,17 +690,23 @@ def query_recent_events(limit: int = 100, after_id: Optional[UUID] = None):
                     FROM requests r
                     LEFT JOIN agents a ON r.agent_id = a.id
                     WHERE r.tenant_id = %s
-                    ORDER BY r.timestamp DESC
+                    ORDER BY r.timestamp DESC, r.id DESC
                     LIMIT %s
                     """,
-                    (_tenant_id, limit)
+                    (_tenant_id, limit),
                 )
             rows = cur.fetchall()
+            if not after_id:
+                # Select the newest window efficiently, then emit it oldest
+                # first so the stream cursor finishes at the newest event.
+                rows.reverse()
+
             # Convert datetime objects to ISO format strings for JSON serialization
             result = []
             for row in rows:
                 d = dict(row)
                 if d.get("timestamp"):
+                    d["_cursor"] = (d["timestamp"], d["id"])
                     d["timestamp"] = d["timestamp"].isoformat()
                 if d.get("cost_usd"):
                     d["cost_usd"] = float(d["cost_usd"])

@@ -15,6 +15,16 @@ export function useVersion() {
           throw new Error('Failed to check version')
         }
         const data = await response.json()
+        // Honor a previous dismissal across reloads. dismissUpdate() records
+        // the dismissed `latest` in localStorage, but that value was never read
+        // back — so every reload re-fetched update_available:true and the update
+        // banner reappeared despite the user dismissing it. Suppress it only for
+        // the exact version that was dismissed; a genuinely newer `latest` no
+        // longer matches and surfaces normally.
+        if (data.update_available && data.latest &&
+            localStorage.getItem('dismissed-update') === data.latest) {
+          data.update_available = false
+        }
         setVersion(data)
       } catch (err) {
         setError(err.message)

@@ -1,0 +1,36 @@
+# Host-managed Ollama / LM Studio overlay.
+#
+# The selected endpoint is reached through host.docker.internal. The explicit
+# host-gateway mappings make that name available on plain Linux Docker Engine
+# as well as Docker Desktop.
+services:
+  llama-server:
+    profiles:
+      - local-inference
+    restart: "no"
+
+  model-router:
+    profiles:
+      - local-inference
+    restart: "no"
+
+  open-webui:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      OPENAI_API_KEY: "${OPEN_WEBUI_LLM_API_KEY:-}"
+
+  dashboard-api:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      LLM_BACKEND: external
+      LLM_API_BASE_PATH: /v1
+      ODS_TALK_VISION_URL: "${EXTERNAL_LLM_CONTAINER_URL}/v1"
+      AMD_INFERENCE_RUNTIME: ""
+      AMD_INFERENCE_BACKEND: ""
+      AMD_INFERENCE_LOCATION: ""
+      AMD_INFERENCE_PORT: ""
+      AMD_INFERENCE_SUPPORTED_BACKENDS: ""
+      AMD_INFERENCE_RUNTIME_MODE: ""
+      AMD_INFERENCE_MANAGED: ""

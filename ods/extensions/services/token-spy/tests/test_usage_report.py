@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import importlib
+
+import pytest
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 
 TOKEN_SPY_DIR = Path(__file__).resolve().parent.parent
+
+
+def _stored_ts(dt: datetime) -> str:
+    """Render a timestamp the way the usage.timestamp column stores it."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def load_sqlite_db(tmp_path, monkeypatch):
@@ -115,3 +123,96 @@ def test_query_report_marks_old_positive_cost_rows_as_priced(tmp_path, monkeypat
 
     assert report["summary"]["paid_cost_usd"] == 1.5
     assert report["models"][0]["cost_source"] == "priced_from_tokens"
+
+
+def test_query_usage_excludes_rows_older_than_window(tmp_path, monkeypatch):
+    """query_usage(hours=1) must not return a row from earlier the same day.
+
+    The SQLite bound used to be datetime('now', ...) — a space-separated value
+    that byte-sorts before the stored T-separated timestamps, so every row on
+    the cutoff's calendar date leaked into the window regardless of time-of-day.
+    """
+    db = load_sqlite_db(tmp_path, monkeypatch)
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=1)
+    # A row ~hours-away but on the cutoff's calendar date — the leak case.
+    stale_same_day = cutoff.replace(hour=0, minute=0, second=1, microsecond=0)
+
+    insert_usage(db, _stored_ts(now - timedelta(minutes=10)), agent="recent")
+    insert_usage(db, _stored_ts(stale_same_day), agent="stale")
+
+    agents = {r["agent"] for r in db.query_usage(hours=1)}
+    assert "recent" in agents
+    assert "stale" not in agents
+
+
+def test_query_summary_respects_hours_window(tmp_path, monkeypatch):
+    """query_summary(hours=1) aggregates only rows inside the window."""
+    db = load_sqlite_db(tmp_path, monkeypatch)
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=1)
+    stale_same_day = cutoff.replace(hour=0, minute=0, second=1, microsecond=0)
+
+    insert_usage(db, _stored_ts(now - timedelta(minutes=5)), agent="recent")
+    insert_usage(db, _stored_ts(stale_same_day), agent="stale")
+
+    agents = {r["agent"] for r in db.query_summary(hours=1)}
+    assert agents == {"recent"}
+
+
+class TestReportRangeCap:
+    """/api/report builds one bucket per day in the requested span.
+
+    Without a cap a single request materializes the whole span: 0001-01-01
+    to 9999-12-30 is 3,652,058 buckets and ~215MB of date strings before any
+    row is read. The endpoint only catches ValueError, and the end-of-range
+    arithmetic raises OverflowError on date.max, which escaped as a 500.
+    """
+
+    def test_rejects_a_span_past_the_cap(self, tmp_path, monkeypatch):
+        db = load_sqlite_db(tmp_path, monkeypatch)
+        with pytest.raises(ValueError, match="366 days"):
+            db._parse_report_dates("0001-01-01", "9999-12-30")
+
+    def test_date_max_raises_value_error_not_overflow(self, tmp_path, monkeypatch):
+        """OverflowError is not a ValueError, so it used to escape as a 500."""
+        db = load_sqlite_db(tmp_path, monkeypatch)
+        with pytest.raises(ValueError):
+            db._parse_report_dates("0001-01-01", "9999-12-31")
+
+    def test_accepts_a_normal_year(self, tmp_path, monkeypatch):
+        db = load_sqlite_db(tmp_path, monkeypatch)
+        start_day, end_day, exclusive = db._parse_report_dates(
+            "2026-01-01", "2026-12-31"
+        )
+        assert (end_day - start_day).days == 364
+        assert exclusive == date(2027, 1, 1)
+
+    def test_reversed_range_still_rejected(self, tmp_path, monkeypatch):
+        db = load_sqlite_db(tmp_path, monkeypatch)
+        with pytest.raises(ValueError, match="on or after"):
+            db._parse_report_dates("2026-06-01", "2026-01-01")
+
+    def test_postgres_backend_shares_the_cap(self):
+        """Both backends serve the same endpoint and need the same bound.
+
+        db_postgres imports psycopg2 at module scope, which is absent
+        wherever Postgres is not the configured backend, so this asserts the
+        parity on the source rather than importing it.
+        """
+        pg = (TOKEN_SPY_DIR / "db_postgres.py").read_text(encoding="utf-8")
+        sqlite = (TOKEN_SPY_DIR / "db.py").read_text(encoding="utf-8")
+        for text, name in ((pg, "db_postgres.py"), (sqlite, "db.py")):
+            assert "MAX_REPORT_RANGE_DAYS = 366" in text, name
+            assert "(end_day - start_day).days >= MAX_REPORT_RANGE_DAYS" in text, name
+
+
+class TestShortSpanAtDateMax:
+    def test_short_span_at_date_max_raises_value_error(self, tmp_path, monkeypatch):
+        """An in-cap span ending at date.max must reject cleanly, not
+        overflow in the exclusive-end arithmetic and escape as a 500."""
+        db = load_sqlite_db(tmp_path, monkeypatch)
+        with pytest.raises(ValueError, match="out of range"):
+            db._parse_report_dates("9999-12-01", "9999-12-31")

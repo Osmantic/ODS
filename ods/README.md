@@ -37,19 +37,27 @@ Known-good version baselines: [`docs/KNOWN-GOOD-VERSIONS.md`](docs/KNOWN-GOOD-VE
 
 ---
 
-## 5-Minute Quickstart (Linux)
+## 5-Minute Quickstart
 
 > **Prerequisites:** `curl` and `jq` must be installed. The installer will auto-install `jq` if missing, but `curl` is required to fetch the installer itself.
 
 ```bash
-# One-line install (Linux — NVIDIA, AMD, Intel Arc, or CPU/cloud fallback)
-curl -fsSL https://raw.githubusercontent.com/Light-Heart-Labs/ODS/main/ods/get-ods.sh | bash
+# One-line install for Linux/macOS shells
+curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
+
+The hosted endpoint proxies the current bootstrap from repository `main`.
+Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
+[Installer Trust](docs/INSTALLER_TRUST.md) to inspect the script or install a
+stable release or audited commit manually.
+
+Do not run the `curl ... | bash` installer from Windows PowerShell. Use the
+Windows PowerShell installer below.
 
 Or manually:
 
 ```bash
-git clone https://github.com/Light-Heart-Labs/ODS.git
+git clone https://github.com/Osmantic/ODS.git
 cd ODS
 ./install.sh
 ```
@@ -85,7 +93,7 @@ swap keeps the tier selector's chosen context for the full model. On capable
 tiers that may still be 128K; constrained tiers stay at the smaller selected
 context instead of being forced higher.
 
-Model download, switching, and manual GGUF notes: [docs/MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md)
+Curated and Hugging Face GGUF discovery, verified imports, switching, and recovery: [docs/MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md)
 
 To skip bootstrap and wait for the full model: `./install.sh --no-bootstrap`
 
@@ -104,7 +112,15 @@ llama-server runs natively with Metal GPU acceleration; all other services run i
 > **Prerequisite:** Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend and make sure it is running before you start.
 
 ```powershell
-.\install.ps1   # Auto-detects GPU, launches all services via Docker Desktop + WSL2
+$ProgressPreference = "SilentlyContinue"
+$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
+$odsZip = Join-Path $odsSrc "ods-main.zip"
+New-Item -ItemType Directory -Path $odsSrc | Out-Null
+Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
+Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
+cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1
 ```
 
 Windows installs keep the cloned repo separate from the runtime directory. The
@@ -114,6 +130,27 @@ installing, run `.\ods.ps1` or manual `docker compose` commands from that
 runtime directory, not from the source checkout.
 
 See [`docs/WINDOWS-QUICKSTART.md`](docs/WINDOWS-QUICKSTART.md) for details.
+
+### Uninstall
+
+Linux/macOS:
+
+```bash
+cd ~/ods
+./ods-uninstall.sh --force
+```
+
+Windows:
+
+```powershell
+$installDir = "$env:USERPROFILE\ods"
+cd $installDir
+.\ods.ps1 uninstall --force
+```
+
+Use `--keep-data` or `--keep-models` if you want to preserve local state. If a
+Windows runtime is partial and `.\ods.ps1` is missing, run the cleanup from a
+source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 
 ---
 
@@ -356,7 +393,7 @@ ods preset load <name>  # Restore a saved preset
 ```
 
 Full mode-switching documentation: [docs/MODE-SWITCH.md](docs/MODE-SWITCH.md)
-Model download and manual GGUF documentation: [docs/MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md)
+Model discovery, verified Hugging Face imports, switching, and recovery: [docs/MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md)
 
 ## Showcase & Demos
 
@@ -388,7 +425,7 @@ ods start                      # Start everything
 # Management scripts
 ./scripts/session-cleanup.sh             # Clean up bloated agent sessions
 ./scripts/llm-cold-storage.sh --status   # Check model hot/cold storage
-ods mode status                        # Show current mode
+ods mode                               # Show current mode
 ```
 
 ## Comparison
@@ -453,7 +490,7 @@ ods mode status                        # Show current mode
 - [BUILD-ON-ODS-SERVER.md](docs/BUILD-ON-ODS-SERVER.md) — Forking, custom editions, extension templates, and downstream validation
 - [QUICKSTART.md](QUICKSTART.md) — Detailed setup guide
 - [HEADLESS-SETUP.md](docs/HEADLESS-SETUP.md) — QR onboarding, first-boot setup, AP mode, mDNS, and local agent access
-- [MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md) — Dashboard model downloads, switching, and manual GGUF use
+- [MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md) — Curated and Hugging Face GGUF discovery, verified imports, switching, and recovery
 - [HARDWARE-GUIDE.md](docs/HARDWARE-GUIDE.md) — What to buy
 - [EXTENSIONS.md](docs/EXTENSIONS.md) — Add services, manifests, dashboard plugins
 - [INSTALLER-ARCHITECTURE.md](docs/INSTALLER-ARCHITECTURE.md) — Modding the installer
@@ -489,7 +526,7 @@ Thanks to [lhl](https://github.com/lhl) for [strix-halo-testing](https://github.
 
 For the full contributor list with detailed credits, see the [Wall of Heroes](../README.md#wall-of-heroes) in the root README.
 
-If we missed anyone, [open an issue](https://github.com/Light-Heart-Labs/ODS/issues). We want to get this right.
+If we missed anyone, [open an issue](https://github.com/Osmantic/ODS/issues). We want to get this right.
 
 ---
 
@@ -499,4 +536,4 @@ Apache 2.0 — Use it, modify it, sell it. Just don't blame us.
 
 ---
 
-*Built by [The Collective](https://github.com/Light-Heart-Labs/ODS) — Android-17, Todd, and friends*
+*Built by [The Collective](https://github.com/Osmantic/ODS) — Android-17, Todd, and friends*

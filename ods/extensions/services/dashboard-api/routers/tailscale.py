@@ -20,14 +20,17 @@ is authenticated.
 """
 
 import asyncio
-import json
 import logging
-import urllib.error
-import urllib.request
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from config import AGENT_URL, ODS_AGENT_KEY
+from host_agent_client import (
+    AgentHTTPError,
+    AgentProtocolError,
+    AgentTimeout,
+    AgentUnavailable,
+    request_json as request_agent_json,
+)
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -37,28 +40,18 @@ router = APIRouter(tags=["tailscale"])
 
 def _proxy_agent(path: str, timeout: int = 15) -> dict:
     """Forward a GET to the host-agent. Translates HTTPError → HTTPException."""
-    headers = {"Authorization": f"Bearer {ODS_AGENT_KEY}"}
-    req = urllib.request.Request(f"{AGENT_URL}{path}", headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
-            return json.loads(body) if body else {}
-    except urllib.error.HTTPError as exc:
-        detail = f"Host agent returned HTTP {exc.code}"
-        try:
-            err_payload = json.loads(exc.read().decode("utf-8"))
-            detail = err_payload.get("error", detail)
-        except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-            pass
-        logger.info("host-agent GET %s -> %s", path, exc.code)
-        raise HTTPException(status_code=exc.code, detail=detail) from exc
-    except TimeoutError as exc:
+        return request_agent_json("GET", path, timeout=timeout)
+    except AgentHTTPError as exc:
+        logger.info("host-agent GET %s -> %s", path, exc.status_code)
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except AgentTimeout as exc:
         logger.warning("host-agent GET %s timed out", path)
         raise HTTPException(status_code=504, detail="ODS host agent request timed out.") from exc
-    except urllib.error.URLError as exc:
+    except AgentUnavailable as exc:
         logger.warning("host-agent GET %s unreachable: %s", path, exc)
         raise HTTPException(status_code=503, detail="ODS host agent is not reachable.") from exc
-    except (OSError, json.JSONDecodeError) as exc:
+    except AgentProtocolError as exc:
         logger.exception("host-agent GET %s failed", path)
         raise HTTPException(status_code=500, detail=f"Host agent call failed: {exc}") from exc
 

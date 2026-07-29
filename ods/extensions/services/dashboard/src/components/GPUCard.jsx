@@ -1,8 +1,10 @@
 import { memo } from 'react'
 import { Thermometer, Power, HardDrive, Activity } from 'lucide-react'
 
-function Bar({ percent, alert }) {
-  const color = alert
+function Bar({ percent, alert, available = true }) {
+  const color = !available
+    ? 'bg-zinc-700'
+    : alert
     ? 'bg-red-500'
     : percent > 90
       ? 'bg-red-500'
@@ -13,18 +15,23 @@ function Bar({ percent, alert }) {
     <div className="h-1 bg-zinc-700 rounded-full overflow-hidden mt-1">
       <div
         className={`h-full rounded-full transition-all ${color}`}
-        style={{ width: `${Math.min(percent, 100)}%` }}
+        style={{ width: available ? `${Math.min(percent, 100)}%` : '0%' }}
       />
     </div>
   )
 }
 
 export const GPUCard = memo(function GPUCard({ gpu }) {
+  const hasUtilization = gpu.utilization_available !== false
+  const hasMemoryUsage = gpu.memory_usage_available !== false
+  const hasTemperature = gpu.temperature_available !== false
   const vramPercent = gpu.memory_total_mb > 0
     ? (gpu.memory_used_mb / gpu.memory_total_mb) * 100
     : 0
-  const tempAlert = gpu.temperature_c >= 85
-  const tempColor = gpu.temperature_c >= 85
+  const tempAlert = hasTemperature && gpu.temperature_c >= 85
+  const tempColor = !hasTemperature
+    ? 'text-zinc-600'
+    : gpu.temperature_c >= 85
     ? 'text-red-400'
     : gpu.temperature_c >= 70
       ? 'text-yellow-400'
@@ -47,9 +54,9 @@ export const GPUCard = memo(function GPUCard({ gpu }) {
       <div className="mb-3">
         <div className="flex items-center justify-between text-xs text-zinc-400 mb-1">
           <span className="flex items-center gap-1"><Activity size={12} />Util</span>
-          <span className="font-mono text-white">{gpu.utilization_percent}%</span>
+          <span className="font-mono text-white">{hasUtilization ? `${gpu.utilization_percent}%` : '—'}</span>
         </div>
-        <Bar percent={gpu.utilization_percent} />
+        <Bar percent={gpu.utilization_percent} available={hasUtilization} />
       </div>
 
       {/* VRAM */}
@@ -57,17 +64,19 @@ export const GPUCard = memo(function GPUCard({ gpu }) {
         <div className="flex items-center justify-between text-xs text-zinc-400 mb-1">
           <span className="flex items-center gap-1"><HardDrive size={12} />VRAM</span>
           <span className="font-mono text-white">
-            {(gpu.memory_used_mb / 1024).toFixed(1)}/{(gpu.memory_total_mb / 1024).toFixed(0)} GB
+            {hasMemoryUsage
+              ? `${(gpu.memory_used_mb / 1024).toFixed(1)}/${(gpu.memory_total_mb / 1024).toFixed(0)} GB`
+              : gpu.memory_total_mb > 0 ? `—/${(gpu.memory_total_mb / 1024).toFixed(0)} GB` : '—'}
           </span>
         </div>
-        <Bar percent={vramPercent} />
+        <Bar percent={vramPercent} available={hasMemoryUsage} />
       </div>
 
       {/* Temp + Power */}
       <div className="flex items-center justify-between text-xs mt-3">
         <span className={`flex items-center gap-1 ${tempColor}`}>
           <Thermometer size={12} />
-          {gpu.temperature_c}°C{tempAlert ? ' !' : ''}
+          {hasTemperature ? `${gpu.temperature_c}°C${tempAlert ? ' !' : ''}` : '—'}
         </span>
         {gpu.power_w != null ? (
           <span className="flex items-center gap-1 text-zinc-400">

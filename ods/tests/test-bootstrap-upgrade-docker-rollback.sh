@@ -28,7 +28,7 @@ trap 'rm -rf "$tmp"' EXIT
 fakebin="$tmp/bin"
 install_dir="$tmp/install"
 docker_calls="$tmp/docker-calls.log"
-mkdir -p "$fakebin" "$install_dir/data/models" "$install_dir/config/llama-server"
+mkdir -p "$fakebin" "$install_dir/data/models" "$install_dir/config/llama-server" "$install_dir/config/litellm"
 
 cat > "$fakebin/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -59,6 +59,12 @@ printf 'Linux\n'
 EOF
 chmod +x "$fakebin/uname"
 
+cat > "$fakebin/flock" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$fakebin/flock"
+
 cat > "$fakebin/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -78,7 +84,11 @@ case "${1:-}" in
             exit 0
         fi
         if [[ " $* " == *" up -d --force-recreate --no-deps llama-server "* ]]; then
-            printf 'compose-up:%s\n' "$(env_value GGUF_FILE)" >> "${ODS_FAKE_DOCKER_LOG:?}"
+            active_gguf="$(env_value GGUF_FILE)"
+            printf 'compose-up:%s\n' "$active_gguf" >> "${ODS_FAKE_DOCKER_LOG:?}"
+            if [[ "$active_gguf" == "Full.gguf" ]]; then
+                printf 'model_list:\n  - model_name: promoted\n' > config/litellm/lemonade.yaml
+            fi
             exit 0
         fi
         exit 0
@@ -122,6 +132,11 @@ load-on-startup = true
 n-ctx = 8192
 EOF
 
+cat > "$install_dir/config/litellm/lemonade.yaml" <<'EOF'
+model_list:
+  - model_name: bootstrap
+EOF
+
 cat > "$install_dir/.compose-flags" <<'EOF'
 -f docker-compose.base.yml -f docker-compose.nvidia.yml
 EOF
@@ -153,6 +168,8 @@ grep -q '^CTX_SIZE=8192$' "$install_dir/.env" \
     || fail "Docker hot-swap failure must restore previous CTX_SIZE"
 grep -q 'filename = Bootstrap.gguf' "$install_dir/config/llama-server/models.ini" \
     || fail "Docker hot-swap failure must restore previous models.ini"
+grep -q 'model_name: bootstrap' "$install_dir/config/litellm/lemonade.yaml" \
+    || fail "Docker hot-swap failure must restore the previous Lemonade route"
 grep -q 'compose-up:Full.gguf' "$docker_calls" \
     || fail "test did not exercise the full-model compose recreate"
 grep -q 'compose-up:Bootstrap.gguf' "$docker_calls" \
@@ -161,6 +178,8 @@ grep -q 'Restoring previous active model config after Docker llama-server swap f
     || fail "bootstrap-upgrade should log the Docker rollback"
 grep -q 'llama-server container exited or is restarting while loading the full model' "$tmp/bootstrap.log" \
     || fail "bootstrap-upgrade should detect a failed llama-server container before waiting for the full health timeout"
+grep -q 'continuing within restart grace' "$tmp/bootstrap.log" \
+    || fail "bootstrap-upgrade should tolerate transient llama-server restarts before rollback"
 health_attempts=$(grep -c '^health:' "$curl_calls" 2>/dev/null || true)
 [[ "$health_attempts" -lt 60 ]] \
     || fail "failed Docker hot-swap should not wait for all health attempts after the container is restarting"

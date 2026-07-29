@@ -63,6 +63,31 @@ fi
 [[ "$ENABLE_OPENCLAW" == "true" ]] && PULL_LIST+=("ghcr.io/openclaw/openclaw:2026.3.8|OPENCLAW — agent framework")
 [[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]] && PULL_LIST+=("ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1|TEI — embedding engine")
 
+if command -v ods_compose_external_images >/dev/null 2>&1 && [[ -n "${COMPOSE_FLAGS:-}" ]]; then
+    read -ra _phase08_compose_flags_arr <<< "$COMPOSE_FLAGS"
+    _phase08_compose_images=()
+    _phase08_compose_image_output=""
+    if _phase08_compose_image_output="$(ods_compose_external_images "${DOCKER_COMPOSE_CMD:-docker compose}" "${_phase08_compose_flags_arr[@]}" 2>>"$LOG_FILE")"; then
+        if [[ -n "$_phase08_compose_image_output" ]]; then
+            mapfile -t _phase08_compose_images <<< "$_phase08_compose_image_output"
+        fi
+        for _compose_img in "${_phase08_compose_images[@]}"; do
+            _already_listed=false
+            for _entry in "${PULL_LIST[@]}"; do
+                if [[ "${_entry%%|*}" == "$_compose_img" ]]; then
+                    _already_listed=true
+                    break
+                fi
+            done
+            if [[ "$_already_listed" != "true" ]]; then
+                PULL_LIST+=("$_compose_img|COMPOSE — ${_compose_img}")
+            fi
+        done
+    else
+        ai_warn "Could not audit Docker Compose image list during Phase 4; Phase 5 will re-check before launch."
+    fi
+fi
+
 if $DRY_RUN; then
     ai "[DRY RUN] I would download ${#PULL_LIST[@]} modules."
 else
@@ -177,7 +202,7 @@ else
         ods_progress "$_img_pct" "images" "Pulling image $pull_count/$pull_total"
 
         if ! pull_with_progress "$img" "$label" "$pull_count" "$pull_total"; then
-            ai_warn "Failed to pull $img — will attempt again during service startup"
+            ai_warn "Failed to pull $img — retry after fixing Docker registry/network/disk access"
             ai "  If this persists, check your network connection and disk space"
             pull_failed=$((pull_failed + 1))
         fi
@@ -187,6 +212,9 @@ else
     if [[ $pull_failed -eq 0 ]]; then
         ai_ok "All $pull_total modules downloaded"
     else
-        ai_warn "$pull_failed of $pull_total modules failed — services may not start fully"
+        ai_bad "$pull_failed of $pull_total modules failed to download"
+        ai "Phase 5 will not perform unprotected Docker pulls during compose up."
+        ai "Fix the registry/network/disk error above, then re-run ./install.sh to resume."
+        exit 1
     fi
 fi

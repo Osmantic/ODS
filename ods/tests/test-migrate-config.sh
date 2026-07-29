@@ -161,23 +161,25 @@ if command -v jq >/dev/null 2>&1; then
 }
 EOF
 
-    # Create mock validator script
-    cat > "$SCRIPT_DIR/scripts/validate-env.sh" <<'EOF'
+    # Create the mock validator in the temp dir and point migrate-config.sh at
+    # it via MIGRATE_VALIDATOR. Writing to the real scripts/validate-env.sh (a
+    # tracked file) and rm-ing it afterward would delete it from the working
+    # tree — which is exactly what this suite used to do.
+    mock_validator="$TEMP_DIR/mock-validate-env.sh"
+    cat > "$mock_validator" <<'EOF'
 #!/bin/bash
 echo "Mock validation passed"
 exit 0
 EOF
-    chmod +x "$SCRIPT_DIR/scripts/validate-env.sh"
+    chmod +x "$mock_validator"
 
     validate_exit=0
-    validate_output=$(bash "$MIGRATE_CONFIG_SCRIPT" validate 2>&1) || validate_exit=$?
+    validate_output=$(MIGRATE_VALIDATOR="$mock_validator" bash "$MIGRATE_CONFIG_SCRIPT" validate 2>&1) || validate_exit=$?
     if [[ $validate_exit -eq 0 ]]; then
         pass "Behavioral test: validate command works"
     else
         skip "Behavioral test: validate command (validator not available)"
     fi
-
-    rm -f "$SCRIPT_DIR/scripts/validate-env.sh"
 else
     skip "Behavioral test: validate command (jq not available)"
 fi
@@ -206,6 +208,33 @@ if grep -q "_exit=0" "$MIGRATE_CONFIG_SCRIPT" && grep -q "|| .*_exit=\$?" "$MIGR
     pass "CLAUDE.md compliance: uses inline exit code capture pattern"
 else
     fail "CLAUDE.md compliance: missing inline exit code capture pattern"
+fi
+
+# ============================================================================
+# Test 11: check reports a pending migration when current > last migrated
+# Guards against two regressions: (a) a bare `compare_versions` call aborting
+# under `set -e` before $? is read, and (b) the inverted comparison that treated
+# only a *downgrade* as "migration needed" so ordinary upgrades were missed.
+# ============================================================================
+echo "2.4.1" > "$INSTALL_DIR/.version"
+mkdir -p "$DATA_DIR"
+echo "0.2.0" > "$DATA_DIR/.migration-state"
+check_exit=0
+check_output=$(bash "$MIGRATE_CONFIG_SCRIPT" check 2>&1) || check_exit=$?
+if [[ $check_exit -eq 2 ]] && echo "$check_output" | grep -q "Migration needed"; then
+    pass "Behavioral test: check reports pending migration (current > last migrated)"
+else
+    fail "Behavioral test: check missed pending migration (exit $check_exit): $check_output"
+fi
+
+# Test 12: with last-migrated equal to current, no migration is reported.
+echo "2.4.1" > "$DATA_DIR/.migration-state"
+check_exit=0
+check_output=$(bash "$MIGRATE_CONFIG_SCRIPT" check 2>&1) || check_exit=$?
+if [[ $check_exit -eq 0 ]] && echo "$check_output" | grep -q "No migration needed"; then
+    pass "Behavioral test: check reports up-to-date when versions match"
+else
+    fail "Behavioral test: check misreported up-to-date state (exit $check_exit): $check_output"
 fi
 
 # ============================================================================

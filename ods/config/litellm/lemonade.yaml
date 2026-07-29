@@ -1,3 +1,4 @@
+# ODS-CONTRACT-WRITER: litellm-lemonade
 model_list:
   # Lemonade exposes models as "extra.<GGUF_FILENAME>" — the wildcard
   # passthrough (openai/*) does NOT work because it forwards the friendly

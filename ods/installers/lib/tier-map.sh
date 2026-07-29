@@ -152,7 +152,7 @@ set_qwen_tier_config() {
             GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
             GGUF_SHA256=""
             MAX_CONTEXT=8192
-            LLM_MODEL_SIZE_MB=1500    # Qwen3.5-2B-Q4_K_M (1.28 GB)
+            LLM_MODEL_SIZE_MB=1221    # Qwen3.5-2B-Q4_K_M (1,280,835,840 bytes)
             ;;
         1)
             TIER_NAME="Entry Level"
@@ -265,7 +265,7 @@ set_gemma4_tier_config() {
             GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
             GGUF_SHA256=""
             MAX_CONTEXT=8192
-            LLM_MODEL_SIZE_MB=1500
+            LLM_MODEL_SIZE_MB=1221
             ;;
         1)
             TIER_NAME="Entry Level"

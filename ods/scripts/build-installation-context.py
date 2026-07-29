@@ -350,6 +350,10 @@ def build_compact_soul(env_path: Path) -> str:
         "You are ODS, the resident assistant on this ODS install. "
         "Keep answers brief, natural, and accurate. Use tools when the task needs them.",
         "",
+        "If the user asks for a specific phrase and nothing else, output those "
+        "literal characters only. Do not call a tool, paraphrase, substitute a "
+        "canned example, or add commentary.",
+        "",
         "## Install facts",
         f"- Host: `{device}`",
         f"- GPU/backend: {gpu}",
@@ -385,7 +389,11 @@ def build_soul(
     context = build_context_block(env_path)
 
     if _INSERT_MARKER in template:
-        assembled = template.replace(_INSERT_MARKER, context)
+        # Replace only the dedicated insertion line. The template also names
+        # the literal marker in its operator-facing regeneration instructions;
+        # replacing every occurrence duplicated the full install context at
+        # the end of SOUL.md and could double an already-large system prompt.
+        assembled = template.replace(_INSERT_MARKER, context, 1)
     else:
         # Template doesn't have the marker yet — append the block so
         # operators upgrading from an older template still get the

@@ -37,7 +37,11 @@ def verify_api_key(
             status_code=503,
             detail="OPEN_INTERPRETER_API_KEY not configured",
         )
-    if not hmac.compare_digest(credentials.credentials, API_KEY):
+    # Compared as UTF-8 bytes: compare_digest raises TypeError on non-ASCII
+    # str, which would turn an unauthenticated request into a 500 not a 401.
+    if not hmac.compare_digest(
+        credentials.credentials.encode("utf-8"), API_KEY.encode("utf-8")
+    ):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return credentials
 

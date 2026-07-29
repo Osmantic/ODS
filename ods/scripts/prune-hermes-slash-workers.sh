@@ -67,9 +67,37 @@ if [[ -z "$CONTAINER" ]]; then
     exit 1
 fi
 
+# Turn one process-table layout into the normalized row this script works on:
+#
+#     pid <TAB> age_seconds <TAB> original ps line
+#
+# `has_age=1` means the caller asked ps for an elapsed-time column, so field 2
+# holds seconds. `has_age=0` means the layout only has `pid` then the command,
+# and age is recorded as -1 ("unknown") rather than being read out of whichever
+# column happens to sit in position 2.
+normalize_workers() {
+    local has_age="$1"
+    awk -v has_age="$has_age" '
+        $0 !~ /tui_gateway[.]slash_worker/ {
+            next
+        }
+        {
+            pid = $1
+            if (pid !~ /^[0-9]+$/) {
+                next
+            }
+            age = -1
+            if (has_age == "1" && $2 ~ /^[0-9]+$/) {
+                age = $2
+            }
+            print pid "\t" age "\t" $0
+        }
+    '
+}
+
 collect_workers() {
     if [[ -n "${ODS_HERMES_SLASH_WORKER_PS_FIXTURE:-}" ]]; then
-        cat "$ODS_HERMES_SLASH_WORKER_PS_FIXTURE"
+        normalize_workers 1 < "$ODS_HERMES_SLASH_WORKER_PS_FIXTURE"
         return 0
     fi
 
@@ -78,13 +106,35 @@ collect_workers() {
         return 1
     fi
     if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER"; then
-        echo "[INFO] $CONTAINER is not running; nothing to prune"
+        # stderr, not stdout: stdout is the normalized worker stream.
+        echo "[INFO] $CONTAINER is not running; nothing to prune" >&2
         return 0
     fi
 
-    docker exec "$CONTAINER" sh -c \
-        "ps -eo pid=,etimes=,args= 2>/dev/null || ps -ef 2>/dev/null" \
-        | grep '[t]ui_gateway[.]slash_worker' || true
+    # Each ps layout is requested in its own `docker exec` so the caller knows
+    # which columns came back. Asking the container to pick via `A || B` hid
+    # that from us: the shapes differ (`ps -ef` leads with UID, not PID), so a
+    # fallback line was read as pid=<uid>, age=<pid> — which silently pruned
+    # nothing on images that print a UID name, and targeted an unrelated pid on
+    # images that print a numeric UID.
+    local raw
+
+    # procps: pid, elapsed seconds, full command line.
+    if raw="$(docker exec "$CONTAINER" sh -c 'ps -eo pid=,etimes=,args=' 2>/dev/null)" \
+        && [[ -n "$raw" ]]; then
+        printf '%s\n' "$raw" | normalize_workers 1
+        return 0
+    fi
+
+    # POSIX/busybox: same leading pid column, no elapsed-time column available.
+    if raw="$(docker exec "$CONTAINER" sh -c 'ps -eo pid=,args=' 2>/dev/null)" \
+        && [[ -n "$raw" ]]; then
+        printf '%s\n' "$raw" | normalize_workers 0
+        return 0
+    fi
+
+    echo "[WARN] could not read the process table inside $CONTAINER" >&2
+    return 1
 }
 
 WORKERS_FILE="$(mktemp)"
@@ -92,19 +142,7 @@ CANDIDATES_FILE="$(mktemp)"
 OVERAGE_FILE="$(mktemp)"
 trap 'rm -f "$WORKERS_FILE" "$CANDIDATES_FILE" "$OVERAGE_FILE"' EXIT
 
-collect_workers | awk '
-    $0 ~ /tui_gateway[.]slash_worker/ {
-        pid = $1
-        age = $2
-        if (pid !~ /^[0-9]+$/) {
-            next
-        }
-        if (age !~ /^[0-9]+$/) {
-            age = -1
-        }
-        print pid "\t" age "\t" $0
-    }
-' > "$WORKERS_FILE"
+collect_workers > "$WORKERS_FILE"
 
 WORKER_COUNT="$(wc -l < "$WORKERS_FILE" | tr -d ' ')"
 if [[ "$WORKER_COUNT" -eq 0 ]]; then
@@ -117,7 +155,10 @@ awk -F '\t' -v max_age="$MAX_AGE_SECONDS" '$2 >= max_age {print}' \
 
 if [[ "$WORKER_COUNT" -gt "$MAX_COUNT" ]]; then
     OVERAGE=$(( WORKER_COUNT - MAX_COUNT ))
-    sort -t "$(printf '\t')" -k2,2nr "$WORKERS_FILE" \
+    # Oldest first. When the container could not report elapsed time every age
+    # is -1, so break the tie on the lowest pid — the longest-lived worker —
+    # instead of leaving the pick to sort order.
+    sort -t "$(printf '\t')" -k2,2nr -k1,1n "$WORKERS_FILE" \
         | head -n "$OVERAGE" > "$OVERAGE_FILE"
     cat "$OVERAGE_FILE" >> "$CANDIDATES_FILE"
 fi

@@ -64,7 +64,7 @@ The installer's first-boot flow handles both. If you're not using the installer,
 **The proxy is the trusted gate.** Behind it, each service's own auth applies:
 
 - `dashboard-api`: API key (`DASHBOARD_API_KEY`)
-- Open WebUI: its own auth (`WEBUI_AUTH=true` by default — users sign up / sign in)
+- Open WebUI: its own auth (`WEBUI_AUTH=true` is selected when the installer enables this LAN proxy)
 - Dashboard SPA: the React app shows admin features only when the API call succeeds
 - ODS Talk: signed `ods-session` cookie from owner-card redemption; no dashboard admin API control
 - `hermes-proxy`: Caddy `forward_auth` against `dashboard-api/api/auth/verify-session` (signed-cookie check)
@@ -86,6 +86,35 @@ HTTP only in v1. Adding HTTPS needs one of:
 3. **Caddy's auto-https for public domains** — only works if you have a real DNS name. Not the `.local` case.
 
 For now, plain HTTP on the trusted LAN. The cookie-issuing flows that set `Secure=` honor the request scheme — they'll set the Secure flag once TLS is in front.
+
+## External reverse proxies
+
+If you run ODS behind your own reverse proxy (Caddy Proxy Manager, Nginx
+Proxy Manager, Traefik, Tailscale Funnel, Cloudflare Tunnel, etc.), configure
+the public browser URL for each service you expose. This is not
+Proxmox-specific; Proxmox only hosts the VM.
+
+```env
+ODS_PUBLIC_URL=https://ods.example.com
+ODS_SERVICE_PUBLIC_URLS={"open-webui":"https://chat.example.com","comfyui":"https://comfy.example.com","n8n":"https://n8n.example.com"}
+ODS_TALK_PUBLIC_URL=https://talk.example.com
+```
+
+You can also use per-service env vars instead of the JSON map. The dashboard
+checks these before falling back to `current-host:port` links:
+
+```env
+OPEN_WEBUI_PUBLIC_URL=https://chat.example.com
+HERMES_PROXY_PUBLIC_URL=https://hermes.example.com
+COMFYUI_PUBLIC_URL=https://comfy.example.com
+N8N_PUBLIC_URL=https://n8n.example.com
+WHISPER_PUBLIC_URL=https://whisper.example.com
+TTS_PUBLIC_URL=https://tts.example.com
+OPENCODE_PUBLIC_URL=https://code.example.com
+```
+
+Public URLs must be absolute `http://` or `https://` URLs. Invalid values are
+ignored and the dashboard keeps the normal host/port fallback.
 
 ## How to bypass the proxy
 

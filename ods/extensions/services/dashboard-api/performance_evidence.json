@@ -1,6 +1,6 @@
 {
   "schema_version": "ods.performance-evidence.v1",
-  "updated_at": "2026-05-12",
+  "updated_at": "2026-07-18",
   "entries": [
     {
       "id": "witcheer-4060ti-qwen35-9b-q4km-16k",
@@ -17,6 +17,22 @@
       "source_label": "witcheer/windows-rtx-4060ti-8gb-bench-2026-05",
       "source_url": "https://huggingface.co/datasets/witcheer/windows-rtx-4060ti-8gb-bench-2026-05",
       "license": "cc-by-4.0"
+    },
+    {
+      "id": "ods-fleet-windows-laptop-rtx5070-phi4-mini-q4km-128k",
+      "model_id": "phi4-mini-q4",
+      "model_names": ["phi-4-mini", "Phi-4-mini-instruct-Q4_K_M.gguf"],
+      "quantization": "Q4_K_M",
+      "backend": "nvidia",
+      "gpu_name": "NVIDIA GeForce RTX 5070 Laptop GPU",
+      "vram_gb": 8,
+      "context_length": 128000,
+      "tokens_per_second": 0.5,
+      "metric": "decode_tok_s",
+      "runtime": "llama-server",
+      "source_label": "ods-fleet/windows-laptop/model-ui-2026-07-18",
+      "source_url": "",
+      "license": "internal-fleet-validation"
     },
     {
       "id": "witcheer-4060ti-qwen36-35b-a3b-ncmoe30-32k",

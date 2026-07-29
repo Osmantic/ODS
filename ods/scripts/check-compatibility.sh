@@ -24,22 +24,26 @@ pass "manifest structure"
 
 # Compose contract files
 while IFS= read -r file; do
+  file="${file%$'\r'}"
   test -f "${ROOT_DIR}/${file}" || fail "missing compose contract file: ${file}"
 done < <(jq -r '.contracts.compose.canonical[]' "$MANIFEST_FILE")
 pass "compose canonical files"
 
 # Workflow catalog canonical path
 workflow_path="$(jq -r '.contracts.workflowCatalog.canonicalPath' "$MANIFEST_FILE")"
+workflow_path="${workflow_path%$'\r'}"
 test -f "${ROOT_DIR}/${workflow_path}" || fail "missing canonical workflow catalog: ${workflow_path}"
 pass "workflow catalog canonical path"
 
 # Extension schema contract
 schema_path="$(jq -r '.contracts.extensions.serviceManifestSchema' "$MANIFEST_FILE")"
+schema_path="${schema_path%$'\r'}"
 test -f "${ROOT_DIR}/${schema_path}" || fail "missing extension schema: ${schema_path}"
 pass "extension schema contract"
 
 # Port contract
 ports_path="$(jq -r '.contracts.ports.canonicalPath' "$MANIFEST_FILE")"
+ports_path="${ports_path%$'\r'}"
 test -f "${ROOT_DIR}/${ports_path}" || fail "missing canonical ports contract: ${ports_path}"
 jq -e '.version and (.ports | type=="array" and length>0)' "${ROOT_DIR}/${ports_path}" >/dev/null \
   || fail "invalid ports contract structure: ${ports_path}"

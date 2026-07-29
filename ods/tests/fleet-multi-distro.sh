@@ -68,8 +68,8 @@ PULL=false
 RUN_DRY_RUN=true
 KEEP_WORK=false
 HOST_LOCK=true
-LOCK_FILE="${ODS_FLEET_HOST_LOCK:-${DREAM_FLEET_HOST_LOCK:-/tmp/dream-fleet-heavy.lock}}"
-LOCK_TIMEOUT="${ODS_FLEET_HOST_LOCK_TIMEOUT_SECONDS:-${DREAM_FLEET_HOST_LOCK_TIMEOUT_SECONDS:-}}"
+LOCK_FILE="${ODS_FLEET_HOST_LOCK:-/tmp/ods-fleet-heavy.lock}"
+LOCK_TIMEOUT="${ODS_FLEET_HOST_LOCK_TIMEOUT_SECONDS:-}"
 TARGETS=()
 
 usage() {
@@ -83,8 +83,7 @@ Options:
   --no-dry-run    Skip install-core.sh --dry-run inside each distro.
   --keep-work     Keep temporary host work directory for debugging.
   --lock-file P    Host lock path for coordinating with full fleet runs.
-                  Default: ODS_FLEET_HOST_LOCK, DREAM_FLEET_HOST_LOCK,
-                  or /tmp/dream-fleet-heavy.lock.
+                  Default: ODS_FLEET_HOST_LOCK or /tmp/ods-fleet-heavy.lock.
   --lock-timeout N Seconds to wait for the host lock before failing.
                   Default: wait indefinitely.
   --no-host-lock  Do not take the shared host lock.

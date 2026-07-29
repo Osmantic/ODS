@@ -1,7 +1,7 @@
 services:
   brave-search:
     build:
-      context: .
+      context: ./extensions/services/brave-search
       dockerfile: Dockerfile
     image: ods-brave-search:local
     container_name: ods-brave-search
@@ -11,6 +11,8 @@ services:
     environment:
       - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY:-}
       - BRAVE_SEARCH_PORT_INTERNAL=8585
+      - BRAVE_SEARCH_SEARXNG_COMPAT=${BRAVE_SEARCH_SEARXNG_COMPAT:-0}
+      - BRAVE_SEARCH_TIMEOUT_MS=${BRAVE_SEARCH_TIMEOUT_MS:-8000}
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${BRAVE_SEARCH_PORT:-8585}:8585"
     deploy:

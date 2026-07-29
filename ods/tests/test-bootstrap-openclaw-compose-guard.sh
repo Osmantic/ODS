@@ -4,7 +4,7 @@
 # both ${#COMPOSE_ARGS[@]} > 0 AND -n "$DOCKER_COMPOSE_CMD" before
 # expanding $DOCKER_COMPOSE_CMD as the command word.
 # ============================================================================
-# Audit follow-up on PR #974 (Lightheartdevs, 2026-04-28):
+# Audit follow-up on PR #974 (2026-04-28):
 #
 #   "The direction of using $DOCKER_CMD instead of bare docker is right,
 #    but the OpenClaw recreation path can still invoke an empty compose

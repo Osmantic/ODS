@@ -93,4 +93,4 @@ If any of these touch a workflow you care about, please open an issue before the
 
 ## Questions / migration pain
 
-File an issue at <https://github.com/Light-Heart-Labs/ODS/issues> with the `migration` label.
+File an issue at <https://github.com/Osmantic/ODS/issues> with the `migration` label.

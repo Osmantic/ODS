@@ -3,7 +3,7 @@
 - **Original audit date:** 2026-03-08
 - **Original analyst:** latentcollapse
 - **Status review:** 2026-05-21
-- **Scope:** `Light-Heart-Labs/ODS` public repository, local clone only. No live infrastructure was touched.
+- **Scope:** ODS public repository under its former GitHub organization at audit time; now `Osmantic/ODS`. Local clone only. No live infrastructure was touched.
 - **Current operator guide:** [`ods/SECURITY.md`](ods/SECURITY.md)
 
 This document tracks the remediation status of the March 2026 static security

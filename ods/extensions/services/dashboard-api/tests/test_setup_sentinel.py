@@ -18,6 +18,46 @@ import pytest
 SENTINEL_PREFIX = "__ODS_RESULT__:"
 
 
+class _AsyncByteStream:
+    def __init__(self, text: str):
+        self._lines = iter(text.encode().splitlines(keepends=True))
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._lines)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+
+def _mock_diagnostic_process(monkeypatch, *, output: str, returncode: int) -> None:
+    """Run sentinel assertions without depending on a host Bash installation."""
+
+    class Process:
+        def __init__(self):
+            self.stdout = _AsyncByteStream(output)
+            self.returncode = None
+
+        async def wait(self):
+            self.returncode = returncode
+            return returncode
+
+        def kill(self):
+            self.returncode = returncode
+
+    async def create_subprocess_exec(program, script_path, **_kwargs):
+        assert program == "bash"
+        assert Path(script_path).is_file()
+        return Process()
+
+    monkeypatch.setattr(
+        "routers.setup.asyncio.create_subprocess_exec",
+        create_subprocess_exec,
+    )
+
+
 def _last_sentinel_line(lines):
     """Return the parsed (status, rc) tuple for the last sentinel found.
 
@@ -65,9 +105,16 @@ def setup_install_dir(tmp_path, monkeypatch):
     return install_root
 
 
-def test_setup_test_emits_pass_sentinel_on_success(test_client, setup_install_dir):
+def test_setup_test_emits_pass_sentinel_on_success(
+    test_client, setup_install_dir, monkeypatch,
+):
     """A diagnostic script that exits 0 must terminate with PASS:0."""
     _write_test_script(setup_install_dir, "#!/bin/bash\necho 'check 1 ok'\necho 'check 2 ok'\nexit 0\n")
+    _mock_diagnostic_process(
+        monkeypatch,
+        output="check 1 ok\ncheck 2 ok\n",
+        returncode=0,
+    )
 
     with test_client.stream("POST", "/api/setup/test", headers=test_client.auth_headers) as response:
         assert response.status_code == 200
@@ -82,9 +129,16 @@ def test_setup_test_emits_pass_sentinel_on_success(test_client, setup_install_di
     )
 
 
-def test_setup_test_emits_fail_sentinel_with_returncode_on_failure(test_client, setup_install_dir):
+def test_setup_test_emits_fail_sentinel_with_returncode_on_failure(
+    test_client, setup_install_dir, monkeypatch,
+):
     """A diagnostic script that exits non-zero must terminate with FAIL:<rc>."""
     _write_test_script(setup_install_dir, "#!/bin/bash\necho 'check failed'\nexit 3\n")
+    _mock_diagnostic_process(
+        monkeypatch,
+        output="check failed\n",
+        returncode=3,
+    )
 
     with test_client.stream("POST", "/api/setup/test", headers=test_client.auth_headers) as response:
         assert response.status_code == 200
@@ -118,7 +172,9 @@ def test_setup_test_emits_sentinel_when_script_missing(test_client, setup_instal
     assert lines[-1].startswith(SENTINEL_PREFIX)
 
 
-def test_setup_test_sentinel_format_is_machine_parseable(test_client, setup_install_dir):
+def test_setup_test_sentinel_format_is_machine_parseable(
+    test_client, setup_install_dir, monkeypatch,
+):
     """The on-the-wire format must match the regex the SetupWizard frontend
     pins: ``^__ODS_RESULT__:(PASS|FAIL):(-?\\d+)$``. This test guards
     against accidental whitespace, prefix, or trailing-character drift on
@@ -126,6 +182,7 @@ def test_setup_test_sentinel_format_is_machine_parseable(test_client, setup_inst
     import re
 
     _write_test_script(setup_install_dir, "#!/bin/bash\nexit 0\n")
+    _mock_diagnostic_process(monkeypatch, output="", returncode=0)
     sentinel_re = re.compile(r"^__ODS_RESULT__:(PASS|FAIL):(-?\d+)$")
 
     with test_client.stream("POST", "/api/setup/test", headers=test_client.auth_headers) as response:

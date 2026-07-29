@@ -4,7 +4,7 @@
   "ports": [
     {
       "env_var": "OLLAMA_PORT",
-      "external_default": 8080,
+      "external_default": 11434,
       "service_id": "llama-server",
       "internal_port": 8080,
       "manifest_service": "llama-server",

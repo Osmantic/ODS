@@ -1,0 +1,26 @@
+schema_version: ods.templates.v1
+template:
+  id: onboarding-full-stack
+  name: Full ODS Stack
+  description: "The complete first-party ODS stack: agents, workflows, RAG, voice, research, privacy, and observability. Image generation (ComfyUI) is tier-gated by the installer — add it from Extensions afterward."
+  icon: Layers
+  tags: [onboarding, full-stack, agents, voice, rag]
+  services:
+    - litellm
+    - searxng
+    - token-spy
+    - whisper
+    - tts
+    - n8n
+    - qdrant
+    - embeddings
+    - hermes
+    - hermes-proxy
+    - ape
+    - perplexica
+    - privacy-shield
+    - langfuse
+  tier_minimum: T2
+  estimated_disk_gb: 16
+  service_notes:
+    langfuse: "Adds the observability data stack and has the largest service footprint"

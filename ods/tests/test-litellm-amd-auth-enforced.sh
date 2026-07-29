@@ -20,6 +20,20 @@ else
     pass "compose.amd.yaml: no 'unset LITELLM_MASTER_KEY'"
 fi
 
+echo "[guard] LiteLLM AMD overlay must preserve switchboard command"
+if grep -q 'exec litellm --config /app/config.yaml' \
+        extensions/services/litellm/compose.amd.yaml; then
+    fail "compose.amd.yaml: hard-coded config.yaml bypasses switchboard.yaml"
+elif grep -q 'ods-select-config.sh' extensions/services/litellm/compose.yaml \
+        && grep -Fq '[ "$mode" != "cloud" ]' \
+            extensions/services/litellm/select-config.sh \
+        && grep -Fq '[ "$switchboard" = "enabled" ]' \
+            extensions/services/litellm/select-config.sh; then
+    pass "compose.amd.yaml: preserves the mode-aware switchboard selector"
+else
+    fail "compose.yaml: missing mode-aware LiteLLM config selector"
+fi
+
 echo "[guard] open-webui must not hardcode OPENAI_API_KEY=no-key on AMD"
 if grep -qE '^[[:space:]]*-[[:space:]]*OPENAI_API_KEY=no-key' docker-compose.amd.yml; then
     fail "docker-compose.amd.yml: hardcoded OPENAI_API_KEY=no-key — open-webui will fail auth"
@@ -32,7 +46,7 @@ fi
 # present LITELLM_KEY by default. Use a fallback chain so user-supplied keys
 # still win, and so non-AMD/non-LiteLLM installs are unchanged.
 echo "[guard] perplexica must use LITELLM_KEY fallback chain"
-if grep -qF 'OPENAI_API_KEY=${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}' \
+if grep -qF 'OPENAI_API_KEY=${HERMES_LLM_API_KEY:-${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}}' \
         extensions/services/perplexica/compose.yaml; then
     pass "perplexica: OPENAI_API_KEY uses LITELLM_KEY fallback chain"
 else

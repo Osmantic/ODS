@@ -158,7 +158,7 @@ Everything you need to build your own extension:
 
 ## Schema
 
-`schema/service-manifest.v1.json` — JSON Schema for validating manifest files.
+`schema/service-manifest.v1.json` is a generated standalone mirror of the canonical schema declared by the repository's `manifest.json`. Update it from the repository root with `python3 scripts/sync-manifest-schema.py`; do not edit the mirror directly.
 
 ```bash
 # Validate any manifest:

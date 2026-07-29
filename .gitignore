@@ -13,7 +13,6 @@ build/
 Thumbs.db
 
 # IDE
-.vscode/
 .idea/
 
 # Config backups (may contain user paths)
@@ -24,8 +23,6 @@ config.yaml.bak
 *.swp
 
 # Secrets and credentials (global)
-.env
-.env.*
 !.env.example
 *.key
 *.pem
@@ -69,3 +66,5 @@ ods/.cache/
 archive/
 .claude/
 !.claude/commands/
+config.bat
+node_modules

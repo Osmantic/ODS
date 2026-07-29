@@ -37,6 +37,8 @@ const welcomeMessage = {
   status: 'done',
 }
 
+const TALK_STATUS_RETRY_MS = 1000
+
 function makeId(prefix) {
   if (globalThis.crypto?.randomUUID) return `${prefix}-${globalThis.crypto.randomUUID()}`
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -52,6 +54,10 @@ export default function ODSTalk() {
   const [input, setInput] = useState('')
   const [status, setStatus] = useState('loading')
   const [statusText, setStatusText] = useState('Connecting to ODS Talk...')
+  const [retryStatusRefresh, setRetryStatusRefresh] = useState(false)
+  // Advances after every offline retry so the polling effect re-arms; a
+  // repeated failure otherwise leaves every dependency unchanged.
+  const [statusAttempt, setStatusAttempt] = useState(0)
   const [sending, setSending] = useState(false)
   const [recording, setRecording] = useState(false)
   const [spokenReplies, setSpokenReplies] = useState(() => {
@@ -109,31 +115,62 @@ export default function ODSTalk() {
   }, [])
 
   const refreshStatus = useCallback(async () => {
+    setRetryStatusRefresh(false)
     setStatus('loading')
     try {
       const resp = await fetch('/api/talk/status', { credentials: 'same-origin' })
       if (resp.status === 401) {
         setStatus('expired')
         setStatusText('Session expired. Scan the owner card again.')
+        setRetryStatusRefresh(false)
         return
       }
       if (!resp.ok) throw new Error(await parseError(resp, 'ODS Talk is not ready.'))
       const data = await resp.json()
       const capabilities = data.capabilities || {}
+      const compatibilityReason = data.reason || data.modelCompatibility?.hermesTalk?.reason || ''
       setVoiceState({
         tts: Boolean(capabilities.tts),
         audioMessage: Boolean(capabilities.audio_message),
         liveMic: Boolean(liveMicSupported && capabilities.audio_message),
       })
+      if (!capabilities.text_chat) {
+        setStatus('offline')
+        setStatusText(compatibilityReason || 'ODS Talk text chat is not available.')
+        setRetryStatusRefresh(!compatibilityReason)
+        return
+      }
       setStatus('ready')
       setStatusText('Ready')
+      setRetryStatusRefresh(false)
     } catch (err) {
       setStatus('offline')
       setStatusText(err.message || 'ODS Talk is offline.')
+      setRetryStatusRefresh(true)
     }
   }, [liveMicSupported])
 
   useEffect(() => { refreshStatus() }, [refreshStatus])
+
+  // Poll while offline. A one-shot setTimeout does not reschedule here: a
+  // failed retry sets `status` and `retryStatusRefresh` to the values they
+  // already hold, React bails out of the re-render, no dependency changes,
+  // and the effect never runs again. Bumping an attempt counter after each
+  // attempt guarantees a changed dependency, so the retry keeps going until
+  // the backend is ready — which is the point, since it is usually a
+  // container still starting up.
+  useEffect(() => {
+    if (!retryStatusRefresh || status !== 'offline') return undefined
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      await refreshStatus()
+      if (!cancelled) setStatusAttempt(attempt => attempt + 1)
+    }, TALK_STATUS_RETRY_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [refreshStatus, retryStatusRefresh, status, statusAttempt])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ block: 'end' })
@@ -333,7 +370,7 @@ export default function ODSTalk() {
     // prompt for images ("Describe what you see in this image."). Without
     // either a caption or an attachment, there's nothing to send.
     if (!clean && !attachment) return
-    if (sending || status === 'expired') return
+    if (sending || status !== 'ready') return
     setSending(true)
 
     const userId = transcriptId || makeId('user')
@@ -605,7 +642,7 @@ export default function ODSTalk() {
 
   // Send is enabled either with text OR an attachment (an image alone is a
   // valid message — the model gets a default "describe this" prompt).
-  const canSend = (input.trim().length > 0 || pendingAttachment) && !sending && status !== 'expired'
+  const canSend = (input.trim().length > 0 || pendingAttachment) && !sending && status === 'ready'
 
   return (
     <div className="min-h-dvh bg-[#f8faf8] text-zinc-950 antialiased">
@@ -663,7 +700,7 @@ export default function ODSTalk() {
 
         {status === 'offline' && (
           <div className="mx-4 mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
-            ODS Talk cannot reach its local services. Try again after the box finishes starting.
+            {statusText || 'ODS Talk cannot reach its local services. Try again after the box finishes starting.'}
           </div>
         )}
 

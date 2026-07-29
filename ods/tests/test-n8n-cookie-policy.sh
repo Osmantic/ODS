@@ -41,6 +41,13 @@ if ods_n8n_secure_cookie_policy sometimes http 127.0.0.1 >/dev/null 2>&1; then
     failures=$((failures + 1))
 fi
 
+compose_file="$ROOT_DIR/extensions/services/n8n/compose.yaml"
+expected_entrypoint='entrypoint: ["tini", "--", "/bin/sh", "/opt/ods/n8n-entrypoint.sh"]'
+if ! grep -Fq "$expected_entrypoint" "$compose_file"; then
+    printf 'FAIL n8n entrypoint must run through /bin/sh for Windows bind mounts\n' >&2
+    failures=$((failures + 1))
+fi
+
 if ((failures > 0)); then
     printf '%d n8n cookie policy test(s) failed\n' "$failures" >&2
     exit 1

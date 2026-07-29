@@ -78,6 +78,140 @@ function Write-InfoBox {
     Write-Host " $Value" -ForegroundColor White
 }
 
+function Get-ODSPositiveIntEnv {
+    param(
+        [string]$Name,
+        [int]$Default
+    )
+
+    $raw = [Environment]::GetEnvironmentVariable($Name)
+    $parsed = 0
+    if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -gt 0) {
+        return $parsed
+    }
+    return $Default
+}
+
+function Get-ODSCurlDownloadHttpArgs {
+    $httpVersion = [Environment]::GetEnvironmentVariable("ODS_DOWNLOAD_HTTP_VERSION")
+    if ([string]::IsNullOrWhiteSpace($httpVersion)) {
+        $httpVersion = [Environment]::GetEnvironmentVariable("ODS_BOOTSTRAP_DOWNLOAD_HTTP_VERSION")
+    }
+    if ([string]::IsNullOrWhiteSpace($httpVersion)) {
+        $httpVersion = "http1.1"
+    }
+
+    switch -Regex ($httpVersion) {
+        "^(auto)$" { return @() }
+        "^(1|1\.1|http1|http1\.1)$" { return @("--http1.1") }
+        "^(2|http2)$" { return @("--http2") }
+        default {
+            Write-AIWarn "Unknown ODS_DOWNLOAD_HTTP_VERSION=$httpVersion; using http1.1."
+            return @("--http1.1")
+        }
+    }
+}
+
+function Test-ODSHuggingFaceResolveUrl {
+    param([string]$Url)
+    return ($Url -match '^https://(www\.)?(huggingface\.co|hf\.co)/')
+}
+
+function Get-ODSHuggingFaceDownloadHelper {
+    $roots = @()
+    $_sourceRoot = Get-Variable -Name SourceRoot -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if (-not [string]::IsNullOrWhiteSpace($_sourceRoot)) { $roots += $_sourceRoot }
+    $_installDir = Get-Variable -Name installDir -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if (-not [string]::IsNullOrWhiteSpace($_installDir)) { $roots += $_installDir }
+    if (-not [string]::IsNullOrWhiteSpace($env:ODS_HOME)) { $roots += $env:ODS_HOME }
+
+    foreach ($root in $roots) {
+        $candidate = Join-Path $root "scripts\download-hf-artifact.py"
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+function Invoke-ODSNativeQuiet {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$Arguments = @()
+    )
+
+    $prevEAP = $ErrorActionPreference
+    $exitCode = 1
+    try {
+        # Expected failed native probes must return an exit code under
+        # Windows PowerShell 5.1 strict installer semantics.
+        $ErrorActionPreference = "SilentlyContinue"
+        & $FilePath @Arguments 2>&1 | Out-Null
+        if ($null -ne $LASTEXITCODE) { $exitCode = $LASTEXITCODE }
+    } catch {
+        $exitCode = 1
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    return $exitCode
+}
+
+function Get-ODSPythonDownloadCommand {
+    $candidates = @(
+        @{ FilePath = "python3"; PrefixArgs = @() },
+        @{ FilePath = "python"; PrefixArgs = @() },
+        @{ FilePath = "py"; PrefixArgs = @("-3") }
+    )
+
+    foreach ($candidate in $candidates) {
+        $filePath = $candidate.FilePath
+        $prefixArgs = @($candidate.PrefixArgs)
+        $probeArgs = @($prefixArgs) + @("-c", "import sys")
+        if ((Invoke-ODSNativeQuiet -FilePath $filePath -Arguments $probeArgs) -eq 0) {
+            return [pscustomobject]@{
+                FilePath = $filePath
+                PrefixArgs = $prefixArgs
+            }
+        }
+    }
+    return $null
+}
+
+function Invoke-ODSHuggingFaceDownloadFallback {
+    param(
+        [string]$Url,
+        [string]$Destination
+    )
+
+    if (-not (Test-ODSHuggingFaceResolveUrl -Url $Url)) {
+        return $false
+    }
+
+    $helper = Get-ODSHuggingFaceDownloadHelper
+    if (-not $helper) {
+        return $false
+    }
+
+    $python = Get-ODSPythonDownloadCommand
+    if (-not $python) {
+        return $false
+    }
+
+    $checkArgs = @($python.PrefixArgs) + @("-c", "import huggingface_hub, hf_xet")
+    if ((Invoke-ODSNativeQuiet -FilePath $python.FilePath -Arguments $checkArgs) -ne 0) {
+        $installArgs = @($python.PrefixArgs) + @("-m", "pip", "install", "--user", "-q", "huggingface_hub[hf_xet]>=0.27")
+        Invoke-ODSNativeQuiet -FilePath $python.FilePath -Arguments $installArgs | Out-Null
+    }
+
+    Write-AI "Retrying with Hugging Face client..."
+    $downloadArgs = @($python.PrefixArgs) + @($helper, $Url, $Destination)
+    & $python.FilePath @downloadArgs
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $Destination) -and ((Get-Item $Destination).Length -gt 0)) {
+        return $true
+    }
+    return $false
+}
+
 function Show-ProgressDownload {
     param(
         [string]$Url,
@@ -88,13 +222,31 @@ function Show-ProgressDownload {
     # Use curl.exe (ships with Windows 10+) for resume-capable download with progress
     # Direct invocation (&) instead of Start-Process so the progress bar is visible
     $partFile = "$Destination.part"
-    & curl.exe -C - -L --progress-bar -o $partFile $Url
+    $connectTimeout = Get-ODSPositiveIntEnv -Name "ODS_DOWNLOAD_CONNECT_TIMEOUT" -Default 30
+    $lowSpeedTime = Get-ODSPositiveIntEnv -Name "ODS_DOWNLOAD_LOW_SPEED_TIME" -Default 120
+    $lowSpeedLimit = Get-ODSPositiveIntEnv -Name "ODS_DOWNLOAD_LOW_SPEED_LIMIT" -Default 262144
+    $curlArgs = @(
+        "-C", "-",
+        "-L",
+        "--progress-bar",
+        "--connect-timeout", "$connectTimeout",
+        "--speed-time", "$lowSpeedTime",
+        "--speed-limit", "$lowSpeedLimit"
+    )
+    $curlArgs += Get-ODSCurlDownloadHttpArgs
+    $curlArgs += @("-o", $partFile, $Url)
+    & curl.exe @curlArgs
     $curlExit = $LASTEXITCODE
     if ($curlExit -eq 0 -and (Test-Path $partFile)) {
         Move-Item -Path $partFile -Destination $Destination -Force
         Write-AISuccess "$Label complete"
         return $true
     } else {
+        if (Invoke-ODSHuggingFaceDownloadFallback -Url $Url -Destination $partFile) {
+            Move-Item -Path $partFile -Destination $Destination -Force
+            Write-AISuccess "$Label complete"
+            return $true
+        }
         $curlErrors = @{ 6="Could not resolve host"; 7="Connection refused"; 18="Partial transfer"; 28="Timeout"; 35="SSL error"; 56="Network failure" }
         $hint = $(if ($curlErrors.ContainsKey($curlExit)) { " ($($curlErrors[$curlExit]))" } else { "" })
         Write-AIError "$Label failed (curl exit code: $curlExit$hint)"

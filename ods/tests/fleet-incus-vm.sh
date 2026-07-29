@@ -13,8 +13,8 @@ WAIT_TIMEOUT="600"
 KEEP_VMS=false
 RUN_INSTALLER_DRY_RUN=true
 HOST_LOCK=true
-LOCK_FILE="${ODS_FLEET_HOST_LOCK:-${DREAM_FLEET_HOST_LOCK:-/tmp/dream-fleet-heavy.lock}}"
-LOCK_TIMEOUT="${ODS_FLEET_HOST_LOCK_TIMEOUT_SECONDS:-${DREAM_FLEET_HOST_LOCK_TIMEOUT_SECONDS:-}}"
+LOCK_FILE="${ODS_FLEET_HOST_LOCK:-/tmp/ods-fleet-heavy.lock}"
+LOCK_TIMEOUT="${ODS_FLEET_HOST_LOCK_TIMEOUT_SECONDS:-}"
 WORK_DIR=""
 
 declare -a CREATED_VMS=()
@@ -91,8 +91,8 @@ Options:
   --memory SIZE             Memory per VM (default: 4GiB)
   --timeout SECONDS         Wait timeout for VM agent readiness (default: 600)
   --lock-file PATH          Host lock path for coordinating with full fleet runs
-                            (default: ODS_FLEET_HOST_LOCK, DREAM_FLEET_HOST_LOCK,
-                             or /tmp/dream-fleet-heavy.lock)
+                            (default: ODS_FLEET_HOST_LOCK or
+                             /tmp/ods-fleet-heavy.lock)
   --lock-timeout SECONDS    Seconds to wait for the host lock before failing
                             (default: wait indefinitely)
   --no-host-lock            Do not take the shared host lock
@@ -329,6 +329,10 @@ install_dnf_deps() {
     if [[ "$distro_id" =~ ^(rocky|almalinux|rhel|ol|centos)$ ]]; then
         info "using Docker CE CentOS/RHEL repository for ${distro_id}"
         "$dnf_bin" -y install dnf-plugins-core
+        if ! modprobe -n xt_addrtype >/dev/null 2>&1; then
+            info "installing extra modules for the running kernel before Docker"
+            "$dnf_bin" -y install "kernel-modules-extra-$(uname -r)"
+        fi
         rm -f /etc/yum.repos.d/docker-ce.repo /etc/yum.repos.d/docker-ce-staging.repo
         "$dnf_bin" config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
         "$dnf_bin" makecache
@@ -551,6 +555,7 @@ run_lane() {
     local lane="$1"
     local vm="${PREFIX}-${lane}-${RUN_ID}"
     local installer_mode="run"
+    local check_rc=0
 
     if [[ "$RUN_INSTALLER_DRY_RUN" != "true" ]]; then
         installer_mode="skip"
@@ -571,7 +576,10 @@ run_lane() {
     incus file push "$PAYLOAD" "$vm/tmp/ods-src.tgz"
     incus file push "$VM_CHECK" "$vm/tmp/fleet-incus-vm-check.sh"
     incus exec "$vm" -- chmod +x /tmp/fleet-incus-vm-check.sh
-    run_vm_check "$vm" "$lane" "$installer_mode"
+    run_vm_check "$vm" "$lane" "$installer_mode" || check_rc=$?
+    if ((check_rc != 0)); then
+        fail "${LABELS[$lane]} VM validation failed (rc=$check_rc)"
+    fi
 
     if [[ "$KEEP_VMS" != "true" ]]; then
         incus delete -f "$vm" >/dev/null

@@ -1,0 +1,21 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: model-router
+  name: ODS Model Router
+  aliases: []
+  container_name: ods-model-router
+  host_env: MODEL_ROUTER_HOST
+  default_host: model-router
+  port: 9099
+  external_link: false
+  health: /health
+  ui_path: /health
+  type: docker
+  gpu_backends: [all]
+  category: core
+  depends_on: []
+  startup_check: true

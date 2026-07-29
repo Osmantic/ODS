@@ -1,14 +1,18 @@
 #!/bin/bash
-# validate-manifest-schema.sh - Comprehensive manifest schema validator
+# validate-manifest-schema.sh - Manifest schema validator
 # Part of: scripts/
-# Purpose: Validate extension manifests against schema requirements
+# Purpose: Validate extension manifests against the canonical JSON Schema.
 #
 # Usage: ./validate-manifest-schema.sh [--strict] [--verbose]
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXTENSIONS_DIR="${SCRIPT_DIR}/../extensions/services"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MANIFEST_FILE="${ROOT_DIR}/manifest.json"
+DEFAULT_MANIFEST_DIRS="${ROOT_DIR}/extensions/services:${ROOT_DIR}/extensions/library/services"
+MANIFEST_DIRS="${ODS_MANIFEST_DIRS:-$DEFAULT_MANIFEST_DIRS}"
+SCHEMA_PATH=""
 
 STRICT_MODE=false
 VERBOSE=false
@@ -34,8 +38,13 @@ OPTIONS:
     -v, --verbose   Show detailed validation output
 
 DESCRIPTION:
-    Validates all extension manifest.yaml files against schema requirements.
-    Checks required fields, types, formats, and logical consistency.
+    Validates bundled and library extension manifests against the schema
+    declared by manifest.json at contracts.extensions.serviceManifestSchema.
+    JSON Schema is the single source of truth for manifest validity.
+
+ENVIRONMENT:
+    ODS_MANIFEST_DIRS   Colon-separated manifest directories to validate.
+                        Defaults to bundled and library service directories.
 
 EXAMPLES:
     $(basename "$0")              # Validate all manifests
@@ -62,6 +71,47 @@ success() {
     [[ "$VERBOSE" == "true" ]] && echo -e "${GREEN}✓${NC} $*"
 }
 
+check_python_deps() {
+    if ! python3 - <<'PYEOF' >/dev/null 2>&1
+import jsonschema  # noqa: F401
+import yaml  # noqa: F401
+PYEOF
+    then
+        echo "ERROR: Manifest schema validation requires Python modules: PyYAML and jsonschema" >&2
+        echo "Install them with: python3 -m pip install PyYAML jsonschema" >&2
+        echo "These are developer/CI validation dependencies, not runtime dependencies." >&2
+        exit 1
+    fi
+}
+
+resolve_schema_path() {
+    python3 - "$MANIFEST_FILE" "$ROOT_DIR" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+manifest_file = Path(sys.argv[1])
+root_dir = Path(sys.argv[2])
+try:
+    manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    schema_rel = manifest["contracts"]["extensions"]["serviceManifestSchema"]
+except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+    print(
+        "Cannot resolve contracts.extensions.serviceManifestSchema "
+        f"from {manifest_file}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+schema_path = root_dir / schema_rel
+if not schema_path.is_file():
+    print(f"Declared service manifest schema not found: {schema_rel}", file=sys.stderr)
+    raise SystemExit(1)
+
+print(schema_path)
+PYEOF
+}
+
 # Validate a single manifest
 validate_manifest() {
     local manifest_path="$1"
@@ -70,79 +120,79 @@ validate_manifest() {
 
     info "Validating: $service_name"
 
-    # Check YAML syntax
-    if ! python3 -c "import yaml; yaml.safe_load(open('$manifest_path'))" 2>/dev/null; then
-        error "$service_name: Invalid YAML syntax"
-        return 1
-    fi
+    python3 - "$manifest_path" "$SCHEMA_PATH" "$service_name" "$VERBOSE" <<'PYEOF'
+import json
+import os
+import sys
 
-    # Comprehensive validation
-    python3 - "$manifest_path" "$service_name" "$VERBOSE" <<'PYEOF'
-import yaml, sys, re, os
+import jsonschema
+import yaml
 
-manifest_path, service_name, verbose = sys.argv[1:4]
-errors, warnings = [], []
+manifest_path, schema_path, service_name, verbose = sys.argv[1:5]
+errors = []
+warnings = []
 
-def error(msg): errors.append(msg); print(f"ERROR: {service_name}: {msg}", file=sys.stderr)
-def warn(msg): warnings.append(msg); print(f"WARNING: {service_name}: {msg}", file=sys.stderr)
-def info(msg): verbose == "true" and print(f"INFO: {service_name}: {msg}")
+
+def report_error(message):
+    errors.append(message)
+    print(f"ERROR: {service_name}: {message}", file=sys.stderr)
+
+
+def report_warning(message):
+    warnings.append(message)
+    print(f"WARNING: {service_name}: {message}", file=sys.stderr)
+
+
+def error_path(validation_error):
+    return ".".join(str(part) for part in validation_error.path) or "<root>"
+
 
 try:
-    manifest = yaml.safe_load(open(manifest_path))
-    if not isinstance(manifest, dict): error("Not a valid YAML mapping"); sys.exit(1)
+    with open(manifest_path, encoding="utf-8") as manifest_file:
+        manifest = yaml.safe_load(manifest_file)
+except yaml.YAMLError as exc:
+    report_error(f"Invalid YAML syntax: {exc}")
+    raise SystemExit(1)
+except OSError as exc:
+    report_error(f"Cannot read manifest: {exc}")
+    raise SystemExit(1)
 
-    # schema_version
-    if manifest.get("schema_version") != "ods.services.v1":
-        error(f"Invalid schema_version: {manifest.get('schema_version')}")
-    else: info("schema_version: OK")
+try:
+    with open(schema_path, encoding="utf-8") as schema_file:
+        schema = json.load(schema_file)
+    validator_cls = jsonschema.validators.validator_for(schema)
+    validator_cls.check_schema(schema)
+except (OSError, json.JSONDecodeError, jsonschema.exceptions.SchemaError) as exc:
+    report_error(f"Cannot load JSON schema: {exc}")
+    raise SystemExit(1)
 
-    service = manifest.get("service", {})
-    if not isinstance(service, dict): error("Missing/invalid 'service' section"); sys.exit(1)
+validator = validator_cls(schema)
+schema_errors = sorted(
+    validator.iter_errors(manifest),
+    key=lambda validation_error: [str(part) for part in validation_error.path],
+)
+for validation_error in schema_errors:
+    report_error(f"{error_path(validation_error)}: {validation_error.message}")
 
-    # Required fields
-    for field, typ in {"id": str, "name": str, "port": int, "health": str, "type": str, "category": str}.items():
-        val = service.get(field)
-        if val is None: error(f"Missing service.{field}")
-        elif not isinstance(val, typ): error(f"Invalid type for service.{field}")
-        else: info(f"service.{field}: OK")
+# Operational warnings are intentionally non-authoritative. Structural and
+# type validity belongs exclusively to the JSON Schema above.
+if isinstance(manifest, dict):
+    service = manifest.get("service")
+    if isinstance(service, dict):
+        health = service.get("health")
+        if isinstance(health, str) and health and not health.startswith("/"):
+            report_warning(f"health should start with '/': {health}")
 
-    # Validate formats
-    if service.get("id") and not re.match(r'^[a-z0-9_-]+$', service["id"]):
-        error(f"Invalid service.id format: {service['id']}")
-    if service.get("category") not in ["core", "recommended", "optional", None]:
-        error(f"Invalid category: {service.get('category')}")
-    if service.get("type") not in ["docker", "native", "external", None]:
-        error(f"Invalid type: {service.get('type')}")
-    
-    port = service.get("port", 0)
-    if isinstance(port, int) and not (0 <= port <= 65535):
-        error(f"Invalid port: {port}")
+        compose_file = service.get("compose_file")
+        if isinstance(compose_file, str):
+            compose_path = os.path.join(os.path.dirname(manifest_path), compose_file)
+            if not os.path.exists(compose_path):
+                report_warning(f"compose_file not found: {compose_file}")
 
-    if service.get("health") and not service["health"].startswith("/"):
-        warn(f"health should start with '/': {service['health']}")
+if verbose == "true" and not errors:
+    print(f"INFO: {service_name}: JSON schema: OK")
 
-    # Validate lists
-    for alias in service.get("aliases", []):
-        if not re.match(r'^[a-z0-9_-]+$', str(alias)):
-            error(f"Invalid alias: {alias}")
-
-    for dep in service.get("depends_on", []):
-        if not re.match(r'^[a-z0-9_-]+$', str(dep)):
-            error(f"Invalid dependency: {dep}")
-
-    for backend in service.get("gpu_backends", []):
-        if backend not in ["amd", "nvidia", "apple", "cpu", "all"]:
-            error(f"Invalid gpu_backend: {backend}")
-
-    # Check compose_file exists
-    if service.get("compose_file"):
-        compose_path = os.path.join(os.path.dirname(manifest_path), service["compose_file"])
-        if not os.path.exists(compose_path):
-            warn(f"compose_file not found: {service['compose_file']}")
-
-    sys.exit(1 if errors else (2 if warnings else 0))
-except Exception as e:
-    print(f"ERROR: {service_name}: {e}", file=sys.stderr); sys.exit(1)
+raise SystemExit(1 if errors else (2 if warnings else 0))
 PYEOF
 
     case $? in
@@ -162,22 +212,33 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+check_python_deps
+SCHEMA_PATH="$(resolve_schema_path)"
+
 # Main
-echo "Validating manifests in: $EXTENSIONS_DIR"
+echo "Validating manifests in: $MANIFEST_DIRS"
+echo "Schema: ${SCHEMA_PATH#"$ROOT_DIR/"}"
 echo ""
 
-[[ ! -d "$EXTENSIONS_DIR" ]] && { echo -e "${RED}ERROR:${NC} Not found: $EXTENSIONS_DIR" >&2; exit 1; }
-
 TOTAL=0 VALID=0
-for dir in "$EXTENSIONS_DIR"/*/; do
-    [[ ! -d "$dir" ]] && continue
-    manifest=""
-    for name in manifest.yaml manifest.yml; do
-        [[ -f "$dir/$name" ]] && manifest="$dir/$name" && break
+IFS=':' read -r -a MANIFEST_DIR_ARRAY <<< "$MANIFEST_DIRS"
+for extensions_dir in "${MANIFEST_DIR_ARRAY[@]}"; do
+    [[ -z "$extensions_dir" ]] && continue
+    if [[ ! -d "$extensions_dir" ]]; then
+        echo -e "${RED}ERROR:${NC} Not found: $extensions_dir" >&2
+        exit 1
+    fi
+
+    for dir in "$extensions_dir"/*/; do
+        [[ ! -d "$dir" ]] && continue
+        manifest=""
+        for name in manifest.yaml manifest.yml; do
+            [[ -f "$dir/$name" ]] && manifest="$dir/$name" && break
+        done
+        [[ -z "$manifest" ]] && { warn "$(basename "$dir"): No manifest"; continue; }
+        ((TOTAL++)) || true
+        validate_manifest "$manifest" && { ((VALID++)) || true; }
     done
-    [[ -z "$manifest" ]] && { warn "$(basename "$dir"): No manifest"; continue; }
-    ((TOTAL++)) || true
-    validate_manifest "$manifest" && { ((VALID++)) || true; }
 done
 
 # Summary

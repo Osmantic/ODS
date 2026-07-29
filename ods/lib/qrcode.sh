@@ -7,10 +7,17 @@
 # ═══════════════════════════════════════════════════════════════
 
 # Best-effort LAN IP detection for remote access URLs.
+#
+# The address is read from the `src` field by name, not by column. `ip route
+# get` only emits `via <gw>` when the route has a gateway; on an on-link
+# default route (WSL2, point-to-point and VPN links, some cloud VMs) the two
+# fields are absent and the column that held the address holds `uid` instead.
+# Same parse as installers/phases/06-directories.sh's HOST_LAN_IP detection.
 _ods_lan_ip() {
     local lan_ip=""
     if command -v ip >/dev/null 2>&1; then
-        lan_ip=$(ip route get 1 2>/dev/null | awk '{print $7; exit}')
+        lan_ip=$(ip -4 route get 1.1.1.1 2>/dev/null \
+            | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}')
     fi
 
     if [[ -z "$lan_ip" ]] && command -v ifconfig >/dev/null 2>&1; then

@@ -68,7 +68,7 @@ That's where we document what we need most, what gets merged fast, and what will
 
 ## Where to Ask Questions
 
-Not sure about something? Open a thread in [GitHub Discussions](https://github.com/Light-Heart-Labs/ODS/discussions) or an issue. We're happy to help you figure out the right approach before you write code.
+Not sure about something? Open a thread in [GitHub Discussions](https://github.com/Osmantic/ODS/discussions) or an issue. We're happy to help you figure out the right approach before you write code.
 
 ## License
 

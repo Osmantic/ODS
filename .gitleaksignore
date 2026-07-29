@@ -49,14 +49,5 @@ a3b26dbd450fd0dc5d0651ffa6f21fe20acb1195:archive/cookbook/voice-agent-framework/
 9539512e06bef98b9276e339ef3cb2d6273e8f1f:ods/installers/macos/lib/env-generator.sh:generic-api-key:80
 5c5151fe050ac570fb022ccb99d86bda93dfedb2:ods/installers/windows/lib/env-generator.ps1:generic-api-key:115
 
-# Historical DreamServer false positives kept for full-history scans on this
-# migration PR. These are generated placeholder key prefixes, not real secrets.
-04efd4da78bb753f60f810552a0480db9041dd76:dream-server/installers/windows/lib/env-generator.ps1:langfuse-project-public-key:124
-04efd4da78bb753f60f810552a0480db9041dd76:dream-server/installers/windows/lib/env-generator.ps1:langfuse-project-secret-key:125
-fa44344053cadfb211269521eccf494a4486a9e3:dream-server/installers/phases/06-directories.sh:langfuse-project-public-key:261
-fa44344053cadfb211269521eccf494a4486a9e3:dream-server/installers/phases/06-directories.sh:langfuse-project-secret-key:262
-fa44344053cadfb211269521eccf494a4486a9e3:dream-server/installers/macos/lib/env-generator.sh:langfuse-project-public-key:85
-fa44344053cadfb211269521eccf494a4486a9e3:dream-server/installers/macos/lib/env-generator.sh:langfuse-project-secret-key:87
-
 # Configuration examples (default/placeholder values)
 48a1d87d3d155359fb23d7a65d1db55b036b7508:ods/config/searxng/settings.yml:generic-api-key:3

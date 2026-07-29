@@ -28,6 +28,11 @@ ods_python_has_module() {
     "$pycmd" -c "import ${module}" >/dev/null 2>&1
 }
 
+ods_python_has_pip() {
+    local pycmd="${1:-$(ods_detect_python_cmd)}"
+    "$pycmd" -m pip --version >/dev/null 2>&1
+}
+
 ods_python_is_env_managed() {
     local py_path="${1:-$(ods_python_cmd_path 2>/dev/null || true)}"
 
@@ -64,6 +69,59 @@ ods_ensure_python_runtime() {
     pycmd="$(ods_detect_python_cmd 2>/dev/null || true)"
     [[ -n "$pycmd" ]] || return 1
     printf '%s' "$pycmd"
+}
+
+ods_ensure_python_pip() {
+    local pycmd="${1:-}"
+    local display="${2:-Python}"
+
+    if [[ -z "$pycmd" ]]; then
+        pycmd="$(ods_ensure_python_runtime)" || return 1
+    fi
+
+    if ods_python_has_pip "$pycmd"; then
+        ai_ok "${display} pip available for $pycmd"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        ai_warn "pip is not available for $pycmd (dry-run: would install python3-pip)."
+        return 0
+    fi
+
+    if declare -f pkg_install >/dev/null 2>&1; then
+        ai "Installing pip for $display Python runtime..."
+        if declare -f pkg_update >/dev/null 2>&1; then
+            case "${PKG_MANAGER:-}" in
+                apt|apk|dnf|xbps|zypper) pkg_update >/dev/null || true ;;
+            esac
+        fi
+        pkg_install python3-pip 2>>"${LOG_FILE:-/dev/null}" || true
+    fi
+
+    if ods_python_has_pip "$pycmd"; then
+        ai_ok "${display} pip available for $pycmd"
+        return 0
+    fi
+
+    if "$pycmd" -m ensurepip --user >/dev/null 2>>"${LOG_FILE:-/dev/null}"; then
+        if ods_python_has_pip "$pycmd"; then
+            ai_ok "${display} pip available for $pycmd"
+            return 0
+        fi
+    fi
+
+    ai_warn "pip is not available for $pycmd; Python package installation cannot continue."
+    return 1
+}
+
+ods_python_pip_install_user() {
+    local pycmd="$1"
+    local log_file="${2:-${LOG_FILE:-/dev/null}}"
+    shift 2
+
+    "$pycmd" -m pip install --user -q "$@" >> "$log_file" 2>&1 && return 0
+    "$pycmd" -m pip install --user --break-system-packages -q "$@" >> "$log_file" 2>&1
 }
 
 ods_ensure_python_module() {

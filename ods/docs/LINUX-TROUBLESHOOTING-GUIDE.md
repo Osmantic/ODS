@@ -162,6 +162,34 @@ docker run --rm hello-world
 
 ---
 
+## Rootless Docker bind-mount ownership
+
+**Symptoms:** An ODS container repeatedly exits with `Permission denied` while
+writing under `data/`, but the same install works with rootful Docker.
+
+ODS prepares active bind mounts inside Docker's rootless user namespace. It
+does not apply host-side numeric `chown` values that would map to the wrong
+container identity. Existing rootless installs can be repaired without a
+reinstall:
+
+```bash
+cd ~/ods
+./ods-cli stop
+./ods-cli repair rootless-ownership
+./ods-cli start
+```
+
+The repair is limited to active ODS services with a documented container UID.
+It rejects symlink escapes, verifies the resulting ownership, and refuses to
+recursively change a mismatched directory while its container is running.
+The first repair may pull the pinned `busybox:1.36.1` helper image; offline
+repairs require that image to be present already.
+
+This command does not configure low-port forwarding or Tailscale networking.
+Those are separate rootless Docker concerns.
+
+---
+
 ### KERNEL_INFO
 
 **Symptoms:** Always **pass** — prints `uname -r` (informational).

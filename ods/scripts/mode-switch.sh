@@ -39,8 +39,15 @@ env_set() {
 }
 
 show_status() {
-    local current
-    current=$(grep "^ODS_MODE=" "$ENV_FILE" 2>/dev/null | cut -d= -f2)
+    local current=""
+    if [[ -f "$ENV_FILE" ]]; then
+        # `grep` exits 1 when the key is absent and the script runs under
+        # `set -euo pipefail`, so a bare pipeline here aborted the whole script
+        # before the default below could apply — status printed nothing at all.
+        current=$(grep -m1 "^ODS_MODE=" "$ENV_FILE" | cut -d= -f2- | tr -d '"\047\r' || true)
+    else
+        warn ".env not found at $ENV_FILE — showing defaults"
+    fi
     echo "Current mode: ${current:-local}"
     echo ""
     echo "Available modes:"
@@ -59,6 +66,12 @@ switch_mode() {
     esac
 
     [[ -f "$ENV_FILE" ]] || error ".env not found at $ENV_FILE"
+
+    local configured_backend
+    configured_backend=$(grep -m1 "^LLM_BACKEND=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+    if [[ "${configured_backend,,}" == "external" ]]; then
+        error "External LLM routing is installer-managed. Run './install.sh --no-external-llm' first, then retry the mode switch."
+    fi
 
     # Update .env
     env_set "ODS_MODE" "$mode"

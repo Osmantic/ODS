@@ -1,0 +1,42 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: remote-provider-egress
+  name: Remote Provider Egress
+  aliases: []
+  container_name: ods-remote-provider-egress
+  default_host: remote-provider-egress
+  port: 8091
+  external_port_default: 0
+  health: /health
+  ui_path: /health
+  external_link: false
+  type: docker
+  gpu_backends: [all]
+  category: core
+  depends_on: []
+  startup_check: true
+  description: >
+    Internal-only OpenAI-compatible egress boundary for optional remote LLM
+    providers. It reads generated remote routing state and a private provider
+    secret file, enforces the remote-provider egress policy, and exposes no
+    host port.
+  env_vars:
+    - key: ODS_REMOTE_PROVIDER_ROUTE_PATH
+      default: /state/remote-provider/routing-state.json
+      description: Generated remote routing-state path mounted read-only into the egress service.
+    - key: ODS_REMOTE_PROVIDER_POLICY_PATH
+      default: /config/remote-provider-egress-policy.json
+      description: Versioned egress policy document mounted read-only into the egress service.
+    - key: ODS_REMOTE_PROVIDER_API_KEY_FILE
+      default: /state/remote-provider/secrets/provider-api-key
+      description: Private provider bearer token file. The value is never projected into public env/config.
+    - key: ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_URL
+      default: http://remote-provider-ssh-tunnel:18090/health
+      description: Internal SSH tunnel readiness endpoint used only for SSH transport health gating.
+    - key: ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_TIMEOUT
+      default: "2"
+      description: Seconds the egress service waits for the internal SSH tunnel health endpoint.

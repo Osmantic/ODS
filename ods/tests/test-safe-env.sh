@@ -111,5 +111,35 @@ load_env_file "$tmpdir/.env-readonly"
 [[ "${AFTER_READONLY_UID:-}" == "still_loads" ]] || fail "load_env_file stopped after readonly UID"
 pass "load_env_file tolerates UID from .env"
 
+echo "Test 11: load_env_file tolerates CRLF .env files (Windows/WSL2)"
+unset CRLF_PORT CRLF_PATH CRLF_QUOTED 2>/dev/null || true
+# Write a .env with Windows CRLF line endings. Without stripping the trailing
+# CR, values keep it (8080\r) and the closing quote survives on quoted values.
+printf 'CRLF_PORT=8080\r\nCRLF_PATH=/home/user/ods\r\nCRLF_QUOTED="abc123"\r\n' > "$tmpdir/.env-crlf"
+load_env_file "$tmpdir/.env-crlf"
+[[ "${CRLF_PORT:-}" == "8080" ]] || fail "CRLF_PORT has trailing CR (got len ${#CRLF_PORT}: '${CRLF_PORT:-}')"
+[[ "${CRLF_PATH:-}" == "/home/user/ods" ]] || fail "CRLF_PATH has trailing CR (got: '${CRLF_PATH:-}')"
+[[ "${CRLF_QUOTED:-}" == "abc123" ]] || fail "CRLF_QUOTED not unquoted/stripped (got: '${CRLF_QUOTED:-}')"
+pass "load_env_file strips trailing CR from CRLF .env values"
+
+echo "Test 12: load_env_file only strips a matching pair of surrounding quotes"
+unset DQ_INNER_SINGLE SQ_INNER_DOUBLE DQ_ONLY_SINGLE PLAIN_DQ PLAIN_SQ 2>/dev/null || true
+# A double-quoted value whose content is itself single-quoted must keep the
+# inner single quotes; the previous independent per-quote stripping dropped them.
+cat > "$tmpdir/.env-quotes" << 'EOF'
+DQ_INNER_SINGLE="'literal'"
+SQ_INNER_DOUBLE='"json"'
+DQ_ONLY_SINGLE="'"
+PLAIN_DQ="plain"
+PLAIN_SQ='plain'
+EOF
+load_env_file "$tmpdir/.env-quotes"
+[[ "${DQ_INNER_SINGLE:-}" == "'literal'" ]] || fail "DQ_INNER_SINGLE lost inner single quotes (got: '${DQ_INNER_SINGLE:-}')"
+[[ "${SQ_INNER_DOUBLE:-}" == '"json"' ]] || fail "SQ_INNER_DOUBLE lost inner double quotes (got: '${SQ_INNER_DOUBLE:-}')"
+[[ "${DQ_ONLY_SINGLE:-}" == "'" ]] || fail "DQ_ONLY_SINGLE collapsed (got: '${DQ_ONLY_SINGLE:-}')"
+[[ "${PLAIN_DQ:-}" == "plain" ]] || fail "PLAIN_DQ not unquoted (got: '${PLAIN_DQ:-}')"
+[[ "${PLAIN_SQ:-}" == "plain" ]] || fail "PLAIN_SQ not unquoted (got: '${PLAIN_SQ:-}')"
+pass "load_env_file strips only matched surrounding quote pairs"
+
 echo ""
 echo "All safe-env tests passed."

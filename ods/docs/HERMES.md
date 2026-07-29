@@ -170,7 +170,7 @@ docker manifest inspect nousresearch/hermes-agent:<new-tag> >/dev/null
 
 These were in the original integration plan but cut once we discovered Hermes ships a complete browser surface:
 
-- **mDNS announcement** — register `hermes.<device>.local` in the ODS mDNS announcer. ✅ shipped as [#1167](https://github.com/Light-Heart-Labs/ODS/pull/1167) (stacked on [#1152](https://github.com/Light-Heart-Labs/ODS/pull/1152)).
+- **mDNS announcement** — register `hermes.<device>.local` in the ODS mDNS announcer. ✅ shipped as [#1167](https://github.com/Osmantic/ODS/pull/1167) (stacked on [#1152](https://github.com/Osmantic/ODS/pull/1152)).
 - **Magic-link SSO** — magic-link cookie gates access to Hermes via the new `hermes-proxy` Caddy sidecar. ✅ shipped — see [docs/HERMES-SSO.md](HERMES-SSO.md). Known limitation: single shared Hermes for all users; real per-user isolation would require per-user containers.
 - **APE policy integration** — route Hermes's tool calls through APE for allow/deny + audit. APE is already in the stack; needs a small adapter inside or in front of Hermes.
 - **Voice in/out from ODS's whisper + kokoro** — Hermes has its own audio pipeline (the image bundles ffmpeg + playwright); verify whether it already proxies to local TTS/STT services or whether we need to wire that ourselves.

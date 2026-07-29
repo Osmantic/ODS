@@ -12,6 +12,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PATH = ROOT / "config" / "generated-config-contracts.json"
 VALID_INVARIANTS = {"file_contains", "yaml_text_contains", "json_path_enum_contains"}
+WRITER_SOURCE_SUFFIXES = {".py", ".ps1", ".sh", ".yaml"}
 
 
 class Issues:
@@ -66,11 +67,25 @@ def validate_string_list(issues: Issues, value: Any, path: str) -> list[str]:
     return result
 
 
-def validate_writers(issues: Issues, value: Any, path: str) -> None:
+def discover_marked_writers(marker: str) -> set[str]:
+    writers: set[str] = set()
+    for source in ROOT.rglob("*"):
+        if not source.is_file() or source.suffix.lower() not in WRITER_SOURCE_SUFFIXES:
+            continue
+        relative = source.relative_to(ROOT)
+        if relative.parts and relative.parts[0] == "tests":
+            continue
+        if marker in source.read_text(encoding="utf-8", errors="replace"):
+            writers.add(relative.as_posix())
+    return writers
+
+
+def validate_writers(issues: Issues, value: Any, path: str) -> set[str]:
     if not isinstance(value, list) or not value:
         issues.add(path, "must be a non-empty array")
-        return
+        return set()
     platforms: list[str] = []
+    targets: set[str] = set()
     for index, writer in enumerate(value):
         writer_path = f"{path}[{index}]"
         if not isinstance(writer, dict):
@@ -83,7 +98,9 @@ def validate_writers(issues: Issues, value: Any, path: str) -> None:
         if nonempty_string(platform):
             platforms.append(platform)
         if nonempty_string(target):
+            targets.add(str(target))
             issues.require((ROOT / target).exists(), f"{writer_path}.path", f"file does not exist: {target}")
+    return targets
 
 
 def validate_invariant(issues: Issues, invariant: Any, path: str) -> None:
@@ -134,7 +151,22 @@ def validate_surface(issues: Issues, surface: Any, path: str) -> str | None:
     issues.require(nonempty_string(surface_id), f"{path}.id", "must be a non-empty string")
     issues.require(nonempty_string(surface.get("label")), f"{path}.label", "must be a non-empty string")
     validate_string_list(issues, surface.get("target_paths"), f"{path}.target_paths")
-    validate_writers(issues, surface.get("writers"), f"{path}.writers")
+    writer_paths = validate_writers(issues, surface.get("writers"), f"{path}.writers")
+    writer_marker = surface.get("writer_marker")
+    if writer_marker is not None:
+        issues.require(
+            nonempty_string(writer_marker),
+            f"{path}.writer_marker",
+            "must be a non-empty string",
+        )
+        if nonempty_string(writer_marker):
+            marked_paths = discover_marked_writers(str(writer_marker))
+            issues.require(
+                marked_paths == writer_paths,
+                f"{path}.writers",
+                "must exactly match marked writers "
+                f"(declared={sorted(writer_paths)}, marked={sorted(marked_paths)})",
+            )
 
     invariants = surface.get("invariants")
     if not isinstance(invariants, list) or not invariants:
@@ -176,7 +208,20 @@ def main(argv: list[str]) -> int:
             surface_id = validate_surface(issues, surface, f"$.surfaces[{index}]")
             if surface_id:
                 surface_ids.append(surface_id)
-        required = {"env", "opencode", "litellm-lemonade", "perplexica", "hermes"}
+        required = {
+            "env",
+            "opencode",
+            "litellm-local",
+            "litellm-local-native",
+            "litellm-cloud",
+            "litellm-hybrid",
+            "litellm-lemonade",
+            "litellm-switchboard",
+            "model-router-endpoints",
+            "remote-routing-state",
+            "perplexica",
+            "hermes",
+        }
         issues.require(set(surface_ids) == required, "$.surfaces", f"must define exactly {sorted(required)}")
 
     issues.exit_if_any()

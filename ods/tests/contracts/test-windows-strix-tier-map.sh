@@ -60,6 +60,14 @@ else
     fail "ConvertTo-ModelFromTier SH_LARGE must return qwen3.6-35b-a3b"
 fi
 
+echo "[contract] Windows catalog selector honors install_recommendation=false"
+if grep -q 'Test-CatalogModelInstallRecommendationAllowed' "$TIER_MAP" \
+    && grep -q 'install_recommendation' "$TIER_MAP"; then
+    pass "catalog selector filters models that are not install recommendations"
+else
+    fail "Windows catalog selector must filter install_recommendation=false models"
+fi
+
 ps_bin=""
 for candidate in pwsh powershell powershell.exe; do
     if command -v "$candidate" >/dev/null 2>&1; then
@@ -87,6 +95,25 @@ if [[ -n "$ps_bin" ]]; then
         pass "PowerShell resolver selects Qwen3.6 A3B with unified-memory policy"
     else
         fail "PowerShell resolver should select Qwen3.6 A3B; got: $OUT"
+    fi
+
+    echo "[contract] behavioral: Windows Tier 1 avoids non-recommended Qwen Coder"
+    ps_code='
+        $ErrorActionPreference = "Stop"
+        $env:MODEL_PROFILE = "qwen"
+        $env:HOST_ARCH = "amd64"
+        . "./installers/windows/lib/tier-map.ps1"
+        $tierConfig = Resolve-TierConfig -Tier "1"
+        $gpu = @{ Backend = "nvidia"; MemoryType = "dedicated"; VramMB = 8000 }
+        $resolved = Resolve-CatalogModelRecommendation -TierConfig $tierConfig -Tier "1" -GpuInfo $gpu -SystemRamGB 31 -SourceRoot (Resolve-Path ".")
+        Write-Output ("RESOLVED={0}|{1}|{2}" -f $resolved.LlmModel, $resolved.GgufFile, $resolved.RecommendationAlternatives)
+    '
+    OUT="$("$ps_bin" -NoProfile -ExecutionPolicy Bypass -Command "$ps_code" 2>/dev/null || true)"
+    if grep -q '^RESOLVED=' <<<"$OUT" \
+        && ! grep -q 'qwen2.5-coder-3b-instruct\|qwen2.5-coder-3b-128k-q4' <<<"$OUT"; then
+        pass "PowerShell resolver excludes non-recommended Qwen Coder for Tier 1 NVIDIA"
+    else
+        fail "PowerShell resolver must exclude non-recommended Qwen Coder; got: $OUT"
     fi
 else
     echo "[skip] PowerShell not available - behavioral resolver check skipped"

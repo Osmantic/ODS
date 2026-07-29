@@ -15,6 +15,8 @@ LINUX_PHASE_06="$ROOT_DIR/installers/phases/06-directories.sh"
 LINUX_PHASE_11="$ROOT_DIR/installers/phases/11-services.sh"
 LINUX_CLI="$ROOT_DIR/ods-cli"
 HERMES_COMPOSE="$ROOT_DIR/extensions/services/hermes/compose.yaml"
+HERMES_SOUL="$ROOT_DIR/extensions/services/hermes/SOUL.md.template"
+SOUL_BUILDER="$ROOT_DIR/scripts/build-installation-context.py"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -62,6 +64,11 @@ check 'SOUL.md.template' "$PHASE_06" "Windows phase 06 has template fallback"
 check 'INSTALLATION_CONTEXT' "$PHASE_06" "fallback removes dynamic marker"
 check 'Invoke-HermesSoulRefresh -InstallRoot $installDir' "$PHASE_06" "Windows phase 06 renders SOUL before compose"
 check 'Invoke-HermesSoulRefresh -InstallRoot $installDir -SyncContainer' "$INSTALLER" "Windows installer syncs SOUL after compose"
+if [[ "$(grep -Fc 'Invoke-HermesSoulRefresh -InstallRoot $installDir -SyncContainer' "$INSTALLER")" -ge 2 ]]; then
+    pass "Windows installer refreshes SOUL again after readiness settles"
+else
+    fail "Windows installer must refresh SOUL after optional services settle"
+fi
 check '-LemonadeCompact:($gpuInfo.Backend -eq "amd")' "$PHASE_06" "Windows AMD applies compact Hermes toolset profile"
 check 'http://litellm:4000/v1' "$PHASE_06" "Windows AMD Hermes routes through LiteLLM"
 
@@ -78,6 +85,29 @@ check 'If a previous failed' "$LINUX_CLI" "Linux CLI documents pre-compose SOUL 
 
 check './data/persona/SOUL.md:/opt/hermes/docker/SOUL.md:ro' "$HERMES_COMPOSE" "Hermes compose mounts generated persona file"
 reject ':/opt/data/SOUL.md' "$HERMES_COMPOSE" "Hermes compose avoids nested /opt/data/SOUL.md bind mount"
+check 'Honor literal-output requests exactly.' "$HERMES_SOUL" "Full Hermes persona prioritizes exact literal replies"
+check 'literal characters only' "$SOUL_BUILDER" "Compact Hermes persona prioritizes exact literal replies"
+
+python_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+if [[ -n "$python_cmd" ]]; then
+    tmp_dir="$(mktemp -d)"
+    trap 'rm -rf "$tmp_dir"' EXIT
+    printf '%s\n' '<!-- INSTALLATION_CONTEXT -->' \
+        'The literal `<!-- INSTALLATION_CONTEXT -->` marker is documented here.' \
+        > "$tmp_dir/template.md"
+    printf '%s\n' 'ODS_DEVICE_NAME=test-host' > "$tmp_dir/.env"
+    "$python_cmd" "$SOUL_BUILDER" \
+        --template "$tmp_dir/template.md" \
+        --env "$tmp_dir/.env" \
+        --output "$tmp_dir/SOUL.md" >/dev/null
+    if [[ "$(grep -c '^## About this ODS install' "$tmp_dir/SOUL.md")" -eq 1 ]]; then
+        pass "SOUL builder inserts dynamic context exactly once"
+    else
+        fail "SOUL builder duplicated dynamic context through marker documentation"
+    fi
+else
+    fail "python is required for SOUL builder contract test"
+fi
 
 echo ""
 echo "Result: $PASS passed, $FAIL failed"
