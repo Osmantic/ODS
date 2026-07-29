@@ -4,6 +4,7 @@ from pathlib import Path
 from helpers import record_model_performance
 from models import GPUInfo
 from performance_oracle import (
+    _usable_model_memory_gb,
     build_models_payload,
     current_model_matches,
     evaluate_performance,
@@ -46,6 +47,38 @@ def _model():
 def _official_model_catalog():
     catalog_path = Path(__file__).resolve().parents[4] / "config" / "model-library.json"
     return json.loads(catalog_path.read_text(encoding="utf-8"))["models"]
+
+
+def test_high_memory_unified_hosts_keep_a_fixed_service_reserve():
+    apple_128gb = _gpu(name="Apple M5", total_mb=128 * 1024, backend="apple")
+    strix_124gb = _gpu(name="AMD Strix-Halo", total_mb=124 * 1024, backend="amd")
+    apple_64gb = _gpu(name="Apple M4", total_mb=64 * 1024, backend="apple")
+
+    assert _usable_model_memory_gb(apple_128gb) == 104
+    assert _usable_model_memory_gb(strix_124gb) == 100
+    assert _usable_model_memory_gb(apple_64gb) == 35.2
+
+
+def test_qwen35_122b_fits_a_128gb_unified_host(data_dir, tmp_path):
+    model = next(
+        model
+        for model in _official_model_catalog()
+        if model["id"] == "qwen3.5-122b-a10b-q4"
+    )
+    payload = build_models_payload(
+        _gpu(name="Apple M5", total_mb=128 * 1024, backend="apple"),
+        None,
+        0,
+        tmp_path,
+        data_dir,
+        catalog=[model],
+        evidence=[],
+    )
+
+    card = payload["models"][0]
+    assert payload["gpu"]["vramTotal"] == 128
+    assert card["estimatedRequired"] == 96
+    assert card["fitsVram"] is True
 
 
 def _compatibility_blocks_release_coverage(entry):

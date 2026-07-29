@@ -933,6 +933,79 @@ def test_kat_coder_v25_dev_records_pinned_evidence_without_recommendation():
         "65a24267982811bc72e45db219e09e6e547c9628"
     )
     assert rejected[0]["evidence"]["hosts"] == ["tower2", "strix-halo"]
+def test_qwen35_122b_hardens_best_medium_candidate_without_promoting_it():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+    model = by_id["qwen3.5-122b-a10b-q4"]
+
+    assert model["gguf_file"] == (
+        "Qwen3.5-122B-A10B-UD-Q4_K_XL-00001-of-00003.gguf"
+    )
+    assert model["gguf_url"] == ""
+    assert model["gguf_sha256"] == ""
+    assert model["size_bytes"] == 77029996032
+    assert model["size_mb"] == 77030
+    assert model["vram_required_gb"] == 96
+    assert model["context_length"] == 131072
+    assert model["max_context_length"] == 262144
+    assert model["total_params_b"] == 122
+    assert model["active_params_b"] == 10
+    assert model["architecture"] == "hybrid-moe"
+    assert model["quantization"] == "UD-Q4_K_XL"
+    assert model["install_recommendation"] is False
+
+    parts = model["gguf_parts"]
+    assert [part["file"] for part in parts] == [
+        "Qwen3.5-122B-A10B-UD-Q4_K_XL-00001-of-00003.gguf",
+        "Qwen3.5-122B-A10B-UD-Q4_K_XL-00002-of-00003.gguf",
+        "Qwen3.5-122B-A10B-UD-Q4_K_XL-00003-of-00003.gguf",
+    ]
+    assert [part["sha256"] for part in parts] == [
+        "467c9bd92ea518539cf75bf5a5fbfbd35e9a0b40d766ccaa67bf120e12041df3",
+        "ecdbd42d43b0df9fa0ef9a584e09e95a43966ef03a122aba0b87a99d44d9ad98",
+        "13300e0f059e6fa21aa0fabde2a554f9deea366c0e54f268045769b214b28c97",
+    ]
+    assert [part["size_bytes"] for part in parts] == [
+        10943552,
+        49640779424,
+        27378273056,
+    ]
+    assert sum(part["size_bytes"] for part in parts) == model["size_bytes"]
+    assert all(
+        "/resolve/51eab4d59d53f573fb9206cb3ce613f1d0aa392b/"
+        in part["url"]
+        for part in parts
+    )
+
+    quality = model["quality_evidence"]
+    assert quality["independent"] is True
+    assert quality["score"] == 32
+    assert "median of 9" in quality["note"]
+    assert "96M" in quality["note"]
+
+    publisher = model["publisher_evidence"]
+    assert publisher["minimum_recommended_context"] == model["context_length"]
+    assert publisher["native_context_length"] == model["max_context_length"]
+    assert publisher["mtp_trained"] is True
+
+    deployment = model["deployment_evidence"]
+    assert all(item["independent"] is True for item in deployment)
+    assert all(item["controlled"] is False for item in deployment)
+    assert "15 tokens/s" in deployment[0]["reported_result"]
+    assert "slightly weaker tool calling" in deployment[1]["reported_result"]
+
+    runtime = model["runtime_evidence"]
+    assert runtime["selected_runtime_scope"] == "text-only GGUF without mmproj"
+    assert "128K allocation" in runtime["validation_risk"]
+
+    source = model["source_evidence"]
+    assert source["model_revision"] == (
+        "dc4d348443bc740c68e2d77492492c11606384d5"
+    )
+    assert source["gguf_revision"] == (
+        "51eab4d59d53f573fb9206cb3ce613f1d0aa392b"
+    )
+    assert source["license"] == "apache-2.0"
 
 
 def test_new_switchboard_models_do_not_change_install_recommendations():
@@ -964,6 +1037,7 @@ def test_new_switchboard_models_do_not_change_install_recommendations():
         "granite3.3-8b-instruct-q4",
         "mistral-nemo-12b-instruct-q4",
         "kat-coder-v2.5-dev-apex-q4",
+        "qwen3.5-122b-a10b-q4",
     }
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}

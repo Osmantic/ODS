@@ -421,17 +421,19 @@ HERMES_AUTH_VERIFY_PY
 
 _write_macos_opencode_config() {
     local config_path="$1" model_name="$2" base_url="$3" api_key="$4" context_length="$5"
-    # OpenCode reads config.json, not opencode.json, so the same document has
-    # to land in both files — matching installers/phases/07-devtools.sh on
-    # Linux and installers/windows/lib/opencode-config.ps1 on Windows.
-    local compat_path
+    # OpenCode merges config.json, opencode.json, and an existing
+    # opencode.jsonc in increasing precedence. Keep every active variant on
+    # the same managed route so a stale higher-precedence JSONC file cannot
+    # silently override a refreshed LiteLLM credential.
+    local compat_path jsonc_path
     compat_path="$(dirname "$config_path")/config.json"
+    jsonc_path="$(dirname "$config_path")/opencode.jsonc"
     mkdir -p "$(dirname "$config_path")"
     ODS_OPENCODE_MODEL="$model_name" \
     ODS_OPENCODE_BASE_URL="$base_url" \
     ODS_OPENCODE_API_KEY="$api_key" \
     ODS_OPENCODE_CONTEXT="$context_length" \
-        /usr/bin/python3 - "$config_path" "$compat_path" <<'OPENCODE_CONFIG_PY'
+        /usr/bin/python3 - "$config_path" "$compat_path" "$jsonc_path" <<'OPENCODE_CONFIG_PY'
 import json
 import os
 import sys
@@ -439,12 +441,107 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 compat_path = Path(sys.argv[2])
-try:
-    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-except (OSError, ValueError):
-    data = {}
-if not isinstance(data, dict):
-    data = {}
+jsonc_path = Path(sys.argv[3])
+
+
+def parse_jsonc(text):
+    output = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(text):
+        character = text[index]
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if in_string:
+            output.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            output.append(character)
+            index += 1
+            continue
+        if character == "/" and following == "/":
+            index += 2
+            while index < len(text) and text[index] not in "\r\n":
+                index += 1
+            continue
+        if character == "/" and following == "*":
+            index += 2
+            while index + 1 < len(text) and text[index:index + 2] != "*/":
+                index += 1
+            if index + 1 >= len(text):
+                raise ValueError("unterminated block comment")
+            index += 2
+            continue
+        output.append(character)
+        index += 1
+
+    without_comments = "".join(output)
+    output = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(without_comments):
+        character = without_comments[index]
+        if in_string:
+            output.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            output.append(character)
+            index += 1
+            continue
+        if character == ",":
+            lookahead = index + 1
+            while lookahead < len(without_comments) and without_comments[lookahead].isspace():
+                lookahead += 1
+            if lookahead < len(without_comments) and without_comments[lookahead] in "}]":
+                index += 1
+                continue
+        output.append(character)
+        index += 1
+    return json.loads("".join(output))
+
+
+def merge_config(target, source):
+    result = json.loads(json.dumps(target))
+    for key, value in source.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = merge_config(result[key], value)
+        else:
+            result[key] = json.loads(json.dumps(value))
+    return result
+
+
+data = {}
+for source_path in (compat_path, path, jsonc_path):
+    if not source_path.exists():
+        continue
+    try:
+        source = (
+            parse_jsonc(source_path.read_text(encoding="utf-8"))
+            if source_path.suffix.casefold() == ".jsonc"
+            else json.loads(source_path.read_text(encoding="utf-8"))
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"OpenCode config {source_path.name} is malformed: {exc}")
+    if not isinstance(source, dict):
+        raise SystemExit(f"OpenCode config {source_path.name} root is not an object")
+    data = merge_config(data, source)
 
 model_name = os.environ["ODS_OPENCODE_MODEL"]
 base_url = os.environ["ODS_OPENCODE_BASE_URL"]
@@ -464,6 +561,7 @@ provider.update({
     },
 })
 data["model"] = f"{provider_id}/{model_name}"
+data["small_model"] = f"{provider_id}/{model_name}"
 data.setdefault("$schema", "https://opencode.ai/config.json")
 
 payload = json.dumps(data, indent=2) + "\n"
@@ -476,13 +574,19 @@ def write_atomic(target):
     os.replace(tmp, target)
 
 
-for target in (path, compat_path):
+targets = [path, compat_path]
+if jsonc_path.exists():
+    targets.append(jsonc_path)
+
+for target in targets:
     write_atomic(target)
 
     check = json.loads(target.read_text(encoding="utf-8"))
     check_provider = check["provider"][provider_id]
     if check.get("model") != f"{provider_id}/{model_name}":
         raise SystemExit(f"OpenCode model verification failed for {target.name}")
+    if check.get("small_model") != f"{provider_id}/{model_name}":
+        raise SystemExit(f"OpenCode small model verification failed for {target.name}")
     if check_provider["options"] != {"baseURL": base_url, "apiKey": api_key}:
         raise SystemExit(f"OpenCode route verification failed for {target.name}")
 OPENCODE_CONFIG_PY

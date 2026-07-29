@@ -181,29 +181,49 @@ pass "disabled Hermes routing patches through a safe image or fails closed"
 # OpenCode and OpenClaw must update only their managed routes across modes.
 eval "$(extract_installer_function _write_macos_opencode_config | sed "s|/usr/bin/python3|$python_cmd|g")"
 opencode_path="$TMP_DIR/opencode/opencode.json"
+opencode_jsonc_path="$TMP_DIR/opencode/opencode.jsonc"
 mkdir -p "$(dirname "$opencode_path")"
 printf '{"custom":{"preserve":true}}\n' > "$opencode_path"
+cat > "$opencode_jsonc_path" <<'OPENCODE_JSONC'
+{
+  // A higher-precedence config must be refreshed without losing its settings.
+  "jsoncCustom": {"preserve": true},
+  "provider": {
+    "llama-server": {
+      "options": {
+        "baseURL": "http://127.0.0.1:4000/v1",
+        "apiKey": "stale-key",
+      },
+    },
+  },
+}
+OPENCODE_JSONC
 opencode_secret="sk-opencode-transition-secret"
 opencode_output="$(_write_macos_opencode_config "$opencode_path" default \
     http://127.0.0.1:4000/v1 "$opencode_secret" 200000 2>&1)"
 [[ "$opencode_output" != *"$opencode_secret"* ]] || fail "OpenCode secret was logged"
-"$python_cmd" - "$opencode_path" "$opencode_secret" <<'PY'
+"$python_cmd" - "$opencode_path" "$opencode_jsonc_path" "$opencode_secret" <<'PY'
 import json, sys
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-assert data["custom"]["preserve"] is True
-assert data["model"] == "llama-server/default"
-opts = data["provider"]["llama-server"]["options"]
-assert opts == {"baseURL": "http://127.0.0.1:4000/v1", "apiKey": sys.argv[2]}
+for config_path in sys.argv[1:3]:
+    data = json.load(open(config_path, encoding="utf-8"))
+    assert data["custom"]["preserve"] is True
+    assert data["jsoncCustom"]["preserve"] is True
+    assert data["model"] == "llama-server/default"
+    assert data["small_model"] == "llama-server/default"
+    opts = data["provider"]["llama-server"]["options"]
+    assert opts == {"baseURL": "http://127.0.0.1:4000/v1", "apiKey": sys.argv[3]}
 PY
 _write_macos_opencode_config "$opencode_path" "ods/current" \
     http://127.0.0.1:4000/v1 "$opencode_secret" 131072 >/dev/null
-"$python_cmd" - "$opencode_path" "$opencode_secret" <<'PY'
+"$python_cmd" - "$opencode_path" "$opencode_jsonc_path" "$opencode_secret" <<'PY'
 import json, sys
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-assert data["model"] == "llama-server/ods/current"
-provider = data["provider"]["llama-server"]
-assert provider["models"]["ods/current"]["limit"] == {"context": 131072, "output": 32768}
-assert provider["options"] == {"baseURL": "http://127.0.0.1:4000/v1", "apiKey": sys.argv[2]}
+for config_path in sys.argv[1:3]:
+    data = json.load(open(config_path, encoding="utf-8"))
+    assert data["model"] == "llama-server/ods/current"
+    assert data["small_model"] == "llama-server/ods/current"
+    provider = data["provider"]["llama-server"]
+    assert provider["models"]["ods/current"]["limit"] == {"context": 131072, "output": 32768}
+    assert provider["options"] == {"baseURL": "http://127.0.0.1:4000/v1", "apiKey": sys.argv[3]}
 PY
 
 # shellcheck source=/dev/null

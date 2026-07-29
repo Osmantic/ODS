@@ -29,6 +29,7 @@ except ModuleNotFoundError as exc:
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 BASE_FILE = ROOT_DIR / "docker-compose.base.yml"
+MULTIGPU_NVIDIA_FILE = ROOT_DIR / "docker-compose.multigpu-nvidia.yml"
 SCHEMA_FILE = ROOT_DIR / ".env.schema.json"
 
 # Flags whose value must stay operator-tunable through .env. The base file is
@@ -107,6 +108,31 @@ def main() -> int:
                     f"{path.name}: {flag} is {values[flag]!r}, which ignores "
                     f"{'/'.join(sorted(expected))} from {BASE_FILE.name}"
                 )
+
+    multigpu_document = yaml.safe_load(
+        MULTIGPU_NVIDIA_FILE.read_text(encoding="utf-8")
+    ) or {}
+    multigpu_service = (
+        (multigpu_document.get("services") or {}).get("llama-server") or {}
+    )
+    multigpu_entrypoint = multigpu_service.get("entrypoint")
+    if not isinstance(multigpu_entrypoint, list):
+        errors.append(
+            f"{MULTIGPU_NVIDIA_FILE.name}: llama-server must wrap its entrypoint "
+            "to remove an empty LLAMA_ARG_TENSOR_SPLIT before llama.cpp parses it"
+        )
+    else:
+        wrapper = "\n".join(str(item) for item in multigpu_entrypoint)
+        if "unset LLAMA_ARG_TENSOR_SPLIT" not in wrapper:
+            errors.append(
+                f"{MULTIGPU_NVIDIA_FILE.name}: entrypoint does not remove an "
+                "empty LLAMA_ARG_TENSOR_SPLIT"
+            )
+        if 'exec /app/llama-server "$$@"' not in wrapper:
+            errors.append(
+                f"{MULTIGPU_NVIDIA_FILE.name}: entrypoint does not exec the "
+                "pinned llama.cpp server with the Compose command arguments"
+            )
 
     if errors:
         print("[FAIL] llama.cpp runtime tunable parity")

@@ -1,5 +1,18 @@
 services:
   llama-server:
+    # llama.cpp treats a present-but-empty LLAMA_ARG_TENSOR_SPLIT as a float
+    # and exits before model loading. ODS intentionally clears an obsolete
+    # explicit split when the live planner should place layers automatically,
+    # so remove only that empty optional variable before starting the server.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -z "$${LLAMA_ARG_TENSOR_SPLIT:-}" ]; then
+          unset LLAMA_ARG_TENSOR_SPLIT
+        fi
+        exec /app/llama-server "$$@"
+      - --
     environment:
       NVIDIA_VISIBLE_DEVICES: "${LLAMA_SERVER_GPU_UUIDS:-all}"
       LLAMA_ARG_SPLIT_MODE: "${LLAMA_ARG_SPLIT_MODE:-none}"

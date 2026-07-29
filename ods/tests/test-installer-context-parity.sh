@@ -294,6 +294,10 @@ assert_grep "installers/macos/install-macos.sh" \
     'compat_path="\$\(dirname "\$config_path"\)/config\.json"' \
     "macOS OpenCode writer syncs config.json"
 
+assert_grep "installers/macos/install-macos.sh" \
+    'jsonc_path="\$\(dirname "\$config_path"\)/opencode\.jsonc"' \
+    "macOS OpenCode writer syncs an existing higher-precedence opencode.jsonc"
+
 if [[ -n "$python_cmd" ]]; then
     tmp_opencode_dir="$(mktemp -d)"
     trap 'rm -rf "$tmp_opencode_dir"' EXIT
@@ -319,9 +323,29 @@ if [[ -n "$python_cmd" ]]; then
         || fail "macOS OpenCode writer must also write config.json"
     pass "macOS OpenCode writer produces config.json"
 
+    cat > "$tmp_opencode_dir/config/opencode.jsonc" <<'OPENCODE_STALE_JSONC'
+{
+  // Preserve user settings while replacing the stale managed route.
+  "custom": {"jsonc": true},
+  "provider": {
+    "llama-server": {
+      "options": {"baseURL": "http://127.0.0.1:4000/v1", "apiKey": "stale",},
+    },
+  },
+}
+OPENCODE_STALE_JSONC
+    _write_macos_opencode_config \
+        "$tmp_opencode_dir/config/opencode.json" \
+        "Modern-Model.gguf" "http://127.0.0.1:8080/v1" "no-key" 32768 \
+        || fail "macOS OpenCode writer failed to refresh existing JSONC"
+
     cmp -s "$tmp_opencode_dir/config/opencode.json" "$tmp_opencode_dir/config/config.json" \
         || fail "macOS OpenCode config.json must match opencode.json"
     pass "macOS OpenCode config.json matches opencode.json"
+
+    cmp -s "$tmp_opencode_dir/config/opencode.json" "$tmp_opencode_dir/config/opencode.jsonc" \
+        || fail "macOS OpenCode opencode.jsonc must match the refreshed managed route"
+    pass "macOS OpenCode existing opencode.jsonc matches the refreshed managed route"
 
     "$python_cmd" - "$tmp_opencode_dir/config/config.json" <<'OPENCODE_COMPAT_PY'
 import json
@@ -330,6 +354,8 @@ import sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 provider = data["provider"]["llama-server"]
 assert data["model"] == "llama-server/Modern-Model.gguf", data.get("model")
+assert data["small_model"] == "llama-server/Modern-Model.gguf", data.get("small_model")
+assert data["custom"]["jsonc"] is True
 assert provider["options"] == {
     "baseURL": "http://127.0.0.1:8080/v1",
     "apiKey": "no-key",

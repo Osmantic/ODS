@@ -35,6 +35,9 @@ _VRAM_FIT_TOLERANCE_GB = 0.25
 _MODEL_SELECTOR_POLICY = "context-aware-largest-capable-general-v1"
 _RUNTIME_MODEL_PREFIXES = ("extra.", "user.")
 _AGENT_MIN_LOCAL_TOKENS_PER_SEC = 2.0
+_UNIFIED_MEMORY_MODEL_SHARE = 0.55
+_HIGH_MEMORY_UNIFIED_THRESHOLD_GB = 120.0
+_HIGH_MEMORY_UNIFIED_HOST_RESERVE_GB = 24.0
 _MODEL_PUBLISHERS = (
     (("qwen",), "Qwen", "Qwen"),
     (("phi",), "Microsoft", "microsoft"),
@@ -802,7 +805,9 @@ def _usable_model_memory_gb(gpu_info: Optional[GPUInfo]) -> float:
     total_gb = gpu_info.memory_total_mb / 1024
     backend = normalize_key(gpu_info.gpu_backend)
     if backend == "apple" or "strix-halo" in normalize_key(gpu_info.name):
-        return max(total_gb * 0.55, 2.0)
+        if total_gb >= _HIGH_MEMORY_UNIFIED_THRESHOLD_GB:
+            return max(total_gb - _HIGH_MEMORY_UNIFIED_HOST_RESERVE_GB, 2.0)
+        return max(total_gb * _UNIFIED_MEMORY_MODEL_SHARE, 2.0)
     return total_gb
 
 

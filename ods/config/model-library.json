@@ -1987,35 +1987,101 @@
       "id": "qwen3.5-122b-a10b-q4",
       "name": "Qwen 3.5 122B-A10B",
       "family": "qwen",
-      "gguf_file": "Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf",
+      "gguf_file": "Qwen3.5-122B-A10B-UD-Q4_K_XL-00001-of-00003.gguf",
       "gguf_url": "",
       "gguf_sha256": "",
       "gguf_parts": [
         {
-          "file": "Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf",
-          "url": "https://huggingface.co/unsloth/Qwen3.5-122B-A10B-GGUF/resolve/main/Q4_K_M/Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf",
-          "sha256": "467c9bd92ea518539cf75bf5a5fbfbd35e9a0b40d766ccaa67bf120e12041df3"
+          "file": "Qwen3.5-122B-A10B-UD-Q4_K_XL-00001-of-00003.gguf",
+          "url": "https://huggingface.co/unsloth/Qwen3.5-122B-A10B-GGUF/resolve/51eab4d59d53f573fb9206cb3ce613f1d0aa392b/UD-Q4_K_XL/Qwen3.5-122B-A10B-UD-Q4_K_XL-00001-of-00003.gguf",
+          "sha256": "467c9bd92ea518539cf75bf5a5fbfbd35e9a0b40d766ccaa67bf120e12041df3",
+          "size_bytes": 10943552
         },
         {
-          "file": "Qwen3.5-122B-A10B-Q4_K_M-00002-of-00003.gguf",
-          "url": "https://huggingface.co/unsloth/Qwen3.5-122B-A10B-GGUF/resolve/main/Q4_K_M/Qwen3.5-122B-A10B-Q4_K_M-00002-of-00003.gguf",
-          "sha256": "90db14846413aebdac365b57206441437cac5f7e5037d94b325f0167f902e6e7"
+          "file": "Qwen3.5-122B-A10B-UD-Q4_K_XL-00002-of-00003.gguf",
+          "url": "https://huggingface.co/unsloth/Qwen3.5-122B-A10B-GGUF/resolve/51eab4d59d53f573fb9206cb3ce613f1d0aa392b/UD-Q4_K_XL/Qwen3.5-122B-A10B-UD-Q4_K_XL-00002-of-00003.gguf",
+          "sha256": "ecdbd42d43b0df9fa0ef9a584e09e95a43966ef03a122aba0b87a99d44d9ad98",
+          "size_bytes": 49640779424
         },
         {
-          "file": "Qwen3.5-122B-A10B-Q4_K_M-00003-of-00003.gguf",
-          "url": "https://huggingface.co/unsloth/Qwen3.5-122B-A10B-GGUF/resolve/main/Q4_K_M/Qwen3.5-122B-A10B-Q4_K_M-00003-of-00003.gguf",
-          "sha256": "e3c24b8ebec070bb4f69ea0aca25a16531da7440cd515529953e046882901f97"
+          "file": "Qwen3.5-122B-A10B-UD-Q4_K_XL-00003-of-00003.gguf",
+          "url": "https://huggingface.co/unsloth/Qwen3.5-122B-A10B-GGUF/resolve/51eab4d59d53f573fb9206cb3ce613f1d0aa392b/UD-Q4_K_XL/Qwen3.5-122B-A10B-UD-Q4_K_XL-00003-of-00003.gguf",
+          "sha256": "13300e0f059e6fa21aa0fabde2a554f9deea366c0e54f268045769b214b28c97",
+          "size_bytes": 27378273056
         }
       ],
-      "size_mb": 76500,
-      "vram_required_gb": 80,
+      "size_bytes": 77029996032,
+      "size_mb": 77030,
+      "vram_required_gb": 96,
       "context_length": 131072,
-      "quantization": "Q4_K_M",
-      "specialty": "Quality",
-      "description": "The largest Qwen 3.5 MoE. 122B params, 10B active. Top-tier quality for multi-GPU or 96GB+ unified memory systems.",
+      "max_context_length": 262144,
+      "total_params_b": 122,
+      "active_params_b": 10,
+      "architecture": "hybrid-moe",
+      "quantization": "UD-Q4_K_XL",
+      "specialty": "High-Quality Multimodal Reasoning",
+      "description": "Qwen's February 2026 Apache-2.0 hybrid MoE combines reasoning, coding, tool use, and vision with 10B active parameters. Its independent score of 32 is well above the comparable open-weight size-class median of 9 and higher than the staged Nemotron Super and Mistral Small 4 candidates. ODS pins the higher-quality UD-Q4_K_XL artifact and keeps the model non-default pending exact 128K fleet validation.",
       "tokens_per_sec_estimate": 15,
       "llm_model_name": "qwen3.5-122b-a10b",
-      "llama_server_image": null
+      "llama_server_image": null,
+      "install_recommendation": false,
+      "quality_evidence": {
+        "source": "Artificial Analysis Intelligence Index v4.1",
+        "source_url": "https://artificialanalysis.ai/models/qwen3-5-122b-a10b/",
+        "benchmark": "Artificial Analysis Intelligence Index",
+        "score": 32,
+        "assessed_at": "2026-07-29",
+        "independent": true,
+        "note": "The reasoning profile scores 32, above the comparable open-weight size-class median of 9. It used 96M evaluation output tokens versus a 53M class median, so exact-response behavior and latency remain explicit fleet risks despite the strong quality result."
+      },
+      "publisher_evidence": {
+        "source_url": "https://huggingface.co/Qwen/Qwen3.5-122B-A10B",
+        "native_context_length": 262144,
+        "extended_context_length": 1010000,
+        "minimum_recommended_context": 131072,
+        "experts": 256,
+        "activated_experts": "8 routed plus 1 shared",
+        "mtp_trained": true,
+        "independent": false,
+        "note": "Qwen describes native multimodal reasoning, coding, agentic tool use, hybrid Gated DeltaNet/attention layers, and multi-token-prediction training. The publisher advises at least 128K context to preserve thinking capability."
+      },
+      "deployment_evidence": [
+        {
+          "source": "LocalLLaMA Strix Halo deployment report",
+          "source_url": "https://www.reddit.com/r/LocalLLaMA/comments/1red6sv/update_your_llamacpp_for_qwen_35/",
+          "artifact": "Unsloth Qwen3.5 122B-A10B Q4_K_M sibling quant",
+          "hardware": "AMD Strix Halo with 128GB unified memory",
+          "runtime": "llama.cpp ROCm and Vulkan",
+          "reported_result": "After fixing the host memory configuration and updating llama.cpp, the sibling Q4 quant loaded and generated at roughly 15 tokens/s; the report also records earlier Vulkan load failures.",
+          "independent": true,
+          "controlled": false
+        },
+        {
+          "source": "LocalLLaMA July comparative user report",
+          "source_url": "https://www.reddit.com/r/LocalLLaMA/comments/1ura4d0/qwen35_122b_is_the_best/",
+          "artifact": "Qwen3.5 122B UD-IQ4_NL and UD-Q4_K_XL",
+          "hardware": "64GB-class local system",
+          "runtime": "local GGUF",
+          "reported_result": "A user found the selected UD-Q4_K_XL class roughly comparable to Qwen 3.6 27B Q4 for general quality, with more world knowledge but slightly weaker tool calling; other participants warned that low-bit MoE quality and KV-cache quantization are workload-sensitive.",
+          "independent": true,
+          "controlled": false
+        }
+      ],
+      "runtime_evidence": {
+        "tool_call_issue": "https://github.com/ggml-org/llama.cpp/issues/20198",
+        "multimodal_cache_issue": "https://github.com/ggml-org/llama.cpp/issues/19858",
+        "selected_runtime_scope": "text-only GGUF without mmproj",
+        "validation_risk": "Exact ODS fleet validation must prove 128K allocation, reasoning output, OpenAI-compatible tool/chat templates, and all switchboard consumers before recommendation."
+      },
+      "source_evidence": {
+        "model_card": "https://huggingface.co/Qwen/Qwen3.5-122B-A10B",
+        "model_revision": "dc4d348443bc740c68e2d77492492c11606384d5",
+        "gguf_repository": "unsloth/Qwen3.5-122B-A10B-GGUF",
+        "gguf_revision": "51eab4d59d53f573fb9206cb3ce613f1d0aa392b",
+        "license": "apache-2.0",
+        "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "license_note": "Apache 2.0 permits commercial use, modification, and redistribution subject to its notice and license terms."
+      }
     }
   ]
 }
