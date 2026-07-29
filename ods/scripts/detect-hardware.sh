@@ -682,7 +682,7 @@ main() {
     # Determine tier
     # For unified memory AMD APUs, use system RAM — VRAM reports only carve-out, not usable UMA.
     local tier tier_desc recommended_model
-    if [[ "$memory_type" == "discrete" && "$gpu_type" == "nvidia" && "$gpu_vram_mb" -gt 0 && "$gpu_vram_mb" -lt 4096 ]]; then
+    if [[ "$memory_type" == "discrete" && "$gpu_type" == "nvidia" && "$gpu_vram_mb" -gt 0 && "$gpu_vram_mb" -lt 3584 ]]; then
         tier="T0"
     elif [[ "$memory_type" == "unified" && "$gpu_type" == "amd" ]]; then
         tier=$(get_strix_halo_tier "$ram")

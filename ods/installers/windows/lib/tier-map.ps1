@@ -772,6 +772,7 @@ function ConvertTo-TierFromGpu {
     if ($vramGB -ge 20) { return "3" }
     if ($vramGB -ge 12) { return "2" }
     if ($vramGB -lt 4 -and $SystemRamGB -lt 12) { return "0" }
+    if ($vramMB -gt 0 -and $vramMB -lt 3584) { return "0" }
     return "1"
 }
 

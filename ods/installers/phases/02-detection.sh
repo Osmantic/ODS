@@ -177,8 +177,8 @@ else
         && "${GPU_BACKEND:-}" == "nvidia" \
         && "${GPU_MEMORY_TYPE:-discrete}" == "discrete" \
         && "${GPU_VRAM:-0}" -gt 0 \
-        && "${GPU_VRAM:-0}" -lt 4096 ]]; then
-        apply_cpu_gpu_fallback "Detected NVIDIA GPU has only ${GPU_VRAM}MB VRAM; using CPU/Tier 0 fallback to avoid CUDA OOM loops."
+        && "${GPU_VRAM:-0}" -lt 3584 ]]; then
+        apply_cpu_gpu_fallback "Detected NVIDIA GPU has only ${GPU_VRAM}MB VRAM (< 3.5 GB); using CPU/Tier 0 fallback to avoid CUDA OOM loops."
     fi
 fi
 
@@ -482,7 +482,7 @@ if [[ -z "$TIER" ]]; then
         TIER=3
     elif [[ $GPU_VRAM -ge 12000 ]] || [[ $RAM_GB -ge 48 ]]; then
         TIER=2
-    elif [[ $GPU_VRAM -lt 4000 ]] && [[ $RAM_GB -lt 12 ]]; then
+    elif [[ $GPU_VRAM -lt 3584 ]] && [[ $RAM_GB -lt 12 ]]; then
         TIER=0
     else
         TIER=1
