@@ -2,7 +2,7 @@
 # Validate that local Markdown links in key docs resolve to existing files.
 #
 # Scope (intentionally minimal):
-#  - repo root README.md
+#  - repo root *.md
 #  - ods/*.md
 #  - ods/docs/**/*.md
 #
@@ -111,10 +111,10 @@ main() {
 
   local files_to_check=()
 
-  # 1) top-level README (exists in repo root)
-  if [[ -f "$REPO_ROOT/README.md" ]]; then
-    files_to_check+=("$REPO_ROOT/README.md")
-  fi
+  # 1) repo-root Markdown files
+  while IFS= read -r -d '' f; do
+    files_to_check+=("$f")
+  done < <(find "$REPO_ROOT" -maxdepth 1 -type f -name '*.md' -print0)
 
   # 2) ods/*.md
   while IFS= read -r -d '' f; do
@@ -138,7 +138,7 @@ main() {
     fail "$failures markdown file(s) contain broken local links"
   fi
 
-  pass "No broken local links found in repo README, ods root docs, and ods/docs"
+  pass "No broken local links found in repo root docs, ods root docs, and ods/docs"
 }
 
 main "$@"
