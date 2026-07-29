@@ -1,0 +1,22 @@
+services:
+  whisper:
+    # Jetson uses NVIDIA's container runtime directly; Docker's --gpus path
+    # is not supported by the Jetson NVIDIA runtime hook.
+    image: ${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda}
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        limits:
+          cpus: '${WHISPER_CPU_LIMIT:-1.0}'
+          memory: ${WHISPER_MEMORY_LIMIT:-4G}
+        reservations:
+          cpus: '${WHISPER_CPU_RESERVATION:-0.5}'
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

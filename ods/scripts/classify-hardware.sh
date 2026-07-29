@@ -77,6 +77,7 @@ with open(db_path, "r", encoding="utf-8") as f:
 OVERLAY_MAP = {
     "amd":    ["docker-compose.base.yml", "docker-compose.amd.yml"],
     "nvidia": ["docker-compose.base.yml", "docker-compose.nvidia.yml"],
+    "jetson": ["docker-compose.base.yml", "docker-compose.jetson.yml"],
     "apple":  ["docker-compose.base.yml", "docker-compose.apple.yml"],
     "cpu":    ["docker-compose.base.yml", "docker-compose.cpu.yml"],
 }
