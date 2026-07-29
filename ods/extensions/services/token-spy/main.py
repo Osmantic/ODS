@@ -280,8 +280,10 @@ if not TOKEN_SPY_API_KEY:
     except FileNotFoundError:
         TOKEN_SPY_API_KEY = secrets.token_urlsafe(32)
         _key_file.parent.mkdir(parents=True, exist_ok=True)
-        _key_file.write_text(TOKEN_SPY_API_KEY)
-        _key_file.chmod(0o600)
+        tmp_key_file = _key_file.with_name(f".{_key_file.name}.tmp")
+        tmp_key_file.write_text(TOKEN_SPY_API_KEY)
+        tmp_key_file.chmod(0o600)
+        os.replace(str(tmp_key_file), str(_key_file))
         log.warning(
             "TOKEN_SPY_API_KEY not set. Generated key and wrote to %s (mode 0600).",
             _key_file,
