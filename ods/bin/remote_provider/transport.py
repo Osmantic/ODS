@@ -124,7 +124,12 @@ def _tunnel_spec(
 ) -> SshTunnelSpec:
     if ":" in listen_host:
         raise TransportError("SSH local bind host must be an IPv4 or hostname token")
-    forward = f"{listen_host}:{listen_port}:{target_host}:{target_port}"
+    # ssh(1) splits -L on colons, so an IPv6 literal target has to be bracketed
+    # or the field boundaries are ambiguous and ssh rejects the whole forward.
+    # The host token itself stays unbracketed on the spec, which is what the
+    # redacted plan reports.
+    forward_target = f"[{target_host}]" if ":" in target_host else target_host
+    forward = f"{listen_host}:{listen_port}:{forward_target}:{target_port}"
     args = base_args[:-1] + ("-L", forward, base_args[-1])
     return SshTunnelSpec(
         name=name,

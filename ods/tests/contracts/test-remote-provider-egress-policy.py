@@ -405,6 +405,37 @@ def test_ssh_transport_specs_are_structured_and_hardened() -> None:
         assert_true(";" not in joined and "\n" not in joined, "SSH argv must not contain shell separators")
 
 
+def test_ssh_forward_brackets_ipv6_targets() -> None:
+    """ssh(1) parses -L by splitting on colons, so IPv6 targets need brackets."""
+    route = plan_route(cloud_ssh_env(
+        REMOTE_LLM_SSH_CONTROL_HOST="127.0.0.1",
+        REMOTE_LLM_SSH_CONTROL_PORT="8091",
+    ))
+    ipv6_route = json.loads(json.dumps(route))
+    ipv6_route["ssh"]["inferenceHost"] = "2001:db8::1"
+    ipv6_route["ssh"]["controlHost"] = "fe80::2"
+    inference, control = build_ssh_tunnel_specs(ipv6_route)
+
+    assert_true(
+        "0.0.0.0:18091:[2001:db8::1]:8000" in inference.args,
+        "IPv6 inference target must be bracketed in the -L forward",
+    )
+    assert_true(
+        "0.0.0.0:18092:[fe80::2]:8091" in control.args,
+        "IPv6 control target must be bracketed in the -L forward",
+    )
+    # The spec metadata (and the redacted plan built from it) keeps the plain
+    # host token; only the ssh argument needs the brackets.
+    assert_true(inference.target_host == "2001:db8::1", "spec target host should stay unbracketed")
+
+    # IPv4 and hostname targets must be untouched.
+    v4_inference, _ = build_ssh_tunnel_specs(route)
+    assert_true(
+        "0.0.0.0:18091:127.0.0.1:8000" in v4_inference.args,
+        "IPv4 forward must not gain brackets",
+    )
+
+
 def test_ssh_transport_specs_reject_unsafe_tokens() -> None:
     route = plan_route(cloud_ssh_env())
     assert_raises_transport_error(
@@ -893,6 +924,7 @@ def main() -> int:
         test_ssh_peer_lifecycle_uses_control_tunnel_boundary,
         test_ssh_requires_transport_metadata,
         test_ssh_transport_specs_are_structured_and_hardened,
+        test_ssh_forward_brackets_ipv6_targets,
         test_ssh_transport_specs_reject_unsafe_tokens,
         test_ssh_supervisor_plan_is_redacted_and_start_gated,
         test_ssh_supervisor_plan_blocks_missing_secret_custody,
