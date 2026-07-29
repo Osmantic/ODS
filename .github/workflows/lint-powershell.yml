@@ -96,3 +96,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/contracts/test-install-footprint-windows.ps1
+
+      - name: Atomic Environment Write Tests
+        if: runner.os == 'Windows'
+        shell: bash
+        run: bash tests/test-atomic-env-writes.sh
