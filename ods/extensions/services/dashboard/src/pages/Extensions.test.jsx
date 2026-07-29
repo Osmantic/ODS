@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Extensions from './Extensions' // eslint-disable-line no-unused-vars
 
@@ -257,5 +257,125 @@ describe('Extensions page — unhealthy + install derivations', () => {
 
     // L760-769: Check Logs button rendered when isUserExt && isUnhealthy.
     expect(screen.getByRole('button', { name: /Check Logs/i })).toBeInTheDocument()
+  })
+
+  it('renders LLM swap-safety badges from the catalog contract', async () => {
+    installFetchMock({
+      extensions: [
+        {
+          id: 'safe-llm-app',
+          name: 'Safe LLM App',
+          status: 'enabled',
+          source: 'user',
+          installable: false,
+          features: [baseFeature],
+          description: 'desc',
+          llm: {
+            consumes: true,
+            route: 'gateway',
+            pinning: 'none',
+            swap_safe: true,
+            swap_safe_reason: 'Routes through the ODS gateway alias.',
+          },
+        },
+        {
+          id: 'unsafe-llm-app',
+          name: 'Unsafe LLM App',
+          status: 'enabled',
+          source: 'user',
+          installable: false,
+          features: [baseFeature],
+          description: 'desc',
+          llm: {
+            consumes: true,
+            route: 'direct',
+            pinning: 'none',
+            swap_safe: false,
+            swap_safe_reason: 'Direct model route without a declared refresh path.',
+          },
+        },
+      ],
+      summary: baseSummary({ installed: 2, enabled: 2, total: 2 }),
+      gpu_backend: 'apple',
+      agent_available: true,
+    })
+
+    render(<Extensions />)
+    await screen.findByText('Safe LLM App')
+
+    expect(screen.getByText('Swap-safe')).toBeInTheDocument()
+    expect(screen.getByText('Not swap-safe')).toBeInTheDocument()
+  })
+
+  it('confirms a modified library update with the force contract', async () => {
+    const timeoutSpy = vi.spyOn(globalThis.AbortSignal, 'timeout').mockReturnValue(new AbortController().signal)
+    const catalog = {
+      extensions: [{
+        id: 'tracked-ext',
+        name: 'Tracked Extension',
+        status: 'enabled',
+        source: 'user',
+        installable: true,
+        update_available: true,
+        update_status: 'modified',
+        locally_modified: true,
+        rollback_available: false,
+        features: [baseFeature],
+        description: 'desc',
+      }],
+      summary: baseSummary({ installed: 1, enabled: 1, updates_available: 1 }),
+      gpu_backend: 'apple',
+      agent_available: true,
+    }
+    const fetchMock = vi.fn(async (url) => {
+      const target = String(url)
+      if (target.includes('/api/extensions/catalog')) return makeJsonResponse(catalog)
+      if (target.includes('/api/templates')) return makeJsonResponse({ templates: [] })
+      if (target === '/api/extensions/tracked-ext/update?force=true') {
+        return makeJsonResponse({ action: 'updated', message: 'Extension updated.' })
+      }
+      throw new Error(`Unmocked fetch: ${target}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<Extensions />)
+    await screen.findByText('Tracked Extension')
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }))
+    expect(screen.getByText(/Local definition changes will be replaced/)).toBeInTheDocument()
+    const updateButtons = screen.getAllByRole('button', { name: 'Update' })
+    fireEvent.click(updateButtons[updateButtons.length - 1])
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/extensions/tracked-ext/update?force=true',
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
+    expect(timeoutSpy).toHaveBeenCalledWith(30 * 60 * 1000)
+  })
+
+  it('shows rollback when a previous extension definition is available', async () => {
+    installFetchMock({
+      extensions: [{
+        id: 'rollback-ext',
+        name: 'Rollback Extension',
+        status: 'disabled',
+        source: 'user',
+        installable: true,
+        update_available: false,
+        update_status: 'current',
+        locally_modified: false,
+        rollback_available: true,
+        features: [baseFeature],
+        description: 'desc',
+      }],
+      summary: baseSummary({ installed: 1 }),
+      gpu_backend: 'apple',
+      agent_available: true,
+    })
+
+    render(<Extensions />)
+    await screen.findByText('Rollback Extension')
+    expect(screen.getByRole('button', { name: 'Rollback' })).toBeInTheDocument()
   })
 })

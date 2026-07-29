@@ -14,7 +14,7 @@
 #   Change VERSION for custom builds. Add new color codes here.
 # ============================================================================
 
-VERSION="2.5.3"
+VERSION="2.6.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Source path utilities for cross-platform path resolution
@@ -26,9 +26,9 @@ else
     INSTALL_DIR="${INSTALL_DIR:-$HOME/ods}"
 fi
 
-LOG_FILE="${LOG_FILE:-/tmp/ods-install.log}"
-CAPABILITY_PROFILE_FILE="${CAPABILITY_PROFILE_FILE:-/tmp/ods-capabilities.json}"
-PREFLIGHT_REPORT_FILE="${PREFLIGHT_REPORT_FILE:-/tmp/ods-preflight-report.json}"
+LOG_FILE="${LOG_FILE:-${TMPDIR:-/tmp}/ods-install.log}"
+CAPABILITY_PROFILE_FILE="${CAPABILITY_PROFILE_FILE:-${TMPDIR:-/tmp}/ods-capabilities.json}"
+PREFLIGHT_REPORT_FILE="${PREFLIGHT_REPORT_FILE:-${TMPDIR:-/tmp}/ods-preflight-report.json}"
 INSTALL_START_EPOCH=$(date +%s)
 
 # Auto-detect system timezone (fallback to UTC)

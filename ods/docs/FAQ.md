@@ -174,9 +174,32 @@ Yes. Common use cases:
 
 **With install wizard:** Under 1 hour for someone comfortable with terminal.
 
+Linux/macOS:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Light-Heart-Labs/ODS/main/ods/get-ods.sh | bash
+curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
+
+The hosted endpoint proxies the current bootstrap from repository `main`.
+Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
+[Installer Trust](INSTALLER_TRUST.md) to inspect the script or install a stable
+release or audited commit manually.
+
+Windows:
+
+```powershell
+$ProgressPreference = "SilentlyContinue"
+$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
+$odsZip = Join-Path $odsSrc "ods-main.zip"
+New-Item -ItemType Directory -Path $odsSrc | Out-Null
+Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
+Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
+cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1
+```
+
+Do not run the `curl ... | bash` installer from Windows PowerShell.
 
 The wizard:
 1. Detects your hardware
@@ -284,6 +307,46 @@ Applying a template only enables services — it doesn't disable anything you've
 
 ---
 
+### Can ODS reuse a model already running in Ollama or LM Studio?
+
+The Linux installer can reuse a host-managed text/chat model instead of
+downloading and starting a duplicate GGUF with ODS's llama-server.
+
+Interactive installs discover matching local services and ask before adopting
+one. Non-interactive installs require an explicit decision:
+
+```bash
+./install.sh --reuse-external-llm --non-interactive
+```
+
+Or configure the endpoint and exact provider model directly:
+
+```bash
+./install.sh \
+  --external-llm-url http://127.0.0.1:11434 \
+  --external-llm-provider ollama \
+  --external-llm-model qwen3.5:9b
+```
+
+The installer verifies the model and a real completion before changing the
+Compose topology. Open WebUI, ODS Talk, Hermes, Perplexica, Privacy Shield, and
+Token Spy then use the container-safe external endpoint. ODS does not stop the
+external process and does not activate local catalog models while that backend
+is selected.
+
+To return an existing installation to ODS-managed llama-server:
+
+```bash
+./install.sh --no-external-llm
+```
+
+This integration routes text/chat inference; it does not import or synchronize
+Ollama/LM Studio model files, VLMs, embedding models, or rerankers. The
+installer flags in this release are Linux-only. Windows Lemonade and macOS
+native llama-server keep their existing platform lifecycle.
+
+---
+
 ### Can I chat while models are downloading?
 
 Yes. During install, a small bootstrap model (~1.5GB, Qwen 3.5 2B) downloads first so you can start chatting within a couple of minutes. The bootstrap context is 64K so Hermes can work during the first session. The full tier-appropriate model downloads in the background.
@@ -296,7 +359,7 @@ When the full model finishes, the system swaps it in automatically — you don't
 
 1. This documentation
 2. `TROUBLESHOOTING.md` for common issues
-3. GitHub Issues: https://github.com/Light-Heart-Labs/ODS/issues
+3. GitHub Issues: https://github.com/Osmantic/ODS/issues
 4. Discord community (link in README)
 
 ---
@@ -329,4 +392,4 @@ See "Cost & ROI" section above. TL;DR: Local is cheaper at scale, more private, 
 
 ---
 
-*Built by Light Heart Labs / The Collective*
+*Built by Osmantic / The Collective*

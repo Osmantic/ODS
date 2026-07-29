@@ -236,4 +236,4 @@ Your AI. Your data. Your machine. Your rules.
 
 ---
 
-*ODS is an open-source project by [Light Heart Labs](https://github.com/Light-Heart-Labs). For documentation, source code, and community support: [github.com/Light-Heart-Labs/ODS](https://github.com/Light-Heart-Labs/ODS)*
+*ODS is an open-source project by [Osmantic](https://github.com/Osmantic). For documentation, source code, and community support: [github.com/Osmantic/ODS](https://github.com/Osmantic/ODS)*

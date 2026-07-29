@@ -26,7 +26,7 @@ Write-Phase -Phase 7 -Total 13 -Name "DEVELOPER TOOLS" -Estimate "~2-5 minutes"
 if ($dryRun) {
     Write-AI "[DRY RUN] Would install OpenCode v$($script:OPENCODE_VERSION) to $($script:OPENCODE_EXE)"
     Write-AI "[DRY RUN] Would configure OpenCode for local llama-server (model: $($tierConfig.LlmModel))"
-    Write-AI "[DRY RUN] Would create a manual OpenCode launcher"
+    Write-AI "[DRY RUN] Would register and start $($script:OPENCODE_TASK_NAME) for the OpenCode web app"
     if (-not $cloudMode) {
         Write-AI "[DRY RUN] Would check for Node.js and install Claude Code + Codex CLI via npm"
     }
@@ -109,20 +109,108 @@ if (Test-Path $script:OPENCODE_EXE) {
     }
 
     # ── VBS launcher (available for manual startup) ──────────────────────────
-    # Creates a VBS script users can run to start OpenCode without a console
-    # window. NOT added to Windows Startup -- OpenCode is a developer tool,
-    # not a core service, so it should be opt-in.
+    # OpenCode is bound to loopback, so match the Linux and macOS launchers:
+    # clear any inherited password and open directly from the ODS app menu.
+    $_ocLauncherPath = Join-Path $script:OPENCODE_DIR "start-opencode.ps1"
+    $_ocExeLiteral = $script:OPENCODE_EXE.Replace("'", "''")
+    $_ocDirLiteral = $script:OPENCODE_DIR.Replace("'", "''")
+    $_ocLauncherContent = @"
+`$ErrorActionPreference = "Stop"
+Remove-Item Env:OPENCODE_SERVER_PASSWORD -ErrorAction SilentlyContinue
+Set-Location -LiteralPath '$_ocDirLiteral'
+& '$_ocExeLiteral' web --port $($script:OPENCODE_PORT) --hostname 127.0.0.1
+exit `$LASTEXITCODE
+"@
+    Write-Utf8NoBom -Path $_ocLauncherPath -Content $_ocLauncherContent
+
+    function Test-ODSOpenCodePortOwned {
+        $listeners = @(
+            Get-NetTCPConnection -LocalPort $script:OPENCODE_PORT `
+                -State Listen -ErrorAction SilentlyContinue
+        )
+        if ($listeners.Count -eq 0) { return $false }
+
+        $expectedExe = [System.IO.Path]::GetFullPath($script:OPENCODE_EXE)
+        foreach ($processId in @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)) {
+            $process = Get-CimInstance Win32_Process `
+                -Filter "ProcessId = $([int]$processId)" -ErrorAction SilentlyContinue
+            if (-not $process -or [string]::IsNullOrWhiteSpace($process.ExecutablePath)) {
+                continue
+            }
+            try {
+                $actualExe = [System.IO.Path]::GetFullPath([string]$process.ExecutablePath)
+            } catch {
+                continue
+            }
+            if ($actualExe.Equals($expectedExe, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+        return $false
+    }
+
+    $_ocTaskArgument = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$($_ocLauncherPath)`""
+    $_ocStarted = $false
+    try {
+        try { Stop-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME -ErrorAction SilentlyContinue } catch { }
+        try { Unregister-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+
+        $_ocTaskAction = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument $_ocTaskArgument -WorkingDirectory $script:OPENCODE_DIR
+        $_ocTaskTrigger = New-ScheduledTaskTrigger -AtLogOn
+        $_ocTaskSettings = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+        $_ocTaskPrincipal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited
+
+        Register-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME `
+            -Action $_ocTaskAction -Trigger $_ocTaskTrigger `
+            -Settings $_ocTaskSettings -Principal $_ocTaskPrincipal `
+            -Description "ODS OpenCode browser application" `
+            -Force -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME -ErrorAction Stop
+        $_ocStarted = $true
+    } catch {
+        Write-AIWarn "Could not register the OpenCode login task: $_"
+        Write-AI "Starting OpenCode for this session..."
+        try {
+            Start-Process -FilePath "powershell.exe" -ArgumentList $_ocTaskArgument `
+                -WorkingDirectory $script:OPENCODE_DIR -WindowStyle Hidden -ErrorAction Stop | Out-Null
+            $_ocStarted = $true
+        } catch {
+            Write-AIWarn "Could not start OpenCode: $_"
+        }
+    }
+
+    $_ocHealthy = $false
+    if ($_ocStarted) {
+        for ($_ocAttempt = 0; $_ocAttempt -lt 15; $_ocAttempt++) {
+            Start-Sleep -Seconds 1
+            if (Test-ODSOpenCodePortOwned) {
+                $_ocHealthy = $true
+                break
+            }
+        }
+    }
+
+    if ($_ocHealthy) {
+        Write-AISuccess "OpenCode web app started (http://localhost:$($script:OPENCODE_PORT))"
+    } elseif ($_ocStarted) {
+        Write-AIWarn "OpenCode was launched but did not become reachable on port $($script:OPENCODE_PORT)."
+    }
+
+    # Retain the familiar double-click launcher as a recovery path.
     $_vbsContent = @"
 ' ODS -- OpenCode Web Server (silent launcher)
 ' Run this script to start OpenCode without a visible console window.
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.CurrentDirectory = WshShell.ExpandEnvironmentStrings("%USERPROFILE%\.opencode")
-WshShell.Run """%USERPROFILE%\.opencode\bin\opencode.exe"" web --port $($script:OPENCODE_PORT) --hostname 127.0.0.1", 0, False
+WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$_ocLauncherPath""", 0, False
 "@
     $_vbsPath = Join-Path $script:OPENCODE_DIR "start-opencode.vbs"
     Write-Utf8NoBom -Path $_vbsPath -Content $_vbsContent
-    Write-AISuccess "OpenCode ready -- start manually: $($script:OPENCODE_EXE) web --port $($script:OPENCODE_PORT)"
-    Write-AI "  Or run: $($_vbsPath) (silent, no console window)"
+    if (-not $_ocStarted) {
+        Write-AI "  Recovery launcher: $($_vbsPath)"
+    }
 }
 
 # ── Node.js / npm tools (Claude Code + Codex CLI) ────────────────────────────
@@ -272,8 +360,8 @@ function Resolve-ODSHostAgentPython {
         }
     }
 
-    foreach ($pyLauncher in @(Get-Command py -CommandType Application -ErrorAction SilentlyContinue)) {
-        if ($pyLauncher -and $pyLauncher.Source -and
+    foreach ($pyLauncher in @(Get-Command py -CommandType Application -All -ErrorAction SilentlyContinue)) {
+        if ($pyLauncher.Source -and
             (Test-ODSHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))) {
             return (New-ODSHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))
         }
@@ -300,6 +388,33 @@ function Install-ODSHostAgentPython {
     return (Resolve-ODSHostAgentPython)
 }
 
+function Invoke-ODSNativeQuiet {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$Arguments = @(),
+        [string]$LogPath = ""
+    )
+
+    $prevEAP = $ErrorActionPreference
+    $exitCode = 1
+    try {
+        # PowerShell 5.1 can promote expected native stderr to a terminating
+        # NativeCommandError when the installer runs with Stop semantics.
+        $ErrorActionPreference = "SilentlyContinue"
+        if ([string]::IsNullOrWhiteSpace($LogPath)) {
+            & $FilePath @Arguments 2>&1 | Out-Null
+        } else {
+            & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Null
+        }
+        if ($null -ne $LASTEXITCODE) { $exitCode = $LASTEXITCODE }
+    } catch {
+        $exitCode = 1
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    return $exitCode
+}
+
 # ── ODS Host Agent (extension lifecycle management) ────────────────────────
 $_agentScript = Join-Path (Join-Path $installDir "bin") "ods-host-agent.py"
 if (Test-Path $_agentScript) {
@@ -307,6 +422,19 @@ if (Test-Path $_agentScript) {
     if (-not $_python3) { $_python3 = Install-ODSHostAgentPython }
 
     if ($_python3) {
+        $_checkArgs = @($_python3.PrefixArgs) + @("-c", "import huggingface_hub, hf_xet")
+        $_checkExit = Invoke-ODSNativeQuiet -FilePath $_python3.FilePath -Arguments $_checkArgs
+        if ($_checkExit -ne 0) {
+            Write-AI "Installing ODS host-agent model downloader dependencies..."
+            $_installArgs = @($_python3.PrefixArgs) + @("-m", "pip", "install", "--user", "-q", "huggingface_hub[hf_xet]>=0.27")
+            $_installExit = Invoke-ODSNativeQuiet -FilePath $_python3.FilePath -Arguments $_installArgs -LogPath $script:LOG_FILE
+            if ($_installExit -eq 0) {
+                Write-AISuccess "ODS host-agent Hugging Face downloader ready"
+            } else {
+                Write-AIWarn "Could not install huggingface_hub[hf_xet]; model manager downloads may fail on Xet-backed Hugging Face models."
+            }
+        }
+
         # Kill existing agent on reinstall (matches Linux force-restart pattern)
         if (Test-Path $script:ODS_AGENT_PID_FILE) {
             $_oldPid = $null
@@ -355,7 +483,7 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
         $taskSettings = New-ScheduledTaskSettingsSet `
             -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
             -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
-        $taskPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+        $taskPrincipal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited
 
         $taskError = $null
         try {
@@ -364,6 +492,12 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
                 -Description "ODS Host Agent -- manages extensions and bridges dashboard to host" `
                 -Force -ErrorAction Stop | Out-Null
             Start-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME
+            # Cleanup any legacy VBScript startup launcher if scheduled task succeeded
+            $startupFolder = [Environment]::GetFolderPath("Startup")
+            $vbsFile = Join-Path $startupFolder "ods-host-agent.vbs"
+            if (Test-Path $vbsFile) {
+                Remove-Item $vbsFile -Force -ErrorAction SilentlyContinue
+            }
             Write-AISuccess "Host agent scheduled and started (Task: $($script:ODS_AGENT_TASK_NAME))"
 
             Start-Sleep -Seconds 3
@@ -380,9 +514,25 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
             }
         } catch {
             $taskError = $_
-            Write-AIWarn "Could not register login task -- start manually: .\ods.ps1 agent start"
-            if ($taskError -and $taskError.Exception) {
-                Write-AI "  Scheduled Tasks error: $($taskError.Exception.Message)"
+            Write-AIWarn "Could not register login task through Task Scheduler: $($taskError.Exception.Message)"
+            Write-AI "Setting up alternative startup persistence for standard user..."
+
+            $startupFolder = [Environment]::GetFolderPath("Startup")
+            $vbsFile = Join-Path $startupFolder "ods-host-agent.vbs"
+            $vbsContent = @"
+' ODS Host Agent login startup launcher
+Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $_encodedAgentCommand", 0, False
+"@
+            try {
+                Write-Utf8NoBom -Path $vbsFile -Content $vbsContent
+                Write-AISuccess "Startup persistence configured via Start Menu Startup folder: $vbsFile"
+                # Start the agent now using the startup script
+                Start-Process wscript.exe -ArgumentList ('"{0}"' -f $vbsFile) -NoNewWindow
+            } catch {
+                Write-AIError "Failed to set up alternative startup persistence: $_"
+                Write-AIWarn "Starting host agent directly for this session..."
+                Start-Process -FilePath $_python3.FilePath -ArgumentList @($_agentScript, '--port', "$($script:ODS_AGENT_PORT)", '--pid-file', $script:ODS_AGENT_PID_FILE, '--install-dir', $installDir) -WorkingDirectory $installDir -WindowStyle Hidden -RedirectStandardError $script:ODS_AGENT_LOG_FILE
             }
         }
     } else {

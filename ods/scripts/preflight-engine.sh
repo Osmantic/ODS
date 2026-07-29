@@ -10,7 +10,7 @@ GPU_VRAM_MB="${GPU_VRAM_MB:-0}"
 GPU_NAME="${GPU_NAME:-Unknown}"
 PLATFORM_ID="${PLATFORM_ID:-linux}"
 COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-}"
-SCRIPT_DIR="${SCRIPT_DIR:-$(pwd)}"
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 STRICT="false"
 ENV_MODE="false"
 
@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ROOT_DIR="$SCRIPT_DIR"
 PYTHON_CMD="python3"
 if [[ -f "$ROOT_DIR/lib/python-cmd.sh" ]]; then
     . "$ROOT_DIR/lib/python-cmd.sh"

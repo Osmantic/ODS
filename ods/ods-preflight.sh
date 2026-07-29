@@ -24,6 +24,10 @@ load_env_file "$ODS_DIR/.env"
 
 SERVICE_HOST="${SERVICE_HOST:-localhost}"
 
+# Bound every health probe so a listening-but-wedged service can't hang the
+# preflight (mirrors scripts/ods-preflight.sh).
+CURL_HEALTH_FLAGS=(--connect-timeout 3 --max-time 10)
+
 # Auto-detect backend from .env or hardware probing.
 # Priority: .env setting → nvidia-smi → AMD sysfs (any card).
 # On dual-GPU systems (AMD iGPU + NVIDIA dGPU) we must prefer
@@ -211,7 +215,7 @@ fi
 
 LLM_FOUND=false
 for ENDPOINT in "${LLM_ENDPOINTS[@]}"; do
-    if curl -sf "$ENDPOINT" &> /dev/null; then
+    if curl -sf "${CURL_HEALTH_FLAGS[@]}" "$ENDPOINT" &> /dev/null; then
         pass "LLM endpoint ($LLM_SERVICE_NAME) responding at $ENDPOINT"
         LLM_FOUND=true
         break
@@ -236,7 +240,7 @@ WHISPER_ENDPOINTS=("http://${SERVICE_HOST}:${WHISPER_PORT_RESOLVED}" "http://127
 WHISPER_FOUND=false
 
 for ENDPOINT in "${WHISPER_ENDPOINTS[@]}"; do
-    if curl -sf "$ENDPOINT/health" &> /dev/null; then
+    if curl -sf "${CURL_HEALTH_FLAGS[@]}" "$ENDPOINT/health" &> /dev/null; then
         pass "Whisper STT responding at $ENDPOINT"
         WHISPER_FOUND=true
         break
@@ -255,7 +259,7 @@ TTS_ENDPOINTS=("http://${SERVICE_HOST}:${TTS_PORT_RESOLVED}" "http://127.0.0.1:$
 TTS_FOUND=false
 
 for ENDPOINT in "${TTS_ENDPOINTS[@]}"; do
-    if curl -sf "$ENDPOINT/health" &> /dev/null; then
+    if curl -sf "${CURL_HEALTH_FLAGS[@]}" "$ENDPOINT/health" &> /dev/null; then
         pass "TTS endpoint responding at $ENDPOINT"
         TTS_FOUND=true
         break
@@ -274,7 +278,7 @@ EMBEDDING_ENDPOINTS=("http://${SERVICE_HOST}:${EMBEDDINGS_PORT_RESOLVED}" "http:
 EMBEDDING_FOUND=false
 
 for ENDPOINT in "${EMBEDDING_ENDPOINTS[@]}"; do
-    if curl -sf "$ENDPOINT/health" &> /dev/null; then
+    if curl -sf "${CURL_HEALTH_FLAGS[@]}" "$ENDPOINT/health" &> /dev/null; then
         pass "Embeddings endpoint responding at $ENDPOINT"
         EMBEDDING_FOUND=true
         break
@@ -288,11 +292,12 @@ log ""
 
 # 8. Dashboard check (replaces LiveKit — more useful for all backends)
 log "[8/8] Checking Dashboard..."
-DASHBOARD_ENDPOINTS=("http://${SERVICE_HOST}:3001" "http://127.0.0.1:3001")
+DASHBOARD_PORT_RESOLVED="${DASHBOARD_PORT:-3001}"
+DASHBOARD_ENDPOINTS=("http://${SERVICE_HOST}:${DASHBOARD_PORT_RESOLVED}" "http://127.0.0.1:${DASHBOARD_PORT_RESOLVED}")
 DASHBOARD_FOUND=false
 
 for ENDPOINT in "${DASHBOARD_ENDPOINTS[@]}"; do
-    if curl -sf "$ENDPOINT" &> /dev/null; then
+    if curl -sf "${CURL_HEALTH_FLAGS[@]}" "$ENDPOINT" &> /dev/null; then
         pass "Dashboard responding at $ENDPOINT"
         DASHBOARD_FOUND=true
         break
@@ -300,7 +305,7 @@ for ENDPOINT in "${DASHBOARD_ENDPOINTS[@]}"; do
 done
 
 if [ "$DASHBOARD_FOUND" = false ]; then
-    warn "Dashboard not found at port 3001"
+    warn "Dashboard not found at port ${DASHBOARD_PORT_RESOLVED}"
 fi
 log ""
 

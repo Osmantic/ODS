@@ -13,7 +13,11 @@ def signed_talk_cookie(monkeypatch):
 
 
 @pytest.fixture()
-def talk_client(test_client, signed_talk_cookie):
+def talk_client(test_client, signed_talk_cookie, monkeypatch):
+    async def no_loaded_model():
+        return None
+
+    monkeypatch.setattr("routers.talk.get_loaded_model", no_loaded_model)
     test_client.cookies.set("ods-session", signed_talk_cookie)
     return test_client
 
@@ -39,6 +43,140 @@ def test_talk_status_requires_session(talk_client, monkeypatch):
     assert data["capabilities"]["tts"] is True
     assert data["capabilities"]["audio_message"] is True
     assert data["capabilities"]["live_mic_requires_secure_context"] is True
+
+
+def test_talk_status_disables_text_chat_for_incompatible_active_model(talk_client, monkeypatch):
+    async def fake_state(service_id):
+        return {"configured": True, "status": "healthy", "id": service_id}
+
+    monkeypatch.setattr("routers.talk._service_state", fake_state)
+    async def incompatible_model():
+        return {
+            "agentViability": {
+                "status": "not_agent_viable",
+                "reason": "Phi direct chat works, but agent validation failed.",
+            },
+            "hermesTalk": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Phi direct chat works, but ODS Talk is not revalidated.",
+            },
+        }
+
+    monkeypatch.setattr("routers.talk._active_model_app_compatibility", incompatible_model)
+
+    resp = talk_client.get("/api/talk/status")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["capabilities"]["text_chat"] is False
+    assert data["reason"] == "Phi direct chat works, but agent validation failed."
+
+
+def test_talk_message_rejects_incompatible_model_before_hermes(talk_client, monkeypatch):
+    calls = []
+
+    async def fake_submit(session_key, text):
+        calls.append((session_key, text))
+        return None
+
+    monkeypatch.setattr("hermes_bridge.submit_prompt", fake_submit)
+    async def incompatible_model():
+        return {
+            "agentViability": {
+                "status": "not_agent_viable",
+                "reason": "Active model is not agent ready.",
+            },
+            "hermesTalk": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Active model is not Talk ready.",
+            },
+        }
+
+    monkeypatch.setattr("routers.talk._active_model_app_compatibility", incompatible_model)
+
+    resp = talk_client.post("/api/talk/message", json={"text": "hello"})
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "Active model is not agent ready."
+    assert calls == []
+
+
+def test_talk_status_uses_live_model_instead_of_configured_bootstrap(talk_client, monkeypatch):
+    async def fake_state(service_id):
+        return {"configured": True, "status": "healthy", "id": service_id}
+
+    async def live_model():
+        return "jamba-reasoning-3b-Q4_K_M.gguf"
+
+    catalog = [
+        {
+            "id": "qwen3.5-2b-q4",
+            "name": "Qwen 3.5 2B",
+            "gguf_file": "Qwen3.5-2B-Q4_K_M.gguf",
+            "app_compatibility": {
+                "agent_viability": {
+                    "status": "not_agent_viable",
+                    "reason": "Configured bootstrap model is not agent ready.",
+                },
+            },
+        },
+        {
+            "id": "jamba-reasoning-3b-q4",
+            "name": "AI21 Jamba Reasoning 3B",
+            "gguf_file": "jamba-reasoning-3b-Q4_K_M.gguf",
+        },
+    ]
+
+    monkeypatch.setattr("routers.talk._service_state", fake_state)
+    monkeypatch.setattr("routers.talk.get_loaded_model", live_model)
+    monkeypatch.setattr("routers.talk.load_model_catalog", lambda _install_dir: catalog)
+    monkeypatch.setattr("routers.talk.read_env_file_value", lambda key, _install_dir: {
+        "LLM_MODEL": "qwen3.5-2b",
+        "GGUF_FILE": "Qwen3.5-2B-Q4_K_M.gguf",
+    }.get(key, ""))
+    monkeypatch.setattr("routers.talk.model_compatibility_runtime_context", lambda _install_dir: {})
+
+    resp = talk_client.get("/api/talk/status")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["capabilities"]["text_chat"] is True
+    assert data["modelCompatibility"]["activeModel"] == {
+        "id": "jamba-reasoning-3b-q4",
+        "model": "jamba-reasoning-3b-Q4_K_M.gguf",
+        "gguf": "jamba-reasoning-3b-Q4_K_M.gguf",
+    }
+
+
+def test_talk_status_falls_back_to_configured_model_without_live_runtime(talk_client, monkeypatch):
+    async def fake_state(service_id):
+        return {"configured": True, "status": "healthy", "id": service_id}
+
+    catalog = [{
+        "id": "qwen3.5-2b-q4",
+        "name": "Qwen 3.5 2B",
+        "gguf_file": "Qwen3.5-2B-Q4_K_M.gguf",
+        "app_compatibility": {
+            "agent_viability": {
+                "status": "not_agent_viable",
+                "reason": "Configured bootstrap model is not agent ready.",
+            },
+        },
+    }]
+
+    monkeypatch.setattr("routers.talk._service_state", fake_state)
+    monkeypatch.setattr("routers.talk.load_model_catalog", lambda _install_dir: catalog)
+    monkeypatch.setattr("routers.talk.read_env_file_value", lambda key, _install_dir: {
+        "LLM_MODEL": "qwen3.5-2b",
+        "GGUF_FILE": "Qwen3.5-2B-Q4_K_M.gguf",
+    }.get(key, ""))
+    monkeypatch.setattr("routers.talk.model_compatibility_runtime_context", lambda _install_dir: {})
+
+    resp = talk_client.get("/api/talk/status")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["capabilities"]["text_chat"] is False
+    assert data["reason"] == "Configured bootstrap model is not agent ready."
+    assert data["modelCompatibility"]["activeModel"]["id"] == "qwen3.5-2b-q4"
 
 
 def test_talk_message_routes_through_hermes_bridge(talk_client, monkeypatch):
@@ -433,6 +571,69 @@ def test_hermes_bridge_pool_serializes_same_key_parallels_different_keys(monkeyp
     assert same_creates["k1"] == 1, f"expected pool reuse for k1, got {same_creates['k1']} creates"
     assert diff_exit == {"A", "B"}
     assert diff_creates == {"phoneA": 1, "phoneB": 1}
+
+
+def test_hermes_bridge_slow_open_does_not_block_other_keys(monkeypatch):
+    """Opening a connection is network I/O (token fetch + ws connect +
+    session.create) that can hang for the full client timeout when Hermes
+    is slow or down. That open must not hold the global pool guard:
+
+      * another phone with a warm pooled connection gets it immediately;
+      * a second call for the SAME key waits for the in-flight open and
+        shares its result instead of opening a duplicate.
+    """
+    import asyncio as _asyncio
+    import hermes_bridge
+
+    hermes_bridge._CONNECTION_POOL.clear()
+    hermes_bridge._OPENING_LOCKS.clear()
+    hermes_bridge._SWEEPER_TASK = None
+
+    class FakeWS:
+        closed = False
+        async def close(self): self.closed = True
+
+    class FakeHTTP:
+        async def close(self): pass
+
+    async def main():
+        open_started = _asyncio.Event()
+        release_open = _asyncio.Event()
+        open_calls = {"n": 0}
+
+        async def slow_open(session_key):
+            open_calls["n"] += 1
+            open_started.set()
+            await release_open.wait()
+            return hermes_bridge._HermesConnection(
+                http_session=FakeHTTP(), ws=FakeWS(), session_id=f"sid-{session_key}",
+            )
+
+        monkeypatch.setattr("hermes_bridge._open_connection", slow_open)
+
+        warm = hermes_bridge._HermesConnection(
+            http_session=FakeHTTP(), ws=FakeWS(), session_id="sid-warm",
+        )
+        hermes_bridge._CONNECTION_POOL["warm-key"] = warm
+
+        slow_task = _asyncio.create_task(hermes_bridge._get_connection("cold-key"))
+        await open_started.wait()
+
+        # While cold-key's open hangs, the warm key must still be served.
+        got = await _asyncio.wait_for(hermes_bridge._get_connection("warm-key"), timeout=1.0)
+        assert got is warm
+
+        # A concurrent same-key call shares the in-flight open's result.
+        second_task = _asyncio.create_task(hermes_bridge._get_connection("cold-key"))
+        await _asyncio.sleep(0.05)
+        release_open.set()
+        first = await _asyncio.wait_for(slow_task, timeout=1.0)
+        second = await _asyncio.wait_for(second_task, timeout=1.0)
+        assert first is second
+        assert open_calls["n"] == 1, f"expected one open for cold-key, got {open_calls['n']}"
+        return True
+
+    assert _run_with_one_loop(main)
 
 
 def test_hermes_bridge_transparent_retry_on_send_reset(monkeypatch):

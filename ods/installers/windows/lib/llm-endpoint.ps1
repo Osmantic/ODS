@@ -32,7 +32,18 @@ function Get-WindowsODSEnvMap {
             if ($line -match "^#" -or $line -eq "") { return }
             if ($line -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
                 $key = $Matches[1]
-                $val = $Matches[2].Trim('"').Trim("'")
+                $val = $Matches[2]
+                # Strip exactly one matching pair of surrounding quotes.
+                # Trimming each quote character independently corrupts values
+                # that legitimately start or end with the other quote: a
+                # double-quoted "'literal'" loses its inner single quotes and
+                # KEY="'" collapses to empty. Mismatched quotes are kept
+                # verbatim, matching lib/safe-env.sh on Linux.
+                if ($val.Length -ge 2 -and (
+                        ($val.StartsWith('"') -and $val.EndsWith('"')) -or
+                        ($val.StartsWith("'") -and $val.EndsWith("'")))) {
+                    $val = $val.Substring(1, $val.Length - 2)
+                }
                 $result[$key] = $val
             }
         }
@@ -64,6 +75,29 @@ function Get-WindowsODSEnvValue {
     }
 
     return $Default
+}
+
+function Get-WindowsODSEnvPort {
+    <#
+    .SYNOPSIS
+        Read and validate a persisted service port from a parsed ODS .env map.
+    #>
+    param(
+        [hashtable]$EnvMap,
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [int]$DefaultPort
+    )
+
+    $candidate = Get-WindowsODSEnvValue -EnvMap $EnvMap -Keys @($Name) -Default ""
+    $parsedPort = 0
+    if ([int]::TryParse(([string]$candidate).Trim(), [ref]$parsedPort) -and
+        $parsedPort -ge 1 -and $parsedPort -le 65535) {
+        return $parsedPort
+    }
+
+    return $DefaultPort
 }
 
 function Get-WindowsLocalLlmEndpoint {
@@ -121,15 +155,30 @@ function Get-WindowsLocalLlmEndpoint {
         $amdInferenceRuntimeMode = $amdInferenceRuntimeMode.ToLowerInvariant()
     }
 
+    $defaultNativePort = "8080"
+    $configuredConstant = Get-Variable -Name LEMONADE_PORT -Scope Script -ErrorAction SilentlyContinue
+    if ($configuredConstant -and [string]$configuredConstant.Value -match '^\d+$') {
+        $defaultNativePort = [string]$configuredConstant.Value
+    }
+    $nativePort = Get-WindowsODSEnvValue `
+        -EnvMap $EnvMap -Keys @("AMD_INFERENCE_PORT") -Default $defaultNativePort
+    $parsedNativePort = 0
+    if (-not [int]::TryParse($nativePort, [ref]$parsedNativePort) -or
+        $parsedNativePort -lt 1 -or $parsedNativePort -gt 65535) {
+        $nativePort = $defaultNativePort
+    } else {
+        $nativePort = [string]$parsedNativePort
+    }
+
     if ($UseLemonade -or $resolvedNativeBackend -eq "lemonade" -or $llmBackend -eq "lemonade") {
         return @{
             Name = "LLM (Lemonade)"
             Backend = "lemonade"
-            Port = "$($script:LEMONADE_PORT)"
+            Port = $nativePort
             ApiBasePath = "/api/v1"
-            HealthUrl = $script:LEMONADE_HEALTH_URL
-            BaseUrl = "http://localhost:$($script:LEMONADE_PORT)/api/v1"
-            ChatCompletionsUrl = "http://localhost:$($script:LEMONADE_PORT)/api/v1/chat/completions"
+            HealthUrl = "http://127.0.0.1:${nativePort}/api/v1/health"
+            BaseUrl = "http://localhost:${nativePort}/api/v1"
+            ChatCompletionsUrl = "http://localhost:${nativePort}/api/v1/chat/completions"
         }
     }
 
@@ -145,11 +194,11 @@ function Get-WindowsLocalLlmEndpoint {
         return @{
             Name = "LLM (llama-server)"
             Backend = "native-llama-server"
-            Port = "8080"
+            Port = $nativePort
             ApiBasePath = "/v1"
-            HealthUrl = "http://localhost:8080/health"
-            BaseUrl = "http://localhost:8080/v1"
-            ChatCompletionsUrl = "http://localhost:8080/v1/chat/completions"
+            HealthUrl = "http://localhost:${nativePort}/health"
+            BaseUrl = "http://localhost:${nativePort}/v1"
+            ChatCompletionsUrl = "http://localhost:${nativePort}/v1/chat/completions"
         }
     }
 
@@ -189,6 +238,7 @@ function Test-WindowsLlmModelReadiness {
         [Parameter(Mandatory = $true)] [hashtable]$Endpoint,
         [Parameter(Mandatory = $true)] [string]$InstallDir,
         [string]$GgufFile = "",
+        [string]$LemonadeModel = "",
         [int]$TimeoutSec = 120
     )
 
@@ -204,10 +254,10 @@ function Test-WindowsLlmModelReadiness {
         $result.FileExists = $true
     }
 
-    # 2. Resolve the served model id. Lemonade prefixes discovered GGUFs with
-    #    'extra.', while the native llama-server fallback serves the GGUF name
-    #    directly. Key this off the resolved endpoint, not the broader AMD GPU
-    #    family, so a valid Vulkan fallback install does not false-fail.
+    # 2. Resolve the served model id. Modern Lemonade derives IDs from its live
+    #    model catalog, while legacy releases use extra.<GGUF_FILE>. Key this off
+    #    the resolved endpoint, not the broader AMD GPU family, so a valid Vulkan
+    #    fallback install does not false-fail.
     $modelId = $GgufFile
     $isLemonadeEndpoint = $false
     if ($Endpoint.ContainsKey("Backend")) {
@@ -216,7 +266,33 @@ function Test-WindowsLlmModelReadiness {
         $isLemonadeEndpoint = ([string]$Endpoint.ApiBasePath) -eq "/api/v1"
     }
     if (-not [string]::IsNullOrWhiteSpace($GgufFile) -and $isLemonadeEndpoint) {
-        $modelId = "extra.$GgufFile"
+        $modelId = $LemonadeModel
+        if ([string]::IsNullOrWhiteSpace($modelId)) {
+            $envMap = Get-WindowsODSEnvMap -InstallDir $InstallDir
+            $modelId = Get-WindowsODSEnvValue `
+                -EnvMap $envMap -Keys @("LEMONADE_MODEL") `
+                -Default "extra.$GgufFile"
+        }
+
+        $resolver = Get-Command Resolve-ODSLemonadeModelId -ErrorAction SilentlyContinue
+        if ($resolver) {
+            $lemonadePort = 0
+            if ($Endpoint.ContainsKey("Port")) {
+                [void][int]::TryParse([string]$Endpoint.Port, [ref]$lemonadePort)
+            }
+            if ($lemonadePort -lt 1 -and $Endpoint.ContainsKey("ChatCompletionsUrl")) {
+                try { $lemonadePort = ([Uri]$Endpoint.ChatCompletionsUrl).Port } catch { }
+            }
+            if ($lemonadePort -gt 0) {
+                try {
+                    $liveModelId = Resolve-ODSLemonadeModelId `
+                        -Port $lemonadePort -GgufFile $GgufFile
+                    if (-not [string]::IsNullOrWhiteSpace($liveModelId)) {
+                        $modelId = $liveModelId
+                    }
+                } catch { }
+            }
+        }
     }
     if ([string]::IsNullOrWhiteSpace($modelId)) { $modelId = "default" }
     $result.ModelId = $modelId

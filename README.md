@@ -4,20 +4,24 @@
 
 **Osmantic Deployment System**
 
+<p align="center">
+  <a href="https://osmantic.com" target="_blank" rel="noopener noreferrer">
+    <img src="ods/docs/images/osmantic-lockup.png" alt="Osmantic" width="800">
+  </a>
+</p>
+
 **Turn your PC, Mac, or Linux box into a private AI server.**
 
 AI server and homelab setup is rapidly becoming a solved problem.
 It should feel that way for everyone.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/Light-Heart-Labs/ODS)](https://github.com/Light-Heart-Labs/ODS/stargazers)
-[![Release](https://img.shields.io/github/v/release/Light-Heart-Labs/ODS)](https://github.com/Light-Heart-Labs/ODS/releases)
+[![GitHub Stars](https://img.shields.io/github/stars/Osmantic/ODS)](https://github.com/Osmantic/ODS/stargazers)
+[![Release](https://img.shields.io/github/v/release/Osmantic/ODS)](https://github.com/Osmantic/ODS/releases)
 
 [![Watch the demo](https://img.shields.io/badge/Demo-Watch%20on%20YouTube-red?logo=youtube)](https://youtu.be/nO8xFNHX-HA)
 
 </div>
-
----
 
 ODS installs and wires together everything you need to run AI locally, so you do not have to assemble Ollama, Open WebUI, n8n, ComfyUI, and privacy tools by hand:
 
@@ -42,29 +46,64 @@ security policy, GitHub workflows, and project coordination docs. The
 `ods/` directory is the product runtime: services, installer phases,
 compose overlays, dashboard, CLI, tests, and operator docs.
 
-**Stable consumption:** `v2.5.2` is the current stable release. `main` moves
+**Stable consumption:** `v2.6.0` is the current stable release. `main` moves
 quickly; use it for active development and validation candidates. For forks,
 appliances, labs, or production-like installs, pin a tagged release or audited
 commit and keep your own validation receipt. Stable patch fixes land on
-`release/2.5.x` before being merged forward. See
+`release/2.6.x` before being merged forward. See
 [Release Channels](ods/docs/RELEASE_CHANNELS.md),
 [Installer Trust](ods/docs/INSTALLER_TRUST.md), and
 [Forkability](ods/docs/FORKABILITY.md).
 
 ## Get Started
 
-Linux and macOS:
+Choose your system, copy the block, run it in a normal terminal. ODS installs the stack, picks a model for your hardware, starts the services, and gives you the local web UI.
+
+**Linux or macOS**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Light-Heart-Labs/ODS/main/ods/get-ods.sh | bash
+curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
 
-Prefer to inspect before running or pin a release tag? See
-[Installer Trust](ods/docs/INSTALLER_TRUST.md).
+**Windows PowerShell**
 
-Windows users should use the PowerShell installer shown below or follow the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md).
+```powershell
+$ProgressPreference = "SilentlyContinue"
+$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
+$odsZip = Join-Path $odsSrc "ods-main.zip"
+New-Item -ItemType Directory -Path $odsSrc | Out-Null
+Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
+Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
+cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1
+```
+
+Prerequisites: Docker must be installed and running. On Windows, use Docker Desktop with the WSL2 backend enabled and run the block in a normal, non-Administrator PowerShell window.
+
+The hosted Linux/macOS endpoint proxies the current bootstrap from repository `main`.
+Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
+[Installer Trust](ods/docs/INSTALLER_TRUST.md) to inspect the script or install
+a stable release or audited commit manually.
+
+Windows users should not run the `curl ... | bash` command from PowerShell. The PowerShell block above downloads the source ZIP and runs the same Windows installer used by the clone-based workflow. For more detail, see the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md).
 
 After install, open **http://localhost:3000** and start chatting.
+
+Uninstall later with the matching platform command:
+
+```bash
+cd ~/ods
+./ods-uninstall.sh --force
+```
+
+```powershell
+$installDir = "$env:USERPROFILE\ods"
+cd $installDir
+.\ods.ps1 uninstall --force
+```
+
+Windows recovery note: if the runtime folder is partial and `.\ods.ps1` is missing, run the same command from a source checkout as `.\ods\installers\windows\ods.ps1 uninstall --force`. It removes Docker resources labelled as the ODS compose project before removing the runtime directory.
 
 > **API endpoint:** Linux Docker installs expose llama-server on **http://localhost:11434** by default (`OLLAMA_PORT`) while containers use `llama-server:8080`. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden. Open WebUI stays on **http://localhost:3000**.
 
@@ -77,8 +116,6 @@ After install, open **http://localhost:3000** and start chatting.
 > ```bash
 > WEBUI_PORT=9090 ./install.sh
 > ```
-
-![ODS Dashboard](ods/docs/images/dashboard.png)
 
 **New here?** Read the [Friendly Guide](ods/docs/HOW-ODS-SERVER-WORKS.md) or [listen to the audio version](https://open.spotify.com/episode/40MvqJ41bC8cEgvUyOyE3K) — a complete walkthrough of what ODS is, how it works, and how to make it your own. No technical background needed.
 
@@ -111,7 +148,7 @@ After install, open **http://localhost:3000** and start chatting.
 > | **Windows** (NVIDIA + AMD) | **Supported** — install and run today |
 > | **macOS** (Apple Silicon) | **Supported** — install and run today |
 >
-> **Tested Linux distros:** Ubuntu 24.04/22.04, Debian 12, Linux Mint 21.3, Fedora 41+, Rocky Linux 9, Arch Linux, Manjaro, CachyOS, and openSUSE Tumbleweed. Other distros using apt, dnf, pacman, or zypper should also work — [open an issue](https://github.com/Light-Heart-Labs/ODS/issues) if yours doesn't.
+> **Tested Linux distros:** Ubuntu 24.04/22.04, Debian 12, Linux Mint 21.3, Fedora 41+, Rocky Linux 9, Arch Linux, Manjaro, CachyOS, and openSUSE Tumbleweed. Other distros using apt, dnf, pacman, or zypper should also work — [open an issue](https://github.com/Osmantic/ODS/issues) if yours doesn't.
 >
 > **Release validation:** Operational changes run through a release-grade gate
 > that covers zero-prereq bootstrap, clean installs, product behavior,
@@ -144,19 +181,11 @@ We built ODS so you don't have to.
 - **Full service stack, pre-wired** — chat, agents, voice, workflows, search, RAG, image generation, privacy tools, observability, and developer tools. All talking to each other out of the box
 - **Fully moddable** — every service is an extension. Drop in a folder, run `ods enable`, done
 
-<div align="center">
-
-![ODS Installer](ods/docs/images/installer-splash.gif)
-
-*The ODSGATE installer handles everything — GPU detection, model selection, service orchestration.*
-
-</div>
-
 <details>
 <summary><b>Manual install (Linux)</b></summary>
 
 ```bash
-git clone https://github.com/Light-Heart-Labs/ODS.git
+git clone https://github.com/Osmantic/ODS.git
 cd ODS/ods
 ./install.sh
 ```
@@ -172,16 +201,21 @@ Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) with 
 Open a normal **PowerShell** session and run:
 
 ```powershell
+$ProgressPreference = "SilentlyContinue"
+$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
+$odsZip = Join-Path $odsSrc "ods-main.zip"
+New-Item -ItemType Directory -Path $odsSrc | Out-Null
+Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
+Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
+cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-git clone https://github.com/Light-Heart-Labs/ODS.git
-cd ODS
 .\install.ps1
 ```
 
 > The `Set-ExecutionPolicy` command allows the installer script to run in the current session. It does not change your system-wide policy.
 > Running as Administrator is not recommended for the installer because user-level paths such as `.opencode`, `data/`, and `.env` can be created with admin-owned permissions.
 
-The installer detects your GPU, picks the right model, generates credentials, starts all services, and creates a Desktop shortcut to the Dashboard. Manage with `.\ods\installers\windows\ods.ps1 status`.
+The installer detects your GPU, picks the right model, generates credentials, starts all services, and creates a Desktop shortcut to the Dashboard. Manage from the runtime directory with `.\ods.ps1 status`; uninstall with `.\ods.ps1 uninstall --force`.
 
 </details>
 
@@ -192,7 +226,7 @@ Requires Apple Silicon (M1+) and [Docker Desktop](https://www.docker.com/product
 **Install Docker Desktop first and make sure it is running before you start.**
 
 ```bash
-git clone https://github.com/Light-Heart-Labs/ODS.git
+git clone https://github.com/Osmantic/ODS.git
 cd ODS/ods
 ./install.sh
 ```
@@ -303,14 +337,6 @@ No waiting for large downloads. ODS uses bootstrap mode by default:
 2. You start chatting immediately
 3. The full model downloads in the background
 4. Hot-swap to the full model when it's ready — zero downtime
-
-<div align="center">
-
-![Installer downloading modules](ods/docs/images/installer-download.png)
-
-*The installer pulls all services in parallel. Downloads are resume-capable — interrupted downloads pick up where they left off.*
-
-</div>
 
 The bootstrap model starts with a 64K context window so Hermes can work during the first session. After the background download finishes, ODS swaps to the full model and restores the Hermes/full-model context target.
 
@@ -436,11 +462,12 @@ Other tools get you part of the way. ODS gets you the whole way.
 | [Headless Setup](ods/docs/HEADLESS-SETUP.md) | QR onboarding, first-boot setup, AP mode, mDNS, and local agent access |
 | [Support Matrix](ods/docs/SUPPORT-MATRIX.md) | Current platform and GPU support status |
 | [Release Validation](ods/docs/RELEASE_VALIDATION.md) | User Green gates and the release-grade fleet/distro validation policy |
+| [2.6.0 Release Notes](ods/docs/RELEASE_NOTES_2.6.0.md) | Current stable release notes, validation receipt, and known validation boundaries |
 | [Validation Matrix](ods/docs/VALIDATION-MATRIX.md) | Sanitized CI, distro lab, and real-hardware fleet release-readiness evidence |
 | [Validation Reproducibility](ods/docs/VALIDATION_REPRODUCIBILITY.md) | How forks and operators can reproduce the validation story on their own hardware |
 | [Offline And Mirroring](ods/docs/OFFLINE_AND_MIRRORING.md) | Pinning, mirroring, and preserving release artifacts for independent operation |
 | [Installer Trust](ods/docs/INSTALLER_TRUST.md) | Inspect-first install paths, ref pinning, and current provenance limits |
-| [Model Management](ods/docs/MODEL-MANAGEMENT.md) | Dashboard model downloads, switching, and manual GGUF workflows |
+| [Model Management](ods/docs/MODEL-MANAGEMENT.md) | Curated and Hugging Face GGUF discovery, verified imports, switching, and recovery |
 | [Hardware Guide](ods/docs/HARDWARE-GUIDE.md) | What to buy, tier recommendations |
 | [FAQ](ods/FAQ.md) | Common questions and configuration |
 | [Extensions](ods/docs/EXTENSIONS.md) | How to add custom services |
@@ -468,6 +495,6 @@ Apache 2.0 — Use it, modify it, ship it. See [LICENSE](LICENSE).
 
 <div align="center">
 
-*Built by [Light Heart Labs](https://github.com/Light-Heart-Labs) and the growing resistance that refuses to rent what should be owned.*
+*Built by [Osmantic](https://github.com/Osmantic) and the growing resistance that refuses to rent what should be owned.*
 
 </div>

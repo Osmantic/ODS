@@ -38,6 +38,41 @@ Before publishing or recommending a release candidate:
    mode, or disabled hardware lanes.
 8. Update release notes with the commit, date, validation layer, and known
    limitations.
+9. When `ods/get-ods.sh` changes, verify the rolling hosted bootstrap after the
+   change merges to `main`.
+
+## Hosted Bootstrap Verification
+
+The public bootstrap endpoint follows repository `main` through the Osmantic
+Worker. Merging `ods/get-ods.sh` updates the hosted source automatically after
+edge-cache refresh; no separate bootstrap promotion or Worker deployment is
+required.
+
+For any change to `ods/get-ods.sh`:
+
+1. Squash or merge the PR using the repository's agreed strategy.
+2. Fetch the target branch and capture the exact final commit. Do not verify a
+   pre-squash branch-head SHA.
+3. Wait for the five-minute freshness window or purge the installer Worker
+   cache.
+4. Verify all twelve active Worker aliases from a checkout containing the
+   final target-branch commit:
+
+   ```bash
+   git fetch origin main
+   bash ods/scripts/verify-hosted-bootstrap.sh origin/main
+   ```
+
+5. Record each endpoint, `X-ODS-Channel`, `X-ODS-Source-Ref`,
+   `X-ODS-Presentation`, and verification result in the PR or release receipt.
+
+Verification is incomplete if any alias does not identify `main`, the
+presentation is not `script`, or the body differs from
+`origin/main:ods/get-ods.sh`.
+
+Deploy the installer Worker only when routing, headers, validation, caching, or
+endpoint configuration changes. For a bad bootstrap merge, revert it on
+repository `main`, wait for or purge the cache, and verify again.
 
 ## When Release-Grade Fleet Is Required
 

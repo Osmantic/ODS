@@ -117,7 +117,7 @@ FLAGS
 cat > "$LAUNCH_PATH" <<'LAUNCH'
 timestamp=2999-01-01T00:00:00Z
 cwd=/tmp/not-the-ods-install-dir
-compose_command=docker compose -f docker-compose.base.yml up -d --remove-orphans --no-build
+compose_command=docker compose -f docker-compose.base.yml up -d --remove-orphans --no-build --pull never
 LAUNCH
 cat > "$COMPOSE_UP_PATH" <<'LOG'
 Docker Compose did not create any managed containers.

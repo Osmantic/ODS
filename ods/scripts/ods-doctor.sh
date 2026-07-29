@@ -46,6 +46,7 @@ load_env_safe() {
     local env_file="${1:-$ROOT_DIR/.env}"
     [[ -f "$env_file" ]] || return 0
     while IFS='=' read -r key value; do
+        value="${value%$'\r'}"
         [[ "$key" =~ ^[[:space:]]*# ]] && continue
         [[ -z "$key" ]] && continue
         [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
@@ -131,6 +132,176 @@ if command -v curl >/dev/null 2>&1; then
         WEBUI_HTTP="true"
     fi
 fi
+
+# Colors for doctor logging
+if [[ -t 1 ]] && [[ -z "${NO_COLOR+x}" ]]; then
+    _GREEN=$'\033[0;32m'
+    _RED=$'\033[0;31m'
+    _BLUE=$'\033[0;34m'
+    _YELLOW=$'\033[1;33m'
+    _NC=$'\033[0m'
+else
+    _GREEN=''
+    _RED=''
+    _BLUE=''
+    _YELLOW=''
+    _NC=''
+fi
+
+log_ok()   { echo -e "  ${_GREEN}✓${_NC} $*"; }
+log_fail() { echo -e "  ${_RED}✗${_NC} $*"; }
+log_info() { echo -e "  ${_BLUE}ℹ${_NC} $*"; }
+log_warn() { echo -e "  ${_YELLOW}⚠${_NC} $*"; }
+
+LLM_STATUS="unknown"
+LLM_PROVIDER=""
+LLM_MODEL=""
+LLM_URL=""
+LLM_LOCAL_WARNING="false"
+LLM_RECOVERY=""
+
+_doctor_check_external_llm() {
+    local url="$1" provider="$2" model="$3"
+    local health_path
+
+    LLM_URL="$url"
+    LLM_PROVIDER="${provider:-external}"
+    LLM_MODEL="$model"
+
+    case "$provider" in
+        ollama)     health_path="/api/tags" ;;
+        lmstudio)   health_path="/v1/models" ;;
+        *)          health_path="/v1/models" ;;  # OpenAI-compat fallback
+    esac
+
+    if command -v curl >/dev/null 2>&1 && curl -sf --max-time 5 "${url}${health_path}" > /dev/null 2>&1; then
+        LLM_STATUS="ok"
+        log_ok "LLM backend: ${provider:-external} (external) — responding"
+        log_ok "  Endpoint : $url"
+        [ -n "$model" ] && log_ok "  Model    : $model"
+    else
+        LLM_STATUS="fail"
+        log_fail "LLM backend: ${provider:-external} (external) — not responding"
+        log_info "  Endpoint : $url"
+        case "$provider" in
+            ollama)
+                LLM_RECOVERY="ollama serve"
+                log_info "  Recovery : ollama serve"
+                ;;
+            lmstudio)
+                LLM_RECOVERY="start LM Studio and enable local server"
+                log_info "  Recovery : start LM Studio and enable local server"
+                ;;
+            *)
+                LLM_RECOVERY="check external LLM service connectivity"
+                ;;
+        esac
+    fi
+
+    if [[ "$DOCKER_DAEMON" == "true" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'ods-llama-server'; then
+        LLM_LOCAL_WARNING="true"
+        log_warn "  Note     : Unused local llama-server container is running"
+    fi
+}
+
+_doctor_check_llama_server() {
+    local port="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-${SERVICE_PORTS[llama-server]:-11434}}}"
+    local health_path="${SERVICE_HEALTH[llama-server]:-/health}"
+    local container_name
+    container_name=$(sr_container "llama-server" 2>/dev/null || echo "ods-llama-server")
+
+    LLM_URL="http://127.0.0.1:${port}"
+    LLM_PROVIDER="llama-server"
+
+    if [[ "$DOCKER_DAEMON" == "true" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container_name"; then
+        if command -v curl >/dev/null 2>&1 && curl -sf --max-time 5 "http://127.0.0.1:${port}${health_path}" >/dev/null 2>&1; then
+            LLM_STATUS="ok"
+            log_ok "LLM backend: llama-server (local) — responding"
+            log_ok "  Endpoint : http://127.0.0.1:${port}"
+        else
+            LLM_STATUS="fail"
+            LLM_RECOVERY="ods restart llama-server"
+            log_fail "LLM backend: llama-server (local) — container running but not responding"
+            log_info "  Endpoint : http://127.0.0.1:${port}"
+            log_info "  Recovery : ods restart llama-server"
+        fi
+    else
+        LLM_STATUS="fail"
+        LLM_RECOVERY="ods start llama-server"
+        log_fail "LLM backend: llama-server (local) — container not running"
+        log_info "  Recovery : ods start llama-server"
+    fi
+}
+
+_doctor_check_llm_backend() {
+    local ext_url="${EXTERNAL_LLM_URL:-}"
+    local ext_provider="${EXTERNAL_LLM_PROVIDER:-}"
+    local ext_model="${EXTERNAL_LLM_MODEL:-}"
+    local mode="${ODS_MODE:-local}"
+
+    if [ -n "$ext_url" ]; then
+        # External LLM mode — skip llama-server check
+        _doctor_check_external_llm "$ext_url" "$ext_provider" "$ext_model"
+    elif [[ "$mode" == "cloud" ]]; then
+        local cloud_url="${LLM_API_URL:-}"
+        if [ -n "$cloud_url" ]; then
+            # Translate known LiteLLM/container routes to the host-mapped port
+            # E.g. http://litellm:4000 -> http://127.0.0.1:${LITELLM_PORT:-4000}
+            local probe_url="$cloud_url"
+            if [[ "$probe_url" =~ ^https?://litellm(:[0-9]+)?(.*)$ ]]; then
+                local port_part="${BASH_REMATCH[1]:-}"
+                local path_part="${BASH_REMATCH[2]:-}"
+                local port="4000"
+                if [ -n "$port_part" ]; then
+                    port="${port_part#:}"
+                elif [ -n "${LITELLM_PORT:-}" ]; then
+                    port="$LITELLM_PORT"
+                fi
+                probe_url="http://127.0.0.1:${port}${path_part}"
+            fi
+
+            # Extract host to check if it's host-probeable (e.g. contains '.' or is 'localhost')
+            local host
+            host=$(echo "$probe_url" | grep -oE '://[^/]+' | cut -d/ -f3 | cut -d: -f1)
+
+            local is_probeable=false
+            if [[ "$host" == "localhost" ]] || [[ "$host" == *"."* ]]; then
+                is_probeable=true
+            fi
+
+            if [ "$is_probeable" = true ]; then
+                _doctor_check_external_llm "$probe_url" "${ext_provider:-openai}" "$ext_model"
+            else
+                LLM_URL="$cloud_url"
+                LLM_PROVIDER="cloud"
+                LLM_STATUS="ok"
+                LLM_MODEL=""
+                LLM_RECOVERY=""
+                log_ok "LLM backend: cloud (external) — container-internal endpoint bypassed host probe"
+                log_ok "  Endpoint : $cloud_url"
+            fi
+        else
+            # Leave backend check provider-neutral when no probe target exists
+            LLM_URL=""
+            LLM_PROVIDER="cloud"
+            LLM_STATUS="ok"
+            LLM_MODEL=""
+            LLM_RECOVERY=""
+        fi
+    else
+        # Local, hybrid, lemonade modes (or default local) — existing llama-server container check unchanged
+        _doctor_check_llama_server
+    fi
+}
+
+_doctor_check_llm_backend
+
+export LLM_STATUS
+export LLM_PROVIDER
+export LLM_MODEL
+export LLM_URL
+export LLM_LOCAL_WARNING
+export LLM_RECOVERY
 
 # STT model cache check: a common silent-failure mode is the installer's
 # pre-download failing, so Whisper's /health passes (service up) but the
@@ -328,6 +499,44 @@ if [[ "$DOCKER_DAEMON" == "true" ]]; then
         docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^ods-' || true
     )"
 fi
+
+# Rootless Docker subordinate ID ranges — runtime half of the install
+# preflight's ROOTLESS_SUBID check. A rootless daemon maps in-container
+# users through /etc/subuid + /etc/subgid; a missing entry or a range under
+# 65536 IDs breaks layer extraction for non-root images with cryptic
+# "uid/gid map out of range" errors, so doctor surfaces it with the fix.
+ROOTLESS_DOCKER="false"
+ROOTLESS_SUBID_STATUS="skipped"
+ROOTLESS_SUBUID_TOTAL="0"
+ROOTLESS_SUBGID_TOTAL="0"
+ROOTLESS_SUBID_USER="$(id -un 2>/dev/null || echo unknown)"
+if [[ "${ODS_ASSUME_ROOTLESS:-0}" == "1" ]] || { [[ "$DOCKER_DAEMON" == "true" ]] \
+    && docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q 'rootless'; }; then
+    ROOTLESS_DOCKER="true"
+    subid_range_total() {
+        # Sum every range allocated to the user; entries may be keyed by
+        # name or numeric UID (subgid is also keyed by user, not group).
+        local file="$1" user="$2" numeric_uid="$3" total=0 owner start count
+        [[ -r "$file" ]] || { echo 0; return; }
+        while IFS=: read -r owner start count; do
+            if [[ "$owner" == "$user" || "$owner" == "$numeric_uid" ]]; then
+                [[ "$count" =~ ^[0-9]+$ ]] && total=$((total + count))
+            fi
+        done <"$file"
+        echo "$total"
+    }
+    _subid_uid="$(id -u)"
+    ROOTLESS_SUBUID_TOTAL="$(subid_range_total "${ODS_SUBUID_FILE:-/etc/subuid}" "$ROOTLESS_SUBID_USER" "$_subid_uid")"
+    ROOTLESS_SUBGID_TOTAL="$(subid_range_total "${ODS_SUBGID_FILE:-/etc/subgid}" "$ROOTLESS_SUBID_USER" "$_subid_uid")"
+    if [[ "$ROOTLESS_SUBUID_TOTAL" -eq 0 || "$ROOTLESS_SUBGID_TOTAL" -eq 0 ]]; then
+        ROOTLESS_SUBID_STATUS="fail"
+    elif [[ "$ROOTLESS_SUBUID_TOTAL" -lt 65536 || "$ROOTLESS_SUBGID_TOTAL" -lt 65536 ]]; then
+        ROOTLESS_SUBID_STATUS="warn"
+    else
+        ROOTLESS_SUBID_STATUS="pass"
+    fi
+fi
+export ROOTLESS_DOCKER ROOTLESS_SUBID_STATUS ROOTLESS_SUBUID_TOTAL ROOTLESS_SUBGID_TOTAL ROOTLESS_SUBID_USER
 
 # Collect extension diagnostics if service registry loaded
 EXT_DIAGNOSTICS="[]"
@@ -1266,6 +1475,14 @@ report = {
         "compose_cli": compose_cli == "true",
         "dashboard_http": dashboard_http == "true",
         "webui_http": webui_http == "true",
+        "llm_backend": {
+            "status": os.environ.get("LLM_STATUS", "unknown"),
+            "provider": os.environ.get("LLM_PROVIDER", ""),
+            "url": os.environ.get("LLM_URL", ""),
+            "model": os.environ.get("LLM_MODEL", ""),
+            "local_running_warning": os.environ.get("LLM_LOCAL_WARNING", "false") == "true",
+            "recovery_hint": os.environ.get("LLM_RECOVERY", ""),
+        },
         "stt_model_cached": stt_cached,
         "stt_model_name": stt_model_name,
         "tts_http": tts_http,
@@ -1285,6 +1502,13 @@ report = {
             if hermes_slash_worker_count_num > hermes_slash_worker_max_count_num
             else "pass",
         },
+        "rootless_docker": os.environ.get("ROOTLESS_DOCKER") == "true",
+        "rootless_subid_check": {
+            "status": os.environ.get("ROOTLESS_SUBID_STATUS", "skipped"),
+            "user": os.environ.get("ROOTLESS_SUBID_USER", ""),
+            "subuid_total": _int_value(os.environ.get("ROOTLESS_SUBUID_TOTAL")),
+            "subgid_total": _int_value(os.environ.get("ROOTLESS_SUBGID_TOTAL")),
+        },
         "amd_runtime": amd_runtime,
         "inference_contract": inference_contract_public,
     },
@@ -1297,6 +1521,7 @@ report = {
             + (1 if stt_cached in {"false", "service_down"} else 0)
             + (1 if tts_http == "false" else 0)
             + (1 if hermes_slash_worker_count_num > hermes_slash_worker_max_count_num else 0)
+            + (1 if os.environ.get("ROOTLESS_SUBID_STATUS") in {"warn", "fail"} else 0)
             + len(amd_runtime.get("warnings", []))
             + inference_contract.get("issue_counts", {}).get("warnings", 0)
         ),
@@ -1333,6 +1558,45 @@ if runtime["docker_daemon"] and not runtime["dashboard_http"]:
     fix_hints.append(f"Run installer/start command, then verify dashboard on http://127.0.0.1:{dashboard_port}.")
 if runtime["docker_daemon"] and not runtime["webui_http"]:
     fix_hints.append(f"Verify Open WebUI container and port {webui_port} mapping.")
+
+llm_status = os.environ.get("LLM_STATUS", "unknown")
+llm_recovery = os.environ.get("LLM_RECOVERY", "")
+llm_provider = os.environ.get("LLM_PROVIDER", "")
+llm_local_warn = os.environ.get("LLM_LOCAL_WARNING", "false") == "true"
+
+if llm_status == "fail" and llm_recovery:
+    if llm_provider != "llama-server":
+        fix_hints.append(f"External LLM backend ({llm_provider}) is unreachable. Hint: {llm_recovery}")
+    else:
+        fix_hints.append(f"Local llama-server is unreachable. Hint: {llm_recovery}")
+
+if llm_local_warn:
+    fix_hints.append("External LLM is configured but the local llama-server container is still running. Stop it with: ods stop llama-server")
+# Rootless daemon without (enough) subordinate IDs: images fail to extract
+# with "uid/gid map out of range" long after doctor reports healthy Docker.
+# Two hints: the fixed 100000-165535 range is only safe to suggest when the
+# user has NO allocation; with an existing-but-small range that command
+# could overlap what is already allocated, so ask for a non-overlapping
+# extension instead.
+_rootless_subid = report["runtime"]["rootless_subid_check"]
+if _rootless_subid["status"] == "fail":
+    fix_hints.append(
+        "Rootless Docker: no subordinate ID allocation for "
+        f"{_rootless_subid['user']} "
+        f"(subuids={_rootless_subid['subuid_total']}, subgids={_rootless_subid['subgid_total']}). "
+        f"Run: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 {_rootless_subid['user']} "
+        "then restart the rootless Docker daemon (systemctl --user restart docker)."
+    )
+elif _rootless_subid["status"] == "warn":
+    fix_hints.append(
+        "Rootless Docker: subordinate ID allocation for "
+        f"{_rootless_subid['user']} is below 65536 "
+        f"(subuids={_rootless_subid['subuid_total']}, subgids={_rootless_subid['subgid_total']}). "
+        "Extend it to at least 65536 IDs with a range that does not overlap "
+        "existing entries in /etc/subuid and /etc/subgid "
+        f"(sudo usermod --add-subuids <start>-<start+65535> --add-subgids <start>-<start+65535> {_rootless_subid['user']}), "
+        "then restart the rootless Docker daemon (systemctl --user restart docker)."
+    )
 
 # STT model cache: service up but model missing is a common silent failure
 if stt_cached == "false" and stt_recovery:

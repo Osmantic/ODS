@@ -11,9 +11,14 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+source "$(dirname "${BASH_SOURCE[0]}")/lib/auth-env.sh"
+
 # Config with environment variable support
-API_URL="${API_URL:-http://localhost:3002}"
+API_URL="${API_URL:-http://localhost:${DASHBOARD_API_PORT}}"
 CURL_TIMEOUT=10  # seconds
+
+# Auth header for dashboard-api
+AUTH_HEADER=("${AE_AUTH_HEADER[@]}")
 PASS_FILE=$(mktemp)
 FAIL_FILE=$(mktemp)
 
@@ -64,7 +69,7 @@ test_endpoint() {
     echo -n "  Testing $name ($endpoint)... "
     
     # Fetch with timeout
-    response=$(curl -sf -m "$CURL_TIMEOUT" "${API_URL}${endpoint}" 2>/dev/null) || {
+    response=$(curl -sf "${AUTH_HEADER[@]}" -m "$CURL_TIMEOUT" "${API_URL}${endpoint}" 2>/dev/null) || {
         echo -e "${RED}FAIL${NC} (connection error)"
         increment_fail
         return 1
@@ -96,7 +101,7 @@ test_array_endpoint() {
     echo -n "  Testing $name ($endpoint)... "
     
     # Fetch with timeout
-    response=$(curl -sf -m "$CURL_TIMEOUT" "${API_URL}${endpoint}" 2>/dev/null) || {
+    response=$(curl -sf "${AUTH_HEADER[@]}" -m "$CURL_TIMEOUT" "${API_URL}${endpoint}" 2>/dev/null) || {
         echo -e "${RED}FAIL${NC} (connection error)"
         increment_fail
         return 1
@@ -126,7 +131,7 @@ test_status_structure() {
     echo -n "  Testing /api/status structure... "
     
     # Fetch with timeout
-    response=$(curl -sf -m "$CURL_TIMEOUT" "${API_URL}/api/status" 2>/dev/null) || {
+    response=$(curl -sf "${AUTH_HEADER[@]}" -m "$CURL_TIMEOUT" "${API_URL}/api/status" 2>/dev/null) || {
         echo -e "${RED}FAIL${NC} (connection error)"
         increment_fail
         return 1
@@ -163,18 +168,21 @@ test_status_structure() {
 # Run tests
 echo -e "${CYAN}Core Endpoints:${NC}"
 test_endpoint "Health" "/health" "status"
-test_endpoint "Disk" "/disk" "used_gb"
-test_endpoint "Bootstrap" "/bootstrap" "active"
-test_array_endpoint "Services" "/services"
 
-echo ""
-echo -e "${CYAN}Dashboard Endpoint:${NC}"
-test_status_structure
+if _ae_require_key; then
+    test_endpoint "Disk" "/disk" "used_gb"
+    test_endpoint "Bootstrap" "/bootstrap" "active"
+    test_array_endpoint "Services" "/services"
 
-echo ""
-echo -e "${CYAN}Optional Endpoints (may fail without GPU/services):${NC}"
-test_endpoint "GPU" "/gpu" "name" || true
-test_endpoint "Model" "/model" "name" || true
+    echo ""
+    echo -e "${CYAN}Dashboard Endpoint:${NC}"
+    test_status_structure
+
+    echo ""
+    echo -e "${CYAN}Optional Endpoints (may fail without GPU/services):${NC}"
+    test_endpoint "GPU" "/gpu" "name" || true
+    test_endpoint "Model" "/model" "name" || true
+fi
 
 # Summary
 echo ""

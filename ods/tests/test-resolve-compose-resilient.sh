@@ -584,6 +584,151 @@ fi
 
 rm -rf "$TEMP_DIR/data/user-extensions/shadow-core"
 
+# ============================================================================
+# 24. External LLM overlay selection is explicit and deterministic
+# ============================================================================
+cat > "$TEMP_DIR/docker-compose.external-llm.yml" <<'EOF'
+services:
+  base-service:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+EOF
+
+external_flags=$(EXTERNAL_LLM_URL="http://127.0.0.1:11434" \
+    bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$TEMP_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    2>/dev/null)
+if contains_path "$external_flags" "docker-compose.external-llm.yml"; then
+    pass "External endpoint selects the dedicated external-LLM overlay"
+else
+    fail "External endpoint did not select the dedicated external-LLM overlay"
+fi
+
+managed_flags=$(EXTERNAL_LLM_URL="" \
+    bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$TEMP_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    2>/dev/null)
+if contains_path "$managed_flags" "docker-compose.external-llm.yml"; then
+    fail "Managed inference unexpectedly selected the external-LLM overlay"
+else
+    pass "Managed inference does not select the external-LLM overlay"
+fi
+
+# ============================================================================
+# 25. Every direct external-LLM consumer receives a Linux host-gateway route
+# ============================================================================
+consumer_route_files=(
+    "$ROOT_DIR/docker-compose.external-llm.yml"
+    "$ROOT_DIR/extensions/services/hermes/compose.yaml"
+    "$ROOT_DIR/extensions/services/openclaw/compose.yaml"
+    "$ROOT_DIR/extensions/services/perplexica/compose.yaml"
+    "$ROOT_DIR/extensions/services/privacy-shield/compose.yaml"
+    "$ROOT_DIR/extensions/services/token-spy/compose.yaml"
+)
+consumer_routes_ok=true
+for consumer_file in "${consumer_route_files[@]}"; do
+    if ! grep -Fq "host.docker.internal:host-gateway" "$consumer_file"; then
+        fail "$(basename "$consumer_file") is missing the external-LLM host-gateway route"
+        consumer_routes_ok=false
+    fi
+done
+if $consumer_routes_ok; then
+    pass "All direct external-LLM consumers define a Linux host-gateway route"
+fi
+
+# ============================================================================
+# 26. The real external-LLM stack renders without local inference dependencies
+# ============================================================================
+real_external_flags=$(EXTERNAL_LLM_URL="http://127.0.0.1:11434" \
+    ODS_MODE=local \
+    bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$ROOT_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    2>/dev/null)
+
+if printf '%s\n' "$real_external_flags" | grep -Fq "compose.local.yaml"; then
+    fail "External-LLM stack retained a local llama-server dependency overlay"
+else
+    pass "External-LLM stack excludes local llama-server dependency overlays"
+fi
+
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    compose_config_file="$TEMP_DIR/external-compose-config.yml"
+    # shellcheck disable=SC2086
+    if (
+        cd "$ROOT_DIR"
+        export EXTERNAL_LLM_URL="http://127.0.0.1:11434"
+        export EXTERNAL_LLM_CONTAINER_URL="http://host.docker.internal:11434"
+        export EXTERNAL_LLM_PROVIDER="ollama"
+        export EXTERNAL_LLM_MODEL="qwen3.5:9b"
+        export LLM_API_URL="$EXTERNAL_LLM_CONTAINER_URL"
+        export HERMES_LLM_BASE_URL="${EXTERNAL_LLM_CONTAINER_URL}/v1"
+        export WEBUI_SECRET="external-llm-compose-test"
+        export DASHBOARD_API_KEY="external-llm-compose-test"
+        export ODS_AGENT_KEY="external-llm-compose-test"
+        export N8N_USER="admin@example.invalid"
+        export N8N_PASS="external-llm-compose-test"
+        export OPENCLAW_TOKEN="external-llm-compose-test"
+        export SEARXNG_SECRET="external-llm-compose-test"
+        docker compose $real_external_flags config > "$compose_config_file"
+    ); then
+        if grep -Eq '^[[:space:]]+llama-server:$' "$compose_config_file"; then
+            fail "Rendered external-LLM stack still contains managed llama-server"
+        elif grep -Eq '^[[:space:]]+model-router:$' "$compose_config_file"; then
+            fail "Rendered external-LLM stack still contains model-router"
+        elif ! grep -Fq 'ODS_TALK_VISION_URL: http://host.docker.internal:11434/v1' "$compose_config_file"; then
+            fail "Rendered external-LLM stack does not route ODS Talk vision to the external backend"
+        else
+            pass "Real external-LLM Compose stack renders without managed inference and routes ODS Talk externally"
+        fi
+    else
+        fail "Real external-LLM Compose stack failed docker compose config"
+    fi
+
+    amd_external_flags=$(EXTERNAL_LLM_URL="http://127.0.0.1:11434" \
+        ODS_MODE=local \
+        bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+        --script-dir "$ROOT_DIR" --tier 1 --gpu-backend amd --skip-broken \
+        2>/dev/null)
+    amd_compose_config_file="$TEMP_DIR/external-amd-compose-config.yml"
+    # shellcheck disable=SC2086
+    if (
+        cd "$ROOT_DIR"
+        export EXTERNAL_LLM_URL="http://127.0.0.1:11434"
+        export EXTERNAL_LLM_CONTAINER_URL="http://host.docker.internal:11434"
+        export EXTERNAL_LLM_PROVIDER="ollama"
+        export EXTERNAL_LLM_MODEL="qwen3.5:9b"
+        export LLM_API_URL="$EXTERNAL_LLM_CONTAINER_URL"
+        export OPEN_WEBUI_LLM_BASE_URL="${EXTERNAL_LLM_CONTAINER_URL}/v1"
+        export OPEN_WEBUI_LLM_API_KEY=""
+        export WEBUI_SECRET="external-llm-compose-test"
+        export DASHBOARD_API_KEY="external-llm-compose-test"
+        export ODS_AGENT_KEY="external-llm-compose-test"
+        export N8N_USER="admin@example.invalid"
+        export N8N_PASS="external-llm-compose-test"
+        export OPENCLAW_TOKEN="external-llm-compose-test"
+        export SEARXNG_SECRET="external-llm-compose-test"
+        docker compose $amd_external_flags config > "$amd_compose_config_file"
+    ); then
+        if grep -Eq '^[[:space:]]+llama-server:$' "$amd_compose_config_file"; then
+            fail "Rendered AMD external stack retained managed Lemonade"
+        elif ! grep -Fq 'LLM_BACKEND: external' "$amd_compose_config_file"; then
+            fail "Rendered AMD external stack overwrote the API backend with Lemonade"
+        elif ! grep -Fq 'LLM_API_BASE_PATH: /v1' "$amd_compose_config_file"; then
+            fail "Rendered AMD external stack retained the Lemonade API base path"
+        elif ! grep -Fq 'OPENAI_API_KEY: ""' "$amd_compose_config_file"; then
+            fail "Rendered AMD external stack leaked the LiteLLM key into Open WebUI"
+        elif ! grep -Fq 'AMD_INFERENCE_RUNTIME: ""' "$amd_compose_config_file"; then
+            fail "Rendered AMD external stack advertised a managed AMD runtime"
+        else
+            pass "Real AMD external stack overrides Lemonade routing without changing GPU telemetry"
+        fi
+    else
+        fail "Real AMD external-LLM stack failed docker compose config"
+    fi
+else
+    skip "Docker Compose unavailable; real external-LLM render skipped"
+fi
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

@@ -744,7 +744,11 @@ app.add_middleware(
 
 
 async def verify_api_key(x_api_key: Optional[str] = Header(None)):
-    if API_KEY and not secrets.compare_digest(x_api_key or "", API_KEY):
+    # Compared as UTF-8 bytes: compare_digest raises TypeError on non-ASCII
+    # str, which would turn an unauthenticated request into a 500 not a 401.
+    if API_KEY and not secrets.compare_digest(
+        (x_api_key or "").encode("utf-8"), API_KEY.encode("utf-8")
+    ):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return True
 

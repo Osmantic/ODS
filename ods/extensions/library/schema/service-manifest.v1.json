@@ -3,14 +3,43 @@
   "$id": "https://ods.ai/schemas/service-manifest.v1.json",
   "title": "ODS Service Manifest v1",
   "type": "object",
-  "required": ["schema_version"],
+  "required": ["schema_version", "service"],
   "properties": {
     "schema_version": {
       "const": "ods.services.v1"
     },
+    "compatibility": {
+      "type": "object",
+      "description": "ODS version compatibility; used by validate-manifests.sh for version checks",
+      "properties": {
+        "ods_min": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "Minimum ODS version this extension supports (e.g. 2.0.0)"
+        },
+        "ods_max": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "Maximum ODS version this extension was tested against (optional)"
+        }
+      },
+      "additionalProperties": false
+    },
     "service": {
       "type": "object",
-      "required": ["id", "name", "port", "health", "description"],
+      "required": ["id", "name", "port", "type", "category"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "host_network": { "const": true }
+            },
+            "required": ["host_network"]
+          },
+          "then": {},
+          "else": { "required": ["port", "health"] }
+        }
+      ],
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
         "name": { "type": "string", "minLength": 1 },
@@ -33,15 +62,52 @@
         "port": { "type": "integer", "minimum": 0, "maximum": 65535 },
         "external_port_env": { "type": "string" },
         "external_port_default": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "public_url_env": {
+          "type": "string",
+          "description": "Optional env var that contains the public browser URL for this service when served through an external reverse proxy."
+        },
+        "host_network": {
+          "type": "boolean",
+          "description": "True for Docker network_mode: host services that do not declare Docker-mapped ports or HTTP health paths."
+        },
         "health": {
           "type": "string",
           "minLength": 0,
           "description": "HTTP health path. Use an empty string for non-HTTP or one-shot services whose readiness is represented by container state/startup_check."
         },
+        "health_timeout": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300,
+          "description": "Health check timeout in seconds (default: 10)"
+        },
+        "ui_path": {
+          "type": "string",
+          "pattern": "^/.*",
+          "description": "Path to the service UI (e.g. /dashboard, /)"
+        },
+        "external_link": {
+          "type": "boolean",
+          "description": "When false, omit this service from dashboard external quicklinks while keeping it in health/status APIs."
+        },
+        "macos_host_supported": {
+          "type": "boolean",
+          "description": "True when a host-systemd service has an equivalent macOS LaunchAgent and should remain in the Apple service registry."
+        },
         "type": { "type": "string", "enum": ["docker", "host-systemd"] },
+        "startup_check": {
+          "type": "boolean",
+          "description": "When false, skip the post-install running-state poll and treat compose's clean exit as success. Set this on one-shot CLI / setup-only extensions whose containers intentionally exit (default: true)."
+        },
+        "startup_timeout": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600,
+          "description": "Seconds the host agent polls for the container to reach the running state before declaring install failed (default: 15). Increase for extensions with heavy initialization (e.g. JVM, postgres, clickhouse)."
+        },
         "gpu_backends": {
           "type": "array",
-          "items": { "type": "string", "enum": ["amd", "nvidia", "apple", "all", "none"] },
+          "items": { "type": "string", "enum": ["amd", "nvidia", "apple", "cpu", "none", "all"] },
           "minItems": 1
         },
         "compose_file": {
@@ -55,7 +121,7 @@
         },
         "depends_on": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
           "description": "Service IDs this service depends on"
         },
         "env_vars": {
@@ -74,13 +140,68 @@
           },
           "description": "Environment variables used by this service"
         },
-        "description": {
-          "type": "string",
-          "description": "Human-readable service description"
+        "llm": {
+          "type": "object",
+          "description": "Declares whether and how this service consumes LLM inference so model swaps can be gated and probed.",
+          "required": ["consumes"],
+          "properties": {
+            "consumes": {
+              "type": "boolean",
+              "description": "True when this service sends prompts/completions to an LLM endpoint."
+            },
+            "route": {
+              "type": "string",
+              "enum": ["gateway", "direct"],
+              "description": "gateway routes through the ODS model gateway alias; direct talks to a runtime or app-specific endpoint."
+            },
+            "pinning": {
+              "type": "string",
+              "enum": ["none", "dynamic"],
+              "description": "none stores no model name; dynamic declares a refresh/reconcile path after swaps."
+            },
+            "min_context": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Optional minimum context length required for this app's LLM path."
+            },
+            "probe": {
+              "type": "object",
+              "description": "Harness probe descriptor used after every model swap.",
+              "properties": {
+                "kind": { "type": "string", "enum": ["chat", "completion", "custom"] },
+                "path": { "type": "string" },
+                "auth": { "type": "string" }
+              },
+              "additionalProperties": true
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "consumes": { "const": true } },
+                "required": ["consumes"]
+              },
+              "then": { "required": ["route", "pinning", "probe"] }
+            }
+          ],
+          "additionalProperties": true
         },
         "setup_hook": {
           "type": "string",
           "description": "Relative path to a setup script run during installation (e.g. setup.sh)"
+        },
+        "hooks": {
+          "type": "object",
+          "description": "Lifecycle hook scripts. Paths relative to extension directory.",
+          "properties": {
+            "pre_install": { "type": "string" },
+            "post_install": { "type": "string" },
+            "pre_start": { "type": "string" },
+            "post_start": { "type": "string" },
+            "pre_uninstall": { "type": "string" },
+            "post_uninstall": { "type": "string" }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": true
@@ -111,9 +232,21 @@
           "enabled_services_any": { "type": "array", "items": { "type": "string" } },
           "setup_time": { "type": "string" },
           "priority": { "type": "integer", "minimum": 1 },
+          "launch": {
+            "type": "object",
+            "description": "Dashboard feature-card launch target. Use type=service for user-facing service UIs, internal for dashboard routes, and none for backend/API-only features.",
+            "required": ["type"],
+            "properties": {
+              "type": { "type": "string", "enum": ["service", "internal", "none"] },
+              "service": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+              "path": { "type": "string", "pattern": "^/.*" }
+            },
+            "additionalProperties": false
+          },
           "gpu_backends": {
             "type": "array",
-            "items": { "type": "string", "enum": ["amd", "nvidia", "apple", "all", "none"] }
+            "items": { "type": "string", "enum": ["amd", "nvidia", "apple", "cpu", "none", "all"] },
+            "minItems": 1
           }
         },
         "additionalProperties": true

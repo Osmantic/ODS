@@ -48,6 +48,14 @@ model:
   # exceeded / max compression attempts reached" loops.
   context_length: 131072
 
+  # Bound each model turn even when a local model ignores the concise-response
+  # persona or falls into a repetition loop. Without an explicit cap Hermes
+  # leaves max_tokens unset; a runaway response can then occupy the only local
+  # inference slot indefinitely and leave ODS Talk stuck on "Responding".
+  # Hermes may take multiple capped turns for tool workflows, so this limits
+  # pathological output without limiting the overall agent task.
+  max_tokens: 1024
+
 # =============================================================================
 # Provider overrides — local inference needs a generous first-token budget
 # =============================================================================

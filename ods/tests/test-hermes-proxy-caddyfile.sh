@@ -43,6 +43,14 @@ grep -Eq '^[[:space:]]*@health[[:space:]]+path([[:space:]]+/[A-Za-z]+)*[[:space:
 echo "[PASS] Hermes proxy auth redirect uses explicit wildcard matcher"
 echo "[PASS] Hermes proxy /health and /healthz both anonymous"
 
+# Cap request body size so abusive clients can't stream unbounded uploads
+# through the Hermes proxy, while still leaving room for agent attachments.
+grep -Eq '^[[:space:]]*request_body[[:space:]]*\{' "$CADDYFILE" \
+    || fail "Hermes proxy must define a request_body block to cap upload size"
+grep -Eq '^[[:space:]]*max_size[[:space:]]+50MB([[:space:]]|$)' "$CADDYFILE" \
+    || fail "Hermes proxy request_body must cap at 50MB"
+echo "[PASS] Hermes proxy caps request body at 50MB"
+
 grep -q 'Setup / Owner' "$AUTH_PAGE" \
     || fail "Hermes auth-required page should point operators to Setup / Owner"
 if grep -Eq 'Invites|scope[[:space:]]+<code>.*all|scope: chat or all' "$AUTH_PAGE"; then

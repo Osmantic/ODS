@@ -3,8 +3,10 @@
 import json
 import logging
 import os
+import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+from urllib.parse import urlparse
 
 import yaml
 
@@ -23,17 +25,255 @@ EXTENSIONS_DIR = Path(
 
 DEFAULT_SERVICE_HOST = os.environ.get("SERVICE_HOST", "host.docker.internal")
 GPU_BACKEND = os.environ.get("GPU_BACKEND", "nvidia")
+ODS_MODES = frozenset({"local", "cloud", "hybrid", "lemonade"})
+LOCAL_MODEL_MODES = frozenset({"local", "hybrid", "lemonade"})
+LLM_CONTRACT_ROUTES = frozenset({"gateway", "direct"})
+LLM_CONTRACT_PINNING = frozenset({"none", "dynamic"})
+
+
+def normalize_ods_mode(value: Any) -> str:
+    """Return a supported ODS mode or ``unknown`` for missing/invalid input."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in ODS_MODES else "unknown"
+
+
+def normalize_llm_contract(value: Any) -> dict[str, Any] | None:
+    """Normalize a manifest ``llm`` contract for API and harness consumers."""
+    if not isinstance(value, dict):
+        return None
+
+    consumes = bool(value.get("consumes", False))
+    route = str(value.get("route") or "").strip().lower()
+    pinning = str(value.get("pinning") or "").strip().lower()
+    if route not in LLM_CONTRACT_ROUTES:
+        route = "direct" if consumes else ""
+    if pinning not in LLM_CONTRACT_PINNING:
+        pinning = "none"
+
+    normalized: dict[str, Any] = {
+        "consumes": consumes,
+        "route": route,
+        "pinning": pinning,
+    }
+
+    min_context = value.get("min_context")
+    if min_context is not None:
+        try:
+            normalized["min_context"] = max(0, int(min_context))
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid llm.min_context value: %r", min_context)
+
+    probe = value.get("probe")
+    if isinstance(probe, dict):
+        normalized["probe"] = probe.copy()
+
+    swap_safe = bool(consumes and (route == "gateway" or pinning == "dynamic"))
+    normalized["swap_safe"] = swap_safe
+    # camelCase alias: the fleet model-ui harness gates required probes on llm.swapSafe
+    normalized["swapSafe"] = swap_safe
+    normalized["badge"] = "swap-safe" if swap_safe else "not-swap-safe"
+    if not consumes:
+        normalized["swap_safe_reason"] = "This service does not declare LLM inference consumption."
+    elif route == "gateway":
+        normalized["swap_safe_reason"] = "Routes through the ODS gateway alias and follows model swaps automatically."
+    elif pinning == "dynamic":
+        normalized["swap_safe_reason"] = "Declares a dynamic model refresh path and is re-probed after swaps."
+    else:
+        normalized["swap_safe_reason"] = "Direct model route without a declared refresh path; swaps may require reconciliation."
+
+    return normalized
+
+
+# This is the mode of the running dashboard-api container. Unlike the mounted
+# .env file, the process environment is fixed until the service is recreated.
+ODS_MODE_EFFECTIVE = normalize_ods_mode(os.environ.get("ODS_MODE"))
+
+
+def _find_env_file_value(key: str) -> tuple[bool, str]:
+    """Return the last persisted value and distinguish missing from empty."""
+    env_path = Path(INSTALL_DIR) / ".env"
+    found = False
+    value = ""
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith(f"{key}="):
+                found = True
+                value = line.split("=", 1)[1].strip().strip("\"'")
+    except (OSError, UnicodeError):
+        pass
+    return found, value
 
 
 def _read_env_from_file(key: str) -> str:
-    """Read a variable from the .env file when not available in process environment."""
-    env_path = Path(INSTALL_DIR) / ".env"
+    """Read a variable from the persisted .env file."""
+    return _find_env_file_value(key)[1]
+
+
+def read_live_env_value(key: str, default: str = "") -> str:
+    """Read mutable ODS state from the mounted .env before process startup env."""
+    found, value = _find_env_file_value(key)
+    if found:
+        return value
+    return os.environ.get(key, "") or default
+
+
+def _apply_host_native_llm_service_override(
+    services: dict[str, dict[str, Any]],
+    gpu_backend: str,
+    environment: Mapping[str, str] | None = None,
+) -> None:
+    """Route Windows AMD dashboard probes to the host-native LLM endpoint."""
+    env = environment if environment is not None else os.environ
+    if str(gpu_backend).lower() != "amd":
+        return
+    if str(env.get("AMD_INFERENCE_LOCATION", "")).lower() != "host":
+        return
+    service = services.get("llama-server")
+    if not service:
+        return
+
+    configured_url = (
+        env.get("OLLAMA_URL")
+        or env.get("LLM_URL")
+        or env.get("LLM_API_URL")
+        or f"http://host.docker.internal:{env.get('AMD_INFERENCE_PORT', '8080')}"
+    )
+    parsed = urlparse(str(configured_url).strip())
+    if not parsed.hostname:
+        logger.warning("Ignoring invalid host-native LLM URL: %s", configured_url)
+        return
     try:
-        for line in env_path.read_text().splitlines():
-            if line.startswith(f"{key}="):
-                return line.split("=", 1)[1].strip().strip("\"'")
-    except OSError:
-        pass
+        port = parsed.port or int(env.get("AMD_INFERENCE_PORT", "8080"))
+    except ValueError:
+        logger.warning("Ignoring invalid host-native LLM port in URL: %s", configured_url)
+        return
+
+    service["host"] = parsed.hostname
+    service["port"] = port
+    logger.info("Host-native AMD inference detected; routing LLM probes to %s:%d", parsed.hostname, port)
+
+
+def _apply_external_llm_service_override(
+    services: dict[str, dict[str, Any]],
+    environment: Mapping[str, str] | None = None,
+) -> None:
+    """Route dashboard LLM probes to a validated external Ollama/LM Studio endpoint."""
+    env = environment if environment is not None else os.environ
+    if str(env.get("LLM_BACKEND", "")).strip().lower() != "external":
+        return
+    service = services.get("llama-server")
+    if not service:
+        return
+
+    configured_url = (
+        env.get("EXTERNAL_LLM_CONTAINER_URL")
+        or env.get("LLM_API_URL")
+        or ""
+    )
+    parsed = urlparse(str(configured_url).strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        logger.warning("Ignoring invalid external LLM URL: %s", configured_url)
+        return
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        logger.warning("Ignoring invalid external LLM port in URL: %s", configured_url)
+        return
+
+    provider = str(env.get("EXTERNAL_LLM_PROVIDER", "")).strip().lower()
+    health_paths = {
+        "ollama": "/api/tags",
+        "lmstudio": "/v1/models",
+    }
+    service["host"] = parsed.hostname
+    service["port"] = port
+    service["health"] = health_paths.get(provider, "/v1/models")
+    service["name"] = {
+        "ollama": "Ollama (External LLM)",
+        "lmstudio": "LM Studio (External LLM)",
+    }.get(provider, "External LLM")
+    logger.info(
+        "External %s inference detected; routing LLM probes to %s:%d%s",
+        provider or "OpenAI-compatible",
+        parsed.hostname,
+        port,
+        service["health"],
+    )
+
+
+def _read_env_value(key: str) -> str:
+    return (os.environ.get(key) or _read_env_from_file(key)).strip()
+
+
+def _service_public_url_key(service_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", service_id).strip("_").upper()
+
+
+def _valid_public_url(value: str) -> str:
+    candidate = value.strip().rstrip("/")
+    if not candidate:
+        return ""
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        logger.warning("Ignoring invalid public service URL: %s", value)
+        return ""
+    return candidate
+
+
+def _read_service_public_url_map() -> dict[str, str]:
+    raw = _read_env_value("ODS_SERVICE_PUBLIC_URLS")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Ignoring invalid ODS_SERVICE_PUBLIC_URLS JSON")
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("Ignoring ODS_SERVICE_PUBLIC_URLS because it is not a JSON object")
+        return {}
+    return {
+        str(key): _valid_public_url(str(value))
+        for key, value in data.items()
+        if str(value).strip()
+    }
+
+
+def _candidate_public_url_env_names(
+    service_id: str,
+    service: dict[str, Any],
+    ext_port_env: str | None,
+) -> list[str]:
+    service_key = _service_public_url_key(service_id)
+    names = [
+        service.get("public_url_env", ""),
+        f"{service_key}_PUBLIC_URL",
+        f"ODS_{service_key}_PUBLIC_URL",
+    ]
+    if ext_port_env:
+        if ext_port_env.endswith("_EXTERNAL_PORT"):
+            names.append(f"{ext_port_env.removesuffix('_EXTERNAL_PORT')}_PUBLIC_URL")
+        if ext_port_env.endswith("_PORT"):
+            names.append(f"{ext_port_env.removesuffix('_PORT')}_PUBLIC_URL")
+        names.append(f"{ext_port_env}_PUBLIC_URL")
+    return [name for index, name in enumerate(names) if name and name not in names[:index]]
+
+
+def _resolve_public_service_url(
+    service_id: str,
+    service: dict[str, Any],
+    ext_port_env: str | None,
+    public_url_map: dict[str, str],
+) -> str:
+    service_key = _service_public_url_key(service_id)
+    for map_key in (service_id, service_key, service_key.lower()):
+        url = public_url_map.get(map_key)
+        if url:
+            return url
+    for env_name in _candidate_public_url_env_names(service_id, service, ext_port_env):
+        url = _valid_public_url(_read_env_value(env_name))
+        if url:
+            return url
     return ""
 
 
@@ -69,6 +309,8 @@ def load_extension_manifests(
         logger.info("Extension manifest directory not found: %s", manifest_dir)
         return services, features, errors
 
+    public_url_map = _read_service_public_url_map()
+
     manifest_files: list[Path] = []
     for item in sorted(manifest_dir.iterdir()):
         if item.is_dir():
@@ -99,9 +341,22 @@ def load_extension_manifests(
                 service_id = service.get("id")
                 if not service_id:
                     raise ValueError("service.id is required")
+                compose_file = str(service.get("compose_file") or "").strip()
+                if service.get("type") == "docker" and compose_file:
+                    compose_path = ext_dir / compose_file
+                    if not compose_path.exists():
+                        logger.debug(
+                            "Skipping docker service %s because %s is not installed",
+                            service_id,
+                            compose_path,
+                        )
+                        continue
                 supported = service.get("gpu_backends", ["amd", "nvidia", "apple"])
                 if gpu_backend == "apple":
-                    if service.get("type") == "host-systemd":
+                    if (
+                        service.get("type") == "host-systemd"
+                        and not service.get("macos_host_supported", False)
+                    ):
                         continue  # Linux-only service, not available on macOS
                     # All docker services run on macOS regardless of gpu_backends declaration
                 elif gpu_backend not in supported and "all" not in supported:
@@ -119,14 +374,17 @@ def load_extension_manifests(
                 else:
                     external_port = int(ext_port_default)
 
-                services[service_id] = {
+                public_url = _resolve_public_service_url(service_id, service, ext_port_env, public_url_map)
+                service_config = {
                     "host": host,
                     "port": int(service.get("port", 0)),
                     "external_port": external_port,
                     "health": service.get("health", "/health"),
                     "name": service.get("name", service_id),
                     "ui_path": service.get("ui_path", "/"),
+                    "public_url": public_url,
                     "external_link": bool(service.get("external_link", True)),
+                    "macos_host_supported": bool(service.get("macos_host_supported", False)),
                     "container_name": service.get("container_name", f"ods-{service_id}"),
                     "depends_on": service.get("depends_on", []),
                     "category": service.get("category", "optional"),
@@ -137,6 +395,10 @@ def load_extension_manifests(
                     **({"type": service["type"]} if "type" in service else {}),
                     **({"health_port": int(service["health_port"])} if "health_port" in service else {}),
                 }
+                llm_contract = normalize_llm_contract(service.get("llm"))
+                if llm_contract is not None:
+                    service_config["llm"] = llm_contract
+                services[service_id] = service_config
 
             manifest_features = manifest.get("features", [])
             if isinstance(manifest_features, list):
@@ -171,6 +433,8 @@ if not SERVICES:
 # Lemonade serves at /api/v1 instead of llama.cpp's /v1. Override the
 # health path so the dashboard poll loop hits the correct endpoint.
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "")
+_apply_host_native_llm_service_override(SERVICES, GPU_BACKEND)
+_apply_external_llm_service_override(SERVICES)
 if LLM_BACKEND == "lemonade" and "llama-server" in SERVICES:
     SERVICES["llama-server"]["health"] = "/api/v1/health"
     logger.info("Lemonade backend detected — overriding llama-server health to /api/v1/health")
@@ -271,9 +535,10 @@ def _load_core_service_ids() -> frozenset:
             pass
     # Fallback to hardcoded list
     return frozenset({
-        "dashboard-api", "dashboard", "llama-server", "open-webui",
+        "dashboard-api", "dashboard", "llama-server", "model-router", "open-webui",
         "litellm", "langfuse", "hermes", "hermes-proxy", "n8n", "openclaw", "opencode",
-        "perplexica", "searxng", "qdrant", "tts", "whisper",
+        "perplexica", "searxng", "qdrant", "remote-provider-egress",
+        "remote-provider-ssh-tunnel", "tts", "whisper",
         "embeddings", "token-spy", "comfyui", "ape", "privacy-shield",
     })
 
@@ -282,7 +547,10 @@ CORE_SERVICE_IDS = _load_core_service_ids()
 
 # Always-on services defined in docker-compose.base.yml — never manageable via API.
 # Distinct from CORE_SERVICE_IDS (the full built-in service allowlist).
-ALWAYS_ON_SERVICES: frozenset = frozenset({"llama-server", "open-webui", "dashboard", "dashboard-api"})
+ALWAYS_ON_SERVICES: frozenset = frozenset({
+    "llama-server", "model-router", "remote-provider-egress",
+    "remote-provider-ssh-tunnel", "open-webui", "dashboard", "dashboard-api",
+})
 
 
 def load_extension_catalog() -> list[dict]:

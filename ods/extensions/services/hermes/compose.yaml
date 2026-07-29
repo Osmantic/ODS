@@ -1,5 +1,7 @@
 services:
   hermes:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Version-pinned upstream image. Override HERMES_AGENT_IMAGE only for
     # deliberate hotfix testing; bumping the default is a review-and-smoke-test
     # pass — see docs/HERMES.md "How to bump the image pin."

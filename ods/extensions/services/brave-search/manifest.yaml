@@ -28,6 +28,10 @@ service:
       required: false
       default: "8585"
       description: External port the proxy listens on
+    - key: BRAVE_SEARCH_SEARXNG_COMPAT
+      required: false
+      default: "0"
+      description: Set to 1 to expose a searxng-compatible /search?format=json route for consumers like Perplexica
 
 features:
   - id: brave-web-search

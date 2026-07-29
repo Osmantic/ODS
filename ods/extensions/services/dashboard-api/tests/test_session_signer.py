@@ -125,6 +125,17 @@ class TestVerify:
         assert ok is False
         assert reason == "bad-signature"
 
+    def test_non_ascii_signature_is_rejected_not_raised(self):
+        """A cookie whose signature holds non-ASCII bytes must come back as
+        bad-signature. Cookie headers decode as latin-1, so a client can put
+        any byte here, and verify() promises a reason rather than raising."""
+        cookie = session_signer.issue(ttl_seconds=60)
+        random_id, expiry, _ = cookie.split(".")
+        tampered = f"{random_id}.{expiry}.\xe9\xff"
+        ok, reason = session_signer.verify(tampered)
+        assert ok is False
+        assert reason == "bad-signature"
+
     def test_extended_expiry_invalidates_signature(self):
         """An attacker who tries to extend a leaked cookie's lifetime by
         editing the expiry field breaks the signature."""

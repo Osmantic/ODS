@@ -310,9 +310,17 @@ if ! $DRY_RUN; then
         _perplexica_model="${LLM_MODEL:-qwen3-30b-a3b}"
         if [[ -n "${GGUF_FILE:-}" ]]; then
             _perplexica_model="$GGUF_FILE"
-            _perplexica_backend="$(printf '%s' "${LLM_BACKEND:-${AMD_INFERENCE_RUNTIME:-}}" | tr '[:upper:]' '[:lower:]')"
-            if [[ "$_perplexica_backend" == "lemonade" ]]; then
-                _perplexica_model="extra.$GGUF_FILE"
+            # Lemonade serves the model under a separate id, so the expected
+            # route differs from the bare GGUF name. An AMD local install runs
+            # Lemonade while LLM_BACKEND stays "llama-server", so both
+            # variables have to be consulted independently — same rule as
+            # scripts/bootstrap-upgrade.sh and the container-side
+            # extensions/services/perplexica/sync-model-config.js.
+            _perplexica_runtime="$(printf '%s' "${AMD_INFERENCE_RUNTIME:-}" | tr '[:upper:]' '[:lower:]')"
+            _perplexica_backend="$(printf '%s' "${LLM_BACKEND:-}" | tr '[:upper:]' '[:lower:]')"
+            if [[ "$_perplexica_runtime" == "lemonade" || "$_perplexica_backend" == "lemonade" ]]; then
+                _perplexica_model="${LEMONADE_MODEL:-}"
+                [[ -n "$_perplexica_model" ]] || _perplexica_model="extra.$GGUF_FILE"
             fi
         fi
         _perplexica_status=$(curl -sf --max-time 5 "http://127.0.0.1:${SERVICE_PORTS[perplexica]:-3004}/api/config" 2>>"$LOG_FILE" | \
@@ -435,8 +443,10 @@ if [[ -n "$SUMMARY_JSON_FILE" ]]; then
 
     "$PYTHON_CMD" - "$SUMMARY_JSON_FILE" "$VERSION" "$INSTALL_DIR" "$TIER" "$TIER_NAME" "$GPU_BACKEND" "${BACKEND_SERVICE_NAME:-llama-server}" "$LLM_MODEL" "$COMPOSE_FLAGS" "$DRY_RUN" "$PREFLIGHT_REPORT_FILE" "${CAP_HARDWARE_CLASS_ID:-unknown}" "${CAP_HARDWARE_CLASS_LABEL:-Unknown}" <<'PY'
 import json
+import os
 import pathlib
 import sys
+import tempfile
 from datetime import datetime, timezone
 
 (
@@ -474,7 +484,19 @@ payload = {
 
 path = pathlib.Path(out_file)
 path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(payload, indent=2) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, str(path))
+except BaseException:
+    try:
+        os.unlink(tmp_path)
+    except OSError:
+        pass
+    raise
 print(f"[INFO] Wrote installer summary JSON: {out_file}")
 PY
 fi

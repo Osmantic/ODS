@@ -116,6 +116,18 @@
       "auth_required": true,
       "notes": "Vector database can contain private embeddings and metadata."
     },
+    "remote-provider-egress": {
+      "risk": "remote-llm-egress",
+      "lan_exposure": "none",
+      "auth_required": true,
+      "notes": "Internal-only boundary that injects private provider credentials and forwards remote LLM traffic."
+    },
+    "remote-provider-ssh-tunnel": {
+      "risk": "remote-llm-ssh-transport",
+      "lan_exposure": "none",
+      "auth_required": true,
+      "notes": "Internal-only SSH tunnel sidecar for remote LLM transport; binds no host ports and reads SSH custody files from private state."
+    },
     "searxng": {
       "risk": "search-ui",
       "lan_exposure": "operator-controlled",

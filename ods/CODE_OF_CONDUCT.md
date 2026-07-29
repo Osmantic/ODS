@@ -30,7 +30,8 @@ Examples of unacceptable behavior:
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the project team at **conduct@lightheartlabs.com**.
+reported to the project team at **contact@osmantic.com** with the subject
+**Code of Conduct report**.
 
 All complaints will be reviewed and investigated promptly and fairly. The project
 team is obligated to maintain confidentiality with regard to the reporter.

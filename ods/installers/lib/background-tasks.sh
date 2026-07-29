@@ -31,7 +31,9 @@ bg_task_start() {
     # Add task to registry
     python3 - "$BG_TASK_REGISTRY" "$task_id" "$pid" "$description" "$log_file" <<'PY'
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 registry_path = Path(sys.argv[1])
@@ -48,7 +50,19 @@ tasks.append({
     "log_file": log_file,
     "status": "running"
 })
-registry_path.write_text(json.dumps(tasks, indent=2))
+fd, tmp_path = tempfile.mkstemp(dir=str(registry_path.parent), suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(tasks, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, str(registry_path))
+except BaseException:
+    try:
+        os.unlink(tmp_path)
+    except OSError:
+        pass
+    raise
 PY
 }
 

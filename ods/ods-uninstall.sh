@@ -73,6 +73,7 @@ This will remove:
     - Docker containers, images, and volumes for ODS
     - Installation directory ($INSTALL_DIR)
     - Systemd user services (opencode-web, openclaw timers)
+    - macOS LaunchAgents (com.ods.host-agent, com.ods.opencode-web, legacy agents)
     - CLI symlinks (/usr/local/bin/ods, ~/.local/bin/ods, legacy /usr/local/bin/ods-cli)
     - Backup directory (~/.ods)
 
@@ -146,8 +147,10 @@ if command -v docker &>/dev/null; then
         log_warn "No compose files resolved; falling back to container/volume discovery"
     fi
 
-    # Remove any remaining ods-* containers
-    ods_containers=$(docker ps -a --filter "name=ods-" --format "{{.Names}}" 2>/dev/null || true)
+    # Remove any remaining ods-* containers.
+    # Docker's name filter matches anywhere in the name, so filter on the
+    # printed names instead: only this project's ods-<service> containers.
+    ods_containers=$(docker ps -a --format "{{.Names}}" 2>/dev/null | grep -E '^ods-' || true)
     if [[ -n "$ods_containers" ]]; then
         log_info "Removing ODS containers..."
         echo "$ods_containers" | xargs docker rm -f 2>/dev/null || true
@@ -157,7 +160,12 @@ if command -v docker &>/dev/null; then
     if [[ "$KEEP_DATA" == "true" ]]; then
         log_info "Keeping Docker volumes (--keep-data)"
     else
-        ods_volumes=$(docker volume ls --filter "name=ods" --format "{{.Name}}" 2>/dev/null || true)
+        # Compose names project volumes ods_<volume> (docker-compose.base.yml
+        # declares `name: ods`); older installs also produced ods-<volume>.
+        # An unanchored "ods" filter would additionally select unrelated
+        # volumes that merely contain it (pods, methods, ...) and this branch
+        # removes what it finds, so anchor on the project prefix.
+        ods_volumes=$(docker volume ls --format "{{.Name}}" 2>/dev/null | grep -E '^ods[_-]' || true)
         if [[ -n "$ods_volumes" ]]; then
             log_info "Removing Docker volumes..."
             echo "$ods_volumes" | xargs docker volume rm 2>/dev/null || true
@@ -169,7 +177,7 @@ else
     log_warn "Docker not found — skipping container cleanup"
 fi
 
-# 2. Stop and remove systemd user services
+# 2. Stop and remove host service definitions
 log_info "Removing systemd user services..."
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 for unit in opencode-web.service openclaw-session-cleanup.timer \
@@ -183,6 +191,46 @@ for unit in opencode-web.service openclaw-session-cleanup.timer \
     fi
 done
 systemctl --user daemon-reload 2>/dev/null || true
+
+# 2a. Remove macOS LaunchAgents (#1882). install-macos.sh creates
+# com.ods.host-agent and com.ods.opencode-web as RunAtLoad+KeepAlive agents;
+# without bootout they respawn forever against the deleted install directory.
+# The legacy labels match the installer's own stale-agent cleanup. This runs
+# BEFORE orphan reaping so KeepAlive cannot resurrect what we kill below.
+# Missing labels/plists are tolerated; failed cleanup only warns.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    log_info "Removing macOS LaunchAgents..."
+    _ods_uid="$(id -u)"
+    _ods_agents_cleaned=true
+    for _ods_agent_label in com.ods.llm-bridge com.ods.host-agent-bridge \
+                            com.ods.host-agent com.ods.opencode-web \
+                            com.ods.llama-server com.ods.full-model-download; do
+        _ods_agent_plist="$HOME/Library/LaunchAgents/${_ods_agent_label}.plist"
+        if launchctl print "gui/${_ods_uid}/${_ods_agent_label}" >/dev/null 2>&1; then
+            if launchctl bootout "gui/${_ods_uid}/${_ods_agent_label}" 2>/dev/null; then
+                log_info "  Booted out ${_ods_agent_label}"
+            else
+                _ods_agents_cleaned=false
+                log_warn "Could not boot out LaunchAgent ${_ods_agent_label}"
+            fi
+        fi
+        if [[ -f "$_ods_agent_plist" ]]; then
+            rm -f "$_ods_agent_plist" 2>/dev/null || true
+            if [[ -f "$_ods_agent_plist" ]]; then
+                _ods_agents_cleaned=false
+                log_warn "Could not remove $_ods_agent_plist"
+            else
+                log_info "  Removed ${_ods_agent_plist##*/}"
+            fi
+        fi
+    done
+    if $_ods_agents_cleaned; then
+        log_ok "macOS LaunchAgents removed"
+    else
+        log_warn "macOS LaunchAgent cleanup incomplete"
+    fi
+    unset _ods_agent_label _ods_agent_plist _ods_uid _ods_agents_cleaned
+fi
 
 # Reap orphan host-managed processes that survive `systemctl --user stop`.
 # These were observed in the fleet test surviving multiple uninstall/reinstall
@@ -218,6 +266,9 @@ if command -v pgrep >/dev/null 2>&1; then
     while IFS= read -r _pid; do
         [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
     done < <(pgrep -f "$INSTALL_DIR/bin/llama-server" 2>/dev/null || true)
+    while IFS= read -r _pid; do
+        [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
+    done < <(pgrep -f "$INSTALL_DIR/bin/ods-macos-llm-bridge.py" 2>/dev/null || true)
 fi
 if (( ${#_ods_uninstall_orphan_pids[@]} > 0 )); then
     log_info "  Sending SIGTERM to ${#_ods_uninstall_orphan_pids[@]} orphan PID(s): ${_ods_uninstall_orphan_pids[*]}"

@@ -85,6 +85,8 @@ SECRET_VALUE="support-bundle-super-secret"
 cat > "$ENV_PATH" <<EOF
 DASHBOARD_API_KEY=$SECRET_VALUE
 OPENAI_API_KEY=$SECRET_VALUE
+N8N_USER=$SECRET_VALUE
+LANGFUSE_INIT_USER_EMAIL=$SECRET_VALUE
 NORMAL_VALUE=visible-value
 ODS_MODE=cloud
 GPU_BACKEND=cpu
@@ -170,6 +172,15 @@ if [[ -f "$BUNDLE_DIR/config/env.redacted" ]] && grep -q "DASHBOARD_API_KEY=\\[R
     pass ".env is included only as redacted env"
 else
     fail "redacted env file is missing expected redaction"
+fi
+
+# Schema secret:true user/email keys must be redacted too — they ship in the
+# publicly shared bundle. The old keyword set omitted USER/EMAIL.
+if grep -q "N8N_USER=\\[REDACTED\\]" "$BUNDLE_DIR/config/env.redacted" \
+    && grep -q "LANGFUSE_INIT_USER_EMAIL=\\[REDACTED\\]" "$BUNDLE_DIR/config/env.redacted"; then
+    pass "schema-secret user/email env keys are redacted"
+else
+    fail "N8N_USER / LANGFUSE_INIT_USER_EMAIL leaked into env.redacted"
 fi
 
 if grep -R "$SECRET_VALUE" "$BUNDLE_DIR" >/dev/null 2>&1; then

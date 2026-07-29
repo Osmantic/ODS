@@ -236,6 +236,64 @@ else
         "Usually fine on modern distros; if Docker fails oddly, see LINUX-TROUBLESHOOTING-GUIDE.md#cgroups."
 fi
 
+# --- Rootless Docker subordinate UID/GID ranges ---
+# Rootless Docker maps in-container users through the subordinate ID ranges
+# allocated in /etc/subuid and /etc/subgid. A missing entry, or a range
+# smaller than 65536 IDs, breaks image extraction for non-root images
+# ("failed to register layer: uid/gid map out of range") long after install.
+# Only meaningful when the daemon actually runs rootless.
+SUBUID_FILE="${ODS_SUBUID_FILE:-/etc/subuid}"
+SUBGID_FILE="${ODS_SUBGID_FILE:-/etc/subgid}"
+MIN_SUBID_RANGE=65536
+
+subid_range_total() {
+    # Sum every range allocated to the current user in a subuid/subgid file.
+    # Entries may be keyed by user name or by numeric UID (subgid is also
+    # keyed by user, not group). Multiple ranges per user are legal.
+    local file="$1" user="$2" numeric_uid="$3" total=0 owner start count
+    [[ -r "$file" ]] || { echo 0; return; }
+    while IFS=: read -r owner start count; do
+        if [[ "$owner" == "$user" || "$owner" == "$numeric_uid" ]]; then
+            [[ "$count" =~ ^[0-9]+$ ]] && total=$((total + count))
+        fi
+    done <"$file"
+    echo "$total"
+}
+
+ROOTLESS_DOCKER=false
+if [[ "${ODS_ASSUME_ROOTLESS:-0}" == "1" ]]; then
+    ROOTLESS_DOCKER=true
+elif [[ "$DOCKER_INFO_OK" == true ]] && docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q 'rootless'; then
+    ROOTLESS_DOCKER=true
+fi
+
+if [[ "$ROOTLESS_DOCKER" == true ]]; then
+    SUBID_USER="$(id -un)"
+    SUBID_UID="$(id -u)"
+    SUBUID_TOTAL="$(subid_range_total "$SUBUID_FILE" "$SUBID_USER" "$SUBID_UID")"
+    SUBGID_TOTAL="$(subid_range_total "$SUBGID_FILE" "$SUBID_USER" "$SUBID_UID")"
+    # Two remediations: with NO allocation the standard 100000-165535 range is
+    # safe to suggest verbatim, but with an existing-but-small allocation that
+    # fixed range can overlap what the user already has (e.g. 100000:1000), so
+    # the small-range hint asks for a non-overlapping extension instead.
+    SUBID_FIX_MISSING="Allocate ranges with: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $SUBID_USER, then restart the rootless Docker daemon (systemctl --user restart docker)."
+    SUBID_FIX_SMALL="Extend the allocation to at least $MIN_SUBID_RANGE subordinate IDs: pick a start ABOVE every range already listed in $SUBUID_FILE and $SUBGID_FILE (sudo usermod --add-subuids <start>-<start+65535> --add-subgids <start>-<start+65535> $SUBID_USER), then restart the rootless Docker daemon (systemctl --user restart docker)."
+    if [[ "$SUBUID_TOTAL" -eq 0 || "$SUBGID_TOTAL" -eq 0 ]]; then
+        append_check "ROOTLESS_SUBID" "fail" \
+            "Rootless Docker detected but $SUBID_USER has no subordinate ID range (subuids=$SUBUID_TOTAL in $SUBUID_FILE, subgids=$SUBGID_TOTAL in $SUBGID_FILE) — non-root containers cannot map user namespaces" \
+            "$SUBID_FIX_MISSING"
+    elif [[ "$SUBUID_TOTAL" -lt "$MIN_SUBID_RANGE" || "$SUBGID_TOTAL" -lt "$MIN_SUBID_RANGE" ]]; then
+        append_check "ROOTLESS_SUBID" "warn" \
+            "Rootless Docker: subordinate ID range for $SUBID_USER is small (subuids=$SUBUID_TOTAL, subgids=$SUBGID_TOTAL, recommended ≥$MIN_SUBID_RANGE) — images using high UIDs/GIDs may fail to extract" \
+            "$SUBID_FIX_SMALL"
+    else
+        append_check "ROOTLESS_SUBID" "pass" \
+            "Rootless Docker: $SUBID_USER has subuids=$SUBUID_TOTAL, subgids=$SUBGID_TOTAL (≥$MIN_SUBID_RANGE)" ""
+    fi
+else
+    append_check "ROOTLESS_SUBID" "pass" "Docker daemon is not rootless — subordinate ID check skipped" ""
+fi
+
 # --- jq (installer often installs it; nice to have) ---
 if command -v jq >/dev/null 2>&1; then
     append_check "JQ_INSTALLED" "pass" "jq available for JSON tooling" ""

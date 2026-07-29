@@ -119,7 +119,7 @@ function App() {
         onToggle={handleToggle}
       />
 
-      <main className={`dashboard-market-shell flex-1 transition-all duration-200 ${sidebarCollapsed ? 'ml-20' : 'ml-64'}`}>
+      <main className={`dashboard-market-shell flex-1 transition-all duration-200 ${sidebarCollapsed ? 'ml-20' : 'ml-20 sm:ml-64'}`}>
         {status?.bootstrap?.active && (
           <BootstrapBanner bootstrap={status.bootstrap} />
         )}

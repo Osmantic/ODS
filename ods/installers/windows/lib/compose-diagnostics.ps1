@@ -16,6 +16,91 @@ function Get-ODSComposeEnvFileArgs {
     return @()
 }
 
+function Get-ODSUserDockerConfigDir {
+    param([string]$DockerConfigOverride = $env:DOCKER_CONFIG)
+
+    if (-not [string]::IsNullOrWhiteSpace($DockerConfigOverride)) {
+        return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+            $DockerConfigOverride
+        )
+    }
+
+    $userProfile = $env:USERPROFILE
+    if ([string]::IsNullOrWhiteSpace($userProfile)) {
+        $userProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    }
+    if ([string]::IsNullOrWhiteSpace($userProfile)) { return $null }
+    return (Join-Path $userProfile ".docker")
+}
+
+function Get-ODSUserDockerCliPluginDirs {
+    param([string]$UserDockerConfigDir)
+
+    if ([string]::IsNullOrWhiteSpace($UserDockerConfigDir)) { return @() }
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $defaultPluginDir = Join-Path $UserDockerConfigDir "cli-plugins"
+    $candidates.Add($defaultPluginDir)
+
+    $userConfigPath = Join-Path $UserDockerConfigDir "config.json"
+    if (Test-Path -LiteralPath $userConfigPath -PathType Leaf) {
+        try {
+            $userConfig = Get-Content -LiteralPath $userConfigPath -Raw -ErrorAction Stop |
+                ConvertFrom-Json -ErrorAction Stop
+            foreach ($pluginDir in @($userConfig.cliPluginsExtraDirs)) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$pluginDir)) {
+                    $candidates.Add([string]$pluginDir)
+                }
+            }
+        } catch { }
+    }
+
+    $resolved = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in $candidates) {
+        try {
+            if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { continue }
+            $fullPath = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
+            if (-not ($resolved | Where-Object { $_.Equals($fullPath, [StringComparison]::OrdinalIgnoreCase) })) {
+                $resolved.Add($fullPath)
+            }
+        } catch { }
+    }
+    return @($resolved)
+}
+
+function Initialize-ODSComposeDockerClientConfig {
+    param(
+        [string]$InstallDir,
+        [string]$UserDockerConfigDir = (Get-ODSUserDockerConfigDir)
+    )
+
+    $dockerConfigDir = Join-Path (Join-Path $InstallDir "data") "docker-client-public"
+    if (-not (Test-Path $dockerConfigDir)) {
+        New-Item -ItemType Directory -Path $dockerConfigDir -Force | Out-Null
+    }
+
+    $dockerConfig = [ordered]@{ auths = [ordered]@{} }
+    $pluginDirs = @(Get-ODSUserDockerCliPluginDirs -UserDockerConfigDir $UserDockerConfigDir)
+    if ($pluginDirs.Count -gt 0) {
+        $dockerConfig["cliPluginsExtraDirs"] = $pluginDirs
+    }
+
+    # Rebuild on every invocation so existing installs gain plugin discovery
+    # without copying credential helpers or registry authentication state.
+    $dockerConfigPath = Join-Path $dockerConfigDir "config.json"
+    $tempConfigPath = "$dockerConfigPath.$PID.tmp"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $json = ($dockerConfig | ConvertTo-Json -Depth 4) + "`n"
+    try {
+        [System.IO.File]::WriteAllText($tempConfigPath, $json, $utf8NoBom)
+        Move-Item -LiteralPath $tempConfigPath -Destination $dockerConfigPath -Force
+    } finally {
+        Remove-Item -LiteralPath $tempConfigPath -Force -ErrorAction SilentlyContinue
+    }
+
+    return $dockerConfigDir
+}
+
 function Invoke-ODSDockerCompose {
     <#
     .SYNOPSIS
@@ -30,16 +115,35 @@ function Invoke-ODSDockerCompose {
         [Parameter(Mandatory = $true)]
         [string[]]$ComposeArgs
     )
+    $hadDockerConfig = Test-Path Env:DOCKER_CONFIG
+    $previousDockerConfig = $env:DOCKER_CONFIG
+    # Resolve a relative DOCKER_CONFIG against the caller's location, not the
+    # install directory used as the Compose working directory.
+    $userDockerConfigDir = Get-ODSUserDockerConfigDir `
+        -DockerConfigOverride $previousDockerConfig
+
     Push-Location $InstallDir
     try {
+        $dockerConfigDir = Initialize-ODSComposeDockerClientConfig `
+            -InstallDir $InstallDir -UserDockerConfigDir $userDockerConfigDir
+        $dockerClientArgs = @("--config", $dockerConfigDir)
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'SilentlyContinue'
-        & docker compose @ComposeFlags @ComposeArgs 2>&1 | ForEach-Object { Write-Host "  $_" }
+        $env:DOCKER_CONFIG = $dockerConfigDir
+        & docker @dockerClientArgs compose @ComposeFlags @ComposeArgs 2>&1 | ForEach-Object { Write-Host "  $_" }
         $exitCode = $LASTEXITCODE
         $ErrorActionPreference = $prevEAP
         return $exitCode
     }
     finally {
+        if ($hadDockerConfig) {
+            $env:DOCKER_CONFIG = $previousDockerConfig
+        } else {
+            Remove-Item Env:DOCKER_CONFIG -ErrorAction SilentlyContinue
+        }
+        if ($null -ne $prevEAP) {
+            $ErrorActionPreference = $prevEAP
+        }
         Pop-Location
     }
 }
@@ -108,7 +212,12 @@ function Get-ODSComposeSensitiveEnvValues {
             if ($line -notmatch '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { continue }
             $key = $Matches[1]
             $value = $Matches[2].Trim().Trim('"').Trim("'")
-            if ($value.Length -ge 4 -and $key -match '(?i)(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)') {
+            # USER|EMAIL|BEARER cover schema secret:true keys the shorter set
+            # missed - N8N_USER, LANGFUSE_INIT_USER_EMAIL, LANGFUSE_MINIO_ROOT_USER -
+            # whose values would otherwise ship in the shareable failure report.
+            # Keep in sync with ConvertTo-ODSComposeRedactedLine below and the
+            # Linux support bundle's redaction set.
+            if ($value.Length -ge 4 -and $key -match '(?i)(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL|USER|EMAIL|BEARER)') {
                 $values += $value
             }
         }
@@ -128,7 +237,8 @@ function ConvertTo-ODSComposeRedactedLine {
     )
 
     $redacted = $Line
-    if ($redacted -match '(?i)(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)' -and $redacted -match '[:=]') {
+    # Key set kept in sync with Get-ODSComposeSensitiveEnvValues above.
+    if ($redacted -match '(?i)(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL|USER|EMAIL|BEARER)' -and $redacted -match '[:=]') {
         $separatorMatch = [regex]::Match($redacted, '[:=]\s*')
         if ($separatorMatch.Success) {
             $redacted = $redacted.Substring(0, $separatorMatch.Index + $separatorMatch.Length) + "[REDACTED]"

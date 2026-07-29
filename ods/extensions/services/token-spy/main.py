@@ -26,6 +26,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from filters import apply_filters
 from providers import ProviderRegistry
+from routed_telemetry import (
+    TelemetryValidationError,
+    routed_event_to_usage,
+    validate_routed_event,
+)
 
 # Database backend selection: sqlite (default) or postgres
 DB_BACKEND = os.environ.get("DB_BACKEND", "sqlite").lower()
@@ -295,7 +300,11 @@ async def verify_api_key(
             detail="Authentication required. Provide Bearer token in Authorization header.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if not secrets.compare_digest(credentials.credentials, TOKEN_SPY_API_KEY):
+    # Compared as UTF-8 bytes: compare_digest raises TypeError on non-ASCII
+    # str, which would turn an unauthenticated request into a 500 not a 403.
+    if not secrets.compare_digest(
+        credentials.credentials.encode("utf-8"), TOKEN_SPY_API_KEY.encode("utf-8")
+    ):
         raise HTTPException(status_code=403, detail="Invalid API key.")
     return credentials.credentials
 
@@ -1530,6 +1539,27 @@ def health():
 # ── API Endpoints ────────────────────────────────────────────────────────────
 
 
+@app.post("/api/ingest/routed", dependencies=[Depends(verify_api_key)])
+async def ingest_routed_telemetry(request: Request):
+    """Store metadata-only usage emitted by the ODS model router."""
+    raw_body = await request.body()
+    if len(raw_body) > 16 * 1024:
+        raise HTTPException(status_code=413, detail="Telemetry event is too large.")
+    try:
+        payload = json.loads(raw_body)
+        event = validate_routed_event(payload)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.") from exc
+    except TelemetryValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if not _db_available:
+        raise HTTPException(status_code=503, detail="Usage database is unavailable.")
+
+    await asyncio.to_thread(log_usage, routed_event_to_usage(event))
+    return JSONResponse({"status": "accepted"}, status_code=202)
+
+
 @app.get("/api/filter-stats", dependencies=[Depends(verify_api_key)])
 def api_filter_stats():
     """Current filter configuration and summary."""
@@ -2393,11 +2423,11 @@ def dashboard_charts_asset():
 async def token_events(request: Request):
     """Stream token usage events as Server-Sent Events."""
     async def event_stream():
-        last_id = None
+        last_cursor = None
         while True:
             try:
                 # Query recent events
-                events = query_recent_events(limit=50, after_id=last_id)
+                events = query_recent_events(limit=50, after_id=last_cursor)
 
                 for event in events:
                     # Format event as SSE
@@ -2415,7 +2445,9 @@ async def token_events(request: Request):
                     }
 
                     yield f"data: {json.dumps(event_data)}\n\n"
-                    last_id = event.get("id")
+                    # PostgreSQL supplies a stable (timestamp, UUID) cursor.
+                    # SQLite and older backends continue to use the row ID.
+                    last_cursor = event.get("_cursor", event.get("id"))
 
                 # Heartbeat to keep connection alive
                 yield ":heartbeat\n\n"

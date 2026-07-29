@@ -3,7 +3,7 @@
 # Regression: `ods config show` masks `N8N_USER` and
 # `LANGFUSE_INIT_USER_EMAIL` even in environments without `jq`.
 # ============================================================================
-# Audit follow-up on PR #994 (Lightheartdevs, 2026-04-28):
+# Audit follow-up on PR #994 (2026-04-28):
 #
 #   "Schema-driven secret masking is useful, but the CLI only learns
 #    the schema secret flags through `jq`. In Git Bash without `jq`,

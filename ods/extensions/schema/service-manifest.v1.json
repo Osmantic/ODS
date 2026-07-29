@@ -3,7 +3,7 @@
   "$id": "https://ods.ai/schemas/service-manifest.v1.json",
   "title": "ODS Service Manifest v1",
   "type": "object",
-  "required": ["schema_version"],
+  "required": ["schema_version", "service"],
   "properties": {
     "schema_version": {
       "const": "ods.services.v1"
@@ -27,7 +27,7 @@
     },
     "service": {
       "type": "object",
-      "required": ["id", "name"],
+      "required": ["id", "name", "port", "type", "category"],
       "allOf": [
         {
           "if": {
@@ -62,6 +62,10 @@
         "port": { "type": "integer", "minimum": 0, "maximum": 65535 },
         "external_port_env": { "type": "string" },
         "external_port_default": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "public_url_env": {
+          "type": "string",
+          "description": "Optional env var that contains the public browser URL for this service when served through an external reverse proxy."
+        },
         "host_network": {
           "type": "boolean",
           "description": "True for Docker network_mode: host services that do not declare Docker-mapped ports or HTTP health paths."
@@ -85,6 +89,10 @@
         "external_link": {
           "type": "boolean",
           "description": "When false, omit this service from dashboard external quicklinks while keeping it in health/status APIs."
+        },
+        "macos_host_supported": {
+          "type": "boolean",
+          "description": "True when a host-systemd service has an equivalent macOS LaunchAgent and should remain in the Apple service registry."
         },
         "type": { "type": "string", "enum": ["docker", "host-systemd"] },
         "startup_check": {
@@ -113,7 +121,7 @@
         },
         "depends_on": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
           "description": "Service IDs this service depends on"
         },
         "env_vars": {
@@ -131,6 +139,52 @@
             "additionalProperties": false
           },
           "description": "Environment variables used by this service"
+        },
+        "llm": {
+          "type": "object",
+          "description": "Declares whether and how this service consumes LLM inference so model swaps can be gated and probed.",
+          "required": ["consumes"],
+          "properties": {
+            "consumes": {
+              "type": "boolean",
+              "description": "True when this service sends prompts/completions to an LLM endpoint."
+            },
+            "route": {
+              "type": "string",
+              "enum": ["gateway", "direct"],
+              "description": "gateway routes through the ODS model gateway alias; direct talks to a runtime or app-specific endpoint."
+            },
+            "pinning": {
+              "type": "string",
+              "enum": ["none", "dynamic"],
+              "description": "none stores no model name; dynamic declares a refresh/reconcile path after swaps."
+            },
+            "min_context": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Optional minimum context length required for this app's LLM path."
+            },
+            "probe": {
+              "type": "object",
+              "description": "Harness probe descriptor used after every model swap.",
+              "properties": {
+                "kind": { "type": "string", "enum": ["chat", "completion", "custom"] },
+                "path": { "type": "string" },
+                "auth": { "type": "string" }
+              },
+              "additionalProperties": true
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "consumes": { "const": true } },
+                "required": ["consumes"]
+              },
+              "then": { "required": ["route", "pinning", "probe"] }
+            }
+          ],
+          "additionalProperties": true
         },
         "setup_hook": {
           "type": "string",
@@ -169,6 +223,7 @@
               "services": { "type": "array", "items": { "type": "string" } },
               "services_any": { "type": "array", "items": { "type": "string" } },
               "vram_gb": { "type": "number", "minimum": 0 },
+              "vram_mb": { "type": "number", "minimum": 0 },
               "disk_gb": { "type": "number", "minimum": 0 }
             },
             "additionalProperties": true
@@ -196,6 +251,11 @@
         },
         "additionalProperties": true
       }
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+      "description": "Categorization tags for service discovery"
     }
   },
   "additionalProperties": true

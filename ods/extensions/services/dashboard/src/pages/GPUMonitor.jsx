@@ -82,19 +82,21 @@ export default function GPUMonitor() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <AggBar
               label="Avg Utilization"
-              value={`${aggregate.utilization_percent}%`}
-              percent={aggregate.utilization_percent}
+              value={aggregate.utilization_available !== false ? `${aggregate.utilization_percent}%` : '—'}
+              percent={aggregate.utilization_available !== false ? aggregate.utilization_percent : 0}
             />
             <AggBar
               label="Total VRAM"
-              value={`${(aggregate.memory_used_mb / 1024).toFixed(1)}/${(aggregate.memory_total_mb / 1024).toFixed(0)} GB`}
-              percent={aggregate.memory_percent}
+              value={aggregate.memory_usage_available !== false
+                ? `${(aggregate.memory_used_mb / 1024).toFixed(1)}/${(aggregate.memory_total_mb / 1024).toFixed(0)} GB`
+                : '—'}
+              percent={aggregate.memory_usage_available !== false ? aggregate.memory_percent : 0}
             />
             <div>
               <div className="flex items-center justify-between text-xs mb-1">
                 <span className="text-zinc-400">Max Temp</span>
-                <span className={`font-mono ${aggregate.temperature_c >= 85 ? 'text-red-400' : aggregate.temperature_c >= 70 ? 'text-yellow-400' : 'text-white'}`}>
-                  {aggregate.temperature_c}°C
+                <span className={`font-mono ${aggregate.temperature_available === false ? 'text-zinc-500' : aggregate.temperature_c >= 85 ? 'text-red-400' : aggregate.temperature_c >= 70 ? 'text-yellow-400' : 'text-white'}`}>
+                  {aggregate.temperature_available !== false ? `${aggregate.temperature_c}°C` : '—'}
                 </span>
               </div>
             </div>

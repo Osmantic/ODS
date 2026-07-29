@@ -27,6 +27,10 @@ FAKE_ODS="$TMP_ROOT/ods"
 mkdir -p "$FAKE_ODS/data/open-webui"
 mkdir -p "$FAKE_ODS/config"
 
+# ods-backup.sh sources lib/rsync.sh relative to ODS_DIR
+mkdir -p "$FAKE_ODS/lib"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$FAKE_ODS/lib/"
+
 # Required by create_manifest()
 echo "test" > "$FAKE_ODS/.version"
 
@@ -62,3 +66,43 @@ if [[ $rc -eq 0 ]]; then
 fi
 
 pass "verify fails after tampering"
+
+# ── Lifecycle: list, retention, and delete must see the script's own IDs ──
+# Backup IDs are YYYYMMDD-HHMMSS (one hyphen); a glob requiring two hyphens
+# regressed list/retention into ignoring every backup this script creates.
+
+LIFECYCLE_DIR="$TMP_ROOT/lifecycle-backups"
+mkdir -p "$LIFECYCLE_DIR"
+
+# Six pre-existing backups in the script's own ID format, plus operator
+# debris that retention must never delete.
+for i in 1 2 3 4 5 6; do
+  d="$LIFECYCLE_DIR/2026010${i}-00000${i}"
+  mkdir -p "$d"
+  echo '{"backup_type": "user-data", "description": "old"}' > "$d/manifest.json"
+done
+mkdir -p "$LIFECYCLE_DIR/my-notes"
+
+info "Listing pre-existing backups"
+list_out=$(ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$LIFECYCLE_DIR" --list)
+echo "$list_out" | grep -q "20260101-000001" || fail "--list does not show own-format backup IDs"
+if echo "$list_out" | grep -q "my-notes"; then
+  fail "--list shows non-backup directories"
+fi
+pass "--list shows own-format backup IDs and skips other directories"
+
+info "Running backup with RETENTION_COUNT=5"
+ODS_DIR="$FAKE_ODS" RETENTION_COUNT=5 "$ODS_BACKUP" --output "$LIFECYCLE_DIR" --type config >/dev/null
+
+[[ ! -d "$LIFECYCLE_DIR/20260101-000001" ]] || fail "retention kept the oldest backup beyond RETENTION_COUNT"
+[[ ! -d "$LIFECYCLE_DIR/20260102-000002" ]] || fail "retention kept the second-oldest backup beyond RETENTION_COUNT"
+[[ -d "$LIFECYCLE_DIR/20260103-000003" ]] || fail "retention deleted a backup inside RETENTION_COUNT"
+[[ -d "$LIFECYCLE_DIR/my-notes" ]] || fail "retention deleted an unrelated directory"
+pass "retention prunes oldest own-format backups and leaves other directories"
+
+info "Deleting a compressed backup by bare ID"
+(cd "$LIFECYCLE_DIR" && mkdir -p 20260601-120000 && echo x > 20260601-120000/f \
+  && tar czf 20260601-120000.tar.gz 20260601-120000 && rm -rf 20260601-120000)
+echo y | ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$LIFECYCLE_DIR" -d 20260601-120000 >/dev/null
+[[ ! -f "$LIFECYCLE_DIR/20260601-120000.tar.gz" ]] || fail "delete left the compressed backup behind"
+pass "delete removes compressed backups by bare ID"

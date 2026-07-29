@@ -225,7 +225,7 @@ def render_card(
     footer_y = CARD_H - MARGIN - 30
     draw.text(
         (MARGIN, footer_y),
-        "ODS is open-source — light-heart-labs.com",
+        "ODS is open-source — osmantic.com",
         font=small_font,
         fill=COLOR_MUTED,
     )

@@ -1,10 +1,11 @@
 import { coreRoutes, coreExternalLinks } from './core'
+import { appendPath } from '../lib/serviceUrls'
 import {
-  MessageSquare, Network, Bot, Terminal, Search, Image, ExternalLink
+  MessageSquare, Network, Bot, Terminal, Search, Image, Code, ExternalLink
 } from 'lucide-react'
 
 const ICON_MAP = {
-  MessageSquare, Network, Bot, Terminal, Search, Image, ExternalLink,
+  MessageSquare, Network, Bot, Terminal, Search, Image, Code, ExternalLink,
 }
 
 const routeExtensions = []
@@ -50,23 +51,24 @@ export function getSidebarExternalLinks(context = {}) {
   const { status, getExternalUrl, apiLinks = [] } = context
   // Merge static plugin links with API-fetched links
   const allLinks = [...coreExternalLinks, ...externalLinkExtensions, ...apiLinks]
-  // Deduplicate by id (API links take priority)
-  const seen = new Set()
-  const deduped = []
-  for (const link of allLinks.reverse()) {
-    if (!seen.has(link.id)) {
-      seen.add(link.id)
-      deduped.unshift(link)
-    }
+  // Merge by id so API values take priority without discarding static launcher
+  // behavior such as OpenCode's always-visible application entry.
+  const linksById = new Map()
+  for (const link of allLinks) {
+    linksById.set(link.id, { ...(linksById.get(link.id) || {}), ...link })
   }
-  return deduped.map(link => {
+  return [...linksById.values()].map(link => {
     const healthy = link.alwaysHealthy ? true : isServiceHealthy(status, link.healthNeedles || [])
     return {
       key: link.id,
       label: link.label,
       icon: typeof link.icon === 'string' ? (ICON_MAP[link.icon] || ExternalLink) : (link.icon || ExternalLink),
       healthy,
-      url: (typeof getExternalUrl === 'function' ? getExternalUrl(link.port) : `http://localhost:${link.port}`) + (link.ui_path && link.ui_path !== '/' ? link.ui_path : ''),
+      alwaysVisible: Boolean(link.alwaysVisible),
+      url: link.public_url || appendPath(
+        typeof getExternalUrl === 'function' ? getExternalUrl(link.port) : `http://localhost:${link.port}`,
+        link.ui_path,
+      ),
     }
   })
 }

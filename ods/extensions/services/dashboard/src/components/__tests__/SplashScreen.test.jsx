@@ -6,6 +6,7 @@ vi.mock('gsap', () => {
     const timeline = {
       to: vi.fn(() => timeline),
       from: vi.fn(() => timeline),
+      add: vi.fn(() => timeline),
       progress: vi.fn(() => timeline),
       timeScale: vi.fn(() => timeline),
     }
@@ -15,6 +16,7 @@ vi.mock('gsap', () => {
 
   return {
     gsap: {
+      registerPlugin: vi.fn(),
       context: (callback) => {
         callback()
         return { revert: vi.fn() }
@@ -27,6 +29,12 @@ vi.mock('gsap', () => {
     },
   }
 })
+
+vi.mock('gsap/CustomEase', () => ({
+  CustomEase: {
+    create: vi.fn(() => 'custom-ease'),
+  },
+}))
 
 describe('SplashScreen', () => {
   beforeEach(() => {
@@ -49,11 +57,12 @@ describe('SplashScreen', () => {
   })
 
   test('renders accessible loading dialog with skip control', () => {
-    render(<SplashScreen onComplete={() => {}} />)
+    const { container } = render(<SplashScreen onComplete={() => {}} />)
 
     expect(screen.getByRole('dialog', { name: 'ODS' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'ODS', level: 1 })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Skip splash screen' })).toBeInTheDocument()
+    expect(container.querySelectorAll('.ell')).toHaveLength(31)
   })
 
   test('completes immediately when reduced motion is requested', () => {

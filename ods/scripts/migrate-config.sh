@@ -174,11 +174,15 @@ cmd_check() {
     log_info "Current version: $current_version"
     log_info "Last migrated: $last_migrated"
     
-    compare_versions "$current_version" "$last_migrated"
-    local result
-    result=$?
+    # compare_versions returns a non-zero *ordering* status, so capture it with
+    # `|| result=$?`. A bare call would trip `set -e` and abort before $? is
+    # read. result 1 => current_version > last_migrated => newer migrations are
+    # pending (this was previously checked as 2, i.e. a downgrade, so an ordinary
+    # upgrade silently reported "no migration needed").
+    local result=0
+    compare_versions "$current_version" "$last_migrated" || result=$?
 
-    if [[ $result -eq 2 ]]; then
+    if [[ $result -eq 1 ]]; then
         log_warn "Migration needed: $last_migrated → $current_version"
         
         # List pending migrations
@@ -189,8 +193,9 @@ cmd_check() {
                 local migration_version
                 migration_version=$(basename "$migration" | sed 's/migrate-v//;s/.sh//')
                 
-                compare_versions "$migration_version" "$last_migrated"
-                if [[ $? -eq 1 ]]; then
+                local mig_cmp=0
+                compare_versions "$migration_version" "$last_migrated" || mig_cmp=$?
+                if [[ $mig_cmp -eq 1 ]]; then
                     echo "  - $migration_version: $(head -5 "$migration" | grep '^# Description:' | sed 's/# Description://')"
                 fi
             fi
@@ -216,8 +221,12 @@ cmd_migrate() {
     # Create backup first
     cmd_backup >/dev/null
     
-    compare_versions "$current_version" "$last_migrated"
-    if [[ $? -ne 2 ]]; then
+    local cmp=0
+    compare_versions "$current_version" "$last_migrated" || cmp=$?
+    # Only current_version > last_migrated (cmp == 1) has pending migrations;
+    # equal (0) or a downgrade (2) means there is nothing to apply. The former
+    # `-ne 2` guard skipped every ordinary upgrade after taking a backup.
+    if [[ $cmp -ne 1 ]]; then
         log_success "Already up to date ($current_version)"
         return 0
     fi
@@ -240,8 +249,9 @@ cmd_migrate() {
             migration_version=$(basename "$migration" | sed 's/migrate-v//;s/.sh//')
             
             # Check if this migration is needed
-            compare_versions "$migration_version" "$last_migrated"
-            if [[ $? -eq 1 ]]; then
+            local mig_cmp=0
+            compare_versions "$migration_version" "$last_migrated" || mig_cmp=$?
+            if [[ $mig_cmp -eq 1 ]]; then
                 log_info "Running migration: $migration_version"
                 
                 if bash "$migration"; then
@@ -249,7 +259,7 @@ cmd_migrate() {
                     set_last_migrated_version "$migration_version"
                 else
                     log_error "Migration $migration_version failed!"
-                    ((failed++)) || true
+                    failed=$((failed + 1))
                     break
                 fi
             fi
@@ -268,7 +278,9 @@ cmd_migrate() {
 
 # Validate .env against schema
 cmd_validate() {
-    local validator="${SCRIPT_DIR}/validate-env.sh"
+    # MIGRATE_VALIDATOR lets the test suite point at a mock validator so it runs
+    # hermetically instead of overwriting the tracked scripts/validate-env.sh.
+    local validator="${MIGRATE_VALIDATOR:-${SCRIPT_DIR}/validate-env.sh}"
     local env_file="${INSTALL_DIR}/.env"
     local schema_file="${INSTALL_DIR}/.env.schema.json"
 

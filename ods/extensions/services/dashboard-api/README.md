@@ -59,7 +59,7 @@ Environment variables (set in `.env`):
 |--------|------|------|-------------|
 | `GET` | `/api/preflight/docker` | Yes | Check Docker availability |
 | `GET` | `/api/preflight/gpu` | Yes | Check GPU availability |
-| `GET` | `/api/preflight/required-ports` | No | List service ports |
+| `GET` | `/api/preflight/required-ports` | Yes | List service ports |
 | `POST` | `/api/preflight/ports` | Yes | Check port availability conflicts |
 | `GET` | `/api/preflight/disk` | Yes | Check available disk space |
 

@@ -53,10 +53,13 @@
     },
     {
       "id": "opencode",
-      "label": "OpenCode provider/auth config",
+      "label": "OpenCode provider/model config",
       "target_paths": [
-        ".opencode/auth.json",
-        ".opencode/config.json"
+        "~/.config/opencode/opencode.json",
+        "~/.config/opencode/opencode.jsonc",
+        "~/.config/opencode/config.json",
+        "~/.local/share/opencode/opencode.json",
+        "~/.local/share/opencode/opencode.jsonc"
       ],
       "writers": [
         {
@@ -78,6 +81,10 @@
         {
           "platform": "upgrade",
           "path": "scripts/bootstrap-upgrade.sh"
+        },
+        {
+          "platform": "runtime",
+          "path": "bin/ods-host-agent.py"
         }
       ],
       "invariants": [
@@ -96,23 +103,133 @@
       ]
     },
     {
+      "id": "litellm-local",
+      "label": "LiteLLM local model routing",
+      "target_paths": [
+        "config/litellm/local.yaml"
+      ],
+      "writers": [
+        {
+          "platform": "canonical-renderer",
+          "path": "scripts/render-runtime-configs.py"
+        },
+        {
+          "platform": "checked-in-template",
+          "path": "config/litellm/local.yaml"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "local-routes-to-llama-server",
+          "type": "yaml_text_contains",
+          "path": "config/litellm/local.yaml",
+          "needle": "api_base: http://llama-server:8080/v1"
+        }
+      ]
+    },
+    {
+      "id": "litellm-local-native",
+      "label": "LiteLLM host-native local model routing",
+      "target_paths": [
+        "config/litellm/local.yaml"
+      ],
+      "writer_marker": "ODS-CONTRACT-WRITER: litellm-local-native",
+      "writers": [
+        {
+          "platform": "canonical-renderer",
+          "path": "scripts/render-runtime-configs.py"
+        },
+        {
+          "platform": "windows-installer",
+          "path": "installers/windows/install-windows.ps1"
+        },
+        {
+          "platform": "windows-env-generator",
+          "path": "installers/windows/lib/env-generator.ps1"
+        },
+        {
+          "platform": "windows-upgrade",
+          "path": "scripts/bootstrap-upgrade.sh"
+        },
+        {
+          "platform": "windows-runtime",
+          "path": "bin/ods-host-agent.py"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "native-local-projection-exists",
+          "type": "file_contains",
+          "path": "scripts/render-runtime-configs.py",
+          "needle": "def render_litellm_local_native"
+        }
+      ]
+    },
+    {
+      "id": "litellm-cloud",
+      "label": "LiteLLM cloud model routing",
+      "target_paths": [
+        "config/litellm/cloud.yaml"
+      ],
+      "writers": [
+        {
+          "platform": "canonical-preview",
+          "path": "scripts/render-runtime-configs.py"
+        },
+        {
+          "platform": "checked-in-template",
+          "path": "config/litellm/cloud.yaml"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "cloud-exposes-stable-alias",
+          "type": "yaml_text_contains",
+          "path": "config/litellm/cloud.yaml",
+          "needle": "model_name: ods/current"
+        }
+      ]
+    },
+    {
+      "id": "litellm-hybrid",
+      "label": "LiteLLM hybrid model routing",
+      "target_paths": [
+        "config/litellm/hybrid.yaml"
+      ],
+      "writers": [
+        {
+          "platform": "canonical-preview",
+          "path": "scripts/render-runtime-configs.py"
+        },
+        {
+          "platform": "checked-in-template",
+          "path": "config/litellm/hybrid.yaml"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "hybrid-preserves-cloud-fallback",
+          "type": "yaml_text_contains",
+          "path": "config/litellm/hybrid.yaml",
+          "needle": "fallbacks:"
+        }
+      ]
+    },
+    {
       "id": "litellm-lemonade",
       "label": "LiteLLM Lemonade model routing",
       "target_paths": [
         "config/litellm/lemonade.yaml"
       ],
+      "writer_marker": "ODS-CONTRACT-WRITER: litellm-lemonade",
       "writers": [
         {
-          "platform": "linux",
-          "path": "installers/phases/06-directories.sh"
+          "platform": "canonical-renderer",
+          "path": "scripts/render-runtime-configs.py"
         },
         {
-          "platform": "upgrade",
-          "path": "scripts/bootstrap-upgrade.sh"
-        },
-        {
-          "platform": "runtime",
-          "path": "bin/ods-host-agent.py"
+          "platform": "checked-in-template",
+          "path": "config/litellm/lemonade.yaml"
         }
       ],
       "invariants": [
@@ -129,10 +246,109 @@
           "needle": "LITELLM_LEMONADE_API_KEY"
         },
         {
-          "id": "bootstrap-writes-extra-model-alias",
+          "id": "bootstrap-supplies-extra-model-alias",
           "type": "file_contains",
           "path": "scripts/bootstrap-upgrade.sh",
           "needle": "extra."
+        },
+        {
+          "id": "windows-lemonade-delegates-to-canonical-renderer",
+          "type": "file_contains",
+          "path": "installers/windows/lib/env-generator.ps1",
+          "needle": "render-runtime-configs.py"
+        },
+        {
+          "id": "windows-lemonade-can-bootstrap-renderer-python",
+          "type": "file_contains",
+          "path": "installers/windows/lib/env-generator.ps1",
+          "needle": "Install-WindowsODSRuntimeConfigPython"
+        }
+      ]
+    },
+    {
+      "id": "litellm-switchboard",
+      "label": "LiteLLM stable-alias Switchboard routing",
+      "target_paths": [
+        "config/litellm/switchboard.yaml"
+      ],
+      "writers": [
+        {
+          "platform": "canonical-renderer",
+          "path": "scripts/render-runtime-configs.py"
+        },
+        {
+          "platform": "checked-in-template",
+          "path": "config/litellm/switchboard.yaml"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "switchboard-exposes-stable-alias",
+          "type": "yaml_text_contains",
+          "path": "config/litellm/switchboard.yaml",
+          "needle": "model_name: ods/current"
+        },
+        {
+          "id": "switchboard-routes-to-model-router",
+          "type": "yaml_text_contains",
+          "path": "config/litellm/switchboard.yaml",
+          "needle": "api_base: http://model-router:9099/v1"
+        }
+      ]
+    },
+    {
+      "id": "model-router-endpoints",
+      "label": "Model Router endpoint allowlist",
+      "target_paths": [
+        "config/model-router/endpoints.json"
+      ],
+      "writers": [
+        {
+          "platform": "canonical-renderer",
+          "path": "scripts/render-runtime-configs.py"
+        },
+        {
+          "platform": "windows-installer",
+          "path": "installers/windows/lib/env-generator.ps1"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "router-endpoint-document",
+          "type": "file_contains",
+          "path": "config/model-router/endpoints.json",
+          "needle": "\"endpoints\""
+        }
+      ]
+    },
+    {
+      "id": "remote-routing-state",
+      "label": "Remote provider routing receipt",
+      "target_paths": [
+        "data/remote-provider/routing-state.json"
+      ],
+      "writers": [
+        {
+          "platform": "canonical-renderer",
+          "path": "scripts/render-runtime-configs.py"
+        }
+      ],
+      "invariants": [
+        {
+          "id": "renderer-emits-remote-routing-state",
+          "type": "file_contains",
+          "path": "scripts/render-runtime-configs.py",
+          "needle": "def render_remote_routing_state"
+        },
+        {
+          "id": "schema-covers-remote-switch",
+          "type": "json_path_enum_contains",
+          "path": ".env.schema.json",
+          "json_path": "properties.REMOTE_LLM_ENABLED.enum",
+          "values": [
+            "true",
+            "false"
+          ]
         }
       ]
     },
@@ -230,6 +446,12 @@
           "type": "yaml_text_contains",
           "path": "extensions/services/hermes/cli-config.yaml.template",
           "needle": "context_length: 131072"
+        },
+        {
+          "id": "template-output-cap",
+          "type": "yaml_text_contains",
+          "path": "extensions/services/hermes/cli-config.yaml.template",
+          "needle": "max_tokens: 1024"
         },
         {
           "id": "patcher-updates-model-name",

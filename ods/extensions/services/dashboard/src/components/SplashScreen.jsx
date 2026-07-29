@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { gsap } from 'gsap'
+import { CustomEase } from 'gsap/CustomEase'
+
+gsap.registerPlugin(CustomEase)
 
 const SPLASH_DURATION_MS = 2800
 const EXIT_PAUSE_MS = 300
 const FADE_DURATION_MS = 600
-const LOW_END_ELLIPSE_COUNT = 14
-const STANDARD_ELLIPSE_COUNT = 22
+const LOW_END_ELLIPSE_COUNT = 31
+const STANDARD_ELLIPSE_COUNT = 31
 const visuallyHiddenStyle = {
   position: 'absolute',
   width: '1px',
@@ -54,7 +57,6 @@ function stopAnimationFrame(frameId) {
   clearTimeout(frameId)
 }
 
-// ─── Orb SVG animation — exact port of codepen.io/chrisgannon/pen/ZYQjZBr ───
 function OrbBackground({ reduced, lowPerformance }) {
   const svgRef = useRef(null)
 
@@ -63,20 +65,33 @@ function OrbBackground({ reduced, lowPerformance }) {
     if (!svg || reduced) return
 
     const allEll = Array.from(svg.querySelectorAll('.ell'))
-    const _ca = ['#f72585', '#7209b7', '#3a0ca3', '#4361ee', '#4cc9f0', '#D9F4FC']
-    const rxFactor = lowPerformance ? 2.4 : 3.2
-    const ryFactor = lowPerformance ? 1.5 : 2
-    const strokeStart = lowPerformance ? 8 : 10
-    const strokeEnd = lowPerformance ? 56 : 84
-    const colorInterp = gsap.utils.interpolate(_ca)
+    const palette = ['#f72585', '#7209b7', '#3a0ca3', '#4361ee', '#4cc9f0', '#d9f4fc']
+    const colorInterp = gsap.utils.interpolate(palette)
+    const standardEase = CustomEase.create(
+      'odsOrbStandard',
+      'M0,0 C0.2,0 0.432,0.147 0.507,0.374 0.59,0.629 0.822,1 1,1'
+    )
+    const easeOut = CustomEase.create(
+      'odsOrbOut',
+      'M0,0 C0.271,0.302 0.323,0.535 0.453,0.775 0.528,0.914 0.78,1 1,1'
+    )
+    const easeIn = CustomEase.create(
+      'odsOrbIn',
+      'M0,0 C0.594,0.062 0.79,0.698 1,1'
+    )
+    const rxFactor = 3.8
+    const ryFactor = 2.3
+    const strokeStart = 10
+    const strokeEnd = 100
 
     const ctx = gsap.context(() => {
       gsap.set(svg, { visibility: 'visible' })
+      const mainTimeline = gsap.timeline()
 
       function animateEllipse(el, index) {
         const offset = index + 1
         const timeline = gsap.timeline({
-          defaults: { duration: lowPerformance ? 1.25 : 1, ease: 'sine.inOut' },
+          defaults: { duration: 1, ease: standardEase },
           repeat: -1,
         })
 
@@ -89,28 +104,32 @@ function OrbBackground({ reduced, lowPerformance }) {
           .to(el, {
             attr: { rx: `+=${offset * rxFactor}`, ry: `-=${offset * ryFactor}` },
             strokeWidth: strokeStart,
-            ease: 'power2.in',
+            ease: easeIn,
           })
           .to(el, {
             strokeWidth: strokeEnd,
             attr: { rx: `-=${offset * rxFactor}`, ry: `+=${offset * ryFactor}` },
-            ease: 'power2.out',
+            ease: easeOut,
           })
           .to(el, {
-            duration: lowPerformance ? 2.5 : 2,
+            duration: 2,
             rotation: -360,
             transformOrigin: '50% 50%',
-            ease: 'none',
+            ease: standardEase,
           }, 0)
           .from(el, {
-            duration: lowPerformance ? 1.1 : 0.9,
+            duration: 1,
             scale: 0,
             transformOrigin: '50% 50%',
-            ease: 'power2.out',
+            ease: standardEase,
           }, 0)
-          .timeScale(lowPerformance ? 0.42 : 0.54)
+          .from(el, {
+            duration: 1.5,
+            ease: standardEase,
+          }, 0)
+          .timeScale(0.5)
 
-        timeline.progress((offset / allEll.length) * 0.35)
+        mainTimeline.add(timeline, offset / allEll.length)
       }
 
       allEll.forEach(animateEllipse)
@@ -131,10 +150,10 @@ function OrbBackground({ reduced, lowPerformance }) {
       focusable="false"
       style={{
         width: '100%',
-        height: '100%',
+        height: '90%',
         visibility: 'hidden',
         position: 'absolute',
-        inset: 0,
+        inset: '5% 0',
       }}
     >
       {Array.from({ length: lowPerformance ? LOW_END_ELLIPSE_COUNT : STANDARD_ELLIPSE_COUNT }, (_, i) => (

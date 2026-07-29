@@ -78,7 +78,7 @@ Download latest drivers from https://www.nvidia.com/drivers
 ### Step 4: Run ODS Installer
 
 ```powershell
-git clone https://github.com/Light-Heart-Labs/ODS.git
+git clone https://github.com/Osmantic/ODS.git
 cd ODS
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1

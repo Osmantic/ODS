@@ -29,6 +29,9 @@ def magic_link_module(tmp_path, monkeypatch):
     monkeypatch.setenv("ODS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ODS_SESSION_SECRET", "test-secret-for-magic-link-tests")
     monkeypatch.delenv("ODS_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("ODS_CHAT_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("ODS_HERMES_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("ODS_TALK_PUBLIC_URL", raising=False)
     monkeypatch.delenv("WEBUI_URL", raising=False)
     monkeypatch.delenv("ODS_TRUST_FORWARDED", raising=False)
     monkeypatch.delenv("ODS_COOKIE_DOMAIN", raising=False)
@@ -36,10 +39,12 @@ def magic_link_module(tmp_path, monkeypatch):
     # session_signer reads ODS_SESSION_SECRET at import time, so any
     # already-loaded copy keeps the old value. Force-set it for the test.
     import session_signer
+
     session_signer._set_secret_for_tests("test-secret-for-magic-link-tests")
 
     # Reimport so module-level constants pick up the new DATA_DIR.
     from routers import magic_link as ml
+
     importlib.reload(ml)
 
     # Reset in-memory rate-limit table between tests.
@@ -49,6 +54,7 @@ def magic_link_module(tmp_path, monkeypatch):
     # The main app already imported the router at module load — re-include the
     # reloaded one so the TestClient routes to fresh module state.
     from main import app
+
     # FastAPI's APIRouter is by-reference; reloading the module replaces
     # ml.router with a new instance. Re-mount it.
     app.include_router(ml.router)
@@ -146,7 +152,9 @@ def test_generate_with_note_and_reusable(magic_link_client):
     assert data["reusable"] is True
 
 
-def test_generate_respects_public_url_env(magic_link_client, monkeypatch, magic_link_module):
+def test_generate_respects_public_url_env(
+    magic_link_client, monkeypatch, magic_link_module
+):
     """ODS_PUBLIC_URL override (for Tailscale tunnels / custom domains)
     keeps the /auth/ prefix because the URL builder assumes that override
     is being fronted by a proxy that routes /auth/* to dashboard-api
@@ -178,7 +186,9 @@ def test_generate_url_defaults_to_auth_subdomain(magic_link_client):
     assert ":3002" not in url
 
 
-def test_generate_url_uses_configured_device_name(magic_link_client, monkeypatch, magic_link_module):
+def test_generate_url_uses_configured_device_name(
+    magic_link_client, monkeypatch, magic_link_module
+):
     """ODS_DEVICE_NAME feeds into the auth subdomain."""
     monkeypatch.setenv("ODS_DEVICE_NAME", "kitchen")
     resp = magic_link_client.post(
@@ -191,7 +201,9 @@ def test_generate_url_uses_configured_device_name(magic_link_client, monkeypatch
     assert url.startswith("http://auth.kitchen.local/magic-link/"), url
 
 
-def test_generate_strips_trailing_slash_from_public_url(magic_link_client, monkeypatch, magic_link_module):
+def test_generate_strips_trailing_slash_from_public_url(
+    magic_link_client, monkeypatch, magic_link_module
+):
     """An operator who sets ODS_PUBLIC_URL=http://x/ must not produce a
     double-slash in the magic-link URL."""
     monkeypatch.setenv("ODS_PUBLIC_URL", "http://ods.local/")
@@ -267,24 +279,69 @@ def test_generate_rejects_long_expiry(magic_link_client):
     assert resp.status_code == 422
 
 
-def test_generate_owner_token_defaults_to_revoke_only_hermes_lan(magic_link_client, monkeypatch):
+def test_generate_owner_token_defaults_to_public_when_public_url_is_configured(
+    magic_link_client, monkeypatch
+):
     monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example")
     resp = magic_link_client.post(
         "/api/auth/magic-link/generate",
-        json={"target_username": "owner", "token_type": "owner", "note": "factory card"},
+        json={
+            "target_username": "owner",
+            "token_type": "owner",
+            "note": "factory card",
+        },
         headers=magic_link_client.auth_headers,
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["token_type"] == "owner"
     assert data["scope"] == "hermes"
-    assert data["url_mode"] == "lan"
+    assert data["url_mode"] == "public"
     assert data["reusable"] is True
     assert data["expires_at"] is None
+    assert data["url"].startswith("https://ods.example/auth/magic-link/")
+
+
+def test_generate_owner_token_defaults_to_lan_without_public_url(magic_link_client):
+    resp = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={
+            "target_username": "owner",
+            "token_type": "owner",
+            "note": "factory card",
+        },
+        headers=magic_link_client.auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["url_mode"] == "lan"
     assert data["url"].startswith("http://auth.ods.local/magic-link/")
 
 
-def test_generate_owner_lan_requires_ods_proxy(magic_link_client, magic_link_module, monkeypatch):
+def test_generate_owner_token_defaults_to_lan_with_invalid_public_url(
+    magic_link_client, monkeypatch
+):
+    monkeypatch.setenv("ODS_PUBLIC_URL", "not-a-url")
+
+    resp = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={
+            "target_username": "owner",
+            "token_type": "owner",
+            "note": "factory card",
+        },
+        headers=magic_link_client.auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["url_mode"] == "lan"
+    assert data["url"].startswith("http://auth.ods.local/magic-link/")
+
+
+def test_generate_owner_lan_requires_ods_proxy(
+    magic_link_client, magic_link_module, monkeypatch
+):
     monkeypatch.setattr(
         magic_link_module,
         "_ods_proxy_lan_ready",
@@ -310,7 +367,9 @@ def test_generate_owner_rejects_expiry(magic_link_client):
     assert resp.status_code == 422
 
 
-def test_owner_public_url_mode_uses_public_url_when_requested(magic_link_client, monkeypatch):
+def test_owner_public_url_mode_uses_public_url_when_requested(
+    magic_link_client, monkeypatch
+):
     monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example")
     resp = magic_link_client.post(
         "/api/auth/magic-link/generate",
@@ -323,8 +382,25 @@ def test_owner_public_url_mode_uses_public_url_when_requested(magic_link_client,
     assert data["url"].startswith("https://ods.example/auth/magic-link/")
 
 
+def test_owner_public_url_mode_rejects_invalid_public_url(
+    magic_link_client, monkeypatch
+):
+    monkeypatch.setenv("ODS_PUBLIC_URL", "not-a-url")
+
+    resp = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner", "url_mode": "public"},
+        headers=magic_link_client.auth_headers,
+    )
+
+    assert resp.status_code == 400
+    assert "ODS_PUBLIC_URL" in resp.json()["detail"]
+
+
 def test_owner_public_url_mode_does_not_require_ods_proxy(
-    magic_link_client, magic_link_module, monkeypatch,
+    magic_link_client,
+    magic_link_module,
+    monkeypatch,
 ):
     monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example")
     monkeypatch.setattr(
@@ -344,7 +420,9 @@ def test_owner_public_url_mode_does_not_require_ods_proxy(
 
 
 def test_owner_card_status_reports_proxy_state(
-    magic_link_client, magic_link_module, monkeypatch,
+    magic_link_client,
+    magic_link_module,
+    monkeypatch,
 ):
     monkeypatch.setattr(
         magic_link_module,
@@ -362,10 +440,59 @@ def test_owner_card_status_reports_proxy_state(
         "ready": False,
         "requires": "ods-proxy",
         "reason": "ods-proxy is not enabled",
+        "url_mode": "lan",
     }
 
 
-def test_ods_proxy_service_refreshes_stale_manifest_cache(magic_link_module, monkeypatch):
+def test_owner_card_status_reports_public_mode_when_public_url_is_configured(
+    magic_link_client,
+    monkeypatch,
+):
+    monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example.test")
+
+    resp = magic_link_client.get(
+        "/api/auth/magic-link/owner-card/status",
+        headers=magic_link_client.auth_headers,
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "ready": True,
+        "requires": "public-url",
+        "reason": "",
+        "url_mode": "public",
+        "public_url": "https://ods.example.test",
+    }
+
+
+def test_ods_proxy_readiness_reports_unreachable_active_stack(
+    magic_link_module, monkeypatch
+):
+    # The shared fixture replaces readiness with an always-ready stub for API
+    # tests. Reload here to exercise the implementation itself.
+    actual_readiness = importlib.reload(magic_link_module)._ods_proxy_lan_ready
+    monkeypatch.setattr(
+        magic_link_module,
+        "_ods_proxy_service",
+        lambda: {"host": "ods-proxy", "port": 80, "health": "/health"},
+    )
+
+    def fail_urlopen(_url, timeout):
+        assert timeout == 1.0
+        raise magic_link_module.urllib.error.URLError("Name or service not known")
+
+    monkeypatch.setattr(magic_link_module.urllib.request, "urlopen", fail_urlopen)
+
+    ready, reason = actual_readiness()
+
+    assert ready is False
+    assert "configured but not reachable in the active stack" in reason
+    assert "Name or service not known" in reason
+
+
+def test_ods_proxy_service_refreshes_stale_manifest_cache(
+    magic_link_module, monkeypatch
+):
     """Owner-card readiness should see ods-proxy after CLI enable.
 
     The dashboard API imports SERVICES at startup. When `ods enable
@@ -415,6 +542,23 @@ def test_ods_proxy_service_keeps_disabled_state(magic_link_module, monkeypatch):
     assert "ods-proxy" not in magic_link_module.SERVICES
 
 
+def test_ods_proxy_service_invalidates_cached_service_after_disable(
+    magic_link_module, monkeypatch, tmp_path
+):
+    proxy_dir = tmp_path / "ods-proxy"
+    proxy_dir.mkdir()
+    (proxy_dir / "compose.yaml.disabled").write_text("services: {}\n")
+    monkeypatch.setattr(magic_link_module, "EXTENSIONS_DIR", tmp_path)
+    magic_link_module.SERVICES["ods-proxy"] = {
+        "host": "ods-proxy",
+        "port": 80,
+        "health": "/health",
+    }
+
+    assert magic_link_module._ods_proxy_service() is None
+    assert "ods-proxy" not in magic_link_module.SERVICES
+
+
 def test_public_url_mode_requires_public_url(magic_link_client):
     resp = magic_link_client.post(
         "/api/auth/magic-link/generate",
@@ -453,7 +597,9 @@ def test_redeem_sets_cookie_and_redirects(magic_link_client, magic_link_module):
     assert b"ods-target-user=alice" in cookie_blob
 
 
-def test_redeem_issues_signed_cookie_that_verifies(magic_link_client, magic_link_module):
+def test_redeem_issues_signed_cookie_that_verifies(
+    magic_link_client, magic_link_module
+):
     """The ods-session cookie set by redemption must round-trip through
     session_signer.verify() — that's what ods-proxy's forward_auth will
     call on every protected request."""
@@ -481,7 +627,9 @@ def test_redeem_issues_signed_cookie_that_verifies(magic_link_client, magic_link
     assert ok is True, f"signed cookie did not verify: {reason}"
 
 
-def test_redeem_redirects_to_chat_subdomain(magic_link_client, magic_link_module, monkeypatch):
+def test_redeem_redirects_to_chat_subdomain(
+    magic_link_client, magic_link_module, monkeypatch
+):
     """Successful redemption 302s to chat.<device>.local — the ods-proxy
     routes Host: chat.<device>.local to Open WebUI. The cookie set just
     above uses Domain=<device>.local so it travels to the chat subdomain."""
@@ -500,7 +648,9 @@ def test_redeem_redirects_to_chat_subdomain(magic_link_client, magic_link_module
     assert resp.headers["location"] == "http://chat.kitchen.local"
 
 
-def test_redeem_hermes_scope_redirects_to_hermes_subdomain(magic_link_client, monkeypatch):
+def test_redeem_hermes_scope_redirects_to_hermes_subdomain(
+    magic_link_client, monkeypatch
+):
     monkeypatch.setenv("ODS_DEVICE_NAME", "kitchen")
     monkeypatch.setenv("ODS_COOKIE_DOMAIN", "kitchen.local")
 
@@ -514,6 +664,54 @@ def test_redeem_hermes_scope_redirects_to_hermes_subdomain(magic_link_client, mo
     resp = magic_link_client.get(f"/magic-link/{token}", follow_redirects=False)
     assert resp.status_code == 302
     assert resp.headers["location"] == "http://hermes.kitchen.local"
+
+
+def test_public_chat_redirect_override_wins_over_service_public_url(
+    magic_link_client,
+    magic_link_module,
+    monkeypatch,
+):
+    monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example.test")
+    monkeypatch.setenv("ODS_CHAT_PUBLIC_URL", "https://chat-override.example.test")
+    magic_link_module.SERVICES["open-webui"] = {
+        "public_url": "https://chat-service.example.test",
+    }
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice", "url_mode": "public"},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    resp = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://chat-override.example.test"
+
+
+def test_public_hermes_redirect_override_wins_over_service_public_url(
+    magic_link_client,
+    magic_link_module,
+    monkeypatch,
+):
+    monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example.test")
+    monkeypatch.setenv("ODS_HERMES_PUBLIC_URL", "https://hermes-override.example.test")
+    magic_link_module.SERVICES["hermes-proxy"] = {
+        "public_url": "https://hermes-service.example.test",
+    }
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice", "scope": "hermes", "url_mode": "public"},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    resp = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://hermes-override.example.test"
 
 
 def test_owner_hermes_scope_redirects_to_ods_talk(magic_link_client, monkeypatch):
@@ -530,6 +728,54 @@ def test_owner_hermes_scope_redirects_to_ods_talk(magic_link_client, monkeypatch
     resp = magic_link_client.get(f"/magic-link/{token}", follow_redirects=False)
     assert resp.status_code == 302
     assert resp.headers["location"] == "http://talk.kitchen.local/talk"
+
+
+def test_owner_public_mode_redirects_to_talk_public_url(magic_link_client, monkeypatch):
+    monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example.test")
+    monkeypatch.setenv("ODS_TALK_PUBLIC_URL", "https://talk.example.test")
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner", "scope": "hermes"},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    resp = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://talk.example.test"
+
+
+def test_owner_public_mode_reads_talk_public_url_from_env_file(
+    magic_link_client, magic_link_module, monkeypatch, tmp_path
+):
+    import config
+
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".env").write_text(
+        "ODS_PUBLIC_URL=https://ods-file.example.test\n"
+        "ODS_TALK_PUBLIC_URL=https://talk-file.example.test\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "INSTALL_DIR", str(install_dir))
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner", "scope": "hermes"},
+        headers=magic_link_client.auth_headers,
+    )
+    data = gen.json()
+    token = data["token"]
+
+    assert data["url_mode"] == "public"
+    assert data["url"].startswith("https://ods-file.example.test/auth/magic-link/")
+
+    resp = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://talk-file.example.test"
 
 
 def test_owner_token_can_be_redeemed_repeatedly_and_revoked(
@@ -561,11 +807,15 @@ def test_owner_token_can_be_redeemed_repeatedly_and_revoked(
     )
     assert rev.status_code == 200
 
-    after_revoke = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+    after_revoke = magic_link_client.get(
+        f"/auth/magic-link/{token}", follow_redirects=False
+    )
     assert after_revoke.status_code == 404
 
 
-def test_redeem_sets_cookie_with_configured_domain(magic_link_client, magic_link_module, monkeypatch):
+def test_redeem_sets_cookie_with_configured_domain(
+    magic_link_client, magic_link_module, monkeypatch
+):
     """When ODS_COOKIE_DOMAIN is set, the cookie carries that Domain
     attribute so the browser shares it across subdomains (SSO).
     Without it, the cookie stays host-only."""
@@ -586,7 +836,9 @@ def test_redeem_sets_cookie_with_configured_domain(magic_link_client, magic_link
     assert b"domain=kitchen.local" in cookie_blob
 
 
-def test_redeem_defaults_cookie_domain_to_device_domain(magic_link_client, magic_link_module, monkeypatch):
+def test_redeem_defaults_cookie_domain_to_device_domain(
+    magic_link_client, magic_link_module, monkeypatch
+):
     """With ODS_COOKIE_DOMAIN unset in the default host-based layout, derive
     <ODS_DEVICE_NAME>.local so redemption on auth.<device>.local carries to
     chat.<device>.local."""
@@ -605,7 +857,9 @@ def test_redeem_defaults_cookie_domain_to_device_domain(magic_link_client, magic
     assert b"domain=kitchen.local" in cookie_blob, cookie_blob
 
 
-def test_redeem_omits_cookie_domain_with_public_url_override(magic_link_client, magic_link_module, monkeypatch):
+def test_redeem_omits_cookie_domain_with_public_url_override(
+    magic_link_client, magic_link_module, monkeypatch
+):
     """ODS_PUBLIC_URL means the operator chose a single custom origin/path
     layout, so omit Domain and let the cookie stay host-only."""
     monkeypatch.setenv("ODS_PUBLIC_URL", "http://ods.example")
@@ -630,6 +884,7 @@ def test_redeem_refuses_when_signing_unconfigured(magic_link_client, magic_link_
     has to ask the admin for a new link. The pre-check protects the
     invite."""
     import session_signer
+
     # Generate an invite while the secret is set (fixture state).
     gen = magic_link_client.post(
         "/api/auth/magic-link/generate",
@@ -652,7 +907,9 @@ def test_redeem_refuses_when_signing_unconfigured(magic_link_client, magic_link_
     assert retry.status_code == 302, retry.text
 
 
-def test_redeem_back_compat_auth_prefix_route_still_works(magic_link_client, magic_link_module):
+def test_redeem_back_compat_auth_prefix_route_still_works(
+    magic_link_client, magic_link_module
+):
     """The /auth/magic-link/<token> path is kept for back-compat with
     ODS_PUBLIC_URL overrides and any in-flight QR codes from before
     the URL shape change. Both routes call the same handler."""
@@ -771,6 +1028,25 @@ def test_reusable_token_can_be_redeemed_multiple_times(
     assert len(redemptions) == 3
 
 
+def test_reusable_token_redemptions_are_capped_at_50(
+    magic_link_client, magic_link_module
+):
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "family", "reusable": True},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    for _ in range(55):
+        res = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+        assert res.status_code == 302
+
+    store = magic_link_module._ensure_store()
+    redemptions = store["tokens"][0]["redemptions"]
+    assert len(redemptions) == 50
+
+
 def test_owner_token_survives_pruning(magic_link_module):
     store = {
         "tokens": [
@@ -781,7 +1057,9 @@ def test_owner_token_survives_pruning(magic_link_module):
                 "reusable": True,
                 "token_type": "owner",
                 "url_mode": "lan",
-                "created_at": (datetime.now(timezone.utc) - timedelta(days=365)).isoformat(),
+                "created_at": (
+                    datetime.now(timezone.utc) - timedelta(days=365)
+                ).isoformat(),
                 "expires_at": None,
                 "created_by_ip": "127.0.0.1",
                 "redemptions": [],
@@ -818,6 +1096,34 @@ def test_rate_limit_kicks_in_after_repeated_failures(
     assert blocked.status_code == 429
 
 
+def test_rate_limit_bucket_lifecycle(magic_link_module):
+    """Test the memory-bound guarantees of the rate-limit bucket map."""
+    import time
+
+    ip = "127.0.0.1"
+    past = time.monotonic() - magic_link_module._RATE_LIMIT_WINDOW_SECONDS - 10
+
+    # 1. Expired buckets are removed (popped).
+    magic_link_module._RATE_LIMIT_BUCKETS[ip] = (1, past)
+    magic_link_module._check_rate_limit(ip)
+    assert ip not in magic_link_module._RATE_LIMIT_BUCKETS
+
+    # 2. Stale entries are pruned once _RATE_LIMIT_BUCKETS grows past 1000.
+    for i in range(1005):
+        magic_link_module._RATE_LIMIT_BUCKETS[f"10.0.0.{i}"] = (1, past)
+
+    magic_link_module._check_rate_limit(ip)
+    assert len(magic_link_module._RATE_LIMIT_BUCKETS) == 0
+
+    # 3. Emergency clear trips if the map remains above 10000.
+    fresh = time.monotonic()
+    for i in range(10005):
+        magic_link_module._RATE_LIMIT_BUCKETS[f"10.1.0.{i}"] = (1, fresh)
+
+    magic_link_module._check_rate_limit(ip)
+    assert len(magic_link_module._RATE_LIMIT_BUCKETS) == 0
+
+
 # ---------------------------------------------------------------------------
 # List + revoke
 # ---------------------------------------------------------------------------
@@ -846,22 +1152,26 @@ def test_list_includes_generated_token(magic_link_client):
 
 
 def test_list_normalizes_legacy_records(magic_link_client, magic_link_module):
-    magic_link_module._write_store({
-        "tokens": [
-            {
-                "token_hash": "b" * 64,
-                "target_username": "legacy",
-                "scope": "chat",
-                "reusable": False,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-                "created_by_ip": "127.0.0.1",
-                "redemptions": [],
-                "revoked_at": None,
-                "note": None,
-            }
-        ]
-    })
+    magic_link_module._write_store(
+        {
+            "tokens": [
+                {
+                    "token_hash": "b" * 64,
+                    "target_username": "legacy",
+                    "scope": "chat",
+                    "reusable": False,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "expires_at": (
+                        datetime.now(timezone.utc) + timedelta(hours=1)
+                    ).isoformat(),
+                    "created_by_ip": "127.0.0.1",
+                    "redemptions": [],
+                    "revoked_at": None,
+                    "note": None,
+                }
+            ]
+        }
+    )
     resp = magic_link_client.get(
         "/api/auth/magic-link/list",
         headers=magic_link_client.auth_headers,
@@ -931,7 +1241,9 @@ def test_qr_endpoint_returns_data_url_when_qrcode_installed(magic_link_client):
 
 
 def test_store_falls_back_when_primary_parent_is_unwritable(
-    magic_link_module, tmp_path, monkeypatch,
+    magic_link_module,
+    tmp_path,
+    monkeypatch,
 ):
     """Docker Desktop can expose /data as non-writable while /data/config works."""
     blocked_parent = tmp_path / "auth-blocked"

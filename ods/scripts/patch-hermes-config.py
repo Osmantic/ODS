@@ -75,7 +75,14 @@ def _key_value(lines: list[str], block: tuple[int, int], key: str, indent: int) 
     return None
 
 
-def _ensure_model(lines: list[str], model: str | None, base_url: str | None, context_length: int | None, api_key: str | None = None) -> None:
+def _ensure_model(
+    lines: list[str],
+    model: str | None,
+    base_url: str | None,
+    context_length: int | None,
+    api_key: str | None = None,
+    max_tokens: int = 1024,
+) -> None:
     block = _top_level_block(lines, "model")
     if block is None:
         insert = ["model:"]
@@ -88,6 +95,8 @@ def _ensure_model(lines: list[str], model: str | None, base_url: str | None, con
             insert.append(f'  api_key: "{api_key}"')
         if context_length:
             insert.append(f"  context_length: {context_length}")
+        if max_tokens:
+            insert.append(f"  max_tokens: {max_tokens}")
         lines[:0] = insert + [""]
         return
 
@@ -98,7 +107,12 @@ def _ensure_model(lines: list[str], model: str | None, base_url: str | None, con
     if api_key:
         block = _set_key(lines, block, "api_key", f'"{api_key}"', 2)
     if context_length:
-        _set_key(lines, block, "context_length", str(context_length), 2)
+        block = _set_key(lines, block, "context_length", str(context_length), 2)
+    # Existing operator values win, but migrate configs that predate ODS's
+    # bounded-output default. An unset Hermes cap lets a repetitive local
+    # model monopolize the only inference slot until an outer timeout fires.
+    if max_tokens and not _has_key(lines, block, "max_tokens", 2):
+        _set_key(lines, block, "max_tokens", str(max_tokens), 2)
 
 
 def _ensure_provider_timeout(lines: list[str], provider: str = "custom", timeout_seconds: int = 180) -> None:
@@ -259,12 +273,13 @@ def patch_config(
     context_length: int | None,
     api_key: str | None = None,
     request_timeout_seconds: int = 180,
+    max_tokens: int = 1024,
 ) -> bool:
     original = path.read_text(encoding="utf-8")
     trailing_newline = original.endswith("\n")
     lines = original.splitlines()
 
-    _ensure_model(lines, model, base_url, context_length, api_key)
+    _ensure_model(lines, model, base_url, context_length, api_key, max_tokens)
     _ensure_provider_timeout(lines, timeout_seconds=request_timeout_seconds)
     _ensure_auxiliary(lines, context_length)
     _ensure_whatsapp_bridge(lines)
@@ -287,6 +302,7 @@ def main() -> int:
     parser.add_argument("--api-key", help="Bearer token Hermes uses to call the LLM (needed when routing through litellm)")
     parser.add_argument("--context-length", type=int)
     parser.add_argument("--request-timeout-seconds", type=int, default=180)
+    parser.add_argument("--max-tokens", type=int, default=1024)
     args = parser.parse_args()
 
     if not args.path.exists():
@@ -298,6 +314,7 @@ def main() -> int:
         args.context_length,
         args.api_key,
         args.request_timeout_seconds,
+        args.max_tokens,
     )
     print("changed" if changed else "unchanged")
     return 0

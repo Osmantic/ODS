@@ -105,3 +105,31 @@ function Test-ODSWindowsServiceEnabled {
 
     return ($Plan.ContainsKey($ServiceId) -and $Plan[$ServiceId].Enabled)
 }
+
+function Set-ODSWindowsExtensionComposeState {
+    param(
+        [Parameter(Mandatory = $true)][string]$ComposePath,
+        [Parameter(Mandatory = $true)][bool]$Enabled
+    )
+
+    $disabledPath = "$ComposePath.disabled"
+
+    if ($Enabled) {
+        if (Test-Path -LiteralPath $disabledPath) {
+            if (Test-Path -LiteralPath $ComposePath) {
+                Remove-Item -LiteralPath $disabledPath -Force
+            } else {
+                Move-Item -LiteralPath $disabledPath -Destination $ComposePath -Force
+            }
+        }
+        return (Test-Path -LiteralPath $ComposePath)
+    }
+
+    if (Test-Path -LiteralPath $ComposePath) {
+        if (Test-Path -LiteralPath $disabledPath) {
+            Remove-Item -LiteralPath $disabledPath -Force
+        }
+        Move-Item -LiteralPath $ComposePath -Destination $disabledPath -Force
+    }
+    return $false
+}

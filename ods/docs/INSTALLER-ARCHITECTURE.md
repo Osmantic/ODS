@@ -35,6 +35,7 @@ installers/
   phases/                     # Sequential install steps — execute on source
     01-preflight.sh           #   Root/OS/tools checks, existing installation check
     02-detection.sh           #   Hardware detection → tier assignment → compose config
+    02b-external-services.sh  #   Validate/offer host Ollama or LM Studio reuse
     03-features.sh            #   Interactive feature selection menu
     04-requirements.sh        #   RAM, disk, GPU, and port availability checks
     05-docker.sh              #   Install Docker, Docker Compose, NVIDIA Container Toolkit
@@ -126,6 +127,7 @@ done. This is the most common way install-time surprises survive a patch.
 | LiteLLM Lemonade config | `phases/06-directories.sh` | n/a | n/a | `scripts/bootstrap-upgrade.sh`, `bin/ods-host-agent.py` |
 | Perplexica config | `phases/12-health.sh`, `phases/13-summary.sh` | `installers/macos/lib/env-generator.sh`, `installers/macos/install-macos.sh` | `installers/windows/lib/env-generator.ps1`, `installers/windows/install-windows.ps1` | `scripts/bootstrap-upgrade.sh`, `scripts/repair/repair-perplexica.sh` |
 | Hermes config | `phases/11-services.sh`, `scripts/patch-hermes-config.py` | `installers/macos/install-macos.sh` | `installers/windows/phases/06-directories.ps1` | `scripts/bootstrap-upgrade.sh`, `bin/ods-host-agent.py` |
+| External text/chat route | `phases/02b-external-services.sh`, `phases/06-directories.sh` | Not installer-managed | Not installer-managed | Linux installer re-runs |
 
 Recent examples: OpenCode on Linux Lemonade mode must use `LITELLM_KEY` because
 LiteLLM enforces auth, while direct llama-server paths keep `no-key`; Lemonade
@@ -133,6 +135,15 @@ LiteLLM enforces auth, while direct llama-server paths keep `no-key`; Lemonade
 false` in install, bootstrap upgrade, and host-agent model activation paths;
 Perplexica's persisted `defaultChatModel` must be refreshed after bootstrap
 hot-swap.
+
+Linux external-LLM reuse is an explicit topology choice, not ambient discovery
+state. Interactive installs may offer a matching Ollama or LM Studio model;
+non-interactive installs adopt one only with `--reuse-external-llm` or an
+explicit URL/provider/model tuple. Phase 02b validates the host endpoint, phase
+06 writes both host-facing and container-facing routes, phase 11 omits managed
+llama-server/model-router and duplicate downloads, and phase 12 proves the
+configured model through host and container completion requests. A rerun with
+`--no-external-llm` clears those routes and restores managed inference.
 
 ## Cross-Platform Architecture
 

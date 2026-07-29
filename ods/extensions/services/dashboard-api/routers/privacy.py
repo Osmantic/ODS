@@ -1,16 +1,20 @@
 """Privacy Shield management endpoints."""
 
 import asyncio
-import json
 import logging
 import os
-import urllib.error
-import urllib.request
 
 import aiohttp
 from fastapi import APIRouter, Depends
 
-from config import AGENT_URL, ODS_AGENT_KEY, SERVICES
+from config import SERVICES
+from host_agent_client import (
+    AgentHTTPError,
+    AgentProtocolError,
+    AgentTimeout,
+    AgentUnavailable,
+    request_json as request_agent_json,
+)
 from models import PrivacyShieldStatus, PrivacyShieldToggle
 from security import verify_api_key
 
@@ -53,15 +57,13 @@ async def toggle_privacy_shield(request: PrivacyShieldToggle, api_key: str = Dep
     action = "start" if request.enable else "stop"
 
     def _call_agent():
-        url = f"{AGENT_URL}/v1/extension/{action}"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {ODS_AGENT_KEY}",
-        }
-        data = json.dumps({"service_id": "privacy-shield"}).encode()
-        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status == 200
+        request_agent_json(
+            "POST",
+            f"/v1/extension/{action}",
+            payload={"service_id": "privacy-shield"},
+            timeout=30,
+        )
+        return True
 
     try:
         ok = await asyncio.to_thread(_call_agent)
@@ -69,19 +71,21 @@ async def toggle_privacy_shield(request: PrivacyShieldToggle, api_key: str = Dep
             msg = "Privacy Shield started. PII scrubbing is now active." if request.enable else "Privacy Shield stopped."
             return {"success": True, "message": msg}
         return {"success": False, "message": f"Host agent returned failure for {action}"}
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode()
-        except Exception:
-            pass
-        logger.warning("Privacy Shield toggle failed: HTTP %d: %s", e.code, body)
-        return {"success": False, "message": f"Host agent returned error ({e.code}): {body or e.reason}"}
-    except urllib.error.URLError:
-        return {"success": False, "message": "Host agent not reachable", "note": "Ensure the ods host agent is running"}
-    except asyncio.TimeoutError:
+    except AgentHTTPError as exc:
+        logger.warning(
+            "Privacy Shield toggle failed: HTTP %d: %s",
+            exc.status_code,
+            exc.response_text,
+        )
+        return {
+            "success": False,
+            "message": f"Host agent returned error ({exc.status_code}): {exc.response_text or exc.detail}",
+        }
+    except AgentTimeout:
         return {"success": False, "message": "Operation timed out"}
-    except OSError:
+    except AgentUnavailable:
+        return {"success": False, "message": "Host agent not reachable", "note": "Ensure the ods host agent is running"}
+    except (AgentProtocolError, OSError):
         logger.exception("Privacy Shield toggle failed")
         return {"success": False, "message": "Privacy Shield operation failed"}
 

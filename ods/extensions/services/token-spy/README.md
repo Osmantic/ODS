@@ -18,6 +18,14 @@ Point your agent's API base URL at Token Spy instead of the upstream provider. C
 
 In a ODS install, `TOKEN_SPY_API_KEY` is written to `.env` by the installer and passed to both Token Spy and dashboard-api. Older installs that already have `data/token-spy/token-spy-api-key.txt` keep that value on upgrade so existing clients do not lose access.
 
+ODS model traffic that uses the stable `ods/current` route is reported by
+model-router through the authenticated `/api/ingest/routed` endpoint. This is a
+best-effort side channel, not a proxy hop: an unavailable or disabled Token Spy
+never blocks inference. Routed events contain only model/backend identifiers,
+request shape, token counters, duration, and stop reason. Prompt text,
+generated content, tools, and credentials are not accepted by the ingest
+schema.
+
 ## Features
 
 - **Real-time dashboard** -- session health cards, cost charts, token breakdown, cumulative cost, recent turns table

@@ -25,6 +25,13 @@ teardown() {
 
 # ── resolve_tier_config ─────────────────────────────────────────────────────
 
+@test "resolve_tier_config: tier 0 keeps pinned Qwen size metadata aligned" {
+    TIER=0
+    resolve_tier_config
+    assert_equal "$GGUF_FILE" "Qwen3.5-2B-Q4_K_M.gguf"
+    assert_equal "$LLM_MODEL_SIZE_MB" "1221"
+}
+
 @test "resolve_tier_config: default profile keeps tier 1 on Qwen" {
     TIER=1
     resolve_tier_config

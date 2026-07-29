@@ -73,7 +73,7 @@ set_qwen_tier_config() {
             LLM_MODEL="qwen3-30b-a3b"
             GGUF_FILE="Qwen3-30B-A3B-Q4_K_M.gguf"
             GGUF_URL="https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/main/Qwen3-30B-A3B-Q4_K_M.gguf"
-            GGUF_SHA256="84b5f7f112156d63836a01a69dc3f11a6ba63b10a23b8ca7a7efaf52d5a2d806"
+            GGUF_SHA256="9f1a24700a339b09c06009b729b5c809e0b64c213b8af5b711b3dbdfd0c5ba48"
             MAX_CONTEXT=32768
             ;;
         2)
@@ -221,6 +221,7 @@ auto_select_tier() {
 
 BOOTSTRAP_GGUF_FILE="Qwen3.5-2B-Q4_K_M.gguf"
 BOOTSTRAP_GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
+BOOTSTRAP_GGUF_SHA256="aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
 BOOTSTRAP_LLM_MODEL="qwen3.5-2b"
 # Hermes requires at least a 64K context window. Keep the fast-start model at
 # that floor so Hermes works during the first-run bootstrap experience too.

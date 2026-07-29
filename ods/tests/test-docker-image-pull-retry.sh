@@ -233,6 +233,13 @@ else
   print_fail
 fi
 
+printf "  %-60s " "Phase 08 audits resolved Compose images..."
+if grep -q "ods_compose_external_images" "$ROOT_DIR/installers/phases/08-images.sh"; then
+  print_pass
+else
+  print_fail
+fi
+
 printf "  %-60s " "Phase 08 tracks pull_failed count..."
 if grep -q "pull_failed" "$ROOT_DIR/installers/phases/08-images.sh"; then
   print_pass
@@ -240,8 +247,23 @@ else
   print_fail
 fi
 
-printf "  %-60s " "Phase 08 shows warning for failures..."
-if grep -q "ai_warn.*failed" "$ROOT_DIR/installers/phases/08-images.sh"; then
+printf "  %-60s " "Phase 08 fails before service startup on pull failures..."
+if grep -q "Phase 5 will not perform unprotected Docker pulls" "$ROOT_DIR/installers/phases/08-images.sh"; then
+  print_pass
+else
+  print_fail
+fi
+
+printf "  %-60s " "Phase 11 preflights Compose images with retry..."
+if grep -q "_phase11_pre_pull_compose_images" "$ROOT_DIR/installers/phases/11-services.sh" \
+  && grep -q "pull_with_progress" "$ROOT_DIR/installers/phases/11-services.sh"; then
+  print_pass
+else
+  print_fail
+fi
+
+printf "  %-60s " "Phase 11 disables implicit Compose pulls..."
+if grep -q -- "--pull never" "$ROOT_DIR/installers/phases/11-services.sh"; then
   print_pass
 else
   print_fail

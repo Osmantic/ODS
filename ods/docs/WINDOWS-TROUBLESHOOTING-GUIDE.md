@@ -21,6 +21,25 @@ are intentionally accepting admin-owned files under your user profile. The
 Windows preflight warns because `.opencode`, `.env`, and `data/` should normally
 belong to your regular account.
 
+### Lemonade MSI fails during an AMD install
+
+Keep the ODS installer in a normal PowerShell session. ODS installs the
+Lemonade runtime for the current user under `%LOCALAPPDATA%\lemonade_server`;
+it does not require an Administrator shell or an all-users `Program Files`
+installation. The installer writes a verbose MSI log under the ODS install directory:
+
+```text
+<ODS install directory>\logs\lemonade-msi-install.log
+```
+
+With the default location this is `%USERPROFILE%\ods\logs\lemonade-msi-install.log`.
+If the installer was run with `-InstallDir`, use that directory instead.
+
+If Lemonade still fails, attach the installer output plus that log after
+reviewing it for local paths. ODS falls back to native Vulkan `llama-server`
+when Lemonade cannot be installed, but the installer output will make the
+Lemonade failure explicit.
+
 ---
 
 ## Docker Compose failed (during install or `ods.ps1`)
@@ -160,7 +179,7 @@ Attach `report.json` to GitHub issues or Discord support threads after review.
 2. Clone the repository and enter it.
 3. Run these commands:
    ```powershell
-   git clone https://github.com/Light-Heart-Labs/ODS.git
+   git clone https://github.com/Osmantic/ODS.git
    cd ODS
    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
    .\install.ps1
@@ -540,7 +559,7 @@ docker info
 ### Where to Get Help
 
 1. **ODS Discord:** https://discord.gg/clawd
-2. **GitHub Issues:** https://github.com/Light-Heart-Labs/ODS/issues
+2. **GitHub Issues:** https://github.com/Osmantic/ODS/issues
 
 ### What to Include When Asking for Help
 

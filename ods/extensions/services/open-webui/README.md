@@ -15,7 +15,7 @@ Open WebUI is served at `http://localhost:3000` and communicates with llama-serv
 - **Image generation**: ComfyUI backend using SDXL Lightning 4-step (1024×1024)
 - **Voice input**: Speech-to-text via Whisper (`/v1/audio/transcriptions`)
 - **Voice output**: Text-to-speech via Kokoro (`/v1/audio/speech`)
-- **User authentication**: Optional login system (enabled by default)
+- **User authentication**: Opens directly on loopback; enabled by default for LAN/network deployments
 - **Document Q&A**: Upload files and chat with their contents (requires Qdrant)
 - **Model selection**: Switch between models at runtime
 
@@ -27,7 +27,7 @@ Environment variables (set in `.env`):
 |----------|---------|-------------|
 | `WEBUI_SECRET` | *(required)* | Session signing key — generate with `openssl rand -hex 32` |
 | `WEBUI_PORT` | `3000` | External port (maps to internal 8080) |
-| `WEBUI_AUTH` | `true` | Enable user authentication (`true`/`false`) |
+| `WEBUI_AUTH` | conditional | `false` for loopback-only installs; `true` for LAN-bound or ODS proxy installs |
 | `TIMEZONE` | `UTC` | System timezone for timestamps |
 | `LLM_API_URL` | `http://llama-server:8080` | LLM backend URL (internal Docker hostname) |
 
@@ -62,8 +62,8 @@ User accounts, chat history, and uploaded documents are stored in `data/open-web
 ## First Use
 
 1. Open `http://localhost:3000` in your browser
-2. Create an admin account (first user automatically becomes admin)
-3. Start chatting — the LLM is ready when llama-server reports healthy
+2. Start chatting; a normal loopback-only ODS install does not require an account
+3. On a LAN/network deployment, create the first admin account when prompted
 
 ## Troubleshooting
 
@@ -86,7 +86,9 @@ docker compose logs open-webui
 - Enable via `ods enable comfyui`
 
 **Authentication issues:**
-- To disable auth (local use only): set `WEBUI_AUTH=false` in `.env` and restart
+- Local-only installs should have `BIND_ADDRESS=127.0.0.1` and `WEBUI_AUTH=false`
+- LAN, ODS proxy, VPN, and public deployments should set `WEBUI_AUTH=true`
+- After changing `WEBUI_AUTH`, recreate Open WebUI with `ods restart open-webui`
 - To reset admin password: remove `data/open-webui/` (loses all chat history)
 
 ## Files

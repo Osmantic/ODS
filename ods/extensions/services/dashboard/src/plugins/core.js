@@ -6,8 +6,10 @@ import {
   Activity,
   Box,
   Network,
+  Cloud,
   UserPlus,
   CreditCard,
+  Code,
 } from 'lucide-react'
 
 const Dashboard = lazy(() => import('../pages/Dashboard'))
@@ -15,6 +17,7 @@ const SettingsPage = lazy(() => import('../pages/Settings'))
 const Extensions = lazy(() => import('../pages/Extensions'))
 const GPUMonitor = lazy(() => import('../pages/GPUMonitor'))
 const Models = lazy(() => import('../pages/Models'))
+const RemoteProvider = lazy(() => import('../pages/RemoteProvider'))
 const ServiceMap = lazy(() => import('../pages/ServiceMap'))
 const Invites = lazy(() => import('../pages/Invites'))
 const Usage = lazy(() => import('../pages/Usage'))
@@ -71,6 +74,16 @@ export const coreRoutes = [
     sidebar: true,
     order: 3,
   },
+  {
+    id: 'remote-provider',
+    path: '/remote-provider',
+    label: 'Remote GPU',
+    icon: Cloud,
+    component: RemoteProvider,
+    getProps: () => ({}),
+    sidebar: true,
+    order: 3.2,
+  },
   // Usage + Setup / Owner are reachable from Settings rather than the top-level
   // sidebar. Setup / Owner is a factory/distributor/service-provider flow, not
   // a day-to-day dashboard surface. Direct URLs still work for bookmarks and
@@ -107,4 +120,17 @@ export const coreRoutes = [
   },
 ]
 
-export const coreExternalLinks = []
+// OpenCode is an ODS application on every platform, even though its process is
+// host-managed rather than part of the Docker stack. Keep the launcher present
+// while health data is loading or the host service needs attention.
+export const coreExternalLinks = [
+  {
+    id: 'opencode',
+    label: 'OpenCode',
+    icon: Code,
+    port: 3003,
+    ui_path: '/',
+    healthNeedles: ['opencode', 'OpenCode (IDE)'],
+    alwaysVisible: true,
+  },
+]

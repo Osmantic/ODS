@@ -95,6 +95,22 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6b. Switchboard mode exposes stable model aliases through LiteLLM. Windows
+#     Hermes must not keep requesting raw GGUF/Lemonade model IDs when the
+#     gateway only advertises ods/current/default/local.
+# ---------------------------------------------------------------------------
+if grep -q 'ODS_MODEL_SWITCHBOARD' "$PHASE" \
+   && grep -q 'ODS_MODEL_SWITCHBOARD' "$MONO" \
+   && grep -q '\$_hermesModel = "ods/current"' "$PHASE" \
+   && grep -q '\$ModelId = "ods/current"' "$MONO" \
+   && grep -q '\$_switchboardMode -eq "enabled"' "$PHASE" \
+   && grep -q '\$switchboardEnabled' "$MONO"; then
+    pass "Windows Hermes config patching uses the stable switchboard alias"
+else
+    fail "Windows Hermes config patching must use ods/current when switchboard mode is enabled"
+fi
+
+# ---------------------------------------------------------------------------
 # 7. Windows local inference needs a longer Hermes provider timeout than the
 #    shared template default. The helper must expose a timeout parameter and
 #    both installer paths must pass the Windows-local value.

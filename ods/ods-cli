@@ -25,7 +25,7 @@ while [[ -L "$_source" ]]; do
 done
 SCRIPT_DIR="$(cd "$(dirname "$_source")" && pwd)"
 INSTALL_DIR="${ODS_HOME:-$HOME/ods}"
-VERSION="2.0.0"
+VERSION="2.6.0"
 if [[ -f "$INSTALL_DIR/.env" ]]; then
     _v=$(awk -F= '/^ODS_VERSION=/{gsub(/^["'"'"']|["'"'"']$/,"",$2); print $2; exit}' "$INSTALL_DIR/.env" 2>/dev/null) || true
     [[ -n "${_v:-}" ]] && VERSION="$_v"
@@ -119,7 +119,34 @@ _env_unset() {
 _env_get_raw() {
     local key="$1" file="$INSTALL_DIR/.env"
     [[ -f "$file" ]] || { echo ""; return 0; }
-    grep -m1 "^${key}=" "$file" 2>/dev/null | cut -d= -f2- | tr -d '\r' || true
+    awk -v k="$key" '
+        index($0, k "=") == 1 { value = substr($0, length(k) + 2); found = 1 }
+        END { if (found) print value }
+    ' "$file" 2>/dev/null | tr -d '\r' || true
+}
+
+_ods_cli_proxy_enabled() {
+    [[ -f "$INSTALL_DIR/extensions/services/ods-proxy/compose.yaml" ]] \
+        || [[ -f "$INSTALL_DIR/data/user-extensions/ods-proxy/compose.yaml" ]]
+}
+
+_ods_cli_require_proxy_auth() {
+    [[ -f "$INSTALL_DIR/.env" ]] \
+        || error "Cannot enable network access without $INSTALL_DIR/.env."
+    if [[ "$(_env_get_raw WEBUI_AUTH)" != "true" ]]; then
+        _env_set "WEBUI_AUTH" "true" \
+            || error "Could not enforce WEBUI_AUTH=true before enabling network access."
+        log "  Network access requires sign-in; set WEBUI_AUTH=true."
+    fi
+    export WEBUI_AUTH=true
+}
+
+_ods_cli_prepare_proxy_start() {
+    local -a compose_flags=("$@")
+    _ods_cli_require_proxy_auth
+    _compose_run_with_summary \
+        "Applying authenticated Open WebUI configuration" \
+        "${compose_flags[@]}" up -d --no-deps --force-recreate open-webui
 }
 
 _ods_cli_bootstrap_status() {
@@ -132,15 +159,114 @@ _ods_cli_bootstrap_status() {
         || true
 }
 
+_ods_cli_bootstrap_status_field() {
+    local key="$1" status_file="$INSTALL_DIR/data/bootstrap-status.json"
+    [[ -f "$status_file" ]] || return 0
+    grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$status_file" \
+        | sed -n '1p' \
+        | sed "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"//" \
+        | sed 's/"//' \
+        || true
+}
+
+_ods_cli_bootstrap_status_number() {
+    local key="$1" status_file="$INSTALL_DIR/data/bootstrap-status.json"
+    [[ -f "$status_file" ]] || return 0
+    grep -o "\"${key}\"[[:space:]]*:[[:space:]]*[0-9][0-9.]*" "$status_file" \
+        | sed -n '1p' \
+        | sed "s/.*:[[:space:]]*//" \
+        || true
+}
+
+_ods_cli_file_size() {
+    local path="$1"
+    if stat -c %s "$path" 2>/dev/null; then
+        return 0
+    fi
+    stat -f %z "$path" 2>/dev/null || echo 0
+}
+
+_ods_cli_bootstrap_upgrade_process_running() {
+    local model="$1" args
+    [[ -n "$model" ]] || return 1
+    while IFS= read -r args; do
+        case "$args" in
+            *"/scripts/bootstrap-upgrade.sh"*" $model "*|*" scripts/bootstrap-upgrade.sh"*" $model "*)
+                return 0
+                ;;
+        esac
+    done < <(ps -eo args= 2>/dev/null || true)
+    return 1
+}
+
+_ods_cli_bootstrap_active_status_settled() {
+    local status="$1"
+    case "$status" in
+        downloading|starting|verifying|swapping) ;;
+        *) return 1 ;;
+    esac
+
+    local model env_model model_path expected_bytes actual_bytes
+    model="$(_ods_cli_bootstrap_status_field model)"
+    [[ -n "$model" ]] || return 1
+
+    if _ods_cli_bootstrap_upgrade_process_running "$model"; then
+        return 1
+    fi
+
+    env_model="$(_env_get_raw GGUF_FILE)"
+    [[ "$env_model" == "$model" ]] || return 1
+
+    model_path="$INSTALL_DIR/data/models/$model"
+    [[ -f "$model_path" ]] || return 1
+
+    expected_bytes="$(_ods_cli_bootstrap_status_number bytesTotal)"
+    if [[ "$expected_bytes" =~ ^[0-9]+$ ]] && (( expected_bytes > 0 )); then
+        actual_bytes="$(_ods_cli_file_size "$model_path")"
+        [[ "$actual_bytes" =~ ^[0-9]+$ ]] || return 1
+        (( actual_bytes >= expected_bytes )) || return 1
+    fi
+
+    return 0
+}
+
+_ods_cli_bootstrap_download_near_swap() {
+    local model percent percent_int downloaded total remaining threshold
+    model="$(_ods_cli_bootstrap_status_field model)"
+    [[ -n "$model" ]] || return 1
+    _ods_cli_bootstrap_upgrade_process_running "$model" || return 1
+
+    threshold="${ODS_CLI_BOOTSTRAP_COMPOSE_DOWNLOAD_WAIT_BYTES:-1073741824}"
+    if ! [[ "$threshold" =~ ^[0-9]+$ ]]; then
+        threshold=1073741824
+    fi
+
+    downloaded="$(_ods_cli_bootstrap_status_number bytesDownloaded)"
+    total="$(_ods_cli_bootstrap_status_number bytesTotal)"
+    if [[ "$downloaded" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ ]] && (( total > 0 )); then
+        remaining=$(( total - downloaded ))
+        (( remaining < 0 )) && remaining=0
+        (( remaining <= threshold )) && return 0
+    fi
+
+    percent="$(_ods_cli_bootstrap_status_number percent)"
+    percent_int="${percent%%.*}"
+    if [[ "$percent_int" =~ ^[0-9]+$ ]] && (( percent_int >= 95 )); then
+        return 0
+    fi
+
+    return 1
+}
+
 _ods_cli_wait_for_bootstrap_compose_safe() {
     local action="${1:-service operation}"
     local status_file="$INSTALL_DIR/data/bootstrap-status.json"
     [[ -f "$status_file" ]] || return 0
 
-    local max_wait="${ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_SECONDS:-900}"
+    local max_wait="${ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_SECONDS:-1800}"
     local interval="${ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_INTERVAL:-5}"
     if ! [[ "$max_wait" =~ ^[0-9]+$ ]] || (( max_wait < 0 )); then
-        max_wait=900
+        max_wait=1800
     fi
     if ! [[ "$interval" =~ ^[0-9]+$ ]] || (( interval < 1 )); then
         interval=5
@@ -150,7 +276,39 @@ _ods_cli_wait_for_bootstrap_compose_safe() {
     while true; do
         status="$(_ods_cli_bootstrap_status)"
         case "$status" in
+            downloading)
+                if _ods_cli_bootstrap_active_status_settled "$status"; then
+                    if [[ "$announced" == "true" ]]; then
+                        log "  Model Upgrade: stale $status status already settled; continuing with $action"
+                    else
+                        warn "Model upgrade status is stale ($status) but the full model is already configured; continuing with $action."
+                    fi
+                    return 0
+                fi
+                if ! _ods_cli_bootstrap_download_near_swap; then
+                    log "  Model Upgrade: downloading in background; continuing with $action before hot-swap begins"
+                    return 0
+                fi
+                if [[ "$announced" == "false" ]]; then
+                    log "  Model Upgrade: download nearly complete; waiting before $action touches llama-server"
+                    announced=true
+                fi
+                if (( waited >= max_wait )); then
+                    warn "Model upgrade is still $status after ${max_wait}s; refusing to run $action against an active hot-swap."
+                    return 1
+                fi
+                sleep "$interval"
+                waited=$(( waited + interval ))
+                ;;
             starting|verifying|swapping)
+                if _ods_cli_bootstrap_active_status_settled "$status"; then
+                    if [[ "$announced" == "true" ]]; then
+                        log "  Model Upgrade: stale $status status already settled; continuing with $action"
+                    else
+                        warn "Model upgrade status is stale ($status) but the full model is already configured; continuing with $action."
+                    fi
+                    return 0
+                fi
                 if [[ "$announced" == "false" ]]; then
                     log "  Model Upgrade: $status; waiting before $action touches llama-server"
                     announced=true
@@ -170,6 +328,14 @@ _ods_cli_wait_for_bootstrap_compose_safe() {
                 ;;
         esac
     done
+}
+
+_ods_cli_reload_model_env() {
+    # A background bootstrap promotion can rewrite these values while a start
+    # or restart command is waiting. Clear the process snapshot first so a key
+    # removed from .env cannot keep overriding Docker Compose.
+    unset GGUF_FILE LLM_MODEL MAX_CONTEXT CTX_SIZE
+    load_env
 }
 
 _get_host_logical_cpus() {
@@ -232,7 +398,7 @@ _calculate_llama_cpu_budget() {
 
 _select_auto_cpu_value() {
     local existing="$1" detected="$2"
-    if [[ "$existing" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN { exit !($existing > 0 && $existing <= $detected) }"; then
+    if [[ "$existing" =~ ^[0-9]+([.][0-9]+)?$ ]] && LC_ALL=C awk "BEGIN { exit !($existing > 0 && $existing <= $detected) }"; then
         echo "$existing"
     else
         echo "$detected"
@@ -241,7 +407,7 @@ _select_auto_cpu_value() {
 
 _cap_cpu_value() {
     local desired="$1" ceiling="$2"
-    awk -v desired="$desired" -v ceiling="$ceiling" '
+    LC_ALL=C awk -v desired="$desired" -v ceiling="$ceiling" '
         BEGIN {
             if (ceiling <= 0) ceiling = 1
             value = desired
@@ -264,7 +430,7 @@ _ensure_service_cpu_pair() {
     detected_reservation="$(_cap_cpu_value "$desired_reservation" "$final_limit")"
     current_reservation="$(_env_get_raw "$reservation_key")"
     final_reservation="$(_select_auto_cpu_value "$current_reservation" "$detected_reservation")"
-    if awk "BEGIN { exit !($final_reservation > $final_limit) }"; then
+    if LC_ALL=C awk "BEGIN { exit !($final_reservation > $final_limit) }"; then
         final_reservation="$final_limit"
     fi
 
@@ -298,7 +464,7 @@ ensure_llama_cpu_budget() {
     final_limit="$(_select_auto_cpu_value "$current_limit" "$detected_limit")"
     final_reservation="$(_select_auto_cpu_value "$current_reservation" "$detected_reservation")"
 
-    if awk "BEGIN { exit !($final_reservation > $final_limit) }"; then
+    if LC_ALL=C awk "BEGIN { exit !($final_reservation > $final_limit) }"; then
         final_reservation="$final_limit"
     fi
 
@@ -557,10 +723,18 @@ _regenerate_compose_flags() {
         # --gpu-count gates the multigpu-{backend}.yml overlay; without it,
         # toggling any extension would silently strip multi-GPU plumbing
         # from the persisted cache.
-        "$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
+        # Capture the resolver's stderr instead of discarding it: it reports
+        # actionable causes (e.g. missing PyYAML) that would otherwise only
+        # surface commands later as compose's "no configuration file provided".
+        local resolver_err=""
+        if ! resolver_err=$("$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
             --script-dir "$INSTALL_DIR" --tier "${TIER:-1}" --gpu-backend "${GPU_BACKEND:-nvidia}" \
             --gpu-count "${GPU_COUNT:-1}" --ods-mode "${ODS_MODE:-local}" \
-            > "$INSTALL_DIR/.compose-flags" 2>/dev/null || rm -f "$INSTALL_DIR/.compose-flags"
+            2>&1 > "$INSTALL_DIR/.compose-flags"); then
+            rm -f "$INSTALL_DIR/.compose-flags"
+            warn "Could not regenerate the compose stack cache. 'ods start' will fail until this is resolved:"
+            [[ -n "$resolver_err" ]] && printf '%s\n' "$resolver_err" >&2
+        fi
     else
         rm -f "$INSTALL_DIR/.compose-flags"
     fi
@@ -756,9 +930,10 @@ _compose_run_with_summary() {
     _compose_log=$(mktemp)
     trap 'rm -f "$_compose_log"' INT TERM
 
-    local _is_compose_up=false _arg
+    local _is_compose_up=false _is_compose_pull=false _arg
     for _arg in "$@"; do
         [[ "$_arg" == "up" ]] && _is_compose_up=true
+        [[ "$_arg" == "pull" ]] && _is_compose_pull=true
     done
 
     _compose_remove_conflicting_ods_containers() {
@@ -783,6 +958,29 @@ _compose_run_with_summary() {
 
     local _rc=0
     docker compose --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
+
+    local _pull_max_attempts="${ODS_COMPOSE_PULL_RETRY_ATTEMPTS:-3}"
+    if ! [[ "$_pull_max_attempts" =~ ^[0-9]+$ ]] || (( _pull_max_attempts < 1 )); then
+        _pull_max_attempts=3
+    fi
+    local _pull_attempt=1
+    local _pull_retries=$(( _pull_max_attempts - 1 ))
+    while (( _rc != 0 )) && $_is_compose_pull \
+       && (( _pull_attempt < _pull_max_attempts )) \
+       && grep -Eiq 'context deadline exceeded|i/o timeout|TLS handshake timeout|connection reset by peer|connection timed out|temporary failure|network is unreachable|net/http: request canceled|unexpected EOF' "$_compose_log"; do
+        local _pull_delay
+        case "$_pull_attempt" in
+            1) _pull_delay="${ODS_COMPOSE_PULL_RETRY_DELAY_1:-5}" ;;
+            2) _pull_delay="${ODS_COMPOSE_PULL_RETRY_DELAY_2:-15}" ;;
+            *) _pull_delay="${ODS_COMPOSE_PULL_RETRY_DELAY_N:-30}" ;;
+        esac
+        warn "Docker registry pull hit a transient network error; retrying (${_pull_attempt}/${_pull_retries})."
+        sleep "$_pull_delay"
+        _pull_attempt=$(( _pull_attempt + 1 ))
+        : >"$_compose_log"
+        _rc=0
+        docker compose --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
+    done
 
     if (( _rc != 0 )) && $_is_compose_up \
        && grep -Eiq 'port is already allocated|Bind for .* failed: port is already allocated' "$_compose_log"; then
@@ -843,6 +1041,53 @@ _compose_run_with_summary() {
     else
         warn "(no error keywords matched in compose log)"
     fi
+
+    # Connect failed services to logs and recovery steps if not in test stub mode
+    if [[ -z "${DOCKER_STUB_MODE:-}" ]]; then
+        local -a _compose_args=()
+        local _arg
+        for _arg in "$@"; do
+            [[ "$_arg" == "up" || "$_arg" == "down" || "$_arg" == "stop" || "$_arg" == "pull" ]] && break
+            _compose_args+=("$_arg")
+        done
+
+        local _failed_candidates=()
+        local _c
+        while read -r _c; do
+            [[ -n "$_c" ]] && _failed_candidates+=("$_c")
+        done < <(grep -oE 'ods-[a-zA-Z0-9_-]+' "$_compose_log" | sort -u || true)
+
+        local _failed_containers=()
+        if (( ${#_failed_candidates[@]} > 0 )); then
+            local _project_containers
+            _project_containers=$(docker compose "${_compose_args[@]}" ps -a --format "{{.Name}}" 2>/dev/null || true)
+
+            for _c in "${_failed_candidates[@]}"; do
+                if grep -qxFe "$_c" <<< "$_project_containers"; then
+                    local _inspect
+                    _inspect=$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$_c" 2>/dev/null || true)
+                    local _status="" _health=""
+                    read -r _status _health <<< "$_inspect"
+                    if [[ "$_status" == "exited" || "$_status" == "dead" || "$_status" == "restarting" || "$_health" == "unhealthy" ]]; then
+                        _failed_containers+=("$_c")
+                    fi
+                fi
+            done
+        fi
+
+        for _c in "${_failed_containers[@]}"; do
+            echo ""
+            warn "Recent logs for container $_c (evidence):"
+            docker logs --tail 20 "$_c" 2>&1 | sed 's/^/  /' || true
+        done
+
+        if (( ${#_failed_containers[@]} > 0 )); then
+            echo ""
+            warn "Actionable recovery step:"
+            warn "  Run 'ods doctor' to inspect system readiness and get suggested fixes."
+        fi
+    fi
+
     if grep -qiE 'permission denied.*(docker API|docker daemon|docker\.sock|/var/run/docker\.sock)|/var/run/docker\.sock.*permission denied' "$_compose_log"; then
         warn "Docker socket permission denied. Add your user to the docker group, then start a new login shell:"
         warn "  sudo usermod -aG docker \"\$USER\""
@@ -902,6 +1147,87 @@ _ods_cli_rebuild_images() {
     if ! docker compose "${flags[@]}" build --no-cache "${svcs[@]}"; then
         warn "One or more images failed to rebuild (continuing — see compose output above)"
     fi
+}
+
+_ods_cli_pull_external_images() {
+    local flags=("$@")
+    local helper="$INSTALL_DIR/installers/lib/compose-images.sh"
+
+    if ! command -v ods_compose_external_images >/dev/null 2>&1 && [[ -f "$helper" ]]; then
+        # Reuse the installer's image discovery contract: pull registry images,
+        # skip local build tags such as ods-lemonade-server:latest.
+        . "$helper"
+    fi
+
+    if ! command -v ods_compose_external_images >/dev/null 2>&1; then
+        _compose_run_with_summary "Pulling latest images" "${flags[@]}" pull
+        return
+    fi
+
+    local image_output=""
+    if ! image_output="$(ods_compose_external_images "docker compose" "${flags[@]}")"; then
+        warn "Could not resolve external Compose image list; falling back to docker compose pull."
+        _compose_run_with_summary "Pulling latest images" "${flags[@]}" pull
+        return
+    fi
+
+    local -a images=()
+    local image
+    while IFS= read -r image; do
+        [[ -n "$image" ]] && images+=("$image")
+    done <<< "$image_output"
+
+    if (( ${#images[@]} == 0 )); then
+        success "Pulling latest images — done"
+        return 0
+    fi
+
+    _check_docker_access
+    log "Pulling latest images..."
+
+    local count=0 total=${#images[@]} failed=0
+    for image in "${images[@]}"; do
+        count=$((count + 1))
+        log "  [$count/$total] $image"
+        local _pull_max_attempts="${ODS_COMPOSE_PULL_RETRY_ATTEMPTS:-3}"
+        if ! [[ "$_pull_max_attempts" =~ ^[0-9]+$ ]] || (( _pull_max_attempts < 1 )); then
+            _pull_max_attempts=3
+        fi
+        local _pull_attempt=1 _pull_ok=false _pull_log
+        _pull_log=$(mktemp)
+        while (( _pull_attempt <= _pull_max_attempts )); do
+            : >"$_pull_log"
+            if docker pull "$image" >"$_pull_log" 2>&1; then
+                _pull_ok=true
+                break
+            fi
+            if (( _pull_attempt >= _pull_max_attempts )) \
+                || ! grep -Eiq 'context deadline exceeded|i/o timeout|TLS handshake timeout|connection reset by peer|connection timed out|temporary failure|network is unreachable|net/http: request canceled|unexpected EOF' "$_pull_log"; then
+                break
+            fi
+            local _pull_delay
+            case "$_pull_attempt" in
+                1) _pull_delay="${ODS_COMPOSE_PULL_RETRY_DELAY_1:-5}" ;;
+                2) _pull_delay="${ODS_COMPOSE_PULL_RETRY_DELAY_2:-15}" ;;
+                *) _pull_delay="${ODS_COMPOSE_PULL_RETRY_DELAY_N:-30}" ;;
+            esac
+            warn "Docker registry pull hit a transient network error; retrying (${_pull_attempt}/$((_pull_max_attempts - 1)))."
+            sleep "$_pull_delay"
+            _pull_attempt=$((_pull_attempt + 1))
+        done
+        if [[ "$_pull_ok" != "true" ]]; then
+            cat "$_pull_log" >&2
+            failed=$((failed + 1))
+        fi
+        rm -f "$_pull_log"
+    done
+
+    if (( failed > 0 )); then
+        log_error "Pulling latest images failed: $failed/$total image(s)"
+        return 1
+    fi
+
+    success "Pulling latest images — done"
 }
 
 #=============================================================================
@@ -1206,6 +1532,17 @@ cmd_restart() {
         resolved_service=$(resolve_service "$resolved_service")
     fi
 
+    if [[ "$resolved_service" == "ods-proxy" ]]; then
+        _ods_cli_prepare_proxy_start "${flags[@]}"
+    elif [[ -z "$resolved_service" || "$resolved_service" == "open-webui" ]] \
+        && _ods_cli_proxy_enabled; then
+        _ods_cli_require_proxy_auth
+    fi
+
+    if ! _ods_cli_repair_rootless_ownership "$resolved_service"; then
+        error "Rootless bind-mount ownership is not ready; service restart was cancelled."
+    fi
+
     local refresh_soul="false"
     if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
         refresh_soul="true"
@@ -1217,6 +1554,10 @@ cmd_restart() {
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
         _ods_cli_wait_for_bootstrap_compose_safe "restart"
+        _ods_cli_reload_model_env
+        ensure_llama_cpu_budget
+        flags_str=$(get_compose_flags)
+        read -ra flags <<< "$flags_str"
     fi
 
     if [[ -z "$resolved_service" ]]; then
@@ -1244,7 +1585,15 @@ _ods_cli_maybe_resume_bootstrap_upgrade() {
 
     local bs_status
     bs_status=$(grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' "$status_file" | sed -n '1p' | sed 's/.*"status"[[:space:]]*:[[:space:]]*"//' | sed 's/"//' || true)
-    [[ "$bs_status" == "failed" ]] || return 0
+    local retry_reason="previous download failed"
+    if [[ "$bs_status" == "failed" || "$bs_status" == "error" ]]; then
+        retry_reason="previous download failed"
+    elif [[ "$bs_status" == "starting" || "$bs_status" == "downloading" || "$bs_status" == "verifying" || "$bs_status" == "swapping" ]]; then
+        _ods_cli_bootstrap_upgrade_status_is_stale "$status_file" || return 0
+        retry_reason="stale download appears stopped"
+    else
+        return 0
+    fi
 
     if command -v pgrep >/dev/null 2>&1 && pgrep -f "bootstrap-upgrade.sh.*$INSTALL_DIR" >/dev/null 2>&1; then
         log "  Model Upgrade: retry already running"
@@ -1271,8 +1620,31 @@ _ods_cli_maybe_resume_bootstrap_upgrade() {
         "$bootstrap_gguf_file" \
         > "$INSTALL_DIR/logs/model-upgrade.log" 2>&1 &
 
-    log "  Model Upgrade: previous download failed; retrying in background ($full_llm_model)"
+    log "  Model Upgrade: $retry_reason; retrying in background ($full_llm_model)"
     log "  Check progress: tail -f $INSTALL_DIR/logs/model-upgrade.log"
+}
+
+_ods_cli_bootstrap_upgrade_status_is_stale() {
+    local status_file="$1"
+    local stale_seconds="${ODS_BOOTSTRAP_UPGRADE_STALE_SECONDS:-900}"
+    [[ "$stale_seconds" =~ ^[0-9]+$ ]] || stale_seconds=900
+
+    local updated_at
+    updated_at=$(grep -o '"updatedAt"[[:space:]]*:[[:space:]]*"[^"]*"' "$status_file" | sed -n '1p' | sed 's/.*"updatedAt"[[:space:]]*:[[:space:]]*"//' | sed 's/"//' || true)
+    [[ -n "$updated_at" ]] || return 1
+
+    local updated_epoch=""
+    updated_epoch=$(date -u -d "$updated_at" +%s 2>/dev/null || true)
+    if [[ -z "$updated_epoch" ]]; then
+        updated_epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$updated_at" +%s 2>/dev/null || true)
+    fi
+    [[ "$updated_epoch" =~ ^[0-9]+$ ]] || return 1
+
+    local now_epoch
+    now_epoch=$(date -u +%s 2>/dev/null || date +%s)
+    [[ "$now_epoch" =~ ^[0-9]+$ ]] || return 1
+
+    (( now_epoch - updated_epoch > stale_seconds ))
 }
 
 # Refresh data/hermes/SOUL.md from the static template + detected install
@@ -1325,6 +1697,16 @@ cmd_stop() {
     fi
 }
 
+_ods_cli_repair_rootless_ownership() {
+    local service="${1:-}"
+    local helper="$INSTALL_DIR/lib/rootless-ownership.sh"
+
+    [[ -f "$helper" ]] || return 0
+    # shellcheck source=lib/rootless-ownership.sh
+    source "$helper"
+    ods_fix_rootless_ownership "$INSTALL_DIR" "$service"
+}
+
 cmd_start() {
     check_install
     cd "$INSTALL_DIR"
@@ -1356,6 +1738,13 @@ cmd_start() {
         resolved_service=$(resolve_service "$resolved_service")
     fi
 
+    if [[ "$resolved_service" == "ods-proxy" ]]; then
+        _ods_cli_prepare_proxy_start "${flags[@]}"
+    elif [[ -z "$resolved_service" || "$resolved_service" == "open-webui" ]] \
+        && _ods_cli_proxy_enabled; then
+        _ods_cli_require_proxy_auth
+    fi
+
     local refresh_soul="false"
     if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
         refresh_soul="true"
@@ -1364,6 +1753,14 @@ cmd_start() {
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
         _ods_cli_wait_for_bootstrap_compose_safe "start"
+        _ods_cli_reload_model_env
+        ensure_llama_cpu_budget
+        flags_str=$(get_compose_flags)
+        read -ra flags <<< "$flags_str"
+    fi
+
+    if ! _ods_cli_repair_rootless_ownership "$resolved_service"; then
+        error "Rootless bind-mount ownership is not ready; service start was cancelled."
     fi
 
     if [[ -z "$resolved_service" ]]; then
@@ -1407,13 +1804,16 @@ cmd_dry_run() {
 
     # Try dashboard API first; fall back to direct GitHub query.
     local api_json=""
-    local dashboard_port="${DASHBOARD_PORT:-3002}"
+    local dashboard_api_port="${DASHBOARD_API_PORT:-3002}"
     local api_key=""
     api_key=$(grep '^DASHBOARD_API_KEY=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
+    if [[ -z "$api_key" && -f "$INSTALL_DIR/data/dashboard-api-key.txt" ]]; then
+        api_key=$(cat "$INSTALL_DIR/data/dashboard-api-key.txt" | tr -d '\r\n ' || true)
+    fi
     if [[ -n "$api_key" ]]; then
         api_json=$(curl -sf --max-time 5 \
-            -H "X-API-Key: ${api_key}" \
-            "http://127.0.0.1:${dashboard_port}/api/update/dry-run" 2>/dev/null || true)
+            -H "Authorization: Bearer ${api_key}" \
+            "http://127.0.0.1:${dashboard_api_port}/api/update/dry-run" 2>/dev/null || true)
     fi
 
     local latest_ver="" changelog_url="" update_status=""
@@ -1427,7 +1827,7 @@ cmd_dry_run() {
         # Direct GitHub fallback
         local gh_resp
         gh_resp=$(curl -sf --max-time 8 \
-            "https://api.github.com/repos/Light-Heart-Labs/ODS/releases/latest" 2>/dev/null || true)
+            "https://api.github.com/repos/Osmantic/ODS/releases/latest" 2>/dev/null || true)
         if [[ -n "$gh_resp" ]] && command -v jq >/dev/null 2>&1; then
             latest_ver=$(echo "$gh_resp" | jq -r '.tag_name // empty' 2>/dev/null | sed 's/^v//' || true)
             changelog_url=$(echo "$gh_resp" | jq -r '.html_url // empty' 2>/dev/null || true)
@@ -1596,9 +1996,15 @@ cmd_update() {
         warn "ods-update.sh and ods-backup.sh not found; skipping pre-update snapshot."
     fi
 
-    if ! _compose_run_with_summary "Pulling latest images" "${flags[@]}" pull; then
+    if ! _ods_cli_pull_external_images "${flags[@]}"; then
         error "Failed to pull latest images"
     fi
+
+    _ods_cli_wait_for_bootstrap_compose_safe "update"
+    load_env
+    ensure_llama_cpu_budget
+    flags_str=$(get_compose_flags)
+    read -ra flags <<< "$flags_str"
 
     [[ "$rebuild_images" == "true" ]] && _ods_cli_rebuild_images "${flags[@]}"
 
@@ -1613,21 +2019,56 @@ cmd_update() {
     log "Verifying update..."
     local failed_services=0
     local total_services=0
+    local active_services=""
+    local running_services=""
 
-    # Check each service health
+    active_services=$(docker compose "${flags[@]}" config --services 2>/dev/null \
+        || docker compose "${flags[@]}" ps --all --services 2>/dev/null \
+        || true)
+    running_services=$(docker compose "${flags[@]}" ps --services --status running 2>/dev/null || true)
+
+    if [[ -z "$active_services" ]]; then
+        log_error "Update verification failed: active compose stack has no services"
+        log_error "Run 'ods status' to check service health"
+        exit 1
+    fi
+
+    # Check only the active compose stack. sr_list_enabled() lists every
+    # installed extension with a compose file, including disabled optional
+    # services, which can make a healthy update look failed.
     while IFS= read -r service; do
         [[ -z "$service" ]] && continue
-        ((total_services++))
+        ((++total_services))
 
-        local container
-        container=$(sr_container "$service" 2>/dev/null || echo "")
-        if [[ -n "$container" ]]; then
-            if ! docker ps --filter "name=$container" --filter "status=running" --format "{{.Names}}" | grep -q "^$container$"; then
-                warn "Service $service ($container) is not running"
-                ((failed_services++))
-            fi
+        if grep -Fxq "$service" <<< "$running_services"; then
+            continue
         fi
-    done < <(sr_list_enabled)
+
+        # Some user extensions are one-shot jobs that legitimately exit 0
+        # after compose recreates them. Treat those as successful, but still
+        # fail missing containers and non-zero exits.
+        local ids=""
+        local completed_ok="false"
+        ids=$(docker compose "${flags[@]}" ps --all -q "$service" 2>/dev/null || true)
+        if [[ -n "$ids" ]]; then
+            completed_ok="true"
+            while IFS= read -r id; do
+                [[ -z "$id" ]] && continue
+                local state=""
+                state=$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "$id" 2>/dev/null || true)
+                case "$state" in
+                    "running "*) ;;
+                    "exited 0") ;;
+                    *) completed_ok="false"; break ;;
+                esac
+            done <<< "$ids"
+        fi
+
+        if [[ "$completed_ok" != "true" ]]; then
+            warn "Service $service is not running"
+            ((++failed_services))
+        fi
+    done <<< "$active_services"
 
     if [[ $failed_services -gt 0 ]]; then
         log_error "Update verification failed: $failed_services/$total_services services are not running"
@@ -2013,6 +2454,35 @@ for name, status in checks:
         print(f"  {RED}✗{NC} {name}")
         has_failures = True
 
+llm_backend = runtime.get('llm_backend', {})
+if llm_backend:
+    llm_status = llm_backend.get('status', 'unknown')
+    llm_provider = llm_backend.get('provider', 'unknown')
+    llm_url = llm_backend.get('url', '')
+    llm_model = llm_backend.get('model', '')
+    local_warn = llm_backend.get('local_running_warning', False)
+    recovery = llm_backend.get('recovery_hint', '')
+
+    is_external = llm_provider != "llama-server"
+    backend_label = f"{llm_provider} (external)" if is_external else "llama-server (local)"
+
+    if llm_status == 'ok':
+        print(f"  {GREEN}✓{NC} LLM Backend: {backend_label} — responding")
+        if llm_url:
+            print(f"    Endpoint: {llm_url}")
+        if llm_model:
+            print(f"    Model:    {llm_model}")
+    else:
+        print(f"  {RED}✗{NC} LLM Backend: {backend_label} — not responding")
+        if llm_url:
+            print(f"    Endpoint: {llm_url}")
+        if recovery:
+            print(f"    Recovery: {recovery}")
+        has_failures = True
+
+    if local_warn:
+        print(f"    {YELLOW}⚠{NC} Note: Unused local llama-server container is running")
+
 dgx_check = runtime.get('dgx_spark_cuda_arch_check', {})
 dgx_status = dgx_check.get('status')
 dgx_message = dgx_check.get('message', '')
@@ -2253,6 +2723,10 @@ cmd_enable() {
     local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
     [[ "$cat" == "core" ]] && { success "$service_id is a core service (always enabled)."; return 0; }
 
+    if [[ "$service_id" == "ods-proxy" ]]; then
+        _ods_cli_require_proxy_auth
+    fi
+
     # Check GPU backend compatibility
     local gpu_backends="${SERVICE_GPU_BACKENDS[$service_id]:-}"
     if [[ -n "$gpu_backends" ]]; then
@@ -2295,7 +2769,9 @@ cmd_enable() {
     if [[ -n "$deps" ]]; then
         local missing=()
         for dep in $deps; do
+            # Check built-in extensions first, then dashboard-installed user extensions
             local dep_cf="$INSTALL_DIR/extensions/services/$dep/compose.yaml"
+            [[ -f "$dep_cf" ]] || dep_cf="$INSTALL_DIR/data/user-extensions/$dep/compose.yaml"
             local dep_cat="${SERVICE_CATEGORIES[$dep]:-optional}"
             # Core services are always available; check extension deps
             if [[ "$dep_cat" != "core" && ! -f "$dep_cf" ]]; then
@@ -2317,6 +2793,14 @@ cmd_enable() {
     fi
 
     if [[ -f "$cf" ]]; then
+        # An interrupted update can leave the compose fragment active while
+        # the persisted stack still omits it. Treat enable as an idempotent
+        # reconciliation operation on every platform.
+        _regenerate_compose_flags
+        if [[ -f "$disabled" ]]; then
+            rm -f "$disabled"
+            warn "Removed stale disabled marker for $service_id."
+        fi
         success "$service_id is already enabled."
     elif [[ -f "$disabled" ]]; then
         mv "$disabled" "$cf"
@@ -2360,7 +2844,9 @@ cmd_disable() {
     local dependents=()
     for sid in "${SERVICE_IDS[@]}"; do
         [[ "$sid" == "$service_id" ]] && continue
+        # Check built-in extensions first, then dashboard-installed user extensions
         local dep_cf="$INSTALL_DIR/extensions/services/$sid/compose.yaml"
+        [[ -f "$dep_cf" ]] || dep_cf="$INSTALL_DIR/data/user-extensions/$sid/compose.yaml"
         [[ ! -f "$dep_cf" ]] && continue
         local deps="${SERVICE_DEPENDS[$sid]:-}"
         for dep in $deps; do
@@ -2425,7 +2911,9 @@ cmd_purge() {
     fi
 
     # Check if service is still enabled (compose.yaml exists = enabled)
+    # Check built-in extensions first, then dashboard-installed user extensions
     local _cf="$INSTALL_DIR/extensions/services/$service_id/compose.yaml"
+    [[ -f "$_cf" ]] || _cf="$INSTALL_DIR/data/user-extensions/$service_id/compose.yaml"
     if [[ -f "$_cf" ]]; then
         error "$service_id is still enabled. Run 'ods disable $service_id' first."
     fi
@@ -2557,7 +3045,9 @@ validate_preset_compatibility() {
     local missing_exts=()
     while IFS=: read -r state sid; do
         [[ -z "$sid" ]] && continue
+        # Check built-in extensions first, then dashboard-installed user extensions
         local ext_dir="$INSTALL_DIR/extensions/services/$sid"
+        [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
         if [[ ! -d "$ext_dir" ]]; then
             missing_exts+=("$sid")
         fi
@@ -2656,20 +3146,25 @@ META
             if [[ -f "$preset_dir/extensions.list" ]]; then
                 local enabled=0 disabled=0
                 while IFS=: read -r state sid; do
+                    # Check built-in extensions first, then dashboard-installed user extensions
                     local ext_dir="$INSTALL_DIR/extensions/services/$sid"
+                    [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
                     [[ -d "$ext_dir" ]] || continue
                     local cf="$ext_dir/compose.yaml"
                     local cf_dis="$ext_dir/compose.yaml.disabled"
 
+                    # NB: enabled=$((enabled + 1)) not ((enabled++)) — the
+                    # post-increment form evaluates to 0 on the first hit,
+                    # which set -e treats as failure and aborts mid-restore.
                     if [[ "$state" == "enabled" ]]; then
                         if [[ -f "$cf_dis" && ! -f "$cf" ]]; then
                             mv "$cf_dis" "$cf"
-                            ((enabled++))
+                            enabled=$((enabled + 1))
                         fi
                     elif [[ "$state" == "disabled" ]]; then
                         if [[ -f "$cf" ]]; then
                             mv "$cf" "$cf_dis"
-                            ((disabled++))
+                            disabled=$((disabled + 1))
                         fi
                     fi
                 done < "$preset_dir/extensions.list"
@@ -3000,6 +3495,12 @@ cmd_mode() {
         *) error "Unknown mode: $mode. Use: local, cloud, hybrid" ;;
     esac
 
+    local configured_backend
+    configured_backend=$(grep -m1 "^LLM_BACKEND=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+    if [[ "${configured_backend,,}" == "external" ]]; then
+        error "External LLM routing is installer-managed. Run './install.sh --no-external-llm' first, then retry 'ods mode $mode'."
+    fi
+
     # Update .env
     _env_set "ODS_MODE" "$mode"
 
@@ -3062,12 +3563,14 @@ cmd_model() {
             echo "  SH         — qwen3-30b-a3b (Strix Halo unified)"
             echo "  SH_LARGE   — qwen3-coder-next (90GB+ unified)"
             echo "  NV_ULTRA   — qwen3-coder-next (amd64) / qwen3.6-35b-a3b (arm64 Spark)"
+            echo "  ARC        — Intel Arc 12GB+"
+            echo "  ARC_LITE   — Intel Arc 6-8GB"
             echo ""
             echo "Usage: ods model swap <tier>"
             ;;
         swap)
             local tier="${2:-}"
-            [[ -z "$tier" ]] && error "Usage: ods model swap <T0|T1|T2|T3|T4|SH|SH_LARGE|NV_ULTRA>"
+            [[ -z "$tier" ]] && error "Usage: ods model swap <T0|T1|T2|T3|T4|SH|SH_LARGE|NV_ULTRA|ARC|ARC_LITE>"
             tier=$(echo "$tier" | tr '[:lower:]' '[:upper:]')
             # Source tier-map and resolve full config (model, GGUF, context)
             . "$INSTALL_DIR/installers/lib/tier-map.sh"
@@ -3079,16 +3582,1001 @@ cmd_model() {
             [[ "$TIER" =~ ^T([0-9]+)$ ]] && TIER="${BASH_REMATCH[1]}"
             [[ "$TIER" == "SH" ]] && TIER="SH_COMPACT"
             resolve_tier_config
-            _env_set "LLM_MODEL" "$model"
-            _env_set "TIER" "$TIER"
-            _env_set "GGUF_FILE" "$GGUF_FILE"
-            _env_set "GGUF_URL" "$GGUF_URL"
-            _env_set "CTX_SIZE" "$MAX_CONTEXT"
-            _env_set "MAX_CONTEXT" "$MAX_CONTEXT"
-            success "Model set to $model (tier $tier, ctx=$MAX_CONTEXT). Run 'ods restart llama-server' to apply."
+
+            local model_path="$INSTALL_DIR/data/models/$GGUF_FILE"
+            [[ -s "$model_path" ]] || error "Model file is not downloaded: $model_path"
+
+            command -v jq >/dev/null 2>&1 || \
+                error "jq is required to resolve the tier model catalog entry"
+            local model_id=""
+            local library="$INSTALL_DIR/config/model-library.json"
+            [[ -f "$library" ]] || error "Model catalog is missing: $library"
+            model_id=$(jq -r --arg file "$GGUF_FILE" \
+                '[.models[]? | select(.gguf_file == $file) | .id][0] // empty' \
+                "$library" 2>/dev/null || true)
+            [[ -n "$model_id" ]] || \
+                error "Tier model is missing from the model catalog: $GGUF_FILE"
+
+            local agent_key
+            agent_key="$(_env_get_raw ODS_AGENT_KEY)"
+            [[ -z "$agent_key" ]] && \
+                agent_key="$(_env_get_raw DASHBOARD_API_KEY)"
+            case "$agent_key" in
+                \"*\") agent_key="${agent_key:1:${#agent_key}-2}" ;;
+                \'*\') agent_key="${agent_key:1:${#agent_key}-2}" ;;
+            esac
+            [[ -n "$agent_key" ]] || error "ODS host-agent API key is missing from .env"
+            [[ "$agent_key" != *$'\n'* && "$agent_key" != *$'\r'* ]] || \
+                error "ODS host-agent API key contains invalid newline characters"
+
+            local agent_port agent_host
+            agent_port="$(_env_get_raw ODS_AGENT_PORT)"
+            [[ "$agent_port" =~ ^[0-9]+$ ]] || agent_port="7710"
+            agent_host="$(_agent_probe_host)"
+            local activate_url="http://${agent_host}:${agent_port}/v1/model/activate"
+            if ! curl -sf --max-time 3 "http://${agent_host}:${agent_port}/health" >/dev/null; then
+                error "ODS host agent is not reachable. Run 'ods agent restart' and retry."
+            fi
+
+            local request_json response_file http_code curl_status
+            request_json=$(jq -nc \
+                --arg model_id "$model_id" \
+                --arg tier "$TIER" \
+                --argjson context_length "$MAX_CONTEXT" \
+                '{model_id: $model_id, tier: $tier, context_length: $context_length}') || \
+                error "Could not build the model activation request"
+            response_file=$(mktemp "${TMPDIR:-/tmp}/ods-model-activate.XXXXXX") || \
+                error "Could not create a model activation response file"
+            chmod 600 "$response_file"
+            trap 'rm -f "$response_file"' INT TERM HUP
+
+            # Feed the bearer header over stdin so the key is never exposed in
+            # process arguments or left in a temporary file after interruption.
+            if http_code=$(printf 'Authorization: Bearer %s\n' "$agent_key" | \
+                curl --silent --show-error --max-time 2700 \
+                    --output "$response_file" --write-out '%{http_code}' \
+                    --request POST --header @- \
+                    --header 'Content-Type: application/json' \
+                    --data "$request_json" "$activate_url"); then
+                curl_status=0
+            else
+                curl_status=$?
+            fi
+            if [[ $curl_status -ne 0 ]]; then
+                rm -f "$response_file"
+                trap - INT TERM HUP
+                error "Model activation request failed before the host agent completed"
+            fi
+
+            if [[ "$http_code" != "200" ]]; then
+                local activation_error
+                activation_error=$(jq -r '.error // empty' "$response_file" 2>/dev/null || true)
+                [[ -z "$activation_error" ]] && activation_error=$(head -c 500 "$response_file")
+                rm -f "$response_file"
+                trap - INT TERM HUP
+                error "Model activation failed (HTTP $http_code): ${activation_error:-unknown error}"
+            fi
+            if [[ "$(jq -r '.status // empty' "$response_file" 2>/dev/null)" != "activated" ]]; then
+                rm -f "$response_file"
+                trap - INT TERM HUP
+                error "Host agent returned an invalid model activation receipt"
+            fi
+            local effective_context effective_tier
+            effective_context=$(jq -r '.context_length // empty' "$response_file" 2>/dev/null || true)
+            effective_tier=$(jq -r '.tier // empty' "$response_file" 2>/dev/null || true)
+            rm -f "$response_file"
+            trap - INT TERM HUP
+            success "Model activated everywhere: $model (tier ${effective_tier:-$tier}, ctx=${effective_context:-$MAX_CONTEXT})."
             ;;
         *)
             error "Usage: ods model <current|list|swap>"
+            ;;
+    esac
+}
+
+_agent_probe_host() {
+    local bind_addr="" gateway=""
+    bind_addr="$(_env_get_raw ODS_AGENT_BIND)"
+    bind_addr="${bind_addr#\"}"; bind_addr="${bind_addr%\"}"
+    bind_addr="${bind_addr#\'}"; bind_addr="${bind_addr%\'}"
+    bind_addr="$(printf '%s' "$bind_addr" | tr -d '[:space:]')"
+
+    if [[ -z "$bind_addr" && "$(uname -s)" == "Linux" ]] && command -v docker >/dev/null 2>&1; then
+        gateway="$(docker network inspect ods-network \
+            --format '{{range .IPAM.Config}}{{if .Gateway}}{{println .Gateway}}{{end}}{{end}}' \
+            2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]' || true)"
+        if [[ -z "$gateway" ]]; then
+            gateway="$(docker network inspect bridge \
+                --format '{{range .IPAM.Config}}{{if .Gateway}}{{println .Gateway}}{{end}}{{end}}' \
+                2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]' || true)"
+        fi
+        bind_addr="$gateway"
+    fi
+
+    case "$bind_addr" in
+        ""|0.0.0.0|"*") bind_addr="127.0.0.1" ;;
+        ::|"[::]") bind_addr="[::1]" ;;
+        *:*)
+            [[ "$bind_addr" == \[*\] ]] || bind_addr="[$bind_addr]"
+            ;;
+    esac
+    printf '%s\n' "$bind_addr"
+}
+
+_strip_outer_quotes() {
+    local value="${1:-}"
+    case "$value" in
+        \"*\") value="${value:1:${#value}-2}" ;;
+        \'*\') value="${value:1:${#value}-2}" ;;
+    esac
+    printf '%s' "$value"
+}
+
+_dashboard_api_key() {
+    local api_key=""
+    api_key="$(_env_get_raw DASHBOARD_API_KEY)"
+    if [[ -z "$api_key" && -f "$INSTALL_DIR/data/dashboard-api-key.txt" ]]; then
+        api_key="$(cat "$INSTALL_DIR/data/dashboard-api-key.txt" 2>/dev/null || true)"
+    fi
+    api_key="$(_strip_outer_quotes "$api_key")"
+    api_key="$(printf '%s' "$api_key" | tr -d '\r\n ')"
+    printf '%s' "$api_key"
+}
+
+_dashboard_api_base_url() {
+    local base_url="${ODS_DASHBOARD_API_URL:-}"
+    if [[ -z "$base_url" ]]; then
+        base_url="$(_env_get_raw ODS_DASHBOARD_API_URL)"
+    fi
+    if [[ -z "$base_url" ]]; then
+        local port
+        port="$(_env_get_raw DASHBOARD_API_PORT)"
+        [[ "$port" =~ ^[0-9]+$ ]] || port="3002"
+        base_url="http://127.0.0.1:${port}"
+    fi
+    base_url="$(_strip_outer_quotes "$base_url")"
+    printf '%s' "${base_url%/}"
+}
+
+_remote_provider_usage() {
+    cat <<'EOF'
+Usage: ods remote-provider <command> [options]
+
+Commands:
+  status [--json]
+      Show sanitized remote-provider route, egress, and action status.
+  plan <configure|test|disable|remove> [options]
+      Print the redacted lifecycle plan without mutating state.
+  configure --base-url URL --model MODEL [secret options]
+      Persist an OpenAI-compatible provider route and provider API key.
+  test [--json]
+      Probe the configured provider route through the internal egress service.
+  test --base-url URL --model MODEL [secret options]
+      Probe a provider without writing route state or secrets.
+  disable
+      Disable the remote-provider route while keeping stored secrets.
+  remove
+      Delete remote-provider route state and stored secrets.
+  peer-models list [--json]
+      List models from the authenticated remote ODS peer.
+  peer-models download-status [--json]
+      Show remote peer model download status.
+  peer-models download MODEL [--json]
+      Start a model download on the remote ODS peer.
+  peer-models load MODEL [--json]
+      Load a downloaded model on the remote ODS peer.
+  peer-models cancel-download [--json]
+      Cancel an active remote peer model download.
+  peer-models delete MODEL --yes [--json]
+      Delete a downloaded model from the remote ODS peer.
+
+Provider options for configure/test/plan configure/plan test:
+  --transport direct|ssh  Provider transport (default direct)
+  --base-url URL          OpenAI-compatible base URL, for example https://gpu.example/v1
+  --model MODEL           Provider model id
+  --ssh-host HOST         SSH server host for ssh transport
+  --ssh-user USER         SSH server user for ssh transport
+  --ssh-port PORT         SSH server port for ssh transport (default 22)
+  --ssh-inference-host HOST
+      Remote-side inference host reached through the SSH tunnel
+  --ssh-inference-port PORT
+      Remote-side inference port reached through the SSH tunnel
+  --ssh-control-host HOST
+      Optional remote-side ODS control host reached through the SSH tunnel
+  --ssh-control-port PORT
+      Optional remote-side ODS control port reached through the SSH tunnel
+
+Secret options for configure/test/plan configure/plan test:
+  --api-key-stdin         Read the provider API key from the first stdin line
+  --api-key-file PATH     Read the provider API key from a local file
+  --api-key-env NAME      Read the provider API key from the process environment (default REMOTE_LLM_API_KEY)
+  --ssh-private-key-file PATH
+      Read the SSH private key from a local file for ssh transport
+  --ssh-private-key-env NAME
+      Read the SSH private key from the process environment (default REMOTE_LLM_SSH_PRIVATE_KEY)
+  --ssh-known-hosts-file PATH
+      Read SSH known_hosts content from a local file for ssh transport
+  --ssh-known-hosts-env NAME
+      Read SSH known_hosts content from the process environment (default REMOTE_LLM_SSH_KNOWN_HOSTS)
+
+Raw secret arguments are intentionally unsupported so secrets do not appear in
+process listings or shell history.
+EOF
+}
+
+_remote_provider_require_tools() {
+    command -v curl >/dev/null 2>&1 || error "curl is required for remote-provider lifecycle commands"
+    command -v jq >/dev/null 2>&1 || error "jq is required for remote-provider lifecycle commands"
+}
+
+_remote_provider_request() {
+    local method="$1" path="$2" response_file="$3" payload_file="${4:-}" timeout="${5:-15}"
+    local api_key base_url curl_status
+    api_key="$(_dashboard_api_key)"
+    [[ -n "$api_key" ]] || error "Dashboard API key is missing from .env or data/dashboard-api-key.txt"
+    [[ "$api_key" != *$'\n'* && "$api_key" != *$'\r'* ]] || \
+        error "Dashboard API key contains invalid newline characters"
+    base_url="$(_dashboard_api_base_url)"
+
+    if [[ -n "$payload_file" ]]; then
+        if printf 'Authorization: Bearer %s\n' "$api_key" | \
+            curl --silent --show-error --max-time "$timeout" \
+                --output "$response_file" --write-out '%{http_code}' \
+                --request "$method" --header @- \
+                --header 'Content-Type: application/json' \
+                --data-binary @"$payload_file" "${base_url}${path}"; then
+            curl_status=0
+        else
+            curl_status=$?
+        fi
+    else
+        if printf 'Authorization: Bearer %s\n' "$api_key" | \
+            curl --silent --show-error --max-time "$timeout" \
+                --output "$response_file" --write-out '%{http_code}' \
+                --request "$method" --header @- "${base_url}${path}"; then
+            curl_status=0
+        else
+            curl_status=$?
+        fi
+    fi
+    return "$curl_status"
+}
+
+_remote_provider_response_error() {
+    local response_file="$1"
+    local detail=""
+    detail="$(jq -r '
+        if (.detail | type) == "object" then
+            .detail.message // .detail.type // (.detail | tojson)
+        elif (.detail // "") != "" then
+            .detail
+        elif (.error | type) == "object" then
+            .error.message // .error.type // (.error | tojson)
+        else
+            .error // empty
+        end
+    ' "$response_file" 2>/dev/null || true)"
+    if [[ -z "$detail" ]]; then
+        detail="$(head -c 500 "$response_file" 2>/dev/null || true)"
+    fi
+    printf '%s' "${detail:-unknown error}"
+}
+
+_remote_provider_read_secret() {
+    local use_stdin="$1" file="$2" env_name="$3" api_key=""
+    if [[ "$use_stdin" == "true" ]]; then
+        IFS= read -r api_key || true
+    elif [[ -n "$file" ]]; then
+        [[ -f "$file" ]] || error "Provider API key file not found: $file"
+        api_key="$(cat "$file")"
+    else
+        [[ "$env_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || \
+            error "--api-key-env must be a valid environment variable name"
+        api_key="${!env_name:-}"
+    fi
+    api_key="$(_strip_outer_quotes "$api_key")"
+    api_key="${api_key%$'\n'}"
+    api_key="${api_key%$'\r'}"
+    [[ -n "$api_key" ]] || error "Provider API key is required; use --api-key-stdin, --api-key-file, or --api-key-env"
+    [[ "$api_key" != *$'\n'* && "$api_key" != *$'\r'* ]] || \
+        error "Provider API key must be a single-line secret"
+    printf '%s' "$api_key"
+}
+
+_remote_provider_read_multiline_secret() {
+    local label="$1" file="$2" env_name="$3" file_option="$4" env_option="$5" value=""
+    if [[ -n "$file" ]]; then
+        [[ -f "$file" ]] || error "$label file not found: $file"
+        value="$(cat "$file")"
+    else
+        [[ "$env_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || \
+            error "$env_option must be a valid environment variable name"
+        value="${!env_name:-}"
+    fi
+    value="$(_strip_outer_quotes "$value")"
+    [[ -n "$value" ]] || error "$label is required; use $file_option or $env_option"
+    printf '%s' "$value"
+}
+
+_remote_provider_write_payload() {
+    local action="$1" payload_file="$2"
+    shift 2
+    local transport="direct" base_url="" model="" json_mode="false"
+    local api_key_env="REMOTE_LLM_API_KEY" api_key_env_explicit="false" api_key_file="" api_key_stdin="false"
+    local ssh_host="" ssh_user="" ssh_port="22" ssh_inference_host="" ssh_inference_port=""
+    local ssh_control_host="" ssh_control_port="" ssh_option_seen="false"
+    local ssh_private_key_env="REMOTE_LLM_SSH_PRIVATE_KEY" ssh_private_key_env_explicit="false" ssh_private_key_file=""
+    local ssh_known_hosts_env="REMOTE_LLM_SSH_KNOWN_HOSTS" ssh_known_hosts_env_explicit="false" ssh_known_hosts_file=""
+    local provider_option_seen="false" secret_option_seen="false"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --transport)
+                [[ $# -ge 2 ]] || error "--transport requires a value"
+                provider_option_seen="true"
+                transport="${2:-}"; shift 2 ;;
+            --base-url)
+                [[ $# -ge 2 ]] || error "--base-url requires a value"
+                provider_option_seen="true"
+                base_url="${2:-}"; shift 2 ;;
+            --model)
+                [[ $# -ge 2 ]] || error "--model requires a value"
+                provider_option_seen="true"
+                model="${2:-}"; shift 2 ;;
+            --ssh-host)
+                [[ $# -ge 2 ]] || error "--ssh-host requires a value"
+                provider_option_seen="true"; ssh_option_seen="true"
+                ssh_host="${2:-}"; shift 2 ;;
+            --ssh-user)
+                [[ $# -ge 2 ]] || error "--ssh-user requires a value"
+                provider_option_seen="true"; ssh_option_seen="true"
+                ssh_user="${2:-}"; shift 2 ;;
+            --ssh-port)
+                [[ $# -ge 2 ]] || error "--ssh-port requires a value"
+                provider_option_seen="true"; ssh_option_seen="true"
+                ssh_port="${2:-}"; shift 2 ;;
+            --ssh-inference-host)
+                [[ $# -ge 2 ]] || error "--ssh-inference-host requires a value"
+                provider_option_seen="true"; ssh_option_seen="true"
+                ssh_inference_host="${2:-}"; shift 2 ;;
+            --ssh-inference-port)
+                [[ $# -ge 2 ]] || error "--ssh-inference-port requires a value"
+                provider_option_seen="true"; ssh_option_seen="true"
+                ssh_inference_port="${2:-}"; shift 2 ;;
+            --ssh-control-host)
+                [[ $# -ge 2 ]] || error "--ssh-control-host requires a value"
+                provider_option_seen="true"; ssh_option_seen="true"
+                ssh_control_host="${2:-}"; shift 2 ;;
+            --ssh-control-port)
+                [[ $# -ge 2 ]] || error "--ssh-control-port requires a value"
+                provider_option_seen="true"; ssh_option_seen="true"
+                ssh_control_port="${2:-}"; shift 2 ;;
+            --api-key-stdin)
+                secret_option_seen="true"
+                api_key_stdin="true"; shift ;;
+            --api-key-file)
+                [[ $# -ge 2 ]] || error "--api-key-file requires a value"
+                secret_option_seen="true"
+                api_key_file="${2:-}"; shift 2 ;;
+            --api-key-env)
+                [[ $# -ge 2 ]] || error "--api-key-env requires a value"
+                secret_option_seen="true"
+                api_key_env="${2:-}"; api_key_env_explicit="true"; shift 2 ;;
+            --api-key)
+                error "Raw --api-key is not supported; use --api-key-stdin, --api-key-file, or --api-key-env" ;;
+            --ssh-private-key-file)
+                [[ $# -ge 2 ]] || error "--ssh-private-key-file requires a value"
+                secret_option_seen="true"; ssh_option_seen="true"
+                ssh_private_key_file="${2:-}"; shift 2 ;;
+            --ssh-private-key-env)
+                [[ $# -ge 2 ]] || error "--ssh-private-key-env requires a value"
+                secret_option_seen="true"; ssh_option_seen="true"
+                ssh_private_key_env="${2:-}"; ssh_private_key_env_explicit="true"; shift 2 ;;
+            --ssh-known-hosts-file)
+                [[ $# -ge 2 ]] || error "--ssh-known-hosts-file requires a value"
+                secret_option_seen="true"; ssh_option_seen="true"
+                ssh_known_hosts_file="${2:-}"; shift 2 ;;
+            --ssh-known-hosts-env)
+                [[ $# -ge 2 ]] || error "--ssh-known-hosts-env requires a value"
+                secret_option_seen="true"; ssh_option_seen="true"
+                ssh_known_hosts_env="${2:-}"; ssh_known_hosts_env_explicit="true"; shift 2 ;;
+            --ssh-private-key)
+                error "Raw --ssh-private-key is not supported; use --ssh-private-key-file or --ssh-private-key-env" ;;
+            --ssh-known-hosts)
+                error "Raw --ssh-known-hosts is not supported; use --ssh-known-hosts-file or --ssh-known-hosts-env" ;;
+            --json)
+                json_mode="true"; shift ;;
+            --help|-h)
+                _remote_provider_usage; exit 0 ;;
+            *)
+                error "Unknown remote-provider option: $1" ;;
+        esac
+    done
+
+    REMOTE_PROVIDER_JSON_MODE="$json_mode"
+    if [[ "$action" == "disable" || "$action" == "remove" ]]; then
+        [[ "$provider_option_seen" == "false" && "$secret_option_seen" == "false" ]] || \
+            error "remote-provider $action does not accept provider or secret options"
+        jq -nc --arg action "$action" '{action: $action}' > "$payload_file" || \
+            error "Could not build remote-provider lifecycle request"
+        return 0
+    fi
+
+    transport="$(printf '%s' "$transport" | tr '[:upper:]' '[:lower:]')"
+    case "$transport" in
+        direct|ssh) ;;
+        *) error "--transport must be direct or ssh" ;;
+    esac
+    [[ -n "$base_url" ]] || error "--base-url is required"
+    [[ -n "$model" ]] || error "--model is required"
+    if [[ "$transport" == "direct" && "$ssh_option_seen" == "true" ]]; then
+        error "direct remote-provider transport does not accept SSH options"
+    fi
+    if [[ "$transport" == "ssh" ]]; then
+        [[ -n "$ssh_host" ]] || error "--ssh-host is required for SSH remote-provider transport"
+        [[ -n "$ssh_user" ]] || error "--ssh-user is required for SSH remote-provider transport"
+        [[ -n "$ssh_port" ]] || error "--ssh-port is required for SSH remote-provider transport"
+        [[ -n "$ssh_inference_host" ]] || error "--ssh-inference-host is required for SSH remote-provider transport"
+        [[ -n "$ssh_inference_port" ]] || error "--ssh-inference-port is required for SSH remote-provider transport"
+    fi
+
+    local secret_sources=0 api_key
+    [[ "$api_key_stdin" == "true" ]] && secret_sources=$((secret_sources + 1))
+    [[ -n "$api_key_file" ]] && secret_sources=$((secret_sources + 1))
+    [[ "$api_key_env_explicit" == "true" ]] && secret_sources=$((secret_sources + 1))
+    (( secret_sources > 1 )) && error "Choose only one provider API key source"
+
+    api_key="$(_remote_provider_read_secret "$api_key_stdin" "$api_key_file" "$api_key_env")"
+    if [[ "$transport" == "ssh" ]]; then
+        local ssh_key_sources=0 ssh_known_hosts_sources=0 ssh_private_key ssh_known_hosts
+        [[ -n "$ssh_private_key_file" ]] && ssh_key_sources=$((ssh_key_sources + 1))
+        [[ "$ssh_private_key_env_explicit" == "true" ]] && ssh_key_sources=$((ssh_key_sources + 1))
+        [[ -n "$ssh_known_hosts_file" ]] && ssh_known_hosts_sources=$((ssh_known_hosts_sources + 1))
+        [[ "$ssh_known_hosts_env_explicit" == "true" ]] && ssh_known_hosts_sources=$((ssh_known_hosts_sources + 1))
+        (( ssh_key_sources > 1 )) && error "Choose only one SSH private key source"
+        (( ssh_known_hosts_sources > 1 )) && error "Choose only one SSH known_hosts source"
+        ssh_private_key="$(_remote_provider_read_multiline_secret \
+            "SSH private key" "$ssh_private_key_file" "$ssh_private_key_env" \
+            "--ssh-private-key-file" "--ssh-private-key-env")"
+        ssh_known_hosts="$(_remote_provider_read_multiline_secret \
+            "SSH known_hosts" "$ssh_known_hosts_file" "$ssh_known_hosts_env" \
+            "--ssh-known-hosts-file" "--ssh-known-hosts-env")"
+        printf '%s\0%s\0%s' "$api_key" "$ssh_private_key" "$ssh_known_hosts" | jq -Rs \
+            --arg action "$action" \
+            --arg transport "$transport" \
+            --arg base_url "$base_url" \
+            --arg model "$model" \
+            --arg ssh_host "$ssh_host" \
+            --arg ssh_user "$ssh_user" \
+            --arg ssh_port "$ssh_port" \
+            --arg ssh_inference_host "$ssh_inference_host" \
+            --arg ssh_inference_port "$ssh_inference_port" \
+            --arg ssh_control_host "$ssh_control_host" \
+            --arg ssh_control_port "$ssh_control_port" \
+            'split("\u0000") as $secrets |
+            {
+                action: $action,
+                provider: {
+                    transport: $transport,
+                    baseUrl: $base_url,
+                    model: $model
+                },
+                ssh: {
+                    host: $ssh_host,
+                    user: $ssh_user,
+                    port: $ssh_port,
+                    inferenceHost: $ssh_inference_host,
+                    inferencePort: $ssh_inference_port
+                },
+                secrets: {
+                    apiKey: $secrets[0],
+                    sshPrivateKey: $secrets[1],
+                    sshKnownHosts: $secrets[2]
+                }
+            }
+            | if ($ssh_control_host != "" or $ssh_control_port != "") then
+                .ssh += {
+                    controlHost: $ssh_control_host,
+                    controlPort: $ssh_control_port
+                }
+              else . end' > "$payload_file" || error "Could not build remote-provider lifecycle request"
+        return 0
+    fi
+    printf '%s' "$api_key" | jq -Rs \
+        --arg action "$action" \
+        --arg transport "$transport" \
+        --arg base_url "$base_url" \
+        --arg model "$model" \
+        '{
+            action: $action,
+            provider: {
+                transport: $transport,
+                baseUrl: $base_url,
+                model: $model
+            },
+            secrets: {
+                apiKey: .
+            }
+        }' > "$payload_file" || error "Could not build remote-provider lifecycle request"
+}
+
+_remote_provider_print_status() {
+    local response_file="$1"
+    jq -r '
+        "Remote provider: \(.status // "unknown")",
+        "Route: " + (if .routeState.enabled == true then "enabled" else "disabled" end),
+        (if .routeState.enabled == true and .routeState.provider then
+            "Provider: \(.routeState.provider.model // "unknown") via \(.routeState.provider.transport // "unknown") at \(.routeState.provider.baseUrl // "unknown")"
+         else empty end),
+        "Egress: \(.egress.status // "unknown")" +
+            (if (.egress.reason // "") != "" then " (\(.egress.reason))" else "" end),
+        "Secret: " + (if .egress.secret.configured == true then "configured" else "missing" end),
+        "Actions: " + (
+            [.availableActions | to_entries[] | select(.value == true) | .key] | join(", ")
+        )
+    ' "$response_file"
+}
+
+_remote_provider_print_apply_result() {
+    local response_file="$1"
+    jq -r '
+        "Remote provider \(.action // "operation"): " +
+            (if .applied == true then "applied" else "completed" end),
+        "Mutated state: \(.mutated // false)",
+        (if .probe then
+            "Probe: HTTP \(.probe.status // "unknown") at \(.probe.endpoint // "/v1/models")" +
+            (if (.probe.modelCount // null) != null then " (\(.probe.modelCount) models)" else "" end)
+         else empty end),
+        (if .rollback.attempted == true then
+            "Rollback: " + (if .rollback.ok == true then "ok" else "failed" end)
+         else empty end)
+    ' "$response_file"
+}
+
+_remote_provider_print_probe_result() {
+    local response_file="$1"
+    jq -r '
+        "Remote provider probe: " + (if .ok == true then "ok" else "failed" end),
+        "Transport: \(.transport // "unknown")",
+        (if .probe then
+            "Probe: HTTP \(.probe.httpStatus // "unknown") at \(.probe.endpoint // "/v1/models")" +
+            (if (.probe.modelCount // null) != null then " (\(.probe.modelCount) models)" else "" end)
+         else empty end),
+        (if .tunnel then
+            "Tunnel: \(.tunnel.status // "unknown")" +
+            (if (.tunnel.reason // "") != "" then " (\(.tunnel.reason))" else "" end)
+         else empty end),
+        (if .routeProof then
+            "Route proof: " +
+            (if .routeProof.recorded == true then
+                "recorded" +
+                (if (.routeProof.status.reason // "") != "" then " (\(.routeProof.status.reason))" else "" end)
+             else
+                "not recorded" +
+                (if (.routeProof.reason // "") != "" then " (\(.routeProof.reason))" else "" end)
+             end)
+         else empty end)
+    ' "$response_file"
+}
+
+_remote_provider_peer_models_usage() {
+    cat <<'EOF'
+Usage: ods remote-provider peer-models <command> [options]
+
+Commands:
+  list [--json]
+      List models from the authenticated remote ODS peer.
+  download-status [--json]
+      Show remote peer model download status.
+  download MODEL [--json]
+      Start a model download on the remote ODS peer.
+  load MODEL [--json]
+      Load a downloaded model on the remote ODS peer.
+  cancel-download [--json]
+      Cancel an active remote peer model download.
+  delete MODEL --yes [--json]
+      Delete a downloaded model from the remote ODS peer.
+
+The CLI talks only to the local Dashboard API. Peer credentials remain in ODS
+secret custody and are never accepted as command arguments.
+EOF
+}
+
+_remote_provider_urlencode() {
+    local value="$1"
+    jq -rn --arg value "$value" '$value | @uri' || \
+        error "Could not encode remote peer model id"
+}
+
+_remote_provider_peer_model_path() {
+    local model_id="$1" action="${2:-}" encoded
+    [[ -n "$model_id" ]] || error "Model id is required"
+    [[ "$model_id" != *$'\n'* && "$model_id" != *$'\r'* ]] || \
+        error "Model id contains invalid newline characters"
+    encoded="$(_remote_provider_urlencode "$model_id")"
+    [[ -n "$encoded" ]] || error "Model id is required"
+    if [[ -n "$action" ]]; then
+        printf '/api/remote-provider/peer/models/%s/%s' "$encoded" "$action"
+    else
+        printf '/api/remote-provider/peer/models/%s' "$encoded"
+    fi
+}
+
+_remote_provider_peer_call() {
+    local method="$1" path="$2" timeout="$3" response_file http_code curl_status detail
+    response_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-peer.XXXXXX") || \
+        error "Could not create a remote-provider peer response file"
+    chmod 600 "$response_file"
+    trap 'rm -f "$response_file"' INT TERM HUP
+    if http_code="$(_remote_provider_request "$method" "$path" "$response_file" "" "$timeout")"; then
+        curl_status=0
+    else
+        curl_status=$?
+    fi
+    if [[ $curl_status -ne 0 ]]; then
+        rm -f "$response_file"; trap - INT TERM HUP
+        error "Remote-provider peer model request failed before Dashboard API completed"
+    fi
+    if [[ "$http_code" != "200" ]]; then
+        detail="$(_remote_provider_response_error "$response_file")"
+        rm -f "$response_file"; trap - INT TERM HUP
+        error "Remote-provider peer model request failed (HTTP $http_code): $detail"
+    fi
+    printf '%s' "$response_file"
+    trap - INT TERM HUP
+}
+
+_remote_provider_print_peer_models() {
+    local response_file="$1"
+    jq -r '
+        (.models // []) as $models |
+        "Remote peer models: \($models | length)",
+        (if (.currentModel // "") != "" then "Current: \(.currentModel)" else empty end),
+        ($models[]? |
+            "- " + (.name // .id // "unknown") +
+            " [" + (.status // "unknown") + "]" +
+            (if (.size // "") != "" then " " + .size
+             elif (.sizeGb // null) != null then " " + ((.sizeGb | tostring) + " GB")
+             else "" end) +
+            (if (.id // "") != "" and (.name // "") != "" and .id != .name then " id=" + .id else "" end)
+        )
+    ' "$response_file"
+}
+
+_remote_provider_print_peer_download_status() {
+    local response_file="$1"
+    jq -r '
+        "Remote peer download: \(.status // "unknown")",
+        (if (.model // .modelId // .activeModelId // "") != "" then
+            "Model: \(.model // .modelId // .activeModelId)"
+         else empty end),
+        (if (.percent // null) != null then "Progress: \(.percent)%" else empty end),
+        (if (.active // .isDownloading // null) != null then
+            "Active: " + (if (.active == true or .isDownloading == true) then "yes" else "no" end)
+         else empty end)
+    ' "$response_file"
+}
+
+_remote_provider_print_peer_action_result() {
+    local label="$1" response_file="$2"
+    jq -r --arg label "$label" '
+        "Remote peer " + $label + ": " +
+            (.status // .message // (if .ok == true then "ok" else "completed" end)),
+        (if (.modelId // .model // "") != "" then "Model: \(.modelId // .model)" else empty end)
+    ' "$response_file"
+}
+
+_remote_provider_probe_configured() {
+    local json_mode="false"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json_mode="true"; shift ;;
+            --help|-h) _remote_provider_usage; return 0 ;;
+            *) error "Unknown remote-provider test option for configured route: $1" ;;
+        esac
+    done
+
+    local response_file http_code curl_status
+    response_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-probe.XXXXXX") || \
+        error "Could not create a remote-provider response file"
+    chmod 600 "$response_file"
+    trap 'rm -f "$response_file"' INT TERM HUP
+    if http_code="$(_remote_provider_request POST /api/remote-provider/probe "$response_file" "" 20)"; then
+        curl_status=0
+    else
+        curl_status=$?
+    fi
+    if [[ $curl_status -ne 0 ]]; then
+        rm -f "$response_file"; trap - INT TERM HUP
+        error "Remote-provider test request failed before Dashboard API completed"
+    fi
+    if [[ "$http_code" != "200" ]]; then
+        local detail
+        detail="$(_remote_provider_response_error "$response_file")"
+        rm -f "$response_file"; trap - INT TERM HUP
+        error "Remote-provider test failed (HTTP $http_code): $detail"
+    fi
+    if [[ "$json_mode" == "true" ]]; then
+        jq . "$response_file"
+    else
+        _remote_provider_print_probe_result "$response_file"
+    fi
+    rm -f "$response_file"; trap - INT TERM HUP
+}
+
+cmd_remote_provider_peer_models() {
+    local subcmd="${1:-list}"
+    shift || true
+
+    case "$subcmd" in
+        help|--help|-h)
+            _remote_provider_peer_models_usage
+            return 0
+            ;;
+        list)
+            local json_mode="false"
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --json) json_mode="true"; shift ;;
+                    --help|-h) _remote_provider_peer_models_usage; return 0 ;;
+                    *) error "Unknown remote-provider peer-models list option: $1" ;;
+                esac
+            done
+            local response_file
+            response_file="$(_remote_provider_peer_call GET /api/remote-provider/peer/models 30)"
+            if [[ "$json_mode" == "true" ]]; then
+                jq . "$response_file"
+            else
+                _remote_provider_print_peer_models "$response_file"
+            fi
+            rm -f "$response_file"
+            ;;
+        download-status|status)
+            local json_mode="false"
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --json) json_mode="true"; shift ;;
+                    --help|-h) _remote_provider_peer_models_usage; return 0 ;;
+                    *) error "Unknown remote-provider peer-models download-status option: $1" ;;
+                esac
+            done
+            local response_file
+            response_file="$(_remote_provider_peer_call GET /api/remote-provider/peer/models/download-status 30)"
+            if [[ "$json_mode" == "true" ]]; then
+                jq . "$response_file"
+            else
+                _remote_provider_print_peer_download_status "$response_file"
+            fi
+            rm -f "$response_file"
+            ;;
+        cancel-download|cancel)
+            local json_mode="false"
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --json) json_mode="true"; shift ;;
+                    --help|-h) _remote_provider_peer_models_usage; return 0 ;;
+                    *) error "Unknown remote-provider peer-models cancel-download option: $1" ;;
+                esac
+            done
+            local response_file
+            response_file="$(_remote_provider_peer_call POST /api/remote-provider/peer/models/download/cancel 30)"
+            if [[ "$json_mode" == "true" ]]; then
+                jq . "$response_file"
+            else
+                _remote_provider_print_peer_action_result "cancel download" "$response_file"
+            fi
+            rm -f "$response_file"
+            ;;
+        download|load|delete)
+            local json_mode="false" yes_mode="false" model_id=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --json) json_mode="true"; shift ;;
+                    --yes) yes_mode="true"; shift ;;
+                    --help|-h) _remote_provider_peer_models_usage; return 0 ;;
+                    --*) error "Unknown remote-provider peer-models $subcmd option: $1" ;;
+                    *)
+                        [[ -z "$model_id" ]] || error "Only one model id may be supplied"
+                        model_id="$1"; shift ;;
+                esac
+            done
+            [[ -n "$model_id" ]] || error "Usage: ods remote-provider peer-models $subcmd MODEL [--json]"
+            if [[ "$subcmd" != "delete" && "$yes_mode" == "true" ]]; then
+                error "--yes is only valid for remote-provider peer-models delete"
+            fi
+            if [[ "$subcmd" == "delete" && "$yes_mode" != "true" ]]; then
+                error "Use --yes to confirm remote peer model deletion"
+            fi
+            local path method timeout response_file label
+            method="POST"
+            timeout="30"
+            label="$subcmd"
+            case "$subcmd" in
+                download)
+                    path="$(_remote_provider_peer_model_path "$model_id" download)"
+                    label="download"
+                    ;;
+                load)
+                    path="$(_remote_provider_peer_model_path "$model_id" load)"
+                    timeout="2705"
+                    label="load"
+                    ;;
+                delete)
+                    path="$(_remote_provider_peer_model_path "$model_id")"
+                    method="DELETE"
+                    label="delete"
+                    ;;
+            esac
+            response_file="$(_remote_provider_peer_call "$method" "$path" "$timeout")"
+            if [[ "$json_mode" == "true" ]]; then
+                jq . "$response_file"
+            else
+                _remote_provider_print_peer_action_result "$label" "$response_file"
+            fi
+            rm -f "$response_file"
+            ;;
+        *)
+            error "Usage: ods remote-provider peer-models <list|download-status|download|load|cancel-download|delete>"
+            ;;
+    esac
+}
+
+cmd_remote_provider() {
+    local subcmd="${1:-status}"
+    shift || true
+
+    case "$subcmd" in
+        help|--help|-h)
+            _remote_provider_usage
+            return 0
+            ;;
+    esac
+
+    check_install
+    cd "$INSTALL_DIR"
+    load_env
+    _remote_provider_require_tools
+
+    case "$subcmd" in
+        peer-models|peer-model)
+            cmd_remote_provider_peer_models "$@"
+            ;;
+        status)
+            local json_mode="false"
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --json) json_mode="true"; shift ;;
+                    --help|-h) _remote_provider_usage; return 0 ;;
+                    *) error "Unknown remote-provider status option: $1" ;;
+                esac
+            done
+            local response_file http_code curl_status
+            response_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-status.XXXXXX") || \
+                error "Could not create a remote-provider response file"
+            chmod 600 "$response_file"
+            trap 'rm -f "$response_file"' INT TERM HUP
+            if http_code="$(_remote_provider_request GET /api/remote-provider/status "$response_file" "" 15)"; then
+                curl_status=0
+            else
+                curl_status=$?
+            fi
+            if [[ $curl_status -ne 0 ]]; then
+                rm -f "$response_file"; trap - INT TERM HUP
+                error "Remote-provider status request failed before Dashboard API completed"
+            fi
+            if [[ "$http_code" != "200" ]]; then
+                local detail
+                detail="$(_remote_provider_response_error "$response_file")"
+                rm -f "$response_file"; trap - INT TERM HUP
+                error "Remote-provider status failed (HTTP $http_code): $detail"
+            fi
+            if [[ "$json_mode" == "true" ]]; then
+                jq . "$response_file"
+            else
+                _remote_provider_print_status "$response_file"
+            fi
+            rm -f "$response_file"; trap - INT TERM HUP
+            ;;
+        plan)
+            local action="${1:-}"
+            [[ -n "$action" ]] || error "Usage: ods remote-provider plan <configure|test|disable|remove> [options]"
+            shift || true
+            case "$action" in
+                configure|test|disable|remove) ;;
+                *) error "Usage: ods remote-provider plan <configure|test|disable|remove> [options]" ;;
+            esac
+            local payload_file response_file http_code curl_status
+            payload_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-payload.XXXXXX") || \
+                error "Could not create a remote-provider request file"
+            response_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-plan.XXXXXX") || \
+                error "Could not create a remote-provider response file"
+            chmod 600 "$payload_file" "$response_file"
+            trap 'rm -f "$payload_file" "$response_file"' INT TERM HUP
+            _remote_provider_write_payload "$action" "$payload_file" "$@"
+            if http_code="$(_remote_provider_request POST /api/remote-provider/plan "$response_file" "$payload_file" 15)"; then
+                curl_status=0
+            else
+                curl_status=$?
+            fi
+            rm -f "$payload_file"
+            if [[ $curl_status -ne 0 ]]; then
+                rm -f "$response_file"; trap - INT TERM HUP
+                error "Remote-provider plan request failed before Dashboard API completed"
+            fi
+            if [[ "$http_code" != "200" ]]; then
+                local detail
+                detail="$(_remote_provider_response_error "$response_file")"
+                rm -f "$response_file"; trap - INT TERM HUP
+                error "Remote-provider plan failed (HTTP $http_code): $detail"
+            fi
+            jq . "$response_file"
+            rm -f "$response_file"; trap - INT TERM HUP
+            ;;
+        configure|test|disable|remove)
+            if [[ "$subcmd" == "test" ]]; then
+                local use_configured_probe="true" arg
+                for arg in "$@"; do
+                    case "$arg" in
+                        --transport|--base-url|--model|--api-key|--api-key-stdin|--api-key-file|--api-key-env)
+                            use_configured_probe="false"
+                            break
+                            ;;
+                        --ssh-host|--ssh-user|--ssh-port|--ssh-inference-host|--ssh-inference-port)
+                            use_configured_probe="false"
+                            break
+                            ;;
+                        --ssh-control-host|--ssh-control-port|--ssh-private-key|--ssh-private-key-file)
+                            use_configured_probe="false"
+                            break
+                            ;;
+                        --ssh-private-key-env|--ssh-known-hosts|--ssh-known-hosts-file|--ssh-known-hosts-env)
+                            use_configured_probe="false"
+                            break
+                            ;;
+                    esac
+                done
+                if [[ "$use_configured_probe" == "true" ]]; then
+                    _remote_provider_probe_configured "$@"
+                    return 0
+                fi
+            fi
+            local payload_file response_file http_code curl_status
+            payload_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-payload.XXXXXX") || \
+                error "Could not create a remote-provider request file"
+            response_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-apply.XXXXXX") || \
+                error "Could not create a remote-provider response file"
+            chmod 600 "$payload_file" "$response_file"
+            trap 'rm -f "$payload_file" "$response_file"' INT TERM HUP
+            REMOTE_PROVIDER_JSON_MODE="false"
+            _remote_provider_write_payload "$subcmd" "$payload_file" "$@"
+            if http_code="$(_remote_provider_request POST /api/remote-provider/apply "$response_file" "$payload_file" 20)"; then
+                curl_status=0
+            else
+                curl_status=$?
+            fi
+            rm -f "$payload_file"
+            if [[ $curl_status -ne 0 ]]; then
+                rm -f "$response_file"; trap - INT TERM HUP
+                error "Remote-provider $subcmd request failed before Dashboard API completed"
+            fi
+            if [[ "$http_code" != "200" ]]; then
+                local detail
+                detail="$(_remote_provider_response_error "$response_file")"
+                rm -f "$response_file"; trap - INT TERM HUP
+                error "Remote-provider $subcmd failed (HTTP $http_code): $detail"
+            fi
+            if [[ "${REMOTE_PROVIDER_JSON_MODE:-false}" == "true" ]]; then
+                jq . "$response_file"
+            else
+                _remote_provider_print_apply_result "$response_file"
+            fi
+            rm -f "$response_file"; trap - INT TERM HUP
+            ;;
+        help|--help|-h)
+            _remote_provider_usage
+            ;;
+        *)
+            error "Usage: ods remote-provider <status|plan|configure|test|disable|remove|peer-models>"
             ;;
     esac
 }
@@ -3281,8 +4769,7 @@ cmd_agent() {
     case "$action" in
         status)
             local bind_addr
-            bind_addr="$(grep '^ODS_AGENT_BIND=' "${INSTALL_DIR}/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)"
-            bind_addr="${bind_addr:-127.0.0.1}"
+            bind_addr="$(_agent_probe_host)"
             if curl -sf --max-time 2 "http://${bind_addr}:${port}/health" > /dev/null 2>&1; then
                 success "ODS host agent: running (port ${port}, ${daemon_type})"
             else
@@ -3970,6 +5457,20 @@ _gpu_reassign() {
     local topo_json
     topo_json=$($topo_detect_fn) || error "Failed to detect GPU topology"
 
+    if [[ "$backend" == "nvidia" ]] \
+       && [[ "$(echo "$topo_json" | jq -r '.mig_enabled // false')" == "true" ]] \
+       && ! echo "$topo_json" | jq -e '
+            (.gpus | type == "array" and length > 0)
+            and all(.gpus[];
+                .mig_instance == true
+                and (.uuid | type == "string" and startswith("MIG-"))
+                and (.memory_gb | type == "number" and . > 0)
+            )
+        ' >/dev/null 2>&1; then
+        warn "GPU reassignment is disabled on NVIDIA MIG hosts until topology detection exposes assignable MIG instances."
+        return 1
+    fi
+
     # Persist topology for the dashboard API
     mkdir -p "$INSTALL_DIR/config"
     echo "$topo_json" > "$INSTALL_DIR/config/gpu-topology.json"
@@ -3995,8 +5496,114 @@ _gpu_reassign() {
     tmpdir=$(mktemp -d)
     trap "rm -rf '$tmpdir'" RETURN
     echo "$topo_json" > "$tmpdir/topo.json"
+    local env_backup="$tmpdir/env.before"
+    cp "$INSTALL_DIR/.env" "$env_backup"
 
     local enabled_services="${ENABLED_SERVICES:-llama_server,whisper,comfyui,embeddings}"
+
+    _gpu_reassign_reload_env() {
+        unset GPU_ASSIGNMENT_JSON_B64
+        unset LLAMA_SERVER_GPU_UUIDS LLAMA_SERVER_GPU_INDICES
+        unset LLAMA_ARG_SPLIT_MODE LLAMA_ARG_TENSOR_SPLIT
+        unset WHISPER_GPU_UUID COMFYUI_GPU_UUID EMBEDDINGS_GPU_UUID
+        unset WHISPER_GPU_INDEX COMFYUI_GPU_INDEX EMBEDDINGS_GPU_INDEX
+        unset ROCR_VISIBLE_DEVICES HSA_OVERRIDE_GFX_VERSION
+        unset LEMONADE_LLAMACPP_ROCM_BIN VIDEO_GID RENDER_GID
+        load_env
+    }
+
+    _gpu_reassign_stack_ready() {
+        local -a compose_flags=("$@")
+        local configured_services
+        configured_services=$(docker compose "${compose_flags[@]}" config --services 2>/dev/null) \
+            || return 1
+
+        local required_service container_id state status health
+        for required_service in dashboard-api llama-server; do
+            grep -qxF "$required_service" <<<"$configured_services" || return 1
+            container_id=$(docker compose "${compose_flags[@]}" ps -q "$required_service" 2>/dev/null) \
+                || return 1
+            [[ -n "$container_id" ]] || return 1
+            state=$(docker inspect \
+                --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+                "$container_id" 2>/dev/null) || return 1
+            read -r status health <<<"$state"
+            [[ "$status" == "running" ]] || return 1
+            [[ -z "$health" || "$health" == "healthy" ]] || return 1
+        done
+
+        local dashboard_port="${DASHBOARD_API_PORT:-3002}"
+        curl --silent --show-error --fail --max-time 5 \
+            "http://127.0.0.1:${dashboard_port}/health" >/dev/null 2>&1 \
+            || return 1
+
+        local llm_port="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-11434}}"
+        local llm_base_path="${LLM_API_BASE_PATH:-}"
+        if [[ -z "$llm_base_path" ]]; then
+            [[ "${GPU_BACKEND:-nvidia}" == "amd" ]] \
+                && llm_base_path="/api/v1" \
+                || llm_base_path="/v1"
+        fi
+        llm_base_path="/${llm_base_path#/}"
+        llm_base_path="${llm_base_path%/}"
+        local models_response model_id completion_payload completion_response
+        models_response=$(curl --silent --show-error --fail --max-time 10 \
+            "http://127.0.0.1:${llm_port}${llm_base_path}/models" 2>/dev/null) \
+            || return 1
+        model_id=$(printf '%s' "$models_response" | jq -er '.data[0].id') || return 1
+        completion_payload=$(jq -cn --arg model "$model_id" '{
+            model: $model,
+            messages: [{role: "user", content: "Reply with OK."}],
+            max_tokens: 1,
+            temperature: 0
+        }') || return 1
+        completion_response=$(curl --silent --show-error --fail --max-time 30 \
+            "http://127.0.0.1:${llm_port}${llm_base_path}/chat/completions" \
+            -H "Content-Type: application/json" \
+            -d "$completion_payload" 2>/dev/null) || return 1
+        printf '%s' "$completion_response" \
+            | jq -e '.choices[0].message.content != null' >/dev/null 2>&1
+    }
+
+    _gpu_reassign_wait_for_stack() {
+        local -a compose_flags=("$@")
+        local attempts="${ODS_GPU_REASSIGN_HEALTH_ATTEMPTS:-30}"
+        local interval="${ODS_GPU_REASSIGN_HEALTH_INTERVAL_SECONDS:-3}"
+        [[ "$attempts" =~ ^[1-9][0-9]*$ ]] || attempts=30
+        [[ "$interval" =~ ^[0-9]+([.][0-9]+)?$ ]] || interval=3
+
+        local attempt
+        for ((attempt = 1; attempt <= attempts; attempt++)); do
+            if _gpu_reassign_stack_ready "${compose_flags[@]}"; then
+                return 0
+            fi
+            (( attempt < attempts )) && sleep "$interval"
+        done
+        return 1
+    }
+
+    _gpu_reassign_apply_with_rollback() {
+        local backup_file="$1"
+        shift
+
+        # Values exported by the initial load_env take precedence over .env in
+        # Compose. Reload after mutation so the first recreate receives the
+        # assignment that was just persisted.
+        _gpu_reassign_reload_env
+        if docker compose "$@" up -d --force-recreate \
+           && _gpu_reassign_wait_for_stack "$@"; then
+            return 0
+        fi
+
+        warn "GPU assignment did not become healthy; restoring the previous .env"
+        cp "$backup_file" "$INSTALL_DIR/.env"
+        _gpu_reassign_reload_env
+        if docker compose "$@" up -d --force-recreate \
+           && _gpu_reassign_wait_for_stack "$@"; then
+            return 1
+        fi
+        return 2
+    }
 
     # ── Manual assignment mode ──
     if [[ "$manual_mode" -eq 1 ]]; then
@@ -4023,24 +5630,98 @@ _gpu_reassign() {
         fi
         echo ""
 
-        local _manual_llama _manual_whisper _manual_comfyui
+        local _manual_llama _manual_whisper _manual_comfyui _manual_embeddings
         echo -n "  GPU(s) for llama-server (comma-separated indices, e.g. 0,1,2,3): "
         read -r _manual_llama
-        echo -n "  GPU for whisper          (index, or blank to skip): "
+        echo -n "  GPU for whisper          (index, blank keeps current): "
         read -r _manual_whisper
-        echo -n "  GPU for comfyui          (index, or blank to skip): "
+        echo -n "  GPU for comfyui          (index, blank keeps current): "
         read -r _manual_comfyui
+        echo -n "  GPU for embeddings       (index, blank keeps current): "
+        read -r _manual_embeddings
 
-        # Build UUID lists from indices
-        local uuid_map
-        if [[ "$backend" == "amd" ]]; then
-            uuid_map=$(echo "$topo_json" | jq -r '.gpus[] | "\(.index), \(.uuid)"' 2>/dev/null)
-        else
-            uuid_map=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader,nounits 2>/dev/null)
+        local current_assignment_json=""
+        local current_assignment_b64="${GPU_ASSIGNMENT_JSON_B64:-}"
+        if [[ -n "$current_assignment_b64" ]]; then
+            current_assignment_json=$(echo "$current_assignment_b64" | tr -d '\r' | tr -d '[:space:]' \
+                | base64 -d 2>/dev/null || true)
+            echo "$current_assignment_json" | jq -e \
+                '.gpu_assignment.services | type == "object"' >/dev/null 2>&1 \
+                || current_assignment_json=""
         fi
 
+        _current_manual_service_index() {
+            local service="$1" env_index_key="$2" env_uuid_key="$3"
+            local current=""
+            if [[ -n "$current_assignment_json" ]]; then
+                current=$(echo "$current_assignment_json" | jq -r --arg service "$service" \
+                    '.gpu_assignment.services[$service].gpu_indices[0] // empty')
+            fi
+            if [[ -z "$current" && "$backend" == "amd" && -n "$env_index_key" ]]; then
+                current="${!env_index_key:-}"
+            fi
+            if [[ -z "$current" && -n "$env_uuid_key" ]]; then
+                local current_uuid="${!env_uuid_key:-}"
+                if [[ -n "$current_uuid" ]]; then
+                    current=$(echo "$topo_json" | jq -r --arg uuid "$current_uuid" \
+                        '.gpus[] | select(.uuid == $uuid) | .index')
+                fi
+            fi
+            local normalized_services=",${enabled_services//[[:space:]]/},"
+            if [[ -z "$current" \
+                && ( "$normalized_services" == *",$service,"* \
+                    || "$normalized_services" == *",all,"* ) ]]; then
+                current=$(echo "$topo_json" | jq -r '.gpus[0].index // empty')
+            fi
+            echo "$current"
+        }
+
+        [[ -n "$(echo "$_manual_whisper" | tr -d '[:space:]')" ]] \
+            || _manual_whisper=$(_current_manual_service_index \
+                "whisper" "WHISPER_GPU_INDEX" "WHISPER_GPU_UUID")
+        [[ -n "$(echo "$_manual_comfyui" | tr -d '[:space:]')" ]] \
+            || _manual_comfyui=$(_current_manual_service_index \
+                "comfyui" "COMFYUI_GPU_INDEX" "COMFYUI_GPU_UUID")
+        [[ -n "$(echo "$_manual_embeddings" | tr -d '[:space:]')" ]] \
+            || _manual_embeddings=$(_current_manual_service_index \
+                "embeddings" "EMBEDDINGS_GPU_INDEX" "EMBEDDINGS_GPU_UUID")
+
+        _normalize_manual_gpu_indices() {
+            local raw="$1" allow_blank="${2:-false}" allow_multiple="${3:-true}" normalized idx
+            normalized=$(echo "$raw" | tr -d '[:space:]')
+            if [[ -z "$normalized" ]]; then
+                [[ "$allow_blank" == "true" ]] && return 0
+                return 1
+            fi
+            [[ "$normalized" =~ ^[0-9]+(,[0-9]+)*$ ]] || return 1
+            [[ "$allow_multiple" == "true" || "$normalized" != *,* ]] || return 1
+
+            local -A seen=()
+            local validated=() requested=()
+            IFS=',' read -ra requested <<< "$normalized"
+            for idx in "${requested[@]}"; do
+                [[ -z "${seen[$idx]+x}" ]] || return 1
+                echo "$topo_json" | jq -e --argjson idx "$idx" \
+                    '.gpus | any(.index == $idx)' >/dev/null || return 1
+                seen[$idx]=1
+                validated+=("$idx")
+            done
+            local IFS=,
+            echo "${validated[*]}"
+        }
+
+        _manual_llama=$(_normalize_manual_gpu_indices "$_manual_llama") \
+            || error "Invalid llama-server GPU list. Use unique indices shown above."
+        _manual_whisper=$(_normalize_manual_gpu_indices "$_manual_whisper" true false) \
+            || error "Invalid Whisper GPU index."
+        _manual_comfyui=$(_normalize_manual_gpu_indices "$_manual_comfyui" true false) \
+            || error "Invalid ComfyUI GPU index."
+        _manual_embeddings=$(_normalize_manual_gpu_indices "$_manual_embeddings" true false) \
+            || error "Invalid embeddings GPU index."
+
         _get_uuid() {
-            echo "$uuid_map" | awk -F', ' -v i="$1" '{gsub(/ /,"",$1); if($1==i){gsub(/ /,"",$2); print $2; exit}}'
+            echo "$topo_json" | jq -r --argjson idx "$1" \
+                '.gpus[] | select(.index == $idx) | .uuid'
         }
 
         local llama_uuid_list=""
@@ -4050,44 +5731,143 @@ _gpu_reassign() {
             [[ -n "$_u" ]] && llama_uuid_list="${llama_uuid_list:+$llama_uuid_list,}$_u"
         done
 
-        local whisper_uuid_m="" comfyui_uuid_m=""
+        local whisper_uuid_m="" comfyui_uuid_m="" embeddings_uuid_m=""
         [[ -n "$_manual_whisper" ]] && whisper_uuid_m=$(_get_uuid "$(echo "$_manual_whisper" | tr -d ' ')")
         [[ -n "$_manual_comfyui" ]] && comfyui_uuid_m=$(_get_uuid "$(echo "$_manual_comfyui" | tr -d ' ')")
+        [[ -n "$_manual_embeddings" ]] && embeddings_uuid_m=$(_get_uuid "$(echo "$_manual_embeddings" | tr -d ' ')")
 
         # How many llama GPUs?
         local llama_gpu_count
         llama_gpu_count=$(echo "$_manual_llama" | tr ',' '\n' | grep -c '[0-9]' || true)
 
-        local split_mode_m="none"
+        local split_mode_m="none" parallelism_mode_m="none" tensor_split_m=""
         if [[ "$llama_gpu_count" -gt 1 ]]; then
             echo -n "  Parallelism mode for llama-server (tensor/pipeline/none) [tensor]: "
             read -r _para
             case "${_para:-tensor}" in
-                tensor|hybrid) split_mode_m="row" ;;
-                pipeline)      split_mode_m="layer" ;;
-                *)             split_mode_m="none" ;;
+                tensor|hybrid)
+                    split_mode_m="row"
+                    parallelism_mode_m="tensor"
+                    tensor_split_m=$(printf '1,%.0s' $(seq 1 "$llama_gpu_count"))
+                    tensor_split_m="${tensor_split_m%,}"
+                    ;;
+                pipeline)
+                    split_mode_m="layer"
+                    parallelism_mode_m="pipeline"
+                    ;;
+                none)
+                    split_mode_m="none"
+                    parallelism_mode_m="none"
+                    ;;
+                *) error "Invalid parallelism mode. Choose tensor, pipeline, or none." ;;
             esac
         fi
+
+        _manual_service_json() {
+            local indices_csv="$1"
+            [[ -n "$indices_csv" ]] || { echo "null"; return; }
+            echo "$topo_json" | jq -c --arg csv "$indices_csv" '
+                ($csv | split(",") | map(tonumber)) as $indices |
+                {
+                    gpus: [
+                        $indices[] as $idx |
+                        .gpus[] |
+                        select(.index == $idx) |
+                        .uuid
+                    ],
+                    gpu_indices: $indices
+                }
+            '
+        }
+
+        local llama_service_json whisper_service_json comfyui_service_json embeddings_service_json
+        llama_service_json=$(_manual_service_json "$_manual_llama")
+        whisper_service_json=$(_manual_service_json "$_manual_whisper")
+        comfyui_service_json=$(_manual_service_json "$_manual_comfyui")
+        embeddings_service_json=$(_manual_service_json "$_manual_embeddings")
+
+        local manual_assignment_json
+        manual_assignment_json=$(jq -cn \
+            --argjson llama "$llama_service_json" \
+            --argjson whisper "$whisper_service_json" \
+            --argjson comfyui "$comfyui_service_json" \
+            --argjson embeddings "$embeddings_service_json" \
+            --arg mode "$parallelism_mode_m" \
+            --argjson count "$llama_gpu_count" \
+            --arg tensor_split "$tensor_split_m" '
+            {
+                gpu_assignment: {
+                    version: "1.0",
+                    strategy: "manual",
+                    services: (
+                        {
+                            llama_server: (
+                                $llama + {
+                                    parallelism: (
+                                        {
+                                            mode: $mode,
+                                            tensor_parallel_size: (
+                                                if $mode == "tensor" then $count else 1 end
+                                            ),
+                                            pipeline_parallel_size: (
+                                                if $mode == "pipeline" then $count else 1 end
+                                            ),
+                                            gpu_memory_utilization: (
+                                                if $mode == "tensor" then 0.93 else 0.95 end
+                                            )
+                                        } + (
+                                            if $tensor_split == "" then {}
+                                            else {
+                                                tensor_split: (
+                                                    $tensor_split |
+                                                    split(",") |
+                                                    map(tonumber)
+                                                )
+                                            }
+                                            end
+                                        )
+                                    )
+                                }
+                            )
+                        }
+                        + (if $whisper == null then {} else {whisper: $whisper} end)
+                        + (if $comfyui == null then {} else {comfyui: $comfyui} end)
+                        + (if $embeddings == null then {} else {embeddings: $embeddings} end)
+                    )
+                }
+            }
+        ') || error "Failed to build manual GPU assignment"
 
         if [[ "$dry_run" -eq 1 ]]; then
             echo ""
             echo "  Dry run — manual assignment:"
-            echo "    llama-server: $(echo "$_manual_llama" | tr ',' ' ' | sed 's/[^ ]*/GPU&/g')"
-            [[ -n "$_manual_whisper" ]] && echo "    whisper:      GPU${_manual_whisper}"
-            [[ -n "$_manual_comfyui" ]] && echo "    comfyui:      GPU${_manual_comfyui}"
-            echo "    split_mode:   ${split_mode_m}"
+            echo "$manual_assignment_json" | jq '.gpu_assignment'
             return
         fi
 
+        local manual_assignment_b64
+        if [[ "$(uname)" == "Linux" ]]; then
+            manual_assignment_b64=$(echo "$manual_assignment_json" | base64 -w0)
+        else
+            manual_assignment_b64=$(echo "$manual_assignment_json" | base64 | tr -d '\r\n')
+        fi
+
         log "Updating .env with manual assignment..."
-        [[ -n "$llama_uuid_list" ]]  && _env_set "LLAMA_SERVER_GPU_UUIDS" "$llama_uuid_list"
+        _env_set "GPU_ASSIGNMENT_JSON_B64" "$manual_assignment_b64"
+        _env_set "LLAMA_SERVER_GPU_UUIDS" "$llama_uuid_list"
+        _env_set "LLAMA_SERVER_GPU_INDICES" "$_manual_llama"
         _env_set "LLAMA_ARG_SPLIT_MODE" "$split_mode_m"
-        [[ -n "$whisper_uuid_m" ]]   && _env_set "WHISPER_GPU_UUID"  "$whisper_uuid_m"
-        [[ -n "$comfyui_uuid_m" ]]   && _env_set "COMFYUI_GPU_UUID"  "$comfyui_uuid_m"
+        _env_set "LLAMA_ARG_TENSOR_SPLIT" "$tensor_split_m"
+        _env_set "WHISPER_GPU_UUID" "$whisper_uuid_m"
+        _env_set "COMFYUI_GPU_UUID" "$comfyui_uuid_m"
+        _env_set "EMBEDDINGS_GPU_UUID" "$embeddings_uuid_m"
 
         # AMD-specific: write render node and ROCR env vars
         if [[ "$backend" == "amd" ]]; then
             _gpu_reassign_write_amd_env "$topo_json" "$_manual_llama"
+            _env_set "WHISPER_GPU_INDEX" "$_manual_whisper"
+            _env_set "COMFYUI_GPU_INDEX" "$_manual_comfyui"
+            _env_set "EMBEDDINGS_GPU_INDEX" "$_manual_embeddings"
         fi
 
         success "Manual GPU assignment saved"
@@ -4101,9 +5881,14 @@ _gpu_reassign() {
                 read -ra _flags <<< "$_flags_str"
                 cd "$INSTALL_DIR"
                 log "Recreating all containers with new GPU assignment..."
-                docker compose "${_flags[@]}" down --remove-orphans
-                docker compose "${_flags[@]}" up -d
-                success "All services recreated with new GPU assignment"
+                local apply_rc=0
+                _gpu_reassign_apply_with_rollback "$env_backup" "${_flags[@]}" \
+                    || apply_rc=$?
+                case "$apply_rc" in
+                    0) success "All services recreated with new GPU assignment" ;;
+                    1) error "GPU assignment failed to apply; the previous configuration and containers were restored" ;;
+                    *) error "GPU assignment failed and automatic rollback could not recreate the previous stack" ;;
+                esac
                 ;;
             *) echo "  Run 'ods restart' when ready." ;;
         esac
@@ -4125,11 +5910,14 @@ _gpu_reassign() {
     fi
 
     # Extract individual env vars from assignment JSON
-    local strategy llama_uuids split_mode tensor_split
+    local strategy llama_uuids llama_indices split_mode tensor_split
     local whisper_uuid comfyui_uuid embeddings_uuid
 
     strategy=$(echo "$assignment_json"    | jq -r '.gpu_assignment.strategy // "unknown"')
     llama_uuids=$(echo "$assignment_json" | jq -r '(.gpu_assignment.services.llama_server.gpus // []) | join(",")' 2>/dev/null || echo "")
+    llama_indices=$(echo "$assignment_json" | jq -r '(.gpu_assignment.services.llama_server.gpu_indices // []) | map(tostring) | join(",")' 2>/dev/null || echo "")
+    [[ -n "$llama_uuids" && -n "$llama_indices" ]] \
+        || error "GPU assignment did not contain a usable llama-server mapping"
 
     local _para_mode
     _para_mode=$(echo "$assignment_json" | jq -r '.gpu_assignment.services.llama_server.parallelism.mode // "none"')
@@ -4159,12 +5947,13 @@ _gpu_reassign() {
 
     # Write to .env
     log "Updating .env..."
-    [[ -n "$llama_uuids" ]]     && _env_set "LLAMA_SERVER_GPU_UUIDS" "$llama_uuids"
+    _env_set "LLAMA_SERVER_GPU_UUIDS" "$llama_uuids"
+    _env_set "LLAMA_SERVER_GPU_INDICES" "$llama_indices"
     _env_set "LLAMA_ARG_SPLIT_MODE" "$split_mode"
-    [[ -n "$tensor_split" ]]    && _env_set "LLAMA_ARG_TENSOR_SPLIT" "$tensor_split"
-    [[ -n "$whisper_uuid" ]]    && _env_set "WHISPER_GPU_UUID" "$whisper_uuid"
-    [[ -n "$comfyui_uuid" ]]    && _env_set "COMFYUI_GPU_UUID" "$comfyui_uuid"
-    [[ -n "$embeddings_uuid" ]] && _env_set "EMBEDDINGS_GPU_UUID" "$embeddings_uuid"
+    _env_set "LLAMA_ARG_TENSOR_SPLIT" "$tensor_split"
+    _env_set "WHISPER_GPU_UUID" "$whisper_uuid"
+    _env_set "COMFYUI_GPU_UUID" "$comfyui_uuid"
+    _env_set "EMBEDDINGS_GPU_UUID" "$embeddings_uuid"
     _env_set "GPU_ASSIGNMENT_JSON_B64" "$assignment_b64"
 
     # AMD-specific: write render node, ROCR_VISIBLE_DEVICES, gfx overrides
@@ -4177,17 +5966,19 @@ _gpu_reassign() {
             _idx=$(echo "$topo_json" | jq -r --arg u "$_uuid" '.gpus[] | select(.uuid == $u) | .index')
             llama_idx_csv="${llama_idx_csv:+$llama_idx_csv,}${_idx}"
         done < <(echo "$assignment_json" | jq -r '.gpu_assignment.services.llama_server.gpus[]' 2>/dev/null)
-        [[ -n "$llama_idx_csv" ]] && _env_set "LLAMA_SERVER_GPU_INDICES" "$llama_idx_csv"
+        _env_set "LLAMA_SERVER_GPU_INDICES" "$llama_idx_csv"
         _env_set "ROCR_VISIBLE_DEVICES" "$llama_idx_csv"
         _gpu_reassign_update_amd_arch_env "$topo_json" "$llama_idx_csv"
 
         # Write GPU index for auxiliary services (whisper, comfyui, embeddings)
         _amd_svc_env() {
             local svc_prefix="$1" svc_uuid="$2"
-            [[ -z "$svc_uuid" ]] && return
-            local _si
-            _si=$(echo "$topo_json" | jq -r --arg u "$svc_uuid" '.gpus[] | select(.uuid == $u) | .index')
-            [[ -n "$_si" && "$_si" != "null" ]] && _env_set "${svc_prefix}_GPU_INDEX" "$_si"
+            local _si=""
+            if [[ -n "$svc_uuid" ]]; then
+                _si=$(echo "$topo_json" | jq -r --arg u "$svc_uuid" '.gpus[] | select(.uuid == $u) | .index')
+                [[ "$_si" != "null" ]] || _si=""
+            fi
+            _env_set "${svc_prefix}_GPU_INDEX" "$_si"
         }
         _amd_svc_env "WHISPER" "$whisper_uuid"
         _amd_svc_env "COMFYUI" "$comfyui_uuid"
@@ -4213,9 +6004,14 @@ _gpu_reassign() {
             read -ra _flags <<< "$_flags_str"
             cd "$INSTALL_DIR"
             log "Recreating all containers with new GPU assignment..."
-            docker compose "${_flags[@]}" down --remove-orphans
-            docker compose "${_flags[@]}" up -d
-            success "All services recreated with new GPU assignment"
+            local apply_rc=0
+            _gpu_reassign_apply_with_rollback "$env_backup" "${_flags[@]}" \
+                || apply_rc=$?
+            case "$apply_rc" in
+                0) success "All services recreated with new GPU assignment" ;;
+                1) error "GPU assignment failed to apply; the previous configuration and containers were restored" ;;
+                *) error "GPU assignment failed and automatic rollback could not recreate the previous stack" ;;
+            esac
             ;;
         *) echo "  Run 'ods restart' when ready." ;;
     esac
@@ -4262,6 +6058,13 @@ cmd_repair() {
             local script="$INSTALL_DIR/scripts/prune-hermes-slash-workers.sh"
             [[ -x "$script" ]] || error "Hermes slash worker repair script not found or not executable: $script"
             "$script" --force
+            ;;
+        rootless-ownership|rootless)
+            local script="$INSTALL_DIR/lib/rootless-ownership.sh"
+            [[ -f "$script" ]] || error "Rootless ownership helper not found: $script"
+            # shellcheck source=lib/rootless-ownership.sh
+            source "$script"
+            ods_fix_rootless_ownership "$INSTALL_DIR"
             ;;
         voice|stt|tts)
             local flags_str
@@ -4323,7 +6126,7 @@ cmd_repair() {
             success "Voice repair complete"
             ;;
         *)
-            log "Usage: ods repair [voice|hermes-workers]"
+            log "Usage: ods repair [voice|hermes-workers|rootless-ownership]"
             log_error "Unknown repair target: $target"
             return 1
             ;;
@@ -4539,6 +6342,8 @@ ${CYAN}Commands:${NC}
                       Switch between local/cloud/hybrid modes
   model [current|list|swap]
                       View or change the local LLM model tier
+  remote-provider [status|plan|configure|test|disable|remove|peer-models]
+                      Configure, test, disable, or inspect remote GPU provider routing
   stt [current|status|download] [MODEL]
                       View Whisper STT model, check cache, or trigger download
   backup [options]    Create a backup of user data and config
@@ -4588,6 +6393,24 @@ ${CYAN}Model Commands:${NC}
   model list          List available tiers
   model swap <tier>   Switch to a different model tier
 
+${CYAN}Remote Provider Commands:${NC}
+  remote-provider status [--json]
+                      Show remote GPU route and egress status
+  remote-provider plan <action>
+                      Preview configure/test/disable/remove as redacted JSON
+  remote-provider configure --base-url URL --model MODEL --api-key-stdin
+                      Persist a direct OpenAI-compatible remote GPU provider
+  remote-provider test [--json]
+                      Probe the configured provider through egress
+  remote-provider test --base-url URL --model MODEL --api-key-stdin
+                      Probe a provider without writing state or secrets
+  remote-provider peer-models list [--json]
+                      List authenticated remote ODS peer models
+  remote-provider peer-models load MODEL
+                      Load a downloaded model on the remote ODS peer
+  remote-provider peer-models delete MODEL --yes
+                      Delete a downloaded model from the remote ODS peer
+
 ${CYAN}Service aliases:${NC}
 EOF
     # Dynamic alias listing from registry
@@ -4619,6 +6442,11 @@ ${CYAN}Examples:${NC}
   ods enable n8n                # Enable the n8n extension
   ods disable whisper           # Disable Whisper STT
   ods mode local                # Switch to local mode
+  ods remote-provider test      # Probe the configured remote provider route
+  printf '%s\n' "\$REMOTE_LLM_API_KEY" | ods remote-provider test --base-url https://gpu.example/v1 --model qwen/remote:latest --api-key-stdin
+                                  # Test a remote provider without persisting secrets
+  ods remote-provider peer-models list
+                                  # List models on the authenticated remote ODS peer
   ods preset save my-setup      # Snapshot your config
   ods preset load my-setup      # Restore it later
   ods preset export my-setup my-setup.tar.gz
@@ -4647,6 +6475,7 @@ ${CYAN}Examples:${NC}
   ods agent status              # Check host agent health
   ods agent restart             # Restart host agent
   ods repair voice              # Start voice services and cache STT model
+  ods repair rootless-ownership # Repair active bind mounts for rootless Docker
   ods repair hermes-workers     # Prune leaked Hermes slash_worker children
 
 ${CYAN}Environment:${NC}
@@ -4669,6 +6498,7 @@ case "${1:-help}" in
     preset|p)    shift; cmd_preset "$@" ;;
     mode|m)      shift; cmd_mode "$@" ;;
     model)       shift; cmd_model "$@" ;;
+    remote-provider) shift; cmd_remote_provider "$@" ;;
     stt)         shift; cmd_stt "$@" ;;
     backup)      shift; cmd_backup "$@" ;;
     restore)     shift; cmd_restore "$@" ;;

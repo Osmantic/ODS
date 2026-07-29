@@ -3,7 +3,7 @@
 
 FROM python:3.11-slim
 
-LABEL org.opencontainers.image.source="https://github.com/Light-Heart-Labs/ODS"
+LABEL org.opencontainers.image.source="https://github.com/Osmantic/ODS"
 LABEL org.opencontainers.image.description="ODS Dashboard API"
 
 WORKDIR /app
@@ -25,6 +25,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # level (won't recurse into routers/, tests/, etc.) and matches the
 # filesystem shape (one flat module dir per service).
 COPY *.py ./
+COPY performance_evidence.json ./
 COPY routers/ routers/
 
 # Non-root user

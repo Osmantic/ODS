@@ -42,6 +42,19 @@ def test_usage_readiness_requires_auth(test_client):
     assert resp.status_code == 401
 
 
+def test_runtime_model_name_uses_live_persisted_state(monkeypatch):
+    import routers.usage as usage_router
+
+    values = {"GGUF_FILE": "new-model.gguf", "LLM_MODEL": "new-model"}
+    monkeypatch.setattr(
+        usage_router,
+        "read_live_env_value",
+        lambda key, default="": values.get(key, default),
+    )
+
+    assert usage_router._runtime_model_name() == "new-model.gguf"
+
+
 def test_usage_readiness_reports_ready_token_spy(test_client, monkeypatch):
     import routers.usage as usage_router
 
@@ -271,6 +284,57 @@ def test_usage_report_rejects_reversed_date_range(test_client):
     assert data["source"]["detail"] == "end must be on or after start"
 
 
+def test_usage_report_rejects_oversized_date_range(test_client):
+    # A span like 0001-01-01..9999-12-31 passes the shape and ordering checks
+    # but would materialize millions of daily buckets. The endpoint must
+    # reject it as invalid_range with an empty daily list, not build them.
+    resp = test_client.get(
+        "/api/usage/report?start=0001-01-01&end=9999-12-31",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"]["status"] == "invalid_range"
+    assert data["source"]["detail"] == "Date range too large (max 366 days)"
+    assert data["daily"] == []
+
+
+def test_usage_report_accepts_full_year_range(test_client, monkeypatch):
+    # 366 inclusive days (a leap year) is the documented ceiling and must
+    # still produce a normal report with per-day buckets.
+    import routers.usage as usage_router
+
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_URL", "")
+    monkeypatch.setattr(usage_router, "_fetch_local_runtime_counters", AsyncMock(return_value=[]))
+
+    resp = test_client.get(
+        "/api/usage/report?start=2024-01-01&end=2024-12-31",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"]["status"] != "invalid_range"
+    assert len(data["daily"]) == 366
+
+
+def test_usage_report_rejects_calendar_invalid_dates(test_client):
+    # Month 13 and Feb 30 pass the route's YYYY-MM-DD regex but are not real
+    # dates; the endpoint must answer with invalid_range, not crash with 500.
+    for query in ("start=2026-13-01&end=2026-13-02", "start=2026-02-30&end=2026-03-01"):
+        resp = test_client.get(
+            f"/api/usage/report?{query}",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source"]["status"] == "invalid_range"
+        assert data["source"]["detail"] == "Dates must be valid YYYY-MM-DD calendar dates"
+        assert data["daily"] == []
+
+
 def test_usage_report_surfaces_local_runtime_counters_without_date_bucketing(test_client, monkeypatch):
     import routers.usage as usage_router
 
@@ -436,3 +500,21 @@ def test_usage_token_spy_key_falls_back_to_shared_data_file(tmp_path, monkeypatc
     monkeypatch.setattr(usage_router, "TOKEN_SPY_KEY_FILE", key_file)
 
     assert usage_router._token_spy_api_key() == "file-key"
+
+
+def test_token_spy_api_key_preserves_opaque_secret_and_handles_unicode_error(tmp_path, monkeypatch):
+    import routers.usage as usage_router
+
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_API_KEY", ' "quoted-env-key" ')
+    assert usage_router._token_spy_api_key() == '"quoted-env-key"'
+
+    quoted_key_file = tmp_path / "quoted.txt"
+    quoted_key_file.write_text(' "quoted-file-key" \n', encoding="utf-8")
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_API_KEY", "")
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_KEY_FILE", quoted_key_file)
+    assert usage_router._token_spy_api_key() == '"quoted-file-key"'
+
+    bad_key_file = tmp_path / "bad.txt"
+    bad_key_file.write_bytes(b"\x80\x81\x82")
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_KEY_FILE", bad_key_file)
+    assert usage_router._token_spy_api_key() == ""
