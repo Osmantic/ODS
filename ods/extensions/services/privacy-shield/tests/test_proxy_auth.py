@@ -76,8 +76,6 @@ class TestHealthAuth:
             "status",
             "service",
             "version",
-            "target_api",
-            "cache_enabled",
             "active_sessions",
         }
         assert body["service"] == "api-privacy-shield"
