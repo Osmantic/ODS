@@ -624,6 +624,45 @@
       "install_recommendation": true
     },
     {
+      "id": "g9v3-3b-q4",
+      "name": "G9v3 3B",
+      "family": "g9v3",
+      "gguf_file": "ai9stars_G9v3-3B-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/bartowski/ai9stars_G9v3-3B-GGUF/resolve/11fe5d21c70f1c6f5e66ca433d1a533738998225/ai9stars_G9v3-3B-Q4_K_M.gguf",
+      "gguf_sha256": "0a14c40b1cb02ec21643fb9f080d8bbfea27bb4b6e1f9f6c9ad87db5051af0a1",
+      "size_bytes": 1902590528,
+      "size_mb": 1903,
+      "vram_required_gb": 4,
+      "context_length": 65536,
+      "max_context_length": 131072,
+      "total_params_b": 3,
+      "active_params_b": 3,
+      "architecture": "dense",
+      "quantization": "Q4_K_M",
+      "specialty": "Compact Reasoning",
+      "description": "AI9Stars' July 2026 Apache-2.0 dense Llama model for reasoning, coding, and tool use. Artificial Analysis ranks it first among 44 open-weight models at 4B parameters or less, but ODS keeps this third-party GGUF staged pending exact six-host validation.",
+      "tokens_per_sec_estimate": 150,
+      "llm_model_name": "g9v3-3b",
+      "llama_server_image": null,
+      "install_recommendation": false,
+      "quality_evidence": {
+        "source": "Artificial Analysis Intelligence Index v4.1",
+        "source_url": "https://artificialanalysis.ai/models/g9v3-3b",
+        "benchmark": "Artificial Analysis Intelligence Index",
+        "score": 16,
+        "assessed_at": "2026-07-28",
+        "independent": true,
+        "note": "Ranked #1 of 44 open-weight models at 4B parameters or less. Artificial Analysis reports an 88M-token evaluation footprint versus a 34M class median, so ODS treats short-response behavior as an explicit fleet-validation risk."
+      },
+      "source_evidence": {
+        "model_card": "https://huggingface.co/ai9stars/G9v3-3B",
+        "model_revision": "d9553445ff92dbce667381954c9699fbcbc924f9",
+        "gguf_repository": "bartowski/ai9stars_G9v3-3B-GGUF",
+        "gguf_revision": "11fe5d21c70f1c6f5e66ca433d1a533738998225",
+        "license": "apache-2.0"
+      }
+    },
+    {
       "id": "granite4.1-3b-q4",
       "name": "Granite 4.1 3B",
       "family": "granite",
