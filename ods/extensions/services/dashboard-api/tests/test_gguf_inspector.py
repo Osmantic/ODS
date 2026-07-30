@@ -327,3 +327,15 @@ def test_boolean_metadata_value_is_ignored_for_integer_fields(tmp_path):
 
     assert result["readable"] is True
     assert result["context_length"] is None
+
+
+def test_oversized_metadata_count_degrades_gracefully(tmp_path):
+    # GGUF header with valid magic/version but astronomically large metadata_count
+    import struct
+    content = b"GGUF" + struct.pack("<IQQ", 3, 10, 999999999999)
+    p = tmp_path / "corrupt.gguf"
+    p.write_bytes(content)
+
+    res = inspect_gguf(p)
+    assert res["readable"] is False
+    assert "exceeds file buffer size" in res["error"]

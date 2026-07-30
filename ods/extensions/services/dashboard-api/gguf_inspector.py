@@ -134,6 +134,8 @@ def _skip_value(reader: _Reader, value_type: int, depth: int = 0) -> None:
             raise ValueError("GGUF array nesting too deep")
         item_type = reader.unpack("<I")
         length = reader.unpack("<Q")
+        if length > len(reader.data):
+            raise ValueError(f"GGUF array length {length} exceeds file buffer size")
         for _ in range(length):
             _skip_value(reader, item_type, depth + 1)
         return
@@ -145,6 +147,8 @@ def _read_array(reader: _Reader, depth: int = 0) -> Any:
         raise ValueError("GGUF array nesting too deep")
     item_type = reader.unpack("<I")
     length = reader.unpack("<Q")
+    if length > len(reader.data):
+        raise ValueError(f"GGUF array length {length} exceeds file buffer size")
     if item_type not in _STRUCTS and item_type not in (8, 9):
         raise ValueError(f"unsupported GGUF array type: {item_type}")
 
@@ -203,6 +207,8 @@ def inspect_gguf(path: Path | str, max_metadata_bytes: int = 8 * 1024 * 1024) ->
         version = reader.unpack("<I")
         tensor_count = reader.unpack("<Q")
         metadata_count = reader.unpack("<Q")
+        if metadata_count > len(data):
+            raise ValueError(f"GGUF metadata count {metadata_count} exceeds file buffer size")
         metadata: dict[str, Any] = {}
         for _ in range(metadata_count):
             key = reader.string()
