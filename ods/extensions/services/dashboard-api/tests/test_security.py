@@ -44,3 +44,10 @@ class TestVerifyApiKey:
         with pytest.raises(HTTPException) as exc_info:
             await security.verify_api_key(creds)
         assert exc_info.value.status_code == 403
+
+    def test_quoted_or_whitespace_key_is_normalized(self, monkeypatch):
+        monkeypatch.setenv("DASHBOARD_API_KEY", ' "my-secret-key" ')
+        import importlib
+        import security as sec_mod
+        importlib.reload(sec_mod)
+        assert sec_mod.DASHBOARD_API_KEY == "my-secret-key"
