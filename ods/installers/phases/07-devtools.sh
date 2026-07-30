@@ -17,7 +17,7 @@
 ods_progress 42 "devtools" "Installing developer tools"
 if $DRY_RUN; then
     log "[DRY RUN] Would install AI developer tools (Claude Code, Codex CLI, OpenCode)"
-    log "[DRY RUN] Would configure OpenCode for local llama-server (user-level systemd service on port 3003)"
+    log "[DRY RUN] Would configure OpenCode for local llama-server (user-level systemd service on \${OPENCODE_PORT:-3003})"
     log "[DRY RUN] Would install ODS host agent systemd service (system-mode, port 7710)"
     log "[DRY RUN] Would install ODS mDNS announcer systemd service (if zeroconf available)"
 else
@@ -275,6 +275,18 @@ OPENCODE_EOF
             SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
             mkdir -p "$SYSTEMD_USER_DIR"
 
+            # OPENCODE_PORT is the documented override (.env.schema.json,
+            # config/ports.json, the opencode manifest's external_port_env) and
+            # is what the dashboard builds its OpenCode link from. macOS and
+            # Windows already launch OpenCode on it; honour it here too instead
+            # of baking 3003 into the unit.
+            _opencode_port="$(grep -E '^OPENCODE_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || true)"
+            if [[ ! "$_opencode_port" =~ ^[0-9]+$ ]] || (( _opencode_port < 1 || _opencode_port > 65535 )); then
+                [[ -n "$_opencode_port" ]] && \
+                    ai_warn "OPENCODE_PORT='${_opencode_port}' is not a valid port; using 3003"
+                _opencode_port="3003"
+            fi
+
             svc_tmp="$(mktemp "${TMPDIR:-/tmp}/opencode-web.service.XXXXXX")" || svc_tmp=""
             if [[ -z "$svc_tmp" ]]; then
                 ai_warn "Failed to create secure temp file for opencode-web.service; skipping user-level unit install"
@@ -287,13 +299,14 @@ OPENCODE_EOF
                 _sed_i "s|__HOME__|${_home_esc}|g" "$svc_tmp"
                 _sed_i "s|__OPENCODE_BIN__|${_opencode_bin_esc}|g" "$svc_tmp"
                 _sed_i "s|__OPENCODE_BIN_DIR__|${_opencode_bin_dir_esc}|g" "$svc_tmp"
+                _sed_i "s|__OPENCODE_PORT__|${_opencode_port}|g" "$svc_tmp"
                 cp "$svc_tmp" "$SYSTEMD_USER_DIR/opencode-web.service"
                 rm -f "$svc_tmp"
             fi
 
             systemctl --user daemon-reload 2>/dev/null || true
             systemctl --user enable --now opencode-web.service >> "$LOG_FILE" 2>&1 && \
-                ai_ok "OpenCode Web UI service installed (user-level, port 3003)" || \
+                ai_ok "OpenCode Web UI service installed (user-level, port ${_opencode_port})" || \
                 ai_warn "OpenCode Web UI service failed to start"
 
             # Enable lingering so service survives logout

@@ -199,6 +199,9 @@ jobs:
       - name: CPU-Only Path Tests
         run: bash tests/test-cpu-only-path.sh
 
+      - name: Linux OpenCode Path Tests
+        run: bash tests/test-linux-opencode-path.sh
+
       - name: Hermes Slash Worker Prune Tests
         run: |
           bash tests/test-hermes-slash-worker-prune.sh
