@@ -56,6 +56,12 @@
       "auth_required": true,
       "notes": "Caddy forward_auth gate in front of Hermes."
     },
+    "hipfire": {
+      "risk": "model-inference-api",
+      "lan_exposure": "operator-controlled",
+      "auth_required": false,
+      "notes": "Local OpenAI-compatible hipfire (ROCm) inference API; binds 127.0.0.1 by default like llama-server."
+    },
     "langfuse": {
       "risk": "observability-data-ui",
       "lan_exposure": "operator-controlled",

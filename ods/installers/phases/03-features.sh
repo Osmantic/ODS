@@ -189,6 +189,7 @@ if ! $DRY_RUN; then
     _sync_extension_compose "${ENABLE_TAILSCALE:-false}" tailscale "Tailscale"  "remote access not enabled"
     _sync_extension_compose "${ENABLE_LANGFUSE:-}"   langfuse   "Langfuse"      "LLM observability not enabled"
     _sync_extension_compose "${ENABLE_BRAVE_SEARCH:-false}" brave-search "Brave Search" "Brave Search API not enabled"
+    _sync_extension_compose "${ENABLE_HIPFIRE:-false}" hipfire    "hipfire"       "hipfire engine not enabled"
 
 fi
 

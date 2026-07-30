@@ -1,0 +1,19 @@
+# hipfire — AMD multi-GPU isolation overlay.
+#
+# compose.amd.yaml already mounts all of /dev/dri, and Compose appends device
+# lists rather than overriding them, so render-node passthrough is redundant.
+# ROCR_VISIBLE_DEVICES is what actually restricts hipfire to a single card.
+#
+# hipfire is SINGLE-CARD by necessity, not by choice: pipeline-parallel is still
+# on upstream's feat/multi-gpu-pp branch (issue #58), not master. `--tp N` is
+# expert-parallel for MoE routing, not a way to split one model across cards.
+# The 35B MQ4 needs ~30 GB, which fits one 32 GB R9700 with room for KV cache.
+#
+# House convention is ROCR_VISIBLE_DEVICES (HIP_VISIBLE_DEVICES appears nowhere
+# in the ODS tree). These are ROCm-global indices; they do NOT renumber when
+# GPU_COUNT changes.
+services:
+  hipfire:
+    # devices and group_add inherited from compose.amd.yaml
+    environment:
+      ROCR_VISIBLE_DEVICES: "${HIPFIRE_GPU_INDEX:-0}"

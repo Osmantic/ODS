@@ -1,0 +1,7 @@
+# hipfire — RDNA-native LLM inference engine
+# This base stub is merged with a GPU-specific overlay:
+#   compose.amd.yaml           (AMD ROCm — the only backend hipfire has)
+#   compose.multigpu-amd.yaml  (pins hipfire to one card when GPU_COUNT > 1)
+# The GPU overlay provides the full service definition.
+# This file exists so the registry can detect hipfire as enabled.
+services: {}
