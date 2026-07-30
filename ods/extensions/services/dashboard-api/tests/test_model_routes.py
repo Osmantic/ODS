@@ -244,3 +244,13 @@ def test_route_evidence_passes_through_instance_id(test_client, monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json()["instanceId"] == "0b7f9d2c-8a41-4f0e-9d5b-1c2e3f4a5b6c"
+
+
+def test_router_internal_key_unquotes_matched_pairs(monkeypatch):
+    import routers.model_routes as mr
+
+    monkeypatch.setenv("ODS_ROUTER_INTERNAL_KEY", '"quoted-key"')
+    assert mr._router_internal_key() == "quoted-key"
+
+    monkeypatch.setenv("ODS_ROUTER_INTERNAL_KEY", "'single-quoted'")
+    assert mr._router_internal_key() == "single-quoted"

@@ -48,9 +48,13 @@ def _normal_probe_id(value: str) -> str:
 
 
 def _router_internal_key() -> str:
-    return os.environ.get("ODS_ROUTER_INTERNAL_KEY", "") or os.environ.get(
-        "DASHBOARD_API_KEY", ""
+    raw = (
+        os.environ.get("ODS_ROUTER_INTERNAL_KEY", "").strip()
+        or os.environ.get("DASHBOARD_API_KEY", "").strip()
     )
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+        raw = raw[1:-1].strip()
+    return raw
 
 
 def _sanitize_evidence(payload: Any, probe_id: str) -> dict[str, Any]:
