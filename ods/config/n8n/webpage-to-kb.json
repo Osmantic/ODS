@@ -1,0 +1,33 @@
+{
+  "name": "Web Page to Knowledge Base",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "start",
+      "name": "Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "content": "## Web Page to Knowledge Base\n\nTemplate for ingesting a web page into your RAG knowledge base.\n\nSuggested flow:\n1. Set the target URL.\n2. HTTP Request node fetches the page.\n3. HTML Extract node pulls the readable text.\n4. Split the text into chunks.\n5. POST each chunk to the embeddings service (http://embeddings:80/embed).\n6. Upsert the vectors into Qdrant (http://qdrant:6333).\n\nRequires the embeddings and qdrant services enabled.",
+        "height": 320,
+        "width": 460
+      },
+      "id": "note",
+      "name": "Setup Instructions",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [440, 140]
+    }
+  ],
+  "connections": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateId": "webpage-to-kb"
+  },
+  "tags": []
+}

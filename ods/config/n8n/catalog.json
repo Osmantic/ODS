@@ -2,6 +2,20 @@
   "version": "2",
   "workflows": [
     {
+      "id": "webpage-to-kb",
+      "file": "webpage-to-kb.json",
+      "name": "Web Page to Knowledge Base",
+      "description": "Fetch a web page and add its text to your RAG knowledge base",
+      "icon": "Globe",
+      "category": "productivity",
+      "dependencies": [
+        "embeddings",
+        "qdrant"
+      ],
+      "setupTime": "3 minutes",
+      "featured": false
+    },
+    {
       "id": "m4-deterministic-voice",
       "file": "08-m4-deterministic-voice.json",
       "name": "M4 Deterministic Voice",
