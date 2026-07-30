@@ -230,8 +230,24 @@ summary["golden_paths"] = {
     "pass_count": sum(1 for item in golden_evidence.get("scenarios", []) if item.get("status") == "pass"),
 }
 
-pathlib.Path(summary_json_path).write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-pathlib.Path(golden_evidence_json_path).write_text(json.dumps(golden_evidence, indent=2) + "\n", encoding="utf-8")
+def _atomic_write(dest, text):
+    p = pathlib.Path(dest)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    import os
+    import tempfile
+    fd, tmp_str = tempfile.mkstemp(dir=str(p.parent), prefix=f".{p.name}.", suffix=".tmp")
+    tmp_path = pathlib.Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp_path, p)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+_atomic_write(summary_json_path, json.dumps(summary, indent=2) + "\n")
+_atomic_write(golden_evidence_json_path, json.dumps(golden_evidence, indent=2) + "\n")
 
 lines = []
 lines.append("# Installer Simulation Summary")
@@ -279,7 +295,7 @@ for item in golden_evidence.get("scenarios", []):
     lines.append(f"- {label}: {status} via `{run_name}`")
 lines.append(f"- Evidence JSON: `{golden_evidence_json_path}`")
 
-pathlib.Path(summary_md_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+_atomic_write(summary_md_path, "\n".join(lines) + "\n")
 PY
 
 if [[ -x "${ROOT_DIR}/scripts/validate-sim-summary.py" ]]; then
