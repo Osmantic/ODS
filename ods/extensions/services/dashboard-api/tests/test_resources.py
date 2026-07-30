@@ -1,5 +1,6 @@
 """Tests for routers/resources.py — per-service resource metrics."""
 
+from pathlib import Path
 from unittest.mock import patch
 
 from host_agent_client import AgentHTTPError, AgentUnavailable
@@ -62,6 +63,17 @@ class TestScanServiceDisk:
         monkeypatch.setattr("routers.resources.DATA_DIR", str(tmp_path))
         (tmp_path / "somefile.txt").write_text("not a directory")
 
+        result = _scan_service_disk()
+        assert result == {}
+
+    def test_permission_error_on_iterdir(self, tmp_path, monkeypatch):
+        """PermissionError when iterating DATA_DIR returns empty dict without raising."""
+        monkeypatch.setattr("routers.resources.DATA_DIR", str(tmp_path))
+
+        def mock_iterdir(self):
+            raise PermissionError("Permission denied")
+
+        monkeypatch.setattr(Path, "iterdir", mock_iterdir)
         result = _scan_service_disk()
         assert result == {}
 
