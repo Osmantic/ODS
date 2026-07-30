@@ -26,7 +26,10 @@ def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[G
     # fall back to HOST_RAM_GB. Unified memory = VRAM on Apple Silicon.
     if gpu_vram_gb == 0 and GPU_BACKEND == "apple":
         try:
-            gpu_vram_gb = float(os.environ.get("HOST_RAM_GB", "0") or "0")
+            raw_ram = (os.environ.get("HOST_RAM_GB", "0") or "0").strip()
+            if len(raw_ram) >= 2 and raw_ram[0] == raw_ram[-1] and raw_ram[0] in {"'", '"'}:
+                raw_ram = raw_ram[1:-1].strip()
+            gpu_vram_gb = float(raw_ram)
         except (ValueError, TypeError):
             pass
         gpu_vram_free_gb = gpu_vram_gb  # assumes zero current usage; Docker can't measure host memory pressure
