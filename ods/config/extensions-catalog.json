@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-24T03:20:28Z",
+  "generated_at": "2026-07-26T18:06:12Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1660,7 +1660,8 @@
           "enabled_services_all": [
             "localai"
           ],
-          "priority": 5
+          "priority": 5,
+          "setup_time": "~5 minutes"
         },
         {
           "id": "localai-image-generation",
@@ -1677,7 +1678,8 @@
           "enabled_services_all": [
             "localai"
           ],
-          "priority": 6
+          "priority": 6,
+          "setup_time": "~5 minutes"
         },
         {
           "id": "audio-generation",
@@ -1694,7 +1696,8 @@
           "enabled_services_all": [
             "localai"
           ],
-          "priority": 7
+          "priority": 7,
+          "setup_time": "~5 minutes"
         },
         {
           "id": "video-generation",
@@ -1711,7 +1714,8 @@
           "enabled_services_all": [
             "localai"
           ],
-          "priority": 8
+          "priority": 8,
+          "setup_time": "~5 minutes"
         },
         {
           "id": "localai-voice-cloning",
@@ -1728,7 +1732,8 @@
           "enabled_services_all": [
             "localai"
           ],
-          "priority": 9
+          "priority": 9,
+          "setup_time": "~5 minutes"
         }
       ]
     },

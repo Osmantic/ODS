@@ -37,7 +37,7 @@ fail() {
 
 header() {
     echo ""
-    echo -e "${BOLD}${CYAN}[$1/7]${NC} ${BOLD}$2${NC}"
+    echo -e "${BOLD}${CYAN}[$1/8]${NC} ${BOLD}$2${NC}"
     echo -e "${CYAN}$(printf '%.0s─' {1..60})${NC}"
 }
 
@@ -102,8 +102,10 @@ features:
   - id: search-ui
     name: Search UI
     description: Search the web privately
+    icon: Search
     category: productivity
     priority: 3
+    setup_time: ~1 minute
     requirements:
       services: [search]
     enabled_services_all: [search]
@@ -215,7 +217,7 @@ PY
 
 header "1" "Valid Project Passes Cleanly"
 root=$(make_fixture_root)
-trap 'rm -rf "$root" "${root2:-}" "${root3:-}" "${root4:-}" "${root5:-}" "${root6:-}" "${root7:-}"' EXIT
+trap 'rm -rf "$root" "${root2:-}" "${root3:-}" "${root4:-}" "${root5:-}" "${root6:-}" "${root7:-}" "${root8:-}"' EXIT
 create_valid_project "$root"
 report=$(mktemp)
 if run_audit "$root" --json > "$report"; then
@@ -362,6 +364,40 @@ if run_audit "$root7" --json > "$report7" 2>/dev/null; then
     pass "external_port_default=0 fixture audits successfully"
 else
     fail "external_port_default=0 should be allowed for internal-only services"
+fi
+
+
+header "8" "Feature Display Fields Are Reported"
+root8=$(make_fixture_root)
+create_valid_project "$root8"
+python3 - "$root8/extensions/services/search/manifest.yaml" <<'PY'
+import sys
+
+import yaml
+
+path = sys.argv[1]
+doc = yaml.safe_load(open(path, encoding="utf-8"))
+for feature in doc["features"]:
+    feature.pop("icon", None)
+    feature.pop("setup_time", None)
+with open(path, "w", encoding="utf-8") as handle:
+    yaml.safe_dump(doc, handle, sort_keys=False)
+PY
+report8=$(mktemp)
+if run_audit "$root8" --json > "$report8" 2>/dev/null; then
+    pass "missing display fields do not fail a non-strict audit"
+else
+    fail "missing icon/setup_time must stay a warning, not an error"
+fi
+if assert_json_value "$report8" "payload['summary']['warnings'] >= 2" >/dev/null; then
+    pass "missing icon and setup_time are both reported"
+else
+    fail "audit did not warn about missing feature display fields"
+fi
+if assert_json_value "$report8" "any(issue['code'] == 'feature-field-missing' and 'setup_time' in issue['message'] for svc in payload['services'] for issue in svc['issues'])" >/dev/null; then
+    pass "the setup_time warning names the field"
+else
+    fail "no feature-field-missing warning mentions setup_time"
 fi
 
 echo ""

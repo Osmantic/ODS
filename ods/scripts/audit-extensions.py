@@ -603,6 +603,19 @@ def validate_records(
                         path=record.manifest_path,
                     )
 
+            # The dashboard renders both of these. A missing setup_time reaches
+            # the Features page as the literal string "Unknown"
+            # (routers/features.py), and dashboard-api already logs a warning
+            # for either at startup, so surface it here where it can be fixed.
+            for expected in ("icon", "setup_time"):
+                if feature.get(expected) in (None, ""):
+                    record.add_issue(
+                        "warning",
+                        "feature-field-missing",
+                        f"feature is missing display field '{expected}'",
+                        path=record.manifest_path,
+                    )
+
             feature_id = str(feature.get("id") or "")
             if feature_id:
                 owners = feature_owners.get(feature_id, set())
