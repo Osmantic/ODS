@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import secrets
+import tempfile
 import threading
 import time
 import urllib.error
@@ -247,14 +248,21 @@ def _ensure_store() -> dict:
 def _write_store(store: dict) -> None:
     """Persist the store atomically (write-tmp + rename)."""
     store_path = _writable_store_path()
-    tmp = store_path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(store, indent=2), encoding="utf-8")
-    tmp.replace(store_path)
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(dir=str(store_path.parent), prefix=f".{store_path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_str)
     try:
-        store_path.chmod(0o600)
-    except OSError:
-        # Best-effort; some filesystems (Docker volumes) don't honor chmod.
-        pass
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(store, indent=2))
+        try:
+            tmp_path.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(tmp_path, store_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _hash_token(token: str) -> str:
