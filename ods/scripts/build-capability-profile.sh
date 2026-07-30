@@ -172,7 +172,8 @@ profile = {
 }
 
 output_path.parent.mkdir(parents=True, exist_ok=True)
-fd, tmp_path = tempfile.mkstemp(dir=str(output_path.parent), suffix=".tmp")
+fd, tmp_str = tempfile.mkstemp(dir=str(output_path.parent), prefix=f".{output_path.name}.", suffix=".tmp")
+tmp_path = pathlib.Path(tmp_str)
 try:
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(json.dumps(profile, indent=2) + "\n")
