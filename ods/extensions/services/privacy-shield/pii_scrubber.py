@@ -27,8 +27,29 @@ class PIIDetector:
     # Stable session token (persisted, doesn't change on restart)
     session_token: str = field(default_factory=lambda: secrets.token_hex(16))
 
-    # Regex patterns for PII detection
+    # Card numbers are 13-19 digits (Visa 13/16/19, Diners 14, Amex 15,
+    # Maestro up to 19), written either unseparated or in issuer groupings.
+    # Two alternatives cover every grouping that occurs in practice:
+    # 4-4-4-N for the even-width brands and 4-6-N for Amex/Diners.
+    CREDIT_CARD_PATTERN = (
+        r'\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{1,7}\b'
+        r'|'
+        r'\b\d{4}[- ]?\d{6}[- ]?\d{4,5}\b'
+    )
+    # Shortest and longest PAN accepted by the Luhn gate. Below the floor a
+    # digit run is a phone number or an SSN, not a card.
+    MIN_PAN_DIGITS = 13
+    MAX_PAN_DIGITS = 19
+
+    # Regex patterns for PII detection.
+    #
+    # Order matters: patterns run in sequence over the same text, so a type
+    # whose matches can contain another type's shape must run first. A Diners
+    # PAN ("3056 930902 5904") holds a phone-shaped 10-digit run — with phone
+    # first, the phone pattern claims the tail and leaves the issuer digits in
+    # cleartext.
     PATTERNS = {
+        'credit_card': re.compile(CREDIT_CARD_PATTERN),
         'email': re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'),
         'phone': re.compile(r'\b(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}\b'),
         'ssn': re.compile(r'\b(?!(?:19|20)\d{2}[-.\s]?\d{2}[-.\s]?\d{4}\b)\d{3}[-.\s]?\d{2}[-.\s]?\d{4}\b'),
@@ -44,14 +65,13 @@ class PIIDetector:
             r'(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}'  # Middle ::
         ),
         'api_key': re.compile(r'\b(?:api[_-]?key|apikey|token)[\s]*[=:]\s*["\']?[a-zA-Z0-9_\-]{16,}["\']?\b', re.IGNORECASE),
-        'credit_card': re.compile(r'\b(?:\d{4}[-\s]?){3}\d{4}\b'),
     }
 
     @staticmethod
     def _luhn_check(number_str: str) -> bool:
         """Validate a credit card number using the Luhn algorithm."""
         digits = [int(d) for d in number_str if d.isdigit()]
-        if len(digits) != 16:
+        if not PIIDetector.MIN_PAN_DIGITS <= len(digits) <= PIIDetector.MAX_PAN_DIGITS:
             return False
         checksum = 0
         for i, d in enumerate(reversed(digits)):

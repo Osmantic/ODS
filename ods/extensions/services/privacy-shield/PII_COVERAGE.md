@@ -15,7 +15,7 @@ Privacy Shield provides PII (Personally Identifiable Information) detection and 
 | Email addresses | `\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b` | user@example.com |
 | Phone numbers (US) | `\b\d{3}[-.]?\d{3}[-.]?\d{4}\b` | 555-123-4567 |
 | Social Security Numbers | `\b\d{3}-\d{2}-\d{4}\b` | 123-45-6789 |
-| Credit card numbers | `\b(?:\d[ -]*?){13,16}\b` | 4111 1111 1111 1111 |
+| Credit card numbers | 13-19 digit PANs in 4-4-4-N or 4-6-N grouping, gated by a Luhn checksum | 4111 1111 1111 1111, 3782 822463 10005 |
 | IP addresses | `\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b` | 192.168.1.1 |
 
 ### Limitations
