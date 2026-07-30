@@ -115,6 +115,19 @@ ods_detect_python_cmd() {
         return 0
     fi
 
+    # On Windows Git Bash the App Execution Aliases usually shadow both names on
+    # PATH, so the checks above reject python3 and python even when a real
+    # interpreter is installed under LOCALAPPDATA. Scan the same install
+    # locations the module-aware resolver uses instead of giving up.
+    local candidate
+    while IFS= read -r candidate; do
+        if _ods_python_runnable "$candidate"; then
+            _ods_python_cmd_cached="$candidate"
+            printf '%s' "${_ods_python_cmd_cached}"
+            return 0
+        fi
+    done < <(_ods_python_windows_candidates)
+
     echo "ERROR: Neither python3 nor python is available/runnable." >&2
     return 1
 }
