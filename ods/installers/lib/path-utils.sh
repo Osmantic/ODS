@@ -12,36 +12,78 @@
 #   Add platform-specific path handling here.
 # ============================================================================
 
+# Collapse ".", "..", duplicate and trailing slashes without touching the
+# filesystem. Purely textual, so an install dir that does not exist yet
+# normalizes exactly like one that does.
+_normalize_path_lexically() {
+    local path="$1" segment
+    local -a segments=() kept=()
+    local saved_ifs="$IFS"
+    IFS='/' read -r -a segments <<< "$path"
+    IFS="$saved_ifs"
+
+    for segment in ${segments[@]+"${segments[@]}"}; do
+        case "$segment" in
+            "" | ".")
+                ;;
+            "..")
+                # A leading ".." has nothing to pop; drop it, since the caller
+                # already made the path absolute and /.. is /.
+                if [[ ${#kept[@]} -gt 0 ]]; then
+                    kept=(${kept[@]+"${kept[@]:0:${#kept[@]} - 1}"})
+                fi
+                ;;
+            *)
+                kept+=("$segment")
+                ;;
+        esac
+    done
+
+    local joined=""
+    for segment in ${kept[@]+"${kept[@]}"}; do
+        joined="$joined/$segment"
+    done
+    echo "${joined:-/}"
+}
+
 # Normalize a path (resolve symlinks, remove trailing slashes, make absolute)
 normalize_path() {
     local path="$1"
-    
+
     # Handle empty path
     if [[ -z "$path" ]]; then
         echo ""
         return 1
     fi
-    
+
     # Expand tilde to HOME
     path="${path/#\~/$HOME}"
-    
+
     # Make absolute if relative
     if [[ "$path" != /* ]]; then
         path="$(pwd)/$path"
     fi
-    
-    # Resolve symlinks and normalize (remove .., ., //)
-    if command -v realpath &>/dev/null; then
-        # GNU realpath (Linux)
-        realpath -m "$path" 2>/dev/null || echo "$path"
-    elif command -v grealpath &>/dev/null; then
-        # GNU realpath via Homebrew (macOS)
-        grealpath -m "$path" 2>/dev/null || echo "$path"
-    else
-        # Fallback: basic normalization without external dependencies
-        # This handles most cases but doesn't resolve all edge cases
-        echo "$path"
-    fi
+
+    # Resolve symlinks and normalize (remove .., ., //).
+    #
+    # Only GNU realpath is usable here: -m is what lets an install dir be
+    # normalized before it is created. macOS 12.3+ ships a BSD realpath that
+    # has neither -m nor tolerance for missing components, and it sits on PATH
+    # as plain `realpath` — so probing for the flag, rather than for the name,
+    # is what keeps Homebrew's coreutils grealpath from being shadowed by it.
+    local candidate resolved
+    for candidate in grealpath realpath; do
+        command -v "$candidate" &>/dev/null || continue
+        if resolved="$("$candidate" -m "$path" 2>/dev/null)" && [[ -n "$resolved" ]]; then
+            echo "$resolved"
+            return 0
+        fi
+    done
+
+    # No GNU realpath available: normalize textually rather than handing back
+    # the raw string. Symlinks stay unresolved, which is the one thing this
+    # cannot do without the filesystem.
+    _normalize_path_lexically "$path"
 }
 
 # Resolve installation directory with precedence:
