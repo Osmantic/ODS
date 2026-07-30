@@ -52,7 +52,11 @@ _ods_report_redact_stream() {
     local env_file="${1:-}"
     awk -v env_file="$env_file" '
         BEGIN {
-            secret_re = "(key|token|secret|password|pass|salt|auth|credential)"
+            # user|email|bearer are here for the same reason scripts/
+            # ods-support-bundle.sh carries them: .env.schema.json marks
+            # N8N_USER, LANGFUSE_INIT_USER_EMAIL and LANGFUSE_MINIO_ROOT_USER
+            # secret:true, and this report is written to be posted on an issue.
+            secret_re = "(key|token|secret|password|pass|salt|auth|credential|user|email|bearer)"
             if (env_file != "") {
                 while ((getline line < env_file) > 0) {
                     sub(/\r$/, "", line)
@@ -170,9 +174,12 @@ write_compose_failure_report() {
             echo "docker command not found"
         fi
         echo ""
-        echo "Installer log tail"
+        echo "Installer log tail (redacted)"
         if [[ -f "$log_file" ]]; then
-            tail -n 160 "$log_file"
+            # The log is installer output, so it carries whatever the phases
+            # echoed — including .env values. It goes in the same shareable
+            # file as the compose config, so it gets the same treatment.
+            tail -n 160 "$log_file" | _ods_report_redact_stream "$env_file"
         else
             echo "installer log unavailable"
         fi

@@ -21,6 +21,16 @@ FAIL=0
 pass() { echo -e "  ${GREEN}PASS${NC} $1"; PASS=$((PASS + 1)); }
 fail() { echo -e "  ${RED}FAIL${NC} $1"; FAIL=$((FAIL + 1)); }
 
+assert_not_contains() {
+    local file="$1" needle="$2" label="$3"
+    if grep -Fq -- "$needle" "$file"; then
+        fail "$label"
+        echo "    unexpected: $needle"
+    else
+        pass "$label"
+    fi
+}
+
 assert_contains() {
     local file="$1" needle="$2" label="$3"
     if grep -Fq -- "$needle" "$file"; then
@@ -53,6 +63,8 @@ LITELLM_PORT=39040
 SEARXNG_PORT=39888
 DASHBOARD_API_KEY=super-secret-dashboard-key
 OPENCLAW_TOKEN=super-secret-openclaw-token
+N8N_USER=ods-owner-alice
+LANGFUSE_INIT_USER_EMAIL=alice@example.com
 EOF
 
 cat > "$INSTALL_DIR/.compose-flags" <<'EOF'
@@ -63,6 +75,7 @@ COMPOSE_LOG="$INSTALL_DIR/logs/compose-up.log"
 cat > "$COMPOSE_LOG" <<'EOF'
 Image ghcr.io/ggml-org/llama.cpp:server-cuda-b8648 Pulling
 Error response from daemon: failed to resolve reference "ghcr.io/ggml-org/llama.cpp:server-cuda-b8648": not found
+Rendering n8n config with N8N_USER=ods-owner-alice
 EOF
 
 cat > "$TMP_DIR/bin/docker" <<'EOF'
@@ -86,6 +99,10 @@ if [[ "$1" == "compose" ]]; then
     echo "    environment:"
     echo "      DASHBOARD_API_KEY: super-secret-dashboard-key"
     echo "      OPENCLAW_TOKEN: super-secret-openclaw-token"
+    echo "  n8n:"
+    echo "    environment:"
+    echo "      N8N_USER: ods-owner-alice"
+    echo "      LANGFUSE_INIT_USER_EMAIL: alice@example.com"
     exit 0
   fi
   if [[ "$*" == *" ps -a"* ]]; then
@@ -133,6 +150,15 @@ assert_contains "$report_path" "- dashboard:39001" "report includes port checks"
 assert_contains "$report_path" "Docker version" "report includes docker version section"
 assert_contains "$report_path" "Compose config tail (redacted)" "report includes redacted compose config section"
 assert_contains "$report_path" "DASHBOARD_API_KEY: [REDACTED]" "report redacts compose config secret fields"
+
+# .env.schema.json marks N8N_USER / LANGFUSE_INIT_USER_EMAIL /
+# LANGFUSE_MINIO_ROOT_USER secret:true. This report exists to be posted on an
+# issue, so its keyword set has to cover them like the support bundle's does.
+assert_contains "$report_path" "N8N_USER: [REDACTED]" "report redacts schema-secret user fields"
+assert_contains "$report_path" "LANGFUSE_INIT_USER_EMAIL: [REDACTED]" "report redacts schema-secret email fields"
+# The installer log lands in the same shareable file as the compose config.
+assert_not_contains "$report_path" "ods-owner-alice" "installer log tail is redacted too"
+assert_not_contains "$report_path" "alice@example.com" "schema-secret email value never appears"
 if grep -Fq "super-secret-dashboard-key" "$report_path" || grep -Fq "super-secret-openclaw-token" "$report_path"; then
     fail "report leaks sensitive compose config values"
 else
