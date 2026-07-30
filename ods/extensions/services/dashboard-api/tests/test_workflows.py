@@ -938,3 +938,110 @@ def test_workflow_enable_rejects_path_traversal_in_catalog_file(test_client, mon
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Invalid workflow file path"
+
+
+# ---------------------------------------------------------------------------
+# Installed-workflow matching parity between list, disable and executions
+# ---------------------------------------------------------------------------
+
+
+def test_find_installed_n8n_workflow_matches_both_directions():
+    """Containment is symmetric: catalog-in-n8n and n8n-in-catalog both match."""
+    from routers.workflows import find_installed_n8n_workflow
+
+    n8n = [{"id": "1", "name": "Daily Digest"}]
+    # n8n name is a prefix of the catalog name
+    assert find_installed_n8n_workflow("Daily Digest Emailer", n8n) == n8n[0]
+    # catalog name is a prefix of the n8n name
+    assert find_installed_n8n_workflow("Daily", n8n) == n8n[0]
+    # unrelated names do not match
+    assert find_installed_n8n_workflow("Invoice Parser", n8n) is None
+    # empty names never match
+    assert find_installed_n8n_workflow("", n8n) is None
+    assert find_installed_n8n_workflow("Daily Digest", [{"id": "1", "name": ""}]) is None
+
+
+def _shorter_n8n_name_catalog(tmp_path, monkeypatch):
+    """Catalog whose name strictly contains the installed n8n workflow's name."""
+    import routers.workflows as wf_mod
+
+    catalog = {
+        "workflows": [
+            {"id": "digest-wf", "name": "Daily Digest Emailer", "description": "test",
+             "file": "digest.json", "dependencies": []}
+        ],
+        "categories": {},
+    }
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps(catalog))
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
+    return [{"id": "42", "name": "Daily Digest", "active": True}]
+
+
+def test_workflow_list_and_disable_agree_on_installed(test_client, tmp_path, monkeypatch):
+    """A workflow the list reports as installed must be disableable.
+
+    The list endpoint matched containment in both directions while
+    _remove_workflow only matched catalog-name-in-n8n-name, so an n8n workflow
+    whose name was shorter than the catalog name showed a Disable action that
+    always answered 404.
+    """
+    n8n_workflows = _shorter_n8n_name_catalog(tmp_path, monkeypatch)
+
+    with patch("routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=n8n_workflows), \
+         patch("routers.workflows.check_n8n_available", new_callable=AsyncMock, return_value=True):
+        listed = test_client.get("/api/workflows", headers=test_client.auth_headers)
+    assert listed.status_code == 200
+    entry = listed.json()["workflows"][0]
+    assert entry["installed"] is True
+    assert entry["n8nId"] == "42"
+
+    resp_mock = AsyncMock()
+    resp_mock.status = 200
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=resp_mock)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    session_mock = AsyncMock()
+    session_mock.delete = MagicMock(return_value=ctx)
+    session_ctx = AsyncMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=session_mock)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=n8n_workflows), \
+         patch("aiohttp.ClientSession", return_value=session_ctx):
+        disabled = test_client.post(
+            "/api/workflows/digest-wf/disable",
+            headers=test_client.auth_headers,
+        )
+
+    assert disabled.status_code == 200, disabled.json()
+    assert disabled.json()["status"] == "success"
+
+
+def test_workflow_executions_match_list_installed(test_client, tmp_path, monkeypatch):
+    """Executions must resolve the same n8n workflow the list reported."""
+    n8n_workflows = _shorter_n8n_name_catalog(tmp_path, monkeypatch)
+
+    resp_mock = AsyncMock()
+    resp_mock.status = 200
+    resp_mock.json = AsyncMock(return_value={"data": [{"id": "100"}]})
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=resp_mock)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    session_mock = AsyncMock()
+    session_mock.get = MagicMock(return_value=ctx)
+    session_ctx = AsyncMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=session_mock)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=n8n_workflows), \
+         patch("aiohttp.ClientSession", return_value=session_ctx):
+        resp = test_client.get(
+            "/api/workflows/digest-wf/executions",
+            headers=test_client.auth_headers,
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["n8nId"] == "42"
+    assert data["executions"] == [{"id": "100"}]

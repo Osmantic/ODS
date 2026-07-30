@@ -26,6 +26,27 @@ def _validate_workflow_id(workflow_id: str) -> None:
         raise HTTPException(status_code=400, detail="Invalid workflow ID format")
 
 
+def find_installed_n8n_workflow(catalog_name: str, n8n_workflows: list[dict]) -> dict | None:
+    """Return the n8n workflow that corresponds to *catalog_name*, if any.
+
+    n8n stores whatever name the imported template carried, which is not
+    guaranteed to equal the catalog name, so the match is a containment test in
+    both directions. Every caller must use the same rule: the list endpoint
+    reporting a workflow as installed while disable/executions cannot find it
+    leaves the UI offering a Disable action that always 404s.
+    """
+    target = (catalog_name or "").lower()
+    if not target:
+        return None
+    for workflow in n8n_workflows:
+        name = (workflow.get("name") or "").lower()
+        if not name:
+            continue
+        if target in name or name in target:
+            return workflow
+    return None
+
+
 def load_workflow_catalog() -> dict:
     """Load workflow catalog from JSON file."""
     if not WORKFLOW_CATALOG_FILE.exists():
@@ -118,17 +139,11 @@ async def api_workflows(api_key: str = Depends(verify_api_key)):
     """Get workflow catalog with status and dependency info."""
     catalog = load_workflow_catalog()
     n8n_workflows = await get_n8n_workflows()
-    n8n_by_name = {w.get("name", "").lower(): w for w in n8n_workflows}
 
     workflows = []
     health_cache: dict[str, bool] = {}
     for wf in catalog.get("workflows", []):
-        wf_name_lower = wf["name"].lower()
-        installed = None
-        for n8n_name, n8n_wf in n8n_by_name.items():
-            if wf_name_lower in n8n_name or n8n_name in wf_name_lower:
-                installed = n8n_wf
-                break
+        installed = find_installed_n8n_workflow(wf["name"], n8n_workflows)
 
         dep_status = await check_workflow_dependencies(wf.get("dependencies", []), health_cache)
         all_deps_met = all(dep_status.values())
@@ -232,12 +247,7 @@ async def _remove_workflow(workflow_id: str):
     if not wf_info:
         raise HTTPException(status_code=404, detail=f"Workflow not found: {workflow_id}")
 
-    n8n_wf = None
-    wf_name_lower = wf_info["name"].lower()
-    for wf in n8n_workflows:
-        if wf_name_lower in wf.get("name", "").lower():
-            n8n_wf = wf
-            break
+    n8n_wf = find_installed_n8n_workflow(wf_info["name"], n8n_workflows)
     if not n8n_wf:
         raise HTTPException(status_code=404, detail="Workflow not installed in n8n")
 
@@ -282,12 +292,7 @@ async def workflow_executions(workflow_id: str, limit: int = 20, api_key: str = 
     if not wf_info:
         raise HTTPException(status_code=404, detail=f"Workflow not found: {workflow_id}")
 
-    n8n_wf = None
-    wf_name_lower = wf_info["name"].lower()
-    for wf in n8n_workflows:
-        if wf_name_lower in wf.get("name", "").lower():
-            n8n_wf = wf
-            break
+    n8n_wf = find_installed_n8n_workflow(wf_info["name"], n8n_workflows)
     if not n8n_wf:
         return {"executions": [], "message": "Workflow not installed"}
 
