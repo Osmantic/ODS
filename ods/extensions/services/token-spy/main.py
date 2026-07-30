@@ -481,6 +481,10 @@ async def on_shutdown():
 # ── Analysis ─────────────────────────────────────────────────────────────────
 
 # Map of known workspace filenames to their DB column names
+# Heading that opens the skill-injection block. Shared so the block is both
+# measured on its own and treated as a boundary for the workspace files above it.
+SKILLS_SECTION_HEADING = "Skills (mandatory)"
+
 WORKSPACE_FILE_MAP = {
     "AGENTS.md": "workspace_agents_chars",
     "SOUL.md": "workspace_soul_chars",
@@ -517,9 +521,12 @@ def analyze_system_prompt(system_blocks: list) -> dict:
     if ctx_match:
         after_ctx = text[ctx_match.start():]
         # Build list of all known file markers: ## AGENTS.md, ## SOUL.md, etc.
-        # Also include ## Silent Replies, ## Heartbeats, ## Runtime as end markers
+        # Also include the sections that follow the workspace files as end
+        # markers. "Skills (mandatory)" belongs here as well: it is measured
+        # separately below, so leaving it out lets the last workspace file's
+        # span run through it and count those characters twice.
         all_file_names = list(WORKSPACE_FILE_MAP.keys())
-        end_markers = ["Silent Replies", "Heartbeats", "Runtime"]
+        end_markers = ["Silent Replies", "Heartbeats", "Runtime", SKILLS_SECTION_HEADING]
 
         # Find positions of all ## FILENAME.md markers within the context
         file_positions = []
@@ -530,9 +537,11 @@ def analyze_system_prompt(system_blocks: list) -> dict:
                 content_start = m.end() + 1  # skip the newline after header
                 file_positions.append((m.start(), content_start, fname))
 
-        # Also find end-of-context markers (sections that follow workspace files)
+        # Also find end-of-context markers (sections that follow workspace
+        # files). The lookahead stands in for \b, which never matches after a
+        # heading that ends in punctuation such as "Skills (mandatory)".
         for marker in end_markers:
-            pattern = re.compile(r"^## " + re.escape(marker) + r"\b", re.MULTILINE)
+            pattern = re.compile(r"^## " + re.escape(marker) + r"(?=\W|$)", re.MULTILINE)
             m = pattern.search(after_ctx)
             if m:
                 file_positions.append((m.start(), m.start(), None))  # None = end marker
@@ -559,7 +568,8 @@ def analyze_system_prompt(system_blocks: list) -> dict:
 
     # Extract skills section (## Skills (mandatory) ... until next ## at same level)
     skills_match = re.search(
-        r"^## Skills \(mandatory\)\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL
+        r"^## " + re.escape(SKILLS_SECTION_HEADING) + r"\n(.*?)(?=^## |\Z)",
+        text, re.MULTILINE | re.DOTALL
     )
     if skills_match:
         result["skill_injection_chars"] = len(skills_match.group(0))
