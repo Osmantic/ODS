@@ -18,9 +18,20 @@
 
 link_rank() {
   case "$1" in
-  NV4 | NV6 | NV8 | NV12 | NV18)  echo 100 ;;   # NVLink gen2/3
+  # nvidia-smi reports NV<n>, where n is the number of NVLink connections
+  # between the pair. Rank on n instead of an enumerated list: driver and
+  # board generations keep introducing counts the list never had (NV5, NV9,
+  # NV10, NV16, NV24...), and an unlisted one fell through to rank 0 — below
+  # even cross-NUMA PCIe (SYS, rank 10). A genuine NVLink pair then lost GPU
+  # assignment to a PCIe pair.
+  NV[1-9] | NV[1-9][0-9])
+    if [[ "${1#NV}" -ge 4 ]]; then
+      echo 100                                  # NVLink gen2/3, 4+ links
+    else
+      echo 80                                   # NVLink gen1, 1-3 links
+    fi
+    ;;
   XGMI | XGMI2)                   echo 90  ;;   # AMD Infinity Fabric
-  NV1 | NV2 | NV3)                echo 80  ;;   # NVLink gen1
   MIG)                            echo 70  ;;   # MIG instance, same die
   PIX)                            echo 50  ;;   # Same PCIe switch
   PXB)                            echo 40  ;;   # Multiple PCIe switches, same CPU
