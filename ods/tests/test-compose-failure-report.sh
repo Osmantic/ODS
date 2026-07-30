@@ -123,6 +123,19 @@ else
     fail "report file is missing"
 fi
 
+if [[ "$report_path" =~ ^"$INSTALL_DIR"/install-report-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}\.txt$ ]]; then
+    pass "returned report path matches final install-report-*.txt pattern"
+else
+    fail "returned report path ($report_path) does not match final install-report-*.txt pattern"
+fi
+
+tmp_leftovers="$(find "$INSTALL_DIR" -maxdepth 1 -name "install-report-*.txt.tmp.*" 2>/dev/null || true)"
+if [[ -z "$tmp_leftovers" ]]; then
+    pass "no temporary report files remain after atomic write"
+else
+    fail "temporary report files remain: $tmp_leftovers"
+fi
+
 assert_contains "$report_path" "ODS install failure report" "report has title"
 assert_contains "$report_path" "Phase: install-core phase 11 docker compose up" "report records phase"
 assert_contains "$report_path" "GPU backend: nvidia" "report records GPU backend"
