@@ -47,11 +47,29 @@ _amd_sort_card_dirs() {
 amd_memory_type() {
     local vram_bytes="${1:-0}"
     local gtt_bytes="${2:-0}"
+    local vram_vendor="${3:-}"
     local gtt_gb_int=$(( gtt_bytes / 1073741824 ))
     local vram_gb_int=$(( vram_bytes / 1073741824 ))
 
-    # GTT is the reliable unified-memory signal for AMD APUs. VRAM alone is
-    # not: MI300X and future 32 GB+ discrete cards report large VRAM too.
+    # A discrete card has dedicated VRAM from a real memory vendor, and says so:
+    # mem_info_vram_vendor reports e.g. samsung / hynix / micron / gddr6 / hbm.
+    # An APU has no dedicated VRAM, so the file is absent or "unknown".
+    #
+    # This check must come FIRST. GTT is *system* memory the GPU may map — roughly
+    # half of host RAM — so a discrete card on a large-RAM host reports a large GTT
+    # too. The `gtt >= 32` heuristic below therefore misclassifies EVERY discrete AMD
+    # GPU on a host with >= 64 GB of RAM as "unified" (observed: 2x Radeon AI PRO
+    # R9700, 31 GB VRAM each, GTT 61 GB on a 123 GB host -> both labelled unified).
+    # That silently disables the "prefer discrete GPUs for the LLM" logic in
+    # assign_gpus.py, which can only fire when something is labelled discrete.
+    if [[ -n "$vram_vendor" && "$vram_vendor" != "unknown" && "$vram_vendor" != "N/A" ]]; then
+        echo "discrete"
+        return
+    fi
+
+    # No VRAM vendor reported → integrated/APU. Keep the original signals to
+    # distinguish a real unified-memory APU (Strix Halo, which may carve out a large
+    # VRAM window) from anything else.
     if [[ $gtt_gb_int -ge 16 && $vram_gb_int -le 4 ]] || [[ $gtt_gb_int -ge 32 ]]; then
         echo "unified"
     else
@@ -431,9 +449,10 @@ detect_amd_topo() {
             pcie_width=$(cat "$card_dir/max_link_width" 2>/dev/null | grep -oP '^\d+' || echo "unknown")
 
         # Detect memory type per card
-        local gtt_bytes mem_type
+        local gtt_bytes mem_type vram_vendor
         gtt_bytes=$(cat "$card_dir/mem_info_gtt_total" 2>/dev/null) || gtt_bytes=0
-        mem_type=$(amd_memory_type "$vram_bytes" "$gtt_bytes")
+        vram_vendor=$(cat "$card_dir/mem_info_vram_vendor" 2>/dev/null) || vram_vendor=""
+        mem_type=$(amd_memory_type "$vram_bytes" "$gtt_bytes" "$vram_vendor")
 
         gpus_tsv+="${idx}	${name}	${vram_gb}	${pcie_gen}	x${pcie_width}	${uuid}	${gfx_ver}	${render_node}	${mem_type}	${pci_bdf}"$'\n'
         idx=$((idx + 1))
