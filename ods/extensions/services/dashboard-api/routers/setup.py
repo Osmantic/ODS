@@ -31,12 +31,12 @@ router = APIRouter(tags=["setup"])
 def get_active_persona_prompt() -> str:
     """Get the system prompt for the active persona."""
     persona_file = SETUP_CONFIG_DIR / "persona.json"
-    if persona_file.exists():
+    if persona_file.is_file():
         try:
-            with open(persona_file) as f:
-                data = json.load(f)
-                return data.get("system_prompt", PERSONAS["general"]["system_prompt"])
-        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+            data = json.loads(persona_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("system_prompt"):
+                return str(data["system_prompt"])
+        except (json.JSONDecodeError, OSError, UnicodeError):
             logger.debug("Failed to read persona.json, using default prompt")
     return PERSONAS["general"]["system_prompt"]
 
@@ -45,24 +45,26 @@ def get_active_persona_prompt() -> str:
 async def setup_status(api_key: str = Depends(verify_api_key)):
     """Check if this is a first-run scenario."""
     setup_complete_file = SETUP_CONFIG_DIR / "setup-complete.json"
-    first_run = not setup_complete_file.exists()
+    first_run = not setup_complete_file.is_file()
 
     step = 0
     progress_file = SETUP_CONFIG_DIR / "setup-progress.json"
-    if progress_file.exists():
+    if progress_file.is_file():
         try:
-            with open(progress_file) as f:
-                step = json.load(f).get("step", 0)
-        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+            data = json.loads(progress_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                step = data.get("step", 0)
+        except (json.JSONDecodeError, OSError, UnicodeError):
             logger.debug("Failed to read setup-progress.json")
 
     persona = None
     persona_file = SETUP_CONFIG_DIR / "persona.json"
-    if persona_file.exists():
+    if persona_file.is_file():
         try:
-            with open(persona_file) as f:
-                persona = json.load(f).get("persona")
-        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+            data = json.loads(persona_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                persona = data.get("persona")
+        except (json.JSONDecodeError, OSError, UnicodeError):
             logger.debug("Failed to read persona.json for setup status")
 
     return {"first_run": first_run, "step": step, "persona": persona, "personas_available": list(PERSONAS.keys())}
