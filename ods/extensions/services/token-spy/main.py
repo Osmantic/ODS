@@ -620,13 +620,16 @@ def estimate_cost(model: str, input_tokens: int, output_tokens: int,
     if provider:
         return provider.calculate_cost(usage, model)
 
-    # Fallback to hardcoded rates for backwards compatibility
+    # Fallback to hardcoded rates for backwards compatibility.
+    # Longest match wins, as the provider plugins already do: a shorter family
+    # prefix must not shadow a more specific one just because it is declared
+    # first (gpt-4o would otherwise price every gpt-4o-mini call).
     rates = None
+    matched = ""
     model_lower = (model or "").lower()
     for prefix, r in COST_PER_MILLION.items():
-        if prefix in model_lower:
-            rates = r
-            break
+        if prefix in model_lower and len(prefix) > len(matched):
+            matched, rates = prefix, r
     if not rates:
         return 0.0
 
