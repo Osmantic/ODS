@@ -53,13 +53,21 @@ def _scan_service_disk() -> dict[str, dict]:
     results = {}
     if not data_path.is_dir():
         return results
-    for child in data_path.iterdir():
-        if not child.is_dir():
+    try:
+        children = list(data_path.iterdir())
+    except OSError as e:
+        logger.debug("Failed to list data directory %s: %s", data_path, e)
+        return results
+    for child in children:
+        try:
+            if not child.is_dir():
+                continue
+            service_id = _DATA_DIR_MAP.get(child.name, child.name)
+            size_gb = dir_size_gb(child)
+            if size_gb > 0:
+                results[service_id] = {"data_gb": size_gb, "path": f"data/{child.name}"}
+        except OSError:
             continue
-        service_id = _DATA_DIR_MAP.get(child.name, child.name)
-        size_gb = dir_size_gb(child)
-        if size_gb > 0:
-            results[service_id] = {"data_gb": size_gb, "path": f"data/{child.name}"}
     return results
 
 

@@ -355,3 +355,14 @@ class TestServiceResources:
             "/v1/service/restart",
             {"service_id": "dashboard-api", "delay_seconds": 1},
         )
+
+
+def test_scan_service_disk_handles_os_error(monkeypatch):
+    from routers.resources import _scan_service_disk
+    from pathlib import Path
+
+    def failing_iterdir(self):
+        raise OSError("Permission denied")
+
+    monkeypatch.setattr(Path, "iterdir", failing_iterdir)
+    assert _scan_service_disk() == {}
