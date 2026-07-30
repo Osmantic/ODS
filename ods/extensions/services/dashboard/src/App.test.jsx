@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom' // eslint-disable-line no-unused
 import { ThemeProvider } from './contexts/ThemeContext' // eslint-disable-line no-unused-vars
 import App from './App' // eslint-disable-line no-unused-vars
 import { useFirstRun } from './hooks/useFirstRun'
+import { useSystemStatus } from './hooks/useSystemStatus'
 
 vi.mock('./hooks/useSystemStatus', () => ({
   useSystemStatus: vi.fn(() => ({
@@ -64,6 +65,12 @@ vi.mock('./components/InstallPromptBanner', () => ({
   default: () => null,
 }))
 
+const IDLE_STATUS = {
+  status: { gpu: null, services: [], model: null, bootstrap: null, uptime: 0, version: '1.0.0' },
+  loading: false,
+  error: null,
+}
+
 describe('App', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(() =>
@@ -72,6 +79,7 @@ describe('App', () => {
     globalThis.localStorage.removeItem('ods-sidebar-collapsed')
     globalThis.sessionStorage.removeItem('ods-splash-shown')
     useFirstRun.mockReturnValue({ firstRun: false, loading: false, error: null, refresh: vi.fn() })
+    useSystemStatus.mockReturnValue(IDLE_STATUS)
   })
 
   afterEach(() => {
@@ -119,6 +127,35 @@ describe('App', () => {
     expect(document.querySelector('aside')).not.toHaveClass('sm:w-64')
     expect(document.querySelector('main')).toHaveClass('ml-20')
     expect(document.querySelector('main')).not.toHaveClass('sm:ml-64')
+  })
+
+  test('bootstrap banner reports download size in the same GiB units as the download card', () => {
+    // dashboard-api sends bytes derived from BootstrapStatus.downloaded_gb /
+    // total_gb, which helpers.py computes with 1024**3. useDownloadProgress
+    // renders /api/models/download-status — the same bootstrap payload — the
+    // same way, so the banner has to agree with it.
+    const GIB = 1024 ** 3
+    useSystemStatus.mockReturnValue({
+      ...IDLE_STATUS,
+      status: {
+        ...IDLE_STATUS.status,
+        bootstrap: {
+          active: true,
+          model: 'Modern-Model.gguf',
+          percent: 50,
+          bytesDownloaded: 15 * GIB,
+          bytesTotal: 30 * GIB,
+          eta: 90,
+          speedMbps: 12.5,
+        },
+      },
+    })
+
+    render(<App />)
+
+    expect(screen.getByText(/15\.0 \/ 30\.0 GB/)).toBeInTheDocument()
+    // Decimal GB would render 16.1 / 32.2 for the same file.
+    expect(screen.queryByText(/16\.1 \/ 32\.2 GB/)).not.toBeInTheDocument()
   })
 
   test('renders ODS Talk without dashboard chrome on /talk', async () => {

@@ -169,7 +169,12 @@ function BootstrapBanner({ bootstrap }) {
 
   const formatBytes = (bytes) => {
     if (!bytes) return '0'
-    return (bytes / 1e9).toFixed(1)
+    // Binary GiB, not decimal GB. dashboard-api derives these bytes from
+    // BootstrapStatus.downloaded_gb / total_gb, which helpers.py builds with
+    // 1024**3, and useDownloadProgress renders the same payload the same way.
+    // Dividing by 1e9 here made the banner read ~7% higher than the download
+    // card for the same file.
+    return (bytes / 1024 ** 3).toFixed(1)
   }
 
   return (
