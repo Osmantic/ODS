@@ -1002,3 +1002,66 @@ class TestRoutedTelemetry:
             "authorization": "Bearer shared-secret",
             "body": {"model": "Concrete.gguf"},
         }]
+
+
+def _set_json_upstream(mod, payload, *, status=200):
+    """Point the router at a fixed non-streaming upstream response."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json=payload)
+    mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+class TestNonStreamingEvidenceGuards:
+    """Evidence must mean the same thing on both response paths.
+
+    The streaming path already refuses to record when the upstream failed or
+    answered as a different model; a probe that reads back evidence treats its
+    presence as proof the route served the request.
+    """
+
+    def _evidence(self, client, probe_id):
+        return client.get(
+            f"/internal/route-evidence/{probe_id}",
+            headers={"Authorization": "Bearer internal-secret"},
+        )
+
+    def _probe(self, client, probe_id):
+        return client.post("/v1/chat/completions", json={
+            "model": "ods/current",
+            "messages": [{"role": "user", "content": _signed_marker(probe_id)}],
+        })
+
+    def test_upstream_error_records_no_evidence(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        probe_id = str(uuid.uuid4())
+        _set_json_upstream(mod, {"error": {"message": "model not loaded"}}, status=500)
+
+        assert self._probe(client, probe_id).status_code == 500
+        assert self._evidence(client, probe_id).status_code == 404
+
+    def test_wrong_concrete_identity_records_no_evidence(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        probe_id = str(uuid.uuid4())
+        _set_json_upstream(mod, {
+            "id": "c1", "model": "Wrong.gguf",
+            "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+        })
+
+        assert self._probe(client, probe_id).status_code == 200
+        assert self._evidence(client, probe_id).status_code == 404
+
+    def test_response_without_identity_records_routed_evidence(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        probe_id = str(uuid.uuid4())
+        _set_json_upstream(mod, {
+            "id": "c1",
+            "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+        })
+
+        assert self._probe(client, probe_id).status_code == 200
+        record = self._evidence(client, probe_id)
+        assert record.status_code == 200
+        assert record.json()["responseModel"] == "Concrete.gguf"

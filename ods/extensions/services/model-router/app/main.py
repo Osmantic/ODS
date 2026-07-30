@@ -1078,10 +1078,22 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     except (ValueError, UnicodeDecodeError):
         pass
 
-    if probe_id:
+    # Same bar as the streaming path: evidence exists only when the routed
+    # model actually answered. A reader treats its presence as the proof, so
+    # an upstream error or a foreign identity must leave no record. A response
+    # that names no model is attributed to the routed model, as when a stream
+    # carries no identity.
+    served_identities = (
+        [response_model] if isinstance(response_model, str) and response_model else []
+    )
+    if (
+        probe_id
+        and 200 <= upstream.status_code < 300
+        and all(model == route["runtimeModelId"] for model in served_identities)
+    ):
         _record_evidence({**evidence_base,
                           "status": upstream.status_code,
-                          "responseModel": str(response_model or ""),
+                          "responseModel": route["runtimeModelId"],
                           "lemonadeRoute": lemonade_route})
 
     if 200 <= upstream.status_code < 300:
