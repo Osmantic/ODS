@@ -30,6 +30,12 @@ test: ## Run unit and contract tests
 	@bash tests/test-hermes-slash-worker-prune.sh
 	@python3 tests/contracts/test-hermes-worker-guardrails.py
 	@echo ""
+	@echo "=== Remote provider contracts ==="
+	@python3 tests/contracts/test-remote-provider-egress-policy.py
+	@python3 tests/contracts/test-remote-provider-egress-service.py
+	@python3 tests/contracts/test-remote-provider-cli.py
+	@python3 tests/contracts/test-remote-provider-ssh-tunnel-service.py
+	@echo ""
 	@echo "=== Installer contracts ==="
 	@bash tests/contracts/test-installer-contracts.sh
 	@bash tests/test-external-services.sh
