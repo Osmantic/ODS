@@ -168,6 +168,25 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 8a. Backend selector reaches the container in the base overlay
+# ---------------------------------------------------------------------------
+# With a literal `--llamacpp auto` (and no env passthrough) a single-GPU host
+# silently runs Lemonade's bundled Vulkan llama.cpp even after the installer
+# wrote LEMONADE_LLAMACPP=rocm — the multi-GPU overlay overrides both, which
+# is why multi-GPU hosts never hit this. Reproduced on Strix Halo (PR #1783).
+echo "[contract] base AMD overlay honors LEMONADE_LLAMACPP"
+if grep -q -- '"${LEMONADE_LLAMACPP:-rocm}"' docker-compose.amd.yml; then
+    pass "docker-compose.amd.yml: --llamacpp selects backend from LEMONADE_LLAMACPP (rocm default)"
+else
+    fail "docker-compose.amd.yml must pass --llamacpp \"\${LEMONADE_LLAMACPP:-rocm}\", not a literal backend"
+fi
+if grep -q 'LEMONADE_LLAMACPP=${LEMONADE_LLAMACPP:-rocm}' docker-compose.amd.yml; then
+    pass "docker-compose.amd.yml: LEMONADE_LLAMACPP exported into the Lemonade container"
+else
+    fail "docker-compose.amd.yml must export LEMONADE_LLAMACPP into the Lemonade container"
+fi
+
+# ---------------------------------------------------------------------------
 # 8b. AMD/Lemonade model routing preserves the selected GGUF
 # ---------------------------------------------------------------------------
 echo "[contract] AMD Lemonade routes selected GGUF through extra_models_dir"
