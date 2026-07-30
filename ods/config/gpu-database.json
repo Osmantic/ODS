@@ -468,6 +468,21 @@
       "recommended": { "backend": "amd", "tier": "T1" }
     },
     {
+      "id": "intel_arc",
+      "match": { "vendor": "intel", "memory_type": "discrete", "min_vram_mb": 12288 },
+      "recommended": { "backend": "intel", "tier": "ARC" }
+    },
+    {
+      "id": "intel_arc_lite",
+      "match": { "vendor": "intel", "memory_type": "discrete", "min_vram_mb": 4096 },
+      "recommended": { "backend": "intel", "tier": "ARC_LITE" }
+    },
+    {
+      "id": "intel_arc_unknown_memory",
+      "match": { "vendor": "intel", "memory_type": "discrete", "min_vram_mb": 0, "max_vram_mb": 4095 },
+      "recommended": { "backend": "cpu", "tier": "T1" }
+    },
+    {
       "id": "apple_ultra",
       "match": { "vendor": "apple", "memory_type": "unified", "min_ram_mb": 131072 },
       "recommended": { "backend": "apple", "tier": "T4" }
@@ -497,6 +512,7 @@
     "bandwidth_gbps": {
       "cuda": 220,
       "rocm": 180,
+      "sycl": 220,
       "metal": 160,
       "cpu_x86": 70,
       "cpu_arm": 50

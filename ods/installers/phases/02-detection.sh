@@ -172,6 +172,8 @@ else
         fi
     fi
 
+    ensure_intel_sycl_or_cpu_fallback
+
     if [[ "${GPU_BACKEND_REQUESTED,,}" != "nvidia" \
         && "${TIER_FORCED:-false}" != "true" \
         && "${GPU_BACKEND:-}" == "nvidia" \

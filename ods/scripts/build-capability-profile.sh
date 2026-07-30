@@ -101,7 +101,14 @@ gpu_name = gpu.get("name") or "None"
 memory_type = (gpu.get("memory_type") or "none").lower()
 vram_mb = int(gpu.get("vram_mb") or 0)
 gpu_count = int(gpu.get("count") or (1 if gpu_type not in {"none", ""} else 0))
+sycl_available = bool(gpu.get("sycl_available", False))
 experimental_jetson = os.environ.get("ODS_ENABLE_EXPERIMENTAL_JETSON") == "1"
+intel_runtime_eligible = (
+    os_name == "linux"
+    and gpu_type == "intel"
+    and sycl_available
+    and vram_mb > 0
+)
 
 llm_health_url = f"http://localhost:{llm_port}{llm_health}"
 llm_api_port = llm_port
@@ -112,6 +119,9 @@ if gpu_type == "amd" and memory_type == "unified":
 elif gpu_type == "nvidia":
     llm_backend = "nvidia"
     overlays = ["docker-compose.base.yml", "docker-compose.nvidia.yml"]
+elif gpu_type == "intel" and intel_runtime_eligible:
+    llm_backend = "intel"
+    overlays = ["docker-compose.base.yml", "docker-compose.intel.yml"]
 elif gpu_type == "jetson" and experimental_jetson:
     # Jetson is Tegra (arm64 + iGPU + unified memory). The dedicated overlay
     # docker-compose.jetson.yml lands in milestone 1 phase 3; until then fall
@@ -134,12 +144,19 @@ elif tier in {"SH_COMPACT", "SH_LARGE"}:
 else:
     recommended = "T1"
 
-if hw_rec_tier:
+if hw_rec_tier and (gpu_type != "intel" or intel_runtime_eligible):
     recommended = hw_rec_tier
-if hw_rec_backend:
+if hw_rec_backend and (gpu_type != "intel" or intel_runtime_eligible):
     llm_backend = hw_rec_backend
-if hw_rec_overlays:
+if hw_rec_overlays and (gpu_type != "intel" or intel_runtime_eligible):
     overlays = hw_rec_overlays
+
+# Preserve the Intel hardware identity but do not advertise an Arc tier or
+# compose route unless the Linux SYCL prerequisites are actually present.
+if gpu_type == "intel" and not intel_runtime_eligible:
+    llm_backend = "cpu"
+    overlays = ["docker-compose.base.yml", "docker-compose.cpu.yml"]
+    recommended = "T1"
 
 profile = {
     "version": "1",
@@ -148,11 +165,12 @@ profile = {
         "family": family,
     },
     "gpu": {
-        "vendor": gpu_type if gpu_type in {"nvidia", "amd", "apple", "none"} else "unknown",
+        "vendor": gpu_type if gpu_type in {"nvidia", "amd", "intel", "apple", "none"} else "unknown",
         "name": gpu_name,
         "memory_type": memory_type if memory_type in {"discrete", "unified", "none"} else "unknown",
         "count": gpu_count,
         "vram_mb": vram_mb,
+        "sycl_available": sycl_available,
     },
     "runtime": {
         "llm_backend": llm_backend,
@@ -196,6 +214,7 @@ if env_mode:
         "CAP_GPU_MEMORY_TYPE": profile["gpu"]["memory_type"],
         "CAP_GPU_COUNT": str(profile["gpu"]["count"]),
         "CAP_GPU_VRAM_MB": str(profile["gpu"]["vram_mb"]),
+        "CAP_GPU_SYCL_AVAILABLE": str(profile["gpu"]["sycl_available"]).lower(),
         "CAP_LLM_BACKEND": profile["runtime"]["llm_backend"],
         "CAP_LLM_HEALTH_URL": profile["runtime"]["llm_health_url"],
         "CAP_LLM_API_PORT": str(profile["runtime"]["llm_api_port"]),

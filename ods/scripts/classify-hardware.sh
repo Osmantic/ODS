@@ -77,6 +77,7 @@ with open(db_path, "r", encoding="utf-8") as f:
 OVERLAY_MAP = {
     "amd":    ["docker-compose.base.yml", "docker-compose.amd.yml"],
     "nvidia": ["docker-compose.base.yml", "docker-compose.nvidia.yml"],
+    "intel":  ["docker-compose.base.yml", "docker-compose.intel.yml"],
     "apple":  ["docker-compose.base.yml", "docker-compose.apple.yml"],
     "cpu":    ["docker-compose.base.yml", "docker-compose.cpu.yml"],
 }
@@ -171,7 +172,12 @@ if bandwidth == 0 and gpu_name:
 
 if bandwidth == 0:
     # Fall back to default bandwidth
-    backend_key_map = {"nvidia": "cuda", "amd": "rocm", "apple": "metal"}
+    backend_key_map = {
+        "nvidia": "cuda",
+        "amd": "rocm",
+        "intel": "sycl",
+        "apple": "metal",
+    }
     bk = backend_key_map.get(gpu_vendor, "cpu_x86")
     bandwidth = db.get("defaults", {}).get("bandwidth_gbps", {}).get(bk, 0)
 
@@ -197,6 +203,16 @@ if selected:
 else:
     class_id = "unknown"
     label = "Unknown"
+    backend = "cpu"
+    tier = "T1"
+    memory_source = "vram"
+
+# Intel Arc acceleration is currently supported only by the Linux installer.
+# A classifier call from WSL, Windows, or macOS must not manufacture a route
+# that those installers do not implement.
+if backend == "intel" and platform_id != "linux":
+    class_id = "intel_unsupported_platform"
+    label = "Intel GPU (unsupported platform)"
     backend = "cpu"
     tier = "T1"
     memory_source = "vram"

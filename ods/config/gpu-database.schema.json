@@ -123,10 +123,10 @@
       "type": "object",
       "required": ["backend", "tier"],
       "properties": {
-        "backend": { "enum": ["nvidia", "amd", "apple", "cpu"] },
+        "backend": { "enum": ["nvidia", "amd", "intel", "apple", "cpu"] },
         "tier": {
           "type": "string",
-          "pattern": "^(T[0-4]|SH_LARGE|SH_COMPACT|NV_ULTRA)$"
+          "pattern": "^(T[0-4]|SH_LARGE|SH_COMPACT|NV_ULTRA|ARC|ARC_LITE)$"
         }
       }
     },

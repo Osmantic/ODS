@@ -1,7 +1,8 @@
 #!/bin/bash
 # ODS Hardware Detection
 # Detects GPU, CPU, RAM and recommends tier
-# Supports: NVIDIA (nvidia-smi), AMD APU/dGPU (sysfs), Apple Silicon
+# Supports: NVIDIA (nvidia-smi), Intel Arc (sysfs/Level Zero),
+#           AMD APU/dGPU (sysfs), Apple Silicon
 
 set -euo pipefail
 
@@ -101,6 +102,13 @@ EOF
 
 # Detect OS and environment
 detect_os() {
+    case "${ODS_DETECT_OS_OVERRIDE:-}" in
+        linux|wsl|macos|unknown)
+            echo "$ODS_DETECT_OS_OVERRIDE"
+            return 0
+            ;;
+    esac
+
     # Explicit WSL detection first
     if is_wsl; then
         echo "wsl"
@@ -182,7 +190,8 @@ count_nvidia_gpus() {
 # Detect AMD GPU via sysfs (works without ROCm installed)
 # Returns: gpu_name|vram_bytes|gtt_bytes|is_apu|gpu_busy|temp|power|vulkan|rocm|driver|device_id|subsystem_device|revision
 detect_amd_sysfs() {
-    for card_dir in /sys/class/drm/card*/device; do
+    local drm_root="${ODS_DRM_SYS:-/sys/class/drm}"
+    for card_dir in "$drm_root"/card*/device; do
         [[ -d "$card_dir" ]] || continue
         local vendor
         vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
@@ -275,8 +284,9 @@ detect_amd_sysfs() {
 
 # Count AMD GPUs via sysfs
 count_amd_gpus() {
+    local drm_root="${ODS_DRM_SYS:-/sys/class/drm}"
     local count=0
-    for card_dir in /sys/class/drm/card*/device; do
+    for card_dir in "$drm_root"/card*/device; do
         [[ -d "$card_dir" ]] || continue
         local vendor
         vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
@@ -284,6 +294,84 @@ count_amd_gpus() {
         [[ "$vendor" == "0x1002" ]] && (( count++ )) || true
     done
     echo "$count"
+}
+
+# Intel Arc device IDs currently supported by the shipped SYCL images.
+# Keep this deliberately narrow: generic Intel integrated graphics must not be
+# routed to the Arc backend merely because they share vendor ID 0x8086.
+is_supported_intel_arc_device_id() {
+    [[ "${1,,}" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f])$ ]]
+}
+
+# Returns: gpu_name|vram_bytes|device_id
+detect_intel_arc_sysfs() {
+    local drm_root="${ODS_DRM_SYS:-/sys/class/drm}"
+    for card_dir in "$drm_root"/card*/device; do
+        [[ -d "$card_dir" ]] || continue
+        local vendor device_id vram_bytes gpu_name
+        vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
+        device_id=$(cat "$card_dir/device" 2>/dev/null) || continue
+        [[ "$vendor" == "0x8086" ]] || continue
+        is_supported_intel_arc_device_id "$device_id" || continue
+
+        vram_bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) || vram_bytes=0
+        gpu_name=$(cat "$card_dir/product_name" 2>/dev/null) || gpu_name=""
+        if [[ -z "$gpu_name" ]] && command -v lspci &>/dev/null; then
+            gpu_name=$(lspci -nn 2>/dev/null \
+                | grep -i 'VGA\|Display\|3D' \
+                | grep -i "8086:${device_id#0x}" \
+                | sed 's/.*: //' \
+                | first_line)
+        fi
+        [[ -n "$gpu_name" ]] || gpu_name="Intel Arc ($device_id)"
+        echo "${gpu_name}|${vram_bytes}|${device_id}"
+        return 0
+    done
+    return 1
+}
+
+count_intel_arc_gpus() {
+    local drm_root="${ODS_DRM_SYS:-/sys/class/drm}"
+    local count=0
+    for card_dir in "$drm_root"/card*/device; do
+        [[ -d "$card_dir" ]] || continue
+        local vendor device_id
+        vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
+        device_id=$(cat "$card_dir/device" 2>/dev/null) || continue
+        if [[ "$vendor" == "0x8086" ]] && is_supported_intel_arc_device_id "$device_id"; then
+            (( count++ )) || true
+        fi
+    done
+    echo "$count"
+}
+
+# The Intel route is Linux-only and requires both a render node and a usable
+# Level Zero loader. Test fixtures may override the probes explicitly.
+intel_sycl_runtime_available() {
+    [[ "$(detect_os)" == "linux" ]] || return 1
+
+    local dri_root="${ODS_DEV_DRI:-/dev/dri}"
+    local render_node_available=false
+    for render_node in "$dri_root"/renderD*; do
+        if [[ -c "$render_node" || ( -n "${ODS_DEV_DRI:-}" && -e "$render_node" ) ]]; then
+            render_node_available=true
+            break
+        fi
+    done
+    [[ "$render_node_available" == "true" ]] || return 1
+
+    case "${ODS_LEVEL_ZERO_AVAILABLE:-}" in
+        1|true|TRUE|yes|YES) return 0 ;;
+        0|false|FALSE|no|NO) return 1 ;;
+    esac
+
+    if command -v ze_info &>/dev/null && ze_info >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v ldconfig &>/dev/null && ldconfig -p 2>/dev/null | grep -q 'libze_loader'; then
+        return 0
+    fi
+    [[ -f /usr/lib/x86_64-linux-gnu/libze_loader.so.1 || -f /usr/lib/libze_loader.so.1 ]]
 }
 
 # Detect AMD GPU (legacy ROCm-only path)
@@ -568,6 +656,7 @@ main() {
     local gpu_busy=0
     local vulkan_available="false"
     local rocm_available="false"
+    local sycl_available="false"
     local driver_loaded="false"
     local device_id=""
     local subsystem_device=""
@@ -626,7 +715,28 @@ main() {
         device_id="$(nvidia_device_id || true)"
     fi
 
-    # Try AMD if no NVIDIA
+    # Try Intel Arc if no NVIDIA. Detection and runtime readiness are separate:
+    # the profile preserves Intel hardware identity while failing closed to CPU
+    # when Level Zero or the render node is unavailable.
+    if [[ -z "$gpu_name" ]]; then
+        local intel_out=""
+        if intel_out=$(detect_intel_arc_sysfs 2>/dev/null); then
+            local intel_vram_bytes
+            IFS='|' read -r gpu_name intel_vram_bytes device_id <<< "$intel_out"
+            intel_vram_bytes=$(as_int "$intel_vram_bytes")
+            gpu_vram_mb=$(( intel_vram_bytes / 1048576 ))
+            gpu_count=$(count_intel_arc_gpus)
+            gpu_type="intel"
+            gpu_architecture="xe-hpg"
+            memory_type="discrete"
+            if [[ "$gpu_vram_mb" -gt 0 ]] && intel_sycl_runtime_available; then
+                sycl_available="true"
+                driver_loaded="true"
+            fi
+        fi
+    fi
+
+    # Try AMD if no NVIDIA or supported Intel Arc
     if [[ -z "$gpu_name" ]]; then
         local amd_out=""
         if amd_out=$(detect_amd_sysfs 2>/dev/null); then
@@ -733,6 +843,7 @@ main() {
     "power_w": $gpu_power,
     "vulkan": $vulkan_available,
     "rocm": $rocm_available,
+    "sycl_available": $sycl_available,
     "driver_loaded": $driver_loaded
   },
   "tier": "$(json_escape "$tier")",

@@ -213,6 +213,36 @@
       }
     },
     {
+      "id": "intel_arc",
+      "label": "Intel Arc (12GB+)",
+      "match": {
+        "platform_id": ["linux"],
+        "gpu_vendor": ["intel"],
+        "memory_type": ["discrete"],
+        "min_vram_mb": 12288
+      },
+      "recommended": {
+        "backend": "intel",
+        "tier": "ARC",
+        "compose_overlays": ["docker-compose.base.yml", "docker-compose.intel.yml"]
+      }
+    },
+    {
+      "id": "intel_arc_lite",
+      "label": "Intel Arc Lite",
+      "match": {
+        "platform_id": ["linux"],
+        "gpu_vendor": ["intel"],
+        "memory_type": ["discrete"],
+        "min_vram_mb": 4096
+      },
+      "recommended": {
+        "backend": "intel",
+        "tier": "ARC_LITE",
+        "compose_overlays": ["docker-compose.base.yml", "docker-compose.intel.yml"]
+      }
+    },
+    {
       "id": "apple_silicon",
       "label": "Apple Silicon",
       "match": {

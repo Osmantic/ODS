@@ -232,6 +232,60 @@ show_amd_gpu_device_guidance() {
     fi
 }
 
+intel_sycl_runtime_available() {
+    # The Intel Arc route is intentionally Linux-only. WSL/Windows and macOS
+    # need separate installer/runtime support before they may select it.
+    if [[ -n "${ODS_DETECT_OS_OVERRIDE:-}" ]]; then
+        [[ "$ODS_DETECT_OS_OVERRIDE" == "linux" ]] || return 1
+    else
+        if [[ -r /proc/sys/kernel/osrelease ]] \
+            && grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null; then
+            return 1
+        fi
+        [[ "$(uname -s 2>/dev/null)" == "Linux" ]] || return 1
+    fi
+
+    local dri_root="${ODS_DEV_DRI:-/dev/dri}"
+    local render_node_available=false
+    for render_node in "$dri_root"/renderD*; do
+        if [[ -c "$render_node" || ( -n "${ODS_DEV_DRI:-}" && -e "$render_node" ) ]]; then
+            render_node_available=true
+            break
+        fi
+    done
+    [[ "$render_node_available" == "true" ]] || return 1
+
+    case "${ODS_LEVEL_ZERO_AVAILABLE:-}" in
+        1|true|TRUE|yes|YES) return 0 ;;
+        0|false|FALSE|no|NO) return 1 ;;
+    esac
+
+    if command -v ze_info &>/dev/null && ze_info >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v ldconfig &>/dev/null && ldconfig -p 2>/dev/null | grep -q 'libze_loader'; then
+        return 0
+    fi
+    [[ -f /usr/lib/x86_64-linux-gnu/libze_loader.so.1 || -f /usr/lib/libze_loader.so.1 ]]
+}
+
+show_intel_sycl_guidance() {
+    ai_warn "Intel Arc was detected, but the Linux SYCL runtime is not ready."
+    ai "ODS requires a /dev/dri/renderD* device and a working Level Zero loader."
+    ai "  sudo apt install intel-opencl-icd intel-level-zero-gpu level-zero"
+    ai "  sudo usermod -aG video,render \$USER"
+    ai "Re-login after changing groups, then rerun the installer."
+}
+
+ensure_intel_sycl_or_cpu_fallback() {
+    [[ "${GPU_BACKEND:-cpu}" == "intel" ]] || return 0
+    if intel_sycl_runtime_available; then
+        return 0
+    fi
+    show_intel_sycl_guidance
+    apply_cpu_gpu_fallback "Falling back to CPU mode because Intel Arc SYCL prerequisites are unavailable."
+}
+
 apply_cpu_gpu_fallback() {
     local reason="${1:-AMD GPU runtime devices are unavailable.}"
     ai_warn "$reason"
@@ -397,35 +451,33 @@ detect_gpu() {
         fi
     fi
 
-    # Try Intel Arc via lspci + sysfs
-    if lspci 2>/dev/null | grep -qi 'VGA.*Intel.*Arc'; then
-        for card_dir in "$_drm_sys"/card*/device; do
-            [[ -d "$card_dir" ]] || continue
-            local vendor device
-            vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
-            device=$(cat "$card_dir/device" 2>/dev/null) || continue
-            # Intel vendor ID: 0x8086, Arc device IDs: 0x56a0-0x56c1 (Alchemist), 0x5690-0x569f (DG2)
-            if [[ "$vendor" == "0x8086" ]] && [[ "$device" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f])$ ]]; then
-                GPU_BACKEND="intel"
-                GPU_MEMORY_TYPE="discrete"
-                GPU_DEVICE_ID="$device"
-                GPU_COUNT=1
-                # Try to get VRAM size from sysfs (lmem_total_bytes on Arc)
-                local vram_bytes
-                vram_bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) || vram_bytes=0
-                GPU_VRAM=$(( vram_bytes / 1048576 ))  # in MB
-                # Try marketing name from sysfs or lspci
-                if [[ -f "$card_dir/product_name" ]]; then
-                    GPU_NAME=$(cat "$card_dir/product_name" 2>/dev/null) || GPU_NAME="Intel Arc"
-                else
-                    GPU_NAME=$(lspci | grep -i 'VGA.*Intel.*Arc' | sed 's/.*: //' | head -1)
-                    [[ -z "$GPU_NAME" ]] && GPU_NAME="Intel Arc ($GPU_DEVICE_ID)"
-                fi
-                log "GPU: $GPU_NAME (${GPU_VRAM}MB VRAM, Intel Arc)"
-                return 0
+    # Try Intel Arc via sysfs. lspci is optional and must not be a prerequisite
+    # for recognizing a supported PCI device.
+    for card_dir in "$_drm_sys"/card*/device; do
+        [[ -d "$card_dir" ]] || continue
+        local vendor device
+        vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
+        device=$(cat "$card_dir/device" 2>/dev/null) || continue
+        # Intel vendor ID: 0x8086, Arc device IDs: 0x56a0-0x56c1
+        # (Alchemist) and 0x5690-0x569f (DG2).
+        if [[ "$vendor" == "0x8086" ]] && [[ "$device" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f])$ ]]; then
+            GPU_BACKEND="intel"
+            GPU_MEMORY_TYPE="discrete"
+            GPU_DEVICE_ID="$device"
+            GPU_COUNT=1
+            local vram_bytes
+            vram_bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) || vram_bytes=0
+            GPU_VRAM=$(( vram_bytes / 1048576 ))
+            if [[ -f "$card_dir/product_name" ]]; then
+                GPU_NAME=$(cat "$card_dir/product_name" 2>/dev/null) || GPU_NAME="Intel Arc"
+            elif command -v lspci &>/dev/null; then
+                GPU_NAME=$(lspci 2>/dev/null | grep -i 'VGA.*Intel.*Arc' | sed 's/.*: //' | head -1)
             fi
-        done
-    fi
+            [[ -n "${GPU_NAME:-}" ]] || GPU_NAME="Intel Arc ($GPU_DEVICE_ID)"
+            log "GPU: $GPU_NAME (${GPU_VRAM}MB VRAM, Intel Arc)"
+            return 0
+        fi
+    done
 
     # Try AMD GPUs (discrete RDNA + APU) via sysfs
     local amd_card_dirs=()
