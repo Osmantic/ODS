@@ -55,6 +55,26 @@ fi
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
+# The resolver must remain anchored to the ODS root when invoked directly from
+# an arbitrary working directory. Installers may still override it explicitly.
+mkdir -p "$TEMP_DIR/unrelated-cwd"
+default_root_output=$(
+    cd "$TEMP_DIR/unrelated-cwd"
+    ODS_MODE=local \
+        EXTERNAL_LLM_URL="" \
+        LEMONADE_EXTERNAL=false \
+        AMD_INFERENCE_RUNTIME="" \
+        AMD_INFERENCE_MANAGED="" \
+        bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+            --tier 1 --gpu-backend cpu 2>/dev/null
+)
+if contains_path "$default_root_output" "docker-compose.base.yml" \
+    && contains_path "$default_root_output" "docker-compose.cpu.yml"; then
+    pass "Direct invocation resolves compose files from the ODS root"
+else
+    fail "Direct invocation used the caller working directory instead of the ODS root"
+fi
+
 # Create minimal directory structure
 mkdir -p "$TEMP_DIR/extensions/services/broken-ext"
 mkdir -p "$TEMP_DIR/extensions/services/good-ext"
