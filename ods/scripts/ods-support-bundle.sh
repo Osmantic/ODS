@@ -571,7 +571,20 @@ manifest = {
     "commands": commands,
 }
 
-(bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+manifest_path = bundle_dir / "manifest.json"
+import os
+import tempfile
+fd, tmp_str = tempfile.mkstemp(dir=str(manifest_path.parent), prefix=f".{manifest_path.name}.", suffix=".tmp")
+tmp_path = pathlib.Path(tmp_str)
+content = json.dumps(manifest, indent=2) + "\n"
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.replace(tmp_path, manifest_path)
+except Exception:
+    if tmp_path.exists():
+        tmp_path.unlink(missing_ok=True)
+    raise
 PY
 }
 
