@@ -1,0 +1,19 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.0.0"
+service:
+  id: reranker
+  name: Reranker (RAG Precision)
+  aliases: [rerank]
+  container_name: ods-reranker
+  host_env: RERANKER_HOST
+  default_host: reranker
+  port: 3010
+  external_port_env: RERANKER_PORT
+  external_port_default: 3010
+  health: /health
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
