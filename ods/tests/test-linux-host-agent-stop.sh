@@ -31,6 +31,10 @@ grep -q 'def _request_server_shutdown' "$AGENT" \
   || fail "host-agent must expose async-safe shutdown helper"
 grep -q 'target=server.shutdown' "$AGENT" \
   || fail "host-agent shutdown helper must call server.shutdown from a helper thread"
-grep -q 'signal.SIGTERM.*_request_server_shutdown' "$AGENT" \
-  || fail "host-agent SIGTERM handler must use async-safe shutdown helper"
+# SIGTERM now registers the rebind-aware wrapper (_request_shutdown), which must
+# itself route through the async-safe helper — assert the whole chain.
+grep -q 'signal.SIGTERM.*_request_shutdown' "$AGENT" \
+  || fail "host-agent SIGTERM handler must use the shutdown wrapper"
+grep -A 3 'def _request_shutdown(' "$AGENT" | grep -q '_request_server_shutdown' \
+  || fail "shutdown wrapper must call the async-safe shutdown helper"
 pass "host-agent SIGTERM path is async-safe"
