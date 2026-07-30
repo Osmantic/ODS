@@ -489,6 +489,12 @@ WORKSPACE_FILE_MAP = {
     "USER.md": "workspace_user_chars",
     "HEARTBEAT.md": "workspace_heartbeat_chars",
     "BOOTSTRAP.md": "workspace_bootstrap_chars",
+    # Every marker here is also a section boundary: a file's content is measured
+    # up to the next KNOWN marker, so omitting one does not merely lose its
+    # bucket — it folds that file's whole body into the bucket of whichever
+    # workspace file precedes it. Keep in step with the usage table columns and
+    # providers/anthropic.py's WORKSPACE_FILE_MAP.
+    "MEMORY.md": "workspace_memory_chars",
 }
 
 
