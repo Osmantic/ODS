@@ -122,6 +122,9 @@ test: ## Run unit and contract tests
 	@echo "=== macOS ods-host-agent bootstrap verification ==="
 	@bash tests/test-macos-host-agent-verification.sh
 	@echo ""
+	@echo "=== desktop host-agent environment contract ==="
+	@bash tests/test-desktop-agent-host-env.sh
+	@echo ""
 	@echo "=== macOS model download retry contract ==="
 	@bash tests/test-macos-download-retries.sh
 	@echo ""
