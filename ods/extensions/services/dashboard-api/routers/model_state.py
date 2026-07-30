@@ -63,7 +63,7 @@ def _validate_document(doc: Any) -> list[str]:
         schema = json.loads(_schema_path().read_text(encoding="utf-8"))
         Draft202012Validator.check_schema(schema)
         validator = Draft202012Validator(schema)
-    except (OSError, ValueError, SchemaError) as exc:
+    except (OSError, UnicodeError, ValueError, SchemaError) as exc:
         return [f"state schema unavailable or invalid: {exc}"]
 
     errors = []
@@ -109,7 +109,7 @@ async def get_model_state(api_key: str = Depends(verify_api_key)):
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return _invalid_response([], exists=False)
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         logger.warning("model-state read failed: %s", exc)
         return _invalid_response([f"read failed: {exc}"])
 
