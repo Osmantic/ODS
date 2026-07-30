@@ -7,6 +7,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+import tempfile
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException
@@ -82,11 +83,31 @@ async def setup_persona(request: PersonaRequest, api_key: str = Depends(verify_a
         "system_prompt": persona_info["system_prompt"], "icon": persona_info["icon"],
         "selected_at": datetime.now(timezone.utc).isoformat()
     }
-    with open(SETUP_CONFIG_DIR / "persona.json", "w") as f:
-        json.dump(persona_data, f, indent=2)
+    persona_file = SETUP_CONFIG_DIR / "persona.json"
+    fd, tmp_path = tempfile.mkstemp(dir=str(SETUP_CONFIG_DIR), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(persona_data, f, indent=2)
+        os.replace(tmp_path, str(persona_file))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
-    with open(SETUP_CONFIG_DIR / "setup-progress.json", "w") as f:
-        json.dump({"step": 2, "persona_selected": True}, f)
+    progress_file = SETUP_CONFIG_DIR / "setup-progress.json"
+    fd, tmp_path = tempfile.mkstemp(dir=str(SETUP_CONFIG_DIR), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump({"step": 2, "persona_selected": True}, f)
+        os.replace(tmp_path, str(progress_file))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     return {"success": True, "persona": request.persona, "name": persona_info["name"], "message": f"Great choice! Your assistant is now a {persona_info['name']}."}
 
@@ -96,8 +117,18 @@ async def setup_complete(api_key: str = Depends(verify_api_key)):
     """Mark the first-run setup as complete."""
     SETUP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
-    with open(SETUP_CONFIG_DIR / "setup-complete.json", "w") as f:
-        json.dump({"completed_at": datetime.now(timezone.utc).isoformat(), "version": "1.0.0"}, f, indent=2)
+    complete_file = SETUP_CONFIG_DIR / "setup-complete.json"
+    fd, tmp_path = tempfile.mkstemp(dir=str(SETUP_CONFIG_DIR), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump({"completed_at": datetime.now(timezone.utc).isoformat(), "version": "1.0.0"}, f, indent=2)
+        os.replace(tmp_path, str(complete_file))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     progress_file = SETUP_CONFIG_DIR / "setup-progress.json"
     if progress_file.exists():

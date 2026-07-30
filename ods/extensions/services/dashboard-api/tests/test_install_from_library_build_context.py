@@ -210,3 +210,32 @@ def test_malformed_yaml_propagates(tmp_path):
 
     with pytest.raises(yaml.YAMLError):
         _rewrite_build_context(compose, final_dir)
+
+
+def test_rewrites_build_context_atomically_without_temp_leftover(tmp_path, monkeypatch):
+    compose = tmp_path / "compose.yaml"
+    final_dir = Path("/var/lib/ods/user-extensions/foo")
+    _write(compose, {
+        "services": {
+            "foo": {"build": "."},
+        },
+    })
+
+    replaced_sources = []
+    real_replace = os.replace
+
+    def mock_replace(src, dst):
+        replaced_sources.append(Path(src))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", mock_replace)
+
+    _rewrite_build_context(compose, final_dir)
+
+    data = _read(compose)
+    assert data["services"]["foo"]["build"] == {"context": str(final_dir.resolve())}
+    assert len(replaced_sources) == 1
+    assert replaced_sources[0].name.startswith(".compose.yaml.")
+    assert replaced_sources[0].name.endswith(".tmp")
+    assert not list(tmp_path.glob("*.tmp"))
+    assert not list(tmp_path.glob(".*.tmp"))

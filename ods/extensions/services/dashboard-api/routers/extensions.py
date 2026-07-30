@@ -1598,8 +1598,21 @@ def _rewrite_build_context(compose_path: Path, final_dir: Path) -> None:
                 changed = True
 
     if changed:
-        with open(compose_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(data, f, sort_keys=False)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(compose_path.parent),
+            prefix=f".{compose_path.name}.",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                yaml.safe_dump(data, f, sort_keys=False)
+            os.replace(tmp_path, compose_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 
 @router.post("/api/extensions/{service_id}/install")
