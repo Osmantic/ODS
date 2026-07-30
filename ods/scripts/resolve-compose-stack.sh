@@ -125,7 +125,12 @@ elif lemonade_external and ods_mode == "lemonade":
     elif existing(["docker-compose.base.yml"]):
         resolved = ["docker-compose.base.yml"]
         primary = "docker-compose.base.yml"
-elif ods_mode == "cloud" or tier == "CLOUD":
+# mesh is local-family and must override a persisted CLOUD tier. A cloud
+# install carries tier == "CLOUD"; switching it to mesh must not keep taking
+# the cloud branch, or it would render docker-compose.cloud.yml and profile out
+# the local llama-server a mesh node contributes (the state ods-doctor flags as
+# ODS-RUNTIME-MESH-CLOUD-OVERLAY). Let mesh fall through to the local overlays.
+elif ods_mode == "cloud" or (tier == "CLOUD" and ods_mode != "mesh"):
     if existing(["docker-compose.base.yml", "docker-compose.cloud.yml"]):
         resolved = ["docker-compose.base.yml", "docker-compose.cloud.yml"]
         primary = "docker-compose.cloud.yml"
@@ -574,7 +579,12 @@ if ext_dir.exists():
             # cloud overlay to profile out ODS's managed llama-server, so
             # local-mode overlays that wait on `llama-server: service_healthy`
             # would point at a disabled service and break lifecycle commands.
-            if ods_mode in ("local", "hybrid", "lemonade") and tier != "CLOUD" and gpu_backend != "apple" and not lemonade_external and not external_llm:
+            # mesh is exempt from the CLOUD-tier skip: it overrides a persisted
+            # CLOUD tier above and keeps a local llama-server, so a converted
+            # cloud->mesh node must get the same depends_on wiring a fresh mesh
+            # install gets. Without the exemption the two stacks differ silently
+            # and ODS-RUNTIME-MESH-LOCAL-OVERLAY-MISSING cannot see it.
+            if ods_mode in ("local", "hybrid", "lemonade", "mesh") and (tier != "CLOUD" or ods_mode == "mesh") and gpu_backend != "apple" and not lemonade_external and not external_llm:
                 local_mode_overlay = service_dir / "compose.local.yaml"
                 if local_mode_overlay.exists():
                     resolved.append(str(local_mode_overlay.relative_to(script_dir)))
@@ -678,8 +688,9 @@ if user_ext_dir.exists():
                 # External Lemonade likewise runs on the host and uses the cloud
                 # overlay to disable ODS's managed llama-server, so user-local
                 # overlays must not add local llama-server health dependencies.
-                # Mirrors the same guard in the built-in loop above (PR #1004).
-                if ods_mode in ("local", "hybrid", "lemonade") and tier != "CLOUD" and gpu_backend != "apple" and not lemonade_external and not external_llm:
+                # Mirrors the same guard in the built-in loop above (PR #1004),
+                # including the mesh exemption from the CLOUD-tier skip.
+                if ods_mode in ("local", "hybrid", "lemonade", "mesh") and (tier != "CLOUD" or ods_mode == "mesh") and gpu_backend != "apple" and not lemonade_external and not external_llm:
                     local_mode_overlay = service_dir / "compose.local.yaml"
                     if local_mode_overlay.exists():
                         # Same content scan as compose.yaml/gpu overlay above —

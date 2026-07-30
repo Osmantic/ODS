@@ -25,7 +25,7 @@ COMMANDS = {
     "disable": ("cmd_disable", "disable <service>"),
     "purge": ("cmd_purge", "purge <service>"),
     "preset": ("cmd_preset", "preset <action>"),
-    "mode": ("cmd_mode", "mode [local|cloud|hybrid]"),
+    "mode": ("cmd_mode", "mode [local|cloud|hybrid|mesh]"),
     "model": ("cmd_model", "model [current|list|swap]"),
     "remote-provider": (
         "cmd_remote_provider",

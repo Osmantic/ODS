@@ -2,9 +2,9 @@
 # ============================================================================
 # ODS Mode Switch
 # ============================================================================
-# Usage: ./mode-switch.sh <local|cloud|hybrid> [--status]
+# Usage: ./mode-switch.sh <local|cloud|hybrid|mesh> [--status]
 #
-# Switches ODS between local/cloud/hybrid modes by updating .env.
+# Switches ODS between local/cloud/hybrid/mesh modes by updating .env.
 # This is the backend for `ods mode <mode>`.
 # ============================================================================
 
@@ -54,6 +54,7 @@ show_status() {
     echo "  local   — Local inference via llama-server (requires GPU/CPU)"
     echo "  cloud   — Cloud APIs via LiteLLM (requires API keys)"
     echo "  hybrid  — Local primary, cloud fallback"
+    echo "  mesh    — Distributed reasoning across local nodes (experimental)"
 }
 
 switch_mode() {
@@ -61,8 +62,8 @@ switch_mode() {
 
     # Validate
     case "$mode" in
-        local|cloud|hybrid) ;;
-        *) error "Unknown mode: $mode. Use: local, cloud, hybrid" ;;
+        local|cloud|hybrid|mesh) ;;
+        *) error "Unknown mode: $mode. Use: local, cloud, hybrid, mesh" ;;
     esac
 
     [[ -f "$ENV_FILE" ]] || error ".env not found at $ENV_FILE"
@@ -98,7 +99,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     case "${1:---status}" in
         --status|-s|status) show_status ;;
         --help|-h|help)
-            echo "Usage: mode-switch.sh <local|cloud|hybrid|--status>"
+            echo "Usage: mode-switch.sh <local|cloud|hybrid|mesh|--status>"
             ;;
         *) switch_mode "${1:-}" ;;
     esac

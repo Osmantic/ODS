@@ -3485,14 +3485,15 @@ cmd_mode() {
         echo "  local   — Local inference via llama-server (requires GPU/CPU)"
         echo "  cloud   — Cloud APIs via LiteLLM (requires API keys)"
         echo "  hybrid  — Local primary, cloud fallback"
+        echo "  mesh    — Distributed reasoning across local nodes (experimental)"
         echo ""
-        echo "Usage: ods mode <local|cloud|hybrid>"
+        echo "Usage: ods mode <local|cloud|hybrid|mesh>"
         return 0
     fi
 
     case "$mode" in
-        local|cloud|hybrid) ;;
-        *) error "Unknown mode: $mode. Use: local, cloud, hybrid" ;;
+        local|cloud|hybrid|mesh) ;;
+        *) error "Unknown mode: $mode. Use: local, cloud, hybrid, mesh" ;;
     esac
 
     local configured_backend
@@ -3524,12 +3525,16 @@ cmd_mode() {
             mv "$litellm_disabled" "$litellm_cf"
             success "Auto-enabled litellm for $mode mode"
         fi
-        # Check for API keys
-        local has_keys=false
-        grep -q "^ANTHROPIC_API_KEY=." .env 2>/dev/null && has_keys=true
-        grep -q "^OPENAI_API_KEY=." .env 2>/dev/null && has_keys=true
-        if [[ "$has_keys" == "false" ]]; then
-            warn "No API keys found in .env — add ANTHROPIC_API_KEY or OPENAI_API_KEY"
+        # Cloud and hybrid reach external providers, so warn when no provider
+        # key is set. mesh routes peer traffic through the local LiteLLM gateway
+        # and needs no external API key, so skip the warning for it.
+        if [[ "$mode" == "cloud" || "$mode" == "hybrid" ]]; then
+            local has_keys=false
+            grep -q "^ANTHROPIC_API_KEY=." .env 2>/dev/null && has_keys=true
+            grep -q "^OPENAI_API_KEY=." .env 2>/dev/null && has_keys=true
+            if [[ "$has_keys" == "false" ]]; then
+                warn "No API keys found in .env — add ANTHROPIC_API_KEY or OPENAI_API_KEY"
+            fi
         fi
     fi
 
@@ -6338,8 +6343,8 @@ ${CYAN}Commands:${NC}
   disable <service>   Disable an extension service
   purge <service>     Permanently delete service data
   preset <action>     Save/load/list/delete/export/import presets
-  mode [local|cloud|hybrid]
-                      Switch between local/cloud/hybrid modes
+  mode [local|cloud|hybrid|mesh]
+                      Switch between local/cloud/hybrid/mesh modes
   model [current|list|swap]
                       View or change the local LLM model tier
   remote-provider [status|plan|configure|test|disable|remove|peer-models]

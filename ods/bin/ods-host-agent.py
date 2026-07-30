@@ -184,8 +184,8 @@ ALWAYS_ON_SERVICES: frozenset = frozenset({
 })
 USER_EXTENSIONS_DIR: Path = Path()
 EXTENSIONS_DIR: Path = Path()
-_ODS_MODES = frozenset({"local", "cloud", "hybrid", "lemonade"})
-_LOCAL_MODEL_MODES = frozenset({"local", "hybrid", "lemonade"})
+_ODS_MODES = frozenset({"local", "cloud", "hybrid", "lemonade", "mesh"})
+_LOCAL_MODEL_MODES = frozenset({"local", "hybrid", "lemonade", "mesh"})
 _MODEL_TIER_RE = re.compile(r"^[A-Z0-9_]{1,32}$")
 _MODEL_TIERS = frozenset({
     "0", "1", "2", "3", "4", "ARC", "ARC_LITE",

@@ -988,18 +988,18 @@ def _collect_inference_contract():
     expected_owner = "external" if external_inference else "ods"
     expected_gateway = (
         "litellm"
-        if external_inference or ods_mode == "lemonade" or gpu_backend == "amd"
+        if external_inference or ods_mode in ("lemonade", "mesh") or gpu_backend == "amd"
         else "llama-server"
     )
 
     issues = []
-    if ods_mode not in {"local", "cloud", "hybrid", "lemonade"}:
+    if ods_mode not in {"local", "cloud", "hybrid", "lemonade", "mesh"}:
         issues.append(
             _inference_issue(
                 "ODS-RUNTIME-MODE-UNKNOWN",
                 "blocker",
                 ".env",
-                f"ODS_MODE={ods_mode!r} is not one of local/cloud/hybrid/lemonade.",
+                f"ODS_MODE={ods_mode!r} is not one of local/cloud/hybrid/lemonade/mesh.",
             )
         )
 
@@ -1108,6 +1108,58 @@ def _collect_inference_contract():
                 )
             )
 
+    if ods_mode == "mesh":
+        # mesh is local-family: each node runs its own llama-server and reasons
+        # peer-to-peer through LiteLLM. The cloud overlay would profile out that
+        # local llama-server, and pointing services straight at llama-server
+        # would bypass the LiteLLM peer gateway. Both defeat the mode, so flag
+        # them the way cloud/local drift is flagged for their own contracts.
+        if compose_flags_exists and cloud_overlay:
+            issues.append(
+                _inference_issue(
+                    "ODS-RUNTIME-MESH-CLOUD-OVERLAY",
+                    "blocker",
+                    ".compose-flags",
+                    "ODS_MODE=mesh but docker-compose.cloud.yml is in the compose stack; the cloud overlay profiles out the local llama-server a mesh node contributes.",
+                )
+            )
+        if compose_flags_exists and not local_inference_overlay:
+            issues.append(
+                _inference_issue(
+                    "ODS-RUNTIME-MESH-LOCAL-OVERLAY-MISSING",
+                    "blocker",
+                    ".compose-flags",
+                    "ODS_MODE=mesh but no local inference overlay is in the compose stack; a mesh node runs its own local llama-server.",
+                )
+            )
+        if _looks_like_local_llama_route(llm_api_url):
+            issues.append(
+                _inference_issue(
+                    "ODS-RUNTIME-MESH-LLM-LOCAL-ROUTE",
+                    "blocker",
+                    ".env",
+                    f"ODS_MODE=mesh but LLM_API_URL points straight at local llama-server ({llm_api_url}); mesh routes peer traffic through LiteLLM.",
+                )
+            )
+        if _looks_like_local_llama_route(hermes_base_url):
+            issues.append(
+                _inference_issue(
+                    "ODS-RUNTIME-MESH-HERMES-LOCAL-ROUTE",
+                    "blocker",
+                    ".env",
+                    f"ODS_MODE=mesh but HERMES_LLM_BASE_URL points straight at local llama-server ({hermes_base_url}); mesh routes Hermes through LiteLLM.",
+                )
+            )
+        if llm_api_url and not _looks_like_litellm_route(llm_api_url) and not _looks_like_local_llama_route(llm_api_url):
+            issues.append(
+                _inference_issue(
+                    "ODS-RUNTIME-MESH-GATEWAY-BYPASS",
+                    "warn",
+                    ".env",
+                    f"ODS_MODE=mesh normally routes ODS services through LiteLLM as the peer gateway, but LLM_API_URL={llm_api_url}.",
+                )
+            )
+
     diagnoses = []
     issue_titles = {
         "ODS-RUNTIME-MODE-UNKNOWN": "Runtime mode is not recognized",
@@ -1121,6 +1173,11 @@ def _collect_inference_contract():
         "ODS-RUNTIME-EXTERNAL-LEMONADE-UNAUTHENTICATED-HOST-ROUTE": "External Lemonade host route has no user-provided API key",
         "ODS-RUNTIME-LOCAL-CLOUD-OVERLAY": "Local mode still has the cloud compose overlay",
         "ODS-RUNTIME-LOCAL-LITELLM-ROUTE": "Local mode routes through LiteLLM unexpectedly",
+        "ODS-RUNTIME-MESH-CLOUD-OVERLAY": "Mesh mode still has the cloud compose overlay",
+        "ODS-RUNTIME-MESH-LOCAL-OVERLAY-MISSING": "Mesh mode is missing the local inference overlay",
+        "ODS-RUNTIME-MESH-LLM-LOCAL-ROUTE": "Mesh mode routes chat clients around the LiteLLM peer gateway",
+        "ODS-RUNTIME-MESH-HERMES-LOCAL-ROUTE": "Mesh mode routes Hermes around the LiteLLM peer gateway",
+        "ODS-RUNTIME-MESH-GATEWAY-BYPASS": "Mesh mode bypasses the LiteLLM peer gateway",
     }
     next_steps = {
         "ODS-RUNTIME-CLOUD-OVERLAY-MISSING": [
@@ -1158,8 +1215,27 @@ def _collect_inference_contract():
         "ODS-RUNTIME-LOCAL-LITELLM-ROUTE": [
             "If this is not an AMD/Lemonade install, set LLM_API_URL back to http://llama-server:8080.",
         ],
+        "ODS-RUNTIME-MESH-CLOUD-OVERLAY": [
+            "Regenerate compose flags with ODS_MODE=mesh so the local llama-server overlay is used instead of docker-compose.cloud.yml.",
+            "Run `ods restart` after correcting .env/.compose-flags.",
+        ],
+        "ODS-RUNTIME-MESH-LOCAL-OVERLAY-MISSING": [
+            "Regenerate compose flags for mesh so the GPU/CPU llama-server overlay is included.",
+            "Run `ods restart` after correcting .compose-flags.",
+        ],
+        "ODS-RUNTIME-MESH-LLM-LOCAL-ROUTE": [
+            "Set LLM_API_URL to the LiteLLM service URL used by the stack, usually http://litellm:4000.",
+            "Mesh routes peer traffic through LiteLLM, so do not point services straight at llama-server.",
+        ],
+        "ODS-RUNTIME-MESH-HERMES-LOCAL-ROUTE": [
+            "Set HERMES_LLM_BASE_URL to http://litellm:4000/v1 for mesh mode.",
+            "Restart Hermes after updating the generated config/template.",
+        ],
+        "ODS-RUNTIME-MESH-GATEWAY-BYPASS": [
+            "Route ODS services through LiteLLM so mesh peer routing stays consistent.",
+        ],
         "ODS-RUNTIME-MODE-UNKNOWN": [
-            "Set ODS_MODE to local, cloud, hybrid, or lemonade.",
+            "Set ODS_MODE to local, cloud, hybrid, lemonade, or mesh.",
         ],
     }
     for issue in issues:

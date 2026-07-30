@@ -296,6 +296,68 @@ else
     pass "user API key suppresses unauthenticated external Lemonade diagnosis"
 fi
 
+# --- Mesh mode: local-family with a LiteLLM peer gateway ---
+# A broken mesh install renders the cloud overlay (profiling out the local
+# llama-server) and points services straight at llama-server (bypassing the
+# LiteLLM peer gateway). Doctor must flag both.
+cat > "$ENV_PATH" <<'ENV'
+ODS_MODE=mesh
+GPU_BACKEND=nvidia
+LLM_API_URL=http://llama-server:8080
+HERMES_LLM_BASE_URL=http://llama-server:8080/v1
+LLM_MODEL=qwen-test
+GGUF_FILE=qwen-test.gguf
+ENV
+cat > "$FLAGS_PATH" <<'FLAGS'
+-f docker-compose.base.yml -f docker-compose.cloud.yml
+FLAGS
+
+if (cd "$ROOT_DIR" && bash scripts/ods-doctor.sh "$REPORT" >/dev/null 2>&1); then
+    pass "ods-doctor runs with broken mesh fixture"
+else
+    fail "ods-doctor failed with broken mesh fixture"
+fi
+
+for id in \
+    ODS-RUNTIME-MESH-CLOUD-OVERLAY \
+    ODS-RUNTIME-MESH-LOCAL-OVERLAY-MISSING \
+    ODS-RUNTIME-MESH-LLM-LOCAL-ROUTE \
+    ODS-RUNTIME-MESH-HERMES-LOCAL-ROUTE
+do
+    if jq -e --arg id "$id" '.diagnoses[] | select(.id == $id)' "$REPORT" >/dev/null; then
+        pass "broken mesh diagnosis present: $id"
+    else
+        fail "broken mesh diagnosis missing: $id"
+    fi
+done
+
+# A healthy mesh install keeps the local inference overlay, drops the cloud
+# overlay, and routes LLM_API_URL/HERMES_LLM_BASE_URL through LiteLLM. Doctor
+# should emit no mesh runtime diagnoses.
+cat > "$ENV_PATH" <<'ENV'
+ODS_MODE=mesh
+GPU_BACKEND=nvidia
+LLM_API_URL=http://litellm:4000
+HERMES_LLM_BASE_URL=http://litellm:4000/v1
+LLM_MODEL=qwen-test
+GGUF_FILE=qwen-test.gguf
+ENV
+cat > "$FLAGS_PATH" <<'FLAGS'
+-f docker-compose.base.yml -f docker-compose.nvidia.yml
+FLAGS
+
+if (cd "$ROOT_DIR" && bash scripts/ods-doctor.sh "$REPORT" >/dev/null 2>&1); then
+    pass "ods-doctor runs with healthy mesh fixture"
+else
+    fail "ods-doctor failed with healthy mesh fixture"
+fi
+
+if jq -e '.diagnoses[] | select(.id | startswith("ODS-RUNTIME-MESH-"))' "$REPORT" >/dev/null; then
+    fail "healthy mesh fixture still emitted a mesh runtime diagnosis"
+else
+    pass "healthy mesh fixture is clean of mesh runtime diagnoses"
+fi
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed, $SKIPPED skipped"
 [[ "$FAILED" -eq 0 ]]
