@@ -222,6 +222,22 @@ class TestCalculateFeatureStatusGeneral:
             result = calculate_feature_status(feature, services, gpu)
         assert result["status"] == "available"
 
+    def test_calculate_feature_status_supports_dict_service_objects(self):
+        from routers.features import calculate_feature_status
+
+        feature = self._make_feature(
+            vram_gb=0,
+            services=["llama-server"],
+            enabled_all=["llama-server"],
+        )
+        dict_services = [{"id": "llama-server", "status": "healthy"}]
+
+        with patch("routers.features.GPU_BACKEND", "nvidia"):
+            result = calculate_feature_status(feature, dict_services, None)
+
+        assert result["status"] == "enabled"
+        assert result["enabled"] is True
+
 
 class TestHermesFeatureContracts:
     @staticmethod
