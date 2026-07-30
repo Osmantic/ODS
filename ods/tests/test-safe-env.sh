@@ -141,5 +141,32 @@ load_env_file "$tmpdir/.env-quotes"
 [[ "${PLAIN_SQ:-}" == "plain" ]] || fail "PLAIN_SQ not unquoted (got: '${PLAIN_SQ:-}')"
 pass "load_env_file strips only matched surrounding quote pairs"
 
+echo "Test 13: model selector loader accepts every catalog runtime-profile env key"
+# select-model.py forwards a matched runtime profile's `env` block verbatim
+# (scripts/select-model.py, `for key, value in (runtime_profile.get("env")...`).
+# Any key the catalog can emit has to survive the allowlist, or the profile's
+# tuning is silently dropped between the selector and the generated .env.
+_profile_env_keys="$(python3 - "$ROOT_DIR/config/model-library.json" << 'PY'
+import json
+import sys
+
+keys = set()
+with open(sys.argv[1], encoding="utf-8") as handle:
+    for model in json.load(handle).get("models", []):
+        for profile in model.get("runtime_profiles") or []:
+            keys.update((profile.get("env") or {}).keys())
+print("\n".join(sorted(keys)))
+PY
+)"
+[[ -n "$_profile_env_keys" ]] || fail "no runtime-profile env keys found in config/model-library.json"
+while IFS= read -r _key; do
+    _key="${_key%$'\r'}"
+    [[ -n "$_key" ]] || continue
+    unset "$_key" 2>/dev/null || true
+    load_model_selector_env_from_output <<< "$(printf '%s="profile-value"' "$_key")"
+    [[ "${!_key:-}" == "profile-value" ]] || fail "$_key is declared by a catalog runtime profile but dropped by the model selector allowlist"
+done <<< "$_profile_env_keys"
+pass "selector allowlist covers every catalog runtime-profile env key"
+
 echo ""
 echo "All safe-env tests passed."
