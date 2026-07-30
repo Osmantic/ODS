@@ -178,6 +178,43 @@ def test_extension_library_sha_tags_are_rejected() -> None:
     )
 
 
+def test_declared_arg_wins_over_inline_fallback() -> None:
+    """A declared ARG must beat an inline ${VAR:-fallback}, as Docker resolves it.
+
+    With `ARG TAG=1.2.3`, Docker builds `FROM base:${TAG:-9.9.9}` as
+    `base:1.2.3`. Returning the fallback made the gate record and enforce an
+    image the build never pulls.
+    """
+    module = load_module()
+
+    assert module._resolve_vars("base:${TAG:-9.9.9}", {"TAG": "1.2.3"}) == "base:1.2.3"
+    assert module._resolve_vars("base:${TAG-9.9.9}", {"TAG": "1.2.3"}) == "base:1.2.3"
+    # `:-` also substitutes on an empty declared value; plain `-` does not.
+    assert module._resolve_vars("base:${TAG:-9.9.9}", {"TAG": ""}) == "base:9.9.9"
+    assert module._resolve_vars("base:${TAG-9.9.9}", {"TAG": ""}) == "base:"
+    # Undeclared names still fall back to the inline default.
+    assert module._resolve_vars("base:${TAG:-9.9.9}", {}) == "base:9.9.9"
+    assert module._resolve_vars("base:${TAG}", {"TAG": "1.2.3"}) == "base:1.2.3"
+    # An undeclared name with no default stays unresolved so validate_refs errors.
+    assert module._resolve_vars("base:${TAG}", {}) == "base:${TAG}"
+
+
+def test_dockerfile_from_uses_declared_arg_value() -> None:
+    module = load_module()
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        dockerfile = root / "Dockerfile"
+        dockerfile.write_text(
+            "ARG RUNTIME_TAG=1.2.3\nFROM example/runtime:${RUNTIME_TAG:-9.9.9}\n",
+            encoding="utf-8",
+        )
+
+        refs = module._dockerfile_image_refs(dockerfile, root)
+
+    assert [ref.value for ref in refs] == ["example/runtime:1.2.3"]
+
+
 def main() -> int:
     tests = [
         test_repo_dependency_lock_passes,
@@ -187,6 +224,8 @@ def main() -> int:
         test_ephemeral_sha256_length_tags_are_rejected,
         test_sha256_digest_pins_are_allowed,
         test_extension_library_sha_tags_are_rejected,
+        test_declared_arg_wins_over_inline_fallback,
+        test_dockerfile_from_uses_declared_arg_value,
     ]
     for test in tests:
         test()
