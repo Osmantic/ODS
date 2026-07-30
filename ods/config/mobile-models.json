@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "default_model": "bonsai-8b-q1",
+  "models": [
+    {
+      "id": "bonsai-8b-q1",
+      "name": "Bonsai 8B (Q1_0)",
+      "family": "bonsai",
+      "gguf_file": "Bonsai-8B-Q1_0.gguf",
+      "gguf_url": "https://huggingface.co/prism-ml/Bonsai-8B-gguf/resolve/main/Bonsai-8B-Q1_0.gguf",
+      "gguf_sha256": "284a335aa3fb2ced3b1b01fcb40b08aa783e3b70832767f0dd2e3fdfa134bd54",
+      "size_bytes": 1158654496,
+      "min_ram_gb": 12,
+      "context_default": 4096,
+      "context_max": 8192,
+      "gen_defaults": {
+        "temp": 0.5,
+        "top_k": 20,
+        "top_p": 0.9
+      },
+      "specialty": "Default",
+      "description": "8B-class ternary-quantized model, ~1.16 GB on disk. Default for high-end Android phones (Snapdragon 8 Gen 3 / 8 Elite class, 12 GB+ RAM). Experimental — quality and speed on phones are unmeasured until real-device benchmarks land.",
+      "provenance": "sha256/size from Hugging Face LFS metadata, independently verified by full download on 2026-07-19"
+    },
+    {
+      "id": "qwen3.5-2b-q4",
+      "name": "Qwen 3.5 2B (Q4_K_M)",
+      "family": "qwen",
+      "gguf_file": "Qwen3.5-2B-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
+      "gguf_sha256": "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223",
+      "size_bytes": 1280835840,
+      "min_ram_gb": 6,
+      "context_default": 4096,
+      "context_max": 8192,
+      "gen_defaults": null,
+      "specialty": "Fallback",
+      "description": "Low-RAM fallback for mid-range phones. Same checksum as the desktop catalog entry in model-library.json; proves the Android Lite profile is model-agnostic.",
+      "provenance": "sha256 matches config/model-library.json; size from Hugging Face LFS metadata on 2026-07-19"
+    }
+  ]
+}
