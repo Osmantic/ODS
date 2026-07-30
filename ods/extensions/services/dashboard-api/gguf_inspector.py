@@ -210,6 +210,13 @@ def inspect_gguf(path: Path | str, max_metadata_bytes: int = 8 * 1024 * 1024) ->
             metadata[key] = _read_value(reader, value_type)
 
         file_type = metadata.get("general.file_type")
+        # general.file_type is a uint32 in every real export, but a malformed
+        # one can store an array — and _read_array returns a list or dict.
+        # Indexing _FILE_TYPE_LABELS with an unhashable key raises TypeError,
+        # which is outside this parser's caught set and would escape the
+        # degrade-to-unknown contract as a 500 in the callers.
+        if not isinstance(file_type, int) or isinstance(file_type, bool):
+            file_type = None
         architecture = metadata.get("general.architecture", "unknown")
         result.update({
             "readable": True,

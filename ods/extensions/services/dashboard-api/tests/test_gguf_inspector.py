@@ -230,6 +230,36 @@ def test_missing_file_type_yields_unknown_quantization(tmp_path):
     assert result["quantization"] == "unknown"
 
 
+def test_array_file_type_degrades_to_unknown(tmp_path):
+    # A malformed export storing file_type as an array made the label lookup
+    # index _FILE_TYPE_LABELS with a list. TypeError is outside the parser's
+    # caught set, so it escaped the degrade-to-unknown contract entirely.
+    path = _write(tmp_path, "arrft.gguf", build_gguf([
+        ("general.architecture", STR, "llama"),
+        ("general.file_type", ARR, (U32, [15, 15])),
+    ]))
+
+    result = inspect_gguf(path)
+
+    assert result["readable"] is True
+    assert result["file_type"] is None
+    assert result["quantization"] == "unknown"
+    assert result["architecture"] == "llama"
+    # The raw value is still preserved for callers that want to inspect it.
+    assert result["metadata"]["general.file_type"] == [15, 15]
+
+
+def test_string_file_type_degrades_to_unknown(tmp_path):
+    path = _write(tmp_path, "strft.gguf", build_gguf([
+        ("general.file_type", STR, "Q4_K_M"),
+    ]))
+
+    result = inspect_gguf(path)
+
+    assert result["file_type"] is None
+    assert result["quantization"] == "unknown"
+
+
 def test_non_string_architecture_degrades_to_unknown(tmp_path):
     # A malformed export storing architecture as an int must not leak the int.
     path = _write(tmp_path, "weird.gguf", build_gguf([
