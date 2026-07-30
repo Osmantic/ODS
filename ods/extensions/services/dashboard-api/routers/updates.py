@@ -178,9 +178,23 @@ async def _refresh_release_cache() -> Optional[dict]:
                 f"{_GITHUB_RELEASES_API}/latest",
                 headers=_GITHUB_HEADERS,
             )
+        # An error body is still valid JSON. GitHub answers an exhausted
+        # unauthenticated rate limit with 403 and {"message": ...}, which has
+        # no tag_name — so without these checks the empty result is cached for
+        # the full TTL and also becomes the allow_stale fallback, and the
+        # dashboard reports "up to date" while a release exists. The releases
+        # manifest below already validates its response this way.
+        response.raise_for_status()
         data = response.json()
+        if not isinstance(data, dict):
+            raise httpx.HTTPError(
+                f"unexpected release response: {type(data).__name__}"
+            )
+        tag = str(data.get("tag_name") or "").strip()
+        if not tag:
+            raise httpx.HTTPError("release response carried no tag_name")
         payload = {
-            "latest": data.get("tag_name", "").lstrip("v"),
+            "latest": tag.lstrip("v"),
             "changelog_url": data.get("html_url"),
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
