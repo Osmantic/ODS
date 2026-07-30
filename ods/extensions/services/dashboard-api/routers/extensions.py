@@ -261,7 +261,16 @@ def _write_initial_progress(service_id: str) -> None:
         "updated_at": now,
     }
     progress_file = progress_dir / f"{service_id}.json"
-    progress_file.write_text(json.dumps(progress), encoding="utf-8")
+    fd, tmp_str = tempfile.mkstemp(dir=str(progress_dir), prefix=f".{service_id}.json.", suffix=".tmp")
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(progress))
+        os.replace(tmp_path, progress_file)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _write_error_progress(service_id: str, error_msg: str) -> None:
@@ -279,7 +288,16 @@ def _write_error_progress(service_id: str, error_msg: str) -> None:
     data["error"] = error_msg
     data["updated_at"] = now
     progress_file.parent.mkdir(parents=True, exist_ok=True)
-    progress_file.write_text(json.dumps(data), encoding="utf-8")
+    fd, tmp_str = tempfile.mkstemp(dir=str(progress_file.parent), prefix=f".{service_id}.json.", suffix=".tmp")
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data))
+        os.replace(tmp_path, progress_file)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _has_error_progress(service_id: str) -> bool:
