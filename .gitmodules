@@ -1,0 +1,9 @@
+[submodule "ods/tests/bats/bats-core"]
+	path = ods/tests/bats/bats-core
+	url = https://github.com/bats-core/bats-core.git
+[submodule "ods/tests/bats/bats-support"]
+	path = ods/tests/bats/bats-support
+	url = https://github.com/bats-core/bats-support.git
+[submodule "ods/tests/bats/bats-assert"]
+	path = ods/tests/bats/bats-assert
+	url = https://github.com/bats-core/bats-assert.git

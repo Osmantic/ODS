@@ -16,50 +16,17 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Install ShellCheck
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
-          shellcheck --version
+      - name: Install pinned developer tools
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          version: "2026.7.7"
+          install_args: shellcheck actionlint zizmor
 
-      - name: Run ShellCheck on ods shell scripts
-        run: |
-          # Find all .sh files under ods/
-          shfiles=$(find ods/ -name '*.sh' -type f)
+      - name: Run repository shell lint policy
+        run: make -C ods lint-shell
 
-          if [ -z "$shfiles" ]; then
-            echo "No .sh files found under ods/"
-            exit 0
-          fi
-
-          echo "Found $(echo "$shfiles" | wc -l) shell scripts"
-          echo ""
-
-          # Run shellcheck:
-          #   -e SC1091  exclude "can't follow sourced files"
-          #   -e SC2034  exclude "unused variables" (many are used by sourced files)
-          #   -S warning treat warnings and above as reportable
-          # shellcheck returns:
-          #   0 = no issues
-          #   1 = errors or warnings found
-          # We fail the job only on error-severity issues by using -S error,
-          # but still display warnings for visibility.
-
-          # First pass: display all warnings and errors for visibility
-          echo "=== ShellCheck results (warnings + errors) ==="
-          echo "$shfiles" | xargs shellcheck \
-            --exclude=SC1091,SC2034 \
-            --severity=warning \
-            --format=gcc \
-            || true
-
-          echo ""
-          echo "=== Checking for error-severity issues (will fail if found) ==="
-
-          # Second pass: fail only on error severity
-          echo "$shfiles" | xargs shellcheck \
-            --exclude=SC1091,SC2034 \
-            --severity=error
+      - name: Validate workflow syntax and security policy
+        run: make -C ods lint-workflows
 
       - name: Regression guard - no http://localhost in shell scripts
         run: |

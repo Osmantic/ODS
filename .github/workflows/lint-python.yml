@@ -16,16 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      - name: Install pinned developer tools
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
         with:
-          python-version: "3.12"
+          version: "2026.7.7"
+          install_args: ruff
 
-      - name: Install Ruff
-        run: pip install ruff
-
-      - name: Run Ruff on ods Python files
-        run: |
-          ruff check ods/ \
-            --select E,F,W \
-            --ignore E501,E701,E731,E741,E402
+      - name: Run repository Python lint policy
+        run: make -C ods lint-python

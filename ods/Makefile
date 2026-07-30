@@ -1,20 +1,35 @@
 # ODS — Developer Targets
 # Run `make help` to see available commands.
 
-SHELL_FILES := $(shell find . -name '*.sh' -not -path './node_modules/*' -not -path './.git/*' -not -path './data/*' -not -path './token-spy/*')
+SHELL_FIND = find . -type f \( -name '*.sh' -o -name '*.bash' \) -not -path './node_modules/*' -not -path './.git/*' -not -path './data/*' -not -path './token-spy/*' -not -path './tests/bats/*' -print0
+SHELLCHECK_ARGS = --rcfile=.shellcheckrc --exclude=SC2034
 
-.PHONY: help lint test bats smoke simulate fleet-distros fleet-vms verify-bootstrap gate doctor
+.PHONY: help lint lint-shell lint-python lint-workflows test bats smoke simulate fleet-distros fleet-vms verify-bootstrap gate doctor
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-lint: ## Syntax check all shell scripts + Python compile check
-	@echo "=== Shell syntax ==="
-	@fail=0; for f in $(SHELL_FILES); do bash -n "$$f" || fail=1; done; [ $$fail -eq 0 ]
-	@echo "=== Python compile ==="
-	@python3 -m py_compile extensions/services/dashboard-api/main.py extensions/services/dashboard-api/agent_monitor.py
+lint: lint-shell lint-python ## Run the same gating shell and Python policies as CI
 	@echo "All lint checks passed."
+
+lint-shell: ## Run Bash syntax checks and the ShellCheck error gate
+	@echo "=== Shell syntax ==="
+	@$(SHELL_FIND) | xargs -0 bash -n
+	@echo "=== ShellCheck warnings (advisory) ==="
+	@$(SHELL_FIND) | xargs -0 shellcheck $(SHELLCHECK_ARGS) --severity=warning --format=gcc || true
+	@echo "=== ShellCheck errors (gating) ==="
+	@$(SHELL_FIND) | xargs -0 shellcheck $(SHELLCHECK_ARGS) --severity=error
+
+lint-python: ## Run the repository Ruff policy
+	@echo "=== Ruff ==="
+	@cd .. && ruff check ods/
+
+lint-workflows: ## Validate workflow syntax and the scoped workflow security gate
+	@echo "=== actionlint ==="
+	@cd .. && actionlint -shellcheck ''
+	@echo "=== zizmor (high severity/medium+ confidence, offline) ==="
+	@cd .. && zizmor --offline --min-severity=high --min-confidence=medium .github/workflows
 
 test: ## Run unit and contract tests
 	@echo "=== Install documentation contract ==="

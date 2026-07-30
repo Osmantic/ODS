@@ -1,0 +1,18 @@
+# Pinned developer toolchain for ODS.
+# Source: docs/superpowers/plans/2026-07-17-handrolled-automation-consolidation.md
+# Prefer: mise install && mise exec -- <command>
+# Runtime product deps stay in installers/compose; this file is developer/CI tooling only.
+
+[tools]
+shellcheck = "0.11.0"
+shfmt = "3.13.1"
+"npm:bash-language-server" = "5.6.0"
+ruff = "0.15.22"
+"npm:basedpyright" = "1.39.9"
+pre-commit = "4.6.0"
+actionlint = "1.7.12"
+zizmor = "1.27.0"
+"npm:ajv-cli" = "5.0.0"
+
+[settings]
+experimental = true

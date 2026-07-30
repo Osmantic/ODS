@@ -5,6 +5,10 @@ Thanks for wanting to contribute. ODS is open source and we welcome help from ev
 ## Quick Start
 
 1. **Fork** this repository and **clone** your fork locally.
+   Initialize the pinned test dependencies after cloning:
+   ```bash
+   git submodule update --init --recursive
+   ```
 2. Create a **branch** for your work:
    ```bash
    git checkout -b my-change
