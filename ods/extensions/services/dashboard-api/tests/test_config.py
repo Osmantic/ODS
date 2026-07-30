@@ -595,3 +595,11 @@ class TestLoadExtensionManifests:
         assert "service.id is required" in errors[0]["error"]
         assert "no-id-svc" in errors[0]["file"]
         assert services == {}
+
+
+def test_read_manifest_file_uses_utf8_encoding(tmp_path):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_bytes('{"service": {"id": "test", "name": "Prénom Test"}}'.encode("utf-8"))
+
+    data = _read_manifest_file(manifest_path)
+    assert data["service"]["name"] == "Prénom Test"
