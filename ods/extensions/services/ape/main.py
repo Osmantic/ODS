@@ -338,6 +338,26 @@ def _coerce_state(raw: Any) -> dict[str, Any]:
     return state
 
 
+def _clear_expired_trip(cb: dict, now: float) -> None:
+    """Clear a served breaker cooldown together with the denials that caused it.
+
+    window_seconds is longer than cooldown_seconds by design, so keeping the
+    deny history past the cooldown means the first decision after it is
+    re-scored against those same denials and re-trips immediately — the breaker
+    can never accumulate the min_samples it needs to prove recovery, and stays
+    open for window_seconds instead of cooldown_seconds. Reopening has to rest
+    on fresh evidence.
+
+    No-op unless the breaker is tripped and the cooldown has elapsed. Caller
+    holds the lock.
+    """
+    tripped_until = cb.get("tripped_until", 0.0)
+    if not tripped_until or now < tripped_until:
+        return
+    cb["tripped_until"] = 0.0
+    cb["decisions"] = []
+
+
 def _prune_state(now: float) -> None:
     """Drop expired window samples / breaker samples. Caller holds the lock."""
     longest = max(WINDOW_TIERS.values()) if WINDOW_TIERS else 0
@@ -364,8 +384,11 @@ def _prune_state(now: float) -> None:
     cb["decisions"] = [
         d for d in cb["decisions"] if d[0] >= cb_cut
     ][-_MAX_BREAKER_SAMPLES:]
-    if cb.get("tripped_until", 0.0) and cb["tripped_until"] < now:
-        cb["tripped_until"] = 0.0
+    # Prune runs on load, i.e. before any request reaches
+    # circuit_breaker_blocked(). Clearing the trip here without the denials
+    # behind it would hand a restarted process the stale evidence and re-trip
+    # on the first decision, so both paths retire a served cooldown the same way.
+    _clear_expired_trip(cb, now)
 
     if len(_state["approvals"]) > _MAX_PENDING_APPROVALS:
         # Drop the oldest pending approvals by issued timestamp.
@@ -581,8 +604,7 @@ def circuit_breaker_blocked(policy: dict, now: float) -> tuple[bool, str]:
         if tripped_until and now < tripped_until:
             return (True, f"circuit breaker open (cooldown until "
                           f"{datetime.fromtimestamp(tripped_until, timezone.utc).isoformat()})")
-        if tripped_until and now >= tripped_until:
-            _state["breaker"]["tripped_until"] = 0.0
+        _clear_expired_trip(_state["breaker"], now)
     return (False, "")
 
 
