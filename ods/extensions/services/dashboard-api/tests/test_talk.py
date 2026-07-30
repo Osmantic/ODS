@@ -1186,3 +1186,14 @@ def test_ods_talk_hermes_timeout_is_env_configurable(monkeypatch):
 
     monkeypatch.setenv("ODS_TALK_HERMES_TIMEOUT", "5")
     assert hermes_bridge._request_timeout() == 10
+
+
+def test_active_model_app_compatibility_handles_non_dict_return(monkeypatch):
+    """_active_model_app_compatibility returns dict safely when model_app_compatibility returns non-dict."""
+    from routers.talk import _active_model_app_compatibility
+    monkeypatch.setattr("routers.talk.model_app_compatibility", lambda *a, **kw: None)
+    monkeypatch.setattr("routers.talk.find_catalog_model", lambda *a, **kw: None)
+
+    res = _active_model_app_compatibility()
+    assert isinstance(res, dict)
+    assert "activeModel" in res
