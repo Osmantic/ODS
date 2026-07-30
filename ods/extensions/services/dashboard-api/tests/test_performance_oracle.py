@@ -16,7 +16,7 @@ from performance_oracle import (
 )
 
 
-def _gpu(name="NVIDIA GeForce RTX 4060", total_mb=8192, backend="nvidia"):
+def _gpu(name="NVIDIA GeForce RTX 4060", total_mb=8192, backend="nvidia", memory_type="discrete"):
     return GPUInfo(
         name=name,
         memory_used_mb=1024,
@@ -24,6 +24,7 @@ def _gpu(name="NVIDIA GeForce RTX 4060", total_mb=8192, backend="nvidia"):
         memory_percent=12.5,
         utilization_percent=0,
         temperature_c=40,
+        memory_type=memory_type,
         gpu_backend=backend,
     )
 
@@ -1220,6 +1221,110 @@ def test_pre_download_ranker_prefers_capable_8gb_model_over_bootstrap(data_dir):
     ranked = rank_pre_download_models(catalog, _gpu(total_mb=8188), profile="qwen", limit=2)
 
     assert ranked[0]["id"] == "qwen3.5-9b-q4"
+
+
+def _unified_memory_catalog():
+    return [
+        {
+            "id": "qwen3.5-32b-q4",
+            "name": "Qwen 3.5 32B",
+            "gguf_file": "Qwen3.5-32B-Q4_K_M.gguf",
+            "size_mb": 20000,
+            "vram_required_gb": 24,
+            "context_length": 32768,
+            "quantization": "Q4_K_M",
+            "specialty": "General",
+            "description": "Large model",
+            "llm_model_name": "qwen3.5-32b",
+        },
+        {
+            "id": "qwen3.5-12b-q4",
+            "name": "Qwen 3.5 12B",
+            "gguf_file": "Qwen3.5-12B-Q4_K_M.gguf",
+            "size_mb": 8000,
+            "vram_required_gb": 12,
+            "context_length": 32768,
+            "quantization": "Q4_K_M",
+            "specialty": "General",
+            "description": "Mid model",
+            "llm_model_name": "qwen3.5-12b",
+        },
+    ]
+
+
+def test_pre_download_ranker_bounds_unreported_unified_memory_apu(data_dir):
+    # gpu.py flags an AMD APU as unified whenever its GTT pool dwarfs the VRAM
+    # carve-out, and the reported name is whatever sysfs product_name says --
+    # not necessarily "Strix Halo". The whole 32GB pool is shared with the OS,
+    # so only a bounded share may back the weights, exactly as the installer's
+    # own selector does for unified hosts.
+    apu = _gpu(name="AMD Radeon 780M Graphics", total_mb=32768, backend="amd", memory_type="unified")
+
+    ranked = rank_pre_download_models(_unified_memory_catalog(), apu, profile="qwen", limit=2)
+
+    assert ranked[0]["id"] == "qwen3.5-12b-q4"
+
+
+def test_pre_download_ranker_uses_full_pool_for_discrete_memory(data_dir):
+    discrete = _gpu(name="AMD Radeon RX 7900 XTX", total_mb=32768, backend="amd")
+
+    ranked = rank_pre_download_models(_unified_memory_catalog(), discrete, profile="qwen", limit=2)
+
+    assert ranked[0]["id"] == "qwen3.5-32b-q4"
+
+
+def _unified_host_gpu(backend, name):
+    return _gpu(name=name, total_mb=126976, backend=backend, memory_type="unified")
+
+
+def test_real_catalog_never_recommends_coder_next_on_unified_memory(data_dir):
+    # qwen3-coder-next Q4_K_M decodes every token as `?` on unified-memory
+    # backends -- see the NV_ULTRA and SH_LARGE blocks in tier-map.sh. The
+    # installer substitutes it away; the dashboard must not offer it either.
+    catalog = [entry for entry in (normalize_catalog_entry(raw) for raw in _official_model_catalog()) if entry]
+
+    for backend, name in (("amd", "AMD Radeon Graphics"), ("nvidia", "NVIDIA GB10")):
+        ranked = rank_pre_download_models(
+            catalog, _unified_host_gpu(backend, name), profile="qwen", limit=3, system_ram_gb=128
+        )
+        offered = [model["llm_model_name"] for model in ranked]
+
+        assert "qwen3-coder-next" not in offered, f"{name} was offered coder-next: {offered}"
+
+
+def test_real_catalog_still_recommends_coder_next_on_discrete_vram(data_dir):
+    # The exclusion is unified-memory-specific: coder-next serves correctly on
+    # a discrete card with the VRAM to hold it.
+    catalog = [entry for entry in (normalize_catalog_entry(raw) for raw in _official_model_catalog()) if entry]
+
+    ranked = rank_pre_download_models(
+        catalog, _gpu(name="NVIDIA RTX 6000 Ada", total_mb=98304), profile="qwen", limit=3, system_ram_gb=128
+    )
+
+    assert "qwen3-coder-next" in [model["llm_model_name"] for model in ranked]
+
+
+def test_unified_memory_exclusion_still_returns_a_fallback(data_dir):
+    # An excluded model must never leave the ranker with nothing to say.
+    catalog = [normalize_catalog_entry({
+        "id": "qwen3-coder-next-q4",
+        "name": "Qwen 3 Coder Next",
+        "family": "qwen",
+        "gguf_file": "qwen3-coder-next-Q4_K_M.gguf",
+        "gguf_url": "https://example.invalid/coder-next.gguf",
+        "size_mb": 48500,
+        "vram_required_gb": 52,
+        "context_length": 131072,
+        "quantization": "Q4_K_M",
+        "specialty": "Code",
+        "llm_model_name": "qwen3-coder-next",
+    })]
+
+    ranked = rank_pre_download_models(
+        catalog, _unified_host_gpu("amd", "AMD Radeon Graphics"), profile="qwen", limit=3, system_ram_gb=128
+    )
+
+    assert [model["id"] for model in ranked] == ["qwen3-coder-next-q4"]
 
 
 def test_pre_download_ranker_accounts_for_long_context_kv_on_4gb_gpu(data_dir, tmp_path):
