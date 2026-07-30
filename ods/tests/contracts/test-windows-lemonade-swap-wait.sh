@@ -189,8 +189,8 @@ fi
 #    Git Bash, and it must verify the YAML before returning success.
 # ---------------------------------------------------------------------------
 if grep -q 'patch_hermes_yaml_with_sed' "$SCRIPT" \
-   && grep -Fq 'grep -Fq "  default: \"${model}\""' "$SCRIPT" \
-   && grep -Fq 'grep -Fq "  base_url: \"${base_url}\""' "$SCRIPT" \
+   && grep -Fq 'grep -Fq "  default: \"${model_yaml}\""' "$SCRIPT" \
+   && grep -Fq 'grep -Fq "  base_url: \"${base_url_yaml}\""' "$SCRIPT" \
    && grep -q 'ERROR: Could not patch ${tpl} after full-model swap.' "$SCRIPT" \
    && grep -q 'return 1' "$SCRIPT"; then
     pass "post-swap Hermes patch is dependency-free, verifies model/base_url, and is fail-loud"
@@ -208,8 +208,8 @@ if grep -q 'hermes_base_url="$(read_env_value HERMES_LLM_BASE_URL)"' "$SCRIPT" \
    && grep -q 'patch_hermes_yaml_with_sed "$tpl" "$new_model" "$FULL_MAX_CONTEXT" "$hermes_base_url"' "$SCRIPT" \
    && grep -q 'patch_hermes_yaml_with_sed "$live" "$new_model" "$FULL_MAX_CONTEXT" "$hermes_base_url"' "$SCRIPT" \
    && grep -q 'patch_hermes_yaml_with_sed "$_hermes_live" "$_hermes_new_model" "$FULL_MAX_CONTEXT" "$_hermes_base_url"' "$SCRIPT" \
-   && grep -q 'hermes_base_url_sed="$(printf' "$SCRIPT" \
-   && grep -q 'base_url: \\"${hermes_base_url_sed}\\"' "$SCRIPT"; then
+   && grep -q 'patch_hermes_yaml_in_container.*' "$SCRIPT" \
+   && grep -q 'base_url: \\"${base_url_sed}\\"' "$SCRIPT"; then
     pass "post-swap Hermes patch preserves HERMES_LLM_BASE_URL in template and live config"
 else
     fail "post-swap Hermes patch must carry HERMES_LLM_BASE_URL into persisted Hermes config"
