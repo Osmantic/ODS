@@ -6,12 +6,15 @@ _ods_completion() {
     local cur prev words cword
     _init_completion || return
 
-    # Main commands and their aliases
-    local main_commands="gpu status status-json list enable disable preset mode model backup restore logs restart start stop update shell config chat benchmark doctor help version"
-    local aliases="g s ls p m l r u sh cfg c bench b diag d h v"
+    # Main commands and their aliases.
+    # Keep in sync with the dispatch table at the bottom of ods-cli;
+    # tests/test-cli-completion-parity.sh fails the build when they drift.
+    local main_commands="gpu status status-json list enable disable purge preset mode model remote-provider stt backup restore rollback logs restart repair start stop update shell config chat benchmark doctor audit template agent help version"
+    local aliases="g s ls p m l log r fix u sh cfg c bench b diag d tmpl h v"
 
-    # Service names (from ods-cli aliases section)
-    local services="ape policy guard embeddings embed llama-server llm n8n workflows open-webui web ui webui opencode opencode-web qdrant vector searxng search tts kokoro whisper voice stt"
+    # Service ids and aliases, from extensions/services/*/manifest.yaml.
+    # tests/test-cli-completion-parity.sh fails the build when they drift.
+    local services="agent ape brave brave-search comfyui dashboard dashboard-api embed embeddings gateway guard hermes hermes-agent hermes-gate hermes-proxy kokoro langfuse litellm llama-server llm model-router n8n observability ods-proxy open-webui openclaw opencode opencode-web perplexica policy privacy-shield proxy qdrant remote remote-provider-egress remote-provider-ssh-tunnel search searxng stt tailscale token-spy traces tts ui vector voice vpn web webui whisper workflows"
 
     case $cword in
         1)
@@ -26,7 +29,7 @@ _ods_completion() {
                     return 0
                     ;;
                 preset|p)
-                    COMPREPLY=($(compgen -W "save load list delete export import" -- "$cur"))
+                    COMPREPLY=($(compgen -W "save load list delete export import diff" -- "$cur"))
                     return 0
                     ;;
                 mode|m)
@@ -35,6 +38,30 @@ _ods_completion() {
                     ;;
                 model)
                     COMPREPLY=($(compgen -W "current list swap" -- "$cur"))
+                    return 0
+                    ;;
+                remote-provider)
+                    COMPREPLY=($(compgen -W "status plan configure test disable remove peer-models help" -- "$cur"))
+                    return 0
+                    ;;
+                stt)
+                    COMPREPLY=($(compgen -W "current status download" -- "$cur"))
+                    return 0
+                    ;;
+                repair|fix)
+                    COMPREPLY=($(compgen -W "voice stt tts hermes-workers slash-workers" -- "$cur"))
+                    return 0
+                    ;;
+                template|tmpl)
+                    COMPREPLY=($(compgen -W "list preview apply" -- "$cur"))
+                    return 0
+                    ;;
+                agent)
+                    COMPREPLY=($(compgen -W "status start stop restart logs" -- "$cur"))
+                    return 0
+                    ;;
+                audit)
+                    COMPREPLY=($(compgen -W "--json --strict $services" -- "$cur"))
                     return 0
                     ;;
                 config|cfg)
@@ -49,7 +76,7 @@ _ods_completion() {
                     COMPREPLY=($(compgen -W "--json" -- "$cur"))
                     return 0
                     ;;
-                enable|disable|logs|log|l|restart|r|start|stop|shell|sh)
+                enable|disable|purge|logs|log|l|restart|r|start|stop|shell|sh)
                     # Complete with service names
                     COMPREPLY=($(compgen -W "$services" -- "$cur"))
                     return 0
@@ -81,7 +108,7 @@ _ods_completion() {
                     ;;
                 preset|p)
                     case $prev in
-                        save|load|delete)
+                        save|load|delete|diff)
                             # Complete with existing preset names
                             local preset_dir="${ODS_HOME:-$HOME/ods}/.presets"
                             if [[ -d "$preset_dir" ]]; then

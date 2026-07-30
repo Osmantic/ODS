@@ -148,6 +148,9 @@ jobs:
       - name: CLI Enable Compose Reconciliation Tests
         run: bash tests/test-cli-enable-compose-reconciliation.sh
 
+      - name: CLI Completion Parity Tests
+        run: bash tests/test-cli-completion-parity.sh
+
       - name: Windows Missing Service Hint Tests
         run: bash tests/test-windows-missing-service-hints.sh
 
