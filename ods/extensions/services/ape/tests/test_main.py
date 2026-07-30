@@ -7,6 +7,9 @@ and STRICT_MODE semantics are preserved.
 
 import concurrent.futures
 import json
+import os
+
+import pytest
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -548,3 +551,91 @@ def test_strict_mode_windowed_hard_deny_raises_403(make_client):
     _verify(client, tool="spawn_agent", args={}, session="swd")
     r = _verify(client, tool="spawn_agent", args={}, session="swd")
     assert r.status_code == 403
+
+
+# ── path_guard mode ─────────────────────────────────────────────────────────
+
+
+def _path_guard_policy(allowed_root: str) -> str:
+    return f"""
+version: 1
+intents:
+  WriteFile:
+    mode: path_guard
+    allowed_paths:
+      - {allowed_root}
+  Other: {{mode: allow}}
+rate_limit: {{requests_per_minute: 100000}}
+windowed_limits: {{enabled: false}}
+circuit_breaker: {{enabled: false}}
+"""
+
+
+@pytest.fixture()
+def path_guard_client(make_client, tmp_path):
+    """A client whose write zone is a real directory on this platform.
+
+    evaluate() resolves the candidate with os.path.realpath, so a hard-coded
+    POSIX literal would not line up with allowed_paths off Linux.
+    """
+    root = os.path.realpath(str(tmp_path / "workspace"))
+    os.makedirs(root, exist_ok=True)
+    client, main = make_client(policy_yaml=_path_guard_policy(root))
+    return client, root
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="allowed_paths prefix matching is POSIX-separator only; APE ships "
+           "as a Linux container",
+)
+def test_path_guard_allows_a_write_inside_the_zone(path_guard_client):
+    client, root = path_guard_client
+    r = client.post("/verify", json={
+        "tool_name": "write_file",
+        "args": {"path": os.path.join(root, "notes.md")},
+        "session_id": "pg",
+    })
+    assert r.json()["allowed"] is True, r.json()["reason"]
+
+
+def test_path_guard_denies_a_write_outside_the_zone(path_guard_client, tmp_path):
+    client, _ = path_guard_client
+    outside = os.path.realpath(str(tmp_path / "elsewhere" / "secrets"))
+    r = client.post("/verify", json={
+        "tool_name": "write_file",
+        "args": {"path": outside},
+        "session_id": "pg",
+    })
+    assert r.json()["allowed"] is False
+
+
+def test_path_guard_denies_a_destination_it_cannot_read(path_guard_client, tmp_path):
+    """An unrecognised destination key must not walk past allowed_paths.
+
+    classify_intent routes any tool named for a write verb into WriteFile, so
+    a tool that calls its destination something other than path/file/filename
+    reaches path_guard with nothing to check. Waving it through defeats the
+    whole mode — and the allowlist branch already denies the equivalent empty
+    command rather than allowing it.
+    """
+    client, _ = path_guard_client
+    r = client.post("/verify", json={
+        "tool_name": "save_output",
+        "args": {"destination": str(tmp_path / "elsewhere" / "loot"), "content": "x"},
+        "session_id": "pg",
+    })
+    body = r.json()
+    assert body["intent"] == "WriteFile"
+    assert body["allowed"] is False
+    assert "destination" in body["reason"]
+
+
+def test_path_guard_denies_an_empty_path_value(path_guard_client):
+    client, _ = path_guard_client
+    r = client.post("/verify", json={
+        "tool_name": "write_file",
+        "args": {"path": ""},
+        "session_id": "pg",
+    })
+    assert r.json()["allowed"] is False

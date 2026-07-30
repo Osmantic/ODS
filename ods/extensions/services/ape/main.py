@@ -685,7 +685,16 @@ def evaluate(intent: str, tool_name: str, args: dict, policy: dict) -> tuple[boo
     if mode == "path_guard":
         path = str(args.get("path", args.get("file", args.get("filename", ""))))
         if not path:
-            return True, "no path specified"
+            # Fail closed, like the empty-command case in allowlist above. A
+            # write whose destination this guard cannot see is precisely what
+            # it exists to stop: classify_intent routes any tool named for a
+            # write verb here, so args naming the destination something else
+            # (dest, target, output_path) would otherwise walk straight past
+            # allowed_paths.
+            return False, (
+                "no readable destination in args (expected path, file, or "
+                "filename); path_guard cannot verify the write"
+            )
         real = os.path.realpath(path)
         allowed_paths = intent_policy.get("allowed_paths", [])
         if any(real == p or real.startswith(p.rstrip("/") + "/") for p in allowed_paths):
