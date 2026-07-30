@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+def test_read_json_file_handles_unicode_decode_error_and_directories(tmp_path):
+    from helpers import _read_json_file
+
+    # Directory path
+    d = tmp_path / "test_dir"
+    d.mkdir()
+    assert _read_json_file(d, {"default": True}) == {"default": True}
+
+    # Non-UTF8 binary data file
+    f = tmp_path / "binary.json"
+    f.write_bytes(b"\x80\xff\xfe invalid unicode")
+    assert _read_json_file(f, {"default": True}) == {"default": True}
