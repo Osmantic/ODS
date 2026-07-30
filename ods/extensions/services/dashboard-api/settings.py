@@ -55,6 +55,13 @@ _TOKEN_SPY_APPLY_KEYS = {
 _PRIVACY_SHIELD_APPLY_KEYS = {
     "TARGET_API_URL", "PII_CACHE_ENABLED", "SHIELD_PORT",
 }
+# Keys whose prefix suggests another service but which only litellm reads.
+# Open WebUI's OPENAI_API_KEY comes from OPEN_WEBUI_LLM_API_KEY, and the
+# langfuse container never sees the tracing toggle — litellm registers the
+# callback from it.
+_LITELLM_APPLY_KEYS = {
+    "OPENAI_API_KEY", "LANGFUSE_ENABLED",
+}
 _MANUAL_RESTART_KEYS = {
     "BIND_ADDRESS",
     "DASHBOARD_API_KEY", "ODS_AGENT_KEY", "DASHBOARD_PORT",
@@ -376,6 +383,8 @@ def _match_apply_service(key: str) -> Optional[str]:
         return None
     if key in _LLAMA_APPLY_KEYS or key.startswith(("LLAMA_", "GGUF_")):
         return "llama-server"
+    if key in _LITELLM_APPLY_KEYS:
+        return "litellm"
     if key == "SEARXNG_URL":
         return "hermes"
     if (

@@ -1320,3 +1320,30 @@ def test_env_example_keys_are_present_in_schema():
     schema_keys = set(schema.get("properties", {}))
 
     assert documented_keys - schema_keys == set()
+
+
+def test_settings_apply_plan_routes_litellm_only_keys_to_litellm():
+    from settings import _compute_env_apply_plan
+
+    # extensions/services/litellm/compose.yaml is the only place that reads
+    # ${OPENAI_API_KEY} and ${LANGFUSE_ENABLED}. Open WebUI's OPENAI_API_KEY
+    # comes from OPEN_WEBUI_LLM_API_KEY and the langfuse container never sees
+    # the toggle, so recreating either could not apply the change.
+    plan = _compute_env_apply_plan(
+        {"OPENAI_API_KEY": "sk-old", "LANGFUSE_ENABLED": "false"},
+        {"OPENAI_API_KEY": "sk-new", "LANGFUSE_ENABLED": "true"},
+    )
+
+    assert plan["services"] == ["litellm"]
+    assert plan["manualKeys"] == []
+
+
+def test_settings_apply_plan_keeps_other_langfuse_keys_on_langfuse():
+    from settings import _compute_env_apply_plan
+
+    plan = _compute_env_apply_plan(
+        {"LANGFUSE_PORT": "3100"},
+        {"LANGFUSE_PORT": "3101"},
+    )
+
+    assert plan["services"] == ["langfuse"]
