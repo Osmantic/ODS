@@ -1,5 +1,6 @@
 """Tests for agent_monitor.py — throughput metrics and data classes."""
 
+import logging
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -189,8 +190,13 @@ class TestFetchTokenSpyMetrics:
             await agent_monitor._fetch_token_spy_metrics()
 
     @pytest.mark.asyncio
-    async def test_content_type_error_handled(self, monkeypatch):
-        """When Token Spy returns unexpected content type, no exception raised."""
+    async def test_content_type_error_handled(self, monkeypatch, caplog):
+        """A non-JSON Token Spy response is reported as a content-type warning.
+
+        ContentTypeError is a ClientError subclass, so it only reaches its own
+        handler when that handler is listed first. Behind the broad handler the
+        failure is silently downgraded to a debug "unavailable" line.
+        """
         monkeypatch.setattr(agent_monitor, "TOKEN_SPY_URL", "http://token-spy:8080")
         monkeypatch.setattr(agent_monitor, "TOKEN_SPY_API_KEY", "")
 
@@ -211,8 +217,13 @@ class TestFetchTokenSpyMetrics:
         mock_session_cm.__aenter__ = AsyncMock(return_value=mock_http)
         mock_session_cm.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("aiohttp.ClientSession", return_value=mock_session_cm):
-            await agent_monitor._fetch_token_spy_metrics()
+        with caplog.at_level(logging.WARNING, logger="agent_monitor"):
+            with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+                await agent_monitor._fetch_token_spy_metrics()
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings, "non-JSON Token Spy response must be logged as a warning"
+        assert "unexpected content type" in warnings[0].getMessage()
 
 
 class TestClusterStatusRefresh:
