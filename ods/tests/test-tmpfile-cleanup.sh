@@ -78,13 +78,41 @@ else
     FAILED=$((FAILED + 1))
 fi
 
-# Test 8: Phase 05 has explicit cleanup in error path
-printf "  %-50s " "Phase 05 has explicit cleanup in error path..."
-if grep -B 2 'error "Docker installation failed' "$ROOT_DIR/installers/phases/05-docker.sh" | grep -q "rm -f.*tmpfile"; then
+# Test 8: every exit from the download helper removes the temp file.
+#
+# The helper owns the temp file end to end: it mktemps, curls get.docker.com
+# into it, runs it, and must delete it before returning on either path. The
+# callers only see a return code, so an assertion anchored on the caller's
+# `error "Docker installation failed"` line proves nothing about the file —
+# it just happened to sit near the cleanup before the download moved into a
+# function.
+printf "  %-50s " "Phase 05 helper cleans up on every exit..."
+helper_body=$(awk '
+    /^_docker_install_from_script\(\) \{/ { inside = 1; next }
+    inside && /^\}/ { exit }
+    inside { print }
+' "$ROOT_DIR/installers/phases/05-docker.sh")
+
+# Every `return` must have a removal on it or within the two lines above it,
+# and the helper must end by removing the file on the success path.
+uncleaned_returns=$(awk '
+    { line[NR] = $0 }
+    /return/ {
+        cleaned = 0
+        for (i = NR; i >= NR - 2 && i >= 1; i--) {
+            if (line[i] ~ /rm -f[[:space:]]+"\$tmpfile"/) cleaned = 1
+        }
+        if (!cleaned) print NR ": " $0
+    }
+' <<< "$helper_body")
+last_statement=$(grep -v '^[[:space:]]*$' <<< "$helper_body" | tail -1)
+
+if [[ -n "$helper_body" ]]     && grep -q 'mktemp /tmp/install-docker' <<< "$helper_body"     && [[ -z "$uncleaned_returns" ]]     && grep -q 'rm -f[[:space:]]\+"\$tmpfile"' <<< "$last_statement"; then
     echo -e "${GREEN}✓ PASS${NC}"
     PASSED=$((PASSED + 1))
 else
     echo -e "${RED}✗ FAIL${NC}"
+    [[ -n "$uncleaned_returns" ]] && echo "    return without cleanup: $uncleaned_returns"
     FAILED=$((FAILED + 1))
 fi
 

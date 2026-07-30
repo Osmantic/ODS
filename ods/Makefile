@@ -98,6 +98,9 @@ test: ## Run unit and contract tests
 	@echo "=== ods config show secret-mask matrix ==="
 	@bash tests/test-ods-config-secret-mask.sh
 	@echo ""
+	@echo "=== installer temp-file cleanup ==="
+	@bash tests/test-tmpfile-cleanup.sh
+	@echo ""
 	@echo "=== Manifest schema source of truth ==="
 	@bash tests/test-validate-manifest-schema.sh
 	@echo ""
