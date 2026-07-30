@@ -432,17 +432,46 @@ def save_state() -> None:
 # Legacy minute-window limiter (kept verbatim for the requests_per_minute
 # policy knob so existing deployments behave identically).
 _session_request_times: dict[str, deque] = {}
+_last_rate_limit_sweep: float = 0.0
+
+
+def sweep_idle_rate_limit_scopes(cutoff: float) -> None:
+    """Drop scopes whose whole minute window has aged out.
+
+    The table is keyed by the caller-supplied session id and nothing ever
+    removed an entry, so it grew once per distinct session for the life of
+    the process. Every other governance structure here is explicitly bounded
+    (_MAX_SAMPLES_PER_WINDOW, _MAX_BREAKER_SAMPLES, _MAX_PENDING_APPROVALS,
+    _MAX_PENDING_GRANTS); this one was not.
+
+    Only fully-aged scopes are dropped. A scope still holding timestamps is
+    still enforcing a limit, and evicting it would hand its caller a fresh
+    budget — flooding new session ids would become a way to clear an
+    exhausted one. Sweeping only dead entries bounds the table by concurrent
+    traffic instead of by uptime, with no such bypass.
+    """
+    for key in [key for key, times in _session_request_times.items()
+                if not times or times[-1] < cutoff]:
+        del _session_request_times[key]
 
 
 def check_rate_limit(policy: dict, session_id: Optional[str]) -> bool:
     """Return True if the request is within the legacy per-minute limit."""
+    global _last_rate_limit_sweep
     limit = policy.get("rate_limit", {}).get("requests_per_minute", RATE_LIMIT)
     key = session_id or "_global"
+    now = time.monotonic()
+    cutoff = now - 60.0
+
+    # One pass per window at most: entries only become collectable after 60
+    # idle seconds, so sweeping more often just rescans live ones.
+    if now - _last_rate_limit_sweep >= 60.0:
+        _last_rate_limit_sweep = now
+        sweep_idle_rate_limit_scopes(cutoff)
+
     if key not in _session_request_times:
         _session_request_times[key] = deque()
     times = _session_request_times[key]
-    now = time.monotonic()
-    cutoff = now - 60.0
     while times and times[0] < cutoff:
         times.popleft()
     if len(times) >= limit:

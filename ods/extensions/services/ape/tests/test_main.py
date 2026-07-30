@@ -548,3 +548,68 @@ def test_strict_mode_windowed_hard_deny_raises_403(make_client):
     _verify(client, tool="spawn_agent", args={}, session="swd")
     r = _verify(client, tool="spawn_agent", args={}, session="swd")
     assert r.status_code == 403
+
+
+# ── Legacy per-minute limiter bookkeeping ───────────────────────────────────
+
+
+def _age_out_rate_limit_table(main):
+    """Push every recorded timestamp past the 60s window, without sleeping."""
+    for times in main._session_request_times.values():
+        for _ in range(len(times)):
+            times.append(times.popleft() - 120.0)
+    main._last_rate_limit_sweep = 0.0
+
+
+def test_rate_limit_table_does_not_retain_finished_sessions(make_client):
+    """The limiter must not keep one entry per session id forever.
+
+    session_id comes straight off the request body, so an agent framework
+    that mints a session per conversation — or a caller sending arbitrary
+    ids — otherwise allocates a permanent deque per value.
+    """
+    client, main = make_client()
+    for index in range(200):
+        _verify(client, session=f"finished-{index}")
+    assert len(main._session_request_times) >= 200
+
+    _age_out_rate_limit_table(main)
+    _verify(client, session="current")
+
+    assert set(main._session_request_times) == {"current"}
+
+
+def test_rate_limit_sweep_never_clears_a_live_budget(make_client):
+    """Eviction must not become a way around the limit.
+
+    If a scope that still holds timestamps could be evicted, flooding fresh
+    session ids would reset an exhausted one.
+    """
+    policy = """
+version: 1
+intents: {ReadFile: {mode: allow}, Other: {mode: allow}}
+rate_limit: {requests_per_minute: 3}
+windowed_limits: {enabled: false}
+circuit_breaker: {enabled: false}
+"""
+    client, main = make_client(policy_yaml=policy)
+    for _ in range(3):
+        assert _verify(client, session="busy").json()["allowed"] is True
+    limited = _verify(client, session="busy")
+    assert limited.json()["allowed"] is False
+    assert limited.json()["reason"] == "rate limit exceeded"
+
+    for index in range(500):
+        _verify(client, session=f"noise-{index}")
+    main._last_rate_limit_sweep = 0.0
+    _verify(client, session="trigger-sweep")
+
+    assert "busy" in main._session_request_times
+    assert _verify(client, session="busy").json()["allowed"] is False
+
+
+def test_sweep_keeps_scopes_with_a_live_window(make_client):
+    client, main = make_client()
+    _verify(client, session="live")
+    main.sweep_idle_rate_limit_scopes(main.time.monotonic() - 60.0)
+    assert "live" in main._session_request_times
