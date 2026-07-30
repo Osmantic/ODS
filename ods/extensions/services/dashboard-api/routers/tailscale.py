@@ -41,7 +41,11 @@ router = APIRouter(tags=["tailscale"])
 def _proxy_agent(path: str, timeout: int = 15) -> dict:
     """Forward a GET to the host-agent. Translates HTTPError → HTTPException."""
     try:
-        return request_agent_json("GET", path, timeout=timeout)
+        res = request_agent_json("GET", path, timeout=timeout)
+        if not isinstance(res, dict):
+            logger.warning("host-agent GET %s returned non-dict response: %r", path, res)
+            return {"running": False}
+        return res
     except AgentHTTPError as exc:
         logger.info("host-agent GET %s -> %s", path, exc.status_code)
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
