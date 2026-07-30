@@ -15,8 +15,18 @@ if not DASHBOARD_API_KEY:
     DASHBOARD_API_KEY = secrets.token_urlsafe(32)
     key_file = Path("/data/dashboard-api-key.txt")
     key_file.parent.mkdir(parents=True, exist_ok=True)
-    key_file.write_text(DASHBOARD_API_KEY)
-    key_file.chmod(0o600)
+    import tempfile
+    fd, tmp_path_str = tempfile.mkstemp(dir=str(key_file.parent), prefix=".dashboard-api-key.", suffix=".tmp")
+    tmp_path = Path(tmp_path_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(DASHBOARD_API_KEY)
+        tmp_path.chmod(0o600)
+        os.replace(tmp_path, key_file)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
     logger.warning(
         "DASHBOARD_API_KEY not set. Generated temporary key and wrote to %s (mode 0600). "
         "Set DASHBOARD_API_KEY in your .env file for production.", key_file
