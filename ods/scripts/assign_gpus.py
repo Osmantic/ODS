@@ -299,7 +299,10 @@ def largest_pow2_divisor(n: int) -> int:
     Find the largest power of 2 p such that:
       - p divides n evenly
       - p <= sqrt(n)  (keeps tensor_size <= pipeline_size for balance)
-    Minimum return value is 2 (hybrid requires at least 2 tensor groups).
+    Returns 1 when no such factor exists — an odd GPU count has no even
+    tensor grouping. Hybrid needs tensor_size * pipeline_size == GPU count,
+    so callers fall back to pipeline rather than clamping to 2 and leaving
+    the odd GPU out of the plan.
     """
     p = 1
     while True:
@@ -309,7 +312,7 @@ def largest_pow2_divisor(n: int) -> int:
         if candidate > math.sqrt(n):
             break
         p = candidate
-    return max(2, p)
+    return p
 
 
 def is_heterogeneous(gpus: list) -> bool:
@@ -321,6 +324,29 @@ def compute_tensor_split(gpus: list) -> list:
     """Proportional VRAM weights, rounded to 4 decimal places."""
     total = sum(g.memory_mb for g in gpus)
     return [round(g.memory_mb / total, 4) for g in gpus]
+
+
+def _pipeline_only(n: int) -> LlamaParallelism:
+    return LlamaParallelism(
+        mode="pipeline",
+        tensor_parallel_size=1,
+        pipeline_parallel_size=n,
+        gpu_memory_utilization=0.95,
+    )
+
+
+def _hybrid_or_pipeline(n: int, split: Optional[list]) -> LlamaParallelism:
+    """Hybrid split, or pipeline when the GPU count has no even grouping."""
+    tp = largest_pow2_divisor(n)
+    if tp < 2:
+        return _pipeline_only(n)
+    return LlamaParallelism(
+        mode="hybrid",
+        tensor_parallel_size=tp,
+        pipeline_parallel_size=n // tp,
+        gpu_memory_utilization=0.93,
+        tensor_split=split,
+    )
 
 
 def select_parallelism(subset: Subset) -> LlamaParallelism:
@@ -357,51 +383,20 @@ def select_parallelism(subset: Subset) -> LlamaParallelism:
                 tensor_split=split,
             )
         else:
-            tp = largest_pow2_divisor(n)
-            pp = n // tp
-            return LlamaParallelism(
-                mode="hybrid",
-                tensor_parallel_size=tp,
-                pipeline_parallel_size=pp,
-                gpu_memory_utilization=0.93,
-                tensor_split=split,
-            )
+            return _hybrid_or_pipeline(n, split)
 
     # Cross-NUMA PCIe
     if rank <= 10:
-        return LlamaParallelism(
-            mode="pipeline",
-            tensor_parallel_size=1,
-            pipeline_parallel_size=n,
-            gpu_memory_utilization=0.95,
-        )
+        return _pipeline_only(n)
 
     # Same-NUMA PCIe (rank 11-79)
     if n <= 3:
-        return LlamaParallelism(
-            mode="pipeline",
-            tensor_parallel_size=1,
-            pipeline_parallel_size=n,
-            gpu_memory_utilization=0.95,
-        )
+        return _pipeline_only(n)
     else:
         if rank >= 40:
-            tp = largest_pow2_divisor(n)
-            pp = n // tp
-            return LlamaParallelism(
-                mode="hybrid",
-                tensor_parallel_size=tp,
-                pipeline_parallel_size=pp,
-                gpu_memory_utilization=0.93,
-                tensor_split=split,
-            )
+            return _hybrid_or_pipeline(n, split)
         else:
-            return LlamaParallelism(
-                mode="pipeline",
-                tensor_parallel_size=1,
-                pipeline_parallel_size=n,
-                gpu_memory_utilization=0.95,
-            )
+            return _pipeline_only(n)
 
 
 #  Phase 4: Build Output JSON

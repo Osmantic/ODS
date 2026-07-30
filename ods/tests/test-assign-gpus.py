@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import subprocess
@@ -5,6 +6,32 @@ import sys
 
 SCRIPT = os.path.join(os.path.dirname(__file__), "../scripts/assign_gpus.py")
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures/topology_json")
+
+
+def _load_module():
+    spec = importlib.util.spec_from_file_location("assign_gpus_under_test", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+assign_gpus = _load_module()
+
+
+def select(n, rank, vram_mb=24000):
+    """Run select_parallelism against a synthetic n-GPU subset at `rank`."""
+    gpus = [
+        assign_gpus.GPU(index=i, uuid=f"GPU-{i}", name="test",
+                        memory_mb=vram_mb, memory_total_mb=vram_mb)
+        for i in range(n)
+    ]
+    subset = assign_gpus.Subset(
+        gpus=gpus,
+        min_link_rank=rank,
+        total_vram_mb=vram_mb * n,
+        all_pairs_highbw=rank >= assign_gpus.HIGH_BW_THRESHOLD,
+    )
+    return assign_gpus.select_parallelism(subset)
 
 def fixture_path(name):
     return os.path.join(FIXTURES_DIR, name)
@@ -466,11 +493,13 @@ class TestEightGpuNv12FullMesh:
         assert len(set(uuids)) == 3
 
     def test_model_fits_one_gpu_extras_back_to_llama_nvlink(self):
-        # NVLink pair wins, remaining=6: 3 to services, 3 extras → llama=5 GPUs, hybrid
+        # NVLink pair wins, remaining=6: 3 to services, 3 extras → llama=5 GPUs.
+        # No power of two divides 5, so a hybrid split would place only 4 of
+        # them and strand the fifth; pipeline spans all five.
         _, out, _ = run(self.TOPO, 70000)
         p = parallelism(out)
-        assert p["mode"] == "hybrid"
-        assert p["gpu_memory_utilization"] == 0.93
+        assert p["mode"] == "pipeline"
+        assert p["gpu_memory_utilization"] == 0.95
 
     def test_model_fits_one_gpu_llama_5gpus(self):
         _, out, _ = run(self.TOPO, 70000)
@@ -480,13 +509,13 @@ class TestEightGpuNv12FullMesh:
         _, out, _ = run(self.TOPO, 100000)
         assert len(llama(out)["gpus"]) == 5
 
-    def test_model_needs_two_gpus_hybrid_nvlink(self):
+    def test_model_needs_two_gpus_pipeline_nvlink(self):
         _, out, _ = run(self.TOPO, 100000)
         p = parallelism(out)
-        assert p["mode"] == "hybrid"
-        assert p["tensor_parallel_size"] == 2
-        assert p["pipeline_parallel_size"] == 2
-        assert p["gpu_memory_utilization"] == 0.93
+        assert p["mode"] == "pipeline"
+        assert p["tensor_parallel_size"] == 1
+        assert p["pipeline_parallel_size"] == 5
+        assert p["gpu_memory_utilization"] == 0.95
 
     def test_model_needs_five_gpus_no_extras(self):
         # 350GB needs 5 GPUs. remaining=3 exactly → no extras → llama has 5 GPUs
@@ -494,12 +523,12 @@ class TestEightGpuNv12FullMesh:
         assert len(llama(out)["gpus"]) == 5
         assert out["strategy"] == "dedicated"
 
-    def test_model_needs_five_gpus_hybrid(self):
+    def test_model_needs_five_gpus_pipeline(self):
         _, out, _ = run(self.TOPO, 350000)
         p = parallelism(out)
-        assert p["mode"] == "hybrid"
-        assert p["tensor_parallel_size"] == 2
-        assert p["pipeline_parallel_size"] == 2
+        assert p["mode"] == "pipeline"
+        assert p["tensor_parallel_size"] == 1
+        assert p["pipeline_parallel_size"] == 5
 
     def test_model_needs_five_gpus_services_dedicated(self):
         _, out, _ = run(self.TOPO, 350000)
@@ -609,10 +638,14 @@ class TestParallelismModeSelection:
         assert p["mode"] == "pipeline"
         assert p["pipeline_parallel_size"] == 3
 
-    def test_nvlink_full_mesh_five_gpus_hybrid(self):
-        # NV12 full mesh, extras push back → 5 GPUs → hybrid
+    def test_nvlink_full_mesh_five_gpus_pipeline(self):
+        # NV12 full mesh, extras push back → 5 GPUs. Five has no even tensor
+        # grouping, so hybrid would place only 4 of them; pipeline covers all.
         _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_8gpus_nv12_full_mesh.json"), 100000)
-        assert parallelism(out)["mode"] == "hybrid"
+        p = parallelism(out)
+        assert len(llama(out)["gpu_indices"]) == 5
+        assert p["mode"] == "pipeline"
+        assert p["pipeline_parallel_size"] == 5
 
     def test_mem_util_none_is_095(self):
         _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_1gpu_pcie.json"), 20000)
@@ -623,9 +656,44 @@ class TestParallelismModeSelection:
         assert parallelism(out)["gpu_memory_utilization"] == 0.92
 
     def test_mem_util_hybrid_is_093(self):
-        _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_8gpus_nv12_full_mesh.json"), 100000)
-        assert parallelism(out)["gpu_memory_utilization"] == 0.93
+        assert select(4, rank=90).gpu_memory_utilization == 0.93
 
     def test_mem_util_pipeline_is_095(self):
         _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_4gpus_soc.json"), 100000)
         assert parallelism(out)["gpu_memory_utilization"] == 0.95
+
+
+# ── Parallelism covers every assigned GPU ─────────────────────────────────────
+
+class TestParallelismCoversAllGpus:
+    """tensor_parallel_size * pipeline_parallel_size must equal the GPU count.
+
+    A plan that multiplies out to fewer placements than GPUs hands llama.cpp a
+    GPU it never uses, so the card is reserved and idle.
+    """
+
+    RANKS = [0, 5, 30, 50, 90]
+
+    def test_product_equals_gpu_count(self):
+        for n in range(1, 17):
+            for rank in self.RANKS:
+                p = select(n, rank)
+                product = p.tensor_parallel_size * p.pipeline_parallel_size
+                assert product == n, (
+                    f"n={n} rank={rank} mode={p.mode} "
+                    f"tp={p.tensor_parallel_size} pp={p.pipeline_parallel_size}"
+                )
+
+    def test_odd_nvlink_counts_fall_back_to_pipeline(self):
+        for n in (5, 7, 9, 11):
+            p = select(n, rank=90)
+            assert p.mode == "pipeline"
+            assert p.pipeline_parallel_size == n
+
+    def test_even_nvlink_counts_still_hybrid(self):
+        for n in (4, 6, 8, 16):
+            assert select(n, rank=90).mode == "hybrid"
+
+    def test_largest_pow2_divisor_always_divides(self):
+        for n in range(1, 65):
+            assert n % assign_gpus.largest_pow2_divisor(n) == 0

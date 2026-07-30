@@ -418,13 +418,18 @@ run_custom() {
 
   # NOTE: keep in sync with assign_gpus.py select_parallelism()
   local mode tp pp mem_util
+  # An odd GPU count has no even tensor grouping: tp*pp would come out one
+  # short and the leftover GPU would be listed but never placed. Pipeline
+  # covers every GPU, so fall back instead of splitting.
   if   [[ $n -eq 1 ]];         then mode="none";     tp=1;  pp=1;        mem_util=0.95
   elif [[ $min_rank -ge 80 ]]; then
-    if   [[ $n -le 3 ]];       then mode="tensor";   tp=$n; pp=1;        mem_util=0.92
-    else                            mode="hybrid";   tp=2;  pp=$((n/2)); mem_util=0.93; fi
+    if   [[ $n -le 3 ]];        then mode="tensor";   tp=$n; pp=1;        mem_util=0.92
+    elif (( n % 2 != 0 ));      then mode="pipeline"; tp=1;  pp=$n;       mem_util=0.95
+    else                             mode="hybrid";   tp=2;  pp=$((n/2)); mem_util=0.93; fi
   elif [[ $min_rank -le 10 ]]; then mode="pipeline"; tp=1;  pp=$n;       mem_util=0.95
   elif [[ $n -le 3 ]];         then mode="pipeline"; tp=1;  pp=$n;       mem_util=0.95
-  elif [[ $min_rank -ge 40 ]]; then mode="hybrid";   tp=2;  pp=$((n/2)); mem_util=0.93
+  elif [[ $min_rank -ge 40 && $((n % 2)) -eq 0 ]]; then
+                                    mode="hybrid";   tp=2;  pp=$((n/2)); mem_util=0.93
   else                              mode="pipeline"; tp=1;  pp=$n;       mem_util=0.95
   fi
 
