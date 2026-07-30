@@ -74,7 +74,14 @@ ods_readiness_summary() {
         if _ods_readiness_is_ready_code "$http_code"; then
             state="ready"
             detail="HTTP $http_code"
-        elif [[ "$container_state" == "running" || "$container_state" == "starting" || "$container_state" == "host" ]]; then
+        # `healthy` belongs here with `running`: docker inspect reports the
+        # health status when the container declares a healthcheck and the plain
+        # status otherwise, so leaving it out made the container Docker vouches
+        # for rank below one Docker only knows is up. The probe URL and the
+        # healthcheck are not always the same endpoint — a service answering
+        # 404 on / while its own check passes is starting up, not broken.
+        elif [[ "$container_state" == "running" || "$container_state" == "healthy" \
+             || "$container_state" == "starting" || "$container_state" == "host" ]]; then
             state="starting"
             detail="HTTP $http_code"
         elif [[ "$container_state" == "missing" || "$container_state" == "docker-unavailable" ]]; then

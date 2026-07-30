@@ -74,7 +74,12 @@ function Write-ODSInstallReadinessSummary {
         else {
             $state = "starting"
             $detail = "HTTP $($http.Code)"
-            if ($containerState -and $containerState -notin @("running", "starting", "host")) {
+            # "healthy" belongs with "running": Get-ODSReadinessContainerState
+            # reports the health status when the container declares a
+            # healthcheck and the plain status otherwise, so omitting it ranked
+            # the container Docker vouches for below one Docker only knows is
+            # up. Mirrors installers/lib/readiness-summary.sh.
+            if ($containerState -and $containerState -notin @("running", "healthy", "starting", "host")) {
                 $state = "needs attention"
                 $detail = "container $containerState, HTTP $($http.Code)"
             }

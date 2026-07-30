@@ -54,6 +54,7 @@ case "$url" in
   *3001*) printf "200" ;;
   *3000*) printf "000"; exit 7 ;;
   *6333*) printf "000"; exit 7 ;;
+  *4000*) printf "404" ;;
   *) printf "404" ;;
 esac
 EOF
@@ -66,6 +67,8 @@ if [[ "$1" == "inspect" ]]; then
   case "$container" in
     ods-dashboard) echo "healthy"; exit 0 ;;
     ods-webui) echo "running"; exit 0 ;;
+    ods-litellm) echo "healthy"; exit 0 ;;
+    ods-comfyui) echo "unhealthy"; exit 0 ;;
     ods-qdrant) exit 1 ;;
     *) echo "missing"; exit 1 ;;
   esac
@@ -94,6 +97,8 @@ OUTPUT="$TMP_DIR/readiness.txt"
     printf 'Dashboard|http://127.0.0.1:3001|ods-dashboard|http://localhost:3001\n'
     printf 'Chat UI (Open WebUI)|http://127.0.0.1:3000|ods-webui|http://localhost:3000\n'
     printf 'Qdrant|http://127.0.0.1:6333|ods-qdrant|http://localhost:6333\n'
+    printf 'LiteLLM|http://127.0.0.1:4000|ods-litellm|http://localhost:4000\n'
+    printf 'ComfyUI|http://127.0.0.1:4000|ods-comfyui|http://localhost:4000\n'
 } | ods_readiness_summary "ods status" "/tmp/ods-install.log" "http://localhost:3001" > "$OUTPUT"
 
 echo ""
@@ -101,7 +106,7 @@ echo "=== Install readiness summary tests ==="
 echo ""
 
 assert_contains "$OUTPUT" "INSTALL READINESS" "summary has heading"
-assert_contains "$OUTPUT" "Ready now: 1/3" "summary counts ready services"
+assert_contains "$OUTPUT" "Ready now: 1/5" "summary counts ready services"
 assert_contains "$OUTPUT" "[OK] Dashboard" "summary lists ready service"
 [[ -s "$SUDO_MARKER" ]] && pass "summary honors DOCKER_CMD wrapper for docker inspect" || fail "summary ignored DOCKER_CMD wrapper"
 assert_contains "$OUTPUT" "[!!] Chat UI (Open WebUI)" "summary lists starting service"
@@ -110,6 +115,14 @@ assert_not_contains "$OUTPUT" "000000" "failed curl probe is normalized to a sin
 assert_contains "$OUTPUT" "[!!] Qdrant" "summary lists missing service"
 assert_contains "$OUTPUT" "not detected - missing" "summary explains missing container"
 assert_contains "$OUTPUT" "HTTP 000" "summary includes failed HTTP code"
+# A container whose own healthcheck passes must not rank below one Docker
+# only knows is running. The probe URL and the healthcheck are not always the
+# same endpoint, so a 404 here means "not up yet", not "go debug this".
+assert_contains "$OUTPUT" "[!!] LiteLLM" "summary lists healthy-but-unprobed service"
+assert_contains "$OUTPUT" "LiteLLM                      starting - HTTP 404" "healthy container reads as starting"
+assert_not_contains "$OUTPUT" "container healthy" "healthy container is never reported as needing attention"
+# unhealthy is the state that genuinely needs an operator.
+assert_contains "$OUTPUT" "ComfyUI                      needs attention - container unhealthy, HTTP 404" "unhealthy container still needs attention"
 assert_contains "$OUTPUT" "Open dashboard: http://localhost:3001" "summary shows dashboard next step"
 assert_contains "$OUTPUT" "Check status: ods status" "summary shows status command"
 assert_contains "$OUTPUT" "Logs: /tmp/ods-install.log" "summary shows log path"
