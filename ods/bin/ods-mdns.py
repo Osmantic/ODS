@@ -96,6 +96,13 @@ POLL_INTERVAL = _safe_positive_int_env("ODS_MDNS_POLL_INTERVAL", 30)
 _HOSTNAME_RE = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9-]{0,30}[a-zA-Z0-9])?$")
 
 
+def _strip_env_quotes(value: str) -> str:
+    v = value.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in {"'", '"'}:
+        return v[1:-1]
+    return v
+
+
 def _read_env() -> dict[str, str]:
     """Return current .env values, ignoring comments and blank lines."""
     if not ENV_FILE.is_file():
@@ -106,7 +113,7 @@ def _read_env() -> dict[str, str]:
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
         key, _, value = stripped.partition("=")
-        env[key.strip()] = value.strip().strip('"').strip("'")
+        env[key.strip()] = _strip_env_quotes(value)
     return env
 
 
