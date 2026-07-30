@@ -547,6 +547,41 @@ def test_atomic_write_failure_preserves_known_good_config() -> None:
         assert not list(target.parent.glob(f".{target.name}.*.tmp"))
 
 
+def test_written_bytes_are_unchanged() -> None:
+    dry_run = run_renderer("--surface", "all", "--ods-mode", "lemonade")
+    with tempfile.TemporaryDirectory() as tmp:
+        run_renderer("--surface", "all", "--ods-mode", "lemonade", "--output-root", tmp, "--write")
+        for item in dry_run["files"]:
+            rel_path = Path(item["path"])
+            written_path = Path(tmp) / rel_path
+            assert written_path.exists()
+            assert written_path.read_text(encoding="utf-8") == item["content"]
+
+
+def test_write_path_never_truncates_in_place() -> None:
+    renderer = load_renderer_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "lemonade.yaml"
+        original_content = "original-content-prior-to-replace\n"
+        target.write_bytes(original_content.encode("utf-8"))
+        original_size = target.stat().st_size
+        seen_sizes = []
+        real_chmod = renderer.os.chmod
+
+        def spy_chmod(path, mode):
+            seen_sizes.append(target.stat().st_size)
+            return real_chmod(path, mode)
+
+        renderer.os.chmod = spy_chmod
+        try:
+            renderer.atomic_write_text(target, "new-content\n")
+        finally:
+            renderer.os.chmod = real_chmod
+
+        assert all(size == original_size for size in seen_sizes)
+        assert target.read_text(encoding="utf-8") == "new-content\n"
+
+
 def main() -> int:
     tests = [
         test_all_surfaces_render,
@@ -572,6 +607,8 @@ def main() -> int:
         test_perplexica_default_model_matches_route,
         test_write_mode_writes_under_output_root,
         test_atomic_write_failure_preserves_known_good_config,
+        test_written_bytes_are_unchanged,
+        test_write_path_never_truncates_in_place,
     ]
     for test in tests:
         test()
