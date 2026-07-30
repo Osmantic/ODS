@@ -32,6 +32,7 @@ from fastapi import FastAPI, Depends, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 
 # --- Local modules ---
+from env_values import strip_matching_quotes
 from config import (
     SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS, ALWAYS_ON_SERVICES,
     AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
@@ -149,7 +150,7 @@ def _read_installed_version() -> str:
         try:
             for line in env_file.read_text().splitlines():
                 if line.startswith("ODS_VERSION="):
-                    env_version = line.split("=", 1)[1].strip().strip("\"'")
+                    env_version = strip_matching_quotes(line.split("=", 1)[1])
                     if env_version:
                         return env_version
         except OSError:

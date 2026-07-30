@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from env_values import strip_matching_quotes
 from models import GPUInfo, IndividualGPU
 from host_agent_client import AgentClientError, request_json as request_agent_json
 
@@ -547,7 +548,7 @@ def _read_env_var_from_file_state(key: str) -> tuple[bool, str]:
     try:
         for line in env_path.read_text().splitlines():
             if line.startswith(f"{key}="):
-                return True, line[len(key) + 1:].strip().strip("\"'")
+                return True, strip_matching_quotes(line[len(key) + 1:])
     except OSError:
         pass
     return False, ""

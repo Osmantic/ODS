@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException
 
+from env_values import strip_matching_quotes
 from host_agent_client import AgentClientError, request_json as request_agent_json
 
 # ── Regex constants ────────────────────────────────────────────────────────────
@@ -96,13 +97,6 @@ _READ_ONLY_ENV_FIELDS = {
 # ── Env parsing ────────────────────────────────────────────────────────────────
 
 
-def _strip_env_quotes(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1]
-    return value
-
-
 def _read_env_map_from_path(path: Path) -> tuple[dict[str, str], list[dict[str, Any]]]:
     try:
         return _parse_env_text(path.read_text(encoding="utf-8"))
@@ -129,7 +123,7 @@ def _parse_env_text(raw_text: str) -> tuple[dict[str, str], list[dict[str, Any]]
             continue
 
         key, value = match.groups()
-        values[key] = _strip_env_quotes(value)
+        values[key] = strip_matching_quotes(value)
 
     return values, issues
 

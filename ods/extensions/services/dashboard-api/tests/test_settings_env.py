@@ -5,6 +5,23 @@ import json
 import pytest
 
 
+def test_settings_parser_strips_one_pair_and_preserves_unmatched_quotes():
+    from settings import _parse_env_text
+
+    values, issues = _parse_env_text(
+        "PAIRED='value'\n"
+        "UNMATCHED=value'\n"
+        "REPEATED=''value''\n"
+    )
+
+    assert issues == []
+    assert values == {
+        "PAIRED": "value",
+        "UNMATCHED": "value'",
+        "REPEATED": "'value'",
+    }
+
+
 @pytest.fixture()
 def settings_env_fixture(tmp_path, monkeypatch):
     install_root = tmp_path / "ods"

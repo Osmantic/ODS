@@ -18,6 +18,7 @@ import aiohttp
 import httpx
 
 from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, read_live_env_value
+from env_values import strip_matching_quotes
 from host_agent_client import AgentClientError, async_request_json as request_agent_json
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
 
@@ -826,14 +827,7 @@ def get_model_info() -> Optional[ModelInfo]:
                     key = key.strip()
                     if not key:
                         continue
-                    value = value.strip()
-                    # Strip exactly one matching pair of surrounding quotes.
-                    # str.strip("\"'") removes any run of either quote from
-                    # both ends, so a value legitimately ending in a quote is
-                    # truncated and "'literal'" loses its inner quotes. Keep
-                    # mismatched quotes verbatim, matching lib/safe-env.sh.
-                    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                        value = value[1:-1]
+                    value = strip_matching_quotes(value)
                     env_values[key] = value
 
             model_name = env_values.get("LLM_MODEL")

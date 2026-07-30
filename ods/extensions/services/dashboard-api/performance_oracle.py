@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+from env_values import strip_matching_quotes
 from gguf_inspector import inspect_gguf
 from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 from helpers import (
@@ -133,7 +134,7 @@ def _system_ram_gb() -> int:
 def read_env_value(key: str, install_dir: str | Path) -> str:
     value = os.environ.get(key, "")
     if value:
-        return value.strip().strip("\"'")
+        return strip_matching_quotes(value)
     return read_env_file_value(key, install_dir)
 
 
@@ -142,7 +143,7 @@ def read_env_file_value(key: str, install_dir: str | Path) -> str:
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
-                return line.split("=", 1)[1].strip().strip("\"'")
+                return strip_matching_quotes(line.split("=", 1)[1])
     except OSError:
         pass
     return ""
@@ -154,7 +155,7 @@ def read_persisted_env_value(key: str, install_dir: str | Path) -> str:
     file_value = read_env_file_value(key, install_dir)
     if file_value or env_path.exists():
         return file_value
-    return os.environ.get(key, "").strip().strip("\"'")
+    return strip_matching_quotes(os.environ.get(key, ""))
 
 
 def read_context_length(install_dir: str | Path, default: int = 32768) -> int:

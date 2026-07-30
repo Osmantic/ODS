@@ -13,6 +13,9 @@ from performance_oracle import (
     model_publisher,
     normalize_catalog_entry,
     rank_pre_download_models,
+    read_env_file_value,
+    read_env_value,
+    read_persisted_env_value,
 )
 
 
@@ -41,6 +44,21 @@ def _model():
         "quantization": "Q4_K_M",
         "llm_model_name": "qwen3.5-9b",
     }
+
+
+def test_performance_env_readers_share_matching_quote_contract(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text(
+        "PAIRED='catalog-v2'\n"
+        "UNMATCHED=catalog-v2'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("PAIRED", raising=False)
+    monkeypatch.setenv("PROCESS_ONLY", "'runtime-v2'")
+
+    assert read_env_file_value("PAIRED", tmp_path) == "catalog-v2"
+    assert read_env_file_value("UNMATCHED", tmp_path) == "catalog-v2'"
+    assert read_env_value("PROCESS_ONLY", tmp_path) == "runtime-v2"
+    assert read_persisted_env_value("UNMATCHED", tmp_path) == "catalog-v2'"
 
 
 def _official_model_catalog():
