@@ -5,6 +5,7 @@ from datetime import datetime
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import httpx
+import pytest
 
 from host_agent_client import AgentHTTPError, AgentUnavailable
 
@@ -598,3 +599,38 @@ def test_trigger_update_action_backup(test_client, monkeypatch):
     assert calls[0][0:2] == ("POST", "/v1/update/backup")
     assert calls[0][2]["backup_id"].startswith("dashboard-")
     assert calls[0][3] == 65
+
+
+@pytest.mark.parametrize(
+    ("current", "latest", "expected"),
+    [
+        # A pre-release identifier is not part of the release number. Skipping
+        # non-numeric components instead of stopping at them read "2.6.0-rc.2"
+        # as 2.6.2, so an rc build was never offered its own release.
+        ("2.6.0-rc.2", "2.6.0", True),
+        ("2.6.0-rc.2", "2.6.1", True),
+        ("2.0.0-beta.1", "2.0.0", True),
+        ("2.0.0-beta.1", "2.0.1", True),
+        ("2.0.0-strix-halo", "2.0.0", True),
+        # Stable comparisons are unchanged.
+        ("2.5.3", "2.6.0", True),
+        ("2.9.0", "2.10.0", True),
+        ("2.10.0", "2.9.0", False),
+        ("2.6.0", "2.6.0", False),
+        ("2.6.0", "2.5.3", False),
+    ],
+)
+def test_build_version_result_orders_prereleases_below_their_release(current, latest, expected):
+    from routers.updates import _build_version_result
+
+    result = _build_version_result(current, {"latest": latest})
+    assert result["update_available"] is expected
+
+
+def test_release_parts_stops_at_prerelease_suffix():
+    from routers.updates import _release_parts
+
+    assert _release_parts("2.6.0-rc.2") == [2, 6, 0]
+    assert _release_parts("2.6.0+build.7") == [2, 6, 0]
+    assert _release_parts("2.6") == [2, 6, 0]
+    assert _release_parts("") == [0, 0, 0]

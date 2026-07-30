@@ -142,6 +142,27 @@ def _normalize_version(value: Optional[str]) -> str:
     return (value or "").strip().lstrip("v")
 
 
+def _release_parts(value: str) -> list[int]:
+    """Numeric release identifiers, stopping at the pre-release suffix.
+
+    A pre-release's identifiers are not part of the release number, so parsing
+    must stop at the first non-numeric component rather than skipping it.
+    Skipping promotes the digit in "2.6.0-rc.2" into the patch slot, making the
+    installed build read as 2.6.2 — newer than every release it precedes.
+    """
+    release = re.split(r"[-+]", value, maxsplit=1)[0]
+    parts: list[int] = []
+    for component in release.split("."):
+        if not component.isdigit():
+            break
+        parts.append(int(component))
+    return (parts + [0, 0, 0])[:3]
+
+
+def _is_prerelease(value: str) -> bool:
+    return "-" in value
+
+
 def _build_version_result(current: str, payload: Optional[dict]) -> dict:
     current = _normalize_version(current)
     result = {
@@ -162,11 +183,15 @@ def _build_version_result(current: str, payload: Optional[dict]) -> dict:
     result["changelog_url"] = payload.get("changelog_url")
     result["checked_at"] = payload.get("checked_at") or result["checked_at"]
 
-    current_parts = [int(x) for x in current.split(".") if x.isdigit()][:3]
-    latest_parts = [int(x) for x in latest.split(".") if x.isdigit()][:3]
-    current_parts += [0] * (3 - len(current_parts))
-    latest_parts += [0] * (3 - len(latest_parts))
-    result["update_available"] = latest_parts > current_parts
+    current_parts = _release_parts(current)
+    latest_parts = _release_parts(latest)
+    # A pre-release sorts below the release it precedes, so the same release
+    # number is still an upgrade for someone running 2.6.0-rc.2.
+    result["update_available"] = latest_parts > current_parts or (
+        latest_parts == current_parts
+        and _is_prerelease(current)
+        and not _is_prerelease(latest)
+    )
     return result
 
 
