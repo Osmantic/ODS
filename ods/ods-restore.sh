@@ -26,7 +26,12 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 log_step() { echo -e "${CYAN}[STEP]${NC} $*"; }
 
 # Source shared rsync utilities
-. "$ODS_DIR/lib/rsync.sh"
+# Shared helpers ship with this script, so resolve them from SCRIPT_DIR.
+# ODS_DIR names the install being backed up/restored and is caller-
+# overridable; sourcing our own library through it makes the tool load a
+# different install's code, or die before it can report anything when the
+# target has no lib/ at all.
+. "$SCRIPT_DIR/lib/rsync.sh"
 
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {
