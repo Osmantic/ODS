@@ -14,6 +14,8 @@ import threading
 import uuid
 from pathlib import Path
 
+import builtins
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -22,6 +24,19 @@ from starlette.requests import Request
 _APP_DIR = Path(__file__).resolve().parents[1]
 if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
+
+_ExceptionGroup = getattr(builtins, "ExceptionGroup", None)
+_BaseExceptionGroup = getattr(builtins, "BaseExceptionGroup", None)
+_STREAM_EXCEPTIONS: tuple[type[BaseException], ...] = tuple(
+    e for e in (httpx.ReadError, _ExceptionGroup, _BaseExceptionGroup) if isinstance(e, type)
+)
+
+
+def _has_truncated_stream_error(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.ReadError) and "truncated stream" in str(exc):
+        return True
+    exceptions = getattr(exc, "exceptions", [])
+    return any(_has_truncated_stream_error(child) for child in exceptions)
 
 
 @pytest.fixture()
@@ -567,13 +582,14 @@ class TestModelsAndEvidence:
             [b'data: {"model":"Concrete.gguf"}\n\n'],
             model_error=httpx.ReadError("truncated stream"),
         )
-        with pytest.raises(httpx.ReadError, match="truncated stream"):
+        with pytest.raises(_STREAM_EXCEPTIONS) as exc_info:
             client.post("/v1/chat/completions", json={
                 "model": "ods/current", "stream": True,
                 "messages": [
                     {"role": "user", "content": _signed_marker(probe_id)}
                 ],
             })
+        assert _has_truncated_stream_error(exc_info.value)
         ev = client.get(
             f"/internal/route-evidence/{probe_id}",
             headers={"Authorization": "Bearer internal-secret"},
