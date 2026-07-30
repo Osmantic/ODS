@@ -804,6 +804,19 @@ def test_settings_apply_plan_maps_hermes_env_keys():
     assert plan["manualKeys"] == []
 
 
+def test_settings_apply_plan_restarts_hermes_for_dashboard_token_rotation():
+    from settings import _compute_env_apply_plan
+
+    plan = _compute_env_apply_plan(
+        {"HERMES_DASHBOARD_SESSION_TOKEN": "old-token"},
+        {"HERMES_DASHBOARD_SESSION_TOKEN": "new-token"},
+    )
+
+    assert plan["status"] == "ready"
+    assert plan["services"] == ["hermes"]
+    assert plan["manualKeys"] == []
+
+
 def test_settings_apply_plan_treats_public_urls_as_manual_restart():
     from settings import _compute_env_apply_plan
 
@@ -1303,6 +1316,17 @@ def test_production_schema_only_allows_explicit_rag_secret_removal():
         if definition.get("clearable") is True
     }
     assert clearable == {"RAG_OPENAI_API_KEY"}
+
+
+def test_production_schema_protects_hermes_dashboard_session_token():
+    import pathlib
+
+    schema_path = pathlib.Path(__file__).resolve().parents[4] / ".env.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    entry = schema["properties"]["HERMES_DASHBOARD_SESSION_TOKEN"]
+
+    assert entry["secret"] is True
+    assert entry["minLength"] >= 32
 
 
 def test_env_example_keys_are_present_in_schema():

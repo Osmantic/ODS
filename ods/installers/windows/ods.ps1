@@ -113,6 +113,8 @@ function Get-ComposeFlags {
     .SYNOPSIS
         Read saved compose flags from installer, or build default flags.
     #>
+    Ensure-HermesDashboardSessionToken
+
     $flagsFile = Join-Path $InstallDir ".compose-flags"
     if (Test-Path $flagsFile) {
         $raw = (Get-Content $flagsFile -Raw).Trim()
@@ -959,6 +961,23 @@ function Set-ODSEnvValue {
 
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllLines($envFile, $lines.ToArray(), $utf8NoBom)
+}
+
+function Ensure-HermesDashboardSessionToken {
+    $current = Get-ODSEnvValue -Name "HERMES_DASHBOARD_SESSION_TOKEN"
+    if (-not [string]::IsNullOrWhiteSpace($current)) {
+        return
+    }
+
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $bytes = New-Object byte[] 32
+        $rng.GetBytes($bytes)
+        $token = ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
+    } finally {
+        $rng.Dispose()
+    }
+    Set-ODSEnvValue -Key "HERMES_DASHBOARD_SESSION_TOKEN" -Value $token
 }
 
 function Set-ODSProxyAuthRequired {

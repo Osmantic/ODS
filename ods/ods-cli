@@ -125,6 +125,21 @@ _env_get_raw() {
     ' "$file" 2>/dev/null | tr -d '\r' || true
 }
 
+_ensure_hermes_dashboard_session_token() {
+    [[ -f "$INSTALL_DIR/.env" ]] || return 0
+    [[ -n "$(_env_get_raw HERMES_DASHBOARD_SESSION_TOKEN)" ]] && return 0
+
+    local token
+    if command -v openssl >/dev/null 2>&1; then
+        token="$(openssl rand -hex 32)"
+    else
+        token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    fi
+    [[ "$token" =~ ^[0-9a-f]{64}$ ]] \
+        || error "Could not generate HERMES_DASHBOARD_SESSION_TOKEN"
+    _env_set "HERMES_DASHBOARD_SESSION_TOKEN" "$token"
+}
+
 _ods_cli_proxy_enabled() {
     [[ -f "$INSTALL_DIR/extensions/services/ods-proxy/compose.yaml" ]] \
         || [[ -f "$INSTALL_DIR/data/user-extensions/ods-proxy/compose.yaml" ]]
@@ -816,6 +831,8 @@ PYEOF
 
 # Build full compose flags: base + GPU overlay + enabled extensions
 get_compose_flags() {
+    _ensure_hermes_dashboard_session_token
+
     # Fast path: use saved flags from installer if available
     if [[ -f "$INSTALL_DIR/.compose-flags" ]]; then
         local cached

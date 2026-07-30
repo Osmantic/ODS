@@ -116,6 +116,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
     [[ -n "$compose_file" ]] && compose_args+=(-f "$compose_file")
   done
   WEBUI_SECRET=test \
+  HERMES_DASHBOARD_SESSION_TOKEN=test-hermes-dashboard-session-token \
   LITELLM_KEY=test \
   OPENCLAW_TOKEN=test \
   N8N_USER=test@example.local \

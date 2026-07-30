@@ -614,6 +614,9 @@ function New-ODSEnv {
     # session_signer raises on issue() and verify-session returns no-secret —
     # the magic-link gate effectively breaks.
     $odsSessionSecret = Get-EnvOrNew "ODS_SESSION_SECRET" (New-SecureHex -Bytes 32)
+    # Hermes otherwise rotates its dashboard token on every process start,
+    # invalidating WebSocket URLs held by already-open browser tabs.
+    $hermesDashboardSessionToken = Get-EnvOrNew "HERMES_DASHBOARD_SESSION_TOKEN" (New-SecureHex -Bytes 32)
     $shieldApiKey    = Get-EnvOrNew "SHIELD_API_KEY"     (New-SecureHex -Bytes 32)
     $tokenSpyApiKeyDefault = Get-ExistingTokenSpyApiKey
     if ([string]::IsNullOrWhiteSpace($tokenSpyApiKeyDefault)) {
@@ -934,6 +937,7 @@ WEBUI_SECRET=$webuiSecret
 DASHBOARD_API_KEY=$dashboardApiKey
 ODS_AGENT_KEY=$odsAgentKey
 ODS_SESSION_SECRET=$odsSessionSecret
+HERMES_DASHBOARD_SESSION_TOKEN=$hermesDashboardSessionToken
 SHIELD_API_KEY=$shieldApiKey
 N8N_USER=admin@ods.local
 N8N_PASS=$n8nPass

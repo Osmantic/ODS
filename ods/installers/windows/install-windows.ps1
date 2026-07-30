@@ -1686,7 +1686,7 @@ litellm_settings:
             $hasHermesImageOverride = -not [string]::IsNullOrWhiteSpace($envHermesImage)
             $envHermesFallbackImage = Get-ODSEnvValueFromFile -Path $_envCheck -Key "HERMES_AGENT_IMAGE_FALLBACK"
             if ([string]::IsNullOrWhiteSpace($envHermesImage)) {
-                $envHermesImage = "nousresearch/hermes-agent:v2026.5.16"
+                $envHermesImage = "nousresearch/hermes-agent:v2026.6.5"
             }
 
             Write-AI "Validating Hermes Agent image tag before startup..."

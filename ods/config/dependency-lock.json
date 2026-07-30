@@ -119,7 +119,7 @@
       "id": "hermes.agent",
       "type": "image",
       "path": "extensions/services/hermes/compose.yaml",
-      "value": "nousresearch/hermes-agent:v2026.5.16"
+      "value": "nousresearch/hermes-agent:v2026.6.5"
     },
     {
       "id": "hermes-proxy.caddy",
@@ -337,8 +337,8 @@
     },
     {
       "path": "extensions/services/hermes/compose.yaml",
-      "value": "${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.5.16}",
-      "default": "nousresearch/hermes-agent:v2026.5.16",
+      "value": "${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.6.5}",
+      "default": "nousresearch/hermes-agent:v2026.6.5",
       "reason": "Hermes Agent image can be overridden for upstream registry hotfixes, but the shipped default is locked."
     },
     {

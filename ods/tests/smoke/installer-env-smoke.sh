@@ -173,6 +173,7 @@ export ENABLE_OPENCLAW=true
     export RAG_OPENAI_API_BASE_URL=https://replacement.example.test/v1
     export RAG_OPENAI_API_KEY=replacement-secret
     export EMBEDDINGS_MEMORY_LIMIT=8GB
+    export HERMES_DASHBOARD_SESSION_TOKEN=replacement-must-not-win
     source installers/phases/06-directories.sh
 " 2>/dev/null; then
     ENV_GENERATED=true
@@ -231,6 +232,14 @@ if [[ "$ENV_GENERATED" == true && -f "$INSTALL_DIR/.env" ]]; then
         pass "Bundled service CPU limits stay at or below Docker CPU count"
     else
         fail "Bundled service CPU limits were not written as expected"
+    fi
+
+    HERMES_DASHBOARD_TOKEN="$(sed -n 's/^HERMES_DASHBOARD_SESSION_TOKEN=//p' "$INSTALL_DIR/.env")"
+    if [[ "$HERMES_DASHBOARD_TOKEN" =~ ^[0-9a-f]{64}$ ]] \
+        && [[ "$HERMES_DASHBOARD_TOKEN" != "replacement-must-not-win" ]]; then
+        pass "Hermes dashboard token is generated once and survives a Linux installer rerun"
+    else
+        fail "Hermes dashboard token is missing, malformed, or replaced on rerun"
     fi
 fi
 

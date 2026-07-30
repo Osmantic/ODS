@@ -110,6 +110,8 @@ test_install() {
 }
 
 get_compose_flags() {
+    ensure_hermes_dashboard_session_token
+
     local flags_file="${INSTALL_DIR}/.compose-flags"
     if [[ -f "$flags_file" ]]; then
         cat "$flags_file"
@@ -398,6 +400,24 @@ upsert_env_value() {
     else
         printf '%s=%s\n' "$key" "$value" >> "$env_file"
     fi
+}
+
+ensure_hermes_dashboard_session_token() {
+    local env_file="${INSTALL_DIR}/.env"
+    [[ -f "$env_file" ]] || return 0
+    [[ -n "$(read_env_value "$env_file" "HERMES_DASHBOARD_SESSION_TOKEN")" ]] && return 0
+
+    local token
+    if command -v openssl >/dev/null 2>&1; then
+        token="$(openssl rand -hex 32)"
+    else
+        token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    fi
+    [[ "$token" =~ ^[0-9a-f]{64}$ ]] || {
+        ai_err "Could not generate HERMES_DASHBOARD_SESSION_TOKEN"
+        return 1
+    }
+    upsert_env_value "$env_file" "HERMES_DASHBOARD_SESSION_TOKEN" "$token"
 }
 
 proxy_is_enabled() {
