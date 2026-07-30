@@ -119,7 +119,7 @@ def log_usage(entry: dict):
         "system_prompt_total_chars",
         "workspace_agents_chars", "workspace_soul_chars", "workspace_tools_chars",
         "workspace_identity_chars", "workspace_user_chars", "workspace_heartbeat_chars",
-        "workspace_bootstrap_chars",
+        "workspace_bootstrap_chars", "workspace_memory_chars",
         "skill_injection_chars", "base_prompt_chars",
         "conversation_history_chars",
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",

@@ -216,3 +216,52 @@ class TestShortSpanAtDateMax:
         db = load_sqlite_db(tmp_path, monkeypatch)
         with pytest.raises(ValueError, match="out of range"):
             db._parse_report_dates("9999-12-01", "9999-12-31")
+
+
+class TestWorkspacePromptColumns:
+    def test_memory_chars_survive_a_round_trip(self, tmp_path, monkeypatch):
+        """MEMORY.md chars must persist like every other workspace bucket.
+
+        The Anthropic provider breaks the system prompt down per workspace
+        file, MEMORY.md included, and the Postgres backend stores that
+        bucket. When the SQLite insert omits the column the metric reads
+        back as 0 forever, so the dashboard shows the same prompt as
+        smaller on the default backend than on Postgres.
+        """
+        db = load_sqlite_db(tmp_path, monkeypatch)
+
+        insert_usage(
+            db,
+            "2026-05-01T10:00:00Z",
+            workspace_memory_chars=4096,
+            workspace_agents_chars=512,
+        )
+
+        conn = db._get_conn()
+        conn.row_factory = __import__("sqlite3").Row
+        row = dict(conn.execute("SELECT * FROM usage").fetchone())
+        assert row["workspace_memory_chars"] == 4096
+        assert row["workspace_agents_chars"] == 512
+
+    def test_every_declared_workspace_column_is_written(self, tmp_path, monkeypatch):
+        """The insert column list must cover the whole workspace breakdown.
+
+        Adding a column to the schema without adding it to log_usage fails
+        silently — no error, just a metric pinned at its default.
+        """
+        db = load_sqlite_db(tmp_path, monkeypatch)
+        conn = db._get_conn()
+        declared = {
+            row[1] for row in conn.execute("PRAGMA table_info(usage)")
+            if row[1].startswith("workspace_")
+        }
+
+        entry = {"agent": "Hermes", "model": "claude-opus-4-5"}
+        entry.update({column: index + 1 for index, column in enumerate(sorted(declared))})
+        db.log_usage(entry)
+
+        conn.row_factory = __import__("sqlite3").Row
+        row = dict(conn.execute("SELECT * FROM usage").fetchone())
+        assert {column: row[column] for column in declared} == {
+            column: entry[column] for column in declared
+        }
