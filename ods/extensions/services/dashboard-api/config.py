@@ -386,6 +386,7 @@ def load_extension_manifests(
                     "external_link": bool(service.get("external_link", True)),
                     "macos_host_supported": bool(service.get("macos_host_supported", False)),
                     "container_name": service.get("container_name", f"ods-{service_id}"),
+                    "aliases": [str(a) for a in (service.get("aliases") or [])],
                     "depends_on": service.get("depends_on", []),
                     "category": service.get("category", "optional"),
                     "host_network": bool(service.get("host_network", False)),
@@ -427,6 +428,22 @@ def load_extension_manifests(
 
 MANIFEST_SERVICES, MANIFEST_FEATURES, MANIFEST_ERRORS = load_extension_manifests(EXTENSIONS_DIR, GPU_BACKEND)
 SERVICES = MANIFEST_SERVICES
+
+
+def build_service_aliases(services: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """Reverse the manifest `aliases` lists into alias -> service id."""
+    return {
+        alias: service_id
+        for service_id, config in services.items()
+        for alias in config.get("aliases", [])
+        if alias not in services
+    }
+
+
+# The CLI and the service manifests treat aliases as first-class service names
+# (`ods logs kokoro`), so anything that accepts a user- or catalog-supplied
+# service name has to resolve them before looking SERVICES up.
+SERVICE_ALIASES = build_service_aliases(SERVICES)
 if not SERVICES:
     logger.error("No services loaded from manifests in %s — dashboard will have no services", EXTENSIONS_DIR)
 

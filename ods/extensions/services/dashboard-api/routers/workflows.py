@@ -9,7 +9,7 @@ import aiohttp
 from fastapi import APIRouter, Depends, HTTPException
 
 from config import (
-    SERVICES, WORKFLOW_DIR, WORKFLOW_CATALOG_FILE,
+    SERVICES, SERVICE_ALIASES, WORKFLOW_DIR, WORKFLOW_CATALOG_FILE,
     DEFAULT_WORKFLOW_CATALOG, N8N_URL, N8N_API_KEY,
 )
 from security import verify_api_key
@@ -68,12 +68,16 @@ async def check_workflow_dependencies(deps: list[str], health_cache: dict[str, b
     """Check if required services are running. Uses health_cache to avoid duplicate checks."""
     from helpers import check_service_health
 
+    # Catalog entries name services the way the CLI does, so a dependency can
+    # be a manifest alias ("kokoro" for tts) rather than a service id. An
+    # unresolved name falls through to the permissive branch below and reports
+    # the dependency as met without ever probing it.
     _DEP_ALIASES = {"ollama": "llama-server"}
     if health_cache is None:
         health_cache = {}
     results = {}
     for dep in deps:
-        resolved = _DEP_ALIASES.get(dep, dep)
+        resolved = _DEP_ALIASES.get(dep) or SERVICE_ALIASES.get(dep, dep)
         if resolved in health_cache:
             results[dep] = health_cache[resolved]
         elif resolved in SERVICES:

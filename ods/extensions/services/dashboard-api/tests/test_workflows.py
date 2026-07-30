@@ -289,6 +289,86 @@ def test_check_workflow_dependencies_uses_cache(test_client, monkeypatch):
     mock_fn.assert_not_called()
 
 
+def test_build_service_aliases_reverses_manifest_aliases():
+    """Manifest alias lists become an alias -> service id lookup."""
+    from config import build_service_aliases
+
+    aliases = build_service_aliases({
+        "tts": {"aliases": ["kokoro"]},
+        "whisper": {"aliases": ["stt", "voice"]},
+        "litellm": {"aliases": []},
+        "qdrant": {},
+    })
+
+    assert aliases == {"kokoro": "tts", "stt": "whisper", "voice": "whisper"}
+
+
+def test_build_service_aliases_never_shadows_a_real_service_id():
+    """A service id always wins over another service claiming it as an alias."""
+    from config import build_service_aliases
+
+    aliases = build_service_aliases({
+        "tts": {"aliases": ["kokoro"]},
+        "kokoro": {"aliases": []},
+    })
+
+    assert "kokoro" not in aliases
+
+
+def test_check_workflow_dependencies_probes_service_behind_manifest_alias(test_client, monkeypatch):
+    """A catalog dependency named by alias is health-checked, not assumed met."""
+    import routers.workflows as wf_mod
+    from models import ServiceStatus
+
+    monkeypatch.setitem(wf_mod.SERVICES, "tts", {"name": "Kokoro TTS", "port": 8880})
+    monkeypatch.setitem(wf_mod.SERVICE_ALIASES, "kokoro", "tts")
+
+    down_status = ServiceStatus(
+        id="tts", name="Kokoro TTS", port=8880, external_port=8880, status="down",
+    )
+    mock_fn = AsyncMock(return_value=down_status)
+    monkeypatch.setattr("helpers.check_service_health", mock_fn)
+
+    import asyncio
+    result = asyncio.run(wf_mod.check_workflow_dependencies(["kokoro"]))
+
+    assert result["kokoro"] is False
+    mock_fn.assert_awaited_once()
+
+
+def test_shipped_catalog_dependencies_all_resolve_to_a_known_service():
+    """Every dependency in the shipped catalog must name a service or alias.
+
+    An unresolved name falls through check_workflow_dependencies' permissive
+    branch and is reported as satisfied without ever being probed, so the
+    workflow installs against a service that is not running.
+    """
+    import yaml
+
+    ods_root = Path(__file__).resolve().parents[4]
+    catalog = json.loads((ods_root / "config" / "n8n" / "catalog.json").read_text(encoding="utf-8"))
+
+    known: set[str] = set()
+    for manifest_path in (ods_root / "extensions" / "services").glob("*/manifest.yaml"):
+        service = (yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}).get("service") or {}
+        if service.get("id"):
+            known.add(str(service["id"]))
+            known.update(str(alias) for alias in (service.get("aliases") or []))
+
+    assert known, "no service manifests found"
+
+    # Legacy catalog names that predate the manifest ids.
+    known.update({"ollama"})
+
+    unresolved = {
+        (workflow["id"], dep)
+        for workflow in catalog["workflows"]
+        for dep in workflow.get("dependencies", [])
+        if dep not in known
+    }
+    assert not unresolved, f"catalog dependencies that name no known service: {sorted(unresolved)}"
+
+
 # ---------------------------------------------------------------------------
 # check_n8n_available() unit tests
 # ---------------------------------------------------------------------------
