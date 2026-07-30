@@ -1,0 +1,60 @@
+[tools]
+actionlint = "1.7.12"
+"npm:bash-language-server" = "5.6.0"
+"pipx:basedpyright" = "1.39.9"
+pre-commit = "4.6.0"
+ruff = "0.15.22"
+shellcheck = "0.11.0"
+shfmt = "3.13.1"
+zizmor = "1.27.0"
+
+# Rust version is owned by rust-toolchain.toml (Mode A). mise = tasks only.
+
+[tasks."rust:doctor"]
+description = "Show Rust ownership and active toolchain"
+dir = "{{config_root}}"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "== rustup =="
+rustup show
+echo
+echo "== binaries =="
+type -a rustup rustc cargo rustfmt clippy-driver rust-analyzer 2>/dev/null || true
+echo
+echo "== versions =="
+rustc --version
+cargo --version
+echo
+echo "== cargo installs =="
+cargo install --list || true
+"""
+
+[tasks."rust:fmt"]
+description = "Format Tauri installer crate"
+dir = "{{config_root}}/installer/src-tauri"
+run = "cargo fmt --all"
+
+[tasks."rust:fmt-check"]
+description = "Check formatting for Tauri installer crate"
+dir = "{{config_root}}/installer/src-tauri"
+run = "cargo fmt --all -- --check"
+
+[tasks."rust:lint"]
+description = "Clippy Tauri installer crate"
+dir = "{{config_root}}/installer/src-tauri"
+run = "cargo clippy --all-targets --all-features -- -D warnings"
+
+[tasks."rust:check"]
+description = "cargo check Tauri installer crate"
+dir = "{{config_root}}/installer/src-tauri"
+run = "cargo check --all-targets --all-features --locked"
+
+[tasks."rust:test"]
+description = "cargo test Tauri installer crate"
+dir = "{{config_root}}/installer/src-tauri"
+run = "cargo test --all-features --locked"
+
+[tasks."rust:ci"]
+description = "fmt-check + lint + test for Tauri installer"
+depends = ["rust:fmt-check", "rust:lint", "rust:test"]
