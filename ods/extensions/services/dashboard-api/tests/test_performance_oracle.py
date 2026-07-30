@@ -16,7 +16,7 @@ from performance_oracle import (
 )
 
 
-def _gpu(name="NVIDIA GeForce RTX 4060", total_mb=8192, backend="nvidia"):
+def _gpu(name="NVIDIA GeForce RTX 4060", total_mb=8192, backend="nvidia", memory_type="discrete"):
     return GPUInfo(
         name=name,
         memory_used_mb=1024,
@@ -24,6 +24,7 @@ def _gpu(name="NVIDIA GeForce RTX 4060", total_mb=8192, backend="nvidia"):
         memory_percent=12.5,
         utilization_percent=0,
         temperature_c=40,
+        memory_type=memory_type,
         gpu_backend=backend,
     )
 
@@ -1220,6 +1221,56 @@ def test_pre_download_ranker_prefers_capable_8gb_model_over_bootstrap(data_dir):
     ranked = rank_pre_download_models(catalog, _gpu(total_mb=8188), profile="qwen", limit=2)
 
     assert ranked[0]["id"] == "qwen3.5-9b-q4"
+
+
+def _unified_memory_catalog():
+    return [
+        {
+            "id": "qwen3.5-32b-q4",
+            "name": "Qwen 3.5 32B",
+            "gguf_file": "Qwen3.5-32B-Q4_K_M.gguf",
+            "size_mb": 20000,
+            "vram_required_gb": 24,
+            "context_length": 32768,
+            "quantization": "Q4_K_M",
+            "specialty": "General",
+            "description": "Large model",
+            "llm_model_name": "qwen3.5-32b",
+        },
+        {
+            "id": "qwen3.5-12b-q4",
+            "name": "Qwen 3.5 12B",
+            "gguf_file": "Qwen3.5-12B-Q4_K_M.gguf",
+            "size_mb": 8000,
+            "vram_required_gb": 12,
+            "context_length": 32768,
+            "quantization": "Q4_K_M",
+            "specialty": "General",
+            "description": "Mid model",
+            "llm_model_name": "qwen3.5-12b",
+        },
+    ]
+
+
+def test_pre_download_ranker_bounds_unreported_unified_memory_apu(data_dir):
+    # gpu.py flags an AMD APU as unified whenever its GTT pool dwarfs the VRAM
+    # carve-out, and the reported name is whatever sysfs product_name says --
+    # not necessarily "Strix Halo". The whole 32GB pool is shared with the OS,
+    # so only a bounded share may back the weights, exactly as the installer's
+    # own selector does for unified hosts.
+    apu = _gpu(name="AMD Radeon 780M Graphics", total_mb=32768, backend="amd", memory_type="unified")
+
+    ranked = rank_pre_download_models(_unified_memory_catalog(), apu, profile="qwen", limit=2)
+
+    assert ranked[0]["id"] == "qwen3.5-12b-q4"
+
+
+def test_pre_download_ranker_uses_full_pool_for_discrete_memory(data_dir):
+    discrete = _gpu(name="AMD Radeon RX 7900 XTX", total_mb=32768, backend="amd")
+
+    ranked = rank_pre_download_models(_unified_memory_catalog(), discrete, profile="qwen", limit=2)
+
+    assert ranked[0]["id"] == "qwen3.5-32b-q4"
 
 
 def test_pre_download_ranker_accounts_for_long_context_kv_on_4gb_gpu(data_dir, tmp_path):

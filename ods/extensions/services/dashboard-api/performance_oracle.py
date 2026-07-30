@@ -666,18 +666,30 @@ def _selector_required_memory_gb(model: dict[str, Any]) -> float:
     return required_model_memory_gb(model)
 
 
+def _has_unified_memory(gpu_info: Optional[GPUInfo]) -> bool:
+    """Return whether the detected GPU shares its memory pool with the host.
+
+    The reported `memory_type` is the authoritative signal: `gpu.py` sets it to
+    "unified" for Apple Silicon and for any AMD APU whose GTT pool dwarfs its
+    carve-out VRAM, whatever the sysfs product name happens to be. Backend and
+    name are kept as fallbacks for surrogate GPUInfo records built from runtime
+    contracts that predate the field.
+    """
+    if not gpu_info:
+        return False
+    return (
+        normalize_key(gpu_info.gpu_backend) == "apple"
+        or normalize_key(getattr(gpu_info, "memory_type", "")) == "unified"
+        or "strix-halo" in normalize_key(gpu_info.name)
+    )
+
+
 def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo],
                               system_ram_gb: int | None = None) -> dict[str, Any] | None:
     if not gpu_info:
         return None
     backend = normalize_key(gpu_info.gpu_backend)
-    memory_type = (
-        "unified"
-        if backend == "apple"
-        or normalize_key(getattr(gpu_info, "memory_type", "")) == "unified"
-        or "strix-halo" in normalize_key(gpu_info.name)
-        else "discrete"
-    )
+    memory_type = "unified" if _has_unified_memory(gpu_info) else "discrete"
     host_arch = _normalize_host_arch(platform.machine())
     vram_gb = float(gpu_info.memory_total_mb or 0) / 1024.0
     ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
@@ -800,8 +812,10 @@ def _usable_model_memory_gb(gpu_info: Optional[GPUInfo]) -> float:
     if not gpu_info:
         return 0.0
     total_gb = gpu_info.memory_total_mb / 1024
-    backend = normalize_key(gpu_info.gpu_backend)
-    if backend == "apple" or "strix-halo" in normalize_key(gpu_info.name):
+    if _has_unified_memory(gpu_info):
+        # Unified memory is shared with the OS, Docker services and the KV
+        # cache, so only a bounded share is available to the weights. Matches
+        # the installer's own selector (scripts/select-model.py).
         return max(total_gb * 0.55, 2.0)
     return total_gb
 
