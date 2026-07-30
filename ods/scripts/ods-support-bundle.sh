@@ -126,8 +126,10 @@ redact_file() {
     [[ -f "$file" ]] || return 0
 
     "$PYTHON_CMD" - "$file" <<'PY'
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 path = Path(sys.argv[1])
@@ -155,7 +157,16 @@ patterns = [
 for pattern, replacement in patterns:
     text = pattern.sub(replacement, text)
 
-path.write_text(text, encoding="utf-8")
+tmp_path = path.with_name(f".{path.name}.tmp")
+try:
+    tmp_path.write_text(text, encoding="utf-8")
+    os.replace(tmp_path, path)
+except BaseException:
+    try:
+        tmp_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    raise
 PY
 }
 
