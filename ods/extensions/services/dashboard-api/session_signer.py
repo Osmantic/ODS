@@ -147,6 +147,11 @@ def verify(cookie_value: str) -> Tuple[bool, str]:
     if not random_id or not expiry_str or not claimed_sig:
         return False, "malformed"
 
+    try:
+        expiry = int(expiry_str)
+    except (ValueError, TypeError):
+        return False, "malformed"
+
     payload = f"{random_id}.{expiry_str}"
     expected_sig = _sign(payload)
     # Constant-time compare to defeat signature timing oracles. Encoded to
@@ -155,12 +160,6 @@ def verify(cookie_value: str) -> Tuple[bool, str]:
     # verify() must return a reason, never raise.
     if not hmac.compare_digest(expected_sig.encode("utf-8"), claimed_sig.encode("utf-8")):
         return False, "bad-signature"
-
-    # Signature is good — check expiry.
-    try:
-        expiry = int(expiry_str)
-    except (ValueError, TypeError):
-        return False, "malformed"
 
     # `<=` because the expiry timestamp is the moment of invalidation, not
     # the last valid second. A cookie issued with ttl=60 stops being valid
