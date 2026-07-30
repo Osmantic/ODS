@@ -2,7 +2,17 @@
 set -euo pipefail
 
 TOOL_VERSION="1"
-REDACTION_VERSION="1"
+REDACTION_VERSION="2"
+
+# Key-name substrings that mark a value as secret, shared by BOTH redactors in
+# this script: redact_file (every collected file) and write_redacted_env (.env).
+# They must not drift — validation/compose-config.txt is `docker compose
+# config` output, which renders every environment value, so anything the file
+# redactor misses ships in cleartext inside the archive users attach to public
+# issues. USER|EMAIL|BEARER are here because .env.schema.json marks N8N_USER,
+# LANGFUSE_INIT_USER_EMAIL and LANGFUSE_MINIO_ROOT_USER secret:true; this
+# mirrors that set and the CLI's config-show masking.
+ODS_SUPPORT_SECRET_WORDS="KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL|USER|EMAIL|BEARER"
 DEFAULT_LOG_TAIL=200
 MAX_LOG_CONTAINERS=25
 
@@ -125,7 +135,7 @@ redact_file() {
     local file="$1"
     [[ -f "$file" ]] || return 0
 
-    "$PYTHON_CMD" - "$file" <<'PY'
+    "$PYTHON_CMD" - "$file" "$ODS_SUPPORT_SECRET_WORDS" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -136,7 +146,7 @@ try:
 except OSError:
     raise SystemExit(0)
 
-secret_word = r"(?:KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)"
+secret_word = f"(?:{sys.argv[2]})"
 
 patterns = [
     (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1[REDACTED]"),
@@ -208,18 +218,14 @@ write_redacted_env() {
         return 0
     fi
 
-    "$PYTHON_CMD" - "$env_path" "$out_path" <<'PY'
+    "$PYTHON_CMD" - "$env_path" "$out_path" "$ODS_SUPPORT_SECRET_WORDS" <<'PY'
 import re
 import sys
 from pathlib import Path
 
 src = Path(sys.argv[1])
 dest = Path(sys.argv[2])
-# USER|EMAIL|BEARER cover schema secret:true keys the old pattern missed —
-# N8N_USER, LANGFUSE_INIT_USER_EMAIL, LANGFUSE_MINIO_ROOT_USER — which are
-# published in cleartext when this env.redacted is shared on a public issue.
-# Match .env.schema.json's secret set / the CLI's config-show masking.
-secret = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL|USER|EMAIL|BEARER)", re.I)
+secret = re.compile(f"({sys.argv[3]})", re.I)
 
 lines = []
 for line in src.read_text(encoding="utf-8", errors="replace").splitlines():
