@@ -6644,3 +6644,30 @@ class TestObservabilityWire:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+
+class TestHostAgentPidFile:
+
+    def test_main_writes_pid_file_atomically(self, monkeypatch, tmp_path):
+        pid_file = tmp_path / "ods-host-agent.pid"
+        pid_file.write_text("12345_stale\n", encoding="utf-8")
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "core-service-ids.json").write_text("[]", encoding="utf-8")
+
+        monkeypatch.setattr(_mod.sys, "argv", ["ods-host-agent.py", "--pid-file", str(pid_file)])
+        monkeypatch.setattr(_mod.shutil, "which", lambda name: "/usr/bin/docker")
+        monkeypatch.setattr(_mod, "load_env", lambda *a, **k: {"ODS_AGENT_KEY": "test-key"})
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+
+        def stop_early(*args, **kwargs):
+            raise RuntimeError("stop_before_server_loop")
+
+        monkeypatch.setattr(_mod, "_create_host_agent_server", stop_early)
+
+        with pytest.raises(RuntimeError, match="stop_before_server_loop"):
+            _mod.main()
+
+        assert pid_file.exists()
+        assert pid_file.read_text(encoding="utf-8") == f"{os.getpid()}\n"

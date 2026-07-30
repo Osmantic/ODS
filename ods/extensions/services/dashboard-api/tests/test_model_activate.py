@@ -1802,7 +1802,7 @@ class TestLaunchNativeLlamaServer:
 
         _launch_native_llama_server(env_path, llama_bin, llama_log, pid_file)
 
-        assert pid_file.read_text(encoding="utf-8") == "4321"
+        assert pid_file.read_text(encoding="utf-8") == "4321\n"
         cmd, _kwargs = calls[0]
         assert cmd[0] == str(llama_bin)
         assert "--model" in cmd
@@ -1813,6 +1813,27 @@ class TestLaunchNativeLlamaServer:
         assert "--reasoning-format" in cmd
         assert "deepseek" in cmd
         assert _kwargs["cwd"] == str(tmp_path)
+
+    def test_writes_pid_atomically_without_in_place_truncation(self, monkeypatch, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("GGUF_FILE=test-model.gguf\n", encoding="utf-8")
+        (tmp_path / "data" / "models").mkdir(parents=True)
+        llama_bin = tmp_path / "bin" / "llama-server"
+        llama_bin.parent.mkdir(parents=True)
+        llama_bin.write_text("", encoding="utf-8")
+        llama_log = tmp_path / "data" / "llama-server.log"
+        pid_file = tmp_path / "data" / ".llama-server.pid"
+        pid_file.write_text("99999_stale_pid_content_to_overwrite\n", encoding="utf-8")
+
+        class _FakeProc:
+            pid = 8888
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: _FakeProc())
+
+        _launch_native_llama_server(env_path, llama_bin, llama_log, pid_file)
+
+        assert pid_file.read_text(encoding="utf-8") == "8888\n"
 
     def test_llm_bridge_is_disabled_before_native_bind(self, monkeypatch, tmp_path):
         env = {
