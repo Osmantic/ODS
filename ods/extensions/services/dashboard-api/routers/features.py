@@ -31,7 +31,9 @@ def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[G
             pass
         gpu_vram_free_gb = gpu_vram_gb  # assumes zero current usage; Docker can't measure host memory pressure
 
-    req = feature["requirements"]
+    req = feature.get("requirements")
+    if not isinstance(req, dict):
+        req = {}
     vram_ok = gpu_vram_gb >= req.get("vram_gb", 0)
     vram_fits = gpu_vram_free_gb >= req.get("vram_gb", 0)
 
