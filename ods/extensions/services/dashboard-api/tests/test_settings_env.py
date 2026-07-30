@@ -1320,3 +1320,29 @@ def test_env_example_keys_are_present_in_schema():
     schema_keys = set(schema.get("properties", {}))
 
     assert documented_keys - schema_keys == set()
+
+
+def test_settings_apply_plan_routes_searxng_keys_to_searxng():
+    from settings import _compute_env_apply_plan
+
+    # SEARXNG_PORT and SEARXNG_SECRET are only read by the searxng container
+    # (extensions/services/searxng/compose.yaml). Recreating open-webui would
+    # take chat down without ever applying the new value.
+    plan = _compute_env_apply_plan(
+        {"SEARXNG_PORT": "8888", "SEARXNG_SECRET": "old"},
+        {"SEARXNG_PORT": "8899", "SEARXNG_SECRET": "new"},
+    )
+
+    assert plan["services"] == ["searxng"]
+    assert plan["manualKeys"] == []
+
+
+def test_settings_apply_plan_keeps_searxng_url_on_hermes():
+    from settings import _compute_env_apply_plan
+
+    plan = _compute_env_apply_plan(
+        {"SEARXNG_URL": "http://searxng:8080"},
+        {"SEARXNG_URL": "http://search:8080"},
+    )
+
+    assert plan["services"] == ["hermes"]
