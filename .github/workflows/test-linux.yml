@@ -231,6 +231,9 @@ jobs:
       - name: Update Rollback Contract
         run: bash tests/test-update-rollback-contract.sh
 
+      - name: Backup Data Coverage Contract
+        run: bash tests/test-backup-data-coverage.sh
+
       - name: Bootstrap Upgrade Compose Flags Recovery Tests
         run: bash tests/test-bootstrap-upgrade-compose-flags-recovery.sh
 

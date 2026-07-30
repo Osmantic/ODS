@@ -29,7 +29,7 @@ mkdir -p "$FAKE_ODS/config"
 
 # ods-backup.sh sources lib/rsync.sh relative to ODS_DIR
 mkdir -p "$FAKE_ODS/lib"
-cp "$SCRIPT_DIR/../lib/rsync.sh" "$FAKE_ODS/lib/"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$SCRIPT_DIR/../lib/backup-paths.sh" "$FAKE_ODS/lib/"
 
 # Required by create_manifest()
 echo "test" > "$FAKE_ODS/.version"

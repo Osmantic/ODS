@@ -70,7 +70,7 @@ fi
 
 SRC="$TMP/ods"
 mkdir -p "$SRC/lib" "$SRC/config" "$SRC/data/open-webui" "$SRC/data/hermes"
-cp "$ROOT_DIR/lib/rsync.sh" "$SRC/lib/rsync.sh"
+cp "$ROOT_DIR/lib/rsync.sh" "$ROOT_DIR/lib/backup-paths.sh" "$SRC/lib/"
 
 cat > "$SRC/.version" <<'EOF'
 1.0.0
@@ -164,7 +164,7 @@ pass "update rollback evidence written to artifacts/update-rollback/evidence.jso
 # Rollback restores a snapshot with GPU_BACKEND=cpu.
 ROLLBACK_SRC="$TMP/ods-rollback-test"
 mkdir -p "$ROLLBACK_SRC/lib" "$ROLLBACK_SRC/config" "$ROLLBACK_SRC/data/backups" "$ROLLBACK_SRC/bin"
-cp "$ROOT_DIR/lib/rsync.sh" "$ROLLBACK_SRC/lib/rsync.sh"
+cp "$ROOT_DIR/lib/rsync.sh" "$ROOT_DIR/lib/backup-paths.sh" "$ROLLBACK_SRC/lib/"
 cp "$ROOT_DIR/lib/safe-env.sh" "$ROLLBACK_SRC/lib/safe-env.sh"
 cp "$ROOT_DIR/ods-update.sh" "$ROLLBACK_SRC/ods-update.sh"
 chmod +x "$ROLLBACK_SRC/ods-update.sh"

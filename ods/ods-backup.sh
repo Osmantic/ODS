@@ -30,6 +30,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
 # Source shared rsync utilities
 . "$ODS_DIR/lib/rsync.sh"
+. "$ODS_DIR/lib/backup-paths.sh"
 
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {
@@ -58,15 +59,7 @@ estimate_backup_bytes() {
 
     # user data volumes
     if [[ "$backup_type" == "full" || "$backup_type" == "user-data" ]]; then
-        local -a user_data_paths=(
-            "data/open-webui"
-            "data/n8n"
-            "data/qdrant"
-            "data/openclaw"
-            "data/litellm"
-            "data/livekit"
-            "data/ollama"
-        )
+        local -a user_data_paths=("${ODS_USER_DATA_PATHS[@]}")
 
         for p in "${user_data_paths[@]}"; do
             if [[ -d "$ODS_DIR/$p" ]]; then
@@ -326,15 +319,7 @@ backup_user_data() {
     local backup_dir="$1"
     log_info "Backing up user data volumes..."
 
-    local user_data_paths=(
-        "data/open-webui"
-        "data/n8n"
-        "data/qdrant"
-        "data/openclaw"
-        "data/litellm"
-        "data/livekit"
-        "data/ollama"
-    )
+    local user_data_paths=("${ODS_USER_DATA_PATHS[@]}")
 
     for path in "${user_data_paths[@]}"; do
         local full_path="$ODS_DIR/$path"

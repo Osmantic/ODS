@@ -27,6 +27,7 @@ log_step() { echo -e "${CYAN}[STEP]${NC} $*"; }
 
 # Source shared rsync utilities
 . "$ODS_DIR/lib/rsync.sh"
+. "$ODS_DIR/lib/backup-paths.sh"
 
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {
@@ -311,15 +312,7 @@ validate_backup() {
 
     # Warn if backup looks partial / missing common paths.
     # (Informational only; older/minimal backups are still valid.)
-    local -a expected_data=(
-        "data/open-webui"
-        "data/n8n"
-        "data/qdrant"
-        "data/openclaw"
-        "data/litellm"
-        "data/livekit"
-        "data/ollama"
-    )
+    local -a expected_data=("${ODS_USER_DATA_PATHS[@]}")
 
     local missing_any=false
     for p in "${expected_data[@]}"; do
@@ -350,7 +343,7 @@ dry_run_preview() {
     if [[ "$restore_data" == "true" ]]; then
         echo "User Data to Restore:"
         echo "───────────────────────────────────────────────────────────────────"
-        local data_dirs=("data/open-webui" "data/n8n" "data/qdrant" "data/openclaw" "data/litellm" "data/livekit" "data/ollama")
+        local data_dirs=("${ODS_USER_DATA_PATHS[@]}")
         for dir in "${data_dirs[@]}"; do
             if [[ -d "$backup_dir/$dir" ]]; then
                 local size
@@ -401,7 +394,7 @@ restore_user_data() {
     local backup_dir="$1"
     log_step "Restoring user data..."
 
-    local data_dirs=("data/open-webui" "data/n8n" "data/qdrant" "data/openclaw" "data/litellm" "data/livekit" "data/ollama")
+    local data_dirs=("${ODS_USER_DATA_PATHS[@]}")
 
     local restored_any=false
     for dir in "${data_dirs[@]}"; do

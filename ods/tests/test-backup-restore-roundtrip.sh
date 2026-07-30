@@ -35,7 +35,7 @@ echo "user-data-file" > "$SRC/data/open-webui/data.txt"
 
 # Both scripts source lib/rsync.sh relative to ODS_DIR
 mkdir -p "$SRC/lib"
-cp "$SCRIPT_DIR/../lib/rsync.sh" "$SRC/lib/"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$SCRIPT_DIR/../lib/backup-paths.sh" "$SRC/lib/"
 
 info "Creating backup from source"
 ODS_DIR="$SRC" bash "$ODS_BACKUP" --type full >/dev/null 2>&1 || fail "Backup failed"
@@ -50,7 +50,7 @@ DST="$TMP/dst"
 mkdir -p "$DST/data"
 mkdir -p "$DST/.backups"
 mkdir -p "$DST/lib"
-cp "$SCRIPT_DIR/../lib/rsync.sh" "$DST/lib/"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$SCRIPT_DIR/../lib/backup-paths.sh" "$DST/lib/"
 
 info "Restoring backup to destination"
 # Copy backup to destination's backup root
@@ -96,7 +96,7 @@ pass "Compressed backup created: $CBACKUP_ID.tar.gz"
 
 DST2="$TMP/dst2"
 mkdir -p "$DST2/data" "$DST2/.backups" "$DST2/lib"
-cp "$SCRIPT_DIR/../lib/rsync.sh" "$DST2/lib/"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$SCRIPT_DIR/../lib/backup-paths.sh" "$DST2/lib/"
 echo "compose-content" > "$DST2/docker-compose.yml"
 cp "$TARBALL" "$DST2/.backups/"
 
