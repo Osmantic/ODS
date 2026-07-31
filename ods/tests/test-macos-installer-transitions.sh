@@ -241,6 +241,42 @@ source "$ENV_GENERATOR"
 )
 pass "macOS switchboard env persists gateway consumers without hiding backend URL"
 
+# Re-running the installer over an existing .env must classify exposure from
+# BIND_ADDRESS the same way a fresh install does. BIND_ADDRESS only entered the
+# macOS .env template in #2237, so upgrades from earlier installs have no key at
+# all -- an absent value is loopback, not exposure, and must not force auth on.
+rerun_webui_auth() {
+    # $1: .env body for the pre-existing install. Echoes the resulting
+    # WEBUI_AUTH value ("" when the key was never written).
+    local env_body="$1"
+    local rerun_dir="$TMP_DIR/rerun-$2"
+    mkdir -p "$rerun_dir/config/searxng"
+    printf '%s\n' "$env_body" > "$rerun_dir/.env"
+    (
+        calculate_llama_cpu_budget() { printf '4 1 8\n'; }
+        detect_device_name() { printf 'ci-mac\n'; }
+        detect_host_lan_ip() { printf '192.168.1.50\n'; }
+        generate_ods_env "$rerun_dir" CI false >/dev/null
+    )
+    grep -E '^WEBUI_AUTH=' "$rerun_dir/.env" | tail -1 | cut -d= -f2-
+}
+
+[[ "$(rerun_webui_auth 'WEBUI_AUTH=false' pre2237)" == "false" ]] \
+    || fail "upgrade from a pre-BIND_ADDRESS install forced Open WebUI auth on"
+[[ "$(rerun_webui_auth $'BIND_ADDRESS=127.0.0.1\nWEBUI_AUTH=false' loopback)" == "false" ]] \
+    || fail "loopback rerun overwrote the operator's Open WebUI auth choice"
+[[ "$(rerun_webui_auth 'BIND_ADDRESS=127.0.0.1' loopback-nokey)" == "false" ]] \
+    || fail "loopback rerun did not default Open WebUI auth off"
+[[ "$(rerun_webui_auth $'BIND_ADDRESS=0.0.0.0\nWEBUI_AUTH=false' exposed)" == "true" ]] \
+    || fail "network-exposed rerun did not force Open WebUI auth on"
+[[ "$(rerun_webui_auth $'BIND_ADDRESS=127.0.0.1\nENABLE_ODS_PROXY=true' proxy)" == "true" ]] \
+    || fail "proxy-enabled rerun did not force Open WebUI auth on"
+# An absent key must still fail closed when the operator exports BIND_ADDRESS to
+# expose this rerun, matching Linux Phase 06's .env -> env -> loopback fallback.
+[[ "$(BIND_ADDRESS=0.0.0.0 rerun_webui_auth 'WEBUI_AUTH=false' exported)" == "true" ]] \
+    || fail "exported BIND_ADDRESS exposure did not force Open WebUI auth on"
+pass "macOS reruns classify Open WebUI auth from BIND_ADDRESS, absent or not"
+
 openclaw_dir="$TMP_DIR/openclaw-install"
 mkdir -p "$openclaw_dir/data/openclaw/home"
 printf '{"custom":{"preserve":true}}\n' > "$openclaw_dir/data/openclaw/home/openclaw.json"

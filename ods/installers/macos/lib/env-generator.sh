@@ -313,6 +313,9 @@ generate_ods_env() {
         # via _env_get unconditionally.
         local _existing_bind
         _existing_bind=$(read_env_value "$env_path" "BIND_ADDRESS")
+        # read_env_value returns "" for a key that predates #2237; empty is not
+        # exposure. Fall back like Linux Phase 06: .env, then env, then loopback.
+        _existing_bind="${_existing_bind:-${BIND_ADDRESS:-127.0.0.1}}"
         if [[ "$_existing_bind" == "0.0.0.0" ]] && [[ -z "$(read_env_value "$env_path" "HOST_LAN_IP")" ]]; then
             local _host_lan_ip
             _host_lan_ip=$(detect_host_lan_ip)
