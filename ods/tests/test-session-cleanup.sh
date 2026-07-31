@@ -185,18 +185,102 @@ else
 fi
 
 # ============================================================================
-# Test 8c: No usable Python → refuse to delete ANYTHING (ordering guard)
+# Test 8c: Interruption cannot leave sessions.json pointing at a deleted file
+# ============================================================================
+SDIR3="$TEMP_DIR/sessions3"
+mkdir -p "$SDIR3"
+cat > "$SDIR3/sessions.json" <<'EOF'
+{"agent:main:talk": {"sessionId": "interrupt-me"}}
+EOF
+dd if=/dev/zero of="$SDIR3/interrupt-me.jsonl" bs=1024 count=2 2>/dev/null
+
+CRASH_BIN="$TEMP_DIR/crash-bin"
+mkdir -p "$CRASH_BIN"
+REAL_RM="$(command -v rm)"
+cat > "$CRASH_BIN/rm" <<EOF
+#!/bin/bash
+"$REAL_RM" "\$@"
+kill -KILL "\$PPID"
+EOF
+chmod +x "$CRASH_BIN/rm"
+
+crash_exit=0
+PATH="$CRASH_BIN:$PATH" SESSIONS_DIR="$SDIR3" MAX_SIZE=100 \
+    bash "$SESSION_CLEANUP_SCRIPT" >"$TEMP_DIR/crash.log" 2>&1 || crash_exit=$?
+if [[ $crash_exit -ne 0 ]]; then
+    pass "Injected interruption terminated cleanup"
+else
+    fail "Injected interruption did not terminate cleanup"
+fi
+
+if [[ -f "$SDIR3/interrupt-me.jsonl" ]] || ! grep -q 'interrupt-me' "$SDIR3/sessions.json"; then
+    pass "Interruption preserves the file-or-no-reference invariant"
+else
+    fail "sessions.json references a session file deleted before interruption"
+fi
+
+# ============================================================================
+# Test 8d: Malformed sessions.json fails closed before deleting files
+# ============================================================================
+SDIR4="$TEMP_DIR/sessions4"
+mkdir -p "$SDIR4"
+printf '{"agent":' > "$SDIR4/sessions.json"
+echo '{"x":1}' > "$SDIR4/preserve-me.jsonl"
+
+invalid_exit=0
+SESSIONS_DIR="$SDIR4" MAX_SIZE=1 \
+    bash "$SESSION_CLEANUP_SCRIPT" >"$TEMP_DIR/invalid.log" 2>&1 || invalid_exit=$?
+if [[ $invalid_exit -ne 0 ]] && [[ -f "$SDIR4/preserve-me.jsonl" ]]; then
+    pass "Malformed sessions.json fails closed without deleting session files"
+else
+    fail "Malformed sessions.json was treated as an empty active-session index"
+fi
+
+# ============================================================================
+# Test 8e: Index commit failure leaves the file and old reference intact
+# ============================================================================
+SDIR5="$TEMP_DIR/sessions5"
+mkdir -p "$SDIR5"
+cat > "$SDIR5/sessions.json" <<'EOF'
+{"agent:main:talk": {"sessionId": "commit-fails"}}
+EOF
+dd if=/dev/zero of="$SDIR5/commit-fails.jsonl" bs=1024 count=2 2>/dev/null
+
+REAL_PYTHON="$(command -v python3 || command -v python)"
+FAIL_PYTHON="$TEMP_DIR/fail-python"
+cat > "$FAIL_PYTHON" <<EOF
+#!/bin/bash
+if [[ "\${1:-}" == "-" && \$# -ge 3 ]]; then
+    exit 71
+fi
+exec "$REAL_PYTHON" "\$@"
+EOF
+chmod +x "$FAIL_PYTHON"
+
+commit_exit=0
+ODS_PYTHON_CMD="$FAIL_PYTHON" SESSIONS_DIR="$SDIR5" MAX_SIZE=100 \
+    bash "$SESSION_CLEANUP_SCRIPT" >"$TEMP_DIR/commit-failure.log" 2>&1 || commit_exit=$?
+if [[ $commit_exit -ne 0 ]] \
+    && [[ -f "$SDIR5/commit-fails.jsonl" ]] \
+    && grep -q 'commit-fails' "$SDIR5/sessions.json"; then
+    pass "Index commit failure leaves the session file and reference intact"
+else
+    fail "Index commit failure partially mutated the session transaction"
+fi
+
+# ============================================================================
+# Test 8f: No usable Python → refuse to delete ANYTHING (ordering guard)
 # ============================================================================
 # A mid-loop Python failure used to kill the script (set -e) after a bloated
 # session file was deleted but before sessions.json was updated, leaving the
 # gateway pointing at a missing file. The guard must fail BEFORE any rm.
-SDIR3="$TEMP_DIR/sessions3"
-mkdir -p "$SDIR3"
-cat > "$SDIR3/sessions.json" <<'EOF'
+SDIR6="$TEMP_DIR/sessions6"
+mkdir -p "$SDIR6"
+cat > "$SDIR6/sessions.json" <<'EOF'
 {"agent:main:talk": {"sessionId": "bloated-one"}}
 EOF
-dd if=/dev/zero of="$SDIR3/bloated-one.jsonl" bs=1024 count=2 2>/dev/null
-echo '{"x":1}' > "$SDIR3/inactive.jsonl"
+dd if=/dev/zero of="$SDIR6/bloated-one.jsonl" bs=1024 count=2 2>/dev/null
+echo '{"x":1}' > "$SDIR6/inactive.jsonl"
 
 NOPY_BIN="$TEMP_DIR/nopy-bin"
 mkdir -p "$NOPY_BIN"
@@ -206,11 +290,11 @@ for tool in bash sh grep sed find date basename dirname cut wc du stat rm cp mv 
 done
 
 nopy_exit=0
-PATH="$NOPY_BIN" ODS_PYTHON_CMD="" SESSIONS_DIR="$SDIR3" MAX_SIZE=100 \
+PATH="$NOPY_BIN" ODS_PYTHON_CMD="" SESSIONS_DIR="$SDIR6" MAX_SIZE=100 \
     bash "$SESSION_CLEANUP_SCRIPT" >"$TEMP_DIR/nopy.log" 2>&1 || nopy_exit=$?
 if [[ $nopy_exit -ne 0 ]]; then
     pass "Missing Python fails loudly instead of half-completing"
-    if [[ -f "$SDIR3/bloated-one.jsonl" && -f "$SDIR3/inactive.jsonl" ]] && grep -q 'bloated-one' "$SDIR3/sessions.json"; then
+    if [[ -f "$SDIR6/bloated-one.jsonl" && -f "$SDIR6/inactive.jsonl" ]] && grep -q 'bloated-one' "$SDIR6/sessions.json"; then
         pass "No files deleted and sessions.json untouched when Python is missing"
     else
         fail "Sessions were mutated despite missing Python (exit $nopy_exit)"
