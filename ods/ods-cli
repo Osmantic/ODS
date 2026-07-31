@@ -3370,14 +3370,22 @@ META
 
                 # Parse both env files
                 declare -A env1 env2
-                while IFS='=' read -r key value; do
-                    [[ "$key" =~ ^[[:space:]]*# ]] && continue
+                while IFS= read -r line; do
+                    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+                    key="${line%%=*}"
+                    value="${line#*=}"
                     [[ -z "$key" ]] && continue
+                    value="${value%$'\r'}"
+                    value="${value#\"}"; value="${value%\"}"
                     env1["$key"]="$value"
                 done < "$dir1/env"
-                while IFS='=' read -r key value; do
-                    [[ "$key" =~ ^[[:space:]]*# ]] && continue
+                while IFS= read -r line; do
+                    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+                    key="${line%%=*}"
+                    value="${line#*=}"
                     [[ -z "$key" ]] && continue
+                    value="${value%$'\r'}"
+                    value="${value#\"}"; value="${value%\"}"
                     env2["$key"]="$value"
                 done < "$dir2/env"
 

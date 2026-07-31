@@ -4,6 +4,9 @@ name: Nightly Documentation Update
 # and creates draft PRs for human review.
 # Estimated cost: ~$1-3 per run (claude-sonnet-4-6)
 
+permissions:
+  contents: write
+
 on:
   # schedule:
   #   - cron: '0 4 * * *'  # 4 AM UTC daily — enable after cost validation

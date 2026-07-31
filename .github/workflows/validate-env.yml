@@ -1,5 +1,8 @@
 name: Validate .env Schema
 
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:

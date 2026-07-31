@@ -4,6 +4,9 @@ name: AI Release Notes
 # Analyzes commits since last release and generates structured notes
 # Estimated cost: ~$1.50/release
 
+permissions:
+  contents: read
+
 on:
   release:
     types: [created]

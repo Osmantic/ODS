@@ -4,6 +4,9 @@ name: Autonomous Code Scanner
 # Creates separate draft PRs per scan category. Budget-gated at $100/run.
 # Estimated cost: $5-60 per run depending on findings.
 
+permissions:
+  contents: read
+
 on:
   # schedule:
   #   - cron: '0 2 * * *'  # 2 AM UTC daily — enable after cost validation

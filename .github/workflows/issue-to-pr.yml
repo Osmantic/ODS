@@ -4,6 +4,9 @@ name: Issue to PR
 # and creates draft PRs for human review.
 # Estimated cost: ~$5-15 per issue (claude-sonnet-4-6)
 
+permissions:
+  contents: read
+
 on:
   issues:
     types: [labeled]
@@ -320,6 +323,8 @@ jobs:
     name: Create Pull Request
     needs: [validate, implement, guardrails]
     if: always()
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

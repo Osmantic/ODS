@@ -15,8 +15,10 @@ services:
     environment:
       # User remapping: match the host user so files written into the volume
       # are owned by the user, not container-root. Same pattern as n8n.
-      - HERMES_UID=${UID:-10000}
-      - HERMES_GID=${GID:-10000}
+      # ODS_UID/ODS_GID are resolved into .env at install time; the fallback
+      # only applies if an operator edits .env directly.
+      - HERMES_UID=${ODS_UID:-10000}
+      - HERMES_GID=${ODS_GID:-10000}
       # Point Hermes at the local LLM. provider=custom is the documented
       # alias for any OpenAI-compatible local server (vLLM / llama.cpp / Ollama).
       # The actual provider/model wiring lives in cli-config.yaml (mounted below).

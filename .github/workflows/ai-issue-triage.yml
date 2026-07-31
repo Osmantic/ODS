@@ -4,6 +4,9 @@ name: AI Issue Triage
 # Advisory mode only — adds labels, doesn't close or modify issues
 # Estimated cost: ~$1.50/issue
 
+permissions:
+  contents: read
+
 on:
   issues:
     types: [opened]

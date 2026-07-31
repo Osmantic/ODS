@@ -65,8 +65,24 @@ format_git_clone_error() {
 }
 
 
-remove_install_dir() {
+_is_ods_install_dir() {
     local target_dir="$1"
+    [[ -d "$target_dir" ]] && ( [[ -f "$target_dir/.env" ]] || [[ -f "$target_dir/docker-compose.base.yml" ]] || [[ -d "$target_dir/data" ]] )
+}
+
+remove_install_dir() {
+    local target_dir="${1%/}"
+
+    # Safety guard: never let rm -rf run on an unsafe path
+    if [[ -z "$target_dir" || "$target_dir" == "/" || "$target_dir" == "$HOME" ]]; then
+        echo "ERROR: refusing to remove unsafe path: $target_dir" >&2
+        return 1
+    fi
+
+    if ! _is_ods_install_dir "$target_dir"; then
+        echo "ERROR: refusing to remove $target_dir — not an ODS install directory" >&2
+        return 1
+    fi
 
     if rm -rf -- "$target_dir" 2>/dev/null; then
         return 0

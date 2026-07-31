@@ -985,6 +985,14 @@ WEBUI_AUTH=${WEBUI_AUTH}
 ENABLE_WEB_SEARCH=true
 WEB_SEARCH_ENGINE=searxng
 
+#=== Container User Mapping ===
+# Hermes and n8n containers run as this host user so bind-mounted data
+# dirs are owned by the real user, not a hardcoded fallback uid. Resolved
+# at install time because UID/GID are readonly shell vars never exported
+# into compose's interpolation environment.
+ODS_UID=$(_env_get ODS_UID "$(id -u)")
+ODS_GID=$(_env_get ODS_GID "$(id -g)")
+
 #=== n8n Settings ===
 N8N_HOST=localhost
 N8N_WEBHOOK_URL=http://localhost:5678

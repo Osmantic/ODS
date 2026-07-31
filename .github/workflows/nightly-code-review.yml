@@ -4,6 +4,9 @@ name: Nightly Code Review
 # improvements, then creates a draft PR requiring human approval.
 # Estimated cost: ~$3-8 per run depending on change volume.
 
+permissions:
+  contents: read
+
 on:
   # schedule:
   #   - cron: '0 3 * * *'  # 3 AM UTC daily — enable after cost validation
