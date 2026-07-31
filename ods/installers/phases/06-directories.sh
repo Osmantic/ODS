@@ -703,6 +703,9 @@ raise SystemExit(1)' 2>/dev/null && return 0
     RAG_OPENAI_API_BASE_URL_VALUE=$(_env_get_preserve_empty RAG_OPENAI_API_BASE_URL "${RAG_OPENAI_API_BASE_URL:-}")
     RAG_OPENAI_API_KEY_VALUE=$(_env_get_preserve_empty RAG_OPENAI_API_KEY "${RAG_OPENAI_API_KEY:-}")
     EMBEDDINGS_MEMORY_LIMIT_VALUE=$(_env_get EMBEDDINGS_MEMORY_LIMIT "${EMBEDDINGS_MEMORY_LIMIT:-4G}")
+    N_GPU_LAYERS_VALUE=$(_env_get N_GPU_LAYERS "${N_GPU_LAYERS:-auto}")
+    N_GPU_LAYERS_VALUE="$(printf '%s' "$N_GPU_LAYERS_VALUE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    N_GPU_LAYERS_VALUE="${N_GPU_LAYERS_VALUE:-auto}"
 
     _phase06_lemonade_uses_host_9000() {
         [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]] && return 0
@@ -816,7 +819,7 @@ MODEL_PERFORMANCE_SOURCE=benchmark_required
 MODEL_PERFORMANCE_LABEL=Benchmark after first launch
 GPU_BACKEND=${GPU_BACKEND}
 SYSTEM_RAM_GB=${RAM_GB:-0}
-N_GPU_LAYERS=${N_GPU_LAYERS:-99}
+N_GPU_LAYERS=${N_GPU_LAYERS_VALUE}
 $(if [[ -n "${LLAMA_SERVER_IMAGE:-}" ]]; then echo "LLAMA_SERVER_IMAGE=${LLAMA_SERVER_IMAGE}"; fi)
 $(if [[ -n "${LLAMA_SERVER_IMAGE_FALLBACK:-}" ]]; then echo "LLAMA_SERVER_IMAGE_FALLBACK=${LLAMA_SERVER_IMAGE_FALLBACK}"; fi)
 #=== llama.cpp Runtime Tuning ===

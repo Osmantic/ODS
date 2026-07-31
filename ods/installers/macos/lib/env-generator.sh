@@ -172,6 +172,13 @@ normalize_ods_model_switchboard() {
     esac
 }
 
+normalize_n_gpu_layers() {
+    local value="${1:-}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s\n' "${value:-auto}"
+}
+
 generate_ods_env() {
     local install_dir="$1"
     local tier="$2"
@@ -301,6 +308,12 @@ generate_ods_env() {
         if [[ -z "$(read_env_value "$env_path" "EMBEDDINGS_MEMORY_LIMIT")" ]]; then
             upsert_env_value "$env_path" "EMBEDDINGS_MEMORY_LIMIT" "${EMBEDDINGS_MEMORY_LIMIT:-4G}"
         fi
+        local _n_gpu_layers
+        _n_gpu_layers="$(normalize_n_gpu_layers "$(read_env_value "$env_path" "N_GPU_LAYERS")")"
+        if ! env_key_exists "$env_path" "N_GPU_LAYERS"; then
+            _n_gpu_layers="$(normalize_n_gpu_layers "${N_GPU_LAYERS:-auto}")"
+        fi
+        upsert_env_value "$env_path" "N_GPU_LAYERS" "$_n_gpu_layers"
 
         # HOST_LAN_IP backfill: the fresh-install heredoc below populates
         # HOST_LAN_IP when BIND_ADDRESS=0.0.0.0 was pre-set, so openclaw can
@@ -441,6 +454,8 @@ generate_ods_env() {
     tz=$(detect_timezone)
     local timestamp
     timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local n_gpu_layers
+    n_gpu_layers="$(normalize_n_gpu_layers "${N_GPU_LAYERS:-auto}")"
     local hermes_llm_base_url="${llm_api_url}/v1"
     local hermes_llm_api_key="sk-ods-hermes-local"
     local open_webui_llm_base_url=""
@@ -522,6 +537,7 @@ MODEL_PERFORMANCE_SOURCE=benchmark_required
 MODEL_PERFORMANCE_LABEL=Benchmark after first launch
 GPU_BACKEND=apple
 HOST_RAM_GB=${SYSTEM_RAM_GB}
+N_GPU_LAYERS=${n_gpu_layers}
 $(if [[ -n "${LLAMA_SERVER_IMAGE:-}" ]]; then echo "LLAMA_SERVER_IMAGE=${LLAMA_SERVER_IMAGE}"; fi)
 #=== llama.cpp Runtime Tuning ===
 LLAMA_ARG_FLASH_ATTN=${LLAMA_ARG_FLASH_ATTN:-auto}

@@ -1138,6 +1138,7 @@ restart_windows_native_llama_server_with_full_model() {
     ODS_WIN_BIND_ADDR="$bind_addr" \
     ODS_WIN_LLAMA_PORT="$llama_port" \
     ODS_WIN_CTX_SIZE="$ctx_size" \
+    ODS_WIN_GPU_LAYERS="$(read_env_value N_GPU_LAYERS)" \
     ODS_WIN_REASONING_FORMAT="$reasoning_fmt" \
     ODS_WIN_FLASH_ATTN="$(read_env_value LLAMA_ARG_FLASH_ATTN)" \
     ODS_WIN_CACHE_TYPE_K="$(read_env_value LLAMA_ARG_CACHE_TYPE_K)" \
@@ -1196,11 +1197,13 @@ restart_windows_native_llama_server_with_full_model() {
         function Start-ODSLlama {
             param([string]$ModelPath)
 
+            $gpuLayers = $env:ODS_WIN_GPU_LAYERS
+            if (-not $gpuLayers) { $gpuLayers = "auto" }
             $args = @(
                 "--model", $ModelPath,
                 "--host", $env:ODS_WIN_BIND_ADDR,
                 "--port", $env:ODS_WIN_LLAMA_PORT,
-                "--n-gpu-layers", "999",
+                "--n-gpu-layers", $gpuLayers,
                 "--ctx-size", $env:ODS_WIN_CTX_SIZE,
                 "--reasoning-format", $env:ODS_WIN_REASONING_FORMAT,
                 "--metrics"
@@ -2832,7 +2835,7 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
             #
             # Two latency hits if we skip this:
             #   1. llama-server / Lemonade loads the full model into VRAM on first
-            #      request (`--n-gpu-layers 999` is lazy). PR #1192 already warms
+            #      request. PR #1192 already warms
             #      this at install time, but that warm-up was against the
             #      bootstrap model — after the swap, the slot is cold again.
             #   2. Hermes's runtime config bakes a 14K-token system prompt
@@ -2969,13 +2972,15 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _n_cpu_moe=$(grep '^LLAMA_ARG_N_CPU_MOE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+            _gpu_layers=$(grep '^N_GPU_LAYERS=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")
+            [[ -z "$_gpu_layers" ]] && _gpu_layers="auto"
             _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _spec_draft_n_max=$(grep '^LLAMA_ARG_SPEC_DRAFT_N_MAX=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _llama_args=(
                 --host "$_bind" --port "$_native_port"
                 --model "$_model_path"
                 --ctx-size "$_ctx_size"
-                --n-gpu-layers 999
+                --n-gpu-layers "$_gpu_layers"
                 --reasoning-format "$_reasoning_fmt"
                 --metrics
             )
@@ -3023,7 +3028,7 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
                             --host "$_bind" --port "$_native_port" \
                             --model "$_old_model_path" \
                             --ctx-size "$_ctx_size" \
-                            --n-gpu-layers 999 \
+                            --n-gpu-layers "$_gpu_layers" \
                             --reasoning-format "${_reasoning_fmt:-none}" \
                             --metrics
                     ) > "$LLAMA_SERVER_LOG" 2>&1 &

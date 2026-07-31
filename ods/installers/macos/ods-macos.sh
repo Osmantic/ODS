@@ -588,6 +588,9 @@ start_native_llama() {
 
     local gguf_file="${ENV_GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}"
     local ctx_size="${ENV_CTX_SIZE:-65536}"
+    local gpu_layers="${ENV_N_GPU_LAYERS:-auto}"
+    gpu_layers="$(printf '%s' "$gpu_layers" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    gpu_layers="${gpu_layers:-auto}"
     local native_port="${ENV_ODS_NATIVE_LLAMA_PORT:-8080}"
     local bind_address="${ENV_BIND_ADDRESS:-127.0.0.1}"
     local probe_host
@@ -615,7 +618,7 @@ start_native_llama() {
         --host "$bind_address" --port "$native_port"
         --model "$model_path"
         --ctx-size "$ctx_size"
-        --n-gpu-layers 999
+        --n-gpu-layers "$gpu_layers"
         --reasoning-format "$reasoning_fmt"
         --metrics
     )

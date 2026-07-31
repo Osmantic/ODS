@@ -38,7 +38,7 @@ services:
       - --port
       - "8080"
       - --n-gpu-layers
-      - "999"
+      - "${N_GPU_LAYERS:-auto}"
       - --ctx-size
       - "${CTX_SIZE:-16384}"
       - --batch-size

@@ -108,6 +108,27 @@ else
     fail "Valid .env should yield exit 0, got $r"
 fi
 
+# N_GPU_LAYERS accepts llama.cpp's symbolic policies and explicit non-negative
+# counts, but rejects malformed values before they reach any launcher.
+for gpu_layers in auto all 0 17 999; do
+    cp "$TMP_DIR/valid.env" "$TMP_DIR/gpu-layers-valid.env"
+    printf 'N_GPU_LAYERS=%s\n' "$gpu_layers" >> "$TMP_DIR/gpu-layers-valid.env"
+    "$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" \
+        "$TMP_DIR/gpu-layers-valid.env" "$ROOT_DIR/.env.schema.json" >/dev/null 2>&1 \
+        || fail "N_GPU_LAYERS=$gpu_layers should validate"
+done
+pass "N_GPU_LAYERS accepts auto, all, and non-negative layer counts"
+
+for gpu_layers in -1 1.5 AUTO automatic '999;exit'; do
+    cp "$TMP_DIR/valid.env" "$TMP_DIR/gpu-layers-invalid.env"
+    printf 'N_GPU_LAYERS=%s\n' "$gpu_layers" >> "$TMP_DIR/gpu-layers-invalid.env"
+    if "$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" \
+        "$TMP_DIR/gpu-layers-invalid.env" "$ROOT_DIR/.env.schema.json" >/dev/null 2>&1; then
+        fail "N_GPU_LAYERS=$gpu_layers should be rejected"
+    fi
+done
+pass "N_GPU_LAYERS rejects malformed and negative values"
+
 # 5. .env missing one required key → exit 2
 REAL_JQ="$(command -v jq)"
 CRLF_JQ_DIR="$TMP_DIR/crlf-jq"

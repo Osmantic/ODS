@@ -418,6 +418,13 @@ if [[ -n "$remote_model" && ! "$remote_model" =~ ^[A-Za-z0-9][A-Za-z0-9._:/+-]{0
     )
 fi
 
+n_gpu_layers="${ENV_MAP[N_GPU_LAYERS]-}"
+if [[ -n "$n_gpu_layers" && ! "$n_gpu_layers" =~ ^(auto|all|[0-9]+)$ ]]; then
+    contract_errors+=(
+      "N_GPU_LAYERS: expected auto, all, or a non-negative whole number (line ${ENV_LINE[N_GPU_LAYERS]:-?})"
+    )
+fi
+
 if [[ "$remote_enabled" == "true" ]]; then
     if [[ "${ENV_MAP[ODS_MODE]-local}" != "cloud" ]]; then
         contract_errors+=(

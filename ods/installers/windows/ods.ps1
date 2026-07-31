@@ -1811,8 +1811,10 @@ function Start-NativeInferenceServer {
     } elseif ($backend -eq "llama-server") {
         $ggufFile = $envVars["GGUF_FILE"]
         $ctxSize  = $envVars["CTX_SIZE"]
+        $gpuLayers = $envVars["N_GPU_LAYERS"]
         if (-not $ggufFile) { $ggufFile = "Qwen3.5-9B-Q4_K_M.gguf" }
         if (-not $ctxSize)  { $ctxSize = "16384" }
+        if (-not $gpuLayers) { $gpuLayers = "auto" }
 
         $modelPath = Join-Path (Join-Path $InstallDir "data\models") $ggufFile
         if (-not (Test-Path $modelPath)) {
@@ -1836,7 +1838,7 @@ function Start-NativeInferenceServer {
             "--model", $modelPath,
             "--host", $bindAddr,
             "--port", [string]$script:LEMONADE_PORT,
-            "--n-gpu-layers", "999",
+            "--n-gpu-layers", $gpuLayers,
             "--ctx-size", $ctxSize,
             "--reasoning-format", $reasoningFmt,
             # llama.cpp keeps /metrics off unless asked. The dashboard's

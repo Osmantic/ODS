@@ -278,7 +278,13 @@ def _validate_env_values(
             if _normalize_bool(value) is None:
                 issues.append({"key": key, "message": "Must be true or false."})
 
-        if key == "EMBEDDING_MODEL":
+        if key == "N_GPU_LAYERS":
+            if not re.fullmatch(r"(?:auto|all|[0-9]+)", str(value).strip()):
+                issues.append({
+                    "key": key,
+                    "message": "Must be auto, all, or a non-negative whole number.",
+                })
+        elif key == "EMBEDDING_MODEL":
             if _is_unsupported_tei_model_id(value):
                 issues.append({
                     "key": key,
@@ -352,6 +358,8 @@ def _serialize_form_values(
             normalized = _normalize_bool(value)
             serialized[key] = normalized if normalized is not None else str(value).strip()
         elif field_type == "integer":
+            serialized[key] = str(value).strip()
+        elif key == "N_GPU_LAYERS":
             serialized[key] = str(value).strip()
         else:
             serialized[key] = str(value)

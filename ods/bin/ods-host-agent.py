@@ -11770,12 +11770,13 @@ def _restart_macos_native_llama_server(
 def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path, pid_file: Path):
     """Launch the native (Metal) llama-server process and write its PID file.
 
-    Reads the current .env for GGUF_FILE, CTX_SIZE, and LLAMA_REASONING so
-    the caller only needs to ensure .env is up-to-date before calling.
+    Reads the current .env for model and llama.cpp runtime settings so the
+    caller only needs to ensure .env is up-to-date before calling.
     """
     env = load_env(env_path)
     gguf_file = env.get("GGUF_FILE", "")
     ctx_size = env.get("CTX_SIZE", "32768")
+    gpu_layers = env.get("N_GPU_LAYERS", "").strip() or "auto"
     model_path = INSTALL_DIR / "data" / "models" / gguf_file
     reasoning = env.get("LLAMA_REASONING", "off")
     reasoning_fmt = {"off": "none", "on": "deepseek"}.get(reasoning, reasoning)
@@ -11793,7 +11794,7 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         "--host", bind_addr, "--port", str(port),
         "--model", str(model_path),
         "--ctx-size", ctx_size,
-        "--n-gpu-layers", "999",
+        "--n-gpu-layers", gpu_layers,
         "--parallel", env.get("LLAMA_PARALLEL", "1"),
         "--reasoning-format", reasoning_fmt,
         "--metrics",

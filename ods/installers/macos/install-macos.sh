@@ -2182,13 +2182,15 @@ else
         _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _n_cpu_moe=$(grep '^LLAMA_ARG_N_CPU_MOE=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+        _gpu_layers=$(grep '^N_GPU_LAYERS=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")
+        [[ -z "$_gpu_layers" ]] && _gpu_layers="auto"
         _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _spec_draft_n_max=$(grep '^LLAMA_ARG_SPEC_DRAFT_N_MAX=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _llama_args=(
             --host "$_bind" --port "$_native_llama_port"
             --model "$MODEL_FULL_PATH"
             --ctx-size "$MAX_CONTEXT"
-            --n-gpu-layers 999
+            --n-gpu-layers "$_gpu_layers"
             --reasoning-format "$_reasoning_fmt"
             --metrics
         )

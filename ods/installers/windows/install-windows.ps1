@@ -710,11 +710,19 @@ if ($dryRun) {
                 # Start native llama-server
                 Write-AI "Starting native llama-server (Vulkan)..."
                 $modelFullPath = Join-Path (Join-Path $installDir "data\models") $tierConfig.GgufFile
+                $_llamaEnv = @{}
+                Get-Content -LiteralPath (Join-Path $installDir ".env") -ErrorAction SilentlyContinue | ForEach-Object {
+                    if ($_ -match '^\s*#' -or $_ -notmatch '=') { return }
+                    $parts = $_ -split '=', 2
+                    $_llamaEnv[$parts[0].Trim()] = $parts[1].Trim().Trim('"')
+                }
+                $_gpuLayers = $_llamaEnv["N_GPU_LAYERS"]
+                if (-not $_gpuLayers) { $_gpuLayers = "auto" }
                 $llamaArgs = @(
                     "--model", $modelFullPath,
                     "--host", $bindAddr,
                     "--port", [string]$script:LEMONADE_PORT,
-                    "--n-gpu-layers", "999",
+                    "--n-gpu-layers", $_gpuLayers,
                     "--ctx-size", "$($tierConfig.MaxContext)",
                     # llama.cpp keeps /metrics off unless asked. The dashboard's
                     # tokens/sec reading and the Usage page's local-runtime
@@ -722,12 +730,6 @@ if ($dryRun) {
                     # path passes this too.
                     "--metrics"
                 )
-                $_llamaEnv = @{}
-                Get-Content -LiteralPath (Join-Path $installDir ".env") -ErrorAction SilentlyContinue | ForEach-Object {
-                    if ($_ -match '^\s*#' -or $_ -notmatch '=') { return }
-                    $parts = $_ -split '=', 2
-                    $_llamaEnv[$parts[0].Trim()] = $parts[1].Trim().Trim('"')
-                }
                 # Map the .env values (off/on/auto) onto llama-server's own
                 # vocabulary, the same way scripts/bootstrap-upgrade.sh does for
                 # its Windows hot-swap. Defaulting to off keeps thinking models
