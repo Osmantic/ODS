@@ -61,6 +61,45 @@ function Resolve-WindowsODSPort {
     return $DefaultPort
 }
 
+function Get-ODSDockerMemoryGB {
+    try {
+        $raw = (& docker info --format "{{.MemTotal}}" 2>$null | Select-Object -First 1)
+        $bytes = [int64]0
+        if ([int64]::TryParse(([string]$raw).Trim(), [ref]$bytes) -and $bytes -ge 1GB) {
+            return [int][Math]::Floor($bytes / 1GB)
+        }
+    } catch { }
+    return 0
+}
+
+function Get-ODSEffectiveContainerMemoryGB {
+    param(
+        [int]$SystemRamGB,
+        [int]$DockerRamGB
+    )
+
+    if ($SystemRamGB -gt 0 -and $DockerRamGB -gt 0) {
+        return [Math]::Min($SystemRamGB, $DockerRamGB)
+    }
+    if ($DockerRamGB -gt 0) {
+        return $DockerRamGB
+    }
+    return [Math]::Max(0, $SystemRamGB)
+}
+
+function Get-ODSDefaultNvidiaLlamaMemoryLimit {
+    param([int]$AvailableRamGB)
+
+    if ($AvailableRamGB -le 0) {
+        return "64G"
+    }
+
+    $reserveGB = $(if ($AvailableRamGB -lt 16) { 3 } else { 4 })
+    $usableGB = [Math]::Max(1, $AvailableRamGB - $reserveGB)
+    $usableGB = [Math]::Min(64, $usableGB)
+    return "${usableGB}G"
+}
+
 function Write-Utf8NoBom {
     <#
     .SYNOPSIS
@@ -687,6 +726,15 @@ function New-ODSEnv {
         $nativeInferencePort = [string]$parsedNativeInferencePort
     }
     $effectiveODSMode = $(if ($windowsAmdLemonade) { "lemonade" } else { $ODSMode })
+    $llamaServerMemoryLimit = ""
+    if ($GpuBackend -eq "nvidia" -and $effectiveODSMode -ne "cloud") {
+        $dockerRamGB = Get-ODSDockerMemoryGB
+        $availableRamGB = Get-ODSEffectiveContainerMemoryGB `
+            -SystemRamGB $SystemRamGB -DockerRamGB $dockerRamGB
+        $llamaMemoryDefault = Get-ODSDefaultNvidiaLlamaMemoryLimit `
+            -AvailableRamGB $availableRamGB
+        $llamaServerMemoryLimit = Get-EnvOrNew "LLAMA_SERVER_MEMORY_LIMIT" $llamaMemoryDefault
+    }
     $existingLemonadeModel = Get-EnvOrNew "LEMONADE_MODEL" ""
     $existingGgufFile = Get-EnvOrNew "GGUF_FILE" ""
     $effectiveLemonadeModel = $existingLemonadeModel
@@ -882,6 +930,7 @@ GPU_BACKEND=$GpuBackend
 SYSTEM_RAM_GB=$SystemRamGB
 $(if ($LlamaServerImage) { "LLAMA_SERVER_IMAGE=$LlamaServerImage" } else { "#LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda" })
 $(if ($llamaServerImageFallback) { "LLAMA_SERVER_IMAGE_FALLBACK=$llamaServerImageFallback" } else { "#LLAMA_SERVER_IMAGE_FALLBACK=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014" })
+$(if ($llamaServerMemoryLimit) { "LLAMA_SERVER_MEMORY_LIMIT=$llamaServerMemoryLimit" })
 $(if ($LemonadeServerImage) { "LEMONADE_SERVER_IMAGE=$LemonadeServerImage" } else { "#LEMONADE_SERVER_IMAGE=ghcr.io/lemonade-sdk/lemonade-server:v10.2.0" })
 #=== llama.cpp Runtime Tuning ===
 LLAMA_PARALLEL=$(Get-EnvOrNew "LLAMA_PARALLEL" "$(if ($TierConfig.LLAMA_PARALLEL) { $TierConfig.LLAMA_PARALLEL } else { "1" })")
