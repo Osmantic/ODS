@@ -330,7 +330,7 @@ fi
 show_stranger_boot
 [[ "$INTERACTIVE" == "true" ]] && sleep 5
 
-$DRY_RUN && echo -e "${AMB}>>> DRY RUN MODE — I will simulate everything. No changes made. <<<${NC}\n"
+[[ "$DRY_RUN" == "true" ]] && echo -e "${AMB}>>> DRY RUN MODE — I will simulate everything. No changes made. <<<${NC}\n"
 
 #=============================================================================
 # Run phases
@@ -341,7 +341,7 @@ INSTALL_PHASE="02b-external-services"; source "$SCRIPT_DIR/installers/phases/02b
 INSTALL_PHASE="03-features";     source "$SCRIPT_DIR/installers/phases/03-features.sh"
 INSTALL_PHASE="04-requirements"; source "$SCRIPT_DIR/installers/phases/04-requirements.sh"
 INSTALL_PHASE="05-docker";       source "$SCRIPT_DIR/installers/phases/05-docker.sh"
-if ! $DRY_RUN; then
+if [[ "$DRY_RUN" != "true" ]]; then
     INSTALL_PHASE="model-lifecycle-lock"
     ods_model_lifecycle_lock_acquire "$INSTALL_DIR" "Linux installer model configuration"
 fi

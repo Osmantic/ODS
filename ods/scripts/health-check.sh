@@ -276,6 +276,7 @@ check_service_async() {
     else
         echo "fail:$sid:$container_state" > "$result_file"
     fi
+    sync
 }
 
 # ── Run tests ───────────────────────────────────────────────────────────────

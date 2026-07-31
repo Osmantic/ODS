@@ -104,7 +104,8 @@ write_compose_failure_report() {
     report="$install_dir/install-report-${stamp}.txt"
     env_file="$install_dir/.env"
     compose_flags_file="$install_dir/.compose-flags"
-    local report_compose_flags="${COMPOSE_FLAGS_REPORT:-${COMPOSE_FLAGS:-}}"
+    local report_compose_flags
+    read -ra report_compose_flags <<< "${COMPOSE_FLAGS_REPORT:-${COMPOSE_FLAGS:-}}"
 
     {
         echo "ODS install failure report"
@@ -157,7 +158,7 @@ write_compose_failure_report() {
         echo "Compose config tail (redacted)"
         if command -v docker >/dev/null 2>&1; then
             # shellcheck disable=SC2086
-            docker compose $report_compose_flags config 2>&1 | _ods_report_redact_stream "$env_file" | tail -n 80 || true
+            docker compose "${report_compose_flags[@]}" config 2>&1 | _ods_report_redact_stream "$env_file" | tail -n 80 || true
         else
             echo "docker command not found"
         fi
@@ -165,7 +166,7 @@ write_compose_failure_report() {
         echo "Compose ps"
         if command -v docker >/dev/null 2>&1; then
             # shellcheck disable=SC2086
-            docker compose $report_compose_flags ps -a 2>&1 | sed -n '1,80p' || true
+            docker compose "${report_compose_flags[@]}" ps -a 2>&1 | sed -n '1,80p' || true
         else
             echo "docker command not found"
         fi

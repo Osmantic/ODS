@@ -62,6 +62,9 @@ export function useSystemStatus() {
   const hasInitialData = useRef(false)
 
   useEffect(() => {
+    let mounted = true
+    const abortController = new AbortController()
+
     const fetchStatus = async () => {
       if (USE_MOCK_DATA) {
         setLoading(false)
@@ -77,17 +80,21 @@ export function useSystemStatus() {
       fetchInFlight.current = true
 
       try {
-        const response = await fetch('/api/status')
+        const response = await fetch('/api/status', { signal: abortController.signal })
+        if (!mounted) return
         if (!response.ok) throw new Error('Failed to fetch status')
         const data = await response.json()
         setStatus(data)
         setError(null)
         hasInitialData.current = true
       } catch (err) {
+        if (!mounted || err.name === 'AbortError') return
         setError(err.message)
       } finally {
-        fetchInFlight.current = false
-        setLoading(false)
+        if (mounted) {
+          fetchInFlight.current = false
+          setLoading(false)
+        }
       }
     }
 
@@ -99,6 +106,8 @@ export function useSystemStatus() {
     document.addEventListener('visibilitychange', onVisibility)
 
     return () => {
+      mounted = false
+      abortController.abort()
       clearInterval(interval)
       document.removeEventListener('visibilitychange', onVisibility)
     }

@@ -44,10 +44,10 @@ export const GPUCard = memo(function GPUCard({ gpu }) {
         <div>
           <span className="text-xs font-mono text-indigo-400 uppercase">GPU {gpu.index}</span>
           <p className="text-sm font-medium text-white leading-tight mt-0.5 truncate max-w-[180px]" title={gpu.name}>
-            {gpu.name.replace('NVIDIA ', '').replace('AMD ', '')}
+            {(gpu.name || '').replace('NVIDIA ', '').replace('AMD ', '')}
           </p>
         </div>
-        <span className="text-xs font-mono text-zinc-500">{gpu.uuid.slice(-8)}</span>
+        <span className="text-xs font-mono text-zinc-500">{gpu.uuid ? gpu.uuid.slice(-8) : '—'}</span>
       </div>
 
       {/* Utilization */}
