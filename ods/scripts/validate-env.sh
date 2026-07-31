@@ -269,13 +269,13 @@ for key in "${schema_keys[@]}"; do
     if [[ "$expected_type" == "integer" || "$expected_type" == "number" ]]; then
       if jq -e --arg k "$key" '.properties[$k].minimum? != null' "$SCHEMA_FILE" >/dev/null 2>&1; then
         minv="$(jq_raw --arg k "$key" '.properties[$k].minimum' "$SCHEMA_FILE")"
-        if awk "BEGIN{exit !($val < $minv)}" 2>/dev/null; then
+        if awk -v val="$val" -v min="$minv" 'BEGIN{exit !(val < min)}' 2>/dev/null; then
           range_errors+=("$key: value $val is < minimum $minv (line ${ENV_LINE[$key]:-?})")
         fi
       fi
       if jq -e --arg k "$key" '.properties[$k].maximum? != null' "$SCHEMA_FILE" >/dev/null 2>&1; then
         maxv="$(jq_raw --arg k "$key" '.properties[$k].maximum' "$SCHEMA_FILE")"
-        if awk "BEGIN{exit !($val > $maxv)}" 2>/dev/null; then
+        if awk -v val="$val" -v max="$maxv" 'BEGIN{exit !(val > max)}' 2>/dev/null; then
           range_errors+=("$key: value $val is > maximum $maxv (line ${ENV_LINE[$key]:-?})")
         fi
       fi
