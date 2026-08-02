@@ -90,13 +90,42 @@ if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]]; then
 fi
 
 if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
-    HERMES_CONTEXT_SIZE="${HERMES_CONTEXT_SIZE:-65536}"
+    # An explicitly-pinned HERMES_CONTEXT_SIZE is honored verbatim; otherwise the
+    # 64K default floor applies, gated by VRAM on discrete GPUs.
+    _hermes_floor_pinned=false
+    if [[ -n "${HERMES_CONTEXT_SIZE:-}" ]]; then
+        _hermes_floor_pinned=true
+    else
+        HERMES_CONTEXT_SIZE=65536
+    fi
     if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
-        ai_warn "Hermes enabled: increasing llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (64K floor)."
-        if [[ -n "${MODEL_RECOMMENDATION_REASON:-}" ]]; then
-            MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON} Hermes requires at least 64K context, so runtime context was raised to ${HERMES_CONTEXT_SIZE}."
+        # A discrete GPU too small to hold the 64K floor in VRAM keeps the
+        # VRAM-fit context -- forcing the floor OOM-kills llama-server (SIGKILL).
+        # CPU, unified-memory (Apple / AMD APU) backends and pinned floors are
+        # exempt from the gate.
+        _hermes_can_hold_floor=true
+        if [[ "$_hermes_floor_pinned" != "true" ]]; then
+            case "${GPU_BACKEND:-}" in
+                nvidia|amd|intel|jetson)
+                    if [[ "${GPU_MEMORY_TYPE:-}" != "unified" ]] \
+                        && [[ "${GPU_VRAM:-0}" =~ ^[0-9]+$ ]] \
+                        && (( GPU_VRAM > 0 )) && (( GPU_VRAM < 8192 )); then
+                        _hermes_can_hold_floor=false
+                        ai_warn "Hermes needs a 64K context floor, but this ${GPU_VRAM}MB GPU cannot hold it in VRAM. Keeping the ${MAX_CONTEXT}-token context selected for this hardware."
+                        if [[ -n "${MODEL_RECOMMENDATION_REASON:-}" ]]; then
+                            MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON} Hermes requires at least 64K context, but the ${GPU_VRAM}MB GPU cannot hold it; keeping VRAM-fit ${MAX_CONTEXT} context."
+                        fi
+                    fi
+                    ;;
+            esac
         fi
-        MAX_CONTEXT="$HERMES_CONTEXT_SIZE"
+        if [[ "$_hermes_can_hold_floor" == "true" ]]; then
+            ai_warn "Hermes enabled: increasing llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (64K floor)."
+            if [[ -n "${MODEL_RECOMMENDATION_REASON:-}" ]]; then
+                MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON} Hermes requires at least 64K context, so runtime context was raised to ${HERMES_CONTEXT_SIZE}."
+            fi
+            MAX_CONTEXT="$HERMES_CONTEXT_SIZE"
+        fi
     fi
 fi
 

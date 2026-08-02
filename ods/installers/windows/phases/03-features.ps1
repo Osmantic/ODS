@@ -152,11 +152,24 @@ if ($enableComfyui -and $gpuInfo.Backend -eq "amd" -and -not $cloudMode) {
 if ($enableHermes -and -not $cloudMode) {
     $hermesContextSize = 65536
     if ([int]$tierConfig.MaxContext -lt $hermesContextSize) {
-        Write-AIWarn "Hermes enabled: increasing llama context from $($tierConfig.MaxContext) to $hermesContextSize (64K floor)."
-        if ($tierConfig.ContainsKey("RecommendationReason") -and $tierConfig.RecommendationReason) {
-            $tierConfig.RecommendationReason = "$($tierConfig.RecommendationReason) Hermes requires at least 64K context, so runtime context was raised to $hermesContextSize."
+        # A discrete GPU too small to hold the 64K floor in VRAM keeps the
+        # VRAM-fit context -- forcing the floor OOM-kills llama-server (SIGKILL).
+        # Unified-memory (AMD APU) and CPU backends are exempt from the gate.
+        $hermesCanHoldFloor = $true
+        if ($gpuInfo.Backend -in @("nvidia", "amd", "intel") -and $gpuInfo.MemoryType -ne "unified" -and [int]$gpuInfo.VramMB -gt 0 -and [int]$gpuInfo.VramMB -lt 8192) {
+            $hermesCanHoldFloor = $false
+            Write-AIWarn "Hermes needs a 64K context floor, but this $($gpuInfo.VramMB)MB GPU cannot hold it in VRAM. Keeping the $($tierConfig.MaxContext)-token context selected for this hardware."
+            if ($tierConfig.ContainsKey("RecommendationReason") -and $tierConfig.RecommendationReason) {
+                $tierConfig.RecommendationReason = "$($tierConfig.RecommendationReason) Hermes requires at least 64K context, but the $($gpuInfo.VramMB)MB GPU cannot hold it; keeping VRAM-fit $($tierConfig.MaxContext) context."
+            }
         }
-        $tierConfig.MaxContext = $hermesContextSize
+        if ($hermesCanHoldFloor) {
+            Write-AIWarn "Hermes enabled: increasing llama context from $($tierConfig.MaxContext) to $hermesContextSize (64K floor)."
+            if ($tierConfig.ContainsKey("RecommendationReason") -and $tierConfig.RecommendationReason) {
+                $tierConfig.RecommendationReason = "$($tierConfig.RecommendationReason) Hermes requires at least 64K context, so runtime context was raised to $hermesContextSize."
+            }
+            $tierConfig.MaxContext = $hermesContextSize
+        }
     }
 }
 
