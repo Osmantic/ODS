@@ -233,6 +233,34 @@ assert_contains "$bootstrap" 'Re-run with --force to remove it automatically' "b
 assert_contains "$bootstrap" 'remove_install_dir()' "bootstrap should centralize incomplete install cleanup"
 assert_contains "$bootstrap" 'sudo -n rm -rf -- "\$target_dir"' "bootstrap --force should retry root-owned container data cleanup with sudo -n"
 assert_contains "$bootstrap" 'root-owned container data' "bootstrap sudo fallback should explain root-owned Docker data cleanup"
+assert_contains "$bootstrap" '_ods_is_unsafe_rm_target' "bootstrap must guard rm -rf against unsafe install paths"
+assert_contains "$bootstrap" 'Refusing to .rm -rf. unsafe install path' "bootstrap should refuse to delete critical roots"
+
+echo "[contract] bootstrap refuses rm -rf on \$HOME / critical roots"
+guard_probe=$(cat <<'EOF'
+set -euo pipefail
+error() { echo "REFUSED: $*"; exit 1; }
+EOF
+)
+# Pull the guard + remove_install_dir out of the bootstrap without running it.
+guard_src=$(awk '/^_ods_is_unsafe_rm_target\(\)/{p=1} p; /^}/{if(p&&++c==2)exit}' "$bootstrap")
+for bad in "$HOME" "/" "/home" ""; do
+    if HOME="$HOME" bash -c "$guard_probe
+$guard_src
+remove_install_dir \"$bad\"" 2>/dev/null; then
+        echo "[FAIL] remove_install_dir did not refuse unsafe path: '${bad:-<empty>}'"
+        exit 1
+    fi
+done
+# A dedicated subdir must still be removable.
+guard_ok_dir="$tmpdir/guard-ok/ods"
+mkdir -p "$guard_ok_dir"
+if ! HOME="$HOME" bash -c "$guard_probe
+$guard_src
+remove_install_dir \"$guard_ok_dir\"" 2>/dev/null || [[ -d "$guard_ok_dir" ]]; then
+    echo "[FAIL] remove_install_dir refused a legitimate dedicated install dir"
+    exit 1
+fi
 
 echo "[contract] public bootstrap can install from an exact commit SHA"
 sha_repo="$tmpdir/sha-ref-repo"

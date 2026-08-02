@@ -65,8 +65,28 @@ format_git_clone_error() {
 }
 
 
+# INSTALL_DIR is taken verbatim from $ODS_INSTALL_DIR, so a typo like
+# ODS_INSTALL_DIR=~ or =/ must never reach `rm -rf`. Canonicalize (resolving
+# .., symlinks, trailing slashes) and refuse critical roots. The only caller
+# has already confirmed the dir exists, so `cd` + `pwd -P` is reliable.
+_ods_is_unsafe_rm_target() {
+    local dir="$1" resolved
+    [[ -z "$dir" ]] && return 0
+    resolved=$(cd -- "$dir" 2>/dev/null && pwd -P) || return 0
+    [[ "$resolved" == "${HOME%/}" ]] && return 0
+    case "$resolved" in
+        /|/home|/root|/usr|/etc|/var|/bin|/sbin|/lib|/lib64|/opt|/boot|/dev|/proc|/sys|/tmp|/mnt|/media|/srv|/Users|/Applications|/System|/Library)
+            return 0 ;;
+    esac
+    return 1
+}
+
 remove_install_dir() {
     local target_dir="$1"
+
+    if _ods_is_unsafe_rm_target "$target_dir"; then
+        error "Refusing to 'rm -rf' unsafe install path: '${target_dir:-<empty>}'. Set ODS_INSTALL_DIR to a dedicated directory such as \$HOME/ods."
+    fi
 
     if rm -rf -- "$target_dir" 2>/dev/null; then
         return 0
