@@ -58,7 +58,7 @@ def add_regex_check(
 ) -> None:
     try:
         checks.append((label, first_match(path, pattern, label)))
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         errors.append(str(exc))
 
 
