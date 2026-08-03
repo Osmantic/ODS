@@ -1,0 +1,37 @@
+name: P2P GPU checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ods/installers/p2p-gpu/**"
+      - ".github/workflows/p2p-gpu.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "ods/installers/p2p-gpu/**"
+      - ".github/workflows/p2p-gpu.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  p2p-gpu:
+    name: P2P GPU syntax + regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Bash syntax check (p2p-gpu)
+        run: |
+          shfiles=$(find ods/installers/p2p-gpu -name '*.sh' -type f)
+          if [ -z "$shfiles" ]; then
+            echo "No .sh files found under ods/installers/p2p-gpu"
+            exit 0
+          fi
+          echo "$shfiles" | xargs bash -n
+
+      - name: NVML mismatch regression
+        run: |
+          # Live Vast.ai + GPU validation is performed manually outside CI.
+          bash ods/installers/p2p-gpu/tests/test-nvml-mismatch.sh
