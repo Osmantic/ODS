@@ -1,16 +1,27 @@
 import { memo } from 'react'
 import { Cpu } from 'lucide-react'
 
+// Strategies the backend actually emits: `single`, `colocated` and `dedicated`
+// from scripts/assign_gpus.py and installers/phases/03-features.sh, plus
+// `manual` from `ods gpu reassign --manual`. `shared` and `auto` were styled
+// here but are never produced by any writer.
 const STRATEGY_STYLE = {
   dedicated: 'bg-indigo-500/15 text-indigo-400',
-  shared:    'bg-yellow-500/15 text-yellow-400',
-  auto:      'bg-zinc-700 text-zinc-300',
+  single:    'bg-indigo-500/15 text-indigo-400',
+  colocated: 'bg-yellow-500/15 text-yellow-400',
+  manual:    'bg-sky-500/15 text-sky-400',
 }
 
+// Neutral treatment for anything a future planner adds, and for assignments
+// persisted by an older ODS.
+const STRATEGY_FALLBACK = 'bg-zinc-700 text-zinc-300'
+
+// Modes emitted by select_parallelism() in scripts/assign_gpus.py.
 const PARALLELISM_LABELS = {
+  none:     'Single Process',
   tensor:   'Tensor Parallel',
   pipeline: 'Pipeline Parallel',
-  none:     'Single Process',
+  hybrid:   'Hybrid Tensor + Pipeline',
 }
 
 export const AssignmentTable = memo(function AssignmentTable({ assignment }) {
@@ -20,7 +31,7 @@ export const AssignmentTable = memo(function AssignmentTable({ assignment }) {
   const serviceEntries = Object.entries(services)
   if (serviceEntries.length === 0) return null
 
-  const strategyStyle = STRATEGY_STYLE[strategy] || STRATEGY_STYLE.auto
+  const strategyStyle = STRATEGY_STYLE[strategy] || STRATEGY_FALLBACK
 
   return (
     <div className="p-5 bg-zinc-900/50 border border-zinc-800 rounded-xl">
