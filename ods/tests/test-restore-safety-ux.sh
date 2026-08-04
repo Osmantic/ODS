@@ -21,7 +21,8 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 FAKE_ODS="$TMP/ods"
-mkdir -p "$FAKE_ODS/.backups"
+mkdir -p "$FAKE_ODS/.backups" "$FAKE_ODS/lib"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$FAKE_ODS/lib/"
 # minimal marker so 'is this a ODS dir' check passes
 mkdir -p "$FAKE_ODS/data"
 
@@ -41,6 +42,18 @@ cat > "$B/manifest.json" <<'JSON'
   "contents": {"user_data": true, "config": false, "cache": false}
 }
 JSON
+
+info "Interactive restore rejects non-numeric selections cleanly"
+for selection in abc 0 '1+0'; do
+    set +e
+    out=$(printf '%s\n' "$selection" | ODS_DIR="$FAKE_ODS" bash "$ODS_RESTORE" -f -d 2>&1)
+    rc=$?
+    set -e
+    [[ $rc -ne 0 ]] || fail "Expected selection '$selection' to fail"
+    echo "$out" | grep -q "Invalid selection: $selection" || fail "Selection '$selection' did not return the validation error"
+    echo "$out" | grep -qiE 'unbound variable|syntax error' && fail "Selection '$selection' reached Bash arithmetic"
+done
+pass "Invalid interactive selections never reach arithmetic evaluation"
 
 info "Restore should cancel unless backup ID is typed"
 set +e

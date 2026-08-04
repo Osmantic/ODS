@@ -187,7 +187,12 @@ select_backup() {
     fi
 
     echo "Select a backup to restore (enter number):" >&2
+    local selection
     read -r selection
+    if [[ ! "$selection" =~ ^[1-9][0-9]*$ ]]; then
+        log_error "Invalid selection: $selection" >&2
+        return 1
+    fi
 
     local backups=()
     while IFS= read -r -d '' backup; do
