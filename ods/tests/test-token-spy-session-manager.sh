@@ -18,10 +18,10 @@ pass() { echo "  ✓ $1"; }
 fail() { echo "  ✗ $1"; exit 1; }
 
 # Source only the helpers: the script's top level defines config and then
-# main() runs under `set -euo pipefail`, so extract the two functions we drive.
+# main() runs under `set -euo pipefail`, so extract the functions we drive.
 FUNCS="$(mktemp)"
 trap 'rm -f "$FUNCS"' EXIT
-sed -n '/^extract_active_ids()/,/^}/p;/^clean_inactive()/,/^}/p' "$MANAGER" > "$FUNCS"
+sed -n '/^extract_active_ids()/,/^}/p;/^clean_inactive()/,/^}/p;/^kill_session()/,/^}/p' "$MANAGER" > "$FUNCS"
 log() { :; }   # silence the manager's logger
 # shellcheck disable=SC1090
 source "$FUNCS"
@@ -84,6 +84,24 @@ for id in aaa bbb; do
 done
 pass "no session deleted when sessions.json is a partial write"
 rm -rf "$WORK"
+
+echo "Test 6: session ids are passed to Python as data, not code"
+WORK="$(mktemp -d)/sessions"
+mkdir -p "$WORK"
+session_id="session'quoted"
+printf '{}' > "$WORK/$session_id.jsonl"
+printf '{"entry":{"sessionId":"session'\''quoted"}}\n' > "$WORK/sessions.json"
+kill_session "$WORK" "$session_id" "test"
+[ ! -f "$WORK/$session_id.jsonl" ] || fail "quoted session file was not removed"
+python3 - "$WORK/sessions.json" <<'PY' || fail "quoted session id remained in index"
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    assert json.load(source) == {}
+PY
+pass "quoted values cannot alter the generated Python program"
+rm -rf "$(dirname "$WORK")"
 
 echo ""
 echo "✓ All token-spy session-manager tests passed"

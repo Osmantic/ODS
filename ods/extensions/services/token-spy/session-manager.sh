@@ -139,17 +139,21 @@ kill_session() {
       pycmd="python"
     fi
 
-    "$pycmd" -c "
+    "$pycmd" - "$sessions_json" "$session_id" <<'PY'
 import json, sys
-with open('$sessions_json', 'r') as f:
+sessions_json, session_id = sys.argv[1:3]
+with open(sessions_json, 'r') as f:
     data = json.load(f)
-to_remove = [k for k, v in data.items() if isinstance(v, dict) and v.get('sessionId') == '$session_id']
+to_remove = [
+    k for k, v in data.items()
+    if isinstance(v, dict) and v.get('sessionId') == session_id
+]
 for k in to_remove:
     del data[k]
     print(f'  Removed session key: {k}', file=sys.stderr)
-with open('$sessions_json', 'w') as f:
+with open(sessions_json, 'w') as f:
     json.dump(data, f, indent=2)
-" 2>&1
+PY
   fi
 }
 
@@ -259,6 +263,10 @@ REMOTESCRIPT
 
   while IFS='|' read -r sid size mtime; do
     [ -z "$sid" ] && continue
+    if [[ ! "$sid" =~ ^[A-Za-z0-9._-]+$ ]] || [[ ! "$size" =~ ^[0-9]+$ ]] || [[ ! "$mtime" =~ ^[0-9]+$ ]]; then
+      log "  [WARN] Ignoring malformed remote session metadata"
+      continue
+    fi
     session_count=$((session_count + 1))
 
     local is_active=false
@@ -286,12 +294,17 @@ REMOTESCRIPT
   log "  Sessions: $session_count total, ${#to_remove[@]} to remove"
 
   if [ "${#to_remove[@]}" -gt 0 ]; then
-    local rm_args=""
+    local rm_command="rm -f --"
+    local quoted_path
     for sid in "${to_remove[@]}"; do
-      rm_args="${rm_args} ${remote_dir}/${sid}.jsonl"
+      printf -v quoted_path '%q' "${remote_dir}/${sid}.jsonl"
+      rm_command="${rm_command} ${quoted_path}"
     done
-    ssh -o ConnectTimeout=5 -o BatchMode=yes "${host}" "rm -f ${rm_args}" 2>/dev/null || true
-    log "  [DONE] Removed ${#to_remove[@]} sessions on $host"
+    if ssh -o ConnectTimeout=5 -o BatchMode=yes "${host}" "$rm_command" 2>/dev/null; then
+      log "  [DONE] Removed ${#to_remove[@]} sessions on $host"
+    else
+      log "  [WARN] Failed to remove sessions on $host"
+    fi
   else
     log "  [OK] No cleanup needed"
   fi
