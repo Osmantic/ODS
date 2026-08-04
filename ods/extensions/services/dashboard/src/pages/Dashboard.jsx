@@ -25,6 +25,7 @@ import {
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { serviceUrl } from '../lib/serviceUrls'
+import { formatUptime } from '../utils/formatUptime'
 
 // Compute overall health from services (excludes not_deployed from counts)
 function computeHealth(services) {
@@ -149,17 +150,6 @@ function formatTokenCount(n) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return `${n}`
-}
-
-// Format uptime: 90061 → "1d 1h 1m"
-function formatUptime(seconds) {
-  if (!seconds) return '—'
-  const d = Math.floor(seconds / 86400)
-  const h = Math.floor((seconds % 86400) / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  if (d > 0) return `${d}d ${h}h ${m}m`
-  if (h > 0) return `${h}h ${m}m`
-  return `${m}m`
 }
 
 function clamp(value, min, max) {
