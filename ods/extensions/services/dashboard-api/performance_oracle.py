@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+from env_file import read_env_file_value
 from gguf_inspector import inspect_gguf
 from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 from helpers import (
@@ -137,17 +138,6 @@ def read_env_value(key: str, install_dir: str | Path) -> str:
     return read_env_file_value(key, install_dir)
 
 
-def read_env_file_value(key: str, install_dir: str | Path) -> str:
-    env_path = Path(install_dir) / ".env"
-    try:
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            if line.startswith(f"{key}="):
-                return line.split("=", 1)[1].strip().strip("\"'")
-    except OSError:
-        pass
-    return ""
-
-
 def read_persisted_env_value(key: str, install_dir: str | Path) -> str:
     """Read mutable install config from .env before the container environment."""
     env_path = Path(install_dir) / ".env"
@@ -167,7 +157,6 @@ def read_context_length(install_dir: str | Path, default: int = 32768) -> int:
             if value > 0:
                 return value
     return default
-
 
 def model_files_dir(data_dir: str | Path) -> Path:
     return Path(data_dir) / "models"

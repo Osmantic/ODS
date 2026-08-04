@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from env_file import read_env_file_value_state
 from models import GPUInfo, IndividualGPU
 from host_agent_client import AgentClientError, request_json as request_agent_json
 
@@ -543,14 +544,7 @@ def decode_gpu_assignment() -> Optional[dict]:
 def _read_env_var_from_file_state(key: str) -> tuple[bool, str]:
     """Read a live .env value while preserving present-but-empty assignments."""
     install_dir = os.environ.get("ODS_INSTALL_DIR", os.path.expanduser("~/ods"))
-    env_path = Path(install_dir) / ".env"
-    try:
-        for line in env_path.read_text().splitlines():
-            if line.startswith(f"{key}="):
-                return True, line[len(key) + 1:].strip().strip("\"'")
-    except OSError:
-        pass
-    return False, ""
+    return read_env_file_value_state(key, install_dir)
 
 
 def _read_env_var_from_file(key: str) -> str:
