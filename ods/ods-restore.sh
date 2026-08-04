@@ -224,6 +224,17 @@ extract_backup() {
             log_error "Backup archive contains unsafe paths (absolute or ../) — refusing to extract" >&2
             return 1
         fi
+        # Archives are created as "<backup_id>.tar.gz" wrapping a top-level
+        # directory named after the backup id (see ods-backup.sh). Refuse an
+        # archive whose root doesn't match, so a renamed or corrupt archive
+        # can't unpack elsewhere and leave the caller restoring from an empty
+        # directory.
+        if archive_root=$(tar -tzf "$compressed" 2>/dev/null | awk -F/ 'NF { print $1; exit }'); then
+            if [[ -n "$archive_root" && "$archive_root" != "$backup_id" ]]; then
+                log_error "Backup archive root '${archive_root}/' does not match backup id '$backup_id' — refusing to extract" >&2
+                return 1
+            fi
+        fi
         log_info "Extracting compressed backup..." >&2
         mkdir -p "$uncompressed"
         if ! tar xzf "$compressed" --no-same-owner -C "$BACKUP_ROOT"; then
