@@ -206,6 +206,44 @@ class TestGetBootstrapStatus:
         status = get_bootstrap_status()
         assert status.active is False
 
+    def test_handles_non_object_json(self, data_dir):
+        status_file = data_dir / "bootstrap-status.json"
+        status_file.write_text(json.dumps(["downloading"]))
+
+        status = get_bootstrap_status()
+
+        assert status.active is False
+
+    def test_rejects_non_string_status(self, data_dir):
+        status_file = data_dir / "bootstrap-status.json"
+        status_file.write_text(json.dumps({"status": ["downloading"]}))
+
+        status = get_bootstrap_status()
+
+        assert status.active is False
+
+    def test_normalizes_persisted_field_types(self, data_dir):
+        status_file = data_dir / "bootstrap-status.json"
+        status_file.write_text(json.dumps({
+            "status": "downloading",
+            "model": ["not-a-name"],
+            "percent": "25",
+            "bytesDownloaded": "512",
+            "bytesTotal": "1024",
+            "speedBytesPerSec": "128",
+            "eta": {"seconds": 4},
+        }))
+
+        status = get_bootstrap_status()
+
+        assert status.active is True
+        assert status.model_name is None
+        assert status.percent == 25
+        assert status.downloaded_gb == 512 / 1024**3
+        assert status.total_gb == 1024 / 1024**3
+        assert status.speed_mbps == 128 / 1024**2
+        assert status.eta_seconds is None
+
     def test_inactive_when_failed(self, data_dir):
         status_file = data_dir / "bootstrap-status.json"
         status_file.write_text(json.dumps({"status": "failed", "model": "test.gguf"}))

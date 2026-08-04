@@ -910,8 +910,14 @@ def get_bootstrap_status() -> BootstrapStatus:
     try:
         with open(status_file) as f:
             data = json.load(f)
+        if not isinstance(data, dict):
+            logger.warning("Bootstrap status must be a JSON object")
+            return BootstrapStatus(active=False)
 
         status = data.get("status", "")
+        if not isinstance(status, str):
+            logger.warning("Bootstrap status field must be a string")
+            return BootstrapStatus(active=False)
         if status in ("complete", "failed", "cancelled", "error"):
             return BootstrapStatus(active=False)
         if status == "" and not data.get("bytesDownloaded") and not data.get("percent"):
@@ -924,6 +930,8 @@ def get_bootstrap_status() -> BootstrapStatus:
         # hot-swap may not have finished yet; returning inactive here would
         # hide a subsequent failure.
         model_name = data.get("model")
+        if not isinstance(model_name, str):
+            model_name = None
         if model_name and status not in ("downloading", "verifying", "swapping"):
             models_dir = Path(DATA_DIR) / "models"
             model_path = (models_dir / model_name).resolve()
@@ -935,6 +943,8 @@ def get_bootstrap_status() -> BootstrapStatus:
                     logger.debug("bootstrap reconciliation stat failed: %s", e)
 
         eta_str = data.get("eta", "")
+        if not isinstance(eta_str, str):
+            eta_str = ""
         eta_seconds = None
         if eta_str and eta_str.strip() and eta_str.strip() != "calculating...":
             try:
@@ -946,9 +956,9 @@ def get_bootstrap_status() -> BootstrapStatus:
             except (ValueError, IndexError):
                 pass
 
-        bytes_downloaded = data.get("bytesDownloaded", 0)
-        bytes_total = data.get("bytesTotal", 0)
-        speed_bps = data.get("speedBytesPerSec", 0)
+        bytes_downloaded = _non_negative_number(data.get("bytesDownloaded", 0))
+        bytes_total = _non_negative_number(data.get("bytesTotal", 0))
+        speed_bps = _non_negative_number(data.get("speedBytesPerSec", 0))
 
         percent_raw = data.get("percent")
         percent = None
@@ -961,7 +971,7 @@ def get_bootstrap_status() -> BootstrapStatus:
             bytes_downloaded = max(0, min(bytes_downloaded, bytes_total))
 
         return BootstrapStatus(
-            active=True, model_name=data.get("model"), percent=percent,
+            active=True, model_name=model_name, percent=percent,
             downloaded_gb=bytes_downloaded / (1024**3) if bytes_downloaded else None,
             total_gb=bytes_total / (1024**3) if bytes_total else None,
             speed_mbps=speed_bps / (1024**2) if speed_bps else None,
