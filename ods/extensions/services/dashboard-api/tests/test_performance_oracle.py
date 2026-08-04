@@ -1318,6 +1318,88 @@ def test_jamba_reasoning_3b_catalog_profile_fits_4gb_at_agent_context(data_dir, 
     assert model["recommended"] is False
 
 
+def test_pre_download_ranker_skips_retired_catalog_entries(data_dir):
+    # The library keeps superseded models so an existing install keeps working,
+    # and marks them install_recommendation: false so nothing steers a new user
+    # onto them. The retired entry here scores higher (Code beats General, and
+    # it is the larger file), so only the flag can keep it out of the pick.
+    catalog = [
+        {
+            "id": "qwen2.5-coder-3b-128k-q4",
+            "name": "Qwen 2.5 Coder 3B",
+            "gguf_file": "Qwen2.5-Coder-3B-Q4_K_M.gguf",
+            "gguf_url": "https://example.invalid/coder.gguf",
+            "size_mb": 1930,
+            "vram_required_gb": 4,
+            "context_length": 131072,
+            "quantization": "Q4_K_M",
+            "specialty": "Code",
+            "description": "Superseded coder model",
+            "llm_model_name": "qwen2.5-coder-3b",
+            "install_recommendation": False,
+        },
+        {
+            "id": "qwen3.5-2b-q4",
+            "name": "Qwen 3.5 2B",
+            "gguf_file": "Qwen3.5-2B-Q4_K_M.gguf",
+            "gguf_url": "https://example.invalid/qwen.gguf",
+            "size_mb": 1500,
+            "vram_required_gb": 3,
+            "context_length": 8192,
+            "quantization": "Q4_K_M",
+            "specialty": "General",
+            "description": "Current model",
+            "llm_model_name": "qwen3.5-2b",
+        },
+    ]
+    normalized = [normalize_catalog_entry(entry) for entry in catalog]
+
+    ranked = rank_pre_download_models(normalized, _gpu(total_mb=4096), profile="qwen", limit=2)
+
+    assert [model["id"] for model in ranked] == ["qwen3.5-2b-q4"]
+
+
+def test_pre_download_ranker_falls_back_to_retired_entry_when_nothing_else_fits(data_dir):
+    # A retired entry is still better than no suggestion at all, so it stays in
+    # the fallback pool once the recommendable pool is empty.
+    catalog = [normalize_catalog_entry({
+        "id": "qwen2.5-1.5b-instruct-q4",
+        "name": "Qwen 2.5 1.5B",
+        "gguf_file": "Qwen2.5-1.5B-Q4_K_M.gguf",
+        "gguf_url": "https://example.invalid/legacy.gguf",
+        "size_mb": 1120,
+        "vram_required_gb": 3,
+        "context_length": 32768,
+        "quantization": "Q4_K_M",
+        "specialty": "Fast",
+        "description": "Only entry in this library",
+        "llm_model_name": "qwen2.5-1.5b",
+        "install_recommendation": False,
+    })]
+
+    ranked = rank_pre_download_models(catalog, _gpu(total_mb=4096), profile="qwen", limit=2)
+
+    assert [model["id"] for model in ranked] == ["qwen2.5-1.5b-instruct-q4"]
+
+
+def test_real_catalog_recommendations_are_never_retired_entries(data_dir):
+    raw_catalog = _official_model_catalog()
+    retired = {
+        model["id"] for model in raw_catalog
+        if model.get("install_recommendation") is False
+    }
+    assert retired, "expected the shipped catalog to retire at least one entry"
+    catalog = [entry for entry in (normalize_catalog_entry(raw) for raw in raw_catalog) if entry]
+
+    for total_mb in (4096, 8188, 12288, 24576):
+        ranked = rank_pre_download_models(
+            catalog, _gpu(total_mb=total_mb), profile="qwen", limit=3
+        )
+        offered = {model["id"] for model in ranked}
+
+        assert not offered & retired, f"{total_mb}MB GPU was offered retired entries: {sorted(offered & retired)}"
+
+
 def test_pre_download_ranker_falls_back_to_smallest_model_without_gpu_info(data_dir):
     catalog = [
         _model(),
