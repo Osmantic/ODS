@@ -7,6 +7,7 @@ import { useState, useEffect, useRef } from 'react'
 import { DependencyBadges, DependencyConfirmDialog, DisableDependentWarning } from '../components/DependencyBadges'
 import { TemplatePicker } from '../components/TemplatePicker'
 import { getTemplateStatus } from '../lib/templates'
+import { copyText } from '../lib/clipboard'
 import { serviceUrl } from '../lib/serviceUrls'
 import { createRecoveryTracker } from '../utils/recoveryTracker'
 
@@ -1307,10 +1308,11 @@ function ConsoleModal({ ext, onClose }) {
 function CopyableCommand({ command }) {
   const [copied, setCopied] = useState(false)
 
-  const handleCopy = () => {
-    navigator.clipboard?.writeText(command)
-      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
-      .catch(() => {})
+  const handleCopy = async () => {
+    if (await copyText(command)) {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
   }
 
   return (

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { AlertCircle, ChevronDown, ChevronUp, Terminal, Copy, Check } from 'lucide-react'
+import { copyText } from '../lib/clipboard'
 
 const commonIssues = [
   {
@@ -109,10 +110,11 @@ export function TroubleshootingAssistant({ serviceStatus }) {
   const [copied, setCopied] = useState(null)
   const [search, setSearch] = useState('')
 
-  const copyToClipboard = (text, id) => {
-    navigator.clipboard.writeText(text)
-    setCopied(id)
-    setTimeout(() => setCopied(null), 2000)
+  const copyToClipboard = async (text, id) => {
+    if (await copyText(text)) {
+      setCopied(id)
+      setTimeout(() => setCopied(null), 2000)
+    }
   }
 
   const filteredIssues = search 

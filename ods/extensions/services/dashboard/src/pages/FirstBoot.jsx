@@ -21,6 +21,7 @@ import {
   MessageSquare, Workflow, Boxes, Loader2, AlertCircle, Copy,
   QrCode, Share2,
 } from 'lucide-react'
+import { copyText } from '../lib/clipboard'
 
 const PROGRESS_KEY = 'ods-firstboot-progress'
 
@@ -625,12 +626,9 @@ function DoneScreen({ invite, onDone }) {
   }, [invite.url])
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(invite.url)
+    if (await copyText(invite.url)) {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
-    } catch {
-      // Fallback: a visible input would let the user select manually.
     }
   }
 

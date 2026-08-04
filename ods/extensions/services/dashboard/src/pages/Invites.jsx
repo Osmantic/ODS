@@ -4,6 +4,7 @@ import {
   Loader2, AlertCircle, Clock, Users, KeyRound, ShieldCheck, Mic2,
   Printer, MessageSquare,
 } from 'lucide-react'
+import { copyText } from '../lib/clipboard'
 
 // Auth: nginx injects "Authorization: Bearer ${DASHBOARD_API_KEY}" via
 // proxy_set_header for all /api/ requests (see nginx.conf). All fetches
@@ -656,12 +657,9 @@ function GeneratedTokenModal({ record, onClose }) {
   }, [record.url])
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(record.url)
+    if (await copyText(record.url)) {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
-    } catch {
-      // Fallback: select the visible input manually.
     }
   }
 
