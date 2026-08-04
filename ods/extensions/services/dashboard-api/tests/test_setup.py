@@ -125,6 +125,33 @@ def test_setup_status_tolerates_corrupt_progress_file(test_client, setup_config_
     assert resp.json()["step"] == 0
 
 
+def test_setup_status_tolerates_non_object_state_files(test_client, setup_config_dir):
+    (setup_config_dir / "setup-progress.json").write_text("[]")
+    (setup_config_dir / "persona.json").write_text("[]")
+
+    resp = test_client.get("/api/setup/status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["step"] == 0
+    assert resp.json()["persona"] is None
+
+
+def test_active_persona_prompt_tolerates_invalid_value_type(
+    setup_config_dir, monkeypatch
+):
+    import routers.setup as setup_router
+
+    monkeypatch.setattr(setup_router, "SETUP_CONFIG_DIR", setup_config_dir)
+    (setup_config_dir / "persona.json").write_text(
+        json.dumps({"system_prompt": ["not", "a", "string"]})
+    )
+
+    assert (
+        setup_router.get_active_persona_prompt()
+        == setup_router.PERSONAS["general"]["system_prompt"]
+    )
+
+
 # ---------------------------------------------------------------------------
 # POST /api/setup/persona
 # ---------------------------------------------------------------------------

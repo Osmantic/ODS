@@ -35,7 +35,11 @@ def get_active_persona_prompt() -> str:
         try:
             with open(persona_file) as f:
                 data = json.load(f)
-                return data.get("system_prompt", PERSONAS["general"]["system_prompt"])
+                if isinstance(data, dict):
+                    prompt = data.get("system_prompt")
+                    if isinstance(prompt, str):
+                        return prompt
+                logger.debug("persona.json must contain a string system_prompt")
         except (FileNotFoundError, PermissionError, json.JSONDecodeError):
             logger.debug("Failed to read persona.json, using default prompt")
     return PERSONAS["general"]["system_prompt"]
@@ -52,7 +56,11 @@ async def setup_status(api_key: str = Depends(verify_api_key)):
     if progress_file.exists():
         try:
             with open(progress_file) as f:
-                step = json.load(f).get("step", 0)
+                data = json.load(f)
+                if isinstance(data, dict) and type(data.get("step")) is int:
+                    step = data["step"]
+                else:
+                    logger.debug("setup-progress.json has an invalid shape")
         except (FileNotFoundError, PermissionError, json.JSONDecodeError):
             logger.debug("Failed to read setup-progress.json")
 
@@ -61,7 +69,11 @@ async def setup_status(api_key: str = Depends(verify_api_key)):
     if persona_file.exists():
         try:
             with open(persona_file) as f:
-                persona = json.load(f).get("persona")
+                data = json.load(f)
+                if isinstance(data, dict) and isinstance(data.get("persona"), str):
+                    persona = data["persona"]
+                else:
+                    logger.debug("persona.json has an invalid shape")
         except (FileNotFoundError, PermissionError, json.JSONDecodeError):
             logger.debug("Failed to read persona.json for setup status")
 
