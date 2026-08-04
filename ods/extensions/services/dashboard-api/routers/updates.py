@@ -236,7 +236,7 @@ async def get_release_manifest():
             raise httpx.HTTPError(f"unexpected releases response: {type(releases).__name__}")
         return {
             "releases": [
-                {"version": r.get("tag_name", "").lstrip("v"), "date": r.get("published_at", ""), "title": r.get("name", ""), "changelog": r.get("body", "")[:500] + "..." if len(r.get("body", "")) > 500 else r.get("body", ""), "url": r.get("html_url", ""), "prerelease": r.get("prerelease", False)}
+                {"version": r.get("tag_name", "").lstrip("v"), "date": r.get("published_at", ""), "title": r.get("name", ""), "changelog": (r.get("body") or "")[:500] + "..." if len((r.get("body") or "")) > 500 else (r.get("body") or ""), "url": r.get("html_url", ""), "prerelease": r.get("prerelease", False)}
                 for r in releases
             ],
             "checked_at": datetime.now(timezone.utc).isoformat()

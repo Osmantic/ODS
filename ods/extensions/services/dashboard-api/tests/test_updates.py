@@ -236,6 +236,38 @@ def test_releases_manifest_with_mocked_github(test_client):
     datetime.fromisoformat(data["checked_at"])  # valid ISO-8601 (regression: no trailing "Z" after the offset)
 
 
+def test_releases_manifest_null_release_body(test_client):
+    """GET /api/releases/manifest tolerates a null release body (no TypeError)."""
+    releases = [
+        {
+            "tag_name": "v1.6.0",
+            "published_at": "2026-01-01T00:00:00Z",
+            "name": "Release 1.6.0",
+            "body": None,
+            "html_url": "https://github.com/test/releases/v1.6.0",
+            "prerelease": False,
+        }
+    ]
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = releases
+
+    async def mock_get(url, **kwargs):
+        return mock_resp
+
+    mock_client = AsyncMock()
+    mock_client.get = mock_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.updates.httpx.AsyncClient", return_value=mock_client):
+        resp = test_client.get("/api/releases/manifest", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["releases"][0]["changelog"] == ""
+
+
 def test_releases_manifest_github_error_fallback(test_client, tmp_path, monkeypatch):
     """GET /api/releases/manifest falls back to local version on httpx error."""
     import routers.updates as updates_mod
