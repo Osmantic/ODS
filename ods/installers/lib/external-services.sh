@@ -166,13 +166,36 @@ PY
         "${url}/v1/chat/completions" >/dev/null
 }
 
+# Read a single KEY=VALUE out of a .env file.
+#
+# Parses the same way lib/safe-env.sh's load_env_file does, so the installer
+# reads back exactly what it wrote:
+#
+#   - strip a trailing CR. A CRLF .env (Windows editors, the Windows
+#     installer) otherwise leaves "\r" on the value, and
+#     external_llm_validate_url rejects "http://127.0.0.1:11434\r" — the
+#     installer silently drops a valid external LLM selection on re-run.
+#   - strip only a MATCHING pair of surrounding quotes. Removing each quote
+#     type independently corrupts values that legitimately start or end with
+#     the other quote, and collapses KEY="'" to an empty string. safe-env.sh
+#     carries the same warning.
+#   - match the key literally. The previous grep treated it as a regex.
 external_llm_env_value() {
-    local env_file="${1:-}" key="${2:-}" value
-    [[ -f "$env_file" ]] || return 1
-    value="$(grep -m1 "^${key}=" "$env_file" 2>/dev/null | cut -d= -f2- || true)"
-    value="${value%\"}"
-    value="${value#\"}"
-    value="${value%\'}"
-    value="${value#\'}"
+    local env_file="${1:-}" key="${2:-}" line value=""
+    [[ -f "$env_file" && -n "$key" ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        [[ "$line" == "$key="* ]] || continue
+        value="${line#*=}"
+        break
+    done < "$env_file"
+    value="${value# }"
+    if [[ "$value" == '"'*'"' ]]; then
+        value="${value#\"}"
+        value="${value%\"}"
+    elif [[ "$value" == "'"*"'" ]]; then
+        value="${value#\'}"
+        value="${value%\'}"
+    fi
     printf '%s\n' "$value"
 }

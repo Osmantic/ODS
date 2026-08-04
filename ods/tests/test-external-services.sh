@@ -74,6 +74,53 @@ else
     pass "rejects unrelated model families"
 fi
 
+# ── external_llm_env_value: parses .env the way lib/safe-env.sh does ─────────
+
+_env_value_fixture_dir="$(mktemp -d)"
+trap 'rm -rf "$_env_value_fixture_dir"' EXIT
+
+_env_lf="$_env_value_fixture_dir/lf.env"
+cat > "$_env_lf" <<'ENVEOF'
+EXTERNAL_LLM_PROVIDER=ollama
+EXTERNAL_LLM_URL=http://127.0.0.1:11434
+EXTERNAL_LLM_MODEL="qwen3.5:9b"
+QUOTED_INNER="'literal'"
+LONE_SINGLE_QUOTE="'"
+SPACED_VALUE= lmstudio
+BASE64_PADDED=YWJjZA==
+ENVEOF
+
+assert_eq "$(external_llm_env_value "$_env_lf" EXTERNAL_LLM_URL)" \
+    "http://127.0.0.1:11434" "reads an unquoted value"
+assert_eq "$(external_llm_env_value "$_env_lf" EXTERNAL_LLM_MODEL)" \
+    "qwen3.5:9b" "strips a matching double-quote pair"
+assert_eq "$(external_llm_env_value "$_env_lf" QUOTED_INNER)" \
+    "'literal'" "keeps inner single quotes inside a double-quoted value"
+assert_eq "$(external_llm_env_value "$_env_lf" LONE_SINGLE_QUOTE)" \
+    "'" "does not collapse a double-quoted lone single quote"
+assert_eq "$(external_llm_env_value "$_env_lf" SPACED_VALUE)" \
+    "lmstudio" "drops one leading space like load_env_file"
+assert_eq "$(external_llm_env_value "$_env_lf" BASE64_PADDED)" \
+    "YWJjZA==" "keeps '=' inside values"
+assert_eq "$(external_llm_env_value "$_env_lf" NOT_PRESENT)" \
+    "" "returns empty for a key the file does not define"
+
+# A CRLF .env is what the Windows installer and Windows editors produce. A
+# trailing CR makes external_llm_validate_url reject an otherwise valid URL,
+# so the installer silently forgets the external LLM selection on re-run.
+_env_crlf="$_env_value_fixture_dir/crlf.env"
+printf 'EXTERNAL_LLM_PROVIDER=ollama\r\nEXTERNAL_LLM_URL=http://127.0.0.1:11434\r\n' > "$_env_crlf"
+assert_eq "$(external_llm_env_value "$_env_crlf" EXTERNAL_LLM_URL)" \
+    "http://127.0.0.1:11434" "strips the CR from a CRLF .env"
+assert_true "a CRLF-sourced URL still passes URL validation" \
+    external_llm_validate_url "$(external_llm_env_value "$_env_crlf" EXTERNAL_LLM_URL)"
+
+# The key is matched literally, not as a regex.
+_env_regex="$_env_value_fixture_dir/regex.env"
+printf 'EXTERNAL_LLM_URL=http://127.0.0.1:11434\nEXTERNALxLLMxURL=http://evil.invalid\n' > "$_env_regex"
+assert_eq "$(external_llm_env_value "$_env_regex" EXTERNAL_LLM_URL)" \
+    "http://127.0.0.1:11434" "matches the key literally"
+
 run_phase_case() {
     set -euo pipefail
 
