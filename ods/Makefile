@@ -83,6 +83,9 @@ test: ## Run unit and contract tests
 	@echo "=== brave-search searxng compat contract ==="
 	@bash tests/test-brave-search-searxng-compat.sh
 	@echo ""
+	@echo "=== installer background task registry ==="
+	@bash tests/test-background-tasks.sh
+	@echo ""
 	@echo "=== ods-cli pipefail tolerance ==="
 	@bash tests/test-ods-cli-pipefail-tolerance.sh
 	@echo ""
