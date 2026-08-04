@@ -2429,6 +2429,19 @@ async def token_events(request: Request):
                 # Query recent events
                 events = query_recent_events(limit=50, after_id=last_cursor)
 
+                # Advance to the highest cursor in the complete batch. SQLite's
+                # initial window is newest-first, while PostgreSQL emits a
+                # stable (timestamp, UUID) cursor; taking the maximum works for
+                # both without walking the SQLite cursor backwards.
+                batch_max_cursor = max(
+                    (
+                        event.get("_cursor", event.get("id"))
+                        for event in events
+                        if event.get("_cursor", event.get("id")) is not None
+                    ),
+                    default=None,
+                )
+
                 for event in events:
                     # Format event as SSE
                     event_data = {
@@ -2445,9 +2458,9 @@ async def token_events(request: Request):
                     }
 
                     yield f"data: {json.dumps(event_data)}\n\n"
-                    # PostgreSQL supplies a stable (timestamp, UUID) cursor.
-                    # SQLite and older backends continue to use the row ID.
-                    last_cursor = event.get("_cursor", event.get("id"))
+
+                if batch_max_cursor is not None:
+                    last_cursor = batch_max_cursor
 
                 # Heartbeat to keep connection alive
                 yield ":heartbeat\n\n"
