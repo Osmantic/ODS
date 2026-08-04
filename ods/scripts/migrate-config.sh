@@ -112,9 +112,15 @@ cmd_backup() {
     cp "${INSTALL_DIR}/docker-compose.yml" "$backup_path/" 2>&1 || cp_exit=$?
     cp -r "${INSTALL_DIR}/config" "$backup_path/" 2>&1 || cp_exit=$?
 
-    # Backup user data references
-    cp -r "${DATA_DIR}" "$backup_path/data/" 2>&1 || cp_exit=$?
-    
+    # Backup user data references. Skip the backups dir itself — it lives
+    # inside DATA_DIR, and copying the whole tree into one of its own
+    # subdirectories makes cp refuse ("cannot copy a directory into itself"),
+    # so the data backup silently fails.
+    mkdir -p "$backup_path/data"
+    while IFS= read -r -d '' entry; do
+        cp -r "$entry" "$backup_path/data/" 2>&1 || cp_exit=$?
+    done < <(find "$DATA_DIR" -mindepth 1 -maxdepth 1 ! -name backups -print0)
+
     log_success "Configuration backed up to: $backup_path"
     echo "$backup_path"
 }
