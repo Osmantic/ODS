@@ -342,6 +342,22 @@ def test_supervisor_uses_restart_cooldown_after_child_exit() -> None:
     assert_true(restarted["status"] == "starting", "restarted child should enter grace period")
 
 
+def test_timing_environment_rejects_non_finite_values() -> None:
+    ssh_app = _health_app()
+    for raw in ("nan", "NaN", "inf", "+inf", "-inf"):
+        with patched_env(ODS_TEST_SSH_TIMING=raw):
+            value = ssh_app._env_float(
+                "ODS_TEST_SSH_TIMING",
+                5.0,
+                minimum=0.1,
+            )
+        assert_true(value == 5.0, f"non-finite timing {raw!r} must use the default")
+
+    with patched_env(ODS_TEST_SSH_TIMING="0.25"):
+        value = ssh_app._env_float("ODS_TEST_SSH_TIMING", 5.0, minimum=0.1)
+    assert_true(value == 0.25, "finite timing override should be preserved")
+
+
 def test_service_source_avoids_public_secret_names() -> None:
     for path, text in _walk_service_source():
         for key in PUBLIC_SSH_SECRET_ENV:
@@ -365,6 +381,7 @@ def main() -> int:
         test_supervisor_stops_process_when_secret_custody_disappears,
         test_supervisor_restarts_process_when_route_argv_changes,
         test_supervisor_uses_restart_cooldown_after_child_exit,
+        test_timing_environment_rejects_non_finite_values,
         test_service_source_avoids_public_secret_names,
     ]
     for test in tests:
