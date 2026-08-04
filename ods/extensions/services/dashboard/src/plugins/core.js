@@ -10,6 +10,7 @@ import {
   UserPlus,
   CreditCard,
   Code,
+  Workflow,
 } from 'lucide-react'
 
 const Dashboard = lazy(() => import('../pages/Dashboard'))
@@ -21,6 +22,7 @@ const RemoteProvider = lazy(() => import('../pages/RemoteProvider'))
 const ServiceMap = lazy(() => import('../pages/ServiceMap'))
 const Invites = lazy(() => import('../pages/Invites'))
 const Usage = lazy(() => import('../pages/Usage'))
+const Workflows = lazy(() => import('../pages/Workflows'))
 
 export const coreRoutes = [
   {
@@ -63,6 +65,20 @@ export const coreRoutes = [
     getProps: () => ({}),
     sidebar: true,
     order: 2.1,
+  },
+  {
+    id: 'workflows',
+    path: '/workflows',
+    label: 'Workflows',
+    icon: Workflow,
+    component: Workflows,
+    getProps: () => ({}),
+    // Route always registered so the n8n README's install links resolve; the
+    // sidebar entry only appears once n8n is actually part of the stack.
+    sidebar: ({ status }) => (status?.services || []).some(
+      service => (service.id || '').toLowerCase() === 'n8n' && service.status !== 'not_deployed'
+    ),
+    order: 2.2,
   },
   {
     id: 'models',
