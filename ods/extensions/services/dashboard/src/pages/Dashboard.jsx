@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import PrivacyShieldCard from '../components/PrivacyShieldCard'
 import { serviceUrl } from '../lib/serviceUrls'
 
 // Compute overall health from services (excludes not_deployed from counts)
@@ -677,6 +678,14 @@ export default function Dashboard({ status, loading }) {
     () => buildServiceRows(status?.services, serviceResources?.services),
     [status?.services, serviceResources?.services]
   )
+  // Privacy Shield ships headless, so the dashboard is the only place its
+  // toggle and counters can appear — but only once it is part of the stack.
+  const privacyShieldDeployed = useMemo(
+    () => (status?.services || []).some(
+      service => (service.id || '').toLowerCase() === 'privacy-shield' && service.status !== 'not_deployed'
+    ),
+    [status?.services]
+  )
 
   if (loading) {
     return (
@@ -887,6 +896,10 @@ export default function Dashboard({ status, loading }) {
       </div>
 
       <ServicesPanel services={serviceRows} />
+
+      {/* Privacy Shield's toggle and counters have no other surface in the
+          dashboard; the card hides itself when the service is not deployed. */}
+      <PrivacyShieldCard deployed={privacyShieldDeployed} />
 
       {/* Feature Discovery is already shown at the top */}
     </div>
