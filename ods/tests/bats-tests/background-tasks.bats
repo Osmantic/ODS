@@ -207,3 +207,52 @@ print('OK')
     assert_output --partial "task-a"
     assert_output --partial "task-b"
 }
+
+# ── default registry location ───────────────────────────────────────────────
+#
+# The installer parses this registry and feeds each entry's "pid" to os.kill()
+# and each entry's "log_file" to Path(...).read_text(). A fixed path in a
+# shared /tmp is writable by every local user, so it must never be the default.
+
+@test "default registry: is never a fixed path in shared /tmp" {
+    run bash -c '
+        unset BG_TASK_REGISTRY INSTALL_DIR
+        source "$1"
+        printf "%s" "${BG_TASK_REGISTRY:-}"
+    ' bash "$BATS_TEST_DIRNAME/../../installers/lib/background-tasks.sh"
+    assert_success
+    refute_output "/tmp/ods-bg-tasks.json"
+}
+
+@test "default registry: prefers the install directory's logs" {
+    mkdir -p "$BATS_TEST_TMPDIR/install/logs"
+    run bash -c '
+        unset BG_TASK_REGISTRY
+        INSTALL_DIR="$2"
+        source "$1"
+        printf "%s" "$BG_TASK_REGISTRY"
+    ' bash "$BATS_TEST_DIRNAME/../../installers/lib/background-tasks.sh" "$BATS_TEST_TMPDIR/install"
+    assert_success
+    assert_output "$BATS_TEST_TMPDIR/install/logs/bg-tasks.json"
+}
+
+@test "default registry: falls back to a private directory owned by this user" {
+    run bash -c '
+        unset BG_TASK_REGISTRY INSTALL_DIR XDG_RUNTIME_DIR
+        TMPDIR="$2"
+        source "$1"
+        [[ -n "$BG_TASK_REGISTRY" ]] || { echo "no registry resolved"; exit 1; }
+        dir="$(dirname "$BG_TASK_REGISTRY")"
+        [[ -d "$dir" ]] || { echo "staging dir missing"; exit 1; }
+        [[ -O "$dir" ]] || { echo "staging dir not owned by this user"; exit 1; }
+        printf "%s" "$dir"
+    ' bash "$BATS_TEST_DIRNAME/../../installers/lib/background-tasks.sh" "$BATS_TEST_TMPDIR"
+    assert_success
+    assert_output --partial "$BATS_TEST_TMPDIR/ods-bg-tasks-"
+}
+
+@test "bg_task_start: refuses to track when no private registry is available" {
+    BG_TASK_REGISTRY=""
+    run bg_task_start "orphan" "12345" "No registry" "/dev/null"
+    assert_failure
+}

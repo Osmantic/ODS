@@ -12,8 +12,39 @@
 #   Add new background task types here.
 # ============================================================================
 
-# Registry file for background tasks
-BG_TASK_REGISTRY="${BG_TASK_REGISTRY:-/tmp/ods-bg-tasks.json}"
+# Registry file for background tasks.
+#
+# The registry must not live at a fixed path in a shared /tmp. Every local
+# user can write there, which lets an unprivileged account
+#   - pre-create the path as a symlink, so the `echo "[]" >` below truncates
+#     whatever it points at with this user's privileges; and
+#   - seed the JSON the installer later trusts — bg_task_status() and
+#     bg_task_summary() send each entry's "pid" to os.kill() and read each
+#     entry's "log_file" with Path(...).read_text(), so a planted registry
+#     turns phase 13 into an arbitrary-file-read that lands in the install log.
+#
+# Prefer the install directory's own logs/, which the installer already owns.
+# Before INSTALL_DIR exists, fall back to a per-user directory created with
+# umask 077 and verified to be owned by this user — the same ownership guard
+# installers/lib/model-lifecycle-lock.sh uses for its lock root.
+_ods_bg_default_registry() {
+    if [[ -n "${INSTALL_DIR:-}" && -d "${INSTALL_DIR}/logs" ]]; then
+        printf '%s/bg-tasks.json' "${INSTALL_DIR}/logs"
+        return 0
+    fi
+
+    local root="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/ods-bg-tasks-${UID:-$(id -u)}"
+    (umask 077 && mkdir -p "$root") || return 1
+    # Ownership is the guard that matters: an attacker who pre-created the
+    # directory keeps ownership, and tightening its mode for them would not
+    # make the contents trustworthy. Same check as ods_model_lifecycle_lock.
+    [[ -O "$root" ]] || return 1
+    printf '%s/bg-tasks.json' "$root"
+}
+
+if [[ -z "${BG_TASK_REGISTRY:-}" ]]; then
+    BG_TASK_REGISTRY="$(_ods_bg_default_registry)" || BG_TASK_REGISTRY=""
+fi
 
 # Start tracking a background task
 # Usage: bg_task_start <task_id> <pid> <description> <log_file>
@@ -22,12 +53,19 @@ bg_task_start() {
     local pid="$2"
     local description="$3"
     local log_file="$4"
-    
-    # Create registry if it doesn't exist
-    if [[ ! -f "$BG_TASK_REGISTRY" ]]; then
-        echo "[]" > "$BG_TASK_REGISTRY"
+
+    if [[ -z "${BG_TASK_REGISTRY:-}" ]]; then
+        declare -f ai_warn &>/dev/null && \
+            ai_warn "No private location for the background-task registry; not tracking $task_id"
+        return 1
     fi
-    
+
+    # Create registry if it doesn't exist. umask 077 so the file the installer
+    # later parses is not group/world writable.
+    if [[ ! -f "$BG_TASK_REGISTRY" ]]; then
+        (umask 077 && echo "[]" > "$BG_TASK_REGISTRY")
+    fi
+
     # Add task to registry
     python3 - "$BG_TASK_REGISTRY" "$task_id" "$pid" "$description" "$log_file" <<'PY'
 import json
