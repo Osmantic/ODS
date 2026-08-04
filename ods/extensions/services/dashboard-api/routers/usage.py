@@ -40,6 +40,25 @@ LLAMA_CPP_PROMETHEUS_METRICS = {
 _LOCAL_RUNTIME_REQUEST_STATE: dict[str, dict[str, Any]] = {}
 
 
+class TokenSpyProtocolError(ValueError):
+    """Token Spy returned JSON that violates the usage-report contract."""
+
+
+def _validated_token_spy_report(payload: Any, start: str, end: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise TokenSpyProtocolError("response root must be an object")
+    period = payload.get("period")
+    if not isinstance(period, dict) or period.get("start") != start or period.get("end") != end:
+        raise TokenSpyProtocolError("response period does not match the request")
+    if not isinstance(payload.get("summary"), dict):
+        raise TokenSpyProtocolError("response summary must be an object")
+    for field in ("daily", "models", "services", "sources"):
+        rows = payload.get(field)
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise TokenSpyProtocolError(f"response {field} must be a list of objects")
+    return payload
+
+
 def _parse_date(value: str) -> date:
     return date.fromisoformat(value)
 
@@ -384,6 +403,8 @@ async def _fetch_token_spy_report(start: str, end: str) -> dict[str, Any]:
         )
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return _empty_report(start, end, detail=f"Token Spy unavailable: {exc}")
+    except (json.JSONDecodeError, UnicodeDecodeError, TokenSpyProtocolError) as exc:
+        return _empty_report(start, end, detail=f"Token Spy returned an invalid report: {exc}")
 
 
 def _request_token_spy_report(start: str, end: str, headers: dict[str, str]) -> dict[str, Any]:
@@ -392,6 +413,7 @@ def _request_token_spy_report(start: str, end: str, headers: dict[str, str]) -> 
     request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=10) as response:
         payload = json.loads(response.read().decode("utf-8"))
+    payload = _validated_token_spy_report(payload, start, end)
     payload["source"] = {
         "name": "token-spy",
         "status": "ok",
