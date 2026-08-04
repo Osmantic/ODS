@@ -112,6 +112,27 @@ def _signed_marker(probe_id: str, key: str = "probe-secret") -> str:
     return f"[ODS_PROBE id={probe_id} sig={sig}]"
 
 
+@pytest.mark.parametrize(
+    "invalid_document",
+    [
+        [],
+        {"endpoints": [None]},
+        {"endpoints": [{"id": ["not-a-string"], "baseUrl": "http://new"}]},
+    ],
+)
+def test_endpoint_loader_retains_last_good_config(router, invalid_document):
+    mod, _client, _write_state, _calls = router
+    expected = mod._load_endpoints()
+    assert "llama-server-default" in expected
+
+    mod.ENDPOINTS_PATH.write_text(
+        json.dumps(invalid_document),
+        encoding="utf-8",
+    )
+
+    assert mod._load_endpoints() == expected
+
+
 def test_internal_key_falls_back_to_dashboard_api_key(monkeypatch):
     monkeypatch.delenv("ODS_ROUTER_INTERNAL_KEY", raising=False)
     monkeypatch.setenv("DASHBOARD_API_KEY", "dashboard-secret")

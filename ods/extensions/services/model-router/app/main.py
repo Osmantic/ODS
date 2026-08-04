@@ -330,14 +330,27 @@ def _load_endpoints() -> dict[str, dict[str, Any]]:
     endpoints: dict[str, dict[str, Any]] = {}
     try:
         raw = json.loads(ENDPOINTS_PATH.read_text(encoding="utf-8"))
-        for entry in raw.get("endpoints", []):
-            endpoint_id = str(entry.get("id") or "")
-            base_url = str(entry.get("baseUrl") or "")
+        if not isinstance(raw, dict):
+            raise ValueError("root must be a JSON object")
+        entries = raw.get("endpoints")
+        if not isinstance(entries, list):
+            raise ValueError("endpoints must be a JSON array")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError("each endpoint must be a JSON object")
+            endpoint_id = entry.get("id")
+            base_url = entry.get("baseUrl")
+            api_key_env = entry.get("apiKeyEnv", "")
+            if not all(
+                isinstance(value, str)
+                for value in (endpoint_id, base_url, api_key_env)
+            ):
+                raise ValueError("endpoint fields must be strings")
             if not endpoint_id or not base_url.startswith(("http://", "https://")):
                 continue
             endpoints[endpoint_id] = {
                 "baseUrl": base_url.rstrip("/"),
-                "apiKeyEnv": str(entry.get("apiKeyEnv") or ""),
+                "apiKeyEnv": api_key_env,
             }
     except (OSError, ValueError) as exc:
         logger.error("endpoints allowlist unreadable; retaining previous: %s", exc)
