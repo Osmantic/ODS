@@ -1318,6 +1318,49 @@ def test_jamba_reasoning_3b_catalog_profile_fits_4gb_at_agent_context(data_dir, 
     assert model["recommended"] is False
 
 
+def _auto_profile_families(gpu, **kwargs):
+    catalog = [entry for entry in (normalize_catalog_entry(raw) for raw in _official_model_catalog()) if entry]
+    ranked = rank_pre_download_models(catalog, gpu, profile="auto", limit=3, **kwargs)
+    by_id = {model["id"]: model.get("family") for model in _official_model_catalog()}
+    return [(model["id"], by_id[model["id"]]) for model in ranked]
+
+
+def test_auto_profile_resolves_to_gemma4_on_every_detected_backend(data_dir):
+    # MODEL_PROFILE=auto is a documented .env value. tier-map.sh (and its
+    # PowerShell twin) resolve it to gemma4 for every tier but CLOUD and 0, so
+    # the dashboard must not rank in the qwen lane -- which excludes the Gemma
+    # family the installer actually installed. AMD is included: the backend-based
+    # split in select-model.py never runs on an install.
+    for backend in ("nvidia", "apple", "amd", "sycl"):
+        offered = _auto_profile_families(_gpu(total_mb=24564, backend=backend))
+
+        assert offered[0][1] == "gemma4", f"{backend}: {offered}"
+        # qwen3.5-2b is the one entry both rankers keep in the Gemma lane as a
+        # tiny bootstrap fallback; nothing else from another family may appear.
+        assert all(
+            family == "gemma4" or model_id == "qwen3.5-2b-q4" for model_id, family in offered
+        ), f"{backend}: {offered}"
+
+    # An RTX 4090 running MODEL_PROFILE=auto: same pick the installer lands on
+    # once tier-map resolves auto to gemma4 (gemma-4-26b-a4b-it).
+    assert _auto_profile_families(_gpu(total_mb=24564, backend="nvidia"))[0][0] == "gemma4-26b-a4b-q4"
+
+
+def test_auto_profile_stays_in_the_qwen_lane_without_a_detected_backend(data_dir):
+    # Tier 0 is not persisted to .env; a host with no detected GPU backend is
+    # the observable half of it, and tier-map.sh sends tier 0 to qwen.
+    offered = _auto_profile_families(_gpu(total_mb=24564, backend=""))
+
+    assert all(family != "gemma4" for _, family in offered), offered
+
+
+def test_auto_profile_forces_qwen_for_cloud_installs(data_dir):
+    # The tier arm short-circuits CLOUD to qwen before the backend matters.
+    offered = _auto_profile_families(_gpu(total_mb=24564, backend="nvidia"), ods_mode="cloud")
+
+    assert all(family != "gemma4" for _, family in offered), offered
+
+
 def test_pre_download_ranker_falls_back_to_smallest_model_without_gpu_info(data_dir):
     catalog = [
         _model(),
