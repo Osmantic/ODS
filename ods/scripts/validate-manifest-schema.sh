@@ -55,20 +55,24 @@ EOF
 
 error() {
     echo -e "${RED}✗ ERROR:${NC} $*" >&2
-    ((ERRORS++)) || true
+    ERRORS=$((ERRORS + 1))
 }
 
 warn() {
     echo -e "${YELLOW}⚠ WARNING:${NC} $*" >&2
-    ((WARNINGS++)) || true
+    WARNINGS=$((WARNINGS + 1))
 }
 
 info() {
-    [[ "$VERBOSE" == "true" ]] && echo -e "${BLUE}ℹ${NC} $*"
+    if [[ "$VERBOSE" == "true" ]]; then
+        echo -e "${BLUE}ℹ${NC} $*"
+    fi
 }
 
 success() {
-    [[ "$VERBOSE" == "true" ]] && echo -e "${GREEN}✓${NC} $*"
+    if [[ "$VERBOSE" == "true" ]]; then
+        echo -e "${GREEN}✓${NC} $*"
+    fi
 }
 
 check_python_deps() {
@@ -112,50 +116,22 @@ print(schema_path)
 PYEOF
 }
 
-# Validate a single manifest
-validate_manifest() {
-    local manifest_path="$1"
-    local service_name
-    service_name=$(basename "$(dirname "$manifest_path")")
+# Validate all manifests in one Python process so jsonschema and the canonical
+# schema are loaded once, even for a full bundled + library catalog scan.
+validate_manifests() {
+    local results_file="$1"
+    shift
 
-    info "Validating: $service_name"
-
-    python3 - "$manifest_path" "$SCHEMA_PATH" "$service_name" "$VERBOSE" <<'PYEOF'
+    python3 - "$SCHEMA_PATH" "$VERBOSE" "$results_file" "$@" <<'PYEOF'
 import json
 import os
 import sys
+from pathlib import Path
 
 import jsonschema
 import yaml
 
-manifest_path, schema_path, service_name, verbose = sys.argv[1:5]
-errors = []
-warnings = []
-
-
-def report_error(message):
-    errors.append(message)
-    print(f"ERROR: {service_name}: {message}", file=sys.stderr)
-
-
-def report_warning(message):
-    warnings.append(message)
-    print(f"WARNING: {service_name}: {message}", file=sys.stderr)
-
-
-def error_path(validation_error):
-    return ".".join(str(part) for part in validation_error.path) or "<root>"
-
-
-try:
-    with open(manifest_path, encoding="utf-8") as manifest_file:
-        manifest = yaml.safe_load(manifest_file)
-except yaml.YAMLError as exc:
-    report_error(f"Invalid YAML syntax: {exc}")
-    raise SystemExit(1)
-except OSError as exc:
-    report_error(f"Cannot read manifest: {exc}")
-    raise SystemExit(1)
+schema_path, verbose, results_path, *manifest_paths = sys.argv[1:]
 
 try:
     with open(schema_path, encoding="utf-8") as schema_file:
@@ -163,43 +139,74 @@ try:
     validator_cls = jsonschema.validators.validator_for(schema)
     validator_cls.check_schema(schema)
 except (OSError, json.JSONDecodeError, jsonschema.exceptions.SchemaError) as exc:
-    report_error(f"Cannot load JSON schema: {exc}")
+    print(f"ERROR: Cannot load JSON schema: {exc}", file=sys.stderr)
     raise SystemExit(1)
 
 validator = validator_cls(schema)
-schema_errors = sorted(
-    validator.iter_errors(manifest),
-    key=lambda validation_error: [str(part) for part in validation_error.path],
-)
-for validation_error in schema_errors:
-    report_error(f"{error_path(validation_error)}: {validation_error.message}")
+with open(results_path, "w", encoding="utf-8") as results_file:
+    for manifest_path in manifest_paths:
+        service_name = Path(manifest_path).parent.name
+        errors = []
+        warnings = []
 
-# Operational warnings are intentionally non-authoritative. Structural and
-# type validity belongs exclusively to the JSON Schema above.
-if isinstance(manifest, dict):
-    service = manifest.get("service")
-    if isinstance(service, dict):
-        health = service.get("health")
-        if isinstance(health, str) and health and not health.startswith("/"):
-            report_warning(f"health should start with '/': {health}")
+        def report_error(message):
+            errors.append(message)
+            print(f"ERROR: {service_name}: {message}", file=sys.stderr)
 
-        compose_file = service.get("compose_file")
-        if isinstance(compose_file, str):
-            compose_path = os.path.join(os.path.dirname(manifest_path), compose_file)
-            if not os.path.exists(compose_path):
-                report_warning(f"compose_file not found: {compose_file}")
+        def report_warning(message):
+            warnings.append(message)
+            print(f"WARNING: {service_name}: {message}", file=sys.stderr)
 
-if verbose == "true" and not errors:
-    print(f"INFO: {service_name}: JSON schema: OK")
+        try:
+            with open(manifest_path, encoding="utf-8") as manifest_file:
+                manifest = yaml.safe_load(manifest_file)
+        except yaml.YAMLError as exc:
+            report_error(f"Invalid YAML syntax: {exc}")
+            manifest = None
+        except OSError as exc:
+            report_error(f"Cannot read manifest: {exc}")
+            manifest = None
 
-raise SystemExit(1 if errors else (2 if warnings else 0))
+        if not errors:
+            schema_errors = sorted(
+                validator.iter_errors(manifest),
+                key=lambda validation_error: [
+                    str(part) for part in validation_error.path
+                ],
+            )
+            for validation_error in schema_errors:
+                error_path = ".".join(
+                    str(part) for part in validation_error.path
+                ) or "<root>"
+                report_error(f"{error_path}: {validation_error.message}")
+
+        # Operational warnings are non-authoritative. Structural and type
+        # validity belongs exclusively to the JSON Schema above.
+        if isinstance(manifest, dict):
+            service = manifest.get("service")
+            if isinstance(service, dict):
+                health = service.get("health")
+                if (
+                    isinstance(health, str)
+                    and health
+                    and not health.startswith("/")
+                ):
+                    report_warning(f"health should start with '/': {health}")
+
+                compose_file = service.get("compose_file")
+                if isinstance(compose_file, str):
+                    compose_path = os.path.join(
+                        os.path.dirname(manifest_path), compose_file
+                    )
+                    if not os.path.exists(compose_path):
+                        report_warning(f"compose_file not found: {compose_file}")
+
+        if verbose == "true" and not errors:
+            print(f"INFO: {service_name}: JSON schema: OK")
+
+        status = "error" if errors else ("warning" if warnings else "valid")
+        print(f"{status}\t{service_name}", file=results_file)
 PYEOF
-
-    case $? in
-        0) success "$service_name: Valid"; return 0 ;;
-        1) ((ERRORS++)) || true; return 1 ;;
-        2) ((WARNINGS++)) || true; return 0 ;;
-    esac
 }
 
 # Parse args
@@ -221,6 +228,7 @@ echo "Schema: ${SCHEMA_PATH#"$ROOT_DIR/"}"
 echo ""
 
 TOTAL=0 VALID=0
+MANIFEST_PATHS=()
 IFS=':' read -r -a MANIFEST_DIR_ARRAY <<< "$MANIFEST_DIRS"
 for extensions_dir in "${MANIFEST_DIR_ARRAY[@]}"; do
     [[ -z "$extensions_dir" ]] && continue
@@ -236,10 +244,34 @@ for extensions_dir in "${MANIFEST_DIR_ARRAY[@]}"; do
             [[ -f "$dir/$name" ]] && manifest="$dir/$name" && break
         done
         [[ -z "$manifest" ]] && { warn "$(basename "$dir"): No manifest"; continue; }
-        ((TOTAL++)) || true
-        validate_manifest "$manifest" && { ((VALID++)) || true; }
+        TOTAL=$((TOTAL + 1))
+        MANIFEST_PATHS+=("$manifest")
     done
 done
+
+RESULTS_FILE="$(mktemp)"
+trap 'rm -f "$RESULTS_FILE"' EXIT
+if ! validate_manifests "$RESULTS_FILE" "${MANIFEST_PATHS[@]}"; then
+    exit 1
+fi
+while IFS=$'\t' read -r status service_name; do
+    case "$status" in
+        valid)
+            VALID=$((VALID + 1))
+            success "$service_name: Valid"
+            ;;
+        warning)
+            VALID=$((VALID + 1))
+            WARNINGS=$((WARNINGS + 1))
+            ;;
+        error)
+            ERRORS=$((ERRORS + 1))
+            ;;
+        *)
+            error "Invalid validator result for $service_name: $status"
+            ;;
+    esac
+done < "$RESULTS_FILE"
 
 # Summary
 echo ""

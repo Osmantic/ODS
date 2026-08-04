@@ -238,4 +238,17 @@ tags: [Bad_Tag]
 YAML
 check_case "tag pattern is enforced" invalid
 
+mkdir -p "$CASE_ROOT/second-case"
+cp "$CASE_ROOT/case/manifest.yaml" "$CASE_ROOT/second-case/manifest.yaml"
+set +e
+ODS_MANIFEST_DIRS="$CASE_ROOT" bash "$VALIDATOR" >"$TMP_DIR/batch.log" 2>&1
+batch_rc=$?
+set -e
+[[ $batch_rc -ne 0 ]] || fail "batch validator accepted an invalid fixture set"
+grep -q "Summary: 2 total, 0 valid, 2 errors" "$TMP_DIR/batch.log" || {
+    cat "$TMP_DIR/batch.log" >&2
+    fail "batch validator did not report every manifest"
+}
+pass "one validator run reports every manifest in the batch"
+
 echo "Manifest schema source-of-truth tests passed."
