@@ -98,15 +98,40 @@ def _parse_target(raw: str) -> Tuple[str, str]:
     if raw.startswith("tcp://"):
         return ("tcp", raw[len("tcp://") :])
 
-    # host:port shorthand
-    if ":" in raw and not raw.startswith("["):
+    # host:port shorthand, including the bracketed IPv6 literal [::1]:5432.
+    # Brackets are how an IPv6 address is written alongside a port, so a
+    # leading "[" is a TCP target, not an unsupported one.
+    if raw.startswith("[") or ":" in raw:
         return ("tcp", raw)
 
     raise ValueError("target must be http(s) URL, tcp://host:port, or host:port")
 
 
 def _parse_host_port(raw: str) -> Tuple[str, int]:
-    host, port_s = raw.rsplit(":", 1)
+    """Split host:port, including the bracketed IPv6 form [::1]:5432.
+
+    The brackets are address syntax, not part of the host. socket functions
+    take the bare address, so `[::1]` has to be unwrapped before connecting.
+    An unbracketed IPv6 literal cannot be split on the last colon at all —
+    `::1` would yield host `::` and port `1` — so it is rejected with a
+    message that names the supported form.
+    """
+    if raw.startswith("["):
+        end = raw.find("]")
+        if end == -1:
+            raise ValueError("unterminated IPv6 literal (missing ']')")
+        host = raw[1:end]
+        remainder = raw[end + 1 :]
+        if not remainder.startswith(":"):
+            raise ValueError("IPv6 target needs a port, e.g. [::1]:5432")
+        port_s = remainder[1:]
+    else:
+        if raw.count(":") != 1:
+            raise ValueError(
+                "target must be host:port; bracket IPv6 addresses, e.g. [::1]:5432"
+            )
+        host, port_s = raw.rsplit(":", 1)
+
     host = host.strip()
     if not host:
         raise ValueError("host is empty")
