@@ -798,7 +798,7 @@ _verify_macos_dashboard_host_agent() {
         return 1
     fi
 
-    for attempt in $(seq 1 20); do
+    for (( attempt = 1; attempt <= 20; attempt++ )); do
         if docker exec ods-dashboard-api curl -fsS --max-time 2 \
             -H "Authorization: Bearer ${api_key}" \
             "http://${host}:${port}/v1/model/status" >/dev/null 2>&1; then
@@ -887,7 +887,7 @@ _ensure_colima_private_network() {
     fi
 
     local attempt
-    for attempt in $(seq 1 60); do
+    for (( attempt = 1; attempt <= 60; attempt++ )); do
         docker info >/dev/null 2>&1 && break
         sleep 1
     done
@@ -2705,7 +2705,7 @@ for service in (data.get("services") or {}).values():
 
     if $ENABLE_HERMES; then
         _hermes_running=false
-        for _hermes_wait_i in $(seq 1 90); do
+        for (( _hermes_wait_i = 1; _hermes_wait_i <= 90; _hermes_wait_i++ )); do
             if [[ "$(docker inspect --format '{{.State.Status}}' ods-hermes 2>/dev/null || true)" == "running" ]]; then
                 _hermes_running=true
                 break
@@ -2718,7 +2718,7 @@ for service in (data.get("services") or {}).values():
         fi
 
         _hermes_live_verified=false
-        for _hermes_wait_i in $(seq 1 90); do
+        for (( _hermes_wait_i = 1; _hermes_wait_i <= 90; _hermes_wait_i++ )); do
             _hermes_patch_rc=0
             _macos_patch_hermes_persisted_config \
                 "$_hermes_model" "$_hermes_base_url" "$MAX_CONTEXT" \
@@ -2739,7 +2739,7 @@ for service in (data.get("services") or {}).values():
             exit 1
         fi
         _hermes_restarted_healthy=false
-        for _hermes_wait_i in $(seq 1 180); do
+        for (( _hermes_wait_i = 1; _hermes_wait_i <= 180; _hermes_wait_i++ )); do
             if [[ "$(docker inspect --format '{{.State.Health.Status}}' ods-hermes 2>/dev/null || true)" == "healthy" ]]; then
                 _hermes_restarted_healthy=true
                 break
@@ -3130,7 +3130,7 @@ if $CLOUD_MODE; then
     [[ "$_cloud_health_port" =~ ^[0-9]+$ ]] || _cloud_health_port="4000"
     _cloud_auth_ok=false
     if [[ -n "$_cloud_health_key" ]]; then
-        for _cloud_health_i in $(seq 1 30); do
+        for (( _cloud_health_i = 1; _cloud_health_i <= 30; _cloud_health_i++ )); do
             if curl -fsS --connect-timeout 2 --max-time 5 \
                 -H "Authorization: Bearer ${_cloud_health_key}" \
                 "http://${_cloud_health_host}:${_cloud_health_port}/v1/models" \
@@ -3213,7 +3213,7 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
 
     # Step 1: wait briefly for the models API to be ready (max 15s).
     _stt_api_ready=false
-    for _i in $(seq 1 15); do
+    for (( _i = 1; _i <= 15; _i++ )); do
         if curl -sf --max-time 2 "${WHISPER_URL}/v1/models" &>/dev/null; then
             _stt_api_ready=true
             break

@@ -67,7 +67,7 @@ BRIDGE_PLIST_EOF
         return 1
     fi
     launchctl kickstart -k "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
-    for _ in $(seq 1 30); do
+    for (( _ = 1; _ <= 30; _++ )); do
         if "$bridge_python" -c \
             'import socket, sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), 1).close()' \
             "$listen_host" "$listen_port" >/dev/null 2>&1; then

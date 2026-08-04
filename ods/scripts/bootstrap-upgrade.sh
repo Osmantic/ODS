@@ -418,7 +418,7 @@ restore_docker_llama_server_after_swap_failure() {
 
     [[ -n "$health_url" ]] || return 0
     log "Waiting for restored llama-server health at $health_url ..."
-    for _rollback_i in $(seq 1 60); do
+    for (( _rollback_i = 1; _rollback_i <= 60; _rollback_i++ )); do
         if curl -sf --max-time 5 "$health_url" >/dev/null 2>&1; then
             rollback_healthy=true
             break
@@ -1047,7 +1047,7 @@ restart_windows_lemonade_with_full_model() {
     # budget as the llama.cpp warm-up path; override with ODS_LEMONADE_SWAP_ATTEMPTS.
     _swap_attempts="${ODS_LEMONADE_SWAP_ATTEMPTS:-60}"
     case "$_swap_attempts" in ''|*[!0-9]*|0) _swap_attempts=60 ;; esac
-    for _i in $(seq 1 "$_swap_attempts"); do
+    for (( _i = 1; _i <= _swap_attempts; _i++ )); do
         if curl -sf --max-time 5 "http://127.0.0.1:${lemonade_port}/api/v1/models" 2>/dev/null \
             | grep -q "\"id\"[[:space:]]*:[[:space:]]*\"${model_id}\""; then
             if curl -sf --max-time 240 -X POST \
@@ -1553,7 +1553,7 @@ verify_windows_lemonade_downstream_route() {
     case "$request_timeout" in ''|*[!0-9]*|0) request_timeout=120 ;; esac
 
     log "Verifying ${route_label} through the configured downstream route: ${route_base}"
-    for _route_i in $(seq 1 "$attempts"); do
+    for (( _route_i = 1; _route_i <= attempts; _route_i++ )); do
         if [[ "$route_mode" == "container" ]]; then
             if $DOCKER_CMD exec "$route_container" curl -sf --max-time "$request_timeout" -X POST \
                 "$route_url" \
@@ -1592,7 +1592,7 @@ verify_model_completion_route() {
     case "$request_timeout" in ''|*[!0-9]*|0) request_timeout=120 ;; esac
 
     log "Verifying ${route_label} with an exact-model completion through ${route_base}..."
-    for _route_i in $(seq 1 "$attempts"); do
+    for (( _route_i = 1; _route_i <= attempts; _route_i++ )); do
         if [[ -n "$route_key" ]]; then
             response="$(curl -fsS --max-time "$request_timeout" -X POST \
                 "${route_base%/}/chat/completions" \
@@ -1853,7 +1853,7 @@ refresh_lemonade_after_bootstrap_cleanup() {
     fi
     old_model_id="extra.${BOOTSTRAP_GGUF//\"/\\\"}"
 
-    for _i in $(seq 1 60); do
+    for (( _i = 1; _i <= 60; _i++ )); do
         models_json="$(curl -sf --max-time 5 "http://127.0.0.1:${lemonade_port}/api/v1/models" 2>/dev/null || true)"
         if json_has_id "$models_json" "$model_id" && ! json_has_id "$models_json" "$old_model_id"; then
             if curl -sf --max-time 240 -X POST \
@@ -1879,7 +1879,7 @@ monitor_download() {
     local part_file="$1" total_bytes="$2"
 
     # Wait for curl to create the .part file (up to 30s)
-    for _wait in $(seq 1 30); do
+    for (( _wait = 1; _wait <= 30; _wait++ )); do
         [[ -f "$part_file" ]] && break
         sleep 1
     done
@@ -2480,7 +2480,7 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
     _healthy=false
     _warmup_sent=false
     _failed_state_attempts=0
-    for _i in $(seq 1 "$_bootstrap_health_attempts"); do
+    for (( _i = 1; _i <= _bootstrap_health_attempts; _i++ )); do
         _resp=$(curl -sf --max-time 5 "$_health_url" 2>/dev/null || echo "")
         if [[ -n "$_resp" ]]; then
             if [[ "$_gpu_backend" == "amd" ]]; then
@@ -2871,7 +2871,7 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
             # broken Hermes doesn't stall the script forever.
             log "Pre-warming Hermes system prompt (caches 14K-token prefill)..."
             _hermes_ready=false
-            for _i in $(seq 1 30); do
+            for (( _i = 1; _i <= 30; _i++ )); do
                 if $DOCKER_CMD exec ods-hermes curl -sf --max-time 3 http://127.0.0.1:9119/api/status >/dev/null 2>&1; then
                     _hermes_ready=true
                     break
@@ -2998,7 +2998,7 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             # Wait for health
             log "Waiting for native llama-server health..."
             _healthy=false
-            for _i in $(seq 1 60); do
+            for (( _i = 1; _i <= 60; _i++ )); do
                 if curl -sf --max-time 5 "http://127.0.0.1:${_native_port}/health" &>/dev/null; then
                     _healthy=true
                     break

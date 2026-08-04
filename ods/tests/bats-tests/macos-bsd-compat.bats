@@ -104,3 +104,14 @@ EOF
     run grep -F "sort -V" "$REPO_ROOT/scripts/migrate-config.sh"
     assert_failure
 }
+
+@test "macOS runtime paths do not depend on the non-system seq command" {
+    local path
+    for path in \
+        "$REPO_ROOT/installers/macos/install-macos.sh" \
+        "$REPO_ROOT/installers/macos/lib/bridge-manager.sh" \
+        "$REPO_ROOT/scripts/bootstrap-upgrade.sh"; do
+        run grep -E '(^|[;&|[:space:]])seq[[:space:]]' "$path"
+        assert_failure
+    done
+}
