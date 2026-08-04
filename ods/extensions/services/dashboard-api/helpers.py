@@ -818,7 +818,7 @@ def get_model_info() -> Optional[ModelInfo]:
     if env_path.exists():
         try:
             env_values = {}
-            with open(env_path) as f:
+            with open(env_path, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     if "=" not in line or line.lstrip().startswith("#"):
                         continue
@@ -908,7 +908,7 @@ def get_bootstrap_status() -> BootstrapStatus:
         return BootstrapStatus(active=False)
 
     try:
-        with open(status_file) as f:
+        with open(status_file, encoding="utf-8", errors="replace") as f:
             data = json.load(f)
 
         status = data.get("status", "")

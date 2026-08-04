@@ -148,6 +148,16 @@ class TestGetModelInfo:
 # --- get_bootstrap_status ---
 
 
+    def test_tolerates_non_utf8_env_file(self, install_dir):
+        # A .env with non-UTF-8 bytes (e.g. written by a legacy Windows
+        # editor) must not crash get_model_info with UnicodeDecodeError.
+        env_file = install_dir / ".env"
+        env_file.write_bytes(b"LLM_MODEL=Qwen2.5-7B-Instruct" + bytes([10, 35, 32, 255, 10]))
+
+        info = get_model_info()
+        assert info is not None
+        assert info.name == "Qwen2.5-7B-Instruct"
+
 class TestGetBootstrapStatus:
 
     def test_inactive_when_no_file(self, data_dir):
@@ -282,6 +292,14 @@ class TestGetBootstrapStatus:
 
 # --- _update_lifetime_tokens ---
 
+
+    def test_tolerates_non_utf8_status_file(self, data_dir):
+        status_file = data_dir / "bootstrap-status.json"
+        status_file.write_bytes(b'{"status": "complete", "note": "' + bytes([255]) + b'"}')
+
+        status = get_bootstrap_status()
+        assert isinstance(status, BootstrapStatus)
+        assert status.active is False
 
 class TestUpdateLifetimeTokens:
 
