@@ -153,3 +153,105 @@ def test_callback_enqueues_without_waiting_for_token_spy(monkeypatch):
             pass
 
     asyncio.run(scenario())
+
+
+def test_worker_restart_reuses_shared_client(monkeypatch):
+    """Regression for #2336: task restarts must not create a new AsyncClient."""
+    monkeypatch.setenv("TOKEN_SPY_URL", "http://token-spy:8080")
+    monkeypatch.setenv("TOKEN_SPY_API_KEY", "shared-secret")
+    monkeypatch.setenv("ODS_MODEL_SWITCHBOARD", "observe")
+    callback = load_callback(monkeypatch)
+    instance = callback.ODSTokenSpyCallback()
+
+    async def scenario():
+        wait = asyncio.Event()
+
+        async def idle_worker():
+            await wait.wait()
+
+        instance._run = idle_worker
+
+        # First log call — creates the worker and the shared client.
+        await instance.async_log_success_event(
+            {"model": "default", "messages": []},
+            {"model": "m.gguf", "usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+            1.0, 2.0,
+        )
+        first_client = instance._client
+
+        # Cancel the worker (simulates a LiteLLM reload or asyncio cancellation).
+        instance.worker.cancel()
+        try:
+            await instance.worker
+        except asyncio.CancelledError:
+            pass
+
+        # Second log call after the worker is done — must reuse the SAME client.
+        await instance.async_log_success_event(
+            {"model": "default", "messages": []},
+            {"model": "m.gguf", "usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+            1.0, 2.0,
+        )
+        assert instance._client is first_client, (
+            "shared client must be reused across worker restarts — not recreated"
+        )
+        instance.worker.cancel()
+        try:
+            await instance.worker
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(scenario())
+
+
+def test_get_client_recreates_after_close(monkeypatch):
+    """Regression for #2336: _get_client must create a fresh client if the previous one is closed."""
+    monkeypatch.setenv("TOKEN_SPY_URL", "http://token-spy:8080")
+    monkeypatch.setenv("TOKEN_SPY_API_KEY", "shared-secret")
+    callback = load_callback(monkeypatch)
+    instance = callback.ODSTokenSpyCallback()
+
+    async def scenario():
+        first = instance._get_client()
+        await first.aclose()
+        second = instance._get_client()
+        assert second is not first, "a new client must be created after the previous one is closed"
+        assert not second.is_closed
+        await second.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_async_shutdown_closes_client_and_cancels_worker(monkeypatch):
+    """Regression for #2336: async_shutdown must cleanly cancel the worker and close the client."""
+    monkeypatch.setenv("TOKEN_SPY_URL", "http://token-spy:8080")
+    monkeypatch.setenv("TOKEN_SPY_API_KEY", "shared-secret")
+    monkeypatch.setenv("ODS_MODEL_SWITCHBOARD", "observe")
+    callback = load_callback(monkeypatch)
+    instance = callback.ODSTokenSpyCallback()
+
+    async def scenario():
+        wait = asyncio.Event()
+
+        async def idle_worker():
+            await wait.wait()
+
+        instance._run = idle_worker
+        await instance.async_log_success_event(
+            {"model": "default", "messages": []},
+            {"model": "m.gguf", "usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+            1.0, 2.0,
+        )
+        assert instance.worker is not None
+        # Prime the shared client manually (mirrors what the real _run does on start).
+        instance._get_client()
+        assert instance._client is not None
+
+        await instance.async_shutdown()
+
+        assert instance.worker.done(), "worker task must be done after shutdown"
+        assert instance._client is None, "shared client must be set to None after shutdown"
+
+    asyncio.run(scenario())
+
+

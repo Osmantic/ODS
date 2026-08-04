@@ -165,6 +165,20 @@ class ODSTokenSpyCallback(CustomLogger):
         )
         self.worker: asyncio.Task[None] | None = None
         self.last_warning = 0.0
+        # Persistent client — created once, shared across all worker restarts so
+        # that cancelled tasks never abandon open TCP connections or FDs.
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Return the shared AsyncClient, creating it if necessary."""
+        timeout = max(
+            0.1, float(os.environ.get("ODS_LITELLM_TELEMETRY_TIMEOUT", "3"))
+        )
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                follow_redirects=False, timeout=timeout
+            )
+        return self._client
 
     async def async_log_success_event(
         self,
@@ -192,29 +206,36 @@ class ODSTokenSpyCallback(CustomLogger):
             self._warn("Token Spy callback queue is full; dropping event")
 
     async def _run(self) -> None:
-        timeout = max(
-            0.1, float(os.environ.get("ODS_LITELLM_TELEMETRY_TIMEOUT", "3"))
-        )
-        async with httpx.AsyncClient(
-            follow_redirects=False, timeout=timeout
-        ) as client:
-            while True:
-                event = await self.queue.get()
-                try:
-                    response = await client.post(
-                        f"{self.url}/api/ingest/routed",
-                        json=event,
-                        headers={"Authorization": f"Bearer {self.api_key}"},
+        client = self._get_client()
+        while True:
+            event = await self.queue.get()
+            try:
+                response = await client.post(
+                    f"{self.url}/api/ingest/routed",
+                    json=event,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                )
+                if response.status_code != 202:
+                    self._warn(
+                        "Token Spy rejected LiteLLM telemetry "
+                        f"with HTTP {response.status_code}"
                     )
-                    if response.status_code != 202:
-                        self._warn(
-                            "Token Spy rejected LiteLLM telemetry "
-                            f"with HTTP {response.status_code}"
-                        )
-                except (httpx.HTTPError, RuntimeError) as exc:
-                    self._warn(f"Token Spy telemetry unavailable: {exc}")
-                finally:
-                    self.queue.task_done()
+            except (httpx.HTTPError, RuntimeError) as exc:
+                self._warn(f"Token Spy telemetry unavailable: {exc}")
+            finally:
+                self.queue.task_done()
+
+    async def async_shutdown(self) -> None:
+        """Cancel the worker task and close the shared HTTP client cleanly."""
+        if self.worker is not None and not self.worker.done():
+            self.worker.cancel()
+            try:
+                await self.worker
+            except asyncio.CancelledError:
+                pass
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     def _warn(self, message: str) -> None:
         now = time.monotonic()
@@ -224,3 +245,4 @@ class ODSTokenSpyCallback(CustomLogger):
 
 
 ods_token_spy_callback = ODSTokenSpyCallback()
+
