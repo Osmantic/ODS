@@ -1186,3 +1186,47 @@ def test_ods_talk_hermes_timeout_is_env_configurable(monkeypatch):
 
     monkeypatch.setenv("ODS_TALK_HERMES_TIMEOUT", "5")
     assert hermes_bridge._request_timeout() == 10
+
+
+def test_vision_stream_tolerates_empty_choices_chunk(monkeypatch):
+    """_stream_vision_chat skips keepalive/role chunks whose choices array is
+    empty instead of crashing the SSE stream with IndexError."""
+    import asyncio
+    import json
+
+    from unittest.mock import AsyncMock, Mock, patch
+
+    from routers.talk import _stream_vision_chat
+
+    async def fake_aiter_lines():
+        yield 'data: {"choices": []}'
+        yield 'data: {"choices": [{"delta": {"content": "Red"}}]}'
+        yield "data: [DONE]"
+
+    mock_resp = AsyncMock()
+    mock_resp.status_code = 200
+    mock_resp.aiter_lines = fake_aiter_lines
+
+    mock_cm = AsyncMock()
+    mock_cm.__aenter__.return_value = mock_resp
+    mock_cm.__aexit__.return_value = False
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = False
+    mock_client.stream = Mock(return_value=mock_cm)
+
+    async def consume():
+        events = []
+        async for ev in _stream_vision_chat(b"fake", "image/png", "what is this?"):
+            events.append(json.loads(ev.decode("utf-8")[5:]))
+        return events
+
+    with patch("routers.talk.httpx.AsyncClient", return_value=mock_client):
+        events = asyncio.run(consume())
+
+    texts = [e["text"] for e in events if e["type"] == "delta"]
+    assert "Red" in texts
+    assert any(e["type"] == "complete" for e in events)
+    assert any(e["type"] == "done" for e in events)
+

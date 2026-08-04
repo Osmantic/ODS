@@ -230,7 +230,7 @@ async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text
                         chunk = json.loads(payload_str)
                     except json.JSONDecodeError:
                         continue
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    delta = (chunk.get("choices") or [{}])[0].get("delta", {})
                     text = delta.get("content")
                     if isinstance(text, str) and text:
                         accumulated.append(text)
