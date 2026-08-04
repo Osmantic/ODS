@@ -439,12 +439,18 @@ restore_config() {
     done
 
     if [[ -d "$backup_dir/config" ]]; then
-        restored_any=true
-        if [[ -d "$ODS_DIR/config" ]]; then
-            rm -rf "$ODS_DIR/config"
+        # Only replace the live config when the backup actually has content;
+        # an empty or truncated backup config dir must not wipe the live one.
+        if [[ "$(find "$backup_dir/config" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" != "0" ]]; then
+            restored_any=true
+            if [[ -d "$ODS_DIR/config" ]]; then
+                rm -rf "$ODS_DIR/config"
+            fi
+            cp -r "$backup_dir/config" "$ODS_DIR/"
+            log_success "Restored: config/"
+        else
+            log_warn "Skipped config/ (backup config dir is empty)"
         fi
-        cp -r "$backup_dir/config" "$ODS_DIR/"
-        log_success "Restored: config/"
     else
         log_warn "Skipped (not in backup): config/"
     fi
