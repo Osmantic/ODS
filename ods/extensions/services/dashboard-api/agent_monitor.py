@@ -47,6 +47,13 @@ class ClusterStatus:
         self.total_gpus = 0
         self.active_gpus = 0
 
+    def _mark_unavailable(self) -> None:
+        """Discard a previous snapshot when the current probe is unusable."""
+        self.nodes = []
+        self.total_gpus = 0
+        self.active_gpus = 0
+        self.failover_ready = False
+
     async def refresh(self):
         """Query cluster status from smart proxy"""
         logger.debug("Refreshing cluster status from proxy")
@@ -60,21 +67,40 @@ class ClusterStatus:
 
             if proc.returncode == 0:
                 data = json.loads(stdout.decode())
-                self.nodes = data.get("nodes", [])
+                if not isinstance(data, dict) or not isinstance(data.get("nodes"), list):
+                    logger.warning("Cluster proxy returned an unexpected response shape")
+                    self._mark_unavailable()
+                    return
+                nodes = data["nodes"]
+                if any(
+                    not isinstance(node, dict)
+                    or not isinstance(node.get("healthy", False), bool)
+                    for node in nodes
+                ):
+                    logger.warning("Cluster proxy returned invalid node metadata")
+                    self._mark_unavailable()
+                    return
+                self.nodes = nodes
                 self.total_gpus = len(self.nodes)
-                self.active_gpus = sum(1 for n in self.nodes if n.get("healthy", False))
+                self.active_gpus = sum(1 for n in self.nodes if n.get("healthy") is True)
                 self.failover_ready = self.active_gpus > 1
                 logger.debug("Cluster status: %d/%d GPUs active, failover_ready=%s",
                            self.active_gpus, self.total_gpus, self.failover_ready)
+            else:
+                self._mark_unavailable()
         except FileNotFoundError:
+            self._mark_unavailable()
             logger.debug("Cluster proxy not available: curl command not found")
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
+            self._mark_unavailable()
             logger.debug("Cluster proxy health check timed out after 5s")
         except OSError as e:
+            self._mark_unavailable()
             logger.debug("Cluster proxy connection failed: %s", e)
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            self._mark_unavailable()
             logger.warning("Cluster proxy returned invalid JSON: %s", e)
 
     def to_dict(self) -> dict:

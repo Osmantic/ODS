@@ -283,6 +283,10 @@ class TestClusterStatusRefresh:
     async def test_refresh_invalid_json(self):
         """ClusterStatus.refresh handles invalid JSON."""
         cs = ClusterStatus()
+        cs.nodes = [{"id": "stale", "healthy": True}]
+        cs.total_gpus = 1
+        cs.active_gpus = 1
+        cs.failover_ready = True
 
         async def _fake_subprocess(*args, **kwargs):
             proc = MagicMock()
@@ -294,6 +298,47 @@ class TestClusterStatusRefresh:
             await cs.refresh()
 
         assert cs.total_gpus == 0
+        assert cs.nodes == []
+        assert cs.active_gpus == 0
+        assert cs.failover_ready is False
+
+    @pytest.mark.asyncio
+    async def test_refresh_rejects_invalid_node_shape(self):
+        """A malformed successful response must not preserve a stale snapshot."""
+        cs = ClusterStatus()
+        cs.nodes = [{"id": "stale", "healthy": True}]
+        cs.total_gpus = 1
+        cs.active_gpus = 1
+
+        async def _fake_subprocess(*args, **kwargs):
+            proc = MagicMock()
+            proc.communicate = AsyncMock(return_value=(b'{"nodes": ["not-an-object"]}', b""))
+            proc.returncode = 0
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=_fake_subprocess):
+            await cs.refresh()
+
+        assert cs.nodes == []
+        assert cs.total_gpus == 0
+        assert cs.active_gpus == 0
+
+    @pytest.mark.asyncio
+    async def test_refresh_rejects_non_boolean_health(self):
+        """String health values must not be counted as active GPUs."""
+        cs = ClusterStatus()
+
+        async def _fake_subprocess(*args, **kwargs):
+            proc = MagicMock()
+            proc.communicate = AsyncMock(return_value=(b'{"nodes": [{"healthy": "false"}]}', b""))
+            proc.returncode = 0
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=_fake_subprocess):
+            await cs.refresh()
+
+        assert cs.nodes == []
+        assert cs.active_gpus == 0
 
 
 class TestGetFullAgentMetrics:
