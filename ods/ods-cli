@@ -4691,22 +4691,11 @@ cmd_restore() {
 
 cmd_rollback() {
     check_install
-    cd "$INSTALL_DIR"
-    load_env
 
-    if [[ ! -f "$INSTALL_DIR/.last-backup-id" ]]; then
-        error "No rollback point found. Rollback is only available after a failed update."
+    if [[ ! -x "$INSTALL_DIR/ods-update.sh" ]]; then
+        error "ods-update.sh not found or not executable"
     fi
 
-    local backup_id
-    backup_id=$(cat "$INSTALL_DIR/.last-backup-id")
-
-    if [[ -z "$backup_id" ]]; then
-        error "Invalid rollback point (empty backup ID)"
-    fi
-
-    log "Rolling back to pre-update state (backup: $backup_id)..."
-    echo ""
     warn "This will restore configuration from before the last update."
     read -p "Continue with rollback? [y/N] " -n 1 -r
     echo ""
@@ -4716,32 +4705,13 @@ cmd_rollback() {
         return 0
     fi
 
-    # Stop services before rollback
-    log "Stopping services..."
-    local flags_str
-    flags_str=$(get_compose_flags)
-    local -a flags
-    read -ra flags <<< "$flags_str"
-    docker compose "${flags[@]}" down 2>/dev/null || true
-
-    # Restore from backup
-    if "$INSTALL_DIR/ods-restore.sh" "$backup_id"; then
-        success "Configuration restored from backup: $backup_id"
-
-        # Restart services with restored configuration
-        log "Restarting services with restored configuration..."
-        if docker compose "${flags[@]}" up -d; then
-            success "Rollback complete"
-            rm -f "$INSTALL_DIR/.last-backup-id"
-
-            log "Checking service health..."
-            sleep 5
-            cmd_status
-        else
-            error "Failed to restart services after rollback. Check 'docker compose logs' for details."
-        fi
+    # Delegate to ods-update.sh, which resolves the most recent pre-update-*
+    # snapshot (created during every update), stops the stack, restores the
+    # snapshot, and brings services back up with the restored configuration.
+    if "$INSTALL_DIR/ods-update.sh" rollback "$@"; then
+        success "Rollback complete"
     else
-        error "Failed to restore from backup. Your system may be in an inconsistent state."
+        error "Rollback failed. Check 'ods-update.sh rollback' for details."
     fi
 }
 
