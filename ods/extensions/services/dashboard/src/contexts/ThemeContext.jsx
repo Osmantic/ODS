@@ -12,15 +12,32 @@ const DEFAULT_THEME = 'ods'
 
 const ThemeContext = createContext(null)
 
+function readStoredTheme() {
+  try {
+    return globalThis.localStorage?.getItem(STORAGE_KEY)
+  } catch (error) {
+    if (error instanceof globalThis.DOMException) return null
+    throw error
+  }
+}
+
+function persistTheme(theme) {
+  try {
+    globalThis.localStorage?.setItem(STORAGE_KEY, theme)
+  } catch (error) {
+    if (!(error instanceof globalThis.DOMException)) throw error
+  }
+}
+
 export function ThemeProvider({ children }) {
   const [theme, setThemeState] = useState(() => {
-    const stored = localStorage.getItem(STORAGE_KEY)
+    const stored = readStoredTheme()
     return THEMES.includes(stored) ? stored : DEFAULT_THEME
   })
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
-    localStorage.setItem(STORAGE_KEY, theme)
+    persistTheme(theme)
   }, [theme])
 
   const setTheme = useCallback((t) => {
