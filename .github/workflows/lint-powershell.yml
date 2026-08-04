@@ -88,6 +88,10 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-python-resolver.ps1
 
+      - name: Windows Disk Preflight Contract
+        shell: pwsh
+        run: ./tests/test-windows-disk-preflight.ps1
+
       - name: Windows Runtime Recovery Contract
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1

@@ -158,6 +158,28 @@ function Test-WindowsODSLemonadeOwnsPort {
     }).Count
 }
 
+function Get-WindowsModelDiskRequirementGB {
+    <#
+    .SYNOPSIS
+        Disk requirement for the tier, raised to fit the selected model.
+    .DESCRIPTION
+        The per-tier minimums assume the tier map's own model. The catalog
+        selector can promote a larger one, so the download would exceed a
+        minimum that already passed. Mirrors the model-aware recheck in
+        installers/phases/04-requirements.sh and installers/macos/
+        install-macos.sh: model size rounded up to GB plus 15GB for Docker
+        image layers. Never returns less than the tier minimum.
+    #>
+    param(
+        [int]$ModelSizeMB,
+        [int]$TierMinimumGB
+    )
+
+    if ($ModelSizeMB -le 0) { return $TierMinimumGB }
+    $modelGB = [int][Math]::Ceiling($ModelSizeMB / 1024.0)
+    return [Math]::Max($TierMinimumGB, $modelGB + 15)
+}
+
 function Stop-WindowsODSLemonadePortConflicts {
     <#
     .SYNOPSIS
@@ -246,6 +268,20 @@ $_minDiskGB = switch ($selectedTier) {
     "0"          {  15 }
     "CLOUD"      {  10 }
     default      {  30 }
+}
+
+# The catalog selector may promote a model larger than the one the tier
+# minimum was sized for, so require room for whatever was actually selected.
+$_selectedModelSizeMB = 0
+if ($tierConfig -and $tierConfig.ModelSizeMB) {
+    $_selectedModelSizeMB = [int]$tierConfig.ModelSizeMB
+}
+$_tierMinDiskGB = $_minDiskGB
+$_minDiskGB = Get-WindowsModelDiskRequirementGB `
+    -ModelSizeMB $_selectedModelSizeMB `
+    -TierMinimumGB $_tierMinDiskGB
+if ($_minDiskGB -gt $_tierMinDiskGB) {
+    Write-AI "Disk: selected model is $([Math]::Ceiling($_selectedModelSizeMB / 1024.0)) GB, raising the requirement to ${_minDiskGB} GB."
 }
 
 $_diskCheck = Test-DiskSpace -Path $installDir -RequiredGB $_minDiskGB
