@@ -9,10 +9,21 @@
 #   ods_compose_external_images <compose-cmd> [compose flags...]
 # ============================================================================
 
+# Resolve the interpreter to run the JSON filter below.
+#
+# ODS_PYTHON_CMD is a *command*, not necessarily a path: install-macos.sh's
+# _set_installer_python_cmd and scripts/pre-download.sh both export the plain
+# name "python3" as often as they export a venv path. Testing only `-x` made
+# the name form fail the check, so the interpreter the installer deliberately
+# selected was silently ignored in favour of whatever `command -v python3`
+# finds first — which lib/python-cmd.sh exists to avoid, because on Windows
+# that can be a non-functional Microsoft Store alias.
 _ods_compose_python_cmd() {
-    if [[ -n "${ODS_PYTHON_CMD:-}" && -x "${ODS_PYTHON_CMD:-}" ]]; then
-        printf '%s\n' "$ODS_PYTHON_CMD"
-        return 0
+    if [[ -n "${ODS_PYTHON_CMD:-}" ]]; then
+        if [[ -x "$ODS_PYTHON_CMD" ]] || command -v "$ODS_PYTHON_CMD" >/dev/null 2>&1; then
+            printf '%s\n' "$ODS_PYTHON_CMD"
+            return 0
+        fi
     fi
     command -v python3 2>/dev/null || command -v python 2>/dev/null || return 1
 }

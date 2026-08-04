@@ -78,6 +78,44 @@ chmod +x "$TMP_DIR/docker"
 
 source "$ROOT_DIR/installers/lib/compose-images.sh"
 
+# ── ODS_PYTHON_CMD resolution ────────────────────────────────────────────────
+#
+# ODS_PYTHON_CMD is a command, not necessarily a path. install-macos.sh and
+# scripts/pre-download.sh export the plain name "python3" as readily as a venv
+# path, so both forms must resolve to the interpreter the installer chose.
+
+mkdir -p "$TMP_DIR/pybin"
+cat > "$TMP_DIR/pybin/chosen-python" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$TMP_DIR/pybin/chosen-python"
+
+resolved="$(ODS_PYTHON_CMD="$TMP_DIR/pybin/chosen-python" _ods_compose_python_cmd)"
+if [[ "$resolved" == "$TMP_DIR/pybin/chosen-python" ]]; then
+    pass "honours ODS_PYTHON_CMD given as an absolute path"
+else
+    fail "honours ODS_PYTHON_CMD given as an absolute path"
+    echo "    resolved: $resolved"
+fi
+
+resolved="$(PATH="$TMP_DIR/pybin:$PATH" ODS_PYTHON_CMD="chosen-python" _ods_compose_python_cmd)"
+if [[ "$resolved" == "chosen-python" ]]; then
+    pass "honours ODS_PYTHON_CMD given as a command name on PATH"
+else
+    fail "honours ODS_PYTHON_CMD given as a command name on PATH"
+    echo "    resolved: $resolved"
+fi
+
+resolved="$(ODS_PYTHON_CMD="definitely-not-on-path-$$" _ods_compose_python_cmd || true)"
+if [[ "$resolved" != "definitely-not-on-path-$$" ]]; then
+    pass "falls back when ODS_PYTHON_CMD names nothing runnable"
+else
+    fail "falls back when ODS_PYTHON_CMD names nothing runnable"
+    echo "    resolved: $resolved"
+fi
+
+
 out="$TMP_DIR/images.out"
 ods_compose_external_images "$TMP_DIR/docker compose" -f docker-compose.base.yml > "$out"
 
