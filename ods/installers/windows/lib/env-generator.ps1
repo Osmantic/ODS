@@ -390,6 +390,55 @@ function Set-WindowsODSLemonadeModelConfiguration {
     }
 }
 
+function Get-WindowsODSDeviceName {
+    <#
+    .SYNOPSIS
+        Derive an mDNS/proxy-safe device name from the machine name.
+    .DESCRIPTION
+        Mirrors the sanitiser in installers/phases/06-directories.sh and
+        installers/macos/lib/env-generator.sh: lowercase, non-alphanumerics
+        collapsed to hyphens, trimmed to 32 characters, first and last
+        character alphanumeric. Falls back to "ods" when the machine name
+        cannot produce a valid value. Matches the ODS_DEVICE_NAME pattern in
+        .env.schema.json.
+    #>
+    param([string]$MachineName = $env:COMPUTERNAME)
+
+    if ([string]::IsNullOrWhiteSpace($MachineName)) { return "ods" }
+
+    $name = [regex]::Replace($MachineName.ToLowerInvariant(), '[^a-z0-9-]+', '-')
+    $name = $name.Trim('-')
+    if ($name.Length -gt 32) { $name = $name.Substring(0, 32) }
+    $name = $name.TrimEnd('-')
+
+    if ($name -match '^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$') { return $name }
+    return "ods"
+}
+
+function Get-WindowsODSHostLanIp {
+    <#
+    .SYNOPSIS
+        Best-effort LAN IPv4 of this host, or "" when none is available.
+    .DESCRIPTION
+        Applies the same loopback/APIPA filter Write-SuccessCard uses in
+        installers/windows/lib/ui.ps1 so both surfaces report one address.
+    #>
+    # The installer only ever runs on Windows, but the contract tests also
+    # execute on Linux pwsh, where the NetTCPIP module does not exist.
+    if (-not (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue)) { return "" }
+
+    $address = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.InterfaceAlias -notlike "*Loopback*" -and
+            $_.IPAddress -notlike "127.*" -and
+            $_.IPAddress -notlike "169.254.*" -and
+            $_.PrefixOrigin -in @("Dhcp", "Manual")
+        } | Select-Object -First 1
+
+    if ($null -eq $address -or [string]::IsNullOrWhiteSpace($address.IPAddress)) { return "" }
+    return $address.IPAddress
+}
+
 function New-SecureHex {
     <#
     .SYNOPSIS
@@ -820,6 +869,20 @@ function New-ODSEnv {
     if ([string]::IsNullOrWhiteSpace($embeddingsMemoryLimitDefault)) { $embeddingsMemoryLimitDefault = "4G" }
     $embeddingsMemoryLimit = Get-EnvOrNew "EMBEDDINGS_MEMORY_LIMIT" $embeddingsMemoryLimitDefault
 
+    # Host LAN IP -- only meaningful when BIND_ADDRESS=0.0.0.0. openclaw reads
+    # it to extend allowedOrigins, so LAN clients are rejected when it is
+    # missing. Empty keeps the compose ${HOST_LAN_IP:-} fallback safe on
+    # loopback installs. Matches phases/06-directories.sh and the macOS
+    # env-generator.
+    $hostLanIp = ""
+    if ($bindAddress -eq "0.0.0.0") { $hostLanIp = Get-WindowsODSHostLanIp }
+    $hostLanIp = Get-EnvOrNew "HOST_LAN_IP" $hostLanIp
+
+    # Device name -- the hostname segment behind the ods-proxy vhosts and the
+    # magic-link URLs dashboard-api generates. Without it every install answers
+    # to ods.local and owner-card links collide on a shared LAN.
+    $deviceName = Get-EnvOrNew "ODS_DEVICE_NAME" (Get-WindowsODSDeviceName)
+
     # Build .env content (matches Phase 06 format)
     $envContent = @"
 # ODS Configuration -- $($TierConfig.TierName) Edition
@@ -830,6 +893,11 @@ function New-ODSEnv {
 # 127.0.0.1 = localhost only (secure default)
 # 0.0.0.0   = accessible from LAN (install with -Lan or set manually)
 BIND_ADDRESS=$bindAddress
+# Host LAN address, populated only when BIND_ADDRESS=0.0.0.0.
+# Containers like openclaw read this to accept LAN clients.
+HOST_LAN_IP=$hostLanIp
+# Hostname segment for the proxy vhosts (<name>.local) and magic-link URLs.
+ODS_DEVICE_NAME=$deviceName
 # Docker Desktop containers reach loopback-only host services through this name.
 ODS_AGENT_HOST=$(Get-EnvOrNew "ODS_AGENT_HOST" "host.docker.internal")
 # The dashboard-api container must call the host agent over Docker Desktop's

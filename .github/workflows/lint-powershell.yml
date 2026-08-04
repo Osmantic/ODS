@@ -76,6 +76,10 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1
 
+      - name: Windows Env Device Identity Contract
+        shell: pwsh
+        run: ./tests/test-windows-env-device-identity.ps1
+
       - name: Windows Catalog Source Boundary Contract
         shell: pwsh
         run: ./tests/test-windows-catalog-selector.ps1
