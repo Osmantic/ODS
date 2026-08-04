@@ -718,6 +718,13 @@ assert_contains "docker-compose.base.yml" 'RAG_EMBEDDING_ENGINE: "\$\{RAG_EMBEDD
 assert_contains "docker-compose.base.yml" 'RAG_OPENAI_API_BASE_URL: "\$\{RAG_OPENAI_API_BASE_URL:-http://embeddings:80/v1\}"' "Open WebUI RAG embeddings should route to the bundled TEI service"
 assert_contains "docker-compose.base.yml" 'RAG_EMBEDDING_MODEL_AUTO_UPDATE: "\$\{RAG_EMBEDDING_MODEL_AUTO_UPDATE:-false\}"' "Open WebUI should not auto-update local embedding models during startup"
 assert_contains "installers/macos/install-macos.sh" 'compose-launch\.txt' "macOS installer missing compose launch record"
+
+echo "[contract] AMD GTT modprobe config is staged privately, not in shared /tmp"
+assert_not_contains "installers/phases/10-amd-tuning.sh" '/tmp/ods-gtt-tuning\.conf' "GTT modprobe config still stages at a fixed, world-writable /tmp path before sudo cp"
+assert_contains "installers/phases/10-amd-tuning.sh" 'mktemp -d .*ods-gtt-tuning' "GTT modprobe config is not staged in a private mktemp directory"
+assert_contains "installers/phases/10-amd-tuning.sh" 'sudo -n cp "\$gtt_stage_file"' "GTT modprobe install does not copy from the private staging path"
+assert_contains "installers/phases/10-amd-tuning.sh" 'ai "  sudo cp \$gtt_stage_file' "GTT manual-copy instructions do not name the staged file that still exists"
+assert_not_contains "installers/phases/10-amd-tuning.sh" 'rm -f /tmp/ods-gtt-tuning\.conf' "GTT staging file is still deleted unconditionally, including on the manual-copy path"
 assert_contains "installers/macos/install-macos.sh" 'ps -q' "macOS installer does not count compose-managed containers"
 assert_contains "installers/macos/install-macos.sh" 'docker compose up completed but created no managed containers' "macOS installer does not fail loud on zero managed containers"
 assert_contains "installers/macos/install-macos.sh" '_macos_pre_pull_compose_images' "macOS installer does not preflight compose images before launch"
