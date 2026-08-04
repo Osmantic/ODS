@@ -938,3 +938,20 @@ def test_workflow_enable_rejects_path_traversal_in_catalog_file(test_client, mon
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Invalid workflow file path"
+
+
+def test_workflows_tolerates_null_n8n_statistics(test_client, monkeypatch):
+    """GET /api/workflows with an n8n workflow whose statistics is null does
+    not crash the whole list with AttributeError."""
+    import routers.workflows as wf_mod
+
+    async def fake_get_n8n_workflows():
+        return [{"id": "wf-1", "name": "Document Q&A", "active": True, "statistics": None}]
+
+    monkeypatch.setattr(wf_mod, "get_n8n_workflows", fake_get_n8n_workflows)
+
+    resp = test_client.get("/api/workflows", headers=test_client.auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "workflows" in data
+

@@ -135,7 +135,7 @@ async def api_workflows(api_key: str = Depends(verify_api_key)):
 
         executions = 0
         if installed:
-            executions = installed.get("statistics", {}).get("executions", {}).get("total", 0)
+            executions = ((installed.get("statistics") or {}).get("executions") or {}).get("total", 0)
 
         workflows.append({
             "id": wf["id"],
