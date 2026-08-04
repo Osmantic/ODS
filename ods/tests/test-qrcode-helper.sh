@@ -82,4 +82,26 @@ default_output=$(PATH="$tmpdir:$PATH" print_dashboard_qr)
 grep -Fq "http://10.42.0.99:3001" <<< "$default_output" \
     || fail "print_dashboard_qr did not use the discovered LAN IP by default"
 
+# ── print_install_summary resolves its own dependency ──────────────────────
+# format_duration() lives in lib/progress.sh. Sourcing lib/qrcode.sh the way
+# its header documents must be enough to render the summary — a caller under
+# `set -euo pipefail` is aborted outright by a "command not found".
+
+declare -F format_duration >/dev/null 2>&1 \
+    || fail "sourcing lib/qrcode.sh did not make format_duration available"
+
+summary=$(
+    bash -euo pipefail -c '
+        BOLD=""; NC=""; CYAN=""; GREEN=""
+        . "$1/lib/qrcode.sh"
+        print_install_summary "Pro" "qwen3-30b-a3b" 1000 1300
+    ' bash "$PROJECT_DIR"
+) || fail "print_install_summary aborted a set -euo pipefail caller"
+
+grep -Fq "Install Time:" <<< "$summary" \
+    || fail "print_install_summary did not render the install-time row"
+
+grep -Eq 'Install Time:[[:space:]]+5m' <<< "$summary" \
+    || fail "print_install_summary did not format the 300s duration as '5m': got '$summary'"
+
 echo "[PASS] qrcode helper honors explicit URLs and macOS LAN detection"
