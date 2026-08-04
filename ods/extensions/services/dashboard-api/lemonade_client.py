@@ -226,14 +226,21 @@ class LemonadeClient:
 
     async def speech(self, model: str, text: str, *, voice: str = "af_heart") -> bytes:
         client = await self._ensure_client()
-        response = await client.post(
-            self.api_url("audio/speech"),
-            json={"model": model, "input": text, "voice": voice},
-            headers=self.auth_headers(),
-            timeout=self.settings.timeout,
-        )
-        response.raise_for_status()
-        return response.content
+        try:
+            response = await client.post(
+                self.api_url("audio/speech"),
+                json={"model": model, "input": text, "voice": voice},
+                headers=self.auth_headers(),
+                timeout=self.settings.timeout,
+            )
+            response.raise_for_status()
+            return response.content
+        except httpx.HTTPStatusError as exc:
+            raise _classified_status_error(exc) from exc
+        except httpx.TimeoutException as exc:
+            raise LemonadeClientError("timeout", str(exc)) from exc
+        except httpx.RequestError as exc:
+            raise LemonadeClientError("provider_unreachable", str(exc)) from exc
 
     async def transcribe_wav(self, model: str, wav_bytes: bytes, *, filename: str = "audio.wav") -> dict[str, Any]:
         client = await self._ensure_client()
@@ -249,13 +256,23 @@ class LemonadeClient:
             payload = response.json() if response.content else {}
             return payload if isinstance(payload, dict) else {"data": payload}
         except httpx.HTTPStatusError as exc:
-            payload = _json_payload(exc.response)
-            raise LemonadeClientError(
-                classify_status(exc.response.status_code),
-                _payload_message(payload) or exc.response.text or str(exc),
-                status_code=exc.response.status_code,
-                payload=payload,
-            ) from exc
+            raise _classified_status_error(exc) from exc
+        except httpx.TimeoutException as exc:
+            raise LemonadeClientError("timeout", str(exc)) from exc
+        except httpx.RequestError as exc:
+            raise LemonadeClientError("provider_unreachable", str(exc)) from exc
+        except ValueError as exc:
+            raise LemonadeClientError("invalid_response", str(exc)) from exc
+
+
+def _classified_status_error(exc: httpx.HTTPStatusError) -> LemonadeClientError:
+    payload = _json_payload(exc.response)
+    return LemonadeClientError(
+        classify_status(exc.response.status_code),
+        _payload_message(payload) or exc.response.text or str(exc),
+        status_code=exc.response.status_code,
+        payload=payload,
+    )
 
 
 def _json_payload(response: httpx.Response) -> dict[str, Any]:

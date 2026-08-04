@@ -171,3 +171,77 @@ async def test_explicit_timeout_override_is_applied():
     await client.aclose()
 
     assert seen["timeout"].get("read") == 5.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["speech", "transcribe"])
+async def test_audio_http_errors_use_the_client_error_contract(operation):
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": {"message": "engine warming"}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = LemonadeClient(client=client)
+
+    with pytest.raises(LemonadeClientError) as exc:
+        if operation == "speech":
+            await adapter.speech("voice-model", "hello")
+        else:
+            await adapter.transcribe_wav("stt-model", b"RIFF")
+
+    assert exc.value.kind == "provider_error"
+    assert exc.value.status_code == 503
+    assert "engine warming" in str(exc.value)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["speech", "transcribe"])
+async def test_audio_transport_errors_use_the_client_error_contract(operation):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = LemonadeClient(client=client)
+
+    with pytest.raises(LemonadeClientError) as exc:
+        if operation == "speech":
+            await adapter.speech("voice-model", "hello")
+        else:
+            await adapter.transcribe_wav("stt-model", b"RIFF")
+
+    assert exc.value.kind == "provider_unreachable"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["speech", "transcribe"])
+async def test_audio_timeouts_use_the_client_error_contract(operation):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("engine timed out", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = LemonadeClient(client=client)
+
+    with pytest.raises(LemonadeClientError) as exc:
+        if operation == "speech":
+            await adapter.speech("voice-model", "hello")
+        else:
+            await adapter.transcribe_wav("stt-model", b"RIFF")
+
+    assert exc.value.kind == "timeout"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_transcription_invalid_json_uses_the_client_error_contract():
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not-json")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = LemonadeClient(client=client)
+
+    with pytest.raises(LemonadeClientError) as exc:
+        await adapter.transcribe_wav("stt-model", b"RIFF")
+
+    assert exc.value.kind == "invalid_response"
+    await client.aclose()
