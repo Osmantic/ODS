@@ -466,11 +466,13 @@ class TestEightGpuNv12FullMesh:
         assert len(set(uuids)) == 3
 
     def test_model_fits_one_gpu_extras_back_to_llama_nvlink(self):
-        # NVLink pair wins, remaining=6: 3 to services, 3 extras → llama=5 GPUs, hybrid
+        # NVLink pair wins, remaining=6: 3 to services, 3 extras → llama=5 GPUs.
+        # 5 has no power-of-2 divisor, so the plan is pipeline over all 5.
         _, out, _ = run(self.TOPO, 70000)
         p = parallelism(out)
-        assert p["mode"] == "hybrid"
-        assert p["gpu_memory_utilization"] == 0.93
+        assert p["mode"] == "pipeline"
+        assert p["pipeline_parallel_size"] == 5
+        assert p["gpu_memory_utilization"] == 0.95
 
     def test_model_fits_one_gpu_llama_5gpus(self):
         _, out, _ = run(self.TOPO, 70000)
@@ -480,13 +482,14 @@ class TestEightGpuNv12FullMesh:
         _, out, _ = run(self.TOPO, 100000)
         assert len(llama(out)["gpus"]) == 5
 
-    def test_model_needs_two_gpus_hybrid_nvlink(self):
+    def test_model_needs_two_gpus_pipeline_over_five_nvlink(self):
+        # llama ends up with 5 GPUs. A 2 x 2 hybrid would only cover 4 of them.
         _, out, _ = run(self.TOPO, 100000)
         p = parallelism(out)
-        assert p["mode"] == "hybrid"
-        assert p["tensor_parallel_size"] == 2
-        assert p["pipeline_parallel_size"] == 2
-        assert p["gpu_memory_utilization"] == 0.93
+        assert p["mode"] == "pipeline"
+        assert p["tensor_parallel_size"] == 1
+        assert p["pipeline_parallel_size"] == 5
+        assert p["gpu_memory_utilization"] == 0.95
 
     def test_model_needs_five_gpus_no_extras(self):
         # 350GB needs 5 GPUs. remaining=3 exactly → no extras → llama has 5 GPUs
@@ -494,12 +497,12 @@ class TestEightGpuNv12FullMesh:
         assert len(llama(out)["gpus"]) == 5
         assert out["strategy"] == "dedicated"
 
-    def test_model_needs_five_gpus_hybrid(self):
+    def test_model_needs_five_gpus_pipeline(self):
         _, out, _ = run(self.TOPO, 350000)
         p = parallelism(out)
-        assert p["mode"] == "hybrid"
-        assert p["tensor_parallel_size"] == 2
-        assert p["pipeline_parallel_size"] == 2
+        assert p["mode"] == "pipeline"
+        assert p["tensor_parallel_size"] == 1
+        assert p["pipeline_parallel_size"] == 5
 
     def test_model_needs_five_gpus_services_dedicated(self):
         _, out, _ = run(self.TOPO, 350000)
@@ -609,10 +612,21 @@ class TestParallelismModeSelection:
         assert p["mode"] == "pipeline"
         assert p["pipeline_parallel_size"] == 3
 
-    def test_nvlink_full_mesh_five_gpus_hybrid(self):
-        # NV12 full mesh, extras push back → 5 GPUs → hybrid
+    def test_nvlink_full_mesh_eight_gpus_hybrid(self):
+        # NV12 full mesh, model needs every GPU → 8 GPUs → hybrid 2 x 4
+        _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_8gpus_nv12_full_mesh.json"), 600000)
+        p = parallelism(out)
+        assert p["mode"] == "hybrid"
+        assert p["tensor_parallel_size"] == 2
+        assert p["pipeline_parallel_size"] == 4
+
+    def test_nvlink_full_mesh_five_gpus_pipeline(self):
+        # NV12 full mesh, extras push back → 5 GPUs. No power of 2 divides 5,
+        # so hybrid cannot cover the subset and the planner must use pipeline.
         _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_8gpus_nv12_full_mesh.json"), 100000)
-        assert parallelism(out)["mode"] == "hybrid"
+        p = parallelism(out)
+        assert p["mode"] == "pipeline"
+        assert p["pipeline_parallel_size"] == 5
 
     def test_mem_util_none_is_095(self):
         _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_1gpu_pcie.json"), 20000)
@@ -623,8 +637,42 @@ class TestParallelismModeSelection:
         assert parallelism(out)["gpu_memory_utilization"] == 0.92
 
     def test_mem_util_hybrid_is_093(self):
-        _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_8gpus_nv12_full_mesh.json"), 100000)
+        _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_8gpus_nv12_full_mesh.json"), 600000)
         assert parallelism(out)["gpu_memory_utilization"] == 0.93
+
+
+# ── Every planned GPU is covered by the parallelism plan ──────────────────────
+
+class TestParallelismCoversEveryGpu:
+    """tensor_parallel_size * pipeline_parallel_size must equal the GPU count.
+
+    llama-server derives its process layout from these two sizes. When the
+    product is smaller than the assigned subset, the remaining GPUs are
+    reserved by the assignment but never used by the model.
+    """
+
+    CASES = [
+        ("nvidia_smi_topo_matrix_2gpus_phb_coloc.json", 40000),
+        ("nvidia_smi_topo_matrix_4gpus_soc.json", 200000),
+        ("nvidia_smi_topo_matrix_4gpus_sys_separated_nv_pairs.json", 100000),
+        ("nvidia_smi_topo_matrix_5gpus_nv12_with_mlx5.json", 300000),
+        ("nvidia_smi_topo_matrix_8gpus_nv12_full_mesh.json", 100000),
+        ("nvidia_smi_topo_matrix_8gpus_nv12_full_mesh.json", 500000),
+        ("nvidia_smi_topo_matrix_8gpus_nv12_full_mesh.json", 600000),
+        ("nvidia_smi_topo_matrix_8gpus_nv1_nv2_partial_mesh.json", 200000),
+    ]
+
+    def test_plan_covers_every_assigned_gpu(self):
+        for name, model_size_mb in self.CASES:
+            code, out, err = run(fixture_path(name), model_size_mb)
+            assert code == 0, f"{name} @ {model_size_mb}MB: {err}"
+            p = parallelism(out)
+            covered = p["tensor_parallel_size"] * p["pipeline_parallel_size"]
+            assigned = len(llama(out)["gpus"])
+            assert covered == assigned, (
+                f"{name} @ {model_size_mb}MB: mode={p['mode']} covers {covered} "
+                f"of {assigned} assigned GPUs"
+            )
 
     def test_mem_util_pipeline_is_095(self):
         _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_4gpus_soc.json"), 100000)

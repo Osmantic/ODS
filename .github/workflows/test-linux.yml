@@ -63,7 +63,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install manifest validator dependencies
-        run: python3 -m pip install "PyYAML>=6.0,<7.0" "jsonschema>=4.21,<5.0"
+        run: python3 -m pip install "PyYAML>=6.0,<7.0" "jsonschema>=4.21,<5.0" "pytest>=8,<9"
 
       - name: Docs Link Checks
         run: bash tests/test-doc-links.sh
@@ -195,6 +195,9 @@ jobs:
 
       - name: Perplexica Entrypoint Contract Tests
         run: python3 tests/test-perplexica-entrypoint.py
+
+      - name: Multi-GPU Assignment Planner Tests
+        run: python3 -m pytest tests/test-assign-gpus.py -q
 
       - name: CPU-Only Path Tests
         run: bash tests/test-cpu-only-path.sh
