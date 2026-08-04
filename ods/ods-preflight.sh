@@ -97,7 +97,13 @@ pass() { log "${GREEN}✓${NC} $1"; PASS=$((PASS+1)); }
 fail() { log "${RED}✗${NC} $1"; FAIL=$((FAIL+1)); }
 warn() { log "${YELLOW}⚠${NC} $1"; WARN=$((WARN+1)); }
 
-echo "" > "$LOG_FILE"
+# Fail loudly if the log can't be created (e.g. root-owned install dir) instead
+# of dying silently under set -e on the first redirect to $LOG_FILE below.
+if ! : > "$LOG_FILE"; then
+    echo "ERROR: cannot write preflight log to $LOG_FILE; is $ODS_DIR writable by the current user?" >&2
+    exit 1
+fi
+
 log "========================================"
 log "ODS Pre-flight Check"
 log "Started: $(date)"
