@@ -53,6 +53,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -863,16 +864,28 @@ def revoke_magic_link(token_hash_prefix: str) -> dict:
     returns the same 404 so admins don't fingerprint state. A successful
     revocation flips revoked_at to now, leaves the audit trail intact.
     """
-    if len(token_hash_prefix) < 4 or len(token_hash_prefix) > 64:
+    if not re.fullmatch(r"[0-9a-fA-F]{8,64}", token_hash_prefix):
         raise HTTPException(status_code=400, detail="Invalid token hash prefix")
+    token_hash_prefix = token_hash_prefix.lower()
     with _STORE_LOCK:
         store = _ensure_store()
-        for record in store.get("tokens", []):
-            if record["token_hash"].startswith(token_hash_prefix) and not record.get("revoked_at"):
-                record["revoked_at"] = _now_iso()
-                _write_store(store)
-                logger.info("magic-link revoked target=%s", record["target_username"])
-                return {"revoked": True}
+        matches = [
+            record
+            for record in store.get("tokens", [])
+            if record["token_hash"].startswith(token_hash_prefix)
+            and not record.get("revoked_at")
+        ]
+        if len(matches) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail="Token hash prefix is ambiguous; use more characters",
+            )
+        if matches:
+            record = matches[0]
+            record["revoked_at"] = _now_iso()
+            _write_store(store)
+            logger.info("magic-link revoked target=%s", record["target_username"])
+            return {"revoked": True}
     raise HTTPException(status_code=404, detail="No active magic link with that prefix")
 
 
