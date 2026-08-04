@@ -184,6 +184,9 @@ jobs:
       - name: Dependency Pin Contract Tests
         run: python3 tests/test-dependency-pins.py
 
+      - name: Service Port Env Documentation Contract
+        run: python3 tests/contracts/test-port-env-documentation.py
+
       - name: Offline Model Validation Tests
         run: python3 tests/test-offline-model-validation.py
 

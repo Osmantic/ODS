@@ -101,6 +101,9 @@ test: ## Run unit and contract tests
 	@echo "=== Manifest schema source of truth ==="
 	@bash tests/test-validate-manifest-schema.sh
 	@echo ""
+	@echo "=== Service port env documentation ==="
+	@python3 tests/contracts/test-port-env-documentation.py
+	@echo ""
 	@echo "=== macOS ods config show secret-mask ==="
 	@bash tests/test-macos-config-show-secret-mask.sh
 	@echo ""
