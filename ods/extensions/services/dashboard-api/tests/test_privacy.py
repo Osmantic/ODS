@@ -79,6 +79,23 @@ def test_privacy_shield_status_not_running(test_client):
     assert data["container_running"] is False
 
 
+def test_privacy_shield_status_invalid_shield_port_env(test_client, monkeypatch):
+    """GET /api/privacy-shield/status with non-numeric SHIELD_PORT does not 500."""
+    monkeypatch.setenv("SHIELD_PORT", "abc")
+    session_mock = MagicMock()
+    session_mock.get = MagicMock(side_effect=aiohttp.ClientError("refused"))
+    session_ctx = AsyncMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=session_mock)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.privacy.aiohttp.ClientSession", return_value=session_ctx):
+        resp = test_client.get("/api/privacy-shield/status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["enabled"] is False
+
+
 # ---------------------------------------------------------------------------
 # /api/privacy-shield/toggle — host agent API
 # ---------------------------------------------------------------------------
@@ -291,3 +308,20 @@ def test_privacy_shield_stats_empty_shield_api_key(test_client, monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {"error": "SHIELD_API_KEY not configured", "enabled": False}
     session_factory.assert_not_called()
+
+
+def test_privacy_shield_stats_invalid_shield_port_env(test_client, monkeypatch):
+    """GET /api/privacy-shield/stats with non-numeric SHIELD_PORT does not 500."""
+    monkeypatch.setenv("SHIELD_PORT", "abc")
+    session_mock = MagicMock()
+    session_mock.get = MagicMock(side_effect=aiohttp.ClientError("refused"))
+    session_ctx = AsyncMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=session_mock)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.privacy.aiohttp.ClientSession", return_value=session_ctx):
+        resp = test_client.get("/api/privacy-shield/stats", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["enabled"] is False
