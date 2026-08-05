@@ -191,6 +191,8 @@ else
         # and as deterministic recovery when the jq rewrite path finds an
         # existing malformed file it cannot parse (issue #332).
         _opencode_write_fresh() {
+            local _opencode_output=32768
+            if (( ${MAX_CONTEXT:-65536} < 32768 )); then _opencode_output=$(( ${MAX_CONTEXT:-65536} )); fi
             cat > "$1" <<OPENCODE_EOF
 {
   "\$schema": "https://opencode.ai/config.json",
@@ -209,7 +211,7 @@ else
           "name": "${_opencode_model_name}",
           "limit": {
             "context": ${MAX_CONTEXT:-65536},
-            "output": 32768
+            "output": ${_opencode_output}
           }
         }
       }
