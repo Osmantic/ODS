@@ -1960,8 +1960,12 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
             detail={**bootstrap_conflict, "requestedModelId": model_id},
         )
 
+    gguf_file = model.get("gguf_file")
+    if not gguf_file:
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' is missing a GGUF file reference")
+
     payload = {
-        "gguf_file": model["gguf_file"],
+        "gguf_file": gguf_file,
         "gguf_url": model.get("gguf_url", ""),
         "gguf_sha256": model.get("gguf_sha256", ""),
     }
@@ -2065,8 +2069,12 @@ def delete_model(model_id: str, api_key: str = Depends(verify_api_key)):
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
 
+    gguf_file = model.get("gguf_file")
+    if not gguf_file:
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' is missing a GGUF file reference")
+
     payload = {
-        "gguf_file": model["gguf_file"],
+        "gguf_file": gguf_file,
     }
     if model.get("gguf_parts"):
         payload["gguf_parts"] = model["gguf_parts"]

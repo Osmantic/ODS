@@ -2645,3 +2645,27 @@ def test_load_model_rejects_local_gguf_path_separators(test_client, monkeypatch,
     )
 
     assert resp.status_code == 404
+
+
+def test_download_and_delete_reject_library_record_missing_gguf_file(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, [{"id": "legacy-model", "name": "Legacy Model"}])
+    monkeypatch.setattr(
+        models_router,
+        "_call_agent_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("host agent reached for record without gguf_file")
+        ),
+    )
+
+    download_response = test_client.post(
+        "/api/models/legacy-model/download",
+        headers=test_client.auth_headers,
+    )
+    delete_response = test_client.delete(
+        "/api/models/legacy-model",
+        headers=test_client.auth_headers,
+    )
+
+    assert download_response.status_code == 404
+    assert delete_response.status_code == 404
