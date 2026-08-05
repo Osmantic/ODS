@@ -243,6 +243,9 @@ jobs:
       - name: Issue-to-PR Security Contract Tests
         run: bash tests/test-issue-to-pr-security.sh
 
+      - name: NVIDIA Multi-GPU Visibility Contract Tests
+        run: bash tests/test-multigpu-nvidia-visibility.sh
+
       - name: Upload Installer Simulation Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

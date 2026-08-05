@@ -561,7 +561,7 @@ fi
 if [[ "$VENDOR" == "nvidia" ]]; then
     LLAMA_SERVER_GPU_UUIDS=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.llama_server.gpus // [] | join(",")')
     if [[ -z "$LLAMA_SERVER_GPU_UUIDS" ]]; then
-        warn "LLAMA_SERVER_GPU_UUIDS is empty — NVIDIA_VISIBLE_DEVICES will fall back to 'all' (all GPUs visible to llama-server)"
+        error "GPU assignment did not select any NVIDIA device for llama-server"
     fi
     WHISPER_GPU_UUID=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.whisper.gpus[0]?')
     COMFYUI_GPU_UUID=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.comfyui.gpus[0]?')
