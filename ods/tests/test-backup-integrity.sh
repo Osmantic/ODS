@@ -82,14 +82,20 @@ for i in 1 2 3 4 5 6; do
   echo '{"backup_type": "user-data", "description": "old"}' > "$d/manifest.json"
 done
 mkdir -p "$LIFECYCLE_DIR/my-notes"
+mkdir -p "$LIFECYCLE_DIR/backup-dashboard-my-name-20260107-000007"
+echo '{"backup_type": "update", "description": "named"}' \
+  > "$LIFECYCLE_DIR/backup-dashboard-my-name-20260107-000007/manifest.json"
 
 info "Listing pre-existing backups"
 list_out=$(ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$LIFECYCLE_DIR" --list)
 echo "$list_out" | grep -q "20260101-000001" || fail "--list does not show own-format backup IDs"
+echo "$list_out" | grep -q "backup-dashboard-my-name-20260107-000007" \
+  || fail "--list rejects a valid multi-segment host-agent backup ID"
 if echo "$list_out" | grep -q "my-notes"; then
   fail "--list shows non-backup directories"
 fi
 pass "--list shows own-format backup IDs and skips other directories"
+rm -rf "$LIFECYCLE_DIR/backup-dashboard-my-name-20260107-000007"
 
 info "Running backup with RETENTION_COUNT=5"
 ODS_DIR="$FAKE_ODS" RETENTION_COUNT=5 "$ODS_BACKUP" --output "$LIFECYCLE_DIR" --type config >/dev/null
