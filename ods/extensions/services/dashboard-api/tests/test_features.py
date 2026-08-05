@@ -26,9 +26,19 @@ class TestCalculateFeatureStatusDefaults:
         assert result["setupTime"] == "Unknown"
         assert result["priority"] == 99
 
+    def test_missing_requirements_block_does_not_keyerror(self):
+        """A feature with no requirements block is computed, not a KeyError 500."""
+        feature = {"id": "no-req", "name": "Missing Requirements"}
+        result = calculate_feature_status(feature, [], None)
+
+        assert result["id"] == "no-req"
+        assert result["requirements"]["vramGb"] == 0
+        assert result["requirements"]["vramOk"] is True
+        assert result["requirements"]["services"] == []
+        assert result["requirements"]["servicesOk"] is True
+
 
 class TestCalculateFeatureStatusAppleFallback:
-
     def _make_feature(self, vram_gb=0):
         return {
             "id": "test-feat",
@@ -50,6 +60,7 @@ class TestCalculateFeatureStatusAppleFallback:
     def test_apple_fallback_uses_host_ram_when_gpu_info_none(self):
         """When GPU_BACKEND=apple and gpu_info is None, HOST_RAM_GB gates VRAM."""
         from routers.features import calculate_feature_status
+
         feature = self._make_feature(vram_gb=16)
         with patch.dict(os.environ, {"HOST_RAM_GB": "24", "GPU_BACKEND": "apple"}):
             with patch("routers.features.GPU_BACKEND", "apple"):
@@ -60,6 +71,7 @@ class TestCalculateFeatureStatusAppleFallback:
     def test_apple_fallback_insufficient_when_ram_too_low(self):
         """When HOST_RAM_GB < feature vram_gb, feature is insufficient_vram."""
         from routers.features import calculate_feature_status
+
         feature = self._make_feature(vram_gb=32)
         with patch.dict(os.environ, {"HOST_RAM_GB": "16", "GPU_BACKEND": "apple"}):
             with patch("routers.features.GPU_BACKEND", "apple"):
@@ -70,6 +82,7 @@ class TestCalculateFeatureStatusAppleFallback:
     def test_apple_fallback_not_triggered_on_linux(self):
         """HOST_RAM fallback does NOT apply on non-apple backends."""
         from routers.features import calculate_feature_status
+
         feature = self._make_feature(vram_gb=8)
         with patch.dict(os.environ, {"HOST_RAM_GB": "64", "GPU_BACKEND": "nvidia"}):
             with patch("routers.features.GPU_BACKEND", "nvidia"):
@@ -86,7 +99,11 @@ class TestApiFeaturesAppleFallback:
         with patch.dict(os.environ, {"HOST_RAM_GB": "16", "GPU_BACKEND": "apple"}):
             with patch("routers.features.GPU_BACKEND", "apple"):
                 with patch("routers.features.get_gpu_info", return_value=None):
-                    with patch("helpers.get_all_services", new_callable=AsyncMock, return_value=[]):
+                    with patch(
+                        "helpers.get_all_services",
+                        new_callable=AsyncMock,
+                        return_value=[],
+                    ):
                         response = test_client.get(
                             "/api/features",
                             headers=test_client.auth_headers,
@@ -100,9 +117,14 @@ class TestApiFeaturesAppleFallback:
 
 
 class TestCalculateFeatureStatusGeneral:
-
-    def _make_feature(self, vram_gb=0, services=None, services_any=None,
-                      enabled_all=None, enabled_any=None):
+    def _make_feature(
+        self,
+        vram_gb=0,
+        services=None,
+        services_any=None,
+        enabled_all=None,
+        enabled_any=None,
+    ):
         return {
             "id": "test-feat",
             "name": "Test Feature",
@@ -116,14 +138,23 @@ class TestCalculateFeatureStatusGeneral:
                 "services": services or [],
                 "services_any": services_any or [],
             },
-            "enabled_services_all": enabled_all if enabled_all is not None else (services or []),
-            "enabled_services_any": enabled_any if enabled_any is not None else (services_any or []),
+            "enabled_services_all": enabled_all
+            if enabled_all is not None
+            else (services or []),
+            "enabled_services_any": enabled_any
+            if enabled_any is not None
+            else (services_any or []),
         }
 
     def _make_service_status(self, sid, status="healthy"):
         from models import ServiceStatus
+
         return ServiceStatus(
-            id=sid, name=sid, port=8080, external_port=8080, status=status,
+            id=sid,
+            name=sid,
+            port=8080,
+            external_port=8080,
+            status=status,
         )
 
     def test_enabled_when_all_services_healthy(self):
@@ -131,12 +162,17 @@ class TestCalculateFeatureStatusGeneral:
         from models import GPUInfo
 
         gpu = GPUInfo(
-            name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
-            memory_percent=8.3, utilization_percent=35, temperature_c=62,
+            name="RTX 4090",
+            memory_used_mb=2048,
+            memory_total_mb=24576,
+            memory_percent=8.3,
+            utilization_percent=35,
+            temperature_c=62,
             gpu_backend="nvidia",
         )
-        feature = self._make_feature(vram_gb=8, services=["llama-server"],
-                                     enabled_all=["llama-server"])
+        feature = self._make_feature(
+            vram_gb=8, services=["llama-server"], enabled_all=["llama-server"]
+        )
         services = [self._make_service_status("llama-server", "healthy")]
 
         with patch("routers.features.GPU_BACKEND", "nvidia"):
@@ -149,8 +185,12 @@ class TestCalculateFeatureStatusGeneral:
         from models import GPUInfo
 
         gpu = GPUInfo(
-            name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
-            memory_percent=8.3, utilization_percent=35, temperature_c=62,
+            name="RTX 4090",
+            memory_used_mb=2048,
+            memory_total_mb=24576,
+            memory_percent=8.3,
+            utilization_percent=35,
+            temperature_c=62,
             gpu_backend="nvidia",
         )
         feature = self._make_feature(
@@ -173,14 +213,19 @@ class TestCalculateFeatureStatusGeneral:
         from models import GPUInfo
 
         gpu = GPUInfo(
-            name="GTX 1050", memory_used_mb=1024, memory_total_mb=4096,
-            memory_percent=25.0, utilization_percent=10, temperature_c=50,
+            name="GTX 1050",
+            memory_used_mb=1024,
+            memory_total_mb=4096,
+            memory_percent=25.0,
+            utilization_percent=10,
+            temperature_c=50,
             gpu_backend="nvidia",
         )
         # enabled_all must reference a service not in the service list so
         # is_enabled is False, allowing the vram check to be reached.
-        feature = self._make_feature(vram_gb=16, services=[],
-                                     enabled_all=["llama-server"])
+        feature = self._make_feature(
+            vram_gb=16, services=[], enabled_all=["llama-server"]
+        )
 
         with patch("routers.features.GPU_BACKEND", "nvidia"):
             result = calculate_feature_status(feature, [], gpu)
@@ -192,12 +237,17 @@ class TestCalculateFeatureStatusGeneral:
         from models import GPUInfo
 
         gpu = GPUInfo(
-            name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
-            memory_percent=8.3, utilization_percent=35, temperature_c=62,
+            name="RTX 4090",
+            memory_used_mb=2048,
+            memory_total_mb=24576,
+            memory_percent=8.3,
+            utilization_percent=35,
+            temperature_c=62,
             gpu_backend="nvidia",
         )
-        feature = self._make_feature(vram_gb=8, services=["whisper", "tts"],
-                                     enabled_all=["whisper", "tts"])
+        feature = self._make_feature(
+            vram_gb=8, services=["whisper", "tts"], enabled_all=["whisper", "tts"]
+        )
         services = [self._make_service_status("whisper", "healthy")]
 
         with patch("routers.features.GPU_BACKEND", "nvidia"):
@@ -210,12 +260,17 @@ class TestCalculateFeatureStatusGeneral:
         from models import GPUInfo
 
         gpu = GPUInfo(
-            name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
-            memory_percent=8.3, utilization_percent=35, temperature_c=62,
+            name="RTX 4090",
+            memory_used_mb=2048,
+            memory_total_mb=24576,
+            memory_percent=8.3,
+            utilization_percent=35,
+            temperature_c=62,
             gpu_backend="nvidia",
         )
-        feature = self._make_feature(vram_gb=8, services=[],
-                                     enabled_all=["some-service"])
+        feature = self._make_feature(
+            vram_gb=8, services=[], enabled_all=["some-service"]
+        )
         services = []
 
         with patch("routers.features.GPU_BACKEND", "nvidia"):
@@ -227,6 +282,7 @@ class TestHermesFeatureContracts:
     @staticmethod
     def _service(service_id, status="healthy"):
         from models import ServiceStatus
+
         return ServiceStatus(
             id=service_id,
             name=service_id,
@@ -243,8 +299,12 @@ class TestHermesFeatureContracts:
 
         services_dir = Path(__file__).resolve().parents[2]
         manifest_name = "hermes-proxy" if feature_id == "hermes-sso" else "hermes"
-        manifest = yaml.safe_load((services_dir / manifest_name / "manifest.yaml").read_text())
-        return next(feature for feature in manifest["features"] if feature["id"] == feature_id)
+        manifest = yaml.safe_load(
+            (services_dir / manifest_name / "manifest.yaml").read_text()
+        )
+        return next(
+            feature for feature in manifest["features"] if feature["id"] == feature_id
+        )
 
     def test_agent_uses_authenticated_proxy_and_accepts_local_provider(self):
         services = [
@@ -297,21 +357,31 @@ class TestHermesFeatureContracts:
 
         assert result["status"] == "enabled"
         assert result["launch"] == {"type": "internal", "path": "/invites"}
-        assert result["enabledServicesAll"] == ["hermes", "hermes-proxy", "dashboard-api"]
+        assert result["enabledServicesAll"] == [
+            "hermes",
+            "hermes-proxy",
+            "dashboard-api",
+        ]
 
 
 # --- /api/features/{feature_id}/enable ---
 
 
 class TestFeatureEnableInstructions:
-
     def test_returns_instructions_for_known_feature(self, test_client, monkeypatch):
         test_features = [
-            {"id": "chat", "name": "Chat", "description": "AI Chat",
-             "icon": "MessageSquare", "category": "inference",
-             "setup_time": "1 min", "priority": 1,
-             "requirements": {"vram_gb": 0, "services": [], "services_any": []},
-             "enabled_services_all": [], "enabled_services_any": []}
+            {
+                "id": "chat",
+                "name": "Chat",
+                "description": "AI Chat",
+                "icon": "MessageSquare",
+                "category": "inference",
+                "setup_time": "1 min",
+                "priority": 1,
+                "requirements": {"vram_gb": 0, "services": [], "services_any": []},
+                "enabled_services_all": [],
+                "enabled_services_any": [],
+            }
         ]
         monkeypatch.setattr("routers.features.FEATURES", test_features)
 
@@ -327,11 +397,18 @@ class TestFeatureEnableInstructions:
 
     def test_instruction_links_use_request_host(self, test_client, monkeypatch):
         test_features = [
-            {"id": "documents", "name": "Documents", "description": "Document Q&A",
-             "icon": "FileText", "category": "productivity",
-             "setup_time": "2 min", "priority": 3,
-             "requirements": {"vram_gb": 0, "services": [], "services_any": []},
-             "enabled_services_all": [], "enabled_services_any": []}
+            {
+                "id": "documents",
+                "name": "Documents",
+                "description": "Document Q&A",
+                "icon": "FileText",
+                "category": "productivity",
+                "setup_time": "2 min",
+                "priority": 3,
+                "requirements": {"vram_gb": 0, "services": [], "services_any": []},
+                "enabled_services_all": [],
+                "enabled_services_any": [],
+            }
         ]
         monkeypatch.setattr("routers.features.FEATURES", test_features)
         monkeypatch.setattr(
@@ -351,18 +428,32 @@ class TestFeatureEnableInstructions:
             "url": "http://dashboard.ods.local:3000",
         }
 
-    def test_instruction_links_prefer_public_service_url(self, test_client, monkeypatch):
+    def test_instruction_links_prefer_public_service_url(
+        self, test_client, monkeypatch
+    ):
         test_features = [
-            {"id": "documents", "name": "Documents", "description": "Document Q&A",
-             "icon": "FileText", "category": "productivity",
-             "setup_time": "2 min", "priority": 3,
-             "requirements": {"vram_gb": 0, "services": [], "services_any": []},
-             "enabled_services_all": [], "enabled_services_any": []}
+            {
+                "id": "documents",
+                "name": "Documents",
+                "description": "Document Q&A",
+                "icon": "FileText",
+                "category": "productivity",
+                "setup_time": "2 min",
+                "priority": 3,
+                "requirements": {"vram_gb": 0, "services": [], "services_any": []},
+                "enabled_services_all": [],
+                "enabled_services_any": [],
+            }
         ]
         monkeypatch.setattr("routers.features.FEATURES", test_features)
         monkeypatch.setattr(
             "routers.features.SERVICES",
-            {"open-webui": {"external_port": 3000, "public_url": "https://chat.example.test"}},
+            {
+                "open-webui": {
+                    "external_port": 3000,
+                    "public_url": "https://chat.example.test",
+                }
+            },
         )
 
         resp = test_client.get(
@@ -376,13 +467,22 @@ class TestFeatureEnableInstructions:
             "url": "https://chat.example.test",
         }
 
-    def test_lan_web_instructions_are_explicit_about_ods_proxy(self, test_client, monkeypatch):
+    def test_lan_web_instructions_are_explicit_about_ods_proxy(
+        self, test_client, monkeypatch
+    ):
         test_features = [
-            {"id": "lan-web", "name": "LAN web entry", "description": "LAN entry",
-             "icon": "Globe", "category": "networking",
-             "setup_time": "Ready", "priority": 1,
-             "requirements": {"vram_gb": 0, "services": [], "services_any": []},
-             "enabled_services_all": ["ods-proxy"], "enabled_services_any": []}
+            {
+                "id": "lan-web",
+                "name": "LAN web entry",
+                "description": "LAN entry",
+                "icon": "Globe",
+                "category": "networking",
+                "setup_time": "Ready",
+                "priority": 1,
+                "requirements": {"vram_gb": 0, "services": [], "services_any": []},
+                "enabled_services_all": ["ods-proxy"],
+                "enabled_services_any": [],
+            }
         ]
         monkeypatch.setattr("routers.features.FEATURES", test_features)
         monkeypatch.setattr(
@@ -405,13 +505,24 @@ class TestFeatureEnableInstructions:
             "url": "http://dashboard.ods.local:80",
         }
 
-    def test_hermes_sso_instructions_open_access_management(self, test_client, monkeypatch):
+    def test_hermes_sso_instructions_open_access_management(
+        self, test_client, monkeypatch
+    ):
         test_features = [
-            {"id": "hermes-sso", "name": "Hermes Single Sign-On",
-             "description": "Manage Hermes access", "icon": "Shield",
-             "category": "privacy", "setup_time": "Ready", "priority": 5,
-             "requirements": {"vram_gb": 0, "services": ["hermes", "hermes-proxy", "dashboard-api"]},
-             "enabled_services_all": ["hermes", "hermes-proxy", "dashboard-api"]}
+            {
+                "id": "hermes-sso",
+                "name": "Hermes Single Sign-On",
+                "description": "Manage Hermes access",
+                "icon": "Shield",
+                "category": "privacy",
+                "setup_time": "Ready",
+                "priority": 5,
+                "requirements": {
+                    "vram_gb": 0,
+                    "services": ["hermes", "hermes-proxy", "dashboard-api"],
+                },
+                "enabled_services_all": ["hermes", "hermes-proxy", "dashboard-api"],
+            }
         ]
         monkeypatch.setattr("routers.features.FEATURES", test_features)
 
@@ -422,7 +533,9 @@ class TestFeatureEnableInstructions:
 
         assert resp.status_code == 200
         instructions = resp.json()["instructions"]
-        assert instructions["links"] == [{"label": "Manage Hermes access", "url": "/invites"}]
+        assert instructions["links"] == [
+            {"label": "Manage Hermes access", "url": "/invites"}
+        ]
         assert "owner cards" in " ".join(instructions["steps"]).lower()
 
     def test_404_for_unknown_feature(self, test_client, monkeypatch):
