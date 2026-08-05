@@ -112,9 +112,27 @@ cmd_backup() {
     cp "${INSTALL_DIR}/docker-compose.yml" "$backup_path/" 2>&1 || cp_exit=$?
     cp -r "${INSTALL_DIR}/config" "$backup_path/" 2>&1 || cp_exit=$?
 
-    # Backup user data references
-    cp -r "${DATA_DIR}" "$backup_path/data/" 2>&1 || cp_exit=$?
-    
+    # Backup user data. backup_path lives under ${DATA_DIR}/backups (BACKUP_DIR
+    # is DATA_DIR/backups), so a plain `cp -r "${DATA_DIR}" "$backup_path/data/"`
+    # would refuse to copy a directory into itself and write nothing, yet still
+    # report success. Copy each top-level entry (excluding the backups tree) so
+    # real user data lands at data/, and fail hard if nothing lands. Missing
+    # optional config files above stay non-fatal (cp_exit).
+    mkdir -p "$backup_path/data"
+    local data_failed=false
+    for entry in "$DATA_DIR"/* "$DATA_DIR"/.[!.]* "$DATA_DIR"/..?*; do
+        [[ -e "$entry" ]] || continue
+        [[ "$(basename "$entry")" == "backups" ]] && continue
+        if ! cp -r "$entry" "$backup_path/data/" 2>&1; then
+            data_failed=true
+        fi
+    done
+
+    if [[ "$data_failed" == true ]]; then
+        log_error "Backup failed: user data could not be copied."
+        return 1
+    fi
+
     log_success "Configuration backed up to: $backup_path"
     echo "$backup_path"
 }

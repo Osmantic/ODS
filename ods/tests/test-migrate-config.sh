@@ -238,6 +238,27 @@ else
 fi
 
 # ============================================================================
+# Test 13: backup preserves user data when backups/ lives inside DATA_DIR
+# Regression for the hollow-backup bug: BACKUP_DIR=${DATA_DIR}/backups, so a
+# naive `cp -r "${DATA_DIR}" "$backup_path/data/"` copies a directory into
+# itself and writes nothing while still printing [SUCCESS]. This test asserts
+# the user-data file actually lands in the backup.
+# ============================================================================
+rm -rf "$DATA_DIR"
+mkdir -p "$DATA_DIR/open-webui" "$DATA_DIR/backups" "$INSTALL_DIR"
+echo "chat-history" > "$DATA_DIR/open-webui/chat.db"
+echo "1.0.0" > "$INSTALL_DIR/.version"
+
+backup_exit=0
+backup_output=$(bash "$MIGRATE_CONFIG_SCRIPT" backup 2>&1) || backup_exit=$?
+backup_dir=$(echo "$backup_output" | grep -o "$DATA_DIR/backups/config-[0-9-]*" | head -1 || true)
+if [[ $backup_exit -eq 0 ]] && [[ -n "$backup_dir" ]] && [[ -f "$backup_dir/data/open-webui/chat.db" ]]; then
+    pass "Regression: backup preserves user data when backups/ is inside DATA_DIR"
+else
+    fail "Regression: backup did not preserve user data (exit $backup_exit): $backup_output"
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo ""
