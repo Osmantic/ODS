@@ -8,33 +8,37 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import tempfile
+from pathlib import Path
 from typing import Optional
 
 
 def load_persisted_key(path: str) -> Optional[str]:
     try:
-        if not os.path.exists(path):
-            return None
-        with open(path, "r", encoding="utf-8") as f:
-            key = f.read().strip()
-        return key or None
-    except Exception:
-        logging.exception("Failed to read persisted SHIELD_API_KEY")
+        key = Path(path).read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
         return None
+    return key or None
 
 
 def persist_key(path: str, key: str) -> None:
+    key_path = Path(path)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{key_path.name}.",
+        suffix=".tmp",
+        dir=key_path.parent,
+    )
+    temporary = Path(temporary_name)
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(key)
-        try:
-            os.chmod(path, 0o600)
-        except Exception:
-            # Best-effort only (may fail on some mounts/platforms)
-            pass
-    except Exception:
-        logging.exception("Failed to persist generated SHIELD_API_KEY")
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(key)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, key_path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def resolve_shield_api_key(env_key: Optional[str], key_path: str) -> str:
