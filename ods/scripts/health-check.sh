@@ -167,6 +167,9 @@ test_service() {
     local port="$default_port"
     [[ -n "$port_env" ]] && port="${!port_env:-$default_port}"
 
+    # Host-network services share the host netns; no Docker-mapped port to probe.
+    [[ "${SERVICE_HOST_NETWORK[$sid]:-}" == "1" ]] && return 0
+
     [[ -z "$health" || "$port" == "0" ]] && return 1
 
     # Check container state first (if docker available)
