@@ -134,6 +134,31 @@ class TestFetchTokenSpyMetrics:
         assert agent_monitor.throughput.data_points[0]["tokens_per_sec"] == pytest.approx(0.125)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"sessions": []},
+            ["not-an-object"],
+            [{"total_output_tokens": "many"}],
+            [{"total_output_tokens": float("nan")}],
+        ],
+        ids=["object-root", "non-object-row", "string-tokens", "nan-tokens"],
+    )
+    async def test_malformed_summary_does_not_update_metrics(
+        self, monkeypatch, payload
+    ):
+        monkeypatch.setattr(agent_monitor, "TOKEN_SPY_URL", "http://token-spy:8080")
+        monkeypatch.setattr(agent_monitor, "TOKEN_SPY_API_KEY", "")
+        agent_monitor.agent_metrics.session_count = 7
+        mock_session_cm = self._make_session_mock(200, payload)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+            await agent_monitor._fetch_token_spy_metrics()
+
+        assert agent_monitor.agent_metrics.session_count == 7
+        assert agent_monitor.throughput.data_points == []
+
+    @pytest.mark.asyncio
     async def test_no_url_skips_fetch(self, monkeypatch):
         """No HTTP call is made when TOKEN_SPY_URL is empty."""
         monkeypatch.setattr(agent_monitor, "TOKEN_SPY_URL", "")
