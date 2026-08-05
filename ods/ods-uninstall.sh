@@ -262,6 +262,10 @@ if command -v pgrep >/dev/null 2>&1; then
     while IFS= read -r _pid; do
         [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
     done < <(pgrep -f '\.opencode/bin/opencode (web|serve)' 2>/dev/null || true)
+    # brew-installed opencode also covered (both subcommands; brew prefixes)
+    while IFS= read -r _pid; do
+        [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
+    done < <(pgrep -f '/(opt/homebrew|usr/local)/bin/opencode (web|serve)' 2>/dev/null || true)
     # macOS-native llama-server: only matches this install's shipped binary
     while IFS= read -r _pid; do
         [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
