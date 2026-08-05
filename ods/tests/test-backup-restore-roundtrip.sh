@@ -26,12 +26,16 @@ trap 'rm -rf "$TMP"' EXIT
 # Create source ODS directory with minimal data
 SRC="$TMP/src"
 mkdir -p "$SRC/data/open-webui"
+mkdir -p "$SRC/data/n8n"
 mkdir -p "$SRC/config"
+mkdir -p "$SRC/models"
 echo "1.0.0" > "$SRC/.version"
 echo "test-env-value" > "$SRC/.env"
 echo "compose-content" > "$SRC/docker-compose.yml"
 echo "config-data" > "$SRC/config/settings.json"
 echo "user-data-file" > "$SRC/data/open-webui/data.txt"
+echo "workflow-data-file" > "$SRC/data/n8n/workflow.txt"
+echo "model-cache-file" > "$SRC/models/model.gguf"
 
 # Both scripts source lib/rsync.sh relative to ODS_DIR
 mkdir -p "$SRC/lib"
@@ -44,6 +48,16 @@ ODS_DIR="$SRC" bash "$ODS_BACKUP" --type full >/dev/null 2>&1 || fail "Backup fa
 BACKUP_ID=$(ls -1 "$SRC/.backups" | head -n 1)
 [[ -n "$BACKUP_ID" ]] || fail "No backup created"
 pass "Backup created: $BACKUP_ID"
+[[ -f "$SRC/.backups/$BACKUP_ID/data/open-webui/data.txt" ]] \
+    || fail "Full backup lost Open WebUI data"
+[[ -f "$SRC/.backups/$BACKUP_ID/data/n8n/workflow.txt" ]] \
+    || fail "Full backup lost n8n data"
+[[ -f "$SRC/.backups/$BACKUP_ID/config/settings.json" ]] \
+    || fail "Full backup lost config data"
+[[ -f "$SRC/.backups/$BACKUP_ID/models/model.gguf" ]] \
+    || fail "Full backup lost model cache"
+[[ -f "$SRC/.backups/$BACKUP_ID/manifest.json" ]] \
+    || fail "Full backup lost its manifest"
 
 # Create destination ODS directory (empty)
 DST="$TMP/dst"
@@ -55,6 +69,8 @@ cp "$SCRIPT_DIR/../lib/rsync.sh" "$DST/lib/"
 info "Restoring backup to destination"
 # Copy backup to destination's backup root
 cp -r "$SRC/.backups/$BACKUP_ID" "$DST/.backups/$BACKUP_ID"
+mkdir -p "$DST/data/open-webui"
+echo "created-after-backup" > "$DST/data/open-webui/local-only.txt"
 
 # Restore (force, no interactive prompts)
 ODS_DIR="$DST" bash "$ODS_RESTORE" -f "$BACKUP_ID" >/dev/null 2>&1 || fail "Restore failed"
@@ -70,6 +86,9 @@ info "Validating restored contents"
 [[ -f "$DST/config/settings.json" ]] || fail "Missing config/settings.json after restore"
 [[ -d "$DST/data/open-webui" ]] || fail "Missing data/open-webui after restore"
 [[ -f "$DST/data/open-webui/data.txt" ]] || fail "Missing data/open-webui/data.txt after restore"
+[[ -f "$DST/data/n8n/workflow.txt" ]] || fail "Missing data/n8n/workflow.txt after restore"
+[[ -f "$DST/data/open-webui/local-only.txt" ]] \
+    || fail "Restore deleted a file created after the backup"
 
 pass "All expected files/dirs present after restore"
 
