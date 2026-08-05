@@ -106,3 +106,20 @@ info "Deleting a compressed backup by bare ID"
 echo y | ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$LIFECYCLE_DIR" -d 20260601-120000 >/dev/null
 [[ ! -f "$LIFECYCLE_DIR/20260601-120000.tar.gz" ]] || fail "delete left the compressed backup behind"
 pass "delete removes compressed backups by bare ID"
+
+# Verify by bare ID must also resolve a compressed archive (mirrors delete).
+# Previously verify_backup required the literal .tar.gz suffix, so the
+# documented `verify 20260212-071500` form reported "not found" after a -c
+# backup had removed its directory.
+info "Verifying a compressed backup by bare ID"
+(cd "$LIFECYCLE_DIR" && mkdir -p 20260602-130000 && echo x > 20260602-130000/f \
+  && (cd 20260602-130000 && sha256sum f > checksums.sha256 2>/dev/null || shasum -a 256 f > checksums.sha256) \
+  && tar czf 20260602-130000.tar.gz 20260602-130000 && rm -rf 20260602-130000)
+set +e
+ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$LIFECYCLE_DIR" verify 20260602-130000 >/dev/null 2>&1
+verify_rc=$?
+set -e
+if [[ $verify_rc -ne 0 ]]; then
+  fail "verify by bare ID did not resolve the compressed archive"
+fi
+pass "verify resolves compressed backups by bare ID"

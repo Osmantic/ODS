@@ -548,6 +548,12 @@ verify_backup() {
 
     local target="$BACKUP_ROOT/$backup_id"
 
+    # Compressed backups are .tar.gz files, not directories; also accept the
+    # bare ID for an archive-only backup (mirrors delete_backup).
+    if [[ ! -e "$target" && -f "$target.tar.gz" ]]; then
+        target="$target.tar.gz"
+    fi
+
     if [[ -d "$target" ]]; then
         if [[ ! -f "$target/checksums.sha256" ]]; then
             log_error "checksums.sha256 not found for backup: $backup_id"
@@ -572,9 +578,10 @@ verify_backup() {
         trap 'rm -rf "$tmpdir"' RETURN
 
         # Extract checksums first (fast fail if missing)
-        local archive_name="${backup_id%.tar.gz}"
+        local archive_name
+        archive_name="$(basename "$target" .tar.gz)"
         if ! tar xzf "$target" -C "$tmpdir" "${archive_name}/checksums.sha256" >/dev/null 2>&1; then
-            log_error "checksums.sha256 not found in archive: $backup_id"
+            log_error "checksums.sha256 not found in archive: $archive_name"
             return 1
         fi
 
@@ -589,7 +596,7 @@ verify_backup() {
             fi
         )
 
-        log_success "Backup verified: $backup_id"
+        log_success "Backup verified: $archive_name"
         return 0
     fi
 
