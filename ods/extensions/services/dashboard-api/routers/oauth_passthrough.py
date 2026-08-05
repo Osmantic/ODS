@@ -71,6 +71,7 @@ import logging
 import os
 import re
 import secrets
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -261,18 +262,22 @@ def _prune_expired_nonces(nonce_dir: Path) -> None:
 
 
 def _atomic_write_0600(target: Path, data: str) -> None:
-    """Write ``data`` to ``target`` atomically with mode 0600 on POSIX.
-    The chmod is best-effort on filesystems that don't honour it
-    (Windows dev boxes, some overlayfs setups). Uses ``with_name`` rather
-    than ``with_suffix`` because Path.with_suffix rejects suffixes that
-    contain embedded dots on some Python versions."""
-    tmp = target.with_name(target.name + ".tmp")
-    tmp.write_text(data, encoding="utf-8")
+    """Write ``data`` to ``target`` atomically with mode 0600 on POSIX."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
+    tmp = Path(tmp_str)
     try:
-        tmp.chmod(0o600)
-    except OSError:
-        logger.debug("could not chmod %s to 0600", tmp, exc_info=True)
-    tmp.replace(target)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            logger.debug("could not chmod %s to 0600", tmp, exc_info=True)
+        os.replace(tmp, target)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        raise
 
 
 def _success_page(skill: str, return_url: Optional[str] = None) -> str:
