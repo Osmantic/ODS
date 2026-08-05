@@ -454,7 +454,10 @@ else
 fi
 
 if [[ -n "$JSON_FILE" ]]; then
-    printf '%s\n' "$REPORT_JSON" >"$JSON_FILE"
+    mkdir -p "$(dirname "$JSON_FILE")"
+    tmp_json="$(mktemp "${JSON_FILE}.tmp.XXXXXX")"
+    printf '%s\n' "$REPORT_JSON" >"$tmp_json"
+    mv -f "$tmp_json" "$JSON_FILE"
     echo "JSON written to: $JSON_FILE"
 fi
 
