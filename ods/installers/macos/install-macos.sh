@@ -3070,8 +3070,10 @@ else
     HEALTH_URLS=("http://${_health_llama_host}:${_health_llama_port}/health" "http://127.0.0.1:3000")
     HEALTH_CONTAINERS=("" "ods-webui")
 fi
+_health_n8n_port="$(read_env_value "$INSTALL_DIR/.env" "N8N_PORT")"
+[[ "$_health_n8n_port" =~ ^[0-9]+$ ]] || _health_n8n_port="5678"
 $ENABLE_VOICE && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:9000/health") && HEALTH_CONTAINERS+=("ods-whisper")
-$ENABLE_WORKFLOWS && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:5678/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
+$ENABLE_WORKFLOWS && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:${_health_n8n_port}/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
 [[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
 
 for ((idx=0; idx<${#HEALTH_NAMES[@]}; idx++)); do
@@ -3307,7 +3309,7 @@ fi
     printf 'Dashboard API|http://127.0.0.1:3002/health|ods-dashboard-api|http://localhost:3002\n'
     printf 'Perplexica|http://127.0.0.1:3004|ods-perplexica|http://localhost:3004\n'
     $ENABLE_VOICE && printf 'Whisper (STT)|http://127.0.0.1:%s/health|ods-whisper|http://localhost:%s\n' "${WHISPER_PORT:-9000}" "${WHISPER_PORT:-9000}"
-    $ENABLE_WORKFLOWS && printf 'n8n|http://127.0.0.1:5678/healthz|ods-n8n|http://localhost:5678\n'
+    $ENABLE_WORKFLOWS && printf 'n8n|http://127.0.0.1:%s/healthz|ods-n8n|http://localhost:%s\n' "$_health_n8n_port" "$_health_n8n_port"
     [[ -x "$OPENCODE_BIN" ]] && printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
 } | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:3001"
 
