@@ -24,6 +24,7 @@ test: ## Run unit and contract tests
 	@echo "=== Tier map tests ==="
 	@bash tests/test-tier-map.sh
 	@bash tests/test-installer-context-parity.sh
+	@python3 tests/test-hermes-config-scalar-escaping.py
 	@bash tests/test-hermes-context-floor.sh
 	@echo ""
 	@echo "=== Hermes slash worker prune ==="
