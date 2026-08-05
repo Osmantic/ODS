@@ -2854,7 +2854,7 @@ for service in (data.get("services") or {}).values():
         ai_ok "OpenCode configured for ${_opencode_model} at ${_opencode_base_url}"
         unset _opencode_model _opencode_port _opencode_bind _opencode_host \
             _opencode_switchboard_mode \
-            _opencode_base_url _opencode_api_key
+            _opencode_base_url _opencode_api_key _opencode_web_port
 
         # Install as macOS LaunchAgent (auto-start on login).
         # Log path is intentionally decoupled from INSTALL_DIR: xpcproxy denies
@@ -2862,6 +2862,8 @@ for service in (data.get("services") or {}).values():
         # to exit 78 before the target process ever runs. $HOME/Library/Logs is
         # always inside xpcproxy's sandbox writable set, so use that instead.
         mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/ODS"
+        _opencode_web_port="$(read_env_value "$INSTALL_DIR/.env" "OPENCODE_PORT")"
+        [[ "$_opencode_web_port" =~ ^[0-9]+$ ]] || _opencode_web_port="3003"
         OPENCODE_LAUNCHD_PATH="$(_compute_launchd_path "$(dirname "$OPENCODE_BIN")")"
         cat > "$OPENCODE_PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -2875,7 +2877,7 @@ for service in (data.get("services") or {}).values():
         <string>${OPENCODE_BIN}</string>
         <string>web</string>
         <string>--port</string>
-        <string>3003</string>
+        <string>${_opencode_web_port}</string>
         <string>--hostname</string>
         <string>127.0.0.1</string>
     </array>
@@ -2909,10 +2911,10 @@ PLIST_EOF
         launchctl bootout "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" >/dev/null 2>&1 || true
         _opencode_bootstrap_err="$(launchctl bootstrap "gui/$(id -u)" "$OPENCODE_PLIST" 2>&1)" && _opencode_bootstrap_rc=0 || _opencode_bootstrap_rc=$?
         if [[ $_opencode_bootstrap_rc -eq 0 ]]; then
-            ai_ok "OpenCode Web UI service installed (LaunchAgent, port 3003)"
+            ai_ok "OpenCode Web UI service installed (LaunchAgent, port ${_opencode_web_port})"
         else
             ai_warn "OpenCode LaunchAgent failed (rc=${_opencode_bootstrap_rc}): ${_opencode_bootstrap_err}"
-            ai_warn "Start manually: ${OPENCODE_BIN} web --port 3003"
+            ai_warn "Start manually: ${OPENCODE_BIN} web --port ${_opencode_web_port}"
         fi
     fi
 fi
