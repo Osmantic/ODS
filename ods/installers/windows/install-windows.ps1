@@ -2436,7 +2436,7 @@ if ($installReadiness -and $installReadiness.AllReady -and $llmModelReady -and $
 
 # ── Desktop & Start Menu shortcuts ───────────────────────────────────────────
 try {
-    $dashboardUrl  = "http://localhost:3001"
+    $dashboardUrl  = "http://localhost:$dashboardPort"
     $shortcutName  = "ODS"
     $iconPath      = Join-Path $installDir "extensions\services\dashboard\public\osmantic-os.ico"
     $iconContent   = if (Test-Path -LiteralPath $iconPath) { "IconFile=$iconPath`nIconIndex=0" } else { "IconIndex=0" }
@@ -2466,7 +2466,7 @@ try {
 
 # ── Success card ──────────────────────────────────────────────────────────────
 if ($allHealthy) {
-    Write-SuccessCard
+    Write-SuccessCard -WebUIPort $webuiPort -DashboardPort $dashboardPort
 } else {
     Write-Host ""
     Write-AIWarn "Install finished, but one or more services are not ready yet. Check status with:"
