@@ -377,12 +377,20 @@ if [[ -d "$HOME/.ods" ]]; then
     log_ok "Backups removed"
 fi
 
-# 7. Remove OpenCode config (if we created it)
-OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
-if [[ -f "$OPENCODE_CONFIG" ]] && grep -q "llama-server" "$OPENCODE_CONFIG" 2>/dev/null; then
-    rm -f "$OPENCODE_CONFIG"
-    log_ok "OpenCode config removed"
+# 7. Remove OpenCode config (if we created it). OpenCode actually reads
+#    config.json — the compat copy every installer writes alongside
+#    opencode.json — so removing only opencode.json leaves a stale ODS
+#    llama-server route pointing at a deleted install.
+OPENCODE_CONFIG_DIR="$HOME/.config/opencode"
+OPENCODE_CONFIG="$OPENCODE_CONFIG_DIR/opencode.json"
+OPENCODE_COMPAT_CONFIG="$OPENCODE_CONFIG_DIR/config.json"
+if [[ -f "$OPENCODE_CONFIG" ]] || [[ -f "$OPENCODE_COMPAT_CONFIG" ]]; then
+    if grep -q "llama-server" "$OPENCODE_CONFIG" "$OPENCODE_COMPAT_CONFIG" 2>/dev/null; then
+        rm -f "$OPENCODE_CONFIG" "$OPENCODE_COMPAT_CONFIG"
+        log_ok "OpenCode config removed"
+    fi
 fi
+unset OPENCODE_CONFIG_DIR OPENCODE_CONFIG OPENCODE_COMPAT_CONFIG
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
