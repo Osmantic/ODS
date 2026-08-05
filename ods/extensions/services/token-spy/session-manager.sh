@@ -58,6 +58,17 @@ get_agent_char_limit() {
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
+# Portable stat: GNU stat -c%Y fails on macOS's BSD stat (-f %m), which would
+# report mtime 0 and make fresh sessions look ancient.
+portable_mtime() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then stat -f %m "$1" 2>/dev/null || echo 0
+  else stat -c%Y "$1" 2>/dev/null || echo 0; fi
+}
+portable_size() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then stat -f %z "$1" 2>/dev/null || echo 0
+  else stat -c%s "$1" 2>/dev/null || echo 0; fi
+}
+
 query_status() {
   local agent="$1" port="$2"
   curl -sf --max-time 5 "http://${MONITOR_HOST}:${port}/api/session-status?agent=${agent}" 2>/dev/null || echo '{"recommendation":"unavailable"}'
@@ -175,7 +186,7 @@ enforce_count_limit() {
     local basename
     basename=$(basename "$f" .jsonl)
     local mtime
-    mtime=$(stat -c%Y "$f" 2>/dev/null || echo 0)
+    mtime=$(portable_mtime "$f")
     local age_mins=$(( (now - mtime) / 60 ))
 
     if [ "$age_mins" -le "$RECENT_MINUTES" ]; then
@@ -204,12 +215,21 @@ manage_remote_agent() {
       echo "NO_DIR"
       exit 0
     fi
+    # Portable stat for the remote host (BSD stat on macOS, GNU on Linux)
+    portable_mtime() {
+      if [ "\$(uname -s)" = "Darwin" ]; then stat -f %m "\$1" 2>/dev/null || echo 0
+      else stat -c%Y "\$1" 2>/dev/null || echo 0; fi
+    }
+    portable_size() {
+      if [ "\$(uname -s)" = "Darwin" ]; then stat -f %z "\$1" 2>/dev/null || echo 0
+      else stat -c%s "\$1" 2>/dev/null || echo 0; fi
+    }
     echo "SESSION_LIST_START"
     for f in "\$SESSIONS_DIR"/*.jsonl; do
       [ -f "\$f" ] || continue
       sid=\$(basename "\$f" .jsonl)
-      sz=\$(stat -c%s "\$f" 2>/dev/null || echo 0)
-      mt=\$(stat -c%Y "\$f" 2>/dev/null || echo 0)
+      sz=\$(portable_size "\$f")
+      mt=\$(portable_mtime "\$f")
       echo "\${sid}|\${sz}|\${mt}"
     done
     echo "SESSION_LIST_END"
