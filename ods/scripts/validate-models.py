@@ -39,12 +39,13 @@ def ods_root() -> Path:
 
 
 def env_value(root: Path, key: str, default: str = "") -> str:
-    """Read one KEY=value from the install's .env, or return ``default``."""
+    """Read the last KEY=value from .env, matching Docker Compose precedence."""
     env_path = root / ".env"
     if not env_path.is_file():
         return default
 
     prefix = f"{key}="
+    result = default
     for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = raw.strip()
         if not line.startswith(prefix):
@@ -52,8 +53,8 @@ def env_value(root: Path, key: str, default: str = "") -> str:
         value = line[len(prefix):].strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
             value = value[1:-1]
-        return value or default
-    return default
+        result = value or default
+    return result
 
 
 def model_candidates(cache_root: Path, repo_id: str) -> list[Path]:
