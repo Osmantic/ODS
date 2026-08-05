@@ -74,7 +74,14 @@ ods_readiness_summary() {
         if _ods_readiness_is_ready_code "$http_code"; then
             state="ready"
             detail="HTTP $http_code"
-        elif [[ "$container_state" == "running" || "$container_state" == "starting" || "$container_state" == "host" ]]; then
+        # `healthy` comes from .State.Health.Status and only exists for a
+        # container that declares a healthcheck and is passing it. It replaces
+        # the `running` string for those containers, so leaving it out of this
+        # list filed the best-behaved services under "needs attention" while an
+        # identical container with no healthcheck was reported as "starting".
+        # `unhealthy` deliberately stays in the else branch.
+        elif [[ "$container_state" == "running" || "$container_state" == "healthy" \
+             || "$container_state" == "starting" || "$container_state" == "host" ]]; then
             state="starting"
             detail="HTTP $http_code"
         elif [[ "$container_state" == "missing" || "$container_state" == "docker-unavailable" ]]; then

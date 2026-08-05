@@ -54,6 +54,8 @@ case "$url" in
   *3001*) printf "200" ;;
   *3000*) printf "000"; exit 7 ;;
   *6333*) printf "000"; exit 7 ;;
+  *5678*) printf "000"; exit 7 ;;
+  *8188*) printf "000"; exit 7 ;;
   *) printf "404" ;;
 esac
 EOF
@@ -66,6 +68,10 @@ if [[ "$1" == "inspect" ]]; then
   case "$container" in
     ods-dashboard) echo "healthy"; exit 0 ;;
     ods-webui) echo "running"; exit 0 ;;
+    # Passing its own healthcheck, but not reachable from the host yet.
+    ods-n8n) echo "healthy"; exit 0 ;;
+    # Failing its own healthcheck — this one really does need attention.
+    ods-comfyui) echo "unhealthy"; exit 0 ;;
     ods-qdrant) exit 1 ;;
     *) echo "missing"; exit 1 ;;
   esac
@@ -94,6 +100,8 @@ OUTPUT="$TMP_DIR/readiness.txt"
     printf 'Dashboard|http://127.0.0.1:3001|ods-dashboard|http://localhost:3001\n'
     printf 'Chat UI (Open WebUI)|http://127.0.0.1:3000|ods-webui|http://localhost:3000\n'
     printf 'Qdrant|http://127.0.0.1:6333|ods-qdrant|http://localhost:6333\n'
+    printf 'n8n|http://127.0.0.1:5678|ods-n8n|http://localhost:5678\n'
+    printf 'ComfyUI|http://127.0.0.1:8188|ods-comfyui|http://localhost:8188\n'
 } | ods_readiness_summary "ods status" "/tmp/ods-install.log" "http://localhost:3001" > "$OUTPUT"
 
 echo ""
@@ -101,7 +109,7 @@ echo "=== Install readiness summary tests ==="
 echo ""
 
 assert_contains "$OUTPUT" "INSTALL READINESS" "summary has heading"
-assert_contains "$OUTPUT" "Ready now: 1/3" "summary counts ready services"
+assert_contains "$OUTPUT" "Ready now: 1/5" "summary counts ready services"
 assert_contains "$OUTPUT" "[OK] Dashboard" "summary lists ready service"
 [[ -s "$SUDO_MARKER" ]] && pass "summary honors DOCKER_CMD wrapper for docker inspect" || fail "summary ignored DOCKER_CMD wrapper"
 assert_contains "$OUTPUT" "[!!] Chat UI (Open WebUI)" "summary lists starting service"
@@ -109,6 +117,13 @@ assert_contains "$OUTPUT" "starting - HTTP 000" "summary explains starting servi
 assert_not_contains "$OUTPUT" "000000" "failed curl probe is normalized to a single 000 code"
 assert_contains "$OUTPUT" "[!!] Qdrant" "summary lists missing service"
 assert_contains "$OUTPUT" "not detected - missing" "summary explains missing container"
+# A container passing its own healthcheck is at least as started as one with no
+# healthcheck at all — it must not be filed under "needs attention".
+assert_contains "$OUTPUT" "n8n                          starting" "healthy container reports as starting, not needs attention"
+assert_not_contains "$OUTPUT" "container healthy" "healthy container is never described as needing attention"
+# A container failing its own healthcheck genuinely does need attention.
+assert_contains "$OUTPUT" "ComfyUI                      needs attention" "unhealthy container still needs attention"
+assert_contains "$OUTPUT" "container unhealthy" "unhealthy container reports its docker state"
 assert_contains "$OUTPUT" "HTTP 000" "summary includes failed HTTP code"
 assert_contains "$OUTPUT" "Open dashboard: http://localhost:3001" "summary shows dashboard next step"
 assert_contains "$OUTPUT" "Check status: ods status" "summary shows status command"

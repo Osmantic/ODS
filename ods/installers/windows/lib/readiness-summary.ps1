@@ -74,7 +74,11 @@ function Write-ODSInstallReadinessSummary {
         else {
             $state = "starting"
             $detail = "HTTP $($http.Code)"
-            if ($containerState -and $containerState -notin @("running", "starting", "host")) {
+            # "healthy" comes from .State.Health.Status and replaces "running"
+            # for any container that declares a healthcheck, so omitting it
+            # filed passing containers under "needs attention". "unhealthy"
+            # deliberately stays out of this list.
+            if ($containerState -and $containerState -notin @("running", "healthy", "starting", "host")) {
                 $state = "needs attention"
                 $detail = "container $containerState, HTTP $($http.Code)"
             }

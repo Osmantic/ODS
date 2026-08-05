@@ -60,21 +60,35 @@ if command -v pwsh >/dev/null 2>&1; then
             param([string]$Container)
             if ($Container -eq "ods-webui") { return "running" }
             if ($Container -eq "ods-qdrant") { return "missing" }
+            if ($Container -eq "ods-comfyui") { return "unhealthy" }
             return "healthy"
         }
         $checks = @(
             @{ Name = "Dashboard"; Url = "http://localhost:3001"; Container = "ods-dashboard"; OpenUrl = "http://localhost:3001" },
             @{ Name = "Chat UI"; Url = "http://localhost:3000"; Container = "ods-webui"; OpenUrl = "http://localhost:3000" },
-            @{ Name = "Qdrant"; Url = "http://localhost:6333"; Container = "ods-qdrant"; OpenUrl = "http://localhost:6333" }
+            @{ Name = "Qdrant"; Url = "http://localhost:6333"; Container = "ods-qdrant"; OpenUrl = "http://localhost:6333" },
+            @{ Name = "n8n"; Url = "http://localhost:5678"; Container = "ods-n8n"; OpenUrl = "http://localhost:5678" },
+            @{ Name = "ComfyUI"; Url = "http://localhost:8188"; Container = "ods-comfyui"; OpenUrl = "http://localhost:8188" }
         )
         Write-ODSInstallReadinessSummary -Checks $checks -StatusCommand ".\ods.ps1 status" -LogPath "C:\ods\logs\install.log" -DashboardUrl "http://localhost:3001"
     ')"
 
     [[ "$OUTPUT" == *"INSTALL READINESS"* ]] && pass "runtime summary has heading" || fail "runtime summary missing heading"
-    [[ "$OUTPUT" == *"Ready now: 1/3"* ]] && pass "runtime summary counts ready services" || fail "runtime summary count mismatch"
+    [[ "$OUTPUT" == *"Ready now: 1/5"* ]] && pass "runtime summary counts ready services" || fail "runtime summary count mismatch"
     [[ "$OUTPUT" == *"[OK] Dashboard"* ]] && pass "runtime summary lists ready service" || fail "runtime summary missing ready service"
     [[ "$OUTPUT" == *"[!!] Chat UI"* ]] && pass "runtime summary lists starting service" || fail "runtime summary missing starting service"
     [[ "$OUTPUT" == *"[!!] Qdrant"* ]] && pass "runtime summary lists missing service" || fail "runtime summary missing missing service"
+    # A container passing its own healthcheck is at least as started as one
+    # with no healthcheck; only a failing healthcheck is "needs attention".
+    [[ "$OUTPUT" == *"n8n                          starting"* ]] \
+        && pass "runtime summary reports a healthy container as starting" \
+        || fail "runtime summary flags a healthy container as needing attention"
+    [[ "$OUTPUT" != *"container healthy"* ]] \
+        && pass "runtime summary never describes a healthy container as a problem" \
+        || fail "runtime summary describes a healthy container as a problem"
+    [[ "$OUTPUT" == *"container unhealthy"* ]] \
+        && pass "runtime summary still flags an unhealthy container" \
+        || fail "runtime summary lost the unhealthy container case"
 else
     pass "PowerShell runtime behavior skipped (pwsh unavailable)"
 fi
