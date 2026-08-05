@@ -513,6 +513,46 @@ load_selector_env "$_selector_env"
 assert_eq "SELECTOR_CURATED_SOURCE" "curated-model" "$LLM_MODEL"
 echo ""
 
+echo "Catalog selector fails when --installable-only has no eligible models:"
+_selector_catalog="$(mktemp)"
+trap 'rm -f "$_selector_catalog"' EXIT
+python3 - "$_selector_catalog" <<'PY'
+import json
+import sys
+
+models = [
+    {
+        "id": "metadata-only-model",
+        "llm_model_name": "metadata-only-model",
+        "family": "qwen",
+        "gguf_file": "metadata-only.gguf",
+        "gguf_url": "",
+        "install_recommendation": False,
+        "size_mb": 1000,
+        "vram_required_gb": 2,
+        "context_length": 8192,
+    }
+]
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump({"models": models}, handle)
+PY
+if python3 "$SCRIPT_DIR/scripts/select-model.py" \
+    --catalog "$_selector_catalog" \
+    --backend nvidia \
+    --vram-mb 8192 \
+    --profile qwen \
+    --installable-only \
+    --env >/dev/null 2>&1; then
+    echo "  FAIL: SELECTOR_EMPTY_INSTALLABLE_POOL (selector unexpectedly succeeded)"
+    ((FAIL++))
+else
+    echo "  PASS: SELECTOR_EMPTY_INSTALLABLE_POOL"
+    ((PASS++))
+fi
+rm -f "$_selector_catalog"
+trap - EXIT
+echo ""
+
 # --- Summary ---
 echo "==============================="
 echo "Results: $PASS passed, $FAIL failed"

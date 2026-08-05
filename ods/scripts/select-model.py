@@ -309,7 +309,11 @@ def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
         ] or [
             model for model in catalog
             if install_recommendation_allowed(model)
-        ] or catalog
+        ]
+        if not fallback_pool:
+            if installable_only:
+                return []
+            fallback_pool = catalog
         fallback = min(fallback_pool, key=lambda m: float(m.get("vram_required_gb") or 999))
         return [fallback]
     candidates.sort(
@@ -469,6 +473,12 @@ def main() -> int:
         args.host_arch,
         args.max_size_mb,
     )
+    if not ranked:
+        print(
+            "error: model catalog has no installable models matching the selection policy",
+            file=sys.stderr,
+        )
+        return 1
     arch_selected, arch_policy_tag = arch_policy_model(
         catalog, args.tier, profile, args.host_arch, args.memory_type, args.installable_only, ranked[0],
     )
