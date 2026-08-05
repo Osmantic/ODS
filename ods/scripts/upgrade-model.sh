@@ -147,14 +147,20 @@ save_state() {
     # Backup current state
     [[ -f "$STATE_FILE" ]] && cp "$STATE_FILE" "$BACKUP_FILE"
     
-    jq -n         --arg cur "$current"         --arg prev "$previous"         --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"         '{
+    local tmp_state
+    tmp_state="$(mktemp "${STATE_FILE}.XXXXXX.tmp")"
+    jq -n \
+        --arg cur "$current" \
+        --arg prev "$previous" \
+        --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        '{
             current: $cur,
             previous: $prev,
             updatedAt: $ts,
             history: [
                 {model: $cur, activatedAt: $ts}
             ]
-        }' > "$STATE_FILE"
+        }' > "$tmp_state" && mv -f "$tmp_state" "$STATE_FILE"
 }
 
 #-----------------------------------------------------------------------------
