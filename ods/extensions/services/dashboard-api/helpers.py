@@ -9,6 +9,7 @@ import platform
 import re
 import shutil
 import socket
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -250,10 +251,12 @@ def _read_json_file(path: Path, default):
 
 
 def _write_json_file(path: Path, data) -> None:
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        fd, tmp_str = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+        temporary = Path(tmp_str)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=2, sort_keys=True))
         # Windows virus scanners and indexers can briefly retain a handle to
         # the destination. Retry only that transient access-denied case; other
         # filesystem failures remain fail-soft as before.
@@ -264,12 +267,15 @@ def _write_json_file(path: Path, data) -> None:
             except PermissionError:
                 if attempt == 3:
                     raise
-                time.sleep(0.025 * (2 ** attempt))
-    except OSError as e:
+                time.sleep(0.05)
+    except Exception as e:
+        if 'temporary' in locals() and temporary.exists():
+            temporary.unlink(missing_ok=True)
         logger.debug("Failed to write JSON file %s: %s", path, e)
     finally:
         try:
-            temporary.unlink(missing_ok=True)
+            if 'temporary' in locals():
+                temporary.unlink(missing_ok=True)
         except OSError:
             pass
 
