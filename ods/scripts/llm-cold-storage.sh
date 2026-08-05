@@ -71,15 +71,18 @@ get_last_access_days() {
         # GNU: stat -c %X (atime as epoch seconds)
         newest_atime="$(find "$dir" -type f -exec stat -c %X {} + 2>/dev/null | sort -rn | sed -n '1p')"
     fi
-    if [[ -z "$newest_atime" ]]; then
+    newest_atime="${newest_atime%.*}"
+    if [[ ! "$newest_atime" =~ ^[0-9]+$ ]]; then
         echo "9999"
         return
     fi
     local now
     now="$(date +%s)"
-    local age_secs
-    age_secs="$(echo "$now - ${newest_atime%.*}" | bc)"
-    echo "$(( age_secs / 86400 ))"
+    # Shell arithmetic, not bc: bc is not installed by default on Debian,
+    # Ubuntu Server, Fedora or Arch. When it was missing the substitution
+    # produced an empty string, which bash evaluates as 0 — every model looked
+    # idle for 0 days and nothing was ever archived.
+    echo "$(( (now - newest_atime) / 86400 ))"
 }
 
 do_archive() {
@@ -88,6 +91,15 @@ do_archive() {
     local skipped=0
 
     log "========== LLM cold storage scan started (dry_run=$dry_run) =========="
+
+    # The archive destination has to exist before the first mv. Without this,
+    # every `mv` failed with "No such file or directory" while the log still
+    # reported "ARCHIVED" and the summary still counted the model.
+    if [[ "$dry_run" != "true" ]] && ! mkdir -p "$COLD_DIR"; then
+        log "ERROR: cannot create cold storage directory: $COLD_DIR"
+        log "Set COLD_DIR to a writable path (is the backup drive mounted?)"
+        return 1
+    fi
 
     for model_dir in "$HF_CACHE"/models--*/; do
         [[ -d "$model_dir" ]] || continue
@@ -121,10 +133,26 @@ do_archive() {
                 log "WOULD ARCHIVE: $name ($size, idle ${idle_days}d)"
             else
                 log "ARCHIVING: $name ($size, idle ${idle_days}d)"
+                if [[ -e "$COLD_DIR/$name" ]]; then
+                    # mv would nest it as $COLD_DIR/$name/$name and the symlink
+                    # would then point one level above the real model.
+                    log "ERROR: cold storage already holds $name — leaving it hot"
+                    ((skipped++))
+                    continue
+                fi
                 # Move to cold storage
-                mv "$model_dir" "$COLD_DIR/$name"
+                if ! mv "${model_dir%/}" "$COLD_DIR/$name"; then
+                    log "ERROR: could not move $name to $COLD_DIR — leaving it hot"
+                    ((skipped++))
+                    continue
+                fi
                 # Create symlink so HF cache still resolves
-                ln -s "$COLD_DIR/$name" "${model_dir%/}"
+                if ! ln -s "$COLD_DIR/$name" "${model_dir%/}"; then
+                    log "ERROR: could not link $name back into the cache — restoring"
+                    mv "$COLD_DIR/$name" "${model_dir%/}"
+                    ((skipped++))
+                    continue
+                fi
                 log "ARCHIVED: $name -> $COLD_DIR/$name"
             fi
             ((archived++))

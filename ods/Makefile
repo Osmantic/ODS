@@ -148,6 +148,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== session cleanup lifecycle ==="
 	@bash tests/test-session-cleanup.sh
+	@echo ""
+	@echo "=== LLM cold storage archive path ==="
+	@bash tests/test-llm-cold-storage.sh
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="

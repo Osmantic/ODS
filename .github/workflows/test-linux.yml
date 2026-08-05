@@ -172,6 +172,9 @@ jobs:
       - name: Mode Switch Tests
         run: bash tests/test-mode-switch-status.sh
 
+      - name: LLM Cold Storage Tests
+        run: bash tests/test-llm-cold-storage.sh
+
       - name: Validate Simulation Summary Tests
         run: bash tests/test-validate-sim-summary.sh
 
