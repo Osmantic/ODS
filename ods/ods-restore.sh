@@ -379,6 +379,40 @@ dry_run_preview() {
     log_info "Dry run complete. No changes were made."
 }
 
+# Resolve the docker compose overlay flags for the active ODS stack. The repo
+# does not ship a top-level docker-compose.yml (only docker-compose.base.yml +
+# GPU overlays), so a bare `docker compose down` fails with "no configuration
+# file provided" even from the install dir. Prefer the flags persisted by the
+# installer, then the compose stack resolver, then a base + GPU-overlay chain.
+resolve_compose_flags() {
+    local flags=""
+
+    local compose_flags_file="${ODS_DIR}/.compose-flags"
+    if [[ -f "$compose_flags_file" ]]; then
+        flags="$(tr '\n' ' ' < "$compose_flags_file" | xargs 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$flags" && -x "$ODS_DIR/scripts/resolve-compose-stack.sh" ]]; then
+        flags="$("$ODS_DIR/scripts/resolve-compose-stack.sh" \
+            --script-dir "$ODS_DIR" \
+            --tier "${TIER:-1}" \
+            --gpu-backend "${GPU_BACKEND:-nvidia}" \
+            --gpu-count "${GPU_COUNT:-1}" \
+            --ods-mode "${ODS_MODE:-local}" 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$flags" && -f "$ODS_DIR/docker-compose.base.yml" ]]; then
+        flags="-f docker-compose.base.yml"
+        case "${GPU_BACKEND:-}" in
+            amd|nvidia|intel|apple|arc|cpu)
+                [[ -f "$ODS_DIR/docker-compose.${GPU_BACKEND}.yml" ]] && flags="$flags -f docker-compose.${GPU_BACKEND}.yml"
+                ;;
+        esac
+    fi
+
+    printf '%s\n' "$flags"
+}
+
 # Stop running containers
 stop_containers() {
     log_step "Stopping containers..."
@@ -389,7 +423,12 @@ stop_containers() {
     fi
 
     cd "$ODS_DIR"
-    if docker compose down; then
+    local compose_flags
+    compose_flags="$(resolve_compose_flags)"
+    if [[ -z "$compose_flags" ]]; then
+        log_warn "Could not resolve compose stack; stopping with defaults"
+    fi
+    if docker compose $compose_flags down; then
         log_success "Containers stopped"
     else
         log_warn "Some containers may not have stopped cleanly"
