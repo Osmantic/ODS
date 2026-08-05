@@ -456,7 +456,8 @@ else
     mkdir -p "$INSTALL_DIR/logs"
 
     # Persist compose flags so ods-cli can reuse them without re-resolving
-    echo "$COMPOSE_FLAGS" > "$INSTALL_DIR/.compose-flags" || warn "Could not cache compose flags (non-fatal)"
+    _flags_tmp=$(mktemp "$INSTALL_DIR/.compose-flags.XXXXXX.tmp")
+    printf '%s\n' "$COMPOSE_FLAGS" > "$_flags_tmp" && mv -f "$_flags_tmp" "$INSTALL_DIR/.compose-flags" || warn "Could not cache compose flags (non-fatal)"
     log "Saved compose flags to $INSTALL_DIR/.compose-flags"
 
     _phase11_compose_command_text() {
