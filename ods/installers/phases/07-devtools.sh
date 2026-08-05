@@ -147,6 +147,8 @@ else
             [[ -z "${ODS_MODEL_SWITCHBOARD:-}" ]] && ODS_MODEL_SWITCHBOARD=$(grep -m1 '^ODS_MODEL_SWITCHBOARD=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             [[ -z "${LITELLM_KEY:-}" ]] && LITELLM_KEY=$(grep -m1 '^LITELLM_KEY=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             [[ -z "${LITELLM_PORT:-}" ]] && LITELLM_PORT=$(grep -m1 '^LITELLM_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2-)
+            [[ -z "${OPENCODE_PORT:-}" ]] && OPENCODE_PORT=$(grep -m1 '^OPENCODE_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2-)
+            [[ "$OPENCODE_PORT" =~ ^[0-9]+$ ]] || OPENCODE_PORT=3003
         fi
         # Route through LiteLLM on AMD/Lemonade, direct to llama-server otherwise.
         #
@@ -287,13 +289,16 @@ OPENCODE_EOF
                 _sed_i "s|__HOME__|${_home_esc}|g" "$svc_tmp"
                 _sed_i "s|__OPENCODE_BIN__|${_opencode_bin_esc}|g" "$svc_tmp"
                 _sed_i "s|__OPENCODE_BIN_DIR__|${_opencode_bin_dir_esc}|g" "$svc_tmp"
+                _opencode_port_esc=$(printf '%s\n' "${OPENCODE_PORT:-3003}" | sed 's/[&/\]/\\&/g')
+                _sed_i "s|__OPENCODE_PORT__|${_opencode_port_esc}|g" "$svc_tmp"
+                if grep -q '__OPENCODE_PORT__' "$svc_tmp"; then ai_warn "opencode-web.service has unrendered __OPENCODE_PORT__ placeholder"; fi
                 cp "$svc_tmp" "$SYSTEMD_USER_DIR/opencode-web.service"
                 rm -f "$svc_tmp"
             fi
 
             systemctl --user daemon-reload 2>/dev/null || true
             systemctl --user enable --now opencode-web.service >> "$LOG_FILE" 2>&1 && \
-                ai_ok "OpenCode Web UI service installed (user-level, port 3003)" || \
+                ai_ok "OpenCode Web UI service installed (user-level, port ${OPENCODE_PORT:-3003})" || \
                 ai_warn "OpenCode Web UI service failed to start"
 
             # Enable lingering so service survives logout
