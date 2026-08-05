@@ -42,12 +42,45 @@ pid = int(sys.argv[3])
 description = sys.argv[4]
 log_file = sys.argv[5]
 
+
+def _proc_start(pid):
+    """Start-time token for a pid, or None when it cannot be read.
+
+    Used to detect pid reuse: os.kill(pid, 0) only proves some process owns
+    the number, so a reaped+recycled pid would otherwise report the task as
+    still running. starttime (field 22 of /proc/<pid>/stat) is stable per
+    process; on non-Linux fall back to `ps -o lstart`.
+    """
+    stat_path = "/proc/%d/stat" % pid
+    try:
+        with open(stat_path) as f:
+            rest = f.read().rsplit(")", 1)[1].split()
+        return rest[19]
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
 tasks = json.loads(registry_path.read_text())
 tasks.append({
     "id": task_id,
     "pid": pid,
     "description": description,
     "log_file": log_file,
+    "start_time": _proc_start(pid),
     "status": "running"
 })
 fd, tmp_path = tempfile.mkstemp(dir=str(registry_path.parent), suffix=".tmp")
@@ -95,6 +128,38 @@ if not task:
     sys.exit(3)
 
 pid = task["pid"]
+
+
+def _proc_start(pid):
+    stat_path = "/proc/%d/stat" % pid
+    try:
+        with open(stat_path) as f:
+            rest = f.read().rsplit(")", 1)[1].split()
+        return rest[19]
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+# Check if the recorded process is still running. Guard against pid reuse
+# (os.kill(pid, 0) alone would match an unrelated recycled pid): only treat
+# it as running when the pid's start time still matches the recorded one.
+recorded_start = task.get("start_time")
+if recorded_start is not None and _proc_start(pid) != recorded_start:
+    sys.exit(1)  # Completed (or never matched the recorded process)
 
 # Check if process is still running
 try:
@@ -173,22 +238,51 @@ for task in tasks:
     task_id = task["id"]
     pid = task["pid"]
     desc = task["description"]
-    
-    # Check if still running
-    try:
-        os.kill(pid, 0)
-        status = "running"
-    except OSError:
-        log_file = task.get("log_file", "")
-        if log_file and Path(log_file).exists():
-            log_content = Path(log_file).read_text()
-            if "ERROR" in log_content or "failed" in log_content:
-                status = "failed"
+
+    # Check if still running. Guard against pid reuse (see bg_task_status):
+    # a live pid whose start time differs from the recorded one is treated as
+    # completed rather than "running".
+    def _proc_start(pid):
+        stat_path = "/proc/%d/stat" % pid
+        try:
+            with open(stat_path) as f:
+                rest = f.read().rsplit(")", 1)[1].split()
+            return rest[19]
+        except (OSError, ValueError, IndexError):
+            pass
+        try:
+            import subprocess
+
+            out = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "lstart="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if out.returncode == 0:
+                return out.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return None
+
+    recorded_start = task.get("start_time")
+    if recorded_start is not None and _proc_start(pid) != recorded_start:
+        status = "completed"
+    else:
+        try:
+            os.kill(pid, 0)
+            status = "running"
+        except OSError:
+            log_file = task.get("log_file", "")
+            if log_file and Path(log_file).exists():
+                log_content = Path(log_file).read_text()
+                if "ERROR" in log_content or "failed" in log_content:
+                    status = "failed"
+                else:
+                    status = "completed"
             else:
                 status = "completed"
-        else:
-            status = "completed"
-    
+
     print(f"  [{task_id}] {desc}: {status}")
 PY
 }
