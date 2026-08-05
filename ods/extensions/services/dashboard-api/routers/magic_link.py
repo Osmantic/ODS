@@ -294,6 +294,7 @@ def _normalize_record(record: dict) -> dict:
         record["redemptions"] = []
     record.setdefault("note", None)
     record.setdefault("revoked_at", None)
+    record.setdefault("created_at", _now_iso())  # legacy records may lack created_at
     return record
 
 
