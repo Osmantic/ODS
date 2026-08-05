@@ -122,6 +122,40 @@ test_diff_masks_secrets() {
     fi
 }
 
+# Test 7: Diff preserves equals signs inside values
+test_diff_preserves_equals_in_values() {
+    local presets_dir="$ODS_DIR/presets"
+    mkdir -p "$presets_dir/test-preset-i" "$presets_dir/test-preset-j"
+    echo 'PUBLIC_URL=https://example.test/callback?state=a=b' > "$presets_dir/test-preset-i/env"
+    echo 'PUBLIC_URL=https://example.test/callback?state=a=c' > "$presets_dir/test-preset-j/env"
+
+    local output
+    output=$("$ODS_CLI" preset diff test-preset-i test-preset-j 2>&1 || true)
+    if echo "$output" | grep -q 'PUBLIC_URL' \
+        && echo "$output" | grep -q 'state=a=b' \
+        && echo "$output" | grep -q 'state=a=c'; then
+        pass "Diff preserves equals signs inside values"
+    else
+        fail "Diff truncated values at an equals sign"
+    fi
+}
+
+# Test 8: CRLF and matching quotes do not create false differences
+test_diff_normalizes_env_syntax() {
+    local presets_dir="$ODS_DIR/presets"
+    mkdir -p "$presets_dir/test-preset-k" "$presets_dir/test-preset-l"
+    printf 'PUBLIC_URL="https://example.test/?state=a=b"\r\n' > "$presets_dir/test-preset-k/env"
+    printf 'PUBLIC_URL=https://example.test/?state=a=b\n' > "$presets_dir/test-preset-l/env"
+
+    local output
+    output=$("$ODS_CLI" preset diff test-preset-k test-preset-l 2>&1 || true)
+    if ! echo "$output" | grep -qE '^[[:space:]]*[~+-][[:space:]]+PUBLIC_URL'; then
+        pass "Diff normalizes CRLF and matching quotes"
+    else
+        fail "Diff reported equivalent env syntax as different"
+    fi
+}
+
 # Run tests
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Preset Diff Tests"
@@ -134,6 +168,8 @@ test_diff_identical
 test_diff_env_changes
 test_diff_service_changes
 test_diff_masks_secrets
+test_diff_preserves_equals_in_values
+test_diff_normalizes_env_syntax
 cleanup
 
 # Summary

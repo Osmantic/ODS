@@ -2219,6 +2219,28 @@ _cmd_config_is_secret() {
     return 1
 }
 
+_cmd_preset_env_entries() {
+    local env_file="$1" line key value
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        [[ "$line" == *=* ]] || continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key%"${key##*[![:space:]]}"}"
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+        value="${value# }"
+        if [[ "$value" == '"'*'"' ]]; then
+            value="${value#\"}"
+            value="${value%\"}"
+        elif [[ "$value" == "'"*"'" ]]; then
+            value="${value#\'}"
+            value="${value%\'}"
+        fi
+        printf '%s\0%s\0' "$key" "$value"
+    done < "$env_file"
+}
+
 cmd_config() {
     check_install
 
@@ -3370,16 +3392,12 @@ META
 
                 # Parse both env files
                 declare -A env1 env2
-                while IFS='=' read -r key value; do
-                    [[ "$key" =~ ^[[:space:]]*# ]] && continue
-                    [[ -z "$key" ]] && continue
+                while IFS= read -r -d '' key && IFS= read -r -d '' value; do
                     env1["$key"]="$value"
-                done < "$dir1/env"
-                while IFS='=' read -r key value; do
-                    [[ "$key" =~ ^[[:space:]]*# ]] && continue
-                    [[ -z "$key" ]] && continue
+                done < <(_cmd_preset_env_entries "$dir1/env")
+                while IFS= read -r -d '' key && IFS= read -r -d '' value; do
                     env2["$key"]="$value"
-                done < "$dir2/env"
+                done < <(_cmd_preset_env_entries "$dir2/env")
 
                 # Find all unique keys
                 local all_keys=()
