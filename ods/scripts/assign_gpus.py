@@ -73,6 +73,81 @@ class AssignmentResult:
 
 #  Phase 1: Topology Analysis
 
+def _finite_number(value, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be a number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{label} must be finite")
+    return number
+
+
+def validate_inputs(topology: dict, model_size_mb: float) -> None:
+    """Validate detector output before it reaches the assignment algorithm."""
+    if not math.isfinite(model_size_mb) or model_size_mb <= 0:
+        raise ValueError("model size must be a positive finite number")
+    if not isinstance(topology, dict):
+        raise ValueError("topology root must be an object")
+
+    gpus = topology.get("gpus")
+    if not isinstance(gpus, list):
+        raise ValueError("topology gpus must be a list")
+    gpu_count = topology.get("gpu_count")
+    if isinstance(gpu_count, bool) or not isinstance(gpu_count, int):
+        raise ValueError("topology gpu_count must be an integer")
+    if gpu_count != len(gpus):
+        raise ValueError(
+            f"topology gpu_count ({gpu_count}) does not match gpus length ({len(gpus)})"
+        )
+    if gpu_count == 0:
+        raise ValueError("no GPUs found in topology")
+
+    indices = set()
+    for position, gpu in enumerate(gpus):
+        label = f"topology gpus[{position}]"
+        if not isinstance(gpu, dict):
+            raise ValueError(f"{label} must be an object")
+        index = gpu.get("index")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise ValueError(f"{label}.index must be a non-negative integer")
+        if index in indices:
+            raise ValueError(f"duplicate GPU index: {index}")
+        indices.add(index)
+        if not isinstance(gpu.get("uuid"), str) or not gpu["uuid"]:
+            raise ValueError(f"{label}.uuid must be a non-empty string")
+        if not isinstance(gpu.get("name"), str) or not gpu["name"]:
+            raise ValueError(f"{label}.name must be a non-empty string")
+
+        total_gb = _finite_number(gpu.get("memory_gb"), f"{label}.memory_gb")
+        if total_gb <= 0:
+            raise ValueError(f"{label}.memory_gb must be positive")
+        if gpu.get("memory_free_gb") is not None:
+            free_gb = _finite_number(
+                gpu["memory_free_gb"], f"{label}.memory_free_gb"
+            )
+            if free_gb < 0 or free_gb > total_gb:
+                raise ValueError(
+                    f"{label}.memory_free_gb must be between zero and memory_gb"
+                )
+
+    links = topology.get("links", [])
+    if not isinstance(links, list):
+        raise ValueError("topology links must be a list")
+    for position, link in enumerate(links):
+        label = f"topology links[{position}]"
+        if not isinstance(link, dict):
+            raise ValueError(f"{label} must be an object")
+        for endpoint in ("gpu_a", "gpu_b"):
+            if link.get(endpoint) not in indices:
+                raise ValueError(f"{label}.{endpoint} references an unknown GPU")
+        rank = _finite_number(link.get("rank"), f"{label}.rank")
+        if rank < 0:
+            raise ValueError(f"{label}.rank must be non-negative")
+        for key in ("link_type", "link_label"):
+            if not isinstance(link.get(key), str):
+                raise ValueError(f"{label}.{key} must be a string")
+
+
 def parse_gpus(topology: dict) -> list:
     gpus = []
     for g in topology["gpus"]:
@@ -461,11 +536,12 @@ def main():
 
     enabled_services = [s.strip() for s in args.enabled_services.split(",")]
     model_size_mb    = args.model_size
-    gpu_count        = topology.get("gpu_count", 0)
-
-    if gpu_count == 0:
-        print("ERROR: no GPUs found in topology", file=sys.stderr)
+    try:
+        validate_inputs(topology, model_size_mb)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
+    gpu_count = topology["gpu_count"]
 
     #  Early exit: single GPU
     if gpu_count == 1:

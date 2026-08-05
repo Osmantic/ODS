@@ -32,6 +32,65 @@ def parallelism(output):
     return llama(output)["parallelism"]
 
 
+def write_topology(tmp_path, topology):
+    path = tmp_path / "topology.json"
+    path.write_text(json.dumps(topology), encoding="utf-8")
+    return str(path)
+
+
+def minimal_topology():
+    return {
+        "gpu_count": 1,
+        "gpus": [
+            {
+                "index": 0,
+                "uuid": "GPU-test",
+                "name": "Test GPU",
+                "memory_gb": 24,
+            }
+        ],
+        "links": [],
+    }
+
+
+class TestInputValidation:
+    def test_non_finite_model_size_errors(self):
+        rc, _, stderr = run(
+            fixture_path("nvidia_smi_topo_matrix_1gpu_pcie.json"), "nan"
+        )
+
+        assert rc == 1
+        assert "positive finite" in stderr
+
+    def test_gpu_count_must_match_gpu_list(self, tmp_path):
+        topology = minimal_topology()
+        topology["gpu_count"] = 2
+
+        rc, _, stderr = run(write_topology(tmp_path, topology), 1000)
+
+        assert rc == 1
+        assert "does not match" in stderr
+
+    def test_non_finite_gpu_memory_errors(self, tmp_path):
+        topology = minimal_topology()
+        topology["gpus"][0]["memory_gb"] = float("nan")
+
+        rc, _, stderr = run(write_topology(tmp_path, topology), 1000)
+
+        assert rc == 1
+        assert "memory_gb must be finite" in stderr
+
+    def test_duplicate_gpu_indices_error(self, tmp_path):
+        topology = minimal_topology()
+        topology["gpu_count"] = 2
+        topology["gpus"].append({**topology["gpus"][0], "uuid": "GPU-test-2"})
+
+        rc, _, stderr = run(write_topology(tmp_path, topology), 1000)
+
+        assert rc == 1
+        assert "duplicate GPU index" in stderr
+
+
 # ── 1 GPU — single ────────────────────────────────────────────────────────────
 
 class TestSingleGpu:
