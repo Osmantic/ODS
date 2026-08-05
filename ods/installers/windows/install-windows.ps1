@@ -2085,7 +2085,10 @@ if ($enableVoice)     {
     $healthWhisperPort = if ($windowsEnvMap.ContainsKey("WHISPER_PORT") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["WHISPER_PORT"])) { $windowsEnvMap["WHISPER_PORT"] } else { "9000" }
     $healthChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$healthWhisperPort/health" }
 }
-if ($enableWorkflows) { $healthChecks += @{ Name = "n8n (Workflows)";   Url = "http://localhost:5678/healthz" } }
+if ($enableWorkflows) {
+    $n8nHealthPort = Get-WindowsODSEnvPort -EnvMap $windowsEnvMap -Name "N8N_PORT" -DefaultPort 5678
+    $healthChecks += @{ Name = "n8n (Workflows)"; Url = "http://localhost:$n8nHealthPort/healthz" }
+}
 
 Write-AI "Running health checks..."
 $maxAttempts = 60; $allHealthy = $true
