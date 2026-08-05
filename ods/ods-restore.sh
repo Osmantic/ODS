@@ -54,8 +54,8 @@ estimate_restore_bytes_dir() {
 # Estimate restore size for a tar.gz (uncompressed file sizes)
 estimate_restore_bytes_tar() {
     local tar_path="$1"
-    # tar -tv lists size in column 3
-    tar -tvzf "$tar_path" 2>/dev/null | awk '{sum += $3} END {print sum+0}'
+    # tar -tv lists the byte size as the first pure-numeric field on GNU and BSD
+    tar -tvzf "$tar_path" 2>/dev/null | awk '{ for (i=1; i<=NF; i++) { if ($i ~ /^[0-9]+$/ && $i+0 > 0) { sum += $i+0; break } } } END { print sum+0 }'
 }
 
 ensure_restore_space() {
