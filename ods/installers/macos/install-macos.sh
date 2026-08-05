@@ -326,8 +326,7 @@ _macos_patch_hermes_persisted_config() {
         done
 
         if [[ -z "$selected_image" ]]; then
-            if [[ ! -e "$(dirname "$persisted_config")" ]] \
-               || { [[ -x "$(dirname "$persisted_config")" ]] && [[ ! -e "$persisted_config" ]]; }; then
+            if [[ ! -e "$persisted_config" ]]; then
                 return 3
             fi
             return 4
