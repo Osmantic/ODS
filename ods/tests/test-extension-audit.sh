@@ -37,7 +37,7 @@ fail() {
 
 header() {
     echo ""
-    echo -e "${BOLD}${CYAN}[$1/7]${NC} ${BOLD}$2${NC}"
+    echo -e "${BOLD}${CYAN}[$1/9]${NC} ${BOLD}$2${NC}"
     echo -e "${CYAN}$(printf '%.0s─' {1..60})${NC}"
 }
 
@@ -215,7 +215,7 @@ PY
 
 header "1" "Valid Project Passes Cleanly"
 root=$(make_fixture_root)
-trap 'rm -rf "$root" "${root2:-}" "${root3:-}" "${root4:-}" "${root5:-}" "${root6:-}" "${root7:-}"' EXIT
+trap 'rm -rf "$root" "${root2:-}" "${root3:-}" "${root4:-}" "${root5:-}" "${root6:-}" "${root7:-}" "${root8:-}" "${root9:-}"' EXIT
 create_valid_project "$root"
 report=$(mktemp)
 if run_audit "$root" --json > "$report"; then
@@ -362,6 +362,54 @@ if run_audit "$root7" --json > "$report7" 2>/dev/null; then
     pass "external_port_default=0 fixture audits successfully"
 else
     fail "external_port_default=0 should be allowed for internal-only services"
+fi
+
+header "8" "Long Port Syntax Requires An Exact Environment Name"
+root8=$(make_fixture_root)
+create_valid_project "$root8"
+python3 - "$root8/extensions/services/search/compose.yaml" <<'PY'
+import yaml
+import sys
+path = sys.argv[1]
+doc = yaml.safe_load(open(path, encoding="utf-8"))
+doc["services"]["search"]["ports"] = [{
+    "target": 8080,
+    "published": "${SEARCH_PORT_BACKUP:-8888}",
+    "host_ip": "127.0.0.1",
+}]
+with open(path, "w", encoding="utf-8") as handle:
+    yaml.safe_dump(doc, handle, sort_keys=False)
+PY
+report8=$(mktemp)
+run_audit "$root8" --json > "$report8" 2>/dev/null \
+    || fail "wrong long-syntax variable should only produce a warning"
+if assert_json_value "$report8" "any(issue['code'] == 'compose-port-env-unused' for svc in payload['services'] for issue in svc['issues'])" >/dev/null; then
+    pass "long-syntax port variable prefixes do not satisfy external_port_env"
+else
+    fail "long-syntax prefix variable was accepted as an exact match"
+fi
+
+header "9" "Short Port Syntax Requires An Exact Environment Name"
+root9=$(make_fixture_root)
+create_valid_project "$root9"
+python3 - "$root9/extensions/services/search/compose.yaml" <<'PY'
+import yaml
+import sys
+path = sys.argv[1]
+doc = yaml.safe_load(open(path, encoding="utf-8"))
+doc["services"]["search"]["ports"] = [
+    "127.0.0.1:${SEARCH_PORT_BACKUP:-8888}:8080"
+]
+with open(path, "w", encoding="utf-8") as handle:
+    yaml.safe_dump(doc, handle, sort_keys=False)
+PY
+report9=$(mktemp)
+run_audit "$root9" --json > "$report9" 2>/dev/null \
+    || fail "wrong short-syntax variable should only produce a warning"
+if assert_json_value "$report9" "any(issue['code'] == 'compose-port-env-unused' for svc in payload['services'] for issue in svc['issues'])" >/dev/null; then
+    pass "short-syntax port variable prefixes do not satisfy external_port_env"
+else
+    fail "short-syntax prefix variable was accepted as an exact match"
 fi
 
 echo ""

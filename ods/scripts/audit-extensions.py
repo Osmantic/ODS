@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -31,6 +32,10 @@ FEATURE_SERVICE_KEYS = (
     ("requirements", "services_any"),
     ("enabled_services_all",),
     ("enabled_services_any",),
+)
+COMPOSE_ENV_REFERENCE = re.compile(
+    r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-+?][^}]*)?\}|"
+    r"([A-Za-z_][A-Za-z0-9_]*))"
 )
 
 
@@ -391,13 +396,14 @@ def ports_reference_env(service_def: Any, env_name: str) -> bool:
     if not isinstance(service_def, dict) or not env_name:
         return False
 
-    needle = f"${{{env_name}"
     for port in as_list(service_def.get("ports")):
-        if isinstance(port, str) and needle in port:
-            return True
+        candidate = port
         if isinstance(port, dict):
-            published = port.get("published")
-            if isinstance(published, str) and env_name in published:
+            candidate = port.get("published")
+        if not isinstance(candidate, str):
+            continue
+        for match in COMPOSE_ENV_REFERENCE.finditer(candidate):
+            if (match.group(1) or match.group(2)) == env_name:
                 return True
     return False
 
