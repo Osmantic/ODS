@@ -195,9 +195,10 @@ class ODSTokenSpyCallback(CustomLogger):
         timeout = max(
             0.1, float(os.environ.get("ODS_LITELLM_TELEMETRY_TIMEOUT", "3"))
         )
-        async with httpx.AsyncClient(
+        client = httpx.AsyncClient(
             follow_redirects=False, timeout=timeout
-        ) as client:
+        )
+        try:
             while True:
                 event = await self.queue.get()
                 try:
@@ -215,6 +216,14 @@ class ODSTokenSpyCallback(CustomLogger):
                     self._warn(f"Token Spy telemetry unavailable: {exc}")
                 finally:
                     self.queue.task_done()
+        finally:
+            close_task = asyncio.create_task(client.aclose())
+            try:
+                await asyncio.shield(close_task)
+            except asyncio.CancelledError:
+                # A second cancellation must not interrupt socket cleanup.
+                await close_task
+                raise
 
     def _warn(self, message: str) -> None:
         now = time.monotonic()
