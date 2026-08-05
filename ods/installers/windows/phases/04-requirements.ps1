@@ -304,7 +304,8 @@ if ($enableRecommended) {
     $_portsToCheck["Token Spy (usage monitor)"] = 3005
 }
 if ($enableVoice) {
-    $_whisperPortToCheck = $(if ($gpuInfo.Backend -eq "amd" -and -not $cloudMode) { 9100 } else { 9000 })
+    $_whisperDefaultPort = if ($gpuInfo.Backend -eq "amd" -and -not $cloudMode) { 9100 } else { 9000 }
+    $_whisperPortToCheck = Resolve-WindowsODSPort -Name "WHISPER_PORT" -DefaultPort $_whisperDefaultPort -InstallDir $installDir
     $_portsToCheck["Whisper (STT)"] = $_whisperPortToCheck
     $_portsToCheck["Kokoro (TTS)"]  = 8880
 }
