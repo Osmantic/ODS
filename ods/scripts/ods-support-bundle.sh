@@ -58,14 +58,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Mirrors detect_bash below: a candidate only counts once it has been proven to
+# run. `command -v python3` on its own accepts the Windows Microsoft Store
+# app-execution alias, which is on PATH by default and prints a Store advert
+# instead of executing. lib/python-cmd.sh does that probe, skips the alias, and
+# honours ODS_PYTHON_CMD.
 detect_python() {
-    if command -v python3 >/dev/null 2>&1; then
-        command -v python3
-    elif command -v python >/dev/null 2>&1; then
-        command -v python
-    else
-        return 1
+    if [[ -f "$ROOT_DIR/lib/python-cmd.sh" ]]; then
+        # shellcheck source=../lib/python-cmd.sh
+        . "$ROOT_DIR/lib/python-cmd.sh"
+        ods_detect_python_cmd 2>/dev/null && return 0
     fi
+    local candidate
+    for candidate in python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1 \
+           && "$candidate" -c 'import sys; sys.exit(0)' >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+    return 1
 }
 
 detect_bash() {

@@ -89,6 +89,9 @@ test: ## Run unit and contract tests
 	@echo "=== offline model validation ==="
 	@python3 tests/test-offline-model-validation.py
 	@echo ""
+	@echo "=== python resolver entry points ==="
+	@bash tests/test-python-resolver-entrypoints.sh
+	@echo ""
 	@echo "=== Bash 3.2 guard contracts ==="
 	@bash tests/test-bash32-guards.sh
 	@echo ""

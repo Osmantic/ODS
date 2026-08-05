@@ -187,6 +187,9 @@ jobs:
       - name: Offline Model Validation Tests
         run: python3 tests/test-offline-model-validation.py
 
+      - name: Python Resolver Entry Point Tests
+        run: bash tests/test-python-resolver-entrypoints.sh
+
       - name: Runtime Config Renderer Tests
         run: python3 tests/test-render-runtime-configs.py
 
