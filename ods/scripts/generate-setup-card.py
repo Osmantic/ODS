@@ -41,7 +41,9 @@ Requires: Pillow + qrcode. Imports lazily so `--help` works without them.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 # Card geometry — 4×6 inches @ 300 DPI = 1200×1800px portrait.
@@ -366,10 +368,19 @@ def main(argv: list[str] | None = None) -> int:
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_format = args.format or ("pdf" if out_path.suffix.lower() == ".pdf" else "png")
-    if out_format == "pdf":
-        card.save(out_path, format="PDF", resolution=300.0)
-    else:
-        card.save(out_path, format="PNG", dpi=(300, 300))
+    fd, tmp_str = tempfile.mkstemp(dir=str(out_path.parent), prefix=f".{out_path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_str)
+    os.close(fd)
+    try:
+        if out_format == "pdf":
+            card.save(tmp_path, format="PDF", resolution=300.0)
+        else:
+            card.save(tmp_path, format="PNG", dpi=(300, 300))
+        os.replace(tmp_path, out_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
     print(f"wrote {out_path} ({CARD_W}×{CARD_H} @ 300 DPI = 4×6 inches)")
     return 0
 
