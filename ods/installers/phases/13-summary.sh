@@ -56,10 +56,16 @@ if ! $DRY_RUN; then
     _setup_config_dir="${INSTALL_DIR}/data/config"
     _setup_complete_file="${_setup_config_dir}/setup-complete.json"
     _completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    if mkdir -p "${_setup_config_dir}" 2>/dev/null \
-        && printf '{"completed_at": "%s", "version": "1.0.0"}\n' "${_completed_at}" > "${_setup_complete_file}" 2>/dev/null \
-        && chmod 644 "${_setup_complete_file}" 2>/dev/null; then
-        log "Setup wizard pre-marked complete at ${_setup_complete_file}"
+    if mkdir -p "${_setup_config_dir}" 2>/dev/null; then
+        _setup_tmp=$(mktemp "${_setup_complete_file}.XXXXXX.tmp" 2>/dev/null)
+        if printf '{"completed_at": "%s", "version": "1.0.0"}\n' "${_completed_at}" > "${_setup_tmp}" 2>/dev/null \
+            && chmod 644 "${_setup_tmp}" 2>/dev/null \
+            && mv -f "${_setup_tmp}" "${_setup_complete_file}" 2>/dev/null; then
+            log "Setup wizard pre-marked complete at ${_setup_complete_file}"
+        else
+            rm -f "${_setup_tmp}" 2>/dev/null
+            ai_warn "Could not write ${_setup_complete_file} (non-fatal)"
+        fi
     else
         ai_warn "Could not write ${_setup_complete_file} (non-fatal)"
     fi
