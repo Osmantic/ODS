@@ -148,6 +148,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== session cleanup lifecycle ==="
 	@bash tests/test-session-cleanup.sh
+	@echo ""
+	@echo "=== token-spy request filters ==="
+	@python3 tests/test-token-spy-filters.py
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="

@@ -172,6 +172,9 @@ jobs:
       - name: Mode Switch Tests
         run: bash tests/test-mode-switch-status.sh
 
+      - name: Token Spy Request Filter Tests
+        run: python3 tests/test-token-spy-filters.py
+
       - name: Validate Simulation Summary Tests
         run: bash tests/test-validate-sim-summary.sh
 

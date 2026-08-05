@@ -278,37 +278,33 @@ def _filter_history(body: dict, cfg: dict, result: FilterResult,
                         )
                         result.tool_results_truncated += 1
 
-    # Step 6: Flatten units back into message list
+    # Step 6: Apply max_total_chars by dropping whole units, oldest first.
+    #
+    # This runs on units, before the flatten. Trimming the flattened list one
+    # message at a time splits a tool chain: dropping an assistant message that
+    # carries tool_calls while keeping its `role: "tool"` reply produces a
+    # request whose tool message answers nothing, which every OpenAI-compatible
+    # server rejects with a 400. always_keep_last_n bounds how far back we go.
+    #
+    # A single unit larger than max_total is kept whole — the cap is best
+    # effort, because the alternative is emitting an invalid request.
+    # truncate_tool_results_chars is the knob for an oversized unit.
+    max_total = cfg.get("max_total_chars")
+    if max_total:
+        while len(units) > 1:
+            if _units_chars(units) <= max_total:
+                break
+            if sum(len(unit) for unit in units[1:]) < always_keep_last_n:
+                # Dropping the next unit would cut into the protected tail.
+                break
+            result.messages_removed += len(units.pop(0))
+
+    # Step 7: Flatten units back into message list
     filtered_conv = []
     for unit in units:
         filtered_conv.extend(unit)
 
-    # Step 7: Apply always_keep_last_n safety — ensure the last N raw messages
-    # from the original conversation are present (protects in-flight tool chains)
-    if always_keep_last_n and conv_msgs:
-        tail = conv_msgs[-always_keep_last_n:]
-        # Check if tail messages are already in filtered_conv
-        # by comparing the last N messages
-        tail_ids = {id(m) for m in tail}
-        existing_ids = {id(m) for m in filtered_conv[-always_keep_last_n:]} if filtered_conv else set()
-        if not tail_ids.issubset(existing_ids):
-            # Ensure tail messages are present — they may have been modified by
-            # truncation but should still be in the list since we keep recent units
-            pass  # Units-based approach already preserves recent messages
-
     result.messages_kept = len(system_msgs) + len(filtered_conv)
-
-    # Step 8: Apply max_total_chars if set
-    max_total = cfg.get("max_total_chars")
-    if max_total:
-        while len(filtered_conv) > always_keep_last_n:
-            total = sum(len(json.dumps(m, separators=(",", ":"))) for m in filtered_conv)
-            if total <= max_total:
-                break
-            # Remove the oldest non-system unit
-            filtered_conv.pop(0)
-            result.messages_removed += 1
-        result.messages_kept = len(system_msgs) + len(filtered_conv)
 
     # Reassemble: system messages first, then filtered conversation
     body["messages"] = system_msgs + filtered_conv
@@ -321,6 +317,15 @@ def _filter_history(body: dict, cfg: dict, result: FilterResult,
         )
 
     return body, result
+
+
+def _units_chars(units: list[list[dict]]) -> int:
+    """Serialized size of every message across *units*, in characters."""
+    return sum(
+        len(json.dumps(msg, separators=(",", ":")))
+        for unit in units
+        for msg in unit
+    )
 
 
 def _group_into_units(messages: list[dict]) -> list[list[dict]]:
