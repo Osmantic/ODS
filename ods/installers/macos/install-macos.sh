@@ -3057,9 +3057,11 @@ CLOUD_REQUIRED_HEALTHY=true
 # runs natively on macOS via Metal; OpenCode is a LaunchAgent). Docker
 # services wait on `docker inspect ... .State.Health.Status == healthy`;
 # host-native services fall back to an HTTP probe on 127.0.0.1.
+_health_litellm_port="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_PORT")"
+[[ "$_health_litellm_port" =~ ^[0-9]+$ ]] || _health_litellm_port="4000"
 if $CLOUD_MODE; then
     HEALTH_NAMES=("LiteLLM gateway" "Chat UI (Open WebUI)")
-    HEALTH_URLS=("http://127.0.0.1:4000/health/readiness" "http://127.0.0.1:3000")
+    HEALTH_URLS=("http://127.0.0.1:${_health_litellm_port}/health/readiness" "http://127.0.0.1:3000")
     HEALTH_CONTAINERS=("ods-litellm" "ods-webui")
 else
     _health_bind="$(read_env_value "$INSTALL_DIR/.env" "BIND_ADDRESS")"
