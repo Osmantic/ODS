@@ -1,0 +1,16 @@
+{
+  "hardware": {
+    "gpu_vendor": "none",
+    "vram_gb": 0,
+    "ram_gb": 16.0
+  },
+  "recommendations": [
+    {
+      "model_id": "Qwen/Qwen3.5-2B-GGUF",
+      "quantization": "Q4_K_M",
+      "estimated_tokens_per_sec": 8.1,
+      "score": 0.72,
+      "fits": true
+    }
+  ]
+}

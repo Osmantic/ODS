@@ -1,0 +1,16 @@
+{
+  "hardware": {
+    "gpu_vendor": "apple",
+    "vram_gb": 11.2,
+    "ram_gb": 16.0
+  },
+  "recommendations": [
+    {
+      "model_id": "Qwen/Qwen3.5-9B-GGUF",
+      "quantization": "Q4_K_M",
+      "estimated_tokens_per_sec": 18.5,
+      "score": 0.81,
+      "fits": true
+    }
+  ]
+}

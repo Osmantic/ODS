@@ -1,0 +1,29 @@
+{
+  "_comment": "ods_hardware_classes intentionally omitted — hardware-class enforcement deferred to integration PR that wires advisor into classify-hardware.sh",
+  "mappings": [
+    {
+      "llmfit_model_id": "Qwen/Qwen3.5-2B-GGUF",
+      "llmfit_quant": "Q4_K_M",
+      "ods_gguf_file": "Qwen3.5-2B-Q4_K_M.gguf",
+      "ods_tier": "T1"
+    },
+    {
+      "llmfit_model_id": "Qwen/Qwen3.5-9B-GGUF",
+      "llmfit_quant": "Q4_K_M",
+      "ods_gguf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+      "ods_tier": "T2"
+    },
+    {
+      "llmfit_model_id": "Qwen/Qwen3-30B-A3B-GGUF",
+      "llmfit_quant": "Q4_K_M",
+      "ods_gguf_file": "Qwen3-30B-A3B-Q4_K_M.gguf",
+      "ods_tier": "T3"
+    },
+    {
+      "llmfit_model_id": "Qwen/Qwen3.6-35B-A3B-GGUF",
+      "llmfit_quant": "Q4_K_M",
+      "ods_gguf_file": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+      "ods_tier": "T4"
+    }
+  ]
+}
