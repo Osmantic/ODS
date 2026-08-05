@@ -521,9 +521,68 @@ sync_windows_opencode_config() {
         sync_script_arg=$(cygpath -w "$sync_script")
     fi
 
-    log "Refreshing Windows OpenCode config for model: $FULL_GGUF_FILE"
-    "$ps_cmd" -NoProfile -ExecutionPolicy Bypass -File "$sync_script_arg" -InstallDir "$install_dir_arg" \
-        >/dev/null 2>&1 || log "WARNING: OpenCode config refresh failed (non-fatal)"
+    log "Refreshing Windows OpenCode config and restarting OpenCode web for model: $FULL_GGUF_FILE"
+    if "$ps_cmd" -NoProfile -ExecutionPolicy Bypass -File "$sync_script_arg" -InstallDir "$install_dir_arg" \
+        >/dev/null 2>&1; then
+        restart_managed_windows_opencode "$ps_cmd"
+    else
+        log "WARNING: OpenCode config refresh failed (non-fatal)"
+    fi
+}
+
+# Restart the ODS-managed Windows OpenCode web process so a live session picks
+# up the freshly-synced model route (Linux/macOS get this restart from the host
+# agent; Windows bootstrap-upgrade did not, leaving the pre-swap route live).
+restart_managed_windows_opencode() {
+    local ps_cmd="$1"
+    local opencode_exe="$HOME/.opencode/bin/opencode.exe"
+    if [[ ! -f "$opencode_exe" ]]; then
+        log "WARNING: OpenCode binary not found ($opencode_exe); skipping web process restart (non-fatal)"
+        return 0
+    fi
+
+    local opencode_exe_arg="$opencode_exe"
+    local restart_script="${TMPDIR:-/tmp}/ods-restart-opencode.$$.ps1"
+    local restart_script_arg="$restart_script"
+    if command -v cygpath >/dev/null 2>&1; then
+        opencode_exe_arg=$(cygpath -w "$opencode_exe")
+        restart_script_arg=$(cygpath -w "$restart_script")
+    fi
+
+    local port
+    port="$(read_env_value OPENCODE_PORT)"
+    [[ -n "$port" ]] || port="3003"
+
+    cat > "$restart_script" <<'RESTART_PS'
+$ErrorActionPreference = "Stop"
+$exe = $env:ODS_OPENCODE_EXE
+$port = [string]$env:ODS_OPENCODE_PORT
+$procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.ExecutablePath -and $_.ExecutablePath.Equals($exe, [StringComparison]::OrdinalIgnoreCase) -and
+    $_.CommandLine -match "(?i)\b(web|serve)\b" -and
+    $_.CommandLine -match ("(?i)--port\s+" + [regex]::Escape($port))
+})
+foreach ($p in $procs) { Stop-Process -Id ([int]$p.ProcessId) -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 1
+try {
+    Start-ScheduledTask -TaskName "ODSOpenCodeWeb" -ErrorAction Stop | Out-Null
+    $back = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.ExecutablePath -and $_.ExecutablePath.Equals($exe, [StringComparison]::OrdinalIgnoreCase) -and
+        $_.CommandLine -match "(?i)\b(web|serve)\b" -and
+        $_.CommandLine -match ("(?i)--port\s+" + [regex]::Escape($port))
+    })
+    if ($back.Count -eq 0) { throw "OpenCode web did not come back after scheduled-task start" }
+} catch {
+    throw "Could not restart ODS-managed OpenCode web: $($_.Exception.Message)"
+}
+RESTART_PS
+
+    ODS_OPENCODE_EXE="$opencode_exe_arg" ODS_OPENCODE_PORT="$port" \
+        "$ps_cmd" -NoProfile -ExecutionPolicy Bypass -File "$restart_script_arg" \
+        >/dev/null 2>&1 \
+        && log "Restarted ODS-managed Windows OpenCode web process on port $port." \
+        || log "WARNING: OpenCode web process restart failed (non-fatal)"
+    rm -f "$restart_script"
 }
 
 read_env_value() {
