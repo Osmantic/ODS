@@ -10,6 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Iterator
+from unittest.mock import ANY, patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -342,6 +343,32 @@ def test_supervisor_uses_restart_cooldown_after_child_exit() -> None:
     assert_true(restarted["status"] == "starting", "restarted child should enter grace period")
 
 
+def test_supervisor_logs_invalid_plan_reason() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        route_path, secret_dir = _ready_supervisor_fixture(Path(tmp))
+        supervisor, _factory, _clock = _new_fake_supervisor(route_path, secret_dir)
+        ssh_app = _health_app()
+        invalid_plan = {
+            "readyToStart": True,
+            "tunnels": [{"argv": ["ssh", "gpu.example.test"]}],
+        }
+        with (
+            patch.object(ssh_app, "_supervisor_plan_for_paths", return_value=invalid_plan),
+            patch.object(ssh_app.LOGGER, "warning") as warning,
+        ):
+            payload = supervisor.reconcile()
+
+    warning.assert_called_once_with(
+        "ssh plan argv invalid: %s",
+        ANY,
+    )
+    assert_true(
+        str(warning.call_args.args[1]) == "SSH tunnel argv is missing a local forward",
+        "warning must preserve the actionable argv validation reason",
+    )
+    assert_true(payload["reason"] == "ssh_plan_unavailable", "invalid plan reason drifted")
+
+
 def test_service_source_avoids_public_secret_names() -> None:
     for path, text in _walk_service_source():
         for key in PUBLIC_SSH_SECRET_ENV:
@@ -365,6 +392,7 @@ def main() -> int:
         test_supervisor_stops_process_when_secret_custody_disappears,
         test_supervisor_restarts_process_when_route_argv_changes,
         test_supervisor_uses_restart_cooldown_after_child_exit,
+        test_supervisor_logs_invalid_plan_reason,
         test_service_source_avoids_public_secret_names,
     ]
     for test in tests:
