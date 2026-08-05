@@ -21,7 +21,7 @@ _stat_size() {
 }
 
 TIMESTAMP=$(date '+%Y-%m-%d_%H%M')
-LOCKFILE=/tmp/memory-shepherd.lock
+LOCKFILE="${MEMORY_SHEPHERD_LOCKFILE:-/tmp/memory-shepherd.lock}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Logging ────────────────────────────────────────────────────────────
@@ -31,19 +31,40 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [memory-shepherd] $1"; }
 # ── Lock Management ────────────────────────────────────────────────────
 
 cleanup_lock() { rm -f "$LOCKFILE"; }
-trap cleanup_lock EXIT
 
-if [ -f "$LOCKFILE" ]; then
-    lock_age=$(( $(date +%s) - $(_stat_mtime "$LOCKFILE") ))
+# Create-or-fail in one step. `[ -f ]` followed by a separate write is not a
+# lock: two runs starting together both see no lock file and both proceed.
+acquire_lock() {
+    ( set -o noclobber; echo $$ > "$LOCKFILE" ) 2>/dev/null
+}
+
+lock_age_seconds() {
+    local mtime
+    mtime="$(_stat_mtime "$LOCKFILE" 2>/dev/null)" || mtime=""
+    [[ "$mtime" =~ ^[0-9]+$ ]] || { echo 999999; return 0; }
+    echo $(( $(date +%s) - mtime ))
+}
+
+if ! acquire_lock; then
+    lock_age="$(lock_age_seconds)"
     if [ "$lock_age" -gt 120 ]; then
         log "WARN: Stale lock (age: ${lock_age}s) — removing"
         rm -f "$LOCKFILE"
+        if ! acquire_lock; then
+            log "Another reset claimed the lock — exiting"
+            exit 0
+        fi
     else
         log "Another reset running (lock age: ${lock_age}s) — exiting"
         exit 0
     fi
 fi
-echo $$ > "$LOCKFILE"
+
+# Arm the cleanup only now that this process owns the lock. Arming it before
+# the check meant the "another reset running" exit above deleted the *other*
+# run's lock on its way out, so the next invocation started concurrently with
+# a reset that was still rewriting MEMORY.md files.
+trap cleanup_lock EXIT
 
 # ── Config Parser ──────────────────────────────────────────────────────
 

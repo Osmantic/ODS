@@ -148,6 +148,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== session cleanup lifecycle ==="
 	@bash tests/test-session-cleanup.sh
+	@echo ""
+	@echo "=== memory-shepherd run lock ==="
+	@bash tests/test-memory-shepherd-lock.sh
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="
