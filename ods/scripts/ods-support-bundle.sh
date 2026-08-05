@@ -746,7 +746,21 @@ evidence = {
     "commands": command_statuses(),
 }
 
-(bundle_dir / "manifest" / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+evidence_path = bundle_dir / "manifest" / "evidence.json"
+import os
+import pathlib
+import tempfile
+fd, tmp_str = tempfile.mkstemp(dir=str(evidence_path.parent), prefix=f".{evidence_path.name}.", suffix=".tmp")
+tmp_path = pathlib.Path(tmp_str)
+content = json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.replace(tmp_path, evidence_path)
+except Exception:
+    if tmp_path.exists():
+        tmp_path.unlink(missing_ok=True)
+    raise
 PY
     redact_file "$BUNDLE_DIR/manifest/evidence.json"
 }
