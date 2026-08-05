@@ -307,10 +307,21 @@ with log_path.open("ab", buffering=0) as log_handle:
         close_fds=True,
         start_new_session=True,
     )
-tmp = pid_path.with_name(f"{pid_path.name}.{os.getpid()}.tmp")
-tmp.write_text(f"{proc.pid}\n", encoding="ascii")
-os.chmod(tmp, 0o600)
-os.replace(tmp, pid_path)
+import tempfile
+fd, tmp_str = tempfile.mkstemp(dir=str(pid_path.parent), prefix=f".{pid_path.name}.", suffix=".tmp")
+tmp = Path(tmp_str)
+try:
+    with os.fdopen(fd, "w", encoding="ascii") as f:
+        f.write(f"{proc.pid}\n")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        pass
+    os.replace(tmp, pid_path)
+except Exception:
+    if tmp.exists():
+        tmp.unlink(missing_ok=True)
+    raise
 BOOTSTRAP_LAUNCH_PY
 }
 
