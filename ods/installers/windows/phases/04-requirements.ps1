@@ -286,8 +286,10 @@ Stop-WindowsODSLemonadePortConflicts `
 $_portsToCheck = [ordered]@{
     "Open WebUI (chat)"   = Resolve-WindowsODSPort `
         -Name "WEBUI_PORT" -DefaultPort 3000 -InstallDir $installDir
-    "Dashboard"           = 3001
-    "Dashboard API"       = 3002
+    "Dashboard"           = Resolve-WindowsODSPort `
+        -Name "DASHBOARD_PORT" -DefaultPort 3001 -InstallDir $installDir
+    "Dashboard API"       = Resolve-WindowsODSPort `
+        -Name "DASHBOARD_API_PORT" -DefaultPort 3002 -InstallDir $installDir
 }
 $_llmPortToCheck = Resolve-WindowsLlmPreflightPort `
     -GpuBackend ([string]$gpuInfo.Backend) `
