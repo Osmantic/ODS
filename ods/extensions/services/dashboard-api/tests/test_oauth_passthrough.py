@@ -164,6 +164,35 @@ def test_oauth_init_prunes_expired_nonces(oauth_client):
     assert not stale.exists(), "expired nonce should have been pruned on init"
 
 
+def test_oauth_init_prunes_nonce_with_invalid_timestamp(oauth_client):
+    """A JSON-valid nonce with a non-numeric created_at/ttl_seconds (ISO
+    string, hand edit) must be reaped as stale on the next init instead of
+    raising ValueError → 500."""
+    nonce_dir = oauth_client.tmp / "oauth-nonces"
+    nonce_dir.mkdir(parents=True, exist_ok=True)
+    stale = nonce_dir / "bad-timestamp-abcdefghijklmno.json"
+    stale.write_text(
+        json.dumps(
+            {
+                "nonce": "bad-timestamp-abcdefghijklmno",
+                "skill_id": "google-workspace",
+                "return_url": "",
+                "created_at": "not-a-number",
+                "ttl_seconds": "also-not-a-number",
+            }
+        )
+    )
+    assert stale.exists()
+
+    resp = oauth_client.post(
+        "/api/oauth/init",
+        json={"skill_id": "spotify"},
+        headers=oauth_client.auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert not stale.exists(), "nonce with invalid timestamp should be pruned on init"
+
+
 # ---------------------------------------------------------------------------
 # /api/oauth/callback — happy path
 # ---------------------------------------------------------------------------
@@ -322,6 +351,31 @@ def test_callback_rejects_expired_nonce(oauth_client):
     assert not nonce_file.exists(), "expired nonce should be cleaned up"
 
 
+def test_callback_rejects_nonce_with_invalid_timestamp(oauth_client):
+    """A JSON-valid nonce whose created_at is an ISO string must be refused
+    as stale (400, not 500) and cleaned up."""
+    state = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"
+    nonce_dir = oauth_client.tmp / "oauth-nonces"
+    nonce_dir.mkdir(parents=True, exist_ok=True)
+    nonce_file = nonce_dir / f"{state}.json"
+    nonce_file.write_text(
+        json.dumps(
+            {
+                "nonce": state,
+                "skill_id": "google-workspace",
+                "return_url": "",
+                "created_at": "2026-08-06T10:00:00Z",
+                "ttl_seconds": 900,
+            }
+        )
+    )
+
+    resp = oauth_client.get("/api/oauth/callback", params={"code": "fake", "state": state})
+    assert resp.status_code == 400
+    assert not (oauth_client.tmp / "oauth_callback.json").exists()
+    assert not nonce_file.exists(), "nonce with invalid timestamp should be cleaned up"
+
+
 def test_callback_rejects_replayed_nonce(oauth_client):
     """Nonces are single-use. A second callback with the same state must
     fail — otherwise a leaked callback URL could be exchanged twice."""
@@ -460,6 +514,21 @@ def test_oauth_pending_endpoint_returns_true_after_callback(oauth_client):
     assert isinstance(body["captured_at"], int)
     assert body["age_seconds"] >= 0
     assert body["stale"] is False
+
+
+def test_oauth_pending_tolerates_non_numeric_captured_at(oauth_client):
+    """pending must not 500 when the callback file's captured_at is
+    non-numeric; it degrades to treating the code as stale."""
+    target = oauth_client.tmp / "oauth_callback.json"
+    target.write_text(
+        json.dumps({"code": "x", "state": "google-workspace", "captured_at": "n/a"})
+    )
+
+    resp = oauth_client.get("/api/oauth/pending", headers=oauth_client.auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["pending"] is True
+    assert body["age_seconds"] >= 0
 
 
 # ---------------------------------------------------------------------------

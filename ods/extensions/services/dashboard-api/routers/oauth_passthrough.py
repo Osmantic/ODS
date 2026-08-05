@@ -98,6 +98,16 @@ _SKILL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _DEFAULT_NONCE_TTL_SECONDS = 900  # 15 min; OAuth provider codes usually expire in ~10 min
 
 
+def _as_int(value) -> int:
+    """Coerce a JSON-valid but possibly non-numeric timestamp/ttl to int.
+    Invalid values (ISO strings, hand edits, nulls) become 0 so the
+    nonce is treated as expired and pruned rather than raising 500."""
+    try:
+        return int(value or 0)
+    except (ValueError, TypeError):
+        return 0
+
+
 def _callback_dir() -> Path:
     """Where dashboard-api writes the captured OAuth callback for the
     agent to consume. ``data/persona/`` is the operator-owned mount that
@@ -251,8 +261,8 @@ def _prune_expired_nonces(nonce_dir: Path) -> None:
             except OSError:
                 pass
             continue
-        created = int(payload.get("created_at", 0) or 0)
-        ttl = int(payload.get("ttl_seconds", 0) or 0)
+        created = _as_int(payload.get("created_at"))
+        ttl = _as_int(payload.get("ttl_seconds"))
         if not created or not ttl or (now - created) > ttl:
             try:
                 path.unlink(missing_ok=True)
@@ -455,8 +465,8 @@ async def oauth_callback(
         )
 
     now = int(time.time())
-    created = int(nonce_payload.get("created_at", 0) or 0)
-    ttl = int(nonce_payload.get("ttl_seconds", 0) or 0)
+    created = _as_int(nonce_payload.get("created_at"))
+    ttl = _as_int(nonce_payload.get("ttl_seconds"))
     if not created or not ttl or (now - created) > ttl:
         try:
             nonce_path.unlink(missing_ok=True)
@@ -528,7 +538,7 @@ async def oauth_pending(api_key: str = Depends(verify_api_key)):
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return {"pending": False, "error": f"could not read callback file: {exc}"}
-    age = max(0, int(time.time()) - int(payload.get("captured_at", 0)))
+    age = max(0, int(time.time()) - _as_int(payload.get("captured_at")))
     return {
         "pending": True,
         "state": payload.get("state"),
