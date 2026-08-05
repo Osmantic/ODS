@@ -72,8 +72,21 @@ def test_bundled_rag_inherits_canonical_model() -> None:
     webui = config["services"]["open-webui"]
 
     assert embeddings["environment"]["MODEL_ID"] == "BAAI/bge-m3"
+    assert embeddings["image"] == "ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1"
+    assert embeddings["platform"] == "linux/amd64"
     assert webui["environment"]["RAG_EMBEDDING_MODEL"] == "BAAI/bge-m3"
     assert embeddings["deploy"]["resources"]["limits"]["memory"] == "6442450944"
+
+
+def test_embeddings_accept_matching_image_and_platform_overrides() -> None:
+    config = render_compose(
+        EMBEDDINGS_IMAGE="registry.example.test/tei:arm64",
+        EMBEDDINGS_PLATFORM="linux/arm64",
+    )
+    embeddings = config["services"]["embeddings"]
+
+    assert embeddings["image"] == "registry.example.test/tei:arm64"
+    assert embeddings["platform"] == "linux/arm64"
 
 
 def test_external_rag_override_does_not_change_bundled_tei() -> None:
@@ -267,6 +280,7 @@ def test_macos_env_generator_renders_embedding_contract() -> None:
 def main() -> int:
     tests = [
         test_bundled_rag_inherits_canonical_model,
+        test_embeddings_accept_matching_image_and_platform_overrides,
         test_external_rag_override_does_not_change_bundled_tei,
         test_installers_write_or_backfill_canonical_model,
     ]

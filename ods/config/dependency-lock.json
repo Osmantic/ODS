@@ -342,6 +342,12 @@
       "reason": "Hermes Agent image can be overridden for upstream registry hotfixes, but the shipped default is locked."
     },
     {
+      "path": "extensions/services/embeddings/compose.yaml",
+      "value": "${EMBEDDINGS_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1}",
+      "default": "ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1",
+      "reason": "The embeddings image can be overridden for platform compatibility while the shipped default remains locked."
+    },
+    {
       "path": "extensions/services/llama-server/Dockerfile.amd",
       "value": "rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete",
       "arg": "ROCM_VERSION",
