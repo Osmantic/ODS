@@ -525,6 +525,51 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
         }
 
 
+def _lemonade_loaded_model(payload: object) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    loaded = payload.get("model_loaded")
+    return loaded if isinstance(loaded, str) and loaded else None
+
+
+def _llama_loaded_model(payload: object) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    models = payload.get("data")
+    if not isinstance(models, list):
+        return None
+
+    fallback = None
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        model_id = model.get("id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        if fallback is None:
+            fallback = model_id
+        status = model.get("status")
+        if isinstance(status, dict) and status.get("value") == "loaded":
+            return model_id
+    return fallback
+
+
+def _llama_context_size(payload: object) -> Optional[int]:
+    if not isinstance(payload, dict):
+        return None
+    settings = payload.get("default_generation_settings")
+    if not isinstance(settings, dict):
+        return None
+    n_ctx = settings.get("n_ctx")
+    if isinstance(n_ctx, bool) or n_ctx is None:
+        return None
+    try:
+        context_size = int(n_ctx)
+    except (TypeError, ValueError):
+        return None
+    return context_size if context_size > 0 else None
+
+
 async def get_loaded_model() -> Optional[str]:
     """Query llama-server for actually loaded model name."""
     if "llama-server" not in SERVICES:
@@ -539,18 +584,11 @@ async def get_loaded_model() -> Optional[str]:
         # authoritative source for which model is actually loaded.
         if LLM_BACKEND == "lemonade":
             resp = await client.get(f"http://{host}:{port}{_LLM_API_PREFIX}/health")
-            loaded = resp.json().get("model_loaded")
-            return loaded if loaded else None
+            return _lemonade_loaded_model(resp.json())
 
         # llama.cpp: /v1/models returns the loaded model with status info.
         resp = await client.get(f"http://{host}:{port}{_LLM_API_PREFIX}/models")
-        models = resp.json().get("data", [])
-        for m in models:
-            status = m.get("status", {})
-            if isinstance(status, dict) and status.get("value") == "loaded":
-                return m.get("id")
-        if models:
-            return models[0].get("id")
+        return _llama_loaded_model(resp.json())
     except (httpx.HTTPError, httpx.TimeoutException, ValueError, KeyError) as e:
         logger.debug("get_loaded_model failed: %s", e)
     return None
@@ -573,8 +611,7 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
             url += f"?model={loaded}"
         client = await _get_httpx_client()
         resp = await client.get(url)
-        n_ctx = resp.json().get("default_generation_settings", {}).get("n_ctx")
-        return int(n_ctx) if n_ctx else None
+        return _llama_context_size(resp.json())
     except (httpx.HTTPError, httpx.TimeoutException, ValueError, KeyError) as e:
         logger.debug("get_llama_context_size failed: %s", e)
         return None

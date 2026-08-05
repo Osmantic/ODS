@@ -680,6 +680,31 @@ class TestGetLlamaMetrics:
 
 class TestGetLoadedModel:
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            [],
+            {"data": {}},
+            {"data": [None, "bad-row"]},
+            {"data": [{"id": {}}, {"id": ""}]},
+        ],
+        ids=["non-object-root", "non-list-data", "invalid-rows", "invalid-ids"],
+    )
+    def test_llama_payload_parser_rejects_malformed_shapes(self, payload):
+        import helpers
+
+        assert helpers._llama_loaded_model(payload) is None
+
+    @pytest.mark.parametrize(
+        "payload",
+        [[], {"model_loaded": 123}, {"model_loaded": ""}],
+        ids=["non-object-root", "non-string-model", "empty-model"],
+    )
+    def test_lemonade_payload_parser_rejects_malformed_shapes(self, payload):
+        import helpers
+
+        assert helpers._lemonade_loaded_model(payload) is None
+
     @pytest.mark.asyncio
     async def test_returns_none_when_llama_server_not_in_services(self, monkeypatch):
         monkeypatch.setattr("helpers.SERVICES", {})
@@ -757,6 +782,22 @@ class TestGetLoadedModel:
 
 
 class TestGetLlamaContextSize:
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            [],
+            {"default_generation_settings": []},
+            {"default_generation_settings": {"n_ctx": {}}},
+            {"default_generation_settings": {"n_ctx": True}},
+            {"default_generation_settings": {"n_ctx": -1}},
+        ],
+        ids=["non-object-root", "invalid-settings", "invalid-value", "bool", "negative"],
+    )
+    def test_context_payload_parser_rejects_malformed_shapes(self, payload):
+        import helpers
+
+        assert helpers._llama_context_size(payload) is None
 
     @pytest.mark.asyncio
     async def test_returns_none_when_llama_server_not_in_services(self, monkeypatch):
