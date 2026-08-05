@@ -43,7 +43,11 @@ class PIIDetector:
             r'|'
             r'(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}'  # Middle ::
         ),
-        'api_key': re.compile(r'\b(?:api[_-]?key|apikey|token)[\s]*[=:]\s*["\']?[a-zA-Z0-9_\-]{16,}["\']?\b', re.IGNORECASE),
+        # The label separator must allow a space: "API Key: sk-..." is how a
+        # human writes it in a chat message, and it is the form this module's
+        # own __main__ demo uses. Only `_`, `-` and "apikey" were accepted, so
+        # the spaced form reached the upstream provider unredacted.
+        'api_key': re.compile(r'\b(?:api[\s._-]?key|apikey|token)[\s]*[=:]\s*["\']?[a-zA-Z0-9_\-]{16,}["\']?\b', re.IGNORECASE),
         'credit_card': re.compile(r'\b(?:\d{4}[-\s]?){3}\d{4}\b'),
     }
 
