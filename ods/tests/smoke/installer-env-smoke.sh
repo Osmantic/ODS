@@ -236,6 +236,13 @@ fi
 
 # Check for duplicate keys
 if [[ "$ENV_GENERATED" == true && -f "$INSTALL_DIR/.env" ]]; then
+    if grep -qx "UID=$(id -u)" "$INSTALL_DIR/.env" \
+        && grep -qx "GID=$(id -g)" "$INSTALL_DIR/.env"; then
+        pass "Host UID/GID are persisted for Docker Compose interpolation"
+    else
+        fail "Generated .env does not contain the host UID/GID"
+    fi
+
     DUPES=$(grep -v '^#' "$INSTALL_DIR/.env" | grep -v '^$' | cut -d= -f1 | sort | uniq -d)
     if [[ -z "$DUPES" ]]; then
         pass "No duplicate keys in .env"

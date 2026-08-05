@@ -183,6 +183,8 @@ generate_ods_env() {
     local detected_cpu_limit detected_cpu_reservation
     local tts_cpu_limit tts_cpu_reservation whisper_cpu_limit whisper_cpu_reservation
     local hermes_cpu_limit hermes_cpu_reservation comfyui_cpu_limit comfyui_cpu_reservation
+    local host_uid="${SUDO_UID:-$(id -u)}"
+    local host_gid="${SUDO_GID:-$(id -g)}"
     read -r cpu_limit_raw cpu_reservation_raw docker_available_cpus <<< "$(calculate_llama_cpu_budget "apple")"
     detected_cpu_limit="${cpu_limit_raw}.0"
     detected_cpu_reservation="${cpu_reservation_raw}.0"
@@ -231,6 +233,12 @@ generate_ods_env() {
         upsert_env_value "$env_path" "HERMES_CPU_RESERVATION" "$hermes_cpu_reservation"
         upsert_env_value "$env_path" "COMFYUI_CPU_LIMIT" "$comfyui_cpu_limit"
         upsert_env_value "$env_path" "COMFYUI_CPU_RESERVATION" "$comfyui_cpu_reservation"
+        if ! env_key_exists "$env_path" "UID"; then
+            upsert_env_value "$env_path" "UID" "$host_uid"
+        fi
+        if ! env_key_exists "$env_path" "GID"; then
+            upsert_env_value "$env_path" "GID" "$host_gid"
+        fi
 
         local _switchboard_mode
         _switchboard_mode="$(read_env_value "$env_path" "ODS_MODEL_SWITCHBOARD")"
@@ -543,6 +551,11 @@ HERMES_CPU_LIMIT=${hermes_cpu_limit}
 HERMES_CPU_RESERVATION=${hermes_cpu_reservation}
 COMFYUI_CPU_LIMIT=${comfyui_cpu_limit}
 COMFYUI_CPU_RESERVATION=${comfyui_cpu_reservation}
+
+#=== Host File Ownership ===
+# Docker Compose reads these from .env; Bash's readonly UID is not exported.
+UID=${host_uid}
+GID=${host_gid}
 
 #=== Ports ===
 OLLAMA_PORT=8080
