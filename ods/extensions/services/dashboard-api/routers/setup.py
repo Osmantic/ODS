@@ -198,6 +198,29 @@ async def run_setup_diagnostics(api_key: str = Depends(verify_api_key)):
     return StreamingResponse(run_tests(), media_type="text/plain")
 
 
+def _completion_content(data: object) -> str:
+    """Extract content from an OpenAI-compatible completion response."""
+    if not isinstance(data, dict):
+        raise ValueError("completion response must be an object")
+    choices = data.get("choices")
+    if choices is None or choices == []:
+        return ""
+    if not isinstance(choices, list):
+        raise ValueError("completion choices must be a list")
+    choice = choices[0]
+    if choice is None:
+        return ""
+    if not isinstance(choice, dict):
+        raise ValueError("completion choice must be an object")
+    message = choice.get("message", {})
+    if not isinstance(message, dict):
+        raise ValueError("completion choice must contain a message")
+    content = message.get("content", "")
+    if not isinstance(content, str):
+        raise ValueError("completion message content must be a string")
+    return content
+
+
 @router.post("/api/chat")
 async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     """Simple chat endpoint for the setup wizard QuickWin step."""
@@ -218,9 +241,15 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
             _api_path = os.environ.get("LLM_API_BASE_PATH", "/v1")
             async with session.post(f"{llm_url}{_api_path}/chat/completions", json=payload, headers={"Content-Type": "application/json"}) as resp:
                 if resp.status == 200:
-                    data = await resp.json()
-                    choices = data.get("choices") or [{}]
-                    response_text = (choices[0] or {}).get("message", {}).get("content", "")
+                    try:
+                        data = await resp.json()
+                        response_text = _completion_content(data)
+                    except (aiohttp.ContentTypeError, json.JSONDecodeError, ValueError) as exc:
+                        logger.warning("LLM returned an invalid completion response: %s", exc)
+                        raise HTTPException(
+                            status_code=502,
+                            detail="LLM returned an invalid completion response",
+                        ) from exc
                     # Strip thinking model tags — content may contain <think>...</think> blocks
                     response_text = re.sub(r'<think>[\s\S]*?</think>\s*', '', response_text).strip()
                     return {"response": response_text, "success": True}

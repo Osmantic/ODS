@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -748,6 +749,86 @@ def test_chat_success(test_client, monkeypatch):
     assert data["success"] is True
     assert data["response"] == "Hello from the LLM!"
     assert session_mock.post.call_args.kwargs["json"]["model"] == "new-live-model"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"choices": {}},
+        {"choices": ["invalid-choice"]},
+        {"choices": [{"message": None}]},
+        {"choices": [{"message": {"content": 123}}]},
+    ],
+    ids=[
+        "non-object-root",
+        "non-list-choices",
+        "invalid-choice",
+        "invalid-message",
+        "invalid-content",
+    ],
+)
+def test_chat_invalid_completion_response_returns_502(test_client, payload):
+    resp_mock = AsyncMock()
+    resp_mock.status = 200
+    resp_mock.json = AsyncMock(return_value=payload)
+
+    response_ctx = AsyncMock()
+    response_ctx.__aenter__ = AsyncMock(return_value=resp_mock)
+    response_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    session_mock = MagicMock()
+    session_mock.post = MagicMock(return_value=response_ctx)
+    session_ctx = AsyncMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=session_mock)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.setup.aiohttp.ClientSession", return_value=session_ctx):
+        response = test_client.post(
+            "/api/chat",
+            json={"message": "hi"},
+            headers=test_client.auth_headers,
+        )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "LLM returned an invalid completion response"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"choices": []},
+        {"choices": [None]},
+        {"choices": [{}]},
+        {"choices": [{"message": {}}]},
+    ],
+    ids=["missing-choices", "empty-choices", "null-choice", "empty-choice", "empty-message"],
+)
+def test_chat_empty_completion_response_stays_successful(test_client, payload):
+    resp_mock = AsyncMock()
+    resp_mock.status = 200
+    resp_mock.json = AsyncMock(return_value=payload)
+
+    response_ctx = AsyncMock()
+    response_ctx.__aenter__ = AsyncMock(return_value=resp_mock)
+    response_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    session_mock = MagicMock()
+    session_mock.post = MagicMock(return_value=response_ctx)
+    session_ctx = AsyncMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=session_mock)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.setup.aiohttp.ClientSession", return_value=session_ctx):
+        response = test_client.post(
+            "/api/chat",
+            json={"message": "hi"},
+            headers=test_client.auth_headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"response": "", "success": True}
 
 
 def test_chat_llm_error(test_client, monkeypatch):
