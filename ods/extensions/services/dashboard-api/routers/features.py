@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["features"])
 
 
+def _svc_external_port(service_id: str, config: dict) -> int:
+    """Return the live external port for a service, honoring OPENCODE_PORT."""
+    candidate = config.get("external_port", config.get("port", 0))
+    if service_id == "opencode":
+        raw = os.environ.get("OPENCODE_PORT", "")
+        if raw.isdigit() and 1 <= int(raw) <= 65535:
+            candidate = int(raw)
+    return int(candidate or 0)
+
+
 def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[GPUInfo]) -> dict:
     """Calculate whether a feature can be enabled and its status."""
     gpu_vram_gb = (gpu_info.memory_total_mb / 1024) if gpu_info else 0
@@ -201,7 +211,7 @@ async def feature_enable_instructions(
         public_url = cfg.get("public_url")
         if public_url:
             return public_url
-        port = cfg.get("external_port", cfg.get("port", 0))
+        port = _svc_external_port(service_id, cfg)
         if not port:
             return ""
         forwarded_host = request.headers.get("x-forwarded-host")
@@ -212,7 +222,7 @@ async def feature_enable_instructions(
 
     def _svc_port(service_id: str) -> int:
         cfg = SERVICES.get(service_id, {})
-        return cfg.get("external_port", cfg.get("port", 0))
+        return _svc_external_port(service_id, cfg)
 
     webui_url = _svc_url("open-webui")
     n8n_url = _svc_url("n8n")

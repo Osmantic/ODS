@@ -22,6 +22,16 @@ from host_agent_client import AgentClientError, async_request_json as request_ag
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
 
 
+def _effective_external_port(service_id: str, config: dict) -> int:
+    """Return the live external port for a host service, honoring OPENCODE_PORT."""
+    candidate = config.get("external_port", config.get("port", 0))
+    if service_id == "opencode":
+        raw = os.environ.get("OPENCODE_PORT", "")
+        if raw.isdigit() and 1 <= int(raw) <= 65535:
+            candidate = int(raw)
+    return int(candidate or 0)
+
+
 class _DirSizeCache:
     """Per-path TTL cache for dir_size_gb to avoid repeated rglob walks."""
 
@@ -157,7 +167,7 @@ async def _check_host_systemd_health(service_id: str, config: dict) -> ServiceSt
     open. If the proof is unavailable, fail closed so the dashboard does not
     launch users into a dead localhost URL.
     """
-    port = int(config.get("health_port") or config.get("external_port") or config.get("port") or 0)
+    port = int(config.get("health_port") or _effective_external_port(service_id, config) or 0)
     if port <= 0:
         return _service_status_from_config(service_id, config, "not_deployed")
 
