@@ -36,7 +36,7 @@ read_env_value() {
     local env_path="$1"
     local key="$2"
     [[ -f "$env_path" ]] || { echo ""; return 0; }
-    grep -E "^${key}=" "$env_path" 2>/dev/null | sed -n '1p' | cut -d'=' -f2- | tr -d '\r' || true
+    grep -E "^${key}=" "$env_path" 2>/dev/null | sed -n '1p' | cut -d'=' -f2- | tr -d '\r"' || true
 }
 
 env_key_exists() {
