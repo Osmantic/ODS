@@ -271,7 +271,8 @@ fi
 # write $GPU_TOPOLOGY_JSON into a tmpfile to use by the commands
 TOPOLOGY_FILE=$(mktemp "${TMPDIR:-/tmp}/ods_gpu_topology.XXXXXX.json")
 trap 'rm -f "$TOPOLOGY_FILE"' EXIT
-echo "$GPU_TOPOLOGY_JSON" > "$TOPOLOGY_FILE"
+_topo_tmp=$(mktemp "${TOPOLOGY_FILE}.XXXXXX.tmp")
+printf '%s\n' "$GPU_TOPOLOGY_JSON" > "$_topo_tmp" && mv -f "$_topo_tmp" "$TOPOLOGY_FILE"
 
 ASSIGN_GPUS_SCRIPT="$SCRIPT_DIR/scripts/assign_gpus.py"
 
