@@ -2299,6 +2299,15 @@ if ($enableVoice) {
     }
 }
 
+$readinessEnv = Get-WindowsODSEnvMap -InstallDir $installDir
+function Get-ReadinessPort {
+    param([string]$Name, [string]$Default)
+    if ($readinessEnv.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace($readinessEnv[$Name])) {
+        return $readinessEnv[$Name]
+    }
+    return $Default
+}
+
 # ── Auto-configure Perplexica ─────────────────────────────────────────────────
 if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $servicePlan) {
     Write-AI "Configuring Perplexica..."
@@ -2339,21 +2348,13 @@ if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $servicePlan) {
     if (($useLemonade -or $cloudMode -or $switchboardMode -eq "enabled") -and $windowsEnvMap.ContainsKey("LITELLM_KEY") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["LITELLM_KEY"])) {
         $perplexicaApiKey = $windowsEnvMap["LITELLM_KEY"]
     }
-    $perplexicaOk = Set-PerplexicaConfig -PerplexicaPort 3004 -LlmModel $perplexicaModel -LlmBaseUrl $perplexicaBaseUrl -ApiKey $perplexicaApiKey
+    $perplexicaPort = Get-ReadinessPort -Name "PERPLEXICA_PORT" -Default "3004"
+    $perplexicaOk = Set-PerplexicaConfig -PerplexicaPort $perplexicaPort -LlmModel $perplexicaModel -LlmBaseUrl $perplexicaBaseUrl -ApiKey $perplexicaApiKey
     if ($perplexicaOk) {
         Write-AISuccess "Perplexica configured (model: $perplexicaModel)"
     } else {
-        Write-AIWarn "Perplexica auto-config skipped -- complete setup at http://localhost:3004"
+        Write-AIWarn "Perplexica auto-config skipped -- complete setup at http://localhost:$perplexicaPort"
     }
-}
-
-$readinessEnv = Get-WindowsODSEnvMap -InstallDir $installDir
-function Get-ReadinessPort {
-    param([string]$Name, [string]$Default)
-    if ($readinessEnv.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace($readinessEnv[$Name])) {
-        return $readinessEnv[$Name]
-    }
-    return $Default
 }
 
 $dashboardPort = Get-ReadinessPort -Name "DASHBOARD_PORT" -Default "3001"
