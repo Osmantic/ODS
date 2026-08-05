@@ -3296,19 +3296,28 @@ if ! $ALL_HEALTHY; then
     echo ""
 fi
 
+_dash_p="$(read_env_value "$INSTALL_DIR/.env" "DASHBOARD_PORT")"
+[[ "$_dash_p" =~ ^[0-9]+$ ]] || _dash_p="3001"
+_dash_api_p="$(read_env_value "$INSTALL_DIR/.env" "DASHBOARD_API_PORT")"
+[[ "$_dash_api_p" =~ ^[0-9]+$ ]] || _dash_api_p="3002"
+_webui_p="$(read_env_value "$INSTALL_DIR/.env" "WEBUI_PORT")"
+[[ "$_webui_p" =~ ^[0-9]+$ ]] || _webui_p="3000"
+_perp_p="$(read_env_value "$INSTALL_DIR/.env" "PERPLEXICA_PORT")"
+[[ "$_perp_p" =~ ^[0-9]+$ ]] || _perp_p="3004"
+
 {
-    printf 'Dashboard|http://127.0.0.1:3001|ods-dashboard|http://localhost:3001\n'
-    printf 'Chat UI (Open WebUI)|http://127.0.0.1:3000|ods-webui|http://localhost:3000\n'
+    printf 'Dashboard|http://127.0.0.1:%s|ods-dashboard|http://localhost:%s\n' "$_dash_p" "$_dash_p"
+    printf 'Chat UI (Open WebUI)|http://127.0.0.1:%s|ods-webui|http://localhost:%s\n' "$_webui_p" "$_webui_p"
     if $CLOUD_MODE; then
         printf 'LiteLLM|http://127.0.0.1:4000/health/readiness|ods-litellm|http://localhost:4000\n'
     else
         printf 'llama-server|http://%s:%s/health||http://localhost:%s/v1\n' "$_health_llama_host" "$_health_llama_port" "$_health_llama_port"
     fi
-    printf 'Dashboard API|http://127.0.0.1:3002/health|ods-dashboard-api|http://localhost:3002\n'
-    printf 'Perplexica|http://127.0.0.1:3004|ods-perplexica|http://localhost:3004\n'
+    printf 'Dashboard API|http://127.0.0.1:%s/health|ods-dashboard-api|http://localhost:%s\n' "$_dash_api_p" "$_dash_api_p"
+    printf 'Perplexica|http://127.0.0.1:%s|ods-perplexica|http://localhost:%s\n' "$_perp_p" "$_perp_p"
     $ENABLE_VOICE && printf 'Whisper (STT)|http://127.0.0.1:%s/health|ods-whisper|http://localhost:%s\n' "${WHISPER_PORT:-9000}" "${WHISPER_PORT:-9000}"
     $ENABLE_WORKFLOWS && printf 'n8n|http://127.0.0.1:5678/healthz|ods-n8n|http://localhost:5678\n'
     [[ -x "$OPENCODE_BIN" ]] && printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
-} | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:3001"
+} | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:${_dash_p}"
 
 show_success_card
