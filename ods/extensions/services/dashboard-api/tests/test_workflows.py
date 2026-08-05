@@ -143,6 +143,29 @@ def test_load_workflow_catalog_invalid_inner_types(tmp_path, monkeypatch):
     assert result["categories"] == {}
 
 
+def test_load_workflow_catalog_skips_incomplete_entries(tmp_path, monkeypatch):
+    """load_workflow_catalog drops entries missing id/name/file instead of crashing."""
+    import routers.workflows as wf_mod
+
+    catalog = {
+        "workflows": [
+            {"id": "complete", "name": "Complete", "description": "ok", "file": "c.json"},
+            {"id": "no-name", "description": "missing name", "file": "nn.json"},
+            {"name": "no-id", "description": "missing id", "file": "ni.json"},
+            {"id": "no-file", "name": "No File", "description": "missing file"},
+            "not-a-dict",
+            None,
+        ],
+        "categories": {}
+    }
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps(catalog))
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
+
+    result = wf_mod.load_workflow_catalog()
+    assert [wf["id"] for wf in result["workflows"]] == ["complete"]
+
+
 # ---------------------------------------------------------------------------
 # get_n8n_workflows() unit tests
 # ---------------------------------------------------------------------------

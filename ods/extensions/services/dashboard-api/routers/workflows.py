@@ -42,7 +42,7 @@ def load_workflow_catalog() -> dict:
             workflows = []
         if not isinstance(categories, dict):
             categories = {}
-        return {"workflows": workflows, "categories": categories}
+        return {"workflows": [wf for wf in workflows if isinstance(wf, dict) and wf.get("id") and wf.get("name") and wf.get("file")], "categories": categories}
     except (json.JSONDecodeError, OSError, KeyError) as e:
         logger.warning("Failed to load workflow catalog from %s: %s", WORKFLOW_CATALOG_FILE, e)
         return DEFAULT_WORKFLOW_CATALOG
