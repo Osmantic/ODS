@@ -9,8 +9,10 @@ use the xet read-token flow, so installers use this as a fallback after curl.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -47,12 +49,18 @@ def download_artifact(url: str, destination: Path) -> Path:
         hf_hub_download(repo_id=repo_id, filename=filename, revision=revision)
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
-    tmp_destination = destination.with_name(f"{destination.name}.hf-tmp")
-    shutil.copyfile(downloaded, tmp_destination)
-    if tmp_destination.stat().st_size <= 0:
-        tmp_destination.unlink(missing_ok=True)
-        raise RuntimeError("downloaded artifact is empty")
-    tmp_destination.replace(destination)
+    fd, tmp_str = tempfile.mkstemp(dir=str(destination.parent), prefix=f".{destination.name}.", suffix=".tmp")
+    tmp_destination = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "wb") as f_out, open(downloaded, "rb") as f_in:
+            shutil.copyfileobj(f_in, f_out)
+        if tmp_destination.stat().st_size <= 0:
+            raise RuntimeError("downloaded artifact is empty")
+        os.replace(tmp_destination, destination)
+    except Exception:
+        if tmp_destination.exists():
+            tmp_destination.unlink(missing_ok=True)
+        raise
     return destination
 
 
