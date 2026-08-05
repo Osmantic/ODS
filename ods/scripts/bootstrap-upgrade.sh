@@ -235,7 +235,8 @@ acquire_upgrade_lock() {
     done
 
     UPGRADE_LOCK_DIR="$lock_dir"
-    printf '%s\n' "$$" > "$pid_file"
+    _pid_tmp=$(mktemp "${pid_file}.XXXXXX.tmp")
+    printf '%s\n' "$$" > "$_pid_tmp" && mv -f "$_pid_tmp" "$pid_file"
     trap 'release_model_lifecycle_lock; release_upgrade_lock' EXIT
 }
 
