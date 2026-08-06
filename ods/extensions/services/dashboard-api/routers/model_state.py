@@ -115,7 +115,7 @@ async def get_model_state(api_key: str = Depends(verify_api_key)):
 
     try:
         doc = json.loads(raw)
-    except ValueError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         return _invalid_response([f"not valid JSON: {exc}"])
     errors = _validate_document(doc)
     if errors:
