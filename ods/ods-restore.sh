@@ -294,7 +294,7 @@ validate_backup() {
                         log_error "Backup integrity check FAILED - checksums do not match"
                         log_error "This backup may be corrupted or tampered with"
                         log_error "Use --skip-verify to restore anyway (NOT RECOMMENDED)"
-                        return 1
+                        exit 1
                     fi
                 )
                 if [[ $? -ne 0 ]]; then
