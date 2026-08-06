@@ -83,7 +83,7 @@ result_get() {
     done
 }
 
-log() { $QUIET || echo -e "$1"; }
+log() { $QUIET || $JSON_OUTPUT || echo -e "$1"; }
 
 # Portable millisecond timestamp (macOS BSD date lacks %N)
 _now_ms() {

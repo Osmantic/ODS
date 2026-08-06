@@ -58,16 +58,17 @@ else
     fail "health-check.sh exit code should be 0, 1, or 2; got $exit_code"
 fi
 
-# 3. --json produces JSON-like output (no strict parse here, just key presence)
+# 3. --json produces JSON only, without the human-readable report prefix.
 set +e
 json_out=$(cd "$ROOT_DIR" && bash scripts/health-check.sh --json 2>&1)
 json_exit=$?
 set -e
 
-if echo "$json_out" | grep -q '"'; then
-    pass "health-check.sh --json produces JSON-like output"
+if command -v python3 >/dev/null 2>&1 \
+    && printf '%s\n' "$json_out" | python3 -c 'import json, sys; json.load(sys.stdin)'; then
+    pass "health-check.sh --json produces parseable JSON"
 else
-    fail "health-check.sh --json output does not look like JSON"
+    fail "health-check.sh --json output is not standalone valid JSON"
 fi
 
 if [[ "$json_exit" -eq 0 ]] || [[ "$json_exit" -eq 1 ]] || [[ "$json_exit" -eq 2 ]]; then
@@ -256,9 +257,19 @@ CURLSTUB
         fail "core service with missing container vanished from JSON"
     fi
     if echo "$core_json" | grep -q "container not found"; then
+        fail "JSON output includes human-readable container diagnostics"
+    else
+        pass "JSON output excludes human-readable container diagnostics"
+    fi
+
+    set +e
+    core_human=$(cd "$SANDBOX" && PATH="$SANDBOX/bin:$PATH" INSTALL_DIR="$SANDBOX" \
+        bash scripts/health-check.sh 2>&1)
+    set -e
+    if echo "$core_human" | grep -q "container not found"; then
         pass "container-not-found state reaches the human-readable output"
     else
-        fail "container-not-found message missing from output"
+        fail "container-not-found message missing from human-readable output"
     fi
 
     rm -rf "$SANDBOX"
