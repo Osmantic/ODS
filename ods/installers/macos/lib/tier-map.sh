@@ -89,7 +89,7 @@ set_qwen_tier_config() {
             LLM_MODEL="qwen3.5-2b"
             GGUF_FILE="Qwen3.5-2B-Q4_K_M.gguf"
             GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_SHA256="aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
             MAX_CONTEXT=8192
             ;;
         1)
@@ -148,7 +148,7 @@ set_gemma4_tier_config() {
             LLM_MODEL="qwen3.5-2b"
             GGUF_FILE="Qwen3.5-2B-Q4_K_M.gguf"
             GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_SHA256="aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
             MAX_CONTEXT=8192
             ;;
         1)

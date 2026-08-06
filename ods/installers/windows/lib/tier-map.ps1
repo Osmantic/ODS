@@ -117,7 +117,7 @@ function Resolve-QwenTierConfig {
                 LlmModel   = "qwen3-coder-next"
                 GgufFile   = "qwen3-coder-next-Q4_K_M.gguf"
                 GgufUrl    = "https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/resolve/main/Qwen3-Coder-Next-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufSha256 = "9e6032d2f3b50a60f17ce8bf5a1d85c71af9b53b89c7978020ae7c660f29b090"
                 MaxContext = 131072
                 ModelProfileRequested = "qwen"
                 ModelProfileEffective = "qwen"
@@ -163,7 +163,7 @@ function Resolve-QwenTierConfig {
                 LlmModel   = "qwen3.5-2b"
                 GgufFile   = "Qwen3.5-2B-Q4_K_M.gguf"
                 GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufSha256 = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
                 MaxContext = 8192
                 ModelProfileRequested = "qwen"
                 ModelProfileEffective = "qwen"
@@ -307,7 +307,7 @@ function Resolve-GemmaTierConfig {
                 LlmModel   = "qwen3.5-2b"
                 GgufFile   = "Qwen3.5-2B-Q4_K_M.gguf"
                 GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufSha256 = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
                 MaxContext = 8192
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "qwen"

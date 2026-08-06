@@ -101,6 +101,9 @@ jobs:
       - name: Tier Map Unit Tests
         run: bash tests/test-tier-map.sh
 
+      - name: GGUF Checksum Parity Tests
+        run: python3 tests/test-gguf-checksum-parity.py
+
       - name: Service Registry Tests
         run: bash tests/test-service-registry.sh
 
