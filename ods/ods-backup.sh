@@ -138,17 +138,19 @@ ensure_backup_space() {
 # Collect backup entries (dirs or .tar.gz archives) under BACKUP_ROOT into
 # the global COLLECTED_BACKUPS array, newest first.
 #
-# Backup IDs are YYYYMMDD-HHMMSS (this script) or <prefix>-YYYYMMDD-HHMMSS
-# (dashboard/host-agent). Match that shape explicitly: retention deletes
-# whatever this collects, so an operator's unrelated files in the backup
-# directory must never qualify.
+# Backup IDs are YYYYMMDD-HHMMSS (this script) or <label>-YYYYMMDD-HHMMSS
+# where <label> may span multiple hyphen/underscore segments (dashboard/host
+# agent, e.g. dashboard-my-name-20260715-143022). The host-agent's
+# BACKUP_ID_RE allows [A-Za-z0-9_-]{0,63} labels, so match that shape while
+# still requiring the trailing timestamp so an operator's unrelated files in
+# the backup directory never qualify for retention deletes.
 COLLECTED_BACKUPS=()
 collect_backups() {
     COLLECTED_BACKUPS=()
     local entry base
     while IFS= read -r -d '' entry; do
         base=$(basename "$entry")
-        [[ "$base" =~ ^([A-Za-z0-9_]+-)?[0-9]{8}-[0-9]{6}(\.tar\.gz)?$ ]] || continue
+        [[ "$base" =~ ^(([A-Za-z0-9_]+-)+)?[0-9]{8}-[0-9]{6}(\.tar\.gz)?$ ]] || continue
         COLLECTED_BACKUPS+=("$entry")
     done < <(find "$BACKUP_ROOT" -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
 }
