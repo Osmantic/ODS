@@ -65,8 +65,59 @@ format_git_clone_error() {
 }
 
 
+_ods_install_has_marker() {
+    local dir="$1"
+    local marker=""
+
+    for marker in .env docker-compose.base.yml ods-cli install.sh .ods-install; do
+        [[ -e "$dir/$marker" ]] && return 0
+    done
+    return 1
+}
+
+# Hard refusal before any `rm -rf -- "$target_dir"`. ODS_INSTALL_DIR comes from
+# the environment verbatim; a typo like `ODS_INSTALL_DIR=~` or `/` must never be
+# passed to rm -rf. Removal is only allowed for a genuine ODS marker directory
+# that resolves strictly inside $HOME (the default is $HOME/ods). Exits on any
+# violation, so it cannot be bypassed by --force.
+assert_safe_install_dir() {
+    local target_dir="$1"
+    local resolved=""
+    local home_real=""
+    local home_parent=""
+    local base=""
+
+    resolved="$(cd "$target_dir" && pwd -P 2>/dev/null)" || {
+        error "Refusing to remove $target_dir: cannot resolve its absolute path."
+    }
+    home_real="$(cd "$HOME" && pwd -P 2>/dev/null)" || {
+        error "Refusing to remove $target_dir: cannot resolve \$HOME ($HOME)."
+    }
+    home_real="${home_real%/}"
+    home_parent="${home_real%/*}"
+
+    [[ "$resolved" != "/" ]] \
+        || error "Refusing to remove / — refusing to run rm -rf on the filesystem root."
+    [[ "$resolved" != "$home_real" ]] \
+        || error "Refusing to remove $home_real — that is \$HOME itself."
+    [[ -z "$home_parent" || "$resolved" != "$home_parent" ]] \
+        || error "Refusing to remove $home_parent — that is the parent of \$HOME."
+    [[ "$resolved" == "$home_real"/* ]] \
+        || error "Refusing to remove $target_dir — resolved path $resolved is not inside \$HOME ($home_real)."
+
+    base="${resolved##*/}"
+    [[ "$base" == *ods* ]] \
+        || error "Refusing to remove $target_dir — '$base' does not look like an ODS install directory."
+
+    _ods_install_has_marker "$resolved" \
+        || error "Refusing to remove $target_dir — no ODS marker files found (.env, docker-compose.base.yml, ods-cli, install.sh, or .ods-install); this is not an incomplete ODS install."
+}
+
 remove_install_dir() {
     local target_dir="$1"
+
+    [[ -d "$target_dir" ]] || return 0
+    assert_safe_install_dir "$target_dir"
 
     if rm -rf -- "$target_dir" 2>/dev/null; then
         return 0
@@ -376,6 +427,7 @@ if [[ -d "$INSTALL_DIR" ]]; then
         echo ""
         if [[ "$BOOTSTRAP_FORCE" == "true" ]]; then
             echo "  Removing incomplete install because --force was provided."
+            assert_safe_install_dir "$INSTALL_DIR"
             remove_install_dir "$INSTALL_DIR" || error "Failed to remove incomplete install at $INSTALL_DIR. Try: sudo rm -rf \"$INSTALL_DIR\""
         elif [[ "$BOOTSTRAP_NON_INTERACTIVE" == "true" ]]; then
             echo "  Aborting. Re-run with --force to remove it automatically, or remove manually with: rm -rf $INSTALL_DIR"
