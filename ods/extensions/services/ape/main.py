@@ -627,19 +627,45 @@ def in_warmup(now: float) -> bool:
 
 _EXEC_VERBS = {"exec", "run", "execute", "shell", "bash", "sh", "cmd"}
 _READ_VERBS  = {"read", "cat", "head", "tail", "get_file", "read_file", "view"}
-_WRITE_VERBS = {"write", "create", "append", "write_file", "save", "put"}
+# Editing a file is writing to it. Agent frameworks name these tools `edit`,
+# `apply_patch`, `str_replace_editor`, `update` and so on — none of which
+# contain "write", so they used to miss WriteFile and its path guard.
+_WRITE_VERBS = {"write", "create", "append", "write_file", "save", "put",
+                "edit", "patch", "apply", "replace", "insert", "modify",
+                "update", "mkdir", "touch", "tee", "upload"}
 _NET_VERBS   = {"fetch", "curl", "wget", "web_fetch", "http_get", "request"}
 _SPAWN_VERBS = {"spawn", "agent", "sub_agent", "subagent", "delegate"}
+
+# Arg keys that name the file a tool is acting on. `evaluate()`'s path_guard
+# reads the same list, so a tool whose path lands here is also guarded there.
+PATH_ARG_KEYS = ("path", "file", "filename", "file_path", "filepath",
+                 "target_path", "dest", "destination")
+
+# Arg keys that carry bytes to be written. Their presence makes a call a write
+# regardless of whether the caller volunteered a `mode`; real file-edit tool
+# schemas send `content` / `new_str` / `text`, not `mode`.
+_WRITE_PAYLOAD_KEYS = ("content", "contents", "text", "data", "body",
+                       "new_str", "new_string", "new_text", "patch", "diff")
+
+_READ_MODES = {"r", "rb", "rt", "read"}
+
+
+def _path_arg(args: dict) -> Optional[str]:
+    """Return the first path-shaped argument value, or None."""
+    for key in PATH_ARG_KEYS:
+        if key in args:
+            return args[key]
+    return None
 
 
 def classify_intent(tool_name: str, args: dict) -> str:
     tokens = set(re.split(r"[^a-z0-9]", tool_name.lower()))
     if tokens & _EXEC_VERBS:
         return "ExecuteCommand"
-    if tokens & _READ_VERBS:
-        return "ReadFile"
     if tokens & _WRITE_VERBS:
         return "WriteFile"
+    if tokens & _READ_VERBS:
+        return "ReadFile"
     if tokens & _NET_VERBS:
         return "NetworkFetch"
     if tokens & _SPAWN_VERBS:
@@ -647,8 +673,17 @@ def classify_intent(tool_name: str, args: dict) -> str:
     # Infer from args
     if "command" in args or "cmd" in args:
         return "ExecuteCommand"
-    if "path" in args or "file" in args:
-        return "ReadFile" if args.get("mode", "r") == "r" else "WriteFile"
+    if _path_arg(args) is not None:
+        # An explicit mode wins. Otherwise a write payload decides it: only a
+        # call with neither is treated as a read. Defaulting a payload-carrying
+        # call to "r" sent every edit tool down the ReadFile branch, which is
+        # `mode: allow`, so the WriteFile path guard never ran.
+        mode = args.get("mode")
+        if mode is not None:
+            return "ReadFile" if str(mode).lower() in _READ_MODES else "WriteFile"
+        if any(key in args for key in _WRITE_PAYLOAD_KEYS):
+            return "WriteFile"
+        return "ReadFile"
     if "url" in args:
         return "NetworkFetch"
     return "Other"
@@ -683,7 +718,10 @@ def evaluate(intent: str, tool_name: str, args: dict, policy: dict) -> tuple[boo
         return True, f"command '{base}' is in allowlist"
 
     if mode == "path_guard":
-        path = str(args.get("path", args.get("file", args.get("filename", ""))))
+        # Same key list classify_intent uses, so a call routed here by its
+        # path argument is guarded on that same argument.
+        raw_path = _path_arg(args)
+        path = "" if raw_path is None else str(raw_path)
         if not path:
             return True, "no path specified"
         real = os.path.realpath(path)
