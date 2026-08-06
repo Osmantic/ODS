@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Regression guard: Linux reinstall must not chown Hermes HERMES_HOME back to
-# the host user. Hermes's dashboard/Talk path runs as uid 10000 and needs
-# data/hermes mounted as /opt/data with that owner.
+# Regression guard: Hermes HERMES_HOME must be owned by the resolved host
+# user (ODS_UID), never a hardcoded uid 10000 nor a reinstall left-over from
+# an older uid-10000 install. Hermes's dashboard/Talk path runs as ODS_UID
+# with /opt/data mounted from data/hermes.
 
 set -euo pipefail
 
@@ -13,8 +14,8 @@ fail() {
     exit 1
 }
 
-grep -Fq 'sudo chown -R 10000:10000 "$INSTALL_DIR/data/hermes"' "$PHASE06" \
-    || fail "phase 06 must restore data/hermes to Hermes uid 10000"
+grep -Fq 'sudo chown -R "${ODS_UID:-10000}:${ODS_GID:-10000}" "$INSTALL_DIR/data/hermes"' "$PHASE06" \
+    || fail "phase 06 must restore data/hermes to the resolved Hermes host uid (ODS_UID)"
 
 grep -Fq 'sudo chmod 700 "$INSTALL_DIR/data/hermes"' "$PHASE06" \
     || fail "phase 06 must preserve Hermes private HERMES_HOME mode"

@@ -3,7 +3,7 @@ services:
     image: n8nio/n8n:2.6.4
     container_name: ods-n8n
     restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
+    user: "${ODS_UID:-1000}:${ODS_GID:-1000}"
     security_opt:
       - no-new-privileges:true
     entrypoint: ["tini", "--", "/bin/sh", "/opt/ods/n8n-entrypoint.sh"]
