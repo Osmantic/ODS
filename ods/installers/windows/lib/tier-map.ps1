@@ -320,8 +320,8 @@ function Resolve-GemmaTierConfig {
                 TierName   = "Entry Level"
                 LlmModel   = "gemma-4-e2b-it"
                 GgufFile   = "gemma-4-E2B-it-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf"
+                GgufSha256 = "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8"
                 MaxContext = 16384
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "gemma4"
@@ -334,8 +334,8 @@ function Resolve-GemmaTierConfig {
                 TierName   = "Prosumer"
                 LlmModel   = "gemma-4-e4b-it"
                 GgufFile   = "gemma-4-E4B-it-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/bfc15c382204943c3a8fff0c750b94ae2364d7a3/gemma-4-E4B-it-Q4_K_M.gguf"
+                GgufSha256 = "85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87"
                 MaxContext = 32768
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "gemma4"
