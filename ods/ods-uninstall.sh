@@ -95,6 +95,11 @@ if [[ -d "$SCRIPT_DIR" && -f "$SCRIPT_DIR/ods-cli" ]]; then
     INSTALL_DIR="$SCRIPT_DIR"
 fi
 
+if [[ -z "$INSTALL_DIR" || "$INSTALL_DIR" == "/" || "$INSTALL_DIR" == "$HOME" ]]; then
+    log_error "Refusing to uninstall from unsafe install directory path: '$INSTALL_DIR'"
+    exit 1
+fi
+
 if [[ ! -d "$INSTALL_DIR" ]]; then
     log_error "Install directory not found: $INSTALL_DIR"
     exit 1
