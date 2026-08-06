@@ -73,10 +73,13 @@ detect_backend() {
 BACKEND=$(detect_backend)
 
 is_external_lemonade() {
-    local external="${LEMONADE_EXTERNAL:-false}"
-    local managed="${AMD_INFERENCE_MANAGED:-}"
-    local mode="${ODS_MODE:-local}"
-    [[ "${external,,}" == "true" ]] || [[ "${mode,,}" == "lemonade" && "${managed,,}" == "false" ]]
+    local external
+    external="$(echo "${LEMONADE_EXTERNAL:-false}" | tr '[:upper:]' '[:lower:]')"
+    local managed
+    managed="$(echo "${AMD_INFERENCE_MANAGED:-}" | tr '[:upper:]' '[:lower:]')"
+    local mode
+    mode="$(echo "${ODS_MODE:-local}" | tr '[:upper:]' '[:lower:]')"
+    [[ "$external" == "true" ]] || [[ "$mode" == "lemonade" && "$managed" == "false" ]]
 }
 
 # Colors
