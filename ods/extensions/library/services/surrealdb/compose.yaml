@@ -1,0 +1,46 @@
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:v3.2.4
+    container_name: ods-surrealdb
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    user: "1000:1000"
+    command:
+      - start
+      - --log
+      - info
+      - --user
+      - ${SURREALDB_USER:-root}
+      - --pass
+      - ${SURREALDB_PASS:?SURREALDB_PASS must be set}
+      - rocksdb:/data/database.db
+    volumes:
+      - ./data/surrealdb:/data
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${SURREALDB_PORT:-8900}:8000"
+    healthcheck:
+      test: ["CMD", "/surreal", "is-ready", "--endpoint", "http://127.0.0.1:8000"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ods-network:
+    external: true

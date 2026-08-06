@@ -1,0 +1,20 @@
+#!/bin/sh
+# SurrealDB — generate root password if not already set
+# Usage: setup.sh INSTALL_DIR GPU_BACKEND
+
+set -eu
+
+ENV_FILE="${1:-.}/.env"
+
+append_if_missing() {
+  key="$1"
+  value="$2"
+  if [ -f "$ENV_FILE" ] && grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+    return 0
+  fi
+  echo "${key}=${value}" >> "$ENV_FILE"
+}
+
+append_if_missing "SURREALDB_USER" "root"
+append_if_missing "SURREALDB_PASS" "$(openssl rand -hex 32)"
+append_if_missing "SURREALDB_PORT" "8900"
