@@ -101,15 +101,21 @@ load_model_selector_env_from_output < <(printf '%s\n' 'LLM_MODEL="qwen-test"' 'E
 [[ -z "${EVIL_SELECTOR_KEY:-}" ]] || fail "EVIL_SELECTOR_KEY should not be loaded"
 pass "model selector loader is allowlisted"
 
-echo "Test 10: load_env_file skips Bash readonly UID"
+echo "Test 10: load_env_file skips Bash readonly variables"
 cat > "$tmpdir/.env-readonly" << 'EOF'
 UID=12345
-AFTER_READONLY_UID=still_loads
+EUID=12345
+BASHOPTS=malicious-options
+SHELLOPTS=malicious-options
+AFTER_READONLY=still_loads
 EOF
 load_env_file "$tmpdir/.env-readonly"
 [[ "${UID}" != "12345" ]] || fail "UID should not be overwritten"
-[[ "${AFTER_READONLY_UID:-}" == "still_loads" ]] || fail "load_env_file stopped after readonly UID"
-pass "load_env_file tolerates UID from .env"
+[[ "${EUID}" != "12345" ]] || fail "EUID should not be overwritten"
+[[ "${BASHOPTS}" != "malicious-options" ]] || fail "BASHOPTS should not be overwritten"
+[[ "${SHELLOPTS}" != "malicious-options" ]] || fail "SHELLOPTS should not be overwritten"
+[[ "${AFTER_READONLY:-}" == "still_loads" ]] || fail "load_env_file stopped after a readonly variable"
+pass "load_env_file tolerates Bash readonly variables from .env"
 
 echo "Test 11: load_env_file tolerates CRLF .env files (Windows/WSL2)"
 unset CRLF_PORT CRLF_PATH CRLF_QUOTED 2>/dev/null || true

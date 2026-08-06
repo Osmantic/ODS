@@ -9,6 +9,17 @@
 # - load_env_from_output  — parse KEY="value" lines from stdin (for script output)
 # ============================================================================
 
+_safe_env_shell_var_is_readonly() {
+    local _safe_env_candidate="$1"
+    local _safe_env_declaration _safe_env_attributes
+    if ! _safe_env_declaration="$(declare -p "$_safe_env_candidate" 2>&1)"; then
+        return 1
+    fi
+    _safe_env_attributes="${_safe_env_declaration#declare -}"
+    _safe_env_attributes="${_safe_env_attributes%% *}"
+    [[ "$_safe_env_attributes" == *r* ]]
+}
+
 # Load a .env file safely: comments and empty lines skipped; key names must be
 # valid identifiers; values may be unquoted or quoted; no eval or word-splitting.
 load_env_file() {
@@ -34,10 +45,11 @@ load_env_file() {
         key="${key%"${key##*[![:space:]]}"}"
         [[ -z "$key" ]] && continue
         [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-        # Bash exposes UID as a readonly shell variable. A .env line such as
-        # UID=1000 is valid for Docker Compose, but exporting it here aborts
-        # lifecycle commands under set -e before they can reach compose.
-        [[ "$key" == "UID" ]] && continue
+        # UID/GID overrides and other keys may be valid Docker Compose input,
+        # but Bash exposes several names (UID, EUID, BASHOPTS, SHELLOPTS, ...)
+        # as readonly variables. Exporting any of them aborts lifecycle
+        # commands under set -e before they can reach compose.
+        _safe_env_shell_var_is_readonly "$key" && continue
         # Strip one leading space, then a single matching pair of surrounding
         # quotes. Only strip when both ends carry the SAME quote character —
         # stripping each quote type independently corrupts values whose content
