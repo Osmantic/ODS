@@ -526,10 +526,29 @@ sync_windows_opencode_config() {
         >/dev/null 2>&1 || log "WARNING: OpenCode config refresh failed (non-fatal)"
 }
 
+read_env_file_value() {
+    local env_path="$1" key="$2" value
+    [[ -f "$env_path" ]] || return 0
+    value="$(awk -v key="$key" '
+        index($0, key "=") == 1 {
+            value = substr($0, length(key) + 2)
+            found = 1
+        }
+        END { if (found) print value }
+    ' "$env_path")"
+    value="${value%$'\r'}"
+    if [[ "$value" == '"'*'"' ]]; then
+        value="${value#\"}"
+        value="${value%\"}"
+    elif [[ "$value" == "'"*"'" ]]; then
+        value="${value#\'}"
+        value="${value%\'}"
+    fi
+    printf '%s\n' "$value"
+}
+
 read_env_value() {
-    local key="$1"
-    [[ -f "$ENV_FILE" ]] || return 0
-    grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"\047\r'
+    read_env_file_value "$ENV_FILE" "$1"
 }
 
 write_env_value() {
@@ -1664,8 +1683,7 @@ restart_windows_lemonade_dependents_after_rollback() {
 
 snapshot_env_value() {
     local key="$1" snapshot_env="${ACTIVE_CONFIG_SNAPSHOT_DIR:-}/env"
-    [[ -f "$snapshot_env" ]] || return 0
-    grep -E "^${key}=" "$snapshot_env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"\047\r'
+    read_env_file_value "$snapshot_env" "$key"
 }
 
 rollback_windows_lemonade_swap() {
