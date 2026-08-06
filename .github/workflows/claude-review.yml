@@ -79,14 +79,31 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          # On issue_comment events github.ref is the default branch, not the PR
+          # head, so checkout would fetch main. Check out the PR merge ref instead
+          # so the review actually runs against the PR code. This ref works for
+          # fork PRs with a read token; the fork guard below still governs whether
+          # AI review runs. pull_request events keep default behavior (no ref),
+          # which already checks out the PR merge commit.
+          ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/merge', github.event.issue.number) || '' }}
 
       - name: Check PR size (cost control)
         if: steps.fork_check.outputs.is_fork != 'true'
         id: pr_size
         run: |
-          BASE_REF="${{ github.base_ref || github.event.repository.default_branch || 'main' }}"
-          FILES_CHANGED=$(git diff --name-only origin/${BASE_REF}...HEAD | wc -l)
-          LINES_CHANGED=$(git diff --stat origin/${BASE_REF}...HEAD | tail -1 | awk '{print $4+$6}')
+          # On issue_comment events github.base_ref is empty and the checked-out
+          # HEAD is the PR merge ref (refs/pull/N/merge), whose first parent is
+          # the PR's base tip — so diff HEAD^...HEAD to measure the PR changes.
+          # On pull_request events diff against the base branch as before.
+          if [ "${{ github.event_name }}" == "issue_comment" ]; then
+            DIFF_ARGS="HEAD^...HEAD"
+          else
+            BASE_REF="${{ github.base_ref || github.event.repository.default_branch || 'main' }}"
+            DIFF_ARGS="origin/${BASE_REF}...HEAD"
+          fi
+
+          FILES_CHANGED=$(git diff --name-only ${DIFF_ARGS} | wc -l)
+          LINES_CHANGED=$(git diff --stat ${DIFF_ARGS} | tail -1 | awk '{print $4+$6}')
 
           echo "files_changed=$FILES_CHANGED" >> $GITHUB_OUTPUT
           echo "lines_changed=$LINES_CHANGED" >> $GITHUB_OUTPUT
