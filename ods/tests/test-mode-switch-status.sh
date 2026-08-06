@@ -100,6 +100,10 @@ ROOT="$(new_root)"
 printf 'ODS_MODE=cloud\r\n' > "$ROOT/.env"
 check_eq "CRLF .env does not leak a carriage return" "Current mode: cloud" "$(current_mode_line "$(run_mode "$ROOT" --status)")"
 
+ROOT="$(new_root)"
+printf 'ODS_MODE=local\nODS_MODE=cloud\n' > "$ROOT/.env"
+check_eq "duplicate mode uses Compose-compatible last value" "Current mode: cloud" "$(current_mode_line "$(run_mode "$ROOT" --status)")"
+
 # ── 4. Bare invocation defaults to status ─────────────────────────────────
 
 ROOT="$(new_root)"
@@ -134,6 +138,22 @@ OUT="$(run_mode "$ROOT" cloud)"
 check_eq "external backend rejects direct mode switch" "1" "$(run_rc "$ROOT" cloud)"
 check_contains "external backend points to the transactional reset" "--no-external-llm" "$OUT"
 check_eq "rejected external mode switch leaves .env unchanged" "$BEFORE" "$(cat "$ROOT/.env")"
+
+ROOT="$(new_root)"
+cat > "$ROOT/.env" <<'EOF'
+LLM_BACKEND=llama-server
+LLM_BACKEND=external
+ODS_MODE=local
+EOF
+check_eq "last duplicate external backend blocks switching" "1" "$(run_rc "$ROOT" cloud)"
+
+ROOT="$(new_root)"
+cat > "$ROOT/.env" <<'EOF'
+LLM_BACKEND=external
+LLM_BACKEND=llama-server
+ODS_MODE=local
+EOF
+check_eq "last duplicate local backend permits switching" "0" "$(run_rc "$ROOT" cloud)"
 
 # ── 7. Bad input is rejected ──────────────────────────────────────────────
 
