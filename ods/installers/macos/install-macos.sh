@@ -435,6 +435,7 @@ _write_macos_opencode_config() {
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 path = Path(sys.argv[1])
@@ -470,10 +471,17 @@ payload = json.dumps(data, indent=2) + "\n"
 
 
 def write_atomic(target):
-    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
-    tmp.write_text(payload, encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, target)
+    fd, tmp_str = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
+    tmp = Path(tmp_str)
+    try:
+        os.chmod(tmp_str, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+        os.replace(tmp, target)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        raise
 
 
 for target in (path, compat_path):
