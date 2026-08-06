@@ -729,6 +729,43 @@ else
     skip "Docker Compose unavailable; real external-LLM render skipped"
 fi
 
+# ============================================================================
+# 27. GPU overlay selection must be driven by gpu_backend, never by tier.
+#
+# Regression for the SH_LARGE/SH_COMPACT tiers forcing the AMD overlay onto
+# non-AMD backends (--gpu-backend nvidia SH_LARGE or --gpu-backend apple
+# SH_COMPACT previously resolved to docker-compose.amd.yml). The tier may pick
+# tier0/base overrides but must never select a GPU-vendor overlay; gpu_backend
+# alone chooses amd/nvidia/arc/intel/cpu/apple.
+# ============================================================================
+# Ensure every vendor overlay exists so selection reflects the resolver's
+# decision rather than a missing-file fallback.
+for f in docker-compose.cpu.yml docker-compose.nvidia.yml docker-compose.amd.yml docker-compose.apple.yml docker-compose.arc.yml; do
+    touch "$TEMP_DIR/$f"
+done
+
+expect_overlay() {
+    local desc="$1" backend="$2" tier="$3" want="$4"
+    local out
+    out=$(bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+        --script-dir "$TEMP_DIR" --gpu-backend "$backend" --tier "$tier" --skip-broken \
+        2>/dev/null) || true
+    if contains_path "$out" "docker-compose.$want.yml"; then
+        pass "$desc"
+    else
+        fail "$desc (selected: $(tr '\n' ' ' <<<"$out"))"
+    fi
+}
+
+# GPU backend alone must win; the SH_LARGE/SH_COMPACT tier must not force AMD.
+expect_overlay "cpu backend stays on cpu overlay for SH_LARGE tier" "cpu" "SH_LARGE" "cpu"
+expect_overlay "nvidia backend selects nvidia overlay for SH_LARGE tier" "nvidia" "SH_LARGE" "nvidia"
+expect_overlay "amd backend selects amd overlay for SH_LARGE tier" "amd" "SH_LARGE" "amd"
+expect_overlay "apple backend selects apple overlay for SH_COMPACT tier" "apple" "SH_COMPACT" "apple"
+# ARC tier must not force the ARC/intel overlay onto a non-intel backend.
+expect_overlay "nvidia backend selects nvidia overlay for ARC tier" "nvidia" "ARC" "nvidia"
+expect_overlay "intel backend selects arc overlay for ARC tier" "intel" "ARC" "arc"
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

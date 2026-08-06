@@ -146,10 +146,6 @@ elif gpu_backend == "cpu":
     elif existing(["docker-compose.base.yml"]):
         resolved = ["docker-compose.base.yml"]
         primary = "docker-compose.base.yml"
-elif tier in {"SH_LARGE", "SH_COMPACT"}:
-    if existing(["docker-compose.base.yml", "docker-compose.amd.yml"]):
-        resolved = ["docker-compose.base.yml", "docker-compose.amd.yml"]
-        primary = "docker-compose.amd.yml"
 elif gpu_backend == "apple":
     if existing(["docker-compose.base.yml", APPLE_OVERLAY]):
         resolved = ["docker-compose.base.yml", APPLE_OVERLAY]
@@ -161,7 +157,7 @@ elif gpu_backend == "amd":
     if existing(["docker-compose.base.yml", "docker-compose.amd.yml"]):
         resolved = ["docker-compose.base.yml", "docker-compose.amd.yml"]
         primary = "docker-compose.amd.yml"
-elif gpu_backend in ("intel", "sycl") or tier in ("ARC", "ARC_LITE"):
+elif gpu_backend in ("intel", "sycl"):
     if existing(["docker-compose.base.yml", "docker-compose.arc.yml"]):
         resolved = ["docker-compose.base.yml", "docker-compose.arc.yml"]
         primary = "docker-compose.arc.yml"
