@@ -10,7 +10,9 @@ the rest of the user's config.
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import tempfile
 from pathlib import Path
 
 
@@ -290,7 +292,17 @@ def patch_config(
         updated += "\n"
     if updated == original:
         return False
-    path.write_text(updated, encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(updated)
+        os.replace(tmp_path, path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
     return True
 
 
