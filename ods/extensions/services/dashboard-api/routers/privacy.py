@@ -1,6 +1,7 @@
 """Privacy Shield management endpoints."""
 
 import asyncio
+import json
 import logging
 import os
 
@@ -21,6 +22,22 @@ from security import verify_api_key
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["privacy"])
+
+_PRIVACY_STATS_TYPES = {
+    "cache_enabled": bool,
+    "cache_size": int,
+    "active_sessions": int,
+    "total_pii_scrubbed": int,
+}
+
+
+def _validated_privacy_stats(value: object) -> dict | None:
+    """Validate the response contract exposed by privacy-shield /stats."""
+    if not isinstance(value, dict):
+        return None
+    if any(type(value.get(key)) is not expected for key, expected in _PRIVACY_STATS_TYPES.items()):
+        return None
+    return value
 
 
 @router.get("/api/privacy-shield/status", response_model=PrivacyShieldStatus)
@@ -105,9 +122,16 @@ async def get_privacy_shield_stats(api_key: str = Depends(verify_api_key)):
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
             async with session.get(f"{shield_url}/stats", headers=headers) as resp:
                 if resp.status == 200:
-                    return await resp.json()
+                    stats = _validated_privacy_stats(await resp.json())
+                    if stats is not None:
+                        return stats
+                    logger.warning("Privacy Shield returned malformed statistics")
+                    return {
+                        "error": "Privacy Shield returned invalid statistics",
+                        "enabled": False,
+                    }
                 else:
                     return {"error": "Privacy Shield not responding", "status": resp.status}
-    except (asyncio.TimeoutError, aiohttp.ClientError, OSError):
+    except (asyncio.TimeoutError, aiohttp.ClientError, json.JSONDecodeError, OSError):
         logger.exception("Cannot reach Privacy Shield")
         return {"error": "Cannot reach Privacy Shield", "enabled": False}
