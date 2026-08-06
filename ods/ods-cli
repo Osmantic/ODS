@@ -3368,16 +3368,51 @@ META
                 # used (which missed _PASS, _SALT, email admin fields, etc.).
                 _cmd_config_load_secret_schema
 
-                # Parse both env files
+                # Parse both env files. Split on the FIRST '=' only (values
+                # like JWTs/base64 secrets and URLs carry their own '='), strip
+                # a trailing CR so CRLF files from Windows editors compare
+                # cleanly, and remove one matching pair of surrounding quotes
+                # like lib/safe-env.sh does. Mirrors safe-env.sh semantics.
                 declare -A env1 env2
-                while IFS='=' read -r key value; do
-                    [[ "$key" =~ ^[[:space:]]*# ]] && continue
+                local line key value
+                while IFS= read -r line || [[ -n "$line" ]]; do
+                    line="${line%$'\r'}"
+                    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+                    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+                    [[ "$line" == *=* ]] || continue
+                    key="${line%%=*}"
+                    value="${line#*=}"
+                    key="${key#"${key%%[![:space:]]*}"}"
+                    key="${key%"${key##*[![:space:]]}"}"
                     [[ -z "$key" ]] && continue
+                    value="${value# }"
+                    if [[ "$value" == '"'*'"' ]]; then
+                        value="${value#\"}"
+                        value="${value%\"}"
+                    elif [[ "$value" == "'"*"'" ]]; then
+                        value="${value#\'}"
+                        value="${value%\'}"
+                    fi
                     env1["$key"]="$value"
                 done < "$dir1/env"
-                while IFS='=' read -r key value; do
-                    [[ "$key" =~ ^[[:space:]]*# ]] && continue
+                while IFS= read -r line || [[ -n "$line" ]]; do
+                    line="${line%$'\r'}"
+                    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+                    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+                    [[ "$line" == *=* ]] || continue
+                    key="${line%%=*}"
+                    value="${line#*=}"
+                    key="${key#"${key%%[![:space:]]*}"}"
+                    key="${key%"${key##*[![:space:]]}"}"
                     [[ -z "$key" ]] && continue
+                    value="${value# }"
+                    if [[ "$value" == '"'*'"' ]]; then
+                        value="${value#\"}"
+                        value="${value%\"}"
+                    elif [[ "$value" == "'"*"'" ]]; then
+                        value="${value#\'}"
+                        value="${value%\'}"
+                    fi
                     env2["$key"]="$value"
                 done < "$dir2/env"
 
