@@ -122,6 +122,56 @@ test_diff_masks_secrets() {
     fi
 }
 
+# Test 7: Diff preserves '=' inside values (JWT/base64 secrets, URLs)
+test_diff_preserves_equals_in_value() {
+    local presets_dir="$ODS_DIR/presets"
+    mkdir -p "$presets_dir/test-preset-i" "$presets_dir/test-preset-j"
+    echo "JWT=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhPT1iIn0.signature" > "$presets_dir/test-preset-i/env"
+    echo "LLM_API_URL=http://localhost:8080/v1/?key=a%3Db&x=1" >> "$presets_dir/test-preset-i/env"
+    echo "JWT=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhPT1iIn0.changed" > "$presets_dir/test-preset-j/env"
+    echo "LLM_API_URL=http://localhost:8080/v1/?key=a%3Db&x=2" >> "$presets_dir/test-preset-j/env"
+
+    local output
+    output=$("$ODS_CLI" preset diff test-preset-i test-preset-j 2>&1 || true)
+    if echo "$output" | grep -q "JWT" && echo "$output" | grep -q "LLM_API_URL"; then
+        pass "Diff detects differences in values containing '='"
+    else
+        fail "Diff should detect differences after the first '=' in values"
+    fi
+}
+
+# Test 8: Diff compares quoted values as their unquoted content
+test_diff_unquotes_values() {
+    local presets_dir="$ODS_DIR/presets"
+    mkdir -p "$presets_dir/test-preset-k" "$presets_dir/test-preset-l"
+    echo "TOKEN=\"abc=def=ghi\"" > "$presets_dir/test-preset-k/env"
+    echo "TOKEN=\"abc=def=ghi\"" > "$presets_dir/test-preset-l/env"
+
+    local output
+    output=$("$ODS_CLI" preset diff test-preset-k test-preset-l 2>&1 || true)
+    if echo "$output" | grep -q "no differences"; then
+        pass "Diff treats identically quoted values as equal"
+    else
+        fail "Diff should strip matching quotes before comparing"
+    fi
+}
+
+# Test 9: Diff tolerates CRLF env files (Windows editors)
+test_diff_crlf_env() {
+    local presets_dir="$ODS_DIR/presets"
+    mkdir -p "$presets_dir/test-preset-m" "$presets_dir/test-preset-n"
+    printf 'TIER=3\r\nMODEL=llama-3.1-8b\r\n' > "$presets_dir/test-preset-m/env"
+    printf 'TIER=3\r\nMODEL=llama-3.1-8b\r\n' > "$presets_dir/test-preset-n/env"
+
+    local output
+    output=$("$ODS_CLI" preset diff test-preset-m test-preset-n 2>&1 || true)
+    if echo "$output" | grep -q "no differences"; then
+        pass "Diff tolerates CRLF line endings"
+    else
+        fail "Diff should strip CR so identical CRLF env files compare equal"
+    fi
+}
+
 # Run tests
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Preset Diff Tests"
@@ -134,6 +184,9 @@ test_diff_identical
 test_diff_env_changes
 test_diff_service_changes
 test_diff_masks_secrets
+test_diff_preserves_equals_in_value
+test_diff_unquotes_values
+test_diff_crlf_env
 cleanup
 
 # Summary
