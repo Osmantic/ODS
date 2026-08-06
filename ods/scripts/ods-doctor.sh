@@ -1663,7 +1663,19 @@ report["autofix_hints"] = uniq_hints  # overwrite initial empty list
 
 path = pathlib.Path(report_file)
 path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+import os
+import pathlib
+import tempfile
+fd, tmp_str = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+tmp_path = pathlib.Path(tmp_str)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(report, indent=2) + "\n")
+    os.replace(tmp_path, path)
+except Exception:
+    if tmp_path.exists():
+        tmp_path.unlink(missing_ok=True)
+    raise
 PY
 
 echo "ODS Doctor report: $REPORT_FILE"
