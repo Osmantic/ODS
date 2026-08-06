@@ -1214,6 +1214,95 @@ def test_fetch_loaded_model_does_not_prefer_configured_lemonade_gguf_when_health
     ]
 
 
+def test_fetch_loaded_model_skips_malformed_model_entries(monkeypatch):
+    """Malformed model rows fall through to the props endpoint."""
+    import routers.models as models_router
+
+    seen_urls: list[str] = []
+
+    class _Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class _Client:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            seen_urls.append(url)
+            if url.endswith("/health"):
+                return _Response([])
+            if url.endswith("/models"):
+                return _Response({"data": [None, {"id": 42}]})
+            return _Response({"model_path": "/models/fallback.gguf"})
+
+    monkeypatch.setenv("LLM_URL", "http://host.docker.internal:8080")
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", _Client)
+
+    result = asyncio.run(
+        models_router._fetch_llama_loaded_model("llama-server", 8080, "/v1")
+    )
+
+    assert result == "fallback.gguf"
+    assert seen_urls == [
+        "http://host.docker.internal:8080/v1/models",
+        "http://host.docker.internal:8080/props",
+    ]
+
+
+def test_fetch_loaded_model_falls_back_after_malformed_lemonade_health(monkeypatch):
+    """A non-object health payload must not block the model-list fallback."""
+    import routers.models as models_router
+
+    class _Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class _Client:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            if url.endswith("/health"):
+                return _Response([])
+            return _Response({
+                "data": [{"id": "loaded.gguf", "status": {"value": "loaded"}}]
+            })
+
+    monkeypatch.setenv("LLM_URL", "http://host.docker.internal:8080")
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", _Client)
+
+    result = asyncio.run(
+        models_router._fetch_llama_loaded_model("llama-server", 8080, "/api/v1")
+    )
+
+    assert result == "loaded.gguf"
+
+
 def test_already_active_model_uses_env_file_before_stale_process_env(
     monkeypatch,
     tmp_path,

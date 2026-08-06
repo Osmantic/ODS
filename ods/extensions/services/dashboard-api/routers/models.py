@@ -1762,26 +1762,41 @@ async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> st
                 resp = await client.get(f"{base_url}{api_prefix}/health")
                 resp.raise_for_status()
                 health = resp.json()
-                loaded = health.get("model_loaded")
-                if loaded:
-                    return loaded
-                if "model_loaded" in health:
-                    return None
+                if isinstance(health, dict):
+                    loaded = health.get("model_loaded")
+                    if isinstance(loaded, str) and loaded:
+                        return loaded
+                    if "model_loaded" in health and loaded is None:
+                        return None
             except (httpx.HTTPError, ValueError):
                 pass
 
         try:
             resp = await client.get(f"{base_url}{api_prefix}/models")
             resp.raise_for_status()
-            data = resp.json().get("data") or []
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                raise ValueError("model list response must be an object")
+            data = payload.get("data") or []
+            if not isinstance(data, list):
+                raise ValueError("model list data must be a list")
             for model in data:
+                if not isinstance(model, dict):
+                    continue
                 status = model.get("status", {})
-                if isinstance(status, dict) and status.get("value") == "loaded":
-                    return model.get("id")
+                model_id = model.get("id")
+                if (
+                    isinstance(status, dict)
+                    and status.get("value") == "loaded"
+                    and isinstance(model_id, str)
+                    and model_id
+                ):
+                    return model_id
             if lemonade_api:
                 return None
-            if data and data[0].get("id"):
-                return data[0]["id"]
+            for model in data:
+                if isinstance(model, dict) and isinstance(model.get("id"), str):
+                    return model["id"]
         except (httpx.HTTPError, ValueError):
             pass
 
@@ -1789,10 +1804,14 @@ async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> st
             resp = await client.get(f"{base_url}/props")
             resp.raise_for_status()
             props = resp.json()
-            if props.get("model_alias"):
-                return props["model_alias"]
-            if props.get("model_path"):
-                return Path(props["model_path"]).name
+            if not isinstance(props, dict):
+                raise ValueError("model props response must be an object")
+            model_alias = props.get("model_alias")
+            if isinstance(model_alias, str) and model_alias:
+                return model_alias
+            model_path = props.get("model_path")
+            if isinstance(model_path, str) and model_path:
+                return Path(model_path).name
         except (httpx.HTTPError, ValueError):
             return None
     return None
