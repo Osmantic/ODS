@@ -722,6 +722,7 @@ generate_openclaw_config() {
             python3 - <<'OPENCLAW_REFRESH_PY'
 import json
 import os
+import tempfile
 from pathlib import Path
 
 provider_id = os.environ["ODS_OPENCLAW_PROVIDER"]
@@ -756,10 +757,17 @@ def load(path):
 
 def save(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    fd, tmp_str = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_str)
+    try:
+        os.chmod(tmp_str, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(value, indent=2) + "\n")
+        os.replace(tmp, path)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        raise
 
 home_path = Path(os.environ["ODS_OPENCLAW_HOME_CONFIG"])
 home = load(home_path)
