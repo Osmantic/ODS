@@ -633,6 +633,20 @@ def parse_remote_enabled(value: str) -> bool:
     return value.strip().lower() == "true"
 
 
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def tcp_port(value: str) -> int:
+    parsed = int(value)
+    if not 1 <= parsed <= 65535:
+        raise argparse.ArgumentTypeError("must be between 1 and 65535")
+    return parsed
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--surface", choices=["all", *sorted(RENDERERS)], default="all")
@@ -649,8 +663,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--ods-mode", choices=["local", "cloud", "hybrid", "lemonade"], default="local")
     parser.add_argument("--llm-base-url", default="http://llama-server:8080/v1")
     parser.add_argument("--litellm-key", default=DEFAULT_LITELLM_KEY)
-    parser.add_argument("--opencode-port", type=int, default=3003)
-    parser.add_argument("--context-length", type=int, default=DEFAULT_CONTEXT)
+    parser.add_argument("--opencode-port", type=tcp_port, default=3003)
+    parser.add_argument("--context-length", type=positive_int, default=DEFAULT_CONTEXT)
     parser.add_argument(
         "--remote-llm-enabled",
         choices=["", "true", "false"],

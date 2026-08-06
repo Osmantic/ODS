@@ -63,6 +63,27 @@ def test_all_surfaces_render() -> None:
     assert payload["mode"] == "dry-run"
 
 
+def test_numeric_runtime_inputs_are_bounded() -> None:
+    invalid = [
+        ("--opencode-port", "0", "must be between 1 and 65535"),
+        ("--opencode-port", "65536", "must be between 1 and 65535"),
+        ("--context-length", "0", "must be a positive integer"),
+        ("--context-length", "-1", "must be a positive integer"),
+    ]
+    for option, value, expected_error in invalid:
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), option, value],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert proc.returncode == 2
+        assert f"argument {option}: {expected_error}" in proc.stderr
+        assert proc.stdout == ""
+
+
 def test_switchboard_surface_gated_on_enabled_mode() -> None:
     observed = run_renderer("--surface", "all", "--switchboard-mode", "observe")
     assert "litellm-switchboard" not in {i["surface"] for i in observed["files"]}
@@ -550,6 +571,7 @@ def test_atomic_write_failure_preserves_known_good_config() -> None:
 def main() -> int:
     tests = [
         test_all_surfaces_render,
+        test_numeric_runtime_inputs_are_bounded,
         test_switchboard_surface_gated_on_enabled_mode,
         test_all_selects_one_mode_config,
         test_cloud_enabled_never_renders_local_switchboard,
