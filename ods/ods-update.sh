@@ -132,6 +132,9 @@ resolve_compose_flags() {
                 fi
                 ;;
         esac
+        if [[ -f "${INSTALL_DIR}/docker-compose.override.yml" ]]; then
+            fallback="$fallback -f docker-compose.override.yml"
+        fi
         echo "$fallback"
         return 0
     fi
