@@ -59,6 +59,7 @@ import logging
 import os
 import re
 import secrets
+import shlex
 import threading
 import time
 from collections import deque
@@ -656,6 +657,44 @@ def classify_intent(tool_name: str, args: dict) -> str:
 
 # ── Policy evaluation ─────────────────────────────────────────────────────────
 
+# A command string may only be checked against the allowlist if we can see
+# every program it will run. These constructs hide one command inside another
+# and cannot be resolved without executing them, so a string containing any of
+# them is refused rather than approved on the strength of its first token.
+_COMMAND_SUBSTITUTION = re.compile(r"\$\(|`|<\(|>\(")
+
+# shlex treats a newline as ordinary whitespace, so `echo hi\nrm -r /` reads as
+# a single `echo` invocation with `rm` as an argument. To a shell it is two
+# commands. Refuse embedded line breaks: that string is a script, not a command.
+_COMMAND_LINEBREAK = re.compile(r"[\r\n]")
+
+# shlex.punctuation_chars emits runs of these as standalone tokens.
+_SHELL_OPERATOR_CHARS = set("();<>|&")
+
+
+def command_segments(command: str) -> list[str]:
+    """Split a shell command string into the individual programs it invokes.
+
+    Quote-aware: `grep "a;b" file` is one command, not two. Raises ValueError
+    on input shlex cannot parse (unbalanced quotes), which callers treat as a
+    denial rather than guessing.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    segments: list[str] = []
+    current: list[str] = []
+    for token in lexer:
+        if token and set(token) <= _SHELL_OPERATOR_CHARS:
+            if current:
+                segments.append(current[0])
+                current = []
+        else:
+            current.append(token)
+    if current:
+        segments.append(current[0])
+    return segments
+
+
 def evaluate(intent: str, tool_name: str, args: dict, policy: dict) -> tuple[bool, str]:
     """Return (allowed, reason)."""
     intent_policy = policy.get("intents", {}).get(intent, {"mode": "allow"})
@@ -669,18 +708,33 @@ def evaluate(intent: str, tool_name: str, args: dict, policy: dict) -> tuple[boo
 
     if mode == "allowlist":
         command = args.get("command", args.get("cmd", ""))
-        if not command:
+        if not isinstance(command, str) or not command.strip():
             return False, "empty command denied"
-        # Check command base name
-        base = command.strip().split()[0] if command.strip() else ""
+
+        # Every program the string runs must be allowlisted, not just the
+        # first token. `echo hi; rm -r /data` starts with an allowlisted
+        # `echo` and then deletes a directory.
+        if _COMMAND_SUBSTITUTION.search(command):
+            return False, "command substitution is denied"
+        if _COMMAND_LINEBREAK.search(command):
+            return False, "multi-line command denied"
+        try:
+            segments = command_segments(command)
+        except ValueError as exc:
+            return False, f"command could not be parsed: {exc}"
+        if not segments:
+            return False, "empty command denied"
+
         allowed = intent_policy.get("allowed", [])
-        if base not in allowed:
-            return False, f"command '{base}' not in allowlist"
+        for base in segments:
+            if base not in allowed:
+                return False, f"command '{base}' not in allowlist"
+
         # Check deny patterns
         for pattern in intent_policy.get("deny_patterns", []):
             if re.search(pattern, command):
                 return False, f"command matches deny pattern: {pattern}"
-        return True, f"command '{base}' is in allowlist"
+        return True, f"command '{segments[0]}' is in allowlist"
 
     if mode == "path_guard":
         path = str(args.get("path", args.get("file", args.get("filename", ""))))

@@ -48,6 +48,28 @@ jobs:
       - name: Test Postgres SSE cursor
         run: python -m pytest tests/test_recent_events_cursor_postgres.py -v
 
+  ape-policy-gate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ods/extensions/services/ape
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install APE dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -r tests/requirements-test.txt
+
+      - name: Test policy gate
+        run: python -m pytest tests/ -v
+
   integration-smoke:
     runs-on: ubuntu-latest
     defaults:
