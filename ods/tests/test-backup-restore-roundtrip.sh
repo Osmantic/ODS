@@ -25,13 +25,15 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Create source ODS directory with minimal data
 SRC="$TMP/src"
-mkdir -p "$SRC/data/open-webui"
+mkdir -p "$SRC/data/open-webui" "$SRC/data/n8n" "$SRC/models"
 mkdir -p "$SRC/config"
 echo "1.0.0" > "$SRC/.version"
 echo "test-env-value" > "$SRC/.env"
 echo "compose-content" > "$SRC/docker-compose.yml"
 echo "config-data" > "$SRC/config/settings.json"
 echo "user-data-file" > "$SRC/data/open-webui/data.txt"
+echo "workflow-data-file" > "$SRC/data/n8n/workflows.txt"
+echo "model-cache-file" > "$SRC/models/model.gguf"
 
 # Both scripts source lib/rsync.sh relative to ODS_DIR
 mkdir -p "$SRC/lib"
@@ -45,11 +47,23 @@ BACKUP_ID=$(ls -1 "$SRC/.backups" | head -n 1)
 [[ -n "$BACKUP_ID" ]] || fail "No backup created"
 pass "Backup created: $BACKUP_ID"
 
+# A full backup merges several source trees into one destination. Earlier
+# sources must survive later copies.
+BACKUP_DIR="$SRC/.backups/$BACKUP_ID"
+[[ -f "$BACKUP_DIR/manifest.json" ]] || fail "Full backup lost manifest.json"
+[[ -f "$BACKUP_DIR/.env" ]] || fail "Full backup lost .env"
+[[ -f "$BACKUP_DIR/config/settings.json" ]] || fail "Full backup lost config data"
+[[ -f "$BACKUP_DIR/data/open-webui/data.txt" ]] || fail "Full backup lost open-webui data"
+[[ -f "$BACKUP_DIR/data/n8n/workflows.txt" ]] || fail "Full backup lost n8n data"
+[[ -f "$BACKUP_DIR/models/model.gguf" ]] || fail "Full backup lost model cache"
+
 # Create destination ODS directory (empty)
 DST="$TMP/dst"
 mkdir -p "$DST/data"
 mkdir -p "$DST/.backups"
 mkdir -p "$DST/lib"
+mkdir -p "$DST/data/n8n"
+echo "created-after-backup" > "$DST/data/n8n/live-only.txt"
 cp "$SCRIPT_DIR/../lib/rsync.sh" "$DST/lib/"
 
 info "Restoring backup to destination"
@@ -70,6 +84,8 @@ info "Validating restored contents"
 [[ -f "$DST/config/settings.json" ]] || fail "Missing config/settings.json after restore"
 [[ -d "$DST/data/open-webui" ]] || fail "Missing data/open-webui after restore"
 [[ -f "$DST/data/open-webui/data.txt" ]] || fail "Missing data/open-webui/data.txt after restore"
+[[ -f "$DST/data/n8n/workflows.txt" ]] || fail "Missing data/n8n/workflows.txt after restore"
+[[ -f "$DST/data/n8n/live-only.txt" ]] || fail "Restore deleted live data created after backup"
 
 pass "All expected files/dirs present after restore"
 
