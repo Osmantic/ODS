@@ -7,6 +7,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+import tempfile
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,6 +27,20 @@ from security import verify_api_key
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["setup"])
+
+
+def _write_atomic_json(target_path: Path, data: dict) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(dir=str(target_path.parent), prefix=f".{target_path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, target_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def get_active_persona_prompt() -> str:
@@ -82,11 +97,8 @@ async def setup_persona(request: PersonaRequest, api_key: str = Depends(verify_a
         "system_prompt": persona_info["system_prompt"], "icon": persona_info["icon"],
         "selected_at": datetime.now(timezone.utc).isoformat()
     }
-    with open(SETUP_CONFIG_DIR / "persona.json", "w") as f:
-        json.dump(persona_data, f, indent=2)
-
-    with open(SETUP_CONFIG_DIR / "setup-progress.json", "w") as f:
-        json.dump({"step": 2, "persona_selected": True}, f)
+    _write_atomic_json(SETUP_CONFIG_DIR / "persona.json", persona_data)
+    _write_atomic_json(SETUP_CONFIG_DIR / "setup-progress.json", {"step": 2, "persona_selected": True})
 
     return {"success": True, "persona": request.persona, "name": persona_info["name"], "message": f"Great choice! Your assistant is now a {persona_info['name']}."}
 
@@ -94,10 +106,10 @@ async def setup_persona(request: PersonaRequest, api_key: str = Depends(verify_a
 @router.post("/api/setup/complete")
 async def setup_complete(api_key: str = Depends(verify_api_key)):
     """Mark the first-run setup as complete."""
-    SETUP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-
-    with open(SETUP_CONFIG_DIR / "setup-complete.json", "w") as f:
-        json.dump({"completed_at": datetime.now(timezone.utc).isoformat(), "version": "1.0.0"}, f, indent=2)
+    _write_atomic_json(
+        SETUP_CONFIG_DIR / "setup-complete.json",
+        {"completed_at": datetime.now(timezone.utc).isoformat(), "version": "1.0.0"}
+    )
 
     progress_file = SETUP_CONFIG_DIR / "setup-progress.json"
     if progress_file.exists():
