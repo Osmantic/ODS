@@ -56,7 +56,16 @@ class ClusterStatus:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except OSError:
+                    pass
+                logger.debug("Cluster proxy status probe timed out")
+                return
 
             if proc.returncode == 0:
                 data = json.loads(stdout.decode())
