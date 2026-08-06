@@ -58,7 +58,16 @@ async def get_n8n_workflows() -> list[dict]:
             async with session.get(f"{N8N_URL}/api/v1/workflows", headers=headers) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return data.get("data", [])
+                    if not isinstance(data, dict):
+                        logger.warning("n8n workflows response must be a JSON object")
+                        return []
+                    workflows = data.get("data", [])
+                    if not isinstance(workflows, list) or not all(
+                        isinstance(workflow, dict) for workflow in workflows
+                    ):
+                        logger.warning("n8n workflows response contains invalid workflow data")
+                        return []
+                    return workflows
     except (aiohttp.ClientError, OSError, json.JSONDecodeError) as e:
         logger.warning(f"Failed to fetch workflows from n8n: {e}")
     return []

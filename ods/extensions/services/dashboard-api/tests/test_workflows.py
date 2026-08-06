@@ -191,6 +191,38 @@ def test_get_n8n_workflows_failure(test_client, monkeypatch):
     assert result == []
 
 
+@pytest.mark.parametrize(
+    "n8n_data",
+    [
+        [],
+        {"data": "not-a-list"},
+        {"data": [None]},
+    ],
+)
+def test_get_n8n_workflows_rejects_malformed_payload(test_client, n8n_data):
+    """Malformed successful responses must not crash workflow endpoints."""
+    import asyncio
+    import routers.workflows as wf_mod
+
+    resp_mock = AsyncMock()
+    resp_mock.status = 200
+    resp_mock.json = AsyncMock(return_value=n8n_data)
+
+    response_context = AsyncMock()
+    response_context.__aenter__ = AsyncMock(return_value=resp_mock)
+    response_context.__aexit__ = AsyncMock(return_value=False)
+
+    session_mock = AsyncMock()
+    session_mock.get = MagicMock(return_value=response_context)
+    session_mock.__aenter__ = AsyncMock(return_value=session_mock)
+    session_mock.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
+        result = asyncio.run(wf_mod.get_n8n_workflows())
+
+    assert result == []
+
+
 # ---------------------------------------------------------------------------
 # check_workflow_dependencies() unit tests
 # ---------------------------------------------------------------------------
