@@ -1,7 +1,7 @@
 services:
   llama-server:
     environment:
-      NVIDIA_VISIBLE_DEVICES: "${LLAMA_SERVER_GPU_UUIDS:-all}"
+      NVIDIA_VISIBLE_DEVICES: "${LLAMA_SERVER_GPU_UUIDS:?LLAMA_SERVER_GPU_UUIDS must be set for multigpu}"
       LLAMA_ARG_SPLIT_MODE: "${LLAMA_ARG_SPLIT_MODE:-none}"
       LLAMA_ARG_TENSOR_SPLIT: "${LLAMA_ARG_TENSOR_SPLIT:-}"
     deploy:
