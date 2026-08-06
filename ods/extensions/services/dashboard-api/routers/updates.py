@@ -142,6 +142,42 @@ def _normalize_version(value: Optional[str]) -> str:
     return (value or "").strip().lstrip("v")
 
 
+def _release_object(value: object) -> dict:
+    """Validate one object returned by the GitHub releases API."""
+    if not isinstance(value, dict):
+        raise ValueError(f"unexpected GitHub release response: {type(value).__name__}")
+    return value
+
+
+def _release_string(release: dict, key: str) -> str:
+    """Read an optional string field from a GitHub release object."""
+    value = release.get(key)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"unexpected GitHub release field {key}: {type(value).__name__}")
+    return value
+
+
+def _format_release(value: object) -> dict:
+    """Convert a validated GitHub release object to the dashboard schema."""
+    release = _release_object(value)
+    prerelease = release.get("prerelease", False)
+    if not isinstance(prerelease, bool):
+        raise ValueError(
+            f"unexpected GitHub release field prerelease: {type(prerelease).__name__}"
+        )
+    changelog = _release_string(release, "body")
+    return {
+        "version": _release_string(release, "tag_name").lstrip("v"),
+        "date": _release_string(release, "published_at"),
+        "title": _release_string(release, "name"),
+        "changelog": changelog[:500] + "..." if len(changelog) > 500 else changelog,
+        "url": _release_string(release, "html_url"),
+        "prerelease": prerelease,
+    }
+
+
 def _build_version_result(current: str, payload: Optional[dict]) -> dict:
     current = _normalize_version(current)
     result = {
@@ -178,10 +214,10 @@ async def _refresh_release_cache() -> Optional[dict]:
                 f"{_GITHUB_RELEASES_API}/latest",
                 headers=_GITHUB_HEADERS,
             )
-        data = response.json()
+        data = _release_object(response.json())
         payload = {
-            "latest": data.get("tag_name", "").lstrip("v"),
-            "changelog_url": data.get("html_url"),
+            "latest": _release_string(data, "tag_name").lstrip("v"),
+            "changelog_url": _release_string(data, "html_url") or None,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
         _version_cache = {
@@ -233,15 +269,12 @@ async def get_release_manifest():
             )
         releases = resp.json()
         if not isinstance(releases, list):
-            raise httpx.HTTPError(f"unexpected releases response: {type(releases).__name__}")
+            raise ValueError(f"unexpected releases response: {type(releases).__name__}")
         return {
-            "releases": [
-                {"version": r.get("tag_name", "").lstrip("v"), "date": r.get("published_at", ""), "title": r.get("name", ""), "changelog": r.get("body", "")[:500] + "..." if len(r.get("body", "")) > 500 else r.get("body", ""), "url": r.get("html_url", ""), "prerelease": r.get("prerelease", False)}
-                for r in releases
-            ],
+            "releases": [_format_release(release) for release in releases],
             "checked_at": datetime.now(timezone.utc).isoformat()
         }
-    except (httpx.HTTPError, httpx.TimeoutException, json.JSONDecodeError, OSError):
+    except (httpx.HTTPError, httpx.TimeoutException, json.JSONDecodeError, OSError, ValueError):
         current = await asyncio.to_thread(_read_current_version)
         return {
             "releases": [{"version": current, "date": datetime.now(timezone.utc).isoformat(), "title": f"ODS {current}", "changelog": "Release information unavailable. Check GitHub directly.", "url": _GITHUB_RELEASES_PAGE, "prerelease": False}],
@@ -303,9 +336,9 @@ async def get_update_dry_run():
                 f"{_GITHUB_RELEASES_API}/latest",
                 headers=_GITHUB_HEADERS,
             )
-        data = resp.json()
-        latest = _normalize_version(data.get("tag_name")) or None
-        changelog_url = data.get("html_url") or None
+        data = _release_object(resp.json())
+        latest = _normalize_version(_release_string(data, "tag_name")) or None
+        changelog_url = _release_string(data, "html_url") or None
         if latest:
             def _parts(v: str) -> list[int]:
                 return ([int(x) for x in v.split(".") if x.isdigit()][:3] + [0, 0, 0])[:3]

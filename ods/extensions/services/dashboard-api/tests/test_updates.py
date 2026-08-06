@@ -72,6 +72,28 @@ def test_get_version_with_mock_github(test_client, monkeypatch):
     assert data["changelog_url"] == "https://github.com/test"
 
 
+def test_get_version_rejects_non_object_github_payload(test_client, monkeypatch):
+    """Valid JSON with the wrong shape must not crash the refresh task."""
+    import routers.updates as updates_mod
+
+    monkeypatch.setattr(updates_mod, "_version_cache", {"expires_at": 0.0, "payload": None})
+    monkeypatch.setattr(updates_mod, "_version_refresh_task", None)
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = []
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.updates.httpx.AsyncClient", return_value=mock_client):
+        resp = test_client.get("/api/version", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["latest"] is None
+    assert updates_mod._version_cache["payload"] is None
+
+
 def test_build_version_result_strips_v_prefix_from_current():
     """Current versions stored with a 'v' prefix (matching the release tag
     convention, e.g. a .version file of 'v2.6.0') must normalize before
@@ -142,6 +164,22 @@ def test_get_releases_manifest_authenticated(test_client):
     assert isinstance(data["releases"], list)
     assert len(data["releases"]) == 1
     assert data["releases"][0]["version"] == "1.0.0"
+
+
+def test_get_releases_manifest_rejects_malformed_release(test_client):
+    """A malformed item falls back to local release data instead of returning 500."""
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = [None]
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.updates.httpx.AsyncClient", return_value=mock_client):
+        resp = test_client.get("/api/releases/manifest", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["error"] == "Could not fetch release information"
 
 
 def test_trigger_update_requires_auth(test_client):
@@ -334,6 +372,30 @@ def test_update_dry_run_with_env_and_version(test_client, tmp_path, monkeypatch)
     assert "GPU_BACKEND" in data["env_keys"]
     assert "LLM_MODEL" in data["env_keys"]
     assert "SOME_OTHER_KEY" not in data["env_keys"]
+
+
+def test_update_dry_run_rejects_non_object_github_payload(test_client, tmp_path, monkeypatch):
+    """A valid non-object JSON response is reported as a version-check error."""
+    import routers.updates as updates_mod
+
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = []
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.updates.httpx.AsyncClient", return_value=mock_client):
+        resp = test_client.get("/api/update/dry-run", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["latest_version"] is None
+    assert "unexpected GitHub release response: list" in data["version_check_error"]
 
 
 def test_update_dry_run_parses_quoted_ods_version(test_client, tmp_path, monkeypatch):
