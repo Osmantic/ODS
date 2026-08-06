@@ -60,6 +60,17 @@ else
         esac
     fi
 
+    # Export the host user's uid/gid under non-readonly names. Bash exposes
+    # UID/GID as readonly shell variables that are never exported into the
+    # process environment, so Docker Compose (which interpolates ${...} from
+    # the environment, not shell state) always saw them empty and fell back to
+    # the compose defaults — leaving ./data/hermes and ./data/n8n owned by
+    # 10000/1000 instead of the host user. ODS_UID/ODS_GID are real exported
+    # vars (override-able) that both the generated .env and every `user:`
+    # / HERMES_UID/GID interpolation below agree on.
+    export ODS_UID="${ODS_UID:-$(id -u)}"
+    export ODS_GID="${ODS_GID:-$(id -g)}"
+
     # Create directories
     _phase06_step "create-directories"
     ods_progress 38 "directories" "Creating directory structure"
@@ -69,15 +80,16 @@ else
     mkdir -p "$INSTALL_DIR"/data/langfuse/{postgres,clickhouse,redis,minio}
     mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,openclaw,searxng}
 
-    # Hermes runs its gateway/dashboard as the in-container `hermes` user
-    # (uid 10000) and keeps HERMES_HOME at data/hermes mounted as /opt/data.
-    # Upstream intentionally makes that directory 0700. A reinstall running
-    # as the host user must not "repair" it back to uid 1000, or Hermes's web
-    # status and ODS Talk JSON-RPC paths fail with PermissionError.
+    # Hermes runs its gateway/dashboard as the resolved host user (ODS_UID)
+    # and keeps HERMES_HOME at data/hermes mounted as /opt/data. Matches the
+    # host user (same remap as n8n's `user:`) so files written into the volume
+    # are owned by the host user rather than a hardcoded uid 10000. A reinstall
+    # must not leave stale ownership from an earlier uid-10000 install behind,
+    # or Hermes's web status and ODS Talk JSON-RPC paths fail with PermissionError.
     if ! $_phase06_rootless \
         && [[ "${ENABLE_HERMES:-false}" == "true" && -d "$INSTALL_DIR/data/hermes" ]]; then
-        sudo chown -R 10000:10000 "$INSTALL_DIR/data/hermes" 2>/dev/null || \
-            warn "Failed to restore data/hermes ownership to Hermes uid 10000 (Hermes dashboard may be unhealthy)"
+        sudo chown -R "${ODS_UID:-10000}:${ODS_GID:-10000}" "$INSTALL_DIR/data/hermes" 2>/dev/null || \
+            warn "Failed to restore data/hermes ownership to Hermes uid ${ODS_UID:-10000} (Hermes dashboard may be unhealthy)"
         sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || true
     fi
 
@@ -740,11 +752,17 @@ raise SystemExit(1)' 2>/dev/null && return 0
     # Generate .env file
     # Subshell-scope a tighter umask so the file is created 0600 from the start
     # (closes a brief window on systems where $HOME is world-readable, e.g.
-    # Ubuntu defaults). The umask MUST NOT leak to the rest of phase 06 or
-    # subsequent phases — later mkdirs create container-bind-mount dirs that
-    # need world-traverse (e.g. SearXNG runs as uid 977, OpenClaw as 1000).
-    # The chmod 600 below is belt-and-braces.
-    (
+# Ubuntu defaults). The umask MUST NOT leak to the rest of phase 06 or
+     # subsequent phases — later mkdirs create container-bind-mount dirs that
+     # need world-traverse (e.g. SearXNG runs as uid 977, OpenClaw as 1000).
+     # The chmod 600 below is belt-and-braces.
+     # Resolve the host UID/GID before writing .env. ODS_UID/ODS_GID below are
+     # read by Docker Compose (n8n `user:`, Hermes HERMES_UID/HERMES_GID); these
+     # must hold real numeric values, so fall back to the effective host ids
+     # (ID_UID/ID_GID are shell read-only vars that never reach Compose's env).
+     ODS_UID="${ODS_UID:-$(id -u)}"
+     ODS_GID="${ODS_GID:-$(id -g)}"
+     (
         umask 077
         cat > "$INSTALL_DIR/.env" << ENV_EOF
 # ODS Configuration — ${TIER_NAME} Edition
@@ -753,6 +771,13 @@ raise SystemExit(1)' 2>/dev/null && return 0
 
 #=== ODS Version (used by ods-cli update for version-compat checks) ===
 ODS_VERSION=${VERSION:-2.6.0}
+
+#=== Host user remapping (used by Docker Compose) ===
+# Non-readonly substitutes for the shell-only UID/GID vars. Compose honors
+# these in `user:` (n8n) and HERMES_UID/HERMES_GID so containers run as the
+# host user instead of silently dropping to a fixed default uid/gid.
+ODS_UID=${ODS_UID}
+ODS_GID=${ODS_GID}
 
 #=== Network Binding ===
 # 127.0.0.1 = localhost only (secure default)
