@@ -14,6 +14,11 @@ on:
         required: true
         type: string
 
+# Least privilege by default. The generate job escalates to contents: write
+# for `gh release edit` on the release body.
+permissions:
+  contents: read
+
 concurrency:
   group: release-notes
   cancel-in-progress: false

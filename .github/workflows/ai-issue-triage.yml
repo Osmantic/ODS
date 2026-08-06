@@ -8,6 +8,12 @@ on:
   issues:
     types: [opened]
 
+# Least privilege by default. The triage job escalates to issues: write for
+# label application.
+permissions:
+  contents: read
+  issues: read
+
 concurrency:
   group: issue-triage-${{ github.event.issue.number }}
   cancel-in-progress: false

@@ -19,6 +19,11 @@ on:
         type: boolean
         default: false
 
+# Least privilege by default: read-only contents for every job. The
+# create-prs job escalates to the write scopes it needs.
+permissions:
+  contents: read
+
 concurrency:
   group: autonomous-code-scanner
   cancel-in-progress: false
@@ -759,6 +764,7 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+      actions: read
     needs:
       - security-check
       - scan-formatting
