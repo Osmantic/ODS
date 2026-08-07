@@ -26,6 +26,79 @@ from models import BootstrapStatus, ServiceStatus, DiskUsage
 
 class TestGetModelInfo:
 
+    def test_prefers_the_declared_size_over_the_name_ladder(self, install_dir):
+        """The installer writes the exact size, so guessing from the name is a
+        fallback rather than the source of truth."""
+        env_file = install_dir / ".env"
+        env_file.write_text(
+            "LLM_MODEL=qwen3-coder-next\n"
+            "LLM_MODEL_SIZE_MB=48500\n"
+            "GGUF_FILE=qwen3-coder-next-Q4_K_M.gguf\n"
+        )
+
+        info = get_model_info()
+        assert info is not None
+        assert info.size_gb == 47.4
+        assert info.quantization == "GGUF"
+
+    def test_declared_size_wins_even_when_the_ladder_would_match(self, install_dir):
+        """A name the ladder recognises must still defer to the real number."""
+        env_file = install_dir / ".env"
+        env_file.write_text(
+            "LLM_MODEL=qwen3.5-9b\n"
+            "LLM_MODEL_SIZE_MB=5760\n"
+        )
+
+        info = get_model_info()
+        assert info is not None
+        assert info.size_gb == 5.6  # the ladder would have said 5.8
+
+    def test_moe_model_the_ladder_cannot_read(self, install_dir):
+        """qwen3.6-35b-a3b has no rung on the ladder and fell back to 15.0."""
+        env_file = install_dir / ".env"
+        env_file.write_text(
+            "LLM_MODEL=qwen3.6-35b-a3b\n"
+            "LLM_MODEL_SIZE_MB=21110\n"
+        )
+
+        info = get_model_info()
+        assert info is not None
+        assert info.size_gb == 20.6
+
+    def test_falls_back_to_the_ladder_without_a_declared_size(self, install_dir):
+        """Installs predating LLM_MODEL_SIZE_MB keep their previous behaviour."""
+        env_file = install_dir / ".env"
+        env_file.write_text("LLM_MODEL=Qwen2.5-7B-Instruct\n")
+
+        info = get_model_info()
+        assert info is not None
+        assert info.size_gb == 4.0
+
+    @pytest.mark.parametrize("declared", ["", "auto", "notanumber", "0", "-1"])
+    def test_unusable_declared_size_falls_back(self, install_dir, declared):
+        """A non-numeric or non-positive value must not report 0.0 GB."""
+        env_file = install_dir / ".env"
+        env_file.write_text(
+            "LLM_MODEL=Qwen2.5-7B-Instruct\n"
+            f"LLM_MODEL_SIZE_MB={declared}\n"
+        )
+
+        info = get_model_info()
+        assert info is not None
+        assert info.size_gb == 4.0
+
+    def test_declared_size_keeps_quantization_detection(self, install_dir):
+        env_file = install_dir / ".env"
+        env_file.write_text(
+            "LLM_MODEL=Qwen2.5-32B-Instruct-AWQ\n"
+            "LLM_MODEL_SIZE_MB=17000\n"
+        )
+
+        info = get_model_info()
+        assert info is not None
+        assert info.size_gb == 16.6
+        assert info.quantization == "AWQ"
+
     def test_parses_32b_awq_model(self, install_dir):
         env_file = install_dir / ".env"
         env_file.write_text('LLM_MODEL=Qwen2.5-32B-Instruct-AWQ\n')

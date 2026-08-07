@@ -812,6 +812,18 @@ def get_disk_usage() -> DiskUsage:
     return DiskUsage(path=path, used_gb=round(used / (1024**3), 2), total_gb=round(total / (1024**3), 2), percent=percent)
 
 
+def _detect_quantization(model_name: str, gguf_file: str) -> Optional[str]:
+    """Name the quantization format, or None when it cannot be told."""
+    name_lower = (model_name or "").lower()
+    if "awq" in name_lower:
+        return "AWQ"
+    if "gptq" in name_lower:
+        return "GPTQ"
+    if "gguf" in name_lower or (gguf_file or "").lower().endswith(".gguf"):
+        return "GGUF"
+    return None
+
+
 def get_model_info() -> Optional[ModelInfo]:
     """Get current model info from .env config."""
     env_path = Path(INSTALL_DIR) / ".env"
@@ -855,6 +867,28 @@ def get_model_info() -> Optional[ModelInfo]:
 
                 import re as _re
 
+                # The installer already knows the exact size: the tier map sets
+                # LLM_MODEL_SIZE_MB and model activation persists it, so prefer
+                # the declared value over guessing from the name. The ladder
+                # below only covers names that spell their parameter count, and
+                # silently reports the 15.0 GB default for anything else —
+                # qwen3-coder-next (47.4 GB) and qwen3.6-35b-a3b (20.6 GB) are
+                # both shipped tier selections that fall through it.
+                declared_mb = env_values.get("LLM_MODEL_SIZE_MB")
+                if declared_mb:
+                    try:
+                        declared = float(declared_mb)
+                    except (TypeError, ValueError):
+                        declared = 0.0
+                    if declared > 0:
+                        gguf_file = env_values.get("GGUF_FILE", "").lower()
+                        return ModelInfo(
+                            name=model_name,
+                            size_gb=round(declared / 1024, 1),
+                            context_length=context,
+                            quantization=_detect_quantization(model_name, gguf_file),
+                        )
+
                 name_lower = model_name.lower()
                 if "gemma-4-e2b" in name_lower:
                     size_gb = 2.8
@@ -887,13 +921,7 @@ def get_model_info() -> Optional[ModelInfo]:
                 elif _re.search(r'\b70b\b', name_lower):
                     size_gb = 35.0
 
-                gguf_file = env_values.get("GGUF_FILE", "").lower()
-                if "awq" in name_lower:
-                    quant = "AWQ"
-                elif "gptq" in name_lower:
-                    quant = "GPTQ"
-                elif "gguf" in name_lower or gguf_file.endswith(".gguf"):
-                    quant = "GGUF"
+                quant = _detect_quantization(model_name, env_values.get("GGUF_FILE", ""))
 
                 return ModelInfo(name=model_name, size_gb=size_gb, context_length=context, quantization=quant)
         except OSError as e:
