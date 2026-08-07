@@ -11015,7 +11015,7 @@ def _wait_for_opencode_health(attempts: int = 30) -> None:
         try:
             request = urllib_request.Request(url, method="GET")
             with urllib_request.urlopen(request, timeout=3) as response:
-                if 200 <= response.status < 500:
+                if 200 <= response.status < 300:
                     return
         except (OSError, urllib_error.URLError):
             pass
