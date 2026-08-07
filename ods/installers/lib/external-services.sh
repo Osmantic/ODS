@@ -1,14 +1,25 @@
 #!/bin/bash
 # External Ollama / LM Studio discovery and validation helpers.
 
+# Reduce a provider's model id to a comparable name.
+#
+# Ollama reports names as `<model>:<tag>`. The tag is the default `latest`
+# unless the user asked for a specific one, so `ollama pull qwen3-30b-a3b`
+# is listed as `qwen3-30b-a3b:latest` — the exact model ODS wants, under a
+# name that used to normalize to `qwen3-30b-a3b-latest` and match nothing.
+#
+# Tag handling therefore runs BEFORE the quantization strip: a quant that
+# arrives in the tag position (`qwen3.5-2b:q8_0`) is only recognisable once
+# the colon has become a separator the quant pattern accepts.
 external_llm_normalize_model_name() {
     local value="${1:-}"
     value="${value##*/}"
     value="${value,,}"
     value="${value%.gguf}"
     value="$(printf '%s' "$value" | sed -E \
-        -e 's/[-_.](q[0-9]+([_.][a-z0-9]+)*|iq[0-9]+([_.][a-z0-9]+)*|fp(8|16|32)|bf16)([-_.].*)?$//' \
+        -e 's/:latest$//' \
         -e 's/:/-/' \
+        -e 's/[-_.](q[0-9]+([_.][a-z0-9]+)*|iq[0-9]+([_.][a-z0-9]+)*|fp(8|16|32)|bf16)([-_.].*)?$//' \
         -e 's/[[:space:]_]+/-/g' \
         -e 's/-+/-/g' \
         -e 's/^-|-$//g')"

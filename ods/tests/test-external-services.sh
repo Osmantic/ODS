@@ -43,6 +43,27 @@ assert_eq "$(external_llm_normalize_model_name 'qwen3.5:9b')" \
     "qwen3.5-9b" "normalizes Ollama tags"
 assert_eq "$(external_llm_normalize_model_name 'Qwen3.5-9B-Q4_K_M.gguf')" \
     "qwen3.5-9b" "removes GGUF quantization suffixes"
+# `latest` is Ollama's default tag: `ollama pull qwen3-30b-a3b` is listed by
+# /api/tags as `qwen3-30b-a3b:latest`. Treating that as part of the name meant
+# the commonest case — the user already has exactly the model we want — never
+# matched, and the installer downloaded a duplicate copy.
+assert_eq "$(external_llm_normalize_model_name 'qwen3-30b-a3b:latest')" \
+    "qwen3-30b-a3b" "drops Ollama's default :latest tag"
+assert_eq "$(external_llm_normalize_model_name 'gemma-4-e4b-it:latest')" \
+    "gemma-4-e4b-it" "drops :latest from a hyphenated name"
+# A quantization that arrives in the tag position is still a quantization.
+assert_eq "$(external_llm_normalize_model_name 'qwen3.5-2b:q8_0')" \
+    "qwen3.5-2b" "strips a quantization supplied as an Ollama tag"
+assert_eq "$(external_llm_normalize_model_name 'qwen3.5-9b:iq4_xs')" \
+    "qwen3.5-9b" "strips an IQ quantization tag"
+# A size tag is part of the identity and must survive.
+assert_eq "$(external_llm_normalize_model_name 'qwen3.5:9b')" \
+    "qwen3.5-9b" "keeps a size tag"
+assert_eq "$(external_llm_normalize_model_name 'llama3.2:3b')" \
+    "llama3.2-3b" "keeps a size tag on another family"
+# "latest" only counts as a tag, never as part of the name.
+assert_eq "$(external_llm_normalize_model_name 'my-latest-model')" \
+    "my-latest-model" "does not strip latest from inside a name"
 assert_eq "$(external_llm_container_url 'http://localhost:11434/v1')" \
     "http://host.docker.internal:11434" "normalizes localhost for containers"
 assert_eq "$(external_llm_container_url 'http://[::1]:1234/api/v1')" \
@@ -72,6 +93,24 @@ if external_llm_model_matches "qwen3.5:9b" "llama3.2:3b"; then
     fail "rejects unrelated model families"
 else
     pass "rejects unrelated model families"
+fi
+# The tier map's LLM_MODEL against what /api/tags actually reports for a
+# model the user pulled by bare name.
+assert_true "matches a tier target against Ollama's :latest listing" \
+    external_llm_model_matches "qwen3-30b-a3b" "qwen3-30b-a3b:latest"
+assert_true "matches a hyphenated tier target against :latest" \
+    external_llm_model_matches "gemma-4-e4b-it" "gemma-4-e4b-it:latest"
+assert_true "matches a tier target against a quantization tag" \
+    external_llm_model_matches "qwen3.5-2b" "qwen3.5-2b:q8_0"
+if external_llm_model_matches "qwen3.5-9b" "qwen3.5:4b"; then
+    fail "rejects a different size in the tag"
+else
+    pass "rejects a different size in the tag"
+fi
+if external_llm_model_matches "qwen3-30b-a3b" "qwen3-8b:latest"; then
+    fail "rejects a different model carrying :latest"
+else
+    pass "rejects a different model carrying :latest"
 fi
 
 run_phase_case() {
