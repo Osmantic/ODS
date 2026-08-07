@@ -152,7 +152,7 @@ def _vision_backend_base_url() -> str:
         os.environ.get("ODS_TALK_VISION_URL")
         or os.environ.get("LLM_API_URL")
         or "http://llama-server:8080"
-    ).rstrip("/")
+    ).strip().rstrip("/")
     if raw.endswith("/v1") or raw.endswith("/api/v1"):
         return raw
 
@@ -277,11 +277,15 @@ async def _service_state(service_id: str) -> dict[str, Any]:
 
 
 def _whisper_url() -> str:
-    return (os.environ.get("WHISPER_URL") or "http://whisper:8000").rstrip("/")
+    return (os.environ.get("WHISPER_URL") or "http://whisper:8000").strip().rstrip("/")
 
 
 def _tts_url() -> str:
-    return (os.environ.get("KOKORO_URL") or os.environ.get("TTS_URL") or "http://tts:8880").rstrip("/")
+    return (
+        os.environ.get("KOKORO_URL")
+        or os.environ.get("TTS_URL")
+        or "http://tts:8880"
+    ).strip().rstrip("/")
 
 
 def _stt_model() -> str:

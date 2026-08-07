@@ -2,6 +2,8 @@
 
 import pytest
 
+from routers import talk
+
 
 @pytest.fixture()
 def signed_talk_cookie(monkeypatch):
@@ -1186,3 +1188,11 @@ def test_ods_talk_hermes_timeout_is_env_configurable(monkeypatch):
 
     monkeypatch.setenv("ODS_TALK_HERMES_TIMEOUT", "5")
     assert hermes_bridge._request_timeout() == 10
+def test_talk_backend_urls_ignore_surrounding_env_whitespace(monkeypatch):
+    monkeypatch.setenv("ODS_TALK_VISION_URL", "  http://vision:8080/v1/  ")
+    monkeypatch.setenv("WHISPER_URL", "  http://whisper:8000/  ")
+    monkeypatch.setenv("KOKORO_URL", "  http://kokoro:8880/  ")
+
+    assert talk._vision_backend_base_url() == "http://vision:8080/v1"
+    assert talk._whisper_url() == "http://whisper:8000"
+    assert talk._tts_url() == "http://kokoro:8880"
