@@ -2909,7 +2909,22 @@ PLIST_EOF
         launchctl bootout "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" >/dev/null 2>&1 || true
         _opencode_bootstrap_err="$(launchctl bootstrap "gui/$(id -u)" "$OPENCODE_PLIST" 2>&1)" && _opencode_bootstrap_rc=0 || _opencode_bootstrap_rc=$?
         if [[ $_opencode_bootstrap_rc -eq 0 ]]; then
-            ai_ok "OpenCode Web UI service installed (LaunchAgent, port 3003)"
+            launchctl kickstart -p "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" >/dev/null 2>&1 || true
+            _opencode_health_ok=false
+            for _opencode_health_i in 1 2 3 4 5 6 7 8 9 10; do
+                if curl -fsS --max-time 1 "http://127.0.0.1:${OPENCODE_PORT}/" >/dev/null 2>&1; then
+                    _opencode_health_ok=true
+                    break
+                fi
+                sleep 1
+            done
+            if [[ "$_opencode_health_ok" == "true" ]]; then
+                ai_ok "OpenCode Web UI service installed (LaunchAgent, port ${OPENCODE_PORT})"
+            else
+                ai_warn "OpenCode loaded but not responding on :${OPENCODE_PORT} after 10s."
+                ai_warn "  Log:      $HOME/Library/Logs/ODS/opencode-web.log"
+                ai_warn "  Force start: launchctl kickstart -p gui/$(id -u)/${OPENCODE_PLIST_LABEL}"
+            fi
         else
             ai_warn "OpenCode LaunchAgent failed (rc=${_opencode_bootstrap_rc}): ${_opencode_bootstrap_err}"
             ai_warn "Start manually: ${OPENCODE_BIN} web --port 3003"
