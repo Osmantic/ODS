@@ -36,7 +36,7 @@ features:
     category: development
     requirements:
       services: [opencode]
-      vram_gb: 8
+      vram_gb: 0
     enabled_services_all: [opencode]
     setup_time: Ready
     priority: 6
