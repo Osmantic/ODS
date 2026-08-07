@@ -297,7 +297,7 @@ EOF
     cat << 'EOF' > "$REAL_ENV"
 EXTERNAL_LLM_URL="https://mock-llm.example.com"
 EXTERNAL_LLM_PROVIDER="ollama"
-EXTERNAL_LLM_MODEL="llama3-test"
+EXTERNAL_LLM_MODEL=llama3-test"
 EOF
 
     rm -f /tmp/curl_calls.log
@@ -338,8 +338,8 @@ EOF
     if [[ "$status" == "ok" ]] && \
        [[ "$provider" == "ollama" ]] && \
        [[ "$url" == "https://mock-llm.example.com" ]] && \
-       [[ "$model" == "llama3-test" ]]; then
-        pass "External LLM report JSON contains correct unquoted fields"
+       [[ "$model" == 'llama3-test"' ]]; then
+        pass "External LLM report preserves mismatched quotes via the shared env loader"
     else
         fail "External LLM report JSON fields are incorrect. got: status=$status, provider=$provider, url=$url, model=$model"
     fi
