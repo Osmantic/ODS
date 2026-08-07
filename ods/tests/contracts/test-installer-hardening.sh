@@ -231,8 +231,39 @@ assert_contains "$bootstrap" 'BOOTSTRAP_NON_INTERACTIVE=false' "bootstrap should
 assert_contains "$bootstrap" 'Removing incomplete install because --force was provided' "bootstrap --force should remove incomplete install dirs without prompting"
 assert_contains "$bootstrap" 'Re-run with --force to remove it automatically' "bootstrap --non-interactive should fail with a force hint instead of prompting"
 assert_contains "$bootstrap" 'remove_install_dir()' "bootstrap should centralize incomplete install cleanup"
+assert_contains "$bootstrap" 'install_dir_removal_is_safe "\$target_dir"' "bootstrap must validate an install path before recursive removal"
 assert_contains "$bootstrap" 'sudo -n rm -rf -- "\$target_dir"' "bootstrap --force should retry root-owned container data cleanup with sudo -n"
 assert_contains "$bootstrap" 'root-owned container data' "bootstrap sudo fallback should explain root-owned Docker data cleanup"
+
+echo "[contract] public bootstrap refuses protected and unrecognized removal targets"
+guard_functions="$tmpdir/bootstrap-removal-functions.sh"
+sed -n '/^install_dir_removal_is_safe() {/,/^}/p' "$bootstrap" > "$guard_functions"
+safe_named="$tmpdir/ods"
+safe_marked="$tmpdir/custom-install"
+unrecognized="$tmpdir/photos"
+ods_prefixed="$tmpdir/ods-photos"
+ods_suffixed="$tmpdir/client-ods"
+mkdir -p "$safe_named" "$safe_marked/installers" "$unrecognized" "$ods_prefixed" "$ods_suffixed"
+touch "$safe_marked/docker-compose.base.yml"
+bash -c '
+  set -euo pipefail
+  ODS_BOOTSTRAP_ROOT="$1"
+  source "$2"
+  safe_named="$3"
+  safe_marked="$4"
+  unrecognized="$5"
+  ods_prefixed="$6"
+  ods_suffixed="$7"
+
+  ! install_dir_removal_is_safe /
+  ! install_dir_removal_is_safe /tmp
+  ! install_dir_removal_is_safe "$ODS_BOOTSTRAP_ROOT"
+  ! install_dir_removal_is_safe "$unrecognized"
+  ! install_dir_removal_is_safe "$ods_prefixed"
+  ! install_dir_removal_is_safe "$ods_suffixed"
+  install_dir_removal_is_safe "$safe_named"
+  install_dir_removal_is_safe "$safe_marked"
+' bash "$tmpdir" "$guard_functions" "$safe_named" "$safe_marked" "$unrecognized" "$ods_prefixed" "$ods_suffixed"
 
 echo "[contract] public bootstrap can install from an exact commit SHA"
 sha_repo="$tmpdir/sha-ref-repo"

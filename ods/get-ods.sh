@@ -65,8 +65,40 @@ format_git_clone_error() {
 }
 
 
+install_dir_removal_is_safe() {
+    local target_dir="${1:-}"
+    local target_parent target_name canonical_parent canonical_target canonical_home
+
+    [[ -n "$target_dir" && -d "$target_dir" && ! -L "$target_dir" ]] || return 1
+    target_parent=$(dirname -- "${target_dir%/}")
+    target_name=$(basename -- "${target_dir%/}")
+    [[ "$target_name" != "." && "$target_name" != ".." ]] || return 1
+    canonical_parent=$(cd -P -- "$target_parent" 2>/dev/null && pwd) || return 1
+    canonical_target="${canonical_parent%/}/$target_name"
+    [[ "$canonical_target" == /* ]] || return 1
+
+    canonical_home=$(cd -P -- "$ODS_BOOTSTRAP_ROOT" 2>/dev/null && pwd) || return 1
+    [[ "$canonical_target" != "$canonical_home" ]] || return 1
+    # Never delete the filesystem root or one of its direct children (such as
+    # /home, /Users, /Volumes, /mnt, or /opt), regardless of its name.
+    [[ "${canonical_target#/}" == */* ]] || return 1
+
+    # The canonical default may be incomplete before it has any ODS marker.
+    # Name patterns alone are not evidence for custom paths: unrelated
+    # directories such as ods-photos or client-ods must never become eligible
+    # for recursive deletion.
+    [[ "$canonical_target" == "${canonical_home%/}/ods" ]] && return 0
+    [[ -f "$target_dir/ods-cli" && -f "$target_dir/install-core.sh" ]] \
+        || [[ -f "$target_dir/docker-compose.base.yml" && -d "$target_dir/installers" ]]
+}
+
 remove_install_dir() {
     local target_dir="$1"
+
+    if ! install_dir_removal_is_safe "$target_dir"; then
+        warn "Refusing to recursively remove an unrecognized or protected install path: $target_dir"
+        return 2
+    fi
 
     if rm -rf -- "$target_dir" 2>/dev/null; then
         return 0
@@ -376,7 +408,7 @@ if [[ -d "$INSTALL_DIR" ]]; then
         echo ""
         if [[ "$BOOTSTRAP_FORCE" == "true" ]]; then
             echo "  Removing incomplete install because --force was provided."
-            remove_install_dir "$INSTALL_DIR" || error "Failed to remove incomplete install at $INSTALL_DIR. Try: sudo rm -rf \"$INSTALL_DIR\""
+            remove_install_dir "$INSTALL_DIR" || error "Failed or refused to remove incomplete install at $INSTALL_DIR. Verify ODS_INSTALL_DIR points to an ODS checkout before removing it manually."
         elif [[ "$BOOTSTRAP_NON_INTERACTIVE" == "true" ]]; then
             echo "  Aborting. Re-run with --force to remove it automatically, or remove manually with: rm -rf $INSTALL_DIR"
             exit 1
@@ -384,7 +416,7 @@ if [[ -d "$INSTALL_DIR" ]]; then
             echo -n "  Remove and reinstall? [y/N] "
             read -r response
             if [[ "$response" =~ ^[Yy]$ ]]; then
-                remove_install_dir "$INSTALL_DIR" || error "Failed to remove incomplete install at $INSTALL_DIR. Try: sudo rm -rf \"$INSTALL_DIR\""
+                remove_install_dir "$INSTALL_DIR" || error "Failed or refused to remove incomplete install at $INSTALL_DIR. Verify ODS_INSTALL_DIR points to an ODS checkout before removing it manually."
             else
                 echo "  Aborting. Remove manually with: rm -rf $INSTALL_DIR"
                 exit 1
