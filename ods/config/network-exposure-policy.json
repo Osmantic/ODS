@@ -95,7 +95,7 @@
     "opencode": {
       "risk": "code-execution-ui",
       "lan_exposure": "operator-controlled",
-      "auth_required": true,
+      "auth_required": false,
       "notes": "Browser IDE/coding assistant surface."
     },
     "perplexica": {
