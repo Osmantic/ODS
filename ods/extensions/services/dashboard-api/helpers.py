@@ -141,6 +141,8 @@ async def _check_tailscale_health(service_id: str, config: dict) -> ServiceStatu
     except AgentClientError:
         return _service_status_from_config(service_id, config, "not_deployed")
 
+    if not isinstance(payload, dict):
+        return _service_status_from_config(service_id, config, "not_deployed")
     if not payload.get("running"):
         return _service_status_from_config(service_id, config, "not_deployed")
     if payload.get("authenticated"):
@@ -171,6 +173,8 @@ async def _check_host_systemd_health(service_id: str, config: dict) -> ServiceSt
     except AgentClientError:
         return _service_status_from_config(service_id, config, "down")
 
+    if not isinstance(payload, dict):
+        return _service_status_from_config(service_id, config, "down")
     status = "healthy" if payload.get("reachable") else "not_deployed"
     return ServiceStatus(
         id=service_id,
@@ -703,6 +707,8 @@ async def get_all_services() -> list[ServiceStatus]:
 
     try:
         snapshot = await request_agent_json("GET", "/v1/service/health", timeout=15)
+        if not isinstance(snapshot, dict):
+            raise ValueError("host service-health response must be an object")
         if snapshot.get("schema_version") != "ods.host-service-health.v1":
             raise ValueError("unsupported host service-health schema")
         containers = snapshot.get("containers")

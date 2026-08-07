@@ -527,11 +527,39 @@ class TestCheckServiceHealth:
         result = await check_service_health("tailscale", config)
         assert result.status == "healthy"
 
+    @pytest.mark.asyncio
+    async def test_tailscale_rejects_non_object_agent_payload(self, monkeypatch):
+        config = {
+            "name": "Tailscale", "port": 0, "external_port": 0,
+            "health": "/health", "host": "localhost", "host_network": True,
+        }
+        monkeypatch.setattr("helpers.request_agent_json", AsyncMock(return_value=[]))
+
+        result = await check_service_health("tailscale", config)
+        assert result.status == "not_deployed"
+
 
 # --- get_all_services ---
 
 
 class TestGetAllServices:
+
+    @pytest.mark.asyncio
+    async def test_non_object_host_snapshot_preserves_probe_status(self, monkeypatch):
+        fake_services = {"svc": {"name": "Service", "port": 8001, "external_port": 8001}}
+        monkeypatch.setattr("helpers.SERVICES", fake_services)
+
+        async def degraded(service_id, config):
+            return ServiceStatus(
+                id=service_id, name=config["name"], port=config["port"],
+                external_port=config["external_port"], status="degraded",
+            )
+
+        monkeypatch.setattr("helpers.check_service_health", degraded)
+        monkeypatch.setattr("helpers.request_agent_json", AsyncMock(return_value=[]))
+
+        statuses = await get_all_services()
+        assert statuses[0].status == "degraded"
 
     @pytest.mark.asyncio
     async def test_returns_all_statuses(self, monkeypatch):
@@ -1012,6 +1040,17 @@ class TestCheckServiceHealthSystemd:
         result = await check_service_health("opencode", config)
         assert result.status == "not_deployed"
         assert result.response_time_ms == 2.0
+
+    @pytest.mark.asyncio
+    async def test_host_systemd_rejects_non_object_agent_payload(self, monkeypatch):
+        monkeypatch.setattr("helpers.request_agent_json", AsyncMock(return_value=[]))
+        config = {
+            "name": "opencode", "port": 3003, "external_port": 3003,
+            "health": "/health", "host": "localhost", "type": "host-systemd",
+        }
+
+        result = await check_service_health("opencode", config)
+        assert result.status == "down"
 
 
 # --- get_model_info error branch ---
