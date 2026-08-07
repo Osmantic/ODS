@@ -18,6 +18,9 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 concurrency:
   group: nightly-code-review
   cancel-in-progress: false
@@ -27,6 +30,9 @@ jobs:
     name: Pre-flight Checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       has_changes: ${{ steps.detect.outputs.has_changes }}
       skip: ${{ steps.dedup.outputs.skip }}
@@ -73,6 +79,8 @@ jobs:
 
   code-review:
     name: Claude Code Review
+    permissions:
+      contents: read
     needs: preflight
     if: needs.preflight.outputs.has_changes == 'true' && needs.preflight.outputs.skip != 'true'
     runs-on: ubuntu-latest

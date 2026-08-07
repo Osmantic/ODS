@@ -143,6 +143,9 @@ test: ## Run unit and contract tests
 	@echo "=== issue-to-pr security check ==="
 	@bash tests/test-issue-to-pr-security.sh
 	@echo ""
+	@echo "=== workflow permissions contract ==="
+	@bash tests/test-workflow-permissions.sh
+	@echo ""
 	@echo "=== CLI user-extension dependency resolution ==="
 	@bash tests/test-cli-user-extension-deps.sh
 	@echo ""
