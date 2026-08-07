@@ -33,6 +33,12 @@ assert_success() {
 
 assert_success "generated library schema mirror is current" \
     python3 "$ROOT_DIR/scripts/sync-manifest-schema.py" --check
+CUSTOM_MIRROR="$TMP_DIR/custom-schema.json"
+assert_success "custom schema mirror can be generated" \
+    python3 "$ROOT_DIR/scripts/sync-manifest-schema.py" --output "$CUSTOM_MIRROR"
+cmp "$SCHEMA" "$CUSTOM_MIRROR" || fail "custom schema mirror differs from canonical schema"
+assert_success "custom schema mirror can be checked" \
+    python3 "$ROOT_DIR/scripts/sync-manifest-schema.py" --check --output "$CUSTOM_MIRROR"
 assert_success "bundled and library manifests validate together" \
     bash "$VALIDATOR"
 assert_success "standalone library validator accepts all library manifests" \

@@ -32,18 +32,25 @@ def main() -> int:
         action="store_true",
         help="fail if the generated mirror differs instead of updating it",
     )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=LIBRARY_SCHEMA,
+        help="write or check an alternate mirror path",
+    )
     args = parser.parse_args()
+    output = args.output.resolve()
 
     try:
         source = canonical_schema_path()
         expected = source.read_bytes()
-        actual = LIBRARY_SCHEMA.read_bytes() if LIBRARY_SCHEMA.exists() else None
+        actual = output.read_bytes() if output.exists() else None
     except (KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
         print(f"ERROR: cannot resolve manifest schema contract: {exc}", file=sys.stderr)
         return 2
 
     if actual == expected:
-        print(f"Manifest schema mirror is current: {LIBRARY_SCHEMA.relative_to(ROOT_DIR)}")
+        print(f"Manifest schema mirror is current: {output}")
         return 0
 
     if args.check:
@@ -54,11 +61,11 @@ def main() -> int:
         )
         return 1
 
-    LIBRARY_SCHEMA.parent.mkdir(parents=True, exist_ok=True)
-    LIBRARY_SCHEMA.write_bytes(expected)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(expected)
     print(
         "Updated generated manifest schema mirror from "
-        f"{source.relative_to(ROOT_DIR)}"
+        f"{source.relative_to(ROOT_DIR)} at {output}"
     )
     return 0
 
