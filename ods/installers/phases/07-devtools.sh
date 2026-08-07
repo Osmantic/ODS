@@ -296,10 +296,15 @@ OPENCODE_EOF
                 ai_ok "OpenCode Web UI service installed (user-level, port 3003)" || \
                 ai_warn "OpenCode Web UI service failed to start"
 
-            # Enable lingering so service survives logout
-            loginctl enable-linger "$(whoami)" 2>/dev/null || \
-                sudo -n loginctl enable-linger "$(whoami)" 2>/dev/null || \
-                ai_warn "Could not enable linger. OpenCode may stop after logout. Run: loginctl enable-linger $(whoami)"
+            # Enable lingering so service survives logout. Under `sudo bash
+            # install.sh`, $(whoami) is root — grant linger to the real user via
+            # the same heuristic the host-agent block uses (INSTALL_USER/SUDO_USER/whoami).
+            _linger_user="${INSTALL_USER:-}"
+            [[ -n "$_linger_user" ]] || _linger_user="${SUDO_USER:-}"
+            [[ -n "$_linger_user" ]] || _linger_user="$(whoami)"
+            loginctl enable-linger "$_linger_user" 2>/dev/null || \
+                sudo -n loginctl enable-linger "$_linger_user" 2>/dev/null || \
+                ai_warn "Could not enable linger. OpenCode may stop after logout. Run: loginctl enable-linger $_linger_user"
         fi
     fi
 fi
