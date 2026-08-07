@@ -27,6 +27,7 @@ Options
   --expect-body-regex REGEX      Regex to match in response body (GET only)
   --user-agent UA                Custom user-agent
   --json                         Emit machine-readable JSON result
+  --quiet                        Suppress successful human-readable output
 
 Exit codes
 ----------
@@ -287,6 +288,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="User-Agent header",
     )
     p.add_argument("--json", action="store_true", help="Emit JSON result")
+    p.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress successful human-readable output (JSON is never suppressed)",
+    )
     return p.parse_args(argv)
 
 
@@ -394,7 +400,7 @@ def main(argv: Sequence[str]) -> int:
 
     if args.json:
         print(res.to_json())
-    else:
+    elif not (args.quiet and res.ok):
         if res.ok:
             status_part = f" status={res.status}" if res.status is not None else ""
             print(f"[PASS] {res.kind} {res.target}{status_part} ({res.elapsed_ms}ms)")
