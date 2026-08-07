@@ -148,7 +148,12 @@ collect_backups() {
     local entry base
     while IFS= read -r -d '' entry; do
         base=$(basename "$entry")
-        [[ "$base" =~ ^([A-Za-z0-9_]+-)?[0-9]{8}-[0-9]{6}(\.tar\.gz)?$ ]] || continue
+        # Prefix allows internal hyphens (e.g. "dashboard-my-name-") so
+        # multi-segment user-named backups created via the host-agent
+        # (whose BACKUP_ID_RE in bin/ods-host-agent.py permits
+        # [A-Za-z0-9_-]) are still recognized here instead of silently
+        # skipped by list/retention while remaining on disk and deletable.
+        [[ "$base" =~ ^([A-Za-z0-9_-]+-)?[0-9]{8}-[0-9]{6}(\.tar\.gz)?$ ]] || continue
         COLLECTED_BACKUPS+=("$entry")
     done < <(find "$BACKUP_ROOT" -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
 }

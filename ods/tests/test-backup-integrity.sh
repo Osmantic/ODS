@@ -106,3 +106,21 @@ info "Deleting a compressed backup by bare ID"
 echo y | ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$LIFECYCLE_DIR" -d 20260601-120000 >/dev/null
 [[ ! -f "$LIFECYCLE_DIR/20260601-120000.tar.gz" ]] || fail "delete left the compressed backup behind"
 pass "delete removes compressed backups by bare ID"
+
+# ── Multi-segment user-named backup IDs must be recognized, not just deletable ──
+# bin/ods-host-agent.py's BACKUP_ID_RE allows [A-Za-z0-9_-]+, so a
+# dashboard-triggered named backup like "dashboard-my-name-20260715-143022"
+# lands in BACKUP_ROOT with multiple hyphens before the timestamp. The old
+# collect_backups() glob only allowed a single hyphenated prefix segment, so
+# such a backup was invisible to --list/retention (though still deletable).
+
+NAMED_DIR="$TMP_ROOT/named-backups"
+mkdir -p "$NAMED_DIR/dashboard-my-name-20260715-143022"
+echo '{"backup_type": "user-data", "description": "named"}' \
+  > "$NAMED_DIR/dashboard-my-name-20260715-143022/manifest.json"
+
+info "Listing a multi-segment user-named backup ID"
+named_list_out=$(ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$NAMED_DIR" --list)
+echo "$named_list_out" | grep -q "dashboard-my-name-20260715-143022" \
+  || fail "--list does not show a multi-segment user-named backup ID"
+pass "--list recognizes multi-segment user-named backup IDs"
