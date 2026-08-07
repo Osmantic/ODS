@@ -204,7 +204,7 @@ exit `$LASTEXITCODE
 ' ODS -- OpenCode Web Server (silent launcher)
 ' Run this script to start OpenCode without a visible console window.
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$_ocLauncherPath""", 0, False
+WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """"$_ocLauncherPath""""", 0, False
 "@
     $_vbsPath = Join-Path $script:OPENCODE_DIR "start-opencode.vbs"
     Write-Utf8NoBom -Path $_vbsPath -Content $_vbsContent
