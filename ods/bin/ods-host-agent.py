@@ -10998,12 +10998,7 @@ def _capture_managed_opencode_state() -> dict:
             timeout=15,
             env=user_env,
         )
-        if status.returncode == 0:
-            return {"system": system, "active": True, "env": user_env}
-        if status.returncode in {3, 4}:
-            return {"system": system, "active": False, "env": user_env}
-        detail = (status.stderr or status.stdout or "").strip()
-        raise RuntimeError(f"Could not inspect managed OpenCode: {detail[:300]}")
+        return {"system": system, "active": status.returncode == 0, "env": user_env}
     elif system == "Windows":
         return {"system": system, "active": _run_windows_opencode_control("inspect")}
     return {"system": system, "active": False}
