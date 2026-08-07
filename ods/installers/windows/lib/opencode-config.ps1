@@ -108,6 +108,11 @@ function Update-WindowsOpenCodeConfigObject {
     }
     $models = $llamaProvider.models
 
+    $staleModelIds = @($models.PSObject.Properties.Name | Where-Object { $_ -ne $ModelId })
+    foreach ($staleModelId in $staleModelIds) {
+        $models.PSObject.Properties.Remove($staleModelId)
+    }
+
     if (-not $models.PSObject.Properties[$ModelId] -or $null -eq $models.PSObject.Properties[$ModelId].Value) {
         Set-OpenCodeObjectProperty -Target $models -Name $ModelId -Value ([pscustomobject]@{})
     }
