@@ -29,12 +29,19 @@ error() { echo -e "${RED}✗${NC} $1" >&2; exit 1; }
 # Uses awk index() instead of sed to avoid delimiter collisions
 env_set() {
     local key="$1" val="$2"
+    local dir
+    dir="$(dirname "$ENV_FILE")"
+    mkdir -p "$dir"
+    local tmp_file
+    tmp_file="$(mktemp "$dir/.env.XXXXXX.tmp")"
     if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
         awk -v k="$key" -v v="$val" '{
             if (index($0, k "=") == 1) print k "=" v; else print
-        }' "$ENV_FILE" > "${ENV_FILE}.tmp" && cat "${ENV_FILE}.tmp" > "$ENV_FILE" && rm -f "${ENV_FILE}.tmp"
+        }' "$ENV_FILE" > "$tmp_file" && mv -f "$tmp_file" "$ENV_FILE"
     else
-        echo "${key}=${val}" >> "$ENV_FILE"
+        [[ -f "$ENV_FILE" ]] && cp "$ENV_FILE" "$tmp_file"
+        echo "${key}=${val}" >> "$tmp_file"
+        mv -f "$tmp_file" "$ENV_FILE"
     fi
 }
 
