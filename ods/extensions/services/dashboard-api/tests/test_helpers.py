@@ -752,6 +752,24 @@ class TestGetLoadedModel:
         result = await get_loaded_model()
         assert result is None
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [
+        [],
+        {"data": {}},
+        {"data": [None, {"id": None, "status": []}]},
+    ])
+    async def test_returns_none_for_invalid_models_payload(self, monkeypatch, payload):
+        monkeypatch.setattr("helpers.SERVICES", {
+            "llama-server": {"host": "localhost", "port": 8080},
+        })
+        mock_response = MagicMock()
+        mock_response.json.return_value = payload
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=mock_client))
+
+        assert await get_loaded_model() is None
+
 
 # --- get_llama_context_size ---
 
@@ -802,6 +820,25 @@ class TestGetLlamaContextSize:
 
         result = await get_llama_context_size(model_hint="test-model")
         assert result is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [
+        [],
+        {"default_generation_settings": []},
+        {"default_generation_settings": {"n_ctx": True}},
+        {"default_generation_settings": {"n_ctx": 0}},
+    ])
+    async def test_returns_none_for_invalid_props_payload(self, monkeypatch, payload):
+        monkeypatch.setattr("helpers.SERVICES", {
+            "llama-server": {"host": "localhost", "port": 8080},
+        })
+        mock_response = MagicMock()
+        mock_response.json.return_value = payload
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=mock_client))
+
+        assert await get_llama_context_size(model_hint="test-model") is None
 
 
 # --- get_disk_usage ---
