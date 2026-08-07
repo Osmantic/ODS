@@ -287,7 +287,12 @@ OPENCODE_EOF
                 _sed_i "s|__HOME__|${_home_esc}|g" "$svc_tmp"
                 _sed_i "s|__OPENCODE_BIN__|${_opencode_bin_esc}|g" "$svc_tmp"
                 _sed_i "s|__OPENCODE_BIN_DIR__|${_opencode_bin_dir_esc}|g" "$svc_tmp"
-                cp "$svc_tmp" "$SYSTEMD_USER_DIR/opencode-web.service"
+                # Verify placeholders were actually rendered
+                if grep -q '__HOME__\|__OPENCODE_BIN__\|__OPENCODE_BIN_DIR__' "$svc_tmp"; then
+                    ai_warn "OpenCode systemd unit has unrendered placeholders — not installing; check $svc_tmp"
+                else
+                    cp "$svc_tmp" "$SYSTEMD_USER_DIR/opencode-web.service"
+                fi
                 rm -f "$svc_tmp"
             fi
 
