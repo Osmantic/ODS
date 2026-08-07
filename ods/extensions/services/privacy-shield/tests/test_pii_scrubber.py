@@ -117,6 +117,15 @@ class TestIPDetection:
         result = detector.scrub(text)
         assert "2001:0db8:85a3:0000:0000:8a2e:0370:7334" not in result
 
+    @pytest.mark.parametrize(
+        "candidate",
+        ["999.999.999.999", "256.1.1.1", "192.168.1.999"],
+    )
+    def test_invalid_ipv4_candidate_is_not_scrubbed(self, detector, candidate):
+        text = f"Version-like value: {candidate}"
+
+        assert detector.scrub(text) == text
+
 
 # ── API key detection ────────────────────────────────────────────────────────
 

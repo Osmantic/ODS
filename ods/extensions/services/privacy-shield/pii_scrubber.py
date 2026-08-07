@@ -5,6 +5,7 @@ Detects and replaces PII with tokens, restores on reverse.
 """
 
 import codecs
+import ipaddress
 import re
 import hashlib
 import secrets
@@ -86,6 +87,15 @@ class PIIDetector:
                 # Credit card: validate with Luhn to reduce false positives
                 if pii_type == 'credit_card' and not self._luhn_check(match):
                     continue
+
+                # The regex identifies IPv4/IPv6-shaped candidates, but it
+                # deliberately does not encode numeric range rules. Avoid
+                # scrubbing version-like values such as 999.999.999.999.
+                if pii_type == 'ip_address':
+                    try:
+                        ipaddress.ip_address(match)
+                    except ValueError:
+                        continue
 
                 # Check if we've seen this PII before
                 existing_token = None
