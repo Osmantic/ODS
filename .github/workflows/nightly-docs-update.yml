@@ -22,11 +22,17 @@ concurrency:
   group: nightly-docs-update
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   detect-changes:
     name: Detect Doc-Affecting Changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       has_changes: ${{ steps.check.outputs.has_changes }}
       affected_docs: ${{ steps.check.outputs.affected_docs }}
@@ -162,6 +168,9 @@ jobs:
     if: needs.detect-changes.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout repository

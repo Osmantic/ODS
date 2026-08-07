@@ -12,6 +12,9 @@ concurrency:
   group: issue-triage-${{ github.event.issue.number }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   triage:
     name: Triage Issue

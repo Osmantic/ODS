@@ -18,6 +18,9 @@ concurrency:
   group: release-notes
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   generate:
     name: Generate Release Notes
