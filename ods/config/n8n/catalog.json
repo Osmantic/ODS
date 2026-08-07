@@ -23,6 +23,7 @@
       "category": "productivity",
       "dependencies": [
         "qdrant",
+        "embeddings",
         "llama-server"
       ],
       "setupTime": "2 minutes",

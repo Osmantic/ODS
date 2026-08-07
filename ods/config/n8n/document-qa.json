@@ -2,27 +2,268 @@
   "name": "Document Q&A",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## Document Q&A\n\nThe **query** half of RAG: ask a question, get an answer grounded in the\ndocuments you indexed with the *RAG Pipeline Trigger* template.\n\n```bash\ncurl -X POST http://localhost:5678/webhook/ods-ask \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"question\": \"What is our on-call escalation policy?\"}'\n```\n\n**Body:** `question` (required), `collection` (default `ods_docs`),\n`top_k` (default 5, clamped 1..20), `min_score` (default 0.25).\n\nThe question is embedded with the same model used at ingest\n(`BAAI/bge-base-en-v1.5`, 768 dims) — retrieval only works if both sides\nagree, so do not change one without the other.\n\n**Answers are grounded, not guessed.** If nothing clears `min_score` the\nworkflow answers \"I don't know\" without calling the model at all, and\nthe response always carries the `sources` it used so you can check it.\n\n**Requires** qdrant, embeddings and llama-server.",
+        "height": 660,
+        "width": 540
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [-120, 20]
     },
     {
       "parameters": {
-        "content": "## Document Q&A\n\nThis is a template workflow for uploading documents and asking questions about them.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "httpMethod": "POST",
+        "path": "ods-ask",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "webhook-ask",
+      "name": "Question In",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [440, 360],
+      "webhookId": "7e3c5b28-4a19-4f76-b2d8-6c1e9f0a3b54"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "q1",
+              "name": "question",
+              "value": "={{ ($json.body.question || $json.body.q || '').slice(0, 4000) }}",
+              "type": "string"
+            },
+            {
+              "id": "q2",
+              "name": "collection",
+              "value": "={{ $json.body.collection || 'ods_docs' }}",
+              "type": "string"
+            },
+            {
+              "id": "q3",
+              "name": "top_k",
+              "value": "={{ Math.min(Math.max(Number($json.body.top_k) || 5, 1), 20) }}",
+              "type": "number"
+            },
+            {
+              "id": "q4",
+              "name": "min_score",
+              "value": "={{ Number($json.body.min_score) >= 0 ? Number($json.body.min_score) : 0.25 }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-inputs",
+      "name": "Read Question",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [660, 360]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.question }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-question",
+      "name": "Question Present?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [880, 360]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://embeddings:80/v1/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'BAAI/bge-base-en-v1.5', input: $json.question }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "http-embed",
+      "name": "Embed Question",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://qdrant:6333/collections/{{ $('Read Question').item.json.collection }}/points/query",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query: $json.data[0].embedding, limit: $('Read Question').item.json.top_k, with_payload: true }) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "http-search",
+      "name": "Search Qdrant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1360, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Qdrant's /points/query returns { result: { points: [...] } }. Older\n// /points/search returned { result: [...] }. Accept either so the workflow\n// is not tied to one server minor version.\nconst payload = $input.first().json || {};\nconst raw = payload.result?.points ?? payload.result ?? [];\nconst hits = Array.isArray(raw) ? raw : [];\n\nconst q = $('Read Question').first().json;\n\nconst kept = hits\n  .filter((h) => typeof h?.score === 'number' && h.score >= q.min_score)\n  .map((h, i) => ({\n    rank: i + 1,\n    score: Number(h.score.toFixed(4)),\n    source: h.payload?.source ?? 'unknown',\n    chunk_index: h.payload?.chunk_index ?? null,\n    text: String(h.payload?.text ?? ''),\n  }));\n\nreturn [{\n  json: {\n    question: q.question,\n    collection: q.collection,\n    grounded: kept.length > 0,\n    hit_count: kept.length,\n    searched: hits.length,\n    sources: kept.map(({ rank, score, source, chunk_index }) => ({\n      rank,\n      score,\n      source,\n      chunk_index,\n    })),\n    context: kept\n      .map((h) => `[${h.rank}] (${h.source}) ${h.text}`)\n      .join('\\n\\n'),\n  },\n}];"
+      },
+      "id": "code-context",
+      "name": "Build Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 260]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "g1",
+              "leftValue": "={{ $json.grounded }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-grounded",
+      "name": "Anything Retrieved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1840, 260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'local-model', messages: [ { role: 'system', content: 'Answer using only the numbered context passages. Cite the passages you used as [n]. If the context does not contain the answer, say so — do not fall back on general knowledge.' }, { role: 'user', content: 'Question: ' + $json.question + '\\n\\nContext:\\n' + $json.context } ], temperature: 0.2, max_tokens: 900, stream: false }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "http-llama",
+      "name": "Answer From Context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2080, 180]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ answer: $json.choices[0].message.content, grounded: true, question: $('Build Context').item.json.question, collection: $('Build Context').item.json.collection, sources: $('Build Context').item.json.sources }) }}",
+        "options": {}
+      },
+      "id": "respond-answer",
+      "name": "Return Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2320, 180]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ answer: \"I don't know — nothing in this collection matched the question closely enough.\", grounded: false, question: $json.question, collection: $json.collection, searched: $json.searched, min_score: $('Read Question').item.json.min_score, sources: [] }) }}",
+        "options": {}
+      },
+      "id": "respond-nogrounding",
+      "name": "Return I Don't Know",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2080, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: \"Body must include a non-empty 'question' field.\" }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-bad-request",
+      "name": "Return 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1120, 500]
     }
   ],
-  "connections": {},
+  "connections": {
+    "Question In": {
+      "main": [[{ "node": "Read Question", "type": "main", "index": 0 }]]
+    },
+    "Read Question": {
+      "main": [[{ "node": "Question Present?", "type": "main", "index": 0 }]]
+    },
+    "Question Present?": {
+      "main": [
+        [{ "node": "Embed Question", "type": "main", "index": 0 }],
+        [{ "node": "Return 400", "type": "main", "index": 0 }]
+      ]
+    },
+    "Embed Question": {
+      "main": [[{ "node": "Search Qdrant", "type": "main", "index": 0 }]]
+    },
+    "Search Qdrant": {
+      "main": [[{ "node": "Build Context", "type": "main", "index": 0 }]]
+    },
+    "Build Context": {
+      "main": [[{ "node": "Anything Retrieved?", "type": "main", "index": 0 }]]
+    },
+    "Anything Retrieved?": {
+      "main": [
+        [{ "node": "Answer From Context", "type": "main", "index": 0 }],
+        [{ "node": "Return I Don't Know", "type": "main", "index": 0 }]
+      ]
+    },
+    "Answer From Context": {
+      "main": [[{ "node": "Return Answer", "type": "main", "index": 0 }]]
+    }
+  },
   "settings": {
     "executionOrder": "v1"
   },
