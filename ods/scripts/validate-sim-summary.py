@@ -343,6 +343,7 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     p.add_argument("summary_json", help="Path to summary.json")
     p.add_argument("--strict", action="store_true", help="Fail on unknown keys and require generated_at")
+    p.add_argument("--json", action="store_true", help="Emit a machine-readable validation report")
     return p.parse_args(argv)
 
 
@@ -351,27 +352,47 @@ def main(argv: Sequence[str]) -> int:
 
     path = Path(args.summary_json)
     if not path.exists():
+        if args.json:
+            print(json.dumps({"ok": False, "path": str(path), "errors": [{"path": "$", "message": "file not found"}]}))
+            return 2
         print(f"[FAIL] summary file not found: {path}")
         return 2
 
     try:
         raw = path.read_text(encoding="utf-8")
     except Exception as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "path": str(path), "errors": [{"path": "$", "message": f"cannot read file: {exc}"}]}))
+            return 3
         print(f"[FAIL] cannot read summary file: {exc}")
         return 3
 
     try:
         data = json.loads(raw)
     except Exception as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "path": str(path), "errors": [{"path": "$", "message": f"invalid JSON: {exc}"}]}))
+            return 3
         print(f"[FAIL] invalid JSON: {exc}")
         return 3
 
     if not isinstance(data, Mapping):
+        if args.json:
+            print(json.dumps({"ok": False, "path": str(path), "errors": [{"path": "$", "message": f"root must be an object, got {_type_name(data)}"}]}))
+            return 2
         print(f"[FAIL] root must be an object, got {_type_name(data)}")
         return 2
 
     v = Validator(strict=bool(args.strict))
     validate_summary(v, data)
+    if args.json:
+        print(json.dumps({
+            "ok": not v.issues,
+            "path": str(path),
+            "strict": bool(args.strict),
+            "errors": [{"path": issue.path, "message": issue.message} for issue in v.issues],
+        }, sort_keys=True))
+        return 2 if v.issues else 0
     v.fail_if_any()
 
     print("[PASS] simulation summary structure")
