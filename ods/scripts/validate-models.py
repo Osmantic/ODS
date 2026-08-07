@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import re
 import sys
@@ -206,7 +208,10 @@ def installer_command(platform_name: str | None = None) -> str:
     return r".\install.ps1" if (platform_name or os.name) == "nt" else "./install.sh"
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="emit a machine-readable readiness report")
+    args = parser.parse_args(argv)
     root = ods_root()
     results: list[tuple[str, bool | None, str]] = []
 
@@ -248,16 +253,23 @@ def main() -> int:
     else:
         results.append(("Embedding model", None, "Skipped: service is not active"))
 
-    print("=" * 72)
-    print("ODS Offline Mode - Model Validation")
-    print("=" * 72)
     missing: list[str] = []
+    report: list[dict[str, object]] = []
     for description, ok, detail in results:
         status = "OK" if ok is True else "MISSING" if ok is False else "SKIP"
-        print(f"[{status:7s}] {description:30s} {detail}")
+        report.append({"name": description, "status": status.lower(), "detail": detail})
         if ok is False:
             missing.append(description)
 
+    if args.json:
+        print(json.dumps({"ready": not missing, "models": report}, sort_keys=True))
+        return 0 if not missing else 1
+
+    print("=" * 72)
+    print("ODS Offline Mode - Model Validation")
+    print("=" * 72)
+    for item in report:
+        print(f"[{str(item['status']).upper():7s}] {str(item['name']):30s} {item['detail']}")
     print("=" * 72)
 
     if not missing:
