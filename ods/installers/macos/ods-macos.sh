@@ -713,8 +713,15 @@ cmd_status() {
     echo -e "  ${DGRN}$(printf -- '-%.0s' {1..40})${NC}"
 
     # Parallel arrays (Bash 3.2 compatible)
-    local ep_names=("$CLI_LLM_NAME" "Chat UI" "Dashboard" "OpenCode (IDE)")
-    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:3000" "http://127.0.0.1:3001" "http://127.0.0.1:3003")
+    local ep_names=("$CLI_LLM_NAME" "Chat UI" "Dashboard")
+    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:3000" "http://127.0.0.1:3001")
+    local _oc_web_port
+    _oc_web_port="$(read_env_value "${INSTALL_DIR}/.env" "OPENCODE_PORT")"
+    [[ "$_oc_web_port" =~ ^[0-9]+$ ]] || _oc_web_port="${OPENCODE_PORT:-3003}"
+    if [[ -x "$HOME/.opencode/bin/opencode" ]]; then
+        ep_names+=("OpenCode (IDE)")
+        ep_urls+=("http://127.0.0.1:${_oc_web_port}")
+    fi
 
     for ((i=0; i<${#ep_names[@]}; i++)); do
         local name="${ep_names[$i]}"
