@@ -2,27 +2,279 @@
   "name": "M4 Deterministic Voice",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## M4 Deterministic Voice\n\nIntent classification with **deterministic** routing: the model only ever\npicks a label from a fixed list, and a Switch node — not the model —\ndecides what happens next.\n\n```bash\ncurl -X POST http://localhost:5678/webhook/ods-intent \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"utterance\": \"turn the kitchen lights off\"}'\n```\n\n**Intents:** `smart_home`, `timer`, `question`, `unknown`\n\nWhy this shape: the classifier runs at `temperature: 0` and is told to\nreply with one word. Its answer is then normalised and matched against\nthe allowed set, so a hallucinated or chatty label lands in `unknown`\ninstead of routing somewhere unintended.",
+        "height": 520,
+        "width": 500
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [-80, 20]
     },
     {
       "parameters": {
-        "content": "## M4 Deterministic Voice\n\nThis is a template workflow for intent classification with deterministic routing.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
+        "httpMethod": "POST",
+        "path": "ods-intent",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-intent",
+      "name": "Utterance In",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [440, 320],
+      "webhookId": "9c1f3a68-4b72-4e05-a3d9-5f2b8e7c1a04"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "utterance",
+              "value": "={{ ($json.body.utterance || $json.body.text || '').slice(0, 2000) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-utterance",
+      "name": "Read Utterance",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [660, 320]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.utterance }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-utterance",
+      "name": "Utterance Present?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [880, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'local-model', messages: [ { role: 'system', content: 'Classify the user utterance into exactly one label: smart_home, timer, question, unknown. Reply with the label only - one word, lowercase, nothing else. If it fits none of them, reply unknown.' }, { role: 'user', content: $json.utterance } ], temperature: 0, max_tokens: 8, stream: false }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "http-classify",
+      "name": "Classify Intent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 220]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "n1",
+              "name": "intent",
+              "value": "={{ ['smart_home','timer','question'].includes(($json.choices[0].message.content || '').toLowerCase().replace(/[^a-z_]/g, '')) ? ($json.choices[0].message.content || '').toLowerCase().replace(/[^a-z_]/g, '') : 'unknown' }}",
+              "type": "string"
+            },
+            {
+              "id": "n2",
+              "name": "raw_label",
+              "value": "={{ ($json.choices[0].message.content || '').trim() }}",
+              "type": "string"
+            },
+            {
+              "id": "n3",
+              "name": "utterance",
+              "value": "={{ $('Read Utterance').item.json.utterance }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-normalise",
+      "name": "Constrain To Allowed Set",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1360, 220]
+    },
+    {
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "s1",
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "smart_home",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "smart_home"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "s2",
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "timer",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "timer"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "s3",
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "question",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "question"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "unknown"
+        }
+      },
+      "id": "switch-intent",
+      "name": "Route By Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [1600, 220]
+    },
+    {
+      "parameters": {
+        "content": "### Wire your actions here\n\nEach Switch output is a branch you own:\n\n- **smart_home** — call your hub's API\n- **timer** — create a schedule or reminder\n- **question** — hand off to `ods-chat` (Chat API Endpoint template)\n- **unknown** — ask the user to rephrase\n\nAll four converge on the responder for now, so the workflow is runnable\nexactly as shipped and you can see the classification before you build\non it.",
+        "height": 320,
         "width": 400
       },
-      "id": "note",
-      "name": "Setup Instructions",
+      "id": "note-branches",
+      "name": "Wire your actions here",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [440, 140]
+      "position": [1580, 460]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ intent: $json.intent, raw_label: $json.raw_label, utterance: $json.utterance }) }}",
+        "options": {}
+      },
+      "id": "respond-ok",
+      "name": "Return Intent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1920, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: \"Body must include a non-empty 'utterance' (or 'text') field.\" }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-bad-request",
+      "name": "Return 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1120, 460]
     }
   ],
-  "connections": {},
+  "connections": {
+    "Utterance In": {
+      "main": [[{ "node": "Read Utterance", "type": "main", "index": 0 }]]
+    },
+    "Read Utterance": {
+      "main": [[{ "node": "Utterance Present?", "type": "main", "index": 0 }]]
+    },
+    "Utterance Present?": {
+      "main": [
+        [{ "node": "Classify Intent", "type": "main", "index": 0 }],
+        [{ "node": "Return 400", "type": "main", "index": 0 }]
+      ]
+    },
+    "Classify Intent": {
+      "main": [[{ "node": "Constrain To Allowed Set", "type": "main", "index": 0 }]]
+    },
+    "Constrain To Allowed Set": {
+      "main": [[{ "node": "Route By Intent", "type": "main", "index": 0 }]]
+    },
+    "Route By Intent": {
+      "main": [
+        [{ "node": "Return Intent", "type": "main", "index": 0 }],
+        [{ "node": "Return Intent", "type": "main", "index": 0 }],
+        [{ "node": "Return Intent", "type": "main", "index": 0 }],
+        [{ "node": "Return Intent", "type": "main", "index": 0 }]
+      ]
+    }
+  },
   "settings": {
     "executionOrder": "v1"
   },
