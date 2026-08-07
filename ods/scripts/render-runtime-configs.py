@@ -454,6 +454,7 @@ def render_opencode(inputs: RenderInputs) -> RenderedFile:
         "baseURL": base_url,
         "apiKey": opencode_key(inputs),
         "model": model,
+        "small_model": model,
         "port": inputs.opencode_port,
     }
     return RenderedFile(
