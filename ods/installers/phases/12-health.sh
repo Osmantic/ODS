@@ -514,7 +514,7 @@ fi
 # hermes-proxy is the LAN-facing entry and has an anonymous /health endpoint.
 [[ "$ENABLE_HERMES" == "true" ]] && _check_health "Hermes Proxy" "http://127.0.0.1:${SERVICE_PORTS[hermes-proxy]:-9120}${SERVICE_HEALTH[hermes-proxy]:-/health}" 60 5 "$(sr_container hermes-proxy)"
 [[ "$ENABLE_OPENCLAW" == "true" ]] && _check_health "OpenClaw" "http://127.0.0.1:${SERVICE_PORTS[openclaw]:-7860}${SERVICE_HEALTH[openclaw]:-/}" 150 10 "$(sr_container openclaw)"
-systemctl --user is-active opencode-web &>/dev/null && _check_health "OpenCode Web" "http://127.0.0.1:3003/" 10 5
+systemctl --user is-active opencode-web &>/dev/null && _check_health "OpenCode Web" "http://127.0.0.1:${OPENCODE_PORT:-3003}/" 10 5
 # Whisper: 150 attempts * adaptive backoff = up to ~20 minutes (model download on first start)
 ods_progress 95 "health" "Checking voice services"
 [[ "$ENABLE_VOICE" == "true" ]] && _check_health "Whisper (STT)" "http://127.0.0.1:${SERVICE_PORTS[whisper]:-9000}${SERVICE_HEALTH[whisper]:-/health}" 150 10 "$(sr_container whisper)"

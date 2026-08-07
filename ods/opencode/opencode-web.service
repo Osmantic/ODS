@@ -6,7 +6,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=__HOME__
-ExecStart=__OPENCODE_BIN__ serve --port 3003 --hostname 127.0.0.1
+ExecStart=__OPENCODE_BIN__ serve --port __OPENCODE_PORT__ --hostname 127.0.0.1
 Restart=on-failure
 RestartSec=5
 

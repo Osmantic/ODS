@@ -147,6 +147,7 @@ else
             [[ -z "${ODS_MODEL_SWITCHBOARD:-}" ]] && ODS_MODEL_SWITCHBOARD=$(grep -m1 '^ODS_MODEL_SWITCHBOARD=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             [[ -z "${LITELLM_KEY:-}" ]] && LITELLM_KEY=$(grep -m1 '^LITELLM_KEY=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             [[ -z "${LITELLM_PORT:-}" ]] && LITELLM_PORT=$(grep -m1 '^LITELLM_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2-)
+            [[ -z "${OPENCODE_PORT:-}" ]] && OPENCODE_PORT=$(grep -m1 '^OPENCODE_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2-)
         fi
         # Route through LiteLLM on AMD/Lemonade, direct to llama-server otherwise.
         #
@@ -284,9 +285,11 @@ OPENCODE_EOF
                 _home_esc=$(printf '%s\n' "$HOME" | sed 's/[&/\]/\\&/g')
                 _opencode_bin_esc=$(printf '%s\n' "$OPENCODE_BIN" | sed 's/[&/\]/\\&/g')
                 _opencode_bin_dir_esc=$(printf '%s\n' "$(dirname "$OPENCODE_BIN")" | sed 's/[&/\]/\\&/g')
+                _oc_port=${OPENCODE_PORT:-3003}
                 _sed_i "s|__HOME__|${_home_esc}|g" "$svc_tmp"
                 _sed_i "s|__OPENCODE_BIN__|${_opencode_bin_esc}|g" "$svc_tmp"
                 _sed_i "s|__OPENCODE_BIN_DIR__|${_opencode_bin_dir_esc}|g" "$svc_tmp"
+                _sed_i "s|__OPENCODE_PORT__|${_oc_port}|g" "$svc_tmp"
                 cp "$svc_tmp" "$SYSTEMD_USER_DIR/opencode-web.service"
                 rm -f "$svc_tmp"
             fi

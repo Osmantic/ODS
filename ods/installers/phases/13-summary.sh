@@ -128,7 +128,7 @@ echo "  • LLM API:       http://localhost:${SERVICE_PORTS[llama-server]:-11434
 [[ "${ENABLE_COMFYUI:-false}" == "true" ]] && echo "  • ComfyUI:       http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
 [[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes (auth): http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}  (magic-link gated; not direct :9119)"
 [[ "$ENABLE_OPENCLAW" == "true" ]] && echo "  • OpenClaw:      http://localhost:${SERVICE_PORTS[openclaw]:-7860}"
-systemctl --user is-active opencode-web &>/dev/null && echo "  • OpenCode:      http://localhost:3003"
+systemctl --user is-active opencode-web &>/dev/null && echo "  • OpenCode:      http://localhost:${OPENCODE_PORT:-3003}"
 [[ "$ENABLE_VOICE" == "true" ]] && echo "  • Whisper STT:   http://localhost:${SERVICE_PORTS[whisper]:-9000}"
 [[ "$ENABLE_VOICE" == "true" ]] && echo "  • TTS (Kokoro):  http://localhost:${SERVICE_PORTS[tts]:-8880}"
 [[ "$ENABLE_WORKFLOWS" == "true" ]] && echo "  • n8n:           http://localhost:${SERVICE_PORTS[n8n]:-5678}"
@@ -414,7 +414,7 @@ echo -e "  ${BGRN}Hermes${NC}       ${WHT}http://localhost:${SERVICE_PORTS[herme
 [[ "$ENABLE_OPENCLAW" == "true" ]] && \
 echo -e "  ${BGRN}OpenClaw${NC}     ${WHT}http://localhost:${OPENCLAW_PORT}${NC}"
 systemctl --user is-active opencode-web &>/dev/null && \
-echo -e "  ${BGRN}OpenCode${NC}     ${WHT}http://localhost:3003${NC}"
+echo -e "  ${BGRN}OpenCode${NC}     ${WHT}http://localhost:${OPENCODE_PORT:-3003}${NC}"
 echo ""
 if [[ -n "$LOCAL_IP" ]]; then
     _bind=$(grep "^BIND_ADDRESS=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || echo "127.0.0.1")
