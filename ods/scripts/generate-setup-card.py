@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Card geometry — 4×6 inches @ 300 DPI = 1200×1800px portrait.
 CARD_W = 1200
@@ -331,6 +332,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _valid_card_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+        return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+    except ValueError:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
@@ -342,6 +351,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.mode == "factory-owner" and not args.owner_url:
         print("error: --owner-url is required in factory-owner mode", file=sys.stderr)
+        return 2
+    card_url = args.setup_url if args.mode == "setup" else args.owner_url
+    if card_url is not None and not _valid_card_url(card_url):
+        option = "--setup-url" if args.mode == "setup" else "--owner-url"
+        print(f"error: {option} must be an absolute HTTP(S) URL", file=sys.stderr)
         return 2
 
     try:

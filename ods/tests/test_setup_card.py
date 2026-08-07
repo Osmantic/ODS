@@ -218,6 +218,27 @@ def test_cli_requires_owner_url_in_factory_owner_mode(tmp_path):
     assert "owner-url" in result.stderr.lower() or "owner_url" in result.stderr.lower()
 
 
+@pytest.mark.parametrize(
+    ("mode_args", "url_option"),
+    [
+        (["--setup-url", "javascript:alert(1)"], "setup-url"),
+        (["--setup-url", "/setup"], "setup-url"),
+        (["--mode", "factory-owner", "--owner-url", "http://[invalid"], "owner-url"),
+    ],
+)
+def test_cli_rejects_unusable_card_urls(tmp_path, mode_args, url_option):
+    out = tmp_path / "card.png"
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--ssid", "ODS", *mode_args, "--output", str(out)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 2
+    assert url_option in result.stderr.lower()
+    assert not out.exists()
+
+
 def test_cli_help_works_without_pillow():
     """Argparse help shouldn't require Pillow; helpful when an operator is
     checking flags before installing deps."""
