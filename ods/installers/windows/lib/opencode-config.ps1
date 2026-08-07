@@ -194,6 +194,32 @@ function Sync-WindowsOpenCodeConfig {
     }
 }
 
+function Resolve-WindowsOpenCodeModelId {
+    param(
+        [hashtable]$LlmEndpoint,
+        [string]$EnvMapValue,
+        [string]$GgufFile,
+        [string]$Default = ""
+    )
+
+    $modelId = $GgufFile
+    if (-not [string]::IsNullOrWhiteSpace($modelId) -and -not [string]::IsNullOrWhiteSpace($EnvMapValue)) {
+        $modelId = $EnvMapValue
+        $resolver = Get-Command Resolve-ODSLemonadeModelId -ErrorAction SilentlyContinue
+        if ($resolver -and $LlmEndpoint.ContainsKey("Port")) {
+            try {
+                $liveModelId = Resolve-ODSLemonadeModelId `
+                    -Port ([int]$LlmEndpoint.Port) -GgufFile $GgufFile
+                if (-not [string]::IsNullOrWhiteSpace($liveModelId)) {
+                    $modelId = $liveModelId
+                }
+            } catch { }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($modelId)) { $modelId = $Default }
+    return $modelId
+}
+
 function Sync-WindowsOpenCodeConfigFromEnv {
     param(
         [string]$InstallDir = $script:ODS_INSTALL_DIR,
@@ -212,7 +238,13 @@ function Sync-WindowsOpenCodeConfigFromEnv {
     $_llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $InstallDir -EnvMap $_envMap `
         -GpuBackend $GpuBackend -NativeBackend $NativeBackend `
         -UseLemonade:$UseLemonade -CloudMode:$CloudMode
-    $_modelId = Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("GGUF_FILE") -Default $DefaultModelId
+    $_ggufFile = Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("GGUF_FILE") -Default $DefaultModelId
+    $_lemonadeModel = Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("LEMONADE_MODEL") -Default ""
+    $_modelId = Resolve-WindowsOpenCodeModelId `
+        -LlmEndpoint $_llmEndpoint `
+        -EnvMapValue $_lemonadeModel `
+        -GgufFile $_ggufFile `
+        -Default $DefaultModelId
     $_modelName = Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("LLM_MODEL") -Default $DefaultModelName
     $_apiKey = "no-key"
     $_providerName = "llama-server (local)"
