@@ -34,10 +34,10 @@ def estimated_param_billions(model: dict[str, Any]) -> float:
         model.get("gguf"),
         model.get("gguf_file"),
     ):
-        numbers.extend(
-            float(match)
-            for match in re.findall(r"(\d+(?:\.\d+)?)\s*b", str(text or ""), re.I)
-        )
+        for match in re.findall(r"(\d+(?:\.\d+)?)\s*b", str(text or ""), re.I):
+            val = _positive_number(match)
+            if val:
+                numbers.append(val)
     if numbers:
         return max(numbers)
 
