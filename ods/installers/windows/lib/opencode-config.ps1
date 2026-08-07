@@ -163,7 +163,7 @@ function Sync-WindowsOpenCodeConfig {
 
     if ($_existingConfigFile) {
         try {
-            $_configObject = Get-Content $_existingConfigFile -Raw | ConvertFrom-Json -ErrorAction Stop
+            $_configObject = Get-Content $_existingConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
             $_configStatus = "updated"
         } catch {
             $_configStatus = "regenerated"
