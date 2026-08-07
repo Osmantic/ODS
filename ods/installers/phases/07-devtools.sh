@@ -356,13 +356,19 @@ if [[ -f "$INSTALL_DIR/bin/ods-host-agent.py" ]]; then
                 ai_warn "  Set INSTALL_USER=<non-root user> before re-running install if this is unintentional."
             fi
 
-            if ! "$AGENT_PYTHON" -c "import huggingface_hub, hf_xet" >/dev/null 2>&1; then
+            # Derive the real user's home. Under `sudo bash install.sh`, $HOME is
+            # /root even though the agent runs as $_agent_user, so pip --user would
+            # write deps into root's home. Fall back to getent if su/login shell fails.
+            AGENT_HOME="$(sudo -u "$_agent_user" sh -c 'echo "$HOME"')"
+            [[ -n "$AGENT_HOME" ]] || AGENT_HOME="$(getent passwd "$_agent_user" | cut -d: -f6)"
+
+            if ! sudo -u "$_agent_user" env HOME="$AGENT_HOME" "$AGENT_PYTHON" -c "import huggingface_hub, hf_xet" >/dev/null 2>&1; then
                 ai "Installing ODS host-agent model downloader dependencies..."
                 if ods_ensure_python_pip "$AGENT_PYTHON" "ODS host-agent" && {
-                    sudo -u "$_agent_user" env HOME="$HOME" \
+                    sudo -u "$_agent_user" env HOME="$AGENT_HOME" \
                         "$AGENT_PYTHON" -m pip install --user -q "huggingface_hub[hf_xet]>=0.27" \
                         2>&1 | tee -a "$LOG_FILE" >/dev/null || \
-                    sudo -u "$_agent_user" env HOME="$HOME" \
+                    sudo -u "$_agent_user" env HOME="$AGENT_HOME" \
                         "$AGENT_PYTHON" -m pip install --user --break-system-packages -q "huggingface_hub[hf_xet]>=0.27" \
                         2>&1 | tee -a "$LOG_FILE" >/dev/null
                 }; then
