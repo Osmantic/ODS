@@ -2,32 +2,166 @@
   "name": "Voice to Voice",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## Voice to Voice\n\nSpeak, get spoken audio back — the whole loop on your own hardware.\n\n```\naudio in -> whisper (transcribe) -> llama-server (answer) -> tts (speak) -> audio out\n```\n\n**Call it:**\n```bash\ncurl -X POST http://localhost:5678/webhook/ods-voice \\n  -F 'file=@question.wav' --output answer.mp3\n```\n\nOptional form fields: `voice` (default `af_heart`), `system` (system\nprompt), `stt_model`.\n\nEvery hop stays on the internal `ods-network`: whisper:8000,\nllama-server:8080, tts:8880. No audio and no transcript leaves the box.\n\n**Requires** whisper, llama-server and tts to be enabled.",
+        "height": 520,
+        "width": 500
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [-80, 40]
     },
     {
       "parameters": {
-        "content": "## Voice to Voice\n\nThis is a template workflow for speaking and getting AI response as audio.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "httpMethod": "POST",
+        "path": "ods-voice",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "webhook-voice",
+      "name": "Voice Upload",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [440, 320],
+      "webhookId": "6b2c9e47-1a58-4d3f-8e06-4c9b7a1d5f62"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $binary?.file?.fileName || $binary?.file?.mimeType }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-audio",
+      "name": "Audio Attached?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [660, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://whisper:8000/v1/audio/transcriptions",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "file"
+            },
+            {
+              "name": "model",
+              "value": "={{ $json.body?.stt_model || 'Systran/faster-whisper-base' }}"
+            }
+          ]
+        },
+        "options": { "timeout": 300000 }
+      },
+      "id": "http-whisper",
+      "name": "Whisper Transcribe",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'local-model', messages: [ { role: 'system', content: ($('Voice Upload').item.json.body?.system) || 'You are a voice assistant. Answer in two or three short spoken sentences. No markdown, no lists, no code blocks — the reply will be read aloud.' }, { role: 'user', content: $json.text } ], temperature: 0.6, max_tokens: 400, stream: false }) }}",
+        "options": { "timeout": 180000 }
+      },
+      "id": "http-llama",
+      "name": "llama-server Answer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://tts:8880/v1/audio/speech",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'kokoro', input: $json.choices[0].message.content, voice: ($('Voice Upload').item.json.body?.voice) || 'af_heart' }) }}",
+        "options": {
+          "timeout": 180000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "speech"
+            }
+          }
+        }
+      },
+      "id": "http-tts",
+      "name": "Kokoro Speak",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1380, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "responseDataSource": "set",
+        "inputFieldName": "speech",
+        "options": {}
+      },
+      "id": "respond-audio",
+      "name": "Return Audio",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1620, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: \"Send an audio file as multipart form data, e.g. curl -F 'file=@question.wav'.\" }) }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "respond-bad-request",
+      "name": "Return 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 460]
     }
   ],
-  "connections": {},
-  "settings": {
-    "executionOrder": "v1"
+  "connections": {
+    "Voice Upload": { "main": [[{ "node": "Audio Attached?", "type": "main", "index": 0 }]] },
+    "Audio Attached?": {
+      "main": [
+        [{ "node": "Whisper Transcribe", "type": "main", "index": 0 }],
+        [{ "node": "Return 400", "type": "main", "index": 0 }]
+      ]
+    },
+    "Whisper Transcribe": { "main": [[{ "node": "llama-server Answer", "type": "main", "index": 0 }]] },
+    "llama-server Answer": { "main": [[{ "node": "Kokoro Speak", "type": "main", "index": 0 }]] },
+    "Kokoro Speak": { "main": [[{ "node": "Return Audio", "type": "main", "index": 0 }]] }
   },
-  "meta": {
-    "templateId": "voice-to-voice"
-  },
+  "settings": { "executionOrder": "v1" },
+  "meta": { "templateId": "voice-to-voice" },
   "tags": []
 }
