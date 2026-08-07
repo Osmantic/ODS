@@ -1,5 +1,6 @@
 """Tests for config.py — manifest loading and service discovery."""
 
+import json
 import logging
 from pathlib import Path
 
@@ -66,6 +67,34 @@ def test_live_env_value_preserves_explicit_empty_value(monkeypatch, tmp_path):
     monkeypatch.setenv("LEMONADE_MODEL", "stale-process-model")
 
     assert config.read_live_env_value("LEMONADE_MODEL", "fallback") == ""
+
+
+def test_core_service_ids_load_valid_registry(monkeypatch, tmp_path):
+    registry = tmp_path / "config" / "core-service-ids.json"
+    registry.parent.mkdir()
+    registry.write_text(
+        json.dumps(["custom-core", "dashboard"]), encoding="utf-8"
+    )
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+
+    assert config._load_core_service_ids() == frozenset({
+        "custom-core", "dashboard",
+    })
+
+
+@pytest.mark.parametrize("payload", [{"dashboard": True}, [], [None], "dashboard"])
+def test_core_service_ids_fall_back_for_invalid_registry(
+    monkeypatch, tmp_path, payload
+):
+    registry = tmp_path / "config" / "core-service-ids.json"
+    registry.parent.mkdir()
+    registry.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+
+    loaded = config._load_core_service_ids()
+
+    assert "dashboard-api" in loaded
+    assert "llama-server" in loaded
 
 
 class TestReadManifestFile:

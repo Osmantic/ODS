@@ -530,9 +530,20 @@ def _load_core_service_ids() -> frozenset:
     core_ids_path = Path(INSTALL_DIR) / "config" / "core-service-ids.json"
     if core_ids_path.exists():
         try:
-            return frozenset(json.loads(core_ids_path.read_text(encoding="utf-8")))
-        except (json.JSONDecodeError, OSError):
-            pass
+            payload = json.loads(core_ids_path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(payload, list)
+                or not payload
+                or any(not isinstance(item, str) or not item for item in payload)
+            ):
+                raise ValueError("core service IDs must be a non-empty string list")
+            return frozenset(payload)
+        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            logger.warning(
+                "Invalid core service ID registry at %s: %s; using defaults",
+                core_ids_path,
+                exc,
+            )
     # Fallback to hardcoded list
     return frozenset({
         "dashboard-api", "dashboard", "llama-server", "model-router", "open-webui",
