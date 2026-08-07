@@ -47,6 +47,9 @@ def _read_current_version() -> str:
     if env_file.exists():
         try:
             for line in _read_utf8(env_file).splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
                 if line.startswith("ODS_VERSION="):
                     return line.split("=", 1)[1].strip().strip("\"'")
         except OSError:
