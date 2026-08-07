@@ -178,6 +178,33 @@ def test_extension_library_sha_tags_are_rejected() -> None:
     )
 
 
+def test_lock_paths_cannot_escape_repository_root() -> None:
+    module = load_module()
+    with TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        root = workspace / "repo"
+        root.mkdir()
+        outside = workspace / "compose.yaml"
+        outside.write_text("image: example/runtime:1.0\n", encoding="utf-8")
+        lock = {
+            "version": 1,
+            "entries": [
+                {
+                    "id": "escape",
+                    "path": "../compose.yaml",
+                    "value": "example/runtime:1.0",
+                }
+            ],
+            "allow_latest": [],
+            "allow_local_images": [],
+            "allow_variable_refs": [],
+        }
+
+        errors = module._validate_lock_shape(lock, root)
+
+    assert any("path escapes repository root" in error for error in errors)
+
+
 def main() -> int:
     tests = [
         test_repo_dependency_lock_passes,
@@ -187,6 +214,7 @@ def main() -> int:
         test_ephemeral_sha256_length_tags_are_rejected,
         test_sha256_digest_pins_are_allowed,
         test_extension_library_sha_tags_are_rejected,
+        test_lock_paths_cannot_escape_repository_root,
     ]
     for test in tests:
         test()

@@ -218,6 +218,16 @@ def _arg_default_present(path: Path, arg: str, default: str) -> bool:
     return expected in path.read_text(encoding="utf-8")
 
 
+def _resolve_locked_path(root: Path, value: str) -> Path | None:
+    root = root.resolve()
+    candidate = (root / value).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate
+
+
 def _validate_lock_shape(lock: dict[str, object], root: Path) -> list[str]:
     errors: list[str] = []
     if lock.get("version") != 1:
@@ -242,7 +252,10 @@ def _validate_lock_shape(lock: dict[str, object], root: Path) -> list[str]:
         if (path, value) in entry_keys:
             errors.append(f"duplicate lock entry path/value: {path} -> {value}")
         entry_keys.add((path, value))
-        file_path = root / path
+        file_path = _resolve_locked_path(root, path)
+        if file_path is None:
+            errors.append(f"lock entry path escapes repository root: {path}")
+            continue
         if not file_path.exists():
             errors.append(f"lock entry points at missing file: {path}")
             continue
@@ -263,7 +276,10 @@ def _validate_lock_shape(lock: dict[str, object], root: Path) -> list[str]:
             if (path, value) in seen:
                 errors.append(f"duplicate {list_name} entry: {path} -> {value}")
             seen.add((path, value))
-            file_path = root / path
+            file_path = _resolve_locked_path(root, path)
+            if file_path is None:
+                errors.append(f"{list_name} path escapes repository root: {path}")
+                continue
             if not file_path.exists():
                 errors.append(f"{list_name} entry points at missing file: {path}")
                 continue
