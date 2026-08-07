@@ -50,7 +50,7 @@ function New-WindowsOpenCodeConfigObject {
                         name = $ModelName
                         limit = [pscustomobject]@{
                             context = $ContextLimit
-                            output = 32768
+                            output = [Math]::Min(32768, $ContextLimit)
                         }
                     }
                 }
@@ -118,7 +118,7 @@ function Update-WindowsOpenCodeConfigObject {
         Set-OpenCodeObjectProperty -Target $modelEntry -Name 'limit' -Value ([pscustomobject]@{})
     }
     Set-OpenCodeObjectProperty -Target $modelEntry.limit -Name 'context' -Value $ContextLimit
-    Set-OpenCodeObjectProperty -Target $modelEntry.limit -Name 'output' -Value 32768
+    Set-OpenCodeObjectProperty -Target $modelEntry.limit -Name 'output' -Value ([Math]::Min(32768, $ContextLimit))
 
     return $Config
 }
