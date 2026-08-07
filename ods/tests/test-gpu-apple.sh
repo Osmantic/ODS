@@ -13,9 +13,9 @@
 # Verifies each subcommand under GPU_BACKEND=apple and includes negative
 # cases asserting nvidia/amd backends do NOT take the apple path.
 #
-# External binaries (sysctl, system_profiler, nvidia-smi, curl, docker) are
-# stubbed via a PATH-prepended fixture directory so the test is hermetic and
-# runs on any host.
+# External binaries (sysctl, system_profiler, curl, docker) are stubbed via a
+# PATH-prepended fixture directory, and GPU tooling (nvidia-smi, rocm-smi) is
+# removed from PATH entirely, so the test is hermetic and runs on any host.
 #
 # Usage: ./tests/test-gpu-apple.sh
 # ============================================================================
@@ -125,13 +125,55 @@ cat > "$STUB_BIN/docker" <<'STUB'
 exit 0
 STUB
 
+# Keep `/usr/bin/env bash` available even when the directory containing the
+# real interpreter also contains GPU tooling and is removed from STUB_PATH.
+# A symlink avoids a shim script that would itself need a PATH-resolved
+# interpreter.
+ln -s "$(command -v bash)" "$STUB_BIN/bash"
 chmod +x "$STUB_BIN"/*
 
-# Deliberately do NOT stub nvidia-smi. `command -v nvidia-smi` must return
-# false under GPU_BACKEND=apple so the apple branch is the only one taken.
-# For negative tests we rely on nvidia-smi being absent from PATH too.
+# Deliberately do NOT stub nvidia-smi: `command -v nvidia-smi` must report it
+# ABSENT, both so GPU_BACKEND=apple can only take the apple branch and so the
+# nvidia negative case exercises the no-tooling fallthrough it asserts.
+#
+# A stub cannot express "absent" — `command -v` would find it — so drop every
+# PATH entry that provides GPU tooling instead. Relying on the host not having
+# nvidia-smi makes the suite fail on any NVIDIA developer box or GPU runner,
+# which is the opposite of the hermeticity this header promises.
+path_without_gpu_tools() {
+    local out="" dir tool found
+    local IFS=:
+    for dir in $PATH; do
+        if [[ -z "$dir" ]]; then
+            continue
+        fi
+        found=0
+        for tool in nvidia-smi nvidia-smi.exe rocm-smi rocm-smi.exe rocminfo; do
+            if [[ -x "$dir/$tool" ]]; then
+                found=1
+                break
+            fi
+        done
+        if (( found )); then
+            continue
+        fi
+        out="${out:+$out:}$dir"
+    done
+    printf '%s' "$out"
+}
 
-STUB_PATH="$STUB_BIN:$PATH"
+STUB_PATH="$STUB_BIN:$(path_without_gpu_tools)"
+
+if ! PATH="$STUB_PATH" command -v bash >/dev/null 2>&1; then
+    fail "filtered PATH must retain a Bash interpreter"
+    exit 1
+fi
+for tool in nvidia-smi nvidia-smi.exe rocm-smi rocm-smi.exe rocminfo; do
+    if PATH="$STUB_PATH" command -v "$tool" >/dev/null 2>&1; then
+        fail "filtered PATH still exposes $tool"
+        exit 1
+    fi
+done
 
 # Run ods-cli under the fixture. Returns captured stdout+stderr via $OUT,
 # rc via $RC (using globals to keep set -e friendly).

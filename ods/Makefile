@@ -97,6 +97,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== ods config show secret-mask matrix ==="
 	@bash tests/test-ods-config-secret-mask.sh
+	@bash tests/test-gpu-apple.sh
 	@echo ""
 	@echo "=== Manifest schema source of truth ==="
 	@bash tests/test-validate-manifest-schema.sh
