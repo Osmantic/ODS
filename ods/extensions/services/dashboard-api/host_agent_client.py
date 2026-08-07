@@ -99,9 +99,13 @@ def _headers() -> dict[str, str]:
 
 
 def _timeout(read_seconds: float) -> httpx.Timeout:
+    try:
+        read_val = max(0.1, float(read_seconds))
+    except (ValueError, TypeError):
+        read_val = 5.0
     return httpx.Timeout(
         connect=5.0,
-        read=max(0.1, float(read_seconds)),
+        read=read_val,
         write=30.0,
         pool=5.0,
     )
