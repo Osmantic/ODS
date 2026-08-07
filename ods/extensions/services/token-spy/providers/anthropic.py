@@ -7,10 +7,19 @@ Handles Anthropic-specific request/response formats including:
 """
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from .base import LLMProvider
 from .registry import register_provider
+
+# Anthropic wrote the generation before the family for Claude 3.x
+# (claude-3-5-haiku-20241022) and after it from Claude 4 on
+# (claude-haiku-4-5-20251001). Normalise the older spelling onto the newer
+# one so a single pricing table covers both.
+_GENERATION_FIRST_RE = re.compile(
+    r"claude-(?P<major>\d+)(?:[-.](?P<minor>\d+))?-(?P<family>opus|sonnet|haiku)"
+)
 
 
 @register_provider("anthropic")
@@ -25,7 +34,11 @@ class AnthropicProvider(LLMProvider):
         "claude-opus-4": {"input": 15.0, "output": 75.0, "cache_read": 1.50, "cache_write": 18.75},
         "claude-sonnet-4": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
         "claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.10, "cache_write": 1.25},
+        "claude-sonnet-3-7": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
+        "claude-sonnet-3-5": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
+        "claude-opus-3": {"input": 15.0, "output": 75.0, "cache_read": 1.50, "cache_write": 18.75},
         "claude-haiku-3-5": {"input": 0.80, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0},
+        "claude-haiku-3": {"input": 0.25, "output": 1.25, "cache_read": 0.03, "cache_write": 0.30},
         "claude-haiku": {"input": 0.80, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0},
     }
 
@@ -53,9 +66,26 @@ class AnthropicProvider(LLMProvider):
     def api_endpoint(self) -> str:
         return "/v1/messages"
 
+    @staticmethod
+    def normalize_model(model: str) -> str:
+        """Rewrite generation-first model ids into the family-first spelling.
+
+        Anthropic put the generation before the family for Claude 3.x
+        (``claude-3-5-haiku-20241022``) and after it from Claude 4 on
+        (``claude-haiku-4-5-20251001``). COST_TABLE is keyed on the newer
+        spelling, so a 3.x id matched nothing at all and every lookup fell
+        through to zero — a silent "this cost nothing" on the one service
+        whose job is telling you what things cost.
+        """
+        return _GENERATION_FIRST_RE.sub(
+            lambda m: f"claude-{m.group('family')}-{m.group('major')}"
+            + (f"-{m.group('minor')}" if m.group("minor") else ""),
+            model.lower(),
+        )
+
     def get_model_pricing(self, model: str) -> Dict[str, float]:
         """Match model name to pricing table."""
-        model_lower = model.lower()
+        model_lower = self.normalize_model(model)
 
         # Try exact prefix matches (longer prefixes first for specificity)
         for prefix in sorted(self.COST_TABLE.keys(), key=len, reverse=True):
