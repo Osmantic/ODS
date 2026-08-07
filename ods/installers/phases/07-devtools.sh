@@ -179,7 +179,7 @@ else
             _opencode_url="http://127.0.0.1:${LITELLM_PORT:-4000}/v1"
             _opencode_key="${LITELLM_KEY:-no-key}"
         else
-            _opencode_url="http://127.0.0.1:${OLLAMA_PORT:-8080}/v1"
+            _opencode_url="http://127.0.0.1:${OLLAMA_PORT:-11434}/v1"
             _opencode_key="no-key"
         fi
         if [[ -z "${_opencode_key:-}" ]]; then
