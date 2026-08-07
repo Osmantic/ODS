@@ -2930,6 +2930,8 @@ if [[ -f "${INSTALL_DIR}/bin/ods-host-agent.py" ]] && [[ -n "$AGENT_PYTHON" ]]; 
     _agent_native_bind="$(read_env_value "$INSTALL_DIR/.env" "ODS_AGENT_BIND")"
     _agent_native_bind="$(macos_normalize_agent_bind "${_agent_native_bind:-127.0.0.1}")"
     _agent_probe_host="$(macos_bind_probe_host "$_agent_native_bind")"
+    _agent_port="$(read_env_value "$INSTALL_DIR/.env" "ODS_AGENT_PORT")"
+    [[ "$_agent_port" =~ ^[0-9]+$ ]] || _agent_port="7710"
     if ! command -v docker >/dev/null 2>&1; then
         ai_warn "docker not found on PATH at install time — host agent will fail to start until Docker Desktop is launched and 'docker' resolves on your shell PATH"
     fi
@@ -2997,16 +2999,16 @@ AGENT_PLIST_EOF
         launchctl kickstart -p "gui/$(id -u)/${ODS_AGENT_PLIST_LABEL}" >/dev/null 2>&1 || true
         _agent_health_ok=false
         for _agent_health_i in 1 2 3 4 5 6 7 8 9 10; do
-            if curl -fsS --max-time 1 "http://${_agent_probe_host}:${ODS_AGENT_PORT}/health" >/dev/null 2>&1; then
+            if curl -fsS --max-time 1 "http://${_agent_probe_host}:${_agent_port}/health" >/dev/null 2>&1; then
                 _agent_health_ok=true
                 break
             fi
             sleep 1
         done
         if [[ "$_agent_health_ok" == "true" ]]; then
-            ai_ok "ODS host agent installed (LaunchAgent, port ${ODS_AGENT_PORT})"
+            ai_ok "ODS host agent installed (LaunchAgent, port ${_agent_port})"
         else
-            ai_warn "ODS host agent loaded but not responding on :${ODS_AGENT_PORT} after 10s."
+            ai_warn "ODS host agent loaded but not responding on :${_agent_port} after 10s."
             ai_warn "  Log:         tail -F ~/Library/Logs/ODS/ods-host-agent.log"
             ai_warn "  Force start: launchctl kickstart -p gui/\$(id -u)/${ODS_AGENT_PLIST_LABEL}"
             ai_warn "  Dashboard model + extension actions will fail until the agent comes up."
