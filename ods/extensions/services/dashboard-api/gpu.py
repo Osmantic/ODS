@@ -516,8 +516,16 @@ def read_gpu_topology() -> Optional[dict]:
         logger.warning("Topology file not found at %s", topo_path)
         return None
     try:
-        return _json.loads(topo_path.read_text())
-    except (OSError, _json.JSONDecodeError) as exc:
+        topology = _json.loads(topo_path.read_text(encoding="utf-8"))
+        if not isinstance(topology, dict):
+            raise ValueError("topology root must be an object")
+        gpus = topology.get("gpus", [])
+        if not isinstance(gpus, list) or any(
+            not isinstance(gpu, dict) for gpu in gpus
+        ):
+            raise ValueError("topology gpus must be a list of objects")
+        return topology
+    except (OSError, _json.JSONDecodeError, ValueError) as exc:
         logger.warning("Failed to read topology file %s: %s", topo_path, exc)
         return None
 
@@ -535,8 +543,26 @@ def decode_gpu_assignment() -> Optional[dict]:
     if not b64:
         return None
     try:
-        return _json.loads(base64.b64decode(b64.strip()).decode("utf-8"))
-    except (base64.binascii.Error, _json.JSONDecodeError, UnicodeDecodeError):
+        assignment = _json.loads(
+            base64.b64decode(b64.strip()).decode("utf-8")
+        )
+        if not isinstance(assignment, dict):
+            raise ValueError("assignment root must be an object")
+        body = assignment.get("gpu_assignment")
+        if not isinstance(body, dict):
+            raise ValueError("gpu_assignment must be an object")
+        services = body.get("services", {})
+        if not isinstance(services, dict) or any(
+            not isinstance(service, dict) for service in services.values()
+        ):
+            raise ValueError("assignment services must be an object map")
+        return assignment
+    except (
+        base64.binascii.Error,
+        _json.JSONDecodeError,
+        UnicodeDecodeError,
+        ValueError,
+    ):
         return None
 
 
