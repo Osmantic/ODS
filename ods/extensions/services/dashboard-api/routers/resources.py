@@ -67,7 +67,14 @@ def _fetch_container_stats() -> list[dict]:
     """Fetch container stats from host agent."""
     try:
         data = request_agent_json("GET", "/v1/service/stats", timeout=10)
-        return data.get("containers", [])
+        if not isinstance(data, dict):
+            logger.warning("Host agent stats response root is not an object")
+            return []
+        containers = data.get("containers", [])
+        if not isinstance(containers, list):
+            logger.warning("Host agent stats containers field is not a list")
+            return []
+        return [item for item in containers if isinstance(item, dict)]
     except (AgentClientError, OSError):
         logger.debug("Could not fetch container stats from host agent")
         return []
