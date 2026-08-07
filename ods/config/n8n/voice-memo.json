@@ -2,27 +2,203 @@
   "name": "Voice Memo",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## Voice Memo\n\nTalk into your phone, get a dated text file on the box. Transcription\nruns on your own Whisper — no cloud round trip.\n\n**Call it:**\n```bash\ncurl -X POST http://localhost:5678/webhook/ods-memo \\\n  -F 'file=@memo.m4a'\n```\n\n**Where memos land:** `/home/node/.n8n/voice-memos/` inside the n8n\ncontainer, which is the `./data/n8n` bind mount — so on the host they\nappear under `data/n8n/voice-memos/`. They survive container restarts and\nare picked up by `ods backup`.\n\nFilenames are `YYYY-MM-DD-HHmmss.txt` in the container's timezone\n(`GENERIC_TIMEZONE`, set from `TIMEZONE` in `.env`).\n\nThe response includes both the transcript and the path written, so a\nphone shortcut can show the text immediately.",
+        "height": 580,
+        "width": 520
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [-100, 20]
     },
     {
       "parameters": {
-        "content": "## Voice Memo\n\nThis is a template workflow for recording and transcribing voice memos.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "httpMethod": "POST",
+        "path": "ods-memo",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "webhook-memo",
+      "name": "Memo Upload",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [440, 320],
+      "webhookId": "5a8e0d34-7c96-4b18-83f5-2b6d9a4e1c07"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $binary?.file?.fileName || $binary?.file?.mimeType }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-audio",
+      "name": "Memo Attached?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [660, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://whisper:8000/v1/audio/transcriptions",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "file"
+            },
+            {
+              "name": "model",
+              "value": "={{ $json.body?.stt_model || 'Systran/faster-whisper-base' }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "http-whisper",
+      "name": "Whisper Transcribe",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 220]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "m1",
+              "name": "transcript",
+              "value": "={{ $json.text || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "m2",
+              "name": "recorded_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            },
+            {
+              "id": "m3",
+              "name": "path",
+              "value": "={{ '/home/node/.n8n/voice-memos/' + $now.toFormat('yyyy-LL-dd-HHmmss') + '.txt' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-memo",
+      "name": "Name The Memo",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1140, 220]
+    },
+    {
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "transcript",
+        "binaryPropertyName": "memo",
+        "options": {
+          "fileName": "={{ $json.path.split('/').pop() }}"
+        }
+      },
+      "id": "convert-text",
+      "name": "Transcript To File",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [1380, 220]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $('Name The Memo').item.json.path }}",
+        "dataPropertyName": "memo",
+        "options": {
+          "append": false
+        }
+      },
+      "id": "write-file",
+      "name": "Save Memo",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [1620, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ transcript: $('Name The Memo').item.json.transcript, saved_to: $('Name The Memo').item.json.path, recorded_at: $('Name The Memo').item.json.recorded_at }) }}",
+        "options": {}
+      },
+      "id": "respond-ok",
+      "name": "Return Memo",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1860, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: \"Send an audio memo as multipart form data, e.g. curl -F 'file=@memo.m4a'.\" }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-bad-request",
+      "name": "Return 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 460]
     }
   ],
-  "connections": {},
+  "connections": {
+    "Memo Upload": {
+      "main": [[{ "node": "Memo Attached?", "type": "main", "index": 0 }]]
+    },
+    "Memo Attached?": {
+      "main": [
+        [{ "node": "Whisper Transcribe", "type": "main", "index": 0 }],
+        [{ "node": "Return 400", "type": "main", "index": 0 }]
+      ]
+    },
+    "Whisper Transcribe": {
+      "main": [[{ "node": "Name The Memo", "type": "main", "index": 0 }]]
+    },
+    "Name The Memo": {
+      "main": [[{ "node": "Transcript To File", "type": "main", "index": 0 }]]
+    },
+    "Transcript To File": {
+      "main": [[{ "node": "Save Memo", "type": "main", "index": 0 }]]
+    },
+    "Save Memo": {
+      "main": [[{ "node": "Return Memo", "type": "main", "index": 0 }]]
+    }
+  },
   "settings": {
     "executionOrder": "v1"
   },
