@@ -3070,7 +3070,7 @@ else
     HEALTH_URLS=("http://${_health_llama_host}:${_health_llama_port}/health" "http://127.0.0.1:3000")
     HEALTH_CONTAINERS=("" "ods-webui")
 fi
-$ENABLE_VOICE && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:9000/health") && HEALTH_CONTAINERS+=("ods-whisper")
+$ENABLE_VOICE && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:${WHISPER_PORT:-9000}/health") && HEALTH_CONTAINERS+=("ods-whisper")
 $ENABLE_WORKFLOWS && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:5678/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
 [[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
 
