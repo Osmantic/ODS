@@ -237,6 +237,29 @@ else
     fail "Behavioral test: check misreported up-to-date state (exit $check_exit): $check_output"
 fi
 
+# Test 13: prerelease suffixes and zero-padded components compare by their
+# numeric semantic-version core instead of causing a Bash integer error.
+echo "v2.08.0-rc.1" > "$INSTALL_DIR/.version"
+echo "2.7.9" > "$DATA_DIR/.migration-state"
+check_exit=0
+check_output=$(bash "$MIGRATE_CONFIG_SCRIPT" check 2>&1) || check_exit=$?
+if [[ $check_exit -eq 2 ]] && echo "$check_output" | grep -q "Migration needed"; then
+    pass "Behavioral test: prerelease and zero-padded versions compare safely"
+else
+    fail "Behavioral test: prerelease comparison failed (exit $check_exit): $check_output"
+fi
+
+# A prerelease and its final release share the same migration core, so no
+# migration should be replayed solely because the suffix differs.
+echo "2.8.0" > "$DATA_DIR/.migration-state"
+check_exit=0
+check_output=$(bash "$MIGRATE_CONFIG_SCRIPT" check 2>&1) || check_exit=$?
+if [[ $check_exit -eq 0 ]] && echo "$check_output" | grep -q "No migration needed"; then
+    pass "Behavioral test: prerelease suffix does not replay core migration"
+else
+    fail "Behavioral test: prerelease suffix replayed migration (exit $check_exit): $check_output"
+fi
+
 # ============================================================================
 # Summary
 # ============================================================================
