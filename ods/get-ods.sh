@@ -361,6 +361,42 @@ fi
 
 # GPU pre-check already done above — real detection happens in the installer
 
+# ── Guard against a dangerous ODS_INSTALL_DIR before any destructive op ──
+# INSTALL_DIR is used below by remove_install_dir() (rm -rf) and by the
+# post-clone copy/cleanup steps. A mistyped ODS_INSTALL_DIR (e.g. "~",
+# unset HOME resolving to "/", or "/home") must never be treated as an
+# ODS install location just because it happens to exist and lack a .env file.
+resolve_absolute_path() {
+    local p="$1"
+    (cd "$p" 2>/dev/null && pwd -P) || echo "$p"
+}
+
+is_unsafe_install_dir() {
+    local resolved="$1"
+    local home_resolved=""
+
+    [[ -n "${HOME:-}" ]] && home_resolved="$(resolve_absolute_path "$HOME")"
+
+    [[ "$resolved" == "/" ]] && return 0
+    [[ -n "$home_resolved" && "$resolved" == "$home_resolved" ]] && return 0
+
+    case "$resolved" in
+        /root|/home|/usr|/etc|/var|/opt|/bin|/sbin|/boot|/dev|/proc|/sys|/lib|/lib64|/mnt|/media|/srv|/tmp)
+            return 0 ;;
+    esac
+
+    # Reject direct children of root ("/foo") — an ODS install should
+    # always be nested at least two levels deep.
+    local without_root="${resolved#/}"
+    [[ "$without_root" != */* ]] && return 0
+
+    return 1
+}
+
+if [[ -e "$INSTALL_DIR" ]] && is_unsafe_install_dir "$(resolve_absolute_path "$INSTALL_DIR")"; then
+    error "ODS_INSTALL_DIR ('$INSTALL_DIR') resolves to a system or home directory, not a dedicated ODS install location. Refusing to continue — set ODS_INSTALL_DIR to a subdirectory, e.g. \$HOME/ods."
+fi
+
 # ── Check for existing installation ──────────────────
 if [[ -d "$INSTALL_DIR" ]]; then
     if [[ -f "$INSTALL_DIR/.env" ]]; then
