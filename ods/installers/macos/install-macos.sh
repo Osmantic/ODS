@@ -454,7 +454,7 @@ provider_id = "llama-server"
 provider = data.setdefault("provider", {}).setdefault(provider_id, {})
 provider.update({
     "npm": "@ai-sdk/openai-compatible",
-    "name": "ODS inference",
+    "name": "llama-server (local)",
     "options": {"baseURL": base_url, "apiKey": api_key},
     "models": {
         model_name: {
@@ -464,6 +464,7 @@ provider.update({
     },
 })
 data["model"] = f"{provider_id}/{model_name}"
+data["small_model"] = f"{provider_id}/{model_name}"
 data.setdefault("$schema", "https://opencode.ai/config.json")
 
 payload = json.dumps(data, indent=2) + "\n"
