@@ -13,6 +13,7 @@ Covers:
 """
 
 import importlib
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -109,6 +110,27 @@ def test_redeem_is_public(magic_link_client):
     )
     # Bogus token → 404 (constant-shape failure), not 401.
     assert resp.status_code == 404
+
+
+@pytest.mark.parametrize("payload", [[], {"tokens": {}}, {"unexpected": []}])
+def test_store_rejects_valid_json_with_invalid_shape(
+    magic_link_module, payload
+):
+    store_path = magic_link_module._writable_store_path()
+    store_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert magic_link_module._ensure_store() == {"tokens": []}
+
+
+def test_store_drops_non_object_records(magic_link_module):
+    store_path = magic_link_module._writable_store_path()
+    valid_record = {"token_hash": "abc"}
+    store_path.write_text(
+        json.dumps({"tokens": [None, "invalid", valid_record]}),
+        encoding="utf-8",
+    )
+
+    assert magic_link_module._ensure_store() == {"tokens": [valid_record]}
 
 
 # ---------------------------------------------------------------------------
