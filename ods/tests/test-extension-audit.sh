@@ -257,6 +257,14 @@ if assert_json_value "$report2" "any(issue['code'] == 'dependency-missing' for s
 else
     fail "missing dependency code was not reported"
 fi
+annotations=$(mktemp)
+if run_audit "$root2" --github-annotations > "$annotations" 2>/dev/null; then
+    fail "annotation output should preserve audit failure status"
+elif grep -q '^::error file=.*manifest.yaml,title=dependency-missing::depends_on references unknown service' "$annotations"; then
+    pass "GitHub annotation output includes the issue path, code, and message"
+else
+    fail "GitHub annotation output did not contain the dependency error"
+fi
 
 header "3" "Alias Collisions Are Rejected"
 root3=$(make_fixture_root)

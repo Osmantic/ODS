@@ -97,10 +97,16 @@ def parse_args() -> argparse.Namespace:
         default=default_project,
         help="ODS project directory (defaults to the repo root).",
     )
-    parser.add_argument(
+    output_group = parser.add_mutually_exclusive_group()
+    output_group.add_argument(
         "--json",
         action="store_true",
         help="Emit JSON instead of the human-readable report.",
+    )
+    output_group.add_argument(
+        "--github-annotations",
+        action="store_true",
+        help="Emit issues as GitHub Actions workflow annotations.",
     )
     parser.add_argument(
         "--strict",
@@ -849,6 +855,29 @@ def print_human_report(payload: dict[str, Any]) -> None:
     )
 
 
+def escape_workflow_data(value: Any) -> str:
+    return str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def escape_workflow_property(value: Any) -> str:
+    return escape_workflow_data(value).replace(":", "%3A").replace(",", "%2C")
+
+
+def print_github_annotations(payload: dict[str, Any]) -> None:
+    issues = list(payload["global_issues"])
+    for service in payload["services"]:
+        issues.extend(service["issues"])
+
+    for issue in issues:
+        properties = [f"title={escape_workflow_property(issue['code'])}"]
+        if issue.get("path"):
+            properties.insert(0, f"file={escape_workflow_property(issue['path'])}")
+        print(
+            f"::{issue['severity']} {','.join(properties)}::"
+            f"{escape_workflow_data(issue['message'])}"
+        )
+
+
 def main() -> int:
     args = parse_args()
     project_dir = args.project_dir.resolve()
@@ -869,6 +898,8 @@ def main() -> int:
     if args.json:
         json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
+    elif args.github_annotations:
+        print_github_annotations(payload)
     else:
         print_human_report(payload)
 
