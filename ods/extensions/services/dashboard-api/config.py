@@ -560,8 +560,19 @@ def load_extension_catalog() -> list[dict]:
         return []
     try:
         data = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
-        return data.get("extensions", [])
-    except (json.JSONDecodeError, OSError) as e:
+        if not isinstance(data, dict):
+            raise ValueError("catalog root must be an object")
+        extensions = data.get("extensions", [])
+        if not isinstance(extensions, list):
+            raise ValueError("catalog extensions must be a list")
+        valid_extensions = [item for item in extensions if isinstance(item, dict)]
+        if len(valid_extensions) != len(extensions):
+            logger.warning(
+                "Skipped %d non-object extension catalog entries",
+                len(extensions) - len(valid_extensions),
+            )
+        return valid_extensions
+    except (json.JSONDecodeError, OSError, ValueError) as e:
         logger.warning("Failed to load extensions catalog: %s", e)
         return []
 

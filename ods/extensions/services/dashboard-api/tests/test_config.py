@@ -1,5 +1,6 @@
 """Tests for config.py — manifest loading and service discovery."""
 
+import json
 import logging
 from pathlib import Path
 
@@ -66,6 +67,29 @@ def test_live_env_value_preserves_explicit_empty_value(monkeypatch, tmp_path):
     monkeypatch.setenv("LEMONADE_MODEL", "stale-process-model")
 
     assert config.read_live_env_value("LEMONADE_MODEL", "fallback") == ""
+
+
+@pytest.mark.parametrize("payload", [[], {"extensions": {}}, "invalid"])
+def test_extension_catalog_rejects_invalid_payload_shape(
+    monkeypatch, tmp_path, payload
+):
+    catalog = tmp_path / "extensions-catalog.json"
+    catalog.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(config, "CATALOG_PATH", catalog)
+
+    assert config.load_extension_catalog() == []
+
+
+def test_extension_catalog_skips_non_object_entries(monkeypatch, tmp_path):
+    catalog = tmp_path / "extensions-catalog.json"
+    valid = {"id": "qdrant", "name": "Qdrant"}
+    catalog.write_text(
+        json.dumps({"extensions": [None, "invalid", valid]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CATALOG_PATH", catalog)
+
+    assert config.load_extension_catalog() == [valid]
 
 
 class TestReadManifestFile:
