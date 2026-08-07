@@ -141,6 +141,9 @@ def read_env_file_value(key: str, install_dir: str | Path) -> str:
     env_path = Path(install_dir) / ".env"
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
             if line.startswith(f"{key}="):
                 return line.split("=", 1)[1].strip().strip("\"'")
     except OSError:
