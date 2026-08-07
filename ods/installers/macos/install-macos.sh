@@ -431,7 +431,7 @@ _write_macos_opencode_config() {
     ODS_OPENCODE_BASE_URL="$base_url" \
     ODS_OPENCODE_API_KEY="$api_key" \
     ODS_OPENCODE_CONTEXT="$context_length" \
-        /usr/bin/python3 - "$config_path" "$compat_path" <<'OPENCODE_CONFIG_PY'
+        ${ODS_PYTHON_CMD:-/usr/bin/python3} - "$config_path" "$compat_path" <<'OPENCODE_CONFIG_PY'
 import json
 import os
 import sys
