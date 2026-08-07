@@ -50,6 +50,13 @@ anything:
 python ods/scripts/maintainers/list-stale-branches.py --days 45
 ```
 
+For automation, request a single JSON document instead of the human-readable
+report:
+
+```bash
+python ods/scripts/maintainers/list-stale-branches.py --days 45 --format json
+```
+
 By default the helper excludes `main`, `master`, `develop`, `release/*`,
 `support/*`, and branches backing open PRs when the GitHub CLI is available.
 

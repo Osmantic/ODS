@@ -79,31 +79,14 @@ def remote_branches() -> list[tuple[datetime, str, str]]:
     return branches
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--days", type=int, default=45, help="stale age threshold")
-    parser.add_argument(
-        "--include-open-prs",
-        action="store_true",
-        help="do not exclude branches that back open PRs",
-    )
-    args = parser.parse_args()
-
-    root = repo_root()
-    heads = set() if args.include_open_prs else open_pr_heads()
-    now = datetime.now(timezone.utc)
-    cutoff_days = args.days
-
-    print(f"Repository: {root}")
-    print(f"Stale threshold: {cutoff_days} days")
-    if heads:
-        print(f"Excluding {len(heads)} open PR branch(es)")
-    elif not args.include_open_prs:
-        print("Open PR branch exclusion unavailable or empty")
-    print()
-
+def find_candidates(
+    branches: list[tuple[datetime, str, str]],
+    heads: set[str],
+    cutoff_days: int,
+    now: datetime,
+) -> list[tuple[int, str, str, str]]:
     candidates: list[tuple[int, str, str, str]] = []
-    for date, ref, sha in remote_branches():
+    for date, ref, sha in branches:
         if ref in DEFAULT_EXCLUDE_EXACT or ref.startswith(DEFAULT_EXCLUDE_PREFIXES):
             continue
         short = ref.removeprefix("origin/")
@@ -113,13 +96,60 @@ def main() -> int:
         if age_days < cutoff_days:
             continue
         candidates.append((age_days, ref, sha, date.date().isoformat()))
+    return sorted(candidates, reverse=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--days", type=int, default=45, help="stale age threshold")
+    parser.add_argument(
+        "--include-open-prs",
+        action="store_true",
+        help="do not exclude branches that back open PRs",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="output format (default: text)",
+    )
+    args = parser.parse_args(argv)
+    if args.days < 1:
+        parser.error("--days must be at least 1")
+
+    root = repo_root()
+    heads = set() if args.include_open_prs else open_pr_heads()
+    now = datetime.now(timezone.utc)
+    cutoff_days = args.days
+    candidates = find_candidates(remote_branches(), heads, cutoff_days, now)
+
+    if args.format == "json":
+        payload = {
+            "repository": str(root),
+            "stale_threshold_days": cutoff_days,
+            "excluded_open_pr_branches": len(heads),
+            "candidates": [
+                {"age_days": age, "date": date, "sha": sha, "ref": ref}
+                for age, ref, sha, date in candidates
+            ],
+        }
+        print(json.dumps(payload, sort_keys=True))
+        return 0
+
+    print(f"Repository: {root}")
+    print(f"Stale threshold: {cutoff_days} days")
+    if heads:
+        print(f"Excluding {len(heads)} open PR branch(es)")
+    elif not args.include_open_prs:
+        print("Open PR branch exclusion unavailable or empty")
+    print()
 
     if not candidates:
         print("No stale branch candidates found.")
         return 0
 
     print("Dry-run candidates. Review before deleting anything:")
-    for age_days, ref, sha, date_s in sorted(candidates, reverse=True):
+    for age_days, ref, sha, date_s in candidates:
         print(f"{age_days:4d}d  {date_s}  {sha}  {ref}")
     return 0
 
