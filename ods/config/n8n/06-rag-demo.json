@@ -2,27 +2,273 @@
   "name": "RAG Demo",
   "nodes": [
     {
+      "parameters": {
+        "content": "## RAG Demo\n\nBoth halves of retrieval-augmented generation in one runnable workflow.\nPress **Test workflow** and watch it index a tiny corpus, then answer a\nquestion that can only be answered from it.\n\n```\nseed 3 passages -> embed -> Qdrant  (index)\nquestion -> embed -> Qdrant search -> llama-server  (retrieve + answer)\n```\n\nIt uses its own collection, `ods_rag_demo`, so it never touches the\n`ods_docs` collection the real templates use. Re-running is safe: point\nids are deterministic, so a second run updates the same three points.\n\n**The question is deliberately unanswerable without retrieval** — the\nseeded passages contain an invented policy detail no model could know.\nIf the answer comes back right, retrieval genuinely worked. If it comes\nback \"I don't know\", check that qdrant and embeddings are running.\n\nOnce this passes, use *RAG Pipeline Trigger* to index your own documents\nand *Document Q&A* to query them.\n\n**Requires** qdrant, embeddings and llama-server.",
+        "height": 700,
+        "width": 560
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-140, 20]
+    },
+    {
       "parameters": {},
-      "id": "start",
-      "name": "Start",
+      "id": "manual-trigger",
+      "name": "Run Demo",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [460, 340]
     },
     {
       "parameters": {
-        "content": "## RAG Demo\n\nThis is a template workflow for retrieval-augmented generation.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "method": "PUT",
+        "url": "http://qdrant:6333/collections/ods_rag_demo",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ vectors: { size: 768, distance: 'Cosine' } }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
       },
-      "id": "note",
-      "name": "Setup Instructions",
+      "id": "http-ensure",
+      "name": "Ensure Demo Collection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "// A tiny corpus with one invented, unguessable fact. If the final answer\n// contains it, retrieval demonstrably worked — a model cannot know this\n// from training data.\nconst passages = [\n  {\n    source: 'handbook.md',\n    text:\n      'Escalation policy. Any incident that stays unresolved for more than ' +\n      'forty minutes is escalated to the Kestrel rota. The Kestrel rota is ' +\n      'staffed on weekday evenings only; outside those hours incidents go ' +\n      'to the on-call duty engineer instead.',\n  },\n  {\n    source: 'handbook.md',\n    text:\n      'Backups. Nightly snapshots run at 02:15 in the cluster timezone and ' +\n      'are retained for fourteen days. Restores are rehearsed once a ' +\n      'quarter against a scratch namespace.',\n  },\n  {\n    source: 'onboarding.md',\n    text:\n      'New starters get read-only access on day one. Write access to ' +\n      'production is granted after the second week, and only once the ' +\n      'escalation drill has been completed with a buddy.',\n  },\n];\n\nreturn passages.map((p, index) => ({\n  json: { collection: 'ods_rag_demo', source: p.source, index, text: p.text },\n}));"
+      },
+      "id": "code-corpus",
+      "name": "Seed Passages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://embeddings:80/v1/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'BAAI/bge-base-en-v1.5', input: $json.text }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "http-embed-passages",
+      "name": "Embed Passages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deterministic ids so re-running the demo updates the same three points\n// rather than growing the collection. Same scheme as the RAG Pipeline\n// Trigger template.\nconst crypto = require('crypto');\nconst NAMESPACE_URL = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';\n\nfunction uuidv5(name) {\n  const nsBytes = Buffer.from(NAMESPACE_URL.replace(/-/g, ''), 'hex');\n  const hash = crypto\n    .createHash('sha1')\n    .update(Buffer.concat([nsBytes, Buffer.from(name, 'utf8')]))\n    .digest();\n  const bytes = Buffer.from(hash.subarray(0, 16));\n  bytes[6] = (bytes[6] & 0x0f) | 0x50;\n  bytes[8] = (bytes[8] & 0x3f) | 0x80;\n  const hex = bytes.toString('hex');\n  return [\n    hex.slice(0, 8),\n    hex.slice(8, 12),\n    hex.slice(12, 16),\n    hex.slice(16, 20),\n    hex.slice(20),\n  ].join('-');\n}\n\nconst embeddings = $input.all();\nconst passages = $('Seed Passages').all();\n\nif (embeddings.length !== passages.length) {\n  throw new Error(\n    `Embedding count ${embeddings.length} does not match passage count ${passages.length}`\n  );\n}\n\nconst points = embeddings.map((item, i) => {\n  const vector = item.json?.data?.[0]?.embedding;\n  if (!Array.isArray(vector)) {\n    throw new Error(`Embedding ${i} has no vector — check the embeddings service`);\n  }\n  const p = passages[i].json;\n  return {\n    id: uuidv5(`demo:${p.source}#${p.index}`),\n    vector,\n    payload: { text: p.text, source: p.source, chunk_index: p.index },\n  };\n});\n\nreturn [{ json: { points } }];"
+      },
+      "id": "code-points",
+      "name": "Build Demo Points",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1380, 340]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "http://qdrant:6333/collections/ods_rag_demo/points?wait=true",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ points: $json.points }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "http-upsert",
+      "name": "Index Passages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1620, 340]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "q1",
+              "name": "question",
+              "value": "After how long does an unresolved incident escalate, and which rota does it go to?",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-question",
+      "name": "Ask The Question",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1860, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://embeddings:80/v1/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'BAAI/bge-base-en-v1.5', input: $json.question }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "http-embed-question",
+      "name": "Embed Question",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2100, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/ods_rag_demo/points/query",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query: $json.data[0].embedding, limit: 3, with_payload: true }) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "http-search",
+      "name": "Retrieve Passages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2340, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Accept both Qdrant shapes: /points/query returns { result: { points } },\n// the older /points/search returned { result: [...] }.\nconst payload = $input.first().json || {};\nconst raw = payload.result?.points ?? payload.result ?? [];\nconst hits = Array.isArray(raw) ? raw : [];\n\nconst kept = hits.map((h, i) => ({\n  rank: i + 1,\n  score: typeof h?.score === 'number' ? Number(h.score.toFixed(4)) : null,\n  source: h?.payload?.source ?? 'unknown',\n  text: String(h?.payload?.text ?? ''),\n}));\n\nreturn [{\n  json: {\n    question: $('Ask The Question').first().json.question,\n    retrieved: kept.length,\n    sources: kept.map(({ rank, score, source }) => ({ rank, score, source })),\n    context: kept.map((h) => `[${h.rank}] (${h.source}) ${h.text}`).join('\\n\\n'),\n  },\n}];"
+      },
+      "id": "code-context",
+      "name": "Build Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2580, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'local-model', messages: [ { role: 'system', content: 'Answer using only the numbered context passages. Cite the passages you used as [n]. If the context does not contain the answer, say so.' }, { role: 'user', content: 'Question: ' + $json.question + '\\n\\nContext:\\n' + $json.context } ], temperature: 0.2, max_tokens: 500, stream: false }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "http-llama",
+      "name": "Answer From Context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2820, 340]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "question",
+              "value": "={{ $('Build Context').item.json.question }}",
+              "type": "string"
+            },
+            {
+              "id": "r2",
+              "name": "answer",
+              "value": "={{ $json.choices[0].message.content }}",
+              "type": "string"
+            },
+            {
+              "id": "r3",
+              "name": "retrieval_worked",
+              "value": "={{ /kestrel/i.test($json.choices[0].message.content) }}",
+              "type": "boolean"
+            },
+            {
+              "id": "r4",
+              "name": "passages_retrieved",
+              "value": "={{ $('Build Context').item.json.retrieved }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-result",
+      "name": "Demo Result",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [3060, 340]
+    },
+    {
+      "parameters": {
+        "content": "### Reading the result\n\n`retrieval_worked` checks whether the answer mentions **Kestrel** — the\ninvented rota name that appears only in the seeded passages. True means\nthe answer came from the index, not from the model's training data.\n\n`passages_retrieved` should be 3. Zero means Qdrant returned nothing —\ncheck that qdrant and embeddings are both healthy.",
+        "height": 280,
+        "width": 420
+      },
+      "id": "note-result",
+      "name": "Reading the result",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [440, 140]
+      "position": [2980, 520]
     }
   ],
-  "connections": {},
+  "connections": {
+    "Run Demo": {
+      "main": [[{ "node": "Ensure Demo Collection", "type": "main", "index": 0 }]]
+    },
+    "Ensure Demo Collection": {
+      "main": [[{ "node": "Seed Passages", "type": "main", "index": 0 }]]
+    },
+    "Seed Passages": {
+      "main": [[{ "node": "Embed Passages", "type": "main", "index": 0 }]]
+    },
+    "Embed Passages": {
+      "main": [[{ "node": "Build Demo Points", "type": "main", "index": 0 }]]
+    },
+    "Build Demo Points": {
+      "main": [[{ "node": "Index Passages", "type": "main", "index": 0 }]]
+    },
+    "Index Passages": {
+      "main": [[{ "node": "Ask The Question", "type": "main", "index": 0 }]]
+    },
+    "Ask The Question": {
+      "main": [[{ "node": "Embed Question", "type": "main", "index": 0 }]]
+    },
+    "Embed Question": {
+      "main": [[{ "node": "Retrieve Passages", "type": "main", "index": 0 }]]
+    },
+    "Retrieve Passages": {
+      "main": [[{ "node": "Build Context", "type": "main", "index": 0 }]]
+    },
+    "Build Context": {
+      "main": [[{ "node": "Answer From Context", "type": "main", "index": 0 }]]
+    },
+    "Answer From Context": {
+      "main": [[{ "node": "Demo Result", "type": "main", "index": 0 }]]
+    }
+  },
   "settings": {
     "executionOrder": "v1"
   },

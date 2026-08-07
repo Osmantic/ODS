@@ -86,11 +86,12 @@
       "id": "rag-demo",
       "file": "06-rag-demo.json",
       "name": "RAG Demo",
-      "description": "Retrieval-augmented generation example",
+      "description": "End-to-end RAG example: seeds a tiny corpus, then answers from it",
       "icon": "Search",
       "category": "development",
       "dependencies": [
         "qdrant",
+        "embeddings",
         "llama-server"
       ],
       "setupTime": "3 minutes",
