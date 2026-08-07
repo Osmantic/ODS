@@ -31,6 +31,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
@@ -143,12 +144,19 @@ def _require_path_like(v: Validator, value: Any, path: str) -> None:
 
 
 def _require_iso8601ish(v: Validator, value: Any, path: str) -> None:
-    # We intentionally avoid strict RFC3339 parsing to keep dependencies at 0.
     _require_type(v, value, path, "string")
     if isinstance(value, str):
-        # Very lightweight check: 2026-03-15T12:34:56+00:00 / Z / with fractional seconds.
-        if not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$", value):
+        timestamp_pattern = (
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+            r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+        )
+        if not re.fullmatch(timestamp_pattern, value):
             v.add(path, "expected ISO8601 timestamp (UTC or offset)")
+            return
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            v.add(path, "expected a valid ISO8601 calendar timestamp")
 
 
 # -----------------------------
