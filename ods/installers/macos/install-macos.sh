@@ -2384,6 +2384,7 @@ else
     launchctl bootout "gui/$(id -u)/${HOST_AGENT_BRIDGE_PLIST_LABEL}" 2>/dev/null || true
     rm -f "$HOST_AGENT_BRIDGE_PLIST" 2>/dev/null || true
     launchctl bootout "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" 2>/dev/null || true
+    rm -f "$OPENCODE_PLIST" 2>/dev/null || true
     for _legacy_plist_label in \
         com.ods.llama-server \
         com.ods.full-model-download; do
