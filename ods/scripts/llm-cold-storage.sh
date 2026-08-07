@@ -77,8 +77,13 @@ get_last_access_days() {
     fi
     local now
     now="$(date +%s)"
-    local age_secs
-    age_secs="$(echo "$now - ${newest_atime%.*}" | bc)"
+    newest_atime="${newest_atime%.*}"
+    if [[ ! "$now" =~ ^[0-9]+$ || ! "$newest_atime" =~ ^[0-9]+$ ]]; then
+        echo "0"
+        return
+    fi
+    local age_secs=$(( now - newest_atime ))
+    (( age_secs < 0 )) && age_secs=0
     echo "$(( age_secs / 86400 ))"
 }
 

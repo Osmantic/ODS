@@ -119,6 +119,9 @@ test: ## Run unit and contract tests
 	@echo "=== bootstrap-upgrade compose-flags recovery ==="
 	@bash tests/test-bootstrap-upgrade-compose-flags-recovery.sh
 	@echo ""
+	@echo "=== LLM cold-storage access age ==="
+	@bash tests/test-llm-cold-storage-age.sh
+	@echo ""
 	@echo "=== macOS ods-host-agent bootstrap verification ==="
 	@bash tests/test-macos-host-agent-verification.sh
 	@echo ""
