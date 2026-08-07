@@ -33,10 +33,11 @@ def get_active_persona_prompt() -> str:
     persona_file = SETUP_CONFIG_DIR / "persona.json"
     if persona_file.exists():
         try:
-            with open(persona_file) as f:
+            with open(persona_file, encoding="utf-8") as f:
                 data = json.load(f)
-                return data.get("system_prompt", PERSONAS["general"]["system_prompt"])
-        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+                if isinstance(data, dict):
+                    return data.get("system_prompt", PERSONAS["general"]["system_prompt"])
+        except (FileNotFoundError, PermissionError, OSError, ValueError, json.JSONDecodeError):
             logger.debug("Failed to read persona.json, using default prompt")
     return PERSONAS["general"]["system_prompt"]
 
