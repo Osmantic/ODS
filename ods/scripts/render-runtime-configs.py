@@ -173,7 +173,7 @@ litellm_settings:
 def render_litellm_local_native(inputs: RenderInputs) -> RenderedFile:
     # ODS-CONTRACT-WRITER: litellm-local-native
     model = inputs.gguf_file or inputs.model
-    api_base = inputs.llm_base_url.rstrip("/") or "http://host.docker.internal:8080/v1"
+    api_base = inputs.llm_base_url.rstrip("/") or "http://llama-server:8080/v1"
     content = f"""model_list:
   - model_name: default
     litellm_params:
