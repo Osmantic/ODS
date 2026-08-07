@@ -419,6 +419,8 @@ def _match_apply_service(key: str) -> Optional[str]:
         return "perplexica"
     if key.startswith("APE_"):
         return "ape"
+    if key.startswith("OPENCODE_"):
+        return "opencode"
     return None
 
 
