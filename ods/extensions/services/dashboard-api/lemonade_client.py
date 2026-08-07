@@ -58,10 +58,17 @@ class LemonadeSettings:
             or env.get("LITELLM_LEMONADE_API_KEY")
             or ""
         )
+        timeout_raw = env.get("LEMONADE_TIMEOUT") or env.get("LLM_API_TIMEOUT") or "20.0"
+        try:
+            timeout_val = float(timeout_raw)
+        except (ValueError, TypeError):
+            timeout_val = 20.0
+
         return cls(
             base_url=normalize_base_url(base_url, api_base_path),
             api_base_path=_clean_path(api_base_path),
             api_key=api_key,
+            timeout=timeout_val,
         )
 
     @property
