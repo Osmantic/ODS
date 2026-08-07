@@ -34,6 +34,7 @@ _SETTINGS_APPLY_ALLOWED_SERVICES = frozenset({
     "hermes", "hermes-proxy", "openclaw", "opencode", "perplexica", "searxng", "qdrant",
     "tts", "whisper", "embeddings", "token-spy", "comfyui",
     "ape", "privacy-shield", "ods-proxy", "model-router",
+    "brave-search",
 })
 _LLAMA_APPLY_KEYS = {
     "CTX_SIZE", "MAX_CONTEXT", "GGUF_FILE", "GGUF_URL", "GGUF_SHA256",
@@ -53,7 +54,12 @@ _TOKEN_SPY_APPLY_KEYS = {
     "TOKEN_SPY_URL", "TOKEN_SPY_API_KEY",
 }
 _PRIVACY_SHIELD_APPLY_KEYS = {
-    "TARGET_API_URL", "PII_CACHE_ENABLED", "SHIELD_PORT",
+    "TARGET_API_URL", "TARGET_API_KEY",
+    "PII_CACHE_ENABLED", "PII_CACHE_SIZE", "PII_CACHE_TTL",
+    "SHIELD_PORT",
+}
+_BRAVE_SEARCH_APPLY_KEYS = {
+    "BRAVE_SEARCH_API_KEY", "BRAVE_SEARCH_PORT",
 }
 _MANUAL_RESTART_KEYS = {
     "BIND_ADDRESS",
@@ -380,7 +386,9 @@ def _match_apply_service(key: str) -> Optional[str]:
         return "hermes"
     if (
         key in _OPEN_WEBUI_APPLY_KEYS
-        or key.startswith("WEBUI_")
+        # OPEN_WEBUI_* does not start with WEBUI_, so those documented,
+        # editable keys used to match no rule at all.
+        or key.startswith(("WEBUI_", "OPEN_WEBUI_"))
         or key.startswith("OPENAI_API_")
         or key.startswith("SEARXNG_")
     ):
@@ -389,6 +397,8 @@ def _match_apply_service(key: str) -> Optional[str]:
         return "token-spy"
     if key in _PRIVACY_SHIELD_APPLY_KEYS or key.startswith("SHIELD_"):
         return "privacy-shield"
+    if key in _BRAVE_SEARCH_APPLY_KEYS:
+        return "brave-search"
     if key.startswith("LITELLM_"):
         return "litellm"
     if key.startswith("LANGFUSE_"):
