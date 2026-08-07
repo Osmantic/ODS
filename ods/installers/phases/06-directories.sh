@@ -217,7 +217,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
 
         # Replace model and provider placeholders to match what the inference backend actually serves
         # Escape sed special chars in variable values to prevent injection
-        _sed_escape() { printf '%s\n' "$1" | sed 's/[&/\|]/\\&/g'; }
+        _sed_escape() { printf '%s\n' "$1" | sed 's/[&\\]/\\&/g'; }
         _oc_model_esc=$(_sed_escape "$OPENCLAW_MODEL")
         _oc_prov_esc=$(_sed_escape "$OPENCLAW_PROVIDER_NAME")
         _sed_i "s|__LLM_MODEL__|${_oc_model_esc}|g" "$INSTALL_DIR/config/openclaw/openclaw.json"

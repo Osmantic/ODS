@@ -281,9 +281,9 @@ OPENCODE_EOF
             else
                 cp "$INSTALL_DIR/opencode/opencode-web.service" "$svc_tmp"
                 # Escape sed special chars to prevent injection from path values
-                _home_esc=$(printf '%s\n' "$HOME" | sed 's/[&/\]/\\&/g')
-                _opencode_bin_esc=$(printf '%s\n' "$OPENCODE_BIN" | sed 's/[&/\]/\\&/g')
-                _opencode_bin_dir_esc=$(printf '%s\n' "$(dirname "$OPENCODE_BIN")" | sed 's/[&/\]/\\&/g')
+                _home_esc=$(printf '%s\n' "$HOME" | sed 's/[&\\]/\\&/g')
+                _opencode_bin_esc=$(printf '%s\n' "$OPENCODE_BIN" | sed 's/[&\\]/\\&/g')
+                _opencode_bin_dir_esc=$(printf '%s\n' "$(dirname "$OPENCODE_BIN")" | sed 's/[&\\]/\\&/g')
                 _sed_i "s|__HOME__|${_home_esc}|g" "$svc_tmp"
                 _sed_i "s|__OPENCODE_BIN__|${_opencode_bin_esc}|g" "$svc_tmp"
                 _sed_i "s|__OPENCODE_BIN_DIR__|${_opencode_bin_dir_esc}|g" "$svc_tmp"
