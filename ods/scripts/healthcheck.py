@@ -121,21 +121,29 @@ def _parse_host_port(raw: str) -> Tuple[str, int]:
 
 def _parse_expected_status(expr: str) -> Set[int]:
     """Parse '200,204,3xx,401-403' => allowed status codes set."""
+    def status_code(raw: str) -> int:
+        value = int(raw)
+        if not 100 <= value <= 599:
+            raise ValueError(f"HTTP status out of range (100-599): {value}")
+        return value
+
     allowed: Set[int] = set()
     for part in (p.strip() for p in expr.split(",") if p.strip()):
         if part.endswith("xx") and len(part) == 3 and part[0].isdigit():
             base = int(part[0]) * 100
+            if not 100 <= base <= 500:
+                raise ValueError(f"HTTP status class out of range (1xx-5xx): {part}")
             allowed.update(range(base, base + 100))
             continue
         if "-" in part:
             lo_s, hi_s = (x.strip() for x in part.split("-", 1))
-            lo = int(lo_s)
-            hi = int(hi_s)
+            lo = status_code(lo_s)
+            hi = status_code(hi_s)
             if lo > hi:
                 lo, hi = hi, lo
             allowed.update(range(lo, hi + 1))
             continue
-        allowed.add(int(part))
+        allowed.add(status_code(part))
 
     if not allowed:
         raise ValueError("--expect-status produced empty set")
