@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -183,19 +184,32 @@ def validate_surface(issues: Issues, surface: Any, path: str) -> str | None:
 
 
 def main(argv: list[str]) -> int:
-    path = Path(argv[0]) if argv else DEFAULT_PATH
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("path", nargs="?", type=Path, default=DEFAULT_PATH)
+    parser.add_argument("--json", action="store_true", help="emit a machine-readable validation report")
+    args = parser.parse_args(argv)
+    path = args.path
     if not path.exists():
+        if args.json:
+            print(json.dumps({"ok": False, "path": str(path), "errors": ["file not found"]}, sort_keys=True))
+            return 1
         print(f"[FAIL] generated config contract file not found: {path}")
         return 1
     try:
         data = load_json(path)
     except json.JSONDecodeError as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "path": str(path), "errors": [f"invalid JSON: {exc}"]}, sort_keys=True))
+            return 1
         print(f"[FAIL] invalid JSON in {path}: {exc}")
         return 1
 
     issues = Issues()
     if not isinstance(data, dict):
         issues.add("$", "must be an object")
+        if args.json:
+            print(json.dumps({"ok": False, "path": str(path), "errors": issues.items}, sort_keys=True))
+            return 1
         issues.exit_if_any()
         return 1
     issues.require(data.get("version") == 1, "$.version", "must be 1")
@@ -224,6 +238,9 @@ def main(argv: list[str]) -> int:
         }
         issues.require(set(surface_ids) == required, "$.surfaces", f"must define exactly {sorted(required)}")
 
+    if args.json:
+        print(json.dumps({"ok": not issues.items, "path": str(path), "errors": issues.items}, sort_keys=True))
+        return 1 if issues.items else 0
     issues.exit_if_any()
     print("[PASS] generated config contracts")
     return 0
