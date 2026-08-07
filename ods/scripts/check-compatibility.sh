@@ -3,7 +3,8 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="${ODS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+ROOT_DIR="$(cd "$ROOT_DIR" && pwd -P)"
 MANIFEST_FILE="${ROOT_DIR}/manifest.json"
 
 RED='\033[0;31m'
@@ -15,6 +16,23 @@ fail() { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 pass() { echo -e "${GREEN}[PASS]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
+contract_file() {
+  local label="$1"
+  local relative="$2"
+  local candidate parent resolved
+
+  [[ -n "$relative" && "$relative" != "null" && "$relative" != /* ]] \
+    || fail "invalid ${label} path: ${relative}"
+  candidate="${ROOT_DIR}/${relative}"
+  test -f "$candidate" || fail "missing ${label}: ${relative}"
+  parent="$(cd "$(dirname "$candidate")" && pwd -P)"
+  resolved="${parent}/$(basename "$candidate")"
+  case "$resolved" in
+    "$ROOT_DIR"/*) printf '%s\n' "$resolved" ;;
+    *) fail "${label} escapes the repository: ${relative}" ;;
+  esac
+}
+
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 test -f "$MANIFEST_FILE" || fail "manifest.json not found"
 
@@ -25,27 +43,27 @@ pass "manifest structure"
 # Compose contract files
 while IFS= read -r file; do
   file="${file%$'\r'}"
-  test -f "${ROOT_DIR}/${file}" || fail "missing compose contract file: ${file}"
+  contract_file "compose contract file" "$file" >/dev/null
 done < <(jq -r '.contracts.compose.canonical[]' "$MANIFEST_FILE")
 pass "compose canonical files"
 
 # Workflow catalog canonical path
 workflow_path="$(jq -r '.contracts.workflowCatalog.canonicalPath' "$MANIFEST_FILE")"
 workflow_path="${workflow_path%$'\r'}"
-test -f "${ROOT_DIR}/${workflow_path}" || fail "missing canonical workflow catalog: ${workflow_path}"
+contract_file "canonical workflow catalog" "$workflow_path" >/dev/null
 pass "workflow catalog canonical path"
 
 # Extension schema contract
 schema_path="$(jq -r '.contracts.extensions.serviceManifestSchema' "$MANIFEST_FILE")"
 schema_path="${schema_path%$'\r'}"
-test -f "${ROOT_DIR}/${schema_path}" || fail "missing extension schema: ${schema_path}"
+contract_file "extension schema" "$schema_path" >/dev/null
 pass "extension schema contract"
 
 # Port contract
 ports_path="$(jq -r '.contracts.ports.canonicalPath' "$MANIFEST_FILE")"
 ports_path="${ports_path%$'\r'}"
-test -f "${ROOT_DIR}/${ports_path}" || fail "missing canonical ports contract: ${ports_path}"
-jq -e '.version and (.ports | type=="array" and length>0)' "${ROOT_DIR}/${ports_path}" >/dev/null \
+ports_file="$(contract_file "canonical ports contract" "$ports_path")"
+jq -e '.version and (.ports | type=="array" and length>0)' "$ports_file" >/dev/null \
   || fail "invalid ports contract structure: ${ports_path}"
 pass "ports contract"
 
