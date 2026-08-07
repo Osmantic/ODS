@@ -32,15 +32,5 @@ jobs:
       - name: Install PyYAML
         run: pip install pyyaml
 
-      - name: Regenerate catalog and diff
-        run: |
-          cp ods/config/extensions-catalog.json /tmp/catalog-before.json
-          python ods/scripts/generate-extensions-catalog.py
-          # Compare ignoring generated_at timestamp (changes every run)
-          jq 'del(.generated_at)' /tmp/catalog-before.json > /tmp/a.json
-          jq 'del(.generated_at)' ods/config/extensions-catalog.json > /tmp/b.json
-          if ! diff -q /tmp/a.json /tmp/b.json >/dev/null 2>&1; then
-            diff /tmp/a.json /tmp/b.json || true
-            echo "::error::extensions-catalog.json is out of date. Run: python ods/scripts/generate-extensions-catalog.py"
-            exit 1
-          fi
+      - name: Check catalog freshness
+        run: python ods/scripts/generate-extensions-catalog.py --check

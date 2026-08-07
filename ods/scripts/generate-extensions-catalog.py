@@ -41,6 +41,11 @@ def parse_args() -> argparse.Namespace:
         default=script_dir / ".." / "config" / "extensions-catalog.json",
         help="Output path for the catalog JSON",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="fail if the output catalog does not match manifests (ignores generated_at)",
+    )
     return parser.parse_args()
 
 
@@ -149,24 +154,47 @@ def generate_catalog(library_dir: Path) -> list[dict]:
     return entries
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
     library_dir = args.library_dir.resolve()
     output_path = args.output.resolve()
 
     entries = generate_catalog(library_dir)
 
-    catalog = {
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    expected = {
         "schema_version": CATALOG_SCHEMA_VERSION,
         "extensions": entries,
+    }
+
+    if args.check:
+        try:
+            actual = json.loads(output_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"ERROR: Cannot read catalog for checking: {exc}", file=sys.stderr)
+            return 1
+        if isinstance(actual, dict):
+            actual = {key: value for key, value in actual.items() if key != "generated_at"}
+        if actual != expected:
+            print(
+                "ERROR: extensions catalog is out of date; run "
+                "python scripts/generate-extensions-catalog.py",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"Extensions catalog is current: {output_path}")
+        return 0
+
+    catalog = {
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        **expected,
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(catalog, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     print(f"Generated catalog with {len(entries)} extensions at {output_path}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
