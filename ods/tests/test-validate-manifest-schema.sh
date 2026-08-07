@@ -33,6 +33,31 @@ assert_success() {
 
 assert_success "generated library schema mirror is current" \
     python3 "$ROOT_DIR/scripts/sync-manifest-schema.py" --check
+
+ESCAPE_ROOT="$TMP_DIR/schema-escape"
+mkdir -p "$ESCAPE_ROOT/repo/scripts" "$ESCAPE_ROOT/repo/extensions/library/schema" \
+    "$ESCAPE_ROOT/outside"
+cp "$ROOT_DIR/scripts/sync-manifest-schema.py" "$ESCAPE_ROOT/repo/scripts/"
+printf '{}\n' > "$ESCAPE_ROOT/outside/schema.json"
+cat > "$ESCAPE_ROOT/repo/manifest.json" <<'JSON'
+{
+  "contracts": {
+    "extensions": {
+      "serviceManifestSchema": "../outside/schema.json"
+    }
+  }
+}
+JSON
+if python3 "$ESCAPE_ROOT/repo/scripts/sync-manifest-schema.py" --check \
+    >"$TMP_DIR/schema-escape.log" 2>&1; then
+    fail "schema mirror accepted a contract path outside the repository"
+fi
+grep -q "escapes the repository" "$TMP_DIR/schema-escape.log" || {
+    cat "$TMP_DIR/schema-escape.log" >&2
+    fail "schema mirror path error was not actionable"
+}
+pass "schema mirror rejects contract paths outside the repository"
+
 assert_success "bundled and library manifests validate together" \
     bash "$VALIDATOR"
 assert_success "standalone library validator accepts all library manifests" \
