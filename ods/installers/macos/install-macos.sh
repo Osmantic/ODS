@@ -2873,7 +2873,7 @@ for service in (data.get("services") or {}).values():
     <key>ProgramArguments</key>
     <array>
         <string>${OPENCODE_BIN}</string>
-        <string>web</string>
+        <string>serve</string>
         <string>--port</string>
         <string>3003</string>
         <string>--hostname</string>
@@ -2912,7 +2912,7 @@ PLIST_EOF
             ai_ok "OpenCode Web UI service installed (LaunchAgent, port 3003)"
         else
             ai_warn "OpenCode LaunchAgent failed (rc=${_opencode_bootstrap_rc}): ${_opencode_bootstrap_err}"
-            ai_warn "Start manually: ${OPENCODE_BIN} web --port 3003"
+            ai_warn "Start manually: ${OPENCODE_BIN} serve --port 3003"
         fi
     fi
 fi
