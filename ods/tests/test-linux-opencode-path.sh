@@ -34,8 +34,48 @@ grep -q '__OPENCODE_BIN_DIR__' "$SERVICE" \
   && pass "systemd service templates resolved binary directory" \
   || fail "systemd service PATH must include resolved binary directory"
 
+grep -q '__HOME__' "$SERVICE" \
+  && pass "systemd service templates home directory" \
+  || fail "systemd service must template home directory"
+
 if grep -q 'ExecStart=__HOME__/.opencode/bin/opencode' "$SERVICE"; then
   fail "systemd service still hard-codes ~/.opencode/bin/opencode"
 fi
+
+echo "=== sed escape regression guard ==="
+
+_slashed=$(printf '%s\n' '/home/patil' | sed 's/[&\\]/\\&/g')
+[ "$_slashed" = '/home/patil' ] \
+  && pass "sed escape leaves forward slashes intact" \
+  || fail "sed escape must not rewrite / into &"
+
+echo "=== placeholder rendering smoke ==="
+
+_opencode_bin_esc=$(printf '%s\n' '/home/patil/.opencode/bin/opencode' | sed 's/[&\\]/\\&/g')
+_opencode_bin_dir_esc=$(printf '%s\n' '/home/patil/.opencode/bin' | sed 's/[&\\]/\\&/g')
+_rendered=$(sed -e "s|__HOME__|${_slashed}|g" \
+  -e "s|__OPENCODE_BIN__|${_opencode_bin_esc}|g" \
+  -e "s|__OPENCODE_BIN_DIR__|${_opencode_bin_dir_esc}|g" "$SERVICE")
+
+printf '%s\n' "$_rendered" | grep -q '__HOME__' \
+  && fail "rendered unit still contains __HOME__ placeholder" \
+  || pass "rendered unit substitutes __HOME__ placeholder"
+
+printf '%s\n' "$_rendered" | grep -q '__OPENCODE_BIN__' \
+  && fail "rendered unit still contains __OPENCODE_BIN__ placeholder" \
+  || pass "rendered unit substitutes __OPENCODE_BIN__ placeholder"
+
+printf '%s\n' "$_rendered" | grep -q '__OPENCODE_BIN_DIR__' \
+  && fail "rendered unit still contains __OPENCODE_BIN_DIR__ placeholder" \
+  || pass "rendered unit substitutes __OPENCODE_BIN_DIR__ placeholder"
+
+_workdir_line=$(printf '%s\n' "$_rendered" | grep '^WorkingDirectory=')
+[ "$_workdir_line" = 'WorkingDirectory=/home/patil' ] \
+  && pass "rendered WorkingDirectory is a clean slash path" \
+  || fail "rendered WorkingDirectory corrupted: $_workdir_line"
+
+printf '%s\n' "$_workdir_line" | grep -q '&' \
+  && fail "rendered WorkingDirectory contains a stray &" \
+  || pass "rendered WorkingDirectory has no stray &"
 
 echo "[PASS] Linux OpenCode path tests"
