@@ -190,6 +190,33 @@ EOF
             || fail "uninstall must not remove unrelated volume $name (got: '$removed_volumes')"
     done
     pass "volume discovery stays on the ods project prefix"
+
+    # 07-devtools.sh writes opencode.json from a template and syncs a config.json
+    # copy (the document OpenCode actually reads). Uninstall must remove both
+    # ODS-authored documents but leave an unrelated user config untouched.
+    local install_oc="$TMP_DIR/install-oc"
+    local home_oc="$TMP_DIR/home-oc"
+    mkdir -p "$home_oc"
+    make_install "$install_oc"
+    mkdir -p "$home_oc/.config/opencode"
+    cat > "$home_oc/.config/opencode/opencode.json" <<'EOF'
+{ "$schema": "https://opencode.ai/config.json",
+  "model": "llama-server/ods/current",
+  "provider": { "llama-server": {} } }
+EOF
+    cp "$home_oc/.config/opencode/opencode.json" "$home_oc/.config/opencode/config.json"
+    cat > "$home_oc/.config/opencode/user.json" <<'EOF'
+{ "theme": "dark" }
+EOF
+    DOCKER_LOG="$TMP_DIR/docker-oc.log" run_uninstall "$install_oc" "$home_oc" "$stub_dir"
+
+    [[ ! -f "$home_oc/.config/opencode/opencode.json" ]] \
+        || fail "uninstall must remove ODS-managed opencode.json"
+    [[ ! -f "$home_oc/.config/opencode/config.json" ]] \
+        || fail "uninstall must remove the synced config.json document"
+    [[ -f "$home_oc/.config/opencode/user.json" ]] \
+        || fail "uninstall must not remove unrelated user opencode config"
+    pass "uninstall surgically removes ODS OpenCode config but keeps user config"
 }
 
 main "$@"
