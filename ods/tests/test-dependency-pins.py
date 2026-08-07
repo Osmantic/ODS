@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import json
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -178,6 +181,16 @@ def test_extension_library_sha_tags_are_rejected() -> None:
     )
 
 
+def test_json_report_is_machine_readable() -> None:
+    module = load_module()
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        return_code = module.main(["--json"])
+    report = json.loads(output.getvalue())
+    assert return_code == 0
+    assert report == {"ok": True, "error_count": 0, "errors": []}
+
+
 def main() -> int:
     tests = [
         test_repo_dependency_lock_passes,
@@ -187,6 +200,7 @@ def main() -> int:
         test_ephemeral_sha256_length_tags_are_rejected,
         test_sha256_digest_pins_are_allowed,
         test_extension_library_sha_tags_are_rejected,
+        test_json_report_is_machine_readable,
     ]
     for test in tests:
         test()

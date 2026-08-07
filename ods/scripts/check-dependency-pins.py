@@ -8,6 +8,7 @@ drift explicit in review instead of discovering it during an install.
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -351,8 +352,14 @@ def check(path: Path = LOCK_PATH, root: Path = ROOT) -> list[str]:
     return errors
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="emit a machine-readable validation report")
+    args = parser.parse_args(argv)
     errors = check()
+    if args.json:
+        print(json.dumps({"ok": not errors, "error_count": len(errors), "errors": errors}, sort_keys=True))
+        return 1 if errors else 0
     if errors:
         for error in errors:
             print(f"[FAIL] {error}", file=sys.stderr)
