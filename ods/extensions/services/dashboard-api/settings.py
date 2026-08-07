@@ -449,7 +449,8 @@ def _compute_env_apply_plan(
 ) -> dict[str, Any]:
     changed_keys = sorted(
         key for key in set(previous_values) | set(next_values)
-        if previous_values.get(key, "") != next_values.get(key, "")
+        if key not in _LIVE_READ_ENV_KEYS
+        and previous_values.get(key, "") != next_values.get(key, "")
     )
     services: set[str] = set()
     inactive_services: set[str] = set()
