@@ -342,6 +342,41 @@ def test_supervisor_uses_restart_cooldown_after_child_exit() -> None:
     assert_true(restarted["status"] == "starting", "restarted child should enter grace period")
 
 
+def test_supervisor_logs_invalid_ssh_plan_argv() -> None:
+    # Regression: reconcile() used to catch _combined_ssh_argv's ValueError
+    # and discard it entirely, so a malformed tunnel plan (e.g. missing the
+    # -L forward) silently transitioned to "ssh_plan_unavailable" with no
+    # log line explaining why — operators had nothing to diagnose.
+    with tempfile.TemporaryDirectory() as tmp:
+        route_path, secret_dir = _ready_supervisor_fixture(Path(tmp))
+        supervisor, _factory, _clock = _new_fake_supervisor(route_path, secret_dir)
+        ssh_app = _health_app()
+        warnings: list[tuple[object, ...]] = []
+        original_plan_fn = ssh_app._supervisor_plan_for_paths
+        original_warning = ssh_app.LOGGER.warning
+        # Bypass real plan generation entirely: return a plan that is
+        # "ready to start" but structurally invalid (no tunnels), which is
+        # exactly what _combined_ssh_argv rejects with a ValueError.
+        ssh_app._supervisor_plan_for_paths = (
+            lambda _route_path, _secret_dir: {"readyToStart": True, "tunnels": []}
+        )
+        ssh_app.LOGGER.warning = lambda *args: warnings.append(args)
+        try:
+            payload = supervisor.reconcile()
+        finally:
+            ssh_app._supervisor_plan_for_paths = original_plan_fn
+            ssh_app.LOGGER.warning = original_warning
+    assert_true(payload["status"] == "invalid", "invalid plan argv should report an invalid plan status")
+    assert_true(payload["reason"] == "ssh_plan_unavailable", "invalid plan argv reason drifted")
+    assert_true(payload["process"]["status"] == "stopped", "invalid plan argv must stop any running process")
+    assert_true(len(warnings) == 1, "reconcile must log exactly one warning for invalid ssh plan argv")
+    assert_true(warnings[0][0] == "ssh plan argv invalid: %s", "warning message format drifted")
+    assert_true(
+        "SSH supervisor plan has no tunnels" in str(warnings[0][1]),
+        "warning should include the underlying ValueError detail",
+    )
+
+
 def test_service_source_avoids_public_secret_names() -> None:
     for path, text in _walk_service_source():
         for key in PUBLIC_SSH_SECRET_ENV:
@@ -365,6 +400,7 @@ def main() -> int:
         test_supervisor_stops_process_when_secret_custody_disappears,
         test_supervisor_restarts_process_when_route_argv_changes,
         test_supervisor_uses_restart_cooldown_after_child_exit,
+        test_supervisor_logs_invalid_ssh_plan_argv,
         test_service_source_avoids_public_secret_names,
     ]
     for test in tests:
