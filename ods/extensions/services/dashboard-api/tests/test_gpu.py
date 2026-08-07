@@ -142,6 +142,14 @@ class TestGetGpuInfoNvidia:
 
 class TestWindowsHostGpuInfo:
 
+    def test_rejects_non_object_host_agent_payload(self, monkeypatch):
+        monkeypatch.setenv("GPU_BACKEND", "amd")
+        monkeypatch.setattr("gpu._read_env_var_from_file", lambda key: "host")
+        monkeypatch.setattr("gpu.request_agent_json", lambda *args, **kwargs: [])
+
+        assert get_gpu_info_windows_host() is None
+        assert get_gpu_info_windows_host_detailed() is None
+
     def test_maps_valid_host_agent_payload(self, monkeypatch):
         monkeypatch.setenv("GPU_BACKEND", "amd")
         monkeypatch.setattr("gpu._read_env_var_from_file", lambda key: "host")

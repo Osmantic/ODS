@@ -377,6 +377,8 @@ def _get_windows_host_gpu_payload() -> Optional[dict]:
         return None
     try:
         payload = request_agent_json("GET", "/v1/gpu/metrics", timeout=10)
+        if not isinstance(payload, dict):
+            return None
         if payload.get("schema_version") != "ods.host-gpu-metrics.v1":
             return None
         return payload
