@@ -48,6 +48,9 @@ jobs:
       - name: Test Postgres SSE cursor
         run: python -m pytest tests/test_recent_events_cursor_postgres.py -v
 
+      - name: Test cached-token accounting
+        run: python -m pytest tests/test_cached_token_accounting.py -v
+
   integration-smoke:
     runs-on: ubuntu-latest
     defaults:

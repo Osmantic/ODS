@@ -153,6 +153,29 @@ class OpenAICompatibleProvider(LLMProvider):
 
         return body
 
+    @staticmethod
+    def _split_cached(prompt_tokens: Any, cached_tokens: Any) -> tuple[int, int]:
+        """Return (uncached_input, cached) from OpenAI's overlapping fields.
+
+        OpenAI's ``prompt_tokens`` is the total and *includes*
+        ``prompt_tokens_details.cached_tokens``. Anthropic's ``input_tokens``
+        excludes its cache counters, and ``calculate_cost`` bills every
+        ``*_tokens`` field independently — so reporting OpenAI's total verbatim
+        charges the cached tokens twice, once at the input rate and again at
+        the cache-read rate. Subtract them so the two fields are disjoint, the
+        way the base class already assumes.
+        """
+        try:
+            total = int(prompt_tokens or 0)
+        except (TypeError, ValueError):
+            total = 0
+        try:
+            cached = int(cached_tokens or 0)
+        except (TypeError, ValueError):
+            cached = 0
+        cached = max(0, min(cached, total))
+        return total - cached, cached
+
     def extract_usage_from_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
         """Extract usage from non-streaming response."""
         usage = response.get("usage", {})
@@ -163,10 +186,15 @@ class OpenAICompatibleProvider(LLMProvider):
         if choices:
             stop_reason = choices[0].get("finish_reason")
 
+        input_tokens, cache_read_tokens = self._split_cached(
+            usage.get("prompt_tokens", 0),
+            (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
+        )
+
         return {
-            "input_tokens": usage.get("prompt_tokens", 0),
+            "input_tokens": input_tokens,
             "output_tokens": usage.get("completion_tokens", 0),
-            "cache_read_tokens": usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
+            "cache_read_tokens": cache_read_tokens,
             "cache_write_tokens": 0,  # OpenAI doesn't expose cache write stats
             "stop_reason": stop_reason,
         }
@@ -200,13 +228,14 @@ class OpenAICompatibleProvider(LLMProvider):
         # Check for usage in final chunk
         usage = data.get("usage", {})
         if usage:
-            result["input_tokens"] = usage.get("prompt_tokens", 0)
+            details = usage.get("prompt_tokens_details") or {}
+            input_tokens, cache_read_tokens = self._split_cached(
+                usage.get("prompt_tokens", 0), details.get("cached_tokens", 0)
+            )
+            result["input_tokens"] = input_tokens
             result["output_tokens"] = usage.get("completion_tokens", 0)
-
-            # OpenAI may include cache stats in prompt_tokens_details
-            details = usage.get("prompt_tokens_details", {})
             if details:
-                result["cache_read_tokens"] = details.get("cached_tokens", 0)
+                result["cache_read_tokens"] = cache_read_tokens
 
         # Check for stop reason in choices
         choices = data.get("choices", [])
