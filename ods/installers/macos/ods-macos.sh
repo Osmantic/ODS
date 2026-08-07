@@ -988,6 +988,7 @@ cmd_update() {
     compose_pull_with_retry "$flags"
 
     ai "Recreating containers..."
+    macos_wait_for_bootstrap_compose_safe "update" || return 1
     # shellcheck disable=SC2086
     docker compose $flags up -d --force-recreate
     ai_ok "Update complete"
