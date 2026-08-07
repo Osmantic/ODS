@@ -45,9 +45,20 @@ BACKUP_ID=$(ls -1 "$SRC/.backups" | head -n 1)
 [[ -n "$BACKUP_ID" ]] || fail "No backup created"
 pass "Backup created: $BACKUP_ID"
 
-# Create destination ODS directory (empty)
+# Create destination ODS directory with pre-existing live data: a sibling
+# service dir not in this backup (data/qdrant), AND a file inside
+# data/open-webui itself that was created *after* the backup was taken.
+# Regression: restore_user_data() used to rsync with --delete. Since the
+# restored dir (open-webui) already exists live with a newer file not
+# present in the (older) backup, --delete removes it — confirmed via direct
+# rsync testing: `rsync -a --delete backup/open-webui live/data/` deletes
+# any file under live/data/open-webui that isn't in the backup, even though
+# the code's own comment says restore must preserve files added since backup.
 DST="$TMP/dst"
-mkdir -p "$DST/data"
+mkdir -p "$DST/data/qdrant"
+echo "live-qdrant-data" > "$DST/data/qdrant/existing.txt"
+mkdir -p "$DST/data/open-webui"
+echo "created-after-backup" > "$DST/data/open-webui/post-backup-file.txt"
 mkdir -p "$DST/.backups"
 mkdir -p "$DST/lib"
 cp "$SCRIPT_DIR/../lib/rsync.sh" "$DST/lib/"
@@ -81,6 +92,17 @@ pass "All expected files/dirs present after restore"
 [[ "$(cat "$DST/data/open-webui/data.txt")" == "user-data-file" ]] || fail "data/open-webui/data.txt content mismatch"
 
 pass "All file contents match after restore"
+
+# Regression: restore_user_data() used to rsync with --delete.
+info "Verifying restore did not delete unrelated live sibling data"
+[[ -f "$DST/data/qdrant/existing.txt" ]] || fail "restore deleted live data/qdrant (--delete regression)"
+[[ "$(cat "$DST/data/qdrant/existing.txt")" == "live-qdrant-data" ]] || fail "live data/qdrant content mismatch after restore"
+pass "restore preserved unrelated live data directories"
+
+info "Verifying restore did not delete a file created after the backup"
+[[ -f "$DST/data/open-webui/post-backup-file.txt" ]] || fail "restore deleted a file created after the backup (--delete regression)"
+[[ "$(cat "$DST/data/open-webui/post-backup-file.txt")" == "created-after-backup" ]] || fail "post-backup file content mismatch after restore"
+pass "restore preserved a file created in the live dir after the backup was taken"
 
 # ── Compressed round-trip ─────────────────────────────────────────────
 # extract_backup's stdout is command-substituted into the backup path, so a
