@@ -181,6 +181,10 @@ class ODSTokenSpyCallback(CustomLogger):
         ):
             return
         if self.worker is None or self.worker.done():
+            if self.worker is not None and not self.worker.cancelled():
+                exc = self.worker.exception()
+                if exc is not None:
+                    self._warn(f"Token Spy worker restarted after error: {exc}")
             self.worker = asyncio.create_task(
                 self._run(), name="litellm-token-spy"
             )
@@ -195,9 +199,8 @@ class ODSTokenSpyCallback(CustomLogger):
         timeout = max(
             0.1, float(os.environ.get("ODS_LITELLM_TELEMETRY_TIMEOUT", "3"))
         )
-        async with httpx.AsyncClient(
-            follow_redirects=False, timeout=timeout
-        ) as client:
+        client = httpx.AsyncClient(follow_redirects=False, timeout=timeout)
+        try:
             while True:
                 event = await self.queue.get()
                 try:
@@ -215,6 +218,15 @@ class ODSTokenSpyCallback(CustomLogger):
                     self._warn(f"Token Spy telemetry unavailable: {exc}")
                 finally:
                     self.queue.task_done()
+        finally:
+            # Shield the close from a second cancellation. A bare
+            # `async with AsyncClient() as client:` closes fine on a single
+            # cancel, but a worker-recycle race that cancels this task again
+            # while __aexit__'s own await is still running for the first
+            # cancellation interrupts that close before the transport's
+            # pooled connections finish closing, leaking sockets/fds. Shield
+            # keeps aclose() running to completion regardless.
+            await asyncio.shield(client.aclose())
 
     def _warn(self, message: str) -> None:
         now = time.monotonic()
