@@ -210,6 +210,43 @@ def test_deeply_nested_array_degrades_without_recursion_error(tmp_path):
 
 # ── file_type / quantization normalization ──────────────────────────────────
 
+# llama.cpp's llama_ftype enum, spot-checked either side of the gap left by the
+# removed Q4_1_SOME_F16 / Q4_2 / Q4_3 types (4, 5, 6).
+@pytest.mark.parametrize(
+    "ftype,label",
+    [
+        (0, "F32"),
+        (1, "F16"),
+        (2, "Q4_0"),
+        (3, "Q4_1"),
+        (7, "Q8_0"),
+        (8, "Q5_0"),
+        (9, "Q5_1"),
+        (10, "Q2_K"),
+        (15, "Q4_K_M"),
+        (18, "Q6_K"),
+        (30, "IQ4_XS"),
+        (32, "BF16"),
+        (34, "TQ2_0"),
+    ],
+)
+def test_file_type_maps_to_the_llama_cpp_label(tmp_path, ftype, label):
+    path = _write(
+        tmp_path, "model.gguf", build_gguf([("general.file_type", U32, ftype)])
+    )
+    assert inspect_gguf(path)["quantization"] == label
+
+
+@pytest.mark.parametrize("ftype", [4, 5, 6])
+def test_removed_file_types_have_no_label(tmp_path, ftype):
+    """llama.cpp never emits these; claiming a label for one mislabels nothing
+    real but shifts every neighbouring code."""
+    path = _write(
+        tmp_path, "model.gguf", build_gguf([("general.file_type", U32, ftype)])
+    )
+    assert inspect_gguf(path)["quantization"] == str(ftype)
+
+
 def test_unknown_file_type_falls_back_to_stringified_int(tmp_path):
     path = _write(tmp_path, "unk.gguf", build_gguf([
         ("general.architecture", STR, "gpt2"),

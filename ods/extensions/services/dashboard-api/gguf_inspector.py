@@ -56,9 +56,12 @@ _FILE_TYPE_LABELS = {
     1: "F16",
     2: "Q4_0",
     3: "Q4_1",
-    6: "Q5_0",
-    7: "Q5_1",
-    8: "Q8_0",
+    # llama.cpp's llama_ftype leaves 4, 5 and 6 unused — Q4_1_SOME_F16, Q4_2
+    # and Q4_3 were removed — and resumes at 7. Closing that gap here shifted
+    # Q8_0/Q5_0/Q5_1 down by one and invented a label for 6.
+    7: "Q8_0",
+    8: "Q5_0",
+    9: "Q5_1",
     10: "Q2_K",
     11: "Q3_K_S",
     12: "Q3_K_M",
