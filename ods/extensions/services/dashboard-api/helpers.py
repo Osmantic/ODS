@@ -908,7 +908,7 @@ def get_bootstrap_status() -> BootstrapStatus:
         return BootstrapStatus(active=False)
 
     try:
-        with open(status_file) as f:
+        with open(status_file, encoding="utf-8") as f:
             data = json.load(f)
 
         status = data.get("status", "")
