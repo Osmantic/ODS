@@ -127,6 +127,7 @@ def generate_catalog(library_dir: Path) -> list[dict]:
         sys.exit(1)
 
     entries = []
+    entry_sources: dict[str, Path] = {}
     for service_dir in sorted(library_dir.iterdir()):
         if not service_dir.is_dir():
             continue
@@ -143,7 +144,15 @@ def generate_catalog(library_dir: Path) -> list[dict]:
         if entry is None:
             continue
 
+        service_id = entry["id"]
+        previous = entry_sources.get(service_id)
+        if previous is not None:
+            raise ValueError(
+                f"duplicate service id {service_id!r} in {previous} and {manifest_path}"
+            )
+
         entries.append(entry)
+        entry_sources[service_id] = manifest_path
 
     entries.sort(key=lambda e: e["id"])
     return entries
