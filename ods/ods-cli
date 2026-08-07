@@ -3368,16 +3368,37 @@ META
                 # used (which missed _PASS, _SALT, email admin fields, etc.).
                 _cmd_config_load_secret_schema
 
-                # Parse both env files
+                # Parse both env files. Strip a trailing CR (CRLF .env files
+                # from Windows editors/installer — see lib/safe-env.sh) and a
+                # single matching pair of surrounding quotes, so e.g.
+                # PORT=8080\r in one preset and PORT=8080 in the other don't
+                # show up as a spurious diff, and KEY="value" doesn't display
+                # its quotes literally.
                 declare -A env1 env2
                 while IFS='=' read -r key value; do
                     [[ "$key" =~ ^[[:space:]]*# ]] && continue
                     [[ -z "$key" ]] && continue
+                    value="${value%$'\r'}"
+                    if [[ "$value" == '"'*'"' ]]; then
+                        value="${value#\"}"
+                        value="${value%\"}"
+                    elif [[ "$value" == "'"*"'" ]]; then
+                        value="${value#\'}"
+                        value="${value%\'}"
+                    fi
                     env1["$key"]="$value"
                 done < "$dir1/env"
                 while IFS='=' read -r key value; do
                     [[ "$key" =~ ^[[:space:]]*# ]] && continue
                     [[ -z "$key" ]] && continue
+                    value="${value%$'\r'}"
+                    if [[ "$value" == '"'*'"' ]]; then
+                        value="${value#\"}"
+                        value="${value%\"}"
+                    elif [[ "$value" == "'"*"'" ]]; then
+                        value="${value#\'}"
+                        value="${value%\'}"
+                    fi
                     env2["$key"]="$value"
                 done < "$dir2/env"
 

@@ -122,6 +122,51 @@ test_diff_masks_secrets() {
     fi
 }
 
+# Test 7: Diff ignores a trailing CR (CRLF env file) when comparing values
+# Regression: env parsing used to leave a trailing \r attached to the value,
+# so PORT=8080\r (Windows-edited preset) vs PORT=8080 (Linux) showed up as a
+# spurious difference even though the values are identical.
+test_diff_ignores_crlf() {
+    local presets_dir="$ODS_DIR/presets"
+    mkdir -p "$presets_dir/test-preset-i" "$presets_dir/test-preset-j"
+    printf 'TIER=3\r\n' > "$presets_dir/test-preset-i/env"
+    printf 'TIER=3\n' > "$presets_dir/test-preset-j/env"
+    echo "enabled:llama-server" > "$presets_dir/test-preset-i/extensions.list"
+    echo "enabled:llama-server" > "$presets_dir/test-preset-j/extensions.list"
+
+    # Check for a changed-value bullet on TIER specifically — "no differences"
+    # also appears in the unrelated Service State section above, so it isn't
+    # a reliable signal on its own.
+    local output
+    output=$("$ODS_CLI" preset diff test-preset-i test-preset-j 2>&1 || true)
+    if echo "$output" | grep -q "TIER.*→"; then
+        fail "Diff should treat TIER=3\\r and TIER=3 as identical"
+    else
+        pass "Diff ignores a trailing CR (CRLF env file)"
+    fi
+}
+
+# Test 8: Diff treats a quoted value the same as its unquoted equivalent
+# Regression: env parsing didn't strip surrounding quotes, so KEY="3" vs
+# KEY=3 (same effective value) showed up as a spurious difference, and a
+# changed quoted value displayed its quote characters literally.
+test_diff_strips_quotes() {
+    local presets_dir="$ODS_DIR/presets"
+    mkdir -p "$presets_dir/test-preset-k" "$presets_dir/test-preset-l"
+    echo 'TIER="3"' > "$presets_dir/test-preset-k/env"
+    echo "TIER=3" > "$presets_dir/test-preset-l/env"
+    echo "enabled:llama-server" > "$presets_dir/test-preset-k/extensions.list"
+    echo "enabled:llama-server" > "$presets_dir/test-preset-l/extensions.list"
+
+    local output
+    output=$("$ODS_CLI" preset diff test-preset-k test-preset-l 2>&1 || true)
+    if echo "$output" | grep -q "TIER.*→"; then
+        fail "Diff should treat TIER=\"3\" and TIER=3 as identical"
+    else
+        pass "Diff treats a quoted value the same as its unquoted equivalent"
+    fi
+}
+
 # Run tests
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Preset Diff Tests"
@@ -134,6 +179,8 @@ test_diff_identical
 test_diff_env_changes
 test_diff_service_changes
 test_diff_masks_secrets
+test_diff_ignores_crlf
+test_diff_strips_quotes
 cleanup
 
 # Summary
