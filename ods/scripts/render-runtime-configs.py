@@ -15,7 +15,6 @@ import re
 import stat
 import sys
 import tempfile
-import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
@@ -59,18 +58,7 @@ def atomic_write_text(target: Path, content: str) -> None:
             os.fsync(handle.fileno())
         os.chmod(tmp_path, mode)
 
-        last_error: PermissionError | None = None
-        for attempt in range(10):
-            try:
-                os.replace(tmp_path, target)
-                last_error = None
-                break
-            except PermissionError as exc:
-                last_error = exc
-                if attempt < 9:
-                    time.sleep(0.05 * (attempt + 1))
-        if last_error is not None:
-            raise last_error
+        os.replace(tmp_path, target)
     finally:
         tmp_path.unlink(missing_ok=True)
 
