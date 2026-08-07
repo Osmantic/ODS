@@ -938,3 +938,30 @@ def test_workflow_enable_rejects_path_traversal_in_catalog_file(test_client, mon
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Invalid workflow file path"
+
+
+@pytest.mark.asyncio
+async def test_dependency_aliases_resolve_to_real_services():
+    """An unresolved dependency name is reported satisfied without a probe.
+
+    check_workflow_dependencies() falls through to `results[dep] = True` for a
+    name it does not recognise, so a catalog entry naming a service by a
+    non-id label advertises itself as ready with that service down. `kokoro`
+    is the tts service; `ollama` is llama-server.
+    """
+    from routers.workflows import check_workflow_dependencies
+
+    probed = {"llama-server": True, "tts": False}
+    result = await check_workflow_dependencies(
+        ["ollama", "kokoro"], health_cache=dict(probed)
+    )
+    assert result == {"ollama": True, "kokoro": False}
+
+
+@pytest.mark.asyncio
+async def test_unknown_dependency_still_falls_through_as_satisfied():
+    """Documents the existing fail-open behaviour this alias works around."""
+    from routers.workflows import check_workflow_dependencies
+
+    result = await check_workflow_dependencies(["not-a-service"], health_cache={})
+    assert result == {"not-a-service": True}

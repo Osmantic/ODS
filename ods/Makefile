@@ -76,6 +76,7 @@ test: ## Run unit and contract tests
 	@echo "=== Bind address sweep ==="
 	@bash tests/test-bind-address-sweep.sh
 	@bash tests/test-n8n-cookie-policy.sh
+	@python3 tests/test-n8n-catalog-contract.py
 	@echo ""
 	@echo "=== config migration (version check under set -e) ==="
 	@bash tests/test-migrate-config.sh

@@ -68,7 +68,10 @@ async def check_workflow_dependencies(deps: list[str], health_cache: dict[str, b
     """Check if required services are running. Uses health_cache to avoid duplicate checks."""
     from helpers import check_service_health
 
-    _DEP_ALIASES = {"ollama": "llama-server"}
+    # Catalog dependency names that are not service ids. An unresolved name
+    # falls through to the `else` below and is reported satisfied without any
+    # health check, so every alias the catalog uses has to be listed here.
+    _DEP_ALIASES = {"ollama": "llama-server", "kokoro": "tts"}
     if health_cache is None:
         health_cache = {}
     results = {}

@@ -124,6 +124,9 @@ jobs:
       - name: n8n Cookie Policy Tests
         run: bash tests/test-n8n-cookie-policy.sh
 
+      - name: n8n Catalog Contract Tests
+        run: python3 tests/test-n8n-catalog-contract.py
+
       - name: brave-search searxng Compat Tests
         run: bash tests/test-brave-search-searxng-compat.sh
 
