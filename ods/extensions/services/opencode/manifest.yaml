@@ -7,7 +7,6 @@ service:
   id: opencode
   name: OpenCode (IDE)
   aliases: [opencode-web]
-  container_name: ""
   default_host: localhost
   port: 3003
   external_port_env: OPENCODE_PORT

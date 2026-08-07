@@ -81,4 +81,4 @@ another process, stop that process before reinstalling.
 ## Files
 
 - `manifest.yaml`: service metadata, health route, and dashboard feature
-- `opencode-web.service`: Linux user service template
+- `ods/opencode/opencode-web.service`: Linux user service template (shared by installer phases, tracked outside this extension dir)
