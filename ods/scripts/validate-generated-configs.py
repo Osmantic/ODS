@@ -43,6 +43,16 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def resolve_repo_path(issues: Issues, value: str, path: str) -> Path | None:
+    candidate = (ROOT / value).resolve()
+    try:
+        candidate.relative_to(ROOT)
+    except ValueError:
+        issues.add(path, f"path must stay within the repository: {value}")
+        return None
+    return candidate
+
+
 def resolve_json_path(data: Any, dotted_path: str) -> Any:
     current = data
     for part in dotted_path.split("."):
@@ -99,7 +109,9 @@ def validate_writers(issues: Issues, value: Any, path: str) -> set[str]:
             platforms.append(platform)
         if nonempty_string(target):
             targets.add(str(target))
-            issues.require((ROOT / target).exists(), f"{writer_path}.path", f"file does not exist: {target}")
+            target_path = resolve_repo_path(issues, str(target), f"{writer_path}.path")
+            if target_path is not None:
+                issues.require(target_path.exists(), f"{writer_path}.path", f"file does not exist: {target}")
     return targets
 
 
@@ -116,7 +128,9 @@ def validate_invariant(issues: Issues, invariant: Any, path: str) -> None:
     if not nonempty_string(target):
         return
 
-    target_path = ROOT / str(target)
+    target_path = resolve_repo_path(issues, str(target), f"{path}.path")
+    if target_path is None:
+        return
     issues.require(target_path.exists(), f"{path}.path", f"file does not exist: {target}")
     if not target_path.exists():
         return
