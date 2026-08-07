@@ -467,7 +467,7 @@ def render_env(inputs: RenderInputs) -> RenderedFile:
     lemonade_model = (
         lemonade_model_id(inputs)
         if inputs.ods_mode == "lemonade"
-        else inputs.lemonade_model_id
+        else inputs.lemonade_model_id or (inputs.gguf_file or inputs.model)
     )
     lines = [
         f"ODS_MODE={inputs.ods_mode}",
