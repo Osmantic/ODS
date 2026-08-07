@@ -180,11 +180,15 @@ def _loaded_model(llm_port: int = 8080) -> str | None:
         except Exception:
             continue
         loaded = data.get("all_models_loaded") if isinstance(data, dict) else None
-        if isinstance(loaded, list) and loaded:
-            return loaded[0].get("model_name")
+        if isinstance(loaded, list):
+            for item in loaded:
+                if isinstance(item, dict) and isinstance(item.get("model_name"), str):
+                    return item["model_name"]
         models = data.get("data") if isinstance(data, dict) else None
-        if isinstance(models, list) and models:
-            return models[0].get("id")
+        if isinstance(models, list):
+            for item in models:
+                if isinstance(item, dict) and isinstance(item.get("id"), str):
+                    return item["id"]
     return None
 
 
