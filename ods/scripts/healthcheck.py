@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import socket
 import sys
@@ -308,12 +309,17 @@ def main(argv: Sequence[str]) -> int:
             print(f"[FAIL] {res.detail}")
         return 2
 
-    if args.timeout <= 0:
-        res = Result(ok=False, target=args.target, kind=kind, detail="--timeout must be > 0")
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        res = Result(
+            ok=False,
+            target=args.target,
+            kind=kind,
+            detail="--timeout must be a finite number > 0",
+        )
         if args.json:
             print(res.to_json())
         else:
-            print("[FAIL] --timeout must be > 0")
+            print(f"[FAIL] {res.detail}")
         return 2
 
     if args.retries < 0 or args.retries > 50:
