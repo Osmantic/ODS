@@ -2,27 +2,191 @@
   "name": "RAG Pipeline Trigger",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## RAG Pipeline Trigger\n\nThe **ingest** half of RAG: push a document in, get it chunked, embedded\nand stored in Qdrant. Ask questions over it with the *Document Q&A*\ntemplate, which reads the same collection.\n\n```bash\ncurl -X POST http://localhost:5678/webhook/ods-rag-ingest \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"source\": \"handbook.md\", \"text\": \"<document text>\"}'\n```\n\n**Body:** `text` (required), `source` (optional label), `collection`\n(optional, default `ods_docs`).\n\n**Chunking:** ~1200 characters with a 150-character overlap, split on\nparagraph boundaries where possible so a sentence is rarely cut in half.\n\n**Embeddings:** `embeddings:80/v1/embeddings`, the bundled TEI serving\n`BAAI/bge-base-en-v1.5` (768 dimensions). The collection is created with\nCosine distance on first use and left alone afterwards.\n\n**Ids are deterministic** — a UUIDv5 of `source#index` — so re-ingesting\nthe same document updates its points instead of duplicating them.\n\n**Requires** qdrant and embeddings.",
+        "height": 700,
+        "width": 540
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [-120, 20]
     },
     {
       "parameters": {
-        "content": "## RAG Pipeline Trigger\n\nThis is a template workflow for ingesting documents from a watched folder into Qdrant, then answering questions over the indexed corpus.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "httpMethod": "POST",
+        "path": "ods-rag-ingest",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "webhook-ingest",
+      "name": "Document In",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [460, 340],
+      "webhookId": "2b7a4e91-6d38-4c57-9e10-8a3f5b2d7c69"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.body?.text }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-text",
+      "name": "Text Present?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [680, 340]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://qdrant:6333/collections/{{ $json.body?.collection || 'ods_docs' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ vectors: { size: 768, distance: 'Cosine' } }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "http-ensure-collection",
+      "name": "Ensure Collection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 240]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split on paragraph boundaries, packing up to ~1200 characters per chunk\n// with a 150-character overlap so a fact spanning a boundary is still\n// retrievable from at least one chunk.\nconst body = $('Document In').first().json.body || {};\nconst text = String(body.text || '');\nconst source = String(body.source || 'untitled');\nconst collection = String(body.collection || 'ods_docs');\n\nconst MAX = 1200;\nconst OVERLAP = 150;\n\nconst paragraphs = text.split(/\\n\\s*\\n/).map((p) => p.trim()).filter(Boolean);\nconst chunks = [];\nlet current = '';\n\nfor (const paragraph of paragraphs) {\n  if (current && current.length + paragraph.length + 2 > MAX) {\n    chunks.push(current);\n    current = current.slice(Math.max(0, current.length - OVERLAP));\n  }\n  current = current ? current + '\\n\\n' + paragraph : paragraph;\n  while (current.length > MAX) {\n    chunks.push(current.slice(0, MAX));\n    current = current.slice(MAX - OVERLAP);\n  }\n}\nif (current.trim()) chunks.push(current);\n\nreturn chunks.map((chunk, index) => ({\n  json: { collection, source, index, text: chunk },\n}));"
+      },
+      "id": "code-chunk",
+      "name": "Chunk Document",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 240]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://embeddings:80/v1/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'BAAI/bge-base-en-v1.5', input: $json.text }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "http-embed",
+      "name": "Embed Chunk",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 240]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pair each embedding with the chunk it came from. Both node outputs are\n// in the same order, one item per chunk.\nconst embeddings = $input.all();\nconst chunks = $('Chunk Document').all();\n\nif (embeddings.length !== chunks.length) {\n  throw new Error(\n    `Embedding count ${embeddings.length} does not match chunk count ${chunks.length}`\n  );\n}\n\n// Deterministic point id: UUIDv5 over \"source#index\" in the URL namespace,\n// so re-ingesting a document overwrites its own points instead of piling up\n// duplicates. Implemented inline because the Code node has no uuid import.\nconst crypto = require('crypto');\nconst NAMESPACE_URL = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';\n\nfunction uuidv5(name) {\n  const nsBytes = Buffer.from(NAMESPACE_URL.replace(/-/g, ''), 'hex');\n  const hash = crypto\n    .createHash('sha1')\n    .update(Buffer.concat([nsBytes, Buffer.from(name, 'utf8')]))\n    .digest();\n  const bytes = Buffer.from(hash.subarray(0, 16));\n  bytes[6] = (bytes[6] & 0x0f) | 0x50;\n  bytes[8] = (bytes[8] & 0x3f) | 0x80;\n  const hex = bytes.toString('hex');\n  return [\n    hex.slice(0, 8),\n    hex.slice(8, 12),\n    hex.slice(12, 16),\n    hex.slice(16, 20),\n    hex.slice(20),\n  ].join('-');\n}\n\nconst points = embeddings.map((item, i) => {\n  const vector = item.json?.data?.[0]?.embedding;\n  if (!Array.isArray(vector)) {\n    throw new Error(`Embedding ${i} has no vector — check the embeddings service`);\n  }\n  const chunk = chunks[i].json;\n  return {\n    id: uuidv5(`${chunk.source}#${chunk.index}`),\n    vector,\n    payload: {\n      text: chunk.text,\n      source: chunk.source,\n      chunk_index: chunk.index,\n      ingested_at: new Date().toISOString(),\n    },\n  };\n});\n\nreturn [{\n  json: { collection: chunks[0].json.collection, source: chunks[0].json.source, points },\n}];"
+      },
+      "id": "code-points",
+      "name": "Build Points",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1640, 240]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://qdrant:6333/collections/{{ $json.collection }}/points?wait=true",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ points: $json.points }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "http-upsert",
+      "name": "Upsert To Qdrant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1880, 240]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ collection: $('Build Points').item.json.collection, source: $('Build Points').item.json.source, chunks_indexed: $('Build Points').item.json.points.length, qdrant_status: $json.status }) }}",
+        "options": {}
+      },
+      "id": "respond-ok",
+      "name": "Return Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2120, 240]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: \"Body must include a non-empty 'text' field.\" }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-bad-request",
+      "name": "Return 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [920, 480]
     }
   ],
-  "connections": {},
+  "connections": {
+    "Document In": {
+      "main": [[{ "node": "Text Present?", "type": "main", "index": 0 }]]
+    },
+    "Text Present?": {
+      "main": [
+        [{ "node": "Ensure Collection", "type": "main", "index": 0 }],
+        [{ "node": "Return 400", "type": "main", "index": 0 }]
+      ]
+    },
+    "Ensure Collection": {
+      "main": [[{ "node": "Chunk Document", "type": "main", "index": 0 }]]
+    },
+    "Chunk Document": {
+      "main": [[{ "node": "Embed Chunk", "type": "main", "index": 0 }]]
+    },
+    "Embed Chunk": {
+      "main": [[{ "node": "Build Points", "type": "main", "index": 0 }]]
+    },
+    "Build Points": {
+      "main": [[{ "node": "Upsert To Qdrant", "type": "main", "index": 0 }]]
+    },
+    "Upsert To Qdrant": {
+      "main": [[{ "node": "Return Result", "type": "main", "index": 0 }]]
+    }
+  },
   "settings": {
     "executionOrder": "v1"
   },

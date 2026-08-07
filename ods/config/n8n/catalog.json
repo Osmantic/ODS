@@ -177,12 +177,12 @@
       "id": "rag-pipeline-trigger",
       "file": "rag-pipeline-trigger.json",
       "name": "RAG Pipeline Trigger",
-      "description": "Ingest documents from a watched folder into Qdrant, then answer questions over the indexed corpus.",
+      "description": "Chunk, embed and index a document into Qdrant for retrieval",
       "icon": "Database",
       "category": "development",
       "dependencies": [
-        "llama-server",
-        "qdrant"
+        "qdrant",
+        "embeddings"
       ],
       "setupTime": "3 minutes",
       "featured": true,
