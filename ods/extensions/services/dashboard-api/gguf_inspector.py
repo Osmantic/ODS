@@ -182,14 +182,19 @@ def inspect_gguf(path: Path | str, max_metadata_bytes: int = 8 * 1024 * 1024) ->
     p = Path(path)
     result: dict[str, Any] = {
         "path": str(p),
-        "exists": p.exists(),
+        "exists": False,
         "format": "gguf",
         "readable": False,
         "architecture": "unknown",
         "quantization": "unknown",
         "metadata": {},
     }
-    if not p.exists() or not p.is_file():
+    try:
+        exists = p.exists()
+    except OSError:
+        exists = False
+    result["exists"] = exists
+    if not exists or not p.is_file():
         return result
 
     try:
