@@ -515,3 +515,31 @@ def test_oauth_providers_reports_credential_status(oauth_client, monkeypatch):
     assert by_id["google"]["configured"] is True
     assert by_id["spotify"]["configured"] is False
     assert by_id["google"]["found_credentials"] == ["hermes/google_client_secret.json"]
+
+
+def test_oauth_providers_rejects_credential_path_traversal(
+    oauth_client, monkeypatch
+):
+    registry = oauth_client.tmp / "providers.json"
+    registry.write_text(json.dumps({
+        "schema_version": "ods.oauth-providers.v1",
+        "providers": [{
+            "id": "escaped",
+            "credential_files": ["../outside-secret.json"],
+        }],
+    }))
+    data_dir = oauth_client.tmp / "data"
+    hermes_dir = data_dir / "hermes"
+    hermes_dir.mkdir(parents=True)
+    (data_dir / "outside-secret.json").write_text("{}")
+    monkeypatch.setenv("ODS_OAUTH_PROVIDERS_FILE", str(registry))
+    monkeypatch.setenv("ODS_DATA_DIR", str(data_dir))
+
+    resp = oauth_client.get(
+        "/api/oauth/providers", headers=oauth_client.auth_headers
+    )
+
+    assert resp.status_code == 200
+    provider = resp.json()["providers"][0]
+    assert provider["configured"] is False
+    assert provider["found_credentials"] == []
