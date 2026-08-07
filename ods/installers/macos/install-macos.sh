@@ -2063,6 +2063,13 @@ else
                         ai_warn "Could not generate Hermes installation-context SOUL.md (non-fatal — Hermes will use the template default)"
                 fi
             fi
+
+            # Copy pre-registered OAuth credentials into Hermes home, allowing operator override
+            if [[ -f "${SOURCE_ROOT}/installers/lib/oauth-credentials.sh" ]]; then
+                source "${SOURCE_ROOT}/installers/lib/oauth-credentials.sh"
+                copy_oauth_credentials "${INSTALL_DIR}"
+            fi
+
             ai_ok "Prepared Hermes routing for macOS (model=${_hermes_model}, context=${MAX_CONTEXT}, base_url=${_hermes_base_url})"
     fi
 
