@@ -98,8 +98,8 @@ def _parse_target(raw: str) -> Tuple[str, str]:
     if raw.startswith("tcp://"):
         return ("tcp", raw[len("tcp://") :])
 
-    # host:port shorthand
-    if ":" in raw and not raw.startswith("["):
+    # host:port shorthand, including bracketed IPv6 literals.
+    if ":" in raw and (not raw.startswith("[") or "]:" in raw):
         return ("tcp", raw)
 
     raise ValueError("target must be http(s) URL, tcp://host:port, or host:port")
@@ -108,6 +108,8 @@ def _parse_target(raw: str) -> Tuple[str, str]:
 def _parse_host_port(raw: str) -> Tuple[str, int]:
     host, port_s = raw.rsplit(":", 1)
     host = host.strip()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
     if not host:
         raise ValueError("host is empty")
     try:
