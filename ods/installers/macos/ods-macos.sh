@@ -273,7 +273,7 @@ macos_launch_detached_bootstrap_upgrade() {
     local log_file="${INSTALL_DIR}/logs/model-upgrade.log"
     local python_cmd="${PYTHON_CMD:-/usr/bin/python3}"
     local bash_cmd="${BASH:-bash}"
-    [[ -x "$python_cmd" ]] || python_cmd="$(command -v python3 || command -v python || true)"
+    [[ -x "$python_cmd" ]] || python_cmd="/usr/bin/python3"
     [[ -n "$python_cmd" ]] || {
         ai_warn "Python is unavailable; cannot launch background model-upgrade retry."
         return 1
