@@ -1560,6 +1560,8 @@ def _get_agent_model_status(timeout: int = 5) -> Optional[dict]:
             status = request_agent_json("GET", "/v1/model/status", timeout=timeout)
         except AgentClientError:
             status = None
+        if not isinstance(status, dict):
+            status = None
 
         _agent_model_status_cache_value = status
         _agent_model_status_cache_at = time.monotonic()

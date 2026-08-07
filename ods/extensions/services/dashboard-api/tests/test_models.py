@@ -868,6 +868,18 @@ def test_agent_model_status_collapses_concurrent_poll_bursts(monkeypatch):
     assert results == [{"status": "downloading", "percent": 42}] * 16
 
 
+def test_agent_model_status_rejects_non_object_payload(monkeypatch):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "request_agent_json", lambda *args, **kwargs: [])
+    monkeypatch.setattr(models_router, "_AGENT_MODEL_STATUS_CACHE_TTL_SECONDS", 0.0)
+    monkeypatch.setattr(models_router, "_agent_model_status_cache_at", 0.0)
+    monkeypatch.setattr(models_router, "_agent_model_status_cache_value", {"status": "stale"})
+
+    assert models_router._get_agent_model_status() is None
+    assert models_router._agent_model_status_cache_value is None
+
+
 def test_agent_model_status_and_actions_share_transport(monkeypatch):
     import routers.models as models_router
 
