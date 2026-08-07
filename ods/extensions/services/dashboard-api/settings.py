@@ -55,6 +55,16 @@ _TOKEN_SPY_APPLY_KEYS = {
 _PRIVACY_SHIELD_APPLY_KEYS = {
     "TARGET_API_URL", "PII_CACHE_ENABLED", "SHIELD_PORT",
 }
+# Keys more than one service reads. _match_apply_service names a single owner,
+# so without this the other consumers keep the old value while the apply
+# summary reports success — the change is neither applied nor flagged.
+_EXTRA_APPLY_SERVICES: dict[str, tuple[str, ...]] = {
+    # open-webui's OPENAI_API_BASE_URL, openclaw, perplexica, privacy-shield
+    # and token-spy all fall back to LLM_API_URL in their compose files.
+    "LLM_API_URL": (
+        "open-webui", "openclaw", "perplexica", "privacy-shield", "token-spy",
+    ),
+}
 _MANUAL_RESTART_KEYS = {
     "BIND_ADDRESS",
     "DASHBOARD_API_KEY", "ODS_AGENT_KEY", "DASHBOARD_PORT",
@@ -491,6 +501,9 @@ def _compute_env_apply_plan(
         service = _match_apply_service(key)
         if service and service in _SETTINGS_APPLY_ALLOWED_SERVICES:
             schedule(service)
+            for extra in _EXTRA_APPLY_SERVICES.get(key, ()):
+                if extra in _SETTINGS_APPLY_ALLOWED_SERVICES:
+                    schedule(extra)
             continue
         if (
             key in _MANUAL_RESTART_KEYS

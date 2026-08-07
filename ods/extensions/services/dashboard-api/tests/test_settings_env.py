@@ -1320,3 +1320,87 @@ def test_env_example_keys_are_present_in_schema():
     schema_keys = set(schema.get("properties", {}))
 
     assert documented_keys - schema_keys == set()
+
+
+# --- multi-consumer apply routing -----------------------------------------
+
+
+class TestMultiConsumerApplyRouting:
+    """Some .env keys are read by more than one compose service. Scheduling
+    only the first one leaves the others on the old value while the apply
+    summary reports success."""
+
+    def test_llm_api_url_schedules_every_consumer(self):
+        import settings
+
+        plan = settings._compute_env_apply_plan(
+            {"LLM_API_URL": "http://old:8080"},
+            {"LLM_API_URL": "http://new:8080"},
+        )
+        assert plan["services"] == [
+            "llama-server",
+            "open-webui",
+            "openclaw",
+            "perplexica",
+            "privacy-shield",
+            "token-spy",
+        ]
+        assert "manual stack restart" not in plan["summary"]
+
+    def test_extra_consumers_respect_the_allowed_service_gate(self):
+        """An extra consumer that is not permitted to be auto-recreated must
+        not sneak in through this table."""
+        import settings
+
+        for extras in settings._EXTRA_APPLY_SERVICES.values():
+            for service in extras:
+                assert service in settings._SETTINGS_APPLY_ALLOWED_SERVICES, service
+
+    def test_extra_consumers_really_read_the_key(self):
+        """Every service listed for a key must reference it in its compose."""
+        import re
+        from pathlib import Path
+
+        import settings
+
+        root = Path(__file__).resolve().parents[4]
+        base = (root / "docker-compose.base.yml").read_text(encoding="utf-8")
+
+        def reads(service: str, key: str) -> bool:
+            match = re.search(
+                rf"\n  {re.escape(service)}:\n(.*?)(?=\n  [a-z][a-z0-9_-]*:\n|\nnetworks:)",
+                base,
+                re.S,
+            )
+            if match and key in match.group(1):
+                return True
+            compose = root / "extensions" / "services" / service / "compose.yaml"
+            return compose.exists() and key in compose.read_text(encoding="utf-8")
+
+        for key, extras in settings._EXTRA_APPLY_SERVICES.items():
+            for service in extras:
+                assert reads(service, key), f"{service} does not read {key}"
+
+    def test_single_consumer_keys_are_unaffected(self):
+        import settings
+
+        plan = settings._compute_env_apply_plan(
+            {"CTX_SIZE": "8192"}, {"CTX_SIZE": "32768"}
+        )
+        assert plan["services"] == ["llama-server"]
+
+    def test_inactive_extra_consumers_are_staged_not_scheduled(self):
+        import settings
+
+        plan = settings._compute_env_apply_plan(
+            {"LLM_API_URL": "http://old:8080"},
+            {"LLM_API_URL": "http://new:8080"},
+            active_services={"llama-server", "open-webui"},
+        )
+        assert plan["services"] == ["llama-server", "open-webui"]
+        assert set(plan["inactiveServices"]) == {
+            "openclaw",
+            "perplexica",
+            "privacy-shield",
+            "token-spy",
+        }
