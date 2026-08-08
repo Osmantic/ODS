@@ -241,10 +241,9 @@ def _filter_history(body: dict, cfg: dict, result: FilterResult,
 
     # Step 3: Apply max_pairs — keep only the N most recent units
     if max_pairs and len(units) > max_pairs:
-        removed_units = units[:-max_pairs]
-        units = units[-max_pairs:]
-        for unit in removed_units:
-            result.messages_removed += len(unit)
+        units, dropped = _drop_leading_units(
+            units, len(units) - max_pairs, always_keep_last_n)
+        result.messages_removed += dropped
 
     # Step 4: Drop old tool calls from older units
     if drop_old_tool_calls and len(units) > drop_after:
@@ -262,6 +261,12 @@ def _filter_history(body: dict, cfg: dict, result: FilterResult,
                     msg = dict(msg)  # shallow copy
                     del msg["tool_calls"]
                     result.tool_chains_dropped += 1
+                    if not msg.get("content"):
+                        # A pure tool-call turn carries content: null. Without
+                        # tool_calls there is nothing left to send, and an
+                        # assistant message with neither is not a valid turn.
+                        result.messages_removed += 1
+                        continue
                 new_unit.append(msg)
             units[i] = new_unit
 
@@ -278,37 +283,30 @@ def _filter_history(body: dict, cfg: dict, result: FilterResult,
                         )
                         result.tool_results_truncated += 1
 
-    # Step 6: Flatten units back into message list
+    # Step 6: Apply max_total_chars if set — still unit at a time, for the
+    # same reason step 2 grouped them: dropping half of a tool-call exchange
+    # leaves a tool result with no preceding assistant tool_calls, which every
+    # OpenAI-compatible server rejects.
+    max_total = cfg.get("max_total_chars")
+    if max_total:
+        while len(units) > 1:
+            total = sum(
+                len(json.dumps(msg, separators=(",", ":")))
+                for unit in units for msg in unit
+            )
+            if total <= max_total:
+                break
+            units, dropped = _drop_leading_units(units, 1, always_keep_last_n)
+            if not dropped:
+                break  # always_keep_last_n floor reached
+            result.messages_removed += dropped
+
+    # Step 7: Flatten units back into message list
     filtered_conv = []
     for unit in units:
         filtered_conv.extend(unit)
 
-    # Step 7: Apply always_keep_last_n safety — ensure the last N raw messages
-    # from the original conversation are present (protects in-flight tool chains)
-    if always_keep_last_n and conv_msgs:
-        tail = conv_msgs[-always_keep_last_n:]
-        # Check if tail messages are already in filtered_conv
-        # by comparing the last N messages
-        tail_ids = {id(m) for m in tail}
-        existing_ids = {id(m) for m in filtered_conv[-always_keep_last_n:]} if filtered_conv else set()
-        if not tail_ids.issubset(existing_ids):
-            # Ensure tail messages are present — they may have been modified by
-            # truncation but should still be in the list since we keep recent units
-            pass  # Units-based approach already preserves recent messages
-
     result.messages_kept = len(system_msgs) + len(filtered_conv)
-
-    # Step 8: Apply max_total_chars if set
-    max_total = cfg.get("max_total_chars")
-    if max_total:
-        while len(filtered_conv) > always_keep_last_n:
-            total = sum(len(json.dumps(m, separators=(",", ":"))) for m in filtered_conv)
-            if total <= max_total:
-                break
-            # Remove the oldest non-system unit
-            filtered_conv.pop(0)
-            result.messages_removed += 1
-        result.messages_kept = len(system_msgs) + len(filtered_conv)
 
     # Reassemble: system messages first, then filtered conversation
     body["messages"] = system_msgs + filtered_conv
@@ -321,6 +319,33 @@ def _filter_history(body: dict, cfg: dict, result: FilterResult,
         )
 
     return body, result
+
+
+def _drop_leading_units(units: list[list[dict]], max_to_drop: int,
+                        keep_last_n: int) -> tuple[list[list[dict]], int]:
+    """Drop up to *max_to_drop* whole units from the front of the conversation.
+
+    Units are atomic (see _group_into_units): an assistant message carrying
+    tool_calls and the tool results answering it have to go together, or the
+    request that reaches llama-server contains a tool result with nothing to
+    answer.
+
+    Stops early rather than letting the retained conversation fall below
+    *keep_last_n* messages, and always leaves at least one unit. Returns the
+    surviving units and how many messages were dropped.
+    """
+    remaining = list(units)
+    dropped_messages = 0
+    for _ in range(max(0, max_to_drop)):
+        if len(remaining) <= 1:
+            break
+        candidate_len = len(remaining[0])
+        kept = sum(len(unit) for unit in remaining)
+        if keep_last_n and kept - candidate_len < keep_last_n:
+            break
+        remaining.pop(0)
+        dropped_messages += candidate_len
+    return remaining, dropped_messages
 
 
 def _group_into_units(messages: list[dict]) -> list[list[dict]]:
