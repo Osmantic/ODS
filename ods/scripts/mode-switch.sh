@@ -2,7 +2,7 @@
 # ============================================================================
 # ODS Mode Switch
 # ============================================================================
-# Usage: ./mode-switch.sh <local|cloud|hybrid> [--status]
+# Usage: ./mode-switch.sh <local|cloud|hybrid> [--dry-run]
 #
 # Switches ODS between local/cloud/hybrid modes by updating .env.
 # This is the backend for `ods mode <mode>`.
@@ -58,6 +58,7 @@ show_status() {
 
 switch_mode() {
     local mode="$1"
+    local dry_run="${2:-false}"
 
     # Validate
     case "$mode" in
@@ -73,16 +74,29 @@ switch_mode() {
         error "External LLM routing is installer-managed. Run './install.sh --no-external-llm' first, then retry the mode switch."
     fi
 
+    local target_url="http://litellm:4000"
+    [[ "$mode" == "local" ]] && target_url="http://llama-server:8080"
+    local litellm_cf="$SCRIPT_DIR/extensions/services/litellm/compose.yaml"
+    local litellm_disabled="${litellm_cf}.disabled"
+
+    if [[ "$dry_run" == "true" ]]; then
+        log "Dry run: no files will be changed."
+        echo "Would set ODS_MODE=$mode"
+        echo "Would set LLM_API_URL=$target_url"
+        if [[ "$mode" != "local" && -f "$litellm_disabled" && ! -f "$litellm_cf" ]]; then
+            echo "Would enable litellm: $litellm_disabled -> $litellm_cf"
+        fi
+        return 0
+    fi
+
     # Update .env
     env_set "ODS_MODE" "$mode"
 
     if [[ "$mode" == "local" ]]; then
-        env_set "LLM_API_URL" "http://llama-server:8080"
+        env_set "LLM_API_URL" "$target_url"
     else
-        env_set "LLM_API_URL" "http://litellm:4000"
+        env_set "LLM_API_URL" "$target_url"
         # Auto-enable litellm extension
-        local litellm_cf="$SCRIPT_DIR/extensions/services/litellm/compose.yaml"
-        local litellm_disabled="${litellm_cf}.disabled"
         if [[ -f "$litellm_disabled" && ! -f "$litellm_cf" ]]; then
             mv "$litellm_disabled" "$litellm_cf"
             success "Auto-enabled litellm for $mode mode"
@@ -98,8 +112,14 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     case "${1:---status}" in
         --status|-s|status) show_status ;;
         --help|-h|help)
-            echo "Usage: mode-switch.sh <local|cloud|hybrid|--status>"
+            echo "Usage: mode-switch.sh <local|cloud|hybrid> [--dry-run]"
+            echo "       mode-switch.sh --status"
             ;;
-        *) switch_mode "${1:-}" ;;
+        *)
+            if [[ $# -gt 2 || ( $# -eq 2 && "$2" != "--dry-run" ) ]]; then
+                error "Usage: mode-switch.sh <local|cloud|hybrid> [--dry-run]"
+            fi
+            switch_mode "${1:-}" "$( [[ "${2:-}" == "--dry-run" ]] && echo true || echo false )"
+            ;;
     esac
 fi

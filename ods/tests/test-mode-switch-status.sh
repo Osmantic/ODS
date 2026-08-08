@@ -145,6 +145,25 @@ check_contains "unknown mode explains itself" "Unknown mode" "$(run_mode "$ROOT"
 ROOT="$(new_root)"
 check_eq "switching without .env exits 1" "1" "$(run_rc "$ROOT" cloud)"
 
+# 8. Dry run previews every mutation without changing files.
+ROOT="$(new_root)"
+mkdir -p "$ROOT/extensions/services/litellm"
+printf 'disabled compose\n' > "$ROOT/extensions/services/litellm/compose.yaml.disabled"
+printf 'ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\n' > "$ROOT/.env"
+BEFORE="$(cat "$ROOT/.env")"
+OUT="$(run_mode "$ROOT" cloud --dry-run)"
+check_eq "dry run exits 0" "0" "$(run_rc "$ROOT" cloud --dry-run)"
+check_contains "dry run previews mode" "Would set ODS_MODE=cloud" "$OUT"
+check_contains "dry run previews routing URL" "Would set LLM_API_URL=http://litellm:4000" "$OUT"
+check_contains "dry run previews extension enable" "Would enable litellm:" "$OUT"
+check_eq "dry run leaves .env unchanged" "$BEFORE" "$(cat "$ROOT/.env")"
+if [[ -f "$ROOT/extensions/services/litellm/compose.yaml.disabled" && ! -e "$ROOT/extensions/services/litellm/compose.yaml" ]]; then
+    pass "dry run leaves litellm compose disabled"
+else
+    fail "dry run leaves litellm compose disabled" "compose file was moved"
+fi
+check_eq "unknown second argument exits 1" "1" "$(run_rc "$ROOT" cloud --preview)"
+
 # ── Summary ───────────────────────────────────────────────────────────────
 
 echo ""
