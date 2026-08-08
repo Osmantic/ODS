@@ -153,3 +153,25 @@ def test_callback_enqueues_without_waiting_for_token_spy(monkeypatch):
             pass
 
     asyncio.run(scenario())
+
+
+def test_callback_maps_call_types_to_wire_endpoints(monkeypatch):
+    callback = load_callback(monkeypatch)
+
+    def path_for(call_type):
+        return callback.build_event(
+            {"model": "default", "messages": [], "call_type": call_type},
+            {"usage": {}},
+            1.0,
+            2.0,
+        )["path"]
+
+    # completion/acompletion is LiteLLM's *chat* entry point; only the
+    # text_completion family is the legacy /v1/completions endpoint.
+    assert path_for("completion") == "/v1/chat/completions"
+    assert path_for("acompletion") == "/v1/chat/completions"
+    assert path_for("text_completion") == "/v1/completions"
+    assert path_for("atext_completion") == "/v1/completions"
+    assert path_for("responses") == "/v1/responses"
+    assert path_for("aresponses") == "/v1/responses"
+    assert path_for(None) == "/v1/chat/completions"
