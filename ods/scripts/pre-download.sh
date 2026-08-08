@@ -261,22 +261,39 @@ verify_cache() {
     echo "Found: $found cached | Missing: $missing required"
 }
 
+has_component() {
+    local components=",$1," component="$2"
+    [[ "$components" == *",$component,"* ]]
+}
+
 download_tier() {
     local tier="$1"
-    local include_voice="${2:-false}"
+    local components="${2:-llm}"
+    local plan_only="${3:-false}"
     
-    if [[ -z "${TIER_MODELS[$tier]:-}" ]]; then
+    if has_component "$components" llm && [[ -z "${TIER_MODELS[$tier]:-}" ]]; then
         error "Unknown tier: $tier"
         echo "Available tiers: nano, edge, pro, cluster"
         exit 1
     fi
     
-    local model="${TIER_MODELS[$tier]}"
-    local size="${MODEL_SIZES_GB[$tier]}"
+    local model=""
+    local size="0"
+    if has_component "$components" llm; then
+        model="${TIER_MODELS[$tier]}"
+        size="${MODEL_SIZES_GB[$tier]}"
+    fi
     
-    echo -e "\n${BOLD}Downloading ${tier} tier models${NC}"
-    echo -e "LLM: $model (~${size}GB)"
+    echo -e "\n${BOLD}Selected offline artifacts${NC}"
+    has_component "$components" llm && echo -e "LLM ($tier): $model (~${size}GB)"
+    has_component "$components" stt && echo -e "STT: $STT_MODEL (~3GB)"
+    has_component "$components" tts && echo -e "TTS: $TTS_MODEL (~0.2GB)"
     echo ""
+
+    if [[ "$plan_only" == "true" ]]; then
+        success "Download plan ready; no network requests were made."
+        return 0
+    fi
     
     # Estimate time
     local est_minutes
@@ -292,12 +309,14 @@ download_tier() {
     fi
     
     # Download LLM
-    download_model "$model" "LLM ($tier tier)" || exit 1
+    if has_component "$components" llm; then
+        download_model "$model" "LLM ($tier tier)" || exit 1
+    fi
     
-    # Download voice components if requested
-    if [[ "$include_voice" == "true" ]]; then
-        echo ""
+    if has_component "$components" stt; then
         download_model "$STT_MODEL" "STT (Whisper)" || warn "STT download failed (optional)"
+    fi
+    if has_component "$components" tts; then
         download_model "$TTS_MODEL" "TTS (Kokoro)" || warn "TTS download failed (optional)"
     fi
     
@@ -337,7 +356,9 @@ interactive_menu() {
     local include_voice="false"
     [[ $voice_choice =~ ^[Yy]$ ]] && include_voice="true"
     
-    download_tier "$tier_choice" "$include_voice"
+    local components="llm"
+    [[ "$include_voice" == "true" ]] && components="llm,stt,tts"
+    download_tier "$tier_choice" "$components" false
 }
 
 #=============================================================================
@@ -353,6 +374,8 @@ Usage: $0 [options]
 Options:
   --tier TIER      Download models for specific tier (nano/edge/pro/cluster)
   --with-voice     Also download STT and TTS models
+  --component NAME Download only a selected component: llm, stt, or tts (repeatable)
+  --plan           Print the selected artifacts without installing dependencies or downloading
   --list           List available models and sizes
   --verify         Check which models are already cached
   --help           Show this help message
@@ -361,6 +384,7 @@ Examples:
   $0                      # Interactive mode (auto-detect tier)
   $0 --tier pro           # Download pro tier models
   $0 --tier edge --with-voice  # Download edge tier + voice models
+  $0 --component stt --component tts --plan  # Preview a voice-only cache plan
   $0 --verify             # Check cache status
 EOF
 }
@@ -368,6 +392,8 @@ EOF
 main() {
     local tier=""
     local include_voice="false"
+    local components=""
+    local plan_only="false"
     local action="interactive"
     
     while [[ $# -gt 0 ]]; do
@@ -379,6 +405,20 @@ main() {
                 ;;
             --with-voice)
                 include_voice="true"
+                shift
+                ;;
+            --component)
+                case "${2:-}" in
+                    llm|stt|tts) ;;
+                    *) error "--component must be one of: llm, stt, tts"; exit 1 ;;
+                esac
+                components="${components:+$components,}$2"
+                action="download"
+                shift 2
+                ;;
+            --plan)
+                plan_only="true"
+                action="download"
                 shift
                 ;;
             --list)
@@ -407,8 +447,16 @@ main() {
             ;;
         download)
             print_banner
-            check_dependencies
-            download_tier "$tier" "$include_voice"
+            if [[ "$include_voice" == "true" && -n "$components" ]]; then
+                error "--with-voice cannot be combined with --component"
+                exit 1
+            fi
+            if [[ -z "$components" ]]; then
+                components="llm"
+                [[ "$include_voice" == "true" ]] && components="llm,stt,tts"
+            fi
+            [[ "$plan_only" == "true" ]] || check_dependencies
+            download_tier "$tier" "$components" "$plan_only"
             ;;
         list)
             print_banner
