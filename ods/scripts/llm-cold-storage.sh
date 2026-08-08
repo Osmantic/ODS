@@ -4,7 +4,7 @@
 #
 # Part of ODS tooling.
 #
-# Models not accessed in 7+ days are moved to cold storage on a backup drive.
+# Models not accessed for the configured retention period are moved to cold storage.
 # A symlink replaces the original so HuggingFace cache resolution still works.
 # Models can be restored manually or are auto-detected if a process loads them.
 #
@@ -14,13 +14,14 @@
 #   ./llm-cold-storage.sh --restore <name> # Restore a specific model
 #   ./llm-cold-storage.sh --restore-all    # Restore all archived models
 #   ./llm-cold-storage.sh --status         # Show archive status
+#   ./llm-cold-storage.sh --max-idle-days 30 [--execute]
 #
 set -uo pipefail
 
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface/hub}"
 COLD_DIR="${COLD_DIR:-$HOME/llm-cold-storage}"
 LOG_FILE="${LOG_FILE:-$HOME/.local/log/llm-cold-storage.log}"
-MAX_IDLE_DAYS=7
+MAX_IDLE_DAYS="${MAX_IDLE_DAYS:-7}"
 
 # Ensure the log directory exists
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -224,30 +225,64 @@ show_status() {
     echo "Cold storage total: $(du -sh "$COLD_DIR" 2>/dev/null | cut -f1)"
 }
 
-case "${1:-}" in
-    --execute)
-        do_archive false
-        ;;
-    --restore)
-        [[ -n "${2:-}" ]] || { echo "Usage: $0 --restore <model-name>"; exit 1; }
-        do_restore "$2"
-        ;;
-    --restore-all)
-        do_restore_all
-        ;;
-    --status)
-        show_status
-        ;;
-    --help|-h)
+ACTION="archive-dry-run"
+RESTORE_NAME=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --execute)
+            ACTION="archive"
+            shift
+            ;;
+        --max-idle-days)
+            [[ -n "${2:-}" ]] || { echo "ERROR: --max-idle-days requires a value" >&2; exit 2; }
+            MAX_IDLE_DAYS="$2"
+            shift 2
+            ;;
+        --restore)
+            [[ -n "${2:-}" ]] || { echo "Usage: $0 --restore <model-name>"; exit 1; }
+            ACTION="restore"
+            RESTORE_NAME="$2"
+            shift 2
+            ;;
+        --restore-all)
+            ACTION="restore-all"
+            shift
+            ;;
+        --status)
+            ACTION="status"
+            shift
+            ;;
+        --help|-h)
+            ACTION="help"
+            shift
+            ;;
+        *)
+            echo "ERROR: Unknown argument: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [[ ! "$MAX_IDLE_DAYS" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: --max-idle-days must be a non-negative integer" >&2
+    exit 2
+fi
+
+case "$ACTION" in
+    archive) do_archive false ;;
+    archive-dry-run) do_archive true ;;
+    restore) do_restore "$RESTORE_NAME" ;;
+    restore-all) do_restore_all ;;
+    status) show_status ;;
+    help)
         echo "Usage: $0 [--execute|--restore <name>|--restore-all|--status|--help]"
         echo ""
         echo "  (no args)            Dry-run: show what would be archived"
-        echo "  --execute            Archive idle models (>$MAX_IDLE_DAYS days)"
+        echo "  --execute            Archive idle models (default: $MAX_IDLE_DAYS days)"
+        echo "  --max-idle-days N    Override the archive age threshold (may precede --execute)"
         echo "  --restore <name>     Restore model from cold storage"
         echo "  --restore-all        Restore all archived models"
         echo "  --status             Show current hot/cold status"
-        ;;
-    *)
-        do_archive true
         ;;
 esac
