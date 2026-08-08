@@ -547,6 +547,55 @@ def test_atomic_write_failure_preserves_known_good_config() -> None:
         assert not list(target.parent.glob(f".{target.name}.*.tmp"))
 
 
+def test_write_path_routes_through_the_atomic_replace() -> None:
+    """The --write loop itself must not truncate a live config in place.
+
+    config/litellm/<mode>.yaml and config/model-router/endpoints.json are
+    bind-mounted into running containers, so a re-render that truncates first
+    leaves a window where the container reads an empty or partial file. The
+    helper being atomic is not enough — the write loop has to actually use it,
+    and a regression back to a plain write_text would still produce the same
+    final bytes, the same 0644 mode and no temp leftovers. Failing the replace
+    is what separates the two: atomic leaves the previous file intact, an
+    in-place write has already destroyed it.
+    """
+    renderer = load_renderer_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config" / "model-router" / "endpoints.json"
+        target.parent.mkdir(parents=True)
+        target.write_text('{"endpoints": ["known-good"]}\n', encoding="utf-8")
+
+        args = renderer.parse_args([
+            "--surface", "model-router-endpoints",
+            "--switchboard-mode", "enabled",
+            "--output-root", tmp,
+            "--write",
+        ])
+        original_replace = renderer.os.replace
+        original_sleep = renderer.time.sleep
+
+        def fail_replace(*_args, **_kwargs) -> None:
+            raise PermissionError("injected replace failure")
+
+        renderer.os.replace = fail_replace
+        renderer.time.sleep = lambda _seconds: None
+        try:
+            try:
+                renderer.render(args)
+            except PermissionError as exc:
+                assert "injected replace failure" in str(exc)
+            else:
+                raise AssertionError(
+                    "the write loop did not go through the atomic replace"
+                )
+        finally:
+            renderer.os.replace = original_replace
+            renderer.time.sleep = original_sleep
+
+        assert target.read_text(encoding="utf-8") == '{"endpoints": ["known-good"]}\n'
+        assert not list(target.parent.glob(f".{target.name}.*.tmp"))
+
+
 def main() -> int:
     tests = [
         test_all_surfaces_render,
@@ -572,6 +621,7 @@ def main() -> int:
         test_perplexica_default_model_matches_route,
         test_write_mode_writes_under_output_root,
         test_atomic_write_failure_preserves_known_good_config,
+        test_write_path_routes_through_the_atomic_replace,
     ]
     for test in tests:
         test()
