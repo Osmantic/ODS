@@ -377,6 +377,28 @@ def build_compact_soul(env_path: Path) -> str:
     ])
 
 
+def build_context_snapshot(env_path: Path) -> dict[str, object]:
+    """Return the detected install facts without the persona prose wrapper."""
+    env = _read_env(env_path)
+    repo_root = env_path.resolve().parent
+    running = sorted(_running_services(repo_root))
+    device = env.get("ODS_DEVICE_NAME") or socket.gethostname() or "this machine"
+    model = _loaded_model() or env.get("LLM_MODEL") or env.get("GGUF_FILE")
+    context = env.get("CTX_SIZE") or env.get("MAX_CONTEXT")
+    return {
+        "host": device,
+        "gpu_backend": _humanize_gpu(env),
+        "model": model,
+        "context_size": int(context) if context and context.isdigit() else None,
+        "services": running,
+        "urls": {
+            "dashboard": f"http://{device}.local",
+            "talk": f"http://talk.{device}.local",
+            "chat": f"http://chat.{device}.local",
+        },
+    }
+
+
 def build_soul(
     template_path: Path,
     env_path: Path,
@@ -461,13 +483,25 @@ def main(argv: list[str] | None = None) -> int:
         default="full",
         help="Prompt profile to render. local-lemonade keeps Windows AMD prompts compact.",
     )
+    parser.add_argument(
+        "--format",
+        choices=["markdown", "json"],
+        default="markdown",
+        help="Output format for --check (default: markdown).",
+    )
     args = parser.parse_args(argv)
 
     if args.check:
-        ctx = build_compact_soul(args.env) if args.profile == "local-lemonade" else build_context_block(args.env)
-        sys.stdout.write(ctx)
-        sys.stdout.write("\n")
+        if args.format == "json":
+            print(json.dumps(build_context_snapshot(args.env), separators=(",", ":")))
+        else:
+            ctx = build_compact_soul(args.env) if args.profile == "local-lemonade" else build_context_block(args.env)
+            sys.stdout.write(ctx)
+            sys.stdout.write("\n")
         return 0
+
+    if args.format != "markdown":
+        parser.error("--format json requires --check")
 
     if not args.template.exists():
         print(f"ERROR: template not found at {args.template}", file=sys.stderr)
