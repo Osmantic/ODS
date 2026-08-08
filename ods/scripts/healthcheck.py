@@ -122,20 +122,23 @@ def _parse_host_port(raw: str) -> Tuple[str, int]:
 def _parse_expected_status(expr: str) -> Set[int]:
     """Parse '200,204,3xx,401-403' => allowed status codes set."""
     allowed: Set[int] = set()
-    for part in (p.strip() for p in expr.split(",") if p.strip()):
-        if part.endswith("xx") and len(part) == 3 and part[0].isdigit():
-            base = int(part[0]) * 100
-            allowed.update(range(base, base + 100))
-            continue
-        if "-" in part:
-            lo_s, hi_s = (x.strip() for x in part.split("-", 1))
-            lo = int(lo_s)
-            hi = int(hi_s)
-            if lo > hi:
-                lo, hi = hi, lo
-            allowed.update(range(lo, hi + 1))
-            continue
-        allowed.add(int(part))
+    try:
+        for part in (p.strip() for p in expr.split(",") if p.strip()):
+            if part.endswith("xx") and len(part) == 3 and part[0].isdigit():
+                base = int(part[0]) * 100
+                allowed.update(range(base, base + 100))
+                continue
+            if "-" in part:
+                lo_s, hi_s = (x.strip() for x in part.split("-", 1))
+                lo = int(lo_s)
+                hi = int(hi_s)
+                if lo > hi:
+                    lo, hi = hi, lo
+                allowed.update(range(lo, hi + 1))
+                continue
+            allowed.add(int(part))
+    except ValueError as exc:
+        raise ValueError(f"invalid status code specification '{expr}': {exc}") from exc
 
     if not allowed:
         raise ValueError("--expect-status produced empty set")
