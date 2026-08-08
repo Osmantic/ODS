@@ -6,6 +6,7 @@ TIER="1"
 GPU_BACKEND="nvidia"
 PROFILE_OVERLAYS=""
 ENV_MODE="false"
+JSON_MODE="false"
 SKIP_BROKEN="false"
 GPU_COUNT="1"
 ODS_MODE="${ODS_MODE:-local}"
@@ -35,6 +36,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --env)
             ENV_MODE="true"
+            shift
+            ;;
+        --json)
+            JSON_MODE="true"
             shift
             ;;
         --gpu-count)
@@ -73,7 +78,7 @@ if ! "$PYTHON_CMD" -c 'import yaml' >/dev/null 2>&1; then
     exit 2
 fi
 
-"$PYTHON_CMD" - "$SCRIPT_DIR" "$TIER" "$GPU_BACKEND" "$PROFILE_OVERLAYS" "$ENV_MODE" "$SKIP_BROKEN" "$GPU_COUNT" "$ODS_MODE" "$SKIP_GPU_OVERLAYS" <<'PY'
+"$PYTHON_CMD" - "$SCRIPT_DIR" "$TIER" "$GPU_BACKEND" "$PROFILE_OVERLAYS" "$ENV_MODE" "$SKIP_BROKEN" "$GPU_COUNT" "$ODS_MODE" "$SKIP_GPU_OVERLAYS" "$JSON_MODE" <<'PY'
 import os
 import pathlib
 import platform
@@ -93,6 +98,7 @@ skip_gpu_overlays = {
     for x in (sys.argv[9] or os.environ.get("ODS_SKIP_GPU_OVERLAYS", "")).split(",")
     if x.strip()
 }
+json_mode = (sys.argv[10] or "false").lower() == "true"
 lemonade_external = (
     os.environ.get("LEMONADE_EXTERNAL", "").lower() in {"1", "true", "yes", "on"}
     or (
@@ -760,7 +766,17 @@ def to_flags(files):
 
 resolved_flags = to_flags(resolved)
 
-if env_mode:
+if json_mode:
+    print(json.dumps({
+        "primary_file": primary,
+        "files": resolved,
+        "flags": resolved_flags,
+        "tier": tier,
+        "gpu_backend": gpu_backend,
+        "gpu_count": gpu_count,
+        "ods_mode": ods_mode,
+    }, separators=(",", ":")))
+elif env_mode:
     def out(key, value):
         safe = str(value).replace("\\", "\\\\").replace('"', '\\"')
         print(f'{key}="{safe}"')
