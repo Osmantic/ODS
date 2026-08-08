@@ -23,12 +23,29 @@ validate_service_dependencies() {
 
     # Core services defined in docker-compose.base.yml are always enabled
     # (they have no extension manifest, so the registry does not know about them)
-    local _base_compose="${INSTALL_DIR:-$SCRIPT_DIR}/docker-compose.base.yml"
+    #
+    # Only read keys inside the top-level `services:` block. Matching every
+    # two-space-indented key in the file also picked up the keys of the
+    # `x-logging` YAML anchor (`driver`, `options`) and the `default` network,
+    # so names that are not services were accepted as satisfied dependencies —
+    # and every anchor, network or volume added later would silently join them.
+    local _base_compose="${INSTALL_DIR:-${SCRIPT_DIR:-.}}/docker-compose.base.yml"
     if [[ -f "$_base_compose" ]]; then
         local _svc
         while IFS= read -r _svc; do
             enabled_services[$_svc]=1
-        done < <(sed -n 's/^  \([a-z][a-z0-9_-]*\):.*/\1/p' "$_base_compose" 2>/dev/null)
+        done < <(awk '
+            /^[A-Za-z_][A-Za-z0-9_.-]*:/ {
+                in_services = ($0 ~ /^services:([[:space:]]|$)/)
+                next
+            }
+            !in_services { next }
+            /^  [a-z][a-z0-9_-]*:/ {
+                sub(/:.*/, "")
+                sub(/^  /, "")
+                print
+            }
+        ' "$_base_compose" 2>/dev/null)
     fi
 
     # Check each enabled service's dependencies

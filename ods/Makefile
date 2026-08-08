@@ -146,6 +146,9 @@ test: ## Run unit and contract tests
 	@echo "=== CLI user-extension dependency resolution ==="
 	@bash tests/test-cli-user-extension-deps.sh
 	@echo ""
+	@echo "=== service dependency validation gate ==="
+	@bash tests/test-validate-dependencies.sh
+	@echo ""
 	@echo "=== session cleanup lifecycle ==="
 	@bash tests/test-session-cleanup.sh
 
