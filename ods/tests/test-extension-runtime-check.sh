@@ -193,6 +193,27 @@ else
     fail "STRICT=1: expected [BAD] line in output, got: $(echo "$out_strict" | tail -5)"
 fi
 
+# Targeted checks run only requested extension IDs and reject unknown IDs.
+set +e
+out_target=$(PATH="$MOCK_BIN:$PATH" bash "$CHK" --service test-svc "$FIXTURE_DIR" 2>&1)
+code_target=$?
+set -e
+if [[ $code_target -eq 0 && "$out_target" == *"target(s): test-svc"* && "$out_target" == *"[test-svc]"* ]]; then
+    pass "--service targets a registered extension at the public CLI boundary"
+else
+    fail "--service target failed (exit=$code_target)"
+fi
+
+set +e
+PATH="$MOCK_BIN:$PATH" bash "$CHK" --service missing-svc "$FIXTURE_DIR" > /dev/null 2>&1
+code_missing=$?
+set -e
+if [[ $code_missing -eq 2 ]]; then
+    pass "--service rejects unknown extension IDs"
+else
+    fail "--service unknown ID returned $code_missing instead of 2"
+fi
+
 rm -rf "$MOCK_BIN"
 
 echo ""
