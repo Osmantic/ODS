@@ -105,7 +105,7 @@ check_dependencies() {
     # Ensure huggingface_hub is installed
     if ! "$pycmd" -c "import huggingface_hub" 2>/dev/null; then
         log "Installing huggingface_hub..."
-        "$pipcmd" install -q huggingface_hub
+        "$pipcmd" install -q huggingface_hub || "$pipcmd" install -q --break-system-packages huggingface_hub 2>/dev/null || true
     fi
 
     export ODS_PYTHON_CMD="$pycmd"
