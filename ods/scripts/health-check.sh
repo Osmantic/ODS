@@ -155,6 +155,35 @@ check_container_state() {
     fi
 }
 
+# Report the container's Docker healthcheck verdict: healthy|unhealthy|starting|none.
+# Internal-only services (Compose `expose:` with no published host port — e.g.
+# model-router) are unreachable on 127.0.0.1, so a host-loopback probe can never
+# confirm them; Docker's own in-container healthcheck is the correct source of
+# truth. Prints empty (and returns 0) when docker or the container is
+# unavailable so the caller can fall back to its normal probe.
+check_container_health() {
+    local sid="$1"
+    local container="${SERVICE_CONTAINERS[$sid]}"
+
+    [[ -z "$container" ]] && return 0
+    command -v docker &>/dev/null || return 0
+
+    # Mirror check_container_state's 2>&1 + exit-code pattern (avoids swallowing
+    # to /dev/null). '{{else}}none{{end}}' distinguishes "no healthcheck defined"
+    # from an unhealthy verdict.
+    local health inspect_exit
+    health=$(docker inspect \
+        --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+        "$container" 2>&1)
+    inspect_exit=$?
+    if [[ $inspect_exit -ne 0 ]]; then
+        return 0
+    fi
+
+    echo "$health"
+    return 0
+}
+
 # Generic registry-driven service health check
 test_service() {
     local sid="$1"
@@ -182,6 +211,24 @@ test_service() {
         result_set "$sid" "ok"
         return 0
     fi
+
+    # Fallback for internal-only services. model-router and the remote-provider
+    # services publish their port with Compose `expose:` (container network only,
+    # no host port), so the 127.0.0.1 probe above always fails even when the
+    # service is up — the root cause of #2624 ("ODS Model Router: not responding"
+    # while the container's own healthcheck returns 200). When Docker's
+    # in-container healthcheck vouches for a running container, trust it. This
+    # only ever upgrades a would-be fail to ok, so host-published services keep
+    # their existing curl-based behavior unchanged.
+    if [[ "$container_state" == "running" ]]; then
+        local container_health
+        container_health=$(check_container_health "$sid")
+        if [[ "$container_health" == "healthy" ]]; then
+            result_set "$sid" "ok"
+            return 0
+        fi
+    fi
+
     result_set "$sid" "fail"
     ANY_FAIL=true
     return 1

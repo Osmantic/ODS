@@ -267,6 +267,107 @@ else
     skip "async aggregation tests (python3 + PyYAML required for service registry)"
 fi
 
+# 8b. #2624 regression: an internal-only core service (Compose `expose:` with no
+# published host port — model-router) is unreachable on 127.0.0.1, so the host
+# curl probe always fails even when the container is up. test_service must fall
+# back to Docker's own healthcheck verdict and report the service ok. A curl-only
+# probe reports "not responding" here, which is the bug this guards against.
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+    SANDBOX=$(mktemp -d)
+    # shellcheck disable=SC2064
+    trap "rm -rf '$SANDBOX'" EXIT
+
+    mkdir -p "$SANDBOX/scripts" "$SANDBOX/lib" "$SANDBOX/bin" \
+        "$SANDBOX/extensions/services/fakeint"
+    cp "$ROOT_DIR/scripts/health-check.sh" "$SANDBOX/scripts/"
+    cp "$ROOT_DIR/lib/service-registry.sh" "$ROOT_DIR/lib/safe-env.sh" "$SANDBOX/lib/"
+    if [[ -f "$ROOT_DIR/lib/python-cmd.sh" ]]; then
+        cp "$ROOT_DIR/lib/python-cmd.sh" "$SANDBOX/lib/"
+    fi
+
+    cat > "$SANDBOX/extensions/services/fakeint/manifest.yaml" <<'MANIFEST'
+schema_version: ods.services.v1
+service:
+  id: fakeint
+  name: Fake Internal-Only Core
+  category: core
+  container_name: ods-fakeint
+  external_port_default: 9099
+  health: /health
+MANIFEST
+
+    # curl stub: llama-server inference responds; the internal-only service does
+    # not (it has no host port to reach), so every probe to it fails.
+    cat > "$SANDBOX/bin/curl" <<'CURLSTUB'
+#!/bin/bash
+for a in "$@"; do
+  case "$a" in
+    *"/v1/completions"*) echo '{"text":"ok"}'; exit 0 ;;
+  esac
+done
+exit 7
+CURLSTUB
+    chmod +x "$SANDBOX/bin/curl"
+
+    # docker stub: container is running and its Docker healthcheck is healthy.
+    # The health query passes a '.State.Health'-bearing --format; the plain
+    # state query does not — the stub distinguishes them.
+    cat > "$SANDBOX/bin/docker" <<'DOCKERSTUB'
+#!/bin/bash
+for a in "$@"; do
+  case "$a" in
+    *"State.Health"*) echo "healthy"; exit 0 ;;
+  esac
+done
+echo "running"
+exit 0
+DOCKERSTUB
+    chmod +x "$SANDBOX/bin/docker"
+
+    set +e
+    int_json=$(cd "$SANDBOX" && PATH="$SANDBOX/bin:$PATH" INSTALL_DIR="$SANDBOX" \
+        bash scripts/health-check.sh --json 2>&1)
+    set -e
+
+    if echo "$int_json" | grep -q '"fakeint": "ok"'; then
+        pass "internal-only core service reported healthy via Docker healthcheck (#2624)"
+    else
+        got=$(echo "$int_json" | grep -o '"fakeint": "[^"]*"' | head -1)
+        fail "internal-only service should be ok via Docker health; got: ${got:-<none>}"
+    fi
+
+    # Negative control: same unreachable service, but Docker reports unhealthy —
+    # the fallback must NOT upgrade it, so the service stays fail.
+    cat > "$SANDBOX/bin/docker" <<'DOCKERSTUB'
+#!/bin/bash
+for a in "$@"; do
+  case "$a" in
+    *"State.Health"*) echo "unhealthy"; exit 0 ;;
+  esac
+done
+echo "running"
+exit 0
+DOCKERSTUB
+    chmod +x "$SANDBOX/bin/docker"
+
+    set +e
+    unh_json=$(cd "$SANDBOX" && PATH="$SANDBOX/bin:$PATH" INSTALL_DIR="$SANDBOX" \
+        bash scripts/health-check.sh --json 2>&1)
+    set -e
+
+    if echo "$unh_json" | grep -q '"fakeint": "fail"'; then
+        pass "unhealthy internal-only service stays fail (no false-positive upgrade)"
+    else
+        got=$(echo "$unh_json" | grep -o '"fakeint": "[^"]*"' | head -1)
+        fail "unhealthy internal-only service must remain fail; got: ${got:-<none>}"
+    fi
+
+    rm -rf "$SANDBOX"
+    trap - EXIT
+else
+    skip "#2624 internal-only Docker-health fallback (python3 + PyYAML required)"
+fi
+
 # 8. Disk probe uses POSIX df (-P), not the wrap-prone -h
 if grep -qE 'df -P ' "$ROOT_DIR/scripts/health-check.sh"; then
     pass "test_disk uses POSIX df -P (avoids long-device-name line wrapping)"
