@@ -81,8 +81,10 @@ function Update-WindowsOpenCodeConfigObject {
     }
 
     Set-OpenCodeObjectProperty -Target $Config -Name '$schema' -Value "https://opencode.ai/config.json"
-    Set-OpenCodeObjectProperty -Target $Config -Name 'model' -Value "llama-server/$ModelId"
-    Set-OpenCodeObjectProperty -Target $Config -Name 'small_model' -Value "llama-server/$ModelId"
+    if (-not [string]::IsNullOrWhiteSpace($ModelId)) {
+        Set-OpenCodeObjectProperty -Target $Config -Name 'model' -Value "llama-server/$ModelId"
+        Set-OpenCodeObjectProperty -Target $Config -Name 'small_model' -Value "llama-server/$ModelId"
+    }
 
     if (-not $Config.PSObject.Properties['provider'] -or $null -eq $Config.provider) {
         Set-OpenCodeObjectProperty -Target $Config -Name 'provider' -Value ([pscustomobject]@{})
@@ -106,19 +108,21 @@ function Update-WindowsOpenCodeConfigObject {
     if (-not $llamaProvider.PSObject.Properties['models'] -or $null -eq $llamaProvider.models) {
         Set-OpenCodeObjectProperty -Target $llamaProvider -Name 'models' -Value ([pscustomobject]@{})
     }
-    $models = $llamaProvider.models
+$models = $llamaProvider.models
 
-    if (-not $models.PSObject.Properties[$ModelId] -or $null -eq $models.PSObject.Properties[$ModelId].Value) {
-        Set-OpenCodeObjectProperty -Target $models -Name $ModelId -Value ([pscustomobject]@{})
-    }
-    $modelEntry = $models.PSObject.Properties[$ModelId].Value
-    Set-OpenCodeObjectProperty -Target $modelEntry -Name 'name' -Value $ModelName
+    if (-not [string]::IsNullOrWhiteSpace($ModelId)) {
+        if (-not $models.PSObject.Properties[$ModelId] -or $null -eq $models.PSObject.Properties[$ModelId].Value) {
+            Set-OpenCodeObjectProperty -Target $models -Name $ModelId -Value ([pscustomobject]@{})
+        }
+        $modelEntry = $models.PSObject.Properties[$ModelId].Value
+        Set-OpenCodeObjectProperty -Target $modelEntry -Name 'name' -Value $ModelName
 
-    if (-not $modelEntry.PSObject.Properties['limit'] -or $null -eq $modelEntry.limit) {
-        Set-OpenCodeObjectProperty -Target $modelEntry -Name 'limit' -Value ([pscustomobject]@{})
+        if (-not $modelEntry.PSObject.Properties['limit'] -or $null -eq $modelEntry.limit) {
+            Set-OpenCodeObjectProperty -Target $modelEntry -Name 'limit' -Value ([pscustomobject]@{})
+        }
+        Set-OpenCodeObjectProperty -Target $modelEntry.limit -Name 'context' -Value $ContextLimit
+        Set-OpenCodeObjectProperty -Target $modelEntry.limit -Name 'output' -Value 32768
     }
-    Set-OpenCodeObjectProperty -Target $modelEntry.limit -Name 'context' -Value $ContextLimit
-    Set-OpenCodeObjectProperty -Target $modelEntry.limit -Name 'output' -Value 32768
 
     return $Config
 }
