@@ -407,8 +407,17 @@ def load_state() -> None:
 
 
 def save_state() -> None:
-    """Atomically persist the current state. Caller need not hold the lock."""
+    """Atomically persist the current state. Caller need not hold the lock.
+
+    Prunes first: expired window samples, expired breaker samples and the
+    pending-approval/grant caps are enforced here as well as on load. Without
+    this, a scope that stops sending traffic keeps its samples forever (its
+    key is only revisited when that same scope calls again) and the _MAX_*
+    backstops apply only after a restart, so both the in-memory dict and
+    state.json grow monotonically with the number of distinct sessions.
+    """
     with _STATE_LOCK:
+        _prune_state(time.time())
         snapshot = json.dumps(_state, separators=(",", ":"))
     try:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
