@@ -25,6 +25,7 @@ Options
   --method {HEAD,GET}            HTTP method (default: HEAD, with GET fallback)
   --expect-status 200,204,3xx    Allowed HTTP status codes/ranges
   --expect-body-regex REGEX      Regex to match in response body (GET only)
+  --header NAME:VALUE            HTTP request header (repeatable)
   --user-agent UA                Custom user-agent
   --json                         Emit machine-readable JSON result
 
@@ -142,6 +143,22 @@ def _parse_expected_status(expr: str) -> Set[int]:
     return allowed
 
 
+def _parse_headers(values: Sequence[str]) -> List[Tuple[str, str]]:
+    """Parse repeatable NAME:VALUE arguments without accepting header injection."""
+    headers: List[Tuple[str, str]] = []
+    for value in values:
+        if "\r" in value or "\n" in value:
+            raise ValueError("header values must not contain newlines")
+        if ":" not in value:
+            raise ValueError(f"header must use NAME:VALUE syntax: {value!r}")
+        name, raw_value = value.split(":", 1)
+        name = name.strip()
+        if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+            raise ValueError(f"invalid header name: {name!r}")
+        headers.append((name, raw_value.strip()))
+    return headers
+
+
 # -----------------------------
 # Check implementations
 # -----------------------------
@@ -166,9 +183,12 @@ def _http_request(
     method: str,
     timeout: float,
     user_agent: str,
+    headers: Sequence[Tuple[str, str]],
 ) -> urllib.response.addinfourl:
     req = urllib.request.Request(url, method=method)
     req.add_header("User-Agent", user_agent)
+    for name, value in headers:
+        req.add_header(name, value)
     return urllib.request.urlopen(req, timeout=timeout)  # nosec B310
 
 
@@ -180,6 +200,7 @@ def check_http(
     allowed_status: Optional[Set[int]],
     body_regex: Optional[re.Pattern[str]],
     user_agent: str,
+    headers: Sequence[Tuple[str, str]],
 ) -> Tuple[bool, str, Optional[int]]:
     """Check HTTP endpoint matches expected status and optional body regex."""
 
@@ -198,7 +219,13 @@ def check_http(
 
     for m in try_methods:
         try:
-            with _http_request(url, method=m, timeout=timeout, user_agent=user_agent) as resp:
+            with _http_request(
+                url,
+                method=m,
+                timeout=timeout,
+                user_agent=user_agent,
+                headers=headers,
+            ) as resp:
                 status = getattr(resp, "status", None)
 
                 # Status validation
@@ -286,6 +313,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default="ODS-Healthcheck/1.0",
         help="User-Agent header",
     )
+    p.add_argument(
+        "--header",
+        action="append",
+        default=[],
+        metavar="NAME:VALUE",
+        help="HTTP request header (repeatable)",
+    )
     p.add_argument("--json", action="store_true", help="Emit JSON result")
     return p.parse_args(argv)
 
@@ -302,6 +336,24 @@ def main(argv: Sequence[str]) -> int:
         kind, norm = _parse_target(args.target)
     except ValueError as exc:
         res = Result(ok=False, target=args.target, kind="unknown", detail=str(exc))
+        if args.json:
+            print(res.to_json())
+        else:
+            print(f"[FAIL] {res.detail}")
+        return 2
+
+    try:
+        headers = _parse_headers(args.header)
+    except ValueError as exc:
+        res = Result(ok=False, target=args.target, kind=kind, detail=f"invalid --header: {exc}")
+        if args.json:
+            print(res.to_json())
+        else:
+            print(f"[FAIL] {res.detail}")
+        return 2
+
+    if kind != "http" and headers:
+        res = Result(ok=False, target=args.target, kind=kind, detail="--header requires an HTTP target")
         if args.json:
             print(res.to_json())
         else:
@@ -379,6 +431,7 @@ def main(argv: Sequence[str]) -> int:
                 allowed_status=allowed_status,
                 body_regex=body_re,
                 user_agent=args.user_agent,
+                headers=headers,
             ),
             retries=args.retries,
         )
