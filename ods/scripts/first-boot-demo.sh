@@ -2,7 +2,7 @@
 # ODS First Boot Demo
 # Shows off what your local AI stack can do in under 2 minutes
 #
-# Usage: ./first-boot-demo.sh [--all] [--quick]
+# Usage: ./first-boot-demo.sh [--all] [--quick] [--health-only]
 # Mission: M5 (Clonable ODS Setup Server)
 
 set -euo pipefail
@@ -43,15 +43,18 @@ DEMO_MODEL="${LLM_MODEL:-Qwen/Qwen2.5-32B-Instruct-AWQ}"
 
 QUICK_MODE=false
 ALL_MODE=false
+HEALTH_ONLY=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --quick) QUICK_MODE=true; shift ;;
         --all) ALL_MODE=true; shift ;;
+        --health-only) HEALTH_ONLY=true; QUICK_MODE=true; shift ;;
         -h|--help) 
-            echo "Usage: $0 [--quick] [--all]"
+            echo "Usage: $0 [--quick] [--all] [--health-only]"
             echo "  --quick  Skip slow demos, just show what's available"
             echo "  --all    Run all demos including voice (requires audio files)"
+            echo "  --health-only  Check service availability without running prompts"
             exit 0
             ;;
         *) shift ;;
@@ -59,7 +62,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Dependency check — jq is required for parsing API responses.
-if ! command -v jq >/dev/null 2>&1; then
+if [[ "$HEALTH_ONLY" != "true" ]] && ! command -v jq >/dev/null 2>&1; then
     echo "Error: 'jq' is required for first-boot-demo.sh but was not found in PATH."
     echo "Install it with:  sudo apt install jq   (Debian/Ubuntu)"
     echo "                  brew install jq        (macOS)"
@@ -186,6 +189,15 @@ fi
 
 echo ""
 echo -e "${BOLD}Services: ${SERVICES_OK}/${SERVICES_TOTAL} running${NC}"
+
+if [[ "$HEALTH_ONLY" == "true" ]]; then
+    if [[ "$LLM_AVAILABLE" == "true" && "$SERVICES_OK" -eq "$SERVICES_TOTAL" ]]; then
+        success "Core services are ready."
+        exit 0
+    fi
+    fail "One or more core services are unavailable."
+    exit 1
+fi
 
 if [[ "$LLM_AVAILABLE" != "true" ]]; then
     echo -e "\n${RED}LLM (llama-server) is required for demos. Is it still loading?${NC}"
