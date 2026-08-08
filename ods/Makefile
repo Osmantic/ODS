@@ -92,6 +92,9 @@ test: ## Run unit and contract tests
 	@echo "=== Bash 3.2 guard contracts ==="
 	@bash tests/test-bash32-guards.sh
 	@echo ""
+	@echo "=== memory-shepherd locking protocol ==="
+	@bash tests/test-memory-shepherd-lock.sh
+	@echo ""
 	@echo "=== CLI update post-verification ==="
 	@bash tests/test-cli-update-verification.sh
 	@echo ""
