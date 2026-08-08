@@ -148,7 +148,13 @@ collect_backups() {
     local entry base
     while IFS= read -r -d '' entry; do
         base=$(basename "$entry")
-        [[ "$base" =~ ^([A-Za-z0-9_]+-)?[0-9]{8}-[0-9]{6}(\.tar\.gz)?$ ]] || continue
+        # Prefix may span multiple hyphen-separated segments (e.g.
+        # `dashboard-my-name-`): the host agent's BACKUP_ID_RE
+        # (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`) accepts hyphenated labels, so a
+        # `<prefix>-` group with `*` (not `?`) is required to see and retain
+        # them. The trailing YYYYMMDD-HHMMSS timestamp anchor still keeps
+        # unrelated operator files out of the retention set.
+        [[ "$base" =~ ^([A-Za-z0-9_]+-)*[0-9]{8}-[0-9]{6}(\.tar\.gz)?$ ]] || continue
         COLLECTED_BACKUPS+=("$entry")
     done < <(find "$BACKUP_ROOT" -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
 }

@@ -83,13 +83,31 @@ for i in 1 2 3 4 5 6; do
 done
 mkdir -p "$LIFECYCLE_DIR/my-notes"
 
+# #2299: the host agent's BACKUP_ID_RE accepts hyphenated multi-segment labels
+# (e.g. `dashboard-my-name`), so ods-update.sh writes a directory like
+# `backup-dashboard-my-name-<ts>`. collect_backups must recognize a prefix that
+# spans multiple hyphen segments, or these user-named backups are invisible to
+# --list and apply_retention (silently un-pruned).
+MULTISEG_ID="backup-dashboard-my-name-20260715-143022"
+mkdir -p "$LIFECYCLE_DIR/$MULTISEG_ID"
+echo '{"backup_type": "user-data", "description": "multi-segment"}' \
+  > "$LIFECYCLE_DIR/$MULTISEG_ID/manifest.json"
+
 info "Listing pre-existing backups"
 list_out=$(ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$LIFECYCLE_DIR" --list)
 echo "$list_out" | grep -q "20260101-000001" || fail "--list does not show own-format backup IDs"
+echo "$list_out" | grep -q "$MULTISEG_ID" \
+  || fail "--list does not show multi-segment host-agent backup IDs (#2299)"
 if echo "$list_out" | grep -q "my-notes"; then
   fail "--list shows non-backup directories"
 fi
-pass "--list shows own-format backup IDs and skips other directories"
+pass "--list shows own-format and multi-segment backup IDs, skips other directories"
+
+# Scope the multi-segment fixture to the --list assertion above. list_backups
+# and apply_retention share collect_backups, so proving --list sees it proves
+# retention sees it too; remove it here to keep the retention arithmetic below
+# (6 pre-existing + 1 new, RETENTION_COUNT=5) exactly as designed.
+rm -rf "$LIFECYCLE_DIR/$MULTISEG_ID"
 
 info "Running backup with RETENTION_COUNT=5"
 ODS_DIR="$FAKE_ODS" RETENTION_COUNT=5 "$ODS_BACKUP" --output "$LIFECYCLE_DIR" --type config >/dev/null
