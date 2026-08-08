@@ -1,5 +1,6 @@
 """Unit tests for the deployed PII scrubber regex patterns."""
 
+import re
 import sys
 from pathlib import Path
 
@@ -116,6 +117,34 @@ class TestIPDetection:
         text = "IPv6: 2001:0db8:85a3:0000:0000:8a2e:0370:7334"
         result = detector.scrub(text)
         assert "2001:0db8:85a3:0000:0000:8a2e:0370:7334" not in result
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "2001:db8::dead",
+            "fe80::1ff:fe23:4567:890a",
+            "2001:db8:1::ab9:c0a8:102",
+            "::1",
+            "::ffff:c0a8:1",
+            "2001:db8::",
+        ],
+    )
+    def test_compressed_ipv6_leaves_no_tail(self, detector, address):
+        # A compressed address must be consumed whole. Matching only the
+        # "fe80::" head would ship the interface identifier upstream in clear.
+        result = detector.scrub(f"Peer {address} connected")
+        assert "<PII_ip_address_" in result
+        # Nothing but the token may survive: strip it and the surrounding
+        # text must be exactly what went in around the address.
+        assert re.sub(r"<PII_\w+_[0-9a-f]+>", "", result) == "Peer  connected"
+
+    def test_compressed_ipv6_round_trips(self, detector):
+        text = "Peer fe80::1ff:fe23:4567:890a connected"
+        assert detector.restore(detector.scrub(text)) == text
+
+    def test_clock_time_is_not_an_ip(self, detector):
+        result = detector.scrub("Started at 12:34:56 UTC")
+        assert "<PII_ip_address_" not in result
 
 
 # ── API key detection ────────────────────────────────────────────────────────
