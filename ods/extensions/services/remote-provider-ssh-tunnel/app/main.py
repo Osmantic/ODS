@@ -301,7 +301,11 @@ class SshProcessSupervisor:
             self._notice_exited_locked(now)
             try:
                 argv = _combined_ssh_argv(plan)
-            except ValueError:
+            except ValueError as exc:
+                LOGGER.warning(
+                    "ssh plan argv invalid: %s", exc,
+                    extra={"route_path": str(self.route_path)},
+                )
                 self._stop_process_locked()
                 self._last_payload = _health_from_plan(
                     _error_plan("ssh_plan_unavailable", secret_dir=self.secret_dir),
