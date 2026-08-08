@@ -49,6 +49,10 @@ test: ## Run unit and contract tests
 	@echo "=== Docker rootless bind-mount ownership ==="
 	@bash tests/test-rootless-docker-ownership.sh
 	@echo ""
+	@echo "=== GPU topology detection ==="
+	@bash tests/test-nvidia-topo.sh
+	@bash tests/test-amd-topo.sh
+	@echo ""
 	@echo "=== AMD/Lemonade contracts ==="
 	@bash tests/contracts/test-amd-lemonade-contracts.sh
 	@bash tests/test-litellm-amd-auth-enforced.sh
