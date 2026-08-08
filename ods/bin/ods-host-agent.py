@@ -10774,6 +10774,7 @@ def _opencode_config_matches(
     base_url: str,
     api_key: str,
     context_length: int,
+    display_name: str | None = None,
 ) -> bool:
     if not isinstance(config, dict):
         return False
@@ -10784,6 +10785,12 @@ def _opencode_config_matches(
     model = models.get(model_id) if isinstance(models, dict) else None
     limit = model.get("limit") if isinstance(model, dict) else None
     model_ref = f"{provider_id}/{model_id}"
+    npm = llama_provider.get("npm") if isinstance(llama_provider, dict) else None
+    name = model.get("name") if isinstance(model, dict) else None
+    if npm != "@ai-sdk/openai-compatible":
+        return False
+    if display_name is not None and name != display_name:
+        return False
     return bool(
         config.get("model") == model_ref
         and config.get("small_model") == model_ref
@@ -10792,6 +10799,8 @@ def _opencode_config_matches(
         and options.get("apiKey") == api_key
         and isinstance(limit, dict)
         and limit.get("context") == context_length
+        and isinstance(limit.get("output"), int)
+        and limit.get("output") >= min(32768, context_length)
     )
 
 
@@ -10865,7 +10874,7 @@ def _update_opencode_config(
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Could not verify OpenCode config {path}: {exc}") from exc
         if not _opencode_config_matches(
-            persisted, provider_id, route_model_id, base_url, api_key, context_length
+            persisted, provider_id, route_model_id, base_url, api_key, context_length, display_name
         ):
             raise RuntimeError(f"OpenCode persisted model route is stale in {path}")
 
