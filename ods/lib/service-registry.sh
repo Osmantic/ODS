@@ -318,15 +318,18 @@ sr_service_names() {
 sr_compose_flags() {
     sr_load
 
-    # Return cached result if available
+    # Return cached result if available.
+    # Use the arithmetic-assignment form, not ((counter++)): the post-increment
+    # evaluates to the pre-increment value, so the first bump (0 -> 1) makes
+    # ((...)) return exit 1 and aborts any direct caller running under set -e.
     if [[ "$_SR_COMPOSE_FLAGS_CACHED" == "true" ]]; then
-        ((_SR_CACHE_HITS++))
+        _SR_CACHE_HITS=$((_SR_CACHE_HITS + 1))
         echo "$_SR_COMPOSE_FLAGS_CACHE"
         return 0
     fi
 
     # Cache miss: rebuild flags
-    ((_SR_CACHE_MISSES++))
+    _SR_CACHE_MISSES=$((_SR_CACHE_MISSES + 1))
     local flags=""
     for sid in "${SERVICE_IDS[@]}"; do
         local cf="${SERVICE_COMPOSE[$sid]}"
