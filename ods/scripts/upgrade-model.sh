@@ -269,16 +269,41 @@ start_llm() {
 #-----------------------------------------------------------------------------
 
 cmd_list() {
+    local json_output="${1:-false}"
+    local current
+    current=$(get_current_model)
+
+    if [[ "$json_output" == "true" ]]; then
+        local models='[]'
+        if [[ -d "$MODELS_DIR" ]]; then
+            for model_dir in "$MODELS_DIR"/*/; do
+                [[ -f "${model_dir}config.json" ]] || continue
+                local model_name size active
+                model_name=$(basename "$model_dir")
+                size=$(du -sh "$model_dir" 2>/dev/null | cut -f1)
+                active=false
+                [[ "$model_name" == "$current" ]] && active=true
+                models=$(jq -c \
+                    --arg name "$model_name" \
+                    --arg size "$size" \
+                    --argjson active "$active" \
+                    '. + [{name: $name, size: $size, active: $active}]' <<< "$models")
+            done
+        fi
+        jq -cn --arg current "$current" --argjson models "$models" \
+            '{current: (if $current == "" then null else $current end), models: $models}'
+        return 0
+    fi
+
     echo -e "${CYAN}Available Models:${NC}"
     echo ""
     
     if [[ -d "$MODELS_DIR" ]]; then
         for model_dir in "$MODELS_DIR"/*/; do
             if [[ -f "${model_dir}config.json" ]]; then
-                local model_name size current
+                local model_name size
                 model_name=$(basename "$model_dir")
                 size=$(du -sh "$model_dir" 2>/dev/null | cut -f1)
-                current=$(get_current_model)
                 
                 if [[ "$model_name" == "$current" ]]; then
                     echo -e "  ${GREEN}● $model_name${NC} ($size) [ACTIVE]"
@@ -423,7 +448,11 @@ cmd_rollback() {
 main() {
     case "${1:-}" in
         --list|-l)
-            cmd_list
+            if [[ -n "${2:-}" && "${2:-}" != "--json" ]]; then
+                error "Unknown list option: $2"
+                exit 1
+            fi
+            cmd_list "$( [[ "${2:-}" == "--json" ]] && echo true || echo false )"
             ;;
         --current|-c)
             cmd_current
@@ -437,7 +466,7 @@ ODS Model Upgrade
 
 Usage:
   $0 <model-name>        Upgrade to specified model
-  $0 --list              List available models
+  $0 --list [--json]     List available models
   $0 --current           Show current model
   $0 --rollback          Rollback to previous model
   $0 --help              Show this help
