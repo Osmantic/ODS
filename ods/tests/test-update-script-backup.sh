@@ -112,6 +112,84 @@ else
     fail "rotation removed the backup it just created"
 fi
 
+# ---------------------------------------------------------------------------
+# 4. backup labels cannot escape the backup directory
+# ---------------------------------------------------------------------------
+rm -rf "$BACKUPS"
+mkdir -p "$BACKUPS"
+output=$(run_backup "../../../escaped")
+
+if echo "$output" | grep -q "Invalid backup name" && \
+        ! find "$FIXTURE/home/.ods" -type d -name "escaped-*" | grep -q .; then
+    pass "backup rejects path-like labels before writing"
+else
+    fail "path-like backup label escaped or was accepted: $output"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. failed backups never become visible rollback candidates
+# ---------------------------------------------------------------------------
+rm -rf "$BACKUPS"
+mkdir -p "$BACKUPS"
+FAIL_BIN="$FIXTURE/fail-bin"
+mkdir -p "$FAIL_BIN"
+printf '#!/bin/sh\nexit 17\n' > "$FAIL_BIN/cp"
+chmod +x "$FAIL_BIN/cp"
+output=$(PATH="$FAIL_BIN:$PATH" run_backup broken)
+
+if ! find "$BACKUPS" -maxdepth 1 -type d -name "backup-broken-*" | grep -q . && \
+        ! find "$BACKUPS" -maxdepth 1 -type d -name ".backup-broken-*" | grep -q .; then
+    pass "failed backup leaves no final or staging directory"
+else
+    remaining_failed=$(find "$BACKUPS" -maxdepth 1 -type d -name "*backup-broken-*" -print)
+    fail "failed backup remained selectable ($remaining_failed): $output"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. a repeated backup id cannot overwrite a completed snapshot
+# ---------------------------------------------------------------------------
+rm -rf "$BACKUPS"
+mkdir -p "$BACKUPS"
+DATE_BIN="$FIXTURE/date-bin"
+mkdir -p "$DATE_BIN"
+# shellcheck disable=SC2016  # ${1:-} belongs to the generated date stub.
+printf '%s\n' \
+    '#!/bin/sh' \
+    'if [ "${1:-}" = "-u" ]; then' \
+    '  echo 2026-08-23T12:34:56Z' \
+    'else' \
+    '  echo 20260823-123456' \
+    'fi' > "$DATE_BIN/date"
+chmod +x "$DATE_BIN/date"
+
+first_output=$(PATH="$DATE_BIN:$PATH" run_backup collision)
+echo '{"version": "9.9.9"}' > "$FIXTURE/.version"
+second_output=$(PATH="$DATE_BIN:$PATH" run_backup collision)
+collision_count=$(find "$BACKUPS" -maxdepth 1 -type d -name "backup-collision-*" | wc -l)
+collision_dir=$(find "$BACKUPS" -maxdepth 1 -type d -name "backup-collision-*" | head -1)
+
+if [[ "$collision_count" -eq 1 ]] && \
+        grep -q '"version": "2.0.0"' "$collision_dir/.version" && \
+        echo "$second_output" | grep -Eq "already exists|already in progress"; then
+    pass "repeated backup id preserves the completed snapshot"
+else
+    fail "repeated backup id overwrote or duplicated the snapshot: first=$first_output second=$second_output"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. an in-progress backup id rejects a concurrent writer
+# ---------------------------------------------------------------------------
+rm -rf "$BACKUPS"
+mkdir -p "$BACKUPS/.backup-concurrent-20260823-123456.lock"
+output=$(PATH="$DATE_BIN:$PATH" run_backup concurrent)
+
+if echo "$output" | grep -q "Backup already in progress" && \
+        ! find "$BACKUPS" -maxdepth 1 -type d -name "backup-concurrent-*" | grep -q .; then
+    pass "backup lock rejects a concurrent writer"
+else
+    fail "backup ignored an active transaction lock: $output"
+fi
+
 echo ""
 echo "Results: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]] || exit 1

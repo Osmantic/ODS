@@ -688,6 +688,11 @@ cmd_status() {
 
 cmd_backup() {
     local backup_name="${1:-}"
+    if [[ -n "$backup_name" && ! "$backup_name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]]; then
+        log_error "Invalid backup name. Use 1-64 letters, numbers, underscores, or hyphens."
+        return 1
+    fi
+
     local timestamp
     timestamp=$(date +%Y%m%d-%H%M%S)
     local backup_id="backup-${timestamp}"
@@ -697,10 +702,27 @@ cmd_backup() {
     fi
     
     local backup_path="${BACKUP_DIR}/${backup_id}"
+    local lock_path="${BACKUP_DIR}/.${backup_id}.lock"
+    local staging_path=""
     
     log_info "Creating backup: ${backup_id}"
-    
-    mkdir -p "$backup_path"
+
+    mkdir -p "$BACKUP_DIR"
+    if ! mkdir "$lock_path"; then
+        log_error "Backup already in progress: ${backup_id}"
+        return 1
+    fi
+    if [[ -e "$backup_path" ]]; then
+        rmdir "$lock_path"
+        log_error "Backup already exists: ${backup_id}"
+        return 1
+    fi
+
+    # Build out of sight, then publish with one rename. Interrupted copies or
+    # metadata failures must never leave a partial directory that rollback can
+    # select as the newest backup.
+    trap 'if [[ -n "${staging_path:-}" && -d "$staging_path" ]]; then rm -rf "$staging_path" || log_warn "Could not remove incomplete backup staging directory: $staging_path"; fi; if [[ -n "${lock_path:-}" && -d "$lock_path" ]]; then rmdir "$lock_path" || log_warn "Could not remove backup lock: $lock_path"; fi' ERR EXIT
+    staging_path=$(mktemp -d "${BACKUP_DIR}/.${backup_id}.tmp.XXXXXX")
     
     # Backup compose files
     # NB: x=$((x + 1)) not ((x++)) — the post-increment form evaluates to 0
@@ -710,7 +732,7 @@ cmd_backup() {
     for pattern in "docker-compose*.yml" "docker-compose*.yaml" ".env" ".env.*"; do
         for file in "${INSTALL_DIR}"/${pattern}; do
             if [[ -f "$file" ]]; then
-                cp "$file" "$backup_path/"
+                cp "$file" "$staging_path/"
                 files_backed_up=$((files_backed_up + 1))
             fi
         done
@@ -738,7 +760,7 @@ cmd_backup() {
 
     # Backup version file
     if [[ -f "$VERSION_FILE" ]]; then
-        cp "$VERSION_FILE" "$backup_path/.version"
+        cp "$VERSION_FILE" "$staging_path/.version"
         files_backed_up=$((files_backed_up + 1))
     fi
 
@@ -750,7 +772,7 @@ cmd_backup() {
         --argjson fc "$files_backed_up" \
         --arg dir "$INSTALL_DIR" \
         '{backup_id: $bid, timestamp: $ts, version: $ver, files_count: $fc, install_dir: $dir}' \
-        > "$backup_path/metadata.json"
+        > "$staging_path/metadata.json"
 
     # snapshot.json routes restores through the transactional
     # _restore_snapshot path, which knows how to put config-* directories
@@ -762,7 +784,13 @@ cmd_backup() {
         --argjson fc "$files_backed_up" \
         --arg dir "$INSTALL_DIR" \
         '{type:"backup", timestamp:$ts, version:$ver, files_count:$fc, install_dir:$dir}' \
-        > "$backup_path/snapshot.json"
+        > "$staging_path/snapshot.json"
+
+    mv "$staging_path" "$backup_path"
+    staging_path=""
+    rmdir "$lock_path"
+    lock_path=""
+    trap - ERR EXIT
     
     log_ok "Backup created: ${backup_path}"
     log_info "Files backed up: ${files_backed_up}"
