@@ -133,6 +133,10 @@ export N8N_PASS="${N8N_PASS:-test-password}"
 export OPENCLAW_TOKEN="${OPENCLAW_TOKEN:-test-openclaw-token}"
 export SEARXNG_SECRET="${SEARXNG_SECRET:-test-searxng-secret}"
 export HERMES_DASHBOARD_SESSION_TOKEN="${HERMES_DASHBOARD_SESSION_TOKEN:-test-hermes-dashboard-session-token}"
+export PIXEL_OPENWEBUI_KEY="${PIXEL_OPENWEBUI_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}"
+export PIXEL_INGRESS_GID="${PIXEL_INGRESS_GID:-999}"
+export PIXEL_INGRESS_RUNTIME_DIR="${PIXEL_INGRESS_RUNTIME_DIR:-/run/ods-pixel}"
+export PIXEL_PREVIEW_RUNTIME_DIR="${PIXEL_PREVIEW_RUNTIME_DIR:-/run/ods-pixel-preview}"
 
 if [[ -z "$COMPOSE_FILE" ]]; then
     fail "No compose file found (expected base+overlay or docker-compose.yml)"

@@ -538,6 +538,13 @@ assert_contains "$phase06" 'export INSTALL_PHASE="06-directories/\$\{step\}"' "p
 for step in create-directories copy-source copy-extensions-library generate-env validate-env generate-searxng-config; do
   assert_contains "$phase06" "_phase06_step \"$step\"" "phase 06 missing substep: $step"
 done
+assert_contains "installers/phases/06-directories.sh" 'chmod 0755 -- "\$_pixel_exec_control_path"' "Linux installer does not normalize WSL-mounted Pixel execution-control modes"
+assert_contains "installers/phases/06-directories.sh" '! -L "\$_pixel_exec_control_path"' "Linux installer may normalize a symlinked Pixel execution-control helper"
+assert_contains "installers/phases/06-directories.sh" 'find -P "\$_installed_code_root"' "Linux installer does not normalize WSL-mounted product code modes"
+assert_contains "installers/phases/06-directories.sh" '"\$INSTALL_DIR/bin"' "Linux installer does not normalize installed command modes"
+assert_contains "installers/phases/06-directories.sh" 'find -P "\$INSTALL_DIR" -maxdepth 1' "Linux installer does not normalize root executable modes"
+assert_contains "installers/phases/06-directories.sh" 'chmod go-w --' "Linux installer leaves copied product code ambiently writable"
+assert_contains "installers/phases/06-directories.sh" 'find -P "\$INSTALL_DIR/data/extensions-library"' "Linux installer does not normalize copied extension-library modes"
 
 echo "[contract] Windows phase 06 stages the extension library"
 win_phase06="installers/windows/phases/06-directories.ps1"
@@ -693,6 +700,10 @@ assert_contains "installers/phases/11-services.sh" 'ps -q' "Linux installer does
 assert_contains "installers/phases/11-services.sh" 'Docker Compose did not create any managed containers' "Linux installer does not fail loud on zero managed containers"
 assert_not_contains "installers/phases/11-services.sh" '_phase11_assert_managed_containers false' "Linux zero-container path must write a compose failure report"
 assert_contains "installers/phases/11-services.sh" '_phase11_compose_failure_is_delayed_health' "Linux installer does not distinguish delayed health from generic compose failure"
+assert_contains "installers/phases/11-services.sh" '_phase11_recreate_exited_services' "Linux installer does not repair stale exited compose containers"
+assert_contains "installers/phases/11-services.sh" 'ps --status exited --services' "Linux exited-container recovery is not scoped to compose-owned exited services"
+assert_contains "installers/phases/11-services.sh" 'up -d --no-deps' "Linux exited-container recovery can restart dependencies"
+assert_contains "installers/phases/11-services.sh" 'force-recreate --no-build --pull never' "Linux exited-container recovery does not force a bounded container refresh"
 assert_contains "installers/phases/11-services.sh" 'dependency failed to start: container ods-\(llama-server\|llama-ready\|llama-server-ready\) is unhealthy' "Linux delayed-health grace is not scoped to LLM health-gate failures"
 assert_contains "installers/phases/11-services.sh" '_compose_started_with_delayed_health=true' "Linux installer does not continue after delayed compose health with managed containers"
 assert_contains "installers/phases/11-services.sh" 'COMPOSE_STARTED_WITH_DELAYED_HEALTH=true' "Linux installer does not mark delayed compose health for strict phase 12 recovery"
@@ -750,6 +761,13 @@ assert_contains "extensions/services/litellm/compose.apple.yaml" 'ODS_MACOS_HOST
 assert_contains "installers/windows/install-windows.ps1" 'Assert-ODSWindowsManagedContainers' "Windows installer does not assert compose-managed containers"
 assert_contains "installers/windows/install-windows.ps1" 'Docker Compose did not create any managed Windows containers' "Windows installer does not fail loud on zero managed containers"
 assert_contains "installers/windows/install-windows.ps1" 'dashboard", "dashboard-api", "open-webui' "Windows installer does not require core container services"
+assert_contains "bin/ods-host-agent.py" '0o640' "remote-provider lifecycle secrets must be group-readable only to hardened provider services"
+assert_contains "bin/ods-host-agent.py" '_repair_remote_provider_secret_permissions' "legacy remote-provider secrets are not repaired for provider access"
+assert_contains "docker-compose.base.yml" 'REMOTE_PROVIDER_DATA_GID' "remote-provider services must receive the installation data group"
+assert_contains "installers/phases/06-directories.sh" 'REMOTE_PROVIDER_DATA_GID=\$\(id -g' "Linux installer does not derive the current installation data group"
+assert_not_contains "installers/phases/06-directories.sh" 'REMOTE_PROVIDER_DATA_GID=\$\(_env_get' "Linux installer may preserve a stale remote-provider data group"
+assert_contains "installers/windows/lib/env-generator.ps1" 'REMOTE_PROVIDER_DATA_GID=0' "Windows installer does not derive the Docker Desktop provider group"
+assert_not_contains "installers/windows/lib/env-generator.ps1" 'REMOTE_PROVIDER_DATA_GID=\$\(Get-EnvOrNew' "Windows installer may preserve a stale remote-provider data group"
 assert_contains "installers/windows/install-windows.ps1" 'Invoke-ODSWindowsComposeImagePreflight' "Windows installer does not preflight compose images before launch"
 assert_contains "installers/windows/install-windows.ps1" '--pull", "never' "Windows installer still allows implicit compose pulls during install launch"
 

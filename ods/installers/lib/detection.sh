@@ -10,7 +10,8 @@
 #           INTERACTIVE, TIER, OFFLINE_MODE, ENABLE_VOICE, ENABLE_WORKFLOWS,
 #           ENABLE_RAG, ENABLE_OPENCLAW (all used by fix_nvidia_secure_boot),
 #           log/warn/ai/ai_ok/ai_warn/ai_bad helpers
-# Provides: detect_gpu(), load_capability_profile(),
+# Provides: detect_gpu(), load_capability_profile(), ods_is_wsl_host(),
+#           ods_windows_host_port_in_use(),
 #           normalize_profile_tier(), tier_rank(), load_backend_contract(),
 #           fix_nvidia_secure_boot(), MIN_DRIVER_VERSION
 #           Side-effect var on Jetson: JETSON_L4T_RELEASE (e.g. "R36.4.0")
@@ -22,6 +23,50 @@
 
 # Safe env loading (no eval) for script output KEY="value" lines
 [[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "${SCRIPT_DIR}/lib/safe-env.sh"
+
+# WSL2 forwards Docker-published ports through the Windows host. A port can
+# therefore look free to lsof/ss inside Linux while Docker Desktop still
+# refuses the bind because a native Windows process already owns it. Query the
+# Windows listener table once and cache the numeric ports for the installer
+# run. The override is a test hook; normal detection uses WSL's environment and
+# kernel release witnesses.
+ods_is_wsl_host() {
+    case "${ODS_WSL_HOST_OVERRIDE:-auto}" in
+        true|1|yes|on) return 0 ;;
+        false|0|no|off) return 1 ;;
+    esac
+    [[ -n "${WSL_DISTRO_NAME:-}" ]] && return 0
+    grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null
+}
+
+ods_windows_host_listening_ports() {
+    ods_is_wsl_host || return 2
+    command -v powershell.exe >/dev/null 2>&1 || return 2
+
+    if [[ "${_ODS_WINDOWS_PORT_CACHE_READY:-false}" != "true" ]]; then
+        local output
+        output=$(powershell.exe -NoLogo -NoProfile -NonInteractive -Command \
+            'Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique | Sort-Object; Write-Output ODS_WINDOWS_PORT_SCAN_OK' \
+            2>/dev/null | tr -d '\r' || true)
+        grep -Fxq 'ODS_WINDOWS_PORT_SCAN_OK' <<< "$output" || return 2
+        output=$(grep -Fvx 'ODS_WINDOWS_PORT_SCAN_OK' <<< "$output" || true)
+        if [[ -n "$output" ]] && grep -qvE '^[[:space:]]*[0-9]+[[:space:]]*$' <<< "$output"; then
+            return 2
+        fi
+        _ODS_WINDOWS_PORT_CACHE="$output"
+        _ODS_WINDOWS_PORT_CACHE_READY=true
+    fi
+
+    return 0
+}
+
+ods_windows_host_port_in_use() {
+    local port="${1:-}"
+    [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || return 2
+
+    ods_windows_host_listening_ports || return $?
+    grep -Fxq "$port" <<< "${_ODS_WINDOWS_PORT_CACHE:-}"
+}
 
 load_capability_profile() {
     CAP_PROFILE_LOADED="false"
@@ -528,6 +573,59 @@ detect_gpu() {
 }
 
 MIN_DRIVER_VERSION=570
+MIN_WHISPER_CUDA_DRIVER_VERSION=575
+
+ods_whisper_cuda_supported() {
+    local backend="${1:-${GPU_BACKEND:-cpu}}"
+    local driver_major="${2:-${DRIVER_VERSION:-0}}"
+    [[ "$backend" == "nvidia" && "$driver_major" =~ ^[0-9]+$ \
+        && "$driver_major" -ge "$MIN_WHISPER_CUDA_DRIVER_VERSION" ]]
+}
+
+_ods_csv_add_unique() {
+    local variable_name="$1" value="$2" current=""
+    current="${!variable_name:-}"
+    case ",$current," in
+        *",$value,"*) ;;
+        *)
+            if [[ -n "$current" ]]; then
+                printf -v "$variable_name" '%s,%s' "$current" "$value"
+            else
+                printf -v "$variable_name" '%s' "$value"
+            fi
+            ;;
+    esac
+}
+
+ods_configure_whisper_acceleration() {
+    local backend="${1:-${GPU_BACKEND:-cpu}}"
+    local driver_major="${2:-${DRIVER_VERSION:-0}}"
+    local requested="${WHISPER_ACCELERATION:-}"
+
+    WHISPER_ACCELERATION_FORCED_CPU=false
+    if ods_whisper_cuda_supported "$backend" "$driver_major"; then
+        case "$requested" in
+            cpu|cuda) WHISPER_ACCELERATION="$requested" ;;
+            *) WHISPER_ACCELERATION="cuda" ;;
+        esac
+    else
+        WHISPER_ACCELERATION="cpu"
+        [[ "$backend" == "nvidia" ]] && WHISPER_ACCELERATION_FORCED_CPU=true
+    fi
+
+    if [[ "$WHISPER_ACCELERATION" == "cpu" ]]; then
+        _ods_csv_add_unique ODS_SKIP_GPU_OVERLAYS whisper
+        if [[ -z "${WHISPER_IMAGE:-}" || "${WHISPER_IMAGE:-}" =~ [Cc][Uu][Dd][Aa] ]]; then
+            WHISPER_IMAGE="ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu"
+        fi
+        if [[ "${AUDIO_STT_MODEL:-}" =~ ([Ll]arge-v3|[Tt]urbo) ]]; then
+            AUDIO_STT_MODEL="Systran/faster-whisper-base"
+        fi
+    fi
+
+    export WHISPER_ACCELERATION WHISPER_ACCELERATION_FORCED_CPU
+    export ODS_SKIP_GPU_OVERLAYS WHISPER_IMAGE AUDIO_STT_MODEL
+}
 
 nvidia_name_is_blackwell() {
     local name="$1"
@@ -782,6 +880,7 @@ fix_nvidia_secure_boot() {
     $ENABLE_OPENCLAW && resume_args="$resume_args --openclaw"
     [[ -n "$TIER" ]] && resume_args="$resume_args --tier $TIER"
     [[ "$OFFLINE_MODE" == "true" ]] && resume_args="$resume_args --offline"
+    [[ "${ODS_RESELECT_MODEL:-false}" == "true" ]] && resume_args="$resume_args --reselect-model"
 
     ods_sudo tee /etc/systemd/system/${svc_name}.service > /dev/null << SVCEOF
 [Unit]

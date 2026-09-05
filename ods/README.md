@@ -165,7 +165,8 @@ source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 | **LiteLLM** | Multi-model API gateway | 4000 | Recommended |
 | **Token Spy** | Token usage monitor | 3005 | Recommended |
 | **SearXNG** | Self-hosted web search | 8888 | Recommended |
-| **Hermes Agent** | Default local-first autonomous/browser agent | 9120 via auth proxy; 9119 internal | Default agent |
+| **Pixel** | Preferred agent in Open WebUI and Dashboard on qualified/licensed Linux hosts | Private Unix socket; no host TCP port | Conditional default |
+| **Hermes Agent** | Portable fallback and Pixel rollback agent | 9120 via auth proxy; 9119 internal | Default fallback |
 | **OpenClaw** | Deprecated legacy autonomous agent, opt-in during migration | 7860 | Deprecated optional |
 | **APE** | Agent Policy Engine for policy/audit controls | 7890 | Optional |
 | **OpenCode** | Browser IDE / coding assistant | 3003 | Optional host service |
@@ -257,8 +258,8 @@ See [docs/HARDWARE-GUIDE.md](docs/HARDWARE-GUIDE.md) for buying recommendations.
 └─────────────────────────────────────────────────┘
          │                              │
 ┌────────▼────────┐            ┌───────▼────────┐
-│ Hermes Agent    │            │    Dashboard    │
-│ (default agent) │            │ (Status :3001)  │
+│ Pixel / Hermes  │            │    Dashboard    │
+│ agent selection │            │ (Pixel toolbar) │
 └─────────────────┘            └────────────────┘
 
 ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
@@ -436,7 +437,7 @@ ods mode                               # Show current mode
 | Hardware auto-detect + model selection | **NVIDIA + AMD Strix Halo + Apple Silicon + Intel Arc + CPU/cloud fallback** | No | No |
 | AMD APU / unified memory support | **Platform-specific accelerated backend selected by installer** | Partial (Vulkan) | No |
 | Inference engine | **llama-server** (all GPUs) | llama.cpp | llama.cpp |
-| Autonomous AI agent | **Hermes Agent default; OpenClaw legacy opt-in** | No | No |
+| Autonomous AI agent | **Pixel preferred on qualified/licensed Linux; Hermes fallback; OpenClaw legacy opt-in** | No | No |
 | Workflow automation | **n8n (400+ integrations)** | No | No |
 | LLM usage monitoring | **Open WebUI built-in** | No | No |
 | Multi-GPU | **Yes** (NVIDIA) | Partial | Partial |

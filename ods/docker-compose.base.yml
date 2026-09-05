@@ -357,6 +357,10 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # Lifecycle secrets stay owner-written on the host and group-readable only
+    # to the two dedicated, read-only remote-provider containers.
+    group_add:
+      - "${REMOTE_PROVIDER_DATA_GID:-1000}"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -370,7 +374,7 @@ services:
       - ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_URL=${ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_URL:-http://remote-provider-ssh-tunnel:18090/health}
       - ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_TIMEOUT=${ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_TIMEOUT:-2}
     volumes:
-      - ${ODS_DATA_DIR:-./data}:/state:ro
+      - ${ODS_DATA_DIR:-./data}/remote-provider:/state/remote-provider:ro
       - ${ODS_CONFIG_DIR:-./config}/remote-provider-egress-policy.json:/config/remote-provider-egress-policy.json:ro
     deploy:
       resources:
@@ -405,6 +409,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    group_add:
+      - "${REMOTE_PROVIDER_DATA_GID:-1000}"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -418,7 +424,7 @@ services:
       - ODS_REMOTE_PROVIDER_SSH_RESTART_COOLDOWN=${ODS_REMOTE_PROVIDER_SSH_RESTART_COOLDOWN:-5}
       - ODS_REMOTE_PROVIDER_SSH_STOP_TIMEOUT=${ODS_REMOTE_PROVIDER_SSH_STOP_TIMEOUT:-5}
     volumes:
-      - ${ODS_DATA_DIR:-./data}:/state:ro
+      - ${ODS_DATA_DIR:-./data}/remote-provider:/state/remote-provider:ro
     deploy:
       resources:
         limits:
@@ -448,6 +454,7 @@ services:
     logging: *default-logging
     environment:
       - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-}
+      - PIXEL_PREVIEW_PORT=${PIXEL_PREVIEW_PORT:-9437}
     volumes:
       - ./data:/data:ro,z
     ports:

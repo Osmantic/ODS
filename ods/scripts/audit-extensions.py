@@ -18,7 +18,7 @@ import yaml
 
 VALID_CATEGORIES = {"core", "recommended", "optional"}
 VALID_TYPES = {"docker", "host-systemd"}
-VALID_GPU_BACKENDS = {"amd", "nvidia", "apple", "all", "none"}
+VALID_GPU_BACKENDS = {"amd", "nvidia", "apple", "cpu", "all", "none"}
 MANIFEST_NAMES = ("manifest.yaml", "manifest.yml", "manifest.json")
 OVERLAY_SUFFIXES = {
     "amd": ("compose.amd.yaml", "compose.amd.yml"),
@@ -494,13 +494,29 @@ def validate_records(
         # port/health requirements don't apply. The flag also flips off the
         # compose-port-mismatch check further down.
         host_network = bool(service.get("host_network"))
+        socket_only = bool(service.get("socket_only"))
+
+        if socket_only and record.service_type != "host-systemd":
+            record.add_issue(
+                "error",
+                "service-socket-only-type-invalid",
+                "service.socket_only is valid only for host-systemd services",
+                path=record.manifest_path,
+            )
+        if socket_only and service.get("port") != 0:
+            record.add_issue(
+                "error",
+                "service-socket-only-port-invalid",
+                "service.socket_only requires service.port to be 0",
+                path=record.manifest_path,
+            )
 
         port = parse_positive_int(service.get("port"))
-        if port is None and not host_network:
+        if port is None and not host_network and not socket_only:
             record.add_issue("error", "service-port-invalid", "service.port must be a positive integer", path=record.manifest_path)
 
         health = str(service.get("health") or "")
-        if not health.startswith("/") and not host_network:
+        if not health.startswith("/") and not host_network and not socket_only:
             record.add_issue(
                 "error",
                 "service-health-invalid",

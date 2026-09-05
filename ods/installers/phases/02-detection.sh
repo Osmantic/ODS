@@ -266,6 +266,17 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
     fi
 fi
 
+# The pinned Speaches CUDA image requires driver 575+, which is stricter than
+# the llama-server CUDA floor. Keep the primary NVIDIA LLM path enabled on
+# older drivers while selecting CPU Whisper and suppressing only its GPU
+# overlay. This mirrors the existing Windows installer contract.
+ods_configure_whisper_acceleration "$GPU_BACKEND" "${DRIVER_VERSION:-0}"
+if [[ "$WHISPER_ACCELERATION_FORCED_CPU" == "true" ]]; then
+    ai_warn "Whisper CUDA requires NVIDIA driver ${MIN_WHISPER_CUDA_DRIVER_VERSION}+; detected ${DRIVER_VERSION:-unknown}. Using CPU Whisper while keeping GPU inference enabled."
+elif [[ "$WHISPER_ACCELERATION" == "cpu" && "$GPU_BACKEND" == "nvidia" ]]; then
+    log "Whisper CPU acceleration explicitly selected; NVIDIA inference remains enabled"
+fi
+
 #-----------------------------------------------------------------------------
 # Intel Arc validation (lspci cross-check, Level Zero, intel_gpu_top)
 #-----------------------------------------------------------------------------
@@ -546,18 +557,46 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
             fi
         fi
         if [[ -n "$_selector_python" ]]; then
-            _selector_env="$("$_selector_python" "$_selector_script" \
-                --catalog "$_selector_catalog" \
-                --backend "${GPU_BACKEND:-unknown}" \
-                --memory-type "${GPU_MEMORY_TYPE:-discrete}" \
-                --vram-mb "${GPU_VRAM:-0}" \
-                --ram-gb "${RAM_GB:-0}" \
-                --profile "${MODEL_PROFILE_EFFECTIVE:-${MODEL_PROFILE:-qwen}}" \
-                --tier "${TIER:-1}" \
-                --max-size-mb "${LLM_MODEL_SIZE_MB:-0}" \
-                --host-arch "${HOST_ARCH:-unknown}" \
-                --installable-only \
-                --env 2>>"$LOG_FILE" || true)"
+            PIXEL_AGENT_MODEL_READY=unknown
+            _pixel_default_selector=false
+            if declare -F ods_pixel_resolve_enablement >/dev/null 2>&1 \
+                && [[ "${ODS_MODE:-local}" == "local" ]] \
+                && [[ -z "${EXTERNAL_LLM_URL:-}" ]] \
+                && [[ "${LEMONADE_EXTERNAL:-false}" != "true" ]] \
+                && [[ "$(ods_pixel_resolve_enablement "${ENABLE_PIXEL:-auto}" 2>/dev/null || true)" == "pixel" ]]; then
+                _pixel_default_selector=true
+            fi
+            # Pixel adapts its prompt and tool surface to the selected route;
+            # catalog qualification is performance guidance, never an access
+            # gate. For the default agent, choose the strongest installable
+            # model that fits measured hardware instead of inheriting the
+            # bootstrap tier's download-size ceiling.
+            _selector_max_size_mb="${LLM_MODEL_SIZE_MB:-0}"
+            if [[ "$_pixel_default_selector" == true ]]; then
+                _selector_max_size_mb=0
+            fi
+            _run_catalog_selector() {
+                "$_selector_python" "$_selector_script" \
+                    --catalog "$_selector_catalog" \
+                    --backend "${GPU_BACKEND:-unknown}" \
+                    --memory-type "${GPU_MEMORY_TYPE:-discrete}" \
+                    --vram-mb "${GPU_VRAM:-0}" \
+                    --ram-gb "${RAM_GB:-0}" \
+                    --profile "${MODEL_PROFILE_EFFECTIVE:-${MODEL_PROFILE:-qwen}}" \
+                    --tier "${TIER:-1}" \
+                    --max-size-mb "$_selector_max_size_mb" \
+                    --host-arch "${HOST_ARCH:-unknown}" \
+                    --installable-only \
+                    "$@" \
+                    --env
+            }
+            _selector_env="$(_run_catalog_selector 2>>"$LOG_FILE" || true)"
+            if [[ "$_pixel_default_selector" == true && -n "$_selector_env" ]]; then
+                log "Pixel default selected the strongest installable hardware-fit model; catalog qualification remains advisory"
+            fi
+            export PIXEL_AGENT_MODEL_READY
+            unset -f _run_catalog_selector
+            unset _selector_max_size_mb _pixel_default_selector
             if [[ -n "$_selector_env" ]]; then
                 if command -v load_model_selector_env_from_output >/dev/null 2>&1; then
                     load_model_selector_env_from_output <<< "$_selector_env"
@@ -572,6 +611,60 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
             log "Python unavailable for catalog model selector; using tier-map model ${LLM_MODEL}"
         fi
     fi
+fi
+
+# The tier/catalog result is a recommendation.  A valid local model already
+# activated through the Dashboard is operator state and must survive routine
+# installer reruns.  Keep those two concepts separate so updates can advertise
+# a newer recommendation without silently replacing the live agent model.
+INSTALLER_RECOMMENDED_MODEL="${LLM_MODEL:-}"
+INSTALLER_RECOMMENDED_GGUF="${GGUF_FILE:-}"
+INSTALLER_RECOMMENDED_CONTEXT="${MAX_CONTEXT:-}"
+MODEL_SELECTION_SOURCE="installer"
+if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${TIER:-}" != "CLOUD" ]]; then
+    _preserve_script="$SCRIPT_DIR/scripts/preserve-active-model.py"
+    if [[ -f "$_preserve_script" ]]; then
+        if [[ -z "${_selector_python:-}" ]]; then
+            if [[ -f "$SCRIPT_DIR/lib/python-cmd.sh" ]]; then
+                # shellcheck source=/dev/null
+                . "$SCRIPT_DIR/lib/python-cmd.sh"
+                _selector_python="$(ods_detect_python_cmd || true)"
+            elif command -v python3 >/dev/null 2>&1; then
+                _selector_python="python3"
+            fi
+        fi
+        if [[ -n "${_selector_python:-}" ]]; then
+            _preserved_model_env="$("$_selector_python" "$_preserve_script" \
+                --env "$INSTALL_DIR/.env" \
+                --catalog "$SCRIPT_DIR/config/model-library.json" \
+                --imports "$INSTALL_DIR/data/model-imports.json" \
+                --models-dir "$INSTALL_DIR/data/models" \
+                --state "$INSTALL_DIR/data/model-state.json" \
+                --backend "${GPU_BACKEND:-unknown}" \
+                --memory-type "${GPU_MEMORY_TYPE:-discrete}" \
+                --vram-mb "${GPU_VRAM:-0}" \
+                --ram-gb "${RAM_GB:-0}" \
+                --host-arch "${HOST_ARCH:-unknown}" \
+                2>>"$LOG_FILE" || true)"
+            if [[ -n "$_preserved_model_env" ]] && command -v load_model_selector_env_from_output >/dev/null 2>&1; then
+                # Remove every model-selector runtime value before loading the
+                # preserved active contract. The helper omits inactive optional
+                # LLAMA_* settings intentionally: exporting them as empty makes
+                # Compose pass an empty numeric value to llama.cpp.
+                unset MODEL_RUNTIME_PROFILE MODEL_RUNTIME_PROFILE_LABEL MODEL_RUNTIME_PROFILE_SOURCE
+                unset LLAMA_SERVER_IMAGE LLAMA_SERVER_MEMORY_LIMIT
+                unset LLAMA_CPP_RELEASE_TAG_OVERRIDE LLAMA_CPP_SERVER_BINARY
+                unset LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
+                unset LLAMA_ARG_N_CPU_MOE LLAMA_ARG_NO_CACHE_PROMPT
+                unset LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS LLAMA_ARG_SPEC_TYPE
+                unset LLAMA_ARG_SPEC_DRAFT_N_MAX LLAMA_ARG_SPLIT_MODE LLAMA_ARG_TENSOR_SPLIT
+                load_model_selector_env_from_output <<< "$_preserved_model_env"
+                log "Preserved active local model across installer rerun: ${LLM_MODEL} (${GGUF_FILE})"
+            fi
+        fi
+    fi
+elif [[ "${ODS_RESELECT_MODEL:-false}" == "true" ]]; then
+    log "Active-model preservation disabled by --reselect-model"
 fi
 
 # Display hardware summary with nice formatting

@@ -87,7 +87,12 @@ source "$SCRIPT_DIR/installers/lib/packaging.sh"
 source "$SCRIPT_DIR/installers/lib/python-runtime.sh"
 source "$SCRIPT_DIR/installers/lib/progress.sh"
 source "$SCRIPT_DIR/installers/lib/model-lifecycle-lock.sh"
+source "$SCRIPT_DIR/installers/lib/cli-link.sh"
+source "$SCRIPT_DIR/installers/lib/install-mode.sh"
 source "$SCRIPT_DIR/installers/lib/external-services.sh"
+source "$SCRIPT_DIR/installers/lib/pixel-integration.sh"
+source "$SCRIPT_DIR/installers/lib/pixel-host-install.sh"
+source "$SCRIPT_DIR/lib/pixel-uninstall.sh"
 if [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]]; then 
     source "$SCRIPT_DIR/lib/service-registry.sh" 
 fi
@@ -103,14 +108,15 @@ ENABLE_VOICE=true
 ENABLE_WORKFLOWS=true
 ENABLE_RAG=true
 ENABLE_RECOMMENDED=true
-# Default agent flipped to Hermes Agent (Nous Research) on 2026-05-12.
-# OpenClaw is deprecated and will be removed in the next release; new
-# installs no longer enable it by default. Users who explicitly pass
-# --openclaw or upgrade an existing install with OpenClaw enabled keep
-# it working until the removal release. See docs/MIGRATION-OPENCLAW-TO-HERMES.md.
+# Pixel is preferred automatically only on its qualified Linux hosts after a
+# separate written license agreement is acknowledged. Hermes stays enabled as
+# the portable fallback. OpenClaw is deprecated and remains explicit opt-in.
 ENABLE_HERMES=true
+ENABLE_PIXEL="${ENABLE_PIXEL:-auto}"
+PIXEL_EXPLICIT=false
 ENABLE_OPENCLAW=false
 OPENCLAW_EXPLICIT=false
+ENABLE_OPENCODE=false
 ENABLE_COMFYUI=true
 ENABLE_APE=true
 ENABLE_PERPLEXICA=true
@@ -124,6 +130,8 @@ ENABLE_BRAVE_SEARCH=false
 # the Custom menu, or post-install `ods enable langfuse`.
 ENABLE_LANGFUSE=false
 INTERACTIVE=true
+ODS_MODE_EXPLICIT=false
+[[ -n "${ODS_MODE:-}" ]] && ODS_MODE_EXPLICIT=true
 ODS_MODE="${ODS_MODE:-local}"
 LEMONADE_EXTERNAL="${LEMONADE_EXTERNAL:-false}"
 LEMONADE_BASE_URL="${LEMONADE_BASE_URL:-}"
@@ -139,6 +147,7 @@ EXTERNAL_LLM_PROVIDER="${EXTERNAL_LLM_PROVIDER:-auto}"
 EXTERNAL_LLM_MODEL="${EXTERNAL_LLM_MODEL:-}"
 EXTERNAL_LLM_AUTO_REUSE="${EXTERNAL_LLM_AUTO_REUSE:-false}"
 EXTERNAL_LLM_DISABLE=false
+ODS_RESELECT_MODEL="${ODS_RESELECT_MODEL:-false}"
 
 usage() {
     cat << EOF
@@ -159,15 +168,16 @@ Options:
     --lemonade-api-key K
                       API key LiteLLM should send to the existing Lemonade server
     --external-llm-url U
-                      Reuse an OpenAI-compatible Ollama or LM Studio endpoint
+                      Reuse an OpenAI-compatible local or LAN endpoint
     --external-llm-provider P
-                      External provider: auto, ollama, or lmstudio
+                      External provider: auto, ollama, lmstudio, or openai-compatible
     --external-llm-model M
                       Exact model id exposed by the external provider
     --reuse-external-llm
                       Allow non-interactive reuse of a detected matching model
     --no-external-llm
                       Disable a persisted external LLM selection on this rerun
+    --reselect-model  Replace a valid active local model with the current installer recommendation
     --voice           Enable voice services (Whisper + Kokoro)
     --no-voice        Disable voice services
     --workflows       Enable n8n workflow automation
@@ -176,10 +186,14 @@ Options:
     --no-rag          Disable RAG / Qdrant
     --recommended     Enable LiteLLM + SearXNG + Token Spy support services
     --no-recommended  Disable recommended support services
-    --hermes          Enable Hermes Agent (default; new default agent as of 2026-05-12)
+    --hermes          Enable Hermes Agent (portable fallback and rollback path)
     --no-hermes       Disable Hermes Agent
+    --pixel           Require Pixel as the default agent (qualified Linux host and separate license required)
+    --no-pixel        Disable Pixel and use the configured fallback agent
     --openclaw        Enable OpenClaw (DEPRECATED — see docs/MIGRATION-OPENCLAW-TO-HERMES.md)
     --no-openclaw     Disable OpenClaw
+    --opencode        Enable the optional OpenCode browser IDE
+    --no-opencode     Disable the optional OpenCode browser IDE (default)
     --comfyui         Enable ComfyUI image generation
     --no-comfyui      Disable ComfyUI image generation (saves ~34GB)
     --odsforge      Deprecated no-op; ODSForge has been removed
@@ -223,15 +237,16 @@ while [[ $# -gt 0 ]]; do
         --skip-docker) SKIP_DOCKER=true; shift ;;
         --force) FORCE=true; shift ;;
         --tier) TIER="$2"; shift 2 ;;
-        --cloud) ODS_MODE="cloud"; shift ;;
-        --use-existing-lemonade) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; shift ;;
-        --lemonade-url) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; LEMONADE_BASE_URL="$2"; shift 2 ;;
+        --cloud) ODS_MODE="cloud"; ODS_MODE_EXPLICIT=true; shift ;;
+        --use-existing-lemonade) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; shift ;;
+        --lemonade-url) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; LEMONADE_BASE_URL="$2"; shift 2 ;;
         --lemonade-api-key) LEMONADE_API_KEY="$2"; shift 2 ;;
         --external-llm-url) EXTERNAL_LLM_URL="$2"; shift 2 ;;
         --external-llm-provider) EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
         --external-llm-model) EXTERNAL_LLM_MODEL="$2"; shift 2 ;;
         --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
         --no-external-llm) EXTERNAL_LLM_DISABLE=true; shift ;;
+        --reselect-model) ODS_RESELECT_MODEL=true; shift ;;
         --voice) ENABLE_VOICE=true; shift ;;
         --no-voice) ENABLE_VOICE=false; shift ;;
         --workflows) ENABLE_WORKFLOWS=true; shift ;;
@@ -242,8 +257,12 @@ while [[ $# -gt 0 ]]; do
         --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
         --hermes) ENABLE_HERMES=true; shift ;;
         --no-hermes) ENABLE_HERMES=false; shift ;;
+        --pixel) ENABLE_PIXEL=true; PIXEL_EXPLICIT=true; shift ;;
+        --no-pixel) ENABLE_PIXEL=false; PIXEL_EXPLICIT=true; shift ;;
         --openclaw) ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
         --no-openclaw) ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
+        --opencode) ENABLE_OPENCODE=true; shift ;;
+        --no-opencode) ENABLE_OPENCODE=false; shift ;;
         --comfyui) ENABLE_COMFYUI=true; shift ;;
         --no-comfyui) ENABLE_COMFYUI=false; shift ;;
         --odsforge) warn "ODSForge has been removed; ignoring --odsforge"; shift ;;
@@ -252,7 +271,7 @@ while [[ $# -gt 0 ]]; do
         # NOTE: with --all, --no-langfuse must appear AFTER --all on the command
         # line (flag processing is case-loop ordered, matching comfyui).
         --no-langfuse) ENABLE_LANGFUSE=false; shift ;;
-        # --all enables Hermes (the new default agent) but NOT OpenClaw —
+        # --all enables the Hermes fallback but NOT deprecated OpenClaw —
         # the deprecated agent is opt-in via --openclaw for the deprecation
         # release. Will be dropped entirely in the removal release.
         # ENABLE_ODS_PROXY is included so magic-link invite URLs
@@ -261,7 +280,7 @@ while [[ $# -gt 0 ]]; do
         # nothing serves it, and a phone clicking the invite gets
         # "site can't be reached." Operators who don't want the LAN-facing
         # surface can set ENABLE_ODS_PROXY=false in .env after install.
-        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; shift ;;
+        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; shift ;;
         --non-interactive) INTERACTIVE=false; shift ;;
         --offline) OFFLINE_MODE=true; shift ;;
         --lan) BIND_ADDRESS="0.0.0.0"; BIND_ADDRESS_EXPLICIT=true; shift ;;
@@ -272,6 +291,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+_requested_ods_mode="$ODS_MODE"
+ODS_MODE="$(ods_preserve_existing_install_mode "$ODS_MODE" "$ODS_MODE_EXPLICIT" "$INSTALL_DIR/.env")"
+if [[ "$ODS_MODE_EXPLICIT" != "true" && "$ODS_MODE" != "$_requested_ods_mode" ]]; then
+    log "Existing ODS mode detected; preserving ODS_MODE=$ODS_MODE for this installer rerun"
+fi
+unset _requested_ods_mode
+
 if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
     ODS_MODE="lemonade"
     ENABLE_RECOMMENDED=true
@@ -279,7 +305,7 @@ if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
 fi
 
 export EXTERNAL_LLM_URL EXTERNAL_LLM_PROVIDER EXTERNAL_LLM_MODEL
-export EXTERNAL_LLM_AUTO_REUSE EXTERNAL_LLM_DISABLE
+export EXTERNAL_LLM_AUTO_REUSE EXTERNAL_LLM_DISABLE ODS_RESELECT_MODEL
 
 # OpenClaw deprecation back-compat: preserve OpenClaw on UPGRADES of installs
 # that previously had it enabled. The earlier heuristic — "does the compose

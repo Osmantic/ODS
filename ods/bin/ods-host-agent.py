@@ -109,6 +109,11 @@ required_model_memory_gb = _model_memory.required_model_memory_gb
 VERSION = "1.0.0"
 ODS_VERSION = VERSION
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+PIXEL_OPS_JOB_ID_RE = re.compile(r"^ops-[0-9]{13}-[a-f0-9]{12}$")
+PIXEL_OPS_PLAN_HASH_RE = re.compile(r"^[a-f0-9]{64}$")
+PIXEL_OPS_STATUS_HELPER = Path("/usr/local/libexec/ods-pixel-extension-manager.py")
+PIXEL_OPS_STATUS_SOCKET = "/run/ods-pixel-manager/extension-manager.sock"
+PIXEL_OPS_STATUS_KIND = "ods-pixel-operations-status"
 # backup_id is interpolated into a backup directory name by ods-update.sh
 # (BACKUP_DIR/backup-<backup_id>-<ts>). Restrict it to a plain label so it can
 # never contain a path separator or ".." and escape BACKUP_DIR.
@@ -150,6 +155,7 @@ _REMOTE_PROVIDER_EGRESS_UID = 10778
 _REMOTE_PROVIDER_EGRESS_GID = 10778
 _REMOTE_PROVIDER_EGRESS_PROBE_SCHEMA = "ods.remote-provider-egress-probe.v1"
 _REMOTE_PROVIDER_PROOF_RECORD_SCHEMA = "ods.remote-provider-proof-record.v1"
+_REMOTE_PROVIDER_ACTIVATION_STATE_SCHEMA = "ods.remote-provider-activation-state.v1"
 _REMOTE_PROVIDER_SECRET_FIELD_TO_REF = {
     "apiKey": "REMOTE_LLM_API_KEY",
     "peerToken": "REMOTE_ODS_PEER_TOKEN",
@@ -168,6 +174,18 @@ _REMOTE_PROVIDER_SECRET_REF_TO_FILENAME = {
     "REMOTE_LLM_TLS_CLIENT_CERT": "tls-client-cert.pem",
     "REMOTE_LLM_TLS_CLIENT_KEY": "tls-client-key.pem",
 }
+# Secrets consumed by one of the two hardened remote-provider containers. The
+# peer token is deliberately excluded: it is host/dashboard custody and stays
+# owner-only. Provider containers mount only the remote-provider state subtree
+# read-only and receive the installation data group as a supplementary group.
+_REMOTE_PROVIDER_CONTAINER_SECRET_REFS = frozenset({
+    "REMOTE_LLM_API_KEY",
+    "REMOTE_LLM_SSH_PRIVATE_KEY",
+    "REMOTE_LLM_SSH_KNOWN_HOSTS",
+    "REMOTE_LLM_TLS_CA_PEM",
+    "REMOTE_LLM_TLS_CLIENT_CERT",
+    "REMOTE_LLM_TLS_CLIENT_KEY",
+})
 _windows_gpu_metrics_cache: tuple[float, dict | None] = (0.0, None)
 _windows_dxgi_adapters_cache: tuple[float, list[dict]] = (0.0, [])
 _windows_llm_status_cache: tuple[float, dict | None] = (0.0, None)
@@ -193,6 +211,7 @@ _MODEL_TIERS = frozenset({
 })
 _MIN_MODEL_CONTEXT = 1024
 _MAX_MODEL_CONTEXT = 9007199254740991
+_MIN_MANAGED_PIXEL_CONTEXT = 4096
 
 # Per-service locks to prevent concurrent start+stop races on the same service
 _service_locks: dict[str, threading.Lock] = collections.defaultdict(threading.Lock)
@@ -278,10 +297,28 @@ def _ensure_windows_resolver_pyyaml(python_cmd: str) -> None:
         )
 
 
+def _nvidia_smi_binary() -> str | None:
+    resolved = shutil.which("nvidia-smi")
+    if resolved:
+        return resolved
+    # WSL exposes the Windows NVIDIA bridge here, but systemd services do not
+    # necessarily inherit the interactive shell PATH entry for this directory.
+    for candidate in (
+        Path("/usr/lib/wsl/lib/nvidia-smi"),
+        Path("/usr/bin/nvidia-smi"),
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def _nvidia_driver_major() -> int:
+    nvidia_smi = _nvidia_smi_binary()
+    if not nvidia_smi:
+        return 0
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            [nvidia_smi, "--query-gpu=driver_version", "--format=csv,noheader"],
             capture_output=True, text=True, timeout=10, check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -414,6 +451,14 @@ _model_download_proc: subprocess.Popen | None = None
 _model_download_cancel = threading.Event()
 _model_download_cancelable = False
 _model_status_lock = threading.Lock()
+_model_artifact_verification_cache_lock = threading.Lock()
+_model_artifact_verification_cache: dict[
+    str, tuple[tuple[object, ...], bytes]
+] = {}
+_model_artifact_sample_key = secrets.token_bytes(32)
+_MODEL_ARTIFACT_SAMPLE_BLOCK_BYTES = 4096
+_MODEL_ARTIFACT_SAMPLE_COUNT = 32
+_MODEL_ARTIFACT_FULL_SAMPLE_BYTES = 1024 * 1024
 # Model lifecycle ownership serializes operations that read or mutate model
 # artifacts, active routing, or the runtime containers. Keep the historical
 # activation-lock name as an alias because env updates use the same boundary.
@@ -1621,6 +1666,53 @@ def _safe_model_artifact_path(models_dir: Path, filename: object) -> Path | None
     return target
 
 
+def _model_artifact_sample_digest(
+    path: Path,
+    actual_size: int,
+    resolved_path: str,
+    expected_sha: str,
+) -> bytes:
+    """Return a keyed content probe for reuse of one verified full digest.
+
+    Some cross-platform filesystems expose timestamps too coarsely to detect a
+    rapid same-size rewrite.  Reusing a multi-gigabyte model SHA solely from
+    inode metadata can therefore accept changed bytes.  Keep small artifacts
+    exact and probe large ones at first/last plus per-process-secret interior
+    offsets.  A sandbox process cannot predict those offsets; any mismatch
+    discards the cached proof and falls back to the full SHA-256 verifier.
+    """
+    if actual_size <= 0:
+        raise OSError("invalid artifact size")
+    digest = hashlib.blake2b(key=_model_artifact_sample_key, digest_size=32)
+    block_size = _MODEL_ARTIFACT_SAMPLE_BLOCK_BYTES
+    if actual_size <= _MODEL_ARTIFACT_FULL_SAMPLE_BYTES:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.digest()
+
+    last_offset = max(0, actual_size - block_size)
+    offsets = {0, last_offset}
+    seed = f"{resolved_path}\0{actual_size}\0{expected_sha}".encode("utf-8")
+    for index in range(_MODEL_ARTIFACT_SAMPLE_COUNT - len(offsets)):
+        token = hashlib.blake2b(
+            seed + index.to_bytes(4, "big"),
+            key=_model_artifact_sample_key,
+            digest_size=16,
+        ).digest()
+        offsets.add(int.from_bytes(token, "big") % (last_offset + 1))
+    with path.open("rb") as handle:
+        for offset in sorted(offsets):
+            handle.seek(offset)
+            chunk = handle.read(min(block_size, actual_size - offset))
+            if not chunk:
+                raise OSError("artifact sample could not be read")
+            digest.update(offset.to_bytes(8, "big"))
+            digest.update(len(chunk).to_bytes(4, "big"))
+            digest.update(chunk)
+    return digest.digest()
+
+
 def _verify_model_artifact(
     path: Path,
     artifact: dict,
@@ -1630,7 +1722,8 @@ def _verify_model_artifact(
     try:
         if not path.is_file():
             return False, "file is missing"
-        actual_size = path.stat().st_size
+        initial_stat = path.stat()
+        actual_size = initial_stat.st_size
     except OSError as exc:
         return False, f"file could not be inspected: {exc}"
     if actual_size <= 0:
@@ -1644,6 +1737,47 @@ def _verify_model_artifact(
     if expected_sha:
         if not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
             return False, "catalog SHA256 is malformed"
+        try:
+            resolved_path = str(path.resolve(strict=True))
+        except (OSError, RuntimeError) as exc:
+            return False, f"file could not be resolved: {exc}"
+        verification_signature = (
+            initial_stat.st_dev,
+            initial_stat.st_ino,
+            initial_stat.st_size,
+            initial_stat.st_mtime_ns,
+            initial_stat.st_ctime_ns,
+            expected_size,
+            expected_sha,
+        )
+        with _model_artifact_verification_cache_lock:
+            cached_proof = _model_artifact_verification_cache.get(resolved_path)
+        if cached_proof and cached_proof[0] == verification_signature:
+            try:
+                sampled_digest = _model_artifact_sample_digest(
+                    path, actual_size, resolved_path, expected_sha,
+                )
+                sampled_stat = path.stat()
+            except OSError:
+                sampled_digest = b""
+                sampled_stat = None
+            sampled_signature = (
+                sampled_stat.st_dev,
+                sampled_stat.st_ino,
+                sampled_stat.st_size,
+                sampled_stat.st_mtime_ns,
+                sampled_stat.st_ctime_ns,
+                expected_size,
+                expected_sha,
+            ) if sampled_stat is not None else None
+            if (
+                sampled_signature == verification_signature
+                and secrets.compare_digest(sampled_digest, cached_proof[1])
+            ):
+                logger.info("Reusing verified model integrity for %s", path.name)
+                return True, ""
+            with _model_artifact_verification_cache_lock:
+                _model_artifact_verification_cache.pop(resolved_path, None)
         digest = hashlib.sha256()
         try:
             with path.open("rb") as handle:
@@ -1653,11 +1787,53 @@ def _verify_model_artifact(
                     digest.update(chunk)
         except OSError as exc:
             return False, f"file could not be hashed: {exc}"
+        try:
+            final_stat = path.stat()
+        except OSError as exc:
+            return False, f"file could not be inspected after hashing: {exc}"
+        final_signature = (
+            final_stat.st_dev,
+            final_stat.st_ino,
+            final_stat.st_size,
+            final_stat.st_mtime_ns,
+            final_stat.st_ctime_ns,
+            expected_size,
+            expected_sha,
+        )
+        if final_signature != verification_signature:
+            with _model_artifact_verification_cache_lock:
+                _model_artifact_verification_cache.pop(resolved_path, None)
+            return False, "file changed during verification"
         actual_sha = digest.hexdigest()
         if actual_sha != expected_sha:
+            with _model_artifact_verification_cache_lock:
+                _model_artifact_verification_cache.pop(resolved_path, None)
             return (
                 False,
                 f"SHA256 mismatch: expected {expected_sha[:12]}..., got {actual_sha[:12]}...",
+            )
+        try:
+            sampled_digest = _model_artifact_sample_digest(
+                path, actual_size, resolved_path, expected_sha,
+            )
+            sampled_stat = path.stat()
+        except OSError as exc:
+            return False, f"file could not be sampled after hashing: {exc}"
+        sampled_signature = (
+            sampled_stat.st_dev,
+            sampled_stat.st_ino,
+            sampled_stat.st_size,
+            sampled_stat.st_mtime_ns,
+            sampled_stat.st_ctime_ns,
+            expected_size,
+            expected_sha,
+        )
+        if sampled_signature != verification_signature:
+            return False, "file changed after verification"
+        with _model_artifact_verification_cache_lock:
+            _model_artifact_verification_cache[resolved_path] = (
+                verification_signature,
+                sampled_digest,
             )
     elif expected_size is None:
         return False, "catalog has no exact size or SHA256"
@@ -1803,12 +1979,104 @@ def load_env(env_path: Path) -> dict:
             continue
         if "=" in line:
             key, _, val = line.partition("=")
-            env[key.strip()] = val.strip().strip("'\"")
+            raw_value = val.strip()
+            try:
+                parsed = shlex.split(raw_value, comments=False, posix=True)
+            except ValueError:
+                parsed = []
+            env[key.strip()] = (
+                parsed[0]
+                if len(parsed) == 1
+                else raw_value.strip("'\"")
+            )
     return env
 
 
 def _switchboard_state_path() -> Path:
     return INSTALL_DIR / "data" / "model-state.json"
+
+
+def _project_switchboard_agent_viability(payload: dict) -> None:
+    """Project the verified active route's identity and Pixel viability.
+
+    Remote activation and local switchboard records are host-owned and
+    structurally validated. Missing, stale, or malformed state remains unknown
+    rather than inventing either readiness or failure for legacy installations.
+    """
+    remote_runtime = _active_remote_provider_pixel_runtime()
+    if remote_runtime is not None:
+        payload["activeAgentViable"] = True
+        payload["activeRuntime"] = {
+            "source": "remote-provider",
+            **remote_runtime,
+        }
+        return
+    if _switchboard_state is None:
+        return
+    state_path = _switchboard_state_path()
+    if _switchboard_state_needs_current_env_verification(state_path):
+        return
+    doc, errors = _switchboard_state.read_state(state_path)
+    if errors or not isinstance(doc, dict):
+        return
+    active = doc.get("active")
+    if not isinstance(active, dict):
+        return
+    # Local model identity is independent of tool qualification. The route
+    # record has no output-token/reasoning settings; do not invent those or
+    # require Pixel onboarding to show which model is actually serving.
+    env = load_env(INSTALL_DIR / ".env")
+    proof = active.get("proof")
+    local_model = active.get("runtimeModelId")
+    local_context = active.get("contextLength")
+    if (
+        env.get("ODS_MODE", "local") == "local"
+        and _switchboard_state.migrate_env_identity(env)
+        and active.get("reconstructed") is not True
+        and active.get("verifiedAt")
+        and isinstance(proof, dict)
+        and proof.get("completion") is True
+        and isinstance(local_model, str)
+        and _valid_pixel_model_name(local_model)
+        and type(local_context) is int
+        and 1 <= local_context <= 10_000_000
+    ):
+        payload["activeRuntime"] = {
+            "source": "local-switchboard",
+            "model": local_model,
+            "contextLength": local_context,
+        }
+    capabilities = active.get("capabilities")
+    if not isinstance(capabilities, dict):
+        return
+    agent_viable = capabilities.get("agentViable")
+    if not isinstance(agent_viable, bool):
+        return
+
+    # A route proof is a snapshot.  A newer Pixel-specific qualification may
+    # revoke generic agent viability without changing the model bytes, so an
+    # exact current catalog verdict may only narrow the stored capability.
+    projected = agent_viable
+    catalog_id = active.get("catalogId")
+    context_length = active.get("contextLength")
+    if isinstance(catalog_id, str) and isinstance(context_length, int):
+        try:
+            catalog_model = next(
+                (
+                    item
+                    for item in _load_model_library_records()
+                    if item.get("id") == catalog_id
+                ),
+                None,
+            )
+        except RuntimeError:
+            catalog_model = None
+        if isinstance(catalog_model, dict):
+            projected = projected and _model_agent_viable(
+                catalog_model,
+                context_length,
+            )
+    payload["activeAgentViable"] = projected
 
 
 def _switchboard_state_needs_initial_verification(path: Path) -> bool:
@@ -1827,6 +2095,61 @@ def _switchboard_state_needs_initial_verification(path: Path) -> bool:
         or not active.get("verifiedAt")
         or not isinstance(proof, dict)
         or proof.get("completion") is not True
+    )
+
+
+def _env_value_is_true(value: object) -> bool:
+    """Return whether an environment value explicitly enables a flag."""
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _env_value_is_false(value: object) -> bool:
+    """Return whether an environment value explicitly disables a flag."""
+    return str(value or "").strip().casefold() in {"0", "false", "no", "off"}
+
+
+def _external_lemonade_runtime(env: dict) -> bool:
+    """Return whether ODS wraps a separately managed Lemonade service."""
+    runtime_mode = str(env.get("AMD_INFERENCE_RUNTIME_MODE") or "").strip().casefold()
+    managed = str(env.get("AMD_INFERENCE_MANAGED") or "").strip().casefold()
+    return (
+        _env_value_is_true(env.get("LEMONADE_EXTERNAL"))
+        or runtime_mode == "external-lemonade"
+        or (
+            _env_value_is_false(managed)
+            and any(
+                str(env.get(key) or "").strip().casefold() == "lemonade"
+                for key in ("ODS_MODE", "LLM_BACKEND", "AMD_INFERENCE_RUNTIME")
+            )
+        )
+    )
+
+
+def _uses_lemonade_runtime(env: dict) -> bool:
+    """Recognize Lemonade by its runtime contract, not host GPU discovery."""
+    if _is_windows_host_llama_server(env):
+        return False
+    if _external_lemonade_runtime(env):
+        return True
+    return (
+        str(env.get("GPU_BACKEND") or "").strip().casefold() == "amd"
+        or str(env.get("LLM_BACKEND") or "").strip().casefold() == "lemonade"
+        or str(env.get("AMD_INFERENCE_RUNTIME") or "").strip().casefold()
+        == "lemonade"
+    )
+
+
+def _current_runtime_model_inputs(
+    env: dict,
+    identity: dict,
+) -> tuple[str, str]:
+    """Return route identity inputs without stale inactive-backend aliases."""
+    lemonade_model = str(env.get("LEMONADE_MODEL") or "").strip()
+    if _external_lemonade_runtime(env) and lemonade_model:
+        return lemonade_model, lemonade_model
+    return (
+        str(env.get("GGUF_FILE") or identity["runtimeModelId"]),
+        str(env.get("LLM_MODEL") or identity["catalogId"]),
     )
 
 
@@ -1858,8 +2181,7 @@ def _switchboard_state_needs_current_env_verification(
     ):
         return True
 
-    gguf_file = str(env.get("GGUF_FILE") or identity["runtimeModelId"])
-    llm_model_name = str(env.get("LLM_MODEL") or identity["catalogId"])
+    gguf_file, llm_model_name = _current_runtime_model_inputs(env, identity)
     model_id, _model = _catalog_model_for_current_env(env)
     if not _runtime_model_identity_matches(
         active.get("runtimeModelId"),
@@ -1867,6 +2189,8 @@ def _switchboard_state_needs_current_env_verification(
         gguf_file=gguf_file,
         llm_model_name=llm_model_name,
     ):
+        return True
+    if active.get("contextLength") != identity.get("contextLength"):
         return True
 
     backend_kind, endpoint_id, _native_route = _initial_switchboard_backend(env)
@@ -1881,6 +2205,10 @@ def _switchboard_state_needs_current_env_verification(
 def _catalog_model_for_current_env(env: dict) -> tuple[str, dict]:
     gguf_file = str(env.get("GGUF_FILE") or "").strip()
     llm_model_name = str(env.get("LLM_MODEL") or "").strip()
+    lemonade_model = str(env.get("LEMONADE_MODEL") or "").strip()
+    external_lemonade_model = (
+        lemonade_model if _external_lemonade_runtime(env) else ""
+    )
     try:
         library = _load_model_library_records()
     except RuntimeError:
@@ -1891,19 +2219,28 @@ def _catalog_model_for_current_env(env: dict) -> tuple[str, dict]:
         entry_id = str(entry.get("id") or "")
         entry_gguf = str(entry.get("gguf_file") or "")
         entry_llm = str(entry.get("llm_model_name") or entry_id)
-        if (
-            (llm_model_name and entry_id == llm_model_name)
-            or (llm_model_name and entry_llm == llm_model_name)
-            or (gguf_file and entry_gguf == gguf_file)
-        ):
-            return entry_id or llm_model_name or gguf_file, entry
-    return llm_model_name or gguf_file, {}
+        if external_lemonade_model:
+            matches = (
+                entry_id == external_lemonade_model
+                or entry_llm == external_lemonade_model
+                or entry_gguf == external_lemonade_model
+            )
+        else:
+            matches = (
+                (llm_model_name and entry_id == llm_model_name)
+                or (llm_model_name and entry_llm == llm_model_name)
+                or (gguf_file and entry_gguf == gguf_file)
+            )
+        if matches:
+            return (
+                entry_id or external_lemonade_model or llm_model_name or gguf_file,
+                entry,
+            )
+    return external_lemonade_model or llm_model_name or gguf_file, {}
 
 
 def _initial_switchboard_backend(env: dict) -> tuple[str, str, str | None]:
-    gpu_backend = str(env.get("GPU_BACKEND") or "nvidia").lower()
-    windows_native_llama = _is_windows_host_llama_server(env)
-    if gpu_backend == "amd" and not windows_native_llama:
+    if _uses_lemonade_runtime(env):
         lemonade_model_id = str(env.get("LEMONADE_MODEL") or "").strip()
         if not lemonade_model_id:
             lemonade_model_id = _resolve_lemonade_model_id(
@@ -1939,8 +2276,7 @@ def _publish_verified_initial_switchboard_route(
     if not identity:
         return False
 
-    gguf_file = str(env.get("GGUF_FILE") or identity["runtimeModelId"])
-    llm_model_name = str(env.get("LLM_MODEL") or identity["catalogId"])
+    gguf_file, llm_model_name = _current_runtime_model_inputs(env, identity)
     if not gguf_file:
         return False
 
@@ -1963,9 +2299,22 @@ def _publish_verified_initial_switchboard_route(
         return False
 
     fresh_env = load_env(INSTALL_DIR / ".env")
-    if (
-        str(fresh_env.get("GGUF_FILE") or "") != str(env.get("GGUF_FILE") or "")
-        or str(fresh_env.get("LLM_MODEL") or "") != str(env.get("LLM_MODEL") or "")
+    route_env_keys = (
+        "GPU_BACKEND",
+        "GGUF_FILE",
+        "LLM_MODEL",
+        "LEMONADE_MODEL",
+        "LEMONADE_BASE_URL",
+        "LEMONADE_API_BASE_PATH",
+        "LEMONADE_EXTERNAL",
+        "LLM_BACKEND",
+        "AMD_INFERENCE_RUNTIME",
+        "AMD_INFERENCE_RUNTIME_MODE",
+        "AMD_INFERENCE_MANAGED",
+    )
+    if any(
+        str(fresh_env.get(key) or "") != str(env.get(key) or "")
+        for key in route_env_keys
     ):
         logger.info("switchboard initial route proof discarded after env changed")
         return False
@@ -2170,6 +2519,63 @@ def _atomic_write_text(
     _atomic_write_bytes(path, text.encode("utf-8"), mode, uid, gid)
 
 
+def _write_bound_env_bytes(path: Path, content: bytes) -> None:
+    """Update an existing bind-mounted .env without replacing its inode."""
+    if not path.exists():
+        _atomic_write_bytes(path, content)
+        return
+    metadata = path.lstat()
+    if stat_mod.S_ISLNK(metadata.st_mode):
+        raise RuntimeError(f"Refusing to mutate symlinked environment file: {path}")
+    if not stat_mod.S_ISREG(metadata.st_mode):
+        raise RuntimeError(f"Refusing to mutate non-regular environment file: {path}")
+    try:
+        with path.open("r+b", buffering=0) as handle:
+            handle.seek(0)
+            handle.write(content)
+            handle.truncate()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not update bind-mounted environment file {path}: {exc}"
+        ) from exc
+
+
+def _write_bound_env_text(path: Path, text: str) -> None:
+    _write_bound_env_bytes(path, text.encode("utf-8"))
+
+
+def _restore_bound_env_file(path: Path, snapshot: dict) -> None:
+    """Restore .env content while preserving an existing Docker bind inode."""
+    if not snapshot.get("exists"):
+        if path.is_symlink():
+            raise RuntimeError(
+                f"Refusing to remove unexpected symlink during rollback: {path}"
+            )
+        path.unlink(missing_ok=True)
+        return
+    content = snapshot.get("bytes")
+    if not isinstance(content, bytes):
+        content = str(snapshot.get("text") or "").encode("utf-8")
+    _write_bound_env_bytes(path, content)
+    if snapshot.get("mode") is not None:
+        os.chmod(path, int(snapshot["mode"]))
+    if (
+        hasattr(os, "chown")
+        and snapshot.get("uid") is not None
+        and snapshot.get("gid") is not None
+    ):
+        try:
+            os.chown(path, int(snapshot["uid"]), int(snapshot["gid"]))
+        except PermissionError:
+            metadata = path.stat()
+            if (
+                metadata.st_uid != int(snapshot["uid"])
+                or metadata.st_gid != int(snapshot["gid"])
+            ):
+                raise
+
+
 def _copy_unique_env_backup(env_path: Path, backup_dir: Path) -> Path:
     """Copy ``.env`` to a collision-resistant, owner-readable backup file."""
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -2191,6 +2597,8 @@ def _copy_unique_env_backup(env_path: Path, backup_dir: Path) -> Path:
         backup_path.unlink(missing_ok=True)
         raise
     return backup_path
+
+
 def _read_setup_json(path: Path) -> tuple[bool, dict | None]:
     """Read one fixed setup-state file without following a symlink."""
     try:
@@ -2392,6 +2800,177 @@ def _restore_text_file(path: Path, snapshot: dict) -> None:
         path.unlink(missing_ok=True)
 
 
+def _ods_managed_pixel_identity() -> tuple[str, Path] | None:
+    """Return the exact ODS-managed Pixel owner/home for this install.
+
+    A marker owned by another ODS tree is intentionally out of scope: model
+    activation in this tree must never adopt or rewrite an ambient Pixel.
+    An unsafe marker that claims this install is a hard error rather than a
+    silent skip, because continuing would leave the default agent stale.
+    """
+    if platform.system() != "Linux" or os.name == "nt" or not hasattr(os, "geteuid"):
+        return None
+    try:
+        import pwd
+
+        owner_record = pwd.getpwuid(os.geteuid())
+    except (ImportError, KeyError, OSError) as exc:
+        raise RuntimeError(f"Could not resolve the Pixel install owner: {exc}") from exc
+    owner = owner_record.pw_name
+    home = Path(owner_record.pw_dir)
+    marker = home / ".config" / "ods" / "pixel-managed.json"
+    try:
+        metadata = marker.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(f"Could not inspect the ODS-managed Pixel marker: {exc}") from exc
+    if (
+        stat_mod.S_ISLNK(metadata.st_mode)
+        or not stat_mod.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_uid != os.geteuid()
+        or stat_mod.S_IMODE(metadata.st_mode) & 0o077
+        or metadata.st_size > 65536
+    ):
+        raise RuntimeError("The ODS-managed Pixel marker is unsafe")
+    try:
+        value = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not read the ODS-managed Pixel marker: {exc}") from exc
+    if not isinstance(value, dict) or value.get("manager") != "ods":
+        raise RuntimeError("The Pixel marker is outside the ODS management contract")
+    raw_install = value.get("install_dir")
+    if not isinstance(raw_install, str) or not raw_install or not Path(raw_install).is_absolute():
+        raise RuntimeError("The Pixel marker has no safe ODS install boundary")
+    try:
+        marker_install = str(Path(raw_install).resolve())
+        current_install = str(INSTALL_DIR.resolve())
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(f"Could not resolve the Pixel management boundary: {exc}") from exc
+    if marker_install != current_install:
+        return None
+    if value.get("schema_version") != 2 or value.get("state") != "ready":
+        raise RuntimeError("The ODS-managed Pixel runtime is not in a ready state")
+    if not owner or owner == "root" or not home.is_absolute() or home == Path("/"):
+        raise RuntimeError("The ODS-managed Pixel owner identity is unsafe")
+    return owner, home
+
+
+def _pixel_model_reasoning_capable(model: str, env: dict[str, str]) -> bool:
+    """Project ODS's runtime reasoning contract into Pixel model metadata."""
+    configured = str(env.get("LLAMA_REASONING") or "").strip().lower()
+    return configured not in {"", "off", "none", "false", "0"}
+
+
+def _pixel_max_tokens_for_context(context_length: int) -> int:
+    """Keep enough prompt room for Pixel's managed agent/tool contract."""
+    if context_length < _MIN_MANAGED_PIXEL_CONTEXT:
+        # Preserve the legacy rollback shape for older managed installations.
+        return min(4096, max(1, context_length // 2))
+    # Real Qwen qualification showed two distinct truncation failures: a 1K
+    # ceiling at 8K context, and a fixed 4K ceiling at 64K context while the
+    # model was authoring one original SVG tool call. Keep enough output room
+    # for model-authored artifacts while reserving three quarters of compact
+    # contexts for Pixel's prompt, history, and tool results. The 8K ceiling
+    # matches ODS's other platform agent configurations.
+    return min(8192, max(1, context_length // 4))
+
+
+def _reconcile_ods_managed_pixel_model(
+    model: str,
+    context_length: int,
+    *,
+    max_tokens: int = 4096,
+    reasoning: bool = False,
+) -> str:
+    """Transactionally bind the managed Pixel gateway to an activated model."""
+    identity = _ods_managed_pixel_identity()
+    if identity is None:
+        return "not_installed"
+    if not _valid_pixel_model_name(model):
+        raise RuntimeError("The promoted Pixel model identity is invalid")
+    if not isinstance(context_length, int) or isinstance(context_length, bool) \
+            or not 4096 <= context_length <= 10_000_000:
+        raise RuntimeError("Pixel requires a model context between 4096 and 10000000 tokens")
+    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) \
+            or not 1 <= max_tokens <= context_length:
+        raise RuntimeError("The promoted Pixel output-token limit is invalid")
+
+    owner, home = identity
+    env_values = load_env(INSTALL_DIR / ".env")
+    source_url = str(
+        env_values.get("PIXEL_SOURCE_URL")
+        or "https://github.com/Osmantic/Pixel.git"
+    )
+    if any(character in source_url for character in "\r\n\x00"):
+        raise RuntimeError("The configured Pixel source URL is invalid")
+    if source_url != "https://github.com/Osmantic/Pixel.git":
+        source_path = Path(source_url)
+        if not source_path.is_absolute() or source_path == Path("/"):
+            raise RuntimeError("The configured Pixel source must be the canonical URL or an absolute local checkout")
+
+    script = r'''
+set -uo pipefail
+INSTALL_DIR="$1"
+owner="$2"
+home="$3"
+target_model="$4"
+target_context="$5"
+target_max_tokens="$6"
+target_reasoning="$7"
+INTERACTIVE=false
+DRY_RUN=false
+log() { printf '%s\n' "$*" >&2; }
+ai() { log "$*"; }
+ai_ok() { log "$*"; }
+ai_warn() { log "$*"; }
+ai_bad() { log "$*"; }
+error() { log "$*"; return 1; }
+if [[ ${EUID:-$(id -u)} -eq 0 ]] \
+    || { command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; }; then
+    ODS_SUDO_AVAILABLE=true
+else
+    ODS_SUDO_AVAILABLE=false
+fi
+export INSTALL_DIR INTERACTIVE DRY_RUN ODS_SUDO_AVAILABLE
+. "$INSTALL_DIR/installers/lib/sudo.sh"
+. "$INSTALL_DIR/installers/lib/pixel-host-install.sh"
+ods_pixel_reconcile_promoted_model "$owner" "$home" "$target_model" ready \
+    "$target_context" "$target_max_tokens" "$target_reasoning"
+'''
+    child_env = {
+        "HOME": str(home),
+        "USER": owner,
+        "LOGNAME": owner,
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "PIXEL_SOURCE_URL": source_url,
+    }
+    if os.environ.get("TMPDIR"):
+        child_env["TMPDIR"] = str(os.environ["TMPDIR"])
+    try:
+        result = subprocess.run(
+            [
+                "bash", "-c", script, "ods-pixel-model-reconcile",
+                str(INSTALL_DIR), owner, str(home), model,
+                str(context_length), str(max_tokens),
+                "true" if reasoning else "false",
+            ],
+            env=child_env,
+            capture_output=True,
+            text=True,
+            timeout=900,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"ODS-managed Pixel model reconciliation could not run: {exc}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown failure")[-500:].strip()
+        logger.error("ODS-managed Pixel model reconciliation failed: %s", detail)
+        raise RuntimeError("ODS-managed Pixel model reconciliation failed")
+    return "reconciled"
+
+
 class _RemoteProviderApplyError(RuntimeError):
     """Lifecycle apply failure with support-bundle-safe rollback metadata."""
 
@@ -2408,6 +2987,21 @@ def _remote_provider_route_state_path() -> Path:
     return _remote_provider_root() / "routing-state.json"
 
 
+_REMOTE_PROVIDER_PROFILE_SCHEMA = "ods.remote-provider-profile.v1"
+
+
+def _remote_provider_profile_path() -> Path:
+    return _remote_provider_root() / "provider-profile.json"
+
+
+def _remote_provider_activation_state_path() -> Path:
+    return _remote_provider_root() / "activation-state.json"
+
+
+def _remote_provider_activation_public_path() -> Path:
+    return _remote_provider_root() / "activation-public.json"
+
+
 def _remote_provider_secret_path(ref: str) -> Path:
     filename = _REMOTE_PROVIDER_SECRET_REF_TO_FILENAME.get(ref)
     if not filename:
@@ -2420,7 +3014,11 @@ def _remote_provider_secret_owner() -> tuple[int | None, int | None]:
         return None, None
     try:
         if os.geteuid() == 0:
-            return _REMOTE_PROVIDER_EGRESS_UID, _REMOTE_PROVIDER_EGRESS_GID
+            # Keep root as owner and grant the hardened provider group read
+            # access. OpenSSH rejects a private key when the current process
+            # owns it and group bits are present; root:provider with 0640 lets
+            # the non-root tunnel read the key without tripping that check.
+            return 0, _REMOTE_PROVIDER_EGRESS_GID
     except OSError:
         pass
     return None, None
@@ -2482,6 +3080,7 @@ def _remote_provider_route_state_from_plan(
     plan: dict,
     *,
     probe_receipt: dict | None = None,
+    resume: dict | None = None,
 ) -> dict:
     route = plan.get("route") if isinstance(plan.get("route"), dict) else {}
     enabled = route.get("enabled") is True
@@ -2490,12 +3089,13 @@ def _remote_provider_route_state_from_plan(
         if enabled and route.get("transport") == "ssh"
         else "pending-provider-handshake"
     )
-    return {
+    state = {
         "schema": _REMOTE_PROVIDER_ROUTING_STATE_SCHEMA,
         "enabled": enabled,
         "mode": str(route.get("mode") or "cloud"),
         "provider": route.get("provider") if enabled else None,
         "ssh": route.get("ssh") if enabled and route.get("transport") == "ssh" else None,
+        "peer": route.get("peer") if enabled else None,
         "projection": _remote_provider_projection(route),
         "status": _remote_provider_route_status(
             enabled=enabled,
@@ -2503,6 +3103,13 @@ def _remote_provider_route_state_from_plan(
             probe_receipt=probe_receipt,
         ),
     }
+    # Retain the previously validated pointer through an enabled transition.
+    # Dashboard redacts this object and only advertises it while disabled, but
+    # keeping it here gives an interrupted SSH proof or failed profile rewrite
+    # an exact recovery target.
+    if isinstance(resume, dict):
+        state["resume"] = resume
+    return state
 
 
 def _remote_provider_safe_text(value, *, max_length: int) -> str:
@@ -2560,7 +3167,7 @@ def _remote_provider_probe_receipt_from_egress(payload: dict) -> dict:
     return _remote_provider_sanitize_probe_receipt(payload.get("probe"))
 
 
-def _read_remote_provider_route_state_for_update() -> dict:
+def _read_remote_provider_route_state_document() -> dict:
     path = _remote_provider_route_state_path()
     try:
         raw = path.read_text(encoding="utf-8")
@@ -2576,6 +3183,13 @@ def _read_remote_provider_route_state_for_update() -> dict:
         raise RuntimeError("remote-provider route state root must be an object")
     if state.get("schema") != _REMOTE_PROVIDER_ROUTING_STATE_SCHEMA:
         raise RuntimeError("remote-provider route state schema is unsupported")
+    if type(state.get("enabled")) is not bool:
+        raise RuntimeError("remote-provider route state is missing enabled status")
+    return state
+
+
+def _read_remote_provider_route_state_for_update() -> dict:
+    state = _read_remote_provider_route_state_document()
     if state.get("enabled") is not True:
         raise RuntimeError("remote-provider route is disabled")
     if not isinstance(state.get("provider"), dict):
@@ -2583,9 +3197,155 @@ def _read_remote_provider_route_state_for_update() -> dict:
     return state
 
 
+def _remote_provider_profile_route(route: dict) -> dict:
+    provider = route.get("provider") if isinstance(route.get("provider"), dict) else None
+    if route.get("enabled") is not True or provider is None:
+        raise RuntimeError("remote-provider route cannot be saved for later reactivation")
+    profile_route = {
+        "mode": str(route.get("mode") or "cloud"),
+        "provider": provider,
+        "ssh": route.get("ssh") if provider.get("transport") == "ssh" else None,
+        "peer": route.get("peer") if isinstance(route.get("peer"), dict) else None,
+    }
+    _remote_provider_plan_from_profile_route(profile_route)
+    return profile_route
+
+
+def _remote_provider_plan_from_profile_route(profile_route: dict) -> dict:
+    provider = (
+        profile_route.get("provider")
+        if isinstance(profile_route.get("provider"), dict)
+        else {}
+    )
+    validation_payload = {
+        "action": "configure",
+        **profile_route,
+        "secrets": {"apiKey": "profile-validation-only"},
+    }
+    if provider.get("transport") == "ssh":
+        validation_payload["secrets"].update({
+            "sshPrivateKey": "profile-validation-only",
+            "sshKnownHosts": "profile-validation-only",
+        })
+    if _plan_remote_provider_lifecycle_operation is None:
+        raise RuntimeError("Remote provider lifecycle helper is unavailable")
+    validated = _plan_remote_provider_lifecycle_operation(validation_payload)
+    validated_route = validated.get("route") if isinstance(validated.get("route"), dict) else {}
+    for key in ("mode", "provider", "ssh", "peer"):
+        expected = profile_route.get(key)
+        actual = validated_route.get(key)
+        if expected != actual:
+            raise RuntimeError(f"remote-provider saved profile {key} metadata is invalid")
+    return validated
+
+
+def _write_remote_provider_profile(route: dict) -> dict:
+    profile = {
+        "schema": _REMOTE_PROVIDER_PROFILE_SCHEMA,
+        "savedAt": _iso_now(),
+        "route": _remote_provider_profile_route(route),
+    }
+    raw = json.dumps(profile, indent=2, sort_keys=True) + "\n"
+    _atomic_write_text(_remote_provider_profile_path(), raw, 0o600)
+    return {
+        "available": True,
+        "profileSha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "savedAt": profile["savedAt"],
+    }
+
+
+def _read_remote_provider_profile(resume: object) -> dict:
+    if not isinstance(resume, dict) or resume.get("available") is not True:
+        raise RuntimeError(
+            "remote-provider has no saved route; run remote-provider configure"
+        )
+    expected_digest = _remote_provider_safe_text(
+        resume.get("profileSha256"), max_length=64,
+    )
+    if not re.fullmatch(r"[a-f0-9]{64}", expected_digest):
+        raise RuntimeError("remote-provider saved route fingerprint is invalid")
+    path = _remote_provider_profile_path()
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise RuntimeError("remote-provider saved route is missing") from exc
+    except OSError as exc:
+        raise RuntimeError(f"remote-provider saved route is unreadable: {exc}") from exc
+    if (
+        stat_mod.S_ISLNK(metadata.st_mode)
+        or not stat_mod.S_ISREG(metadata.st_mode)
+        or metadata.st_size > 256 * 1024
+        or (os.name != "nt" and stat_mod.S_IMODE(metadata.st_mode) != 0o600)
+    ):
+        raise RuntimeError("remote-provider saved route custody is unsafe")
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"remote-provider saved route is unreadable: {exc}") from exc
+    if not secrets.compare_digest(
+        hashlib.sha256(raw.encode("utf-8")).hexdigest(), expected_digest,
+    ):
+        raise RuntimeError("remote-provider saved route fingerprint does not match")
+    try:
+        profile = json.loads(raw)
+    except ValueError as exc:
+        raise RuntimeError("remote-provider saved route is not valid JSON") from exc
+    if (
+        not isinstance(profile, dict)
+        or profile.get("schema") != _REMOTE_PROVIDER_PROFILE_SCHEMA
+        or not isinstance(profile.get("route"), dict)
+    ):
+        raise RuntimeError("remote-provider saved route contract is invalid")
+    profile_route = profile["route"]
+    synthetic_route = {
+        "enabled": True,
+        **profile_route,
+    }
+    _remote_provider_profile_route(synthetic_route)
+    return _remote_provider_plan_from_profile_route(profile_route)
+
+
+def _read_remote_provider_secret_value(ref: str) -> str:
+    path = _remote_provider_secret_path(ref)
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise RuntimeError("remote-provider secret custody is incomplete") from exc
+    except OSError as exc:
+        raise RuntimeError(f"remote-provider secret is unreadable: {exc}") from exc
+    if (
+        stat_mod.S_ISLNK(metadata.st_mode)
+        or not stat_mod.S_ISREG(metadata.st_mode)
+        or metadata.st_size < 1
+        or metadata.st_size > 1024 * 1024
+        or (os.name != "nt" and stat_mod.S_IMODE(metadata.st_mode) & 0o027)
+    ):
+        raise RuntimeError("remote-provider secret custody is unsafe")
+    try:
+        value = path.read_text(encoding="utf-8").rstrip("\r\n")
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"remote-provider secret is unreadable: {exc}") from exc
+    if not value:
+        raise RuntimeError("remote-provider secret custody is incomplete")
+    return value
+
+
+def _probe_saved_remote_provider_route(plan: dict) -> dict:
+    if _probe_remote_provider_direct is None or _remote_provider_public_probe_receipt is None:
+        raise RuntimeError("Remote provider probe helper is unavailable")
+    route = plan.get("route") if isinstance(plan.get("route"), dict) else {}
+    result = _probe_remote_provider_direct(
+        route,
+        provider_secret=_read_remote_provider_secret_value("REMOTE_LLM_API_KEY"),
+    )
+    return _remote_provider_public_probe_receipt(result, verified_at=_iso_now())
+
+
 def _record_remote_provider_egress_probe(payload: dict) -> dict:
     probe_receipt = _remote_provider_probe_receipt_from_egress(payload)
     state = _read_remote_provider_route_state_for_update()
+    state_path = _remote_provider_route_state_path()
+    state_snapshot = _snapshot_text_file(state_path)
     provider = state.get("provider") if isinstance(state.get("provider"), dict) else {}
     payload_transport = _remote_provider_safe_text(payload.get("transport"), max_length=32)
     active_transport = str(provider.get("transport") or "direct")
@@ -2595,15 +3355,29 @@ def _record_remote_provider_egress_probe(payload: dict) -> dict:
         enabled=True,
         probe_receipt=probe_receipt,
     )
-    _atomic_write_text(
-        _remote_provider_route_state_path(),
-        json.dumps(state, indent=2, sort_keys=True) + "\n",
-        0o644,
-    )
+    _atomic_write_text(state_path, json.dumps(state, indent=2, sort_keys=True) + "\n", 0o644)
+    try:
+        runtime = _remote_provider_runtime_contract(state)
+        activation_state = _read_remote_provider_activation_state()
+        activation_current = (
+            isinstance(activation_state, dict)
+            and activation_state.get("phase") == "active"
+            and activation_state.get("remote") == runtime
+            and activation_state.get("routeFingerprint")
+            == _remote_provider_route_fingerprint(state)
+        )
+        activation = _verify_current_remote_provider_consumers(state, runtime) \
+            if activation_current else None
+        if activation is None:
+            activation = _activate_remote_provider_route(state)
+    except Exception:
+        _restore_text_file(state_path, state_snapshot)
+        raise
     return {
         "schema": _REMOTE_PROVIDER_PROOF_RECORD_SCHEMA,
         "recorded": True,
         "status": state["status"],
+        "activation": activation,
     }
 
 
@@ -2684,6 +3458,485 @@ def _remote_provider_secret_values(payload: dict, plan: dict) -> dict[str, str]:
     return values
 
 
+def _remote_provider_runtime_contract(route: dict) -> dict[str, object]:
+    provider = route.get("provider") if isinstance(route.get("provider"), dict) else {}
+    model = str(provider.get("model") or "")
+    context_length = provider.get("contextLength")
+    max_tokens = provider.get("maxTokens")
+    reasoning = provider.get("reasoning")
+    if not _valid_pixel_model_name(model):
+        raise RuntimeError("Remote provider model identity is invalid for managed agents")
+    if type(context_length) is not int or not 16384 <= context_length <= 10_000_000:
+        raise RuntimeError("Remote provider context must be between 16384 and 10000000 tokens")
+    if type(max_tokens) is not int or not 1 <= max_tokens <= context_length:
+        raise RuntimeError("Remote provider output limit must fit its context window")
+    if type(reasoning) is not bool:
+        raise RuntimeError("Remote provider reasoning capability must be boolean")
+    return {
+        "model": model,
+        "contextLength": context_length,
+        "maxTokens": max_tokens,
+        "reasoning": reasoning,
+    }
+
+
+def _remote_provider_route_fingerprint(route: dict) -> str:
+    provider = route.get("provider") if isinstance(route.get("provider"), dict) else {}
+    identity = {
+        key: provider.get(key)
+        for key in (
+            "transport", "baseUrl", "model", "contextLength", "maxTokens", "reasoning",
+        )
+    }
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _serializable_text_snapshot(snapshot: dict) -> dict[str, object]:
+    return {
+        "exists": bool(snapshot.get("exists")),
+        "text": str(snapshot.get("text") or "") if snapshot.get("exists") else None,
+        "mode": snapshot.get("mode"),
+        "uid": snapshot.get("uid"),
+        "gid": snapshot.get("gid"),
+    }
+
+
+def _valid_serializable_text_snapshot(value: object) -> bool:
+    if not isinstance(value, dict) or type(value.get("exists")) is not bool:
+        return False
+    exists = value["exists"]
+    text = value.get("text")
+    mode = value.get("mode")
+    uid = value.get("uid")
+    gid = value.get("gid")
+    if exists:
+        if not isinstance(text, str) or len(text.encode("utf-8")) > 2 * 1024 * 1024:
+            return False
+        if type(mode) is not int or not 0 <= mode <= 0o7777:
+            return False
+        if type(uid) is not int or uid < 0 or type(gid) is not int or gid < 0:
+            return False
+    elif any(item is not None for item in (text, mode, uid, gid)):
+        return False
+    return True
+
+
+def _valid_managed_pixel_runtime_contract(value: object) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, dict) or not _valid_pixel_model_name(value.get("model")):
+        return False
+    context_length = value.get("contextLength")
+    max_tokens = value.get("maxTokens")
+    reasoning = value.get("reasoning")
+    return bool(
+        type(context_length) is int
+        and 4096 <= context_length <= 10_000_000
+        and type(max_tokens) is int
+        and 1 <= max_tokens <= context_length
+        and type(reasoning) is bool
+    )
+
+
+def _valid_remote_provider_runtime_contract(value: object) -> bool:
+    return bool(
+        _valid_managed_pixel_runtime_contract(value)
+        and isinstance(value, dict)
+        and value.get("contextLength", 0) >= 16384
+    )
+
+
+def _read_remote_provider_activation_state() -> dict | None:
+    path = _remote_provider_activation_state_path()
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(f"Could not inspect remote-provider activation state: {exc}") from exc
+    if (
+        stat_mod.S_ISLNK(metadata.st_mode)
+        or not stat_mod.S_ISREG(metadata.st_mode)
+        or (os.name != "nt" and stat_mod.S_IMODE(metadata.st_mode) & 0o077)
+        or metadata.st_size > 2 * 1024 * 1024
+    ):
+        raise RuntimeError("Remote-provider activation state is unsafe")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not read remote-provider activation state: {exc}") from exc
+    previous = value.get("previous") if isinstance(value, dict) else None
+    remote = value.get("remote") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != _REMOTE_PROVIDER_ACTIVATION_STATE_SCHEMA
+        or value.get("phase") not in {"staging", "active"}
+        or not isinstance(previous, dict)
+        or not isinstance(previous.get("odsMode"), str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}", previous["odsMode"])
+        or not isinstance(previous.get("llmApiUrl"), str)
+        or not previous["llmApiUrl"]
+        or len(previous["llmApiUrl"]) > 2048
+        or any(character in previous["llmApiUrl"] for character in "\r\n\x00")
+        or not _valid_serializable_text_snapshot(previous.get("cloudConfig"))
+        or not _valid_managed_pixel_runtime_contract(previous.get("pixel"))
+        or not _valid_remote_provider_runtime_contract(remote)
+        or not isinstance(value.get("routeFingerprint"), str)
+        or not re.fullmatch(r"[a-f0-9]{64}", value["routeFingerprint"])
+    ):
+        raise RuntimeError("Remote-provider activation state contract is invalid")
+    return value
+
+
+def _active_remote_provider_pixel_runtime() -> dict[str, object] | None:
+    """Return the active remote runtime only when every custody join matches.
+
+    The local switchboard remains a rollback route, but it is not the model
+    serving Pixel while a proven remote-provider transaction is active. This
+    projection does no network I/O because Dashboard polls model status often;
+    activation already proved LiteLLM and reconciled Pixel before commit.
+    """
+    try:
+        route = _read_remote_provider_route_state_for_update()
+        route_status = route.get("status")
+        if not isinstance(route_status, dict) or route_status.get("proven") is not True:
+            return None
+        _remote_provider_sanitize_probe_receipt(route_status.get("lastProbe"))
+        runtime = _remote_provider_runtime_contract(route)
+        activation = _read_remote_provider_activation_state()
+        if (
+            not isinstance(activation, dict)
+            or activation.get("phase") != "active"
+            or activation.get("remote") != runtime
+            or activation.get("routeFingerprint")
+            != _remote_provider_route_fingerprint(route)
+        ):
+            return None
+        env = load_env(INSTALL_DIR / ".env")
+        if (
+            str(env.get("ODS_MODE") or "") != "cloud"
+            or str(env.get("LLM_API_URL") or "").rstrip("/")
+            != "http://litellm:4000"
+        ):
+            return None
+        if _managed_pixel_runtime_contract() != runtime:
+            return None
+        return runtime
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _write_remote_provider_activation_state(value: dict) -> None:
+    _atomic_write_text(
+        _remote_provider_activation_state_path(),
+        json.dumps(value, indent=2, sort_keys=True) + "\n",
+        0o600,
+    )
+
+
+def _write_remote_provider_activation_public(value: dict) -> None:
+    safe = {
+        "schema": _REMOTE_PROVIDER_ACTIVATION_STATE_SCHEMA,
+        "active": value.get("active") is True,
+        "gateway": str(value.get("gateway") or ""),
+        "publicModel": str(value.get("publicModel") or ""),
+        "model": str(value.get("model") or ""),
+        "routeFingerprint": str(value.get("routeFingerprint") or ""),
+        "contextLength": value.get("contextLength"),
+        "maxTokens": value.get("maxTokens"),
+        "reasoning": value.get("reasoning"),
+        "pixel": str(value.get("pixel") or ""),
+        "proven": value.get("proven") is True,
+        "updatedAt": _iso_now(),
+    }
+    _atomic_write_text(
+        _remote_provider_activation_public_path(),
+        json.dumps(safe, indent=2, sort_keys=True) + "\n",
+        0o644,
+    )
+
+
+def _managed_pixel_runtime_contract() -> dict[str, object] | None:
+    if _ods_managed_pixel_identity() is None:
+        return None
+    path = INSTALL_DIR / "data" / "pixel" / "onboarding.json"
+    snapshot = _snapshot_text_file(path)
+    if not snapshot.get("exists") or int(snapshot.get("mode") or 0o777) & 0o077:
+        raise RuntimeError("ODS-managed Pixel onboarding contract is missing or unsafe")
+    try:
+        value = json.loads(str(snapshot.get("text") or ""))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("ODS-managed Pixel onboarding contract is invalid") from exc
+    provider = value.get("modelProvider")
+    model_id = value.get("modelId")
+    model_name = value.get("modelName")
+    if provider == "ods-local":
+        if not _valid_pixel_model_name(model_id) or model_name != f"ODS Local {model_id}":
+            raise RuntimeError("ODS-managed Pixel local model identity is invalid")
+        concrete_model = model_id
+    elif provider == "ods-gateway":
+        alias_label = "Current" if model_id == "ods/current" else "Default"
+        display = re.fullmatch(
+            rf"ODS {alias_label} \(([A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{{0,255}})\)",
+            model_name if isinstance(model_name, str) else "",
+        )
+        if model_id not in {"default", "ods/current"} or display is None:
+            raise RuntimeError("ODS-managed Pixel gateway model identity is invalid")
+        concrete_model = display.group(1)
+    else:
+        raise RuntimeError("ODS-managed Pixel provider identity is invalid")
+    contract = {
+        "model": concrete_model,
+        "contextLength": value.get("modelContextWindow"),
+        "maxTokens": value.get("modelMaxTokens"),
+        "reasoning": value.get("modelReasoning"),
+    }
+    if not _valid_managed_pixel_runtime_contract(contract):
+        raise RuntimeError("ODS-managed Pixel onboarding runtime contract is invalid")
+    return contract
+
+
+def _reconcile_managed_pixel_contract(contract: dict[str, object] | None) -> str:
+    if contract is None:
+        return "not_installed"
+    return _reconcile_ods_managed_pixel_model(
+        str(contract["model"]),
+        int(contract["contextLength"]),
+        max_tokens=int(contract["maxTokens"]),
+        reasoning=bool(contract["reasoning"]),
+    )
+
+
+def _verify_current_remote_provider_consumers(
+    route: dict,
+    runtime: dict[str, object],
+) -> dict[str, object] | None:
+    """Return a fresh receipt only when persisted consumers still match."""
+    env = load_env(INSTALL_DIR / ".env")
+    if (
+        str(env.get("ODS_MODE") or "") != "cloud"
+        or str(env.get("LLM_API_URL") or "").rstrip("/") != "http://litellm:4000"
+    ):
+        return None
+    pixel = _managed_pixel_runtime_contract()
+    if pixel is not None and pixel != runtime:
+        return None
+    try:
+        _verify_litellm_route(env, model="ods/current")
+    except RuntimeError:
+        return None
+    activation = {
+        "active": True,
+        "gateway": "litellm-cloud",
+        "publicModel": "ods/current",
+        "model": runtime["model"],
+        "routeFingerprint": _remote_provider_route_fingerprint(route),
+        "contextLength": runtime["contextLength"],
+        "maxTokens": runtime["maxTokens"],
+        "reasoning": runtime["reasoning"],
+        "pixel": "reconciled" if pixel is not None else "not_installed",
+        "proven": True,
+        "unchanged": True,
+    }
+    _write_remote_provider_activation_public(activation)
+    return activation
+
+
+def _render_remote_provider_cloud_config(route: dict, env: dict[str, str]) -> None:
+    provider = route.get("provider") if isinstance(route.get("provider"), dict) else {}
+    api_key = str(env.get("LITELLM_KEY") or env.get("LITELLM_MASTER_KEY") or "")
+    if not _render_runtime_config(
+        INSTALL_DIR,
+        "litellm-cloud",
+        model=str(env.get("LLM_MODEL") or "default"),
+        gguf_file=str(env.get("GGUF_FILE") or "model.gguf"),
+        lemonade_model_id=str(env.get("LEMONADE_MODEL") or ""),
+        lemonade_api_key=api_key,
+        lemonade_api_base=_runtime_lemonade_api_base(env),
+        llm_base_url=_runtime_llama_api_base(env),
+        ods_mode="cloud",
+        gpu_backend=str(env.get("GPU_BACKEND") or "nvidia"),
+        switchboard_mode=_normal_switchboard_mode(env),
+        remote_llm_enabled=True,
+        remote_llm_transport=str(provider.get("transport") or ""),
+        remote_llm_base_url=str(provider.get("baseUrl") or ""),
+        remote_llm_model=str(provider.get("model") or ""),
+    ):
+        raise RuntimeError("Could not render the remote-provider LiteLLM route")
+
+
+def _activate_remote_provider_route(route: dict) -> dict[str, object]:
+    """Commit a proven egress route to LiteLLM and managed Pixel, or roll back."""
+    runtime = _remote_provider_runtime_contract(route)
+    env_path = INSTALL_DIR / ".env"
+    cloud_path = INSTALL_DIR / "config" / "litellm" / "cloud.yaml"
+    env_snapshot = _snapshot_text_file(env_path)
+    cloud_snapshot = _snapshot_text_file(cloud_path)
+    activation_path = _remote_provider_activation_state_path()
+    activation_public_path = _remote_provider_activation_public_path()
+    activation_snapshot = _snapshot_text_file(activation_path)
+    activation_public_snapshot = _snapshot_text_file(activation_public_path)
+    pixel_before = _managed_pixel_runtime_contract()
+    container_state = _capture_container_state("ods-litellm")
+    if not container_state.get("running"):
+        raise RuntimeError("LiteLLM must be running before a remote provider can become active")
+
+    existing = _read_remote_provider_activation_state()
+    previous = existing.get("previous") if isinstance(existing, dict) else None
+    if not isinstance(previous, dict):
+        env = load_env(env_path)
+        previous = {
+            "odsMode": str(env.get("ODS_MODE") or "local"),
+            "llmApiUrl": str(env.get("LLM_API_URL") or "http://llama-server:8080"),
+            "cloudConfig": _serializable_text_snapshot(cloud_snapshot),
+            "pixel": pixel_before,
+        }
+    candidate_state = {
+        "schema": _REMOTE_PROVIDER_ACTIVATION_STATE_SCHEMA,
+        "phase": "staging",
+        "previous": previous,
+        "remote": runtime,
+        "routeFingerprint": _remote_provider_route_fingerprint(route),
+        "updatedAt": _iso_now(),
+    }
+    pixel_attempted = False
+    litellm_recreated = False
+    try:
+        _write_remote_provider_activation_state(candidate_state)
+        raw_env = str(env_snapshot.get("text") or "")
+        raw_env = _upsert_env_text(raw_env, "ODS_MODE", "cloud")
+        raw_env = _upsert_env_text(raw_env, "LLM_API_URL", "http://litellm:4000")
+        _write_bound_env_text(env_path, raw_env)
+        env = load_env(env_path)
+        _render_remote_provider_cloud_config(route, env)
+        litellm_recreated = _restart_existing_container(
+            "ods-litellm", container_state, recreate=True,
+        )
+        if not litellm_recreated:
+            raise RuntimeError("LiteLLM route could not be recreated")
+        _wait_for_container_health("ods-litellm")
+        _verify_litellm_route(env, model="ods/current")
+        pixel_attempted = pixel_before is not None
+        pixel_status = _reconcile_managed_pixel_contract(runtime)
+        activation_public = {
+            "active": True,
+            "gateway": "litellm-cloud",
+            "publicModel": "ods/current",
+            "model": runtime["model"],
+            "routeFingerprint": candidate_state["routeFingerprint"],
+            "contextLength": runtime["contextLength"],
+            "maxTokens": runtime["maxTokens"],
+            "reasoning": runtime["reasoning"],
+            "pixel": pixel_status,
+            "proven": True,
+        }
+        candidate_state["phase"] = "active"
+        candidate_state["updatedAt"] = _iso_now()
+        _write_remote_provider_activation_state(candidate_state)
+        # Publish readiness only after the private recovery record commits.
+        # A crash between these writes therefore degrades status safely.
+        _write_remote_provider_activation_public(activation_public)
+        return activation_public
+    except Exception as exc:
+        rollback_errors: list[str] = []
+        try:
+            _restore_bound_env_file(env_path, env_snapshot)
+            _restore_text_file(cloud_path, cloud_snapshot)
+            _restore_text_file(activation_path, activation_snapshot)
+            _restore_text_file(activation_public_path, activation_public_snapshot)
+        except Exception as rollback_exc:
+            rollback_errors.append(f"configuration: {rollback_exc}")
+        if litellm_recreated:
+            try:
+                _restore_container_state("ods-litellm", container_state, recreate=True)
+                _wait_for_container_health("ods-litellm")
+            except Exception as rollback_exc:
+                rollback_errors.append(f"LiteLLM: {rollback_exc}")
+        if pixel_attempted:
+            try:
+                _reconcile_managed_pixel_contract(pixel_before)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"Pixel: {rollback_exc}")
+        detail = f"Remote provider consumer activation failed: {exc}"
+        if rollback_errors:
+            detail += "; rollback failed: " + "; ".join(rollback_errors)
+        raise RuntimeError(detail) from exc
+
+
+def _deactivate_remote_provider_route() -> dict[str, object]:
+    """Restore the pre-remote gateway and Pixel route from private state."""
+    activation = _read_remote_provider_activation_state()
+    if activation is None:
+        return {"active": False, "restored": False, "reason": "not_activated"}
+    previous = activation["previous"]
+    env_path = INSTALL_DIR / ".env"
+    cloud_path = INSTALL_DIR / "config" / "litellm" / "cloud.yaml"
+    activation_path = _remote_provider_activation_state_path()
+    activation_public_path = _remote_provider_activation_public_path()
+    env_snapshot = _snapshot_text_file(env_path)
+    cloud_snapshot = _snapshot_text_file(cloud_path)
+    activation_snapshot = _snapshot_text_file(activation_path)
+    activation_public_snapshot = _snapshot_text_file(activation_public_path)
+    pixel_before = _managed_pixel_runtime_contract()
+    container_state = _capture_container_state("ods-litellm")
+    litellm_recreated = False
+    pixel_attempted = False
+    try:
+        raw_env = str(env_snapshot.get("text") or "")
+        raw_env = _upsert_env_text(raw_env, "ODS_MODE", str(previous["odsMode"]))
+        raw_env = _upsert_env_text(raw_env, "LLM_API_URL", str(previous["llmApiUrl"]))
+        _write_bound_env_text(env_path, raw_env)
+        cloud_config = previous.get("cloudConfig")
+        if not isinstance(cloud_config, dict):
+            raise RuntimeError("Remote-provider rollback is missing the prior cloud config")
+        _restore_text_file(cloud_path, cloud_config)
+        litellm_recreated = _restart_existing_container(
+            "ods-litellm", container_state, recreate=True,
+        )
+        if not litellm_recreated:
+            raise RuntimeError("LiteLLM route could not be restored")
+        _wait_for_container_health("ods-litellm")
+        restored_env = load_env(env_path)
+        _verify_litellm_route(restored_env, model="ods/current")
+        previous_pixel = previous.get("pixel")
+        pixel_attempted = previous_pixel is not None
+        pixel_status = _reconcile_managed_pixel_contract(previous_pixel)
+        _remove_remote_provider_file(activation_path)
+        _remove_remote_provider_file(activation_public_path)
+        return {
+            "active": False,
+            "restored": True,
+            "mode": previous["odsMode"],
+            "pixel": pixel_status,
+            "proven": True,
+        }
+    except Exception as exc:
+        rollback_errors: list[str] = []
+        try:
+            _restore_bound_env_file(env_path, env_snapshot)
+            _restore_text_file(cloud_path, cloud_snapshot)
+            _restore_text_file(activation_path, activation_snapshot)
+            _restore_text_file(activation_public_path, activation_public_snapshot)
+        except Exception as rollback_exc:
+            rollback_errors.append(f"configuration: {rollback_exc}")
+        if litellm_recreated:
+            try:
+                _restore_container_state("ods-litellm", container_state, recreate=True)
+                _wait_for_container_health("ods-litellm")
+            except Exception as rollback_exc:
+                rollback_errors.append(f"LiteLLM: {rollback_exc}")
+        if pixel_attempted:
+            try:
+                _reconcile_managed_pixel_contract(pixel_before)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"Pixel: {rollback_exc}")
+        detail = f"Remote provider deactivation failed: {exc}"
+        if rollback_errors:
+            detail += "; rollback failed: " + "; ".join(rollback_errors)
+        raise RuntimeError(detail) from exc
+
+
 def _remote_provider_probe_lifecycle_test(payload: dict, plan: dict) -> dict:
     if _probe_remote_provider_direct is None:
         raise RuntimeError("Remote provider probe helper is unavailable")
@@ -2705,10 +3958,12 @@ def _write_remote_provider_route_state(
     plan: dict,
     *,
     probe_receipt: dict | None = None,
+    resume: dict | None = None,
 ) -> None:
     state = _remote_provider_route_state_from_plan(
         plan,
         probe_receipt=probe_receipt,
+        resume=resume,
     )
     _atomic_write_text(
         _remote_provider_route_state_path(),
@@ -2719,13 +3974,123 @@ def _write_remote_provider_route_state(
 
 def _write_remote_provider_secret(ref: str, value: str) -> None:
     uid, gid = _remote_provider_secret_owner()
+    mode = 0o640 if ref in _REMOTE_PROVIDER_CONTAINER_SECRET_REFS else 0o600
     _atomic_write_text(
         _remote_provider_secret_path(ref),
         value.rstrip("\r\n") + "\n",
-        0o600,
+        mode,
         uid,
         gid,
     )
+
+
+def _repair_remote_provider_secret_permissions() -> list[str]:
+    """Migrate legacy provider-consumed secrets from 0600 to safe 0640.
+
+    Existing installations may have secrets written before provider services
+    received the installation data group. Never follow links or touch a file
+    owned by another account when the host agent is unprivileged. A failure is
+    logged per file so unrelated host-agent operations remain available while
+    the remote route remains naturally fail-closed.
+    """
+    if os.name == "nt" or not hasattr(os, "fchmod"):
+        return []
+    try:
+        effective_uid = os.geteuid()
+    except (AttributeError, OSError):
+        return []
+    try:
+        effective_gid = os.getegid()
+    except (AttributeError, OSError):
+        return []
+    desired_uid = 0 if effective_uid == 0 else effective_uid
+    desired_gid = _REMOTE_PROVIDER_EGRESS_GID if effective_uid == 0 else effective_gid
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        provider_root_fd = os.open(_remote_provider_root(), directory_flags)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        logger.warning("Could not safely open remote-provider state directory: %s", exc)
+        return []
+    try:
+        try:
+            secret_dir_fd = os.open("secrets", directory_flags, dir_fd=provider_root_fd)
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            logger.warning("Could not safely open remote-provider secret directory: %s", exc)
+            return []
+        try:
+            repaired: list[str] = []
+            file_flags = (
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+            )
+            for ref in sorted(_REMOTE_PROVIDER_CONTAINER_SECRET_REFS):
+                filename = _REMOTE_PROVIDER_SECRET_REF_TO_FILENAME[ref]
+                try:
+                    before = os.stat(filename, dir_fd=secret_dir_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    logger.warning("Could not inspect remote-provider secret %s: %s", ref, exc)
+                    continue
+                if stat_mod.S_ISLNK(before.st_mode) or not stat_mod.S_ISREG(before.st_mode):
+                    logger.warning("Refusing to repair unsafe remote-provider secret %s", ref)
+                    continue
+                if effective_uid != 0 and before.st_uid != desired_uid:
+                    logger.warning(
+                        "Cannot repair remote-provider secret %s owned by another user", ref
+                    )
+                    continue
+                if (
+                    stat_mod.S_IMODE(before.st_mode) == 0o640
+                    and before.st_uid == desired_uid
+                    and before.st_gid == desired_gid
+                ):
+                    continue
+                try:
+                    descriptor = os.open(filename, file_flags, dir_fd=secret_dir_fd)
+                    try:
+                        current = os.fstat(descriptor)
+                        if (
+                            not stat_mod.S_ISREG(current.st_mode)
+                            or current.st_dev != before.st_dev
+                            or current.st_ino != before.st_ino
+                            or current.st_uid != before.st_uid
+                            or current.st_gid != before.st_gid
+                        ):
+                            raise RuntimeError("secret changed during permission repair")
+                        if current.st_uid != desired_uid or current.st_gid != desired_gid:
+                            os.fchown(descriptor, desired_uid, desired_gid)
+                        os.fchmod(descriptor, 0o640)
+                        final = os.fstat(descriptor)
+                        if (
+                            final.st_uid != desired_uid
+                            or final.st_gid != desired_gid
+                            or stat_mod.S_IMODE(final.st_mode) != 0o640
+                        ):
+                            raise RuntimeError("secret permission repair did not persist")
+                    finally:
+                        os.close(descriptor)
+                except (OSError, RuntimeError) as exc:
+                    logger.warning("Could not repair remote-provider secret %s: %s", ref, exc)
+                    continue
+                repaired.append(ref)
+                logger.info("Repaired remote-provider secret permissions for %s", ref)
+            return repaired
+        finally:
+            os.close(secret_dir_fd)
+    finally:
+        os.close(provider_root_fd)
 
 
 def _remove_remote_provider_file(path: Path) -> None:
@@ -2735,7 +4100,12 @@ def _remove_remote_provider_file(path: Path) -> None:
 
 
 def _remote_provider_mutation_paths(action: str) -> list[Path]:
-    paths = [_remote_provider_route_state_path()]
+    paths = [
+        _remote_provider_route_state_path(),
+        _remote_provider_activation_public_path(),
+    ]
+    if action in {"configure", "disable", "remove"}:
+        paths.append(_remote_provider_profile_path())
     if action == "remove":
         paths.extend(
             _remote_provider_secret_path(ref)
@@ -2747,21 +4117,58 @@ def _remote_provider_mutation_paths(action: str) -> list[Path]:
 def _restore_remote_provider_snapshots(snapshots: dict[Path, dict]) -> None:
     for path, snapshot in reversed(list(snapshots.items())):
         _restore_text_file(path, snapshot)
+    _repair_remote_provider_secret_permissions()
 
 
 def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dict:
     action = str(plan.get("action") or "")
     result = json.loads(json.dumps(plan))
-    result["applied"] = True
-    result["mutated"] = action in {"configure", "disable", "remove"}
+    result["applied"] = False
+    result["staged"] = False
+    result["mutated"] = action in {"configure", "enable", "disable", "remove"}
     result["rollback"] = {"attempted": False, "ok": None}
     probe_receipt = None
     route = plan.get("route") if isinstance(plan.get("route"), dict) else {}
+    saved_state = None
+    resume = None
+    if action in {"enable", "disable"}:
+        try:
+            saved_state = _read_remote_provider_route_state_document()
+        except RuntimeError:
+            if action == "enable":
+                raise
+    if action == "enable":
+        if saved_state.get("enabled") is True:
+            if isinstance(saved_state.get("resume"), dict):
+                resume = saved_state["resume"]
+            profile_route = _remote_provider_profile_route(saved_state)
+            plan = _remote_provider_plan_from_profile_route(profile_route)
+            route = plan.get("route") if isinstance(plan.get("route"), dict) else {}
+            route_status = saved_state.get("status")
+            runtime = _remote_provider_runtime_contract(route)
+            active_runtime = _active_remote_provider_pixel_runtime()
+            if (
+                isinstance(route_status, dict)
+                and route_status.get("proven") is True
+                and active_runtime == runtime
+            ):
+                result["applied"] = True
+                result["unchanged"] = True
+                result["mutated"] = False
+                return result
+        else:
+            resume = saved_state.get("resume")
+            plan = _read_remote_provider_profile(resume)
+            route = plan.get("route") if isinstance(plan.get("route"), dict) else {}
     ssh_configure = action == "configure" and route.get("transport") == "ssh"
+    ssh_enable = action == "enable" and route.get("transport") == "ssh"
     if action in {"configure", "test"} and not ssh_configure:
         probe_receipt = _remote_provider_probe_lifecycle_test(payload, plan)
         result["probe"] = probe_receipt
-    if ssh_configure:
+    if action == "enable" and not ssh_enable:
+        probe_receipt = _probe_saved_remote_provider_route(plan)
+        result["probe"] = probe_receipt
+    if ssh_configure or ssh_enable:
         result["proof"] = {
             "required": True,
             "status": "pending",
@@ -2771,7 +4178,7 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
     if action == "test":
         return result
 
-    if action not in {"configure", "disable", "remove"}:
+    if action not in {"configure", "enable", "disable", "remove"}:
         raise _RemoteProviderApplyError(
             f"Unsupported remote-provider lifecycle action: {action}",
             result["rollback"],
@@ -2779,7 +4186,11 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
 
     if action == "configure":
         secret_values = _remote_provider_secret_values(payload, plan)
-        mutation_paths = [_remote_provider_route_state_path()]
+        mutation_paths = [
+            _remote_provider_route_state_path(),
+            _remote_provider_activation_public_path(),
+            _remote_provider_profile_path(),
+        ]
         mutation_paths.extend(_remote_provider_secret_path(ref) for ref in secret_values)
         mutation_paths = list(dict.fromkeys(mutation_paths))
     else:
@@ -2790,19 +4201,78 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
     mutation_started = False
     try:
         snapshots = {path: _snapshot_text_file(path) for path in mutation_paths}
+        # A prior receipt must never describe a route while that route is being
+        # replaced, disabled, or removed. Outer rollback restores it on error.
+        _remove_remote_provider_file(_remote_provider_activation_public_path())
+        mutation_started = True
         if action == "configure":
             for ref, secret in secret_values.items():
                 _write_remote_provider_secret(ref, secret)
                 mutation_started = True
+            _write_remote_provider_profile(route)
+            mutation_started = True
             _write_remote_provider_route_state(plan, probe_receipt=probe_receipt)
             mutation_started = True
-        elif action == "disable":
-            _write_remote_provider_route_state(plan)
+            if ssh_configure:
+                result["staged"] = True
+            else:
+                result["activation"] = _activate_remote_provider_route(route)
+                result["applied"] = True
+        elif action == "enable":
+            _write_remote_provider_route_state(
+                plan,
+                probe_receipt=probe_receipt,
+                resume=resume,
+            )
             mutation_started = True
+            if ssh_enable:
+                result["staged"] = True
+            else:
+                result["activation"] = _activate_remote_provider_route(route)
+                result["applied"] = True
+        elif action == "disable":
+            if isinstance(saved_state, dict) and saved_state.get("enabled") is True:
+                try:
+                    resume = _write_remote_provider_profile(saved_state)
+                    mutation_started = True
+                except RuntimeError as exc:
+                    # Disabling is the fail-safe escape hatch. A malformed or
+                    # partially written route must not prevent restoration of
+                    # the local model path merely because it cannot be saved
+                    # for later reactivation.
+                    logger.warning(
+                        "Remote-provider route could not be preserved while disabling: %s",
+                        exc,
+                    )
+                    prior_resume = saved_state.get("resume")
+                    if isinstance(prior_resume, dict):
+                        try:
+                            _read_remote_provider_profile(prior_resume)
+                            resume = prior_resume
+                        except RuntimeError:
+                            resume = None
+            elif isinstance(saved_state, dict) and isinstance(saved_state.get("resume"), dict):
+                try:
+                    _read_remote_provider_profile(saved_state["resume"])
+                    resume = saved_state["resume"]
+                except RuntimeError as exc:
+                    # A stale pointer can result from an interrupted configure
+                    # between the private-profile and public-state commits.
+                    # Pause safely and require configure once to rebuild it.
+                    logger.warning(
+                        "Remote-provider saved route could not be retained while disabling: %s",
+                        exc,
+                    )
+            _write_remote_provider_route_state(plan, resume=resume)
+            mutation_started = True
+            result["activation"] = _deactivate_remote_provider_route()
+            result["applied"] = True
         elif action == "remove":
             for path in mutation_paths:
                 _remove_remote_provider_file(path)
                 mutation_started = True
+            result["activation"] = _deactivate_remote_provider_route()
+            result["applied"] = True
     except Exception as exc:
         rollback = {"attempted": False, "ok": None}
         if mutation_started and snapshots:
@@ -2843,10 +4313,16 @@ def _assert_text_file_matches_snapshot(path: Path, snapshot: dict) -> None:
         raise RuntimeError(f"Configuration changed during model activation: {path}")
 
 
-def _upsert_env_text(raw_text: str, key: str, value: str) -> str:
-    """Return env text with one canonical ``KEY=value`` entry."""
+def _env_assignment(key: str, value: str) -> str:
+    """Serialize one shell-sourceable dotenv assignment without expansion."""
     if any(character in value for character in "\r\n\x00"):
         raise ValueError(f"Invalid newline or NUL in {key}")
+    return f"{key}={shlex.quote(value)}"
+
+
+def _upsert_env_text(raw_text: str, key: str, value: str) -> str:
+    """Return env text with one canonical ``KEY=value`` entry."""
+    assignment = _env_assignment(key, value)
     output = []
     written = False
     for line in raw_text.splitlines():
@@ -2854,19 +4330,19 @@ def _upsert_env_text(raw_text: str, key: str, value: str) -> str:
         line_key = left.strip() if separator and not line.lstrip().startswith("#") else None
         if line_key == key:
             if not written:
-                output.append(f"{key}={value}")
+                output.append(assignment)
                 written = True
             continue
         output.append(line)
     if not written:
-        output.append(f"{key}={value}")
+        output.append(assignment)
     return "\n".join(output) + "\n"
 
 
 def _upsert_env_value(env_path: Path, key: str, value: str) -> None:
     """Persist one simple ``KEY=value`` entry without disturbing other lines."""
     raw_text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
-    _atomic_write_text(env_path, _upsert_env_text(raw_text, key, value))
+    _write_bound_env_text(env_path, _upsert_env_text(raw_text, key, value))
 
 
 def _write_activation_config_file(path: Path, content: str) -> None:
@@ -3041,6 +4517,17 @@ def _detect_docker_bridge_gateway() -> str:
     return _detect_docker_network_gateway("bridge")
 
 
+def _running_under_wsl(
+    system_name: str | None = None,
+    kernel_release: str | None = None,
+) -> bool:
+    """Return whether this process is running in a WSL Linux kernel."""
+    if (system_name or platform.system()) != "Linux":
+        return False
+    release = kernel_release if kernel_release is not None else platform.release()
+    return "microsoft" in str(release).casefold()
+
+
 def _resolve_agent_bind_addr(env: dict, system_name: str | None = None) -> str:
     """Resolve the host-agent bind address without exposing LAN by default."""
     system_name = system_name or platform.system()
@@ -3050,7 +4537,7 @@ def _resolve_agent_bind_addr(env: dict, system_name: str | None = None) -> str:
             return "0.0.0.0"
         return explicit
 
-    if system_name in ("Darwin", "Windows"):
+    if system_name in ("Darwin", "Windows") or _running_under_wsl(system_name):
         return "127.0.0.1"
 
     if system_name == "Linux":
@@ -3428,7 +4915,7 @@ def _persist_proxy_auth_required() -> tuple[bool, str]:
             raw_text = env_path.read_text(encoding="utf-8")
             new_text = _upsert_env_text(raw_text, "WEBUI_AUTH", "true")
             if new_text != raw_text:
-                _atomic_write_text(env_path, new_text)
+                _write_bound_env_text(env_path, new_text)
                 logger.info("Enforced WEBUI_AUTH=true for network-accessible ODS")
     except (OSError, UnicodeError, RuntimeError) as exc:
         return False, f"Could not enforce proxy authentication: {exc}"
@@ -4049,6 +5536,14 @@ def _valid_local_model_name(value: object) -> bool:
     return bool(
         isinstance(value, str)
         and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value)
+    )
+
+
+def _valid_pixel_model_name(value: object) -> bool:
+    """Return true for a bounded provider model identity safe in Pixel JSON."""
+    return bool(
+        isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}", value)
     )
 
 
@@ -4800,12 +6295,127 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_update_status()
         elif path == "/v1/remote-provider/ssh-supervisor":
             self._handle_remote_provider_ssh_supervisor_status()
+        elif path == "/v1/pixel/ops-status":
+            self._handle_pixel_ops_status(parse_qs(parsed.query, keep_blank_values=True))
         elif path == "/v1/host/port":
             self._handle_host_port_status(parse_qs(parsed.query))
         elif path == "/v1/setup/state":
             self._handle_setup_state()
         else:
             json_response(self, 404, {"error": "Not found"})
+
+    def _handle_pixel_ops_status(self, query: dict[str, list[str]]):
+        """Return one exact, nonsecret Operations result projection.
+
+        The root-installed lifecycle manager reads Pixel's deliberately
+        protected result directory. The host agent can request only one
+        validated job/hash pair over its authenticated local socket; it never
+        receives plans, credentials, arbitrary file access, or mutation
+        authority.
+        """
+        if not check_auth(self):
+            return
+        if set(query) != {"job_id", "plan_hash"} or any(
+            len(query[key]) != 1 for key in ("job_id", "plan_hash")
+        ):
+            json_response(self, 400, {"error": "exact job_id and plan_hash are required"})
+            return
+        job_id = query["job_id"][0]
+        plan_hash = query["plan_hash"][0]
+        if (
+            PIXEL_OPS_JOB_ID_RE.fullmatch(job_id) is None
+            or PIXEL_OPS_PLAN_HASH_RE.fullmatch(plan_hash) is None
+        ):
+            json_response(self, 400, {"error": "invalid Pixel Operations receipt"})
+            return
+        if platform.system() != "Linux":
+            json_response(self, 503, {"error": "Pixel Operations status is unavailable"})
+            return
+
+        approval_script = INSTALL_DIR / "bin" / "ods-pixel-approve"
+        try:
+            helper_info = PIXEL_OPS_STATUS_HELPER.lstat()
+            approval_info = approval_script.lstat()
+        except OSError:
+            json_response(self, 503, {"error": "Pixel Operations status is unavailable"})
+            return
+        if (
+            not stat_mod.S_ISREG(helper_info.st_mode)
+            or stat_mod.S_ISLNK(helper_info.st_mode)
+            or helper_info.st_nlink != 1
+            or helper_info.st_uid != 0
+            or helper_info.st_mode & 0o022
+            or not helper_info.st_mode & 0o111
+            or helper_info.st_size > 2 * 1024 * 1024
+            or not stat_mod.S_ISREG(approval_info.st_mode)
+            or stat_mod.S_ISLNK(approval_info.st_mode)
+            or approval_info.st_nlink != 1
+            or approval_info.st_uid != os.getuid()
+            or approval_info.st_mode & 0o022
+            or not approval_info.st_mode & 0o111
+            or approval_info.st_size > 256 * 1024
+        ):
+            json_response(self, 503, {"error": "Pixel Operations status is unavailable"})
+            return
+
+        try:
+            result = subprocess.run(
+                [
+                    "/usr/bin/python3",
+                    str(PIXEL_OPS_STATUS_HELPER),
+                    "status",
+                    PIXEL_OPS_STATUS_SOCKET,
+                    job_id,
+                    plan_hash,
+                ],
+                cwd="/",
+                env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            json_response(self, 503, {"error": "Pixel Operations status is unavailable"})
+            return
+        if result.returncode != 0 or not 1 <= len(result.stdout) <= 64 * 1024:
+            json_response(self, 503, {"error": "Pixel Operations status is unavailable"})
+            return
+        try:
+            value = json.loads(result.stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            json_response(self, 503, {"error": "Pixel Operations status is unavailable"})
+            return
+        expected = {
+            "schemaVersion",
+            "kind",
+            "jobId",
+            "planHash",
+            "status",
+            "riskTier",
+            "approvalRequired",
+            "updatedAt",
+        }
+        if (
+            not isinstance(value, dict)
+            or set(value) != expected
+            or value.get("schemaVersion") != 1
+            or value.get("kind") != PIXEL_OPS_STATUS_KIND
+            or value.get("jobId") != job_id
+            or value.get("planHash") != plan_hash
+        ):
+            json_response(self, 503, {"error": "Pixel Operations status is unavailable"})
+            return
+        command = None
+        if value.get("status") == "awaiting-approval" and value.get("approvalRequired") is True:
+            command = " ".join(
+                (
+                    shlex.quote(str(approval_script)),
+                    job_id,
+                    plan_hash,
+                    "--confirm",
+                )
+            )
+        json_response(self, 200, {**value, "approvalCommand": command})
 
     def _handle_setup_state(self):
         if not check_auth(self):
@@ -5259,8 +6869,17 @@ class AgentHandler(BaseHTTPRequestHandler):
                 {"error": "Remote provider lifecycle planner is unavailable"},
             )
             return
+        lock_acquired = False
         try:
             plan = _plan_remote_provider_lifecycle_operation(body)
+            if not _model_activate_lock.acquire(blocking=False):
+                json_response(
+                    self,
+                    409,
+                    {"error": "A model or remote-provider activation is already in progress"},
+                )
+                return
+            lock_acquired = True
             result = _apply_remote_provider_lifecycle_operation(body, plan)
         except (_RemoteProviderLifecycleError, _RemoteProviderPolicyError) as exc:
             json_response(self, 400, {"error": str(exc)})
@@ -5283,6 +6902,9 @@ class AgentHandler(BaseHTTPRequestHandler):
             logger.exception("remote-provider lifecycle apply failed")
             json_response(self, 500, {"error": f"Remote provider apply failed: {exc}"})
             return
+        finally:
+            if lock_acquired:
+                _model_activate_lock.release()
         json_response(self, 200, result)
 
     def _handle_remote_provider_proof(self):
@@ -5292,7 +6914,16 @@ class AgentHandler(BaseHTTPRequestHandler):
         body = read_optional_json_body(self)
         if body is None:
             return
+        lock_acquired = False
         try:
+            if not _model_activate_lock.acquire(blocking=False):
+                json_response(
+                    self,
+                    409,
+                    {"error": "A model or remote-provider activation is already in progress"},
+                )
+                return
+            lock_acquired = True
             result = _record_remote_provider_egress_probe(body)
         except ValueError as exc:
             json_response(self, 400, {"error": str(exc)})
@@ -5304,6 +6935,9 @@ class AgentHandler(BaseHTTPRequestHandler):
             logger.exception("remote-provider proof recording failed")
             json_response(self, 500, {"error": f"Remote provider proof recording failed: {exc}"})
             return
+        finally:
+            if lock_acquired:
+                _model_activate_lock.release()
         json_response(self, 200, result)
 
     def _handle_remote_provider_ssh_supervisor_status(self):
@@ -6844,6 +8478,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             data = {"status": "idle"}
             data.update(_model_lifecycle_status())
             _verify_switchboard_route_for_status(data, "model-status")
+            _project_switchboard_agent_viability(data)
             json_response(self, 200, data)
             return
         try:
@@ -6851,11 +8486,13 @@ class AgentHandler(BaseHTTPRequestHandler):
             data = _normalize_model_download_status(status_path, data)
             data.update(_model_lifecycle_status())
             _verify_switchboard_route_for_status(data, "model-status")
+            _project_switchboard_agent_viability(data)
             json_response(self, 200, data)
         except (json.JSONDecodeError, OSError):
             data = {"status": "idle"}
             data.update(_model_lifecycle_status())
             _verify_switchboard_route_for_status(data, "model-status")
+            _project_switchboard_agent_viability(data)
             json_response(self, 200, data)
 
     def _handle_model_download(self):
@@ -7545,12 +9182,11 @@ class AgentHandler(BaseHTTPRequestHandler):
             if _live_runtime_has_model(env, target_gguf) is not True:
                 _restart_windows_lemonade(env)
 
-            lemonade_host, lemonade_port = _lemonade_runtime_address(env)
+            lemonade_base_url = _lemonade_runtime_base_url(env)
             lemonade_model_id = _resolve_lemonade_model_id(
                 env,
                 target_gguf,
-                host=lemonade_host,
-                port=lemonade_port,
+                base_url=lemonade_base_url,
             )
             if not lemonade_model_id:
                 raise RuntimeError(
@@ -7576,7 +9212,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             rollback_errors: list[str] = []
             if mutation_started:
                 try:
-                    _restore_text_file(env_path, env_snapshot)
+                    _restore_bound_env_file(env_path, env_snapshot)
                     _restore_text_file(lemonade_path, lemonade_snapshot)
                 except Exception:
                     logger.exception(
@@ -7868,16 +9504,19 @@ class AgentHandler(BaseHTTPRequestHandler):
         hermes_restart_attempted = False
         openclaw_recreate_attempted = False
         perplexica_mutated = False
+        pixel_reconcile_attempted = False
+        pixel_status = "not_installed"
         apple_llama_bin: Path | None = None
         apple_llama_log: Path | None = None
         apple_pid_file: Path | None = None
         switchboard_run: dict | None = None
         final_runtime_proof: dict[str, object] | None = None
         gpu_assignment_plan: dict | None = None
+        previous_pixel_context: int | None = None
 
         def restore_backups():
             if env_snapshot is not None:
-                _restore_text_file(env_path, env_snapshot)
+                _restore_bound_env_file(env_path, env_snapshot)
             if ini_snapshot is not None:
                 _restore_text_file(models_ini, ini_snapshot)
             if lemonade_snapshot is not None:
@@ -7892,7 +9531,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                 _restore_text_file(activation_receipt, activation_receipt_snapshot)
             if hermes_template_snapshot is not None:
                 _restore_text_file(hermes_template_config, hermes_template_snapshot)
-            if hermes_live_snapshot and hermes_live_snapshot.get("exists"):
+            if hermes_live_snapshot and hermes_live_snapshot.get("source") == "deferred_absent":
+                pass  # No snapshot of these private bytes exists; never remove or restore them.
+            elif hermes_live_snapshot and hermes_live_snapshot.get("exists"):
                 if hermes_live_snapshot.get("source") == "host":
                     _restore_text_file(hermes_live_config, hermes_live_snapshot)
                 else:
@@ -7901,7 +9542,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         str(hermes_live_snapshot.get("text") or ""),
                         hermes_live_snapshot.get("source"),
                     )
-            elif hermes_live_snapshot is not None:
+            elif hermes_live_snapshot is not None and hermes_live_snapshot.get("exists") is False:
                 _remove_hermes_live_config(hermes_live_config)
             if opencode_snapshot is not None:
                 _restore_opencode_config(opencode_snapshot)
@@ -7939,17 +9580,93 @@ class AgentHandler(BaseHTTPRequestHandler):
             rollback_attempted = True
             try:
                 restore_backups()
-                restore_previous_runtime()
                 rollback_env = load_env(env_path)
+                previous_gguf = str(rollback_env.get("GGUF_FILE") or "")
+                previous_model = str(
+                    rollback_env.get("LLM_MODEL")
+                    or _local_model_name_from_gguf(previous_gguf)
+                )
+                previous_windows_native = _is_windows_host_llama_server(rollback_env)
+                previous_hermes_model = previous_gguf
+                if not previous_windows_native and _uses_lemonade_runtime(rollback_env):
+                    previous_hermes_model = str(
+                        rollback_env.get("LEMONADE_MODEL")
+                        or f"extra.{previous_gguf}"
+                    )
+                try:
+                    previous_context = int(
+                        rollback_env.get("MAX_CONTEXT")
+                        or rollback_env.get("CTX_SIZE")
+                        or 32768
+                    )
+                except (TypeError, ValueError):
+                    previous_context = 32768
+                previous_base_url = rollback_env.get("HERMES_LLM_BASE_URL") or (
+                    "http://litellm:4000/v1"
+                    if _is_windows_host_lemonade(rollback_env)
+                    else None
+                )
+
+                # The captured Hermes file can already be stale relative to the
+                # persisted model-of-record. Restoring that byte-for-byte would
+                # leave rollback split-brained and make the proof impossible.
+                # Canonicalize both persisted Hermes inputs to the restored env
+                # before restarting it, then prove the running route below.
+                if (
+                    (hermes_restart_attempted or hermes_config_mutated)
+                    and hermes_live_snapshot
+                    and hermes_live_snapshot.get("exists")
+                    and hermes_live_snapshot.get("source") != "deferred_absent"
+                ):
+                    restored_live = _capture_hermes_live_config(hermes_live_config)
+                    repaired_live, repaired = _patch_hermes_config_text(
+                        str(restored_live.get("text") or ""),
+                        previous_hermes_model,
+                        base_url=previous_base_url,
+                        context_length=previous_context,
+                        max_tokens=0,
+                    )
+                    if repaired:
+                        _write_hermes_live_config(
+                            hermes_live_config,
+                            repaired_live,
+                            restored_live.get("source"),
+                            restored_live.get("mode"),
+                        )
+                    if not _hermes_config_matches(
+                        repaired_live,
+                        previous_hermes_model,
+                        previous_base_url,
+                        previous_context,
+                    ):
+                        raise RuntimeError(
+                            "Hermes rollback config could not be rebound to the previous model route"
+                        )
+                    if hermes_template_snapshot and hermes_template_snapshot.get("exists"):
+                        repaired_template, template_changed = _patch_hermes_config_text(
+                            str(hermes_template_snapshot.get("text") or ""),
+                            previous_hermes_model,
+                            base_url=previous_base_url,
+                            context_length=previous_context,
+                            max_tokens=0,
+                        )
+                        if template_changed:
+                            _atomic_write_text(hermes_template_config, repaired_template)
+
+                restore_previous_runtime()
                 litellm_restarted = False
                 if litellm_restart_attempted:
                     litellm_restarted = _restore_container_state(
-                        "ods-litellm", container_states["ods-litellm"]
+                        "ods-litellm",
+                        container_states["ods-litellm"],
+                        recreate=True,
                     )
                 hermes_restarted = False
                 if hermes_restart_attempted or hermes_config_mutated:
                     hermes_restarted = _restore_container_state(
-                        "ods-hermes", container_states["ods-hermes"]
+                        "ods-hermes",
+                        container_states["ods-hermes"],
+                        recreate=True,
                     )
                 openclaw_recreated = False
                 if openclaw_recreate_attempted:
@@ -7963,41 +9680,13 @@ class AgentHandler(BaseHTTPRequestHandler):
                 if opencode_config_mutated and opencode_runtime_state and opencode_runtime_state.get("active"):
                     if not _restart_managed_opencode(opencode_runtime_state):
                         raise RuntimeError("managed OpenCode disappeared during rollback")
-                previous_gguf = str(rollback_env.get("GGUF_FILE") or "")
-                previous_model = str(
-                    rollback_env.get("LLM_MODEL")
-                    or _local_model_name_from_gguf(previous_gguf)
-                )
-                previous_windows_native = _is_windows_host_llama_server(rollback_env)
-                previous_hermes_model = previous_gguf
-                if (
-                    not previous_windows_native
-                    and str(rollback_env.get("GPU_BACKEND") or "").lower() == "amd"
-                ):
-                    previous_hermes_model = str(
-                        rollback_env.get("LEMONADE_MODEL")
-                        or f"extra.{previous_gguf}"
-                    )
                 if hermes_restarted and hermes_live_snapshot and hermes_live_snapshot.get("exists"):
-                    try:
-                        previous_context = int(
-                            rollback_env.get("MAX_CONTEXT")
-                            or rollback_env.get("CTX_SIZE")
-                            or 32768
-                        )
-                    except (TypeError, ValueError):
-                        previous_context = 32768
-                    previous_base_url = rollback_env.get("HERMES_LLM_BASE_URL") or (
-                        "http://litellm:4000/v1"
-                        if _is_windows_host_lemonade(rollback_env)
-                        else None
-                    )
+                    _wait_for_container_health("ods-hermes")
                     _verify_running_hermes_route(
                         previous_hermes_model,
                         previous_base_url,
                         previous_context,
                     )
-                    _wait_for_container_health("ods-hermes")
                 if not previous_gguf:
                     raise RuntimeError("previous GGUF identity is empty")
                 if not _wait_for_model_readiness(
@@ -8011,10 +9700,30 @@ class AgentHandler(BaseHTTPRequestHandler):
                         f"previous model {previous_gguf} did not pass identity and completion readiness"
                     )
                 if litellm_restarted:
+                    _wait_for_container_health("ods-litellm")
                     _verify_litellm_route(rollback_env)
                 if openclaw_recreated:
                     _verify_openclaw_model_env(previous_hermes_model)
                     _wait_for_container_health("ods-openclaw")
+                if pixel_reconcile_attempted:
+                    if previous_pixel_context is None:
+                        raise RuntimeError(
+                            "the previous managed Pixel context was not captured"
+                        )
+                    previous_reasoning = _pixel_model_reasoning_capable(
+                        previous_model,
+                        rollback_env,
+                    )
+                    restored_pixel = _reconcile_ods_managed_pixel_model(
+                        previous_hermes_model,
+                        previous_pixel_context,
+                        max_tokens=_pixel_max_tokens_for_context(previous_pixel_context),
+                        reasoning=previous_reasoning,
+                    )
+                    if restored_pixel != "reconciled":
+                        raise RuntimeError(
+                            "the previous managed Pixel model route disappeared during rollback"
+                        )
                 return True, ""
             except Exception as rollback_exc:
                 logger.exception("Failed to prove previous model route during rollback")
@@ -8023,11 +9732,27 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             # Read current env BEFORE modification — needed for gpu_backend guard
             env_pre = load_env(env_path)
+            try:
+                captured_pixel_context = int(
+                    env_pre.get("MAX_CONTEXT")
+                    or env_pre.get("CTX_SIZE")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                captured_pixel_context = 0
+            if captured_pixel_context >= 4096:
+                previous_pixel_context = captured_pixel_context
+            managed_pixel_identity = _ods_managed_pixel_identity()
+            if managed_pixel_identity is not None and previous_pixel_context is None:
+                raise RuntimeError(
+                    "The current ODS-managed Pixel route requires a valid "
+                    "MAX_CONTEXT or CTX_SIZE of at least 4096 before model activation"
+                )
             gpu_backend = env_pre.get("GPU_BACKEND", "nvidia")
             windows_host_lemonade = _is_windows_host_lemonade(env_pre)
             windows_lemonade_managed = _windows_lemonade_is_managed(env_pre)
             windows_native_llama = _is_windows_host_llama_server(env_pre)
-            lemonade_runtime = str(gpu_backend).lower() == "amd" and not windows_native_llama
+            lemonade_runtime = _uses_lemonade_runtime(env_pre)
             same_lemonade_target = _runtime_model_identity_matches(
                 env_pre.get("GGUF_FILE"),
                 gguf_file=gguf_file,
@@ -8072,22 +9797,51 @@ class AgentHandler(BaseHTTPRequestHandler):
                 # never strand dependents with LEMONADE_MODEL=.
                 lemonade_model_id = _resolve_lemonade_model_id(env_pre, gguf_file)
             runtime_profile = _select_runtime_profile(model, env_pre)
+            logger.info(
+                "Model activation runtime profile for %s: %s",
+                model_id,
+                runtime_profile.get("id") if runtime_profile else "none",
+            )
             runtime_env = {}
+            profile_context_length: int | None = None
             if runtime_profile:
                 if requested_context_length is None:
                     try:
-                        context_length = int(runtime_profile.get("context_length") or context_length)
+                        profile_context_length = int(
+                            runtime_profile.get("context_length") or context_length
+                        )
+                        context_length = profile_context_length
                     except (TypeError, ValueError):
-                        pass
+                        profile_context_length = None
                 llama_server_image = runtime_profile.get("llama_server_image") or llama_server_image
                 runtime_env = runtime_profile.get("env") if isinstance(runtime_profile.get("env"), dict) else {}
             recommended_context = _recommended_activation_context(model_id, model, env_pre)
-            if requested_context_length is None and recommended_context is not None:
+            if (
+                requested_context_length is None
+                and profile_context_length is None
+                and recommended_context is not None
+            ):
                 context_length = recommended_context
             if requested_context_length is not None:
                 context_length = requested_context_length
             if tier_context_limit is not None:
                 context_length = min(int(context_length), tier_context_limit)
+            if (
+                managed_pixel_identity is not None
+                and int(context_length) < _MIN_MANAGED_PIXEL_CONTEXT
+            ):
+                json_response(
+                    self,
+                    400,
+                    {
+                        "error": (
+                            "ODS-managed Pixel requires a model context of at least "
+                            f"{_MIN_MANAGED_PIXEL_CONTEXT} tokens; no model state was changed"
+                        ),
+                        "code": "pixel_context_too_small",
+                    },
+                )
+                return
 
             if gpu_backend == "apple":
                 apple_pid_file = INSTALL_DIR / "data" / ".llama-server.pid"
@@ -8195,6 +9949,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                     hermes_live_config,
                     hermes_live_snapshot,
                 )
+            elif hermes_live_snapshot.get("source") == "deferred_absent":
+                if _container_exists("ods-hermes"):
+                    raise RuntimeError("Hermes appeared while its private config update was deferred")
             if opencode_snapshot is not None:
                 for path, snapshot in opencode_snapshot["files"].items():
                     _assert_text_file_matches_snapshot(path, snapshot)
@@ -8214,6 +9971,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "MODEL_RUNTIME_PROFILE": runtime_profile.get("id", "") if runtime_profile else "",
                     "MODEL_RUNTIME_PROFILE_LABEL": runtime_profile.get("label", "") if runtime_profile else "",
                     "MODEL_RUNTIME_PROFILE_SOURCE": runtime_profile.get("source_url", "") if runtime_profile else "",
+                    "MODEL_SELECTION_SOURCE": "dashboard",
                 }
                 if gpu_assignment_plan:
                     updates.update(gpu_assignment_plan["env_updates"])
@@ -8223,6 +9981,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     updates["LEMONADE_MODEL"] = lemonade_model_id
                 runtime_keys = {
                     "LLAMA_PARALLEL",
+                    "LLAMA_SERVER_MEMORY_LIMIT",
                     "LLAMA_ARG_FLASH_ATTN",
                     "LLAMA_ARG_CACHE_TYPE_K",
                     "LLAMA_ARG_CACHE_TYPE_V",
@@ -8262,7 +10021,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 for line in lines:
                     key = line.split("=", 1)[0] if "=" in line and not line.startswith("#") else None
                     if key and key in updates:
-                        new_lines.append(f"{key}={updates[key]}")
+                        new_lines.append(_env_assignment(key, str(updates[key])))
                         seen.add(key)
                     elif key and key in remove_keys:
                         continue
@@ -8270,8 +10029,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                         new_lines.append(line)
                 for key, val in updates.items():
                     if key not in seen:
-                        new_lines.append(f"{key}={val}")
-                _atomic_write_text(env_path, "\n".join(new_lines) + "\n")
+                        new_lines.append(_env_assignment(key, str(val)))
+                _write_bound_env_text(env_path, "\n".join(new_lines) + "\n")
 
             # Update models.ini
             models_ini.parent.mkdir(parents=True, exist_ok=True)
@@ -8402,12 +10161,11 @@ class AgentHandler(BaseHTTPRequestHandler):
                     _compose_restart_llama_server(env)
 
             if lemonade_runtime:
-                lemonade_host, lemonade_port = _lemonade_runtime_address(env)
+                lemonade_base_url = _lemonade_runtime_base_url(env)
                 lemonade_model_id = _resolve_lemonade_model_id(
                     env,
                     gguf_file,
-                    host=lemonade_host,
-                    port=lemonade_port,
+                    base_url=lemonade_base_url,
                 )
                 if not lemonade_model_id:
                     raise RuntimeError(
@@ -8483,6 +10241,7 @@ class AgentHandler(BaseHTTPRequestHandler):
 
                 hermes_live_exists = bool(
                     hermes_live_snapshot and hermes_live_snapshot.get("exists")
+                    and hermes_live_snapshot.get("source") != "deferred_absent"
                 )
                 hermes_live_patched = False
                 hermes_live_verified = False
@@ -8539,24 +10298,35 @@ class AgentHandler(BaseHTTPRequestHandler):
                         display_name=llm_model_name,
                     )
 
-                # Restart dependent services so they pick up the new model
+                # Recreate bind-configured dependents so Docker Desktop cannot
+                # retain stale inodes after the atomic config replacements.
                 litellm_restart_attempted = container_states["ods-litellm"]["running"]
                 litellm_restarted = _restart_existing_container(
-                    "ods-litellm", container_states["ods-litellm"]
+                    "ods-litellm",
+                    container_states["ods-litellm"],
+                    recreate=True,
                 )
                 if litellm_restarted:
+                    # Recreated LiteLLM images can spend tens of seconds in
+                    # dependency import/startup before accepting HTTP. Wait on
+                    # the bounded health contract first so fast connection
+                    # refusals cannot exhaust the completion probe and roll
+                    # back an otherwise healthy model swap.
+                    _wait_for_container_health("ods-litellm")
                     _verify_litellm_route(env)
                 if hermes_patched:
                     hermes_restart_attempted = container_states["ods-hermes"]["running"]
                 if hermes_patched and _restart_existing_container(
-                    "ods-hermes", container_states["ods-hermes"]
+                    "ods-hermes",
+                    container_states["ods-hermes"],
+                    recreate=True,
                 ):
+                    _wait_for_container_health("ods-hermes")
                     _verify_running_hermes_route(
                         hermes_model_name,
                         hermes_base_url,
                         int(context_length),
                     )
-                    _wait_for_container_health("ods-hermes")
                 openclaw_recreate_attempted = container_states["ods-openclaw"]["running"]
                 openclaw_recreated = _recreate_openclaw_if_present(
                     container_states["ods-openclaw"]
@@ -8592,6 +10362,26 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "Final runtime proof failed for activated model "
                         f"{gguf_file}; rolling back to previous model"
                     )
+                pixel_runtime_identity = str(
+                    final_runtime_proof.get("identity") or ""
+                )
+                if not _valid_pixel_model_name(pixel_runtime_identity):
+                    raise RuntimeError(
+                        "Final runtime proof returned an invalid Pixel model identity; "
+                        "rolling back to the previous model"
+                    )
+                pixel_reconcile_attempted = True
+                pixel_status = _reconcile_ods_managed_pixel_model(
+                    pixel_runtime_identity,
+                    int(context_length),
+                    max_tokens=_pixel_max_tokens_for_context(int(context_length)),
+                    reasoning=_pixel_model_reasoning_capable(
+                        str(llm_model_name),
+                        env,
+                    ),
+                )
+                if pixel_status == "not_installed":
+                    pixel_reconcile_attempted = False
                 consumers = {
                     "open-webui": "dynamic_route",
                     "dashboard": "live_env",
@@ -8603,7 +10393,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                         else "not_installed"
                     ),
                     "hermes": (
-                        "restarted"
+                        "deferred_absent"
+                        if hermes_live_snapshot.get("source") == "deferred_absent"
+                        else "restarted"
                         if hermes_restart_attempted
                         else "updated_for_next_start"
                         if hermes_config_mutated
@@ -8614,6 +10406,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                         if openclaw_recreated
                         else "stopped"
                         if container_states["ods-openclaw"]["exists"]
+                        else "host_gateway_reconciled"
+                        if pixel_status == "reconciled"
                         else "not_installed"
                     ),
                     "opencode": (
@@ -8630,6 +10424,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         if container_states["ods-perplexica"]["exists"]
                         else "not_installed"
                     ),
+                    "pixel": pixel_status,
                 }
                 _atomic_write_json(
                     activation_receipt,
@@ -8896,17 +10691,47 @@ def _runtime_model_identity_matches(
     return bool(expected and actual.intersection(expected))
 
 
-def _lemonade_runtime_address(env: dict) -> tuple[str, str]:
-    """Return the Lemonade address reachable from this host-agent process."""
+def _normalized_lemonade_base_url(value: object) -> str:
+    """Return a credential-free HTTP(S) Lemonade origin or an empty string."""
+    raw = str(value or "").strip().rstrip("/")
+    for suffix in ("/api/v1", "/v1", "/api"):
+        if raw.endswith(suffix):
+            raw = raw[: -len(suffix)].rstrip("/")
+            break
+    try:
+        parsed = urlparse(raw)
+        if (
+            parsed.scheme.casefold() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return ""
+        # External Lemonade is an origin, not an arbitrary URL prefix.
+        if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+            return ""
+        # Accessing .port also validates malformed and out-of-range ports.
+        _ = parsed.port
+    except ValueError:
+        return ""
+    return raw
+
+
+def _lemonade_runtime_base_url(env: dict) -> str:
+    """Return the exact Lemonade origin reachable from the host agent."""
+    if _external_lemonade_runtime(env):
+        # An external runtime has no safe implicit destination. Never fall
+        # through to a co-resident managed service when its origin is absent
+        # or invalid: that could verify and publish the wrong model route.
+        return _normalized_lemonade_base_url(env.get("LEMONADE_BASE_URL"))
     location = str(env.get("AMD_INFERENCE_LOCATION") or "").lower()
     if _is_windows_host_lemonade(env) or location == "host":
-        return (
-            "127.0.0.1",
-            str(env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080"),
-        )
+        host = "127.0.0.1"
+        port = str(env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080")
+        return f"http://{host}:{port}"
     if os.environ.get("ODS_HOST_INSTALL_DIR"):
-        return "ods-llama-server", "8080"
-    return "127.0.0.1", str(env.get("OLLAMA_PORT") or "8080")
+        return "http://ods-llama-server:8080"
+    return f"http://127.0.0.1:{str(env.get('OLLAMA_PORT') or '8080')}"
 
 
 def _lemonade_catalog_values(value: object):
@@ -8971,6 +10796,7 @@ def _resolve_lemonade_model_id(
     *,
     host: str | None = None,
     port: str | None = None,
+    base_url: str | None = None,
 ) -> str:
     """Resolve the exact request ID Lemonade assigned to a local GGUF.
 
@@ -8995,18 +10821,23 @@ def _resolve_lemonade_model_id(
             llm_model_name=stem,
         )
     )
-    if host is None or port is None:
-        resolved_host, resolved_port = _lemonade_runtime_address(env)
-        host = host or resolved_host
-        port = port or resolved_port
+    if base_url is None:
+        if host is not None and port is not None:
+            base_url = f"http://{host}:{port}"
+        else:
+            base_url = _lemonade_runtime_base_url(env)
 
     version = ""
+    if not base_url:
+        if persisted_matches_target:
+            return persisted
+        return f"extra.{filename}"
     for path, timeout in (("/api/v1/models", 5), ("/api/v1/health", 5)):
         try:
             result = subprocess.run(
                 [
                     "curl", "-sf", "--max-time", str(timeout),
-                    f"http://{host}:{port}{path}",
+                    f"{base_url}{path}",
                 ],
                 capture_output=True,
                 text=True,
@@ -9090,9 +10921,11 @@ def _live_runtime_has_model(env: dict, gguf_file: str) -> bool | None:
         return False
     gpu_backend = str(env.get("GPU_BACKEND") or "nvidia").lower()
     windows_native_llama = _is_windows_host_llama_server(env)
-    is_lemonade = gpu_backend == "amd" and not windows_native_llama
+    is_lemonade = _uses_lemonade_runtime(env)
     if is_lemonade:
-        host, port = _lemonade_runtime_address(env)
+        runtime_base_url = _lemonade_runtime_base_url(env)
+        if not runtime_base_url:
+            return None
     elif windows_native_llama:
         host = "127.0.0.1"
         port = str(env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080")
@@ -9105,10 +10938,14 @@ def _live_runtime_has_model(env: dict, gguf_file: str) -> bool | None:
     else:
         host = "127.0.0.1"
         port = str(env.get("OLLAMA_PORT") or "8080")
-    path = "/api/v1/health" if is_lemonade else "/v1/models"
+    url = (
+        f"{runtime_base_url}/api/v1/health"
+        if is_lemonade
+        else f"http://{host}:{port}/v1/models"
+    )
     try:
         result = subprocess.run(
-            ["curl", "-s", "--max-time", "5", f"http://{host}:{port}{path}"],
+            ["curl", "-s", "--max-time", "5", url],
             capture_output=True,
             text=True,
             timeout=10,
@@ -9125,8 +10962,7 @@ def _live_runtime_has_model(env: dict, gguf_file: str) -> bool | None:
         lemonade_model_id = _resolve_lemonade_model_id(
             env,
             gguf_file,
-            host=host,
-            port=port,
+            base_url=runtime_base_url,
         )
         return _check_lemonade_health(body, gguf_file, lemonade_model_id)
     if not isinstance(data, dict) or not isinstance(data.get("data"), list):
@@ -9234,9 +11070,13 @@ def _model_agent_viable(model: dict, context_length: int) -> bool:
     viability = compatibility.get("agent_viability")
     if not isinstance(viability, dict):
         viability = {}
+    pixel_viability = compatibility.get("pixel_agent")
+    if not isinstance(pixel_viability, dict):
+        pixel_viability = {}
     return (
         int(context_length) >= 65536
         and viability.get("status") != "not_agent_viable"
+        and pixel_viability.get("status") != "not_agent_viable"
     )
 
 
@@ -9336,6 +11176,41 @@ def _lemonade_loaded_context_length(
     return _positive_int(recipe_options.get("ctx_size") or entry.get("ctx_size"))
 
 
+def _lemonade_loaded_checkpoint_identity(
+    body_or_data: str | dict,
+    *,
+    expected_gguf_file: str,
+    expected_model_id: str,
+) -> str:
+    """Return the exact health-bound checkpoint identity for a loaded alias."""
+    try:
+        data = json.loads(body_or_data) if isinstance(body_or_data, str) else body_or_data
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    loaded = data.get("all_models_loaded")
+    if not isinstance(loaded, list):
+        return ""
+    entry = _lemonade_loaded_model_entry(
+        loaded,
+        expected_gguf_file=expected_gguf_file,
+        expected_model_id=expected_model_id,
+    )
+    if entry is None:
+        return ""
+    checkpoint = entry.get("checkpoint")
+    if not isinstance(checkpoint, str) or not checkpoint.strip():
+        return ""
+    leaf = checkpoint.strip().replace("\\", "/").rsplit("/", 1)[-1]
+    # Lemonade catalog checkpoints commonly use ``repo:model.gguf`` while a
+    # completion reports only ``model.gguf``. A Windows drive colon is no
+    # longer present after selecting the final normalized path segment.
+    if ":" in leaf:
+        leaf = leaf.rsplit(":", 1)[-1]
+    return leaf.strip()
+
+
 def _windows_lemonade_process_context_length(expected_gguf_file: str) -> int | None:
     """Read the effective ctx-size from Lemonade's owned llama.cpp child."""
     ps_env = os.environ.copy()
@@ -9388,7 +11263,9 @@ def _query_lemonade_runtime_context_length(
     expected_gguf_file: str,
     expected_model_id: str,
 ) -> int | None:
-    host, port = _lemonade_runtime_address(env)
+    base_url = _lemonade_runtime_base_url(env)
+    if not base_url:
+        return None
     try:
         result = subprocess.run(
             [
@@ -9396,7 +11273,7 @@ def _query_lemonade_runtime_context_length(
                 "-s",
                 "--max-time",
                 "5",
-                f"http://{host}:{port}/api/v1/health",
+                f"{base_url}/api/v1/health",
             ],
             capture_output=True,
             text=True,
@@ -9437,7 +11314,31 @@ def _llama_runtime_context_length(host: str, port: str) -> int:
         return 0
 
 
-def _completion_text(data: object) -> str:
+def _runtime_context_matches_request(
+    runtime_context: int,
+    expected_context: int,
+    *,
+    require_exact: bool,
+    allow_llama_alignment_padding: bool,
+) -> bool:
+    """Validate a runtime context without rejecting llama.cpp slot alignment.
+
+    llama.cpp may round a requested slot upward to its next 256-cell boundary
+    (for example, 20,000 becomes 20,224). That bounded increase preserves the
+    requested capacity. A shortage, a full boundary or more of drift, or any
+    non-exact Lemonade result remains a verification failure.
+    """
+    if runtime_context < expected_context:
+        return False
+    if not require_exact or runtime_context == expected_context:
+        return True
+    return (
+        allow_llama_alignment_padding
+        and runtime_context - expected_context < 256
+    )
+
+
+def _completion_text(data: object, *, include_reasoning: bool = True) -> str:
     """Extract bounded OpenAI-compatible assistant text from one response."""
     if not isinstance(data, dict):
         return ""
@@ -9459,21 +11360,22 @@ def _completion_text(data: object) -> str:
         text = "".join(parts)
         if text.strip():
             return text[:4096]
-    reasoning_content = (
-        message.get("reasoning_content")
-        if isinstance(message, dict)
-        else choice.get("reasoning_content")
-    )
-    if isinstance(reasoning_content, str):
-        return reasoning_content[:4096]
+    if include_reasoning:
+        reasoning_content = (
+            message.get("reasoning_content")
+            if isinstance(message, dict)
+            else choice.get("reasoning_content")
+        )
+        if isinstance(reasoning_content, str):
+            return reasoning_content[:4096]
     if isinstance(content, str):
         return content[:4096]
     return ""
 
 
-def _meaningful_completion(data: object) -> bool:
+def _meaningful_completion(data: object, *, include_reasoning: bool = True) -> bool:
     """Reject empty, punctuation-only, and pathological all-question output."""
-    text = _completion_text(data).strip()
+    text = _completion_text(data, include_reasoning=include_reasoning).strip()
     if not text or not any(character.isalnum() for character in text):
         return False
     non_space = "".join(character for character in text if not character.isspace())
@@ -9490,38 +11392,56 @@ def _chat_completion_ready(
     expected_model_id: str = "",
     expected_gguf_file: str = "",
     expected_llm_model_name: str = "",
+    base_url: str = "",
+    disable_thinking: bool = False,
+    require_visible_content: bool = False,
 ) -> bool:
     """Require a meaningful completion and, when requested, its model identity."""
     prefix = "/" + api_prefix.strip("/")
-    url = f"http://{host}:{port}{prefix}/chat/completions"
-    payload = json.dumps({
+    origin = base_url.rstrip("/") if base_url else f"http://{host}:{port}"
+    url = f"{origin}{prefix}/chat/completions"
+    payload_body = {
         "model": model_name,
         "messages": [{
             "role": "user",
             "content": "Reply with the single word READY.",
         }],
-        "max_tokens": 8,
+        # A few reasoning-capable servers ignore enable_thinking. Leave enough
+        # room for them to reach visible output while still bounding the probe.
+        "max_tokens": 64,
         "temperature": 0,
-    })
+    }
+    if disable_thinking:
+        payload_body["chat_template_kwargs"] = {"enable_thinking": False}
+    payload = json.dumps(payload_body)
     try:
         command = [
             "curl", "-sf", "--max-time", "30", "--max-filesize", "65536",
             "-X", "POST", url,
             "-H", "Content-Type: application/json",
         ]
+        header_input = None
         if api_key:
-            command.extend(["-H", f"Authorization: Bearer {api_key}"])
+            # Keep credentials out of process listings. curl accepts a header
+            # stream through stdin, which also avoids a credential-bearing
+            # temporary file.
+            command.extend(["-H", "@-"])
+            header_input = f"Authorization: Bearer {api_key}\n"
         command.extend(["-d", payload])
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
+            input=header_input,
             timeout=35,
         )
         if result.returncode != 0:
             return False
         response = json.loads(result.stdout or "{}")
-        if not _meaningful_completion(response):
+        if not _meaningful_completion(
+            response,
+            include_reasoning=not require_visible_content,
+        ):
             return False
         if expected_model_id or expected_gguf_file or expected_llm_model_name:
             if not isinstance(response, dict) or not _runtime_model_identity_matches(
@@ -9665,14 +11585,22 @@ macos_configure_llm_bridge_from_env "$env_file" "$install_dir"
         )
 
 
-def _send_lemonade_warmup(host: str, port: str, model_id: str, attempt: int) -> bool:
+def _send_lemonade_warmup(
+    host: str,
+    port: str,
+    model_id: str,
+    attempt: int,
+    *,
+    base_url: str = "",
+) -> bool:
     """Send a warm-up chat completion to trigger Lemonade on-demand model load.
 
     Lemonade discovers models from its configured extra_models_dir but only
     loads them when a request arrives for that model ID. Returns True if the
     request was accepted (model is loading). Mirrors bootstrap-upgrade.sh.
     """
-    url = f"http://{host}:{port}/api/v1/chat/completions"
+    origin = base_url.rstrip("/") if base_url else f"http://{host}:{port}"
+    url = f"{origin}/api/v1/chat/completions"
     payload = json.dumps({
         "model": model_id,
         "messages": [{"role": "user", "content": "hello"}],
@@ -9698,6 +11626,8 @@ def _lemonade_completion_ready(
     port: str,
     gguf_file: str,
     lemonade_model_id: str = "",
+    *,
+    base_url: str = "",
 ) -> bool:
     """Return True when Lemonade can complete against the requested GGUF."""
     return _chat_completion_ready(
@@ -9705,6 +11635,9 @@ def _lemonade_completion_ready(
         port,
         lemonade_model_id or f"extra.{gguf_file}",
         api_prefix="/api/v1",
+        base_url=base_url,
+        disable_thinking=True,
+        require_visible_content=True,
     )
 
 
@@ -9730,9 +11663,18 @@ def _wait_for_model_readiness(
     """
     gpu_backend = str(env.get("GPU_BACKEND") or "nvidia").lower()
     windows_native_llama = _is_windows_host_llama_server(env)
-    is_lemonade = gpu_backend == "amd" and not windows_native_llama
+    is_lemonade = _uses_lemonade_runtime(env)
+    runtime_base_url = ""
     if is_lemonade:
-        host, port = _lemonade_runtime_address(env)
+        runtime_base_url = _lemonade_runtime_base_url(env)
+        if not runtime_base_url:
+            return {} if return_proof else "" if return_identity else False
+        parsed_runtime = urlparse(runtime_base_url)
+        host = parsed_runtime.hostname or ""
+        port = str(
+            parsed_runtime.port
+            or (443 if parsed_runtime.scheme.casefold() == "https" else 80)
+        )
     elif windows_native_llama:
         host = "127.0.0.1"
         port = str(env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080")
@@ -9747,15 +11689,18 @@ def _wait_for_model_readiness(
         port = str(env.get("OLLAMA_PORT") or "8080")
 
     identity_path = "/api/v1/health" if is_lemonade else "/v1/models"
-    identity_url = f"http://{host}:{port}{identity_path}"
+    identity_url = (
+        f"{runtime_base_url}{identity_path}"
+        if is_lemonade
+        else f"http://{host}:{port}{identity_path}"
+    )
     completion_model = llm_model_name or gguf_file
     completion_prefix = "/v1"
     if is_lemonade:
         lemonade_model_id = lemonade_model_id or _resolve_lemonade_model_id(
             env,
             gguf_file,
-            host=host,
-            port=port,
+            base_url=runtime_base_url,
         )
         completion_model = lemonade_model_id
         completion_prefix = str(env.get("LEMONADE_API_BASE_PATH") or "/api/v1")
@@ -9779,6 +11724,7 @@ def _wait_for_model_readiness(
             return {} if return_proof else "" if return_identity else False
         runtime_identity = ""
         runtime_context = 0
+        runtime_checkpoint_identity = ""
         try:
             result = subprocess.run(
                 ["curl", "-s", "--max-time", "5", identity_url],
@@ -9800,6 +11746,11 @@ def _wait_for_model_readiness(
                         expected_gguf_file=gguf_file,
                         expected_model_id=lemonade_model_id,
                     ) or 0
+                    runtime_checkpoint_identity = _lemonade_loaded_checkpoint_identity(
+                        body,
+                        expected_gguf_file=gguf_file,
+                        expected_model_id=lemonade_model_id,
+                    )
                     if not runtime_context and _is_windows_host_lemonade(env):
                         runtime_context = (
                             _windows_lemonade_process_context_length(gguf_file) or 0
@@ -9810,6 +11761,7 @@ def _wait_for_model_readiness(
                         port,
                         lemonade_model_id,
                         attempt,
+                        base_url=runtime_base_url,
                     )
             else:
                 runtime_identity = _llama_loaded_model_identity(
@@ -9822,22 +11774,27 @@ def _wait_for_model_readiness(
                     runtime_context = _llama_runtime_context_length(host, port)
                     if (
                         expected_context
-                        and (
-                            runtime_context < expected_context
-                            or (
-                                require_exact_context
-                                and runtime_context != expected_context
-                            )
+                        and not _runtime_context_matches_request(
+                            runtime_context,
+                            expected_context,
+                            require_exact=require_exact_context,
+                            allow_llama_alignment_padding=True,
                         )
                     ):
                         runtime_identity = ""
             if (
                 runtime_identity
                 and expected_context
+                and is_lemonade
                 and require_exact_context
-                and runtime_context != expected_context
             ):
-                runtime_identity = ""
+                if not _runtime_context_matches_request(
+                    runtime_context,
+                    expected_context,
+                    require_exact=True,
+                    allow_llama_alignment_padding=False,
+                ):
+                    runtime_identity = ""
             completion_request_model = (
                 str(runtime_identity)
                 if is_lemonade and runtime_identity
@@ -9849,8 +11806,11 @@ def _wait_for_model_readiness(
                 completion_request_model,
                 completion_prefix,
                 expected_model_id=str(runtime_identity),
-                expected_gguf_file=gguf_file,
+                expected_gguf_file=runtime_checkpoint_identity or gguf_file,
                 expected_llm_model_name=llm_model_name,
+                base_url=runtime_base_url if is_lemonade else "",
+                disable_thinking=is_lemonade,
+                require_visible_content=is_lemonade,
             ):
                 logger.info("Model %s ready after %d attempts", gguf_file, attempt + 1)
                 if return_proof:
@@ -10324,7 +12284,11 @@ def _render_runtime_config(
     ods_mode: str,
     gpu_backend: str,
     context_length: int | None = None,
-    switchboard_mode: str = "observe",
+    switchboard_mode: str = "enabled",
+    remote_llm_enabled: bool = False,
+    remote_llm_transport: str = "",
+    remote_llm_base_url: str = "",
+    remote_llm_model: str = "",
 ) -> bool:
     renderer = install_dir / "scripts" / "render-runtime-configs.py"
     if not renderer.exists():
@@ -10350,16 +12314,29 @@ def _render_runtime_config(
         lemonade_api_base,
         "--llm-base-url",
         llm_base_url or "http://llama-server:8080/v1",
-        "--litellm-key",
-        lemonade_api_key,
         "--output-root",
         str(install_dir),
         "--write",
     ]
+    if remote_llm_enabled:
+        cmd.extend([
+            "--remote-llm-enabled", "true",
+            "--remote-llm-transport", remote_llm_transport,
+            "--remote-llm-base-url", remote_llm_base_url,
+            "--remote-llm-model", remote_llm_model,
+        ])
     if context_length is not None:
         cmd.extend(["--context-length", str(context_length)])
+    renderer_env = os.environ.copy()
+    renderer_env["ODS_RENDER_LITELLM_KEY"] = lemonade_api_key
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=renderer_env,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("Runtime config renderer failed for %s: %s", surface, exc)
         return False
@@ -10374,6 +12351,8 @@ def _render_runtime_config(
 
 
 def _normal_switchboard_mode(env: dict) -> str:
+    # Fresh installers persist ``enabled`` explicitly. An absent key belongs to
+    # an older/unmanaged environment and retains its direct-route behavior.
     value = str(env.get("ODS_MODEL_SWITCHBOARD") or "observe").strip().lower()
     return value if value in {"legacy", "observe", "enabled"} else "observe"
 
@@ -10491,6 +12470,15 @@ def _write_windows_native_litellm_config(install_dir: Path, gguf_file: str, env:
     api_base = f"http://host.docker.internal:{port}/v1"
     content = (
         "model_list:\n"
+        "  - model_name: ods/current\n"
+        "    litellm_params:\n"
+        f"      model: openai/{gguf_file}\n"
+        f"      api_base: {api_base}\n"
+        "      api_key: not-needed\n"
+        "      extra_body:\n"
+        "        chat_template_kwargs:\n"
+        "          enable_thinking: false\n"
+        "\n"
         "  - model_name: default\n"
         "    litellm_params:\n"
         f"      model: openai/{gguf_file}\n"
@@ -10749,8 +12737,15 @@ def _wait_for_container_health(container: str, attempts: int = 60) -> None:
 def _restart_existing_container(
     container: str,
     expected_state: dict[str, bool] | None = None,
+    *,
+    recreate: bool = False,
 ) -> bool:
-    """Restart a dependent only when it was already running."""
+    """Restart or recreate a dependent only when it was already running.
+
+    Recreate is required after atomically replacing a host file that is bind
+    mounted into Docker Desktop. A plain ``docker restart`` keeps the old bind
+    mount inode and can leave the dependent on the previous model route.
+    """
     state = expected_state or _capture_container_state(container)
     if not state["exists"]:
         logger.info("Skipping restart for optional missing container %s", container)
@@ -10761,17 +12756,22 @@ def _restart_existing_container(
     current = _capture_container_state(container)
     if not current["exists"] or not current["running"]:
         raise RuntimeError(f"{container} stopped during model activation")
-    result = subprocess.run(
-        ["docker", "restart", container],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(
-            f"docker restart {container} failed (exit {result.returncode}): {detail[:300]}"
+    if recreate:
+        ok, error = docker_compose_recreate([container.removeprefix("ods-")])
+        if not ok:
+            raise RuntimeError(f"Could not recreate {container}: {error}")
+    else:
+        result = subprocess.run(
+            ["docker", "restart", container],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(
+                f"docker restart {container} failed (exit {result.returncode}): {detail[:300]}"
+            )
     return True
 
 
@@ -11003,7 +13003,7 @@ def _opencode_route(env: dict) -> tuple[str, str]:
         port = str(env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080")
         return f"http://127.0.0.1:{port}/api/v1", "no-key"
     windows_native = _is_windows_host_llama_server(env)
-    if gpu_backend == "amd" and not windows_native:
+    if _uses_lemonade_runtime(env) and not windows_native:
         port = str(env.get("LITELLM_PORT") or "4000")
         api_key = str(env.get("LITELLM_KEY") or "")
         if not api_key:
@@ -11601,17 +13601,21 @@ def _recreate_openclaw_if_present(
     return True
 
 
-def _verify_litellm_route(env: dict) -> None:
-    """Prove the active LiteLLM default route can serve a completion."""
+def _verify_litellm_route(env: dict, *, model: str = "default") -> None:
+    """Prove one active LiteLLM public route can serve a completion."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", model):
+        raise RuntimeError("LiteLLM verification model alias is invalid")
     host = "ods-litellm" if os.environ.get("ODS_HOST_INSTALL_DIR") else "127.0.0.1"
     port = str(env.get("LITELLM_PORT") or "4000")
     api_key = str(env.get("LITELLM_KEY") or env.get("LITELLM_MASTER_KEY") or "")
     for attempt in range(12):
-        if _chat_completion_ready(host, port, "default", "/v1", api_key):
+        if _chat_completion_ready(host, port, model, "/v1", api_key):
             return
         if attempt < 11:
             time.sleep(2)
-    raise RuntimeError("LiteLLM did not serve a completion through the active model route")
+    raise RuntimeError(
+        f"LiteLLM did not serve a completion through the active {model} route"
+    )
 
 
 def _verify_openclaw_model_env(expected_model: str) -> None:
@@ -11684,6 +13688,31 @@ def _write_hermes_container_config(text: str) -> None:
         raise RuntimeError(f"Could not write Hermes live config in container: {detail[:300]}")
 
 
+def _capture_inaccessible_hermes_config(*, exists: bool | None = None) -> dict:
+    # An absent extension can leave private UID-owned data behind. Preserve
+    # those bytes without pretending they are missing or were reconciled.
+    # Docker errors remain errors; a stopped-but-present consumer still needs
+    # its persisted route updated and cannot take this deferral path.
+    if not _container_exists("ods-hermes"):
+        logger.info("Deferring inaccessible Hermes config: optional container is absent")
+        return {
+            "exists": exists,
+            "text": None,
+            "bytes": None,
+            "mode": None,
+            "source": "deferred_absent",
+        }
+    return {
+        "exists": True,
+        "text": _read_hermes_container_config(),
+        "bytes": None,
+        "mode": None,
+        "uid": None,
+        "gid": None,
+        "source": "container",
+    }
+
+
 def _capture_hermes_live_config(path: Path) -> dict:
     """Capture persisted Hermes config, falling back through its running container."""
     try:
@@ -11698,15 +13727,7 @@ def _capture_hermes_live_config(path: Path) -> dict:
         }
     except PermissionError as exc:
         logger.info("Inspecting container-owned Hermes config through ods-hermes: %s", exc)
-        return {
-            "exists": True,
-            "text": _read_hermes_container_config(),
-            "bytes": None,
-            "mode": None,
-            "uid": None,
-            "gid": None,
-            "source": "container",
-        }
+        return _capture_inaccessible_hermes_config()
     except OSError as exc:
         raise RuntimeError(f"Could not inspect Hermes config {path}: {exc}") from exc
     if stat_mod.S_ISLNK(metadata.st_mode):
@@ -11726,15 +13747,7 @@ def _capture_hermes_live_config(path: Path) -> dict:
         }
     except PermissionError as exc:
         logger.info("Reading container-owned Hermes config through ods-hermes: %s", exc)
-        return {
-            "exists": True,
-            "text": _read_hermes_container_config(),
-            "bytes": None,
-            "mode": None,
-            "uid": None,
-            "gid": None,
-            "source": "container",
-        }
+        return _capture_inaccessible_hermes_config(exists=True)
     except (OSError, UnicodeError) as exc:
         raise RuntimeError(f"Could not read Hermes config {path}: {exc}") from exc
 
@@ -11923,18 +13936,24 @@ def _system_ram_gb() -> int:
 
 
 def _nvidia_vram_gb() -> float:
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-        if result.returncode == 0:
-            first = result.stdout.strip().splitlines()[0].strip()
-            return float(first) / 1024.0
-    except (IndexError, OSError, subprocess.TimeoutExpired, ValueError):
-        pass
+    nvidia_smi = _nvidia_smi_binary()
+    if not nvidia_smi:
+        return 0.0
+    for attempt in range(2):
+        try:
+            result = subprocess.run(
+                [nvidia_smi, "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            if result.returncode == 0:
+                first = result.stdout.strip().splitlines()[0].strip()
+                return float(first) / 1024.0
+        except (IndexError, OSError, subprocess.TimeoutExpired, ValueError):
+            pass
+        if attempt == 0:
+            time.sleep(0.25)
     return 0.0
 
 
@@ -11947,9 +13966,31 @@ def _select_runtime_profile(model: dict, env: dict) -> dict | None:
     host_arch = _normalize_host_arch(platform.machine())
     vram_gb = _nvidia_vram_gb() if backend == "nvidia" else 0.0
     try:
-        ram_gb = int(env.get("SYSTEM_RAM_GB") or 0) or _system_ram_gb()
+        configured_ram_gb = int(env.get("SYSTEM_RAM_GB") or 0)
     except (TypeError, ValueError):
-        ram_gb = _system_ram_gb()
+        configured_ram_gb = 0
+    live_ram_gb = _system_ram_gb()
+    # Installer detection can record the Windows host's physical RAM while a
+    # WSL runtime is intentionally capped lower. Profile eligibility must use
+    # the memory the host agent can actually address or model activation can
+    # select a profile that is valid for the host but OOMs inside WSL.
+    ram_limits = [value for value in (configured_ram_gb, live_ram_gb) if value > 0]
+    ram_gb = min(ram_limits) if ram_limits else 0
+    if backend == "nvidia" and vram_gb <= 0:
+        needs_vram_probe = any(
+            isinstance(profile, dict)
+            and _normalize_key(profile.get("backend")) in {"", "nvidia"}
+            and (
+                profile.get("vram_min_gb") is not None
+                or profile.get("vram_max_gb") is not None
+            )
+            for profile in profiles
+        )
+        if needs_vram_probe:
+            raise RuntimeError(
+                "NVIDIA VRAM could not be determined; refusing an unprofiled "
+                "model activation"
+            )
     for profile in profiles:
         if not isinstance(profile, dict):
             continue
@@ -12121,28 +14162,32 @@ def _compose_restart_llama_server(env: dict):
                 f"{(result.stderr or '').strip()[:300]}"
             )
 
-    if gpu_backend == "amd":
-        # Lemonade reads models.ini on boot, so stop + up preserves the named
-        # cache volumes while ensuring the fresh config is picked up.
-        if compose_flags:
-            _run(["docker", "compose"] + compose_flags + ["stop", "llama-server"], 120)
-            _run(["docker", "compose"] + compose_flags + ["up", "-d", "llama-server"], 300)
-        else:
-            # A plain start reuses the old container environment and would
-            # silently ignore a newly planned ROCR_VISIBLE_DEVICES subset.
-            logger.warning("No compose flags — using AMD container recreation fallback")
-            _recreate_llama_server(env)
+    if compose_flags:
+        # One forced recreation is idempotent when the candidate container has
+        # already exited, and refreshes Docker Desktop bind-mount inodes after
+        # the transaction atomically replaces models.ini or other config files.
+        # A strict stop followed by a non-forced up can make rollback fail on
+        # an already-stopped candidate or reuse a stale bind mount.
+        _run(
+            ["docker", "compose"]
+            + compose_flags
+            + [
+                "up",
+                "-d",
+                "--force-recreate",
+                "--no-deps",
+                "llama-server",
+            ],
+            300,
+        )
     else:
-        # llama.cpp: recreate to pick up new GGUF_FILE from .env
-        if compose_flags:
-            _run(["docker", "compose"] + compose_flags + ["stop", "llama-server"], 120)
-            _run(["docker", "compose"] + compose_flags + ["up", "-d", "llama-server"], 300)
-        else:
-            # No compose flags — cannot use compose.  Fall back to
-            # inspect-and-recreate, which picks up GGUF_FILE from .env.
-            # docker start alone re-uses the old container command.
-            logger.warning("No .compose-flags file — using container recreation fallback")
-            _recreate_llama_server(env)
+        # No compose flags — cannot use compose. Fall back to the inspected
+        # container recreation path, which applies the current model, context,
+        # GPU assignment, and bind mounts even when the old container exited.
+        logger.warning(
+            "No .compose-flags file — using container recreation fallback"
+        )
+        _recreate_llama_server(env)
 
     logger.info("llama-server restarted via compose (backend: %s)", gpu_backend)
 
@@ -12775,6 +14820,7 @@ def main():
     GPU_COUNT = env.get("GPU_COUNT", "1")
 
     DATA_DIR = Path(env.get("ODS_DATA_DIR", str(INSTALL_DIR / "data")))
+    _repair_remote_provider_secret_permissions()
     USER_EXTENSIONS_DIR = Path(env.get(
         "ODS_USER_EXTENSIONS_DIR",
         str(DATA_DIR / "user-extensions"),
@@ -12798,10 +14844,12 @@ def main():
         atexit.register(lambda: pid_path.unlink(missing_ok=True))
 
     # Determine bind address: explicit env override, or a platform-aware safe
-    # default. Linux prefers the ods-network gateway so dashboard-api
-    # containers can reach the agent without exposing it to the LAN. The bridge
-    # gateway fallback keeps partial/older installs reachable until phase 11 can
-    # restart the service after ods-network exists.
+    # default. Native Linux prefers the ods-network gateway so dashboard-api
+    # containers can reach the agent without exposing it to the LAN. WSL uses
+    # loopback because Docker Desktop forwards host.docker.internal there; its
+    # compose gateway belongs to Docker Desktop and is not locally bindable.
+    # The bridge gateway fallback keeps partial/older native-Linux installs
+    # reachable until phase 11 can restart the service after ods-network exists.
     bind_addr = _resolve_agent_bind_addr(env)
 
     server = _create_host_agent_server(env, bind_addr, port)

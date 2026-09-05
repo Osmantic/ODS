@@ -62,6 +62,12 @@ function New-ODSWindowsServicePlan {
     $plan["hermes-proxy"] = New-ODSWindowsServicePlanEntry "hermes-proxy" $EnableHermes "agents" "Hermes agent not enabled"
     $plan["openclaw"] = New-ODSWindowsServicePlanEntry "openclaw" $EnableOpenClaw "legacy-agents" "OpenClaw is deprecated and was not explicitly enabled"
     $plan["ape"] = New-ODSWindowsServicePlanEntry "ape" ($EnableHermes -or $EnableOpenClaw) "agents" "agent governance not needed without an enabled agent"
+    # Pixel's current trusted host runtime is installed by the Linux installer
+    # on native Linux or Ubuntu 24.04 under WSL2.  The native Windows installer
+    # must not inherit the manifest's generic `core` fallback and start only the
+    # edge proxy: without the private host ingress behind it that creates a
+    # broken, misleading Pixel surface (and fails Compose secret interpolation).
+    $plan["pixel-edge"] = New-ODSWindowsServicePlanEntry "pixel-edge" $false "agents" "Pixel requires the ODS Linux installer in Ubuntu 24.04 WSL2"
 
     $plan["comfyui"] = New-ODSWindowsServicePlanEntry "comfyui" $EnableComfyui "image" "image generation not enabled"
     $plan["perplexica"] = New-ODSWindowsServicePlanEntry "perplexica" $EnableDeepResearch "research" "deep research not enabled"

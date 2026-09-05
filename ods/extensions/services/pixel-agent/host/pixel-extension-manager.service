@@ -1,0 +1,50 @@
+[Unit]
+Description=ODS Pixel scoped extension lifecycle manager
+After=network-online.target docker.service pixel-ops-broker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__PIXEL_SERVICE_USER__
+Group=pixel-ops
+ExecStart=/usr/bin/python3 /usr/local/libexec/ods-pixel-extension-manager.py serve /run/ods-pixel-manager/extension-manager.sock "__ODS_INSTALL_DIR__/.env" __ODS_DASHBOARD_PORT__
+Restart=always
+RestartSec=2
+TimeoutStopSec=30
+RuntimeDirectory=ods-pixel-manager
+RuntimeDirectoryMode=0750
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=tmpfs
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ProtectProc=invisible
+ProcSubset=pid
+BindReadOnlyPaths="__ODS_INSTALL_DIR__"
+ReadOnlyPaths=/usr/local/libexec/ods-pixel-extension-manager.py
+ReadOnlyPaths=/var/lib/pixel-ops-broker/results
+InaccessiblePaths=/var/lib/pixel-ops-broker/plans /var/lib/pixel-ops-broker/approvals /var/lib/pixel-ops-broker/private /var/lib/pixel-ops-broker/authority /var/lib/pixel-ops-broker/request-archive /var/lib/pixel-ops-broker/requests /var/lib/pixel-ops-broker/cancel /var/lib/pixel-ops-broker/runtime /var/lib/pixel-ops-broker/artifacts
+ReadWritePaths=/run/ods-pixel-manager
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+UMask=0117
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

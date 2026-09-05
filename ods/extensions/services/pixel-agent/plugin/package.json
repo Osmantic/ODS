@@ -1,0 +1,16 @@
+{
+  "name": "openclaw-pixel-ods-status",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.5.17",
+      "minGatewayVersion": "2026.5.17"
+    }
+  }
+}

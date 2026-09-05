@@ -11,8 +11,12 @@ service:
   host_env: MODEL_ROUTER_HOST
   default_host: model-router
   port: 9099
+  external_port_default: 0
   external_link: false
   health: /health
+  # This control-plane API is reachable only on the private Compose network.
+  # Host-side status must use its declared Docker healthcheck, not port 9099.
+  health_source: container
   ui_path: /health
   type: docker
   gpu_backends: [all]

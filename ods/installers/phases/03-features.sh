@@ -6,7 +6,8 @@
 # Purpose: Interactive feature selection menu
 #
 # Expects: INTERACTIVE, DRY_RUN, TIER, ENABLE_VOICE, ENABLE_WORKFLOWS,
-#           ENABLE_RAG, ENABLE_HERMES, ENABLE_OPENCLAW, GPU_COUNT, GPU_BACKEND,
+#           ENABLE_RAG, ENABLE_HERMES, ENABLE_OPENCLAW, ENABLE_OPENCODE,
+#           GPU_COUNT, GPU_BACKEND,
 #           HOST_ARCH, HOST_PAGE_SIZE,
 #           GPU_TOPOLOGY_JSON, LLM_MODEL_SIZE_MB, SCRIPT_DIR, VERBOSE, DEBUG,
 #           GPU_INDICES, GPU_UUIDS (arrays from topology),
@@ -28,6 +29,16 @@ if (( BASH_VERSINFO[0] < 4 )); then
     echo "  macOS ships Bash 3.2 due to licensing. Install a modern version:" >&2
     echo "    brew install bash" >&2
     return 1 2>/dev/null || exit 1
+fi
+
+# Keep this phase independently sourceable by contract tests and maintenance
+# callers. install-core.sh normally imports the Pixel helpers first, but the
+# phase owns the dependency it invokes.
+if ! declare -F ods_pixel_resolve_enablement >/dev/null 2>&1; then
+    # shellcheck source=../lib/pixel-integration.sh
+    _phase03_source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "$_phase03_source_dir/../lib/pixel-integration.sh"
+    unset _phase03_source_dir
 fi
 
 ods_progress 18 "features" "Selecting features"
@@ -60,8 +71,9 @@ if $INTERACTIVE && ! $DRY_RUN; then
         _phase03_prompt_bool ENABLE_VOICE "Enable voice (Whisper STT + Kokoro TTS)?"
         _phase03_prompt_bool ENABLE_WORKFLOWS "Enable n8n workflow automation?"
         _phase03_prompt_bool ENABLE_RAG "Enable Qdrant vector database (for RAG)?"
-        _phase03_prompt_bool ENABLE_HERMES "Enable Hermes Agent (default AI agent framework)?"
+        _phase03_prompt_bool ENABLE_HERMES "Enable Hermes Agent (portable Pixel fallback)?"
         _phase03_prompt_bool ENABLE_OPENCLAW "Enable OpenClaw AI agent framework (DEPRECATED - Hermes replaces it)?"
+        _phase03_prompt_bool ENABLE_OPENCODE "Enable the OpenCode browser IDE extension?"
         _phase03_prompt_bool ENABLE_COMFYUI "Enable image generation (ComfyUI + SDXL Lightning, ~6.5GB)?"
         _phase03_prompt_bool ENABLE_LANGFUSE "Enable Langfuse (LLM observability + telemetry, ~500MB)?"
 
@@ -89,6 +101,37 @@ if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]]; then
             ;;
     esac
 fi
+
+# Pixel is the preferred agent only where its narrower host predicate and
+# separately executed license agreement are both satisfied. ODS platform
+# support remains unchanged; auto mode falls back to Hermes without failing.
+if ! PIXEL_AGENT_MODE="$(ods_pixel_resolve_enablement "${ENABLE_PIXEL:-auto}" 2>/dev/null)"; then
+    ai_bad "Pixel was explicitly required, but this host or license is not qualified."
+    ai "Pixel requires Ubuntu 24.04 or Debian 12 with PID1 systemd and PIXEL_LICENSE_ACCEPTED=true after a separate written agreement."
+    return 1 2>/dev/null || exit 1
+fi
+ENABLE_PIXEL_RUNTIME=false
+if [[ "$PIXEL_AGENT_MODE" == "pixel" ]]; then
+    _pixel_model_route_class="$(ods_pixel_model_route_class \
+        "${ODS_MODE:-local}" "${EXTERNAL_LLM_URL:-}" "${LEMONADE_EXTERNAL:-false}")" || {
+        ai_bad "Pixel received an unsupported ODS model route."
+        return 1 2>/dev/null || exit 1
+    }
+    if [[ "${PIXEL_AGENT_MODEL_READY:-unknown}" == "false" \
+        && "$_pixel_model_route_class" == "local" ]]; then
+        ENABLE_PIXEL_RUNTIME=true
+        ai_warn "Pixel adaptive mode will use this best-fit local model."
+        ai_warn "Every callable model remains selectable; catalog testing is performance guidance, not an access gate."
+        log "Pixel selected in adaptive mode on an untested local model; Hermes remains available as rollback when enabled"
+    else
+        ENABLE_PIXEL_RUNTIME=true
+        log "Pixel selected as the default ODS agent on the managed ODS model route; Hermes remains available as rollback when enabled"
+    fi
+    unset _pixel_model_route_class
+else
+    log "Pixel auto-gate selected Hermes fallback"
+fi
+export PIXEL_AGENT_MODE ENABLE_PIXEL_RUNTIME ENABLE_PIXEL
 
 if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
     HERMES_CONTEXT_SIZE="${HERMES_CONTEXT_SIZE:-65536}"
@@ -164,10 +207,15 @@ if ! $DRY_RUN; then
     if [[ "${ENABLE_HERMES:-false}" != "true" && "${ENABLE_OPENCLAW:-false}" != "true" ]]; then
         ENABLE_APE=false
     fi
-    # SearXNG backs Open WebUI web search, Perplexica, and agent web tools.
+    _pixel_support_services="${ENABLE_RECOMMENDED:-false}"
+    [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && _pixel_support_services=true
+    [[ -n "${EXTERNAL_LLM_URL:-}" ]] && _pixel_support_services=true
+    _sync_extension_compose "$_pixel_support_services" litellm    "LiteLLM"       "neither recommended services nor Pixel are enabled"
+    # SearXNG backs Pixel, Open WebUI web search, Perplexica, and agent web tools.
     # It is not only a recommended extra — --no-recommended with Perplexica
     # still needs the search backend.
     if [[ "${ENABLE_RECOMMENDED:-false}" == "true" ||
+          "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ||
           "${ENABLE_PERPLEXICA:-false}" == "true" ||
           "${ENABLE_HERMES:-false}" == "true" ||
           "${ENABLE_OPENCLAW:-false}" == "true" ]]; then
@@ -176,9 +224,9 @@ if ! $DRY_RUN; then
         ENABLE_SEARXNG=false
     fi
     ENABLE_WEB_SEARCH="$ENABLE_SEARXNG"
-    _sync_extension_compose "${ENABLE_RECOMMENDED:-}" litellm    "LiteLLM"       "recommended services not enabled"
     _sync_extension_compose "${ENABLE_SEARXNG:-}"     searxng    "SearXNG"       "web search backend not required"
     _sync_extension_compose "${ENABLE_RECOMMENDED:-}" token-spy  "Token Spy"     "recommended services not enabled"
+    unset _pixel_support_services
     _sync_extension_compose "${ENABLE_VOICE:-}"      whisper    "Whisper (STT)" "voice not enabled"
     _sync_extension_compose "${ENABLE_VOICE:-}"      tts        "Kokoro (TTS)"  "voice not enabled"
     _sync_extension_compose "${ENABLE_WORKFLOWS:-}"  n8n        "n8n"           "workflows not enabled"
@@ -193,6 +241,7 @@ if ! $DRY_RUN; then
     # is exposed on the LAN with no auth. Same flag drives both.
     _sync_extension_compose "${ENABLE_HERMES:-}"     hermes        "Hermes Agent"  "Hermes agent not enabled"
     _sync_extension_compose "${ENABLE_HERMES:-}"     hermes-proxy  "Hermes proxy"  "Hermes agent not enabled"
+    _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-edge "Pixel edge" "Pixel host or license not qualified"
     _sync_extension_compose "${ENABLE_OPENCLAW:-}"   openclaw   "OpenClaw"      "agent framework not enabled"
     _sync_extension_compose "${ENABLE_APE:-}"        ape        "APE"           "agent governance not enabled"
     _sync_extension_compose "${ENABLE_COMFYUI:-}"    comfyui    "ComfyUI"       "image generation not enabled"

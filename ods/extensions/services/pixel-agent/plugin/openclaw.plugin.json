@@ -1,0 +1,30 @@
+{
+  "id": "pixel-ods",
+  "name": "Pixel ODS Integration",
+  "description": "ODS status, guarded public-page evidence, verified downloads, and isolated workspace previews for Pixel.",
+  "version": "1.0.0",
+  "contracts": {
+    "tools": ["pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_host_observe", "pixel_ods_host_command_propose", "pixel_ods_evidence_report", "pixel_ods_evidence_readback", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview"]
+  },
+  "toolMetadata": {
+    "pixel_ods_status": { "replaySafe": true },
+    "pixel_ods_apps_list": { "replaySafe": true },
+    "pixel_ods_host_observe": { "replaySafe": true }
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "modelContextWindow": {
+        "type": "integer",
+        "minimum": 4096
+      },
+      "leanPrompt": {
+        "type": "boolean"
+      }
+    }
+  }
+}

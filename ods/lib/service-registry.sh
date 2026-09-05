@@ -33,6 +33,7 @@ declare -A SERVICE_CATEGORIES   # service_id → core|recommended|optional
 declare -A SERVICE_DEPENDS      # service_id → space-separated dependency IDs
 declare -A SERVICE_HEALTH       # service_id → health endpoint path
 declare -A SERVICE_HEALTH_TIMEOUTS  # service_id → health check timeout in seconds
+declare -A SERVICE_HEALTH_SOURCES # service_id → http (default) | container
 declare -A SERVICE_STARTUP_CHECKS # service_id → "true" unless manifest sets startup_check: false
 declare -A SERVICE_PORTS        # service_id → external port (what the user hits on localhost)
 declare -A SERVICE_PORT_ENVS    # service_id → env var name for the external port
@@ -42,6 +43,9 @@ declare -A SERVICE_PORT_ENVS    # service_id → env var name for the external p
 # Callers (tests, health probes, doctor) should skip the port check
 # when SERVICE_HOST_NETWORK[sid] is "1".
 declare -A SERVICE_HOST_NETWORK # service_id → "1" iff manifest sets host_network: true
+# Host/systemd services with `socket_only: true` expose their HTTP-compatible
+# protocol only over a Unix-domain socket and intentionally have port 0.
+declare -A SERVICE_SOCKET_ONLY  # service_id → "1" iff manifest sets socket_only: true
 declare -A SERVICE_NAMES        # service_id → display name
 declare -A SERVICE_SETUP_HOOKS  # service_id → absolute path to setup script
 declare -A SERVICE_GPU_BACKENDS # service_id → space-separated GPU backends (amd, nvidia, apple, cpu)
@@ -185,17 +189,22 @@ for service_dir in _all_service_dirs:
         print(f'SERVICE_DEPENDS["{_esc(sid)}"]="{_esc(" ".join(str(d) for d in depends))}"')
         health = s.get("health", "/health")
         health_timeout = s.get("health_timeout", 5)  # Default 5 seconds
+        health_source = s.get("health_source", "http")
         startup_check = "false" if s.get("startup_check") is False else "true"
         port = s.get("external_port_default", s.get("port", 0))
         port_env = s.get("external_port_env", "")
         host_network = "1" if s.get("host_network") else ""
+        socket_only = "1" if s.get("socket_only") else ""
         print(f'SERVICE_HEALTH["{_esc(sid)}"]="{_esc(health)}"')
         print(f'SERVICE_HEALTH_TIMEOUTS["{_esc(sid)}"]="{_esc(health_timeout)}"')
+        print(f'SERVICE_HEALTH_SOURCES["{_esc(sid)}"]="{_esc(health_source)}"')
         print(f'SERVICE_STARTUP_CHECKS["{_esc(sid)}"]="{startup_check}"')
         print(f'SERVICE_PORTS["{_esc(sid)}"]="{_esc(port)}"')
         print(f'SERVICE_PORT_ENVS["{_esc(sid)}"]="{_esc(port_env)}"')
         if host_network:
             print(f'SERVICE_HOST_NETWORK["{_esc(sid)}"]="1"')
+        if socket_only:
+            print(f'SERVICE_SOCKET_ONLY["{_esc(sid)}"]="1"')
         print(f'SERVICE_NAMES["{_esc(sid)}"]="{_esc(s.get("name", sid))}"')
         # Prefer hooks.post_install over legacy setup_hook
         hooks = s.get("hooks", {})

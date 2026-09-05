@@ -102,6 +102,7 @@ Options:
 This will remove:
     - Docker containers, images, and volumes for ODS
     - Installation directory ($INSTALL_DIR)
+    - ODS-managed Pixel host services and private configuration
     - Systemd user services (opencode-web, openclaw timers)
     - macOS LaunchAgents (com.ods.host-agent, com.ods.opencode-web, legacy agents)
     - CLI symlinks (/usr/local/bin/ods, ~/.local/bin/ods, legacy /usr/local/bin/ods-cli)
@@ -153,6 +154,25 @@ if [[ "$FORCE" != "true" ]]; then
         exit 0
     fi
     echo ""
+fi
+
+# Validate and remove Pixel before any broader uninstall mutation. The helper
+# is marker-bound to this exact install and fails closed on ambient or drifted
+# Pixel state.
+if [[ "$(uname -s)" == "Linux" ]]; then
+    _ods_pixel_marker="$HOME/.config/ods/pixel-managed.json"
+    if [[ -f "$SCRIPT_DIR/lib/pixel-uninstall.sh" ]]; then
+        # shellcheck source=lib/pixel-uninstall.sh
+        . "$SCRIPT_DIR/lib/pixel-uninstall.sh"
+        if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME"; then
+            log_error "Pixel cleanup failed before ODS uninstall mutation"
+            exit 1
+        fi
+    elif [[ -e "$_ods_pixel_marker" || -L "$_ods_pixel_marker" ]]; then
+        log_error "ODS-managed Pixel marker exists but its uninstall helper is missing"
+        exit 1
+    fi
+    unset _ods_pixel_marker
 fi
 
 # 1. Stop and remove Docker containers

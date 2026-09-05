@@ -252,6 +252,37 @@ class TestExtensionDetail:
         assert data["setup_instructions"]["cli_enable"] == "ods enable test-svc"
         assert data["setup_instructions"]["cli_disable"] == "ods disable test-svc"
 
+    def test_detail_uses_cached_service_snapshot(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """Detail lookup must not repeat the slow all-service health fan-out."""
+        catalog = [_make_catalog_ext("test-svc", "Test Service")]
+        services = {
+            "test-svc": {
+                "host": "localhost",
+                "port": 8080,
+                "name": "Test Service",
+            },
+        }
+        _patch_extensions_config(
+            monkeypatch, catalog, services, tmp_path=tmp_path,
+        )
+        cached = [_make_service_status("test-svc", "healthy")]
+
+        live_scan = AsyncMock(return_value=[])
+        with (
+            patch("helpers.get_cached_services", return_value=cached),
+            patch("helpers.get_all_services", live_scan),
+        ):
+            resp = test_client.get(
+                "/api/extensions/test-svc",
+                headers=test_client.auth_headers,
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "enabled"
+        live_scan.assert_not_awaited()
+
     def test_detail_returns_configured_public_url(self, test_client, monkeypatch, tmp_path):
         catalog = [_make_catalog_ext("test-svc", "Test Service")]
         services = {

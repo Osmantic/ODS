@@ -1288,10 +1288,23 @@ async def extension_detail(
     if not ext:
         raise HTTPException(status_code=404, detail=f"Extension not found: {service_id}")
 
-    from helpers import _CATALOG_HEALTH_TIMEOUT, check_service_health, get_all_services
+    from helpers import (
+        _CATALOG_HEALTH_TIMEOUT,
+        check_service_health,
+        get_all_services,
+        get_cached_services,
+    )
     from user_extensions import get_user_services_cached
 
-    service_list = await get_all_services()
+    # The background health poll owns the expensive all-service fan-out.  A
+    # detail request is also used by Pixel's bounded extension-manager probe
+    # during installation, so repeating the full scan here can exceed that
+    # caller's timeout even while the API and requested extension are healthy.
+    # Match the catalog endpoint: use the latest complete snapshot and only
+    # fall back to a live scan before the first poll has completed.
+    service_list = get_cached_services()
+    if service_list is None:
+        service_list = await get_all_services()
     services_by_id = {s.id: s for s in service_list}
 
     user_svc_configs = await asyncio.to_thread(get_user_services_cached, USER_EXTENSIONS_DIR)

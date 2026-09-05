@@ -532,6 +532,7 @@ show_install_menu() {
             ENABLE_RECOMMENDED=true
             ENABLE_HERMES=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the new default
+            ENABLE_OPENCODE=true
             ENABLE_COMFYUI=true
             ENABLE_APE=true
             ENABLE_PERPLEXICA=true
@@ -558,6 +559,7 @@ show_install_menu() {
             ENABLE_RECOMMENDED=false
             ENABLE_HERMES=false
             ENABLE_OPENCLAW=false
+            ENABLE_OPENCODE=false
             ENABLE_COMFYUI=false
             ENABLE_APE=false
             ENABLE_PERPLEXICA=false
@@ -576,6 +578,7 @@ show_install_menu() {
             ENABLE_RECOMMENDED=true
             ENABLE_HERMES=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the new default
+            ENABLE_OPENCODE=true
             ENABLE_COMFYUI=true
             ENABLE_APE=true
             ENABLE_PERPLEXICA=true

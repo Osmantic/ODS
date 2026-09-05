@@ -31,13 +31,31 @@
       "allOf": [
         {
           "if": {
-            "properties": {
-              "host_network": { "const": true }
-            },
-            "required": ["host_network"]
+            "anyOf": [
+              {
+                "properties": { "host_network": { "const": true } },
+                "required": ["host_network"]
+              },
+              {
+                "properties": { "socket_only": { "const": true } },
+                "required": ["socket_only"]
+              }
+            ]
           },
           "then": {},
           "else": { "required": ["port", "health"] }
+        },
+        {
+          "if": {
+            "properties": { "socket_only": { "const": true } },
+            "required": ["socket_only"]
+          },
+          "then": {
+            "properties": {
+              "type": { "const": "host-systemd" },
+              "port": { "const": 0 }
+            }
+          }
         }
       ],
       "properties": {
@@ -70,6 +88,10 @@
           "type": "boolean",
           "description": "True for Docker network_mode: host services that do not declare Docker-mapped ports or HTTP health paths."
         },
+        "socket_only": {
+          "type": "boolean",
+          "description": "True only for host-systemd services whose HTTP-compatible interface is exposed exclusively over a Unix-domain socket and therefore has no TCP port."
+        },
         "health": {
           "type": "string",
           "minLength": 0,
@@ -80,6 +102,11 @@
           "minimum": 1,
           "maximum": 300,
           "description": "Health check timeout in seconds (default: 10)"
+        },
+        "health_source": {
+          "type": "string",
+          "enum": ["http", "container"],
+          "description": "Health authority used by host-side CLI checks. Defaults to http; use container only for internal-only Docker services with a declared Docker healthcheck."
         },
         "ui_path": {
           "type": "string",

@@ -417,26 +417,28 @@ assert_eq "SELECTOR_SOURCE" "catalog_fit_pre_download" "$MODEL_RECOMMENDATION_SO
 assert_eq "SELECTOR_POLICY" "context-aware-largest-capable-general-v1" "$MODEL_RECOMMENDATION_POLICY"
 echo ""
 
-echo "Catalog selector (8GB NVIDIA qwen uses 64K catalog fit):"
+echo "Catalog selector (8GB NVIDIA qwen uses the live-proven 64K Q8-KV interactive profile):"
 _selector_env="$(python3 "$SCRIPT_DIR/scripts/select-model.py" \
     --catalog "$SCRIPT_DIR/config/model-library.json" \
     --backend nvidia \
     --memory-type discrete \
     --vram-mb 8188 \
-    --ram-gb 31 \
+    --ram-gb 15 \
     --profile qwen \
     --tier 1 \
     --host-arch amd64 \
     --installable-only \
     --env)"
-LLM_MODEL="" GGUF_FILE="" MAX_CONTEXT="" MODEL_RUNTIME_PROFILE="" LLAMA_ARG_N_CPU_MOE="" LLAMA_ARG_CACHE_TYPE_V="" LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=""
+LLM_MODEL="" GGUF_FILE="" MAX_CONTEXT="" MODEL_RUNTIME_PROFILE="" LLAMA_ARG_N_CPU_MOE="" LLAMA_ARG_FLASH_ATTN="" LLAMA_ARG_CACHE_TYPE_K="" LLAMA_ARG_CACHE_TYPE_V="" LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=""
 load_selector_env "$_selector_env"
 assert_eq "SELECTOR_LLM_MODEL" "qwen3.5-9b" "$LLM_MODEL"
 assert_eq "SELECTOR_GGUF_FILE" "Qwen3.5-9B-Q4_K_M.gguf" "$GGUF_FILE"
 assert_eq "SELECTOR_CONTEXT" "65536" "$MAX_CONTEXT"
-assert_eq "SELECTOR_RUNTIME_PROFILE" "" "$MODEL_RUNTIME_PROFILE"
+assert_eq "SELECTOR_RUNTIME_PROFILE" "nvidia-8gb-64k-q8-kv" "$MODEL_RUNTIME_PROFILE"
 assert_eq "SELECTOR_N_CPU_MOE" "" "$LLAMA_ARG_N_CPU_MOE"
-assert_eq "SELECTOR_CACHE_V" "" "$LLAMA_ARG_CACHE_TYPE_V"
+assert_eq "SELECTOR_FLASH_ATTN" "on" "$LLAMA_ARG_FLASH_ATTN"
+assert_eq "SELECTOR_CACHE_K" "q8_0" "$LLAMA_ARG_CACHE_TYPE_K"
+assert_eq "SELECTOR_CACHE_V" "q8_0" "$LLAMA_ARG_CACHE_TYPE_V"
 assert_eq "SELECTOR_CHECKPOINTS" "" "$LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"
 echo ""
 

@@ -216,18 +216,33 @@ class TestResolveAgentBindAddr:
         assert _resolve_agent_bind_addr({}, "Darwin") == "127.0.0.1"
 
     def test_linux_prefers_ods_network_gateway(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args, **_kwargs: False)
         monkeypatch.setattr(_mod, "_detect_docker_network_gateway", lambda network: "172.18.0.1")
         monkeypatch.setattr(_mod, "_detect_docker_bridge_gateway", lambda: "172.17.0.1")
 
         assert _resolve_agent_bind_addr({}, "Linux") == "172.18.0.1"
 
+    def test_wsl_uses_loopback_instead_of_unbindable_compose_gateway(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(
+            _mod,
+            "_detect_docker_network_gateway",
+            lambda _network: (_ for _ in ()).throw(
+                AssertionError("WSL must not select Docker Desktop's compose gateway")
+            ),
+        )
+
+        assert _resolve_agent_bind_addr({}, "Linux") == "127.0.0.1"
+
     def test_linux_falls_back_to_bridge_gateway(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args, **_kwargs: False)
         monkeypatch.setattr(_mod, "_detect_docker_network_gateway", lambda network: "")
         monkeypatch.setattr(_mod, "_detect_docker_bridge_gateway", lambda: "172.17.0.1")
 
         assert _resolve_agent_bind_addr({}, "Linux") == "172.17.0.1"
 
     def test_linux_falls_back_to_loopback(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args, **_kwargs: False)
         monkeypatch.setattr(_mod, "_detect_docker_network_gateway", lambda network: "")
         monkeypatch.setattr(_mod, "_detect_docker_bridge_gateway", lambda: "")
 
@@ -2225,12 +2240,186 @@ class _FakeHandler:
         return json.loads(self.wfile.getvalue().decode("utf-8"))
 
 
+class TestPixelOperationsStatus:
+    @pytest.fixture(autouse=True)
+    def _auth(self, monkeypatch):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+
+    def test_projects_exact_manager_receipt_and_fixed_approval_command(
+        self, monkeypatch
+    ):
+        job_id = "ops-1788127319657-f3262c99a419"
+        plan_hash = "e" * 64
+
+        class TrustedApproval:
+            def lstat(self):
+                return types.SimpleNamespace(
+                    st_mode=_mod.stat_mod.S_IFREG | 0o755,
+                    st_nlink=1,
+                    st_uid=1000,
+                    st_size=4096,
+                )
+
+            def __str__(self):
+                return "/opt/ods/bin/ods-pixel-approve"
+
+        class TrustedInstall:
+            def __truediv__(self, item):
+                return self if item == "bin" else TrustedApproval()
+
+        class TrustedHelper:
+            def lstat(self):
+                return types.SimpleNamespace(
+                    st_mode=_mod.stat_mod.S_IFREG | 0o755,
+                    st_nlink=1,
+                    st_uid=0,
+                    st_size=4096,
+                )
+
+            def __str__(self):
+                return "/usr/local/libexec/ods-pixel-extension-manager.py"
+
+        projection = {
+            "schemaVersion": 1,
+            "kind": "ods-pixel-operations-status",
+            "jobId": job_id,
+            "planHash": plan_hash,
+            "status": "awaiting-approval",
+            "riskTier": "managed",
+            "approvalRequired": True,
+            "updatedAt": "2026-08-30T22:01:59Z",
+        }
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout=json.dumps(projection).encode("utf-8"),
+                stderr=b"",
+            )
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", TrustedInstall())
+        monkeypatch.setattr(_mod, "PIXEL_OPS_STATUS_HELPER", TrustedHelper())
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod.os, "getuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        handler = _FakeHandler(b"")
+
+        _mod.AgentHandler._handle_pixel_ops_status(
+            handler,
+            {"job_id": [job_id], "plan_hash": [plan_hash]},
+        )
+
+        assert handler.response_code == 200
+        body = handler.parse_response()
+        assert body == {
+            **projection,
+            "approvalCommand": f"/opt/ods/bin/ods-pixel-approve {job_id} {plan_hash} --confirm",
+        }
+        assert calls[0][0] == [
+            "/usr/bin/python3",
+            "/usr/local/libexec/ods-pixel-extension-manager.py",
+            "status",
+            "/run/ods-pixel-manager/extension-manager.sock",
+            job_id,
+            plan_hash,
+        ]
+        assert calls[0][1]["cwd"] == "/"
+        assert calls[0][1]["env"] == {
+            "PATH": "/usr/bin:/bin",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            {"job_id": ["../../shadow"], "plan_hash": ["e" * 64]},
+            {
+                "job_id": ["ops-1788127319657-f3262c99a419"],
+                "plan_hash": ["e" * 64],
+                "path": ["/etc/shadow"],
+            },
+        ],
+    )
+    def test_rejects_unbounded_status_queries(self, query):
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_pixel_ops_status(handler, query)
+        assert handler.response_code == 400
+
+
 class TestRemoteProviderLifecycle:
     """Direct host-agent tests for remote-provider lifecycle planning/apply."""
 
     @pytest.fixture(autouse=True)
     def _auth(self, monkeypatch):
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX secret modes")
+    def test_repairs_legacy_provider_secret_modes_without_widening_peer_token(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        secret_dir = tmp_path / "remote-provider" / "secrets"
+        secret_dir.mkdir(parents=True)
+        provider = secret_dir / "provider-api-key"
+        peer = secret_dir / "peer-token"
+        provider.write_text("provider-secret\n", encoding="utf-8")
+        peer.write_text("peer-secret\n", encoding="utf-8")
+        provider.chmod(0o600)
+        peer.chmod(0o600)
+
+        repaired = _mod._repair_remote_provider_secret_permissions()
+
+        assert repaired == ["REMOTE_LLM_API_KEY"]
+        assert stat.S_IMODE(provider.stat().st_mode) == 0o640
+        assert stat.S_IMODE(peer.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX secret modes")
+    def test_secret_writer_keeps_peer_token_owner_only(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "_remote_provider_secret_owner", lambda: (None, None))
+
+        _mod._write_remote_provider_secret("REMOTE_LLM_API_KEY", "provider-secret")
+        _mod._write_remote_provider_secret("REMOTE_ODS_PEER_TOKEN", "peer-secret")
+
+        secret_dir = tmp_path / "remote-provider" / "secrets"
+        assert stat.S_IMODE((secret_dir / "provider-api-key").stat().st_mode) == 0o640
+        assert stat.S_IMODE((secret_dir / "peer-token").stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX secret modes")
+    def test_secret_permission_repair_refuses_symlinks(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        if not can_create_symlinks(tmp_path):
+            pytest.skip("symlinks unavailable")
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        secret_dir = tmp_path / "remote-provider" / "secrets"
+        secret_dir.mkdir(parents=True)
+        target = tmp_path / "outside-secret"
+        target.write_text("outside\n", encoding="utf-8")
+        target.chmod(0o600)
+        (secret_dir / "provider-api-key").symlink_to(target)
+
+        assert _mod._repair_remote_provider_secret_permissions() == []
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX secret ownership")
+    def test_root_secret_owner_uses_provider_group_without_container_ownership(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(_mod.os, "geteuid", lambda: 0)
+
+        assert _mod._remote_provider_secret_owner() == (
+            0,
+            _mod._REMOTE_PROVIDER_EGRESS_GID,
+        )
 
     def _configure_payload(self):
         return {
@@ -2374,6 +2563,17 @@ class TestRemoteProviderLifecycle:
     ):
         monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
         probes = self._patch_successful_probe(monkeypatch)
+        monkeypatch.setattr(
+            _mod,
+            "_activate_remote_provider_route",
+            lambda route: {
+                "active": True,
+                "proven": True,
+                "publicModel": "ods/current",
+                "model": route["provider"]["model"],
+                "pixel": "reconciled",
+            },
+        )
         payload = self._configure_payload()
         handler = _FakeHandler(json.dumps(payload).encode("utf-8"))
 
@@ -2386,6 +2586,7 @@ class TestRemoteProviderLifecycle:
         state = json.loads(state_path.read_text(encoding="utf-8"))
         assert handler.response_code == 200
         assert body["applied"] is True
+        assert body["staged"] is False
         assert body["mutated"] is True
         assert body["rollback"] == {"attempted": False, "ok": None}
         assert body["probe"]["schema"] == "ods.remote-provider-probe-receipt.v1"
@@ -2402,6 +2603,8 @@ class TestRemoteProviderLifecycle:
         assert probes[0][0]["provider"]["baseUrl"] == "https://gpu.example.test/v1"
         assert probes[0][1] == "unit-test-provider-token"
         assert secret_path.read_text(encoding="utf-8") == "unit-test-provider-token\n"
+        if os.name != "nt":
+            assert stat.S_IMODE(secret_path.stat().st_mode) == 0o640
         assert "unit-test-provider-token" not in dumped
 
     def test_route_state_preserves_ssh_metadata_without_secret_values(self):
@@ -2445,7 +2648,8 @@ class TestRemoteProviderLifecycle:
         secret_dir = root / "secrets"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         assert handler.response_code == 200
-        assert body["applied"] is True
+        assert body["applied"] is False
+        assert body["staged"] is True
         assert body["mutated"] is True
         assert body["proof"] == {
             "required": True,
@@ -2470,6 +2674,9 @@ class TestRemoteProviderLifecycle:
         assert (secret_dir / "known_hosts").read_text(encoding="utf-8") == (
             "gpu.example.test ssh-ed25519 AAAATEST\n"
         )
+        if os.name != "nt":
+            for filename in ("provider-api-key", "ssh-identity", "known_hosts"):
+                assert stat.S_IMODE((secret_dir / filename).stat().st_mode) == 0o640
         assert "unit-test-provider-token" not in dumped
         assert "unit-test-key" not in dumped
         assert "AAAATEST" not in dumped
@@ -2492,6 +2699,17 @@ class TestRemoteProviderLifecycle:
         plan = _mod._plan_remote_provider_lifecycle_operation(payload)
         state = _mod._remote_provider_route_state_from_plan(plan)
         (root / "routing-state.json").write_text(json.dumps(state), encoding="utf-8")
+        monkeypatch.setattr(
+            _mod,
+            "_activate_remote_provider_route",
+            lambda route: {
+                "active": True,
+                "proven": True,
+                "publicModel": "ods/current",
+                "model": route["provider"]["model"],
+                "pixel": "reconciled",
+            },
+        )
         handler = _FakeHandler(b"")
 
         _mod.AgentHandler._handle_remote_provider_ssh_supervisor_status(handler)
@@ -2523,6 +2741,18 @@ class TestRemoteProviderLifecycle:
         plan = _mod._plan_remote_provider_lifecycle_operation(payload)
         state = _mod._remote_provider_route_state_from_plan(plan)
         (root / "routing-state.json").write_text(json.dumps(state), encoding="utf-8")
+        monkeypatch.setattr(
+            _mod,
+            "_activate_remote_provider_route",
+            lambda route: {
+                "active": True,
+                "proven": True,
+                "publicModel": "ods/current",
+                "model": route["provider"]["model"],
+                "routeFingerprint": _mod._remote_provider_route_fingerprint(route),
+                "pixel": "reconciled",
+            },
+        )
         handler = _FakeHandler(
             json.dumps(self._egress_probe_response()).encode("utf-8")
         )
@@ -2553,6 +2783,14 @@ class TestRemoteProviderLifecycle:
             "schema": "ods.remote-provider-proof-record.v1",
             "recorded": True,
             "status": expected_status,
+            "activation": {
+                "active": True,
+                "proven": True,
+                "publicModel": "ods/current",
+                "model": "qwen/remote:latest",
+                "routeFingerprint": _mod._remote_provider_route_fingerprint(state),
+                "pixel": "reconciled",
+            },
         }
         assert recorded_state["provider"]["transport"] == "ssh"
         assert recorded_state["ssh"]["host"] == "gpu.example.test"
@@ -2638,7 +2876,7 @@ class TestRemoteProviderLifecycle:
         body = handler.parse_response()
         dumped = json.dumps(body, sort_keys=True)
         assert handler.response_code == 200
-        assert body["applied"] is True
+        assert body["applied"] is False
         assert body["mutated"] is False
         assert body["probe"]["ok"] is True
         assert body["probe"]["verifiedAt"] == "2026-07-26T00:00:00+00:00"
@@ -2715,12 +2953,20 @@ class TestRemoteProviderLifecycle:
         tmp_path,
     ):
         monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(
+            _mod,
+            "_deactivate_remote_provider_route",
+            lambda: {"active": False, "restored": False, "reason": "not_activated"},
+        )
         root = tmp_path / "remote-provider"
         secret_path = root / "secrets" / "provider-api-key"
         secret_path.parent.mkdir(parents=True)
         secret_path.write_text("old-provider-token\n", encoding="utf-8")
+        active_plan = _mod._plan_remote_provider_lifecycle_operation(
+            self._configure_payload()
+        )
         (root / "routing-state.json").write_text(
-            json.dumps({"schema": "ods.remote-routing-state.v1", "enabled": True}),
+            json.dumps(_mod._remote_provider_route_state_from_plan(active_plan)),
             encoding="utf-8",
         )
         handler = _FakeHandler(json.dumps({"action": "disable"}).encode("utf-8"))
@@ -2731,7 +2977,274 @@ class TestRemoteProviderLifecycle:
         assert handler.response_code == 200
         assert state["enabled"] is False
         assert state["provider"] is None
+        assert state["resume"]["available"] is True
+        assert len(state["resume"]["profileSha256"]) == 64
+        profile = root / "provider-profile.json"
+        assert profile.exists()
+        if os.name != "nt":
+            assert stat.S_IMODE(profile.stat().st_mode) == 0o600
         assert secret_path.read_text(encoding="utf-8") == "old-provider-token\n"
+
+    def test_apply_enable_reproves_saved_direct_route_without_new_secrets(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        probes = self._patch_successful_probe(monkeypatch)
+        activations = []
+        monkeypatch.setattr(
+            _mod,
+            "_activate_remote_provider_route",
+            lambda route: activations.append(route) or {
+                "active": True,
+                "proven": True,
+                "model": route["provider"]["model"],
+            },
+        )
+        monkeypatch.setattr(
+            _mod,
+            "_deactivate_remote_provider_route",
+            lambda: {"active": False, "restored": True, "proven": True},
+        )
+
+        configure = _FakeHandler(
+            json.dumps(self._configure_payload()).encode("utf-8")
+        )
+        _mod.AgentHandler._handle_remote_provider_apply(configure)
+        disable = _FakeHandler(json.dumps({"action": "disable"}).encode("utf-8"))
+        _mod.AgentHandler._handle_remote_provider_apply(disable)
+        enable = _FakeHandler(json.dumps({"action": "enable"}).encode("utf-8"))
+        _mod.AgentHandler._handle_remote_provider_apply(enable)
+
+        root = tmp_path / "remote-provider"
+        state = json.loads((root / "routing-state.json").read_text(encoding="utf-8"))
+        body = enable.parse_response()
+        assert configure.response_code == 200
+        assert disable.response_code == 200
+        assert enable.response_code == 200
+        assert body["action"] == "enable"
+        assert body["applied"] is True
+        assert body["staged"] is False
+        assert body["probe"]["ok"] is True
+        assert state["enabled"] is True
+        assert state["provider"]["model"] == "qwen/remote:latest"
+        assert state["status"]["proven"] is True
+        assert state["resume"]["available"] is True
+        assert len(probes) == 2
+        assert probes[-1][1] == "unit-test-provider-token"
+        assert len(activations) == 2
+
+    def test_apply_enable_stages_saved_ssh_route_for_fresh_egress_proof(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(
+            _mod,
+            "_deactivate_remote_provider_route",
+            lambda: {"active": False, "restored": True, "proven": True},
+        )
+        configure = _FakeHandler(
+            json.dumps(self._ssh_configure_payload()).encode("utf-8")
+        )
+        _mod.AgentHandler._handle_remote_provider_apply(configure)
+        disable = _FakeHandler(json.dumps({"action": "disable"}).encode("utf-8"))
+        _mod.AgentHandler._handle_remote_provider_apply(disable)
+        enable = _FakeHandler(json.dumps({"action": "enable"}).encode("utf-8"))
+        _mod.AgentHandler._handle_remote_provider_apply(enable)
+
+        body = enable.parse_response()
+        state = json.loads(
+            (tmp_path / "remote-provider" / "routing-state.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert configure.response_code == 200
+        assert disable.response_code == 200
+        assert enable.response_code == 200
+        assert body["action"] == "enable"
+        assert body["applied"] is False
+        assert body["staged"] is True
+        assert body["proof"]["reason"] == "pending-ssh-tunnel-proof"
+        assert state["enabled"] is True
+        assert state["provider"]["transport"] == "ssh"
+        assert state["status"]["proven"] is False
+        assert state["resume"]["available"] is True
+
+    def test_apply_enable_rejects_tampered_saved_profile_and_stays_disabled(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        self._patch_successful_probe(monkeypatch)
+        monkeypatch.setattr(
+            _mod,
+            "_activate_remote_provider_route",
+            lambda route: {"active": True, "proven": True},
+        )
+        monkeypatch.setattr(
+            _mod,
+            "_deactivate_remote_provider_route",
+            lambda: {"active": False, "restored": True, "proven": True},
+        )
+        configure = _FakeHandler(
+            json.dumps(self._configure_payload()).encode("utf-8")
+        )
+        _mod.AgentHandler._handle_remote_provider_apply(configure)
+        disable = _FakeHandler(json.dumps({"action": "disable"}).encode("utf-8"))
+        _mod.AgentHandler._handle_remote_provider_apply(disable)
+        profile = tmp_path / "remote-provider" / "provider-profile.json"
+        profile.write_text(profile.read_text(encoding="utf-8") + " ", encoding="utf-8")
+        enable = _FakeHandler(json.dumps({"action": "enable"}).encode("utf-8"))
+        _mod.AgentHandler._handle_remote_provider_apply(enable)
+
+        state = json.loads(
+            (tmp_path / "remote-provider" / "routing-state.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert enable.response_code == 500
+        assert "fingerprint does not match" in enable.parse_response()["error"]
+        assert state["enabled"] is False
+
+    def test_apply_disable_drops_stale_resume_instead_of_blocking_local_fallback(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        self._patch_successful_probe(monkeypatch)
+        monkeypatch.setattr(
+            _mod,
+            "_activate_remote_provider_route",
+            lambda route: {"active": True, "proven": True},
+        )
+        deactivations = []
+        monkeypatch.setattr(
+            _mod,
+            "_deactivate_remote_provider_route",
+            lambda: deactivations.append(True) or {
+                "active": False,
+                "restored": True,
+                "proven": True,
+            },
+        )
+        configure = _FakeHandler(
+            json.dumps(self._configure_payload()).encode("utf-8")
+        )
+        _mod.AgentHandler._handle_remote_provider_apply(configure)
+        disable_once = _FakeHandler(json.dumps({"action": "disable"}).encode("utf-8"))
+        _mod.AgentHandler._handle_remote_provider_apply(disable_once)
+        root = tmp_path / "remote-provider"
+        profile = root / "provider-profile.json"
+        profile.write_text(profile.read_text(encoding="utf-8") + " ", encoding="utf-8")
+
+        disable_again = _FakeHandler(
+            json.dumps({"action": "disable"}).encode("utf-8")
+        )
+        _mod.AgentHandler._handle_remote_provider_apply(disable_again)
+
+        state = json.loads((root / "routing-state.json").read_text(encoding="utf-8"))
+        assert configure.response_code == 200
+        assert disable_once.response_code == 200
+        assert disable_again.response_code == 200
+        assert state["enabled"] is False
+        assert "resume" not in state
+        assert profile.exists()
+        assert deactivations == [True, True]
+
+    def test_apply_disable_restores_local_when_enabled_route_cannot_be_saved(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        restored = []
+        monkeypatch.setattr(
+            _mod,
+            "_deactivate_remote_provider_route",
+            lambda: restored.append(True) or {
+                "active": False,
+                "restored": True,
+                "proven": True,
+            },
+        )
+        root = tmp_path / "remote-provider"
+        root.mkdir(parents=True)
+        (root / "routing-state.json").write_text(
+            json.dumps({
+                "schema": _mod._REMOTE_PROVIDER_ROUTING_STATE_SCHEMA,
+                "enabled": True,
+                "mode": "cloud",
+                "provider": None,
+            }),
+            encoding="utf-8",
+        )
+
+        disable = _FakeHandler(json.dumps({"action": "disable"}).encode("utf-8"))
+        _mod.AgentHandler._handle_remote_provider_apply(disable)
+
+        state = json.loads((root / "routing-state.json").read_text(encoding="utf-8"))
+        assert disable.response_code == 200
+        assert state["enabled"] is False
+        assert "resume" not in state
+        assert restored == [True]
+
+    def test_apply_disable_retains_prior_resume_when_profile_rewrite_fails(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        self._patch_successful_probe(monkeypatch)
+        monkeypatch.setattr(
+            _mod,
+            "_activate_remote_provider_route",
+            lambda route: {"active": True, "proven": True},
+        )
+        monkeypatch.setattr(
+            _mod,
+            "_deactivate_remote_provider_route",
+            lambda: {"active": False, "restored": True, "proven": True},
+        )
+        configure = _FakeHandler(
+            json.dumps(self._configure_payload()).encode("utf-8")
+        )
+        _mod.AgentHandler._handle_remote_provider_apply(configure)
+        disable_once = _FakeHandler(json.dumps({"action": "disable"}).encode("utf-8"))
+        _mod.AgentHandler._handle_remote_provider_apply(disable_once)
+        root = tmp_path / "remote-provider"
+        paused_state = json.loads(
+            (root / "routing-state.json").read_text(encoding="utf-8")
+        )
+        original_resume = paused_state["resume"]
+        enable = _FakeHandler(json.dumps({"action": "enable"}).encode("utf-8"))
+        _mod.AgentHandler._handle_remote_provider_apply(enable)
+        enabled_state = json.loads(
+            (root / "routing-state.json").read_text(encoding="utf-8")
+        )
+        assert enabled_state["resume"] == original_resume
+
+        monkeypatch.setattr(
+            _mod,
+            "_write_remote_provider_profile",
+            lambda _route: (_ for _ in ()).throw(RuntimeError("simulated write failure")),
+        )
+        disable_again = _FakeHandler(
+            json.dumps({"action": "disable"}).encode("utf-8")
+        )
+        _mod.AgentHandler._handle_remote_provider_apply(disable_again)
+
+        state = json.loads((root / "routing-state.json").read_text(encoding="utf-8"))
+        assert configure.response_code == 200
+        assert disable_once.response_code == 200
+        assert enable.response_code == 200
+        assert disable_again.response_code == 200
+        assert state["enabled"] is False
+        assert state["resume"] == original_resume
 
     def test_apply_remove_deletes_route_state_and_secrets(
         self,
@@ -2739,6 +3252,11 @@ class TestRemoteProviderLifecycle:
         tmp_path,
     ):
         monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(
+            _mod,
+            "_deactivate_remote_provider_route",
+            lambda: {"active": False, "restored": False, "reason": "not_activated"},
+        )
         root = tmp_path / "remote-provider"
         secret_dir = root / "secrets"
         secret_dir.mkdir(parents=True)
@@ -2746,6 +3264,7 @@ class TestRemoteProviderLifecycle:
             json.dumps({"schema": "ods.remote-routing-state.v1", "enabled": True}),
             encoding="utf-8",
         )
+        (root / "provider-profile.json").write_text("saved-profile\n", encoding="utf-8")
         for filename in ("provider-api-key", "peer-token", "ssh-identity", "known_hosts"):
             (secret_dir / filename).write_text(f"{filename}\n", encoding="utf-8")
         handler = _FakeHandler(json.dumps({"action": "remove"}).encode("utf-8"))
@@ -2754,6 +3273,7 @@ class TestRemoteProviderLifecycle:
 
         assert handler.response_code == 200
         assert not (root / "routing-state.json").exists()
+        assert not (root / "provider-profile.json").exists()
         assert not (secret_dir / "provider-api-key").exists()
         assert not (secret_dir / "peer-token").exists()
         assert not (secret_dir / "ssh-identity").exists()
@@ -2775,6 +3295,8 @@ class TestRemoteProviderLifecycle:
             "provider": {"baseUrl": "https://old.example.test/v1"},
         }
         (root / "routing-state.json").write_text(json.dumps(old_state), encoding="utf-8")
+        activation_public = root / "activation-public.json"
+        activation_public.write_text("known-good-activation\n", encoding="utf-8")
         secret_path.write_text("old-provider-token\n", encoding="utf-8")
         real_atomic_write = _mod._atomic_write_text
         failed_once = {"value": False}
@@ -2796,8 +3318,343 @@ class TestRemoteProviderLifecycle:
         assert handler.response_code == 500
         assert body["rollback"] == {"attempted": True, "ok": True}
         assert state == old_state
+        assert activation_public.read_text(encoding="utf-8") == "known-good-activation\n"
         assert secret_path.read_text(encoding="utf-8") == "old-provider-token\n"
+        if os.name != "nt":
+            assert stat.S_IMODE(secret_path.stat().st_mode) == 0o640
         assert "unit-test-provider-token" not in dumped
+
+    def test_managed_pixel_runtime_recovers_concrete_gateway_model(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        install_dir = tmp_path / "ods"
+        onboarding = install_dir / "data" / "pixel" / "onboarding.json"
+        onboarding.parent.mkdir(parents=True)
+        onboarding.write_text(
+            json.dumps(
+                {
+                    "modelProvider": "ods-gateway",
+                    "modelId": "ods/current",
+                    "modelName": "ODS Current (org/qwen+tools:remote)",
+                    "modelContextWindow": 131072,
+                    "modelMaxTokens": 8192,
+                    "modelReasoning": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+        onboarding.chmod(0o600)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(
+            _mod,
+            "_ods_managed_pixel_identity",
+            lambda: ("pixel-owner", tmp_path / "home"),
+        )
+        real_snapshot = _mod._snapshot_text_file
+        monkeypatch.setattr(
+            _mod,
+            "_snapshot_text_file",
+            lambda path: {
+                **real_snapshot(path),
+                "mode": 0o600,
+            },
+        )
+
+        assert _mod._managed_pixel_runtime_contract() == {
+            "model": "org/qwen+tools:remote",
+            "contextLength": 131072,
+            "maxTokens": 8192,
+            "reasoning": True,
+        }
+
+        value = json.loads(onboarding.read_text(encoding="utf-8"))
+        value["modelName"] = "ODS Current (forged) trailing"
+        onboarding.write_text(json.dumps(value), encoding="utf-8")
+        onboarding.chmod(0o600)
+        with pytest.raises(RuntimeError, match="gateway model identity"):
+            _mod._managed_pixel_runtime_contract()
+
+    def test_activation_state_rejects_incomplete_previous_contract(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        path = tmp_path / "remote-provider" / "activation-state.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "schema": "ods.remote-provider-activation-state.v1",
+                    "phase": "active",
+                    "previous": {"odsMode": "local"},
+                    "remote": {
+                        "model": "org/qwen:remote",
+                        "contextLength": 32768,
+                        "maxTokens": 4096,
+                        "reasoning": False,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        path.chmod(0o600)
+
+        with pytest.raises(RuntimeError, match="contract is invalid"):
+            _mod._read_remote_provider_activation_state()
+
+    def test_active_remote_pixel_runtime_requires_current_proven_custody_join(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        runtime = {
+            "model": "remote-owner-model",
+            "contextLength": 131072,
+            "maxTokens": 16384,
+            "reasoning": False,
+        }
+        route = {
+            "provider": {
+                "transport": "ssh",
+                "baseUrl": "http://127.0.0.1:18080/v1",
+                **runtime,
+            },
+            "status": {
+                "proven": True,
+                "lastProbe": {
+                    "schema": _mod._REMOTE_PROVIDER_PROBE_RECEIPT_SCHEMA,
+                    "ok": True,
+                    "verifiedAt": "2026-08-31T16:19:55Z",
+                    "endpoint": "/v1/models",
+                    "httpStatus": 200,
+                    "modelCount": 1,
+                    "resolution": {"ok": True, "addressCount": 0},
+                },
+            },
+        }
+        activation = {
+            "phase": "active",
+            "remote": runtime,
+            "routeFingerprint": _mod._remote_provider_route_fingerprint(route),
+        }
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path / "ods")
+        monkeypatch.setattr(
+            _mod, "_read_remote_provider_route_state_for_update", lambda: route,
+        )
+        monkeypatch.setattr(
+            _mod, "_read_remote_provider_activation_state", lambda: activation,
+        )
+        monkeypatch.setattr(
+            _mod,
+            "load_env",
+            lambda _path: {"ODS_MODE": "cloud", "LLM_API_URL": "http://litellm:4000"},
+        )
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: runtime)
+
+        assert _mod._active_remote_provider_pixel_runtime() == runtime
+
+        activation["routeFingerprint"] = "0" * 64
+        assert _mod._active_remote_provider_pixel_runtime() is None
+        activation["routeFingerprint"] = _mod._remote_provider_route_fingerprint(route)
+
+        monkeypatch.setattr(
+            _mod,
+            "_managed_pixel_runtime_contract",
+            lambda: {**runtime, "maxTokens": 8192},
+        )
+        assert _mod._active_remote_provider_pixel_runtime() is None
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: runtime)
+
+        monkeypatch.setattr(
+            _mod,
+            "load_env",
+            lambda _path: {"ODS_MODE": "local", "LLM_API_URL": "http://llama-server:8080"},
+        )
+        assert _mod._active_remote_provider_pixel_runtime() is None
+        monkeypatch.setattr(
+            _mod,
+            "load_env",
+            lambda _path: {"ODS_MODE": "cloud", "LLM_API_URL": "http://litellm:4000"},
+        )
+
+        route["status"]["proven"] = False
+        assert _mod._active_remote_provider_pixel_runtime() is None
+
+    def test_consumer_activation_and_deactivation_restore_exact_prior_route(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        install_dir = tmp_path / "ods"
+        data_dir = install_dir / "data"
+        cloud_path = install_dir / "config" / "litellm" / "cloud.yaml"
+        cloud_path.parent.mkdir(parents=True)
+        data_dir.mkdir(parents=True)
+        env_path = install_dir / ".env"
+        original_env = (
+            "ODS_MODE=local\n"
+            "LLM_API_URL=http://llama-server:8080\n"
+            "LITELLM_KEY=unit-test-litellm-key\n"
+        )
+        original_cloud = "model_list:\n  - model_name: previous-cloud\n"
+        env_path.write_text(original_env, encoding="utf-8")
+        cloud_path.write_text(original_cloud, encoding="utf-8")
+        env_path.chmod(0o600)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "DATA_DIR", data_dir)
+
+        local_pixel = {
+            "model": "qwen-local",
+            "contextLength": 65536,
+            "maxTokens": 4096,
+            "reasoning": False,
+        }
+        remote_pixel = {
+            "model": "qwen/remote:latest",
+            "contextLength": 32768,
+            "maxTokens": 4096,
+            "reasoning": False,
+        }
+        current_pixel = {"value": local_pixel}
+        reconciled = []
+        verified = []
+        monkeypatch.setattr(
+            _mod, "_managed_pixel_runtime_contract", lambda: current_pixel["value"]
+        )
+        monkeypatch.setattr(
+            _mod,
+            "_capture_container_state",
+            lambda _name: {"exists": True, "running": True},
+        )
+        monkeypatch.setattr(_mod, "_restart_existing_container", lambda *a, **k: True)
+        monkeypatch.setattr(_mod, "_restore_container_state", lambda *a, **k: True)
+        monkeypatch.setattr(_mod, "_wait_for_container_health", lambda _name: None)
+        monkeypatch.setattr(
+            _mod,
+            "_verify_litellm_route",
+            lambda env, *, model="default": verified.append((env["ODS_MODE"], model)),
+        )
+
+        def fake_render(route, env):
+            assert route["provider"]["model"] == "qwen/remote:latest"
+            assert env["ODS_MODE"] == "cloud"
+            cloud_path.write_text("model_list:\n  - model_name: ods/current\n", encoding="utf-8")
+
+        def fake_reconcile(contract):
+            reconciled.append(contract)
+            current_pixel["value"] = contract
+            return "reconciled"
+
+        monkeypatch.setattr(_mod, "_render_remote_provider_cloud_config", fake_render)
+        monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", fake_reconcile)
+        private_writes = []
+        real_private_write = _mod._write_remote_provider_activation_state
+        real_public_write = _mod._write_remote_provider_activation_public
+
+        def track_private(value):
+            private_writes.append(("private", value["phase"]))
+            real_private_write(value)
+
+        def track_public(value):
+            private_writes.append(("public", value["proven"]))
+            real_public_write(value)
+
+        monkeypatch.setattr(_mod, "_write_remote_provider_activation_state", track_private)
+        monkeypatch.setattr(_mod, "_write_remote_provider_activation_public", track_public)
+        route = self._configure_payload()
+        plan = _mod._plan_remote_provider_lifecycle_operation(route)
+
+        activation = _mod._activate_remote_provider_route(plan["route"])
+
+        assert activation["active"] is True
+        assert activation["proven"] is True
+        assert _mod.load_env(env_path)["ODS_MODE"] == "cloud"
+        assert _mod.load_env(env_path)["LLM_API_URL"] == "http://litellm:4000"
+        assert cloud_path.read_text(encoding="utf-8") == (
+            "model_list:\n  - model_name: ods/current\n"
+        )
+        assert reconciled[-1] == remote_pixel
+        assert verified[-1] == ("cloud", "ods/current")
+        public = json.loads(
+            (data_dir / "remote-provider" / "activation-public.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert public["active"] is True
+        assert public["model"] == "qwen/remote:latest"
+        assert "unit-test-litellm-key" not in json.dumps(public)
+        assert private_writes[:3] == [
+            ("private", "staging"),
+            ("private", "active"),
+            ("public", True),
+        ]
+
+        current = _mod._verify_current_remote_provider_consumers(plan["route"], remote_pixel)
+        assert current["unchanged"] is True
+        assert current["pixel"] == "reconciled"
+        assert current_pixel["value"] == remote_pixel
+
+        deactivation = _mod._deactivate_remote_provider_route()
+
+        assert deactivation["restored"] is True
+        assert env_path.read_text(encoding="utf-8") == original_env
+        assert cloud_path.read_text(encoding="utf-8") == original_cloud
+        assert reconciled[-1] == local_pixel
+        assert verified[-1] == ("local", "ods/current")
+        assert not (data_dir / "remote-provider" / "activation-state.json").exists()
+        assert not (data_dir / "remote-provider" / "activation-public.json").exists()
+
+    def test_consumer_activation_failure_restores_config_and_never_claims_ready(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        install_dir = tmp_path / "ods"
+        data_dir = install_dir / "data"
+        cloud_path = install_dir / "config" / "litellm" / "cloud.yaml"
+        cloud_path.parent.mkdir(parents=True)
+        data_dir.mkdir(parents=True)
+        env_path = install_dir / ".env"
+        original_env = "ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\n"
+        original_cloud = "known-good-cloud\n"
+        env_path.write_text(original_env, encoding="utf-8")
+        cloud_path.write_text(original_cloud, encoding="utf-8")
+        env_path.chmod(0o600)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "DATA_DIR", data_dir)
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: None)
+        monkeypatch.setattr(
+            _mod,
+            "_capture_container_state",
+            lambda _name: {"exists": True, "running": True},
+        )
+        monkeypatch.setattr(_mod, "_restart_existing_container", lambda *a, **k: True)
+        monkeypatch.setattr(_mod, "_restore_container_state", lambda *a, **k: True)
+        monkeypatch.setattr(_mod, "_wait_for_container_health", lambda _name: None)
+        monkeypatch.setattr(
+            _mod,
+            "_render_remote_provider_cloud_config",
+            lambda route, env: cloud_path.write_text("candidate-cloud\n", encoding="utf-8"),
+        )
+        monkeypatch.setattr(
+            _mod,
+            "_verify_litellm_route",
+            lambda env, *, model="default": (_ for _ in ()).throw(
+                RuntimeError("simulated consumer proof failure")
+            ) if env.get("ODS_MODE") == "cloud" else None,
+        )
+        plan = _mod._plan_remote_provider_lifecycle_operation(self._configure_payload())
+
+        with pytest.raises(RuntimeError, match="simulated consumer proof failure"):
+            _mod._activate_remote_provider_route(plan["route"])
+
+        assert env_path.read_text(encoding="utf-8") == original_env
+        assert cloud_path.read_text(encoding="utf-8") == original_cloud
+        assert not (data_dir / "remote-provider" / "activation-state.json").exists()
+        assert not (data_dir / "remote-provider" / "activation-public.json").exists()
 
 
 class TestTailscaleStatus:
@@ -3349,6 +4206,239 @@ class TestModelActivationOwnership:
         assert response["activeTarget"] == "target-a"
         assert response["activeModelId"] == "target-a"
 
+    def test_model_status_projects_only_active_agent_viability(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir = tmp_path / "ods"
+        state_path = install_dir / "data" / "model-state.json"
+        state_path.parent.mkdir(parents=True)
+        state = _mod._switchboard_state.initial_state()
+        state["seq"] = 1
+        state["routeSeq"] = 1
+        state["desired"] = {"catalogId": "chat-only"}
+        state["active"] = {
+            "routeSeq": 1,
+            "catalogId": "chat-only",
+            "runtimeModelId": "chat-only.gguf",
+            "publicModel": "ods/current",
+            "backend": {
+                "kind": "llama-server",
+                "endpointId": "llama-server-default",
+                "nativeRoute": None,
+            },
+            "contextLength": 32768,
+            "capabilities": {
+                "chat": True,
+                "tools": False,
+                "vision": False,
+                "agentViable": False,
+            },
+            "verifiedAt": "2026-08-31T13:53:16Z",
+            "proof": {"identity": "chat-only.gguf", "completion": True},
+        }
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_status(handler)
+
+        assert handler.response_code == 200
+        response = handler.parse_response()
+        assert response == {"status": "idle", "activeAgentViable": False}
+        assert "runtimeModelId" not in response
+        assert "capabilities" not in response
+
+    def test_model_status_projects_active_remote_runtime_over_local_rollback(
+        self, tmp_path, monkeypatch,
+    ):
+        runtime = {
+            "model": "remote-owner-model",
+            "contextLength": 131072,
+            "maxTokens": 16384,
+            "reasoning": False,
+        }
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path / "ods")
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(
+            _mod,
+            "_active_remote_provider_pixel_runtime",
+            lambda: runtime,
+        )
+
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_status(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response() == {
+            "status": "idle",
+            "activeAgentViable": True,
+            "activeRuntime": {"source": "remote-provider", **runtime},
+        }
+
+    def test_model_status_applies_new_pixel_specific_revocation(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir = tmp_path / "ods"
+        state_path = install_dir / "data" / "model-state.json"
+        state_path.parent.mkdir(parents=True)
+        (install_dir / "config").mkdir()
+        (install_dir / "config" / "model-library.json").write_text(
+            json.dumps({
+                "models": [{
+                    "id": "stale-qualified",
+                    "gguf_file": "model.gguf",
+                    "gguf_url": "https://huggingface.co/example/model.gguf",
+                    "app_compatibility": {
+                        "pixel_agent": {"status": "not_agent_viable"},
+                    },
+                }],
+            }),
+            encoding="utf-8",
+        )
+        state = _mod._switchboard_state.initial_state()
+        state["seq"] = 1
+        state["routeSeq"] = 1
+        state["desired"] = {"catalogId": "stale-qualified"}
+        state["active"] = {
+            "routeSeq": 1,
+            "catalogId": "stale-qualified",
+            "runtimeModelId": "model.gguf",
+            "publicModel": "ods/current",
+            "backend": {
+                "kind": "llama-server",
+                "endpointId": "llama-server-default",
+                "nativeRoute": None,
+            },
+            "contextLength": 65536,
+            "capabilities": {
+                "chat": True,
+                "tools": False,
+                "vision": False,
+                "agentViable": True,
+            },
+            "verifiedAt": "2026-08-31T13:53:16Z",
+            "proof": {"identity": "model.gguf", "completion": True},
+        }
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_status(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response()["activeAgentViable"] is False
+
+    def test_pixel_agent_viability_is_distinct_from_generic_chat_viability(self):
+        generic = {"app_compatibility": {"agent_viability": {"status": "verified"}}}
+        revoked = {
+            "app_compatibility": {
+                "agent_viability": {"status": "verified"},
+                "pixel_agent": {"status": "not_agent_viable"},
+            },
+        }
+        assert _mod._model_agent_viable(generic, 65536) is True
+        assert _mod._model_agent_viable(revoked, 65536) is False
+
+    def test_switchboard_route_requires_reproof_when_context_changes(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir = tmp_path / "ods"
+        (install_dir / "data").mkdir(parents=True)
+        (install_dir / "config").mkdir()
+        model = {
+            "id": "same-model",
+            "gguf_file": "same-model.gguf",
+            "llm_model_name": "same-model",
+            "gguf_url": "https://huggingface.co/example/same-model.gguf",
+        }
+        (install_dir / "config" / "model-library.json").write_text(
+            json.dumps({"models": [model]}),
+            encoding="utf-8",
+        )
+        (install_dir / ".env").write_text(
+            "ODS_MODE=local\n"
+            "GPU_BACKEND=cpu\n"
+            "GGUF_FILE=same-model.gguf\n"
+            "LLM_MODEL=same-model\n"
+            "CTX_SIZE=65536\n",
+            encoding="utf-8",
+        )
+        state_path = install_dir / "data" / "model-state.json"
+        _mod._switchboard_state.record_verified_route(
+            state_path,
+            catalog_id="same-model",
+            runtime_model_id="same-model.gguf",
+            backend_kind="llama-server",
+            endpoint_id="llama-server-default",
+            context_length=32768,
+            capabilities={
+                "chat": True,
+                "tools": False,
+                "vision": False,
+                "agentViable": False,
+            },
+            proof_identity="same-model.gguf",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+
+        assert _mod._switchboard_state_needs_current_env_verification(state_path) is True
+        payload = {"status": "idle"}
+        _mod._project_switchboard_agent_viability(payload)
+        assert payload == {"status": "idle"}
+
+    @pytest.mark.parametrize("agent_viable", [True, False])
+    @pytest.mark.parametrize("backend", ["llama-server", "lemonade"])
+    def test_model_status_projects_verified_local_identity_without_onboarding(
+        self, tmp_path, monkeypatch, agent_viable, backend,
+    ):
+        install_dir = tmp_path / "ods"
+        install_dir.mkdir()
+        env = (
+            "ODS_MODE=local\nGPU_BACKEND=cpu\nLLM_MODEL=same-model\n"
+            "GGUF_FILE=same-model.gguf\nCTX_SIZE=65536\n"
+        )
+        if backend == "lemonade":
+            env += (
+                "LEMONADE_MODEL=same-model.gguf\n"
+                "LEMONADE_BASE_URL=http://host.docker.internal:8080/api/v1\n"
+                "LLM_BACKEND=lemonade\n"
+            )
+        (install_dir / ".env").write_text(env, encoding="utf-8")
+        state_path = install_dir / "data" / "model-state.json"
+        _mod._switchboard_state.record_verified_route(
+            state_path, catalog_id="same-model", runtime_model_id="same-model.gguf",
+            backend_kind=backend, endpoint_id=f"{backend}-default",
+            context_length=65536,
+            capabilities={"chat": True, "tools": False, "vision": False,
+                          "agentViable": agent_viable},
+            proof_identity="same-model.gguf",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_active_remote_provider_pixel_runtime", lambda: None)
+        payload = {"status": "idle"}
+        _mod._project_switchboard_agent_viability(payload)
+        assert payload["activeRuntime"] == {
+            "source": "local-switchboard", "model": "same-model.gguf",
+            "contextLength": 65536,
+        }
+        assert payload["activeAgentViable"] is agent_viable
+
+        # Missing proof and a cloud transition must not expose a local rollback
+        # route as Pixel's active runtime. This is a display rule, not admission.
+        (install_dir / ".env").write_text(env.replace("local", "cloud"), encoding="utf-8")
+        payload = {}
+        _mod._project_switchboard_agent_viability(payload)
+        assert "activeRuntime" not in payload
+        (install_dir / ".env").write_text(env, encoding="utf-8")
+        doc = json.loads(state_path.read_text(encoding="utf-8"))
+        doc["active"]["proof"]["completion"] = False
+        state_path.write_text(json.dumps(doc), encoding="utf-8")
+        payload = {}
+        _mod._project_switchboard_agent_viability(payload)
+        assert "activeRuntime" not in payload
+
     def test_non_activation_lock_owner_reports_unknown_target(self, monkeypatch):
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
         handler = _FakeHandler(json.dumps({"model_id": "target-a"}).encode("utf-8"))
@@ -3703,6 +4793,13 @@ class TestModelActivationModeAndMacosBridge:
         monkeypatch.setattr(_mod, "_stop_macos_native_llama_server", record_stop)
         monkeypatch.setattr(_mod, "_configure_macos_llm_bridge", record_bridge)
         monkeypatch.setattr(_mod, "_launch_native_llama_server", record_launch)
+        # This fixture covers the native model bridge, not an installed
+        # OpenCode service. The generic subprocess stub must not manufacture
+        # a running service and trigger a real localhost health request.
+        monkeypatch.setattr(
+            _mod, "_capture_managed_opencode_state",
+            lambda: {"system": "Darwin", "active": False},
+        )
         monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
         handler = _FakeHandler(b"")
@@ -6271,6 +7368,45 @@ class TestModelDownloadFileIntegrity:
         )
         assert valid is False
         assert "size mismatch" in reason
+
+    def test_verified_model_artifact_reuses_unchanged_integrity_proof(
+        self, tmp_path, monkeypatch,
+    ):
+        payload = b"catalog verified model"
+        model_path = tmp_path / "cached-model.gguf"
+        model_path.write_bytes(payload)
+        artifact = {
+            "size_bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+
+        assert _mod._verify_model_artifact(model_path, artifact) == (True, "")
+
+        def unexpected_hash():
+            raise AssertionError("unchanged artifact should reuse its integrity proof")
+
+        monkeypatch.setattr(_mod.hashlib, "sha256", unexpected_hash)
+        assert _mod._verify_model_artifact(model_path, artifact) == (True, "")
+
+    def test_verified_model_artifact_cache_rejects_same_size_tampering(
+        self, tmp_path,
+    ):
+        payload = b"catalog model A"
+        replacement = b"catalog model B"
+        assert len(payload) == len(replacement)
+        model_path = tmp_path / "tampered-model.gguf"
+        model_path.write_bytes(payload)
+        artifact = {
+            "size_bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+
+        assert _mod._verify_model_artifact(model_path, artifact) == (True, "")
+        model_path.write_bytes(replacement)
+
+        valid, reason = _mod._verify_model_artifact(model_path, artifact)
+        assert valid is False
+        assert "SHA256 mismatch" in reason
 
     def test_stale_split_status_rejects_missing_second_part(self, tmp_path, monkeypatch):
         first_payload = b"verified first part"

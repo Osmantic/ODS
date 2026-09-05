@@ -273,6 +273,48 @@ describe('useModels', () => {
     }
   })
 
+  test('loadModel reports an active Pixel turn without inventing a model conflict', async () => {
+    vi.useFakeTimers()
+    const target = 'next-model'
+    fetch.mockImplementation((_url, options) => {
+      if (options?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({
+            detail: {
+              code: 'pixel_chat_active',
+              message: 'Pixel is working. Stop the active response before changing models.',
+              requestedModelId: target,
+            },
+          }),
+        })
+      }
+      return Promise.resolve(modelsResponse([{ id: target, status: 'downloaded' }]))
+    })
+
+    try {
+      const { result } = renderHook(() => useModels())
+      await act(async () => {})
+
+      let loadPromise
+      act(() => {
+        loadPromise = result.current.loadModel(target)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+        await loadPromise
+      })
+
+      expect(result.current.error).toBe(
+        'Pixel is working. Stop the active response before changing models.'
+      )
+      expect(result.current.error).not.toMatch(/active target|server did not identify/i)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   test('loadModel sends context and waits for the requested runtime context', async () => {
     vi.useFakeTimers()
     const target = 'qwen-long-context'

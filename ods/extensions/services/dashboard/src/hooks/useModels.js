@@ -72,6 +72,7 @@ const MOCK_GPU = { vramTotal: 16, vramUsed: 13.2, vramFree: 2.8 }
 const MOCK_CURRENT_MODEL = 'Qwen/Qwen2.5-32B-Instruct-AWQ'
 const MOCK_MODES = { odsMode: 'local', configuredMode: 'local' }
 const DEFAULT_HERMES_MIN_CONTEXT = 65536
+const DEFAULT_PIXEL_MIN_CONTEXT = 16384
 const DEFAULT_POLL_MS = 30000
 const PENDING_MODEL_ACTION_POLL_MS = 2000
 const MODELS_FETCH_TIMEOUT_MS = 30000
@@ -173,6 +174,7 @@ export function useModels() {
   const [llmBackend, setLlmBackend] = useState(USE_MOCK_DATA ? 'llama-server' : 'unknown')
   const [recommendationAlternatives, setRecommendationAlternatives] = useState([])
   const [hermesMinimumContext, setHermesMinimumContext] = useState(DEFAULT_HERMES_MIN_CONTEXT)
+  const [pixelMinimumContext, setPixelMinimumContext] = useState(DEFAULT_PIXEL_MIN_CONTEXT)
   const [loading, setLoading] = useState(USE_MOCK_DATA ? false : true)
   const [fetchError, setFetchError] = useState(null)
   const [mutationError, setMutationError] = useState(null)
@@ -252,6 +254,7 @@ export function useModels() {
       setLlmBackend(typeof data.llmBackend === 'string' ? data.llmBackend.trim().toLowerCase() : 'unknown')
       setRecommendationAlternatives(data.recommendationAlternatives ?? [])
       setHermesMinimumContext(Number(data.hermesMinimumContext || DEFAULT_HERMES_MIN_CONTEXT))
+      setPixelMinimumContext(Number(data.pixelMinimumContext || DEFAULT_PIXEL_MIN_CONTEXT))
       setFetchError(null)
       reconcilePendingActions(data.models)
       return data
@@ -388,6 +391,13 @@ export function useModels() {
 
         const body = await responseJson(response)
         if (response.status === 409) {
+          if (body?.detail?.code === 'pixel_chat_active') {
+            activationError = errorMessageFromPayload(
+              body,
+              'Pixel is working. Stop the active response before changing models.'
+            )
+            return
+          }
           const activeModelId = conflictActiveModelId(body)
           if (activeModelId === modelId && !requestedContextLength) return
 
@@ -497,6 +507,7 @@ export function useModels() {
     activationModeError,
     recommendationAlternatives,
     hermesMinimumContext,
+    pixelMinimumContext,
     loading,
     error,
     actionLoading,

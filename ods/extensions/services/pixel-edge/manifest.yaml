@@ -1,0 +1,47 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: pixel-edge
+  name: Pixel Edge (Open WebUI → Pixel proxy)
+  aliases: [pixel]
+  container_name: ods-pixel-edge
+  host_env: PIXEL_EDGE_HOST
+  default_host: pixel-edge
+  port: 9595
+  external_port_default: 0
+  health: /health
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: core
+  depends_on: []
+  env_vars:
+    - key: PIXEL_OPENWEBUI_KEY
+      required: true
+      secret: true
+      description: Scoped bearer token for Open WebUI authentication
+    - key: PIXEL_INGRESS_GID
+      required: true
+      description: Numeric GID allowed to connect to the host Pixel ingress socket
+
+features:
+  - id: pixel-edge-proxy
+    name: Pixel Edge Proxy
+    description: >-
+      Internal OpenAI-compatible edge proxy from Open WebUI to a host Pixel
+      ingress Unix socket. Scoped auth, model rewriting, SSE streaming, and
+      strict container hardening.
+    icon: GitMerge
+    category: agent
+    requirements:
+      services: [pixel-edge]
+      vram_gb: 0
+    enabled_services_all: [pixel-edge]
+    setup_time: ~2 minutes
+    priority: 55
+    launch:
+      type: none
+    gpu_backends: [all]

@@ -92,6 +92,12 @@
       "value": "python:3.11-slim"
     },
     {
+      "id": "pixel-edge.python",
+      "type": "image",
+      "path": "extensions/services/pixel-edge/Dockerfile",
+      "value": "python:3.11-slim"
+    },
+    {
       "id": "remote-provider-egress.python",
       "type": "image",
       "path": "extensions/services/remote-provider-egress/Dockerfile",
@@ -173,7 +179,7 @@
       "id": "litellm.proxy",
       "type": "image",
       "path": "extensions/services/litellm/compose.yaml",
-      "value": "ghcr.io/berriai/litellm:v1.81.3-stable"
+      "value": "ghcr.io/berriai/litellm:v1.90.7@sha256:917d480b7e4a7e61822e54f70be5c7cf753fb0b7328cbf6467612652ca748075"
     },
     {
       "id": "llama-server.rocm-build",
@@ -292,6 +298,11 @@
       "path": "extensions/services/brave-search/compose.yaml",
       "value": "ods-brave-search:local",
       "reason": "Local extension image built from the adjacent Dockerfile."
+    },
+    {
+      "path": "extensions/services/pixel-edge/compose.yaml.disabled",
+      "value": "ods-pixel-edge:local",
+      "reason": "Qualified Linux installs enable this fragment and build the internal Pixel edge image from its adjacent Dockerfile."
     },
     {
       "path": "docker-compose.base.yml",

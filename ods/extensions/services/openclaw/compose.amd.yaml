@@ -1,8 +1,8 @@
 # AMD/Lemonade overlay — bypass LiteLLM for Responses API.
 #
-# LiteLLM v1.81.3 has a streaming bug: Lemonade omits optional fields
-# (created_at, output) in SSE response.created events and LiteLLM's
-# Pydantic validation rejects them, causing HTTP 500 errors.
+# This direct route preserves compatibility with Lemonade responses that omit
+# optional fields (created_at, output) in SSE response.created events; older
+# LiteLLM validation rejected those events and caused HTTP 500 errors.
 # Lemonade handles the Responses API correctly on its own — both
 # streaming and non-streaming — so bypassing LiteLLM avoids the issue.
 services:

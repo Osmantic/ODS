@@ -93,7 +93,7 @@ Lemonade's deterministic `collection.router` behavior is a strong fit for AMD/Le
 
 ### LiteLLM alone
 
-LiteLLM already provides the public gateway and model aliases, but ODS v1.81.3 is configured from a read-only YAML mount with no database-backed management plane. Today that YAML contains the concrete model ID, so changing the alias still requires rewriting the file and restarting LiteLLM. Enabling LiteLLM's database management stack solely for one mutable local alias would add a database, migration, and admin surface to every ODS installation.
+LiteLLM already provides the public gateway and model aliases, but ODS's pinned LiteLLM is configured from a read-only YAML mount with no database-backed management plane. Today that YAML contains the concrete model ID, so changing the alias still requires rewriting the file and restarting LiteLLM. Enabling LiteLLM's database management stack solely for one mutable local alias would add a database, migration, and admin surface to every ODS installation.
 
 Keep LiteLLM for auth, OpenAI compatibility, policy, and provider translation. Put ODS's small mutable routing decision behind it, where ODS can test and version the behavior independently.
 
@@ -443,7 +443,7 @@ Primary changes:
 - Add `ods/config/model-router/endpoints.json`, generated at install from known runtime topology and mounted read-only. State selects only an `endpointId` from this file.
 - Include model-router in local, Lemonade, and hybrid Compose stacks; exclude it from cloud-only routing. It has no host port.
 - Change LiteLLM local/Lemonade templates to map `ods/current`, `default`, and the compatibility wildcard to model-router permanently when enabled.
-- Add `ODS_MODEL_SWITCHBOARD=legacy|observe|enabled`; ship `observe` by default in this PR. `legacy` renders the pre-switchboard LiteLLM config, `observe` runs router/state checks without consumer traffic, and `enabled` sends the stable aliases through model-router.
+- `ODS_MODEL_SWITCHBOARD=enabled` is the production default after live request-drain and rollback qualification. `observe` remains a non-routing diagnostic mode, and `legacy` renders the pre-switchboard LiteLLM configuration for explicit rollback.
 
 Required LiteLLM shape when enabled:
 

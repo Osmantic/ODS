@@ -9,6 +9,7 @@
 # Expects: DRY_RUN, INSTALL_DIR, SCRIPT_DIR, LOG_FILE, INTERACTIVE,
 #           TIER, TIER_NAME, VERSION, GPU_BACKEND, LLM_MODEL, OFFLINE_MODE,
 #           ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_QDRANT, ENABLE_HERMES, ENABLE_OPENCLAW,
+#           ENABLE_PIXEL_RUNTIME, PIXEL_AGENT_MODE,
 #           COMPOSE_FLAGS, SUMMARY_JSON_FILE, PREFLIGHT_REPORT_FILE,
 #           BGRN, GRN, AMB, WHT, NC, DASHBOARD_PORT (:-3001),
 #           CAP_HARDWARE_CLASS_ID (:-unknown), CAP_HARDWARE_CLASS_LABEL (:-Unknown),
@@ -44,8 +45,17 @@ else
     log "[DRY RUN] Would write mode metadata to $INSTALL_DIR"
 fi
 
-# Show the cinematic success card
-show_success_card "http://localhost:3000" "http://localhost:3001" "$LOCAL_IP"
+# A dry run is a plan, not a successful installation.  Keep its completion
+# language and checks visibly separate from live-runtime evidence.
+if $DRY_RUN; then
+    echo ""
+    bootline
+    echo -e "${BGRN}DRY RUN PLAN COMPLETE — NOTHING WAS INSTALLED${NC}"
+    bootline
+    echo ""
+else
+    show_success_card "http://localhost:3000" "http://localhost:3001" "$LOCAL_IP"
+fi
 
 # Mark the setup wizard as already completed for fresh installs. The
 # dashboard-api reads this file (container path /data/config/setup-complete.json,
@@ -118,17 +128,28 @@ fi
 
 # Additional service info
 bootline
-echo -e "${BGRN}ALL SERVICES${NC}"
+if $DRY_RUN; then
+    echo -e "${BGRN}PLANNED SERVICES (NOT STARTED)${NC}"
+else
+    echo -e "${BGRN}ALL SERVICES${NC}"
+fi
 bootline
 # Core services always shown
 echo "  • Chat UI:       http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
 echo "  • Dashboard:     http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
-echo "  • LLM API:       http://localhost:${SERVICE_PORTS[llama-server]:-11434}/v1  (llama-server)"
+if [[ "${ODS_MODE:-local}" == "cloud" || "${ODS_MODE:-local}" == "lemonade" || "${LEMONADE_EXTERNAL:-false}" == "true" ]]; then
+    echo "  • LLM API:       http://localhost:${SERVICE_PORTS[litellm]:-4000}/v1  (managed LiteLLM gateway)"
+else
+    echo "  • LLM API:       http://localhost:${SERVICE_PORTS[llama-server]:-11434}/v1  (llama-server)"
+fi
+[[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && echo "  • Pixel Agent:   http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel  (also the default Open WebUI model)"
 [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && echo "  • Perplexica:    http://localhost:${SERVICE_PORTS[perplexica]:-3004}"
 [[ "${ENABLE_COMFYUI:-false}" == "true" ]] && echo "  • ComfyUI:       http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
 [[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes (auth): http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}  (magic-link gated; not direct :9119)"
 [[ "$ENABLE_OPENCLAW" == "true" ]] && echo "  • OpenClaw:      http://localhost:${SERVICE_PORTS[openclaw]:-7860}"
-systemctl --user is-active opencode-web &>/dev/null && echo "  • OpenCode:      http://localhost:3003"
+if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
+    systemctl --user is-active opencode-web &>/dev/null && echo "  • OpenCode:      http://localhost:3003"
+fi
 [[ "$ENABLE_VOICE" == "true" ]] && echo "  • Whisper STT:   http://localhost:${SERVICE_PORTS[whisper]:-9000}"
 [[ "$ENABLE_VOICE" == "true" ]] && echo "  • TTS (Kokoro):  http://localhost:${SERVICE_PORTS[tts]:-8880}"
 [[ "$ENABLE_WORKFLOWS" == "true" ]] && echo "  • n8n:           http://localhost:${SERVICE_PORTS[n8n]:-5678}"
@@ -137,10 +158,19 @@ echo ""
 
 # Configuration summary
 bootline
-echo -e "${BGRN}YOUR CONFIGURATION${NC}"
+if $DRY_RUN; then
+    echo -e "${BGRN}PLANNED CONFIGURATION${NC}"
+else
+    echo -e "${BGRN}YOUR CONFIGURATION${NC}"
+fi
 bootline
 echo "  • Tier: $TIER ($TIER_NAME)"
 echo "  • Model: $LLM_MODEL"
+if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then
+    echo "  • Default agent: Pixel (Open WebUI model: pixel/default)"
+elif [[ "${ENABLE_HERMES:-false}" == "true" ]]; then
+    echo "  • Default agent: Hermes (Pixel unavailable or disabled)"
+fi
 echo "  • Install dir: $INSTALL_DIR"
 echo ""
 
@@ -154,6 +184,7 @@ echo "  docker compose logs -f                     # View container logs"
 echo "  docker compose restart                     # Restart containers"
 echo "  systemctl --user list-timers               # Check maintenance timers"
 echo "  ods status                                 # Check service health"
+[[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && echo "  bash install.sh --no-pixel --hermes         # Roll back the default agent to Hermes"
 echo ""
 
 if [[ -f "$LOG_FILE" ]]; then
@@ -165,14 +196,17 @@ if [[ -f "$PREFLIGHT_REPORT_FILE" ]]; then
     echo ""
 fi
 
-# Run preflight check to validate installation
-echo ""
-bootline
-echo -e "${BGRN}RUNNING PREFLIGHT VALIDATION${NC}"
-bootline
-echo ""
-
-if [[ -f "$SCRIPT_DIR/ods-preflight.sh" ]]; then
+# Run preflight only for a real installation. A dry run has no services to
+# validate and must never print missing-service noise as if it were live proof.
+if $DRY_RUN; then
+    echo ""
+    ai "[DRY RUN] Live preflight and extension runtime checks were not run."
+elif [[ -f "$SCRIPT_DIR/ods-preflight.sh" ]]; then
+    echo ""
+    bootline
+    echo -e "${BGRN}RUNNING PREFLIGHT VALIDATION${NC}"
+    bootline
+    echo ""
     # Services like APE and Embeddings may still be starting on fresh installs.
     # Retry up to 3 times with 10s backoff before reporting failures.
     _preflight_passed=false
@@ -194,10 +228,11 @@ else
     log "Preflight script not found — skipping validation"
 fi
 
-# Extension manifest validation (non-blocking)
+# Extension manifest validation (non-blocking). Static manifest validation is
+# useful in dry run, but it must not be presented as a live runtime check.
 echo ""
 bootline
-echo -e "${BGRN}VALIDATING EXTENSIONS${NC}"
+echo -e "${BGRN}VALIDATING EXTENSION MANIFESTS${NC}"
 bootline
 echo ""
 if [[ -f "$SCRIPT_DIR/scripts/validate-manifests.sh" ]]; then
@@ -211,15 +246,17 @@ else
 fi
 
 # Non-core extension runtime check (Docker + optional HTTP health; non-blocking)
-echo ""
-bootline
-echo -e "${BGRN}EXTENSION RUNTIME CHECK${NC}"
-bootline
-echo ""
-if [[ -f "$SCRIPT_DIR/scripts/extension-runtime-check.sh" ]]; then
-    bash "$SCRIPT_DIR/scripts/extension-runtime-check.sh" "$INSTALL_DIR" || true
-else
-    log "extension-runtime-check.sh not found — skipping"
+if ! $DRY_RUN; then
+    echo ""
+    bootline
+    echo -e "${BGRN}EXTENSION RUNTIME CHECK${NC}"
+    bootline
+    echo ""
+    if [[ -f "$SCRIPT_DIR/scripts/extension-runtime-check.sh" ]]; then
+        bash "$SCRIPT_DIR/scripts/extension-runtime-check.sh" "$INSTALL_DIR" || true
+    else
+        log "extension-runtime-check.sh not found — skipping"
+    fi
 fi
 
 #=============================================================================
@@ -279,25 +316,21 @@ fi
 #=============================================================================
 if ! $DRY_RUN; then
     if [[ -x "$INSTALL_DIR/ods-cli" ]]; then
-        if ! command -v ods &>/dev/null; then
-            if sudo -n ln -sf "$INSTALL_DIR/ods-cli" /usr/local/bin/ods 2>/dev/null; then
-                ai_ok "ods command installed (try: ods status)"
-            else
-                # Fallback: user-local bin directory (no sudo needed)
-                mkdir -p "$HOME/.local/bin"
-                if ln -sf "$INSTALL_DIR/ods-cli" "$HOME/.local/bin/ods" 2>/dev/null; then
-                    ai_ok "ods command installed to ~/.local/bin/ods"
-                    if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-                        ai_warn "Add to your shell profile: export PATH=\"\$HOME/.local/bin:\$PATH\""
-                    fi
-                else
-                    ai_warn "Could not create 'ods' command. Add manually:"
-                    ai "  sudo ln -sf $INSTALL_DIR/ods-cli /usr/local/bin/ods"
+        _ods_cli_binding="$(ods_bind_cli_command "$INSTALL_DIR" "$HOME" 2>>"$LOG_FILE")" || _ods_cli_binding=""
+        case "$_ods_cli_binding" in
+            existing:*) ai_ok "ods command already targets this install" ;;
+            system:*) ai_ok "ods command installed (try: ods status)" ;;
+            user:*)
+                ai_ok "ods command installed to ~/.local/bin/ods"
+                if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+                    ai_warn "Add to your shell profile: export PATH=\"\$HOME/.local/bin:\$PATH\""
                 fi
-            fi
-        else
-            ai_ok "ods command already available"
-        fi
+                ;;
+            *)
+                ai_warn "Could not safely bind the 'ods' command to this install. Add manually:"
+                ai "  sudo ln -sfn $INSTALL_DIR/ods-cli /usr/local/bin/ods"
+                ;;
+        esac
     fi
 fi
 
@@ -362,7 +395,7 @@ print("ok" if values.get("setupComplete") and has_model and prefs.get("defaultCh
     fi
 fi
 
-if command -v ods_readiness_summary >/dev/null 2>&1; then
+if ! $DRY_RUN && command -v ods_readiness_summary >/dev/null 2>&1; then
     _dashboard_url="http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
     {
         printf 'Dashboard|http://127.0.0.1:%s%s|%s|%s\n' \
@@ -397,24 +430,35 @@ if command -v ods_readiness_summary >/dev/null 2>&1; then
 fi
 
 echo ""
-signal "Broadcast stable. You're free now."
+if $DRY_RUN; then
+    signal "Plan simulated. No changes were made."
+else
+    signal "Broadcast stable. You're free now."
+fi
 echo ""
 DASHBOARD_PORT="${SERVICE_PORTS[dashboard]:-3001}"
 WEBUI_PORT="${SERVICE_PORTS[open-webui]:-3000}"
 OPENCLAW_PORT="${SERVICE_PORTS[openclaw]:-7860}"
 LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
 echo -e "${GRN}──────────────────────────────────────────────────────────────────────────────${NC}"
-echo -e "${BGRN}  YOUR ODS IS LIVE${NC}"
+if $DRY_RUN; then
+    echo -e "${BGRN}  DRY RUN COMPLETE — ODS IS NOT RUNNING${NC}"
+else
+    echo -e "${BGRN}  YOUR ODS IS LIVE${NC}"
+fi
 echo -e "${GRN}──────────────────────────────────────────────────────────────────────────────${NC}"
 echo ""
 echo -e "  ${BGRN}Dashboard${NC}    ${WHT}http://localhost:${DASHBOARD_PORT}${NC}"
 echo -e "  ${BGRN}Chat${NC}         ${WHT}http://localhost:${WEBUI_PORT}${NC}"
+[[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && \
+echo -e "  ${BGRN}Pixel${NC}        ${WHT}http://localhost:${DASHBOARD_PORT}/pixel${NC}  ${AMB}(default in Open WebUI too)${NC}"
 [[ "$ENABLE_HERMES" == "true" ]] && \
 echo -e "  ${BGRN}Hermes${NC}       ${WHT}http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}${NC}  ${AMB}(magic-link gated)${NC}"
 [[ "$ENABLE_OPENCLAW" == "true" ]] && \
 echo -e "  ${BGRN}OpenClaw${NC}     ${WHT}http://localhost:${OPENCLAW_PORT}${NC}"
 systemctl --user is-active opencode-web &>/dev/null && \
-echo -e "  ${BGRN}OpenCode${NC}     ${WHT}http://localhost:3003${NC}"
+[[ "${ENABLE_OPENCODE:-false}" == "true" ]] && \
+    echo -e "  ${BGRN}OpenCode${NC}     ${WHT}http://localhost:3003${NC}"
 echo ""
 if [[ -n "$LOCAL_IP" ]]; then
     _bind=$(grep "^BIND_ADDRESS=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || echo "127.0.0.1")
@@ -426,7 +470,11 @@ if [[ -n "$LOCAL_IP" ]]; then
     fi
 fi
 echo ""
-echo -e "  Start here → ${WHT}http://localhost:${DASHBOARD_PORT}${NC}"
+if $DRY_RUN; then
+    echo -e "  After a real install, start here → ${WHT}http://localhost:${DASHBOARD_PORT}${NC}"
+else
+    echo -e "  Start here → ${WHT}http://localhost:${DASHBOARD_PORT}${NC}"
+fi
 echo -e "  The Dashboard shows all services, GPU status, and quick links."
 echo ""
 echo -e "${GRN}──────────────────────────────────────────────────────────────────────────────${NC}"
@@ -441,7 +489,7 @@ if [[ -n "$SUMMARY_JSON_FILE" ]]; then
         PYTHON_CMD="python"
     fi
 
-    "$PYTHON_CMD" - "$SUMMARY_JSON_FILE" "$VERSION" "$INSTALL_DIR" "$TIER" "$TIER_NAME" "$GPU_BACKEND" "${BACKEND_SERVICE_NAME:-llama-server}" "$LLM_MODEL" "$COMPOSE_FLAGS" "$DRY_RUN" "$PREFLIGHT_REPORT_FILE" "${CAP_HARDWARE_CLASS_ID:-unknown}" "${CAP_HARDWARE_CLASS_LABEL:-Unknown}" <<'PY'
+    "$PYTHON_CMD" - "$SUMMARY_JSON_FILE" "$VERSION" "$INSTALL_DIR" "$TIER" "$TIER_NAME" "$GPU_BACKEND" "${BACKEND_SERVICE_NAME:-llama-server}" "$LLM_MODEL" "$COMPOSE_FLAGS" "$DRY_RUN" "$PREFLIGHT_REPORT_FILE" "${CAP_HARDWARE_CLASS_ID:-unknown}" "${CAP_HARDWARE_CLASS_LABEL:-Unknown}" "${PIXEL_AGENT_MODE:-hermes}" <<'PY'
 import json
 import os
 import pathlib
@@ -463,6 +511,7 @@ from datetime import datetime, timezone
     preflight_report,
     hw_class_id,
     hw_class_label,
+    default_agent,
 ) = sys.argv[1:]
 
 payload = {
@@ -475,6 +524,7 @@ payload = {
         "gpu_backend": gpu_backend,
         "backend_service": backend_service,
         "llm_model": llm_model,
+        "default_agent": default_agent,
         "compose_flags": compose_flags,
         "dry_run": dry_run == "true",
     },

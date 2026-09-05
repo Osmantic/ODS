@@ -52,7 +52,7 @@ from helpers import (
     get_disk_usage, dir_size_gb, get_model_info, get_bootstrap_status,
     get_uptime, get_cpu_metrics, get_ram_metrics,
     get_llama_metrics, get_loaded_model, get_llama_context_size,
-    _get_httpx_client,
+    _get_httpx_client, shutdown_service_health_client,
 )
 from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 from host_agent_client import (
@@ -74,6 +74,7 @@ from routers import (
     tailscale,
     usage,
     node,
+    pixel,
 )
 from settings import (
     _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text, _read_env_map_from_path,
@@ -1052,7 +1053,10 @@ async def _lifespan(app: FastAPI):
             await hermes_bridge.shutdown_pool()
         except Exception:
             logger.debug("hermes_bridge.shutdown_pool raised at app shutdown", exc_info=True)
-        await shutdown_agent_clients()
+        try:
+            await shutdown_agent_clients()
+        finally:
+            await shutdown_service_health_client()
 
 
 app = FastAPI(
@@ -1181,6 +1185,7 @@ app.include_router(talk.router)
 app.include_router(tailscale.router)
 app.include_router(usage.router)
 app.include_router(node.router)
+app.include_router(pixel.router)
 
 
 # ================================================================
@@ -1489,11 +1494,12 @@ async def _build_api_status() -> dict:
 
     model_data = None
     if model_info:
+        runtime_model_name = loaded_model or model_info.name
         model_data = {
-            "name": model_info.name,
-            "currentModel": model_info.name,
+            "name": runtime_model_name,
+            "currentModel": runtime_model_name,
             "configuredModel": model_info.name,
-            "loadedModel": loaded_model or model_info.name,
+            "loadedModel": runtime_model_name,
             "tokensPerSecond": llama_metrics_data.get("tokens_per_second") or None,
             "contextLength": context_size or model_info.context_length,
         }
@@ -1517,7 +1523,7 @@ async def _build_api_status() -> dict:
         "gpu": gpu_data, "services": services_data, "model": model_data,
         "bootstrap": bootstrap_data, "uptime": uptime,
         "version": app.version, "tier": tier,
-        "currentModel": configured_model_name,
+        "currentModel": loaded_model_name,
         "loadedModel": loaded_model_name,
         "configuredModel": configured_model_name,
         "cpu": cpu_metrics, "ram": ram_metrics,

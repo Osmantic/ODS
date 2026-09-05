@@ -67,6 +67,7 @@ export default function Models() {
     activationModeError,
     recommendationAlternatives,
     hermesMinimumContext,
+    pixelMinimumContext,
     loading,
     error,
     actionLoading,
@@ -420,6 +421,7 @@ export default function Models() {
                       canActivateModels={canActivateModels}
                       activationModeError={activationModeError}
                       hermesMinimumContext={hermesMinimumContext}
+                      pixelMinimumContext={pixelMinimumContext}
                       isCurrentModel={model.id === currentModel}
                       isLoading={pendingModelActions.includes(model.id)}
                       loadBusy={pendingModelActions.length > 0}
@@ -464,7 +466,7 @@ export default function Models() {
         <ModelActivationDialog
           model={activationConfigModel}
           gpu={gpu}
-          hermesMinimumContext={hermesMinimumContext}
+          pixelMinimumContext={pixelMinimumContext}
           isCurrentModel={activationConfigModel.id === currentModel}
           onCancel={() => setActivationConfigModel(null)}
           onConfirm={handleConfirmActivation}
@@ -786,6 +788,7 @@ function ModelTableRow({
   canActivateModels,
   activationModeError,
   hermesMinimumContext,
+  pixelMinimumContext,
   isCurrentModel,
   isLoading,
   loadBusy,
@@ -800,7 +803,7 @@ function ModelTableRow({
   const isLoaded = model.status === 'loaded' || isCurrentModel
   const isDownloaded = model.status === 'downloaded'
   const memory = getMemoryMeta(model, gpu)
-  const compatibility = getCompatibilityMeta(model, memory, hermesMinimumContext)
+  const compatibility = getCompatibilityMeta(model, memory, pixelMinimumContext)
   const speed = getSpeedDisplay(model)
   const tags = getModelTags(model, hermesMinimumContext)
   const iconTone = getIconTone(model, compatibility)
@@ -952,8 +955,6 @@ function PrimaryAction({
 
   if (isDownloaded) {
     const runDisabled = Boolean(runDisabledReason)
-    const directChatBlocked = isOpenAiChatBlocked(getOpenAiChatCompatibility(model))
-    const buttonLabel = directChatBlocked ? 'Chat Unsupported' : 'Run'
     return (
       <span className="inline-flex" title={runDisabledReason || `Run ${model.name}`}>
         <button
@@ -967,8 +968,8 @@ function PrimaryAction({
               : 'cursor-not-allowed border border-theme-border bg-theme-bg/45 text-theme-text-muted'
           }`}
         >
-          {directChatBlocked ? <AlertCircle size={13} /> : <Play size={13} />}
-          {buttonLabel}
+          <Play size={13} />
+          Run
         </button>
       </span>
     )
@@ -1081,7 +1082,7 @@ function DeleteModelDialog({ model, onCancel, onConfirm }) {
 function ModelActivationDialog({
   model,
   gpu,
-  hermesMinimumContext,
+  pixelMinimumContext,
   isCurrentModel,
   onCancel,
   onConfirm,
@@ -1098,7 +1099,21 @@ function ModelActivationDialog({
   const contextValid = Number.isSafeInteger(selectedContext)
     && selectedContext >= 1024
   const sameContext = contextValid && isCurrentModel && selectedContext === currentContext
-  const hermesReady = selectedContext >= Number(hermesMinimumContext || 65536)
+  const openAiChat = getOpenAiChatCompatibility(model)
+  const pixelAgent = getPixelAgentCompatibility(model)
+  const agentViability = getAgentViabilityCompatibility(model)
+  const pixelContextReady = selectedContext >= Number(pixelMinimumContext || 16384)
+  const appProfile = isOpenAiChatBlocked(openAiChat)
+    ? { label: 'Pixel adaptive', tone: 'text-theme-accent-light' }
+    : isAgentViabilityBlocked(pixelAgent)
+    ? { label: 'Pixel adaptive', tone: 'text-theme-accent-light' }
+    : isAgentViabilityBlocked(agentViability)
+      ? { label: 'Pixel adaptive', tone: 'text-theme-accent-light' }
+      : !pixelContextReady
+        ? { label: `Pixel compact · ${formatContext(selectedContext)}`, tone: 'text-amber-300' }
+        : isPixelAgentVerified(pixelAgent)
+          ? { label: 'Pixel verified', tone: 'text-emerald-400' }
+          : { label: 'Pixel adaptive', tone: 'text-theme-accent-light' }
   const memoryCapacity = Number(gpu?.vramTotal || 0)
   const exceedsMemory = selected?.fitsVram === false
   const exceedsDeclaredLimit = declaredLimit > 0 && selectedContext > declaredLimit
@@ -1221,8 +1236,8 @@ function ModelActivationDialog({
             />
             <ContextMetric
               label="App profile"
-              value={hermesReady ? 'Hermes ready' : 'Chat only'}
-              tone={hermesReady ? 'text-emerald-400' : 'text-amber-300'}
+              value={appProfile.label}
+              tone={appProfile.tone}
             />
           </div>
 
@@ -1445,10 +1460,6 @@ function getRunDisabledReason({
   if (!canActivateModels) {
     return activationModeError || 'The local model runtime is unavailable. Review runtime settings before running this model.'
   }
-  const openAiChat = getOpenAiChatCompatibility(model)
-  if (isOpenAiChatBlocked(openAiChat)) {
-    return openAiChat.reason || 'This model is not currently validated for direct local chat.'
-  }
   if (model.fitsVram !== true && !model.recommended) {
     const required = Number(model.estimatedRequired || model.vramRequired || 0)
     const total = Number(gpu?.vramTotal || 0)
@@ -1666,7 +1677,7 @@ function getMemoryMeta(model, gpu) {
   }
 }
 
-function getCompatibilityMeta(model, memory, hermesMinimumContext = 0) {
+function getCompatibilityMeta(model, memory, pixelMinimumContext = 0) {
   if (!model?.fitsVram) {
     const nearLimit = memory.total > 0 && memory.required <= memory.total * 1.08
     return {
@@ -1678,17 +1689,17 @@ function getCompatibilityMeta(model, memory, hermesMinimumContext = 0) {
   const openAiChat = getOpenAiChatCompatibility(model)
   if (isOpenAiChatBlocked(openAiChat)) {
     return {
-      label: 'Unavailable',
-      detail: 'Chat blocked',
-      tone: 'red',
+      label: 'Pixel adaptive',
+      detail: 'Capability varies',
+      tone: 'purple',
     }
   }
   const agentViability = getAgentViabilityCompatibility(model)
   if (isAgentViabilityBlocked(agentViability)) {
     return {
-      label: 'Direct chat only',
-      detail: 'Agent blocked',
-      tone: 'amber',
+      label: 'Pixel adaptive',
+      detail: 'Capability varies',
+      tone: 'purple',
     }
   }
   const appBlock = getBlockedAppCompatibility(model)
@@ -1699,18 +1710,33 @@ function getCompatibilityMeta(model, memory, hermesMinimumContext = 0) {
       tone: 'amber',
     }
   }
+  const pixelAgent = getPixelAgentCompatibility(model)
+  if (isAgentViabilityBlocked(pixelAgent)) {
+    return {
+      label: 'Pixel adaptive',
+      detail: 'Available to use',
+      tone: 'purple',
+    }
+  }
   const contextLength = Number(model?.contextLength || 0)
-  const minimumContext = Number(hermesMinimumContext || 0)
+  const minimumContext = Number(pixelMinimumContext || 0)
   if (minimumContext > 0 && contextLength > 0 && contextLength < minimumContext) {
     return {
-      label: 'Direct chat only',
-      detail: `Needs ${formatContext(minimumContext)}`,
+      label: 'Pixel compact',
+      detail: `${formatContext(contextLength)} context`,
       tone: 'amber',
+    }
+  }
+  if (!isPixelAgentVerified(pixelAgent)) {
+    return {
+      label: 'Pixel adaptive',
+      detail: 'Available to use',
+      tone: 'purple',
     }
   }
   const talkCompatibility = getHermesTalkCompatibility(model)
   if (isHermesTalkVerified(talkCompatibility)) {
-    return { label: 'Talk ready', detail: model.recommended || model.status === 'loaded' ? 'Best' : 'Verified', tone: 'green' }
+    return { label: 'Pixel verified', detail: model.recommended || model.status === 'loaded' ? 'Best' : 'Verified', tone: 'green' }
   }
   if (model.recommended || model.status === 'loaded') {
     return { label: model.fitLabel || 'Fits GPU', detail: 'Best', tone: 'green' }
@@ -1729,6 +1755,10 @@ function getOpenAiChatCompatibility(model) {
 
 function getAgentViabilityCompatibility(model) {
   return model?.appCompatibility?.agentViability || getHermesTalkCompatibility(model)
+}
+
+function getPixelAgentCompatibility(model) {
+  return model?.appCompatibility?.pixelAgent || null
 }
 
 function getBlockedAppCompatibility(model) {
@@ -1779,6 +1809,7 @@ const CORE_MODEL_COMPATIBILITY_KEYS = new Set([
   'agentViability',
   'hermesTalk',
   'openaiChat',
+  'pixelAgent',
 ])
 
 function isHermesTalkBlocked(compatibility) {
@@ -1789,6 +1820,11 @@ function isHermesTalkBlocked(compatibility) {
 function isHermesTalkVerified(compatibility) {
   const status = String(compatibility?.status || '').toLowerCase()
   return ['supported', 'verified'].includes(status)
+}
+
+function isPixelAgentVerified(compatibility) {
+  const status = String(compatibility?.status || '').toLowerCase()
+  return ['pixel_agent_viable', 'supported', 'verified'].includes(status)
 }
 
 function getSpeedDisplay(model) {

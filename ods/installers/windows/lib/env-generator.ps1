@@ -346,12 +346,19 @@ function Write-WindowsODSLemonadeLiteLlmConfig {
         "--gpu-backend", "amd",
         "--lemonade-model-id", $ModelId,
         "--lemonade-api-base", $lemonadeApiBase,
-        "--litellm-key", $ApiKey,
         "--output-root", $InstallDir,
         "--write"
     )
-    $renderOutput = & $python.FilePath @renderArgs 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $previousRendererKey = [Environment]::GetEnvironmentVariable("ODS_RENDER_LITELLM_KEY", "Process")
+    try {
+        [Environment]::SetEnvironmentVariable("ODS_RENDER_LITELLM_KEY", $ApiKey, "Process")
+        $renderOutput = & $python.FilePath @renderArgs 2>&1
+        $renderExitCode = $LASTEXITCODE
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable("ODS_RENDER_LITELLM_KEY", $previousRendererKey, "Process")
+    }
+    if ($renderExitCode -ne 0) {
         throw "Runtime config renderer failed for Windows Lemonade route: $($renderOutput -join "`n")"
     }
 
@@ -684,14 +691,14 @@ function New-ODSEnv {
     $difySecretKey    = Get-EnvOrNew "DIFY_SECRET_KEY"           (New-SecureHex -Bytes 32)
     $qdrantApiKey     = Get-EnvOrNew "QDRANT_API_KEY"            (New-SecureHex -Bytes 32)
     $opencodePassword = Get-EnvOrNew "OPENCODE_SERVER_PASSWORD"  (New-SecureBase64 -Bytes 16)
-    $switchboardModeDefault = if ([string]::IsNullOrWhiteSpace($SwitchboardMode)) { "observe" } else { $SwitchboardMode.Trim().ToLowerInvariant() }
+    $switchboardModeDefault = if ([string]::IsNullOrWhiteSpace($SwitchboardMode)) { "enabled" } else { $SwitchboardMode.Trim().ToLowerInvariant() }
     if ($switchboardModeDefault -notin @("legacy", "observe", "enabled")) {
-        $switchboardModeDefault = "observe"
+        $switchboardModeDefault = "enabled"
     }
     $switchboardMode = Get-EnvOrNew "ODS_MODEL_SWITCHBOARD" $switchboardModeDefault
     $switchboardMode = $switchboardMode.Trim().ToLowerInvariant()
     if ($switchboardMode -notin @("legacy", "observe", "enabled")) {
-        $switchboardMode = "observe"
+        $switchboardMode = "enabled"
     }
     $cpuBudget = Get-LlamaCpuBudget -GpuBackend $(if ($GpuBackend -eq "none") { "cpu" } else { $GpuBackend })
     $llamaCpuLimit = Select-AutoCpuValue -Key "LLAMA_CPU_LIMIT" -Detected $cpuBudget.Limit
@@ -915,6 +922,8 @@ ODS_AGENT_HOST=$(Get-EnvOrNew "ODS_AGENT_HOST" "host.docker.internal")
 # The dashboard-api container must call the host agent over Docker Desktop's
 # host gateway. Bearer auth still protects every host-agent endpoint.
 ODS_AGENT_BIND=$(Get-EnvOrNew "ODS_AGENT_BIND" "0.0.0.0")
+# Docker Desktop presents host-owned lifecycle secrets through its root group.
+REMOTE_PROVIDER_DATA_GID=0
 
 #=== LLM Backend Mode ===
 ODS_MODE=$effectiveODSMode
@@ -1211,6 +1220,8 @@ search:
     - html
     - json
 engines:
+  - name: bing
+    disabled: false
   - name: duckduckgo
     disabled: false
   - name: google

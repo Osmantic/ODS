@@ -591,6 +591,18 @@ def test_lifecycle_configure_operation_is_redacted_and_typed() -> None:
     assert_true(operation["schema"] == LIFECYCLE_OPERATION_SCHEMA, "lifecycle schema drifted")
     assert_true(operation["action"] == "configure", "configure action drifted")
     assert_true(operation["route"]["provider"]["baseUrl"] == "https://gpu.example.test/v1", "base URL not normalized")
+    assert_true(
+        operation["route"]["provider"]["contextLength"] == 32768,
+        "default remote-provider context drifted",
+    )
+    assert_true(
+        operation["route"]["provider"]["maxTokens"] == 4096,
+        "default remote-provider output limit drifted",
+    )
+    assert_true(
+        operation["route"]["provider"]["reasoning"] is False,
+        "default remote-provider reasoning contract drifted",
+    )
     assert_true(operation["writes"]["routingState"] is True, "configure must write routing state")
     assert_true(operation["writes"]["providerSecret"] is True, "configure must write provider secret")
     assert_true(operation["writes"]["removesSecrets"] is False, "configure must not delete secrets")
@@ -663,6 +675,11 @@ def test_lifecycle_test_disable_and_remove_write_intent() -> None:
     assert_true(disabled["writes"]["routingState"] is True, "disable must write routing state")
     assert_true(disabled["writes"]["removesSecrets"] is False, "disable must preserve secrets")
 
+    enabled = plan_lifecycle_operation({"action": "enable"})
+    assert_true(enabled["route"]["enabled"] is False, "enable planning must not expose saved route metadata")
+    assert_true(enabled["writes"]["routingState"] is True, "enable must declare a route-state write")
+    assert_true(enabled["writes"]["removesSecrets"] is False, "enable must reuse secret custody")
+
     removed = plan_lifecycle_operation({"action": "remove"})
     assert_true(removed["route"]["enabled"] is False, "remove must produce a disabled public route")
     assert_true(removed["writes"]["routingState"] is False, "remove should delete, not rewrite, route state")
@@ -725,6 +742,26 @@ def test_lifecycle_rejects_unsafe_or_secret_public_inputs() -> None:
         "configure accepted a missing provider secret",
     )
     assert_true("secrets.apiKey" in detail, "missing API key failure should name secrets.apiKey")
+    for field, value in (
+        ("contextLength", 8192),
+        ("maxTokens", 50000),
+        ("reasoning", "yes"),
+    ):
+        assert_raises_lifecycle_error(
+            lambda field=field, value=value: plan_lifecycle_operation(
+                {
+                    "action": "configure",
+                    "provider": {
+                        "transport": "direct",
+                        "baseUrl": "https://gpu.example.test/v1",
+                        "model": "qwen/remote:latest",
+                        field: value,
+                    },
+                    "secrets": {"apiKey": "unit-test-provider-token"},
+                }
+            ),
+            f"invalid provider.{field} accepted",
+        )
     assert_raises_lifecycle_error(
         lambda: plan_lifecycle_operation({"action": "rotate"}),
         "unsupported lifecycle action accepted",

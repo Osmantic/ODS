@@ -1,0 +1,52 @@
+[Unit]
+Description=ODS Pixel loopback workspace preview
+After=openclaw-gateway.service
+Requires=openclaw-gateway.service
+
+[Service]
+Type=simple
+User=__PIXEL_SERVICE_USER__
+Group=ods-pixel
+ExecStart=/usr/bin/python3 /usr/local/libexec/ods-pixel-workspace-preview.py serve /run/ods-pixel-preview/control.sock "__PIXEL_WORKSPACE__" /var/lib/ods-pixel-preview __PIXEL_SERVICE_USER__ __PIXEL_PREVIEW_PORT__
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=30
+RuntimeDirectory=ods-pixel-preview
+RuntimeDirectoryMode=0750
+StateDirectory=ods-pixel-preview
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=tmpfs
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ProtectProc=invisible
+ProcSubset=pid
+PrivateMounts=true
+BindReadOnlyPaths="__PIXEL_WORKSPACE__"
+ReadOnlyPaths=/usr/local/libexec/ods-pixel-workspace-preview.py
+ReadWritePaths=/run/ods-pixel-preview /var/lib/ods-pixel-preview
+IPAddressDeny=any
+IPAddressAllow=localhost
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+MemoryMax=256M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

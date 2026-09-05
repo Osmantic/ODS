@@ -24,6 +24,22 @@ You should receive a text response within a few seconds. If you see an error, ch
 
 Open your browser and navigate to the address shown at the end of installation (default: `http://localhost:3000`). The Open WebUI chat interface should load and let you send a message.
 
+If the installer selected Pixel, confirm the default model is `pixel/default`,
+send a real message, then open `http://localhost:3001/pixel` and send another
+message through the dedicated Dashboard app. Ask Pixel to check ODS status and
+confirm it uses `pixel_ods_status` without exposing credentials or internal
+paths. Also check the private path:
+
+```bash
+systemctl is-active openclaw-gateway.service pixel-ingress.service
+sudo -u "$USER" curl --unix-socket /run/ods-pixel/pixel-ingress.sock \
+  http://localhost/health
+docker inspect --format '{{.State.Health.Status}}' ods-pixel-edge
+```
+
+Expected results are two `active` lines, `{"status":"ok"}`, and `healthy`.
+See [PIXEL.md](PIXEL.md) for rollback and the full qualification gate.
+
 ## 4. GPU verification
 
 **NVIDIA** — GPU utilisation, VRAM, and temperature appear automatically in `ods status`.

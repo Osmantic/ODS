@@ -1,7 +1,7 @@
 """Typed remote-provider lifecycle operation planning.
 
 This module is intentionally side-effect free.  It gives the host-agent and
-Dashboard/API one shared contract for configure/test/disable/remove before
+Dashboard/API one shared contract for configure/test/enable/disable/remove before
 later slices add file mutation and live probes.
 """
 
@@ -20,17 +20,19 @@ from .policy import (
 
 
 LIFECYCLE_OPERATION_SCHEMA = "ods.remote-provider-lifecycle-operation.v1"
-LIFECYCLE_ACTIONS = frozenset({"configure", "test", "disable", "remove"})
+LIFECYCLE_ACTIONS = frozenset({"configure", "test", "enable", "disable", "remove"})
 
 _ACTION_PHASE = {
     "configure": "stage",
     "test": "validate",
+    "enable": "stage",
     "disable": "commit",
     "remove": "commit",
 }
 _ACTION_DETAIL = {
     "configure": "remote provider route staged",
     "test": "remote provider route validated",
+    "enable": "saved remote provider route requested for reactivation",
     "disable": "remote provider route disabled",
     "remove": "remote provider route removed",
 }
@@ -45,6 +47,8 @@ _SECRET_FIELD_TO_REF = {
 }
 _SINGLE_LINE_SECRET_FIELDS = {"apiKey", "peerToken"}
 _SSH_SECRET_FIELDS = {"sshPrivateKey", "sshKnownHosts"}
+_DEFAULT_CONTEXT_LENGTH = 32768
+_DEFAULT_MAX_TOKENS = 4096
 
 
 class LifecycleError(PolicyError):
@@ -142,6 +146,24 @@ def _route_env(payload: Mapping[str, Any]) -> dict[str, str]:
     return env
 
 
+def _provider_runtime_contract(provider: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the model limits Pixel and other agent consumers must know."""
+    context_length = provider.get("contextLength", _DEFAULT_CONTEXT_LENGTH)
+    if type(context_length) is not int or not 16384 <= context_length <= 10_000_000:
+        raise LifecycleError("provider.contextLength must be an integer from 16384 to 10000000")
+    max_tokens = provider.get("maxTokens", min(_DEFAULT_MAX_TOKENS, context_length // 8))
+    if type(max_tokens) is not int or not 1 <= max_tokens <= context_length:
+        raise LifecycleError("provider.maxTokens must be an integer within the context window")
+    reasoning = provider.get("reasoning", False)
+    if type(reasoning) is not bool:
+        raise LifecycleError("provider.reasoning must be a boolean")
+    return {
+        "contextLength": context_length,
+        "maxTokens": max_tokens,
+        "reasoning": reasoning,
+    }
+
+
 def _disabled_route(payload: Mapping[str, Any]) -> dict[str, Any]:
     return plan_route(
         {
@@ -199,7 +221,7 @@ def _secret_refs_for_action(
 
 def _write_plan(action: str, secret_refs: Mapping[str, str]) -> dict[str, bool]:
     return {
-        "routingState": action in {"configure", "disable"},
+        "routingState": action in {"configure", "enable", "disable"},
         "providerSecret": action == "configure" and "apiKey" in secret_refs,
         "peerToken": action == "configure" and "peerToken" in secret_refs,
         "sshIdentity": action == "configure" and "sshPrivateKey" in secret_refs,
@@ -224,7 +246,12 @@ def plan_lifecycle_operation(
         raise LifecycleError(f"remote-provider lifecycle action must be one of: {allowed}")
 
     if requested_action in {"configure", "test"}:
+        provider = _mapping(payload.get("provider"), "provider")
         route = plan_route(_route_env(payload))
+        route_provider = route.get("provider")
+        if not isinstance(route_provider, dict):
+            raise LifecycleError("remote-provider route is missing provider metadata")
+        route_provider.update(_provider_runtime_contract(provider))
         transport = str(route.get("transport") or "")
     else:
         route = _disabled_route(payload)

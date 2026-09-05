@@ -33,6 +33,14 @@ features:
 """
 
 
+def test_bundled_llama_server_is_discoverable_on_cpu_fallback():
+    manifest_path = Path(__file__).resolve().parents[2] / "llama-server" / "manifest.yaml"
+    manifest = config.yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+
+    assert "cpu" in manifest["service"]["gpu_backends"]
+    assert all("cpu" in feature["gpu_backends"] for feature in manifest["features"])
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
@@ -140,9 +148,24 @@ class TestHostAgentResolution:
     def test_resolve_agent_host_uses_gateway_inside_container(self, monkeypatch):
         monkeypatch.delenv("ODS_AGENT_HOST", raising=False)
         monkeypatch.setattr(config, "_running_inside_container", lambda: True)
+        monkeypatch.setattr(config, "_running_under_wsl", lambda: False)
         monkeypatch.setattr(config, "_detect_container_default_gateway", lambda: "172.18.0.1")
 
         assert config._resolve_agent_host() == "172.18.0.1"
+
+    def test_resolve_agent_host_uses_desktop_route_under_wsl(self, monkeypatch):
+        monkeypatch.delenv("ODS_AGENT_HOST", raising=False)
+        monkeypatch.setattr(config, "_running_inside_container", lambda: True)
+        monkeypatch.setattr(config, "_running_under_wsl", lambda: True)
+        monkeypatch.setattr(
+            config,
+            "_detect_container_default_gateway",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("WSL must not select Docker Desktop's compose gateway")
+            ),
+        )
+
+        assert config._resolve_agent_host() == "host.docker.internal"
 
     def test_resolve_agent_host_falls_back_outside_container(self, monkeypatch):
         monkeypatch.delenv("ODS_AGENT_HOST", raising=False)

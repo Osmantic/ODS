@@ -112,6 +112,24 @@ exit 1
 FAKE_DOCKER
 chmod 700 "$FAKE_BIN/docker"
 
+cat > "$FAKE_BIN/uname" <<'FAKE_UNAME'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+    -s) printf 'Linux\n' ;;
+    -r)
+        if [[ "${FAKE_WSL:-false}" == "true" ]]; then
+            printf '6.6.87.2-microsoft-standard-WSL2\n'
+        else
+            printf '6.8.0-native\n'
+        fi
+        ;;
+    -m) printf 'x86_64\n' ;;
+    *) /usr/bin/uname "$@" ;;
+esac
+FAKE_UNAME
+chmod 700 "$FAKE_BIN/uname"
+
 if ! command -v jq >/dev/null 2>&1; then
     cat > "$FAKE_BIN/jq" <<'FAKE_JQ'
 #!/usr/bin/env python
@@ -193,6 +211,25 @@ grep -qx 'Authorization: Bearer test-agent-key' "$CAPTURE_DIR/auth-header"
 grep -qx 'LLM_MODEL=old-model' "$INSTALL_DIR/.env"
 grep -qx 'GGUF_FILE=old-model.gguf' "$INSTALL_DIR/.env"
 grep -qx 'MAX_CONTEXT=2048' "$INSTALL_DIR/.env"
+
+# WSL must mirror the host agent's loopback default. Docker Desktop forwards
+# host.docker.internal to that listener; the compose gateway is not locally
+# bindable and made `ods agent status` and model activation report false
+# unavailability on a healthy WSL install.
+rm -f "$CAPTURE_DIR/urls"
+wsl_output="$({
+    ODS_HOME="$INSTALL_DIR" \
+    CAPTURE_DIR="$CAPTURE_DIR" \
+    FAKE_DOCKER_GATEWAY=172.31.0.1 \
+    FAKE_WSL=true \
+    HOST_ARCH=amd64 \
+    NO_COLOR=1 \
+    PATH="$FAKE_BIN:$PATH" \
+        "$ROOT_DIR/ods-cli" model swap T1
+} 2>&1)"
+grep -q 'Model activated everywhere: qwen3.5-9b' <<< "$wsl_output"
+grep -qx 'http://127.0.0.1:7710/health' "$CAPTURE_DIR/urls"
+grep -qx 'http://127.0.0.1:7710/v1/model/activate' "$CAPTURE_DIR/urls"
 
 # Explicit quoted IPv6 binds must become a valid loopback URL rather than a
 # wildcard or a value containing quote characters. The last duplicate value

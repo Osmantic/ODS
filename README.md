@@ -252,7 +252,8 @@ See the [macOS Quickstart](ods/docs/MACOS-QUICKSTART.md) for details.
 - **Kokoro** — text-to-speech
 
 ### Agents & Automation
-- **Hermes Agent** — default local-first autonomous/browser agent with memory, skills, and a magic-link-gated proxy
+- **Pixel** — preferred default agent on qualified Ubuntu 24.04/Debian 12 systemd hosts after separate written license authorization; appears as `pixel/default` in Open WebUI and as a Dashboard toolbar app
+- **Hermes Agent** — portable default and one-command rollback when Pixel is unavailable, unlicensed, or disabled; includes memory, skills, and a magic-link-gated proxy
 - **OpenClaw** — deprecated legacy autonomous agent, still opt-in during the migration window
 - **n8n** — workflow automation with 400+ integrations (Slack, email, databases, APIs)
 - **APE** — Agent Policy Engine for auditing and governing autonomous tool calls
@@ -283,7 +284,7 @@ The installer detects your GPU and first assigns a deterministic hardware tier. 
 
 `MODEL_PROFILE=qwen` is the default non-Gemma catalog profile, so the effective pick can be Qwen, Phi, or DeepSeek depending on what fits best. `MODEL_PROFILE=gemma4` forces Gemma 4 where available, and `MODEL_PROFILE=auto` uses Gemma 4 on NVIDIA, Apple Silicon, and Intel Arc tiers. Override tier selection with `./install.sh --tier 3`; override the model family with `MODEL_PROFILE=gemma4 ./install.sh` or `MODEL_PROFILE=auto ./install.sh`.
 
-When Hermes is enabled, which is the default agent path, installers keep the first-run bootstrap model at a 64K context floor and promote the full local model context to 128K where the selected model supports it. That avoids Hermes's hard 64K minimum while preserving the under-2-minute first chat experience. The examples below are current catalog-selector outputs for common hardware envelopes; exact installs can differ with detected VRAM/RAM, host architecture, existing downloads, or explicit profile overrides. Throughput still needs a local benchmark after first launch.
+When the Hermes fallback is enabled, installers keep the first-run bootstrap model at a 64K context floor and promote the full local model context to 128K where the selected model supports it. That avoids Hermes's hard 64K minimum while preserving the under-2-minute first chat experience. The examples below are current catalog-selector outputs for common hardware envelopes; exact installs can differ with detected VRAM/RAM, host architecture, existing downloads, or explicit profile overrides. Throughput still needs a local benchmark after first launch.
 
 ### NVIDIA
 
@@ -439,7 +440,7 @@ Other tools get you part of the way. ODS gets you the whole way.
 | One-command install | Everything, auto-configured | LLM + chat only | LLM only |
 | Hardware auto-detect + model selection | NVIDIA + AMD Strix Halo + Apple Silicon + Intel Arc + CPU/cloud fallback | No | No |
 | AMD APU unified memory support | Platform-specific accelerated backend, selected by installer | Partial (Vulkan) | No |
-| Autonomous AI agents | Hermes Agent default; OpenClaw legacy opt-in | No | No |
+| Autonomous AI agents | Pixel preferred on qualified/licensed hosts; Hermes fallback; OpenClaw legacy opt-in | No | No |
 | Workflow automation | n8n (400+ integrations) | No | No |
 | Voice (STT + TTS) | Whisper + Kokoro | No | No |
 | Image generation | ComfyUI | No | No |
@@ -455,6 +456,7 @@ Other tools get you part of the way. ODS gets you the whole way.
 |---|---|
 | [Quickstart](ods/QUICKSTART.md) | Step-by-step install guide with troubleshooting |
 | [Docs Index](ods/docs/README.md) | Maintained map for operators, contributors, and reviewers |
+| [Pixel Integration](ods/docs/PIXEL.md) | Eligibility, licensing boundary, architecture, install, security, tools, rollback, and qualification |
 | [Build On ODS](ods/docs/BUILD-ON-ODS-SERVER.md) | Forking, custom editions, extension templates, and downstream validation |
 | [Forkability](ods/docs/FORKABILITY.md) | How to fork, audit, customize, and independently operate ODS |
 | [Maintainer Runbook](ods/docs/MAINTAINER_RUNBOOK.md) | Release, rollback, validation, and operator continuity guidance for maintainers and forks |

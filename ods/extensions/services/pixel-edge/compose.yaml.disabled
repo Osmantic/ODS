@@ -1,0 +1,79 @@
+# Disabled by default: the qualified Linux installer enables this fragment
+# only after Pixel licensing, host systemd, and UDS prerequisites pass.
+services:
+  pixel-edge:
+    build:
+      context: ./extensions/services/pixel-edge
+      dockerfile: Dockerfile
+    image: ods-pixel-edge:local
+    container_name: ods-pixel-edge
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - default
+    environment:
+      - PIXEL_OPENWEBUI_KEY=${PIXEL_OPENWEBUI_KEY:?Set PIXEL_OPENWEBUI_KEY in .env}
+      - PIXEL_EDGE_PORT_INTERNAL=9595
+      - PIXEL_INGRESS_SOCKET=/pixel-runtime/pixel-ingress.sock
+      - PIXEL_PREVIEW_PROXY_KEY=${DASHBOARD_API_KEY:?Set DASHBOARD_API_KEY in .env}
+      - PIXEL_PREVIEW_SOCKET=/pixel-preview-runtime/http.sock
+    group_add:
+      - "${PIXEL_INGRESS_GID:?Set PIXEL_INGRESS_GID in .env}"
+    volumes:
+      - "${PIXEL_INGRESS_RUNTIME_DIR:?Set PIXEL_INGRESS_RUNTIME_DIR in .env}:/pixel-runtime:ro"
+      - "${PIXEL_PREVIEW_RUNTIME_DIR:?Set PIXEL_PREVIEW_RUNTIME_DIR in .env}:/pixel-preview-runtime:ro"
+    tmpfs:
+      - /tmp:size=1M,noexec,nosuid,nodev,mode=1777
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.05'
+          memory: 32M
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9595/health')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  open-webui:
+    depends_on:
+      pixel-edge:
+        condition: service_healthy
+    environment:
+      ENABLE_OPENAI_API: "true"
+      OPENAI_API_BASE_URLS: "http://pixel-edge:9595/v1;${OPEN_WEBUI_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}/v1}"
+      OPENAI_API_KEYS: "${PIXEL_OPENWEBUI_KEY:?Set PIXEL_OPENWEBUI_KEY in .env};${OPEN_WEBUI_LLM_API_KEY:-}"
+      DEFAULT_MODELS: "pixel/default"
+      DEFAULT_PINNED_MODELS: "pixel/default"
+      DEFAULT_PROMPT_SUGGESTIONS: >-
+        [{"title":["Check ODS health","and explain what needs attention"],"content":"Check the current ODS status. Summarize what is healthy, identify anything degraded or stopped, and suggest the safest next action."},{"title":["Build something","and verify it in the workspace"],"content":"Help me build and verify something useful in your writable workspace. Start by asking what outcome I want if it is not clear."},{"title":["Research a topic","with exact public sources"],"content":"Research a public topic for me using current sources. Ask what topic and decision I need to make, then return a concise evidence-backed answer with exact source URLs."},{"title":["Plan a complex task","then carry it through safely"],"content":"Help me complete a multi-step task safely. Ask for the objective, then make a short plan and carry out the steps you can verify."}]
+      # Pixel owns the visible conversation. Keep any explicit query-generation
+      # task on the ordinary model without recursively agent-routing, but do
+      # not spend three extra local-model turns on cosmetic post-chat metadata.
+      TASK_MODEL_EXTERNAL: "${OPEN_WEBUI_TASK_MODEL:-${GGUF_FILE:-${LLM_MODEL:-default}}}"
+      ENABLE_TITLE_GENERATION: "false"
+      ENABLE_TAGS_GENERATION: "false"
+      ENABLE_FOLLOW_UP_GENERATION: "false"
+  # Dashboard API is a prerequisite for the host-side Pixel installation.
+  # Do not health-order it (or the dashboard) behind Pixel Edge: on a clean
+  # install the edge cannot become healthy until the later host-ingress step.
+  dashboard-api:
+    environment:
+      PIXEL_EDGE_URL: "http://pixel-edge:9595"
+      PIXEL_OPENWEBUI_KEY: "${PIXEL_OPENWEBUI_KEY:?Set PIXEL_OPENWEBUI_KEY in .env}"

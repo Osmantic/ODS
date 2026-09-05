@@ -101,6 +101,12 @@ jobs:
       - name: Tier Map Unit Tests
         run: bash tests/test-tier-map.sh
 
+      - name: Active Model Preservation Tests
+        run: python3 tests/test-preserve-active-model.py
+
+      - name: Pixel Agent Model Selection Tests
+        run: python3 tests/test-pixel-model-selector.py
+
       - name: Service Registry Tests
         run: bash tests/test-service-registry.sh
 
@@ -147,6 +153,12 @@ jobs:
 
       - name: CLI Enable Compose Reconciliation Tests
         run: bash tests/test-cli-enable-compose-reconciliation.sh
+
+      - name: CLI Link Refresh Tests
+        run: bash tests/test-cli-link-refresh.sh
+
+      - name: Installer Mode Preservation Tests
+        run: bash tests/test-installer-mode-preservation.sh
 
       - name: Windows Missing Service Hint Tests
         run: bash tests/test-windows-missing-service-hints.sh
@@ -219,9 +231,19 @@ jobs:
           bash tests/contracts/test-preflight-fixtures.sh
           bash tests/test-preflight-resolver-bug.sh
           bash tests/test-desktop-agent-host-env.sh
+          bash tests/test-pixel-uninstall.sh
           python3 tests/contracts/test-network-exposure-contracts.py
           python3 tests/contracts/test-remote-provider-egress-policy.py
           python3 tests/contracts/test-remote-provider-egress-service.py
+
+      - name: Pixel Default Agent Contract Tests
+        run: |
+          bash tests/test-pixel-integration.sh
+          bash tests/test-pixel-host-install.sh
+          bash tests/test-pixel-compose-wiring.sh
+          python3 tests/test_pixel_timeout_contract.py
+          python3 -m unittest -v extensions/services/pixel-agent/tests/test_artifact_promoter.py
+          node --test extensions/services/pixel-agent/tests/*.test.mjs
 
       - name: Linux install preflight tests
         run: |

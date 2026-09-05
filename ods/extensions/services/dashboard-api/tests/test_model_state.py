@@ -157,6 +157,30 @@ class TestStateModule:
              {"catalogId": "M", "runtimeModelId": "M.gguf", "backendKind": "lemonade"}),
             ({"LLM_MODEL": "native-model"},
              {"catalogId": "native-model", "runtimeModelId": "native-model", "backendKind": "llama-server"}),
+            ({
+                "GPU_BACKEND": "cpu",
+                "LLM_BACKEND": "lemonade",
+                "AMD_INFERENCE_RUNTIME_MODE": "external-lemonade",
+                "LEMONADE_EXTERNAL": "true",
+                "LEMONADE_MODEL": "Qwen3.6-35B-A3B-GGUF",
+                "LLM_MODEL": "qwen3.5-9b",
+                "GGUF_FILE": "Qwen3.5-9B-Q4_K_M.gguf",
+            }, {
+                "catalogId": "Qwen3.6-35B-A3B-GGUF",
+                "runtimeModelId": "Qwen3.6-35B-A3B-GGUF",
+                "backendKind": "lemonade",
+            }),
+            ({
+                "LLM_BACKEND": "lemonade",
+                "AMD_INFERENCE_MANAGED": "off",
+                "LEMONADE_MODEL": "portable-model",
+                "LLM_MODEL": "stale-model",
+                "GGUF_FILE": "stale.gguf",
+            }, {
+                "catalogId": "portable-model",
+                "runtimeModelId": "portable-model",
+                "backendKind": "lemonade",
+            }),
         ],
     )
     def test_migrate_env_forms(self, env, expected):
@@ -449,6 +473,125 @@ class TestObserveHook:
             "identity": "old-model.gguf",
             "completion": True,
         }
+
+    def test_external_lemonade_initial_route_ignores_stale_local_identity(
+        self, tmp_path, monkeypatch
+    ):
+        import test_model_activate as tma
+
+        install_dir = tma._write_model_activation_fixture(tmp_path)[0]
+        env_path = install_dir / ".env"
+        env_path.write_text(
+            "\n".join([
+                "ODS_MODE=lemonade",
+                "GPU_BACKEND=cpu",
+                "LLM_BACKEND=lemonade",
+                "AMD_INFERENCE_RUNTIME=lemonade",
+                "AMD_INFERENCE_RUNTIME_MODE=external-lemonade",
+                "AMD_INFERENCE_MANAGED=false",
+                "LEMONADE_EXTERNAL=true",
+                "LEMONADE_BASE_URL=http://172.19.224.1:8080",
+                "LEMONADE_API_BASE_PATH=/api/v1",
+                "LEMONADE_MODEL=Qwen3.6-35B-A3B-GGUF",
+                "LLM_MODEL=qwen3.5-9b",
+                "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf",
+                "CTX_SIZE=65536",
+                "",
+            ]),
+            encoding="utf-8",
+        )
+        state_path = install_dir / "data" / "model-state.json"
+        env = tma._mod.load_env(env_path)
+        reconstructed = sb.initialize_if_missing(state_path, env)
+        assert reconstructed["active"]["catalogId"] == "Qwen3.6-35B-A3B-GGUF"
+        assert reconstructed["active"]["backend"]["kind"] == "lemonade"
+
+        readiness_calls = []
+
+        def readiness(*_args, **kwargs):
+            readiness_calls.append(kwargs)
+            return {
+                "identity": "Qwen3.6-35B-A3B-GGUF",
+                "contextLength": 65536,
+                "contextVerified": True,
+                "verifiedAt": "2026-09-04T00:00:00Z",
+            }
+
+        monkeypatch.setattr(tma._mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(tma._mod, "_wait_for_model_readiness", readiness)
+
+        assert tma._mod._publish_verified_initial_switchboard_route(
+            reason="external-test", attempts=1, initial_delay=0, interval=0
+        ) is True
+        assert readiness_calls[0]["model_id"] == "Qwen3.6-35B-A3B-GGUF"
+        assert readiness_calls[0]["gguf_file"] == "Qwen3.6-35B-A3B-GGUF"
+        assert readiness_calls[0]["llm_model_name"] == "Qwen3.6-35B-A3B-GGUF"
+        assert readiness_calls[0]["lemonade_model_id"] == "Qwen3.6-35B-A3B-GGUF"
+
+        doc, errors = sb.read_state(state_path)
+        assert errors == [] and doc is not None
+        assert doc["active"]["catalogId"] == "Qwen3.6-35B-A3B-GGUF"
+        assert doc["active"]["runtimeModelId"] == "Qwen3.6-35B-A3B-GGUF"
+        assert doc["active"]["backend"] == {
+            "kind": "lemonade",
+            "endpointId": "lemonade-default",
+            "nativeRoute": "Qwen3.6-35B-A3B-GGUF",
+        }
+
+    @pytest.mark.parametrize(
+        "key,new_value",
+        [
+            ("GPU_BACKEND", "amd"),
+            ("AMD_INFERENCE_MANAGED", "true"),
+        ],
+    )
+    def test_external_initial_route_discards_proof_after_runtime_contract_changes(
+        self, tmp_path, monkeypatch, key, new_value
+    ):
+        import test_model_activate as tma
+
+        install_dir = tma._write_model_activation_fixture(tmp_path)[0]
+        env_path = install_dir / ".env"
+        original_values = {
+            "ODS_MODE": "lemonade",
+            "GPU_BACKEND": "cpu",
+            "LLM_BACKEND": "lemonade",
+            "AMD_INFERENCE_RUNTIME": "lemonade",
+            "AMD_INFERENCE_RUNTIME_MODE": "external-lemonade",
+            "AMD_INFERENCE_MANAGED": "false",
+            "LEMONADE_EXTERNAL": "true",
+            "LEMONADE_BASE_URL": "http://172.19.224.1:8080",
+            "LEMONADE_MODEL": "portable-model",
+            "CTX_SIZE": "65536",
+        }
+        original = "".join(f"{name}={value}\n" for name, value in original_values.items())
+        env_path.write_text(original, encoding="utf-8")
+        state_path = install_dir / "data" / "model-state.json"
+        sb.initialize_if_missing(state_path, tma._mod.load_env(env_path))
+
+        def readiness(*_args, **_kwargs):
+            changed_values = dict(original_values)
+            changed_values[key] = new_value
+            env_path.write_text(
+                "".join(f"{name}={value}\n" for name, value in changed_values.items()),
+                encoding="utf-8",
+            )
+            return {
+                "identity": "portable-model",
+                "contextLength": 65536,
+                "contextVerified": True,
+                "verifiedAt": "2026-09-04T00:00:00Z",
+            }
+
+        monkeypatch.setattr(tma._mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(tma._mod, "_wait_for_model_readiness", readiness)
+
+        assert tma._mod._publish_verified_initial_switchboard_route(
+            reason="runtime-race-test", attempts=1, initial_delay=0, interval=0
+        ) is False
+        doc, errors = sb.read_state(state_path)
+        assert errors == [] and doc is not None
+        assert doc["active"]["reconstructed"] is True
 
     def test_initial_reconstructed_state_stays_unroutable_without_proof(
         self, tmp_path, monkeypatch
