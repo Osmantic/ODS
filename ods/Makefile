@@ -48,6 +48,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-ods-doctor-rootless-subid.sh
 	@echo "=== Docker rootless bind-mount ownership ==="
 	@bash tests/test-rootless-docker-ownership.sh
+	@bash tests/test-cli-status-docker-error.sh
 	@echo ""
 	@echo "=== AMD/Lemonade contracts ==="
 	@bash tests/contracts/test-amd-lemonade-contracts.sh
