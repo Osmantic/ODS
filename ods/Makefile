@@ -87,6 +87,7 @@ test: ## Run unit and contract tests
 	@echo "=== restore refuses empty backup config ==="
 	@bash tests/test-restore-empty-config.sh
 	@bash tests/test-lifecycle-prompts-noninteractive.sh
+	@bash tests/test-restore-safety-ux.sh
 	@echo ""
 	@echo "=== atomic .env writes ==="
 	@bash tests/test-atomic-env-writes.sh
