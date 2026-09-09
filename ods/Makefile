@@ -30,6 +30,9 @@ test: ## Run unit and contract tests
 	@bash tests/test-hermes-slash-worker-prune.sh
 	@python3 tests/contracts/test-hermes-worker-guardrails.py
 	@echo ""
+	@echo "=== Extension library workflows ==="
+	@python3 tests/contracts/test-workflow-library-contracts.py
+	@echo ""
 	@echo "=== Installer contracts ==="
 	@bash tests/contracts/test-installer-contracts.sh
 	@bash tests/test-external-services.sh
