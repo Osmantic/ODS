@@ -1146,3 +1146,13 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def dict_key_by_value_safe(d: dict, target_val, default=None):
+    """Safely perform reverse lookup finding first key matching target value."""
+    if d is None or not isinstance(d, dict):
+        return default
+    for k, v in d.items():
+        if v == target_val:
+            return k
+    return default
