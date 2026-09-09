@@ -11,7 +11,7 @@ services:
       - APE_POLICY_FILE=/config/policy.yaml
       - APE_AUDIT_LOG=/data/ape/audit.jsonl
       - APE_RATE_LIMIT_RPM=${APE_RATE_LIMIT_RPM:-60}
-      - APE_STRICT_MODE=${APE_STRICT_MODE:-false}
+       - APE_STRICT_MODE=${APE_STRICT_MODE:-true}
       - APE_API_KEY=${APE_API_KEY:-}
     volumes:
       - ./config/ape:/config:ro,z

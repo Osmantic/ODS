@@ -82,7 +82,7 @@ except Exception:  # pragma: no cover - platform dependent
 POLICY_FILE = Path(os.environ.get("APE_POLICY_FILE", "/config/policy.yaml"))
 AUDIT_LOG = Path(os.environ.get("APE_AUDIT_LOG", "/data/ape/audit.jsonl"))
 RATE_LIMIT = int(os.environ.get("APE_RATE_LIMIT_RPM", "60"))
-STRICT_MODE = os.environ.get("APE_STRICT_MODE", "false").lower() == "true"
+STRICT_MODE = os.environ.get("APE_STRICT_MODE", "true").lower() == "true"
 _API_KEY = os.environ.get("APE_API_KEY", "")
 
 # Persistent governance state lives next to the audit log on the /data/ape
