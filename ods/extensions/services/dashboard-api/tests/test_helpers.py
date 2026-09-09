@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestDictRemapKeysSafe:
+    def test_valid_remapping(self):
+        from helpers import dict_remap_keys_safe
+        data = {"old_a": 1, "old_b": 2, "c": 3}
+        mapping = {"old_a": "new_a", "old_b": "new_b"}
+        assert dict_remap_keys_safe(data, mapping) == {"new_a": 1, "new_b": 2, "c": 3}
+
+    def test_invalid_and_bounds(self):
+        from helpers import dict_remap_keys_safe
+        assert dict_remap_keys_safe(None, {"a": "b"}) == {}
+        assert dict_remap_keys_safe({"a": 1}, None) == {"a": 1}
+

@@ -1146,3 +1146,17 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def dict_remap_keys_safe(d: dict, mapping: dict) -> dict:
+    """Safely rename dictionary keys based on a key transformation mapping."""
+    if d is None or not isinstance(d, dict):
+        return {}
+    if mapping is None or not isinstance(mapping, dict):
+        return dict(d)
+    res = {}
+    for k, v in d.items():
+        new_k = mapping.get(k, k)
+        res[new_k] = v
+    return res
+
