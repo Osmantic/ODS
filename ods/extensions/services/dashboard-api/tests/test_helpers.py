@@ -1607,3 +1607,16 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestStringIsValidHexSafe:
+    def test_valid_hex(self):
+        from helpers import string_is_valid_hex_safe
+        assert string_is_valid_hex_safe("0x1a3f") is True
+        assert string_is_valid_hex_safe("deadbeef") is True
+
+    def test_invalid_and_bounds(self):
+        from helpers import string_is_valid_hex_safe
+        assert string_is_valid_hex_safe(None) is False
+        assert string_is_valid_hex_safe("not-hex-xyz") is False
+

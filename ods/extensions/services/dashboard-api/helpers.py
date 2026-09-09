@@ -1146,3 +1146,20 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_is_valid_hex_safe(val: str) -> bool:
+    """Safely check if string represents valid hexadecimal sequence."""
+    if val is None or not isinstance(val, str):
+        return False
+    val = val.strip()
+    if not val:
+        return False
+    if val.startswith("0x") or val.startswith("0X"):
+        val = val[2:]
+    try:
+        int(val, 16)
+        return True
+    except (ValueError, TypeError):
+        return False
+
