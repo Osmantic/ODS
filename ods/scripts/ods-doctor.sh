@@ -260,12 +260,12 @@ _doctor_check_llm_backend() {
                 probe_url="http://127.0.0.1:${port}${path_part}"
             fi
 
-            # Extract host to check if it's host-probeable (e.g. contains '.' or is 'localhost')
+            # Extract host to check if it's host-probeable (e.g. contains '.' but not localhost)
             local host
             host=$(echo "$probe_url" | grep -oE '://[^/]+' | cut -d/ -f3 | cut -d: -f1)
 
             local is_probeable=false
-            if [[ "$host" == "localhost" ]] || [[ "$host" == *"."* ]]; then
+            if [[ "$host" == *"."* ]]; then
                 is_probeable=true
             fi
 

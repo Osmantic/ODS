@@ -65,7 +65,7 @@ def test_doctor_cloud_mode_localhost_no_active_probe():
         report_path = f.name
 
     try:
-        # Test with localhost URL - should skip active probe
+        # Test with localhost URL - should skip active probe (now considered non-probeable)
         env = os.environ.copy()
         env.update(
             {
@@ -90,7 +90,7 @@ def test_doctor_cloud_mode_localhost_no_active_probe():
         # Check that report was generated
         assert os.path.exists(report_path), "Doctor report not generated"
 
-        # For localhost, we should see the bypass message, not active probe
+        # For localhost, we should see the bypass message (since localhost is now non-probeable)
         output = result.stdout + result.stderr
         assert "container-internal endpoint bypassed host probe" in output, (
             f"Expected bypass message not found in output: {output}"
