@@ -1607,3 +1607,15 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestListPartitionBySafe:
+    def test_valid_partition(self):
+        from helpers import list_partition_by_safe
+        m, nm = list_partition_by_safe([1, 2, 3, 4], lambda x: x % 2 == 0)
+        assert m == [2, 4]
+        assert nm == [1, 3]
+
+    def test_invalid_and_bounds(self):
+        from helpers import list_partition_by_safe
+        assert list_partition_by_safe(None) == ([], [])

@@ -1146,3 +1146,28 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_partition_by_safe(items, predicate=None) -> tuple:
+    """Safely split list elements into match and non-match tuple groups."""
+    if items is None:
+        return ([], [])
+    if not isinstance(items, (list, tuple, set)):
+        try:
+            items = list(items)
+        except TypeError:
+            return ([], [])
+    else:
+        items = list(items)
+    if predicate is None or not callable(predicate):
+        predicate = bool
+    matching, non_matching = [], []
+    for item in items:
+        try:
+            if predicate(item):
+                matching.append(item)
+            else:
+                non_matching.append(item)
+        except Exception:
+            non_matching.append(item)
+    return (matching, non_matching)
