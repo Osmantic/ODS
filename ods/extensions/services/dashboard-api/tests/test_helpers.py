@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestListFlattenNestedSafe:
+    def test_valid_flattening(self):
+        from helpers import list_flatten_nested_safe
+        nested = [1, [2, [3, 4]], 5]
+        assert list_flatten_nested_safe(nested) == [1, 2, 3, 4, 5]
+
+    def test_invalid_and_bounds(self):
+        from helpers import list_flatten_nested_safe
+        assert list_flatten_nested_safe(None) == []
+        assert list_flatten_nested_safe(42) == [42]
+        assert list_flatten_nested_safe([1, [2]], max_depth=0) == [1, [2]]
+

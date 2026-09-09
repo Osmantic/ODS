@@ -1146,3 +1146,23 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_flatten_nested_safe(items, max_depth: int = 5) -> list:
+    """Safely flatten nested lists/tuples up to maximum recursion depth."""
+    if items is None:
+        return []
+    if not isinstance(items, (list, tuple, set)):
+        return [items]
+    if not isinstance(max_depth, int) or max_depth < 0:
+        max_depth = 5
+    res = []
+    def _flatten(seq, depth):
+        for item in seq:
+            if isinstance(item, (list, tuple, set)) and depth < max_depth:
+                _flatten(item, depth + 1)
+            else:
+                res.append(item)
+    _flatten(items, 0)
+    return res
+
