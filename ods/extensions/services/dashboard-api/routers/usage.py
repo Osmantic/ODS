@@ -15,9 +15,8 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
-from fastapi import APIRouter, Depends, Query
-
 from config import EXTENSIONS_DIR, SERVICES, USER_EXTENSIONS_DIR, read_live_env_value
+from fastapi import APIRouter, Depends, Query
 from helpers import check_service_health, get_cached_services
 from security import verify_api_key
 
@@ -448,7 +447,9 @@ def _extract_llama_cpp_prometheus_counters(metrics_text: str, url: str) -> dict[
     request_count_note = None
     if not request_metric_available:
         observed = _observe_runtime_request_delta(
-            key=f"llama.cpp:{service}:{_runtime_model_name()}",
+            # Multiple runtimes can share a hostname (different ports or paths).
+            # Keep observation baselines scoped to the configured endpoint.
+            key=f"llama.cpp:{url}:{_runtime_model_name()}",
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
