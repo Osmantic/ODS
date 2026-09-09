@@ -100,7 +100,10 @@ class ThroughputMetrics:
             "tokens_per_sec": tokens_per_sec
         })
 
-        # Prune old data
+        self._prune_expired()
+
+    def _prune_expired(self):
+        """Enforce retention even when the upstream stops producing samples."""
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.history_minutes)
         self.data_points = [
             p for p in self.data_points
@@ -109,6 +112,7 @@ class ThroughputMetrics:
 
     def get_stats(self) -> dict:
         """Get throughput statistics"""
+        self._prune_expired()
         if not self.data_points:
             return {"current": 0, "average": 0, "peak": 0, "history": []}
 
@@ -151,6 +155,7 @@ async def _fetch_token_spy_metrics() -> None:
                     # seconds in that window to get an average tokens/sec.
                     total_out = sum(r.get("total_output_tokens", 0) or 0 for r in data)
                     throughput.add_sample(total_out / 86400.0)
+                    agent_metrics.last_update = datetime.now(timezone.utc)
                     logger.debug("Token Spy metrics: %d sessions, %d total output tokens",
                                len(data), total_out)
                 else:
@@ -172,8 +177,6 @@ async def collect_metrics():
 
             # Update agent session count and throughput from Token Spy
             await _fetch_token_spy_metrics()
-
-            agent_metrics.last_update = datetime.now(timezone.utc)
 
         except FileNotFoundError as e:
             logger.debug("Metrics collection failed: command not found - %s", e)
