@@ -1607,3 +1607,13 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestListDifferenceSafe:
+    def test_valid_difference(self):
+        from helpers import list_difference_safe
+        assert list_difference_safe([1, 2, 3], [2]) == [1, 3]
+
+    def test_invalid_and_bounds(self):
+        from helpers import list_difference_safe
+        assert list_difference_safe(None, [1]) == []
