@@ -1146,3 +1146,32 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def numeric_moving_std_safe(numbers, window_size: int = 3, default: float = 0.0) -> float:
+    """Safely calculate sample standard deviation over trailing window numbers."""
+    if numbers is None:
+        return default
+    if not isinstance(numbers, (list, tuple, set)):
+        return default
+    clean = []
+    for n in numbers:
+        try:
+            val = float(n)
+            if not (math.isnan(val) or math.isinf(val)):
+                clean.append(val)
+        except (ValueError, TypeError):
+            continue
+    if len(clean) < 2:
+        return default
+    if not isinstance(window_size, int) or window_size < 2:
+        window_size = len(clean)
+    window = clean[-window_size:]
+    if len(window) < 2:
+        return default
+    try:
+        mean = sum(window) / len(window)
+        variance = sum((x - mean) ** 2 for x in window) / (len(window) - 1)
+        return float(math.sqrt(variance))
+    except Exception:
+        return default
