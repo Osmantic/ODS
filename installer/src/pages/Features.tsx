@@ -92,6 +92,10 @@ export default function Features({ onNext }: Props) {
           return (
             <button
               key={feature.id}
+              role="checkbox"
+              aria-label={feature.name}
+              aria-checked={isSelected}
+              disabled={isRequired}
               onClick={() => toggle(feature.id)}
               className={`w-full text-left rounded-lg px-4 py-3 transition-colors border ${
                 isSelected
@@ -101,13 +105,14 @@ export default function Features({ onNext }: Props) {
             >
               <div className="flex items-start gap-3">
                 <div
+                  aria-hidden="true"
                   className={`mt-0.5 w-5 h-5 rounded border-2 flex items-center justify-center text-xs ${
                     isSelected
                       ? "bg-ods-600 border-ods-600 text-white"
                       : "border-gray-600"
                   } ${isRequired ? "opacity-50" : ""}`}
                 >
-                  {isSelected && "&#10003;"}
+                  {isSelected && "✓"}
                 </div>
                 <div className="flex-1">
                   <p className="text-sm font-medium text-white">
