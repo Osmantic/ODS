@@ -180,7 +180,7 @@ def chat_stream(req: ChatRequest, _auth=Depends(verify_api_key)):
 
             for line in proc.stdout:
                 if line.startswith("SSE: "):
-                    yield f"data: {line[5:]}\n\n"
+                    yield f"data: {line[5:].rstrip()}\n\n"
 
             proc.wait()
         finally:
