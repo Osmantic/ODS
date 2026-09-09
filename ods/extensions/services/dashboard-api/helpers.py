@@ -1146,3 +1146,19 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def safe_path_relative_to(path_str: str, base_str: str, default: str = "") -> str:
+    """Safely resolve relative path string between target and base path."""
+    import pathlib
+    if not path_str or not isinstance(path_str, (str, pathlib.Path)):
+        return default
+    if not base_str or not isinstance(base_str, (str, pathlib.Path)):
+        return default
+    try:
+        p = pathlib.Path(path_str)
+        b = pathlib.Path(base_str)
+        return str(p.relative_to(b))
+    except (ValueError, TypeError, RuntimeError, Exception):
+        return default
+

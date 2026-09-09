@@ -1607,3 +1607,15 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestSafePathRelativeTo:
+    def test_valid_relative_path(self):
+        from helpers import safe_path_relative_to
+        assert safe_path_relative_to("/a/b/c/d.txt", "/a/b") == "c/d.txt"
+
+    def test_invalid_and_bounds(self):
+        from helpers import safe_path_relative_to
+        assert safe_path_relative_to(None, "/a/b") == ""
+        assert safe_path_relative_to("/x/y", "/a/b", default="none") == "none"
+
