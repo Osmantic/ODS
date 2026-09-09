@@ -32,41 +32,60 @@ export default function Installing({
     message: "Starting installation...",
     error: null,
   });
-  const started = useRef(false);
+  const [progressUnavailable, setProgressUnavailable] = useState(false);
+  const installation = useRef<Promise<string> | null>(null);
 
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
+    let active = true;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
-    // Start the install
-    startInstall(tier, features, installDir).then(() => {
-      onComplete();
-    }).catch((e) => {
-      onError(String(e));
-    });
+    // The command owns the installation. Each effect subscribes to the same
+    // result, including StrictMode's setup/cleanup/setup cycle.
+    if (!installation.current) {
+      installation.current = startInstall(tier, features, installDir);
+    }
+    installation.current.then(
+      () => {
+        settled = true;
+        clearTimeout(timer);
+        if (active) onComplete();
+      },
+      (error: unknown) => {
+        settled = true;
+        clearTimeout(timer);
+        if (active) onError(String(error));
+      },
+    );
 
-    // Poll for progress
-    const interval = setInterval(async () => {
+    const poll = async () => {
       try {
-        const p = await getInstallProgress();
-        setProgress(p);
-        if (p.error) {
-          clearInterval(interval);
-          onError(p.error);
-        }
-        if (p.percent >= 100) {
-          clearInterval(interval);
+        const next = await getInstallProgress();
+        if (active && !settled) {
+          setProgress(next);
+          setProgressUnavailable(false);
         }
       } catch {
-        // Ignore polling errors
+        if (active && !settled) {
+          setProgressUnavailable(true);
+        }
       }
-    }, 2000);
+      // Schedule after the response: a slow IPC call must not accumulate
+      // concurrent polls or publish an older response over a newer one.
+      if (active && !settled) timer = setTimeout(poll, 2000);
+    };
+    timer = setTimeout(poll, 2000);
 
-    return () => clearInterval(interval);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [tier, features, installDir, onComplete, onError]);
 
   const phaseLabel =
-    PHASE_LABELS[progress.phase] || progress.message || "Working...";
+    progressUnavailable
+      ? "Progress unavailable; installation is still running"
+      : PHASE_LABELS[progress.phase] || progress.message || "Working...";
 
   return (
     <div className="flex flex-col items-center justify-center h-full px-8">
