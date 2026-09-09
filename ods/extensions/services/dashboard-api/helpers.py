@@ -1146,3 +1146,16 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def dict_rename_keys_prefix_safe(d: dict, prefix: str = "", default: dict = None) -> dict:
+    """Safely prepend a string prefix to all dictionary keys."""
+    if d is None or not isinstance(d, dict):
+        return default if default is not None else {}
+    if not prefix or not isinstance(prefix, str):
+        prefix = ""
+    res = {}
+    for k, v in d.items():
+        res[f"{prefix}{k}"] = v
+    return res
+
