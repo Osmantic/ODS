@@ -1146,3 +1146,15 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_remove_accents_safe(text: str, default: str = "") -> str:
+    """Safely strip diacritics and accent marks from unicode string."""
+    import unicodedata
+    if text is None or not isinstance(text, str):
+        return default
+    try:
+        nfkd = unicodedata.normalize('NFKD', text)
+        return "".join([c for c in nfkd if not unicodedata.combining(c)])
+    except Exception:
+        return default
