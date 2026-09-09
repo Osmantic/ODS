@@ -1,4 +1,5 @@
 import http.client
+import hashlib
 import importlib.util
 import json
 import os
@@ -24,6 +25,69 @@ class UnixHTTPConnection(http.client.HTTPConnection):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(self.timeout)
         self.sock.connect(self.socket_path)
+
+
+def test_manifest_rehashes_published_files_without_reading_live_workspace():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = pathlib.Path(temporary)
+        workspace, previews = root / "workspace", root / "previews"
+        workspace.mkdir(mode=0o700)
+        previews.mkdir(mode=0o700)
+        site = workspace / "demo"
+        site.mkdir(mode=0o700)
+        (site / "assets").mkdir(mode=0o700)
+        for name, content in {"index.html": "<h1>Original</h1>", "assets/app.js": "console.log(1)"}.items():
+            (site / name).write_text(content)
+            (site / name).chmod(0o600)
+        receipt = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+        (site / "index.html").write_text("unpublished change")
+        manifest = json.loads(MODULE.snapshot_manifest(previews, receipt["siteId"]))
+        assert manifest["sha256"] == receipt["sha256"]
+        assert manifest["bytes"] == receipt["bytes"]
+        assert [f["path"] for f in manifest["files"]] == ["assets/app.js", "index.html"]
+        assert manifest["files"][1]["sha256"] == receipt["entrySha256"]
+        assert "unpublished" not in json.dumps(manifest)
+        with MODULE.PreviewHTTPServer(("127.0.0.1", 0), previews) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                for tail, host, expected in [
+                    ("__ods_manifest__.json", f"{receipt['siteId']}.localhost:{server.server_port}", 200),
+                    ("__ods_manifest__.json", "wrong-host", 404),
+                    ("__ods_manifest__.json?path=/etc/passwd", f"{receipt['siteId']}.localhost:{server.server_port}", 404),
+                    ("__ods_manifest__.json/other", f"{receipt['siteId']}.localhost:{server.server_port}", 404),
+                ]:
+                    connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+                    connection.request("GET", f"/{receipt['siteId']}/{tail}", headers={"Host": host})
+                    response = connection.getresponse()
+                    body = response.read()
+                    assert response.status == expected
+                    if expected == 200:
+                        assert json.loads(body) == manifest
+                        assert response.headers["X-Preview-SHA256"] == hashlib.sha256(body).hexdigest()
+                        assert response.headers["Content-Type"] == "application/json"
+                    connection.close()
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+        target = previews / receipt["siteId"] / "index.html"
+        target.chmod(0o600)
+        target.write_text("modified snapshot")
+        target.chmod(0o400)
+        try:
+            MODULE.snapshot_manifest(previews, receipt["siteId"])
+        except MODULE.PreviewError:
+            pass
+        else:
+            raise AssertionError("modified snapshot manifest was accepted")
+        target.unlink()
+        target.symlink_to(site / "index.html")
+        try:
+            MODULE.snapshot_manifest(previews, receipt["siteId"])
+        except MODULE.PreviewError:
+            pass
+        else:
+            raise AssertionError("symlink was accepted")
 
 
 def test_snapshot_preserves_csv_and_tsv_app_data_and_prior_versions():
@@ -239,6 +303,30 @@ def test_http_preview_allows_only_csp_guarded_cross_origin_embedding():
                 thread.join(timeout=5)
 
 
+def test_published_changes_use_actual_verified_source_versions_and_keep_unknown_baseline_explicit():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = pathlib.Path(temporary)
+        workspace, previews = root / "workspace", root / "previews"
+        workspace.mkdir(mode=0o700)
+        previews.mkdir(mode=0o700)
+        site = workspace / "demo"
+        site.mkdir(mode=0o700)
+        entry = site / "index.html"
+        entry.write_text("<!doctype html>\n<h1>Cobrinha</h1>\n<p>Keep</p>\n")
+        os.chmod(entry, 0o600)
+        old = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+        entry.write_text("<!doctype html>\n<h1>Cobrao</h1>\n<p>Keep</p>\n")
+        new = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+        value = json.loads(MODULE.snapshot_changes(previews, new["siteId"], old["siteId"]))
+        assert value["sha256"] == new["sha256"] and value["beforeSha256"] == old["sha256"]
+        file = value["changes"][0]
+        assert file["change"] == "modified" and file["additions"] == 1 and file["deletions"] == 1
+        assert [row["text"] for row in file["diff"] if row["type"] == "remove"] == ["<h1>Cobrinha</h1>"]
+        first = json.loads(MODULE.snapshot_changes(previews, old["siteId"], None))["changes"][0]
+        assert first["change"] == "published" and first["additions"] == 3 and first["deletions"] == 0
+        assert json.loads(MODULE.snapshot_changes(previews, new["siteId"], new["siteId"]))["changes"] == []
+
+
 def test_unix_http_preview_accepts_only_the_internal_relay_authority():
     with tempfile.TemporaryDirectory() as temporary:
         root = pathlib.Path(temporary)
@@ -268,6 +356,19 @@ def test_unix_http_preview_accepts_only_the_internal_relay_authority():
                 assert response.status == 200
                 assert response.headers["X-Preview-SHA256"] == receipt["entrySha256"]
                 connection.close()
+
+                styled_connection = UnixHTTPConnection(str(socket_path))
+                styled_connection.request("GET", f"/{receipt['siteId']}/__ods_view__.html",
+                                          headers={"Host": "pixel-preview.internal"})
+                styled = styled_connection.getresponse()
+                styled_body = styled.read()
+                assert styled.status == 200
+                assert styled_body == b"<button>Remote</button>" + MODULE.PREVIEW_SCROLLBAR_STYLE
+                assert b"scrollbar-color:#3d3f43 #131415" in styled_body
+                assert styled.headers["X-Preview-SHA256"] == hashlib.sha256(styled_body).hexdigest()
+                assert (previews / receipt["siteId"] / "index.html").read_bytes() == b"<button>Remote</button>"
+                assert "allow-same-origin" not in styled.headers["Content-Security-Policy"]
+                styled_connection.close()
 
                 rejected_connection = UnixHTTPConnection(str(socket_path))
                 rejected_connection.request(

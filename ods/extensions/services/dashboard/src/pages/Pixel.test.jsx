@@ -1,6 +1,8 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import { act } from '@testing-library/react'
+import {saveProfile} from '../lib/localProfile'
+import {saveConversation,readConversations,DELETE_EVENT} from '../lib/pixelConversations'
 
 // The repository's base ESLint profile does not mark JSX identifiers as uses.
 // eslint-disable-next-line no-unused-vars
@@ -192,9 +194,11 @@ describe('Pixel', () => {
     fireEvent.click(screen.getByTitle('Send'))
 
     const frame = await screen.findByTitle('Interactive Pixel preview')
-    expect(frame).toHaveAttribute('src', `/pixel-preview/${siteId}/`)
+    expect(frame).toHaveAttribute('src', `/pixel-preview/${siteId}/__ods_view__.html`)
     expect(frame).toHaveAttribute('sandbox', 'allow-scripts allow-forms allow-downloads')
-    expect(screen.getByText('Host verified · 3 files')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Snapshot details')).not.toBeInTheDocument()
+    expect(screen.queryByText('Info', {exact:true})).not.toBeInTheDocument()
+    expect(screen.getByRole('button', {name:'Files',exact:true})).toBeInTheDocument()
     expect(screen.getByTitle('Open preview in a new tab')).toHaveAttribute('href', `/pixel-preview/${siteId}/`)
     expect(screen.getByRole('link', { name: 'Open the verified preview' })).toHaveAttribute('href', `/pixel-preview/${siteId}/`)
     expect(screen.getByRole('link', { name: 'Documentation' })).toHaveAttribute('href', 'https://example.com/docs')
@@ -206,19 +210,114 @@ describe('Pixel', () => {
     original.unmount()
     globalThis.fetch.mockResolvedValue(response({ available: true }))
     const restored = render(<Pixel />)
-    expect(await screen.findByTitle('Interactive Pixel preview')).toHaveAttribute('src', `/pixel-preview/${siteId}/`)
+    expect(await screen.findByTitle('Interactive Pixel preview')).toHaveAttribute('src', `/pixel-preview/${siteId}/__ods_view__.html`)
     expect(globalThis.fetch.mock.calls.filter(([url]) => url === '/api/pixel/chat/stream')).toHaveLength(1)
 
     fireEvent.click(screen.getByTitle('Close preview'))
     expect(screen.queryByTitle('Interactive Pixel preview')).not.toBeInTheDocument()
     await waitFor(() => expect(
-      JSON.parse(globalThis.localStorage.getItem('ods.pixel.chat.v1')).preview
-    ).toBeNull())
+      JSON.parse(globalThis.localStorage.getItem('ods.pixel.chat.v1')).workspaceOpen
+    ).toBe(false))
+    expect(JSON.parse(globalThis.localStorage.getItem('ods.pixel.chat.v1')).preview).toEqual(preview)
     restored.unmount()
     render(<Pixel />)
     await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
     expect(screen.queryByTitle('Interactive Pixel preview')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open the verified preview' })).toHaveAttribute('href', `/pixel-preview/${siteId}/`)
+    fireEvent.click(screen.getByRole('button',{name:'Workspace',exact:true}))
+    expect(screen.getByTitle('Interactive Pixel preview')).toHaveAttribute('src', `/pixel-preview/${siteId}/__ods_view__.html`)
+  })
+
+  it('opens the workspace without a preview and only drafts a publication request', async () => {
+    globalThis.fetch.mockResolvedValue(response({available:true}))
+    render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.click(screen.getByRole('button',{name:'Workspace',exact:true}))
+    expect(screen.getByText('No preview published yet')).toBeVisible()
+    expect(screen.queryByTitle('Interactive Pixel preview')).toBeNull()
+    fireEvent.click(screen.getByRole('button',{name:'Ask Pixel to publish'}))
+    expect(screen.getByPlaceholderText('Message Pixel...').value).toContain('pixel_ods_workspace_preview')
+    expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
+    fireEvent.click(screen.getByTitle('Close preview'))
+    expect(screen.queryByText('No preview published yet')).toBeNull()
+    fireEvent.click(screen.getByRole('button',{name:'Workspace',exact:true}))
+    expect(screen.getByText('No preview published yet')).toBeVisible()
+  })
+
+  it('deletes the selected idle chat and starts an empty one without resurrecting it', async () => {
+    saveConversation({schema:1,chatId:'delete-current',messages:[{role:'user',content:'Disposable current chat'}]})
+    globalThis.fetch.mockResolvedValue(response({available:true,model:'pixel/default'}))
+    render(<Pixel/>)
+    await waitFor(()=>expect(screen.getByText('Available')).toBeInTheDocument())
+    expect(screen.getByText('Disposable current chat')).toBeVisible()
+    const complete=vi.fn()
+    act(()=>window.dispatchEvent(new CustomEvent(DELETE_EVENT,{detail:{chatId:'delete-current',complete}})))
+    expect(complete).toHaveBeenCalledWith('')
+    await waitFor(()=>expect(screen.queryByText('Disposable current chat')).not.toBeInTheDocument())
+    expect(readConversations().some(chat=>chat.chatId==='delete-current')).toBe(false)
+    expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).chatId).not.toBe('delete-current')
+  })
+
+  it('shows the local profile photo beside user messages without including it in model requests',async()=>{
+    const photo='data:image/webp;base64,YWJj'
+    saveProfile({name:'Gabriel',photo})
+    globalThis.fetch.mockResolvedValueOnce(response({available:true}))
+    globalThis.fetch.mockResolvedValueOnce(sseResponse([JSON.stringify({choices:[{delta:{content:'Hello'}}]}),'[DONE]']))
+    render(<Pixel/>)
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByPlaceholderText('Message Pixel...'),{target:{value:'Hi'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    expect(await screen.findByRole('img',{name:'Gabriel profile photo'})).toHaveAttribute('src',photo)
+    expect(screen.getByRole('img',{name:'Gabriel profile photo'}).parentElement).toHaveClass('pixel-user-character')
+    const post=globalThis.fetch.mock.calls.find(([,options])=>options?.method==='POST')
+    expect(post[1].body).not.toContain(photo)
+    await act(async()=>saveProfile({name:'Gabriel',photo:''}))
+    expect(screen.queryByRole('img',{name:'Gabriel profile photo'})).toBeNull()
+    expect(screen.getByRole('img',{name:'Gabriel avatar'})).toBeVisible()
+  })
+
+  it('keeps the chat toolbar inside its column beside the full-height workspace', async () => {
+    globalThis.fetch.mockResolvedValue(response({available:true,model:'pixel/default'}))
+    render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.click(screen.getByRole('button',{name:'Workspace',exact:true}))
+    const panel = screen.getByRole('complementary',{name:'Preview panel'})
+    const column = screen.getByPlaceholderText('Message Pixel...').closest('.pixel-chat-column')
+    expect(column.parentElement).toBe(panel.parentElement)
+    expect(column).toContainElement(screen.getByRole('button',{name:'Workspace',exact:true}))
+    expect(column).toContainElement(screen.getByRole('link',{name:'Change model'}))
+    expect(column).toContainElement(screen.getByRole('button',{name:'Search Pixel'}))
+    expect(panel).not.toContainElement(screen.getByRole('heading',{name:'Pixel',exact:true}))
+    fireEvent.click(screen.getByTitle('Collapse preview'))
+    expect(panel).toHaveClass('is-collapsed')
+    fireEvent.click(screen.getByTitle('Expand preview'))
+    expect(panel).not.toHaveClass('is-collapsed')
+  })
+
+  it('saves terminal activity with the reply and never sends telemetry to the model', async () => {
+    const task={schemaVersion:1,runId:'chatcmpl_11111111-2222-4333-8444-555555555555',startedAt:'2026-09-08T20:00:00.000Z',finishedAt:'2026-09-08T20:00:02.000Z',state:'completed',calls:1,failures:0,blocked:0,truncated:false,activities:[{kind:'read',calls:1,failures:0,blocked:0}]}
+    globalThis.fetch.mockResolvedValueOnce(response({available:true}))
+    globalThis.fetch.mockResolvedValueOnce(sseResponse([
+      JSON.stringify({choices:[{delta:{content:'Read the file.'}}]}),
+      JSON.stringify({id:task.runId,pixel_task:task,choices:[{delta:{},finish_reason:'stop'}]}),'[DONE]']))
+    const first=render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByPlaceholderText('Message Pixel...'),{target:{value:'Read the file'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await waitFor(()=>expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).task).toEqual(task))
+    first.unmount()
+    globalThis.fetch.mockResolvedValueOnce(response({available:true}))
+    render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.click(screen.getByRole('button',{name:'Workspace',exact:true}))
+    fireEvent.click(screen.getByRole('button',{name:'Activity',exact:true}))
+    expect(screen.getByText('Read')).toBeVisible()
+    globalThis.fetch.mockResolvedValueOnce(sseResponse([JSON.stringify({choices:[{delta:{content:'OK'}}]}),'[DONE]']))
+    fireEvent.change(screen.getByPlaceholderText('Message Pixel...'),{target:{value:'Continue'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByText('OK')
+    const calls=globalThis.fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')
+    expect(JSON.parse(calls.at(-1)[1].body).messages.every(message=>Object.keys(message).sort().join(',')==='content,role')).toBe(true)
   })
 
   it('renders agent tables and task lists while keeping unsafe content inert', async () => {
@@ -300,7 +399,14 @@ describe('Pixel', () => {
     }))
     globalThis.fetch.mockResolvedValue(response({ available: true }))
     const restored = render(<Pixel />)
-    expect(await screen.findByTitle('Interactive Pixel preview')).toBeInTheDocument()
+    const frame = await screen.findByTitle('Interactive Pixel preview')
+    expect(frame).toBeInTheDocument()
+    fireEvent.click(screen.getByTitle('Collapse preview'))
+    expect(frame).not.toBeVisible()
+    expect(screen.getByTitle('Interactive Pixel preview')).toBe(frame)
+    fireEvent.click(screen.getByTitle('Expand preview'))
+    expect(frame).toBeVisible()
+    expect(screen.getByTitle('Interactive Pixel preview')).toBe(frame)
     fireEvent.click(screen.getByTitle('Start a new chat'))
     await waitFor(() => {
       const stored = JSON.parse(globalThis.localStorage.getItem('ods.pixel.chat.v1'))
@@ -324,12 +430,14 @@ describe('Pixel', () => {
       protocol: 'http:',
     })).toEqual({
       url: '/pixel-preview/site-0123456789abcdef01234567/',
+      frameUrl: '/pixel-preview/site-0123456789abcdef01234567/__ods_view__.html',
       sandbox: 'allow-scripts allow-forms allow-downloads',
       route: 'private-dashboard',
     })
     for (const hostname of ['localhost', '127.0.0.1', '[::1]', '::1']) {
       expect(resolvePreviewAccess(preview, { hostname, protocol: 'http:' })).toEqual({
         url: `/pixel-preview/${preview.siteId}/`,
+        frameUrl: `/pixel-preview/${preview.siteId}/__ods_view__.html`,
         sandbox: 'allow-scripts allow-forms allow-downloads',
         route: 'private-dashboard',
       })
@@ -353,6 +461,46 @@ describe('Pixel', () => {
     fireEvent.click(screen.getByTitle('Send'))
     expect(await screen.findByText(/Live at/)).toBeInTheDocument()
     expect(screen.queryByTitle('Interactive Pixel preview')).not.toBeInTheDocument()
+  })
+
+  it('keeps dictation beside send and distinguishes characters from model context', async () => {
+    globalThis.fetch.mockResolvedValue(response({ available: true, model: 'pixel/default' }))
+    render(<Pixel systemStatus={{ inference: { loadedModel: 'local-model', contextSize: 65536 } }} />)
+    await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
+    const send = screen.getByTitle('Send')
+    expect(send.parentElement).toContainElement(screen.getByRole('button', { name: 'Dictate message' }))
+    expect(send.parentElement).toHaveClass('pixel-composer-actions')
+    expect(screen.getByText('64K context')).toHaveAttribute('title', expect.stringContaining('Model context'))
+    const counter = screen.getByTitle('Characters in this message, not tokens or context usage')
+    expect(counter).toHaveTextContent(`0 / ${(16 * 1024).toLocaleString()} chars`)
+    fireEvent.change(screen.getByPlaceholderText('Message Pixel...'), { target: { value: 'Olá' } })
+    expect(counter).toHaveTextContent(`3 / ${(16 * 1024).toLocaleString()} chars`)
+    expect(screen.getByText('64K context')).toBeInTheDocument()
+    const field = screen.getByPlaceholderText('Message Pixel...')
+    expect(field).toHaveClass('pixel-composer-input')
+    expect(field.className).not.toContain('focus:ring')
+    fireEvent.keyDown(field,{key:'Enter',shiftKey:true})
+    fireEvent.change(field,{target:{value:'Olá\nsegunda linha\nterceira linha'}})
+    expect(field).toHaveValue('Olá\nsegunda linha\nterceira linha')
+    expect(send.parentElement.parentElement).toHaveClass('pixel-composer-row')
+    expect(send.parentElement).toContainElement(screen.getByRole('button',{name:'Dictate message'}))
+    expect(globalThis.fetch.mock.calls.every(([,options]) => options?.method !== 'POST')).toBe(true)
+  })
+
+  it('highlights fenced code while keeping unknown languages and HTML inert', async () => {
+    const content = '```js\nconst value = "Pixel";\n```\n\n```unknown-language\n<video onerror="alert(1)">\n```'
+    globalThis.fetch.mockResolvedValueOnce(response({ available: true }))
+    globalThis.fetch.mockResolvedValueOnce(sseResponse([
+      JSON.stringify({ choices: [{ delta: { content } }] }), '[DONE]',
+    ]))
+    const { container } = render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByPlaceholderText('Message Pixel...'), { target: { value: 'Show code' } })
+    fireEvent.click(screen.getByTitle('Send'))
+    await waitFor(() => expect(container.querySelector('.hljs-keyword')).toHaveTextContent('const'))
+    expect(container.querySelector('.hljs-string')).toHaveTextContent('"Pixel"')
+    expect(container.querySelector('.language-unknown-language')).toHaveTextContent('<video onerror="alert(1)">')
+    expect(container.querySelector('video')).toBeNull()
   })
 
   it('renders a host-verified approval card without approving in the browser', async () => {
@@ -615,6 +763,66 @@ describe('Pixel', () => {
     expect(send).toBeEnabled()
   })
 
+  it('preserves earlier file changes across another message and reload without sending UI metadata to the model', async () => {
+    const publication = letter => {
+      const sha256 = letter.repeat(64)
+      const siteId = `site-${sha256.slice(0, 24)}`
+      return {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', relativeDirectory: 'demo', siteId, port: 9437, url: `http://${siteId}.localhost:9437/${siteId}/`, files: 1, bytes: 100, sha256, entrySha256: sha256}
+    }
+    const before = publication('a')
+    const after = publication('b')
+    const changes = {schemaVersion: 1, scope: 'published-snapshots', siteId: after.siteId, sha256: after.sha256, beforeSiteId: before.siteId, beforeSha256: before.sha256, changes: [{path: 'index.html', change: 'modified', additions: 22, deletions: 9, truncated: true, diff: []}]}
+    globalThis.localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({schema: 1, chatId: 'diff-history', messages: [
+      {role: 'user', content: 'edit the game'},
+      {role: 'assistant', content: 'Game updated', publication: after, beforePublication: before},
+    ]}))
+    globalThis.fetch.mockImplementation(async (url) => {
+      if (url.includes('__ods_changes__')) return {ok: true, headers: new Map(), arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(changes)).buffer}
+      if (url === '/api/pixel/chat/stream') return sseResponse([JSON.stringify({choices: [{delta: {content: 'Second answer'}}]}), '[DONE]'])
+      return response({available: true, model: 'pixel/default'})
+    })
+    const view = render(<Pixel />)
+    expect(await screen.findByText('Edited index.html')).toBeVisible()
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByPlaceholderText('Message Pixel...'), {target: {value: 'another message'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    expect(screen.getByText('Edited index.html')).toBeVisible()
+    expect(await screen.findByText('Second answer')).toBeVisible()
+    expect(screen.getByText('Edited index.html')).toBeVisible()
+    expect(screen.getAllByLabelText('22 lines added, 9 lines removed')).toHaveLength(2)
+    const call = globalThis.fetch.mock.calls.find(([url]) => url === '/api/pixel/chat/stream')
+    expect(JSON.parse(call[1].body).messages).toEqual([
+      {role: 'user', content: 'edit the game'}, {role: 'assistant', content: 'Game updated'}, {role: 'user', content: 'another message'},
+    ])
+    const stored = JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
+    expect(stored.messages[1]).toMatchObject({publication: after, beforePublication: before})
+    view.unmount()
+    render(<Pixel />)
+    expect(await screen.findByText('Edited index.html')).toBeVisible()
+    expect(screen.getByText('Second answer')).toBeVisible()
+  })
+
+  it('keeps visible history beyond the model request limit after send and reload', async () => {
+    const messages = Array.from({length: 60}, (_, index) => ({role: index % 2 ? 'assistant' : 'user', content: `History item ${index}`}))
+    localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({schema: 1, chatId: 'long-history', messages}))
+    globalThis.fetch.mockImplementation(async url => url === '/api/pixel/chat/stream'
+      ? sseResponse([JSON.stringify({choices: [{delta: {content: 'Latest answer'}}]}), '[DONE]'])
+      : response({available: true, model: 'pixel/default'}))
+    const view = render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByPlaceholderText('Message Pixel...'), {target: {value: 'continue'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByText('Latest answer')
+    expect(screen.getByText('History item 0')).toBeVisible()
+    const call = globalThis.fetch.mock.calls.find(([url]) => url === '/api/pixel/chat/stream')
+    expect(JSON.parse(call[1].body).messages.length).toBeLessThanOrEqual(50)
+    expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages).toHaveLength(62)
+    view.unmount()
+    render(<Pixel />)
+    expect(screen.getByText('History item 0')).toBeVisible()
+    expect(screen.getByText('Latest answer')).toBeVisible()
+  })
+
   it('restores the bounded local chat and reuses its opaque session after reload', async () => {
     globalThis.localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({
       schema: 1,
@@ -665,7 +873,7 @@ describe('Pixel', () => {
     }} />)
 
     await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
-    expect(screen.getByText('What should we accomplish?')).toBeInTheDocument()
+    expect(screen.getByText('What do you want to work on?')).toBeInTheDocument()
     expect(screen.getByText('Qwen3.5-9B-Q4_K_M.gguf')).toBeInTheDocument()
     expect(screen.getByText('32K context')).toBeInTheDocument()
 
@@ -916,6 +1124,10 @@ describe('Pixel', () => {
     expect(retryBody.messages).toEqual([
       { role: 'user', content: 'Inspect the installed extension.' },
     ])
+    const savedRecovery = JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
+    expect(savedRecovery.contextStart).toBe(2)
+    expect(savedRecovery.messages[0].content).toBe('old context')
+    expect(screen.getByText('old answer')).toBeVisible()
 
     fireEvent.change(textarea, { target: { value: 'Continue from that verified result.' } })
     fireEvent.click(screen.getByTitle('Send'))
@@ -1005,7 +1217,7 @@ describe('Pixel', () => {
     const firstChatId = JSON.parse(firstCall[1].body).chat_id
     fireEvent.click(screen.getByTitle('Start a new chat'))
     expect(screen.queryByText('First answer')).not.toBeInTheDocument()
-    expect(screen.getByText('What should we accomplish?')).toBeInTheDocument()
+    expect(screen.getByText('What do you want to work on?')).toBeInTheDocument()
 
     fireEvent.change(screen.getByPlaceholderText('Message Pixel...'), { target: { value: 'second turn' } })
     fireEvent.click(screen.getByTitle('Send'))
@@ -1174,6 +1386,24 @@ describe('Pixel', () => {
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
   })
 
+  it('rechecks the selected interrupted chat even when the previous interrupted chat is terminal', async () => {
+    saveConversation({schema:1,chatId:'second_interrupted',interrupted:true,messages:[{role:'user',content:'Another task'}]})
+    saveInterruptedChat()
+    globalThis.fetch.mockImplementation(async (url, options) => {
+      if (url === '/api/pixel/status') return response({available:true})
+      expect(url).toBe('/api/pixel/chat/activity')
+      const {chat_id} = JSON.parse(options.body)
+      return response({state:chat_id === 'second_interrupted' ? 'active' : 'terminal'})
+    })
+    render(<Pixel />)
+    await screen.findByText(/previous request is no longer active/)
+    act(()=>window.dispatchEvent(new CustomEvent('ods:pixel-select-conversation',{detail:'second_interrupted'})))
+    await screen.findByText('Working in this chat')
+    expect(fetch).toHaveBeenCalledWith('/api/pixel/chat/activity',expect.objectContaining({body:JSON.stringify({chat_id:'second_interrupted'})}))
+    expect(screen.getByPlaceholderText('Message Pixel...')).toBeDisabled()
+    expect(screen.getByTitle('Stop')).toBeEnabled()
+  })
+
   it('restored activity recovers from unknown and only exact cancellation marks this chat stopped', async () => {
     saveInterruptedChat()
     let state = 'unknown'
@@ -1304,6 +1534,9 @@ describe('Pixel', () => {
       expect(screen.getByText('Working')).toBeInTheDocument()
       expect(screen.getAllByText(/0:00 elapsed/).length).toBeGreaterThan(0)
       expect(screen.getByText('Starting the owner-agent turn')).toBeInTheDocument()
+      const reply = screen.getByText('Starting the owner-agent turn').closest('[data-pixel-response]')
+      expect(reply.querySelectorAll('.pixel-character')).toHaveLength(1)
+      expect(reply.querySelector('.pixel-reply-character')).not.toBeNull()
       expect(screen.queryByText('Available')).not.toBeInTheDocument()
     })
   })
@@ -1395,6 +1628,46 @@ describe('Pixel', () => {
       expect(stored.interrupted).toBe(false)
       expect(stored.inFlight).toBe(false)
     })
+  })
+
+  it.each(['delta', 'error', 'eof'])('isolates a new reply from a stopped reader that delivers a late %s', async late => {
+    const pending = []
+    let requests = 0
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/status') return response({available:true})
+      if (url === '/api/pixel/chat/cancel') return response({aborted:true})
+      if (url !== '/api/pixel/chat/stream') throw new Error('Unexpected request')
+      const index = requests++
+      return {ok:true, status:200, body:{getReader:()=>({
+        read:()=>new Promise((resolve,reject)=>{pending[index]={resolve,reject}}),
+        releaseLock:()=>{},
+      })}}
+    })
+    render(<Pixel />)
+    await screen.findByText('Available')
+    const send = text => {
+      fireEvent.change(screen.getByPlaceholderText('Message Pixel...'), {target:{value:text}})
+      fireEvent.click(screen.getByTitle('Send'))
+    }
+    send('First task')
+    await waitFor(()=>expect(pending[0]).toBeDefined())
+    fireEvent.click(screen.getByTitle('Stop'))
+    await screen.findByText('Response stopped')
+    send('Second task')
+    await waitFor(()=>expect(pending[1]).toBeDefined())
+    await act(async()=>{
+      if (late === 'error') pending[0].reject(new Error('Late network failure'))
+      else pending[0].resolve(late === 'eof' ? {done:true} : {
+        done:false,value:new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Old reply leaking"}}]}\n\ndata: [DONE]\n\n'),
+      })
+    })
+    expect(screen.queryByText('Old reply leaking')).not.toBeInTheDocument()
+    expect(screen.getByTitle('Stop')).toBeInTheDocument()
+    expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).inFlight).toBe(true)
+    await act(async()=>pending[1].resolve({done:false,value:new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Second reply correct"}}]}\n\ndata: [DONE]\n\n')}))
+    await screen.findByText('Second reply correct')
+    expect(screen.getByText('Response stopped')).toBeInTheDocument()
+    expect(screen.getByText('Available')).toBeInTheDocument()
   })
 
   it('keeps the live stream attached and Stop retryable without an exact acknowledgement', async () => {
@@ -1490,6 +1763,66 @@ describe('Pixel', () => {
 
     await waitFor(() => expect(screen.getByText('Response interrupted.')).toBeInTheDocument())
     expect(screen.getByText('Partial answer')).toBeInTheDocument()
+  })
+
+  it('preserves partial answers and ignores late content after an upstream error', async () => {
+    globalThis.fetch.mockResolvedValueOnce(response({available:true}))
+    globalThis.fetch.mockResolvedValueOnce(sseResponse([
+      JSON.stringify({choices:[{delta:{content:'Work already explained'}}]}),
+      JSON.stringify({error:'private-upstream-error'}),
+      JSON.stringify({choices:[{delta:{content:'False late success'}}]}),
+      '[DONE]',
+    ]))
+    const view=render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByPlaceholderText('Message Pixel...'),{target:{value:'test'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByText('Pixel could not complete the response.')
+    expect(screen.getByText('Work already explained')).toBeInTheDocument()
+    expect(screen.queryByText(/False late success|private-upstream-error/)).toBeNull()
+    await waitFor(()=>{
+      const saved=JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
+      expect(saved.messages.at(-1).status).toBe('error')
+      expect(saved.inFlight).toBe(false)
+    })
+    view.unmount()
+    globalThis.fetch.mockResolvedValue(response({available:true}))
+    render(<Pixel />)
+    expect(screen.getByText('Work already explained')).toBeInTheDocument()
+    expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).status).toBe('error')
+  })
+
+  it('restores long assistant replies without losing the chat and bounds only their API copy',async()=>{
+    const longReply='Long explanation '+ 'x'.repeat(20000)
+    localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'long_reply',messages:[{role:'user',content:'Original task'},{role:'assistant',content:longReply,status:'done'}]}))
+    globalThis.fetch.mockImplementation(async url=>url==='/api/pixel/chat/stream' ? sseResponse([JSON.stringify({choices:[{delta:{content:'Follow-up answer'}}]}),'[DONE]']) : response({available:true}))
+    render(<Pixel />)
+    await screen.findByText('Available')
+    expect(screen.getByText(longReply)).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Message Pixel...'),{target:{value:'Continue'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByText('Follow-up answer')
+    const body=JSON.parse(fetch.mock.calls.find(([url])=>url==='/api/pixel/chat/stream')[1].body)
+    expect(body.chat_id).toBe('long_reply')
+    expect(body.messages.every(message=>message.content.length<=16384)).toBe(true)
+    expect(body.messages[1].content).toContain('shortened for model context')
+    expect(screen.getByText(longReply)).toBeInTheDocument()
+    expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages[1].content).toBe(longReply)
+  })
+
+  it.each(['Files','Changes'])('reloads the active %s inspector after a failed fetch',async tab=>{
+    const sha256='a'.repeat(64),siteId=`site-${sha256.slice(0,24)}`
+    localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'reload_inspector',messages:[{role:'user',content:'Inspect project'}],preview:{schemaVersion:1,kind:'ods-pixel-workspace-preview',relativeDirectory:'demo',siteId,port:9437,url:`http://${siteId}.localhost:9437/${siteId}/`,files:1,bytes:100,sha256,entrySha256:'b'.repeat(64)}}))
+    globalThis.fetch.mockImplementation(async url=>url==='/api/pixel/status' ? response({available:true}) : {ok:false})
+    render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.click(screen.getByRole('button',{name:tab,exact:true}))
+    await screen.findByText(tab==='Files' ? 'Task files could not be verified.' : /File comparison unavailable/)
+    const requests=()=>fetch.mock.calls.filter(([url])=>url.startsWith('/pixel-preview/')).length
+    const before=requests()
+    fireEvent.click(screen.getByTitle('Reload preview'))
+    await waitFor(()=>expect(requests()).toBe(before+1))
+    expect(screen.getByRole('button',{name:tab,exact:true})).toHaveAttribute('aria-pressed','true')
   })
 
   it('renders assistant HTML as inert text', async () => {

@@ -840,6 +840,26 @@ test("streaming response releases a bounded broad Operations report above the le
   }
 });
 
+test("SSE releases content-free task observations only in the matching terminal frame", async () => {
+  const task = {schemaVersion:1,runId:TEST_RUN_ID,startedAt:'2026-09-08T20:00:00.000Z',finishedAt:'2026-09-08T20:00:02.000Z',
+    state:'completed',calls:1,failures:0,blocked:0,truncated:false,activities:[{kind:'read',calls:1,failures:0,blocked:0}]};
+  for (const invalid of [false,true]) {
+    const gw = await fakeGateway({verification:{status:'none',task:{...task,...(invalid ? {runId:TEST_RUN_ID.replace('11111111','aaaaaaaa')} : {})}}});
+    const srv = await startIngress({gatewayPort:gw.port});
+    try {
+      const response = await request(srv,'POST','/v1/chat/completions',{body:JSON.stringify({stream:true,messages:[{role:'user',content:'test'}]}),headers:{'Content-Type':'application/json'}});
+      if (invalid) { assert.match(response.body,/upstream stream failed/); assert.doesNotMatch(response.body,/pixel_task|activities|\"content\":\"ok\"/); }
+      else {
+        assert.equal(response.status,200);
+        const frames = response.body.split('\n').filter(line=>line.startsWith('data: {')).map(line=>JSON.parse(line.slice(6)));
+        assert.equal(frames.filter(frame=>frame.pixel_task).length,1);
+        assert.deepEqual(frames.at(-1).pixel_task,task);
+        assert.equal(frames.at(-1).choices[0].finish_reason,'stop');
+      }
+    } finally { await new Promise(resolve=>srv.close(resolve)); await new Promise(resolve=>gw.server.close(resolve)); }
+  }
+});
+
 test("Operations verification text above the bounded 32 KiB cap remains fail-closed", async () => {
   const gw = await fakeGateway({
     verification: { status: "passed", text: "x".repeat(32 * 1024 + 1) },

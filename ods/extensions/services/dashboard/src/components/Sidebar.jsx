@@ -1,288 +1,73 @@
-import { NavLink } from 'react-router-dom'
-import { useEffect, useMemo, useState } from 'react'
-import {
-  ChevronLeft,
-  ChevronRight,
-  Palette
-} from 'lucide-react'
+import { NavLink, useLocation } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Plus, Search, Sparkles, Settings } from 'lucide-react'
 import { getSidebarExternalLinks, getSidebarNavItems } from '../plugins/registry'
-import { useTheme } from '../contexts/ThemeContext'
 import { fallbackServiceUrl } from '../lib/serviceUrls'
-
-// Derive external service URLs from current host
-const getExternalUrl = (port) => fallbackServiceUrl(port)
-
-function OsmanticLogo({ compact = false }) {
-  return (
-    <img
-      className={`osmantic-logo ${compact ? 'osmantic-logo--compact' : ''}`}
-      src={compact ? '/osmantic-os-icon-192.png' : '/ods-logo.png'}
-      alt="Osmantic"
-      draggable="false"
-      width={compact ? 192 : 760}
-      height={compact ? 192 : 240}
-    />
-  )
-}
+import PixelHandoffApproval from './PixelHandoffApproval'
+import PixelMascot from './PixelMascot'
+import ODSLogo from './ODSLogo'
+import MetalMetricIcon from './MetalMetricIcon'
+import PixelConversationNavigation from './PixelConversationNavigation'
+import {useLocalProfile} from '../lib/localProfile'
+import UserAvatar from './UserAvatar'
 
 export default function Sidebar({ status, collapsed, onToggle }) {
-  const { theme, cycleTheme, labels } = useTheme() // eslint-disable-line no-unused-vars -- theme switcher temporarily hidden
-  const [serviceTokens, setServiceTokens] = useState({})
+  const profile = useLocalProfile()
+  const { pathname } = useLocation()
+  const pixelMode = pathname.startsWith('/pixel')
+  const [query, setQuery] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   const [apiLinks, setApiLinks] = useState([])
-  const [showAllQuickLinks, setShowAllQuickLinks] = useState(false)
-
+  const [serviceTokens, setServiceTokens] = useState({})
   useEffect(() => {
-    fetch('/api/service-tokens')
-      .then(r => r.ok ? r.json() : {})
-      .then(setServiceTokens)
-      .catch(() => {})
-
-    fetch('/api/external-links')
-      .then(r => r.ok ? r.json() : [])
-      .then(setApiLinks)
-      .catch(() => {})
+    let active = true
+    fetch('/api/external-links').then(r => r.ok ? r.json() : []).then(value => {
+      if (active && Array.isArray(value)) setApiLinks(value)
+    }).catch(() => {})
+    fetch('/api/service-tokens').then(r => r.ok ? r.json() : {}).then(value => {
+      if (active && value && typeof value === 'object') setServiceTokens(value)
+    }).catch(() => {})
+    return () => { active = false }
   }, [])
-
-  const navItems = useMemo(
-    () => getSidebarNavItems({ status }),
-    [status]
-  )
-
-  // Compute external links with auto-auth tokens (e.g. OpenClaw ?token=xxx)
-  const externalLinks = useMemo(() => {
-    const links = getSidebarExternalLinks({ status, getExternalUrl, apiLinks })
-    return links.map(link => {
-      if (link.key === 'openclaw' && serviceTokens.openclaw) {
-        return { ...link, url: `${link.url}/?token=${serviceTokens.openclaw}` }
-      }
-      return link
-    })
-  }, [status, serviceTokens, apiLinks])
-
-  const visibleExternalLinks = useMemo(() => {
-    return showAllQuickLinks
-      ? externalLinks
-      : externalLinks.filter(link => link.healthy || link.alwaysVisible)
-  }, [externalLinks, showAllQuickLinks])
-
-  // Service counts with degraded nuance
-  const services = status?.services || []
-  const deployed = services.filter(s => s.status !== 'not_deployed')
-  const onlineCount = deployed.filter(s => s.status === 'healthy' || s.status === 'degraded').length
-  const degradedCount = deployed.filter(s => s.status === 'degraded').length
-  const totalCount = deployed.length
-
-  // Memory bar: use unified (RAM) stats on APUs, VRAM on discrete
-  const isUnified = status?.gpu?.memoryType === 'unified'
-  const memPct = isUnified
-    ? (status?.ram?.percent || 0)
-    : status?.gpu?.vramTotal > 0
-      ? (status.gpu.vramUsed / status.gpu.vramTotal) * 100
-      : 0
-  const memUsed = isUnified ? (status?.ram?.used_gb || 0) : (status?.gpu?.vramUsed || 0)
-  const memTotal = isUnified ? (status?.ram?.total_gb || 0) : (status?.gpu?.vramTotal || 0)
-  const memLabel = isUnified ? 'Memory' : 'VRAM'
-  const memFillClass = memPct > 90
-    ? 'liquid-metal-progress-fill liquid-metal-progress-fill--danger'
-    : memPct > 75
-      ? 'liquid-metal-progress-fill liquid-metal-progress-fill--warn'
-      : 'liquid-metal-progress-fill'
-
-  // Footer status color
-  const footerColor = degradedCount > 0
-    ? 'text-yellow-500'
-    : onlineCount === totalCount
-      ? 'text-green-500'
-      : totalCount > 0
-        ? 'text-yellow-500'
-        : 'text-theme-text-muted'
-
-  return (
-    <aside
-      className={`fixed left-0 top-0 flex h-screen flex-col transition-all duration-200 ${collapsed ? 'w-20' : 'w-20 sm:w-64'}`}
-      style={{
-        background: `var(--sidebar-bg-glow), var(--sidebar-bg)`,
-        borderRight: '1px solid var(--sidebar-border)',
-        boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.04)',
-      }}
-    >
-      {/* Logo */}
-      <div className="px-4 pt-6 pb-5 border-b overflow-hidden" style={{ borderColor: 'var(--sidebar-border)' }}>
-        {collapsed ? (
-          <div className="flex flex-col items-center">
-            <div className="osmantic-logo-tile">
-              <OsmanticLogo compact />
-            </div>
-            <p className="text-[8px] font-mono mt-2 tracking-[0.18em] uppercase" style={{ color: 'var(--sidebar-text-muted)' }}>
-              v{status?.version || '...'}
-            </p>
-          </div>
-        ) : (
-          <>
-            <div className="flex flex-col items-center sm:hidden">
-              <div className="osmantic-logo-tile">
-                <OsmanticLogo compact />
-              </div>
-              <p className="mt-2 font-mono text-[8px] uppercase tracking-[0.18em]" style={{ color: 'var(--sidebar-text-muted)' }}>
-                v{status?.version || '...'}
-              </p>
-            </div>
-            <div className="hidden sm:block">
-              <OsmanticLogo />
-              <p className="mt-2.5 font-mono text-[8px] uppercase tracking-[0.16em]" style={{ color: 'var(--sidebar-accent-soft)' }}>
-                OSMANTIC DEPLOYMENT SYSTEM
-              </p>
-              <p className="mt-1 text-[10px]" style={{ color: 'var(--sidebar-text-secondary)' }}>
-                {status?.tier || 'Minimal'} • v{status?.version || '...'}
-              </p>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Navigation */}
-      <nav className="flex-1 p-4 overflow-y-auto overflow-x-hidden">
-        <ul className="space-y-1.5">
-          {navItems.map(({ path, icon: Icon, label }) => (
-            <li key={path}>
-              <NavLink
-                to={path}
-                end
-                aria-label={label}
-                title={label}
-                className={({ isActive }) =>
-                  `flex items-center ${collapsed ? 'justify-center' : 'justify-center sm:justify-start'} gap-3 px-3 py-2.5 rounded-lg transition-colors ${
-                    isActive
-                      ? 'liquid-metal-nav text-white shadow-lg'
-                      : 'text-theme-text-muted hover:text-theme-text'
-                  }`
-                }
-                style={({ isActive }) => isActive
-                  ? {
-                    border: '1px solid var(--sidebar-active-border)',
-                    boxShadow: 'var(--sidebar-active-shadow)',
-                  }
-                  : {
-                    background: 'transparent',
-                  }
-                }
-              >
-                <Icon size={20} />
-                {!collapsed && <span className="hidden sm:inline">{label}</span>}
-              </NavLink>
-            </li>
-          ))}
-        </ul>
-
-        {/* External Links — hidden when collapsed */}
-        {!collapsed && (
-          <div className="mt-4 hidden border-t pt-4 sm:block" style={{ borderColor: 'var(--sidebar-border)' }}>
-            <div className="mb-2 flex items-center justify-between px-3">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.24em]" style={{ color: 'var(--sidebar-accent-soft)' }}>
-                Quick Links
-              </p>
-              {externalLinks.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowAllQuickLinks(current => !current)}
-                  className="text-[9px] font-mono uppercase tracking-[0.18em] transition-colors hover:text-theme-text"
-                  style={{ color: 'var(--sidebar-accent-soft)' }}
-                >
-                  {showAllQuickLinks ? 'Show open' : 'View all'}
-                </button>
-              )}
-            </div>
-            <ul className="space-y-0">
-              {visibleExternalLinks.map(({ key, url, icon: Icon, label, healthy }) => (
-                <li key={key}>
-                  <a
-                    href={healthy ? url : undefined}
-                    onClick={(e) => { if (!healthy) e.preventDefault() }}
-                    target={healthy ? '_blank' : undefined}
-                    rel={healthy ? 'noopener noreferrer' : undefined}
-                    className={`flex items-start gap-2.5 px-3 py-1.5 rounded-lg transition-colors ${
-                      healthy
-                        ? 'hover:bg-white/[0.03]'
-                        : 'text-theme-text-muted/40 cursor-not-allowed'
-                    }`}
-                    style={healthy ? { color: 'var(--sidebar-text)' } : undefined}
-                  >
-                    <span className="mt-0.5" style={{ color: healthy ? 'var(--sidebar-accent-soft)' : 'var(--sidebar-inactive)' }}>
-                      <Icon size={15} />
-                    </span>
-                    <span className="text-[12px] leading-4">{label}</span>
-                    <span
-                      className="ml-auto text-[9px] font-mono uppercase tracking-[0.18em]"
-                      style={{ color: healthy ? 'var(--sidebar-accent-soft)' : 'var(--sidebar-inactive)' }}
-                    >
-                      {healthy ? 'OPEN' : 'OFFLINE'}
-                    </span>
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </nav>
-
-      {/* Theme + Toggle buttons */}
-      {/* Theme switcher hidden until Lemonade/Light/Arctic themes are polished for liquid metal design.
-          To restore: uncomment the Palette button and label below. */}
-      <div className={`mb-2 flex ${collapsed ? 'mx-2 flex-col items-center gap-2' : 'mx-4 items-center gap-1'}`}>
-        {/* <button
-          onClick={cycleTheme}
-          className="flex items-center justify-center p-2 rounded-lg text-theme-text-muted hover:text-theme-text transition-colors"
-          title={`Theme: ${labels[theme]} (click to cycle)`}
-          style={{ background: 'var(--sidebar-hover-bg)' }}
-        >
-          <Palette size={18} />
-        </button>
-        {!collapsed && (
-          <span className="text-xs" style={{ color: 'var(--sidebar-label)' }}>{labels[theme]}</span>
-        )} */}
-        <button
-          onClick={onToggle}
-          className={`${collapsed ? '' : 'ml-auto'} hidden items-center justify-center rounded-lg p-2 text-theme-text-muted transition-colors hover:text-theme-text sm:flex`}
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          style={{ background: 'var(--sidebar-hover-bg)' }}
-        >
-          {collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
-        </button>
-      </div>
-
-      {/* Status Footer */}
-      <div className="p-4 border-t" style={{ borderColor: 'var(--sidebar-border)' }}>
-        {!collapsed && (
-          <div className="mb-2 hidden items-center justify-between text-sm sm:flex">
-            <span className="text-theme-text-muted">Services</span>
-            <span className={footerColor}>
-              {degradedCount > 0
-                ? `Online: ${onlineCount}/${totalCount} · ${degradedCount} degraded`
-                : `Online: ${onlineCount}/${totalCount}`
-              }
-            </span>
-          </div>
-        )}
-        {(status?.gpu || (isUnified && status?.ram)) && (
-          <div>
-            {!collapsed && (
-              <div className="mb-1 hidden items-center justify-between text-xs text-theme-text-muted sm:flex">
-                <span>{memLabel}</span>
-                <span className="font-mono">{memUsed.toFixed ? memUsed.toFixed(1) : memUsed}/{memTotal.toFixed ? memTotal.toFixed(0) : memTotal} GB</span>
-              </div>
-            )}
-            <div
-              className="liquid-metal-progress-track h-1.5 rounded-full overflow-hidden"
-              title={collapsed ? `${memLabel}: ${memUsed.toFixed ? memUsed.toFixed(1) : memUsed}/${memTotal.toFixed ? memTotal.toFixed(0) : memTotal} GB` : undefined}
-            >
-              <div
-                className={`h-full rounded-full transition-all ${memFillClass}`}
-                style={{ width: `${Math.min(memPct, 100)}%` }}
-              />
-            </div>
-          </div>
-        )}
-      </div>
-    </aside>
-  )
+  const applications = getSidebarExternalLinks({ status, getExternalUrl: fallbackServiceUrl, apiLinks })
+    .filter(link => link.healthy || link.alwaysVisible)
+  const links = pixelMode ? [
+    { path: '/pixel', label: 'Agent', icon: Sparkles },
+    { path: '/pixel/settings', label: 'Settings', icon: Settings },
+  ] : getSidebarNavItems({ status })
+  function closeSearch() { setSearchOpen(false); setQuery('') }
+  function toggleSearch() {
+    if (searchOpen) { closeSearch(); return }
+    if (collapsed) onToggle()
+    setSearchOpen(true)
+  }
+  return <aside className={`pixel-sidebar ${collapsed ? 'is-collapsed' : ''} ${searchOpen ? 'has-search' : ''}`} aria-label={pixelMode ? 'Pixel navigation' : 'ODS navigation'}>
+    <div className={`pixel-brand ${pixelMode ? '' : 'ods-brand'}`}>
+      <NavLink to={pixelMode ? '/pixel' : '/'} aria-label={pixelMode ? 'Pixel home' : 'ODS home'}>
+        <div hidden={pixelMode}><ODSLogo active={!pixelMode} /></div>
+        {pixelMode && <><PixelMascot brand /><span>Pixel</span></>}
+      </NavLink>
+      <button className="pixel-metal-control" onClick={onToggle} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}><MetalMetricIcon icon={collapsed ? ChevronRight : ChevronLeft} size={16}/></button>
+    </div>
+    <nav className="pixel-nav">
+      {pixelMode && <>
+        <NavLink to="/" className="pixel-nav-item" title="Back to ODS"><ArrowLeft size={16} /><span>Back to ODS</span></NavLink>
+      </>}
+      <button className="pixel-nav-item" title="Search navigation" aria-label="Search" onClick={toggleSearch} aria-expanded={searchOpen}><Search size={16} /><span>Search</span></button>
+      {searchOpen && !collapsed && <input autoFocus aria-label="Search navigation" placeholder="Find a page…" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { closeSearch(); event.currentTarget.previousElementSibling?.focus() } }} className="pixel-nav-search" />}
+      {links.filter(item => item.label.toLowerCase().includes(query.toLowerCase())).map(({ path, label, icon: Icon }) => <NavLink key={path} to={path} end title={label} aria-label={label} onClick={closeSearch} className={({ isActive }) => `pixel-nav-item ${isActive ? 'is-active' : ''}`}><Icon size={16} /><span>{label}</span></NavLink>)}
+      {!pixelMode && applications.length > 0 && <details className="pixel-applications" open={query ? true : undefined}>
+        <summary aria-label="Applications"><span>{collapsed ? '•••' : 'Applications'}</span><svg className="rail-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg></summary>
+        {applications.filter(link => link.label.toLowerCase().includes(query.toLowerCase())).map(({ key, label, icon: Icon, healthy, url }) => {
+          const href = key === 'openclaw' && serviceTokens.openclaw ? `${url}/?token=${encodeURIComponent(serviceTokens.openclaw)}` : url
+          return <a key={key} className="pixel-nav-item" title={healthy ? label : `${label} · Offline`} aria-label={label} aria-disabled={!healthy} href={healthy ? href : undefined} target={healthy ? '_blank' : undefined} rel="noopener noreferrer"><Icon size={16} /><span>{label}</span>{!healthy && !collapsed && <small>Offline</small>}</a>
+        })}
+      </details>}
+      <PixelConversationNavigation collapsed={collapsed} />
+      {pixelMode && !collapsed && <div className="pixel-sidebar-sections">
+        <PixelHandoffApproval label="Approvals" />
+      </div>}
+    </nav>
+    <footer className="pixel-sidebar-footer"><NavLink to="/settings?section=profile" className="sidebar-profile-link" aria-label="Edit your profile" title="Edit your profile"><UserAvatar profile={profile}/><div className="sidebar-profile-copy"><strong>{profile.name || 'Your profile'}</strong><small>{status?.version ? `ODS ${status.version}` : 'Local workspace'}</small></div><MetalMetricIcon icon={Settings} size={14}/></NavLink></footer>
+  </aside>
 }

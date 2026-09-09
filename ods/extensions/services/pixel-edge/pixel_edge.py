@@ -1050,6 +1050,12 @@ def _preview_upstream_path(site_id: str, tail: str) -> str | None:
         return None
     if not tail:
         return f"/{site_id}/"
+    # Exact host-generated metadata endpoint; no other underscore-prefixed
+    # paths, queries, or live workspace access are admitted.
+    if tail in {"__ods_manifest__.json", "__ods_view__.html"}:
+        return f"/{site_id}/{tail}"
+    if re.fullmatch(r"__ods_changes__/(?:initial|site-[a-f0-9]{24})\.json", tail):
+        return f"/{site_id}/{tail}"
     parts = tail.split("/")
     if any(_PREVIEW_PATH_COMPONENT.fullmatch(part) is None for part in parts):
         return None

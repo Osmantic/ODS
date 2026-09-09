@@ -13,12 +13,14 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@paper-design/shaders-react": "^0.0.80",
     "gsap": "^3.12.7",
     "lucide-react": "^0.441.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^6.26.0",
+    "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {

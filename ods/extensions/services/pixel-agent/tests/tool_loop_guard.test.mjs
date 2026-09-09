@@ -190,6 +190,50 @@ function seedNamedPreview(guard) {
   return { write, params, details };
 }
 
+test("Portuguese HTML creation requests require a preview without overriding negative or quoted intent", () => {
+  for (const prompt of ["crie um jogo em html da cobrinha", "Faça um site de portfolio", "Por favor, pode criar um aplicativo web?"]) {
+    assert.equal(userMessageRequestsWorkspacePreview([], prompt), true, prompt);
+  }
+  for (const prompt of [
+    "explique como criar um jogo em html da cobrinha",
+    'Traduza: "crie um jogo em html da cobrinha"',
+    '> crie um jogo em html da cobrinha',
+    '```\ncrie um jogo em html da cobrinha\n```',
+    "Não crie um jogo em html da cobrinha",
+    "Crie um jogo em html, mas não publique",
+    "Crie um site sem preview",
+    "Crie um jogo em html, apenas o código",
+    "Crie um script Python para calcular fibonacci",
+  ]) assert.equal(userMessageRequestsWorkspacePreview([], prompt), false, prompt);
+});
+
+test("Portuguese publication commands require verified delivery, not a prose promise", () => {
+  for (const prompt of [
+    "Corrija o contador e publique essa pasta no preview.",
+    "Por favor, republique o site corrigido.",
+    "Teste o contador. Depois republique essa pasta no preview.",
+    "O teste real no preview falhou. Corrija apenas demo-counter. Só publique após esses três testes passarem.",
+  ]) {
+    assert.equal(userMessageRequestsWorkspacePreview([], prompt), true, prompt);
+    const guard = createToolLoopGuard();
+    const context = {agentId:'pixel',runId:'run-portuguese',sessionId:'session-portuguese'};
+    guard.observeRun(context, 'pixel', {prompt});
+    const recovery = guard.beforeAgentFinalize({lastAssistantMessage:'Agora publicando...'}, context);
+    assert.ok(recovery?.retry, 'A promise without a verified publication must not finish the turn');
+    assert.equal(recovery.retry.maxAttempts, 1, 'Publication recovery remains bounded');
+  }
+  for (const prompt of [
+    "Explique como publicar essa pasta no preview.",
+    'Traduza: "publique essa pasta no preview"',
+    '> publique essa pasta no preview',
+    '```\npublique essa pasta no preview\n```',
+    "Não publique essa pasta no preview.",
+    "Corrija o contador, mas nunca republique o site.",
+    "Explique por que devemos publicar o site.",
+    "Só publique após esses três testes passarem.",
+  ]) assert.equal(userMessageRequestsWorkspacePreview([], prompt), false, prompt);
+});
+
 test("prior website feedback does not require a preview for new scheduled file work", () => {
   const prompt = "The actual badge website now labels Play as motion off and explains the system reduced-motion preference. Preserve it. Test your real scheduled-work capability: create one one-time task for about two minutes from now to write /workspace/scheduled-check-lab/result.json containing a short greeting, the actual execution UTC time and the task ID if available. Use an actual scheduling tool if available; do not simulate scheduling with an exec sleep loop. Avoid duplicate jobs, do not modify other files, and do not configure an external notification channel. Return the real job ID and due time, or the exact missing capability. This is one bounded local task, not a recurring schedule.";
   assert.equal(userMessageRequestsWorkspacePreview([], prompt), false);
@@ -3407,6 +3451,29 @@ test("live health plus reporting is scoped and cannot authorize artifact-only or
   assert.ok(!excluded.actions.includes("host.memory"));
   assert.ok(!excluded.actions.includes("host.storage"));
   assert.deepEqual(userMessageOperationsRequirements([], "Inspect this computer's CPU health and explain it."), { required: true, actions: ["host.cpu"] });
+});
+
+test("unrelated service mentions and source addresses do not force application inventory", () => {
+  for (const prompt of [
+    "Find three dumpling restaurants in Philadelphia with online delivery ordering. Use current web sources, open each restaurant's own site or its ordering page, and save a short comparison with source links to release-2641/philadelphia-dumplings.md. Distinguish an actual delivery option from pickup only and don't assume delivery reaches my address. Use your own search and web tools without delegating to Perplexica.",
+    "Research Python packaging and save source URLs. Do not use Hermes.",
+    "Find the official documentation without Perplexica; include a source link.",
+    "Do not query the Perplexica URL. Research the public documentation.",
+  ]) {
+    assert.deepEqual(userMessageOdsToolRequirements([], prompt), [], prompt);
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    assert.notEqual(call(guard, "tool_call", { event: { params: {
+      id: "openclaw:core:web_search", args: { query: "public source documentation" },
+    } } })?.block, true, prompt);
+  }
+  for (const prompt of [
+    "Where is Perplexica?",
+    "What's the configured n8n URL?",
+    "Show the SearXNG address.",
+    "List the ODS apps.",
+    "Research Python packaging. Then show the configured Open WebUI URL.",
+  ]) assert.deepEqual(userMessageOdsToolRequirements([], prompt), ["pixel_ods_apps_list"], prompt);
 });
 
 test("explicit negative ODS status intent never creates a compulsory projection", () => {
@@ -10392,6 +10459,75 @@ test("classifies a requested website demo as a verified workspace preview", () =
   }
 });
 
+test("website navigation and research files do not require a workspace preview", () => {
+  for (const prompt of [
+    "Find three dumpling restaurants in Philadelphia with online delivery ordering. Use current web sources, open each restaurant's own site or its ordering page, and save a short comparison with source links to release-2641/philadelphia-dumplings.md. Distinguish an actual delivery option from pickup only and don't assume delivery reaches my address. Use your own search and web tools without delegating to Perplexica.",
+    "Open the official documentation website and write a summary to notes.md.",
+    "Open https://example.com/docs/index.html and save the findings to research.md.",
+    "View the museum website and report its opening hours.",
+    "Open the local news site and summarize today's headlines to notes.md.",
+    "Open the museum website and report the updated hours.",
+    "Open the museum website. Read the saved chart and summarize both to notes.md.",
+    "Use web search, open each source site, and save a cited comparison to comparison.md.",
+  ]) {
+    assert.equal(userMessageRequestsWorkspacePreview([], prompt), false, prompt);
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    assert.deepEqual(guard.verificationForRun("run-1"), { status: "none" }, prompt);
+  }
+  for (const prompt of [
+    "Search the web for examples, then build a website and publish it.",
+    "Open the saved website preview.",
+    "Show demo/index.html.",
+    "Publish the website.",
+    "Create a playable game and show it.",
+  ]) {
+    assert.equal(userMessageRequestsWorkspacePreview([], prompt), true, prompt);
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    assert.equal(guard.verificationForRun("run-1").status, "failed", prompt);
+  }
+});
+
+test("bare reopening binds only a verified preview in the current session", () => {
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel",
+    { prompt: "Build and publish a website." });
+  const write = { path: "signal-garden/index.html", content: "<!doctype html><title>Signal Garden</title>" };
+  call(guard, "write", { event: { params: write } });
+  afterCall(guard, "write", { event: { params: write, result: { details: { status: "completed" } } } });
+  const params = { relativeDirectory: "signal-garden" };
+  call(guard, "pixel_ods_workspace_preview", { event: { params } });
+  const snapshot = workspacePreviewSnapshot("signal-garden", [write]);
+  afterCall(guard, "pixel_ods_workspace_preview", { event: { params, result: { details: {
+    schemaVersion: 1, kind: "ods-pixel-workspace-preview", status: "succeeded",
+    relativeDirectory: "signal-garden", ...snapshot, port: 9437,
+    url: `http://${snapshot.siteId}.localhost:9437/${snapshot.siteId}/`,
+    httpStatus: 200, readbackVerified: true, executable: false, overwritten: false,
+  } } } });
+  assert.equal(guard.verificationForRun("run-1").status, "passed");
+  let next = 2;
+  for (const prompt of ["Show the website.", "Open the game.", "View the chart."]) {
+    const runId = `run-${next++}`;
+    guard.observeRun({ agentId: "pixel", runId, sessionId: "session-1" }, "pixel", { prompt });
+    assert.equal(guard.verificationForRun(runId).status, "failed", "reopening requires a fresh receipt");
+    const otherRun = `run-${next++}`;
+    guard.observeRun({ agentId: "pixel", runId: otherRun, sessionId: "other-session" }, "pixel", { prompt });
+    assert.deepEqual(guard.verificationForRun(otherRun), { status: "none" }, "another session cannot lend its artifact");
+  }
+  for (const prompt of [
+    "Open the local news site and summarize today's headlines to notes.md.",
+    "Open the museum website and report updated hours.",
+    "Open https://example.com/index.html and summarize it.",
+    "Explain why we should show the website.",
+    "Do not open the game.",
+  ]) {
+    const runId = `run-${next++}`;
+    guard.observeRun({ agentId: "pixel", runId, sessionId: "session-1" }, "pixel", { prompt });
+    assert.deepEqual(guard.verificationForRun(runId), { status: "none" }, prompt);
+  }
+});
+
 test("negated application changes do not turn an ODS inspection into a preview task", () => {
   for (const request of [
     "Inspect this ODS installation and tell me which applications are installed and running, which model Pixel is actually configured to use, and whether Open WebUI, Hermes, OpenCode, ComfyUI and n8n are present. Use actual ODS tools and distinguish unavailable information from confirmed facts. Do not install, remove or change anything.",
@@ -11947,6 +12083,27 @@ test("allows requested verification after publication and invalidates potentiall
   );
   assert.match(persisted.message.content.at(-1).text, /remaining owner-requested checks/i);
   assert.doesNotMatch(persisted.message.content.at(-1).text, /do not call another tool/i);
+  const documentation = { path: "README.md", content: "Documentation written after publishing." };
+  call(guard, "write", { event: { params: documentation, toolCallId: "readme-after-preview" },
+    context: { toolCallId: "readme-after-preview" } });
+  afterCall(guard, "write", { event: { params: documentation,
+    toolCallId: "readme-after-preview", result: { details: { status: "completed" } } },
+    context: { toolCallId: "readme-after-preview" } });
+  assert.equal(guard.verificationForRun("run-1").status, "failed",
+    "Documentation must not turn an invalidated receipt into a current preview");
+  const republishHint = persistToolResult(guard, "write", "readme-after-preview");
+  assert.match(republishHint.message.content.at(-1).text, /Publish last, after documentation too/);
+  assert.match(republishHint.message.content.at(-1).text, /"relativeDirectory":"signal-garden"/);
+  const recovery = guard.beforeAgentFinalize({}, { agentId: "pixel", runId: "run-1" });
+  assert.equal(recovery.retry.idempotencyKey, "pixel-ods-workspace-preview-refresh");
+  assert.equal(recovery.retry.maxAttempts, 1);
+  assert.equal(guard.beforeAgentFinalize({}, { agentId: "pixel", runId: "run-1" }).retry.idempotencyKey,
+    recovery.retry.idempotencyKey, "Repeated finalization must not grant unlimited retries");
+  call(guard, "pixel_ods_workspace_preview", { event: { params: { relativeDirectory: "signal-garden" } } });
+  afterCall(guard, "pixel_ods_workspace_preview", { event: {
+    params: { relativeDirectory: "signal-garden" }, result: { details },
+  } });
+  assert.equal(guard.verificationForRun("run-1").status, "passed");
   const verificationParams = { command: "node --check signal-garden/index.html" };
   const verification = call(guard, "tool_call", {
     event: {

@@ -1,5 +1,5 @@
 import { createElement } from 'react'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Models from './Models'
 
@@ -102,6 +102,41 @@ function confirmModelRun() {
   fireEvent.click(screen.getByRole('button', { name: 'Run model' }))
 }
 
+test('uses compact source tabs and collapsible filters in the portal panel', () => {
+  useModelsMock.mockReturnValue(baseState({models:[model({status:'downloaded'})]}))
+  const {container} = render(createElement(MemoryRouter, null, createElement(Models, {compact:true})))
+  expect(screen.getByRole('tablist',{name:'Model sources'})).toHaveClass('portal-model-tabs')
+  expect(container.querySelector('.model-filter-disclosure')).not.toHaveAttribute('open')
+  expect(container.querySelector('[class*="min-w-[1074px]"]')).toBeNull()
+  fireEvent.click(screen.getByRole('tab',{name:/Installed/}))
+  expect(screen.getByRole('tab',{name:/Installed/})).toHaveAttribute('aria-selected','true')
+})
+
+test('compact Models highlights the running model and keeps configuration behind confirmation', () => {
+  const state = baseState({currentModel:'qwen3.5-9b-q4',models:[model({status:'loaded'})]})
+  useModelsMock.mockReturnValue(state)
+  render(createElement(MemoryRouter, null, createElement(Models, {compact:true})))
+  expect(screen.getByRole('tab',{name:/Installed/})).toHaveAttribute('aria-selected','true')
+  expect(within(screen.getByRole('region',{name:'Model runtime'})).getByText('Qwen 3.5 9B')).toBeVisible()
+  expect(screen.getByRole('textbox',{name:'Search models'})).toBeVisible()
+  expect(screen.getByRole('article',{name:'Qwen 3.5 9B'})).toHaveClass('model-entry')
+  expect(screen.getByRole('button',{name:'Delete Qwen 3.5 9B unavailable'})).toBeDisabled()
+  fireEvent.click(screen.getByRole('button',{name:'Configure context for Qwen 3.5 9B'}))
+  expect(screen.getByRole('dialog')).toBeVisible()
+  expect(state.loadModel).not.toHaveBeenCalled()
+})
+
+test('compact catalog uses fitted pages and preserves filter reset behavior', () => {
+  useModelsMock.mockReturnValue(baseState({models:Array.from({length:12},(_,i)=>model({id:`m${i}`,name:`Catalog model ${i}`}))}))
+  render(createElement(MemoryRouter,null,createElement(Models,{compact:true})))
+  fireEvent.click(screen.getByRole('tab',{name:/ODS Recommended/}))
+  expect(screen.getByRole('article',{name:'Catalog model 0'})).toBeVisible()
+  expect(screen.queryByRole('article',{name:'Catalog model 11'})).toBeNull()
+  fireEvent.change(screen.getByRole('textbox',{name:'Search models'}),{target:{value:'Catalog model 11'}})
+  expect(screen.getByRole('article',{name:'Catalog model 11'})).toBeVisible()
+  expect(screen.queryByRole('button',{name:'Page 2'})).toBeNull()
+})
+
 test('renders the model library layout from catalog fields only', () => {
   useModelsMock.mockReturnValue(baseState({
     currentModel: 'qwen3.5-9b-q4',
@@ -129,7 +164,7 @@ test('renders the model library layout from catalog fields only', () => {
   expect(screen.getAllByText('VRAM').length).toBeGreaterThan(0)
   expect(screen.getAllByText('Speed').length).toBeGreaterThan(0)
   expect(screen.getByText('Currently running: qwen3.5-9b-q4')).toBeInTheDocument()
-  expect(screen.getByRole('link', { name: /dashboard/i })).toHaveAttribute('href', '/')
+  expect(screen.getByRole('link', { name: /dashboard/i })).toHaveAttribute('href', '/dashboard')
   expect(screen.getByText('51.7 tok/s')).toBeInTheDocument()
   expect(screen.getByText('69.8 tok/s')).toBeInTheDocument()
   expect(screen.getByText('~3.2 GB incl. KV')).toBeInTheDocument()

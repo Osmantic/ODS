@@ -389,6 +389,23 @@ class TestAuth(BaseEdgeTest):
 
 
 class TestPreviewRelay(BaseEdgeTest):
+    async def test_manifest_route_is_exact_and_keeps_authentication(self):
+        from pixel_edge import _preview_upstream_path
+        site = "site-" + "a" * 24
+        self.assertEqual(_preview_upstream_path(site, "__ods_manifest__.json"), f"/{site}/__ods_manifest__.json")
+        self.assertEqual(_preview_upstream_path(site, "__ods_view__.html"), f"/{site}/__ods_view__.html")
+        self.assertEqual(_preview_upstream_path(site, f"__ods_changes__/{site}.json"), f"/{site}/__ods_changes__/{site}.json")
+        self.assertEqual(_preview_upstream_path(site, "__ods_changes__/initial.json"), f"/{site}/__ods_changes__/initial.json")
+        for tail in ["__ods_changes__/../index.html", "__ods_changes__/initial.json?path=secret", "__ods_changes__/garbage.json"]:
+            self.assertIsNone(_preview_upstream_path(site, tail))
+        for tail in ["__ods_view__.html?path=secret", "../__ods_view__.html", "__ods_view__.html/extra"]:
+            self.assertIsNone(_preview_upstream_path(site, tail))
+        for tail in ["__ods_manifest__.json/other", "__ods_manifest__.json?path=secret", "../__ods_manifest__.json", "__anything"]:
+            self.assertIsNone(_preview_upstream_path(site, tail))
+        self.assertIsNone(_preview_upstream_path("not-a-site", "__ods_manifest__.json"))
+        async with self.client.get(f"http://localhost/preview/{site}/__ods_manifest__.json") as resp:
+            self.assertEqual(resp.status, 401)
+
     async def test_preview_requires_the_dashboard_proxy_token(self):
         site_id = "site-" + "a" * 24
         async with self.client.get(f"http://localhost/preview/{site_id}/") as resp:

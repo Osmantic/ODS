@@ -7,6 +7,15 @@ const safe = {available: true, surface: 'linux-systemd', configured_mode: 'sandb
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Pixel access confirmation and effective status', () => {
+  it('ends the inspection message after failure and clears the error on retry', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ok: false}).mockResolvedValue({ok: true, json: async () => safe}))
+    render(<PixelAccessCard />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Pixel access status is unavailable')
+    expect(screen.queryByText('Inspecting Pixel access…')).toBeNull()
+    fireEvent.click(screen.getByRole('button', {name: 'Refresh status'}))
+    await waitFor(() => expect(screen.getByText('Configured')).toBeInTheDocument())
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
   it('does not present configured mode as effective or POST before explicit confirmation', async () => {
     const fetch = vi.fn(async (_url, options) => ({ok: true, json: async () => options ? {...safe, pending: true} : safe}))
     vi.stubGlobal('fetch', fetch)

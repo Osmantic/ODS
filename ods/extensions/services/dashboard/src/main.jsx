@@ -9,6 +9,8 @@ import {
   recoverFromStaleAsset,
 } from './utils/staleAssetRecovery'
 import './index.css'
+import './pixel-workspace.css'
+import './wallpaper-themes.css'
 
 const RECOVERY_CLEAR_DELAY_MS = 30_000
 
@@ -35,8 +37,8 @@ class ErrorBoundary extends React.Component {
     if (this.state.hasError) {
       const staleAsset = isStaleAssetError(this.state.error)
       return (
-        <div style={{ display: 'grid', placeItems: 'center', padding: '2rem', color: '#d4d4d8', background: '#09090b', minHeight: '100vh', fontFamily: 'system-ui, sans-serif' }}>
-          <div style={{ width: 'min(32rem, 100%)', padding: '2rem', background: '#18181b', border: '1px solid #3f3f46', borderRadius: '16px' }}>
+        <div style={{ display: 'grid', placeItems: 'center', padding: '2rem', color: '#dedfe3', background: '#111212', minHeight: '100vh', fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif' }}>
+          <div style={{ width: 'min(32rem, 100%)', padding: '2rem', background: '#1d1e1f', border: '1px solid #2e2e32', borderRadius: '12px' }}>
             <h1 style={{ color: '#fff', margin: '0 0 0.75rem', fontSize: '1.5rem' }}>
               {staleAsset ? 'Dashboard updated' : 'Something went wrong'}
             </h1>
@@ -46,13 +48,13 @@ class ErrorBoundary extends React.Component {
                 : 'The dashboard could not finish loading this screen. Your ODS services are still running.'}
             </p>
             <button onClick={() => globalThis.location.reload()}
-              style={{ marginTop: '1.25rem', padding: '0.65rem 1rem', background: '#7c3aed', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 600 }}>
+              style={{ marginTop: '1.25rem', padding: '0.65rem 1rem', background: '#b4b8c0', color: '#171819', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontFamily: 'inherit' }}>
               Reload dashboard
             </button>
             {!staleAsset && this.state.error && (
-              <details style={{ marginTop: '1.25rem', color: '#a1a1aa', fontFamily: 'monospace', fontSize: '0.8rem' }}>
+              <details style={{ marginTop: '1.25rem', color: '#989da6', fontSize: '0.8rem' }}>
                 <summary style={{ cursor: 'pointer' }}>Technical details</summary>
-                <pre style={{ whiteSpace: 'pre-wrap' }}>{this.state.error.toString()}</pre>
+                <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: '"JetBrains Mono", monospace' }}>{this.state.error.toString()}</pre>
               </details>
             )}
           </div>

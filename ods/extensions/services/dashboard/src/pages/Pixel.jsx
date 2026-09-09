@@ -1,8 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { readConversations, saveConversation, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import rehypeHighlight from 'rehype-highlight'
 import { Link } from 'react-router-dom'
 import PixelAdvice from '../components/PixelAdvice.jsx'
+import PixelMascot from '../components/PixelMascot.jsx'
+import UserAvatar from '../components/UserAvatar'
+import {useLocalProfile} from '../lib/localProfile'
+import { pixelHeaderPose, pixelReplyPose } from '../lib/pixelMascotState'
+import PixelComposerTools from '../components/PixelComposerTools'
+import PixelDictation from '../components/PixelDictation'
+import PixelCommandSearch, { OPEN_PIXEL_SEARCH } from '../components/PixelCommandSearch'
+import PixelSelectionActions from '../components/PixelSelectionActions'
+import PixelTaskFiles from '../components/PixelTaskFiles'
+import PixelTaskActivity from '../components/PixelTaskActivity'
+import PixelSnapshotChanges from '../components/PixelSnapshotChanges'
+import { parseTaskActivity, parseTaskActivityFrame } from '../lib/pixelTaskActivity'
+import MetalMetricIcon from '../components/MetalMetricIcon'
+import PanelResizeHandle from '../components/PanelResizeHandle.jsx'
 import PixelHandoffApproval from '../components/PixelHandoffApproval.jsx'
 import PixelProviderScopes from '../components/PixelProviderScopes.jsx'
 import {
@@ -14,10 +30,12 @@ import {
   Globe2,
   ExternalLink,
   Loader2,
-  PanelRightOpen,
   Plus,
+  PanelRightClose,
+  PanelRightOpen,
   RefreshCw,
   Send,
+  Search,
   ShieldCheck,
   Sparkles,
   Square,
@@ -33,7 +51,7 @@ const MARKDOWN_COMPONENTS = {
   li: ({ children }) => <li className="break-words">{children}</li>,
   strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,
-  code: ({ children }) => <code className="rounded bg-theme-bg/70 px-1 py-0.5 font-mono text-[13px] text-theme-text">{children}</code>,
+  code: ({ children, className = '' }) => <code className={`rounded bg-theme-bg/70 px-1 py-0.5 font-mono text-[13px] text-theme-text ${className}`}>{children}</code>,
   pre: ({ children }) => <pre className="my-2 overflow-x-auto rounded border border-theme-border bg-theme-bg/70 [&>code]:block [&>code]:p-2">{children}</pre>,
   table: ({ children }) => (
     <div role="region" aria-label="Scrollable table" tabIndex={0} className="my-3 max-w-full overflow-x-auto rounded border border-theme-border">
@@ -60,6 +78,9 @@ const MARKDOWN_COMPONENTS = {
 const MAX_INPUT_LEN = 16 * 1024
 const MAX_REQUEST_MESSAGES = 50
 const MAX_TOTAL_MESSAGE_BYTES = 256 * 1024
+// Visible history is independent of the model's per-request context budget.
+const MAX_STORED_MESSAGES = 2000
+const MAX_STORED_MESSAGE_BYTES = 4 * 1024 * 1024
 const CHAT_STORAGE_KEY = 'ods.pixel.chat.v1'
 const SAFE_CHAT_ID = /^[A-Za-z0-9_-]{1,128}$/
 const STOPPED_NOTICE = 'Stopped by you. Workspace changes completed before cancellation were preserved.'
@@ -205,6 +226,7 @@ export function resolvePreviewAccess(preview) {
   if (!preview) return null
   return {
     url: `/pixel-preview/${preview.siteId}/`,
+    frameUrl: `/pixel-preview/${preview.siteId}/__ods_view__.html`,
     // A loopback dashboard can be an SSH forward to another machine. Use its
     // authenticated relay rather than assuming the viewer hosts the snapshot.
     // Keep it opaque even though it shares the Dashboard URL.
@@ -380,14 +402,28 @@ function stoppedContent(content) {
   return `${partial}\n\n---\n\n_${STOPPED_NOTICE}_`
 }
 
-function loadStoredChat() {
+function messagePublication(message) {
+  const validate = preview => parseVerifiedPreviewFrame({choices:[{finish_reason:'stop'}],pixel:{schemaVersion:1,preview}})
+  if (message?.role !== 'assistant') return {}
+  const publication = validate(message.publication)
+  const beforePublication = validate(message.beforePublication)
+  return publication ? {publication, beforePublication:beforePublication?.relativeDirectory === publication.relativeDirectory ? beforePublication : null} : {}
+}
+
+function messageOutcome(message) {
+  return message.role === 'assistant' && ['done', 'error', 'stopped'].includes(message.status)
+    ? {status:message.status} : {}
+}
+
+function loadStoredChat(selected) {
   try {
-    const stored = JSON.parse(globalThis.localStorage?.getItem(CHAT_STORAGE_KEY) || 'null')
+    const stored = selected || JSON.parse(globalThis.localStorage?.getItem(CHAT_STORAGE_KEY) || 'null')
     if (
       stored?.schema !== 1
       || !SAFE_CHAT_ID.test(stored.chatId || '')
+      || isConversationDeleted(stored.chatId)
       || !Array.isArray(stored.messages)
-      || stored.messages.length > MAX_REQUEST_MESSAGES
+      || stored.messages.length > MAX_STORED_MESSAGES
     ) return null
 
     let totalBytes = 0
@@ -396,11 +432,12 @@ function loadStoredChat() {
         !message
         || !['user', 'assistant'].includes(message.role)
         || typeof message.content !== 'string'
-        || message.content.length > MAX_INPUT_LEN
+        || (message.role === 'user' && message.content.length > MAX_INPUT_LEN)
       ) throw new Error('invalid stored Pixel message')
       totalBytes += new TextEncoder().encode(message.content).byteLength
-      if (totalBytes > MAX_TOTAL_MESSAGE_BYTES) throw new Error('stored Pixel chat is too large')
-      return { role: message.role, content: message.content }
+      if (totalBytes > MAX_STORED_MESSAGE_BYTES) throw new Error('stored Pixel chat is too large')
+      const task = message.role === 'assistant' && parseTaskActivity(message.task, message.task?.runId)
+      return { role: message.role, content: message.content, ...messageOutcome(message), ...(task ? {task} : {}), ...messagePublication(message) }
     })
     // Reuse the terminal marker validator for persisted metadata. Never infer
     // an iframe URL from conversation text, and always use the authenticated
@@ -416,6 +453,9 @@ function loadStoredChat() {
     }
     return {
       chatId: stored.chatId, messages, preview,
+      contextStart: Number.isInteger(stored.contextStart) && stored.contextStart >= 0 && stored.contextStart <= messages.length ? stored.contextStart : 0,
+      workspaceOpen: stored.workspaceOpen !== false && (stored.workspaceOpen === true || Boolean(preview)),
+      draft: typeof stored.draft === 'string' ? stored.draft.slice(0, MAX_INPUT_LEN) : '',
       interrupted: stored.inFlight === true || stored.interrupted === true,
     }
   } catch {
@@ -429,7 +469,13 @@ function boundedHistory(messages, nextUserContent) {
   const selected = []
   let bytes = 0
   for (let index = messages.length - 1; index >= 0 && selected.length < MAX_REQUEST_MESSAGES - 2; index -= 1) {
-    const { role, content } = messages[index]
+    const { role } = messages[index]
+    // The transport's per-message cap is not a transcript storage limit.
+    // Bound only the copy sent to the model; keep the complete reply in chat.
+    const omission = '\n[Earlier response shortened for model context.]'
+    const original = messages[index].content
+    const content = original.length > MAX_INPUT_LEN
+      ? original.slice(0, MAX_INPUT_LEN - omission.length) + omission : original
     const size = encoder.encode(content).byteLength
     if (bytes + size > budget) break
     selected.unshift({ role, content })
@@ -440,11 +486,13 @@ function boundedHistory(messages, nextUserContent) {
 }
 
 export default function Pixel({ systemStatus = null }) {
+  const profile = useLocalProfile()
   const [initialChat] = useState(loadStoredChat)
   const [status, setStatus] = useState('loading')
   const [statusDetail, setStatusDetail] = useState('')
   const [messages, setMessages] = useState(() => initialChat?.messages || [])
-  const [input, setInput] = useState('')
+  const [input, setInput] = useState(() => initialChat?.draft || '')
+  const [persistenceError, setPersistenceError] = useState('')
   const [sending, setSending] = useState(false)
   const [interrupted, setInterrupted] = useState(() => initialChat?.interrupted || false)
   const [stopping, setStopping] = useState(false)
@@ -456,11 +504,16 @@ export default function Pixel({ systemStatus = null }) {
   const [modelSupport, setModelSupport] = useState(null)
   const [preview, setPreview] = useState(() => initialChat?.preview || null)
   const [previewRefresh, setPreviewRefresh] = useState(0)
+  const [previewCollapsed, setPreviewCollapsed] = useState(false)
+  const [previewWidth, setPreviewWidth] = useState(440)
+  const [previewTab, setPreviewTab] = useState('preview')
+  const [workspaceOpen, setWorkspaceOpen] = useState(() => initialChat?.workspaceOpen || false)
+  useEffect(() => { setPreviewTab('preview') }, [preview?.siteId])
 
   const abortRef = useRef(null)
   const restoredActivityRef = useRef(restoredActivity)
   const chatIdRef = useRef(initialChat?.chatId || makeChatId())
-  const contextStartRef = useRef(0)
+  const contextStartRef = useRef(initialChat?.contextStart || 0)
   const inputRef = useRef(null)
   const scrollRef = useRef(null)
 
@@ -614,27 +667,34 @@ export default function Pixel({ systemStatus = null }) {
 
   useEffect(() => {
     try {
-      const storedMessages = boundedHistory(messages.slice(contextStartRef.current), '')
-      globalThis.localStorage?.setItem(CHAT_STORAGE_KEY, JSON.stringify({
+      const storedMessages = messages.map(message => {
+        const task = message.role === 'assistant' && parseTaskActivity(message.task, message.task?.runId)
+        return {role: message.role, content: message.content, ...messageOutcome(message), ...(task ? {task} : {}), ...messagePublication(message)}
+      })
+      // Report storage limits without silently trimming previous turns.
+      if (storedMessages.length > MAX_STORED_MESSAGES || storedMessages.reduce((total, message) => total + new TextEncoder().encode(message.content).byteLength, 0) > MAX_STORED_MESSAGE_BYTES) throw new Error('stored Pixel chat is too large')
+      saveConversation({
         schema: 1,
         chatId: chatIdRef.current,
         inFlight: sending,
         interrupted,
-        messages: storedMessages.map(({ role, content }) => ({
-          role,
-          content,
-        })),
+        draft: input,
+        messages: storedMessages,
+        contextStart: contextStartRef.current,
         preview,
-      }))
+        workspaceOpen,
+      })
+      setPersistenceError('')
     } catch {
       // Conversation persistence is a convenience; chat remains usable when
       // storage is unavailable, full, or blocked by the browser.
+      setPersistenceError('Your browser could not save this conversation. Keep this page open to avoid losing it.')
     }
-  }, [messages, preview, sending, interrupted])
+  }, [messages, preview, workspaceOpen, sending, interrupted, input])
 
   const sendMessage = useCallback(async () => {
     const trimmed = input.trim()
-    if (!trimmed || sending || restoredActive || restoredChecking || status !== 'available' || trimmed.length > MAX_INPUT_LEN) return
+    if (!trimmed || sending || abortRef.current || restoredActive || restoredChecking || status !== 'available' || trimmed.length > MAX_INPUT_LEN) return
 
     const userMessage = { role: 'user', content: trimmed }
     const originalContextStart = contextStartRef.current
@@ -645,8 +705,8 @@ export default function Pixel({ systemStatus = null }) {
       ...boundedHistory(messages.slice(originalContextStart), trimmed),
       userMessage,
     ]
-    contextStartRef.current = 0
-    setMessages([...conversation, { role: 'assistant', content: '', status: 'streaming' }])
+    const visibleConversation = [...messages, userMessage]
+    setMessages([...visibleConversation, { role: 'assistant', content: '', status: 'streaming' }])
     setInput('')
     setSending(true)
     setInterrupted(false)
@@ -656,6 +716,9 @@ export default function Pixel({ systemStatus = null }) {
 
     const controller = new AbortController()
     abortRef.current = controller
+    // Stop releases the UI before the old reader necessarily settles. Only
+    // this generation may update the response, workspace, or sending state.
+    const isCurrentTurn = () => !controller.signal.aborted && abortRef.current === controller
     let latestAssistantText = ''
 
     async function streamAttempt(chatId, attemptConversation) {
@@ -665,6 +728,7 @@ export default function Pixel({ systemStatus = null }) {
       let receivedError = false
       let recoveryEligible = false
       let verifiedPreview = null
+      let taskActivity = null
 
       try {
         const response = await fetch('/api/pixel/chat/stream', {
@@ -673,6 +737,7 @@ export default function Pixel({ systemStatus = null }) {
           body: JSON.stringify({ chat_id: chatId, messages: attemptConversation }),
           signal: controller.signal,
         })
+        if (!isCurrentTurn()) return { kind: 'obsolete' }
         if (response.status === 409) {
           let detail = MODEL_SWITCH_DETAIL
           if (typeof response.json === 'function') {
@@ -707,6 +772,7 @@ export default function Pixel({ systemStatus = null }) {
 
         while (!receivedDone) {
           const { done, value } = await reader.read()
+          if (!isCurrentTurn()) return { kind: 'obsolete' }
           if (done) {
             buffer += decoder.decode()
             break
@@ -729,14 +795,19 @@ export default function Pixel({ systemStatus = null }) {
               if (frame?.error) {
                 receivedError = true
                 setMessages(previous => replaceLastAssistant(previous, {
-                  content: 'Pixel could not complete the response.',
+                  content: assistantText ? `${assistantText}\n\n_Pixel could not complete the response._` : 'Pixel could not complete the response.',
                   status: 'error',
                 }))
                 continue
               }
+              // Error is terminal for this reply. Late deltas must not turn a
+              // failed response back into an apparently running/successful one.
+              if (receivedError) continue
               if (isCleanContextRecoveryFrame(frame)) recoveryEligible = true
               const candidatePreview = parseVerifiedPreviewFrame(frame)
               if (candidatePreview) verifiedPreview = candidatePreview
+              const candidateTask = parseTaskActivityFrame(frame)
+              if (candidateTask) taskActivity = candidateTask
               const content = frame?.choices?.[0]?.delta?.content
               if (typeof content === 'string' && content.length > 0) {
                 assistantText += content
@@ -759,6 +830,7 @@ export default function Pixel({ systemStatus = null }) {
           receivedError,
           recoveryEligible,
           verifiedPreview,
+          taskActivity,
         }
       } finally {
         reader?.releaseLock?.()
@@ -768,15 +840,20 @@ export default function Pixel({ systemStatus = null }) {
     function finishAttempt(attempt, recovered = false) {
       // An acknowledged Stop or page disposal can close a reader normally.
       // Its late close must not overwrite the explicit cancellation outcome.
-      if (controller.signal.aborted) return
+      if (!isCurrentTurn()) return
       if (attempt.receivedError) return
       if (attempt.receivedDone) {
+        const previousPublication = [...messages].reverse().find(message => message.publication?.relativeDirectory === attempt.verifiedPreview?.relativeDirectory)?.publication || preview
         if (attempt.verifiedPreview) {
           setPreview(attempt.verifiedPreview)
+          setWorkspaceOpen(true)
+          setPreviewCollapsed(false)
           setPreviewRefresh(0)
         }
         setMessages(previous => replaceLastAssistant(previous, {
           status: 'done',
+          ...(attempt.taskActivity ? {task: attempt.taskActivity} : {}),
+          ...(attempt.verifiedPreview ? {publication:attempt.verifiedPreview, beforePublication:previousPublication?.relativeDirectory === attempt.verifiedPreview.relativeDirectory ? previousPublication : null} : {}),
           ...(recovered ? { recovered: true } : {}),
         }))
         return
@@ -790,6 +867,7 @@ export default function Pixel({ systemStatus = null }) {
 
     try {
       let attempt = await streamAttempt(chatIdRef.current, conversation)
+      if (!isCurrentTurn()) return
       if (attempt.kind === 'switching') {
         setStatus('switching')
         setStatusDetail(attempt.detail)
@@ -810,10 +888,10 @@ export default function Pixel({ systemStatus = null }) {
       if (!attempt.receivedError && attempt.receivedDone && attempt.recoveryEligible) {
         const retryChatId = makeChatId()
         chatIdRef.current = retryChatId
-        contextStartRef.current = conversation.length - 1
+        contextStartRef.current = visibleConversation.length - 1
         latestAssistantText = ''
         setMessages([
-          ...conversation,
+          ...visibleConversation,
           {
             role: 'assistant',
             content: CLEAN_CONTEXT_RECOVERY_NOTICE,
@@ -822,17 +900,18 @@ export default function Pixel({ systemStatus = null }) {
         ])
 
         attempt = await streamAttempt(retryChatId, [userMessage])
+        if (!isCurrentTurn()) return
         if (attempt.kind === 'switching') {
-          contextStartRef.current = 0
-          setMessages([])
+          contextStartRef.current = messages.length
+          setMessages(messages)
           setInput(trimmed)
           setStatus('switching')
           setStatusDetail(`${attempt.detail}. The clean-context request is preserved.`)
           return
         }
         if (attempt.kind === 'adaptive') {
-          contextStartRef.current = 0
-          setMessages([])
+          contextStartRef.current = messages.length
+          setMessages(messages)
           setInput(trimmed)
           setStatus('available')
           setModelSupport({ tier: 'adaptive', detail: attempt.detail })
@@ -851,7 +930,7 @@ export default function Pixel({ systemStatus = null }) {
 
       finishAttempt(attempt)
     } catch (error) {
-      if (error?.name !== 'AbortError') {
+      if (isCurrentTurn() && error?.name !== 'AbortError') {
         setInterrupted(true)
         setMessages(previous => replaceLastAssistant(previous, {
           content: latestAssistantText || 'Request failed',
@@ -859,12 +938,14 @@ export default function Pixel({ systemStatus = null }) {
         }))
       }
     } finally {
-      setSending(false)
-      setStopping(false)
-      setStopError('')
-      if (abortRef.current === controller) abortRef.current = null
+      if (isCurrentTurn()) {
+        setSending(false)
+        setStopping(false)
+        setStopError('')
+        abortRef.current = null
+      }
     }
-  }, [input, messages, sending, status, restoredActive, restoredChecking, updateRestoredActivity])
+  }, [input, messages, preview, sending, status, restoredActive, restoredChecking, updateRestoredActivity])
 
   const stopStreaming = useCallback(async () => {
     const controller = abortRef.current
@@ -926,6 +1007,7 @@ export default function Pixel({ systemStatus = null }) {
     contextStartRef.current = 0
     setMessages([])
     setPreview(null)
+    setWorkspaceOpen(false)
     setPreviewRefresh(0)
     setInput('')
     setInterrupted(false)
@@ -937,6 +1019,60 @@ export default function Pixel({ systemStatus = null }) {
     setInput(prompt)
     inputRef.current?.focus?.()
   }, [])
+
+  useEffect(() => {
+    const remove = event => {
+      const {chatId, complete} = event.detail
+      if (sending || restoredActive || restoredChecking || stopping) {
+        complete('Stop the current task before deleting a conversation.')
+        return
+      }
+      try {
+        deleteConversation(chatId)
+        if (chatId === chatIdRef.current) startNewChat()
+        complete('')
+      } catch (error) { complete(error.message || 'Could not delete this conversation.') }
+    }
+    window.addEventListener(DELETE_EVENT, remove)
+    return () => window.removeEventListener(DELETE_EVENT, remove)
+  }, [sending, restoredActive, restoredChecking, stopping, startNewChat])
+
+  const insertComposerText = useCallback(text => {
+    if (sending || restoredActive || restoredChecking || stopping) return
+    setInput(value => value === '/' ? text : `${value}${value && !value.endsWith(' ') && !value.endsWith('\n') ? ' ' : ''}${text}`)
+    inputRef.current?.focus?.()
+  }, [sending, restoredActive, restoredChecking, stopping])
+
+  useEffect(() => {
+    window.addEventListener('ods:pixel-new-task', startNewChat)
+    return () => window.removeEventListener('ods:pixel-new-task', startNewChat)
+  }, [startNewChat])
+
+  useEffect(() => {
+    const select = event => {
+      if (sending || restoredActive || restoredChecking || stopping) {
+        setStopError('Stop the current task before switching conversations.')
+        return
+      }
+      const chat = loadStoredChat(readConversations().find(item => item.chatId === event.detail))
+      if (!chat || chat.chatId === chatIdRef.current) return
+      chatIdRef.current = chat.chatId
+      contextStartRef.current = chat.contextStart
+      setMessages(chat.messages)
+      setPreview(chat.preview)
+      setWorkspaceOpen(chat.workspaceOpen)
+      setPreviewRefresh(0)
+      setInput(chat.draft)
+      setStopError('')
+      setInterrupted(chat.interrupted)
+      updateRestoredActivity(chat.interrupted ? 'checking' : 'idle')
+      // Two interrupted chats have identical flags; the ref-only identity
+      // change must still dispose the previous poll and check the new chat.
+      setActivityRefresh(value => value + 1)
+    }
+    window.addEventListener(SELECT_EVENT, select)
+    return () => window.removeEventListener(SELECT_EVENT, select)
+  }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity])
 
   const inputOver = input.length > MAX_INPUT_LEN
   const inputEmpty = !input.trim()
@@ -961,27 +1097,34 @@ export default function Pixel({ systemStatus = null }) {
         : 'Degraded'
 
   return (
-    <div className="flex h-[100dvh] flex-col overflow-hidden text-theme-text">
-      <div className="flex flex-wrap items-center gap-3 border-b border-theme-border bg-theme-card/35 px-4 py-3 sm:px-6">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-theme-accent/30 bg-theme-accent/15 text-theme-accent-light">
-          <Bot className="h-5 w-5" />
+    <div className="pixel-chat flex flex-col overflow-hidden text-theme-text">
+      <div className="pixel-chat-preview-layout flex min-h-0 flex-1 flex-col lg:flex-row">
+        <div className="pixel-chat-column flex min-h-0 min-w-0 flex-1 flex-col">
+      {persistenceError && <p role="alert" className="px-6 py-2 text-sm text-amber-300">{persistenceError}</p>}
+      <header className="pixel-chat-header">
+        <div className="pixel-chat-identity">
+        <div className="flex h-9 w-9 items-center justify-center text-theme-accent-light">
+          <PixelMascot state={pixelHeaderPose({sending, stopping, restoredActive, restoredChecking, interrupted, restoredActivity, status})} />
         </div>
         <div className="min-w-0">
           <h1 className="text-base font-semibold leading-tight">Pixel</h1>
           <p className="text-[11px] text-theme-text-muted">Your local ODS owner agent</p>
         </div>
+        </div>
 
-        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
-          <PixelAdvice canInsert={!sending} onInsert={text => setInput(current => current ? `${current}\n\n${text}` : text)} />
-          <PixelHandoffApproval />
-          <PixelProviderScopes chatId={chatIdRef.current} sending={sending} />
+        <div className="pixel-chat-header-actions">
+          <button type="button" aria-label="Search Pixel" title="Search conversations · Ctrl+K" className="pixel-metal-control p-2" onClick={() => window.dispatchEvent(new Event(OPEN_PIXEL_SEARCH))}><Search size={16}/></button>
+          <details className="pixel-chat-options"><summary aria-label="Chat options">•••</summary><div className="pixel-chat-options-menu">
+            <PixelAdvice canInsert={!sending} onInsert={text => setInput(current => current ? `${current}\n\n${text}` : text)} />
+            <PixelHandoffApproval label="Approvals" />
+            <PixelProviderScopes chatId={chatIdRef.current} sending={sending} />
+          </div></details>
           {activeModel && (
             <div
-              className="hidden min-w-0 items-center gap-2 rounded-lg border border-theme-border bg-theme-bg/40 px-2.5 py-1.5 font-mono text-[10px] text-theme-text-muted sm:flex"
+              className="pixel-chat-model hidden min-w-0 items-center rounded-md border border-theme-border px-2 py-1.5 font-mono text-[10px] text-theme-text-muted sm:flex"
               title={activeModel}
             >
-              <span className="max-w-52 truncate text-theme-text-secondary">{activeModel}</span>
-              {activeContext && <span className="shrink-0 text-theme-accent-light">{activeContext}</span>}
+              <span className="truncate text-theme-text-secondary">{activeModel}</span>
             </div>
           )}
           <Link
@@ -990,12 +1133,15 @@ export default function Pixel({ systemStatus = null }) {
           >
             Change model
           </Link>
+          <button type="button" aria-label="Workspace" aria-expanded={workspaceOpen} onClick={() => { setWorkspaceOpen(value => !value); setPreviewCollapsed(false) }} className="inline-flex items-center gap-1.5 bg-transparent px-2.5 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text">
+            <PanelRightOpen size={14}/><span>Workspace</span>
+          </button>
           {messages.length > 0 && (
             <button
               type="button"
               onClick={startNewChat}
               disabled={sending || restoredActive || restoredChecking || stopping}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-theme-border bg-theme-card px-2.5 py-1.5 text-xs font-medium text-theme-text-secondary transition hover:border-theme-accent/40 hover:text-theme-text disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-none border-0 bg-transparent px-2.5 py-1.5 text-xs font-medium text-theme-text-secondary transition hover:text-theme-text disabled:cursor-not-allowed disabled:opacity-50"
               title="Start a new chat"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -1005,12 +1151,12 @@ export default function Pixel({ systemStatus = null }) {
           <span
             aria-live="polite"
             title={modelSupport?.detail || undefined}
-            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
+            className={`inline-flex items-center gap-1.5 text-[11px] font-medium ${
             sending
-              ? 'border-theme-accent/35 bg-theme-accent/15 text-theme-accent-light'
+              ? 'text-theme-accent-light'
               : status === 'available'
-              ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400'
-              : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+              ? 'text-emerald-400'
+              : 'text-amber-300'
           }`}
           >
             {sending || status === 'loading' || status === 'switching' ? (
@@ -1024,10 +1170,7 @@ export default function Pixel({ systemStatus = null }) {
             {sending && <span className="font-mono text-[10px] opacity-80">{workingElapsed}</span>}
           </span>
         </div>
-      </div>
-
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      </header>
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
         {interrupted && !sending && (
           <div role="status" className="mx-auto w-full max-w-5xl rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
@@ -1057,13 +1200,15 @@ export default function Pixel({ systemStatus = null }) {
           </div>
         )}
         {status === 'unavailable' && messages.length === 0 && (
-          <div className="mx-auto flex h-full max-w-lg flex-col items-center justify-center text-center text-theme-text-muted">
-            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-amber-500/25 bg-amber-500/10 text-amber-300">
-              <AlertCircle className="h-7 w-7" />
-            </div>
+          <div className="pixel-welcome mx-auto text-theme-text-muted">
+            <PixelMascot className="pixel-welcome-character" />
+            <h2>What do you want to work on?</h2>
+            <p className="pixel-welcome-description">Start a private task, explore an idea, or create something new.</p>
+            <div className="pixel-offline-notice" role="status">
             <p className="font-medium text-theme-text">Pixel is currently unavailable</p>
             {statusDetail && <p className="mt-1 text-sm">{statusDetail}</p>}
             <p className="mt-4 text-xs">Your other ODS applications remain available while the agent reconnects.</p>
+            </div>
           </div>
         )}
         {status === 'switching' && messages.length === 0 && (
@@ -1074,26 +1219,22 @@ export default function Pixel({ systemStatus = null }) {
           </div>
         )}
         {status === 'available' && messages.length === 0 && (
-          <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center py-8">
-            <div className="mb-7 text-center">
-              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-theme-accent/30 bg-theme-accent/15 text-theme-accent-light shadow-[0_0_32px_rgba(157,0,255,0.18)]">
-                <Sparkles className="h-7 w-7" />
-              </div>
-              <h2 className="text-2xl font-semibold tracking-tight">What should we accomplish?</h2>
-              <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-theme-text-muted">
-                Pixel uses every ODS chat model. Stronger models handle complex tools and long tasks more reliably; the same broker-enforced safety boundaries apply to all of them.
-              </p>
+          <div className="pixel-welcome mx-auto text-theme-text-muted">
+            <div>
+              <PixelMascot className="pixel-welcome-character" />
+              <h2>What do you want to work on?</h2>
+              <p className="pixel-welcome-description">Start a private task, explore an idea, or create something new.</p>
             </div>
 
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="pixel-suggestions">
               {SUGGESTED_TASKS.map(({ icon: Icon, label, description, prompt }) => (
                 <button
                   key={label}
                   type="button"
                   onClick={() => selectSuggestion(prompt)}
-                  className="group flex items-start gap-3 rounded-xl border border-theme-border bg-theme-card/70 p-4 text-left transition hover:border-theme-accent/45 hover:bg-theme-surface-hover"
+                  className="pixel-suggestion"
                 >
-                  <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-theme-accent/12 text-theme-accent-light">
+                  <span className="pixel-suggestion-icon">
                     <Icon className="h-4 w-4" />
                   </span>
                   <span>
@@ -1104,24 +1245,19 @@ export default function Pixel({ systemStatus = null }) {
               ))}
             </div>
 
-            <div className="mt-6 flex flex-wrap justify-center gap-x-4 gap-y-2 text-[11px] text-theme-text-muted">
-              <span className="inline-flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5" /> Local-first</span>
-              <span>Workspace tools</span>
-              <span>Public-source research</span>
-              <span>Explicit safety boundaries</span>
-            </div>
           </div>
         )}
         {messages.map((message, index) => (
-          <div key={index} className={`mx-auto flex min-w-0 w-full max-w-5xl ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+          <div key={index} data-pixel-response={message.role === 'assistant' ? '' : undefined} className={`mx-auto flex min-w-0 w-full max-w-5xl ${message.role === 'user' ? 'justify-end gap-2' : 'justify-start'}`}>
+            {message.role === 'assistant' && <PixelMascot state={pixelReplyPose(message, sending && index === messages.length - 1)} settled={message.status !== 'streaming'} className="pixel-reply-character" />}
             <div className={`min-w-0 max-w-[min(85%,48rem)] rounded-2xl px-4 py-3 text-sm leading-6 [overflow-wrap:anywhere] ${
               message.role === 'user'
-                ? 'bg-theme-accent text-white shadow-lg shadow-black/10'
+                ? 'border border-theme-border bg-theme-card text-theme-text'
                 : message.status === 'error'
                   ? 'border border-red-500/25 bg-red-500/10 text-red-200'
                   : message.status === 'stopped'
-                    ? 'border border-amber-500/30 bg-amber-500/10 text-theme-text-secondary shadow-lg shadow-black/10'
-                  : 'border border-theme-border bg-theme-card text-theme-text-secondary shadow-lg shadow-black/10'
+                    ? 'border border-amber-500/30 bg-amber-500/10 text-theme-text-secondary'
+                  : 'bg-transparent text-theme-text-secondary'
             }`}>
               {message.status === 'stopped' && (
                 <div role="status" className="mb-2 inline-flex items-center gap-1.5 text-xs font-medium text-amber-300">
@@ -1137,7 +1273,8 @@ export default function Pixel({ systemStatus = null }) {
               )}
               {message.role === 'assistant' && message.content ? (
                 <>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{message.content}</ReactMarkdown>
+                  {message.publication && <PixelSnapshotChanges preview={message.publication} before={message.beforePublication} onPreview={() => {setPreview(message.publication);setWorkspaceOpen(true);setPreviewCollapsed(false);setPreviewTab('preview')}}/>}
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={MARKDOWN_COMPONENTS}>{message.content}</ReactMarkdown>
                   <OperationsApprovalCard content={message.content} />
                 </>
               ) : (
@@ -1145,9 +1282,8 @@ export default function Pixel({ systemStatus = null }) {
               )}
               {message.status === 'streaming' && !message.content && (
                 <span role="status" className="inline-flex items-start gap-2 text-theme-text-muted">
-                  <Loader2 className="h-4 w-4 animate-spin text-theme-accent-light" />
                   <span>
-                    <span className="block">{workingDetail(workingElapsedSeconds)}</span>
+                    <span className="pixel-working-label block">{workingDetail(workingElapsedSeconds)}</span>
                     <span className="mt-0.5 block text-xs text-theme-text-muted/80">
                       {workingElapsed} elapsed · You can stop safely at any time.
                     </span>
@@ -1155,14 +1291,15 @@ export default function Pixel({ systemStatus = null }) {
                 </span>
               )}
             </div>
+            {message.role === 'user' && <UserAvatar profile={profile} className="pixel-user-character"/>}
           </div>
         ))}
         <div ref={scrollRef} />
       </div>
 
-      <div className="border-t border-theme-border bg-theme-bg/80 px-4 py-3 backdrop-blur sm:px-6">
+      <div className="pixel-composer px-4 py-3 sm:px-6">
         <div className="mx-auto max-w-5xl">
-          <div className="flex gap-2">
+          <div className="pixel-composer-row">
           <textarea
             ref={inputRef}
             value={input}
@@ -1181,15 +1318,17 @@ export default function Pixel({ systemStatus = null }) {
                 : 'Pixel is unavailable'}
             disabled={isDisabled}
             rows={1}
-            className={`min-h-11 flex-1 resize-none rounded-xl border bg-theme-card px-4 py-2.5 text-sm text-theme-text outline-none transition placeholder:text-theme-text-muted/70 focus:ring-2 focus:ring-theme-accent/30 disabled:opacity-50 ${
-              inputOver ? 'border-red-400' : 'border-theme-border focus:border-theme-accent/60'
+            className={`pixel-composer-input min-h-11 flex-1 resize-none rounded-xl border bg-theme-card px-4 py-2.5 text-sm text-theme-text outline-none transition placeholder:text-theme-text-muted/70 disabled:opacity-50 ${
+              inputOver ? 'border-red-400' : 'border-theme-border'
             }`}
           />
+          <div className="pixel-composer-actions">
+          <PixelDictation disabled={isDisabled} conversationId={chatIdRef.current} onInsert={insertComposerText}/>
           {sending || restoredActive ? (
             <button
               onClick={stopStreaming}
               disabled={stopping}
-              className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-red-500 text-white transition hover:bg-red-600 disabled:cursor-wait disabled:opacity-70"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-theme-border bg-theme-surface text-theme-text transition hover:bg-theme-surface-hover disabled:cursor-wait disabled:opacity-70"
               title={stopping ? 'Stopping' : 'Stop'}
             >
               {stopping ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
@@ -1198,17 +1337,24 @@ export default function Pixel({ systemStatus = null }) {
             <button
               onClick={sendMessage}
               disabled={isDisabled || inputOver || inputEmpty}
-              className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-theme-accent text-white shadow-[0_0_22px_rgba(157,0,255,0.18)] transition hover:bg-theme-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-theme-accent text-white transition hover:bg-theme-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
               title="Send"
             >
               <Send className="h-4 w-4" />
             </button>
           )}
           </div>
+          </div>
           {stopError && <p role="alert" className="mt-1.5 px-1 text-xs text-amber-300">{stopError}</p>}
+          <div className="pixel-composer-secondary">
+            <PixelComposerTools input={input} disabled={isDisabled} onInsert={insertComposerText} />
+            <div className="pixel-composer-limits">
+              {activeContext && <span title="Model context window shared by instructions, conversation, tools, and reply">{activeContext}</span>}
+              <span className={inputOver ? 'text-red-400' : ''} title="Characters in this message, not tokens or context usage">{input.length.toLocaleString()} / {MAX_INPUT_LEN.toLocaleString()} chars</span>
+            </div>
+          </div>
           <div className="mt-1.5 flex items-center justify-between gap-3 px-1 text-[10px] text-theme-text-muted/70">
             <span>{stopping ? 'Waiting for exact cancellation acknowledgement' : restoredActive ? 'Earlier work is active in this chat; Stop targets only this chat.' : sending ? `Pixel is using the active ODS model and tools · ${workingElapsed} elapsed` : 'Enter to send • Shift+Enter for a new line'}</span>
-            <span className={inputOver ? 'text-red-400' : ''}>{input.length.toLocaleString()} / {MAX_INPUT_LEN.toLocaleString()}</span>
           </div>
         </div>
         {inputOver && (
@@ -1219,53 +1365,69 @@ export default function Pixel({ systemStatus = null }) {
       </div>
         </div>
 
-        {preview && (
-          <aside className="flex h-[46vh] min-h-80 shrink-0 flex-col border-t border-theme-border bg-theme-card/55 lg:h-auto lg:w-[42%] lg:border-l lg:border-t-0 xl:w-1/2">
-            <div className="flex items-center gap-2 border-b border-theme-border px-3 py-2.5">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-theme-accent/30 bg-theme-accent/15 text-theme-accent-light">
-                <PanelRightOpen className="h-4 w-4" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-xs font-semibold text-theme-text" title={preview.relativeDirectory}>
-                  Live preview · {preview.relativeDirectory}
-                </p>
-                <p className="text-[10px] text-emerald-400">Host verified · {preview.files} files</p>
-              </div>
+        <PixelCommandSearch onInsert={insertComposerText} onNewTask={startNewChat}/>
+        <PixelSelectionActions disabled={isDisabled} conversationId={chatIdRef.current} onInsert={insertComposerText}/>
+        {workspaceOpen && (
+          <aside aria-label="Preview panel" style={{'--preview-width':`${previewWidth}px`}} className={`pixel-preview-panel ${previewCollapsed ? 'is-collapsed' : ''} flex shrink-0 flex-col border-theme-border bg-theme-bg`}>
+            {!previewCollapsed && <PanelResizeHandle width={previewWidth} onResize={setPreviewWidth} label="Resize preview panel" container=".pixel-chat-preview-layout" minimum={240} />}
+            <div className="pixel-workspace-toolbar flex items-center gap-2 border-b border-theme-border px-3 py-2.5">
+              <nav className="pixel-preview-tabs" aria-label="Preview views">
+                <button type="button" aria-pressed={previewTab === 'activity'} onClick={() => setPreviewTab('activity')}>Activity</button>
+                <button type="button" aria-pressed={previewTab === 'files'} onClick={() => setPreviewTab('files')}>Files</button>
+                <button type="button" aria-pressed={previewTab === 'preview'} onClick={() => setPreviewTab('preview')}>Preview</button>
+                <button type="button" aria-pressed={previewTab === 'changes'} onClick={() => setPreviewTab('changes')}>Changes</button>
+              </nav>
+              <div className="pixel-workspace-actions">
+              <button type="button" onClick={() => setPreviewCollapsed(value => !value)} title={previewCollapsed ? 'Expand preview' : 'Collapse preview'} className="rounded-lg p-2 text-theme-text-muted">
+                <MetalMetricIcon icon={previewCollapsed ? PanelRightOpen : PanelRightClose} size={16}/>
+              </button>
               <button
                 type="button"
                 onClick={() => setPreviewRefresh(value => value + 1)}
                 className="rounded-lg p-2 text-theme-text-muted transition hover:bg-theme-surface-hover hover:text-theme-text"
                 title="Reload preview"
+                disabled={!preview}
               >
-                <RefreshCw className="h-4 w-4" />
+                <MetalMetricIcon icon={RefreshCw} size={16} />
               </button>
-              <a
+              {preview && <a
                 href={previewAccess.url}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="rounded-lg p-2 text-theme-text-muted transition hover:bg-theme-surface-hover hover:text-theme-text"
                 title="Open preview in a new tab"
               >
-                <ExternalLink className="h-4 w-4" />
-              </a>
+                <MetalMetricIcon icon={ExternalLink} size={16} />
+              </a>}
               <button
                 type="button"
-                onClick={() => setPreview(null)}
+                onClick={() => setWorkspaceOpen(false)}
                 className="rounded-lg p-2 text-theme-text-muted transition hover:bg-theme-surface-hover hover:text-theme-text"
                 title="Close preview"
               >
-                <X className="h-4 w-4" />
+                <MetalMetricIcon icon={X} size={16} />
               </button>
+              </div>
             </div>
-            <iframe
+            {preview && <iframe
               key={`${preview.siteId}-${previewRefresh}`}
-              src={previewAccess.url}
+              src={previewAccess.frameUrl}
               title="Interactive Pixel preview"
+              hidden={previewCollapsed || previewTab !== 'preview'}
               sandbox={previewAccess.sandbox}
               data-preview-route={previewAccess.route}
               referrerPolicy="no-referrer"
               className="min-h-0 flex-1 border-0 bg-white"
-            />
+            />}
+            {!previewCollapsed && preview && previewTab === 'files' && <PixelTaskFiles key={`${preview.siteId}-${previewRefresh}`} preview={preview}/>}
+            {!previewCollapsed && preview && previewTab === 'changes' && <div className="pixel-workspace-changes"><PixelSnapshotChanges key={`${preview.siteId}-${previewRefresh}`} preview={preview} before={[...messages].reverse().find(message=>message.publication?.siteId === preview.siteId)?.beforePublication || null} onPreview={()=>setPreviewTab('preview')}/></div>}
+            {!previewCollapsed && previewTab === 'activity' && <PixelTaskActivity key={chatIdRef.current} messages={messages} sending={sending} elapsed={workingElapsed}/>}
+            {!previewCollapsed && !preview && previewTab !== 'activity' && <section className="pixel-workspace-empty">
+              <Code2 size={24}/><h2>{previewTab === 'files' ? 'No published files yet' : 'No preview published yet'}</h2>
+              <p>Saving HTML in the agent workspace does not publish it here. Pixel must publish the site and ODS must verify the result.</p>
+              <button type="button" disabled={isDisabled} onClick={() => insertComposerText('Publique o site que voce criou nesta conversa no preview do ODS. Inspecione os arquivos existentes, preserve o projeto e use pixel_ods_workspace_preview para a pasta que contem index.html. Nao apenas descreva o arquivo.')}>Ask Pixel to publish</button>
+              <small>Adds a request to your message. Review it before sending.</small>
+            </section>}
           </aside>
         )}
       </div>

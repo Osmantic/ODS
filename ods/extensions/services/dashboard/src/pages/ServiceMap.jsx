@@ -198,7 +198,9 @@ function edgePath(source, target) {
 function ServiceNode({ node, pos, selected, onSelect }) {
   const meta = statusMeta(node.status)
   return (
-    <g onClick={() => onSelect(node)} className="cursor-pointer">
+    <g role="button" tabIndex={0} aria-label={`${node.name}: ${node.status}`} onClick={() => onSelect(node)} onKeyDown={event => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(node) }
+    }} className="cursor-pointer">
       {selected && (
         <rect x={pos.x - 4} y={pos.y - 4} width={NODE_W + 8} height={NODE_H + 8} rx={14} fill="none" stroke={meta.color} strokeWidth="2" />
       )}
@@ -207,7 +209,7 @@ function ServiceNode({ node, pos, selected, onSelect }) {
       <text x={pos.x + 27} y={pos.y + 29} className="fill-zinc-100" style={{ fontSize: 12, fontWeight: 700 }}>
         {node.name.length > 18 ? `${node.name.slice(0, 17)}…` : node.name}
       </text>
-      <text x={pos.x + 15} y={pos.y + 47} className="fill-zinc-500" style={{ fontSize: 10, fontFamily: 'monospace' }}>
+      <text x={pos.x + 15} y={pos.y + 47} className="fill-zinc-400" style={{ fontSize: 11 }}>
         :{node.port}
       </text>
       <text x={pos.x + NODE_W - 10} y={pos.y + 47} textAnchor="end" style={{ fontSize: 9, fill: meta.color }}>
@@ -231,7 +233,7 @@ function DetailPanel({ node, edges, onClose }) {
           <span className={`h-2.5 w-2.5 rounded-full ${meta.dot}`} />
           <span className="text-sm font-semibold text-theme-text">{node.name}</span>
         </div>
-        <button onClick={onClose} className="text-theme-text-muted hover:text-theme-text"><X size={16} /></button>
+        <button onClick={onClose} aria-label="Close service details" className="text-theme-text-muted hover:text-theme-text"><X size={16} /></button>
       </div>
       <div className="space-y-3 px-4 py-3 text-xs">
         <div className="flex justify-between"><span className="text-theme-text-muted">Status</span><span className={meta.text}>{node.status}</span></div>
@@ -262,10 +264,12 @@ function DependencyList({ label, edges, field }) {
   )
 }
 
-export default function ServiceMap() {
+export default function ServiceMap({ compact = false }) {
+  const [showMap, setShowMap] = useState(false)
   const [topology, setTopology] = useState({ nodes: [], edges: [] })
   const [selectedNode, setSelectedNode] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [actualSize, setActualSize] = useState(false)
   const [error, setError] = useState(null)
   const fetchInFlight = useRef(false)
 
@@ -314,11 +318,19 @@ export default function ServiceMap() {
     return <div className="p-8 text-sm text-red-400">Topology data unavailable: {error}</div>
   }
 
+  if (compact && !showMap) return <section className="portal-integrations p-5">
+    <div className="mb-4 flex justify-between items-center gap-3"><p className="text-theme-text-muted">{nodes.length} services · {counts.healthy} healthy</p><button className="rounded border border-theme-border px-3 py-2" onClick={() => setShowMap(true)}>View map</button></div>
+    <p className="mb-4 text-xs text-theme-text-muted">Select a service to inspect its connections.</p>
+    {nodes.map(node => <button key={node.id} onClick={() => setSelectedNode(node)} aria-pressed={selectedNode?.id === node.id} className="flex w-full items-center justify-between gap-3 border-b border-theme-border py-3 text-left"><span>{node.name}</span><small className={node.status === 'healthy' ? 'text-emerald-300' : 'text-theme-text-muted'}>{node.status}</small></button>)}
+    <DetailPanel node={selectedNode} edges={edges} onClose={() => setSelectedNode(null)} />
+  </section>
+
   return (
     <div className="p-8">
+      {compact && <button className="mb-4 text-sm text-theme-text-muted" onClick={() => setShowMap(false)}>← Service list</button>}
       <div className="mb-6 flex items-start justify-between">
         <div>
-          <h1 className="flex items-center gap-2 text-2xl font-bold text-theme-text"><GitBranch size={22} className="text-theme-accent" />Integrations</h1>
+          {!compact && <h1 className="flex items-center gap-2 text-2xl font-bold text-theme-text"><GitBranch size={22} className="text-theme-accent" />Integrations</h1>}
           <p className="mt-1 text-sm text-theme-text-muted">
             {nodes.length} services · <span className="text-green-400">{counts.healthy} healthy</span>
             {counts.degraded > 0 && <>, <span className="text-yellow-400">{counts.degraded} degraded</span></>}
@@ -336,8 +348,13 @@ export default function ServiceMap() {
         <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-zinc-500" />Not deployed</span>
       </div>
 
-      <div className="relative min-h-[70vh] overflow-auto rounded-xl border border-theme-border bg-theme-card">
-        <svg width={svgWidth} height={svgHeight} viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="mx-auto block">
+      <div className="relative overflow-hidden rounded-xl border border-theme-border bg-theme-bg">
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-theme-border">
+          <span className="text-xs text-theme-text-muted">Service connections</span>
+          <button type="button" aria-pressed={actualSize} onClick={() => setActualSize(value => !value)} className="rounded-md px-3 py-1.5 text-xs text-theme-text-secondary hover:bg-theme-card">{actualSize ? 'Fit to panel' : 'Actual size'}</button>
+        </div>
+        <div className="overflow-auto" role="region" aria-label="Service topology" tabIndex={0}>
+        <svg width={actualSize ? svgWidth : '100%'} height={actualSize ? svgHeight : undefined} viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="mx-auto block" style={{ fontFamily: 'inherit', minHeight: actualSize ? undefined : 300 }}>
           <defs>
             <filter id="node-shadow" x="-25%" y="-60%" width="150%" height="230%"><feDropShadow dx="0" dy="2" stdDeviation="10" floodColor="#000" floodOpacity="0.7" /></filter>
             {Object.entries(EDGE_META).map(([label, color]) => <marker key={label} id={`arrow-${label.replaceAll(' ', '-')}`} markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M 0 0 L 7 2.5 L 0 5 Z" fill={color} fillOpacity="0.85" /></marker>)}
@@ -355,6 +372,7 @@ export default function ServiceMap() {
 
           {nodes.map(node => positions[node.id] && <ServiceNode key={node.id} node={node} pos={positions[node.id]} selected={selectedNode?.id === node.id} onSelect={setSelectedNode} />)}
         </svg>
+        </div>
 
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-theme-border px-4 py-3">
           <span className="text-xs font-medium text-zinc-600">Connections:</span>

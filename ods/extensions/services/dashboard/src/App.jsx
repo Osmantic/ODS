@@ -1,6 +1,8 @@
-import { Routes, Route, useLocation } from 'react-router-dom'
+import { Navigate, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import { useState, useEffect, Suspense, useMemo, useCallback, lazy } from 'react'
 import Sidebar from './components/Sidebar'
+import PanelResizeHandle from './components/PanelResizeHandle'
+import MetalMetricIcon from './components/MetalMetricIcon'
 import InstallPromptBanner from './components/InstallPromptBanner'
 import { useSystemStatus } from './hooks/useSystemStatus'
 import { useVersion } from './hooks/useVersion'
@@ -8,12 +10,16 @@ import { useFirstRun } from './hooks/useFirstRun'
 import { useSessionBootstrap } from './hooks/useSessionBootstrap'
 import { getInternalRoutes } from './plugins/registry'
 import SplashScreen from './components/SplashScreen'
+import { X, PanelRightClose, PanelRightOpen } from 'lucide-react'
 
 // Phone-first first-boot wizard. Mounted instead of the normal app shell
 // when useFirstRun() reports firstRun=true. Lazy-loaded so the wizard
 // bundle isn't paid for on every page load after onboarding.
 const FirstBoot = lazy(() => import('./pages/FirstBoot'))
 const ODSTalk = lazy(() => import('./pages/ODSTalk'))
+const SettingsModal = lazy(() => import('./components/SettingsModal'))
+const Pixel = lazy(() => import('./pages/Pixel'))
+const PixelSettings = lazy(() => import('./pages/PixelSettings'))
 
 function getStorageValue(storage, key) {
   try {
@@ -33,6 +39,15 @@ function setStorageValue(storage, key, value) {
 
 function App() {
   const location = useLocation()
+  const navigate = useNavigate()
+  useEffect(() => {
+    if (location.pathname === '/pixel') navigate('/', {replace:true})
+  }, [location.pathname, navigate])
+  const panelLocation = location
+  const panelOpen = !['/', '/pixel'].includes(panelLocation.pathname)
+  const [panelCollapsed, setPanelCollapsed] = useState(false)
+  const [panelWidth, setPanelWidth] = useState(440)
+  useEffect(() => { setPanelCollapsed(false) }, [panelLocation.pathname])
   const isTalkHost = typeof window !== 'undefined' && window.location.hostname.startsWith('talk.')
   const isTalkPath = isTalkHost || location.pathname.startsWith('/talk')
 
@@ -42,10 +57,8 @@ function App() {
   // See hooks/useSessionBootstrap.js for the full rationale.
   useSessionBootstrap(!isTalkPath)
 
-  // Show splash only once per browser session — not on every F5 / new tab
-  const [splashDone, setSplashDone] = useState(
-    () => getStorageValue(globalThis.sessionStorage, 'ods-splash-shown') === '1'
-  )
+  // Play the current brand animation on each document load, including refresh.
+  const [splashDone, setSplashDone] = useState(false)
   const { status, loading, error } = useSystemStatus()
   const { version, dismissUpdate } = useVersion()
   // Server-side first-run flag (sourced from /api/setup/status). localStorage
@@ -108,7 +121,7 @@ function App() {
   }
 
   return (
-    <div className="flex min-h-screen bg-theme-bg text-theme-text relative">
+    <div className={`pixel-app flex min-h-screen bg-theme-bg text-theme-text relative ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       {!splashDone && <SplashScreen onComplete={() => {
         setStorageValue(globalThis.sessionStorage, 'ods-splash-shown', '1')
         setSplashDone(true)
@@ -119,11 +132,15 @@ function App() {
         onToggle={handleToggle}
       />
 
-      <main className={`dashboard-market-shell flex-1 transition-all duration-200 ${sidebarCollapsed ? 'ml-20' : 'ml-20 sm:ml-64'}`}>
-        {status?.bootstrap?.active && (
-          <BootstrapBanner bootstrap={status.bootstrap} />
-        )}
-
+      <main className="pixel-workspace dashboard-market-shell portal-workspace flex-1 transition-all duration-200">
+        <div className="portal-chat">
+          {status?.bootstrap?.active && <BootstrapBanner bootstrap={status.bootstrap} />}
+          <Suspense fallback={<p className="p-6 text-theme-text-muted">Opening Pixel…</p>}><Pixel systemStatus={status} /></Suspense>
+        </div>
+        {panelOpen && <aside style={{'--portal-panel-width':`${panelWidth}px`}} className={`portal-side-panel ${panelCollapsed ? 'is-collapsed' : ''}`} aria-label="Workspace panel">
+          {!panelCollapsed && <PanelResizeHandle width={panelWidth} onResize={setPanelWidth} />}
+          <header><strong>{routes.find(route => route.path === panelLocation.pathname)?.label || 'Workspace'}</strong><button className="pixel-metal-control" aria-label={panelCollapsed ? 'Expand workspace panel' : 'Collapse workspace panel'} onClick={() => setPanelCollapsed(value => !value)}><MetalMetricIcon icon={panelCollapsed ? PanelRightOpen : PanelRightClose}/></button><button className="pixel-metal-control" aria-label="Close workspace panel" onClick={() => navigate('/')}><MetalMetricIcon icon={X}/></button></header>
+          <div className="portal-panel-content" hidden={panelCollapsed}>
         <Suspense fallback={
           <div className="p-8 animate-pulse">
             <div className="h-8 bg-theme-card rounded w-1/3 mb-4" />
@@ -132,20 +149,26 @@ function App() {
             </div>
           </div>
         }>
-          <Routes>
-            {routes.map(route => {
+          <Routes location={panelLocation}>
+            <Route path="/settings" element={<SettingsModal />} />
+            <Route path="/pixel/settings" element={<PixelSettings />} />
+            <Route path="/extensions/integrations" element={<Navigate to="/settings?section=integrations" replace />} />
+            <Route path="/remote-provider" element={<Navigate to="/settings?section=remote" replace />} />
+            {routes.filter(route => !['/', '/pixel', '/pixel/settings', '/settings', '/extensions/integrations', '/remote-provider'].includes(route.path)).map(route => {
               const Component = route.component
               const props = typeof route.getProps === 'function' ? route.getProps({ status, loading }) : {}
               return (
                 <Route
                   key={route.id || route.path}
                   path={route.path}
-                  element={<Component {...props} />}
+                  element={<Component {...props} compact />}
                 />
               )
             })}
           </Routes>
         </Suspense>
+          </div>
+        </aside>}
       </main>
 
       {/* Smart PWA install nudge — only renders when the user has shown

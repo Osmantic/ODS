@@ -4291,8 +4291,16 @@ export function userMessageOdsToolRequirements(messages, prompt = undefined) {
       asksOdsAppInventory ||
       /\bODS(?:\s+(?:app|application|service)s?)?\s+(?:links?|URLs?)\b/i.test(text) ||
       /\bconfigured\s+(?:app\s+)?(?:links?|URLs?)\b.{0,48}\bODS\b/i.test(text) ||
-      (/\b(?:n8n|Open\s*WebUI|Perplexica|SearXNG|LiteLLM|Hermes)\b/i.test(text) &&
-        /\b(?:configured|link|URL|where|address)\b/i.test(text)) ||
+      text.split(/[!?;\n]+|\.(?=\s|$)|,\s*(?=(?:and\s+then|but|however|instead|then)\b)/i).some(
+        (clause) => {
+          // A service excluded from research and an unrelated address or URL
+          // must not force application inventory before the owner's task.
+          const service = String.raw`(?:n8n|Open\s*WebUI|Perplexica|SearXNG|LiteLLM|Hermes)`;
+          return new RegExp(`\\b${service}\\b`, "i").test(clause) &&
+            /\b(?:configured|link|URL|where|address)\b/i.test(clause) &&
+            !explicitlyRejectsOdsTool(clause, service);
+        }
+      ) ||
       asksNamedServiceInventory);
   if (asksStatus) requirements.push("pixel_ods_status");
   if (asksApps) requirements.push("pixel_ods_apps_list");
@@ -5027,7 +5035,9 @@ export function userMessageRequestsWorkspaceMutation(messages, prompt = undefine
 }
 
 function hasWorkspaceHtmlTarget(text) {
-  return /\b[A-Za-z0-9_-][A-Za-z0-9._/-]{0,511}\.html?\b/i.test(text);
+  // A public page URL is a navigation target, not a workspace filename.
+  const paths = text.replace(/\bhttps?:\/\/[^\s<>"'\x60]+/gi, " ");
+  return /\b[A-Za-z0-9_-][A-Za-z0-9._/-]{0,511}\.html?\b/i.test(paths);
 }
 
 function ownerForbidsWorkspacePreview(messages, prompt) {
@@ -5038,23 +5048,70 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
   // Preserve explicit owner constraints without requiring a positive visual
   // vocabulary to use the local snapshot tool. These are delivery actions,
   // not filenames, quoted examples, or another clause's edit restriction.
-  return /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
+  return portuguesePreviewForbidden(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
+}
+
+function portuguesePreviewForbidden(text) {
+  const prose = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return /\b(?:nao|nunca|sem|evite)\s+(?:(?:criar|crie|fazer|faca|editar|edite)\s+(?:e|ou)\s+)?(?:(?:re)?publ(?:ic|iq)\w*|mostr\w*|abrir|abra|preview|pre-?visualiz\w*)\b/i.test(prose)
+    || /\b(?:so|somente|apenas)\s+(?:o\s+)?codigo\b/i.test(prose);
+}
+
+function portugueseWorkspaceBuildRequest(text) {
+  // Match an actual owner command, not quoted examples, tutorials or files
+  // merely named by a model. Delivery remains the existing bounded snapshot
+  // capability; this adds no network/server or arbitrary-directory authority.
+  const prose = text.replace(/(?:`{3}|~{3})[\s\S]*?(?:`{3}|~{3})/g, ' ')
+    .replace(/^\s*>[^\n]*/gm, ' ').replace(/"[^"\n]*"|`[^`\n]*`/g, ' ')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (portuguesePreviewForbidden(prose)) return false;
+  return prose.split(/[!?;\n]+|\.(?=\s|$)/).some(clause =>
+    /^\s*(?:por\s+favor[, ]+)?(?:(?:voce|vc)\s+)?(?:pode\s+)?(?:crie|criar|faca|fazer|construa|construir|desenvolva|desenvolver|implemente|implementar)\s+/i.test(clause)
+    && /\b(?:html|site|website|pagina\s+web|app\s+web|aplicativo\s+web)\b/i.test(clause)
+    && !/\b(?:nao|nunca|sem)\s+(?:criar|crie|fazer|faca|public\w*)\b/i.test(clause));
 }
 
 function withoutWorkspaceHtmlTargets(text) {
   return text.replace(/\b[A-Za-z0-9_-][A-Za-z0-9._/-]{0,511}\.html?\b/gi, " ");
 }
 
+function hasPortugueseWorkspacePreviewDirective(text) {
+  const portuguese = text.replace(/(?:`{3}|~{3})[\s\S]*?(?:`{3}|~{3})/g, ' ')
+    .replace(/^\s*>[^\n]*/gm, ' ').replace(/"[^"\n]*"|`[^`\n]*`/g, ' ')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (!portuguesePreviewForbidden(portuguese)) {
+    const directives = portuguese.matchAll(
+      /(?:^|[.!?;\n]|\be\s+)\s*(?:(?:depois|entao)\s+)?(?:por\s+favor[, ]+)?(?:(?:so|somente|apenas)\s+)?(?:publique|republique)\s+([^!?;\n]{1,512})/gi
+    );
+    for (const match of directives) {
+      const target = match[1];
+      if (hasWorkspaceHtmlTarget(target) || /\b(?:site|website|pagina|preview)\b/i.test(target)) return true;
+      // A conditional publication is still a requested delivery, not proof
+      // that tests passed. Existing execution/readback gates remain in force.
+      if (/^(?:apos|depois\s+de)\b/i.test(target)
+        && /\btestes?\b/i.test(target)
+        && /\b(?:site|website|pagina|preview)\b/i.test(portuguese.slice(0, match.index))) return true;
+    }
+  }
+  return false;
+}
+
 function hasExplicitWorkspacePreviewDirective(text) {
+  if (hasPortugueseWorkspacePreviewDirective(text)) return true;
   // A requested delivery action can follow a diagnosis or code repair. Do not
   // mistake a subordinate "why we should publish" for that owner command.
   const commands = text.matchAll(
-    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then)\s+)\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:display|preview|publish|republish|serve|open|show|view)\s+([^!?;\n]{1,512})/gi
+    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then)\s+)\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(display|preview|publish|republish|serve|open|show|view)\s+([^!?;\n]{1,512})/gi
   );
   return [...commands].some((match) => {
-    const target = match[1];
-    if (hasWorkspaceHtmlTarget(target) ||
-      /\b(?:website|site|web\s*page|frontend|dashboard|preview|animation|illustration|scene|game|chart|diagram|svg)\b/i.test(target)) return true;
+    const target = match[2].split(/\.(?=\s|$)|\b(?:and|then|but|however|instead)\b/i)[0];
+    if (hasWorkspaceHtmlTarget(target)) return true;
+    const visualTarget = /\b(?:website|site|web\s*page|frontend|dashboard|preview|animation|illustration|scene|game|chart|diagram|svg)\b/i.test(target);
+    // Open/show/view also describe ordinary navigation. Require a local
+    // artifact or preview binding before imposing workspace publication.
+    if (visualTarget && (!/^(?:open|show|view)$/i.test(match[1]) ||
+      /\b(?:workspace|preview)\b/i.test(target) ||
+      /\b(?:existing|current|saved|created|built|generated|updated|repaired)\s+(?:animated\s+)?(?:website|site|web\s*page|frontend|dashboard|animation|illustration|scene|game|chart|diagram|svg)\b/i.test(target))) return true;
     // "Edit demo/index.html and publish it" names its target before the
     // command. Bind that pronoun within this clause, not an earlier topic.
     const precedingClause = text.slice(0, match.index)
@@ -5081,15 +5138,20 @@ function requestsNamedSessionPreview(text, preview) {
   // Keep this an owner command, rather than a quoted command, explanation,
   // subordinate clause, or instruction found inside a code block.
   const commands = ownerText.matchAll(
-    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:publish|republish|preview|display|show|open)\s+([^!?;\n]{1,512})/gi
+    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:publish|republish|preview|display|show|open|view)\s+([^!?;\n]{1,512})/gi
   );
-  if (![...commands].some((match) => target.test(match[1]))) return false;
-  return !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:publish(?:ing)?|republish(?:ing)?|preview(?:ing)?|display(?:ing)?|show(?:ing)?|open(?:ing)?)\b/i.test(ownerText);
+  // A bare reference can reopen this session's actual verified artifact.
+  // Extra names or clauses (for example a public site's research request)
+  // must not inherit that artifact merely because the session has one.
+  const bareTarget = /^(?:me\s+)?(?:(?:the|this|that)\s+)(?:website|site|web\s*page|frontend|dashboard|preview|artwork|animation|illustration|scene|game|chart|diagram|svg)(?:\s+(?:again|here))?\s*[.!?]?\s*$/i;
+  if (![...commands].some((match) => target.test(match[1]) || bareTarget.test(match[1]))) return false;
+  return !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:publish(?:ing)?|republish(?:ing)?|preview(?:ing)?|display(?:ing)?|show(?:ing)?|open(?:ing)?|view(?:ing)?)\b/i.test(ownerText);
 }
 
 export function userMessageRequestsWorkspacePreview(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt);
   if (!text) return false;
+  if (portuguesePreviewForbidden(text)) return false;
   // Classify visual targets and actions from the same positive request text.
   // A no-website constraint on a Python task is not a website request. Keep
   // independent actions after "but", "instead", "then", or a sentence boundary.
@@ -5128,7 +5190,7 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
   // Feedback about the previous website must not turn an independent file or
   // scheduled-work request into a mandatory website build.
   const websiteAction = actionText
-    .split(/[!?;\n]+|\.(?=\s|$)/)
+    .split(/[!?;\n]+|\.(?=\s|$)|\b(?:and|then|but|however|instead)\s+(?=(?:build|create|develop|design|generate|implement|make|write)\b)/i)
     .some((clause) => websitePattern.test(clause) &&
       (buildAction.test(clause) || reviseAction.test(clause)));
   // A timer or another named utility can be explicitly requested as HTML
@@ -5171,7 +5233,8 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
   const nonVisualImplementation =
     /\b(?:backend|daemon|engine|file\s+format|library|parser|renderer|seriali[sz]er|server|service)\b/i.test(proseActionText) &&
     !/\b(?:browser|demo|interactive|visuali[sz]ation)\b/i.test(actionText);
-  const explicitDelivery = hasExplicitWorkspacePreviewDirective(actionText);
+  // Portuguese "no preview" means "in the preview", not English negation.
+  const explicitDelivery = hasPortugueseWorkspacePreviewDirective(text) || hasExplicitWorkspacePreviewDirective(actionText);
   // An edit constraint does not veto an independently requested display.
   // Keep negative compound requests closed ("never create and publish").
   // A filename's dot is not a sentence boundary.
@@ -5194,10 +5257,8 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
     // are constraints, even when another clause names an HTML file.
     (hasWorkspaceHtmlTarget(actionText) &&
       /\b(?:preview|publish|serve|open|show|view)\b/i.test(actionText)) ||
-    /\b(?:preview|publish|serve|open|show|view)\b[^.!?;\n]{0,96}\b(?:artworks?|illustrations?|charts?|diagrams?|animations?|games?)\b/i.test(actionText) ||
-    /\b(?:preview|publish|serve|open|show|view)\b[^.!?;\n]{0,96}\b(?:site|website|web\s*page|frontend)\b/i.test(actionText) ||
-    /\b(?:site|website|web\s*page|frontend)\b[^.!?;\n]{0,96}\b(?:preview|publish|serve|open|show|view)\b/i.test(actionText) ||
-    /\b(?:open|publish|refresh|republish|serve|show|view)\b[^.!?;\n]{0,96}\b(?:live\s+)?(?:preview|site|website|web\s*page|frontend)\b/i.test(actionText);
+    /\b(?:preview|publish|republish|serve)\b[^.!?;\n]{0,96}\b(?:artworks?|illustrations?|charts?|diagrams?|animations?|games?|sites?|websites?|web\s*pages?|frontends?)\b/i.test(actionText) ||
+    /\b(?:site|website|web\s*page|frontend)\b[^.!?;\n]{0,96}\b(?:preview|publish|republish|serve)\b/i.test(actionText);
   const unreachableLocalPreview =
     /\b(?:localhost|local\s+host)\b/i.test(text) &&
     /\b(?:not\s+(?:seeing|loading|opening|working)|can(?:not|'t)\s+(?:see|load|open|reach)|investigate|fix)\b/i.test(text);
@@ -5208,7 +5269,7 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
   return directPreview || unreachableLocalPreview || interactiveDelivery ||
     websiteAction ||
     ((application || browserInterface || htmlCreation) && (build || revise)) ||
-    (browserVisual && build);
+    (browserVisual && build) || portugueseWorkspaceBuildRequest(text);
 }
 
 function userMessageRequiresWorkspacePreviewAuthorship(
@@ -5239,7 +5300,7 @@ function userMessageRequiresWorkspacePreviewAuthorship(
     /\b(?:apps?|applications?|artwork|animation|chart|diagram|game|illustration|site|website)\b[^.!?;\n]{0,48}\bin\s+(?:(?:my|the|our)\s+)?workspace\b/i.test(text) ||
     /\b(?:show|open|view|preview)\s+(?:me\s+)?(?:the|that|this|our|my)\b[^.!?;\n]{0,64}\b(?:apps?|applications?|artwork|animation|chart|diagram|game|illustration|site|website)\b/i.test(text);
   if (reuseExisting && !explicitCreation) return false;
-  return create.test(text) && !rejectsCreation.test(text);
+  return (create.test(text) || portugueseWorkspaceBuildRequest(text)) && !rejectsCreation.test(text);
 }
 
 export function userMessageRequestsWorkspacePreviewInspection(
@@ -8935,7 +8996,10 @@ export function createToolLoopGuard({
     }
     state.workspacePreviewDirectory = directory;
     return {
-      stage: "workspace-preview",
+      // A publication followed by a write/check needs a new host receipt.
+      // Do not spend that recovery on the initial publication's retry key.
+      // Keep one fixed refresh key per run, not an unbounded mutation counter.
+      stage: state.workspacePreviewVerifiedDirectory ? "workspace-preview-refresh" : "workspace-preview",
       instruction:
         `Do not reply yet. Call tool_call now with id ${WORKSPACE_PREVIEW_TOOL} ` +
         `and args ${JSON.stringify({ relativeDirectory: directory })}. ` +
@@ -9002,6 +9066,15 @@ export function createToolLoopGuard({
       return undefined;
     })();
     const previewStageInstruction = (() => {
+      if (state?.workspacePreviewVerifiedDirectory && !state.workspacePreview &&
+          state.workspacePreviewRequired && !state.workspacePreviewForbidden &&
+          !state.operationsRequired && !state.exactDownloadRequested) {
+        return "[ODS Pixel next step] Files or checks changed after the earlier publication. " +
+          "Finish any remaining requested edits and checks, then call tool_call with id " +
+          WORKSPACE_PREVIEW_TOOL + " and args " +
+          JSON.stringify({ relativeDirectory: state.workspacePreviewVerifiedDirectory }) +
+          ". Publish last, after documentation too. Do not claim the earlier snapshot is current.";
+      }
       if (
         !state?.workspacePreview ||
         state.operationsRequired ||

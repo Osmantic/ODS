@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from host_agent_client import AgentClientError, async_request_json as request_agent_json
 from pixel_runtime_state import begin_pixel_stream, end_pixel_stream
 from security import verify_api_key
+from config import read_live_env_value
 
 
 logger = logging.getLogger(__name__)
@@ -208,6 +209,27 @@ async def _host_model_status() -> dict[str, object] | None:
     return status if isinstance(status, dict) else None
 
 
+async def _local_inference_issue(host_status: object) -> str | None:
+    # Gateway discovery proves the agent exists, not that its model server is
+    # reachable. Probe the configured host runtime without spending tokens.
+    runtime = _active_runtime_projection(host_status)
+    if runtime and runtime.get("source") == "remote-provider":
+        return None
+    if (read_live_env_value("LLM_BACKEND").lower() != "lemonade"
+            or read_live_env_value("AMD_INFERENCE_LOCATION").lower() != "host"):
+        return None
+    try:
+        telemetry = await request_agent_json("GET", "/v1/llm/status", timeout=3.0)
+        if (isinstance(telemetry, dict)
+                and telemetry.get("schema_version") == "ods.host-llm-status.v1"
+                and isinstance(telemetry.get("health"), dict)
+                and telemetry["health"].get("status") == "ok"):
+            return None
+    except AgentClientError:
+        pass
+    return "The local model runtime is unavailable. Restore it in Models before sending another task."
+
+
 def _model_readiness_issue_from_status(status: object) -> tuple[str, str] | None:
     switching = (
         isinstance(status, dict)
@@ -330,6 +352,10 @@ async def pixel_status() -> dict[str, object]:
             "model": _MODEL if available else None,
             "detail": "Owner agent ready" if available else "pixel/default is unavailable",
         }
+        if available:
+            inference_issue = await _local_inference_issue(host_status)
+            if inference_issue:
+                return {"available": False, "model": None, "state": "model_unavailable", "detail": inference_issue}
         runtime = _active_runtime_projection(host_status)
         if available and runtime is not None:
             result["runtime"] = runtime

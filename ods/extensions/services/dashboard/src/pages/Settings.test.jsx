@@ -92,6 +92,13 @@ const renderSettings = (override = null) => {
 }
 
 describe('Settings', () => {
+  it('does not invent uptime or a live state when uptime is missing', async () => {
+    renderSettings(url => url === '/api/settings/summary' ? response({...summary,uptime:undefined}) : null)
+    const label = await screen.findByText('Uptime')
+    const row = label.closest('.settings-meta-row')
+    expect(within(row).getByText('Unknown')).toBeVisible()
+    expect(within(row).queryByText('Live')).toBeNull()
+  })
   it('preserves unsaved provider edits during a system refresh', async () => {
     const { fetchMock } = renderSettings()
     await screen.findByText('No providers configured.')
@@ -182,15 +189,19 @@ describe('Settings', () => {
     expect(screen.getAllByText('Empty')).toHaveLength(3)
   })
 
-  test('does not force dark inline card backgrounds when the light theme is selected', async () => {
+  test('migrates a retired theme to the shared Pixel appearance', async () => {
+    localStorage.setItem('ods-theme', 'light')
     const { container } = renderSettings()
     await screen.findByRole('heading', { name: 'System Identity' })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Light' }))
+    expect(screen.queryByRole('button', { name: 'Light' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Pixel', exact: true })).toHaveAttribute('aria-pressed', 'true')
 
-    await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'light'))
-    const cards = [...container.querySelectorAll('.liquid-metal-frame')]
+    await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'ods'))
+    expect(localStorage.getItem('ods-theme')).toBe('ods')
+    const cards = [...container.querySelectorAll('.settings-section')]
     expect(cards.length).toBeGreaterThan(0)
+    expect(container.querySelector('.liquid-metal-frame')).not.toBeInTheDocument()
     expect(cards.every(card => !card.getAttribute('style')?.includes('rgba(18,18,25'))).toBe(true)
   })
 
@@ -201,6 +212,19 @@ describe('Settings', () => {
     expect(screen.queryByRole('button', { name: 'More information about ODS Version' })).not.toBeInTheDocument()
     expect(screen.queryByText('K', { selector: 'span' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'localhost' })).not.toBeInTheDocument()
+  })
+
+  test('keeps compact route filters functional and allows collapsing the expanded list', async () => {
+    renderSettings(url => url === '/api/settings/summary' ? response({ ...summary, services: Array.from({ length: 6 }, (_, index) => ({ id: `route-${index}`, name: `Test route ${index}`, status: 'healthy', port: 8000 + index })) }) : null)
+    const filters = await screen.findByRole('group', { name: 'Filter routes' })
+    expect(within(filters).getByRole('button', { name: 'all', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: '2 more routes' }))
+    expect(screen.getByText('Test route 5')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show fewer routes' }))
+    expect(screen.queryByText('Test route 5')).not.toBeInTheDocument()
+    fireEvent.click(within(filters).getByRole('button', { name: 'inactive', exact: true }))
+    expect(screen.getByText('No routes match this filter.')).toBeInTheDocument()
+    expect(within(filters).getByRole('button', { name: 'inactive', exact: true })).toHaveAttribute('aria-pressed', 'true')
   })
 
   test('preserves unsaved environment changes during a global refresh', async () => {

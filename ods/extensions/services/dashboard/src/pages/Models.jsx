@@ -20,6 +20,9 @@ import { Link } from 'react-router-dom'
 import { useModels } from '../hooks/useModels'
 import { useDownloadProgress } from '../hooks/useDownloadProgress'
 import HuggingFaceModelBrowser from '../components/model-library/HuggingFaceModelBrowser'
+import MetalMetricIcon from '../components/MetalMetricIcon'
+import FittedLibraryPage from '../components/FittedLibraryPage'
+import './models-refined.css'
 
 const PAGE_SIZE = 10
 const DOWNLOAD_STATUS_TIMEOUT_MS = 15000
@@ -54,7 +57,7 @@ function catalogModelIdForProgress(models, progressModel) {
   return fileMatch?.id ?? null
 }
 
-export default function Models() {
+export default function Models({ compact = false }) {
   const downloadProgress = useDownloadProgress()
   const {
     models,
@@ -91,7 +94,7 @@ export default function Models() {
   const [contextFloor, setContextFloor] = useState(0)
   const [deleteConfirmModel, setDeleteConfirmModel] = useState(null)
   const [activationConfigModel, setActivationConfigModel] = useState(null)
-  const [libraryScope, setLibraryScope] = useState('recommended')
+  const [libraryScope, setLibraryScope] = useState(compact ? 'installed' : 'recommended')
   const libraryRef = useRef(null)
 
   useEffect(() => {
@@ -239,6 +242,14 @@ export default function Models() {
     error: downloadStartFailure.error,
   })
   const retryModelId = catalogModelIdForProgress(models, visibleDownloadProgress?.model)
+  const renderModel = model => <ModelTableRow key={model.id} compact={compact} model={model} gpu={gpu}
+    canActivateModels={canActivateModels} activationModeError={activationModeError}
+    hermesMinimumContext={hermesMinimumContext} pixelMinimumContext={pixelMinimumContext}
+    isCurrentModel={model.id === currentModel} isLoading={pendingModelActions.includes(model.id)}
+    loadBusy={pendingModelActions.length > 0} activationBusy={Boolean(activationLoading)}
+    downloadBusy={downloadProgress.isDownloading || !!downloadStarting} downloadStarting={downloadStarting === model.id}
+    onDownload={() => handleDownload(model.id)} onLoad={() => setActivationConfigModel(model)}
+    onBenchmark={() => benchmarkModel(model.id)} onDelete={() => setDeleteConfirmModel(model)}/>
 
   if (loading) {
     return (
@@ -259,10 +270,10 @@ export default function Models() {
   }
 
   return (
-    <div className="p-3 sm:p-6 lg:p-8">
-      <header className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <div className={compact ? 'models-refined' : 'p-3 sm:p-6 lg:p-8'}>
+      {compact ? <header className="models-toolbar"><h2>Your models</h2><span>Runtime: {formatModeLabel(odsMode)}{configuredMode !== odsMode ? ` / configured ${formatModeLabel(configuredMode)}` : ''}</span><button className="pixel-metal-control" title="Refresh models" onClick={refresh}><MetalMetricIcon icon={RefreshCw} size={14}/></button></header> : <header className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-theme-text">Models</h1>
+          {!compact && <h1 className="text-2xl font-bold text-theme-text">Models</h1>}
           <p className="mt-1 text-sm text-theme-text-muted">
             Discover, filter, and deploy the right model for your workflow.
           </p>
@@ -290,7 +301,7 @@ export default function Models() {
             <RefreshCw size={16} />
           </button>
         </div>
-      </header>
+      </header>}
 
       {error && (
         <div className="mb-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
@@ -328,6 +339,7 @@ export default function Models() {
       )}
 
       <CurrentModelPanel
+        compact={compact}
         model={activeModel}
         currentModel={currentModel}
         gpu={gpu}
@@ -350,6 +362,7 @@ export default function Models() {
       )}
 
       <ModelSourceTabs
+        compact={compact}
         value={libraryScope}
         onChange={setLibraryScope}
         installedCount={installedModels.length}
@@ -359,8 +372,8 @@ export default function Models() {
       {libraryScope === 'huggingface' ? (
         <section
           ref={libraryRef}
-          className="rounded-lg border p-4 sm:p-5"
-          style={TECH_PANEL_STYLE}
+          className={compact ? 'models-hub' : 'rounded-lg border p-4 sm:p-5'}
+          style={compact ? undefined : TECH_PANEL_STYLE}
         >
           <HuggingFaceModelBrowser
             gpu={gpu}
@@ -369,8 +382,10 @@ export default function Models() {
           />
         </section>
       ) : (
-      <div className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
-        <ModelsFilterPanel
+      <div className={compact ? 'models-library' : 'grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]'}>
+        {compact && <label className="models-search"><Search size={15} aria-hidden="true"/><input aria-label="Search models" placeholder="Search models..." value={query} onChange={event => setQuery(event.target.value)}/></label>}
+        <details open={compact ? undefined : true} className="model-filter-disclosure"><summary>{compact && <MetalMetricIcon icon={SlidersHorizontal} size={13}/>}Filters</summary><ModelsFilterPanel
+          compact={compact}
           query={query}
           setQuery={setQuery}
           categoryFilter={categoryFilter}
@@ -391,16 +406,19 @@ export default function Models() {
             setSpeedFilter('any')
             setContextFloor(0)
           }}
-        />
+        /></details>
 
-        <section
+        {compact ? <>
+          <div className="models-results"><span>{libraryScope === 'installed' ? 'On this device' : 'ODS recommended'}</span><span>{filteredModels.length} {filteredModels.length === 1 ? 'model' : 'models'}</span></div>
+          {filteredModels.length ? <FittedLibraryPage key={`${libraryScope}:${query}:${categoryFilter}:${compatibilityFilter}:${speedFilter}:${contextFloor}`} items={filteredModels} label="Model library">{items => <div className="models-list">{items.map(renderModel)}</div>}</FittedLibraryPage> : <p className="models-empty">No models match the current filters.</p>}
+        </> : <section
           ref={libraryRef}
           className="overflow-hidden rounded-xl border"
           style={TECH_PANEL_STYLE}
         >
           <div className="min-w-full overflow-x-auto">
-            <div className="lg:min-w-[1074px]">
-              <div className="hidden grid-cols-[minmax(250px,1.7fr)_184px_70px_110px_120px_90px_130px] gap-5 border-b border-theme-border px-5 py-3 text-[9px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/75 lg:grid">
+            <div className={compact ? 'min-w-0' : 'lg:min-w-[1074px]'}>
+              <div className={`${compact ? 'hidden' : 'hidden lg:grid'} grid-cols-[minmax(250px,1.7fr)_184px_70px_110px_120px_90px_130px] gap-5 border-b border-theme-border px-5 py-3 text-[9px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted/75`}>
                 <span>Model</span>
                 <span>Actions</span>
                 <span>Size</span>
@@ -411,30 +429,7 @@ export default function Models() {
               </div>
 
               <div className="divide-y divide-theme-border">
-                {visibleModels.map((model, index) => {
-                  const rowId = `${model.id || model.name || 'model'}:${startIndex + index}`
-                  return (
-                    <ModelTableRow
-                      key={rowId}
-                      model={model}
-                      gpu={gpu}
-                      canActivateModels={canActivateModels}
-                      activationModeError={activationModeError}
-                      hermesMinimumContext={hermesMinimumContext}
-                      pixelMinimumContext={pixelMinimumContext}
-                      isCurrentModel={model.id === currentModel}
-                      isLoading={pendingModelActions.includes(model.id)}
-                      loadBusy={pendingModelActions.length > 0}
-                      activationBusy={Boolean(activationLoading)}
-                      downloadBusy={downloadProgress.isDownloading || !!downloadStarting}
-                      downloadStarting={downloadStarting === model.id}
-                      onDownload={() => handleDownload(model.id)}
-                      onLoad={() => setActivationConfigModel(model)}
-                      onBenchmark={() => benchmarkModel(model.id)}
-                      onDelete={() => setDeleteConfirmModel(model)}
-                    />
-                  )
-                })}
+                {visibleModels.map(renderModel)}
               </div>
 
               {filteredModels.length === 0 && (
@@ -451,7 +446,7 @@ export default function Models() {
             </span>
             <Pagination page={safePage} pageCount={pageCount} onChange={setPage} />
           </div>
-        </section>
+        </section>}
       </div>
       )}
 
@@ -476,12 +471,22 @@ export default function Models() {
   )
 }
 
-function CurrentModelPanel({ model, currentModel, gpu }) {
+function CurrentModelPanel({ model, currentModel, gpu, compact = false }) {
   const modelLabel = currentModel || model?.id
   const speed = getSpeedDisplay(model)
   const context = model ? formatContext(model.contextLength) : '--'
   const memory = model ? getMemoryMeta(model, gpu) : null
   const statusLabel = currentModel ? 'Currently running' : 'Model runtime'
+
+  if (compact) return (
+    <section className="models-active" aria-label="Model runtime">
+      <header><span className={currentModel ? 'models-live' : ''}>{statusLabel}</span><Link to="/dashboard">Dashboard <ChevronRight size={12}/></Link></header>
+      <div className="models-active-name"><MetalMetricIcon icon={Box} size={22}/><strong title={modelLabel}>{model?.name || modelLabel || 'No model running'}</strong></div>
+      {currentModel && <>
+        <dl><div><dt>Context</dt><dd>{context}</dd></div>{memory && <div><dt>VRAM estimate</dt><dd>{memory.label}</dd></div>}</dl>
+      </>}
+    </section>
+  )
 
   return (
     <section className="mb-4 rounded-xl border p-4" style={TECH_TILE_STYLE}>
@@ -507,7 +512,7 @@ function CurrentModelPanel({ model, currentModel, gpu }) {
         <ModelSpeedVisual model={model} speed={speed} compact />
 
         <Link
-          to="/"
+          to="/dashboard"
           className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-theme-border bg-theme-bg/45 px-3 text-xs font-semibold text-theme-text transition-colors hover:border-theme-accent/35 hover:bg-theme-accent/10"
         >
           Dashboard
@@ -517,7 +522,7 @@ function CurrentModelPanel({ model, currentModel, gpu }) {
   )
 }
 
-function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) {
+function ModelSourceTabs({ value, onChange, installedCount, recommendedCount, compact = false }) {
   const tabs = [
     {
       id: 'installed',
@@ -532,7 +537,7 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
       label: 'ODS Recommended',
       detail: 'Curated catalog',
       count: recommendedCount,
-      image: '/osmantic-os-icon-192.png',
+      image: '/osmantic-isolated-os.png',
       tone: 'purple',
     },
     {
@@ -544,21 +549,22 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
       tone: 'amber',
     },
   ]
+  if (compact) return <div className="portal-model-tabs" role="tablist" aria-label="Model sources">{tabs.map(tab => <button key={tab.id} role="tab" aria-selected={value === tab.id} onClick={() => onChange(tab.id)}>{tab.label}{tab.count !== null && <small>{tab.count}</small>}</button>)}</div>
   const activeStyles = {
     emerald: {
       borderColor: 'rgba(52, 211, 153, 0.48)',
-      background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(76, 29, 149, 0.14))',
-      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), 0 0 28px rgba(16,185,129,0.1)',
+      background: '#1d1e1f',
+      boxShadow: 'none',
     },
     purple: {
-      borderColor: 'rgba(184, 100, 255, 0.58)',
-      background: 'linear-gradient(135deg, rgba(126, 34, 206, 0.22), rgba(71, 25, 120, 0.16))',
-      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08), 0 0 30px rgba(157,0,255,0.15)',
+      borderColor: '#777c85',
+      background: '#1d1e1f',
+      boxShadow: 'none',
     },
     amber: {
       borderColor: 'rgba(251, 191, 106, 0.72)',
-      background: 'linear-gradient(135deg, rgba(120, 53, 15, 0.2), rgba(126, 34, 206, 0.22))',
-      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1), 0 0 32px rgba(251,191,36,0.14)',
+      background: '#1d1e1f',
+      boxShadow: 'none',
     },
   }
   const iconStyles = {
@@ -568,7 +574,7 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
   }
   const indicatorStyles = {
     emerald: 'bg-emerald-300 shadow-[0_0_10px_rgba(110,231,183,0.75)]',
-    purple: 'bg-theme-accent-light shadow-[0_0_10px_rgba(192,132,252,0.8)]',
+    purple: 'bg-theme-accent-light',
     amber: 'bg-amber-200 shadow-[0_0_12px_rgba(253,230,138,0.9)]',
   }
   return (
@@ -596,7 +602,7 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
           >
             <span className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ${iconStyles[tone]}`}>
               {image
-                ? <img src={image} alt="" className={image === '/osmantic-os-icon-192.png' ? 'h-10 w-10 object-contain' : 'h-8 w-8 object-contain'} />
+                ? <img src={image} alt="" className={image === '/osmantic-isolated-os.png' ? 'h-10 w-10 object-contain grayscale mix-blend-screen' : 'h-8 w-8 object-contain'} />
                 : <Icon size={27} strokeWidth={1.75} />}
             </span>
             <span className="min-w-0 flex-1">
@@ -617,6 +623,7 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount }) 
 }
 
 function ModelsFilterPanel({
+  compact = false,
   query,
   setQuery,
   categoryFilter,
@@ -646,7 +653,7 @@ function ModelsFilterPanel({
           </button>
         </div>
 
-        <label className="relative block">
+        {!compact && <label className="relative block">
           <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-theme-text-muted" />
           <input
             value={query}
@@ -654,7 +661,7 @@ function ModelsFilterPanel({
             placeholder="Search models..."
             className="h-9 w-full rounded-lg border border-theme-border bg-theme-bg/45 pl-9 pr-3 text-xs text-theme-text outline-none transition-colors placeholder:text-theme-text-muted/60 focus:border-theme-accent/45"
           />
-        </label>
+        </label>}
 
         <div className="mt-5">
           <SectionLabel>Categories</SectionLabel>
@@ -783,6 +790,7 @@ function FilterChip({ active, onClick, children }) {
 }
 
 function ModelTableRow({
+  compact = false,
   model,
   gpu,
   canActivateModels,
@@ -817,6 +825,17 @@ function ModelTableRow({
     loadBusy,
     activationBusy,
   })
+
+  if (compact) return <article className="model-entry" aria-label={model.name}>
+    <header><span className="model-entry-symbol"><ModelPublisherIcon model={model} tone={iconTone}/></span><div><h3 title={model.name}>{model.name}</h3><span>{model.quantization || 'Quantization unspecified'}{model.size ? ` · ${model.size}` : ''}</span></div><span className={isLoaded ? 'models-live model-state' : 'model-state'}>{isLoaded ? 'Active' : isDownloaded ? 'Installed' : 'Available'}</span></header>
+    <dl className="model-entry-metrics"><div><dt>Context</dt><dd>{formatContext(model.contextLength)}</dd></div><div><dt>VRAM estimate</dt><dd>{memory.value}</dd></div><div className="model-speed-reading"><dt>Speed</dt><dd>{speed.label}</dd></div></dl>
+    <div className="model-fit"><span>{compatibility.label}</span><span>{compatibility.detail}</span></div>
+    <footer><div className="model-entry-actions">
+      <PrimaryAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} downloadBusy={downloadBusy} downloadStarting={downloadStarting} runDisabledReason={runDisabledReason} hermesMinimumContext={hermesMinimumContext} onDownload={onDownload} onLoad={onLoad} onBenchmark={onBenchmark}/>
+      {isLoaded && <button aria-label={`Configure context for ${model.name}`} title={`Configure context for ${model.name}`} disabled={activationBusy} onClick={onLoad}><MetalMetricIcon icon={SlidersHorizontal} size={14}/></button>}
+      <DeleteAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} onDelete={onDelete}/>
+    </div><details className="model-entry-details"><summary>Details <ChevronRight size={12}/></summary><div><p>{model.description || 'No description available.'}</p><p>{tags.join(' · ')}</p>{performanceBadge && <p>{performanceBadge.label}</p>}<p>{compatibility.label}: {compatibility.detail}</p>{runDisabledReason && <p>{runDisabledReason}</p>}</div></details></footer>
+  </article>
 
   return (
     <div className="grid grid-cols-2 gap-x-3 gap-y-4 px-3 py-4 transition-colors hover:bg-theme-surface-hover/70 sm:grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(250px,1.7fr)_184px_70px_110px_120px_90px_130px] lg:gap-5 lg:px-5 lg:py-3.5">
@@ -1397,7 +1416,7 @@ function DownloadProgressBar({ progress, helpers, onRetry }) {
 
       <div className="h-2.5 overflow-hidden rounded-full bg-theme-border">
         <div
-          className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300"
+          className="h-full rounded-full bg-theme-accent transition-all duration-300"
           style={{ width: `${progress.percent || 0}%` }}
         />
       </div>
@@ -1494,7 +1513,7 @@ function ModelSpeedVisual({ model, speed, compact = false }) {
 
   const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ')
   const area = `${path} L 100 30 L 0 30 Z`
-  const stroke = speed.tone === 'orange' ? '#f59e0b' : '#a855f7'
+  const stroke = '#aeb5c0'
 
   return (
     <svg viewBox="0 0 100 30" className={sizeClass} aria-hidden="true">

@@ -5430,6 +5430,51 @@ foreach ($prefix in $prefixes) {{
         return payload
 
 
+class _BackendHealthNoRedirect(urllib_request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _lemonade_backend_health(raw_health: dict) -> str | None:
+    """Lemonade can retain 'ok/loaded' after its llama-server child dies.
+
+    Probe only the exact selected llama.cpp backend on numeric loopback. Never
+    send the Lemonade API key, use an environment proxy, follow redirects or
+    generate tokens. Old releases without the backend projection keep their
+    compatibility behavior (None means unverified, not healthy).
+    """
+    loaded = raw_health.get("model_loaded")
+    rows = raw_health.get("all_models_loaded")
+    if not isinstance(loaded, str) or not isinstance(rows, list):
+        return None
+    matches = [row for row in rows if isinstance(row, dict)
+               and row.get("model_name") == loaded and row.get("recipe") == "llamacpp"]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        return "unavailable"
+    value = matches[0].get("backend_url")
+    try:
+        if not isinstance(value, str) or not value or any(char.isspace() or ord(char) < 32 for char in value):
+            return "unavailable"
+        parsed = urlparse(value)
+        if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"}
+                or parsed.username is not None or parsed.password is not None
+                or not parsed.port or parsed.query or parsed.fragment or parsed.params
+                or parsed.path not in {"", "/", "/v1", "/v1/"}):
+            return "unavailable"
+        opener = urllib_request.build_opener(urllib_request.ProxyHandler({}), _BackendHealthNoRedirect())
+        request = urllib_request.Request(f"http://{parsed.netloc}/health")
+        with opener.open(request, timeout=2) as response:
+            raw = response.read(MAX_TELEMETRY_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_TELEMETRY_RESPONSE_BYTES:
+            return "unavailable"
+        health = json.loads(raw.decode("utf-8"))
+        return "ok" if isinstance(health, dict) and health.get("status") == "ok" else "unavailable"
+    except (OSError, ValueError, urllib_error.URLError):
+        return "unavailable"
+
+
 def _windows_llm_status() -> dict | None:
     """Read host-native Lemonade health and optional stats over loopback."""
     global _windows_llm_status_cache
@@ -5502,6 +5547,12 @@ def _windows_llm_status() -> dict | None:
             "version": raw_health.get("version"),
             "model_loaded": model_loaded,
         }
+        backend_health = _lemonade_backend_health(raw_health)
+        if backend_health is not None:
+            health["backend_status"] = backend_health
+            if backend_health != "ok":
+                health["status"] = "error"
+                stats = None  # Do not present cached throughput as live output.
         payload = {
             "schema_version": "ods.host-llm-status.v1",
             "health": health,

@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="description" content="ODS Dashboard - Control your local AI" />
     <title>ODS</title>
-    <link rel="icon" type="image/svg+xml" href="/osmantic-os.svg" />
-    <link rel="alternate icon" type="image/x-icon" href="/osmantic-os.ico" />
+    <script src="/pixel-mascot.js"></script>
+    <link rel="icon" type="image/svg+xml" sizes="any" href="/ods-metal-favicon.svg?v=20260908" />
 
     <!-- PWA manifest — makes the dashboard installable as "ODS" on phone home screens -->
     <link rel="manifest" href="/manifest.webmanifest?v=os-20260627" />
@@ -21,15 +21,14 @@
     <script>
       // Prevent flash of wrong theme — runs before React
       (function() {
-        var t = localStorage.getItem('ods-theme');
-        if (t && t !== 'ods') document.documentElement.setAttribute('data-theme', t);
+        document.documentElement.setAttribute('data-theme', 'ods');
       })();
     </script>
     <style>
       /* Critical CSS for instant load feel */
       body {
         margin: 0;
-        background: var(--theme-bg, #0f0f13);
+        background: var(--theme-bg, #111212);
         color: var(--theme-text, #e4e4e7);
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       }
@@ -45,10 +44,10 @@
         gap: 1rem;
       }
       .loading-logo {
-        font-family: monospace;
+        font-family: inherit;
         font-size: 1.5rem;
         font-weight: bold;
-        color: var(--theme-loading-logo, #a78bfa);
+        color: var(--theme-loading-logo, #dedfe3);
         letter-spacing: 0.1em;
         animation: pulse 2s ease-in-out infinite;
       }

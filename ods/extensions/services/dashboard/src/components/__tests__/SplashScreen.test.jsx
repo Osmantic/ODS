@@ -62,7 +62,8 @@ describe('SplashScreen', () => {
     expect(screen.getByRole('dialog', { name: 'ODS' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'ODS', level: 1 })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Skip splash screen' })).toBeInTheDocument()
-    expect(container.querySelectorAll('.ell')).toHaveLength(31)
+    expect(container.querySelector('img')).toHaveAttribute('src', '/osmantic-isolated-os.png')
+    expect(container.querySelectorAll('.ell')).toHaveLength(0)
   })
 
   test('completes immediately when reduced motion is requested', () => {

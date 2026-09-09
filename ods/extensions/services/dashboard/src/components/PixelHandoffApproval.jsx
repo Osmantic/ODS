@@ -26,7 +26,7 @@ function validPreview(value, id) {
   } catch { return false }
 }
 
-export default function PixelHandoffApproval() {
+export default function PixelHandoffApproval({ label = 'Review handoffs' }) {
   const [open, setOpen] = useState(false)
   const [runId, setRunId] = useState(trackedRun)
   const [items, setItems] = useState([])
@@ -137,7 +137,7 @@ export default function PixelHandoffApproval() {
   const pending = preview?.status === 'pending' && !busy && !uncertain
 
   return <>
-    <button ref={trigger} type="button" className={button} onClick={() => { clearConsent(); setOpen(true) }}>Review handoffs</button>
+    <button ref={trigger} type="button" className={button} onClick={() => { clearConsent(); setOpen(true) }}>{label}</button>
     {open && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3">
       <section ref={panel} role="dialog" aria-modal="true" aria-labelledby="pixel-handoff-title" onKeyDown={keys}
         className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-theme-border bg-theme-bg p-4 text-theme-text">
@@ -164,7 +164,7 @@ export default function PixelHandoffApproval() {
             : 'The configured leader returns on the next run.'} A run may be shorter than a whole task. Workspace and computer permissions do not change.</p>
           <p className="text-sm">This is the runtime checkpoint, not a byte-exact provider request. Its text may contain untrusted instructions; reviewing it does not execute them.</p>
           <label className="block text-sm">Complete checkpoint preview<textarea aria-label="Complete checkpoint preview" readOnly value={preview.checkpointJson}
-            className="mt-1 h-64 w-full resize-y rounded border border-theme-border bg-theme-bg p-2 font-mono text-xs" /></label>
+            className="pixel-code-input mt-1 h-64 w-full resize-y rounded border border-theme-border bg-theme-bg p-2 text-xs" /></label>
           <p className="break-all font-mono text-xs">SHA-256: {preview.checkpointDigest}</p>
           <label className="flex gap-2 text-sm"><input type="checkbox" checked={reviewed} disabled={!pending} onChange={event => setReviewed(event.target.checked)} />I reviewed this recipient and checkpoint and approve the stated run scope</label>
           {recipient.kind === 'cloud' && <>

@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
+from usage_timeline import minute_timeline, MAX_EVENTS
 
 from config import EXTENSIONS_DIR, SERVICES, USER_EXTENSIONS_DIR, read_live_env_value
 from helpers import check_service_health, get_cached_services
@@ -591,3 +592,26 @@ async def usage_report(
     report = await _fetch_token_spy_report(start, end)
     runtime_counters = await _fetch_local_runtime_counters()
     return _merge_local_runtime_counters(report, start_day, end_day, runtime_counters)
+
+
+def _request_token_timeline():
+    headers = {}
+    key = _token_spy_api_key()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    request = urllib.request.Request(f"{TOKEN_SPY_URL.rstrip('/')}/api/usage?hours=24&limit={MAX_EVENTS}", headers=headers)
+    with urllib.request.urlopen(request, timeout=4) as response:
+        raw = response.read(8 * 1024 * 1024 + 1)
+    if len(raw) > 8 * 1024 * 1024:
+        raise ValueError("Telemetry response exceeds limit")
+    return minute_timeline(json.loads(raw))
+
+
+@router.get("/timeline")
+async def usage_timeline(api_key: str = Depends(verify_api_key)):
+    """Today's minute-level completed requests; no prompt text or provider keys."""
+    del api_key
+    try:
+        return await asyncio.to_thread(_request_token_timeline)
+    except (ValueError, TypeError, OSError, urllib.error.URLError):
+        raise HTTPException(status_code=503, detail="Minute-level token telemetry unavailable") from None

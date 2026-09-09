@@ -43,6 +43,7 @@ import {
 } from "./host-observe.mjs";
 import { createEvidenceArtifactWriter } from "./evidence-artifact.mjs";
 import { createWorkspacePreviewTool } from "./workspace-preview.mjs";
+import { createTaskActivity } from "./task-activity.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import { createOpenClawCodingTools, resolveSandboxContext, OPENCLAW_VERSION } from "openclaw/plugin-sdk/agent-harness";
@@ -51,6 +52,7 @@ const AGENT_ID = process.env.PIXEL_AGENT_ID ?? "pixel";
 const ABORT_BODY_LIMIT = 256;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const toolLoopGuardRegistry = createToolLoopGuardRegistry();
+const taskActivity = createTaskActivity();
 let execCancellationControl;
 let accessRuntime;
 const managedRuntimeRegistry = createManagedRuntimeRegistry();
@@ -237,6 +239,7 @@ export default definePluginEntry({
     api.on("before_prompt_build", (event, context) => {
       const privateBrowserAccess = privateBrowserAccessForAgent(api.config, AGENT_ID);
       toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess });
+      if (!accessRuntime.isProbe(context)) taskActivity.begin(event, context);
       return promptContractForAgent(context, AGENT_ID, event, {
         verificationStatus: toolLoopGuard.verificationStatus(context?.runId),
         configuredContextWindow,
@@ -249,20 +252,27 @@ export default definePluginEntry({
     );
     if (!managedRuntime) {
       api.on("before_agent_run", (event, context) => accessRuntime.admit(undefined, context));
-      api.on("agent_end", (event, context) => accessRuntime.finish({runId: event.runId}, context));
     }
+    api.on("agent_end", (event, context) => {
+      if (!accessRuntime.isProbe(context)) taskActivity.finish(event, context);
+      if (!managedRuntime) return accessRuntime.finish({runId: event.runId}, context);
+    });
     api.on("before_tool_call", async (event, context) => {
       if (accessRuntime.isProbe(context)) return;
       const guard = withPixelCronDeliveryDefault(
         await toolLoopGuard.beforeToolCall(event, context, AGENT_ID),
         event, context, AGENT_ID,
       );
-      if (guard?.block) return guard;
-      return accessRuntime.beforeTool(event, context) ?? guard;
+      const decision = guard?.block ? guard : accessRuntime.beforeTool(event, context) ?? guard;
+      taskActivity.before(event, context, decision?.block === true);
+      return decision;
     });
     api.on("after_tool_call", (event, context) => {
       accessRuntime.afterTool(event, context);
-      if (!accessRuntime.isProbe(context)) return toolLoopGuard.afterToolCall(event, context, AGENT_ID);
+      if (!accessRuntime.isProbe(context)) {
+        taskActivity.after(event, context);
+        return toolLoopGuard.afterToolCall(event, context, AGENT_ID);
+      }
     });
     api.registerHttpRoute({path: "/pixel-ods/access-runtime", auth: "gateway", match: "exact",
       handler: async (req, res) => {
@@ -345,7 +355,8 @@ export default definePluginEntry({
           sendJson(res, parsed.status, { error: "invalid verification request" });
           return true;
         }
-        sendJson(res, 200, toolLoopGuard.deliveryVerificationForRun(parsed.runId));
+        const task = taskActivity.projection(parsed.runId);
+        sendJson(res, 200, {...toolLoopGuard.deliveryVerificationForRun(parsed.runId), ...(task ? {task} : {})});
         return true;
       },
     });

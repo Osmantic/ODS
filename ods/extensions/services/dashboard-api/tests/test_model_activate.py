@@ -2900,7 +2900,17 @@ def _install_davep_gpu_contract(install_dir, env_path):
     return encoded
 
 
+def _native_nvidia_host(monkeypatch):
+    # These fixtures describe a native Linux GPU fleet, not the machine running
+    # pytest. Keep the real WSL guard active and test its inputs separately.
+    monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_mod.platform, "release", lambda: "6.8.0-generic")
+    monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+    monkeypatch.delenv("WSL_INTEROP", raising=False)
+
+
 def _write_nvidia_gpu_plan_fixture(tmp_path, monkeypatch):
+    _native_nvidia_host(monkeypatch)
     install_dir = tmp_path / "install"
     models_dir = install_dir / "data" / "models"
     models_dir.mkdir(parents=True)
@@ -3445,6 +3455,7 @@ def test_model_gpu_plan_rejects_malformed_or_duplicate_assignment(
     monkeypatch,
     encoded,
 ):
+    _native_nvidia_host(monkeypatch)
     install_dir = tmp_path / "install"
     target = tmp_path / "model.gguf"
     target.write_bytes(b"model")
@@ -3664,10 +3675,16 @@ def test_model_gpu_plan_leaves_non_applicable_runtimes_unchanged(
     assert _mod._plan_nvidia_model_gpu_assignment(env, {"size_mb": 22000}, target) is None
 
 
-def test_model_gpu_plan_explicitly_skips_wsl_auto_replan(tmp_path, monkeypatch):
+@pytest.mark.parametrize("wsl_signal", ["distro", "interop", "kernel"])
+def test_model_gpu_plan_explicitly_skips_wsl_auto_replan(tmp_path, monkeypatch, wsl_signal):
     _install_dir, target, env = _write_nvidia_gpu_plan_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
-    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    if wsl_signal == "distro":
+        monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    elif wsl_signal == "interop":
+        monkeypatch.setenv("WSL_INTEROP", "/run/WSL/test_interop")
+    else:
+        monkeypatch.setattr(_mod.platform, "release", lambda: "6.6.87.2-microsoft-standard-WSL2")
     monkeypatch.setattr(
         _mod,
         "_run_nvidia_gpu_planner",
@@ -4381,6 +4398,7 @@ class TestModelActivateRollback:
         tmp_path,
         monkeypatch,
     ):
+        _native_nvidia_host(monkeypatch)
         install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
             _write_model_activation_fixture(tmp_path)
         )
@@ -4447,6 +4465,7 @@ class TestModelActivateRollback:
         tmp_path,
         monkeypatch,
     ):
+        _native_nvidia_host(monkeypatch)
         install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
             _write_model_activation_fixture(tmp_path)
         )

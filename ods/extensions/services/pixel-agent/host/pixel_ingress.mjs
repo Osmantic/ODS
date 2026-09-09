@@ -16,6 +16,7 @@ import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
+import { parseTaskActivity } from "./task_activity_schema.mjs";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -668,7 +669,7 @@ async function readBounded(stream, limit) {
   }
 }
 
-function parseVerificationResponse(value) {
+function parseVerificationResponse(value, runId) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new HttpError(502, "verification state unavailable");
   }
@@ -695,6 +696,8 @@ function parseVerificationResponse(value) {
     : ["status"];
   if (suppressStaleExecWarning) expectedKeys.push("suppressStaleExecWarning");
   if (hasPreview) expectedKeys.push("preview");
+  const hasTask = Object.prototype.hasOwnProperty.call(value, "task");
+  if (hasTask) expectedKeys.push("task");
   if (status === "passed" && carriesAuthoritativeText && value.deliveryMode === "append") {
     expectedKeys.push("deliveryMode");
   }
@@ -746,7 +749,7 @@ function parseVerificationResponse(value) {
         value.text.length < 1 ||
         value.text.length > MAX_VERIFICATION_TEXT ||
         /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value.text))) ||
-    !previewValid
+    !previewValid || (hasTask && !parseTaskActivity(value.task, runId))
   ) {
     throw new HttpError(502, "verification state unavailable");
   }
@@ -786,7 +789,7 @@ async function verificationForRun(runId, token, gatewayPort, signal, deps) {
   } catch {
     throw new HttpError(502, "verification state unavailable");
   }
-  return parseVerificationResponse(parsed);
+  return parseVerificationResponse(parsed, runId);
 }
 
 function applyVerificationToCompletion(completion, verification) {
@@ -872,6 +875,7 @@ function completionSse(completion, verification) {
     model,
     choices: [{ index: 0, delta, finish_reason: finishReason }],
     ...(terminal && terminalPixel ? { pixel: terminalPixel } : {}),
+    ...(terminal && verification?.task ? { pixel_task: verification.task } : {}),
   });
   return Buffer.from(
     `data: ${envelope({ role: "assistant" }, null)}\n\n` +

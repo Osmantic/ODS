@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 const modeName = mode => mode === 'full-access' ? 'Full Access' : mode === 'sandboxed' ? 'Safer mode' : 'Not verified'
 
-export default function PixelAccessCard() {
+export default function PixelAccessCard({ showHeading = true }) {
   const [status, setStatus] = useState(null)
   const [error, setError] = useState('')
   const [changing, setChanging] = useState(false)
@@ -14,6 +14,7 @@ export default function PixelAccessCard() {
       if (!response.ok) throw new Error()
       const value = await response.json()
       setStatus(value)
+      setError('')
       return value
     } catch { setError('Pixel access status is unavailable. No effective mode has been verified.') }
   }, [])
@@ -52,7 +53,7 @@ export default function PixelAccessCard() {
   const disabled = changing || !status?.available || status?.busy || !status?.revision
   return <section aria-labelledby="pixel-access-title" className="rounded-xl border border-white/10 bg-white/[0.03] p-5 space-y-3">
     <div className="flex items-center justify-between gap-4">
-      <h2 id="pixel-access-title" className="font-semibold">Pixel access</h2>
+      <h2 id="pixel-access-title" className={showHeading ? 'font-semibold' : 'sr-only'}>Pixel access</h2>
       <button type="button" onClick={() => { setError(''); void refresh() }} disabled={changing} className="text-sm underline">Refresh status</button>
     </div>
     <p>Safer mode confines Pixel tools to their configured sandbox. Full Access lets Pixel act with the owner account’s filesystem permissions, including outside the workspace.</p>
@@ -61,7 +62,7 @@ export default function PixelAccessCard() {
       <dt>Configured</dt><dd>{modeName(status.configured_mode)}</dd>
       <dt>Effective</dt><dd>{status.runtime_verified ? modeName(status.effective_mode) : 'Not verified'}</dd>
       <dt>Platform</dt><dd>{status.surface}</dd>
-    </dl> : <p role="status">Inspecting Pixel access…</p>}
+    </dl> : !error ? <p role="status">Inspecting Pixel access…</p> : null}
     {!status?.available && status ? <p role="status">{status.pending
       ? 'Checking Pixel while the access transition is unfinished. Controls return when the running gateway can be verified.'
       : 'The required host adapter or admission gate is unavailable on this installation.'}</p> : null}

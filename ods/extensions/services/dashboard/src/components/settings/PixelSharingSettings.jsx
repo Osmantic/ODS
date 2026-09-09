@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { connectionBundle, readSharing } from './pixelSharingForm'
 
-const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 py-2 text-theme-text focus:outline-none focus:ring-2 focus:ring-blue-500'
-const buttonStyle = 'rounded border border-theme-border px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-blue-500'
+const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 py-2 text-theme-text focus:outline-none focus:ring-2 focus:ring-theme-accent'
+const buttonStyle = 'rounded border border-theme-border px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-theme-accent'
 
 export default function PixelSharingSettings() {
   const [snapshot, setSnapshot] = useState(null)
@@ -142,7 +142,7 @@ export default function PixelSharingSettings() {
         <label className="text-sm">Expires in days<input className={inputStyle} type="number" min={1} max={365} value={days} onChange={event => setDays(event.target.value === '' ? '' : Number(event.target.value))} disabled={locked} /></label>
         <button className={buttonStyle} disabled={locked || !route || !validLabel || !validDays || config.devices.length >= 64} onClick={issue}>Create device key</button>
       </div>
-      {issued && <div className="rounded border border-blue-500/40 p-4 space-y-3">
+      {issued && <div className="rounded-lg border border-theme-border p-4 space-y-3">
         <h3 className="font-medium">One-time connection settings</h3>
         <p className="text-sm text-theme-text-muted">On your laptop, forward this host’s 127.0.0.1:{snapshot.transport.port} through authenticated SSH, or use your explicitly configured HTTPS ingress. The key grants inference only, not SSH or computer access.</p>
         <label className="block text-sm">Laptop connection URL<input className={inputStyle} value={baseUrl} onChange={event => setBaseUrl(event.target.value)} spellCheck={false} /></label>

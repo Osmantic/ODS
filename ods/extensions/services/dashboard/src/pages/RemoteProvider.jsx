@@ -311,7 +311,7 @@ function LoadingState() {
   )
 }
 
-export default function RemoteProvider() {
+export default function RemoteProvider({ compact = false }) {
   const [statusData, setStatusData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -531,10 +531,10 @@ export default function RemoteProvider() {
   if (loading) return <LoadingState />
 
   return (
-    <div className="p-3 sm:p-6 lg:p-8">
+    <div className={`${compact ? 'remote-settings-content' : ''} p-3 sm:p-6 lg:p-8`}>
       <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-theme-text">Remote GPU</h1>
+          {!compact && <h1 className="text-2xl font-bold text-theme-text">Remote GPU</h1>}
           <p className="mt-1 text-sm text-theme-text-muted">
             Switchboard route, egress health, and SSH tunnel proof.
           </p>

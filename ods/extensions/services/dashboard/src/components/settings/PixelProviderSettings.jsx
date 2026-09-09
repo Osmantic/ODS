@@ -12,7 +12,7 @@ function Toggle({ label, ...props }) {
   return <label className="flex items-center gap-2 text-sm"><input type="checkbox" {...props} />{label}</label>
 }
 
-export default function PixelProviderSettings() {
+export default function PixelProviderSettings({ showHeading = true }) {
   const [snapshot, setSnapshot] = useState(null)
   const [draft, setDraft] = useState(null)
   const [secrets, setSecrets] = useState({})
@@ -142,7 +142,7 @@ export default function PixelProviderSettings() {
 
   return <section aria-labelledby="pixel-connections-title" className="settings-premium-card rounded-lg border border-theme-border p-5 space-y-5 text-theme-text">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><h2 id="pixel-connections-title" className="text-lg font-semibold">Pixel connections</h2>
+      <div><h2 id="pixel-connections-title" className={showHeading ? 'text-lg font-semibold' : 'sr-only'}>Pixel connections</h2>
         <p className="text-sm text-theme-text-muted">Choose inference providers without changing other ODS apps.</p></div>
       <div className="flex flex-wrap gap-2">
         <button className={buttonStyle} disabled={loading || saving} onClick={reload}>Reload providers</button>

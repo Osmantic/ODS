@@ -48,6 +48,98 @@ def _isolate_opencode_config(monkeypatch, tmp_path):
     )
 
 
+def _backend_projection(url):
+    return {"status": "ok", "model_loaded": "selected", "all_models_loaded": [
+        {"model_name": "selected", "recipe": "llamacpp", "backend_url": url},
+    ]}
+
+
+@pytest.mark.parametrize("url", [
+    "http://example.com:8001/v1", "http://localhost:8001/v1",
+    "http://127.0.0.1:8001/other", "https://127.0.0.1:8001/v1",
+    "http://user:secret@127.0.0.1:8001/v1", "http://127.0.0.1/v1",
+    "http://127.0.0.1:8001/v1?key=secret", "http://127.0.0.1:8001/v1#fragment",
+    "http://127.0.0.1:99999/v1", "http://127.0.0.1:8001/\nv1", None,
+])
+def test_lemonade_backend_rejects_untrusted_endpoints(monkeypatch, url):
+    def unexpected(*args, **kwargs):
+        pytest.fail("Invalid backend metadata must not initiate network I/O")
+    monkeypatch.setattr(_mod.urllib_request, "build_opener", unexpected)
+    assert _mod._lemonade_backend_health(_backend_projection(url)) == "unavailable"
+
+
+def test_lemonade_backend_real_health_no_proxy_headers_or_redirect(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    requests = []
+    mode = ["ok"]
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            requests.append((self.path, dict(self.headers)))
+            self.send_response(302 if mode[0] == "redirect" else 200)
+            if mode[0] == "redirect":
+                self.send_header("Location", "/redirect-target")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": mode[0]}).encode())
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setenv("LEMONADE_API_KEY", "must-not-forward")
+    payload = _backend_projection(f"http://127.0.0.1:{server.server_port}/v1")
+    try:
+        assert _mod._lemonade_backend_health(payload) == "ok"
+        mode[0] = "loading"
+        assert _mod._lemonade_backend_health(payload) == "unavailable"
+        mode[0] = "redirect"
+        assert _mod._lemonade_backend_health(payload) == "unavailable"
+        assert [path for path, _ in requests] == ["/health"] * 3
+        assert all("Authorization" not in headers and "Cookie" not in headers
+                   for _, headers in requests)
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+    assert _mod._lemonade_backend_health(payload) == "unavailable"
+
+
+def test_windows_llm_dead_child_overrides_stale_health_and_stats(monkeypatch, tmp_path):
+    monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(_mod, "_windows_llm_status_cache", (0.0, None))
+    projection = _backend_projection("http://127.0.0.1:8001/v1")
+
+    class Response(io.BytesIO):
+        pass
+
+    def fetch(request, timeout):
+        data = projection if request.full_url.endswith("/health") else {
+            "tokens_per_second": 100, "output_tokens": 20,
+        }
+        return Response(json.dumps(data).encode())
+
+    monkeypatch.setattr(_mod.urllib_request, "urlopen", fetch)
+    monkeypatch.setattr(_mod, "_lemonade_backend_health", lambda value: "unavailable")
+    result = _mod._windows_llm_status()
+    assert result["health"]["status"] == "error"
+    assert result["health"]["backend_status"] == "unavailable"
+    assert result["stats"] is None
+    assert "backend_url" not in json.dumps(result)
+
+
+def test_lemonade_backend_legacy_and_ambiguous_projection():
+    assert _mod._lemonade_backend_health({"status": "ok"}) is None
+    projection = _backend_projection("http://127.0.0.1:8001/v1")
+    projection["all_models_loaded"] *= 2
+    assert _mod._lemonade_backend_health(projection) == "unavailable"
+
+
 def can_create_symlinks(tmp_path: Path) -> bool:
     target = tmp_path / "symlink-target"
     link = tmp_path / "symlink-probe"

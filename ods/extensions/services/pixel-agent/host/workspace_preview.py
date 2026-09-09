@@ -10,6 +10,7 @@ serves only those immutable snapshots with browser-hardening headers.
 from __future__ import annotations
 
 import hashlib
+import difflib
 import http.client
 import http.server
 import json
@@ -34,6 +35,7 @@ SCHEMA_VERSION = 1
 KIND = "ods-pixel-workspace-preview"
 SOCKET_PATH = pathlib.Path("/run/ods-pixel-preview/control.sock")
 HTTP_SOCKET_PATH = pathlib.Path("/run/ods-pixel-preview/http.sock")
+PROFILE_ID: str | None = None
 PATH_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 SITE_ID = re.compile(r"site-[a-f0-9]{24}")
 ALLOWED_SUFFIXES = frozenset(
@@ -78,6 +80,27 @@ class PreviewError(Exception):
     """A generic fail-closed preview error."""
 
 
+def configure_portal(profile_id: str) -> None:
+    """Bind this broker process to one supervisor-selected Hermes profile.
+
+    Called once before opening listeners. The legacy standalone entry point does
+    not call this, so existing Pixel wire contracts and installs stay unchanged.
+    The same audited snapshot/HTTP engine is packaged for both entry points.
+    """
+    global KIND, BOUNDARY, SOCKET_PATH, HTTP_SOCKET_PATH, PROFILE_ID
+    if PROFILE_ID is not None or not isinstance(profile_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", profile_id) is None:
+        raise PreviewError("invalid or already bound preview profile")
+    PROFILE_ID = profile_id
+    KIND = "ods-portal-workspace-preview"
+    BOUNDARY = BOUNDARY.replace("Pixel workspace", "Portal workspace")
+    SOCKET_PATH = pathlib.Path("/run/ods-portal/preview/control.sock")
+    HTTP_SOCKET_PATH = pathlib.Path("/run/ods-portal/preview/http.sock")
+
+
+def _profile_fields() -> dict[str, str]:
+    return {} if PROFILE_ID is None else {"profileId": PROFILE_ID}
+
+
 PREVIEW_FAILURE_CODES = {
     "unsupported preview file type": "unsupported_file_type",
     "preview requires index.html": "missing_entry",
@@ -109,16 +132,26 @@ def _parts(value: object) -> tuple[str, ...]:
     return parts
 
 
+def _json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise PreviewError("duplicate preview JSON member")
+        result[key] = value
+    return result
+
+
 def parse_request(payload: bytes) -> dict[str, Any]:
     try:
-        value = json.loads(payload.decode("utf-8"))
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=_json_object)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PreviewError("invalid preview request") from exc
     if (
         not isinstance(value, dict)
-        or set(value) != {"schemaVersion", "action", "relativeDirectory"}
-        or value.get("schemaVersion") != SCHEMA_VERSION
+        or set(value) != {"schemaVersion", "action", "relativeDirectory", *_profile_fields()}
+        or type(value.get("schemaVersion")) is not int or value.get("schemaVersion") != SCHEMA_VERSION
         or value.get("action") != "publish"
+        or (PROFILE_ID is not None and value.get("profileId") != PROFILE_ID)
     ):
         raise PreviewError("invalid preview request")
     _parts(value.get("relativeDirectory"))
@@ -347,6 +380,7 @@ def publish_snapshot(
         "schemaVersion": SCHEMA_VERSION,
         "kind": KIND,
         "status": "succeeded",
+        **_profile_fields(),
         "relativeDirectory": relative_directory,
         "siteId": site_id,
         "files": len(captured),
@@ -358,6 +392,109 @@ def publish_snapshot(
         "overwritten": overwritten,
         "boundary": BOUNDARY,
     }
+
+
+def snapshot_manifest(previews: pathlib.Path, site_id: str) -> bytes:
+    """Describe only a rehashed published snapshot, never the live workspace.
+
+    The reserved HTTP filename cannot be supplied by a generated site (its
+    leading underscore is excluded by PATH_COMPONENT). Old snapshots work
+    without migration or adding metadata files to their content hash.
+    """
+    if SITE_ID.fullmatch(site_id) is None:
+        raise PreviewError("invalid preview snapshot")
+    files = _source_files(previews, site_id, os.getuid())
+    digest = hashlib.sha256()
+    entries = []
+    total = 0
+    for relative, source, info in files:
+        if stat.S_IMODE(info.st_mode) != 0o400:
+            raise PreviewError("unsafe preview snapshot")
+        data = _read_stable(source, info)
+        total += len(data)
+        if total > MAX_TOTAL_BYTES:
+            raise PreviewError("preview is too large")
+        name = relative.encode("utf-8")
+        digest.update(len(name).to_bytes(4, "big"))
+        digest.update(name)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+        entries.append({"path": relative, "bytes": len(data),
+                        "sha256": hashlib.sha256(data).hexdigest()})
+    if site_id != f"site-{digest.hexdigest()[:24]}":
+        raise PreviewError("preview snapshot verification failed")
+    return json.dumps({"schemaVersion": 1, "siteId": site_id,
+                       "sha256": digest.hexdigest(), "bytes": total,
+                       "files": entries}, separators=(",", ":")).encode("utf-8")
+
+
+# Presentation-only chrome for the embedded viewer. Original artifact bytes and
+# their hashes remain available at index.html and in the manifest unchanged.
+PREVIEW_SCROLLBAR_STYLE = b'''<style data-ods-preview-scrollbars>
+:root,body,*{scrollbar-color:#3d3f43 #131415!important;scrollbar-width:thin!important}
+::-webkit-scrollbar{width:8px;height:8px;background:#131415}
+::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:#131415}
+::-webkit-scrollbar-thumb{background:#3d3f43;border-radius:6px;border:2px solid #131415}
+::-webkit-scrollbar-thumb:hover{background:#55585e}
+</style>'''
+
+
+def snapshot_changes(previews: pathlib.Path, site_id: str, before_id: str | None) -> bytes:
+    """Compare verified publications, never infer edits from assistant prose.
+
+    The bounded line comparison follows Pixel control/chat_artifacts.py.
+    First publication is labelled published, not a claimed new workspace file.
+    """
+    def contents(identity):
+        if identity is None:
+            return None, {}
+        manifest = json.loads(snapshot_manifest(previews, identity))
+        files = {}
+        for entry in manifest["files"]:
+            path = previews / identity / entry["path"]
+            data = _read_stable(path, path.lstat())
+            if hashlib.sha256(data).hexdigest() != entry["sha256"]:
+                raise PreviewError("preview snapshot verification failed")
+            files[entry["path"]] = data
+        return manifest["sha256"], files
+    before_hash, before = contents(before_id)
+    after_hash, after = contents(site_id)
+    changes = []
+    remaining = 256 * 1024
+    for path in sorted(set(before) | set(after)):
+        old, new = before.get(path), after.get(path)
+        if old == new:
+            continue
+        change = "published" if before_id is None else "deleted" if new is None else "created" if old is None else "modified"
+        entry = {"path": path, "change": change, "additions": None, "deletions": None, "diff": [], "truncated": False}
+        try:
+            a = [] if old is None else old.decode("utf-8").splitlines()
+            b = [] if new is None else new.decode("utf-8").splitlines()
+            if any(any(ord(c) < 32 and c != '\t' for c in line) for line in a + b) or len(a) + len(b) > 4000:
+                raise ValueError()
+            additions = deletions = 0
+            for kind, i, j, k, l in difflib.SequenceMatcher(None, a, b).get_opcodes():
+                if kind in {"replace", "delete"}: deletions += j - i
+                if kind in {"replace", "insert"}: additions += l - k
+                rows = []
+                if kind == "equal": rows = [{"type":"context", "oldLine":x+1, "newLine":k+x-i+1, "text":a[x]} for x in range(i,j)]
+                else:
+                    rows += [{"type":"remove", "oldLine":x+1, "newLine":None, "text":a[x]} for x in range(i,j)]
+                    rows += [{"type":"add", "oldLine":None, "newLine":x+1, "text":b[x]} for x in range(k,l)]
+                for row in rows:
+                    size = len(json.dumps(row, ensure_ascii=True).encode()) + 1
+                    if size > remaining:
+                        entry["truncated"] = True
+                        continue
+                    remaining -= size
+                    entry["diff"].append(row)
+            entry.update(additions=additions, deletions=deletions)
+        except (UnicodeError, ValueError):
+            entry["truncated"] = True
+        changes.append(entry)
+    return json.dumps({"schemaVersion":1, "scope":"published-snapshots", "siteId":site_id,
+                       "beforeSiteId":before_id, "sha256":after_hash, "beforeSha256":before_hash,
+                       "changes":changes}, separators=(",", ":")).encode()
 
 
 class PreviewHandler(http.server.BaseHTTPRequestHandler):
@@ -377,14 +514,33 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
             return None
         site_id = parts[0]
         if self.server.internal_proxy:  # type: ignore[attr-defined]
-            expected_host = "pixel-preview.internal"
+            expected_host = "portal-preview.internal" if PROFILE_ID is not None else "pixel-preview.internal"
         else:
             expected_host = (
                 f"{site_id}.localhost:{self.server.preview_port}"  # type: ignore[attr-defined]
             )
         if self.headers.get("Host", "").lower() != expected_host:
             return None
+        if parts[1:] == ["__ods_manifest__.json"]:
+            try:
+                return pathlib.Path("manifest.json"), snapshot_manifest(
+                    self.server.preview_root, site_id  # type: ignore[attr-defined]
+                )
+            except (PreviewError, OSError, ValueError):
+                return None
+        if len(parts) == 3 and parts[1] == "__ods_changes__" and parts[2].endswith(".json"):
+            baseline = parts[2][:-5]
+            if baseline != "initial" and SITE_ID.fullmatch(baseline) is None:
+                return None
+            try:
+                return pathlib.Path("changes.json"), snapshot_changes(
+                    self.server.preview_root, site_id, None if baseline == "initial" else baseline)
+            except (PreviewError, OSError, ValueError):
+                return None
         if parts[-1] == "":
+            parts[-1] = "index.html"
+        styled_view = parts[1:] == ["__ods_view__.html"]
+        if styled_view:
             parts[-1] = "index.html"
         if any(PATH_COMPONENT.fullmatch(part) is None for part in parts[1:]):
             return None
@@ -400,7 +556,12 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
                 or target.resolve(strict=True).is_relative_to(root) is False
             ):
                 return None
-            return target, target.read_bytes()
+            body = target.read_bytes()
+            if styled_view:
+                # Append instead of prepending so the original doctype and
+                # document parsing mode remain intact. No script is injected.
+                body += PREVIEW_SCROLLBAR_STYLE
+            return target, body
         except (FileNotFoundError, OSError, ValueError):
             return None
 
@@ -497,6 +658,7 @@ def _error_result(code: str = "unavailable") -> dict[str, Any]:
         "schemaVersion": SCHEMA_VERSION,
         "kind": KIND,
         "status": "failed",
+        **_profile_fields(),
         "error": "ODS workspace preview publication failed",
         "errorCode": code if code in PREVIEW_FAILURE_CODES.values() else "unavailable",
         "boundary": BOUNDARY,
@@ -534,6 +696,7 @@ def _serve_connection(
                 "schemaVersion": SCHEMA_VERSION,
                 "kind": KIND,
                 "status": "ok",
+                **_profile_fields(),
                 "port": port,
                 "boundary": BOUNDARY,
             }
@@ -585,11 +748,14 @@ def serve(
         or workspace == pathlib.Path("/")
         or not previews.is_absolute()
         or previews == pathlib.Path("/")
-        or not 1 <= port <= 65535
-        or re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", owner) is None
+        or type(port) is not int or not 1 <= port <= 65535
+        or (re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", owner) is None
+            and not (PROFILE_ID is not None and re.fullmatch(r"[1-9][0-9]{0,9}", owner)))
     ):
         raise PreviewError("invalid preview service configuration")
-    owner_uid = pwd.getpwnam(owner).pw_uid
+    owner_uid = int(owner) if PROFILE_ID is not None and owner.isdecimal() else pwd.getpwnam(owner).pw_uid
+    if PROFILE_ID is not None and owner_uid != os.getuid():
+        raise PreviewError("preview must run as its configured owner")
     _safe_root(workspace, owner_uid)
     previews.mkdir(mode=0o700, parents=True, exist_ok=True)
     _safe_root(previews, owner_uid)
