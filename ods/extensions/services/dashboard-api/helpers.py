@@ -1146,3 +1146,26 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_difference_safe(seq1, seq2) -> list:
+    """Safely compute set difference preserving order of first sequence."""
+    if seq1 is None:
+        return []
+    if not isinstance(seq1, (list, tuple, set)):
+        try:
+            seq1 = list(seq1)
+        except TypeError:
+            return []
+    else:
+        seq1 = list(seq1)
+    if seq2 is None:
+        return list(seq1)
+    if not isinstance(seq2, (list, tuple, set)):
+        try:
+            s2_set = set(seq2)
+        except TypeError:
+            return list(seq1)
+    else:
+        s2_set = set(seq2)
+    return [x for x in seq1 if x not in s2_set]
