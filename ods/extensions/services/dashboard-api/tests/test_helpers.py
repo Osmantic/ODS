@@ -1607,3 +1607,16 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestDictRenameKeysPrefixSafe:
+    def test_valid_prefixing(self):
+        from helpers import dict_rename_keys_prefix_safe
+        data = {"a": 1, "b": 2}
+        assert dict_rename_keys_prefix_safe(data, "meta_") == {"meta_a": 1, "meta_b": 2}
+
+    def test_invalid_and_bounds(self):
+        from helpers import dict_rename_keys_prefix_safe
+        assert dict_rename_keys_prefix_safe(None) == {}
+        assert dict_rename_keys_prefix_safe("invalid", default={"err": 1}) == {"err": 1}
+
