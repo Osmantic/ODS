@@ -1146,3 +1146,16 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_count_words_safe(text: str, default: int = 0) -> int:
+    """Safely count total whitespace-delimited words in a string."""
+    if text is None or not isinstance(text, str):
+        return default
+    if not text.strip():
+        return 0
+    try:
+        return len(text.split())
+    except (ValueError, TypeError, OverflowError):
+        return default
+
