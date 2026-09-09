@@ -1607,3 +1607,13 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestDictInvertSafe:
+    def test_valid_invert(self):
+        from helpers import dict_invert_safe
+        assert dict_invert_safe({"a": 1, "b": 2}) == {1: "a", 2: "b"}
+
+    def test_invalid_and_bounds(self):
+        from helpers import dict_invert_safe
+        assert dict_invert_safe(None) == {}

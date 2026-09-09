@@ -1146,3 +1146,16 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def dict_invert_safe(d: dict) -> dict:
+    """Safely invert dictionary keys and values for unqiue value maps."""
+    if d is None or not isinstance(d, dict):
+        return {}
+    res = {}
+    for k, v in d.items():
+        try:
+            res[v] = k
+        except TypeError:
+            continue
+    return res
