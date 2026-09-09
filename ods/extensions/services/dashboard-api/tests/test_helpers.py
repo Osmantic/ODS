@@ -1607,3 +1607,18 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestListChunkByConditionSafe:
+    def test_valid_partitioning(self):
+        from helpers import list_chunk_by_condition_safe
+        nums = [1, 2, 3, 4, 5, 6]
+        matched, unmatched = list_chunk_by_condition_safe(nums, lambda x: x % 2 == 0)
+        assert matched == [2, 4, 6]
+        assert unmatched == [1, 3, 5]
+
+    def test_invalid_and_bounds(self):
+        from helpers import list_chunk_by_condition_safe
+        assert list_chunk_by_condition_safe(None) == [[], []]
+        assert list_chunk_by_condition_safe(12345) == [[], []]
+
