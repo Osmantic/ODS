@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """FastAPI server wrapper for Open Interpreter"""
 
+import collections
 import hmac
 import json
 import logging
@@ -8,6 +9,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -24,6 +26,16 @@ DATA_DIR = Path("/app/data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_MESSAGE_LENGTH = 32000
+
+# A streamed run gets the same wall-clock budget as a blocking one.
+STREAM_TIMEOUT_SECONDS = 300
+# Grace period between SIGTERM and SIGKILL for a runner that will not exit.
+TERMINATE_GRACE_SECONDS = 5
+# Non-SSE runner output kept for the failure log, bounded so a chatty
+# runner cannot grow this without limit.
+STDERR_TAIL_LINES = 20
+
+logger = logging.getLogger("open-interpreter")
 
 security = HTTPBearer()
 
@@ -151,6 +163,77 @@ def chat(req: ChatRequest, _auth=Depends(verify_api_key)):
         os.unlink(script_path)
 
 
+def _cleanup_process(proc):
+    """Stop proc if it is still running and close its pipes.
+
+    Called from the generator's finally block, which also runs when the client
+    disconnects mid-stream and the generator is closed.
+    """
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=TERMINATE_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            logger.warning("Runner ignored SIGTERM after %ds; killing", TERMINATE_GRACE_SECONDS)
+            proc.kill()
+            proc.wait()
+
+    for stream in (proc.stdin, proc.stdout):
+        if stream is not None and not stream.closed:
+            stream.close()
+
+
+def _stream_interpreter(script_path, config):
+    """Yield SSE frames from the runner subprocess.
+
+    The subprocess, its pipes and the temp script are released on every exit
+    path, including a client disconnect (which closes this generator) and a
+    runner that never terminates on its own.
+    """
+    try:
+        proc = subprocess.Popen(
+            ["python", script_path],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except OSError:
+        os.unlink(script_path)
+        raise
+
+    # The read loop below blocks indefinitely on a silent pipe, so the deadline
+    # has to be enforced from outside it.
+    watchdog = threading.Timer(STREAM_TIMEOUT_SECONDS, proc.kill)
+    watchdog.start()
+    tail = collections.deque(maxlen=STDERR_TAIL_LINES)
+
+    try:
+        proc.stdin.write(config)
+        proc.stdin.close()
+
+        for line in proc.stdout:
+            if line.startswith("SSE: "):
+                yield f"data: {line[5:]}\n\n"
+            else:
+                tail.append(line.rstrip("\n"))
+
+        returncode = proc.wait()
+        if returncode != 0:
+            # Headers are already sent, so the status code cannot change here;
+            # signal the failure in-band instead of ending the stream silently.
+            logger.error(
+                "Interpreter runner failed (exit %d): %s",
+                returncode, " | ".join(tail),
+            )
+            yield 'event: error\ndata: {"error": "Interpreter execution failed"}\n\n'
+    finally:
+        watchdog.cancel()
+        _cleanup_process(proc)
+        os.unlink(script_path)
+
+
 @app.post("/chat/stream")
 def chat_stream(req: ChatRequest, _auth=Depends(verify_api_key)):
     """Stream Open Interpreter output."""
@@ -164,29 +247,10 @@ def chat_stream(req: ChatRequest, _auth=Depends(verify_api_key)):
         f.write(_STREAM_RUNNER_SCRIPT)
         script_path = f.name
 
-    def generate():
-        try:
-            proc = subprocess.Popen(
-                ["python", script_path],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-
-            proc.stdin.write(config)
-            proc.stdin.close()
-
-            for line in proc.stdout:
-                if line.startswith("SSE: "):
-                    yield f"data: {line[5:]}\n\n"
-
-            proc.wait()
-        finally:
-            os.unlink(script_path)
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        _stream_interpreter(script_path, config),
+        media_type="text/event-stream",
+    )
 
 
 if __name__ == "__main__":
