@@ -1146,3 +1146,10 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def dict_compact_nulls_safe(d: dict) -> dict:
+    """Safely remove key-value entries with None values from dictionary."""
+    if d is None or not isinstance(d, dict):
+        return {}
+    return {k: v for k, v in d.items() if v is not None}

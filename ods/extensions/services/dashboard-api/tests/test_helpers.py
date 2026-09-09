@@ -1607,3 +1607,13 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestDictCompactNullsSafe:
+    def test_valid_compact(self):
+        from helpers import dict_compact_nulls_safe
+        assert dict_compact_nulls_safe({"a": 1, "b": None}) == {"a": 1}
+
+    def test_invalid_and_bounds(self):
+        from helpers import dict_compact_nulls_safe
+        assert dict_compact_nulls_safe(None) == {}
