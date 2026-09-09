@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestStringCountWordsSafe:
+    def test_valid_word_counts(self):
+        from helpers import string_count_words_safe
+        assert string_count_words_safe("The quick brown fox jumps") == 5
+        assert string_count_words_safe("   single   ") == 1
+
+    def test_invalid_and_bounds(self):
+        from helpers import string_count_words_safe
+        assert string_count_words_safe(None) == 0
+        assert string_count_words_safe(12345, default=-1) == -1
+        assert string_count_words_safe("   ") == 0
+
