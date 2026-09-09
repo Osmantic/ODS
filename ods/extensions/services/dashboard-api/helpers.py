@@ -1146,3 +1146,18 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_word_wrap_safe(text: str, width: int = 80) -> list:
+    """Safely split text into lines not exceeding maximum line character width."""
+    import textwrap
+    if text is None or not isinstance(text, str):
+        return []
+    if not text:
+        return []
+    if not isinstance(width, int) or width <= 0:
+        width = 80
+    try:
+        return textwrap.wrap(text, width=width)
+    except Exception:
+        return [text]
