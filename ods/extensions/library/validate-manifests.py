@@ -23,6 +23,9 @@ MANIFEST_FILE = ROOT_DIR / "manifest.json"
 LOCAL_SCHEMA_PATH = SCRIPT_DIR / "schema" / "service-manifest.v1.json"
 SERVICES_DIR = SCRIPT_DIR / "services"
 
+# Max manifest file size: 1MB (prevents DoS via file exhaustion)
+MAX_MANIFEST_SIZE = 1024 * 1024
+
 
 def schema_path():
     """Use the repository contract when available, with a standalone fallback."""
@@ -66,8 +69,19 @@ def main():
         total += 1
 
         try:
+            # Check file size to prevent DoS via large files
+            file_size = manifest_path.stat().st_size
+            if file_size > MAX_MANIFEST_SIZE:
+                print(f"FAIL  {service_name}: Manifest file too large ({file_size} bytes, max {MAX_MANIFEST_SIZE})")
+                failed += 1
+                continue
+
             with open(manifest_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
+        except OSError as e:
+            print(f"FAIL  {service_name}: File read error: {e}")
+            failed += 1
+            continue
         except yaml.YAMLError as e:
             print(f"FAIL  {service_name}: YAML parse error: {e}")
             failed += 1
