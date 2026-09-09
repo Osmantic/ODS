@@ -627,17 +627,18 @@ cmd_backup() {
     log_ok "Backup created: ${backup_path}"
     log_info "Files backed up: ${files_backed_up}"
     
-    # Cleanup old backups
-    local backup_dirs
-    backup_dirs=$(find "$BACKUP_DIR" -maxdepth 1 -type d -name "backup-*" | sort -r)
+    # Cleanup old backups. Read NUL-delimited paths: `for dir in $backup_dirs`
+    # word-split every path, so a BACKUP_DIR containing a space (a HOME like
+    # /mnt/c/Users/First Last) produced fragments — retention silently pruned
+    # nothing, and `rm -rf` ran against a partial path.
     local count=0
-    for dir in $backup_dirs; do
+    while IFS= read -r -d '' dir; do
         count=$((count + 1))
         if ((count > MAX_BACKUPS)); then
             log_info "Removing old backup: $(basename "$dir")"
             rm -rf "$dir"
         fi
-    done
+    done < <(find "$BACKUP_DIR" -maxdepth 1 -type d -name "backup-*" -print0 | sort -zr)
 }
 
 #==============================================================================
