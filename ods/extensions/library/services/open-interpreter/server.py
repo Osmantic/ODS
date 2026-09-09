@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -17,7 +18,27 @@ from pydantic import BaseModel, field_validator
 
 app = FastAPI(title="Open Interpreter API")
 
-LLM_API_URL = os.environ.get("LLM_API_URL", "http://localhost:8000")
+def _validated_llm_api_url(raw):
+    """Reject a malformed LLM_API_URL at import time.
+
+    Without this the value travels all the way into the interpreter subprocess,
+    where a typo surfaces minutes later as a generic 500 with the real cause
+    buried in the runner's output. Failing here stops the container instead,
+    with the reason in the startup log.
+    """
+    parsed = urlparse(raw)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"LLM_API_URL must be an http:// or https:// URL, got {raw!r}"
+        )
+    if not parsed.hostname:
+        raise ValueError(f"LLM_API_URL must include a host, got {raw!r}")
+    return raw
+
+
+LLM_API_URL = _validated_llm_api_url(
+    os.environ.get("LLM_API_URL", "http://localhost:8000")
+)
 API_KEY = os.environ.get("OPEN_INTERPRETER_API_KEY", "")
 AUTO_RUN = os.environ.get("OPEN_INTERPRETER_AUTO_RUN", "false").lower() == "true"
 DATA_DIR = Path("/app/data")
@@ -110,7 +131,14 @@ for chunk in interpreter.chat(config["message"], stream=True):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "llm_url": LLM_API_URL}
+    """Liveness only.
+
+    This route is deliberately unauthenticated so the container healthcheck can
+    reach it, which means anything returned here is public to whoever can reach
+    the port. LLM_API_URL is internal topology and may carry credentials in its
+    userinfo, so it is not reported.
+    """
+    return {"status": "ok"}
 
 
 @app.post("/chat")
