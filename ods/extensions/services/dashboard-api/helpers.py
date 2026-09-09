@@ -1146,3 +1146,26 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def numeric_harmonic_mean_safe(numbers, default: float = 0.0) -> float:
+    """Safely calculate harmonic mean of positive numbers."""
+    if numbers is None or not isinstance(numbers, (list, tuple, set)):
+        return default
+    clean = []
+    for n in numbers:
+        try:
+            v = float(n)
+            if not (math.isnan(v) or math.isinf(v)) and v > 0:
+                clean.append(v)
+        except (ValueError, TypeError):
+            continue
+    if not clean:
+        return default
+    try:
+        sum_recip = sum(1.0 / x for x in clean)
+        if sum_recip == 0:
+            return default
+        return float(len(clean) / sum_recip)
+    except Exception:
+        return default

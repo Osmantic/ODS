@@ -1607,3 +1607,14 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestNumericHarmonicMeanSafe:
+    def test_valid_mean(self):
+        from helpers import numeric_harmonic_mean_safe
+        assert round(numeric_harmonic_mean_safe([1, 4, 4]), 2) == 2.0
+
+    def test_invalid_and_bounds(self):
+        from helpers import numeric_harmonic_mean_safe
+        assert numeric_harmonic_mean_safe(None) == 0.0
+        assert numeric_harmonic_mean_safe([-1, 0]) == 0.0
