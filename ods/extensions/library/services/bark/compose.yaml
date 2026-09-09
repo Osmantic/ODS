@@ -16,8 +16,10 @@ services:
       - SUNO_OFFLOAD_CPU=${BARK_OFFLOAD_CPU:-false}
       - BARK_API_KEY=${BARK_API_KEY:-}
     volumes:
-      # Bark model cache — persists ~5GB of downloaded models
-      - ./data/bark/models:/root/.cache/suno
+      # Bark model cache — persists ~5GB of downloaded models.
+      # Target must match XDG_CACHE_HOME in the Dockerfile, or the models are
+      # re-downloaded outside the volume on every start.
+      - ./data/bark/models:/home/bark/.cache/suno
       # Audio output directory
       - ./data/bark/output:/app/output
     healthcheck:
