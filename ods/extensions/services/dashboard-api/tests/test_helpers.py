@@ -1607,3 +1607,14 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestStringRandomAlphanumericSafe:
+    def test_valid_generation(self):
+        from helpers import string_random_alphanumeric_safe
+        res = string_random_alphanumeric_safe(10)
+        assert len(res) == 10
+
+    def test_invalid_and_bounds(self):
+        from helpers import string_random_alphanumeric_safe
+        assert len(string_random_alphanumeric_safe(-5)) == 16

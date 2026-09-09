@@ -1146,3 +1146,16 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_random_alphanumeric_safe(length: int = 16, default: str = "") -> str:
+    """Safely generate pseudo-random alphanumeric token string."""
+    import secrets
+    import string
+    if not isinstance(length, int) or length <= 0:
+        length = 16
+    try:
+        alphabet = string.ascii_letters + string.digits
+        return ''.join(secrets.choice(alphabet) for _ in range(length))
+    except Exception:
+        return default
