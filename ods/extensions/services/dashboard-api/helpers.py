@@ -1146,3 +1146,14 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_normalize_whitespace_safe(text: str, default: str = "") -> str:
+    """Safely compress multi-spaces and newlines into single spaces."""
+    import re
+    if text is None or not isinstance(text, str):
+        return default
+    try:
+        return re.sub(r'\s+', ' ', text).strip()
+    except Exception:
+        return default
