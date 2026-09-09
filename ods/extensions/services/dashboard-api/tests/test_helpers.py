@@ -1607,3 +1607,13 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestStringToCamelCaseSafe:
+    def test_valid_camel_case(self):
+        from helpers import string_to_camel_case_safe
+        assert string_to_camel_case_safe("hello_world_test") == "helloWorldTest"
+
+    def test_invalid_and_bounds(self):
+        from helpers import string_to_camel_case_safe
+        assert string_to_camel_case_safe(None) == ""
