@@ -6,14 +6,17 @@ Compatible with the ODS extensions ecosystem.
 
 import io
 import base64
+import hmac
 import logging
+import os
 import threading
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
 import soundfile as sf
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
 
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +30,43 @@ _model_lock = threading.Lock()
 
 # Thread pool for CPU-intensive TTS generation
 _executor = ThreadPoolExecutor(max_workers=2)
+
+API_KEY = os.environ.get("BARK_API_KEY", "")
+
+# auto_error=False so an absent header reaches verify_api_key, which decides
+# whether it matters. With the default, unauthenticated mode would 403.
+security = HTTPBearer(auto_error=False)
+
+if not API_KEY:
+    logger.warning(
+        "BARK_API_KEY is not set - /tts, /tts/stream and /voices accept "
+        "unauthenticated requests. Set BARK_API_KEY to require a bearer token."
+    )
+
+
+def verify_api_key(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
+    """Require a bearer token matching BARK_API_KEY, when one is configured.
+
+    Leaving BARK_API_KEY empty keeps the service open, which is the behaviour
+    every existing deployment already has. Setting it now actually enforces it
+    instead of being silently ignored.
+    """
+    if not API_KEY:
+        return None
+
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+
+    # Compared as UTF-8 bytes: compare_digest raises TypeError on non-ASCII
+    # str, which would turn an unauthenticated request into a 500 not a 401.
+    if not hmac.compare_digest(
+        credentials.credentials.encode("utf-8"), API_KEY.encode("utf-8")
+    ):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return credentials
+
 
 # Valid output formats
 VALID_FORMATS = {"WAV", "MP3", "OGG", "FLAC"}
@@ -145,7 +185,7 @@ def health():
 
 
 @app.post("/tts", response_model=TTSResponse)
-def text_to_speech(req: TTSRequest):
+def text_to_speech(req: TTSRequest, _auth=Depends(verify_api_key)):
     """
     Generate speech audio from text using Bark.
 
@@ -179,7 +219,7 @@ def text_to_speech(req: TTSRequest):
 
 
 @app.post("/tts/stream")
-def text_to_speech_stream(req: TTSRequest):
+def text_to_speech_stream(req: TTSRequest, _auth=Depends(verify_api_key)):
     """
     Generate speech and return raw audio bytes (wav).
     Suitable for streaming to audio players.
@@ -218,7 +258,7 @@ def _generate_audio_stream_sync(text: str, voice_preset: str) -> Response:
 
 
 @app.get("/voices")
-def list_voices():
+def list_voices(_auth=Depends(verify_api_key)):
     """List available Bark voice presets."""
     voices = {
         "english": [f"v2/en_speaker_{i}" for i in range(10)],
