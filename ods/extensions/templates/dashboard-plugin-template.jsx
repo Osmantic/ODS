@@ -1,8 +1,18 @@
 // Dashboard extension template.
-// Copy this file and import it from your plugin entrypoint.
+//
+// Copy this file into the dashboard's plugin directory and import it from your
+// plugin entrypoint:
+//
+//   cp extensions/templates/dashboard-plugin-template.jsx \
+//      extensions/services/dashboard/src/plugins/my-extension.jsx
+//
+// It is a .jsx file because it defines a component inline: vite only applies
+// the React/JSX transform to .jsx and .tsx, so JSX in a .js file fails to
+// parse at build time. The `./registry` import below resolves once the file
+// sits next to registry.js in src/plugins/ (see core.js for the same imports).
 
 import { Sparkles } from 'lucide-react'
-import { registerRoutes, registerExternalLinks } from '../../dashboard/src/plugins/registry'
+import { registerRoutes, registerExternalLinks } from './registry'
 
 function MyExtensionPage() {
   return (

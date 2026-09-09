@@ -154,7 +154,7 @@ Everything you need to build your own extension:
 | `compose-template.yaml` | Compose fragment with best practices |
 | `compose-gpu-only.yaml` | GPU-only service pattern (no CPU fallback) |
 | `compose-gpu-swap.yaml` | CPU base + GPU overlay pattern |
-| `dashboard-plugin-template.js` | Dashboard UI plugin scaffold |
+| `dashboard-plugin-template.jsx` | Dashboard UI plugin scaffold |
 
 ## Schema
 

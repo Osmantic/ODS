@@ -167,6 +167,8 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== CLI user-extension dependency resolution ==="
 	@bash tests/test-cli-user-extension-deps.sh
+	@echo "=== dashboard plugin template is buildable ==="
+	@bash tests/test-dashboard-plugin-template.sh
 	@echo ""
 	@echo "=== session cleanup lifecycle ==="
 	@bash tests/test-session-cleanup.sh
