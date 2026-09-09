@@ -240,6 +240,37 @@ _phase11_patch_hermes_with_sed() {
         && grep -Fqx "  context_length: ${context_length}" "$template_path"
 }
 
+_phase11_migrate_hermes_persisted_config() {
+    local python_cmd="$1" patcher="$2" persisted_config="$3" log_file="$4"
+
+    # A fresh install has no persisted config yet; Hermes will copy the
+    # already-patched template on first start.
+    if [[ ! -e "$persisted_config" && ! -L "$persisted_config" ]]; then
+        return 0
+    fi
+    # Persisted operator state must never be followed through a symlink or
+    # rewritten when the path has an unexpected type.
+    [[ ! -L "$persisted_config" && -f "$persisted_config" ]] || return 2
+    [[ -n "$python_cmd" && -f "$patcher" ]] || return 3
+
+    if "$python_cmd" "$patcher" "$persisted_config" \
+        --migrate-legacy-reductions-only >>"$log_file" 2>&1; then
+        return 0
+    fi
+
+    # Rootful upgrades can retain container ownership despite the phase-06
+    # repair. Retry through the installer's already-authorized sudo boundary;
+    # the patcher writes atomically and preserves file mode/ownership.
+    if declare -F ods_sudo >/dev/null 2>&1 \
+       && declare -F ods_sudo_available >/dev/null 2>&1 \
+       && ods_sudo_available; then
+        ods_sudo "$python_cmd" "$patcher" "$persisted_config" \
+            --migrate-legacy-reductions-only >>"$log_file" 2>&1
+        return $?
+    fi
+    return 1
+}
+
 ods_progress 75 "services" "Starting services"
 show_phase 5 6 "Starting Services" "~2-3 minutes"
 
@@ -1014,6 +1045,8 @@ MODELS_INI_EOF
         # substitution in installers/macos/install-macos.sh.
         _python_cmd="$(ods_detect_python_cmd 2>/dev/null || command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
         _hermes_tpl="$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template"
+        _hermes_live="$INSTALL_DIR/data/hermes/config.yaml"
+        _hermes_patcher="$INSTALL_DIR/scripts/patch-hermes-config.py"
         if [[ -f "$_hermes_tpl" ]]; then
             # Model name: cloud mode uses the routed model id; Lemonade
             # prefixes GGUF files with "extra."; llama.cpp uses the file name.
@@ -1065,7 +1098,6 @@ MODELS_INI_EOF
             elif _phase11_external_llm; then
                 _hermes_request_timeout=900
             fi
-            _hermes_patcher="$INSTALL_DIR/scripts/patch-hermes-config.py"
             if [[ -n "$_python_cmd" && -f "$_hermes_patcher" ]]; then
                 _hermes_patcher_args=("$_hermes_tpl" --model "$_hermes_model" --context-length "$_hermes_context")
                 if [[ -n "$_hermes_base_url" ]]; then
@@ -1093,6 +1125,19 @@ MODELS_INI_EOF
             else
                 warn "Hermes template substitution didn't take effect — Hermes may 404 every chat completion. Hand-edit $_hermes_tpl after install if Hermes prompts hang."
             fi
+        fi
+
+        # Existing config.yaml is authoritative operator state and is not
+        # recopied from the template. Migrate only exact ODS-authored legacy
+        # reductions on every install/upgrade, including cloud and already-full
+        # routes where bootstrap-upgrade.sh never runs.
+        if ! _phase11_migrate_hermes_persisted_config \
+            "$_python_cmd" "$_hermes_patcher" "$_hermes_live" "$LOG_FILE"; then
+            ai_bad "Could not safely migrate persisted Hermes config: $_hermes_live"
+            ai "Refusing to leave an existing Portal runtime on ODS-authored capability reductions."
+            return 1
+        elif [[ -f "$_hermes_live" ]]; then
+            ai_ok "Migrated persisted Hermes config without changing operator-owned values"
         fi
 
         # Render data/persona/SOUL.md = static persona + dynamic installation

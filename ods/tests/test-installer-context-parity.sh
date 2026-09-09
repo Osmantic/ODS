@@ -226,8 +226,10 @@ assert_grep "scripts/repair/repair-perplexica.sh" 'PERPLEXICA_MODEL:=ods/current
     "Perplexica repair uses stable switchboard alias"
 assert_not_grep "installers/macos/install-macos.sh" '\$LOG_FILE' \
     "macOS installer uses ODS_LOG_FILE, not undefined LOG_FILE"
-assert_grep "installers/windows/install-windows.ps1" 'Update-HermesConfigFile.*ContextLength \(\[int\]\$tierConfig\.MaxContext\)' \
-    "Windows Hermes patcher receives context length"
+assert_grep "installers/windows/install-windows.ps1" 'Update-HermesConfigPair' \
+    "Windows Hermes patcher updates template and live config transactionally"
+assert_grep "installers/windows/install-windows.ps1" 'ContextLength \(\[int\]\$tierConfig\.MaxContext\)' \
+    "Windows Hermes transactional patcher receives context length"
 
 echo ""
 echo "Hermes config patcher behavior:"

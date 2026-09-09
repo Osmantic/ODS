@@ -272,13 +272,13 @@ function Set-ODSWindowsHermesRuntimeModel {
     $hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
     $hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
     $hermesRequestTimeout = $(if ($cloudMode -and -not $switchboardEnabled) { 180 } else { 900 })
-    $templateUpdated = Update-HermesConfigFile -Path $hermesTemplate -Model $ModelId -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) `
-        -RequestTimeoutSeconds $hermesRequestTimeout
-    $liveUpdated = Update-HermesConfigFile `
-        -Path $hermesLive -Model $ModelId -BaseUrl $hermesBaseUrl `
+    return (Update-HermesConfigPair `
+        -TemplatePath $hermesTemplate `
+        -LivePath $hermesLive `
+        -Model $ModelId `
+        -BaseUrl $hermesBaseUrl `
         -ContextLength ([int]$tierConfig.MaxContext) `
-        -RequestTimeoutSeconds $hermesRequestTimeout
-    return ($templateUpdated -and $liveUpdated)
+        -RequestTimeoutSeconds $hermesRequestTimeout)
 }
 
 # ============================================================================

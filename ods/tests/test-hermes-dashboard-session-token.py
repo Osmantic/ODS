@@ -67,7 +67,7 @@ def test_all_installers_generate_and_persist_token() -> None:
     macos = (ROOT / "installers/macos/lib/env-generator.sh").read_text(encoding="utf-8")
     windows = (ROOT / "installers/windows/lib/env-generator.ps1").read_text(encoding="utf-8")
 
-    assert f"{TOKEN_KEY}=$(_env_get {TOKEN_KEY}" in linux
+    assert f"{TOKEN_KEY}=$(_phase06_env_hex_secret {TOKEN_KEY} 32)" in linux
     assert f"{TOKEN_KEY}=${{{TOKEN_KEY}}}" in linux
     assert f'read_env_value "$env_path" "{TOKEN_KEY}"' in macos
     assert f'upsert_env_value "$env_path" "{TOKEN_KEY}"' in macos

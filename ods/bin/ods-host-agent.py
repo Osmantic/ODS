@@ -10523,6 +10523,95 @@ def _write_windows_native_litellm_config(install_dir: Path, gguf_file: str, env:
     logger.info("Wrote native Windows LiteLLM local.yaml for model: %s", gguf_file)
 
 
+_HERMES_LEGACY_DISABLED_TOOLSETS = (
+    ("terminal", "browser"),
+    (
+        "terminal", "browser", "vision", "video", "image_gen", "video_gen",
+        "x_search", "moa", "tts", "skills", "todo", "memory",
+        "session_search", "clarify", "delegation", "cronjob", "messaging",
+        "homeassistant", "spotify", "yuanbao", "computer_use",
+    ),
+)
+
+
+def _remove_legacy_hermes_reductions(text: str) -> tuple[str, bool]:
+    """Remove only exact historical ODS reductions from persisted YAML."""
+    trailing_newline = text.endswith("\n")
+    lines = text.splitlines()
+    changed = False
+
+    def top_level_block(name: str) -> tuple[int, int] | None:
+        start = None
+        pattern = re.compile(rf"^{re.escape(name)}:(?:[ \t]+#.*|[ \t]*)$")
+        for idx, line in enumerate(lines):
+            if start is None:
+                if pattern.match(line):
+                    start = idx
+                continue
+            if line and not line.startswith((" ", "\t")) and not line.lstrip().startswith("#"):
+                return start, idx
+        return None if start is None else (start, len(lines))
+
+    def child_block(parent: tuple[int, int], name: str) -> tuple[int, int] | None:
+        start = None
+        pattern = re.compile(rf"^  {re.escape(name)}:(?:[ \t]+#.*|[ \t]*)$")
+        for idx in range(parent[0] + 1, parent[1]):
+            line = lines[idx]
+            if start is None:
+                if pattern.match(line):
+                    start = idx
+                continue
+            if line.startswith("  ") and line.strip() and not line.startswith("    ") and not line.lstrip().startswith("#"):
+                return start, idx
+        return None if start is None else (start, parent[1])
+
+    for block_name, pattern in (
+        ("model", re.compile(r"^  max_tokens:[ \t]*1024(?:[ \t]+#.*|[ \t]*)$")),
+        ("terminal", re.compile(r"^  timeout:[ \t]*30(?:[ \t]+#.*|[ \t]*)$")),
+    ):
+        block = top_level_block(block_name)
+        if block is None:
+            continue
+        for idx in range(block[0] + 1, block[1]):
+            if pattern.fullmatch(lines[idx]):
+                del lines[idx]
+                changed = True
+                break
+
+    agent = top_level_block("agent")
+    if agent is not None:
+        disabled = child_block(agent, "disabled_toolsets")
+        if disabled is not None:
+            items: list[str] = []
+            item_indices: list[int] = []
+            exact_list = True
+            for idx in range(disabled[0] + 1, disabled[1]):
+                line = lines[idx]
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                match = re.fullmatch(r"    -[ \t]+([a-z0-9_]+)(?:[ \t]+#.*|[ \t]*)", line)
+                if match is None:
+                    exact_list = False
+                    break
+                items.append(match.group(1))
+                item_indices.append(idx)
+            if exact_list and tuple(items) in _HERMES_LEGACY_DISABLED_TOOLSETS:
+                for idx in reversed([disabled[0], *item_indices]):
+                    del lines[idx]
+                changed = True
+                agent = top_level_block("agent")
+                if agent is not None and not any(
+                    line.strip() and not line.lstrip().startswith("#")
+                    for line in lines[agent[0] + 1 : agent[1]]
+                ):
+                    del lines[agent[0]]
+
+    updated = "\n".join(lines)
+    if trailing_newline:
+        updated += "\n"
+    return updated, changed
+
+
 def _patch_hermes_config_text(
     text: str,
     model_name: str,
@@ -10535,12 +10624,13 @@ def _patch_hermes_config_text(
     ODS no longer injects a default max_tokens cap. Legacy max_tokens: 1024
     is removed on upgrade; operator values (e.g. 2048) are preserved.
     """
-    lines = text.splitlines()
+    migrated_text, migrated = _remove_legacy_hermes_reductions(text)
+    lines = migrated_text.splitlines()
     in_model_block = False
     model_block_found = False
     model_indent = "  "
     model_fields = set()
-    changed = False
+    changed = migrated
     new_lines = []
 
     def add_missing_model_fields() -> None:
@@ -10593,10 +10683,6 @@ def _patch_hermes_config_text(
             changed = changed or new_line != line
             continue
         if in_model_block and re.match(r"^\s+max_tokens:\s*", line):
-            # Remove legacy ODS max_tokens: 1024; preserve operator values.
-            if re.match(r"^\s+max_tokens:\s*1024\s*$", line):
-                changed = True
-                continue
             model_fields.add("max_tokens")
             model_indent = line[:len(line) - len(line.lstrip())]
             new_lines.append(line)

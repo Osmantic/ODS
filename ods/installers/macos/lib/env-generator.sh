@@ -304,7 +304,7 @@ generate_ods_env() {
         if [[ -z "$(read_env_value "$env_path" "ODS_SESSION_SECRET")" ]]; then
             upsert_env_value "$env_path" "ODS_SESSION_SECRET" "$(new_secure_hex 32)"
         fi
-        # Hermes v2026.6.5+ accepts a stable dashboard token. Backfill older
+        # Hermes v2026.9.7 accepts a stable dashboard token. Backfill older
         # installs once and preserve it on every later rerun.
         if [[ -z "$(read_env_value "$env_path" "HERMES_DASHBOARD_SESSION_TOKEN")" ]]; then
             upsert_env_value "$env_path" "HERMES_DASHBOARD_SESSION_TOKEN" "$(new_secure_hex 32)"

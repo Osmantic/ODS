@@ -281,6 +281,15 @@ verify_model_integrity() {
 }
 
 ACTIVE_CONFIG_SNAPSHOT_DIR=""
+MODEL_SWAP_HERMES_RUNNING=false
+
+capture_model_swap_hermes_state() {
+    MODEL_SWAP_HERMES_RUNNING=false
+    [[ -n "${DOCKER_CMD:-}" ]] || return 0
+    if $DOCKER_CMD ps --filter name=ods-hermes --format '{{.Names}}' 2>/dev/null | grep -Fxq ods-hermes; then
+        MODEL_SWAP_HERMES_RUNNING=true
+    fi
+}
 
 snapshot_file_state() {
     local source_path="$1" snapshot_path="$2"
@@ -303,7 +312,7 @@ restore_file_state() {
 }
 
 snapshot_active_model_config() {
-    local snapshot_base include_windows_lemonade="${1:-false}"
+    local snapshot_base include_hermes="${1:-false}"
     snapshot_base="${INSTALL_DIR}/data"
     mkdir -p "$snapshot_base" 2>/dev/null || return 1
     ACTIVE_CONFIG_SNAPSHOT_DIR="$(mktemp -d "${snapshot_base}/bootstrap-upgrade-active-config.XXXXXX" 2>/dev/null || true)"
@@ -325,18 +334,18 @@ snapshot_active_model_config() {
     snapshot_file_state \
         "$INSTALL_DIR/config/litellm/lemonade.yaml" \
         "$ACTIVE_CONFIG_SNAPSHOT_DIR/litellm-lemonade" || return 1
+    snapshot_file_state \
+        "$INSTALL_DIR/config/litellm/local.yaml" \
+        "$ACTIVE_CONFIG_SNAPSHOT_DIR/litellm-local" || return 1
 
-    if [[ "$include_windows_lemonade" == "true" ]]; then
+    if [[ "$include_hermes" == "true" ]]; then
         snapshot_file_state \
             "$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template" \
-            "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade/hermes-template" || return 1
+            "$ACTIVE_CONFIG_SNAPSHOT_DIR/hermes/hermes-template" || return 1
         snapshot_file_state \
             "$INSTALL_DIR/data/hermes/config.yaml" \
-            "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade/hermes-live" || return 1
-        snapshot_file_state \
-            "$INSTALL_DIR/config/litellm/lemonade.yaml" \
-            "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade/litellm-lemonade" || return 1
-        : > "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade.included"
+            "$ACTIVE_CONFIG_SNAPSHOT_DIR/hermes/hermes-live" || return 1
+        : > "$ACTIVE_CONFIG_SNAPSHOT_DIR/hermes.included"
     fi
 }
 
@@ -359,17 +368,17 @@ restore_active_model_config() {
     restore_file_state \
         "$ACTIVE_CONFIG_SNAPSHOT_DIR/litellm-lemonade" \
         "$INSTALL_DIR/config/litellm/lemonade.yaml" || return 1
+    restore_file_state \
+        "$ACTIVE_CONFIG_SNAPSHOT_DIR/litellm-local" \
+        "$INSTALL_DIR/config/litellm/local.yaml" || return 1
 
-    if [[ -f "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade.included" ]]; then
+    if [[ -f "$ACTIVE_CONFIG_SNAPSHOT_DIR/hermes.included" ]]; then
         restore_file_state \
-            "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade/hermes-template" \
+            "$ACTIVE_CONFIG_SNAPSHOT_DIR/hermes/hermes-template" \
             "$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template" || return 1
         restore_file_state \
-            "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade/hermes-live" \
+            "$ACTIVE_CONFIG_SNAPSHOT_DIR/hermes/hermes-live" \
             "$INSTALL_DIR/data/hermes/config.yaml" || return 1
-        restore_file_state \
-            "$ACTIVE_CONFIG_SNAPSHOT_DIR/windows-lemonade/litellm-lemonade" \
-            "$INSTALL_DIR/config/litellm/lemonade.yaml" || return 1
     fi
 
     rm -rf "$ACTIVE_CONFIG_SNAPSHOT_DIR"
@@ -386,7 +395,8 @@ discard_active_model_config_snapshot() {
 restore_docker_llama_server_after_swap_failure() {
     local health_url="${1:-}"
     local compose_arg_count=0
-    local previous_gguf previous_gpu_backend previous_model_id
+    local previous_gguf previous_gpu_backend previous_model_id previous_hermes_model_id
+    local previous_llm_backend previous_runtime previous_switchboard_mode
     local rollback_healthy=false
 
     previous_gguf="$(snapshot_env_value GGUF_FILE)"
@@ -394,6 +404,17 @@ restore_docker_llama_server_after_swap_failure() {
     previous_model_id="$(snapshot_env_value LEMONADE_MODEL)"
     if [[ -z "$previous_model_id" && -n "$previous_gguf" ]]; then
         previous_model_id="extra.${previous_gguf}"
+    fi
+    previous_llm_backend="$(snapshot_env_value LLM_BACKEND | tr '[:upper:]' '[:lower:]')"
+    previous_runtime="$(snapshot_env_value AMD_INFERENCE_RUNTIME | tr '[:upper:]' '[:lower:]')"
+    previous_switchboard_mode="$(snapshot_env_value ODS_MODEL_SWITCHBOARD | tr '[:upper:]' '[:lower:]')"
+    previous_hermes_model_id="$previous_gguf"
+    [[ -n "$previous_hermes_model_id" ]] || previous_hermes_model_id="$(snapshot_env_value LLM_MODEL)"
+    if [[ "$previous_runtime" == "lemonade" || "$previous_llm_backend" == "lemonade" ]]; then
+        previous_hermes_model_id="$previous_model_id"
+    fi
+    if [[ "$previous_switchboard_mode" == "enabled" ]]; then
+        previous_hermes_model_id="ods/current"
     fi
 
     log "Restoring previous active model config after Docker llama-server swap failure..."
@@ -440,6 +461,17 @@ restore_docker_llama_server_after_swap_failure() {
                     "$(read_env_value LITELLM_KEY)" \
                     "restored LiteLLM route"; then
                 log "WARNING: previous runtime is healthy, but its restored LiteLLM route could not be proved."
+                return 1
+            fi
+        fi
+        if [[ "$MODEL_SWAP_HERMES_RUNNING" == "true" ]]; then
+            log "Restarting Hermes with the restored model config..."
+            if ! $DOCKER_CMD restart ods-hermes >/dev/null 2>&1; then
+                log "WARNING: previous model runtime was restored, but Hermes could not be restarted."
+                return 1
+            fi
+            if ! verify_hermes_runtime_after_swap "$previous_hermes_model_id"; then
+                log "WARNING: previous model runtime was restored, but its Hermes completion route could not be proved."
                 return 1
             fi
         fi
@@ -1393,11 +1425,25 @@ patch_hermes_yaml_with_sed() {
     [[ "$context_length" =~ ^[0-9]+$ ]] || return 1
     [[ "$request_timeout_seconds" =~ ^[0-9]+$ ]] || return 1
 
-    local model_yaml base_url_yaml model_sed base_url_sed
+    local model_yaml base_url_yaml model_sed base_url_sed patcher python_cmd transaction_backup
     model_yaml="$(yaml_double_quoted_scalar_content "$model")" || return 1
     base_url_yaml="$(yaml_double_quoted_scalar_content "$base_url")" || return 1
     model_sed="$(sed_replacement_escape "$model_yaml")" || return 1
     base_url_sed="$(sed_replacement_escape "$base_url_yaml")" || return 1
+
+    patcher="${INSTALL_DIR}/scripts/patch-hermes-config.py"
+    python_cmd="${ODS_PYTHON_CMD:-}"
+    [[ -n "$python_cmd" ]] || python_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+    [[ -n "$python_cmd" && -f "$patcher" ]] || return 1
+    transaction_backup="$(mktemp "${path}.ods-hermes-patch.XXXXXX")" || return 1
+    if ! cp -p "$path" "$transaction_backup"; then
+        rm -f -- "$transaction_backup"
+        return 1
+    fi
+    if ! "$python_cmd" "$patcher" "$path" --migrate-legacy-reductions-only >/dev/null; then
+        mv -f "$transaction_backup" "$path"
+        return 1
+    fi
 
     local sed_args=(
         -e "s|^  default: \".*\"[[:space:]]*$|  default: \"${model_sed}\"|"
@@ -1416,13 +1462,19 @@ patch_hermes_yaml_with_sed() {
         "$path" 2>&1; then
         rm -f "${path}.bak"
     else
-        [[ -f "${path}.bak" ]] && mv "${path}.bak" "$path"
+        rm -f -- "${path}.bak"
+        mv -f "$transaction_backup" "$path"
         return 1
     fi
 
-    grep -Fq "  default: \"${model_yaml}\"" "$path" \
+    if grep -Fq "  default: \"${model_yaml}\"" "$path" \
         && grep -Fq "  context_length: ${context_length}" "$path" \
-        && { [[ -z "$base_url" ]] || grep -Fq "  base_url: \"${base_url_yaml}\"" "$path"; }
+        && { [[ -z "$base_url" ]] || grep -Fq "  base_url: \"${base_url_yaml}\"" "$path"; }; then
+        rm -f -- "$transaction_backup"
+        return 0
+    fi
+    mv -f "$transaction_backup" "$path"
+    return 1
 }
 
 patch_hermes_yaml_in_container() {
@@ -1433,11 +1485,13 @@ patch_hermes_yaml_in_container() {
     [[ "$context_length" =~ ^[0-9]+$ ]] || return 1
     [[ "$request_timeout_seconds" =~ ^[0-9]+$ ]] || return 1
     [[ "$normalize_compression" == "true" || "$normalize_compression" == "false" ]] || return 1
-    local model_yaml base_url_yaml model_sed base_url_sed
+    local model_yaml base_url_yaml model_sed base_url_sed patcher container_tmp
     model_yaml="$(yaml_double_quoted_scalar_content "$model")" || return 1
     base_url_yaml="$(yaml_double_quoted_scalar_content "$base_url")" || return 1
     model_sed="$(sed_replacement_escape "$model_yaml")" || return 1
     base_url_sed="$(sed_replacement_escape "$base_url_yaml")" || return 1
+    patcher="${INSTALL_DIR}/scripts/patch-hermes-config.py"
+    [[ -f "$patcher" ]] || return 1
 
     local sed_args=(
         -e "s|^  default: \".*\"[[:space:]]*$|  default: \"${model_sed}\"|"
@@ -1459,9 +1513,99 @@ patch_hermes_yaml_in_container() {
         )
     fi
 
-    $DOCKER_CMD exec ods-hermes sed -i \
+    # Patch a private sibling first, verify it, then atomically rename it over
+    # the live config. A failed migration/sed/verification leaves the original
+    # byte-for-byte intact.
+    container_tmp="$($DOCKER_CMD exec ods-hermes python3 -c \
+        'import tempfile; f=tempfile.NamedTemporaryFile(prefix=".config.yaml.ods-patch.", dir="/opt/data", delete=False); print(f.name); f.close()')" \
+        || return 1
+    case "$container_tmp" in
+        /opt/data/.config.yaml.ods-patch.*) ;;
+        *) return 1 ;;
+    esac
+    if ! $DOCKER_CMD exec ods-hermes cp -p /opt/data/config.yaml "$container_tmp"; then
+        $DOCKER_CMD exec ods-hermes rm -f "$container_tmp" >/dev/null 2>&1 || true
+        return 1
+    fi
+    if ! $DOCKER_CMD exec -i ods-hermes python3 - \
+        "$container_tmp" --migrate-legacy-reductions-only < "$patcher"; then
+        $DOCKER_CMD exec ods-hermes rm -f "$container_tmp" >/dev/null 2>&1 || true
+        return 1
+    fi
+    if ! $DOCKER_CMD exec ods-hermes sed -i \
         "${sed_args[@]}" \
-        /opt/data/config.yaml
+        "$container_tmp"; then
+        $DOCKER_CMD exec ods-hermes rm -f "$container_tmp" >/dev/null 2>&1 || true
+        return 1
+    fi
+    if ! $DOCKER_CMD exec ods-hermes grep -Fq \
+        "  default: \"${model_yaml}\"" "$container_tmp" \
+        || ! $DOCKER_CMD exec ods-hermes grep -Fq \
+            "  context_length: ${context_length}" "$container_tmp" \
+        || { [[ -n "$base_url" ]] && ! $DOCKER_CMD exec ods-hermes grep -Fq \
+            "  base_url: \"${base_url_yaml}\"" "$container_tmp"; }; then
+        $DOCKER_CMD exec ods-hermes rm -f "$container_tmp" >/dev/null 2>&1 || true
+        return 1
+    fi
+    $DOCKER_CMD exec ods-hermes mv -f "$container_tmp" /opt/data/config.yaml
+}
+
+verify_hermes_runtime_after_swap() {
+    local model_id="${1:-}" attempts timeout_seconds hermes_ready=false
+    local route_base route_key route_url request_body response escaped_model
+    [[ -n "$model_id" ]] || return 1
+    attempts="${ODS_HERMES_SWAP_READY_ATTEMPTS:-30}"
+    timeout_seconds="${ODS_HERMES_SWAP_PROBE_TIMEOUT:-180}"
+    case "$attempts" in ''|*[!0-9]*|0) attempts=30 ;; esac
+    case "$timeout_seconds" in ''|*[!0-9]*|0) timeout_seconds=180 ;; esac
+
+    log "Waiting for Hermes after the model-route restart..."
+    for _hermes_i in $(seq 1 "$attempts"); do
+        if $DOCKER_CMD exec ods-hermes curl -sf --max-time 3 \
+            http://127.0.0.1:9119/api/status >/dev/null 2>&1; then
+            hermes_ready=true
+            break
+        fi
+        sleep 2
+    done
+    if [[ "$hermes_ready" != "true" ]]; then
+        log "ERROR: Hermes did not return healthy after the model-route restart."
+        return 1
+    fi
+
+    route_base="$(read_env_value HERMES_LLM_BASE_URL)"
+    [[ -n "$route_base" ]] || route_base="http://litellm:4000/v1"
+    route_key="$(read_env_value HERMES_LLM_API_KEY)"
+    [[ -n "$route_key" ]] || route_key="$(read_env_value LITELLM_KEY)"
+    route_url="${route_base%/}/chat/completions"
+    escaped_model="${model_id//\\/\\\\}"
+    escaped_model="${escaped_model//\"/\\\"}"
+    request_body="{\"model\":\"${escaped_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":4,\"temperature\":0,\"stream\":false}"
+
+    log "Proving the exact model route from the Hermes container without enabling agent tools..."
+    for _hermes_i in $(seq 1 "$attempts"); do
+        if [[ -n "$route_key" ]]; then
+            response="$($DOCKER_CMD exec ods-hermes curl -fsS --max-time "$timeout_seconds" -X POST \
+                "$route_url" \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer ${route_key}" \
+                -d "$request_body" 2>/dev/null || true)"
+        else
+            response="$($DOCKER_CMD exec ods-hermes curl -fsS --max-time "$timeout_seconds" -X POST \
+                "$route_url" \
+                -H "Content-Type: application/json" \
+                -d "$request_body" 2>/dev/null || true)"
+        fi
+        if grep -q '"choices"[[:space:]]*:' <<<"$response" \
+            && ! grep -q '"error"[[:space:]]*:' <<<"$response"; then
+            log "Verified the Hermes provider route with model ${model_id}."
+            return 0
+        fi
+        sleep 2
+    done
+
+    log "ERROR: Hermes could not reach an exact-model completion through its configured provider route."
+    return 1
 }
 
 patch_hermes_model_after_swap() {
@@ -1516,6 +1660,7 @@ patch_hermes_model_after_swap() {
             log "ERROR: Could not restart Hermes after full-model swap."
             return 1
         }
+        verify_hermes_runtime_after_swap "$new_model" || return 1
     elif [[ "$live_host_patch_failed" == "true" ]]; then
         log "ERROR: Could not patch Hermes live config after full-model swap."
         return 1
@@ -2344,6 +2489,7 @@ acquire_model_lifecycle_lock || fail "Could not serialize background full-model 
 _windows_lemonade_swap_applies=false
 _windows_native_llama_swap_applies=false
 _docker_llama_swap_applies=false
+_macos_native_llama_swap_applies=false
 if is_windows_bash; then
     _runtime_for_swap="$(read_env_value AMD_INFERENCE_RUNTIME | tr '[:upper:]' '[:lower:]')"
     _backend_for_swap="$(read_env_value LLM_BACKEND | tr '[:upper:]' '[:lower:]')"
@@ -2356,21 +2502,29 @@ if is_windows_bash; then
         && [[ "$_runtime_mode_for_swap" == "windows-llama-server-fallback" || ( "$_runtime_for_swap" == "llama-server" && "$_location_for_swap" == "host" ) ]]; then
         _windows_native_llama_swap_applies=true
     fi
-elif [[ -n "$DOCKER_CMD" ]]; then
-    # Linux Docker installs mutate .env/models.ini before attempting a
-    # llama-server hot-swap. Snapshot whenever Docker is available so every
-    # Docker failure path can restore the last known-good model config.
-    _docker_llama_swap_applies=true
+else
+    if [[ -n "$DOCKER_CMD" ]]; then
+        # Linux Docker installs mutate .env/models.ini before attempting a
+        # llama-server hot-swap. Snapshot whenever Docker is available so every
+        # Docker failure path can restore the last known-good model config.
+        _docker_llama_swap_applies=true
+    fi
+    if [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
+        _macos_native_llama_swap_applies=true
+    fi
 fi
 
 if [[ "$_windows_lemonade_swap_applies" == "true" || "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_applies" == "true" ]]; then
     log "Snapshotting active model config before full-model swap..."
-    _include_windows_lemonade_snapshot=false
-    if [[ "$_windows_lemonade_swap_applies" == "true" ]]; then
-        _include_windows_lemonade_snapshot=true
+    capture_model_swap_hermes_state
+    if [[ "$_windows_lemonade_swap_applies" == "true" || "$_windows_native_llama_swap_applies" == "true" ]]; then
         capture_windows_lemonade_dependent_state
     fi
-    if ! snapshot_active_model_config "$_include_windows_lemonade_snapshot"; then
+    # Hermes is the user-facing core, so its template and live config
+    # participate in every model route that has complete rollback coverage.
+    # macOS native remains outside this transaction until its inherited
+    # restart/rollback path can restore and prove the exact prior runtime.
+    if ! snapshot_active_model_config true; then
         discard_active_model_config_snapshot
         write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
             "Full model downloaded and verified, but ODS could not snapshot active model config before swap. Bootstrap model left unchanged; re-run to retry."
@@ -2871,6 +3025,16 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
             fi
             unset _direct_model _direct_port
         fi
+        if ! patch_hermes_model_after_swap; then
+            log "ERROR: Hermes config update or restart failed after the Docker model swap"
+            _rollback_status="Previous active model config restore was attempted; inspect the logs before retrying."
+            if restore_docker_llama_server_after_swap_failure "$_health_url"; then
+                _rollback_status="Previous active model config, Hermes config, and model runtime restored; re-run to retry the full-model swap."
+            fi
+            write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+                "Full model downloaded and verified, but ODS could not reconcile Hermes with it. ${_rollback_status}"
+            exit 1
+        fi
         HOT_SWAP_VERIFIED=true
         discard_active_model_config_snapshot
         # Recreate OpenClaw so inject-token.js picks up the new GGUF_FILE/LLM_MODEL
@@ -2896,148 +3060,8 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
                 log "WARNING: No compose binary available (DOCKER_COMPOSE_CMD empty or compose args missing) — OpenClaw was NOT recreated. The new model will not take effect until OpenClaw is recreated manually with: env -u GGUF_FILE -u LLM_MODEL -u MAX_CONTEXT -u CTX_SIZE docker compose up -d --force-recreate openclaw"
             fi
         fi
-        # Patch Hermes Agent's config so it stops asking the LLM server for the
-        # bootstrap model id. PR #1191 substitutes model.default in the template
-        # at install time, but at install time we've only loaded the bootstrap
-        # model (Qwen3.5-2B) — Hermes's /opt/data/config.yaml is therefore
-        # pinned to that name. Once this script swaps Lemonade/llama-server
-        # to the full model, Hermes keeps sending the stale bootstrap id and
-        # every chat completion 404s.
-        #
-        # This is hard-broken on AMD/Lemonade (which strictly validates the
-        # `model` field) and silently masked on NVIDIA/Apple (llama.cpp
-        # ignores the field and serves whatever's loaded), so the bug
-        # surfaces as "Hermes works on Tower2/Mac but every prompt 404s on
-        # Strix Halo" after a bootstrap-to-full swap.
-        #
-        # Three files/views to keep in sync:
-        #   1. data/hermes/config.yaml on the host — the bind-mounted live
-        #      config that persists across Hermes restarts.
-        #   2. /opt/data/config.yaml inside the container — the same live
-        #      config from Hermes's view. Patch via docker exec too so Linux
-        #      container-owned files can still be recovered.
-        #   3. extensions/services/hermes/cli-config.yaml.template — the
-        #      source Hermes copies into /opt/data on first start. Updating
-        #      it keeps subsequent down-and-up cycles correct.
-        # Lemonade prefixes the served model id with "extra."; llama.cpp
-        # serves under the bare file name. Mirror the same branch PR #1191
-        # added in installers/phases/11-services.sh.
-        _hermes_old_model="$BOOTSTRAP_GGUF_FILE"
-        _hermes_new_model="$FULL_GGUF_FILE"
-        _hermes_base_url="$(read_env_value HERMES_LLM_BASE_URL)"
-        _hermes_switchboard_mode="$(read_env_value ODS_MODEL_SWITCHBOARD | tr '[:upper:]' '[:lower:]')"
-        _gpu_backend_for_hermes=$(grep -E '^GPU_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' || echo "")
-        if [[ "$_gpu_backend_for_hermes" == "amd" ]]; then
-            _hermes_old_model="extra.$BOOTSTRAP_GGUF_FILE"
-            _hermes_new_model="$(read_env_value LEMONADE_MODEL)"
-            [[ -n "$_hermes_new_model" ]] || _hermes_new_model="extra.$FULL_GGUF_FILE"
-        fi
-        if [[ "$_hermes_switchboard_mode" == "enabled" ]]; then
-            _hermes_new_model="ods/current"
-            [[ -n "$_hermes_base_url" ]] || _hermes_base_url="http://litellm:4000/v1"
-        fi
-        log "Patching Hermes config: model.default $_hermes_old_model -> $_hermes_new_model"
-        _hermes_request_timeout=180
-        _hermes_llm_backend_for_timeout="$(read_env_value LLM_BACKEND | tr '[:upper:]' '[:lower:]')"
-        if is_windows_bash || [[ "$_hermes_switchboard_mode" == "enabled" || "$_gpu_backend_for_hermes" == "amd" || "$_hermes_llm_backend_for_timeout" == "lemonade" ]]; then
-            _hermes_request_timeout=900
-        fi
-
-        # Template on host (user-owned, no sudo needed). Patch this even when
-        # Hermes is stopped so future container creates do not copy the stale
-        # bootstrap model id.
-        _hermes_tpl="$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template"
-        if [[ -f "$_hermes_tpl" ]]; then
-            if ! patch_hermes_yaml_with_sed "$_hermes_tpl" "$_hermes_new_model" "$FULL_MAX_CONTEXT" "$_hermes_base_url" "$_hermes_request_timeout"; then
-                log "WARNING: Could not patch ${_hermes_tpl} (non-fatal; operator can hand-edit before restarting Hermes)"
-            fi
-        fi
-
-        _hermes_live="$INSTALL_DIR/data/hermes/config.yaml"
-        _hermes_live_host_patched=false
-        if [[ -f "$_hermes_live" ]]; then
-            if patch_hermes_yaml_with_sed "$_hermes_live" "$_hermes_new_model" "$FULL_MAX_CONTEXT" "$_hermes_base_url" "$_hermes_request_timeout"; then
-                _hermes_live_host_patched=true
-            else
-                log "WARNING: Could not patch ${_hermes_live} on host (non-fatal if container patch below succeeds)"
-            fi
-        fi
-
-        if $DOCKER_CMD ps --filter name=ods-hermes --format '{{.Names}}' 2>/dev/null | grep -q ods-hermes; then
-            # Live config inside the running container (owned by container UID).
-            patch_hermes_yaml_in_container \
-                "$_hermes_new_model" "$FULL_MAX_CONTEXT" "$_hermes_base_url" "$_hermes_request_timeout" true \
-                2>&1 || \
-                log "WARNING: Could not patch Hermes /opt/data/config.yaml (non-fatal — operator can hand-edit and 'docker restart ods-hermes')"
-            log "Restarting Hermes to pick up model change..."
-            $DOCKER_CMD restart ods-hermes 2>&1 || log "WARNING: Hermes restart failed (non-fatal — hand-restart with 'docker restart ods-hermes')"
-
-            # Pre-warm the freshly-swapped LLM + Hermes's 14K-token system prompt.
-            #
-            # Two latency hits if we skip this:
-            #   1. llama-server / Lemonade loads the full model into VRAM on first
-            #      request. PR #1192 already warms
-            #      this at install time, but that warm-up was against the
-            #      bootstrap model — after the swap, the slot is cold again.
-            #   2. Hermes's runtime config bakes a 14K-token system prompt
-            #      (skills, soul, tool descriptors). First Hermes prompt has
-            #      to prefill all of it. Empirically 67s on Strix Halo,
-            #      1m25s on macOS, ~5s once cached. We've seen real users
-            #      think Hermes is broken because they alt-tabbed away during
-            #      a fresh install and the first prompt looked stuck.
-            #
-            # Mirrors PR #1192's pattern: best-effort, time-bounded, never fails
-            # the upgrade. If either warm-up times out the swap still succeeds —
-            # the user just eats the slow first call.
-            log "Pre-warming llama-server slot with full model..."
-            _prewarm_api_path="/v1"
-            _prewarm_model="$FULL_GGUF_FILE"
-            if [[ "$_gpu_backend_for_hermes" == "amd" ]]; then
-                _prewarm_api_path="/api/v1"
-                _prewarm_model="$(read_env_value LEMONADE_MODEL)"
-                [[ -n "$_prewarm_model" ]] || _prewarm_model="extra.$FULL_GGUF_FILE"
-            fi
-            _prewarm_body="{\"model\":\"${_prewarm_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}"
-            if $DOCKER_CMD exec ods-hermes curl -sf --max-time 120 -X POST \
-                "http://llama-server:8080${_prewarm_api_path}/chat/completions" \
-                -H "Content-Type: application/json" \
-                -d "$_prewarm_body" >/dev/null 2>&1; then
-                log "llama-server slot pre-warmed."
-            else
-                log "WARNING: llama-server pre-warm timed out — first Hermes prompt may be slow."
-            fi
-
-            # Wait for Hermes to come back up after the restart, then trigger
-            # one no-op invocation so the 14K system prompt gets into
-            # llama-server's KV cache. We cap at 90s total — long enough for
-            # Hermes's skills sync + config bootstrap (start_period: 60s in
-            # compose.yaml) plus a few decode tokens, short enough that a
-            # broken Hermes doesn't stall the script forever.
-            log "Pre-warming Hermes system prompt (caches 14K-token prefill)..."
-            _hermes_ready=false
-            for _i in $(seq 1 30); do
-                if $DOCKER_CMD exec ods-hermes curl -sf --max-time 3 http://127.0.0.1:9119/api/status >/dev/null 2>&1; then
-                    _hermes_ready=true
-                    break
-                fi
-                sleep 2
-            done
-            if $_hermes_ready; then
-                if $DOCKER_CMD exec ods-hermes timeout 90 \
-                    /opt/hermes/.venv/bin/hermes -z "ping" --yolo \
-                    >/dev/null 2>&1; then
-                    log "Hermes system prompt cached — first user prompt will be fast."
-                else
-                    log "WARNING: Hermes warm-up timed out (>90s). First user prompt will incur the full 14K-token prefill."
-                fi
-            else
-                log "WARNING: Hermes did not respond on /api/status within 60s; skipping system-prompt warm-up."
-            fi
-        else
-            if [[ -f "$_hermes_live" && "$_hermes_live_host_patched" != "true" ]]; then
-                log "WARNING: Hermes is stopped and ${_hermes_live} could not be patched; operator can hand-edit and restart Hermes"
-            fi
-        fi
+        # The required Hermes completion proof above also warms the model slot
+        # and Hermes system prompt before the transaction commits.
         sync_windows_opencode_config
     else
         log "WARNING: llama-server health check timed out. The model may still be loading."

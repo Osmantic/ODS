@@ -40,18 +40,19 @@ service:
     pinning: none
     min_context: 65536
     probe:
+      # The pinned upstream dashboard has no HTTP chat-completion route.
+      # /api/status is its public, deterministic post-restart probe; the
+      # bootstrap transaction separately proves the model completion route.
       kind: custom
-      path: /api/talk/message/stream
-      auth: cookie:dream-session
+      path: /api/status
+      auth: none
   description: >
-    Hermes Agent (Nous Research) — a self-improving generalist agent with
-    persistent memory, autonomous skill creation, and 70+ built-in tools.
-    ODS runs the upstream image pinned by version, points it at the
-    local LLM (llama-server), and ships no messaging-platform adapters
-    (Telegram / Discord / Slack / etc.) since the web dashboard is the
-    surface we ship. The container runs `hermes gateway run` with the
-    dashboard embedded (HERMES_DASHBOARD=1) so the scheduler that fires
-    cron jobs actually runs.
+    Portal candidate runtime based on the full upstream Hermes AIAgent from
+    Nous Research, pinned by immutable OCI index digest and routed to the ODS
+    model gateway. Messaging-platform adapters remain installed but are
+    unconfigured without operator credentials. Portal plugin packaging and
+    activation remain governed by config/portal-dependency-lock.json; the
+    internal hermes service ID is retained for compatibility during migration.
 
   env_vars:
     # HERMES_PORT is intentionally NOT exposed here. With this PR's
@@ -78,7 +79,7 @@ service:
 features:
   - id: hermes-agent
     name: Hermes Agent
-    description: Generalist self-improving agent — chat, tools, persistent memory, scheduled tasks
+    description: Hermes runtime base for the Portal candidate — chat, tools, persistent memory, scheduled tasks
     icon: Bot
     category: productivity
     requirements:

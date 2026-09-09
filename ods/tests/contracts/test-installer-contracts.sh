@@ -9,6 +9,9 @@ command -v jq >/dev/null 2>&1 || {
   exit 1
 }
 
+echo "[contract] Hermes runtime-base digest and migration gate"
+python3 tests/contracts/test-runtime-base.py
+
 echo "[contract] backend contract files"
 for f in config/backends/amd.json config/backends/nvidia.json config/backends/cpu.json config/backends/apple.json; do
   test -f "$f" || { echo "[FAIL] missing $f"; exit 1; }
@@ -56,6 +59,10 @@ bash tests/contracts/test-external-lemonade-contracts.sh
 echo "[contract] bootstrap hot-swap force-recreate"
 bash tests/test-bootstrap-upgrade-hotswap-contract.sh
 bash tests/contracts/test-windows-lemonade-swap-wait.sh
+bash tests/test-bootstrap-upgrade-windows-native-llama.sh
+
+echo "[contract] Linux persisted Hermes migration without bootstrap"
+bash tests/test-linux-hermes-persisted-migration.sh
 
 echo "[contract] bootstrap Docker hot-swap rollback"
 bash tests/test-bootstrap-upgrade-docker-rollback.sh

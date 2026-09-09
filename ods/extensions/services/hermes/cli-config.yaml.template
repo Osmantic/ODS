@@ -17,11 +17,10 @@ model:
   # ignores this field and serves whatever's loaded, but Lemonade (AMD) and
   # other strict OpenAI-compat servers DO require an exact match — they will
   # 404 every chat completion if Hermes asks for "qwen3.5-9b" but the server
-  # only serves "extra.Qwen3.5-4B-Q4_K_M.gguf" or similar. The installer
-  # should sed-replace this value with the actually-served model name
-  # during phase 11 (open follow-up). Until that lands, operators on
-  # AMD / Apple Silicon / aarch64 must hand-edit /opt/data/config.yaml
-  # after first start to match the output of:
+  # only serves "extra.Qwen3.5-4B-Q4_K_M.gguf" or similar. ODS installers
+  # replace this placeholder with the actually-served model name and migrate
+  # the persisted config during model transitions. Operators can verify it
+  # against the output of:
   #   curl http://<llama-server-host>:<port>/v1/models | jq .data[0].id
   # (Hermes does NOT read HERMES_MODEL_NAME from env — config.yaml is the
   # source of truth once it's copied out of the example.)
@@ -37,8 +36,8 @@ model:
   # passed through as OPENAI_BASE_URL but Hermes still dialed
   # llama-server:8080 and failed with `Connection error`. Operators on
   # macOS (where llama-server runs native on the host, not as a sibling
-  # container) must hand-edit this to `http://host.docker.internal:8080/v1`
-  # or rely on a future installer-side substitution.
+  # container) therefore uses `http://host.docker.internal:8080/v1` after
+  # installer rendering. The persisted config remains authoritative.
   base_url: "http://llama-server:8080/v1"
 
   # Hermes needs a large working window for tool-calling workflows. ODS's
@@ -74,6 +73,12 @@ providers:
 auxiliary:
   compression:
     context_length: 131072
+
+# Keep command execution inside the Hermes container. The upstream default is
+# currently local as well, but this explicit boundary must not drift with an
+# upstream default change. No ODS-specific terminal timeout is imposed.
+terminal:
+  backend: "local"
 
 # =============================================================================
 # Messaging gateways — installed but unconfigured without credentials

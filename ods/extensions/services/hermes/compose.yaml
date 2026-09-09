@@ -2,7 +2,7 @@ services:
   hermes:
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Version-pinned upstream image. Override HERMES_AGENT_IMAGE only for
+    # Immutable-digest-pinned upstream image. Override HERMES_AGENT_IMAGE only for
     # deliberate hotfix testing; bumping the default is a review-and-smoke-test
     # pass — see docs/HERMES.md "How to bump the image pin."
     image: ${HERMES_AGENT_IMAGE:-docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7}
@@ -32,8 +32,8 @@ services:
       - HERMES_LANGUAGE=${HERMES_LANGUAGE:-en}
       # Optional WhatsApp adapter pass-through. These list-form entries are
       # only populated when the operator sets them in the compose environment;
-      # otherwise the disabled config block in cli-config.yaml.template remains
-      # authoritative and Hermes's own persisted .env is not masked by blanks.
+      # otherwise the adapters remain unconfigured and Hermes's own persisted
+      # .env is not masked by blank values.
       - WHATSAPP_ENABLED
       - WHATSAPP_MODE
       - WHATSAPP_ALLOWED_USERS

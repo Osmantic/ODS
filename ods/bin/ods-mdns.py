@@ -204,11 +204,8 @@ def _build_services(env: dict[str, str], device_name: str, ip: str) -> list[Serv
             ("dashboard",     _safe_port(env, "DASHBOARD_PORT", 3001),     "ODS Dashboard", {"path": "/"}),
             ("chat",          _safe_port(env, "WEBUI_PORT", 3000),         "ODS Chat",      {"path": "/"}),
             ("dashboard-api", _safe_port(env, "DASHBOARD_API_PORT", 3002), "ODS API",       {"path": "/health"}),
-            # Announce unconditionally when direct ports are LAN-reachable:
-            # the Hermes extension is opt-in via `ods enable hermes`, but
-            # the failure mode when disabled is the same as any optional
-            # service that is not running.
-            ("hermes",        _safe_port(env, "HERMES_PORT", 9119),        "Hermes Agent",    {"path": "/api/health"}),
+            # Hermes intentionally has no host-bound direct port. Its only
+            # advertised surface is the authenticated proxy route below.
         ]
         for suffix, port, label, txt in direct:
             infos.append(ServiceInfo(
@@ -269,9 +266,9 @@ class Announcer:
     def __init__(self) -> None:
         self.zc: Zeroconf | None = None
         self.registered: list[ServiceInfo] = []
-        self.last_signature: tuple[str, str, str, int, int, int, int, int] | None = None
+        self.last_signature: tuple[str, str, str, int, int, int, int] | None = None
 
-    def _config_signature(self, device_name: str, ip: str, env: dict[str, str]) -> tuple[str, str, str, int, int, int, int, int]:
+    def _config_signature(self, device_name: str, ip: str, env: dict[str, str]) -> tuple[str, str, str, int, int, int, int]:
         """Compact summary of what we'd publish — re-announce on change.
 
         Includes ODS_PROXY_PORT so that flipping the proxy to a non-
@@ -285,7 +282,6 @@ class Announcer:
             _safe_port(env, "DASHBOARD_PORT", 3001),
             _safe_port(env, "WEBUI_PORT", 3000),
             _safe_port(env, "DASHBOARD_API_PORT", 3002),
-            _safe_port(env, "HERMES_PORT", 9119),
             _safe_port(env, "ODS_PROXY_PORT", 80),
         )
 

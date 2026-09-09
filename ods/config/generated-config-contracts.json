@@ -448,10 +448,10 @@
           "needle": "context_length: 131072"
         },
         {
-          "id": "template-output-cap",
+          "id": "template-local-terminal-backend",
           "type": "yaml_text_contains",
           "path": "extensions/services/hermes/cli-config.yaml.template",
-          "needle": "max_tokens: 1024"
+          "needle": "backend: \"local\""
         },
         {
           "id": "patcher-updates-model-name",

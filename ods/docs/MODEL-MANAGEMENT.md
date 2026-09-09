@@ -329,9 +329,10 @@ model:
   context_length: 65536
 ```
 
-Also keep `auxiliary.compression.context_length` at the same value and use
-`compression.threshold: 0.50`; older absolute-token thresholds can leave Hermes
-waiting too long to compact.
+Also keep `auxiliary.compression.context_length` at the same value and use the
+current ODS policy: `compression.threshold: 0.75`, `target_ratio: 0.50`, and
+`protect_last_n: 40`. Older absolute-token thresholds can leave Hermes waiting
+too long to compact.
 
 5. For AMD/Lemonade installs, verify `config/litellm/lemonade.yaml`.
 

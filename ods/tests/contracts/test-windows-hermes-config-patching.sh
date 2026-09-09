@@ -30,7 +30,8 @@ echo "[contract] Windows Hermes config patching"
 # ---------------------------------------------------------------------------
 # 1. The patch helper must not silently no-op when the target file is missing.
 # ---------------------------------------------------------------------------
-if grep -q 'if (-not (Test-Path \$Path)) { return \$false }' "$PHASE"; then
+if grep -q '\$pathItem = Get-HermesConfigRegularFile -Path \$Path' "$PHASE" \
+   && grep -q 'if (\$null -eq \$pathItem) { return \$false }' "$PHASE"; then
     pass "Update-HermesConfigFile reports missing targets as failure"
 else
     fail "Update-HermesConfigFile must return false when the target file is missing"
@@ -39,11 +40,20 @@ fi
 # ---------------------------------------------------------------------------
 # 2. The helper must use explicit UTF-8 reads and UTF-8-no-BOM writes.
 # ---------------------------------------------------------------------------
-if grep -q 'ReadAllText(\$Path, \$utf8NoBom)' "$PHASE" \
-   && grep -q '\[System.IO.File\]::WriteAllText(\$Path, \$content, \$utf8NoBom)' "$PHASE"; then
-    pass "Hermes config patching uses dependency-free explicit UTF-8 read/write"
+if grep -q 'ReadAllText(\$fullPath, \$utf8NoBom)' "$PHASE" \
+   && grep -q '\[System.IO.File\]::WriteAllText(\$stagedPath, \$content, \$utf8NoBom)' "$PHASE" \
+   && grep -q '\[System.IO.File\]::Replace(\$stagedPath, \$fullPath, \$backupPath, \$true)' "$PHASE"; then
+    pass "Hermes config patching verifies a private UTF-8 sibling before atomic replacement"
 else
-    fail "Hermes config patching must use dependency-free explicit UTF-8 read/write"
+    fail "Hermes config patching must verify a private UTF-8 sibling before atomic replacement"
+fi
+
+if grep -q 'FileAttributes]::ReparsePoint' "$PHASE" \
+   && grep -q 'Hermes config rollback failed; backup retained' "$PHASE" \
+   && grep -q 'restored bytes do not match the pair backup' "$PHASE"; then
+    pass "Hermes config transactions reject reparse points and retain unverifiable rollback backups"
+else
+    fail "Hermes config transactions must reject reparse points and retain unverifiable rollback backups"
 fi
 
 # ---------------------------------------------------------------------------
@@ -73,10 +83,12 @@ fi
 #    config did not receive the patch.
 # ---------------------------------------------------------------------------
 if grep -q 'Failed to patch Hermes config for Windows runtime' "$PHASE" \
-   && grep -q 'Failed to patch Hermes config for Windows runtime' "$MONO"; then
-    pass "Windows installer paths fail loudly when Hermes config patching does not land"
+   && grep -q 'Failed to patch Hermes config for Windows runtime' "$MONO" \
+   && grep -q 'Update-HermesConfigPair -TemplatePath \$_hermesTemplate -LivePath \$_hermesLive' "$PHASE" \
+   && grep -q 'Update-HermesConfigPair `' "$MONO"; then
+    pass "Windows installer paths transactionally update both Hermes configs and fail loudly"
 else
-    fail "Windows installer paths must fail loudly when Hermes config patching does not land"
+    fail "Windows installer paths must transactionally update both Hermes configs and fail loudly"
 fi
 
 # ---------------------------------------------------------------------------
@@ -124,6 +136,19 @@ if grep -q '\[int\]\$RequestTimeoutSeconds = 180' "$PHASE" \
     pass "Windows Hermes config patching applies the local provider timeout"
 else
     fail "Windows Hermes config patching must pass the local provider timeout into template and live config"
+fi
+
+# Windows must use the same tuned compression values as the canonical Python
+# patcher, source template, and operator documentation.
+if grep -q 'threshold: 0.75' "$PHASE" \
+   && grep -q 'target_ratio: 0.50' "$PHASE" \
+   && grep -q 'protect_last_n: 40' "$PHASE" \
+   && ! grep -q 'threshold: 0.50' "$PHASE" \
+   && ! grep -q 'target_ratio: 0.20' "$PHASE" \
+   && ! grep -q 'protect_last_n: 20' "$PHASE"; then
+    pass "Windows Hermes config patching matches canonical compression tuning"
+else
+    fail "Windows Hermes config patching must use threshold 0.75, target_ratio 0.50, protect_last_n 40"
 fi
 
 # ---------------------------------------------------------------------------

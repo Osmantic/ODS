@@ -38,9 +38,7 @@ These are published only when `BIND_ADDRESS` is explicitly LAN-facing (for examp
 | `<device>-chat._http._tcp.local` | 3000 | Open WebUI direct (bypasses proxy) |
 | `<device>-dashboard._http._tcp.local` | 3001 | Dashboard direct |
 | `<device>-dashboard-api._http._tcp.local` | 3002 | Dashboard API health endpoint |
-| `<device>-hermes._http._tcp.local` | 9119 | Hermes Agent direct (when the `hermes` extension is enabled) |
-
-These exist for MCP clients, service-discovery tools, and the eventual ODS mobile app that want to talk directly to a service. End users should use the subdomain entries above.
+These exist for MCP clients, service-discovery tools, and the eventual ODS mobile app that want to talk directly to a service. Hermes is intentionally omitted because port 9119 is internal-only; all users and clients must enter through the authenticated `hermes.<device>.local` proxy route above.
 
 ## Platform support
 

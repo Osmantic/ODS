@@ -352,6 +352,10 @@ class TestLoadExtensionManifests:
         assert services["open-webui"]["llm"]["probe"]["path"] == "/openai/v1/chat/completions"
         assert services["perplexica"]["llm"]["probe"]["path"] == "/api/search"
         assert services["privacy-shield"]["llm"]["probe"]["path"] == "/v1/chat/completions"
+        hermes = services["hermes"]
+        assert hermes["default_host"] == "hermes"
+        assert hermes["llm"]["probe"]["path"] == hermes["health"] == "/api/status"
+        assert hermes["llm"]["probe"]["auth"] == "none"
 
     def test_external_port_default_zero_disables_external_port_fallback(self, tmp_path):
         svc_dir = tmp_path / "internal-service"

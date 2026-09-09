@@ -10,13 +10,66 @@ the rest of the user's config.
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import tempfile
 from pathlib import Path
+
+
+LEGACY_DISABLED_TOOLSETS = (
+    ("terminal", "browser"),
+    (
+        "terminal",
+        "browser",
+        "vision",
+        "video",
+        "image_gen",
+        "video_gen",
+        "x_search",
+        "moa",
+        "tts",
+        "skills",
+        "todo",
+        "memory",
+        "session_search",
+        "clarify",
+        "delegation",
+        "cronjob",
+        "messaging",
+        "homeassistant",
+        "spotify",
+        "yuanbao",
+        "computer_use",
+    ),
+)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Replace a config through a private sibling while preserving metadata."""
+    original = path.stat()
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.ods-patch-", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, original.st_mode & 0o777)
+        if os.name != "nt" and hasattr(os, "chown"):
+            try:
+                os.chown(tmp, original.st_uid, original.st_gid)
+            except PermissionError:
+                staged = tmp.stat()
+                if (staged.st_uid, staged.st_gid) != (original.st_uid, original.st_gid):
+                    raise
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _top_level_block(lines: list[str], name: str) -> tuple[int, int] | None:
     start = None
-    pattern = re.compile(rf"^{re.escape(name)}:\s*(?:#.*)?$")
+    pattern = re.compile(rf"^{re.escape(name)}:(?:[ \t]+#.*|[ \t]*)$")
     for idx, line in enumerate(lines):
         if start is None:
             if pattern.match(line):
@@ -32,7 +85,7 @@ def _top_level_block(lines: list[str], name: str) -> tuple[int, int] | None:
 def _child_block(lines: list[str], parent: tuple[int, int], name: str, indent: int) -> tuple[int, int] | None:
     start = None
     prefix = " " * indent
-    pattern = re.compile(rf"^{prefix}{re.escape(name)}:\s*(?:#.*)?$")
+    pattern = re.compile(rf"^{prefix}{re.escape(name)}:(?:[ \t]+#.*|[ \t]*)$")
     for idx in range(parent[0] + 1, parent[1]):
         line = lines[idx]
         if start is None:
@@ -67,12 +120,71 @@ def _has_key(lines: list[str], block: tuple[int, int], key: str, indent: int) ->
 
 def _key_value(lines: list[str], block: tuple[int, int], key: str, indent: int) -> str | None:
     prefix = " " * indent
-    pattern = re.compile(rf"^{prefix}{re.escape(key)}:\s*(.*?)\s*(?:#.*)?$")
+    pattern = re.compile(rf"^{prefix}{re.escape(key)}:[ \t]*(.*?)(?:[ \t]+#.*|[ \t]*)$")
     for idx in range(block[0] + 1, block[1]):
         match = pattern.match(lines[idx])
         if match:
             return match.group(1).strip()
     return None
+
+
+def _remove_legacy_reductions(lines: list[str]) -> bool:
+    """Remove only exact ODS-authored legacy capability reductions.
+
+    Persisted Hermes configuration is operator state. Values which differ from
+    the historical ODS defaults are therefore preserved verbatim.
+    """
+    changed = False
+
+    model = _top_level_block(lines, "model")
+    if model is not None:
+        for idx in range(model[0] + 1, model[1]):
+            if re.fullmatch(r"  max_tokens:[ \t]*1024(?:[ \t]+#.*|[ \t]*)", lines[idx]):
+                del lines[idx]
+                changed = True
+                break
+
+    terminal = _top_level_block(lines, "terminal")
+    if terminal is not None:
+        for idx in range(terminal[0] + 1, terminal[1]):
+            if re.fullmatch(r"  timeout:[ \t]*30(?:[ \t]+#.*|[ \t]*)", lines[idx]):
+                del lines[idx]
+                changed = True
+                break
+
+    agent = _top_level_block(lines, "agent")
+    if agent is not None:
+        disabled = _child_block(lines, agent, "disabled_toolsets", 2)
+        if disabled is not None:
+            items: list[str] = []
+            item_indices: list[int] = []
+            exact_list = True
+            for idx in range(disabled[0] + 1, disabled[1]):
+                line = lines[idx]
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                match = re.fullmatch(r"    -[ \t]+([a-z0-9_]+)(?:[ \t]+#.*|[ \t]*)", line)
+                if match is None:
+                    exact_list = False
+                    break
+                items.append(match.group(1))
+                item_indices.append(idx)
+            if exact_list and tuple(items) in LEGACY_DISABLED_TOOLSETS:
+                # Remove the managed key and list items, but retain blank and
+                # comment lines that may document the following operator key.
+                for idx in reversed([disabled[0], *item_indices]):
+                    del lines[idx]
+                changed = True
+                agent = _top_level_block(lines, "agent")
+                if agent is not None and not any(
+                    line.strip() and not line.lstrip().startswith("#")
+                    for line in lines[agent[0] + 1 : agent[1]]
+                ):
+                    # Remove the now-empty mapping header, but preserve nearby
+                    # comments because they may document the following block.
+                    del lines[agent[0]]
+
+    return changed
 
 
 def _ensure_model(
@@ -108,24 +220,8 @@ def _ensure_model(
         block = _set_key(lines, block, "api_key", f'"{api_key}"', 2)
     if context_length:
         block = _set_key(lines, block, "context_length", str(context_length), 2)
-    # Remove ODS's legacy max_tokens: 1024 cap; preserve operator values.
-    _remove_legacy_max_tokens(lines, block)
     if max_tokens and not _has_key(lines, block, "max_tokens", 2):
         _set_key(lines, block, "max_tokens", str(max_tokens), 2)
-
-
-def _remove_legacy_max_tokens(lines: list[str], block: tuple[int, int]) -> None:
-    """Remove the exact ODS legacy max_tokens: 1024 value.
-
-    A different explicit operator value (e.g., 2048) is preserved.
-    If max_tokens is absent, this is a no-op.
-    """
-    prefix = "  "
-    for idx in range(block[0] + 1, block[1]):
-        if re.match(rf"^{re.escape(prefix)}max_tokens:\s*1024\s*$", lines[idx]):
-            del lines[idx]
-            block = (block[0], block[1] - 1)
-            return
 
 
 def _ensure_provider_timeout(lines: list[str], provider: str = "custom", timeout_seconds: int = 180) -> None:
@@ -292,6 +388,7 @@ def patch_config(
     trailing_newline = original.endswith("\n")
     lines = original.splitlines()
 
+    _remove_legacy_reductions(lines)
     _ensure_model(lines, model, base_url, context_length, api_key, max_tokens)
     _ensure_provider_timeout(lines, timeout_seconds=request_timeout_seconds)
     _ensure_auxiliary(lines, context_length)
@@ -303,7 +400,21 @@ def patch_config(
         updated += "\n"
     if updated == original:
         return False
-    path.write_text(updated, encoding="utf-8")
+    _atomic_write_text(path, updated)
+    return True
+
+
+def migrate_legacy_reductions(path: Path) -> bool:
+    """Migrate only recognized legacy reductions in an existing config."""
+    original = path.read_text(encoding="utf-8")
+    trailing_newline = original.endswith("\n")
+    lines = original.splitlines()
+    if not _remove_legacy_reductions(lines):
+        return False
+    updated = "\n".join(lines)
+    if trailing_newline:
+        updated += "\n"
+    _atomic_write_text(path, updated)
     return True
 
 
@@ -316,19 +427,27 @@ def main() -> int:
     parser.add_argument("--context-length", type=int)
     parser.add_argument("--request-timeout-seconds", type=int, default=180)
     parser.add_argument("--max-tokens", type=int, default=None)
+    parser.add_argument(
+        "--migrate-legacy-reductions-only",
+        action="store_true",
+        help="Remove only exact ODS-authored max/tool/terminal reductions.",
+    )
     args = parser.parse_args()
 
     if not args.path.exists():
         return 0
-    changed = patch_config(
-        args.path,
-        args.model,
-        args.base_url,
-        args.context_length,
-        args.api_key,
-        args.request_timeout_seconds,
-        args.max_tokens,
-    )
+    if args.migrate_legacy_reductions_only:
+        changed = migrate_legacy_reductions(args.path)
+    else:
+        changed = patch_config(
+            args.path,
+            args.model,
+            args.base_url,
+            args.context_length,
+            args.api_key,
+            args.request_timeout_seconds,
+            args.max_tokens,
+        )
     print("changed" if changed else "unchanged")
     return 0
 
