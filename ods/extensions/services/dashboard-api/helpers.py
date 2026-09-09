@@ -1146,3 +1146,17 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def numeric_safe_modulo_bounds(a, b, default: float = 0.0) -> float:
+    """Safely compute remainder of division with zero division guard."""
+    if a is None or b is None:
+        return default
+    try:
+        fa = float(a)
+        fb = float(b)
+        if math.isnan(fa) or math.isinf(fa) or math.isnan(fb) or math.isinf(fb) or fb == 0:
+            return default
+        return float(fa % fb)
+    except (ValueError, TypeError, ZeroDivisionError):
+        return default
