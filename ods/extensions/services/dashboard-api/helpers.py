@@ -1146,3 +1146,24 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def numeric_normalize_ratio_safe(val, min_val=0.0, max_val=1.0, default: float = 0.0) -> float:
+    """Safely normalize a numeric value to a 0.0 - 1.0 ratio based on min/max bounds."""
+    if val is None:
+        return default
+    try:
+        if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+            return default
+        v = float(val)
+        mn = float(min_val)
+        mx = float(max_val)
+        if math.isnan(v) or math.isnan(mn) or math.isnan(mx) or math.isinf(v) or math.isinf(mn) or math.isinf(mx):
+            return default
+        if mx <= mn:
+            return default
+        clamped = max(mn, min(v, mx))
+        return (clamped - mn) / (mx - mn)
+    except (ValueError, TypeError, ZeroDivisionError, OverflowError):
+        return default
+

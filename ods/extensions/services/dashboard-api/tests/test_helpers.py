@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestNumericNormalizeRatioSafe:
+    def test_valid_normalization(self):
+        from helpers import numeric_normalize_ratio_safe
+        assert numeric_normalize_ratio_safe(50, 0, 100) == 0.5
+        assert numeric_normalize_ratio_safe(150, 0, 100) == 1.0
+
+    def test_invalid_and_bounds(self):
+        from helpers import numeric_normalize_ratio_safe
+        assert numeric_normalize_ratio_safe(None) == 0.0
+        assert numeric_normalize_ratio_safe(float("nan")) == 0.0
+        assert numeric_normalize_ratio_safe(5, 10, 10) == 0.0
+
