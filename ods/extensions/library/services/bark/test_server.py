@@ -48,8 +48,9 @@ def mock_soundfile_write():
         def side_effect(buf, audio_array, sample_rate, format=None):
             # Simulate writing by just seeking to end
             buf.seek(0)
-            buf.write(b'\x00' * 100)  # fake WAV data
+            buf.write(b"\x00" * 100)  # fake WAV data
             buf.seek(0)
+
         mock.side_effect = side_effect
         yield mock
 
@@ -87,11 +88,14 @@ def test_health_after_load(mock_bark_preload_models):
 def test_tts_success(mock_bark_generate_audio, mock_soundfile_write):
     """Test successful TTS request."""
     with patch("server._models_loaded", True):
-        response = client.post("/tts", json={
-            "text": "Hello, world!",
-            "voice_preset": "v2/en_speaker_6",
-            "output_format": "wav"
-        })
+        response = client.post(
+            "/tts",
+            json={
+                "text": "Hello, world!",
+                "voice_preset": "v2/en_speaker_6",
+                "output_format": "wav",
+            },
+        )
         assert response.status_code == 200
         data = response.json()
         assert "audio_base64" in data
@@ -103,9 +107,12 @@ def test_tts_success(mock_bark_generate_audio, mock_soundfile_write):
 def test_tts_default_format(mock_bark_generate_audio, mock_soundfile_write):
     """Test TTS with default format (wav)."""
     with patch("server._models_loaded", True):
-        response = client.post("/tts", json={
-            "text": "Hello, world!",
-        })
+        response = client.post(
+            "/tts",
+            json={
+                "text": "Hello, world!",
+            },
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["format"] == "wav"
@@ -114,10 +121,9 @@ def test_tts_default_format(mock_bark_generate_audio, mock_soundfile_write):
 def test_tts_case_insensitive_format(mock_bark_generate_audio, mock_soundfile_write):
     """Test TTS with lowercase format."""
     with patch("server._models_loaded", True):
-        response = client.post("/tts", json={
-            "text": "Hello, world!",
-            "output_format": "mp3"
-        })
+        response = client.post(
+            "/tts", json={"text": "Hello, world!", "output_format": "mp3"}
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["format"] == "mp3"
@@ -125,10 +131,9 @@ def test_tts_case_insensitive_format(mock_bark_generate_audio, mock_soundfile_wr
 
 def test_tts_invalid_format():
     """Test TTS with invalid format."""
-    response = client.post("/tts", json={
-        "text": "Hello, world!",
-        "output_format": "avi"
-    })
+    response = client.post(
+        "/tts", json={"text": "Hello, world!", "output_format": "avi"}
+    )
     assert response.status_code == 422
     assert "output_format" in response.json()["detail"].lower()
 
@@ -136,34 +141,37 @@ def test_tts_invalid_format():
 def test_tts_text_too_long():
     """Test TTS with text exceeding MAX_TEXT_LENGTH."""
     long_text = "a" * (server.MAX_TEXT_LENGTH + 1)
-    response = client.post("/tts", json={
-        "text": long_text
-    })
+    response = client.post("/tts", json={"text": long_text})
     assert response.status_code == 422
     assert "text" in response.json()["detail"].lower()
 
 
 def test_tts_text_empty():
     """Test TTS with empty text."""
-    response = client.post("/tts", json={
-        "text": ""
-    })
+    response = client.post("/tts", json={"text": ""})
     assert response.status_code == 200  # Empty text is allowed by Pydantic
 
 
-def test_tts_model_loading_on_first_request(mock_bark_preload_models, mock_bark_generate_audio, mock_soundfile_write):
+def test_tts_model_loading_on_first_request(
+    mock_bark_preload_models, mock_bark_generate_audio, mock_soundfile_write
+):
     """Test that models are loaded on first request."""
     # Ensure models are not loaded
     with patch("server._models_loaded", False):
-        response = client.post("/tts", json={
-            "text": "Hello, world!",
-        })
+        response = client.post(
+            "/tts",
+            json={
+                "text": "Hello, world!",
+            },
+        )
         assert response.status_code == 200
         # Verify preload_models was called
         mock_bark_preload_models.assert_called_once()
 
 
-def test_tts_concurrent_requests(mock_bark_preload_models, mock_bark_generate_audio, mock_soundfile_write):
+def test_tts_concurrent_requests(
+    mock_bark_preload_models, mock_bark_generate_audio, mock_soundfile_write
+):
     """Test concurrent TTS requests."""
     with patch("server._models_loaded", False):
         # Make multiple concurrent requests
@@ -195,10 +203,10 @@ def test_tts_concurrent_requests(mock_bark_preload_models, mock_bark_generate_au
 def test_tts_stream_success(mock_bark_generate_audio, mock_soundfile_write):
     """Test successful TTS stream request."""
     with patch("server._models_loaded", True):
-        response = client.post("/tts/stream", json={
-            "text": "Hello, world!",
-            "voice_preset": "v2/en_speaker_6"
-        })
+        response = client.post(
+            "/tts/stream",
+            json={"text": "Hello, world!", "voice_preset": "v2/en_speaker_6"},
+        )
         assert response.status_code == 200
         assert response.headers["content-type"] == "audio/wav"
         assert "bark_output.wav" in response.headers["content-disposition"]
@@ -208,10 +216,13 @@ def test_tts_stream_success(mock_bark_generate_audio, mock_soundfile_write):
 def test_tts_stream_default_format(mock_bark_generate_audio, mock_soundfile_write):
     """Test TTS stream always returns WAV regardless of format."""
     with patch("server._models_loaded", True):
-        response = client.post("/tts/stream", json={
-            "text": "Hello, world!",
-            "output_format": "mp3"  # This should be ignored for stream endpoint
-        })
+        response = client.post(
+            "/tts/stream",
+            json={
+                "text": "Hello, world!",
+                "output_format": "mp3",  # This should be ignored for stream endpoint
+            },
+        )
         assert response.status_code == 200
         assert response.headers["content-type"] == "audio/wav"
 
@@ -219,10 +230,9 @@ def test_tts_stream_default_format(mock_bark_generate_audio, mock_soundfile_writ
 # Tests for validation
 def test_tts_invalid_voice_preset():
     """Test TTS with invalid voice preset (now rejected by server validator)."""
-    response = client.post("/tts", json={
-        "text": "Hello, world!",
-        "voice_preset": "invalid_preset"
-    })
+    response = client.post(
+        "/tts", json={"text": "Hello, world!", "voice_preset": "invalid_preset"}
+    )
     assert response.status_code == 422
     assert "voice_preset" in response.json()["detail"].lower()
 
@@ -230,9 +240,7 @@ def test_tts_invalid_voice_preset():
 def test_tts_text_max_length_boundary():
     """Test TTS with text at MAX_TEXT_LENGTH boundary."""
     text = "a" * server.MAX_TEXT_LENGTH
-    response = client.post("/tts", json={
-        "text": text
-    })
+    response = client.post("/tts", json={"text": text})
     assert response.status_code == 200
 
 
@@ -241,9 +249,12 @@ def test_tts_generation_error(mock_bark_generate_audio):
     """Test TTS when bark.generate_audio raises an exception."""
     mock_bark_generate_audio.side_effect = Exception("Bark error")
     with patch("server._models_loaded", True):
-        response = client.post("/tts", json={
-            "text": "Hello, world!",
-        })
+        response = client.post(
+            "/tts",
+            json={
+                "text": "Hello, world!",
+            },
+        )
         assert response.status_code == 500
         assert "TTS generation failed" in response.json()["detail"]
 
@@ -252,9 +263,12 @@ def test_tts_stream_generation_error(mock_bark_generate_audio):
     """Test TTS stream when bark.generate_audio raises an exception."""
     mock_bark_generate_audio.side_effect = Exception("Bark error")
     with patch("server._models_loaded", True):
-        response = client.post("/tts/stream", json={
-            "text": "Hello, world!",
-        })
+        response = client.post(
+            "/tts/stream",
+            json={
+                "text": "Hello, world!",
+            },
+        )
         assert response.status_code == 500
         assert "TTS generation failed" in response.json()["detail"]
 
@@ -285,3 +299,86 @@ def test_load_models_thread_safety(mock_bark_preload_models):
     assert all(results)
     # preload_models should only be called once due to lock
     assert mock_bark_preload_models.call_count == 1
+
+
+def test_tts_requires_api_key(monkeypatch):
+    """Test that /tts endpoint requires API key when set."""
+    monkeypatch.setenv("BARK_API_KEY", "test-key")
+    response = client.post("/tts", json={"text": "hello"})
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid API key"
+
+
+def test_tts_works_with_correct_api_key(
+    monkeypatch, mock_bark_generate_audio, mock_soundfile_write
+):
+    """Test that /tts endpoint works with correct API key."""
+    monkeypatch.setenv("BARK_API_KEY", "test-key")
+    with patch("server._models_loaded", True):
+        response = client.post(
+            "/tts",
+            json={"text": "Hello, world!", "voice_preset": "v2/en_speaker_6"},
+            headers={"X-API-Key": "test-key"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "audio_base64" in data
+        assert data["sample_rate"] == 24000
+        assert data["format"] == "wav"
+
+
+def test_tts_works_without_api_key(
+    monkeypatch, mock_bark_generate_audio, mock_soundfile_write
+):
+    """Test that /tts endpoint works without API key when not set."""
+    monkeypatch.delenv("BARK_API_KEY", raising=False)
+    with patch("server._models_loaded", True):
+        response = client.post(
+            "/tts", json={"text": "Hello, world!", "voice_preset": "v2/en_speaker_6"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "audio_base64" in data
+        assert data["sample_rate"] == 24000
+        assert data["format"] == "wav"
+
+
+def test_tts_stream_requires_api_key(monkeypatch):
+    """Test that /tts/stream endpoint requires API key when set."""
+    monkeypatch.setenv("BARK_API_KEY", "test-key")
+    response = client.post("/tts/stream", json={"text": "hello"})
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid API key"
+
+
+def test_tts_stream_works_with_correct_api_key(
+    monkeypatch, mock_bark_generate_audio, mock_soundfile_write
+):
+    """Test that /tts/stream endpoint works with correct API key."""
+    monkeypatch.setenv("BARK_API_KEY", "test-key")
+    with patch("server._models_loaded", True):
+        response = client.post(
+            "/tts/stream",
+            json={"text": "Hello, world!", "voice_preset": "v2/en_speaker_6"},
+            headers={"X-API-Key": "test-key"},
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/wav"
+        assert "bark_output.wav" in response.headers["content-disposition"]
+        assert len(response.content) > 0
+
+
+def test_tts_stream_works_without_api_key(
+    monkeypatch, mock_bark_generate_audio, mock_soundfile_write
+):
+    """Test that /tts/stream endpoint works without API key when not set."""
+    monkeypatch.delenv("BARK_API_KEY", raising=False)
+    with patch("server._models_loaded", True):
+        response = client.post(
+            "/tts/stream",
+            json={"text": "Hello, world!", "voice_preset": "v2/en_speaker_6"},
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/wav"
+        assert "bark_output.wav" in response.headers["content-disposition"]
+        assert len(response.content) > 0
