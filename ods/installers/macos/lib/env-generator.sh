@@ -448,22 +448,24 @@ generate_ods_env() {
     # bridge loopback-only host services through that scoped interface.
     local macos_llm_bridge_enabled="false"
     local macos_host_agent_bridge_enabled="false"
-    local native_llama_port="8080"
+    # Host port the native Metal llama-server binds. Honour a pre-set value so
+    # an operator whose 8080 is taken can relocate ODS; every derived URL and
+    # the container readiness probe below follow this one variable.
+    local native_llama_port="${ODS_NATIVE_LLAMA_PORT:-8080}"
     local macos_host_gateway=""
     local macos_vm_ip=""
     local agent_host="host.docker.internal"
-    local llm_api_url="http://host.docker.internal:8080"
+    local llm_api_url="http://host.docker.internal:${native_llama_port}"
     local switchboard_mode
     switchboard_mode="$(normalize_ods_model_switchboard "${ODS_MODEL_SWITCHBOARD:-observe}")"
     if [[ "${DOCKER_BACKEND:-unknown}" == "colima" ]]; then
         macos_llm_bridge_enabled="true"
         macos_host_agent_bridge_enabled="true"
-        native_llama_port="8080"
         macos_host_gateway="${COLIMA_HOST_IP:-}"
         macos_vm_ip="${COLIMA_VM_IP:-}"
         if [[ -n "$macos_host_gateway" ]]; then
             agent_host="$macos_host_gateway"
-            llm_api_url="http://${macos_host_gateway}:8080"
+            llm_api_url="http://${macos_host_gateway}:${native_llama_port}"
         fi
     fi
 
@@ -593,7 +595,7 @@ ODS_UID=${host_uid}
 ODS_GID=${host_gid}
 
 #=== Ports ===
-OLLAMA_PORT=8080
+OLLAMA_PORT=${native_llama_port}
 WEBUI_PORT=3000
 SEARXNG_PORT=8888
 PERPLEXICA_PORT=3004

@@ -1767,7 +1767,7 @@ else
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_HOST_AGENT_BRIDGE_ENABLED" "$_macos_agent_bridge_enabled"
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_AGENT_HOST" "$COLIMA_HOST_IP"
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_LLM_BRIDGE_ENABLED" "$_macos_llm_bridge_enabled"
-        upsert_env_value "${INSTALL_DIR}/.env" "ODS_NATIVE_LLAMA_PORT" "8080"
+        upsert_env_value "${INSTALL_DIR}/.env" "ODS_NATIVE_LLAMA_PORT" "${ODS_NATIVE_LLAMA_PORT:-8080}"
         unset _macos_llm_bind _macos_agent_bridge_enabled
     else
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_HOST_AGENT_BRIDGE_ENABLED" "false"
@@ -1775,7 +1775,7 @@ else
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_AGENT_HOST" "host.docker.internal"
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_HOST_GATEWAY" ""
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_VM_IP" ""
-        upsert_env_value "${INSTALL_DIR}/.env" "ODS_NATIVE_LLAMA_PORT" "8080"
+        upsert_env_value "${INSTALL_DIR}/.env" "ODS_NATIVE_LLAMA_PORT" "${ODS_NATIVE_LLAMA_PORT:-8080}"
     fi
     if $CLOUD_MODE; then
         _macos_litellm_key="$(read_env_value "${INSTALL_DIR}/.env" "LITELLM_KEY")"
@@ -1806,11 +1806,11 @@ else
             upsert_env_value "${INSTALL_DIR}/.env" "CTX_SIZE" "$MAX_CONTEXT"
         fi
         if [[ "${DOCKER_BACKEND:-unknown}" == "colima" ]]; then
-            upsert_env_value "${INSTALL_DIR}/.env" "LLM_API_URL" "http://${COLIMA_HOST_IP}:8080"
-            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://${COLIMA_HOST_IP}:8080/v1"
+            upsert_env_value "${INSTALL_DIR}/.env" "LLM_API_URL" "http://${COLIMA_HOST_IP}:${ODS_NATIVE_LLAMA_PORT:-8080}"
+            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://${COLIMA_HOST_IP}:${ODS_NATIVE_LLAMA_PORT:-8080}/v1"
         else
-            upsert_env_value "${INSTALL_DIR}/.env" "LLM_API_URL" "http://host.docker.internal:8080"
-            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://host.docker.internal:8080/v1"
+            upsert_env_value "${INSTALL_DIR}/.env" "LLM_API_URL" "http://host.docker.internal:${ODS_NATIVE_LLAMA_PORT:-8080}"
+            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://host.docker.internal:${ODS_NATIVE_LLAMA_PORT:-8080}/v1"
         fi
         if [[ "$_macos_switchboard_mode" == "enabled" ]]; then
             _macos_litellm_key="$(read_env_value "${INSTALL_DIR}/.env" "LITELLM_KEY")"
@@ -1837,7 +1837,7 @@ else
         _previous_llm_bind _previous_macos_gateway _macos_llm_bridge_enabled \
         _macos_litellm_key
     CONTAINER_LLM_URL="$(read_env_value "${INSTALL_DIR}/.env" "LLM_API_URL")"
-    [[ -n "$CONTAINER_LLM_URL" ]] || CONTAINER_LLM_URL="http://host.docker.internal:8080"
+    [[ -n "$CONTAINER_LLM_URL" ]] || CONTAINER_LLM_URL="http://host.docker.internal:${ODS_NATIVE_LLAMA_PORT:-8080}"
     _macos_runtime_renderer="${ODS_PYTHON_CMD:-python3}"
     if [[ ! -f "${INSTALL_DIR}/scripts/render-runtime-configs.py" ]] \
         || ! command -v "$_macos_runtime_renderer" >/dev/null 2>&1; then

@@ -146,6 +146,8 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== macOS CLI .env quote handling ==="
 	@bash tests/test-macos-env-quote-strip.sh
+	@echo "=== macOS native llama port is relocatable ==="
+	@bash tests/test-macos-native-llama-port.sh
 	@echo ""
 	@echo "=== macOS uninstall LaunchAgent cleanup ==="
 	@bash tests/test-macos-uninstall-launchagents.sh
