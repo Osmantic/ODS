@@ -1146,3 +1146,19 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_extract_urls_safe(text: str) -> list:
+    """Safely parse and extract HTTP/HTTPS URL strings from text content."""
+    import re
+    if text is None or not isinstance(text, str):
+        return []
+    if not text.strip():
+        return []
+    try:
+        url_pattern = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
+        matches = re.findall(url_pattern, text)
+        return [m.rstrip('.,;)!?') for m in matches if m]
+    except Exception:
+        return []
+

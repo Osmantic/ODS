@@ -1607,3 +1607,16 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestStringExtractUrlsSafe:
+    def test_valid_url_extraction(self):
+        from helpers import string_extract_urls_safe
+        txt = "Visit https://example.com/docs or http://api.org."
+        assert string_extract_urls_safe(txt) == ["https://example.com/docs", "http://api.org"]
+
+    def test_invalid_and_bounds(self):
+        from helpers import string_extract_urls_safe
+        assert string_extract_urls_safe(None) == []
+        assert string_extract_urls_safe("No links here!") == []
+
