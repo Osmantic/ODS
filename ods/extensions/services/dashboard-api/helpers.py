@@ -1146,3 +1146,19 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def numeric_safe_log10_bounds(val, default: float = 0.0) -> float:
+    """Safely calculate log10 with domain and overflow guards."""
+    if val is None:
+        return default
+    try:
+        v = float(val)
+        if math.isnan(v) or math.isinf(v) or v <= 0:
+            return default
+        res = math.log10(v)
+        if math.isnan(res) or math.isinf(res):
+            return default
+        return float(res)
+    except (ValueError, TypeError, OverflowError):
+        return default
