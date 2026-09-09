@@ -1146,3 +1146,22 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_slugify_safe(text: str, delimiter: str = "-", default: str = "") -> str:
+    """Safely convert strings into URL-safe slug format."""
+    import re
+    if text is None or not isinstance(text, str):
+        return default
+    if not text.strip():
+        return default
+    if not isinstance(delimiter, str):
+        delimiter = "-"
+    try:
+        s = text.lower().strip()
+        s = re.sub(r"[^\w\s-]", "", s)
+        s = re.sub(r"[\s_-]+", delimiter, s)
+        return s.strip(delimiter) or default
+    except (ValueError, TypeError, Exception):
+        return default
+
