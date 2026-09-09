@@ -1607,3 +1607,13 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestListGroupConsecutiveSafe:
+    def test_valid_grouping(self):
+        from helpers import list_group_consecutive_safe
+        assert list_group_consecutive_safe([1, 1, 2, 3, 3, 3]) == [[1, 1], [2], [3, 3, 3]]
+
+    def test_invalid_and_bounds(self):
+        from helpers import list_group_consecutive_safe
+        assert list_group_consecutive_safe(None) == []

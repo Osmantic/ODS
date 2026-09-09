@@ -1146,3 +1146,21 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_group_consecutive_safe(items) -> list:
+    """Safely group consecutive identical elements into sublists."""
+    import itertools
+    if items is None:
+        return []
+    if not isinstance(items, (list, tuple, set)):
+        try:
+            items = list(items)
+        except TypeError:
+            return []
+    else:
+        items = list(items)
+    try:
+        return [list(g) for k, g in itertools.groupby(items)]
+    except Exception:
+        return []
