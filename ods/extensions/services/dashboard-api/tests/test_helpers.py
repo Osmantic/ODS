@@ -1607,3 +1607,16 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestDictMapValuesSafe:
+    def test_valid_mapping(self):
+        from helpers import dict_map_values_safe
+        data = {"a": 1, "b": 2}
+        assert dict_map_values_safe(data, lambda x: x * 10) == {"a": 10, "b": 20}
+
+    def test_invalid_and_bounds(self):
+        from helpers import dict_map_values_safe
+        assert dict_map_values_safe(None) == {}
+        assert dict_map_values_safe({"a": "text"}, lambda x: int(x)) == {"a": "text"}
+
