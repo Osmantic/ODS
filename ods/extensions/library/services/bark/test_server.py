@@ -1,14 +1,23 @@
 """Bark TTS API Server Tests"""
 
-import pytest
 import base64
+import concurrent.futures
+import sys
 import threading
+from unittest.mock import MagicMock, patch
+
 import numpy as np
-from unittest.mock import patch
+import pytest
+from fastapi.responses import Response
 from fastapi.testclient import TestClient
 
+# bark is a multi-GB ML dependency that is not installed in CI. server.py only
+# imports it lazily inside the generation helpers, so a stub is enough to let
+# the suite exercise the HTTP layer.
+sys.modules.setdefault("bark", MagicMock(SAMPLE_RATE=24000))
+
 # Import the module under test
-import server
+import server  # noqa: E402
 
 client = TestClient(server.app)
 
@@ -130,7 +139,8 @@ def test_tts_invalid_format():
         "output_format": "avi"
     })
     assert response.status_code == 422
-    assert "output_format" in response.json()["detail"].lower()
+    # A 422 detail is a list of error objects; the field lives in each "loc".
+    assert any("output_format" in str(err["loc"]) for err in response.json()["detail"])
 
 
 def test_tts_text_too_long():
@@ -140,7 +150,8 @@ def test_tts_text_too_long():
         "text": long_text
     })
     assert response.status_code == 422
-    assert "text" in response.json()["detail"].lower()
+    # A 422 detail is a list of error objects; the field lives in each "loc".
+    assert any("text" in str(err["loc"]) for err in response.json()["detail"])
 
 
 def test_tts_text_empty():
@@ -224,7 +235,8 @@ def test_tts_invalid_voice_preset():
         "voice_preset": "invalid_preset"
     })
     assert response.status_code == 422
-    assert "voice_preset" in response.json()["detail"].lower()
+    # A 422 detail is a list of error objects; the field lives in each "loc".
+    assert any("voice_preset" in str(err["loc"]) for err in response.json()["detail"])
 
 
 def test_tts_text_max_length_boundary():
@@ -285,3 +297,81 @@ def test_load_models_thread_safety(mock_bark_preload_models):
     assert all(results)
     # preload_models should only be called once due to lock
     assert mock_bark_preload_models.call_count == 1
+
+
+# Tests for ThreadPoolExecutor lifecycle and request timeouts
+
+
+def timing_out_future():
+    """A future whose result() raises the error ThreadPoolExecutor actually raises."""
+    future = MagicMock()
+    future.result.side_effect = concurrent.futures.TimeoutError()
+    return future
+
+
+def test_executor_is_bounded():
+    assert server._executor._max_workers == 2
+
+
+def test_shutdown_handler_drains_the_pool():
+    with patch.object(server._executor, "shutdown") as shutdown:
+        server._shutdown_executor()
+    shutdown.assert_called_once_with(wait=True)
+
+
+def test_shutdown_handler_is_registered_at_exit():
+    import atexit
+    import importlib
+
+    with patch.object(atexit, "register") as register:
+        importlib.reload(server)
+
+    registered = [call.args[0].__name__ for call in register.call_args_list if call.args]
+    assert "_shutdown_executor" in registered
+
+
+def test_tts_returns_504_when_generation_times_out():
+    with patch.object(server._executor, "submit", return_value=timing_out_future()):
+        response = client.post("/tts", json={"text": "Hello, world!"})
+
+    assert response.status_code == 504
+    assert "timed out" in response.json()["detail"].lower()
+
+
+def test_tts_stream_returns_504_when_generation_times_out():
+    with patch.object(server._executor, "submit", return_value=timing_out_future()):
+        response = client.post("/tts/stream", json={"text": "Hello, world!"})
+
+    assert response.status_code == 504
+    assert "timed out" in response.json()["detail"].lower()
+
+
+def test_tts_bounds_the_wait_on_the_worker():
+    """An unbounded result() would hang the request forever on a stuck worker."""
+    future = MagicMock()
+    future.result.return_value = {
+        "audio_base64": "", "sample_rate": 24000, "format": "wav",
+    }
+    with patch.object(server._executor, "submit", return_value=future):
+        client.post("/tts", json={"text": "Hello, world!"})
+
+    assert future.result.call_args.kwargs.get("timeout") == 600
+
+
+def test_tts_stream_bounds_the_wait_on_the_worker():
+    future = MagicMock()
+    future.result.return_value = Response(content=b"", media_type="audio/wav")
+    with patch.object(server._executor, "submit", return_value=future):
+        client.post("/tts/stream", json={"text": "Hello, world!"})
+
+    assert future.result.call_args.kwargs.get("timeout") == 600
+
+
+def test_timeout_branch_does_not_swallow_other_failures():
+    """Regression guard: the 504 branch must not shadow the generic 500 path."""
+    future = MagicMock()
+    future.result.side_effect = RuntimeError("model exploded")
+    with patch.object(server._executor, "submit", return_value=future):
+        response = client.post("/tts", json={"text": "Hello, world!"})
+
+    assert response.status_code == 500

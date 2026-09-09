@@ -4,12 +4,16 @@ Wraps suno-ai/bark with a minimal FastAPI HTTP interface.
 Compatible with the ODS extensions ecosystem.
 """
 
+import atexit
 import io
 import base64
 import logging
 import threading
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor
+# concurrent.futures.TimeoutError is only an alias of the builtin TimeoutError
+# on Python 3.11+. This image is python:3.10, where it subclasses Exception
+# instead, so it must be caught by name or it falls through to the 500 branch.
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import soundfile as sf
 from fastapi import FastAPI, HTTPException
@@ -27,6 +31,12 @@ _model_lock = threading.Lock()
 
 # Thread pool for CPU-intensive TTS generation
 _executor = ThreadPoolExecutor(max_workers=2)
+
+def _shutdown_executor():
+    """Gracefully shutdown the thread pool executor."""
+    _executor.shutdown(wait=True)
+
+atexit.register(_shutdown_executor)
 
 # Valid output formats
 VALID_FORMATS = {"WAV", "MP3", "OGG", "FLAC"}
@@ -165,13 +175,16 @@ def text_to_speech(req: TTSRequest):
             req.voice_preset,
             req.output_format,
         )
-        result = future.result()
+        result = future.result(timeout=600)
 
         return TTSResponse(**result)
     except ValueError as e:
         # Validation errors — safe to expose
         logger.warning(f"TTS validation failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+    except FutureTimeoutError:
+        logger.error("TTS generation timed out after 600 seconds")
+        raise HTTPException(status_code=504, detail="TTS generation timed out. Please try again.")
     except Exception as e:
         # Internal errors — log full trace, return generic message
         logger.exception(f"TTS generation failed: {e}")
@@ -190,10 +203,13 @@ def text_to_speech_stream(req: TTSRequest):
             req.text,
             req.voice_preset,
         )
-        return future.result()
+        return future.result(timeout=600)
     except ValueError as e:
         logger.warning(f"TTS stream validation failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+    except FutureTimeoutError:
+        logger.error("TTS stream generation timed out after 600 seconds")
+        raise HTTPException(status_code=504, detail="TTS generation timed out. Please try again.")
     except Exception as e:
         logger.exception(f"TTS stream failed: {e}")
         raise HTTPException(status_code=500, detail="TTS generation failed. Please try again.")
