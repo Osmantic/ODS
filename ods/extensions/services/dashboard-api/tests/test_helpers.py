@@ -1607,3 +1607,18 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestParseMemoryStringBytesSafe:
+    def test_valid_memory_parsing(self):
+        from helpers import parse_memory_string_bytes_safe
+        assert parse_memory_string_bytes_safe("1KB") == 1024
+        assert parse_memory_string_bytes_safe("4GB") == 4 * 1024**3
+        assert parse_memory_string_bytes_safe(2048) == 2048
+
+    def test_invalid_and_bounds(self):
+        from helpers import parse_memory_string_bytes_safe
+        assert parse_memory_string_bytes_safe(None) == 0
+        assert parse_memory_string_bytes_safe("invalid") == 0
+        assert parse_memory_string_bytes_safe(-100, default=0) == 0
+
