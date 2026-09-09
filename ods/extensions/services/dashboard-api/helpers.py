@@ -1146,3 +1146,22 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_rotate_safe(items, steps: int = 1) -> list:
+    """Safely rotate sequence elements left or right by step count."""
+    if items is None:
+        return []
+    if not isinstance(items, (list, tuple, set)):
+        try:
+            items = list(items)
+        except TypeError:
+            return []
+    else:
+        items = list(items)
+    if not items:
+        return []
+    if not isinstance(steps, int):
+        steps = 1
+    steps = steps % len(items)
+    return items[steps:] + items[:steps]
