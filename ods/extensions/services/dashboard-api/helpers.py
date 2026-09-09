@@ -1146,3 +1146,22 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_mask_sensitive_safe(text: str, unmasked_suffix_len: int = 4, mask_char: str = "*") -> str:
+    """Safely mask sensitive strings (API keys, cards) preserving trailing unmasked suffix characters."""
+    if text is None or not isinstance(text, str):
+        return ""
+    if not text:
+        return ""
+    if not isinstance(unmasked_suffix_len, int) or unmasked_suffix_len < 0:
+        unmasked_suffix_len = 4
+    if not isinstance(mask_char, str) or not mask_char:
+        mask_char = "*"
+    mask_char = mask_char[0]
+    n = len(text)
+    if n <= unmasked_suffix_len:
+        return mask_char * n
+    masked_count = n - unmasked_suffix_len
+    return (mask_char * masked_count) + text[-unmasked_suffix_len:]
+
