@@ -1146,3 +1146,20 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_mask_email_safe(email: str, default: str = "") -> str:
+    """Safely obfuscate email username portion for privacy preservation."""
+    if email is None or not isinstance(email, str):
+        return default
+    if "@" not in email:
+        return default
+    try:
+        user, domain = email.split("@", 1)
+        if len(user) <= 2:
+            masked_user = "*" * len(user)
+        else:
+            masked_user = user[0] + "*" * (len(user) - 2) + user[-1]
+        return f"{masked_user}@{domain}"
+    except Exception:
+        return default
