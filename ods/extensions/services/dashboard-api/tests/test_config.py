@@ -353,7 +353,7 @@ class TestLoadExtensionManifests:
         assert services["perplexica"]["llm"]["probe"]["path"] == "/api/search"
         assert services["privacy-shield"]["llm"]["probe"]["path"] == "/v1/chat/completions"
         hermes = services["hermes"]
-        assert hermes["default_host"] == "hermes"
+        assert hermes["host"] == "hermes"
         assert hermes["llm"]["probe"]["path"] == hermes["health"] == "/api/status"
         assert hermes["llm"]["probe"]["auth"] == "none"
 
