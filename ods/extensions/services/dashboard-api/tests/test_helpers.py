@@ -1607,3 +1607,13 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestStringRemoveAccentsSafe:
+    def test_valid_removal(self):
+        from helpers import string_remove_accents_safe
+        assert string_remove_accents_safe("café crêpe") == "cafe crepe"
+
+    def test_invalid_and_bounds(self):
+        from helpers import string_remove_accents_safe
+        assert string_remove_accents_safe(None) == ""
