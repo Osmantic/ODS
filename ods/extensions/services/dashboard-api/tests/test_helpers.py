@@ -1607,3 +1607,15 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestStringStripHtmlTagsSafe:
+    def test_valid_stripping(self):
+        from helpers import string_strip_html_tags_safe
+        assert string_strip_html_tags_safe("<p>Hello <b>World</b></p>") == "Hello World"
+
+    def test_invalid_and_bounds(self):
+        from helpers import string_strip_html_tags_safe
+        assert string_strip_html_tags_safe(None) == ""
+        assert string_strip_html_tags_safe(1234, default="none") == "none"
+

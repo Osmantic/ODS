@@ -1146,3 +1146,18 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_strip_html_tags_safe(text: str, default: str = "") -> str:
+    """Safely strip HTML tags from raw string input."""
+    import re
+    if text is None or not isinstance(text, str):
+        return default
+    if not text:
+        return default
+    try:
+        clean = re.sub(r'<[^>]*>', '', text)
+        return clean.strip()
+    except Exception:
+        return default
+
