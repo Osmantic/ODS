@@ -1607,3 +1607,13 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestStringEscapeMarkdownSafe:
+    def test_valid_escape(self):
+        from helpers import string_escape_markdown_safe
+        assert string_escape_markdown_safe("*bold*") == r"\*bold\*"
+
+    def test_invalid_and_bounds(self):
+        from helpers import string_escape_markdown_safe
+        assert string_escape_markdown_safe(None) == ""

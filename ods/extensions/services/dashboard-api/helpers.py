@@ -1146,3 +1146,16 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_escape_markdown_safe(text: str, default: str = "") -> str:
+    """Safely escape special Markdown syntax characters."""
+    if text is None or not isinstance(text, str):
+        return default
+    try:
+        special = ['*', '_', '`', '[', ']', '(', ')', '#', '+', '-', '.', '!']
+        for char in special:
+            text = text.replace(char, "\\" + char)
+        return text
+    except Exception:
+        return default
