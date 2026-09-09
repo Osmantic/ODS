@@ -78,7 +78,7 @@ _ods_pixel_prepare_attempt_log() {
         fi
         return 1
     }
-    if ! ods_pixel_run_as_owner "$owner" "$home" chmod 0600 -- "$temporary" \
+    if ! ods_pixel_run_as_owner "$owner" "$home" chmod 0600 "$temporary" \
         || ! ods_pixel_run_as_owner "$owner" "$home" mv -fT -- "$temporary" "$path"; then
         ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$temporary" >/dev/null 2>&1 || true
         return 1
@@ -95,7 +95,7 @@ _ods_pixel_assert_managed_state() {
     if [[ -e "$marker_dir" || -L "$marker_dir" ]]; then
         [[ -d "$marker_dir" && ! -L "$marker_dir" ]] || return 1
         [[ "$(stat -c '%u' -- "$marker_dir")" == "$(id -u "$owner")" ]] || return 1
-        ods_pixel_run_as_owner "$owner" "$home" chmod 0700 -- "$marker_dir" || return 1
+        ods_pixel_run_as_owner "$owner" "$home" chmod 0700 "$marker_dir" || return 1
     else
         ods_pixel_run_as_owner "$owner" "$home" install -d -m 0700 -- "$marker_dir" || return 1
     fi
@@ -1465,7 +1465,7 @@ _ods_pixel_secure_plugin_tree() {
         "$plugin_root"; do
         [[ -d "$path" && ! -L "$path" ]] || return 1
         [[ "$(stat -c '%u' -- "$path")" == "$(id -u "$owner")" ]] || return 1
-        ods_pixel_run_as_owner "$owner" "$home" chmod 0755 -- "$path" || return 1
+        ods_pixel_run_as_owner "$owner" "$home" chmod 0755 "$path" || return 1
     done
     if find -P "$plugin_root" -mindepth 1 \( -type l -o ! -user "$owner" \) -print -quit | grep -q .; then
         return 1
@@ -1473,8 +1473,8 @@ _ods_pixel_secure_plugin_tree() {
     if find -P "$plugin_root" -mindepth 1 ! -type d ! -type f -print -quit | grep -q .; then
         return 1
     fi
-    ods_pixel_run_as_owner "$owner" "$home" find -P "$plugin_root" -type d -exec chmod 0755 -- '{}' + || return 1
-    ods_pixel_run_as_owner "$owner" "$home" find -P "$plugin_root" -type f -exec chmod 0644 -- '{}' + || return 1
+    ods_pixel_run_as_owner "$owner" "$home" find -P "$plugin_root" -type d -exec chmod 0755 '{}' + || return 1
+    ods_pixel_run_as_owner "$owner" "$home" find -P "$plugin_root" -type f -exec chmod 0644 '{}' + || return 1
     if find -P "$plugin_root" -perm /022 -print -quit | grep -q .; then
         return 1
     fi
@@ -3464,7 +3464,7 @@ _ods_pixel_write_onboarding() {
         mktemp "${answers%/*}/.pixel-gateway-key.XXXXXX")" || return 1
     if ! printf '%s' "$gateway_key" \
         | ods_pixel_run_as_owner "$owner" "$home" tee -- "$gateway_key_file" >/dev/null \
-        || ! ods_pixel_run_as_owner "$owner" "$home" chmod 0600 -- "$gateway_key_file"; then
+        || ! ods_pixel_run_as_owner "$owner" "$home" chmod 0600 "$gateway_key_file"; then
         ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$gateway_key_file" || true
         return 1
     fi
