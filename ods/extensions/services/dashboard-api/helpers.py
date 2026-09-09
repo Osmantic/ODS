@@ -1146,3 +1146,10 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def dict_values_to_list_safe(d: dict) -> list:
+    """Safely extract all values from a dictionary into a list."""
+    if d is None or not isinstance(d, dict):
+        return []
+    return list(d.values())
