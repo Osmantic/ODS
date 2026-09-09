@@ -385,8 +385,13 @@ function Remove-ODSManagedHermesReductions {
     param([string]$Content)
 
     # Remove scalar reductions only inside their exact top-level mappings.
-    $modelCapPattern = '(?ms)(^model:(?:[ \t]+#[^\r\n]*|[ \t]*)\r?\n(?:(?!^[^ \t#]).)*?)^  max_tokens:[ \t]*1024(?:[ \t]+#[^\r\n]*|[ \t]*)(?:\r?\n|\z)'
-    $terminalTimeoutPattern = '(?ms)(^terminal:(?:[ \t]+#[^\r\n]*|[ \t]*)\r?\n(?:(?!^[^ \t#]).)*?)^  timeout:[ \t]*30(?:[ \t]+#[^\r\n]*|[ \t]*)(?:\r?\n|\z)'
+    # Keep this line-oriented rather than relying on RegexOptions.Singleline.
+    # PowerShell's .NET regex engines have differed across Windows and Linux
+    # around multiline anchors adjacent to CRLF. This form consumes only
+    # indented, comment, or blank lines inside the selected top-level mapping.
+    $mappingBody = '(?:(?:^[ \t]+[^\r\n]*|^#[^\r\n]*|^[ \t]*)\r?\n)*?'
+    $modelCapPattern = '(?m)(^model:(?:[ \t]+#[^\r\n]*|[ \t]*)\r?\n' + $mappingBody + ')^  max_tokens:[ \t]*1024(?:[ \t]+#[^\r\n]*|[ \t]*)(?:\r?\n|\z)'
+    $terminalTimeoutPattern = '(?m)(^terminal:(?:[ \t]+#[^\r\n]*|[ \t]*)\r?\n' + $mappingBody + ')^  timeout:[ \t]*30(?:[ \t]+#[^\r\n]*|[ \t]*)(?:\r?\n|\z)'
     $Content = [regex]::Replace($Content, $modelCapPattern, '$1')
     $Content = [regex]::Replace($Content, $terminalTimeoutPattern, '$1')
 

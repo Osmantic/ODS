@@ -75,6 +75,16 @@ foreach ($removed in @(
         throw "Legacy reduction was not removed: $removed"
     }
 }
+
+$legacyLf = $legacy.Replace("`r`n", "`n")
+$migratedLf = Remove-ODSManagedHermesReductions -Content $legacyLf
+if ($migratedLf.Contains("  max_tokens: 1024 # ODS legacy default") -or
+    $migratedLf.Contains("  timeout: 30 # ODS legacy default")) {
+    throw "Legacy scalar reductions were not removed from LF input"
+}
+if (-not $migratedLf.Contains("other:`n  max_tokens: 1024")) {
+    throw "Operator content was not preserved in LF input"
+}
 foreach ($preserved in @(
     "  default: `"operator-model`"",
     "  temperature: 0.4",
