@@ -1146,3 +1146,27 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_chunk_by_condition_safe(items, predicate=None) -> list:
+    """Safely partition a list into sublists based on a boolean predicate condition."""
+    if items is None:
+        return [[], []]
+    if not isinstance(items, (list, tuple, set)):
+        try:
+            items = list(items)
+        except TypeError:
+            return [[], []]
+    if predicate is None or not callable(predicate):
+        predicate = bool
+    matched, unmatched = [], []
+    for item in items:
+        try:
+            if predicate(item):
+                matched.append(item)
+            else:
+                unmatched.append(item)
+        except Exception:
+            unmatched.append(item)
+    return [matched, unmatched]
+
