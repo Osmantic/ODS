@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestListInterleaveSequencesSafe:
+    def test_valid_interleaving(self):
+        from helpers import list_interleave_sequences_safe
+        s1 = [1, 3, 5]
+        s2 = [2, 4]
+        assert list_interleave_sequences_safe(s1, s2) == [1, 2, 3, 4, 5]
+
+    def test_invalid_and_bounds(self):
+        from helpers import list_interleave_sequences_safe
+        assert list_interleave_sequences_safe(None, [1, 2]) == [1, 2]
+        assert list_interleave_sequences_safe(123) == []
+
