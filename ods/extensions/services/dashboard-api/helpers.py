@@ -1146,3 +1146,27 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_zip_fill_safe(*sequences, fillvalue=None) -> list:
+    """Safely zip unequal length sequences substituting missing values."""
+    import itertools
+    if not sequences:
+        return []
+    valid = []
+    for s in sequences:
+        if s is None:
+            continue
+        if not isinstance(s, (list, tuple, set)):
+            try:
+                valid.append(list(s))
+            except TypeError:
+                continue
+        else:
+            valid.append(list(s))
+    if not valid:
+        return []
+    try:
+        return [list(t) for t in itertools.zip_longest(*valid, fillvalue=fillvalue)]
+    except Exception:
+        return []
