@@ -25,6 +25,9 @@ bash scripts/check-release-claims.sh
 "$PYTHON_CMD" scripts/validate-golden-paths.py
 "$PYTHON_CMD" scripts/validate-generated-configs.py
 "$PYTHON_CMD" scripts/check-dependency-pins.py
+"$PYTHON_CMD" scripts/check-portal-dependency-lock.py
+"$PYTHON_CMD" -m unittest -v tools/portal-hermes-inventory/test_check_inventory.py
+PYTHON_CMD="$PYTHON_CMD" bash tools/portal-hermes-inventory/validate-inventory.sh
 
 echo "[gate] contracts"
 bash tests/test-install-docs.sh

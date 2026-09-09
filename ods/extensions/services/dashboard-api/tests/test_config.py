@@ -140,9 +140,28 @@ class TestHostAgentResolution:
     def test_resolve_agent_host_uses_gateway_inside_container(self, monkeypatch):
         monkeypatch.delenv("ODS_AGENT_HOST", raising=False)
         monkeypatch.setattr(config, "_running_inside_container", lambda: True)
+        monkeypatch.setattr(config, "_running_under_wsl", lambda: False)
         monkeypatch.setattr(config, "_detect_container_default_gateway", lambda: "172.18.0.1")
 
         assert config._resolve_agent_host() == "172.18.0.1"
+
+    def test_resolve_agent_host_uses_desktop_route_under_wsl(self, monkeypatch):
+        monkeypatch.delenv("ODS_AGENT_HOST", raising=False)
+        monkeypatch.setattr(config, "_running_inside_container", lambda: True)
+        monkeypatch.setattr(config, "_running_under_wsl", lambda: True)
+        gateway_calls = []
+        monkeypatch.setattr(config, "_detect_container_default_gateway", lambda: gateway_calls.append(True))
+
+        assert config._resolve_agent_host() == "host.docker.internal"
+        assert gateway_calls == []
+
+    def test_resolve_agent_host_falls_back_when_gateway_is_missing(self, monkeypatch):
+        monkeypatch.delenv("ODS_AGENT_HOST", raising=False)
+        monkeypatch.setattr(config, "_running_inside_container", lambda: True)
+        monkeypatch.setattr(config, "_running_under_wsl", lambda: False)
+        monkeypatch.setattr(config, "_detect_container_default_gateway", lambda: "")
+
+        assert config._resolve_agent_host() == "host.docker.internal"
 
     def test_resolve_agent_host_falls_back_outside_container(self, monkeypatch):
         monkeypatch.delenv("ODS_AGENT_HOST", raising=False)
@@ -333,6 +352,10 @@ class TestLoadExtensionManifests:
         assert services["open-webui"]["llm"]["probe"]["path"] == "/openai/v1/chat/completions"
         assert services["perplexica"]["llm"]["probe"]["path"] == "/api/search"
         assert services["privacy-shield"]["llm"]["probe"]["path"] == "/v1/chat/completions"
+        hermes = services["hermes"]
+        assert hermes["host"] == "hermes"
+        assert hermes["llm"]["probe"]["path"] == hermes["health"] == "/api/status"
+        assert hermes["llm"]["probe"]["auth"] == "none"
 
     def test_external_port_default_zero_disables_external_port_fallback(self, tmp_path):
         svc_dir = tmp_path / "internal-service"
@@ -410,6 +433,39 @@ class TestLoadExtensionManifests:
         services, _, _ = load_extension_manifests(tmp_path, "nvidia")
 
         assert services["host-network-service"]["host_network"] is True
+
+    def test_preserves_socket_only_flag(self, tmp_path):
+        svc_dir = tmp_path / "socket-only-service"
+        svc_dir.mkdir()
+        (svc_dir / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: socket-only-service\n"
+            "  name: Socket Only Service\n"
+            "  socket_only: true\n"
+            "  port: 0\n"
+            "  type: host-systemd\n"
+            "  compose_file: ''\n"
+        )
+
+        services, _, _ = load_extension_manifests(tmp_path, "nvidia")
+
+        assert services["socket-only-service"]["socket_only"] is True
+
+    def test_socket_only_defaults_false(self, tmp_path):
+        svc_dir = tmp_path / "plain-service"
+        svc_dir.mkdir()
+        (svc_dir / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: plain-service\n"
+            "  name: Plain Service\n"
+            "  port: 8080\n"
+        )
+
+        services, _, _ = load_extension_manifests(tmp_path, "nvidia")
+
+        assert services["plain-service"]["socket_only"] is False
 
     def test_skips_wrong_schema_version(self, tmp_path):
         svc_dir = tmp_path / "old-service"

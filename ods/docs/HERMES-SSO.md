@@ -12,9 +12,9 @@ When this extension is enabled:
 
 ## Why this design
 
-After reading [upstream's web_server.py at our pinned SHA](https://github.com/NousResearch/hermes-agent/blob/dd0923bb89ed2dd56f82cb63656a1323f6f42e6f/hermes_cli/web_server.py), Hermes's auth is **per-PROCESS, not per-user**. The session token is `secrets.token_urlsafe(32)` generated at server start and baked into the SPA HTML — no env-var to pre-seed, no login flow, no user concept.
+At the [pinned upstream release](https://github.com/NousResearch/hermes-agent/blob/v2026.9.7/hermes_cli/web_server.py), Hermes's dashboard token authenticates a browser to one running server; it is not an ODS user identity. ODS pre-seeds that token through `HERMES_DASHBOARD_SESSION_TOKEN` so browser sessions survive container restarts, while the outer magic-link proxy remains the LAN-facing authorization gate.
 
-Hermes **does** support per-user isolation via [profiles](https://github.com/NousResearch/hermes-agent/blob/dd0923bb89ed2dd56f82cb63656a1323f6f42e6f/hermes_cli/profiles.py) (separate `HERMES_HOME/profiles/<name>/`), but a profile is bound at process launch — one Hermes process = one profile. There's no in-process profile switching.
+Hermes supports multiple [profiles](https://github.com/NousResearch/hermes-agent/blob/v2026.9.7/hermes_cli/profiles.py) and in-process profile selection. ODS does not bind the redeemed magic-link identity to one of those profiles, however, so profiles inside the shared container are organization aids rather than a per-user authorization boundary.
 
 This extension does NOT try to give you real multi-user. It gives you:
 

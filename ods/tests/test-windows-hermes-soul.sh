@@ -69,7 +69,7 @@ if [[ "$(grep -Fc 'Invoke-HermesSoulRefresh -InstallRoot $installDir -SyncContai
 else
     fail "Windows installer must refresh SOUL after optional services settle"
 fi
-check '-LemonadeCompact:($gpuInfo.Backend -eq "amd")' "$PHASE_06" "Windows AMD applies compact Hermes toolset profile"
+! grep -q 'LemonadeCompact' "$PHASE_06" || fail "Windows installer must not use removed LemonadeCompact switch"; pass "Windows installer has no LemonadeCompact switch"
 check 'http://litellm:4000/v1' "$PHASE_06" "Windows AMD Hermes routes through LiteLLM"
 
 check 'function Invoke-HermesSoulRefresh' "$WINDOWS_CLI" "Windows CLI can refresh Hermes SOUL"

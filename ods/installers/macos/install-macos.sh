@@ -310,7 +310,7 @@ _macos_patch_hermes_persisted_config() {
         project_image="$(basename "$INSTALL_DIR" | tr '[:upper:]' '[:lower:]')-dashboard-api:latest"
         hermes_image="$(docker inspect --format '{{.Config.Image}}' ods-hermes 2>/dev/null || true)"
         [[ -n "$hermes_image" ]] || hermes_image="$(read_env_value "${INSTALL_DIR}/.env" "HERMES_AGENT_IMAGE")"
-        [[ -n "$hermes_image" ]] || hermes_image="nousresearch/hermes-agent:v2026.6.5"
+        [[ -n "$hermes_image" ]] || hermes_image="docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7"
 
         # The Hermes runtime image is not guaranteed to include PyYAML. Probe
         # candidates instead of treating a cached image as a usable migrator.
@@ -363,6 +363,30 @@ if not isinstance(model, dict):
 model["default"] = model_name
 model["base_url"] = base_url
 model["context_length"] = context_length
+# Remove only exact historical ODS reductions. Divergent values are operator
+# state and remain untouched.
+if model.get("max_tokens") == 1024:
+    model.pop("max_tokens")
+legacy_disabled_toolsets = (
+    ("terminal", "browser"),
+    (
+        "terminal", "browser", "vision", "video", "image_gen", "video_gen",
+        "x_search", "moa", "tts", "skills", "todo", "memory",
+        "session_search", "clarify", "delegation", "cronjob", "messaging",
+        "homeassistant", "spotify", "yuanbao", "computer_use",
+    ),
+)
+agent = data.get("agent")
+disabled_toolsets = agent.get("disabled_toolsets") if isinstance(agent, dict) else None
+if isinstance(disabled_toolsets, list) and tuple(disabled_toolsets) in legacy_disabled_toolsets:
+    agent.pop("disabled_toolsets")
+    if not agent:
+        data.pop("agent")
+terminal = data.get("terminal")
+if isinstance(terminal, dict) and terminal.get("timeout") == 30:
+    terminal.pop("timeout")
+    if not terminal:
+        data.pop("terminal")
 # OPENAI_API_KEY from compose is authoritative. Removing a persisted key keeps
 # local/cloud transitions and later extension toggles in sync with .env.
 model.pop("api_key", None)
@@ -400,6 +424,19 @@ if int(check_model.get("context_length") or 0) != context_length:
     raise SystemExit("Hermes context verification failed")
 if "api_key" in check_model:
     raise SystemExit("Hermes persisted api_key was not removed")
+if check_model.get("max_tokens") == 1024:
+    raise SystemExit("Hermes legacy max_tokens reduction was not removed")
+check_agent = check.get("agent") or {}
+if not isinstance(check_agent, dict):
+    raise SystemExit("Hermes agent config is not a mapping")
+check_disabled_toolsets = check_agent.get("disabled_toolsets")
+if isinstance(check_disabled_toolsets, list) and tuple(check_disabled_toolsets) in legacy_disabled_toolsets:
+    raise SystemExit("Hermes legacy disabled_toolsets reduction was not removed")
+check_terminal = check.get("terminal") or {}
+if not isinstance(check_terminal, dict):
+    raise SystemExit("Hermes terminal config is not a mapping")
+if check_terminal.get("timeout") == 30:
+    raise SystemExit("Hermes legacy terminal timeout reduction was not removed")
 check_compression = (check.get("auxiliary") or {}).get("compression") or {}
 if int(check_compression.get("context_length") or 0) != context_length:
     raise SystemExit("Hermes compression context verification failed")

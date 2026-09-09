@@ -37,7 +37,7 @@ fail() {
 
 header() {
     echo ""
-    echo -e "${BOLD}${CYAN}[$1/7]${NC} ${BOLD}$2${NC}"
+    echo -e "${BOLD}${CYAN}[$1/8]${NC} ${BOLD}$2${NC}"
     echo -e "${CYAN}$(printf '%.0s─' {1..60})${NC}"
 }
 
@@ -72,7 +72,7 @@ service:
   external_port_default: 8080
   health: /health
   type: docker
-  gpu_backends: [amd, nvidia]
+  gpu_backends: [cpu, amd, nvidia]
   category: core
   depends_on: []
 EOF
@@ -185,12 +185,33 @@ service:
 EOF
 }
 
+service_socket_host_valid() {
+    local dir="$1"
+    cat > "$dir/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+
+service:
+  id: socket-agent
+  name: Socket Agent
+  aliases: []
+  container_name: ""
+  socket_only: true
+  port: 0
+  health: /health
+  type: host-systemd
+  gpu_backends: [all]
+  category: core
+  depends_on: []
+EOF
+}
+
 create_valid_project() {
     local root="$1"
     write_service "$root" "llama-server" service_core_llm
     write_service "$root" "search" service_search_valid
     write_service "$root" "image-gen" service_image_valid
     write_service "$root" "opencode" service_host_valid
+    write_service "$root" "socket-agent" service_socket_host_valid
 }
 
 run_audit() {
@@ -215,7 +236,7 @@ PY
 
 header "1" "Valid Project Passes Cleanly"
 root=$(make_fixture_root)
-trap 'rm -rf "$root" "${root2:-}" "${root3:-}" "${root4:-}" "${root5:-}" "${root6:-}" "${root7:-}"' EXIT
+trap 'rm -rf "$root" "${root2:-}" "${root3:-}" "${root4:-}" "${root5:-}" "${root6:-}" "${root7:-}" "${root8:-}" "${root9:-}"' EXIT
 create_valid_project "$root"
 report=$(mktemp)
 if run_audit "$root" --json > "$report"; then
@@ -362,6 +383,53 @@ if run_audit "$root7" --json > "$report7" 2>/dev/null; then
     pass "external_port_default=0 fixture audits successfully"
 else
     fail "external_port_default=0 should be allowed for internal-only services"
+fi
+
+header "8" "Socket-Only Contract Is Fail-Closed"
+root8=$(make_fixture_root)
+create_valid_project "$root8"
+python3 - "$root8/extensions/services/socket-agent/manifest.yaml" <<'PY'
+import yaml
+import sys
+path = sys.argv[1]
+doc = yaml.safe_load(open(path, encoding="utf-8"))
+doc["service"]["type"] = "docker"
+with open(path, "w", encoding="utf-8") as handle:
+    yaml.safe_dump(doc, handle, sort_keys=False)
+PY
+report8=$(mktemp)
+if run_audit "$root8" --json > "$report8" 2>/dev/null; then
+    fail "socket-only docker service should fail"
+else
+    pass "socket-only docker service fails audit"
+fi
+if assert_json_value "$report8" "any(issue['code'] == 'service-socket-only-type-invalid' for svc in payload['services'] for issue in svc['issues'])" >/dev/null; then
+    pass "socket-only wrong type is reported"
+else
+    fail "socket-only wrong type code was not reported"
+fi
+
+root9=$(make_fixture_root)
+create_valid_project "$root9"
+python3 - "$root9/extensions/services/socket-agent/manifest.yaml" <<'PY'
+import yaml
+import sys
+path = sys.argv[1]
+doc = yaml.safe_load(open(path, encoding="utf-8"))
+doc["service"]["port"] = 8443
+with open(path, "w", encoding="utf-8") as handle:
+    yaml.safe_dump(doc, handle, sort_keys=False)
+PY
+report9=$(mktemp)
+if run_audit "$root9" --json > "$report9" 2>/dev/null; then
+    fail "socket-only nonzero port should fail"
+else
+    pass "socket-only nonzero port fails audit"
+fi
+if assert_json_value "$report9" "any(issue['code'] == 'service-socket-only-port-invalid' for svc in payload['services'] for issue in svc['issues'])" >/dev/null; then
+    pass "socket-only nonzero port is reported"
+else
+    fail "socket-only nonzero port code was not reported"
 fi
 
 echo ""

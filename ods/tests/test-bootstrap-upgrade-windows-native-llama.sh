@@ -30,13 +30,22 @@ mkdir -p \
     "$install_dir/config/litellm" \
     "$install_dir/config/llama-server" \
     "$install_dir/extensions/services/hermes" \
-    "$install_dir/llama-server"
+    "$install_dir/llama-server" \
+    "$install_dir/scripts"
+
+cp "$ROOT_DIR/scripts/patch-hermes-config.py" "$install_dir/scripts/patch-hermes-config.py"
 
 cat > "$fakebin/uname" <<'EOF_UNAME'
 #!/usr/bin/env bash
 printf 'MINGW64_NT-10.0\n'
 EOF_UNAME
 chmod +x "$fakebin/uname"
+
+cat > "$fakebin/cygpath" <<'EOF_CYGPATH'
+#!/usr/bin/env bash
+printf '%s\n' "${@: -1}"
+EOF_CYGPATH
+chmod +x "$fakebin/cygpath"
 
 cat > "$fakebin/curl" <<'EOF_CURL'
 #!/usr/bin/env bash
@@ -53,6 +62,14 @@ chmod +x "$fakebin/curl"
 cat > "$fakebin/powershell.exe" <<'EOF_PS'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${ODS_ENV_ACL_SOURCE:-}" ]]; then
+  exit 0
+fi
+if [[ -n "${ODS_ENV_REPLACE_SOURCE:-}" ]]; then
+  cp "$ODS_ENV_REPLACE_TARGET" "$ODS_ENV_REPLACE_BACKUP"
+  mv -f "$ODS_ENV_REPLACE_SOURCE" "$ODS_ENV_REPLACE_TARGET"
+  exit 0
+fi
 : "${ODS_WIN_PID_FILE:?}"
 : "${ODS_WIN_LLAMA_EXE:?}"
 : "${ODS_WIN_MODEL_PATH:?}"
@@ -152,7 +169,7 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$install_dir/llama-server/llama-server
 chmod +x "$install_dir/llama-server/llama-server.exe"
 printf '1111\n' > "$install_dir/data/llama-server.pid"
 
-PATH="$fakebin:$PATH" ODS_FAKE_PS_TRACE="$trace" ODS_FAKE_DOCKER_TRACE="$docker_trace" bash "$TARGET" \
+if ! PATH="$fakebin:$PATH" ODS_FAKE_PS_TRACE="$trace" ODS_FAKE_DOCKER_TRACE="$docker_trace" bash "$TARGET" \
     "$install_dir" \
     "Full.gguf" \
     "https://example.invalid/Full.gguf" \
@@ -160,7 +177,10 @@ PATH="$fakebin:$PATH" ODS_FAKE_PS_TRACE="$trace" ODS_FAKE_DOCKER_TRACE="$docker_
     "full-model" \
     "32768" \
     "Bootstrap.gguf" \
-    > "$tmp/bootstrap.log" 2>&1
+    > "$tmp/bootstrap.log" 2>&1; then
+    cat "$tmp/bootstrap.log" >&2
+    fail "bootstrap-upgrade should complete the native Windows llama-server swap"
+fi
 
 grep -q 'Restarting native Windows llama-server with full model' "$tmp/bootstrap.log" \
     || fail "bootstrap-upgrade should restart the native Windows llama-server fallback"

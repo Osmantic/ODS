@@ -17,7 +17,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN_KEY = "HERMES_DASHBOARD_SESSION_TOKEN"
-HERMES_IMAGE = "nousresearch/hermes-agent:v2026.6.5"
+HERMES_IMAGE = "docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7"
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -67,7 +67,7 @@ def test_all_installers_generate_and_persist_token() -> None:
     macos = (ROOT / "installers/macos/lib/env-generator.sh").read_text(encoding="utf-8")
     windows = (ROOT / "installers/windows/lib/env-generator.ps1").read_text(encoding="utf-8")
 
-    assert f"{TOKEN_KEY}=$(_env_get {TOKEN_KEY}" in linux
+    assert f"{TOKEN_KEY}=$(_phase06_env_hex_secret {TOKEN_KEY} 32)" in linux
     assert f"{TOKEN_KEY}=${{{TOKEN_KEY}}}" in linux
     assert f'read_env_value "$env_path" "{TOKEN_KEY}"' in macos
     assert f'upsert_env_value "$env_path" "{TOKEN_KEY}"' in macos

@@ -74,6 +74,12 @@
       "auth_required": false,
       "notes": "Local OpenAI-compatible inference API."
     },
+    "model-router": {
+      "risk": "model-routing-control-plane",
+      "lan_exposure": "none",
+      "auth_required": true,
+      "notes": "Internal-only routing and evidence API; it publishes no host port and must remain reachable only through authenticated ODS consumers."
+    },
     "n8n": {
       "risk": "workflow-automation-ui",
       "lan_exposure": "operator-controlled",

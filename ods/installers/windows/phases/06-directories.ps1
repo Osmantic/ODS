@@ -381,6 +381,81 @@ if ($_missingKeys.Count -gt 0) {
 }
 Write-AISuccess "Verified .env contains all required secrets"
 
+function Remove-ODSManagedHermesReductions {
+    param([string]$Content)
+
+    # Remove scalar reductions only inside their exact top-level mappings.
+    # Keep this line-oriented rather than relying on RegexOptions.Singleline.
+    # PowerShell's .NET regex engines have differed across Windows and Linux
+    # around multiline anchors adjacent to CRLF. This form consumes only
+    # indented, comment, or blank lines inside the selected top-level mapping.
+    $mappingBody = '(?:(?:^[ \t]+[^\r\n]*|^#[^\r\n]*|^[ \t]*)\r?\n)*?'
+    $modelCapPattern = '(?m)(^model:(?:[ \t]+#[^\r\n]*|[ \t]*)\r?\n' + $mappingBody + ')^  max_tokens:[ \t]*1024(?:[ \t]+#[^\r\n]*|[ \t]*)(?:\r?\n|\z)'
+    $terminalTimeoutPattern = '(?m)(^terminal:(?:[ \t]+#[^\r\n]*|[ \t]*)\r?\n' + $mappingBody + ')^  timeout:[ \t]*30(?:[ \t]+#[^\r\n]*|[ \t]*)(?:\r?\n|\z)'
+    $Content = [regex]::Replace($Content, $modelCapPattern, '$1')
+    $Content = [regex]::Replace($Content, $terminalTimeoutPattern, '$1')
+
+    $legacyDisabledToolsets = @(
+        @('terminal', 'browser'),
+        @(
+            'terminal', 'browser', 'vision', 'video', 'image_gen', 'video_gen',
+            'x_search', 'moa', 'tts', 'skills', 'todo', 'memory',
+            'session_search', 'clarify', 'delegation', 'cronjob', 'messaging',
+            'homeassistant', 'spotify', 'yuanbao', 'computer_use'
+        )
+    )
+    $removedDisabledToolsets = $false
+    foreach ($toolsets in $legacyDisabledToolsets) {
+        $gapNames = @()
+        $itemPatterns = for ($index = 0; $index -lt $toolsets.Count; $index++) {
+            $terminator = if ($index -eq ($toolsets.Count - 1)) { '(?:\r?\n|\z)' } else { '\r?\n' }
+            $item = "    -[ `t]+$([regex]::Escape($toolsets[$index]))(?:[ `t]+#[^\r\n]*|[ `t]*)${terminator}"
+            if ($index -lt ($toolsets.Count - 1)) {
+                $gapName = "odsGap$index"
+                $gapNames += $gapName
+                $item += "(?<${gapName}>(?:[ `t]*#[^\r\n]*\r?\n|[ `t]*\r?\n)*)"
+            }
+            $item
+        }
+        $itemPattern = $itemPatterns -join ''
+        $blockPattern = "(?ms)(^agent:(?:[ `t]+#[^\r\n]*|[ `t]*)\r?\n(?:(?!^[^ `t#]).)*?)^  disabled_toolsets:(?:[ `t]+#[^\r\n]*|[ `t]*)\r?\n${itemPattern}(?=(?:[ `t]*#[^\r\n]*\r?\n|[ `t]*\r?\n)*(?:^  [^ `t#-]|^[^ `t#]|\z))"
+        if ([regex]::IsMatch($Content, $blockPattern)) {
+            $replacement = '$1' + (($gapNames | ForEach-Object { '${' + $_ + '}' }) -join '')
+            $Content = [regex]::Replace($Content, $blockPattern, $replacement)
+            $removedDisabledToolsets = $true
+        }
+    }
+
+    # Drop an agent header only when the removed list was its sole value. Keep
+    # any surrounding comments and every operator-authored sibling key.
+    if ($removedDisabledToolsets) {
+        $emptyAgentPattern = '(?ms)^agent:(?:[ \t]+#[^\r\n]*|[ \t]*)\r?\n(?=(?:[ \t]*#[^\r\n]*\r?\n|[ \t]*\r?\n)*(?:^[^ \t#]|\z))'
+        $Content = [regex]::Replace($Content, $emptyAgentPattern, '')
+    }
+
+    return $Content
+}
+
+function Get-HermesConfigRegularFile {
+    param([string]$Path)
+
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if ($item.PSIsContainer -or
+            (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            return $null
+        }
+        return $item
+    } catch {
+        return $null
+    }
+}
+
+function Get-HermesConfigFingerprint {
+    param([string]$Path)
+    return [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($Path))
+}
+
 function Update-HermesConfigFile {
     param(
         [string]$Path,
@@ -388,14 +463,17 @@ function Update-HermesConfigFile {
         [string]$BaseUrl,
         [int]$ContextLength,
         [int]$RequestTimeoutSeconds = 180,
-        [int]$MaxTokens = 1024,
-        [switch]$LemonadeCompact
+        [int]$MaxTokens = -1  # -1 = do not inject max_tokens; operator values only
     )
 
-    if (-not (Test-Path $Path)) { return $false }
+    $pathItem = Get-HermesConfigRegularFile -Path $Path
+    if ($null -eq $pathItem) { return $false }
 
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    $content = [System.IO.File]::ReadAllText($Path, $utf8NoBom)
+    $fullPath = [System.IO.Path]::GetFullPath($pathItem.FullName)
+    $originalFingerprint = Get-HermesConfigFingerprint -Path $fullPath
+    $content = [System.IO.File]::ReadAllText($fullPath, $utf8NoBom)
+    $content = Remove-ODSManagedHermesReductions -Content $content
     # .NET reads '$' in a -replace *replacement* as a group-substitution token
     # ($1, ${name}, $$ ...), so a model id or URL carrying '$' is rewritten on
     # its way into the file. Doubling is the documented escape. The verification
@@ -407,9 +485,11 @@ function Update-HermesConfigFile {
     $content = $content -replace '(?m)^  base_url: ".*"\r?$', "  base_url: `"$baseUrlReplacement`""
     $content = $content -replace '(?m)^  context_length: .+\r?$', "  context_length: $ContextLength"
     $content = $content -replace '(?m)^    context_length: .+\r?$', "    context_length: $ContextLength"
-    if ($MaxTokens -lt 1) { $MaxTokens = 1024 }
-    if ($content -notmatch '(?m)^  max_tokens:\s*\d+\s*$') {
-        $content = $content -replace '(?m)^model:\s*$', "model:`n  max_tokens: $MaxTokens"
+    # Only inject max_tokens when explicitly requested (positive value).
+    if ($MaxTokens -gt 0) {
+        if ($content -notmatch '(?m)^  max_tokens:\s*\d+\s*$') {
+            $content = $content -replace '(?m)^model:\s*$', "model:`n  max_tokens: $MaxTokens"
+        }
     }
     if ($RequestTimeoutSeconds -lt 1) { $RequestTimeoutSeconds = 180 }
 
@@ -443,66 +523,158 @@ function Update-HermesConfigFile {
     }
 
     if ($content -notmatch '(?m)^compression:\s*$') {
-        $content += "`ncompression:`n  enabled: true`n  threshold: 0.50`n  target_ratio: 0.20`n  protect_last_n: 20`n"
+        $content += "`ncompression:`n  enabled: true`n  threshold: 0.75`n  target_ratio: 0.50`n  protect_last_n: 40`n"
     } else {
         if ($content -notmatch '(?m)^  enabled:') {
             $content = $content -replace '(?m)^compression:\s*$', "compression:`n  enabled: true"
         }
         if ($content -match '(?m)^  threshold:') {
-            $content = $content -replace '(?m)^  threshold: .+$', "  threshold: 0.50"
+            $content = $content -replace '(?m)^  threshold: .+$', "  threshold: 0.75"
         } else {
-            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  threshold: 0.50"
+            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  threshold: 0.75"
         }
         if ($content -match '(?m)^  target_ratio:') {
-            $content = $content -replace '(?m)^  target_ratio: .+$', "  target_ratio: 0.20"
+            $content = $content -replace '(?m)^  target_ratio: .+$', "  target_ratio: 0.50"
         } else {
-            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  target_ratio: 0.20"
+            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  target_ratio: 0.50"
         }
-        if ($content -notmatch '(?m)^  protect_last_n:') {
-            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  protect_last_n: 20"
+        if ($content -match '(?m)^  protect_last_n:') {
+            $content = $content -replace '(?m)^  protect_last_n: .+$', "  protect_last_n: 40"
+        } else {
+            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  protect_last_n: 40"
         }
     }
 
-    if ($LemonadeCompact) {
-        $compactAgent = @"
-agent:
-  disabled_toolsets:
-    - terminal
-    - browser
-    - vision
-    - video
-    - image_gen
-    - video_gen
-    - x_search
-    - moa
-    - tts
-    - skills
-    - todo
-    - memory
-    - session_search
-    - clarify
-    - delegation
-    - cronjob
-    - messaging
-    - homeassistant
-    - spotify
-    - yuanbao
-    - computer_use
-"@
-        if ($content -match '(?ms)^agent:\r?\n.*?(?=^terminal:|^platforms:|^compression:|\z)') {
-            $content = [regex]::Replace($content, '(?ms)^agent:\r?\n.*?(?=^terminal:|^platforms:|^compression:|\z)', "$compactAgent`n")
-        } elseif ($content -match '(?m)^terminal:\s*$') {
-            $content = $content -replace '(?m)^terminal:\s*$', "$compactAgent`nterminal:"
-        } else {
-            $content += "`n$compactAgent`n"
+    # Verify a private sibling before replacing the live file. A malformed
+    # template or failed write must leave the original byte-for-byte intact.
+    $parent = [System.IO.Path]::GetDirectoryName($fullPath)
+    $leaf = [System.IO.Path]::GetFileName($fullPath)
+    $nonce = [Guid]::NewGuid().ToString("N")
+    $stagedPath = Join-Path $parent ".$leaf.ods-patch.$nonce.tmp"
+    $backupPath = Join-Path $parent ".$leaf.ods-patch.$nonce.bak"
+    $committed = $false
+    $rollbackSucceeded = $true
+    $retainBackup = $false
+    try {
+        [System.IO.File]::WriteAllText($stagedPath, $content, $utf8NoBom)
+        $verified = [System.IO.File]::ReadAllText($stagedPath, $utf8NoBom)
+        if (-not $verified.Contains("  default: `"$Model`"")) { return $false }
+        if (-not $verified.Contains("  base_url: `"$BaseUrl`"")) { return $false }
+        if (-not $verified.Contains("  context_length: $ContextLength")) { return $false }
+        if (-not $verified.Contains("  threshold: 0.75")) { return $false }
+        if (-not $verified.Contains("  target_ratio: 0.50")) { return $false }
+        if (-not $verified.Contains("  protect_last_n: 40")) { return $false }
+
+        $currentItem = Get-HermesConfigRegularFile -Path $fullPath
+        if ($null -eq $currentItem) { return $false }
+        if ((Get-HermesConfigFingerprint -Path $fullPath) -cne $originalFingerprint) {
+            return $false
+        }
+        [System.IO.File]::Replace($stagedPath, $fullPath, $backupPath, $true)
+        $installed = [System.IO.File]::ReadAllText($fullPath, $utf8NoBom)
+        if ($installed -cne $verified) {
+            throw "Installed Hermes config did not match the verified staging bytes"
+        }
+        $committed = $true
+        return $true
+    } catch {
+        if ((Test-Path -LiteralPath $backupPath -PathType Leaf) -and -not $committed) {
+            try {
+                if ((Test-Path -LiteralPath $fullPath) -and
+                    $null -eq (Get-HermesConfigRegularFile -Path $fullPath)) {
+                    throw "rollback target is a reparse point"
+                }
+                # Keep the backup until the restored target is byte-proven.
+                # A failed copy/readback therefore leaves recovery material.
+                [System.IO.File]::Copy($backupPath, $fullPath, $true)
+                if ((Get-HermesConfigFingerprint -Path $fullPath) -cne $originalFingerprint) {
+                    throw "restored bytes do not match the pre-update file"
+                }
+            } catch {
+                $rollbackSucceeded = $false
+                $retainBackup = $true
+                $rollbackFailure = $_.Exception.Message
+            }
+        }
+        if (-not $rollbackSucceeded) {
+            throw "Hermes config rollback failed; backup retained at $backupPath ($rollbackFailure)"
+        }
+        return $false
+    } finally {
+        Remove-Item -LiteralPath $stagedPath -Force -ErrorAction SilentlyContinue
+        if (-not $retainBackup) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
         }
     }
+}
 
-    [System.IO.File]::WriteAllText($Path, $content, $utf8NoBom)
-    $verified = [System.IO.File]::ReadAllText($Path, $utf8NoBom)
-    if (-not $verified.Contains("  default: `"$Model`"")) { return $false }
-    if (-not $verified.Contains("  base_url: `"$BaseUrl`"")) { return $false }
-    return $true
+function Update-HermesConfigPair {
+    param(
+        [string]$TemplatePath,
+        [string]$LivePath,
+        [string]$Model,
+        [string]$BaseUrl,
+        [int]$ContextLength,
+        [int]$RequestTimeoutSeconds = 180
+    )
+
+    $templateItem = Get-HermesConfigRegularFile -Path $TemplatePath
+    $liveItem = Get-HermesConfigRegularFile -Path $LivePath
+    if ($null -eq $templateItem -or $null -eq $liveItem) { return $false }
+    $TemplatePath = [System.IO.Path]::GetFullPath($templateItem.FullName)
+    $LivePath = [System.IO.Path]::GetFullPath($liveItem.FullName)
+
+    $nonce = [Guid]::NewGuid().ToString("N")
+    $templateBackup = "$TemplatePath.ods-pair.$nonce.bak"
+    $liveBackup = "$LivePath.ods-pair.$nonce.bak"
+    $committed = $false
+    $rollbackSucceeded = $true
+    $rollbackFailures = @()
+    try {
+        [System.IO.File]::Copy($TemplatePath, $templateBackup, $false)
+        [System.IO.File]::Copy($LivePath, $liveBackup, $false)
+        if (-not (Update-HermesConfigFile -Path $TemplatePath -Model $Model -BaseUrl $BaseUrl -ContextLength $ContextLength -RequestTimeoutSeconds $RequestTimeoutSeconds)) {
+            return $false
+        }
+        if (-not (Update-HermesConfigFile -Path $LivePath -Model $Model -BaseUrl $BaseUrl -ContextLength $ContextLength -RequestTimeoutSeconds $RequestTimeoutSeconds)) {
+            return $false
+        }
+        $committed = $true
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if (-not $committed) {
+            foreach ($rollback in @(
+                @{ Backup = $templateBackup; Target = $TemplatePath },
+                @{ Backup = $liveBackup; Target = $LivePath }
+            )) {
+                if (Test-Path -LiteralPath $rollback.Backup -PathType Leaf) {
+                    try {
+                        if ((Test-Path -LiteralPath $rollback.Target) -and
+                            $null -eq (Get-HermesConfigRegularFile -Path $rollback.Target)) {
+                            throw "rollback target is a reparse point"
+                        }
+                        [System.IO.File]::Copy($rollback.Backup, $rollback.Target, $true)
+                        if ((Get-HermesConfigFingerprint -Path $rollback.Target) -cne
+                            (Get-HermesConfigFingerprint -Path $rollback.Backup)) {
+                            throw "restored bytes do not match the pair backup"
+                        }
+                    } catch {
+                        $rollbackSucceeded = $false
+                        $rollbackFailures += "$($rollback.Target): $($_.Exception.Message)"
+                    }
+                }
+            }
+        }
+        if ($committed -or $rollbackSucceeded) {
+            Remove-Item -LiteralPath $templateBackup -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $liveBackup -Force -ErrorAction SilentlyContinue
+        }
+        if (-not $rollbackSucceeded) {
+            throw "Hermes config pair rollback failed; backups retained ($($rollbackFailures -join '; '))"
+        }
+    }
 }
 
 function Invoke-HermesSoulRefresh {
@@ -621,9 +793,8 @@ if ($enableHermes) {
         Copy-Item -Path $_hermesTemplate -Destination $_hermesLive -Force
     }
     $_hermesRequestTimeout = $(if ($cloudMode -and $_switchboardMode -ne "enabled") { 180 } else { 900 })
-    $_patchedHermesTemplate = Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
-    $_patchedHermesLive = Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
-    if (-not ($_patchedHermesTemplate -and $_patchedHermesLive)) {
+    $_patchedHermesPair = Update-HermesConfigPair -TemplatePath $_hermesTemplate -LivePath $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout
+    if (-not $_patchedHermesPair) {
         Write-AIError "Failed to patch Hermes config for Windows runtime (model=$_hermesModel, base_url=$_hermesBaseUrl)"
         throw "ODS_INSTALL_ABORTED"
     }

@@ -1,0 +1,169 @@
+{
+  "$schema": "./portal-dependency-lock-v1.schema.json",
+  "schemaVersion": 1,
+  "observedAt": "2026-09-09T02:48:17Z",
+  "product": {
+    "subsystem": "Portal",
+    "genericPlaceholder": true,
+    "userNamingSource": "hermes-profile-display-name",
+    "securityIdentitySource": "hermes-profile-id",
+    "canonicalIdsImmutable": true
+  },
+  "ods": {
+    "repository": "https://github.com/Osmantic/ODS",
+    "baseBranch": "main",
+    "baseCommit": "21f4b3a64dd2a2fac1163f446806091c25b6b814"
+  },
+  "sourceInputs": [
+    {
+      "repository": "https://github.com/Osmantic/ODS",
+      "pullRequest": 3385,
+      "baseCommit": "21f4b3a64dd2a2fac1163f446806091c25b6b814",
+      "headCommit": "53bf63fa256b6bed27764cace170d45aa43c75d1",
+      "disposition": "source-only-untouched",
+      "integrationState": "inventory-in-progress"
+    },
+    {
+      "repository": "https://github.com/Osmantic/ODS",
+      "pullRequest": 3818,
+      "baseCommit": "58a2d544b8752cee2b42d54001100d9ef2e89ae0",
+      "headCommit": "90e74b01c597bec13b12955ad04acb1f0bf68b16",
+      "disposition": "source-only-untouched",
+      "integrationState": "inventory-in-progress"
+    }
+  ],
+  "portalCore": {
+    "repository": "https://github.com/Osmantic/Pixel",
+    "pullRequest": 239,
+    "sourceCommit": "bd0bbdf8faa3d7f56e930ec89e94e27efa9a0f53",
+    "sourceState": "reviewed-private-draft",
+    "consumptionMode": "source-lock-only",
+    "runtimeActivated": false,
+    "coreComplete": false,
+    "evidenceFiles": [
+      {
+        "path": "PORTAL-CORE-LOCK.json",
+        "sha256": "ef08d82292ec7a4a707d45d6dafc7259579b472e6f16c75f2b9534b3cafca7cb"
+      },
+      {
+        "path": "schemas/portal-core-lock-v1.schema.json",
+        "sha256": "1c54a2089b971ca32e262dcaff33056a13eedfdc47ff715da02a75599f2f8622"
+      },
+      {
+        "path": "configs/hermes-plugin-coverage-v1.json",
+        "sha256": "46aa1db4dedea9335a30ba8cbd9bf9a2d637b81c8e95330f96625bfa6866d648"
+      },
+      {
+        "path": "configs/portal-hermes-runtime-evidence-v1.json",
+        "sha256": "742d8b9ff2cb2b68d344829e5ac9b135eb29daa0b3ae0ff3b75cba6f9ea10ac7"
+      },
+      {
+        "path": "hermes-plugin/ods-portal/plugin.yaml",
+        "sha256": "41277c909689b2b70620de56938be12d8609130851cc0d8299b7ed4eb752070e"
+      }
+    ],
+    "candidateArtifact": {
+      "status": "not-published",
+      "reference": null,
+      "digest": null,
+      "immutable": false
+    },
+    "signature": {
+      "status": "not-verified",
+      "claim": "No signed Portal-core candidate exists for this lock."
+    },
+    "sbom": {
+      "status": "missing",
+      "digest": null
+    }
+  },
+  "upstreamHermes": {
+    "repository": "https://github.com/NousResearch/hermes-agent",
+    "release": {
+      "releaseId": 384339710,
+      "tag": "v2026.9.7",
+      "packageVersion": "0.21.1",
+      "publishedAt": "2026-09-07T22:17:01Z",
+      "draft": false,
+      "prerelease": false,
+      "tagObjectSha": "9949d0d324a3a06ac238e01dd1c2103dbca09900",
+      "commitSha": "2237be355906fbe6065ce1815711eee52b2d646e"
+    },
+    "sourceVerification": {
+      "tagSignature": "unsigned",
+      "commitSignature": "unsigned",
+      "releaseAssetCount": 0
+    },
+    "oci": {
+      "tagReference": "docker.io/nousresearch/hermes-agent:v2026.9.7",
+      "digestReference": "docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7",
+      "indexDigest": "sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7",
+      "manifests": [
+        {
+          "platform": "linux/amd64",
+          "manifestDigest": "sha256:b3190406963c6b51ac955397ecef45346efaae9563ee305108f8eef0a77e267b",
+          "provenanceManifestDigest": "sha256:5fc02b8e0b89c3436a203c3261dd7d9e52e339461edb4d2afaaa87dd3f8d66db",
+          "provenanceLayerDigest": "sha256:ae6c21ad6159175419b5c83d866c96f94e79f0726c0cf32df0c5918664ead91e"
+        },
+        {
+          "platform": "linux/arm64",
+          "manifestDigest": "sha256:71b06481e12b7f1ec6a7c90ac629faab7a12ca4a3020566697c3c11b334b9e83",
+          "provenanceManifestDigest": "sha256:75548bc637e49c3dfedb68d29c1b838e255472947241e2d3cda8e4c04022e20e",
+          "provenanceLayerDigest": "sha256:4651a8d0330e2a1753d42797dbb5b586c4f5a64b1750ff4bc04e1b6a7d2b6e8a"
+        }
+      ],
+      "provenance": {
+        "status": "present-source-commit-bound",
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "sourceRepository": "https://github.com/NousResearch/hermes-agent",
+        "sourceCommit": "2237be355906fbe6065ce1815711eee52b2d646e",
+        "builder": "https://github.com/NousResearch/hermes-agent/actions/runs/34166135981/attempts/1"
+      },
+      "sbom": {
+        "status": "not-found-in-index-attestations"
+      },
+      "signature": {
+        "status": "not-verified",
+        "claim": "No OCI signature was verified; this is not proof that no signature exists."
+      }
+    }
+  },
+  "qualification": {
+    "state": "blocked",
+    "releaseGreen": false,
+    "acceptance": {
+      "subsystemProvenance": "in-progress",
+      "capabilitySuperset": "not-run",
+      "migrationRollback": "not-run",
+      "installedFleet": "not-run",
+      "performance": "not-run"
+    },
+    "blockers": [
+      {
+        "code": "signed-candidate-required",
+        "display": "BLOCKED—SIGNED CANDIDATE REQUIRED",
+        "resolution": "Restore or obtain access to an existing approved signing path, then publish and independently verify an immutable Portal-core test candidate."
+      },
+      {
+        "code": "portal-sbom-required",
+        "display": "BLOCKED—PORTAL SBOM REQUIRED",
+        "resolution": "Generate a Portal-owned SBOM and bind its digest to the signed candidate."
+      },
+      {
+        "code": "portal-core-incomplete",
+        "display": "BLOCKED—PORTAL CORE INCOMPLETE",
+        "resolution": "Complete and review the full Hermes-native Portal capability superset in the private dependency."
+      },
+      {
+        "code": "subsystem-provenance-incomplete",
+        "display": "BLOCKED—SUBSYSTEM PROVENANCE INCOMPLETE",
+        "resolution": "Classify every valuable subsystem from ODS PRs #3385 and #3818 as retained or replaced with parity evidence."
+      },
+      {
+        "code": "installed-fleet-qualification-required",
+        "display": "BLOCKED—INSTALLED FLEET QUALIFICATION REQUIRED",
+        "resolution": "Complete the required installed capability, migration, rollback, failure-injection, and performance journeys on designated hosts."
+      }
+    ]
+  }
+}

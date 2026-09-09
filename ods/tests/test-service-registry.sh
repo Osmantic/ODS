@@ -118,9 +118,8 @@ else
         fi
 
         # Validate required fields. host_network services (Docker
-        # network_mode: host) don't have a Docker-mapped port and may
-        # not serve an HTTP health endpoint — port and health drop to
-        # "optional" for them.
+        # network_mode: host) and socket_only host-systemd services don't
+        # have a Docker-mapped TCP port.
         validation=$("$PYTHON_CMD" -c "
 import yaml, sys
 with open(sys.argv[1]) as f:
@@ -132,8 +131,8 @@ s = m.get('service', {})
 if not isinstance(s, dict):
     errors.append('service must be a dict')
 else:
-    host_network = bool(s.get('host_network'))
-    required = ['id', 'name'] if host_network else ['id', 'name', 'port', 'health']
+    portless = bool(s.get('host_network')) or bool(s.get('socket_only'))
+    required = ['id', 'name'] if portless else ['id', 'name', 'port', 'health']
     for field in required:
         if not s.get(field):
             errors.append(f'missing required field: service.{field}')
@@ -141,7 +140,7 @@ else:
         errors.append(f'invalid category: {s[\"category\"]}')
     if 'gpu_backends' in s:
         for gb in s['gpu_backends']:
-            if gb not in ('amd', 'nvidia', 'apple', 'all'):
+            if gb not in ('amd', 'nvidia', 'apple', 'cpu', 'none', 'all'):
                 errors.append(f'invalid gpu_backend: {gb}')
     if 'aliases' in s and not isinstance(s['aliases'], list):
         errors.append('aliases must be a list')
@@ -317,12 +316,21 @@ for sid in "${SERVICE_IDS[@]}"; do
         fail "Missing health endpoint: $sid"
     fi
 
+    health_source="${SERVICE_HEALTH_SOURCES[$sid]:-}"
+    if [[ "$health_source" == "http" || "$health_source" == "container" ]]; then
+        pass "Valid health source: $sid → $health_source"
+    else
+        fail "Invalid/missing health source: $sid → '$health_source'"
+    fi
+
     # Every service should have a runtime port. SERVICE_PORTS is the
     # user-facing external port; internal-only services may intentionally set
-    # it to 0 when a proxy owns the LAN entry point. Host-network services
-    # share the host namespace and have no Docker-mapped port to validate.
+    # it to 0 when a proxy owns the LAN entry point. Host-network and
+    # socket-only services have no Docker-mapped TCP port to validate.
     if [[ "${SERVICE_HOST_NETWORK[$sid]:-}" == "1" ]]; then
         pass "host_network service exempt from port check: $sid"
+    elif [[ "${SERVICE_SOCKET_ONLY[$sid]:-}" == "1" ]]; then
+        pass "socket_only service exempt from port check: $sid"
     else
         port="${SERVICE_PORTS[$sid]:-0}"
         if [[ "$port" != "0" ]]; then
@@ -334,6 +342,17 @@ for sid in "${SERVICE_IDS[@]}"; do
         fi
     fi
 done
+
+if [[ "${SERVICE_HEALTH_SOURCES[model-router]:-}" == "container" ]]; then
+    pass "Internal model-router uses its Docker healthcheck"
+else
+    fail "Internal model-router must not be probed through an unpublished host port"
+fi
+if [[ "${SERVICE_PORTS[model-router]:-}" == "0" ]]; then
+    pass "Internal model-router publishes no host port"
+else
+    fail "Internal model-router must expose port 9099 only inside Compose"
+fi
 
 # ============================================
 # TEST 6: Compose Fragment Consistency
@@ -473,6 +492,47 @@ if (
     pass "Registry compose flags survive an install root containing spaces"
 else
     fail "Registry compose flags must be relative to a spaced install root"
+fi
+
+# ============================================
+# TEST 9: Socket-Only Registry State (hermetic)
+# ============================================
+header "9/9" "Socket-Only Registry State"
+
+# Drives the registry's manifest pass in a throwaway install root so the
+# socket_only contract is proven independently of the live first-party tree.
+if (
+    tmp_root="$(mktemp -d)"
+    trap 'rm -rf "$tmp_root"' EXIT
+    mkdir -p "$tmp_root/extensions/services/fixture-socket"
+
+    cat > "$tmp_root/extensions/services/fixture-socket/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+service:
+  id: fixture-socket
+  name: Fixture Socket
+  socket_only: true
+  port: 0
+  health: /health
+  type: host-systemd
+  gpu_backends: [all]
+  category: optional
+  depends_on: []
+EOF
+
+    (
+        export SCRIPT_DIR="$tmp_root"
+        # shellcheck disable=SC1090,SC1091
+        . "$PROJECT_DIR/lib/service-registry.sh"
+        sr_load || exit 1
+        [[ "${SERVICE_SOCKET_ONLY[fixture-socket]:-}" == "1" ]] || exit 1
+        [[ "${SERVICE_HEALTH_SOURCES[fixture-socket]:-}" == "http" ]] || exit 1
+        [[ "${SERVICE_PORTS[fixture-socket]:-}" == "0" ]] || exit 1
+    )
+); then
+    pass "socket_only manifests set SERVICE_SOCKET_ONLY and default to http health source"
+else
+    fail "socket_only registry state did not match the service contract"
 fi
 
 # ============================================

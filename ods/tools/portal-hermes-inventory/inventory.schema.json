@@ -1,0 +1,233 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Portal-on-Hermes Predecessor Preservation Inventory",
+  "description": "Deterministic fail-closed inventory of all changed paths from Portal-on-Hermes source PRs, with subsystem classification and disposition.",
+  "type": "object",
+  "required": [
+    "version",
+    "ledger_id",
+    "generated_at_branch",
+    "branch_sha",
+    "source_prs",
+    "total_records",
+    "canonical_digest",
+    "records",
+    "subsystem_totals",
+    "disposition_totals",
+    "policy"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version. Must be exactly 1."
+    },
+    "ledger_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$",
+      "description": "Unique task ledger identifier."
+    },
+    "generated_at_branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "branch_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "source_prs": {
+      "type": "object",
+      "required": ["pr-3385", "pr-3818"],
+      "additionalProperties": false,
+      "properties": {
+        "pr-3385": {
+          "allOf": [
+            { "$ref": "#/definitions/sourcePr" },
+            {
+              "properties": {
+                "base_sha": { "const": "21f4b3a64dd2a2fac1163f446806091c25b6b814" },
+                "head_sha": { "const": "53bf63fa256b6bed27764cace170d45aa43c75d1" },
+                "changed_path_count": { "const": 283 },
+                "source_delta_sha256": { "const": "6baaa5dd2bae01b297b75efc387d0dea88c3bb7c9eb7298a6562087e9a3e8c0b" }
+              }
+            }
+          ]
+        },
+        "pr-3818": {
+          "allOf": [
+            { "$ref": "#/definitions/sourcePr" },
+            {
+              "properties": {
+                "base_sha": { "const": "58a2d544b8752cee2b42d54001100d9ef2e89ae0" },
+                "head_sha": { "const": "90e74b01c597bec13b12955ad04acb1f0bf68b16" },
+                "changed_path_count": { "const": 144 },
+                "source_delta_sha256": { "const": "e2f1f236e6a9e3fdfb4650ac58a0ac627b997e80e36ff9d496c07d3da39a9b22" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "total_records": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "canonical_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the canonical JSON representation of sorted records."
+    },
+    "records": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/record" },
+      "minItems": 1
+    },
+    "subsystem_totals": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 1 }
+    },
+    "disposition_totals": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 1 }
+    },
+    "policy": {
+      "type": "object",
+      "required": [
+        "no_record_may_vanish",
+        "no_record_may_duplicate",
+        "no_record_may_move_to_drop_without_user_approval",
+        "drop_requires"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "no_record_may_vanish": { "const": true },
+        "no_record_may_duplicate": { "const": true },
+        "no_record_may_move_to_drop_without_user_approval": { "const": true },
+        "drop_requires": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "definitions": {
+    "sourcePr": {
+      "type": "object",
+      "required": ["base_sha", "head_sha", "changed_path_count", "source_delta_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "changed_path_count": { "type": "integer", "minimum": 0 },
+        "source_delta_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of sorted change_type<TAB>path lines for this PR"
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "required": [
+        "source_pr",
+        "path",
+        "change_type",
+        "subsystem",
+        "disposition",
+        "classification_method",
+        "base_sha",
+        "head_sha",
+        "rationale"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_pr": {
+          "type": "string",
+          "pattern": "^pr-[0-9]+$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              { "pattern": "^/" },
+              { "pattern": "/$" },
+              { "pattern": "//" },
+              { "pattern": "(^|/)(\\.\\.?)(/|$)" },
+              { "pattern": "\\\\" },
+              { "pattern": "^[A-Za-z]:" },
+              { "pattern": "[\\u0000-\\u001f\\u007f]" }
+            ]
+          }
+        },
+        "change_type": {
+          "type": "string",
+          "enum": ["A", "M", "D", "R", "T", "AM"]
+        },
+        "subsystem": {
+          "type": "string",
+          "enum": [
+            "core-runtime",
+            "ingress-edge",
+            "model-routing",
+            "providers",
+            "access-scopes",
+            "leases-approvals",
+            "source-broker",
+            "operations",
+            "previews",
+            "dashboard-api",
+            "installer",
+            "observability",
+            "tests-docs",
+            "other"
+          ]
+        },
+        "disposition": {
+          "type": "string",
+          "enum": [
+            "retain-semantics",
+            "replace-openclaw-coupling",
+            "already-on-main",
+            "orthogonal-retain",
+            "review-required",
+            "drop-blocked-user-approval"
+          ]
+        },
+        "classification_method": {
+          "type": "string",
+          "enum": ["mechanical", "manual"]
+        },
+        "base_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "head_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty explanation of why this disposition was assigned."
+        },
+        "user_approval_reference": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Required only for drop-blocked-user-approval; must be absent for other dispositions."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "disposition": { "const": "drop-blocked-user-approval" }
+            },
+            "required": ["disposition"]
+          },
+          "then": { "required": ["user_approval_reference"] },
+          "else": { "not": { "required": ["user_approval_reference"] } }
+        }
+      ]
+    }
+  }
+}

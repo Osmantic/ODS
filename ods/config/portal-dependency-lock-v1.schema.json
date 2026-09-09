@@ -1,0 +1,325 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.local/schemas/portal-dependency-lock-v1.schema.json",
+  "title": "ODS Portal dependency and qualification lock",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "observedAt",
+    "product",
+    "ods",
+    "sourceInputs",
+    "portalCore",
+    "upstreamHermes",
+    "qualification"
+  ],
+  "properties": {
+    "$schema": { "const": "./portal-dependency-lock-v1.schema.json" },
+    "schemaVersion": { "const": 1 },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "product": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subsystem",
+        "genericPlaceholder",
+        "userNamingSource",
+        "securityIdentitySource",
+        "canonicalIdsImmutable"
+      ],
+      "properties": {
+        "subsystem": { "const": "Portal" },
+        "genericPlaceholder": { "const": true },
+        "userNamingSource": { "const": "hermes-profile-display-name" },
+        "securityIdentitySource": { "const": "hermes-profile-id" },
+        "canonicalIdsImmutable": { "const": true }
+      }
+    },
+    "ods": { "$ref": "#/$defs/odsSource" },
+    "sourceInputs": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "$ref": "#/$defs/sourceInput" }
+    },
+    "portalCore": { "$ref": "#/$defs/portalCore" },
+    "upstreamHermes": { "$ref": "#/$defs/upstreamHermes" },
+    "qualification": { "$ref": "#/$defs/qualification" }
+  },
+  "$defs": {
+    "gitSha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "odsSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "baseBranch", "baseCommit"],
+      "properties": {
+        "repository": { "const": "https://github.com/Osmantic/ODS" },
+        "baseBranch": { "const": "main" },
+        "baseCommit": { "$ref": "#/$defs/gitSha" }
+      }
+    },
+    "sourceInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "pullRequest",
+        "baseCommit",
+        "headCommit",
+        "disposition",
+        "integrationState"
+      ],
+      "properties": {
+        "repository": { "const": "https://github.com/Osmantic/ODS" },
+        "pullRequest": { "enum": [3385, 3818] },
+        "baseCommit": { "$ref": "#/$defs/gitSha" },
+        "headCommit": { "$ref": "#/$defs/gitSha" },
+        "disposition": { "const": "source-only-untouched" },
+        "integrationState": { "enum": ["inventory-in-progress", "mapped"] }
+      }
+    },
+    "evidenceFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "portalCore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "pullRequest",
+        "sourceCommit",
+        "sourceState",
+        "consumptionMode",
+        "runtimeActivated",
+        "coreComplete",
+        "evidenceFiles",
+        "candidateArtifact",
+        "signature",
+        "sbom"
+      ],
+      "properties": {
+        "repository": { "const": "https://github.com/Osmantic/Pixel" },
+        "pullRequest": { "const": 239 },
+        "sourceCommit": { "$ref": "#/$defs/gitSha" },
+        "sourceState": { "const": "reviewed-private-draft" },
+        "consumptionMode": { "const": "source-lock-only" },
+        "runtimeActivated": { "const": false },
+        "coreComplete": { "const": false },
+        "evidenceFiles": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/evidenceFile" }
+        },
+        "candidateArtifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reference", "digest", "immutable"],
+          "properties": {
+            "status": { "const": "not-published" },
+            "reference": { "type": "null" },
+            "digest": { "type": "null" },
+            "immutable": { "const": false }
+          }
+        },
+        "signature": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "claim"],
+          "properties": {
+            "status": { "const": "not-verified" },
+            "claim": { "type": "string", "minLength": 1 }
+          }
+        },
+        "sbom": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "digest"],
+          "properties": {
+            "status": { "const": "missing" },
+            "digest": { "type": "null" }
+          }
+        }
+      }
+    },
+    "hermesManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "manifestDigest",
+        "provenanceManifestDigest",
+        "provenanceLayerDigest"
+      ],
+      "properties": {
+        "platform": { "enum": ["linux/amd64", "linux/arm64"] },
+        "manifestDigest": { "$ref": "#/$defs/digest" },
+        "provenanceManifestDigest": { "$ref": "#/$defs/digest" },
+        "provenanceLayerDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "upstreamHermes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "release", "sourceVerification", "oci"],
+      "properties": {
+        "repository": { "const": "https://github.com/NousResearch/hermes-agent" },
+        "release": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "releaseId",
+            "tag",
+            "packageVersion",
+            "publishedAt",
+            "draft",
+            "prerelease",
+            "tagObjectSha",
+            "commitSha"
+          ],
+          "properties": {
+            "releaseId": { "type": "integer", "minimum": 1 },
+            "tag": { "pattern": "^v[0-9]{4}\\.[0-9]{1,2}\\.[0-9]{1,2}$" },
+            "packageVersion": { "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+            "publishedAt": { "type": "string", "format": "date-time" },
+            "draft": { "const": false },
+            "prerelease": { "const": false },
+            "tagObjectSha": { "$ref": "#/$defs/gitSha" },
+            "commitSha": { "$ref": "#/$defs/gitSha" }
+          }
+        },
+        "sourceVerification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tagSignature", "commitSignature", "releaseAssetCount"],
+          "properties": {
+            "tagSignature": { "const": "unsigned" },
+            "commitSignature": { "const": "unsigned" },
+            "releaseAssetCount": { "const": 0 }
+          }
+        },
+        "oci": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tagReference",
+            "digestReference",
+            "indexDigest",
+            "manifests",
+            "provenance",
+            "sbom",
+            "signature"
+          ],
+          "properties": {
+            "tagReference": { "const": "docker.io/nousresearch/hermes-agent:v2026.9.7" },
+            "digestReference": {
+              "pattern": "^docker\\.io/nousresearch/hermes-agent@sha256:[a-f0-9]{64}$"
+            },
+            "indexDigest": { "$ref": "#/$defs/digest" },
+            "manifests": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": { "$ref": "#/$defs/hermesManifest" }
+            },
+            "provenance": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "predicateType",
+                "sourceRepository",
+                "sourceCommit",
+                "builder"
+              ],
+              "properties": {
+                "status": { "const": "present-source-commit-bound" },
+                "predicateType": { "const": "https://slsa.dev/provenance/v1" },
+                "sourceRepository": { "const": "https://github.com/NousResearch/hermes-agent" },
+                "sourceCommit": { "$ref": "#/$defs/gitSha" },
+                "builder": { "type": "string", "format": "uri" }
+              }
+            },
+            "sbom": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status"],
+              "properties": {
+                "status": { "const": "not-found-in-index-attestations" }
+              }
+            },
+            "signature": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "claim"],
+              "properties": {
+                "status": { "const": "not-verified" },
+                "claim": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "releaseGreen", "acceptance", "blockers"],
+      "properties": {
+        "state": { "const": "blocked" },
+        "releaseGreen": { "const": false },
+        "acceptance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "subsystemProvenance",
+            "capabilitySuperset",
+            "migrationRollback",
+            "installedFleet",
+            "performance"
+          ],
+          "properties": {
+            "subsystemProvenance": { "const": "in-progress" },
+            "capabilitySuperset": { "const": "not-run" },
+            "migrationRollback": { "const": "not-run" },
+            "installedFleet": { "const": "not-run" },
+            "performance": { "const": "not-run" }
+          }
+        },
+        "blockers": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "display", "resolution"],
+            "properties": {
+              "code": {
+                "enum": [
+                  "signed-candidate-required",
+                  "portal-sbom-required",
+                  "portal-core-incomplete",
+                  "subsystem-provenance-incomplete",
+                  "installed-fleet-qualification-required"
+                ]
+              },
+              "display": { "type": "string", "minLength": 1 },
+              "resolution": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

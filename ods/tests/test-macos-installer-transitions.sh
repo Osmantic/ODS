@@ -71,7 +71,16 @@ model:
   default: old-model
   base_url: http://old.invalid/v1
   context_length: 1024
+  max_tokens: 1024
   api_key: stale-secret
+agent:
+  disabled_toolsets:
+    - terminal
+    - browser
+  mode: autonomous
+terminal:
+  backend: local
+  timeout: 30
 auxiliary:
   compression:
     context_length: 1024
@@ -107,10 +116,41 @@ assert model["default"] == "default"
 assert model["base_url"] == "http://litellm:4000/v1"
 assert model["context_length"] == 200000
 assert "api_key" not in model
+assert "max_tokens" not in model
+assert data["agent"]["mode"] == "autonomous"
+assert "disabled_toolsets" not in data["agent"]
+assert data["terminal"]["backend"] == "local"
+assert "timeout" not in data["terminal"]
 assert data["auxiliary"]["compression"]["context_length"] == 200000
 assert data["custom"]["preserve"] is True
 PY
 pass "Hermes persisted routing is container-patched and verified"
+
+# A mapping with the same keys is valid operator state, not the historical
+# sequence authored by ODS. It must not be coerced to a tuple and deleted.
+cat > "$INSTALL_DIR/data/hermes/config.yaml" <<'YAML'
+model:
+  default: old-model
+  base_url: http://old.invalid/v1
+  context_length: 1024
+agent:
+  disabled_toolsets:
+    terminal: false
+    browser: false
+terminal:
+  backend: local
+auxiliary:
+  compression:
+    context_length: 1024
+YAML
+_macos_patch_hermes_persisted_config default http://litellm:4000/v1 200000 \
+    || fail "Hermes mapping-valued operator state patch failed"
+"$python_cmd" - "$INSTALL_DIR/data/hermes/config.yaml" <<'PY'
+import sys, yaml
+data = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+assert data["agent"]["disabled_toolsets"] == {"terminal": False, "browser": False}
+PY
+pass "Hermes migration preserves mapping-valued operator state"
 
 # Disabled Hermes still has authoritative persisted state. Its cached runtime
 # image may exist without PyYAML, so the installer must select a verified
@@ -120,6 +160,15 @@ model:
   default: stale-local-model
   base_url: http://host.docker.internal:8080/v1
   context_length: 1024
+  max_tokens: 2048
+agent:
+  disabled_toolsets:
+    - terminal
+    - browser
+    - skills
+terminal:
+  backend: remote
+  timeout: 45
 auxiliary:
   compression:
     context_length: 1024
@@ -160,6 +209,9 @@ data = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 assert data["model"]["default"] == "cloud-default"
 assert data["model"]["base_url"] == "http://litellm:4000/v1"
 assert data["model"]["context_length"] == 131072
+assert data["model"]["max_tokens"] == 2048
+assert data["agent"]["disabled_toolsets"] == ["terminal", "browser", "skills"]
+assert data["terminal"] == {"backend": "remote", "timeout": 45}
 assert data["auxiliary"]["compression"]["context_length"] == 131072
 PY
 

@@ -1,18 +1,18 @@
-# Hermes Agent
+# Portal runtime base: Hermes Agent
 
-ODS ships **Hermes Agent** — the [Nous Research open-source agent](https://github.com/nousresearch/hermes-agent) packaged as a ODS service. Hermes is a self-improving generalist agent with persistent memory, autonomous skill creation, and 70+ tools built in.
+The Portal source candidate uses **Hermes Agent** — the [Nous Research open-source agent](https://github.com/nousresearch/hermes-agent) — as its sole core loop. The full upstream AIAgent is pinned as the runtime base; Portal package activation is tracked separately in `config/portal-dependency-lock.json` and must not be inferred from the presence of this service source.
 
 When enabled, Hermes runs in a container alongside the rest of the stack, serves its own browser dashboard on internal port 9119, and talks to the selected model provider through an OpenAI-compatible API. End users should enter through `hermes-proxy` on port 9120; direct host access to 9119 is intentionally not bound in the default stack.
 
 ## What you get
 
-Hermes ships its own complete web UI — ODS is just packaging it. After `ods enable hermes` + `ods enable hermes-proxy`, you can browse to `http://<device>:9120` (or `hermes.<device>.local:9120` once mDNS announcement lands — see "Roadmap" below). The proxy is the LAN-facing entry; it gates access on ODS's magic-link cookie before forwarding to Hermes's internal port 9119. See [docs/HERMES-SSO.md](HERMES-SSO.md) for the full auth flow. Once past the proxy you find pages for:
+The transitional Hermes service exposes upstream's complete web UI. After `ods enable hermes` + `ods enable hermes-proxy`, you can browse to `http://<device>:9120` (or `hermes.<device>.local:9120` once mDNS announcement lands — see "Roadmap" below). The proxy is the LAN-facing entry; it gates access on ODS's magic-link cookie before forwarding to Hermes's internal port 9119. See [docs/HERMES-SSO.md](HERMES-SSO.md) for the full auth flow. This is runtime-base behavior, not proof that the Portal plugin package has been activated. Once past the proxy you find pages for:
 
 - **Chat** — conversational interface with streaming responses + inline tool calls
 - **Sessions** — list, switch between, prune past conversations
 - **Skills** — view skills Hermes has autonomously created from your interactions; edit or delete
 - **Memories** — persistent facts Hermes has learned about you
-- **Profiles** — per-user agent contexts (a built-in alternative to running multiple Hermes containers)
+- **Profiles** — multiple agent contexts selectable inside the shared runtime; ODS does not yet bind them to magic-link user identities
 - **Cron** — schedule recurring agent tasks
 - **Models** — pick which LLM Hermes uses (defaults to your llama-server)
 - **Config / Env** — Hermes's own settings
@@ -107,12 +107,12 @@ The first start takes a minute — image is ~3GB, Hermes runs its `skills_sync.p
   and config to the model selector's chosen context after the background model
   upgrade completes. Large-context tiers still use 128K when they select a
   128K-capable model; constrained tiers can remain at a smaller context.
-- **Compression:** enabled at `compression.threshold: 0.50` with `target_ratio: 0.20` so long sessions compact before the backend hard-rejects an over-window request.
-- **Model name:** `qwen3.5-9b` (ODS's default LLM — to switch models, edit `model.default` in `data/hermes/config.yaml` after first start; there is no env-var hook for this)
+- **Compression:** enabled at `compression.threshold: 0.75` with `target_ratio: 0.50` and `protect_last_n: 40`, delaying compaction and retaining more recent context while still avoiding hard backend limits.
+- **Model name:** the installer-selected local, external, cloud, or switchboard model. The source template contains `qwen3.5-9b` only as a pre-install placeholder; `data/hermes/config.yaml` remains authoritative after first start.
 - **Persona (`SOUL.md`):** a generalist ODS-aware persona (see `extensions/services/hermes/SOUL.md.template`)
-- **Messaging gateways DISABLED:** Telegram / Discord / Slack / WhatsApp / Signal / Teams / Google Chat / Matrix / Mattermost / SMS — all off by default. ODS owner-card users reach Hermes through the ODS Talk mobile portal, while advanced users can still open the full Hermes web dashboard. WhatsApp is pre-seeded as disabled with `bridge_port: 3010` so upstream's default `3000` bridge does not collide with Open WebUI when users intentionally enable it. To enable any platform, see [upstream messaging docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/).
+- **Messaging gateways installed but unconfigured:** Telegram / Discord / Slack / WhatsApp / Signal / Teams / Google Chat / Matrix / Mattermost / SMS — adapter code is present but requires credentials to activate. Portal users reach Hermes through the ODS Talk portal and the web dashboard. WhatsApp is pre-seeded as disabled with `bridge_port: 3010` so upstream's default `3000` bridge does not collide with Open WebUI when users intentionally enable it. To enable any platform, see [upstream messaging docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/).
 - **Network exposure:** Hermes is **not directly LAN-reachable**. Once the `hermes-proxy` extension is enabled (see [docs/HERMES-SSO.md](HERMES-SSO.md)), the proxy at port 9120 fronts Hermes and gates access on ODS's magic-link cookie. Hermes's own port 9119 is internal-only. To restore direct access (e.g. for testing without auth), re-add a `ports:` binding to `extensions/services/hermes/compose.yaml`.
-- **Resource caps:** 4 CPUs / 4GB RAM hard limit, 0.5 CPU / 1GB reservation. Hermes's playwright + ML deps can be hungry; adjust in `extensions/services/hermes/compose.yaml` if needed.
+- **Resource caps:** 1 CPU / 4GB RAM default hard limit, 0.5 CPU / 1GB reservation. Override `HERMES_CPU_LIMIT` or edit `extensions/services/hermes/compose.yaml` if the Playwright and ML dependencies need more headroom.
 
 ## Configuration
 
@@ -135,29 +135,36 @@ For local backends, keep `model.context_length` and `auxiliary.compression.conte
 
 - **`--insecure` is enabled inside the container.** Hermes's dashboard refuses non-loopback binds without it. ODS accepts that trade-off only because port 9119 is not host-bound in the default stack; the LAN-facing entry is the magic-link-gated proxy on port 9120. Do not add a public 9119 host binding.
 - **Hermes's internal dashboard token is independent of ODS authentication.** The installer stores `HERMES_DASHBOARD_SESSION_TOKEN` in the mode-600 `.env`; the browser receives it from Hermes only after the ODS session gate permits the page request. The token is stable across restarts but is not a substitute for the outer proxy gate.
-- **The container runs as a non-root user** (UID 10000 by default, remappable via `HERMES_UID`). The entrypoint drops privileges via `gosu` before any agent code runs.
+- **Runtime services are unprivileged after initialization.** The pinned s6 image starts as root so its cont-init hook can remap `HERMES_UID`/`HERMES_GID`, seed configuration, and repair targeted data-volume ownership. Supervised Hermes services then drop to that user with `s6-setuidgid`; do not force Compose `user:` because it bypasses the required initialization.
 - **The container has full network access** within ODS's bridge net — Hermes can make outbound HTTP requests for tools like `web_search`. If you want to restrict this, add an iptables firewall rule on the host or run Hermes behind a forward proxy.
-- **No APE policy enforcement yet.** Hermes's 70+ tools include shell + file write. The base config defaults toward less-risky tools, but Hermes can still execute shell commands inside its sandbox container. APE policy wrapping is a planned follow-up; until then, the trust model is "the user authenticated to Hermes is trusted to use the local container."
+- **No APE policy enforcement yet.** ODS does not disable upstream Hermes toolsets or impose an output-token cap: authenticated users receive the full upstream shell/file-write/tool surface. The explicit `terminal.backend: local` boundary keeps command execution inside the Hermes container, but it is not an authorization policy. APE wrapping remains required before claiming policy-enforced tool authority; until then, the trust model is "the user authenticated to Hermes is trusted to use the local container."
 
 ## How to bump the image pin
 
-Hermes is a young, fast-moving project. ODS pins a reviewed upstream image tag in `compose.yaml` instead of auto-tracking `:latest`. Operators can temporarily override it with `HERMES_AGENT_IMAGE`, and can provide `HERMES_AGENT_IMAGE_FALLBACK` for registry hotfixes, but changing the shipped default is a deliberate review-and-smoke-test pass:
+Hermes is a young, fast-moving project. ODS resolves a reviewed upstream tag to an immutable OCI index digest and pins that digest instead of auto-tracking a mutable tag. Operators can temporarily override it with `HERMES_AGENT_IMAGE`, and can provide `HERMES_AGENT_IMAGE_FALLBACK` for registry hotfixes, but changing the shipped default is a deliberate custody and qualification pass:
 
 ```bash
 # 1. Pick a published upstream image tag.
 curl -s 'https://hub.docker.com/v2/repositories/nousresearch/hermes-agent/tags?page_size=25' \
   | jq -r '.results[] | [.name, .last_updated] | @tsv'
 
-# 2. Verify Docker can resolve the tag on a clean machine.
-docker manifest inspect nousresearch/hermes-agent:<new-tag> >/dev/null
+# 2. Resolve and record the immutable multi-platform index digest.
+docker buildx imagetools inspect nousresearch/hermes-agent:<new-tag>
+# Use docker.io/nousresearch/hermes-agent@sha256:<index-digest> below.
 
 # 3. Review upstream release notes / commits. Skim breaking changes,
 #    config-format migrations, removed env vars, and dashboard changes.
 
-# 4. Update:
+# 4. Update every active pin and custody surface:
 #    - extensions/services/hermes/compose.yaml
+#    - .env.example and .env.schema.json
 #    - installers/phases/08-images.sh
+#    - installers/macos/install-macos.sh
+#    - installers/windows/install-windows.ps1
 #    - config/dependency-lock.json
+#    - config/portal-dependency-lock.json, its schema, and checker expectation
+#    - tests/test-hermes-dashboard-session-token.py
+#    - tests/contracts/test-runtime-base.py
 #    - this bump-history table
 
 # 5. Smoke test:
@@ -168,7 +175,7 @@ docker manifest inspect nousresearch/hermes-agent:<new-tag> >/dev/null
 #    # JSON-backed endpoint used by ODS's health metadata and Docker probe.
 #    open http://localhost:9120, sign in, send a chat, verify tool call
 
-# 5. If it works, commit. If config.yaml format has changed, document the
+# 6. If it works, commit. If config.yaml format has changed, document the
 #    migration in this file's "Bump history" section below.
 ```
 
@@ -277,14 +284,15 @@ The container image stays cached — `docker image prune` removes it.
 
 ## Upstream attribution
 
-Hermes Agent is © 2026 Nous Research, MIT-licensed. ODS's contribution is the packaging layer (`extensions/services/hermes/`) — no code is forked from upstream. The pinned image is pulled directly from `docker.io/nousresearch/hermes-agent`.
+Hermes Agent is © 2026 Nous Research, MIT-licensed. ODS's current runtime-base contribution is the integration layer under `extensions/services/hermes/`; no Hermes code is forked from upstream. The pinned image is pulled directly from `docker.io/nousresearch/hermes-agent`.
 
-When promoting / talking about this extension, the convention is: "Hermes Agent (from Nous Research) — packaged for ODS."
+When describing this candidate, use: "Portal, using Hermes Agent from Nous Research as its pinned runtime base." Do not claim Portal activation until the dependency lock and installed evidence say it is active.
 
 ## Bump history
 
 | Date | Pinned image | Notes |
 |---|---|---|
+| 2026-09-09 | `docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7` | Resolve reviewed tag `v2026.9.7` to an immutable multi-platform index; remove exact ODS-authored output/tool/terminal reductions while preserving operator overrides. |
 | 2026-07-30 | `nousresearch/hermes-agent:v2026.6.5` | Persist Hermes's supported dashboard session token so WebSocket reconnects survive container restarts; retain compatibility with ODS's authenticated proxy topology. |
 | 2026-06-01 | `nousresearch/hermes-agent:v2026.5.16` | Replace removed upstream `sha-*` tag with a published version tag; add `HERMES_AGENT_IMAGE` override/fallback path. |
 | 2026-05-12 | `dd0923bb89ed2dd56f82cb63656a1323f6f42e6f` | Initial integration. |

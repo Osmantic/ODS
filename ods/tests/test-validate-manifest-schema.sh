@@ -112,6 +112,15 @@ if operation == "host-systemd":
 elif operation == "host-network":
     service["host_network"] = True
     service.pop("health", None)
+elif operation == "socket-only":
+    service["type"] = "host-systemd"
+    service["socket_only"] = True
+    service["port"] = 0
+elif operation == "socket-only-docker":
+    service["socket_only"] = True
+    service["port"] = 0
+elif operation == "invalid-health-source":
+    service["health_source"] = "tcp"
 elif operation == "none-backend":
     service["gpu_backends"] = ["none"]
 elif operation == "missing-service":
@@ -173,6 +182,18 @@ check_case "host-systemd service type" valid
 write_base_manifest
 mutate_manifest host-network
 check_case "host-network service may omit health" valid
+
+write_base_manifest
+mutate_manifest socket-only
+check_case "host-systemd Unix-socket service may use port zero" valid
+
+write_base_manifest
+mutate_manifest socket-only-docker
+check_case "socket-only service must be host-systemd" invalid
+
+write_base_manifest
+mutate_manifest invalid-health-source
+check_case "unknown health source" invalid
 
 write_base_manifest
 mutate_manifest none-backend

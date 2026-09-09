@@ -1270,6 +1270,38 @@ _ods_cli_pull_external_images() {
 # Commands
 #=============================================================================
 
+_ods_cli_service_health() {
+    local sid="$1" port="$2" health_path="$3"
+    shift 3
+
+    if [[ "${SERVICE_HEALTH_SOURCES[$sid]:-http}" == "container" ]]; then
+        local container_id="" inspect="" state="" container_health=""
+        container_id=$(docker compose "$@" ps -q "$sid" 2>/dev/null || true)
+        # ODS services are single-instance. Reject ambiguous compose output
+        # explicitly instead of trusting an arbitrary replica.
+        if [[ -n "$container_id" && "$container_id" != *$'\n'* ]]; then
+            inspect=$(docker inspect \
+                --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+                "$container_id" 2>/dev/null || true)
+            read -r state container_health <<<"$inspect"
+        fi
+        if [[ "$state" == "running" && "$container_health" == "healthy" ]]; then
+            printf 'healthy\n'
+        else
+            printf 'unhealthy\n'
+        fi
+        return 0
+    fi
+
+    local url="http://127.0.0.1:${port}${health_path}"
+    local timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}"
+    if curl -sf --max-time "$timeout" "$url" >/dev/null 2>&1; then
+        printf 'healthy\n'
+    else
+        printf 'unhealthy\n'
+    fi
+}
+
 cmd_status() {
     local json_mode="false"
     while [[ $# -gt 0 ]]; do
@@ -1323,8 +1355,10 @@ cmd_status() {
         local name="${SERVICE_NAMES[$sid]:-$sid}"
         local cat="${SERVICE_CATEGORIES[$sid]}"
 
-        # Skip services with no health endpoint or port
-        [[ -z "$health" || "$default_port" == "0" ]] && continue
+        # Container-authoritative internal services have no host port but are
+        # still part of operator status.
+        [[ -z "$health" ]] && continue
+        [[ "$default_port" == "0" && "${SERVICE_HEALTH_SOURCES[$sid]:-http}" != "container" ]] && continue
 
         # Resolve port from env var or default
         local port="$default_port"
@@ -1341,9 +1375,7 @@ cmd_status() {
 
         # Launch health check in background
         (
-            url="http://127.0.0.1:${port}${health}"
-            timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}"
-            if curl -sf --max-time "$timeout" "$url" > /dev/null 2>&1; then
+            if [[ "$(_ods_cli_service_health "$sid" "$port" "$health" "${flags[@]}")" == "healthy" ]]; then
                 echo "healthy|$name" > "$tmpdir/$sid"
             else
                 echo "unhealthy|$name" > "$tmpdir/$sid"
@@ -1430,8 +1462,10 @@ cmd_status_json() {
         local default_port="${SERVICE_PORTS[$sid]}"
         local name="${SERVICE_NAMES[$sid]:-$sid}"
 
-        # Skip services with no health endpoint or port configured
-        [[ -z "$health" || "$default_port" == "0" ]] && continue
+        # Container-authoritative internal services have no host port but are
+        # still part of operator status.
+        [[ -z "$health" ]] && continue
+        [[ "$default_port" == "0" && "${SERVICE_HEALTH_SOURCES[$sid]:-http}" != "container" ]] && continue
 
         # Resolve port from env var or default
         local port="$default_port"
@@ -1454,12 +1488,7 @@ cmd_status_json() {
         if [[ "$cat" != "core" && "$container_status" == "stopped" ]]; then
             status="stopped"
         else
-            local url="http://127.0.0.1:${port}${health}"
-            if curl -sf --max-time 5 "$url" > /dev/null 2>&1; then
-                status="healthy"
-            else
-                status="unhealthy"
-            fi
+            status="$(_ods_cli_service_health "$sid" "$port" "$health" "${flags[@]}")"
         fi
 
         jq -n \

@@ -465,7 +465,7 @@ def test_hermes_uses_lemonade_model_id_for_amd() -> None:
     assert 'default: "extra.Amd.gguf"' in content
     assert 'base_url: "http://litellm:4000/v1"' in content
     assert "context_length: 65536" in content
-    assert "max_tokens: 1024" in content
+    assert "max_tokens" not in content
 
 
 def test_perplexica_default_model_matches_route() -> None:

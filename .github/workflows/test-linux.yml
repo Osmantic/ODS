@@ -190,6 +190,14 @@ jobs:
       - name: Dependency Pin Contract Tests
         run: python3 tests/test-dependency-pins.py
 
+      - name: Portal Dependency Lock Contract Tests
+        run: python3 tests/test-portal-dependency-lock.py
+
+      - name: Portal Predecessor Inventory Contract Tests
+        run: |
+          python3 -m unittest -v tools/portal-hermes-inventory/test_check_inventory.py
+          bash tools/portal-hermes-inventory/validate-inventory.sh
+
       - name: Offline Model Validation Tests
         run: python3 tests/test-offline-model-validation.py
 
