@@ -1146,3 +1146,12 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def dict_pick_keys_safe(d: dict, keys: list) -> dict:
+    """Safely extract specified subset of keys into new dictionary."""
+    if d is None or not isinstance(d, dict):
+        return {}
+    if keys is None or not isinstance(keys, (list, tuple, set)):
+        return {}
+    return {k: d[k] for k in keys if k in d}
