@@ -80,17 +80,19 @@ except Exception:  # pragma: no cover - platform dependent
 # ── Config ──────────────────────────────────────────────────────────────────
 
 POLICY_FILE = Path(os.environ.get("APE_POLICY_FILE", "/config/policy.yaml"))
-AUDIT_LOG   = Path(os.environ.get("APE_AUDIT_LOG",   "/data/ape/audit.jsonl"))
-RATE_LIMIT  = int(os.environ.get("APE_RATE_LIMIT_RPM", "60"))
+AUDIT_LOG = Path(os.environ.get("APE_AUDIT_LOG", "/data/ape/audit.jsonl"))
+RATE_LIMIT = int(os.environ.get("APE_RATE_LIMIT_RPM", "60"))
 STRICT_MODE = os.environ.get("APE_STRICT_MODE", "false").lower() == "true"
 _API_KEY = os.environ.get("APE_API_KEY", "")
 
 # Persistent governance state lives next to the audit log on the /data/ape
 # volume so it survives container restarts.
-STATE_FILE = Path(os.environ.get(
-    "APE_STATE_FILE",
-    str(AUDIT_LOG.parent / "state.json"),
-))
+STATE_FILE = Path(
+    os.environ.get(
+        "APE_STATE_FILE",
+        str(AUDIT_LOG.parent / "state.json"),
+    )
+)
 
 # Warmup grace period (seconds) after process start during which windowed
 # limits and the circuit breaker are not enforced. 0 disables warmup.
@@ -102,10 +104,14 @@ logger = logging.getLogger("ape")
 API_KEY = _API_KEY or secrets.token_hex(32)
 
 if not _API_KEY:
-    logger.warning(f"APE_API_KEY not set - auto-generated key: {API_KEY[:16]}... (set APE_API_KEY env var to use a fixed key)")
+    logger.warning(
+        f"APE_API_KEY not set - auto-generated key: {API_KEY[:16]}... (set APE_API_KEY env var to use a fixed key)"
+    )
 
 if not STRICT_MODE:
-    logger.warning("WARNING: APE is running in advisory mode. Tool calls are logged but NOT blocked. Set APE_STRICT_MODE=true to enforce policies.")
+    logger.warning(
+        "WARNING: APE is running in advisory mode. Tool calls are logged but NOT blocked. Set APE_STRICT_MODE=true to enforce policies."
+    )
 
 # Named sliding-window tiers. Order matters only for readability; each window
 # is evaluated independently.
@@ -122,11 +128,22 @@ DEFAULT_POLICY = {
     "intents": {
         "ExecuteCommand": {
             "mode": "allowlist",
-            "allowed": ["ls", "cat", "grep", "find", "head", "tail", "wc",
-                        "echo", "pwd", "env", "which"],
+            "allowed": [
+                "ls",
+                "cat",
+                "grep",
+                "find",
+                "head",
+                "tail",
+                "wc",
+                "echo",
+                "pwd",
+                "env",
+                "which",
+            ],
             "deny_patterns": [
-                r"rm\s+-rf",      # recursive delete
-                r">\s*/dev/sd",   # disk writes
+                r"rm\s+-rf",  # recursive delete
+                r">\s*/dev/sd",  # disk writes
                 r"curl.*\|.*sh",  # curl pipe to shell
                 r"wget.*\|.*sh",  # wget pipe to shell
                 r"chmod\s+[0-7]*7[0-7]*\s+/",  # chmod 777 /...
@@ -139,10 +156,10 @@ DEFAULT_POLICY = {
                 "/tmp",
             ],
         },
-        "ReadFile":     {"mode": "allow"},
+        "ReadFile": {"mode": "allow"},
         "NetworkFetch": {"mode": "allow"},
-        "SpawnAgent":   {"mode": "allow"},
-        "Other":        {"mode": "allow"},
+        "SpawnAgent": {"mode": "allow"},
+        "Other": {"mode": "allow"},
     },
     "rate_limit": {"requests_per_minute": RATE_LIMIT},
     # Per-intent sliding-window caps. Each entry maps a tier name (see
@@ -276,15 +293,17 @@ def _args_hash(args: dict) -> str:
     """Stable short hash of the call args so a grant is tied to the exact
     invocation that was approved, not just any call to the same tool."""
     try:
-        canon = json.dumps(args or {}, sort_keys=True, separators=(",", ":"),
-                           default=str)
+        canon = json.dumps(
+            args or {}, sort_keys=True, separators=(",", ":"), default=str
+        )
     except Exception:  # pragma: no cover - non-serialisable args
         canon = repr(args)
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
 
 
-def _grant_key(session_id: Optional[str], tool_name: str, intent: str,
-               args_hash: str) -> str:
+def _grant_key(
+    session_id: Optional[str], tool_name: str, intent: str, args_hash: str
+) -> str:
     """Tight one-shot-grant key: scope + tool + intent + args fingerprint."""
     scope = session_id or "_global"
     return f"{scope}|{tool_name}|{intent}|{args_hash}"
@@ -304,8 +323,7 @@ def _coerce_state(raw: Any) -> dict[str, Any]:
             for tier, samples in tiers.items():
                 if isinstance(samples, list):
                     clean[str(tier)] = [
-                        float(s) for s in samples
-                        if isinstance(s, (int, float))
+                        float(s) for s in samples if isinstance(s, (int, float))
                     ]
             if clean:
                 state["windows"][str(key)] = clean
@@ -316,7 +334,8 @@ def _coerce_state(raw: Any) -> dict[str, Any]:
             state["breaker"]["decisions"] = [
                 [float(d[0]), bool(d[1])]
                 for d in decisions
-                if isinstance(d, (list, tuple)) and len(d) == 2
+                if isinstance(d, (list, tuple))
+                and len(d) == 2
                 and isinstance(d[0], (int, float))
             ]
         tu = breaker.get("tripped_until")
@@ -361,9 +380,9 @@ def _prune_state(now: float) -> None:
 
     cb = _state["breaker"]
     cb_cut = min(cutoff_default, now - 24 * 60 * 60)
-    cb["decisions"] = [
-        d for d in cb["decisions"] if d[0] >= cb_cut
-    ][-_MAX_BREAKER_SAMPLES:]
+    cb["decisions"] = [d for d in cb["decisions"] if d[0] >= cb_cut][
+        -_MAX_BREAKER_SAMPLES:
+    ]
     if cb.get("tripped_until", 0.0) and cb["tripped_until"] < now:
         cb["tripped_until"] = 0.0
 
@@ -473,14 +492,21 @@ def _intent_window_config(policy: dict, intent: str) -> dict[str, Any]:
     if not isinstance(wl, dict) or not wl.get("enabled", True):
         return {}
     intents = wl.get("intents", {})
-    if isinstance(intents, dict) and intent in intents and isinstance(intents[intent], dict):
+    if (
+        isinstance(intents, dict)
+        and intent in intents
+        and isinstance(intents[intent], dict)
+    ):
         return intents[intent]
     default = wl.get("default", {})
     return default if isinstance(default, dict) else {}
 
 
 def check_windowed_limits(
-    policy: dict, session_id: Optional[str], intent: str, now: float,
+    policy: dict,
+    session_id: Optional[str],
+    intent: str,
+    now: float,
 ) -> tuple[str, str]:
     """Evaluate sliding-window caps for (scope, intent).
 
@@ -514,8 +540,7 @@ def check_windowed_limits(
             tiers[tier_name] = samples
             if len(samples) >= limit:
                 reason = (
-                    f"{intent} exceeded {tier_name} window "
-                    f"({len(samples)}/{limit})"
+                    f"{intent} exceeded {tier_name} window ({len(samples)}/{limit})"
                 )
                 if action == "deny":
                     # Hard deny always wins over an approval escalation.
@@ -534,7 +559,10 @@ def check_windowed_limits(
 
 
 def consume_grant(
-    session_id: Optional[str], tool_name: str, intent: str, args: dict,
+    session_id: Optional[str],
+    tool_name: str,
+    intent: str,
+    args: dict,
 ) -> Optional[dict[str, Any]]:
     """Atomically consume a one-shot approval grant for this exact action.
 
@@ -550,7 +578,10 @@ def consume_grant(
 
 
 def record_window_sample(
-    policy: dict, session_id: Optional[str], intent: str, now: float,
+    policy: dict,
+    session_id: Optional[str],
+    intent: str,
+    now: float,
 ) -> None:
     """Record one window sample for (scope, intent) without re-evaluating the
     caps. Used after a one-shot grant is consumed so the approved retry is
@@ -571,6 +602,7 @@ def record_window_sample(
 
 # ── Circuit breaker ─────────────────────────────────────────────────────────
 
+
 def circuit_breaker_blocked(policy: dict, now: float) -> tuple[bool, str]:
     """Return (blocked, reason). Caller-independent; takes the state lock."""
     cb = policy.get("circuit_breaker", {})
@@ -579,8 +611,11 @@ def circuit_breaker_blocked(policy: dict, now: float) -> tuple[bool, str]:
     with _STATE_LOCK:
         tripped_until = _state["breaker"].get("tripped_until", 0.0)
         if tripped_until and now < tripped_until:
-            return (True, f"circuit breaker open (cooldown until "
-                          f"{datetime.fromtimestamp(tripped_until, timezone.utc).isoformat()})")
+            return (
+                True,
+                f"circuit breaker open (cooldown until "
+                f"{datetime.fromtimestamp(tripped_until, timezone.utc).isoformat()})",
+            )
         if tripped_until and now >= tripped_until:
             _state["breaker"]["tripped_until"] = 0.0
     return (False, "")
@@ -607,7 +642,9 @@ def record_breaker_decision(policy: dict, allowed: bool, now: float) -> None:
                 _state["breaker"]["tripped_until"] = now + cooldown
                 logger.warning(
                     "Circuit breaker TRIPPED: %d/%d denied over %.0fs window",
-                    denied, len(decisions), window,
+                    denied,
+                    len(decisions),
+                    window,
                 )
 
 
@@ -626,9 +663,9 @@ def in_warmup(now: float) -> bool:
 # ── Intent classification ─────────────────────────────────────────────────────
 
 _EXEC_VERBS = {"exec", "run", "execute", "shell", "bash", "sh", "cmd"}
-_READ_VERBS  = {"read", "cat", "head", "tail", "get_file", "read_file", "view"}
+_READ_VERBS = {"read", "cat", "head", "tail", "get_file", "read_file", "view"}
 _WRITE_VERBS = {"write", "create", "append", "write_file", "save", "put"}
-_NET_VERBS   = {"fetch", "curl", "wget", "web_fetch", "http_get", "request"}
+_NET_VERBS = {"fetch", "curl", "wget", "web_fetch", "http_get", "request"}
 _SPAWN_VERBS = {"spawn", "agent", "sub_agent", "subagent", "delegate"}
 
 
@@ -655,6 +692,7 @@ def classify_intent(tool_name: str, args: dict) -> str:
 
 
 # ── Policy evaluation ─────────────────────────────────────────────────────────
+
 
 def evaluate(intent: str, tool_name: str, args: dict, policy: dict) -> tuple[bool, str]:
     """Return (allowed, reason)."""
@@ -688,7 +726,9 @@ def evaluate(intent: str, tool_name: str, args: dict, policy: dict) -> tuple[boo
             return True, "no path specified"
         real = os.path.realpath(path)
         allowed_paths = intent_policy.get("allowed_paths", [])
-        if any(real == p or real.startswith(p.rstrip("/") + "/") for p in allowed_paths):
+        if any(
+            real == p or real.startswith(p.rstrip("/") + "/") for p in allowed_paths
+        ):
             return True, "path is within allowed zone"
         return False, f"write to '{real}' is outside allowed paths"
 
@@ -696,6 +736,7 @@ def evaluate(intent: str, tool_name: str, args: dict, policy: dict) -> tuple[boo
 
 
 # ── Audit log ─────────────────────────────────────────────────────────────────
+
 
 def write_audit(entry: dict) -> None:
     try:
@@ -721,6 +762,7 @@ _decision_counts = {
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     load_state()
@@ -736,8 +778,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3001", "http://localhost:3000",
-                   "http://127.0.0.1:3001", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3001",
+        "http://localhost:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:3000",
+    ],
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
@@ -786,12 +832,17 @@ class ApproveResponse(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "strict_mode": STRICT_MODE,
-            "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {
+        "status": "ok",
+        "strict_mode": STRICT_MODE,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @app.post("/verify", response_model=VerifyResponse)
-async def verify(req: VerifyRequest, request: Request, api_key: str = Depends(verify_api_key)):
+async def verify(
+    req: VerifyRequest, request: Request, api_key: str = Depends(verify_api_key)
+):
     policy = load_policy()
     decision_id = f"{int(time.time() * 1000)}-{secrets.token_hex(8)}"
     now = time.time()
@@ -819,9 +870,13 @@ async def verify(req: VerifyRequest, request: Request, api_key: str = Depends(ve
             write_audit(entry)
             if STRICT_MODE:
                 raise HTTPException(status_code=429, detail=cb_reason)
-            return VerifyResponse(allowed=False, reason=cb_reason,
-                                  intent="unknown", decision_id=decision_id,
-                                  decision="deny")
+            return VerifyResponse(
+                allowed=False,
+                reason=cb_reason,
+                intent="unknown",
+                decision_id=decision_id,
+                decision="deny",
+            )
 
     # 2) Legacy per-minute rate limit — preserved verbatim.
     if not check_rate_limit(policy, req.session_id):
@@ -841,9 +896,13 @@ async def verify(req: VerifyRequest, request: Request, api_key: str = Depends(ve
         write_audit(entry)
         if STRICT_MODE:
             raise HTTPException(status_code=429, detail="Rate limit exceeded")
-        return VerifyResponse(allowed=False, reason="rate limit exceeded",
-                              intent="unknown", decision_id=decision_id,
-                              decision="deny")
+        return VerifyResponse(
+            allowed=False,
+            reason="rate limit exceeded",
+            intent="unknown",
+            decision_id=decision_id,
+            decision="deny",
+        )
 
     intent = classify_intent(req.tool_name, req.args)
 
@@ -857,15 +916,15 @@ async def verify(req: VerifyRequest, request: Request, api_key: str = Depends(ve
     grant_used: Optional[dict[str, Any]] = None
     if allowed and not warming:
         w_decision, w_reason = check_windowed_limits(
-            policy, req.session_id, intent, now)
+            policy, req.session_id, intent, now
+        )
         if w_decision != "allow":
             # The window is exhausted. Before escalating again, check for a
             # one-shot bypass grant minted by a prior /approve for THIS exact
             # {session, tool, intent, args}. If present, consume it (strictly
             # one-shot) and allow this single retry past the window. A second
             # retry finds no grant and re-escalates — no broad cap lift.
-            grant_used = consume_grant(
-                req.session_id, req.tool_name, intent, req.args)
+            grant_used = consume_grant(req.session_id, req.tool_name, intent, req.args)
         if grant_used is not None:
             allowed = True
             decision = "allow"
@@ -928,7 +987,7 @@ async def verify(req: VerifyRequest, request: Request, api_key: str = Depends(ve
         "client": client_host,
     }
     if approval_token:
-        entry["approval_token"] = approval_token
+        entry["approval_token"] = "[REDACTED]"
     if grant_used is not None:
         # Mark the approved allow so the audit trail shows it bypassed an
         # exhausted window via a consumed one-shot grant.
@@ -937,8 +996,15 @@ async def verify(req: VerifyRequest, request: Request, api_key: str = Depends(ve
         entry["approver"] = grant_used.get("approver")
     write_audit(entry)
     save_state()
-    logger.info("%s tool=%s intent=%s decision=%s allowed=%s reason=%s",
-                decision_id, req.tool_name, intent, decision, allowed, reason)
+    logger.info(
+        "%s tool=%s intent=%s decision=%s allowed=%s reason=%s",
+        decision_id,
+        req.tool_name,
+        intent,
+        decision,
+        allowed,
+        reason,
+    )
 
     # STRICT_MODE: hard policy denials still raise 403. require_approval is an
     # advisory escalation and intentionally returns 200 so the agent framework
@@ -946,14 +1012,20 @@ async def verify(req: VerifyRequest, request: Request, api_key: str = Depends(ve
     if decision == "deny" and not allowed and STRICT_MODE:
         raise HTTPException(status_code=403, detail=reason)
 
-    return VerifyResponse(allowed=allowed, reason=reason,
-                          intent=intent, decision_id=decision_id,
-                          decision=decision, approval_token=approval_token)
+    return VerifyResponse(
+        allowed=allowed,
+        reason=reason,
+        intent=intent,
+        decision_id=decision_id,
+        decision=decision,
+        approval_token=approval_token,
+    )
 
 
 @app.post("/approve", response_model=ApproveResponse)
-async def approve(req: ApproveRequest, request: Request,
-                  api_key: str = Depends(verify_api_key)):
+async def approve(
+    req: ApproveRequest, request: Request, api_key: str = Depends(verify_api_key)
+):
     """Grant a pending human-approval decision issued by /verify.
 
     Consumes the one-shot approval token AND mints a one-shot windowed-limit
@@ -968,8 +1040,8 @@ async def approve(req: ApproveRequest, request: Request,
         rec = _state["approvals"].pop(req.approval_token, None)
         if rec is None:
             return ApproveResponse(
-                granted=False,
-                reason="unknown or already-consumed approval token")
+                granted=False, reason="unknown or already-consumed approval token"
+            )
         # Persist a one-shot bypass tightly keyed to the approved action.
         gkey = _grant_key(
             rec.get("session"),
@@ -1002,13 +1074,18 @@ async def approve(req: ApproveRequest, request: Request,
     }
     write_audit(entry)
     save_state()
-    logger.info("approval granted token=%s tool=%s approver=%s "
-                "(one-shot grant minted)",
-                req.approval_token[:12] + "...", rec.get("tool_name"),
-                req.approver)
-    return ApproveResponse(granted=True, reason="approval granted",
-                           tool_name=rec.get("tool_name"),
-                           intent=rec.get("intent"))
+    logger.info(
+        "approval granted token=%s tool=%s approver=%s (one-shot grant minted)",
+        req.approval_token[:12] + "...",
+        rec.get("tool_name"),
+        req.approver,
+    )
+    return ApproveResponse(
+        granted=True,
+        reason="approval granted",
+        tool_name=rec.get("tool_name"),
+        intent=rec.get("intent"),
+    )
 
 
 @app.get("/audit")
@@ -1031,7 +1108,7 @@ async def audit(last_n: int = 50, api_key: str = Depends(verify_api_key)):
                 chunk_start = max(0, position - chunk_size)
                 f.seek(chunk_start)
                 chunk = f.read(position - chunk_start)
-                lines_found += chunk.count(b'\n')
+                lines_found += chunk.count(b"\n")
                 position = chunk_start
             f.seek(position)
             for line in f:
@@ -1039,7 +1116,13 @@ async def audit(last_n: int = 50, api_key: str = Depends(verify_api_key)):
                 if line.strip():
                     if len(entries) >= last_n:
                         entries.pop(0)
-                    entries.append(json.loads(line))
+                    entries.append(
+                        {
+                            k: v
+                            for k, v in json.loads(line).items()
+                            if k != "approval_token"
+                        }
+                    )
         return {"entries": entries, "total": total_lines}
     except Exception as e:
         return {"entries": [], "error": str(e)}
@@ -1049,12 +1132,14 @@ async def audit(last_n: int = 50, api_key: str = Depends(verify_api_key)):
 async def policy(api_key: str = Depends(verify_api_key)):
     """Return the active policy (args not shown for security)."""
     p = load_policy()
-    return {"version": p.get("version", 1),
-            "intents": list(p.get("intents", {}).keys()),
-            "rate_limit": p.get("rate_limit", {}),
-            "windowed_limits": p.get("windowed_limits", {}),
-            "circuit_breaker": p.get("circuit_breaker", {}),
-            "strict_mode": STRICT_MODE}
+    return {
+        "version": p.get("version", 1),
+        "intents": list(p.get("intents", {}).keys()),
+        "rate_limit": p.get("rate_limit", {}),
+        "windowed_limits": p.get("windowed_limits", {}),
+        "circuit_breaker": p.get("circuit_breaker", {}),
+        "strict_mode": STRICT_MODE,
+    }
 
 
 @app.get("/metrics")
@@ -1062,17 +1147,18 @@ async def metrics(api_key: str = Depends(verify_api_key)):
     with _STATE_LOCK:
         pending = len(_state["approvals"])
         pending_grants = len(_state.get("grants", {}))
-        breaker_open = bool(
-            _state["breaker"].get("tripped_until", 0.0) > time.time()
-        )
-    return {"decisions": _decision_counts,
-            "total": sum(_decision_counts.values()),
-            "pending_approvals": pending,
-            "pending_grants": pending_grants,
-            "circuit_breaker_open": breaker_open}
+        breaker_open = bool(_state["breaker"].get("tripped_until", 0.0) > time.time())
+    return {
+        "decisions": _decision_counts,
+        "total": sum(_decision_counts.values()),
+        "pending_approvals": pending,
+        "pending_grants": pending_grants,
+        "circuit_breaker_open": breaker_open,
+    }
 
 
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.environ.get("APE_PORT", "7890"))
     uvicorn.run(app, host="0.0.0.0", port=port)
