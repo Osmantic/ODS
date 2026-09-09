@@ -46,7 +46,7 @@ Useful starting files:
 - `extensions/templates/compose-template.yaml`
 - `extensions/templates/compose-gpu-swap.yaml`
 - `extensions/templates/compose-gpu-only.yaml`
-- `extensions/templates/dashboard-plugin-template.js`
+- `extensions/templates/dashboard-plugin-template.jsx`
 
 The core contract is simple: a service manifest describes what the service is,
 and a compose fragment describes how it runs. The registry, CLI, dashboard,
