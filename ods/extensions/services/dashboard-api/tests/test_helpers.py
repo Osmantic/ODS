@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestStringWrapTextSafe:
+    def test_valid_wrapping(self):
+        from helpers import string_wrap_text_safe
+        sample = "Python line wrapping utility function for text formatting."
+        assert string_wrap_text_safe(sample, width=20).startswith("Python line wrapping")
+
+    def test_invalid_and_bounds(self):
+        from helpers import string_wrap_text_safe
+        assert string_wrap_text_safe(None) == ""
+        assert string_wrap_text_safe(12345, default="err") == "err"
+        assert string_wrap_text_safe("hello world", width=-5).startswith("hello")
+
