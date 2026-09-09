@@ -8,7 +8,6 @@ import os
 import re
 import subprocess
 import tempfile
-from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -20,8 +19,6 @@ app = FastAPI(title="Open Interpreter API")
 LLM_API_URL = os.environ.get("LLM_API_URL", "http://localhost:8000")
 API_KEY = os.environ.get("OPEN_INTERPRETER_API_KEY", "")
 AUTO_RUN = os.environ.get("OPEN_INTERPRETER_AUTO_RUN", "false").lower() == "true"
-DATA_DIR = Path("/app/data")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_MESSAGE_LENGTH = 32000
 
