@@ -1607,3 +1607,13 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestListZipFillSafe:
+    def test_valid_zip(self):
+        from helpers import list_zip_fill_safe
+        assert list_zip_fill_safe([1, 2], ["a"], fillvalue="-") == [[1, "a"], [2, "-"]]
+
+    def test_invalid_and_bounds(self):
+        from helpers import list_zip_fill_safe
+        assert list_zip_fill_safe(None) == []
