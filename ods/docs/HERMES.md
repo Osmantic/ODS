@@ -1,6 +1,6 @@
 # Hermes Agent
 
-ODS ships **Hermes Agent** — the [Nous Research open-source agent](https://github.com/nousresearch/hermes-agent) packaged as a ODS service. Hermes is a self-improving generalist agent with persistent memory, autonomous skill creation, and 70+ tools built in.
+Portal is powered by **Hermes Agent** — the [Nous Research open-source agent](https://github.com/nousresearch/hermes-agent), the full upstream Hermes AIAgent, packaged as a Portal service. Hermes is a self-improving generalist agent with persistent memory, autonomous skill creation, and 70+ tools built in.
 
 When enabled, Hermes runs in a container alongside the rest of the stack, serves its own browser dashboard on internal port 9119, and talks to the selected model provider through an OpenAI-compatible API. End users should enter through `hermes-proxy` on port 9120; direct host access to 9119 is intentionally not bound in the default stack.
 
@@ -110,7 +110,7 @@ The first start takes a minute — image is ~3GB, Hermes runs its `skills_sync.p
 - **Compression:** enabled at `compression.threshold: 0.50` with `target_ratio: 0.20` so long sessions compact before the backend hard-rejects an over-window request.
 - **Model name:** `qwen3.5-9b` (ODS's default LLM — to switch models, edit `model.default` in `data/hermes/config.yaml` after first start; there is no env-var hook for this)
 - **Persona (`SOUL.md`):** a generalist ODS-aware persona (see `extensions/services/hermes/SOUL.md.template`)
-- **Messaging gateways DISABLED:** Telegram / Discord / Slack / WhatsApp / Signal / Teams / Google Chat / Matrix / Mattermost / SMS — all off by default. ODS owner-card users reach Hermes through the ODS Talk mobile portal, while advanced users can still open the full Hermes web dashboard. WhatsApp is pre-seeded as disabled with `bridge_port: 3010` so upstream's default `3000` bridge does not collide with Open WebUI when users intentionally enable it. To enable any platform, see [upstream messaging docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/).
+- **Messaging gateways installed but unconfigured:** Telegram / Discord / Slack / WhatsApp / Signal / Teams / Google Chat / Matrix / Mattermost / SMS — adapter code is present but requires credentials to activate. Portal users reach Hermes through the ODS Talk portal and the web dashboard. WhatsApp is pre-seeded as disabled with `bridge_port: 3010` so upstream's default `3000` bridge does not collide with Open WebUI when users intentionally enable it. To enable any platform, see [upstream messaging docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/).
 - **Network exposure:** Hermes is **not directly LAN-reachable**. Once the `hermes-proxy` extension is enabled (see [docs/HERMES-SSO.md](HERMES-SSO.md)), the proxy at port 9120 fronts Hermes and gates access on ODS's magic-link cookie. Hermes's own port 9119 is internal-only. To restore direct access (e.g. for testing without auth), re-add a `ports:` binding to `extensions/services/hermes/compose.yaml`.
 - **Resource caps:** 4 CPUs / 4GB RAM hard limit, 0.5 CPU / 1GB reservation. Hermes's playwright + ML deps can be hungry; adjust in `extensions/services/hermes/compose.yaml` if needed.
 

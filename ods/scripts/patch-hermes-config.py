@@ -81,7 +81,7 @@ def _ensure_model(
     base_url: str | None,
     context_length: int | None,
     api_key: str | None = None,
-    max_tokens: int = 1024,
+    max_tokens: int | None = None,
 ) -> None:
     block = _top_level_block(lines, "model")
     if block is None:
@@ -108,11 +108,24 @@ def _ensure_model(
         block = _set_key(lines, block, "api_key", f'"{api_key}"', 2)
     if context_length:
         block = _set_key(lines, block, "context_length", str(context_length), 2)
-    # Existing operator values win, but migrate configs that predate ODS's
-    # bounded-output default. An unset Hermes cap lets a repetitive local
-    # model monopolize the only inference slot until an outer timeout fires.
+    # Remove ODS's legacy max_tokens: 1024 cap; preserve operator values.
+    _remove_legacy_max_tokens(lines, block)
     if max_tokens and not _has_key(lines, block, "max_tokens", 2):
         _set_key(lines, block, "max_tokens", str(max_tokens), 2)
+
+
+def _remove_legacy_max_tokens(lines: list[str], block: tuple[int, int]) -> None:
+    """Remove the exact ODS legacy max_tokens: 1024 value.
+
+    A different explicit operator value (e.g., 2048) is preserved.
+    If max_tokens is absent, this is a no-op.
+    """
+    prefix = "  "
+    for idx in range(block[0] + 1, block[1]):
+        if re.match(rf"^{re.escape(prefix)}max_tokens:\s*1024\s*$", lines[idx]):
+            del lines[idx]
+            block = (block[0], block[1] - 1)
+            return
 
 
 def _ensure_provider_timeout(lines: list[str], provider: str = "custom", timeout_seconds: int = 180) -> None:
@@ -273,7 +286,7 @@ def patch_config(
     context_length: int | None,
     api_key: str | None = None,
     request_timeout_seconds: int = 180,
-    max_tokens: int = 1024,
+    max_tokens: int | None = None,
 ) -> bool:
     original = path.read_text(encoding="utf-8")
     trailing_newline = original.endswith("\n")
@@ -302,7 +315,7 @@ def main() -> int:
     parser.add_argument("--api-key", help="Bearer token Hermes uses to call the LLM (needed when routing through litellm)")
     parser.add_argument("--context-length", type=int)
     parser.add_argument("--request-timeout-seconds", type=int, default=180)
-    parser.add_argument("--max-tokens", type=int, default=1024)
+    parser.add_argument("--max-tokens", type=int, default=None)
     args = parser.parse_args()
 
     if not args.path.exists():

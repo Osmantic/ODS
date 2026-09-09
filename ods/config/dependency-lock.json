@@ -119,7 +119,7 @@
       "id": "hermes.agent",
       "type": "image",
       "path": "extensions/services/hermes/compose.yaml",
-      "value": "nousresearch/hermes-agent:v2026.6.5"
+      "value": "docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7"
     },
     {
       "id": "hermes-proxy.caddy",
@@ -337,8 +337,8 @@
     },
     {
       "path": "extensions/services/hermes/compose.yaml",
-      "value": "${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.6.5}",
-      "default": "nousresearch/hermes-agent:v2026.6.5",
+      "value": "${HERMES_AGENT_IMAGE:-docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7}",
+      "default": "docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7",
       "reason": "Hermes Agent image can be overridden for upstream registry hotfixes, but the shipped default is locked."
     },
     {

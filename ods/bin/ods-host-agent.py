@@ -10528,9 +10528,13 @@ def _patch_hermes_config_text(
     model_name: str,
     base_url: str | None = None,
     context_length: int | None = None,
-    max_tokens: int = 1024,
+    max_tokens: int | None = None,
 ) -> tuple[str, bool]:
-    """Return Hermes YAML with its routing fields updated line-for-line."""
+    """Return Hermes YAML with its routing fields updated line-for-line.
+
+    ODS no longer injects a default max_tokens cap. Legacy max_tokens: 1024
+    is removed on upgrade; operator values (e.g. 2048) are preserved.
+    """
     lines = text.splitlines()
     in_model_block = False
     model_block_found = False
@@ -10589,8 +10593,10 @@ def _patch_hermes_config_text(
             changed = changed or new_line != line
             continue
         if in_model_block and re.match(r"^\s+max_tokens:\s*", line):
-            # Preserve an operator's explicit output cap. ODS only supplies
-            # its bounded default when the field is absent.
+            # Remove legacy ODS max_tokens: 1024; preserve operator values.
+            if re.match(r"^\s+max_tokens:\s*1024\s*$", line):
+                changed = True
+                continue
             model_fields.add("max_tokens")
             model_indent = line[:len(line) - len(line.lstrip())]
             new_lines.append(line)

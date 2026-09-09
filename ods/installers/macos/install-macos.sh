@@ -310,7 +310,7 @@ _macos_patch_hermes_persisted_config() {
         project_image="$(basename "$INSTALL_DIR" | tr '[:upper:]' '[:lower:]')-dashboard-api:latest"
         hermes_image="$(docker inspect --format '{{.Config.Image}}' ods-hermes 2>/dev/null || true)"
         [[ -n "$hermes_image" ]] || hermes_image="$(read_env_value "${INSTALL_DIR}/.env" "HERMES_AGENT_IMAGE")"
-        [[ -n "$hermes_image" ]] || hermes_image="nousresearch/hermes-agent:v2026.6.5"
+        [[ -n "$hermes_image" ]] || hermes_image="docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7"
 
         # The Hermes runtime image is not guaranteed to include PyYAML. Probe
         # candidates instead of treating a cached image as a usable migrator.

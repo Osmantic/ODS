@@ -17,7 +17,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN_KEY = "HERMES_DASHBOARD_SESSION_TOKEN"
-HERMES_IMAGE = "nousresearch/hermes-agent:v2026.6.5"
+HERMES_IMAGE = "docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7"
 
 
 def read_env(path: Path) -> dict[str, str]:

@@ -5,7 +5,7 @@ services:
     # Version-pinned upstream image. Override HERMES_AGENT_IMAGE only for
     # deliberate hotfix testing; bumping the default is a review-and-smoke-test
     # pass — see docs/HERMES.md "How to bump the image pin."
-    image: ${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.6.5}
+    image: ${HERMES_AGENT_IMAGE:-docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7}
     container_name: ods-hermes
     restart: unless-stopped
     # NOT host networking — we use bridge so the container can resolve
@@ -27,10 +27,6 @@ services:
       - HERMES_API_TIMEOUT=1800
       - HERMES_API_CALL_STALE_TIMEOUT=900
       - HERMES_STREAM_STALE_TIMEOUT=900
-      # Default terminal-tool timeout. We disable the `terminal` toolset
-      # entirely via cli-config.yaml's `agent.disabled_toolsets`, but this is
-      # belt-and-suspenders if a future config refactor re-enables it.
-      - TERMINAL_TIMEOUT=30
       # Locale + timezone match the rest of the stack.
       - TZ=${TIMEZONE:-UTC}
       - HERMES_LANGUAGE=${HERMES_LANGUAGE:-en}

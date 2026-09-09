@@ -1,4 +1,4 @@
-# Hermes Agent configuration — ODS defaults.
+# Hermes Agent configuration — Portal defaults.
 #
 # This file is mounted into the upstream image at
 # /opt/hermes/cli-config.yaml.example, which Hermes's entrypoint copies into
@@ -48,14 +48,6 @@ model:
   # exceeded / max compression attempts reached" loops.
   context_length: 131072
 
-  # Bound each model turn even when a local model ignores the concise-response
-  # persona or falls into a repetition loop. Without an explicit cap Hermes
-  # leaves max_tokens unset; a runaway response can then occupy the only local
-  # inference slot indefinitely and leave ODS Talk stuck on "Responding".
-  # Hermes may take multiple capped turns for tool workflows, so this limits
-  # pathological output without limiting the overall agent task.
-  max_tokens: 1024
-
 # =============================================================================
 # Provider overrides — local inference needs a generous first-token budget
 # =============================================================================
@@ -84,47 +76,12 @@ auxiliary:
     context_length: 131072
 
 # =============================================================================
-# Agent — tool scoping for the consumer-facing ODS Talk surface
-# =============================================================================
-# Upstream PR #18197 (merged) added `agent.disabled_toolsets` as a strict
-# subtraction applied after every other toolset-resolution path. Removing a
-# toolset here removes its tools from the schema the model sees — which is
-# the only reliable fix for wrong-tool selection (upstream RFC #26524 reports
-# Qwen variants jumping 20%->100% reliability when offending tools are
-# removed from the schema, vs ignored prompt-only "use X never Y" guidance).
-#
-# We disable:
-#   * terminal — the model kept reaching for it on weather/news queries and
-#     hanging for 5 min on dead curl commands instead of using web_search.
-#   * browser  — full headless-browser toolset; ODS Talk is mobile chat,
-#     not interactive browsing, so we never want browser_console / navigate.
-agent:
-  disabled_toolsets:
-    - terminal
-    - browser
-
-# =============================================================================
-# Terminal backend — where tool calls execute (when terminal is enabled)
-# =============================================================================
-# Hermes can run tools in a few different sandboxes. For ODS we keep
-# it local-to-the-container: no SSH out, no Modal/Daytona, no Docker-in-Docker.
-# The container IS the sandbox.
-#
-# `timeout` caps per-command duration (default upstream: 180s). We set 30s
-# so even if `terminal` gets re-enabled via env override or a future toolset
-# change, a wedged command can't hang the chat for 5 minutes. Pair with the
-# env var TERMINAL_TIMEOUT=30 in compose.yaml as the same fallback default.
-terminal:
-  backend: "local"
-  timeout: 30
-
-# =============================================================================
-# Messaging gateways — none enabled by default in ODS
+# Messaging gateways — installed but unconfigured without credentials
 # =============================================================================
 # Hermes ships with Telegram / Discord / Slack / WhatsApp / Signal / email /
-# Teams / Google Chat / Matrix / Mattermost / SMS gateway adapters. ODS
-# Server users reach Hermes via the web dashboard, not platform bots — so none
-# of these are enabled here.
+# Teams / Google Chat / Matrix / Mattermost / SMS gateway adapters. These are
+# installed but remain unconfigured without credentials. ODS Portal users
+# reach Hermes via the web dashboard and ODS Talk by default.
 #
 # IMPORTANT: there is NO top-level `gateway.enabled: false` switch in
 # upstream's config schema. Earlier drafts of this template had one; it

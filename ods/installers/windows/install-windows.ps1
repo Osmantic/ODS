@@ -273,13 +273,11 @@ function Set-ODSWindowsHermesRuntimeModel {
     $hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
     $hermesRequestTimeout = $(if ($cloudMode -and -not $switchboardEnabled) { 180 } else { 900 })
     $templateUpdated = Update-HermesConfigFile -Path $hermesTemplate -Model $ModelId -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) `
-        -RequestTimeoutSeconds $hermesRequestTimeout `
-        -LemonadeCompact:($gpuInfo.Backend -eq "amd")
+        -RequestTimeoutSeconds $hermesRequestTimeout
     $liveUpdated = Update-HermesConfigFile `
         -Path $hermesLive -Model $ModelId -BaseUrl $hermesBaseUrl `
         -ContextLength ([int]$tierConfig.MaxContext) `
-        -RequestTimeoutSeconds $hermesRequestTimeout `
-        -LemonadeCompact:($gpuInfo.Backend -eq "amd")
+        -RequestTimeoutSeconds $hermesRequestTimeout
     return ($templateUpdated -and $liveUpdated)
 }
 
@@ -1692,7 +1690,7 @@ litellm_settings:
             $hasHermesImageOverride = -not [string]::IsNullOrWhiteSpace($envHermesImage)
             $envHermesFallbackImage = Get-ODSEnvValueFromFile -Path $_envCheck -Key "HERMES_AGENT_IMAGE_FALLBACK"
             if ([string]::IsNullOrWhiteSpace($envHermesImage)) {
-                $envHermesImage = "nousresearch/hermes-agent:v2026.6.5"
+                $envHermesImage = "docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7"
             }
 
             Write-AI "Validating Hermes Agent image tag before startup..."

@@ -388,8 +388,7 @@ function Update-HermesConfigFile {
         [string]$BaseUrl,
         [int]$ContextLength,
         [int]$RequestTimeoutSeconds = 180,
-        [int]$MaxTokens = 1024,
-        [switch]$LemonadeCompact
+        [int]$MaxTokens = -1  # -1 = do not inject max_tokens; operator values only
     )
 
     if (-not (Test-Path $Path)) { return $false }
@@ -407,9 +406,15 @@ function Update-HermesConfigFile {
     $content = $content -replace '(?m)^  base_url: ".*"\r?$', "  base_url: `"$baseUrlReplacement`""
     $content = $content -replace '(?m)^  context_length: .+\r?$', "  context_length: $ContextLength"
     $content = $content -replace '(?m)^    context_length: .+\r?$', "    context_length: $ContextLength"
-    if ($MaxTokens -lt 1) { $MaxTokens = 1024 }
-    if ($content -notmatch '(?m)^  max_tokens:\s*\d+\s*$') {
-        $content = $content -replace '(?m)^model:\s*$', "model:`n  max_tokens: $MaxTokens"
+    # Remove legacy ODS max_tokens: 1024 cap; preserve operator values.
+    if ($content -match '(?m)^  max_tokens:\s*1024\s*$') {
+        $content = $content -replace '(?m)^  max_tokens:\s*1024\s*$', ''
+    }
+    # Only inject max_tokens when explicitly requested (positive value).
+    if ($MaxTokens -gt 0) {
+        if ($content -notmatch '(?m)^  max_tokens:\s*\d+\s*$') {
+            $content = $content -replace '(?m)^model:\s*$', "model:`n  max_tokens: $MaxTokens"
+        }
     }
     if ($RequestTimeoutSeconds -lt 1) { $RequestTimeoutSeconds = 180 }
 
@@ -460,41 +465,6 @@ function Update-HermesConfigFile {
         }
         if ($content -notmatch '(?m)^  protect_last_n:') {
             $content = $content -replace '(?m)^compression:\s*$', "compression:`n  protect_last_n: 20"
-        }
-    }
-
-    if ($LemonadeCompact) {
-        $compactAgent = @"
-agent:
-  disabled_toolsets:
-    - terminal
-    - browser
-    - vision
-    - video
-    - image_gen
-    - video_gen
-    - x_search
-    - moa
-    - tts
-    - skills
-    - todo
-    - memory
-    - session_search
-    - clarify
-    - delegation
-    - cronjob
-    - messaging
-    - homeassistant
-    - spotify
-    - yuanbao
-    - computer_use
-"@
-        if ($content -match '(?ms)^agent:\r?\n.*?(?=^terminal:|^platforms:|^compression:|\z)') {
-            $content = [regex]::Replace($content, '(?ms)^agent:\r?\n.*?(?=^terminal:|^platforms:|^compression:|\z)', "$compactAgent`n")
-        } elseif ($content -match '(?m)^terminal:\s*$') {
-            $content = $content -replace '(?m)^terminal:\s*$', "$compactAgent`nterminal:"
-        } else {
-            $content += "`n$compactAgent`n"
         }
     }
 
@@ -621,8 +591,8 @@ if ($enableHermes) {
         Copy-Item -Path $_hermesTemplate -Destination $_hermesLive -Force
     }
     $_hermesRequestTimeout = $(if ($cloudMode -and $_switchboardMode -ne "enabled") { 180 } else { 900 })
-    $_patchedHermesTemplate = Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
-    $_patchedHermesLive = Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
+    $_patchedHermesTemplate = Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout
+    $_patchedHermesLive = Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout
     if (-not ($_patchedHermesTemplate -and $_patchedHermesLive)) {
         Write-AIError "Failed to patch Hermes config for Windows runtime (model=$_hermesModel, base_url=$_hermesBaseUrl)"
         throw "ODS_INSTALL_ABORTED"

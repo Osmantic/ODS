@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = "qwen3.5-9b"
 DEFAULT_GGUF = "Qwen3.5-9B-Q4_K_M.gguf"
 DEFAULT_CONTEXT = 131072
-DEFAULT_HERMES_MAX_TOKENS = 1024
+DEFAULT_HERMES_MAX_TOKENS = None  # ODS no longer caps Hermes output; operator values still win
 DEFAULT_LITELLM_KEY = "sk-lemonade"
 NO_KEY = "no-key"
 PUBLIC_MODEL_ALIAS = "ods/current"
@@ -388,7 +388,6 @@ def render_hermes(inputs: RenderInputs) -> RenderedFile:
   provider: "custom"
   base_url: "{base_url}"
   context_length: {inputs.context_length}
-  max_tokens: {DEFAULT_HERMES_MAX_TOKENS}
 
 auxiliary:
   compression:

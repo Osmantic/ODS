@@ -81,8 +81,8 @@ else
     fail "cloud health path must skip local llama-server"
 fi
 
-if grep -Fq 'image: ${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.6.5}' extensions/services/hermes/compose.yaml \
-    && grep -Fq '${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.6.5}|HERMES' installers/phases/08-images.sh \
+if grep -Fq 'image: ${HERMES_AGENT_IMAGE:-docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7}' extensions/services/hermes/compose.yaml \
+    && grep -Fq '${HERMES_AGENT_IMAGE:-docker.io/nousresearch/hermes-agent@sha256:63bfb6d732f49a55d453e801057273785cc61e0f6ee43db3fa2f2a79846301b7}|HERMES' installers/phases/08-images.sh \
     && grep -Fq 'HERMES_AGENT_IMAGE_FALLBACK' installers/phases/08-images.sh \
     && ! grep -R -q 'nousresearch/hermes-agent:sha-' extensions/services/hermes installers/phases config/dependency-lock.json; then
     pass "Hermes image default is resolvable and overrideable for cloud installs"
