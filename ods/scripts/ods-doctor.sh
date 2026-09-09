@@ -260,26 +260,36 @@ _doctor_check_llm_backend() {
                 probe_url="http://127.0.0.1:${port}${path_part}"
             fi
 
-            # Extract host to check if it's host-probeable (e.g. contains '.' or is 'localhost')
+            # Extract host to check if it's host-probeable (e.g. contains '.' but not localhost)
             local host
             host=$(echo "$probe_url" | grep -oE '://[^/]+' | cut -d/ -f3 | cut -d: -f1)
 
             local is_probeable=false
-            if [[ "$host" == "localhost" ]] || [[ "$host" == *"."* ]]; then
+            if [[ "$host" == *"."* ]]; then
                 is_probeable=true
             fi
 
-            if [ "$is_probeable" = true ]; then
-                _doctor_check_external_llm "$probe_url" "${ext_provider:-openai}" "$ext_model"
-            else
-                LLM_URL="$cloud_url"
-                LLM_PROVIDER="cloud"
-                LLM_STATUS="ok"
-                LLM_MODEL=""
-                LLM_RECOVERY=""
-                log_ok "LLM backend: cloud (external) — container-internal endpoint bypassed host probe"
-                log_ok "  Endpoint : $cloud_url"
-            fi
+                 if [ "$is_probeable" = true ]; then
+                     # Check the URL with a 2s timeout
+                     if command -v curl >/dev/null 2>&1 && curl -sf --max-time 2 "$probe_url" > /dev/null 2>&1; then
+                         LLM_STATUS="ok"
+                         log_ok "LLM backend: cloud (external) — responding"
+                         log_ok "  Endpoint : $probe_url"
+                     else
+                         LLM_STATUS="fail"
+                         log_fail "LLM backend: cloud (external) — not responding (2s timeout)"
+                         log_info "  Endpoint : $probe_url"
+                         LLM_RECOVERY="check network connectivity and service availability"
+                     fi
+                 else
+                     LLM_URL="$cloud_url"
+                     LLM_PROVIDER="cloud"
+                     LLM_STATUS="ok"
+                     LLM_MODEL=""
+                     LLM_RECOVERY=""
+                     log_ok "LLM backend: cloud (external) — container-internal endpoint bypassed host probe"
+                     log_ok "  Endpoint : $cloud_url"
+                 fi
         else
             # Leave backend check provider-neutral when no probe target exists
             LLM_URL=""
