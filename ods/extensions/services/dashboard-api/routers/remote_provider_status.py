@@ -179,6 +179,8 @@ def _read_route_state() -> dict[str, Any]:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return _state_response(exists=False, valid=True)
+    except UnicodeError:
+        return _state_response(exists=True, valid=False, errors=["routing state is not valid UTF-8"])
     except OSError as exc:
         return _state_response(exists=True, valid=False, errors=[f"read failed: {exc}"])
 
@@ -366,6 +368,11 @@ def _read_peer_token() -> str:
             "missing_peer_token",
             "Remote ODS peer token custody is not configured.",
         ) from exc
+    except UnicodeError as exc:
+        raise _peer_model_error(
+            "invalid_peer_token",
+            "Remote ODS peer token custody is invalid.",
+        ) from exc
     except OSError as exc:
         raise _peer_model_error(
             "peer_token_unreadable",
@@ -373,7 +380,7 @@ def _read_peer_token() -> str:
             status_code=503,
         ) from exc
     token = value.strip()
-    if not token or any(ord(char) < 32 or ord(char) == 127 for char in token):
+    if not token or not token.isascii() or any(ord(char) < 32 or ord(char) == 127 for char in token):
         raise _peer_model_error(
             "invalid_peer_token",
             "Remote ODS peer token custody is invalid.",
