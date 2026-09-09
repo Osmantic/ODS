@@ -1607,3 +1607,13 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestNumericSafeLcmBounds:
+    def test_valid_lcm(self):
+        from helpers import numeric_safe_lcm_bounds
+        assert numeric_safe_lcm_bounds(4, 6) == 12
+
+    def test_invalid_and_bounds(self):
+        from helpers import numeric_safe_lcm_bounds
+        assert numeric_safe_lcm_bounds(None, 4) == 1
