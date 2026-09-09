@@ -1146,3 +1146,18 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def numeric_safe_lcm_bounds(a, b, default: int = 1) -> int:
+    """Safely calculate least common multiple of two integer inputs."""
+    if a is None or b is None:
+        return default
+    try:
+        ia = int(a)
+        ib = int(b)
+        return math.lcm(ia, ib)
+    except (ValueError, TypeError, OverflowError, AttributeError):
+        try:
+            return abs(ia * ib) // math.gcd(ia, ib)
+        except Exception:
+            return default
