@@ -57,6 +57,11 @@ const editor = {
 }
 
 const payloadByUrl = (url) => {
+  if (url === '/api/pixel/providers') return { configuration: {
+    schemaVersion: 1, revision: 0, enabled: false, providers: [],
+    roles: { leader: null, backups: [], advisor: null, handoff: null },
+    policy: { allowCloud: false, maxAttempts: 3, deadlineSeconds: 120 },
+  }, runtime: { status: 'not-applied' } }
   if (url === '/api/settings/summary') return summary
   if (url === '/api/storage') return storage
   if (url === '/api/settings/env') return editor
@@ -87,6 +92,20 @@ const renderSettings = (override = null) => {
 }
 
 describe('Settings', () => {
+  it('preserves unsaved provider edits during a system refresh', async () => {
+    const { fetchMock } = renderSettings()
+    await screen.findByText('No providers configured.')
+    fireEvent.change(screen.getByLabelText('New provider ID'), { target: { value: 'unsaved' } })
+    fireEvent.change(screen.getByLabelText('New provider label'), { target: { value: 'Unsaved provider' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add provider', exact: true }))
+    fireEvent.change(screen.getByLabelText('Model', { exact: true }), { target: { value: 'keep-this-model' } })
+    const header = screen.getByRole('heading', { name: 'Settings', exact: true }).closest('header')
+    fireEvent.click(within(header).getByRole('button', { name: 'Refresh', exact: true }))
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => url === '/api/settings/summary')).toHaveLength(2))
+    expect(screen.getByLabelText('Model', { exact: true })).toHaveValue('keep-this-model')
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/pixel/providers')).toHaveLength(1)
+  })
+
   afterEach(() => {
     vi.restoreAllMocks()
     globalThis.localStorage.removeItem('ods-theme')

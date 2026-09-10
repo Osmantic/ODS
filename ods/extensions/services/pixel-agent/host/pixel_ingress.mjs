@@ -1261,7 +1261,10 @@ export async function writeStatus(
       runtime = null;
     }
   }
-  if (runtime === null && docker === "ok") {
+  // An explicit null means the secured config has no representable binding
+  // (for example a managed or custom remote provider). It is not permission
+  // to label that provider with an unrelated local llama model.
+  if (configuredRuntime === undefined && runtime === null && docker === "ok") {
     try {
       runtime = await dockerRuntime(deps);
     } catch {

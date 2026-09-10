@@ -80,6 +80,12 @@
       "auth_required": false,
       "notes": "Internal-only stable model route for ODS services; it must not publish a host port."
     },
+    "pixel-inference": {
+      "risk": "scoped-model-inference-api",
+      "lan_exposure": "none",
+      "auth_required": true,
+      "notes": "Optional loopback-only inference sharing; per-device expiring revocable keys. Remote clients require an explicitly trusted tunnel or separately secured HTTPS transport. Never grants agent or administration access."
+    },
     "n8n": {
       "risk": "workflow-automation-ui",
       "lan_exposure": "operator-controlled",

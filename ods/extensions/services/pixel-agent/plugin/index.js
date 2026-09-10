@@ -44,6 +44,7 @@ import {
 import { createEvidenceArtifactWriter } from "./evidence-artifact.mjs";
 import { createWorkspacePreviewTool } from "./workspace-preview.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
+import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import { createOpenClawCodingTools, resolveSandboxContext, OPENCLAW_VERSION } from "openclaw/plugin-sdk/agent-harness";
 
 const AGENT_ID = process.env.PIXEL_AGENT_ID ?? "pixel";
@@ -52,6 +53,7 @@ const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}
 const toolLoopGuardRegistry = createToolLoopGuardRegistry();
 let execCancellationControl;
 let accessRuntime;
+const managedRuntimeRegistry = createManagedRuntimeRegistry();
 const evidenceArtifactWriter = createEvidenceArtifactWriter();
 
 // Restrict tool registration to the Pixel agent. Tools are only offered to the
@@ -203,9 +205,11 @@ export default definePluginEntry({
       executionHost: executionHostForAgent(api.config, AGENT_ID),
     });
     accessRuntime ??= createAccessRuntime({config: () => api.config,
+      settingsConfig: typeof api.runtime?.config?.current === 'function' ? () => api.runtime.config.current() : undefined,
       createTools: createOpenClawCodingTools, resolveSandbox: resolveSandboxContext,
       execControl: () => execCancellationControl, runtimeVersion: OPENCLAW_VERSION,
       hooksAllowed: api.config?.plugins?.entries?.["pixel-ods"]?.hooks?.allowConversationAccess === true});
+    const managedRuntime = managedRuntimeRegistry.register(api, accessRuntime);
     const statusFile = statusFileFromEnv();
     const configuredContextWindow = api.pluginConfig?.modelContextWindow;
     const configuredLeanPrompt = api.pluginConfig?.leanPrompt === true;
@@ -243,8 +247,10 @@ export default definePluginEntry({
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
     );
-    api.on("before_agent_run", (event, context) => accessRuntime.admit(undefined, context));
-    api.on("agent_end", (event, context) => accessRuntime.finish({runId: event.runId}, context));
+    if (!managedRuntime) {
+      api.on("before_agent_run", (event, context) => accessRuntime.admit(undefined, context));
+      api.on("agent_end", (event, context) => accessRuntime.finish({runId: event.runId}, context));
+    }
     api.on("before_tool_call", async (event, context) => {
       if (accessRuntime.isProbe(context)) return;
       const guard = withPixelCronDeliveryDefault(
@@ -261,7 +267,7 @@ export default definePluginEntry({
     api.registerHttpRoute({path: "/pixel-ods/access-runtime", auth: "gateway", match: "exact",
       handler: async (req, res) => {
         if (req.url !== "/pixel-ods/access-runtime") { sendJson(res, 400, {error: "invalid request"}); return true; }
-        if (req.method === "GET") { sendJson(res, 200, accessRuntime.status()); return true; }
+        if (req.method === "GET") { sendJson(res, 200, managedRuntime ? await managedRuntime.readControlStatus() : accessRuntime.status()); return true; }
         if (req.method !== "POST") { sendJson(res, 405, {error: "method not allowed"}); return true; }
         try {
           let body = "";
@@ -270,9 +276,30 @@ export default definePluginEntry({
           if (!value || Object.keys(value).sort().join() !== "operation,revision,token" ||
               !/^[a-f0-9]{64}$/.test(value.token) || !/^[a-f0-9]{64}$/.test(value.revision)) throw new Error();
           let result;
-          if (value.operation === "acquire") result = accessRuntime.acquire(value.token, value.revision);
+          if (value.operation === "acquire") {
+            result = managedRuntime ? await managedRuntime.acquireTransition(value.token, value.revision)
+              : accessRuntime.acquire(value.token, value.revision);
+          }
           else if (value.operation === "release") result = accessRuntime.release(value.token);
-          else if (value.operation === "probe") result = await accessRuntime.probe(value.token);
+          else if (value.operation === "probe") {
+            managedRuntime?.assertTransition();
+            result = await accessRuntime.probe(value.token);
+          }
+          else if (value.operation === "settings-readback") {
+            managedRuntime?.assertTransition();
+            result = accessRuntime.readSettings(value.token, value.revision);
+          }
+          else if (value.operation === "provider-readback") {
+            managedRuntime?.assertTransition();
+            // The same owned transition and current-process snapshot gate this
+            // diagnostic. Registration is distinct from successful inference.
+            const settings = accessRuntime.readSettings(value.token, value.revision);
+            result = {schemaVersion: 1, source: "current-provider-registration",
+              pid: settings.pid, runtimeVersion: settings.runtimeVersion,
+              revision: settings.revision, observedAt: settings.observedAt,
+              registration: managedRuntime ? managedRuntime.readRegistration()
+                : {status: "inactive", binding: null}, transportVerified: false};
+          }
           else throw new Error();
           sendJson(res, 200, result);
         } catch { sendJson(res, 409, {error: "access transition unavailable, busy, or proof failed"}); }

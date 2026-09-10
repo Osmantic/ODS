@@ -3,6 +3,7 @@
   "name": "Pixel ODS Integration",
   "description": "ODS status, delegated Perplexica research, guarded public-page evidence, verified downloads, and isolated workspace previews for Pixel.",
   "version": "1.0.0",
+  "providers": ["ods-policy"],
   "contracts": {
     "tools": [
       "pixel_ods_status",
@@ -39,6 +40,17 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "managedProvider": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schemaVersion", "activationId", "revision", "allowCloud"],
+        "properties": {
+          "schemaVersion": {"const": 1},
+          "activationId": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+          "revision": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "allowCloud": {"type": "boolean"}
+        }
+      },
       "modelContextWindow": {
         "type": "integer",
         "minimum": 4096

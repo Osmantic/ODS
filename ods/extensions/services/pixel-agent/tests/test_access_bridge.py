@@ -157,6 +157,28 @@ class BridgeTests(unittest.TestCase):
         with self.assertRaises(bridge.AccessError): self.runtime.change(request)
         self.assertEqual(self.runtime.log, [])
 
+    def test_access_restore_cannot_consume_settings_or_unknown_root_journal(self):
+        for kind in ("settings", "unknown"):
+            with self.subTest(kind=kind):
+                with self.runtime.locked():
+                    bridge.atomic_json(self.runtime.state / "transition.json", {
+                        "kind": kind, "phase": "error", "token": "d" * 64, "edge_revision": "b" * 64})
+                before = (self.runtime.state / "transition.json").read_bytes()
+                with self.assertRaisesRegex(bridge.AccessError, "settings-recovery-required"):
+                    self.runtime.change(self.request("sandboxed"))
+                self.assertEqual((self.runtime.state / "transition.json").read_bytes(), before)
+                self.assertEqual(self.runtime.log, [])
+
+    def test_legacy_root_access_journal_without_kind_still_recovers(self):
+        self.runtime.fail = "probe"
+        with self.assertRaises(bridge.AccessError):
+            self.runtime.change(self.request("sandboxed"))
+        journal = self.runtime.pending()
+        journal.pop("kind")
+        bridge.atomic_json(self.runtime.state / "transition.json", journal)
+        self.runtime.fail = None
+        self.assertEqual(self.runtime.change(self.request("sandboxed"))["effective_mode"], "sandboxed")
+
     def test_full_enable_and_restore_require_executed_proof_and_preserve_boundaries(self):
         self.assertEqual(self.runtime.status()["effective_mode"], "unknown")
         enabled = self.runtime.change(self.request())

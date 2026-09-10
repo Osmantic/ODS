@@ -92,6 +92,12 @@
       "value": "python:3.11-slim"
     },
     {
+      "id": "pixel-inference.python",
+      "type": "image",
+      "path": "extensions/services/pixel-inference/Dockerfile",
+      "value": "python:3.11-slim"
+    },
+    {
       "id": "pixel-edge.python",
       "type": "image",
       "path": "extensions/services/pixel-edge/Dockerfile",
@@ -284,6 +290,11 @@
     }
   ],
   "allow_local_images": [
+    {
+      "path": "extensions/services/pixel-inference/compose.yaml.disabled",
+      "value": "ods-pixel-inference:local",
+      "reason": "Optional inference-only service built locally after explicit owner activation."
+    },
     {
       "path": "docker-compose.amd.yml",
       "value": "ods-lemonade-server:latest",

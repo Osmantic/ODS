@@ -2244,9 +2244,26 @@ def write(path, content, mode):
         if os.path.exists(temporary): os.unlink(temporary)
 
 host = source / 'extensions/services/pixel-agent/host'
-for name in ('access_mode_server.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py'):
+for name in ('access_mode_server.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py'):
     write(target / name, (host / name).read_bytes(), 0o644)
 write(target / 'pixel_access_bridge.py', (source / 'bin/pixel_access_bridge.py').read_bytes(), 0o644)
+write(target / 'pixel_access_protocol.py', (source / 'bin/pixel_access_protocol.py').read_bytes(), 0o644)
+settings_package = target / 'pixel_settings'
+settings_package.mkdir(mode=0o755, exist_ok=True)
+info = settings_package.lstat()
+if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+    raise SystemExit("Pixel settings program directory is not root protected")
+for name in ('__init__.py', 'contract.py', 'projection.py', 'runtime.py', 'coordinator.py'):
+    write(settings_package / name, (source / 'bin/pixel_settings' / name).read_bytes(), 0o644)
+provider_package = target / 'pixel_provider'
+provider_package.mkdir(mode=0o755, exist_ok=True)
+info = provider_package.lstat()
+if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+    raise SystemExit("Pixel provider program directory is not root protected")
+for name in ('__init__.py', 'config.py', 'store.py', 'activation_config.py',
+             'managed_deployment.py', 'service_environment.py', 'service_activation.py',
+             'runtime_custody.py', 'coordinator.py'):
+    write(provider_package / name, (source / 'bin/pixel_provider' / name).read_bytes(), 0o644)
 config_dir = pathlib.Path('/etc/ods')
 config_dir.mkdir(mode=0o755, exist_ok=True)
 info = config_dir.lstat()
@@ -2255,7 +2272,13 @@ if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
 binary = pathlib.Path(sys.argv[3])
 if not binary.is_absolute() or not os.access(binary, os.X_OK):
     raise SystemExit("The installed OpenClaw validator is unavailable")
-write(config_dir / 'pixel-access.json', json.dumps({'install_dir': str(source.resolve()), 'owner': owner.pw_name, 'openclaw_bin': str(binary)}).encode(), 0o600)
+sys.path.insert(0, str(target))  # Import only the freshly root-protected bundle.
+from pixel_settings.runtime import settings_data_directory
+settings_data_dir = settings_data_directory(source.resolve(), (source / '.env').read_text(encoding='utf-8'))
+if settings_data_dir is None:
+    print('Warning: custom ODS_DATA_DIR is not absolute; Pixel settings Apply remains unavailable', file=sys.stderr)
+write(config_dir / 'pixel-access.json', json.dumps({'install_dir': str(source.resolve()), 'owner': owner.pw_name,
+    'openclaw_bin': str(binary), 'settings_data_dir': settings_data_dir}).encode(), 0o600)
 write(pathlib.Path('/etc/systemd/system/ods-pixel-access.service'), (host / 'ods-pixel-access.service').read_bytes(), 0o644)
 # Hold the same transition lock through activation, so a Settings request cannot
 # begin between code replacement and coordinator restart.

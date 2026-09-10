@@ -487,3 +487,47 @@ test('missing admission permission or an unqualified SDK cannot enable changes',
     assert.throws(() => runtime.acquire(token, runtime.status().revision));
   }
 });
+
+test('settings readback requires the exact current held lease before reading config', linux, () => {
+  let reads = 0;
+  let config = {agents: {list: [{id: 'pixel', contextTokens: 32768}]}};
+  const runtime = createAccessRuntime({...fixture(),
+    config: () => { throw new Error('startup config must not be used for settings readback'); },
+    settingsConfig: () => { reads++; return config; }});
+  const idle = runtime.status();
+  assert.throws(() => runtime.readSettings(token, idle.revision));
+  assert.equal(reads, 0);
+  const held = runtime.acquire(token, idle.revision);
+  for (const [candidate, revision] of [[other, held.revision], [token, idle.revision], [token, undefined]]) {
+    assert.throws(() => runtime.readSettings(candidate, revision));
+  }
+  assert.equal(reads, 0);
+  const result = runtime.readSettings(token, held.revision);
+  assert.equal(result.pid, process.pid);
+  assert.equal(result.revision, held.revision);
+  assert.deepEqual(result.fields.contextTokens, {present: true, value: 32768});
+  assert.equal(reads, 1);
+  assert.equal(runtime.status().revision, held.revision);
+  config = {agents: {list: [{id: 'pixel', contextTokens: 65536}]}};
+  assert.equal(runtime.readSettings(token, held.revision).fields.contextTokens.value, 65536);
+  assert.equal(reads, 2);
+  runtime.release(token);
+  assert.throws(() => runtime.readSettings(token, held.revision));
+  assert.equal(reads, 2);
+});
+
+test('settings readback refuses missing current-config support without reading startup data', linux, () => {
+  const runtime = createAccessRuntime({...fixture(), config: () => { throw new Error('startup config reached'); }});
+  const held = runtime.acquire(token, runtime.status().revision);
+  assert.throws(() => runtime.readSettings(token, held.revision), /runtime settings snapshot unavailable/);
+  assert.equal(runtime.status().phase, 'held');
+});
+
+test('settings readback on an inherited hold refuses unqualified runtime versions', linux, () => {
+  const options = fixture();
+  seed(options, {version: 2, pid: 2147483647, bootId: '0'.repeat(8) + '-0000-0000-0000-' + '0'.repeat(12), startTicks: '1'}, 'held');
+  const runtime = createAccessRuntime({...options, runtimeVersion: 'future',
+    config: () => { throw new Error('config must not be read'); }});
+  assert.equal(runtime.status().available, false);
+  assert.throws(() => runtime.readSettings(token, runtime.status().revision), /runtime lease mismatch/);
+});

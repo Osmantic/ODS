@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Explicit inference pairing into a new private Pixel client directory."""
+import argparse
+import json
+import sys
+
+from pixel_provider.client import prepare_client, read_private, run_client
+from pixel_provider.connection import normalize_connection
+from pixel_provider.connection_transport import probe_connection
+from pixel_provider.connection_tunnel import run_tunnel
+from pixel_provider.store import StoreError, decode_document
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action',choices=('probe','prepare','tunnel','run'))
+    parser.add_argument('--connection-file',help='Owner-private exported connection JSON; never put a key in arguments')
+    parser.add_argument('--confirm-endpoint',help='Explicit endpoint permitted to receive the device key')
+    parser.add_argument('--ssh-target',help='Existing SSH alias; host keys must already be trusted')
+    parser.add_argument('--ssh-bin',default='ssh',help='SSH executable (WSL may explicitly use Windows ssh.exe)')
+    parser.add_argument('--remote-port',type=int,default=4005)
+    parser.add_argument('--listen-port',type=int,default=4005)
+    parser.add_argument('--message-file',help='Owner-private UTF-8 task for a prepared client')
+    parser.add_argument('--timeout',type=int,default=240)
+    parser.add_argument('--provider-directory',help='Owner-private ODS pixel-providers Settings directory for this turn')
+    parser.add_argument('--provider-revision',type=int,help='Exact saved provider-policy revision to activate')
+    parser.add_argument('--confirm-provider-policy',action='store_true',help='Activate this policy for this explicit turn only')
+    parser.add_argument('--allow-cloud-transfer',action='store_true',help='Authorize configured cloud recipients to receive this turn and its tool history')
+    parser.add_argument('--directory',help='New, non-existing private client directory')
+    parser.add_argument('--pixel-repository',help='Local Osmantic/Pixel Git repository containing the ODS pinned commit')
+    parser.add_argument('--openclaw-bin',help='Installed OpenClaw executable; no installation or upgrade is performed')
+    parser.add_argument('--reasoning',choices=('on','off'),help='Explicit model reasoning capability; never guessed from its name')
+    parser.add_argument('--sandbox-image',default='openclaw-sandbox:bookworm-slim')
+    args = parser.parse_args()
+    if args.action != 'run' and (args.provider_directory or args.provider_revision is not None
+            or args.confirm_provider_policy or args.allow_cloud_transfer):
+        parser.error('provider activation options apply only to run')
+    if args.action in ('probe','prepare') and not all((args.connection_file,args.confirm_endpoint)):
+        parser.error('probe/prepare require --connection-file and --confirm-endpoint')
+    if args.action == 'tunnel' and not args.ssh_target:
+        parser.error('tunnel requires --ssh-target')
+    if args.action == 'run' and not all((args.directory,args.message_file)):
+        parser.error('run requires --directory and --message-file')
+    if args.action == 'prepare' and not all((args.directory,args.pixel_repository,args.openclaw_bin,args.reasoning)):
+        parser.error('prepare requires --directory, --pixel-repository, --openclaw-bin and --reasoning')
+    try:
+        if args.action == 'tunnel':
+            run_tunnel(ssh_bin=args.ssh_bin,target=args.ssh_target,remote_port=args.remote_port,listen_port=args.listen_port)
+            return 0
+        if args.action == 'run':
+            adapter = None
+            if args.provider_directory:
+                from pixel_provider.runtime_session import ProviderSession
+                adapter = ProviderSession(args.provider_directory,expected_revision=args.provider_revision,
+                    confirmed=args.confirm_provider_policy,allow_cloud=args.allow_cloud_transfer)
+            elif args.provider_revision is not None or args.confirm_provider_policy or args.allow_cloud_transfer:
+                parser.error('provider activation options require --provider-directory')
+            result = run_client(args.directory,read_private(args.message_file).decode(),timeout=args.timeout,_adapter=adapter)
+            print(json.dumps(result,indent=2))
+            return 0 if result['exitCode'] == 0 and result['status'] == 'process-exited' else 1
+        connection = normalize_connection(decode_document(read_private(args.connection_file)))
+        if args.action == 'probe':
+            result = probe_connection(connection,confirmed_endpoint=args.confirm_endpoint)
+        else:
+            result = prepare_client(connection,args.directory,confirmed_endpoint=args.confirm_endpoint,
+                pixel_repository=args.pixel_repository,openclaw_bin=args.openclaw_bin,reasoning=args.reasoning=='on',
+                sandbox_image=args.sandbox_image)
+        print(json.dumps(result,indent=2))
+        return 0
+    except StoreError as error:
+        print(json.dumps({'error':error.code}),file=sys.stderr)
+        return 1
+    except (OSError,ValueError,KeyError,TypeError):
+        print(json.dumps({'error':'client-preparation-failed'}),file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

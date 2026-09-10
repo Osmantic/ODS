@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Fixtures model private, non-group-writable Pixel release custody regardless
+# of the developer's shell umask. Keep the production permission guard strict.
+umask 077
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=installers/lib/pixel-host-install.sh
 source "$ROOT/installers/lib/pixel-host-install.sh"

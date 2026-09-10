@@ -130,8 +130,8 @@ def _read_file(path):
         return fh.read()
 
 
-def _atomic_write(path, data, mode):
-    """Write bytes to path atomically with exact mode (best-effort dir fsync)."""
+def _atomic_write(path, data, mode, *, durable=False):
+    """Atomic exact-mode write; durable callers require directory fsync too."""
     parent = os.path.dirname(path)
     fd, tmp = tempfile.mkstemp(prefix=".ods-access-", dir=parent)
     try:
@@ -154,7 +154,8 @@ def _atomic_write(path, data, mode):
         finally:
             os.close(dfd)
     except OSError:
-        pass
+        if durable:
+            raise AccessModeRollback("write-durability-unknown", "replacement completed but directory durability is unknown") from None
 
 
 def _atomic_rollback_write(path, data, mode):
@@ -454,7 +455,7 @@ def _stage_and_validate(abs_path, new_bytes, cfg_mode, validate, what):
     """Stage new bytes next to the config, validate the staged file."""
     parent = os.path.dirname(abs_path)
     fd, tmp = tempfile.mkstemp(prefix=".ods-access-stage-", dir=parent)
-    staged = None
+    staged = tmp
     try:
         os.fchmod(fd, cfg_mode)
         with os.fdopen(fd, "wb") as fh:
@@ -478,7 +479,7 @@ def _stage_and_validate(abs_path, new_bytes, cfg_mode, validate, what):
     return staged
 
 
-def _checked_replace(abs_path, new_bytes, expected_hash, staged):
+def _checked_replace(abs_path, new_bytes, expected_hash, staged, *, durable=False):
     """Atomic replace only if the on-disk file still hashes to expected."""
     if _sha256_bytes(_read_file(abs_path)) != expected_hash:
         try:
@@ -488,6 +489,24 @@ def _checked_replace(abs_path, new_bytes, expected_hash, staged):
         raise AccessModeRace("config-changed-during-apply",
                              "config file changed during apply; nothing written")
     os.replace(staged, abs_path)
+    if durable:
+        try:
+            dfd = os.open(os.path.dirname(abs_path), os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            raise AccessModeRollback("write-durability-unknown", "replacement completed but directory durability is unknown") from None
+
+
+def _reject_pending_settings(sd):
+    # Settings and access mode share apply.lock. A crashed settings writer
+    # retains this journal; an access restore must not consume its recovery.
+    if os.path.lexists(os.path.join(sd, "settings-journal.json")):
+        raise AccessModeRejected("settings-recovery-required", "settings recovery must complete before changing access mode")
+    if os.path.lexists(os.path.join(sd, "provider-journal.json")):
+        raise AccessModeRejected("provider-recovery-required", "provider recovery must complete before changing access mode")
 
 
 def _select_pixel(cfg):
@@ -640,6 +659,7 @@ def enable_full_access(config_path, state_dir=None, *, confirmed=False,
 
 def _enable_locked(config_path, sd, validate, restart, check_no_active_run,
                    confirmed):
+    _reject_pending_settings(sd)
     abs_path, cfg_mode, data, cfg = _load_config(config_path)
     h0 = _sha256_bytes(data)
     receipt = _load_receipt(sd)  # may raise state-corrupt
@@ -793,6 +813,7 @@ def restore_sandbox(config_path, state_dir=None, *, validate_config=None,
 
 
 def _restore_locked(config_path, sd, validate, restart, check_no_active_run):
+    _reject_pending_settings(sd)
     abs_path, cfg_mode, data, cfg = _load_config(config_path)
     h0 = _sha256_bytes(data)
     receipt = _load_receipt(sd)

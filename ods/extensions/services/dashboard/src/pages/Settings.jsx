@@ -23,7 +23,11 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import EnvEditor from '../components/settings/EnvEditor'
+import PixelProviderSettings from '../components/settings/PixelProviderSettings.jsx'
+import PixelRuntimeSettings from '../components/settings/PixelRuntimeSettings.jsx'
+import PixelSharingSettings from '../components/settings/PixelSharingSettings.jsx'
 import PixelAccessCard from '../components/settings/PixelAccessCard'
+import AssistantIdentitySettings from '../components/settings/AssistantIdentitySettings'
 import { useTheme } from '../contexts/ThemeContext'
 import { dashboardHost, serviceUrl } from '../lib/serviceUrls'
 import {
@@ -48,7 +52,9 @@ const buildErrorFromResponse = async (response) => {
   try {
     const payload = await response.json()
     detail = payload?.detail ?? payload
-  } catch {}
+  } catch {
+    // Keep the HTTP status fallback when the server did not return JSON.
+  }
   const error = new Error(typeof detail === 'string' ? detail : (detail?.message || `Request failed (${response.status})`))
   error.details = typeof detail === 'object' && detail ? detail : null
   return error
@@ -181,6 +187,7 @@ export default function Settings() {
   const [statusCache, setStatusCache] = useState(null)
   const [setupStatus, setSetupStatus] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [initialized, setInitialized] = useState(false)
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
   const [routeFilter, setRouteFilter] = useState('all')
@@ -279,6 +286,7 @@ export default function Settings() {
       setError(getErrorText(err))
       console.error('Settings fetch error:', err)
     } finally {
+      setInitialized(true)
       setLoading(false)
     }
     void fetchVersionInfo()
@@ -354,7 +362,7 @@ export default function Settings() {
         services: data.services?.map(s => ({ name: s.name, port: s.port, status: s.status })),
         model: data.model,
       }
-      const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' })
+      const blob = new globalThis.Blob([JSON.stringify(config, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -385,7 +393,8 @@ export default function Settings() {
     return { online, degraded, inactive }
   }, [services])
 
-  if (loading) return <SettingsSkeleton />
+  // A system refresh must not unmount the independently edited provider form.
+  if (loading && !initialized) return <SettingsSkeleton />
 
   return (
     <div className="min-h-full px-3 py-6 sm:px-4 lg:px-5 xl:px-6">
@@ -408,6 +417,10 @@ export default function Settings() {
           <AccountUsageCard usageReport={usageReport} className="xl:col-span-7" />
           <RemoteSetupCard setupStatus={setupStatus} className="xl:col-span-5" />
         </div>
+        <AssistantIdentitySettings />
+        <PixelProviderSettings />
+        <PixelRuntimeSettings />
+        <PixelSharingSettings />
         <PixelAccessCard />
         <RoutingTableCard
           services={services}

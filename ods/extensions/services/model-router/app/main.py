@@ -33,9 +33,11 @@ import re
 import time
 import uuid
 from collections import OrderedDict
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+import anyio
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -91,6 +93,7 @@ _HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailer", "transfer-encoding", "upgrade", "host", "authorization",
     "content-length",
+    "x-ods-expected-catalog", "x-ods-expected-model", "x-ods-expected-route",
 }
 
 _PROBE_RE = re.compile(
@@ -555,7 +558,10 @@ def _active_route() -> dict[str, Any]:
     availability = (doc or {}).get("availability") or {}
     return {
         "routeSeq": int(active.get("routeSeq") or 0),
+        "catalogId": str(active.get("catalogId") or ""),
         "runtimeModelId": str(active.get("runtimeModelId") or ""),
+        "contextLength": active["contextLength"],
+        "capabilities": dict(active["capabilities"]),
         "backendKind": str((active.get("backend") or {}).get("kind") or "unknown"),
         "endpointId": endpoint_id,
         "baseUrl": endpoint["baseUrl"],
@@ -810,8 +816,69 @@ async def _read_bounded_body(request: Request) -> bytes:
 
 async def _release_admission() -> None:
     global _inflight
-    async with _inflight_lock:
-        _inflight -= 1
+    with anyio.CancelScope(shield=True):
+        async with _inflight_lock:
+            _inflight -= 1
+
+
+class _OwnedStream(StreamingResponse):
+    """Response, not its possibly unstarted iterator, owns upstream admission."""
+    def __init__(self, *args, cleanup, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cleanup = cleanup
+        self._closed = False
+
+    async def close(self):
+        with anyio.CancelScope(shield=True):
+            if not self._closed:
+                self._closed = True
+                await self._cleanup()
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self.close()
+
+
+async def _while_connected(request, operation):
+    """Propagate client cancellation while queued or waiting for model headers."""
+    stopped = False
+    async def disconnected():
+        while not stopped:
+            if await request.is_disconnected():
+                return
+            if stopped:
+                return
+            await asyncio.sleep(0.25)
+
+    work = asyncio.create_task(operation)
+    watcher = asyncio.create_task(disconnected())
+    handed_off = False
+    try:
+        done, _ = await asyncio.wait((work, watcher), return_when=asyncio.FIRST_COMPLETED)
+        if watcher in done:
+            await watcher
+            return Response(status_code=499)
+        result = await work
+        handed_off = True
+        return result
+    finally:
+        stopped = True
+        with anyio.CancelScope(shield=True):
+            watcher.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await watcher
+            if not work.done():
+                work.cancel()
+                with suppress(asyncio.CancelledError):
+                    await work
+            # Completion and disconnect can arrive together. Dispose of the
+            # ready streaming response if no caller accepted its ownership.
+            if not handed_off and work.done() and not work.cancelled() and work.exception() is None:
+                orphan = work.result()
+                if isinstance(orphan, _OwnedStream):
+                    await orphan.close()
 
 
 def _expire_swap_gate_locked() -> None:
@@ -853,8 +920,9 @@ async def _admit_request() -> tuple[bool, str]:
             await asyncio.sleep(0.25)
     finally:
         if not admitted:
-            async with _inflight_lock:
-                _waiting -= 1
+            with anyio.CancelScope(shield=True):
+                async with _inflight_lock:
+                    _waiting -= 1
 
 
 @app.get("/health")
@@ -890,10 +958,12 @@ async def list_models() -> dict[str, Any]:
     try:
         route = _active_route()
         metadata = {"routedModel": route["runtimeModelId"],
+                    "catalogId": route["catalogId"],
                     "backend": route["backendKind"],
-                    "routeSeq": route["routeSeq"]}
+                    "routeSeq": route["routeSeq"], "contextLength": route["contextLength"],
+                    "capabilities": route["capabilities"]}
     except RouterError:
-        metadata = {"routedModel": None, "backend": None, "routeSeq": None}
+        metadata = {"routedModel": None, "catalogId": None, "backend": None, "routeSeq": None}
     return {"object": "list", "data": data, "ods": metadata}
 
 
@@ -994,7 +1064,10 @@ async def forward(full_path: str, request: Request) -> Response:
         )
 
     requested_alias = str(payload.get("model") or PUBLIC_ALIASES[0])
+    return await _while_connected(request, _forward_admitted(request, path, payload, requested_alias, body))
 
+
+async def _forward_admitted(request, path, payload, requested_alias, body):
     admitted, reason = await _admit_request()
     if not admitted:
         if reason == "queue_full":
@@ -1043,6 +1116,23 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             ), False
         await asyncio.sleep(0.25)
 
+    # Additive precondition for inference-only sharing. It is checked after
+    # admission/queueing and before any upstream bytes are sent. Legacy clients
+    # omit all three headers and retain their existing alias behavior.
+    pin_names = ("x-ods-expected-catalog", "x-ods-expected-model", "x-ods-expected-route")
+    pinned_route = any(name in request.headers for name in pin_names)
+    if pinned_route:
+        values = [request.headers.getlist(name) for name in pin_names]
+        if (any(len(value) != 1 or not value[0] for value in values)
+                or not re.fullmatch(r"0|[1-9][0-9]{0,15}", values[2][0])
+                or int(values[2][0]) > 2**53 - 1):
+            return JSONResponse({"error": {"message": "Invalid route precondition",
+                "type": "route_precondition_invalid", "code": "400"}}, status_code=400), False
+        if (values[0][0] != route["catalogId"] or values[1][0] != route["runtimeModelId"]
+                or int(values[2][0]) != route["routeSeq"]):
+            return JSONResponse({"error": {"message": "The selected model route changed",
+                "type": "route_changed", "code": "409"}}, status_code=409), False
+
     payload["model"] = route["runtimeModelId"]
     request_id = str(uuid.uuid4())
     probe_id = _verify_probe_marker(raw_body.decode("utf-8", "replace"))
@@ -1085,19 +1175,32 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             if lemonade_route:
                 ods_headers["X-Lemonade-Route"] = lemonade_route
 
+            async def cleanup_stream():
+                try:
+                    with suppress(httpx.HTTPError, OSError):
+                        await upstream.aclose()
+                finally:
+                    await _release_admission()
+
             async def stream_body() -> AsyncIterator[bytes]:
                 rewriter = _SSERewriter(requested_alias)
                 completed = False
                 try:
                     async for chunk in upstream.aiter_bytes():
-                        for event in rewriter.feed(chunk):
+                        before = len(rewriter.models)
+                        events = rewriter.feed(chunk)
+                        if pinned_route and any(model != route['runtimeModelId'] for model in rewriter.models[before:]):
+                            raise RouterError(502, 'response_identity_mismatch', 'Backend response identity changed')
+                        for event in events:
                             yield event
+                    before = len(rewriter.models)
                     tail = rewriter.finish()
+                    if pinned_route and any(model != route['runtimeModelId'] for model in rewriter.models[before:]):
+                        raise RouterError(502, 'response_identity_mismatch', 'Backend response identity changed')
                     if tail:
                         yield tail
                     completed = True
                 finally:
-                    await upstream.aclose()
                     if (
                         completed
                         and rewriter.completed
@@ -1131,13 +1234,12 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                             usage=rewriter.usage,
                             stop_reason=rewriter.stop_reason,
                         ))
-                    await _release_admission()
 
             media_type = upstream.headers.get("content-type",
                                               "text/event-stream")
-            return StreamingResponse(
+            return _OwnedStream(
                 stream_body(), status_code=upstream.status_code,
-                media_type=media_type, headers=ods_headers,
+                media_type=media_type, headers=ods_headers, cleanup=cleanup_stream,
             ), True
 
         upstream = await client.post(
@@ -1187,6 +1289,10 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             content = json.dumps(parsed).encode("utf-8")
     except (ValueError, UnicodeDecodeError):
         pass
+
+    if pinned_route and 200 <= upstream.status_code < 300 and response_model != route['runtimeModelId']:
+        return JSONResponse({'error': {'message': 'Backend response identity changed',
+            'type': 'response_identity_mismatch', 'code': '502'}}, status_code=502, headers=ods_headers), False
 
     if probe_id:
         _record_evidence({**evidence_base,

@@ -1996,6 +1996,110 @@ def _switchboard_state_path() -> Path:
     return INSTALL_DIR / "data" / "model-state.json"
 
 
+def _pixel_share_active_route():
+    """Only locally verified identity; never an arbitrary client-chosen route."""
+    if _switchboard_state is None:
+        return None
+    path = _switchboard_state_path()
+    if _switchboard_state_needs_current_env_verification(path):
+        return None
+    doc, errors = _switchboard_state.read_state(path)
+    if errors or not isinstance(doc, dict):
+        return None
+    active = doc.get('active')
+    if not isinstance(active, dict):
+        return None
+    proof = active.get('proof', {})
+    env = load_env(INSTALL_DIR / '.env')
+    if (env.get('ODS_MODE', 'local') != 'local' or not _switchboard_state.migrate_env_identity(env)
+            or active.get('reconstructed') is True or not active.get('verifiedAt')
+            or proof.get('completion') is not True or proof.get('identity') != active.get('runtimeModelId')
+            or active.get('routeSeq') != doc.get('routeSeq') or doc['routeSeq'] > doc['seq']
+            or type(active.get('contextLength')) is not int or not 1 <= active['contextLength'] <= 10_000_000):
+        return None
+    return {key: active[key] for key in ('catalogId', 'runtimeModelId', 'routeSeq', 'contextLength', 'capabilities')}
+
+
+def _pixel_sharing_service():
+    from pixel_provider.sharing_service import SharingService
+    env = load_env(INSTALL_DIR / '.env')
+    raw_port = env.get('PIXEL_INFERENCE_PORT', '4005')
+    if not isinstance(raw_port, str) or not re.fullmatch(r'[0-9]{4,5}', raw_port):
+        from pixel_provider.store import StoreError
+        raise StoreError('invalid-sharing-port')
+    return SharingService(INSTALL_DIR, DATA_DIR, EXTENSIONS_DIR / 'pixel-inference',
+        port=int(raw_port), resolve_flags=resolve_compose_flags, invalidate=invalidate_compose_cache)
+
+
+def _pixel_sharing_runtime():
+    from pixel_provider.store import StoreError
+    try:
+        service = _pixel_sharing_service()
+        if _service_locks['pixel-inference'].locked():
+            return {'status':'starting'}, service.port
+        status = service.status()
+        if status['status'] != 'ready' and _read_progress_status('pixel-inference') == 'error':
+            status = {'status':'error'}
+        return status, service.port
+    except (StoreError, OSError, ValueError):
+        return {'status':'unavailable'}, 4005
+
+
+def _start_pixel_sharing_change(action, body, route):
+    from pixel_provider.sharing import SharingStore
+    from pixel_provider.sharing_host_api import change_sharing, get_sharing
+    from pixel_provider.sharing_service import safe_failure_code
+    from pixel_provider.store import StoreError
+    if (not isinstance(body, dict) or set(body) != {'expectedRevision'}
+            or type(body['expectedRevision']) is not int or not 0 <= body['expectedRevision'] < 2**53 - 1):
+        raise StoreError('invalid-request')
+    lock = _service_locks['pixel-inference']
+    if not lock.acquire(blocking=False):
+        raise StoreError('operation-in-progress')
+    revision = None
+    try:
+        service = _pixel_sharing_service()
+        if action == 'start':
+            doc = get_sharing(DATA_DIR, route)['configuration']
+            if route is None or not any(not item['revoked'] and item['createdAt'] <= time.time() < item['expiresAt']
+                    and all(item[key] == route[key] for key in ('catalogId','runtimeModelId')) for item in doc['devices']):
+                raise StoreError('no-active-device')
+        result = change_sharing(DATA_DIR, 'enable',
+            {'expectedRevision':body['expectedRevision'],'enabled':action == 'start'}, route)
+        revision = result['configuration']['revision']
+        _write_progress('pixel-inference', 'installing', 'Starting inference sharing' if action == 'start' else 'Stopping inference sharing')
+        def work():
+            try:
+                service.start() if action == 'start' else service.stop()
+                _write_progress('pixel-inference', 'complete', 'Inference sharing ready' if action == 'start' else 'Inference sharing stopped')
+            except Exception as error:
+                # Grant revocations may advance revision during the build;
+                # preserve them while closing this failed activation.
+                if action == 'start':
+                    try:
+                        SharingStore(DATA_DIR / 'pixel-inference').disable_after_failed_start()
+                    except (StoreError, OSError):
+                        pass
+                code = safe_failure_code(error)
+                logger.warning('Inference sharing %s failed: %s', action, code)
+                _write_progress('pixel-inference', 'error', f'Inference sharing operation failed ({code})',
+                                error=f'Sharing operation failed ({code}); reload state before retrying.')
+            finally:
+                lock.release()
+        threading.Thread(target=work, daemon=True, name='ods-pixel-sharing-lifecycle').start()
+        result['runtime'] = {'status':'starting'}
+        result['transport']['port'] = service.port
+        return result
+    except Exception:
+        if action == 'start' and revision is not None:
+            try:
+                SharingStore(DATA_DIR / 'pixel-inference').disable_after_failed_start()
+            except (StoreError, OSError):
+                pass
+        lock.release()
+        raise
+
+
 def _project_switchboard_agent_viability(payload: dict) -> None:
     """Project the verified active route's identity and Pixel viability.
 
@@ -5805,11 +5909,13 @@ def _start_enable_retry(handler, service_id: str, lock: threading.Lock) -> None:
         raise
 
 
-def json_response(handler, code: int, body: dict):
+def json_response(handler, code: int, body: dict, *, no_store=False):
     payload = json.dumps(body).encode("utf-8")
     handler.send_response(code)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(payload)))
+    if no_store:
+        handler.send_header("Cache-Control", "no-store")
     if getattr(handler, "close_connection", False):
         handler.send_header("Connection", "close")
     handler.end_headers()
@@ -6297,6 +6403,20 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_remote_provider_ssh_supervisor_status()
         elif path == "/v1/pixel/ops-status":
             self._handle_pixel_ops_status(parse_qs(parsed.query, keep_blank_values=True))
+        elif path == "/v1/pixel/providers":
+            self._handle_pixel_providers(save=False)
+        elif path == "/v1/pixel/providers/runtime" and not parsed.query:
+            self._handle_pixel_providers_runtime(change=False)
+        elif path == "/v1/pixel/settings" and not parsed.query:
+            self._handle_pixel_settings(save=False)
+        elif path == "/v1/pixel/identity" and not parsed.query:
+            self._handle_portal_identity(save=False)
+        elif path == "/v1/pixel/settings/runtime" and not parsed.query:
+            self._handle_pixel_settings_runtime(change=False)
+        elif path == "/v1/pixel/advice-runtime":
+            self._handle_pixel_advice_runtime()
+        elif path == "/v1/pixel/inference-sharing":
+            self._handle_pixel_sharing()
         elif path == "/v1/pixel/access-mode" and not parsed.query:
             self._handle_pixel_access_mode(False)
         elif path == "/v1/host/port":
@@ -6817,6 +6937,28 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_remote_provider_apply()
         elif self.path == "/v1/remote-provider/proof":
             self._handle_remote_provider_proof()
+        elif self.path == "/v1/pixel/providers/save":
+            self._handle_pixel_providers(save=True)
+        elif self.path == "/v1/pixel/providers/connection-probe":
+            self._handle_pixel_connection_probe()
+        elif self.path == "/v1/pixel/providers/runtime":
+            self._handle_pixel_providers_runtime(change=True)
+        elif self.path == "/v1/pixel/settings/save":
+            self._handle_pixel_settings(save=True)
+        elif self.path == "/v1/pixel/identity/save":
+            self._handle_portal_identity(save=True)
+        elif self.path == "/v1/pixel/settings/runtime":
+            self._handle_pixel_settings_runtime(change=True)
+        elif self.path in {"/v1/pixel/advice/start", "/v1/pixel/advice/status", "/v1/pixel/advice/cancel"}:
+            self._handle_pixel_advice(self.path.rsplit('/', 1)[1])
+        elif self.path in {"/v1/pixel/handoff/list", "/v1/pixel/handoff/status", "/v1/pixel/handoff/decide"}:
+            self._handle_pixel_handoff(self.path.rsplit('/', 1)[1])
+        elif self.path in {"/v1/pixel/provider-scopes/status", "/v1/pixel/provider-scopes/begin", "/v1/pixel/provider-scopes/end", "/v1/pixel/provider-scopes/select", "/v1/pixel/provider-scopes/return"}:
+            self._handle_pixel_scopes(self.path.rsplit('/', 1)[1])
+        elif self.path in {"/v1/pixel/advice-runtime/prepare", "/v1/pixel/advice-runtime/status", "/v1/pixel/advice-runtime/cancel"}:
+            self._handle_pixel_advice_runtime(self.path.rsplit('/', 1)[1])
+        elif self.path in {"/v1/pixel/inference-sharing/issue", "/v1/pixel/inference-sharing/enable", "/v1/pixel/inference-sharing/revoke", "/v1/pixel/inference-sharing/start", "/v1/pixel/inference-sharing/stop"}:
+            self._handle_pixel_sharing(self.path.rsplit('/', 1)[1])
         elif self.path == "/v1/runtime/lemonade/ensure":
             self._handle_windows_lemonade_runtime_ensure()
         elif self.path == "/v1/model/delete":
@@ -6837,6 +6979,486 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_network_wifi_forget()
         else:
             json_response(self, 404, {"error": "Not found"})
+
+    def _handle_pixel_sharing(self, action=None):
+        if not check_auth(self):
+            return
+        from pixel_provider.sharing_host_api import get_sharing, change_sharing
+        from pixel_provider.store import MAX_BYTES, StoreError, decode_document
+        try:
+            body = None
+            if action is not None:
+                lengths = self.headers.get_all('Content-Length', [])
+                if (len(lengths) != 1 or not re.fullmatch(r'[0-9]{1,9}', lengths[0])
+                        or self.headers.get('Transfer-Encoding') is not None):
+                    raise StoreError('invalid-request')
+                length = int(lengths[0])
+                if length > MAX_BYTES:
+                    json_response(self, 413, {'error': 'Sharing request exceeds size limit'}, no_store=True)
+                    return
+                if length == 0:
+                    raise StoreError('invalid-request')
+                old_timeout = self.connection.gettimeout()
+                try:
+                    self.connection.settimeout(10)
+                    raw = self.rfile.read(length)
+                finally:
+                    self.connection.settimeout(old_timeout)
+                if len(raw) != length:
+                    raise StoreError('malformed-json')
+                body = decode_document(raw)
+            route = _pixel_share_active_route()
+            if action in {'start', 'stop'}:
+                result = _start_pixel_sharing_change(action, body, route)
+            elif action == 'enable':
+                lock = _service_locks['pixel-inference']
+                if not lock.acquire(blocking=False):
+                    raise StoreError('operation-in-progress')
+                try:
+                    result = change_sharing(DATA_DIR, action, body, route)
+                finally:
+                    lock.release()
+                result['runtime'], result['transport']['port'] = _pixel_sharing_runtime()
+            else:
+                result = (get_sharing(DATA_DIR, route) if action is None else
+                          change_sharing(DATA_DIR, action, body, route))
+                result['runtime'], result['transport']['port'] = _pixel_sharing_runtime()
+        except StoreError as exc:
+            status = 409 if exc.code in {'stale-revision', 'active-route-changed', 'operation-in-progress'} else 503
+            if action is not None and exc.code in {'invalid-request', 'invalid-config', 'malformed-json', 'no-active-device'}:
+                status = 400
+            json_response(self, status, {'error': 'Sharing request failed', 'code': exc.code}, no_store=True)
+            return
+        except (OSError, ValueError, TypeError, RecursionError):
+            json_response(self, 503, {'error': 'Sharing is unavailable'}, no_store=True)
+            return
+        json_response(self, 202 if action in {'start', 'stop'} else 200, result, no_store=True)
+
+    def _handle_pixel_advice_runtime(self, action=None):
+        """Owner-confirmed optional private setup, never an arbitrary command."""
+        if not check_auth(self):
+            return
+        from pixel_provider.store import StoreError, decode_document
+        from pixel_provider.advice_setup import get_setup_manager, readiness
+        try:
+            if action is None:
+                result = readiness(Path(DATA_DIR) / 'pixel-providers')
+            else:
+                lengths = self.headers.get_all('Content-Length', [])
+                if (len(lengths) != 1 or not re.fullmatch(r'[0-9]{1,5}', lengths[0])
+                        or self.headers.get('Transfer-Encoding') is not None or not 0 < int(lengths[0]) <= 8192):
+                    raise StoreError('invalid-setup-request')
+                previous = self.connection.gettimeout()
+                try:
+                    self.connection.settimeout(10)
+                    raw = self.rfile.read(int(lengths[0]))
+                finally:
+                    self.connection.settimeout(previous)
+                if len(raw) != int(lengths[0]):
+                    raise StoreError('invalid-setup-request')
+                body = decode_document(raw)
+                manager = get_setup_manager(DATA_DIR)
+                if action == 'prepare':
+                    result = manager.start(body)
+                else:
+                    if not isinstance(body, dict) or set(body) != {'jobId'}:
+                        raise StoreError('invalid-setup-request')
+                    result = getattr(manager, action)(body['jobId'])
+            json_response(self, 202 if action == 'prepare' else 200, result, no_store=True)
+        except StoreError as exc:
+            status = 409 if exc.code in {'stale-revision', 'setup-request-conflict', 'setup-busy'} else 400
+            json_response(self, status, {'error': 'Advisory setup unavailable', 'code': exc.code}, no_store=True)
+        except (OSError, ValueError, TypeError, KeyError):
+            json_response(self, 503, {'error': 'Advisory setup unavailable'}, no_store=True)
+
+    def _handle_pixel_scopes(self, action):
+        """Owner preferences only; no public model/session/privilege activation."""
+        if not check_auth(self):
+            return
+        from pixel_provider.store import StoreError, decode_document
+        try:
+            from pixel_provider.scopes import handle
+            lengths = self.headers.get_all('Content-Length', [])
+            if (len(lengths) != 1 or not re.fullmatch(r'[0-9]{1,9}', lengths[0])
+                    or self.headers.get('Transfer-Encoding') is not None):
+                raise StoreError('invalid-scope-request')
+            length = int(lengths[0])
+            if not 0 < length <= 4096:
+                json_response(self, 413 if length > 4096 else 400, {'error': 'Invalid scope request size'}, no_store=True)
+                return
+            previous = self.connection.gettimeout()
+            try:
+                self.connection.settimeout(10)
+                raw = self.rfile.read(length)
+            finally:
+                self.connection.settimeout(previous)
+            if len(raw) != length:
+                raise StoreError('invalid-scope-request')
+            result = handle(DATA_DIR, action, decode_document(raw))
+            json_response(self, 200, result, no_store=True)
+        except StoreError as exc:
+            conflicts = {'stale-revision', 'stale-provider-revision', 'scope-task-mismatch',
+                         'scope-task-already-active', 'scope-task-replayed', 'write-durability-unknown'}
+            json_response(self, 409 if exc.code in conflicts else 400,
+                          {'error': 'Provider preference unavailable; reload before retrying', 'code': exc.code}, no_store=True)
+        except (ImportError, OSError, ValueError, TypeError, KeyError):
+            json_response(self, 503, {'error': 'Provider preference unavailable'}, no_store=True)
+
+    def _handle_pixel_handoff(self, action):
+        """Owner-only decisions; checkpoint publication is a private worker pipe."""
+        if not check_auth(self):
+            return
+        from pixel_provider.store import StoreError, decode_document
+        try:
+            from pixel_provider.handoff_approvals import get_manager
+            lengths = self.headers.get_all('Content-Length', [])
+            if (len(lengths) != 1 or not re.fullmatch(r'[0-9]{1,9}', lengths[0])
+                    or self.headers.get('Transfer-Encoding') is not None):
+                raise StoreError('invalid-handoff-request')
+            length = int(lengths[0])
+            if not 0 < length <= 4096:
+                json_response(self, 413 if length > 4096 else 400, {'error': 'Invalid handoff request size'}, no_store=True)
+                return
+            previous = self.connection.gettimeout()
+            try:
+                self.connection.settimeout(10)
+                raw = self.rfile.read(length)
+            finally:
+                self.connection.settimeout(previous)
+            if len(raw) != length:
+                raise StoreError('invalid-handoff-request')
+            body = decode_document(raw)
+            manager = get_manager(DATA_DIR)
+            if action == 'list':
+                if type(body) is not dict or body:
+                    raise StoreError('invalid-handoff-request')
+                result = manager.pending()
+            elif action == 'status':
+                if type(body) is not dict or set(body) != {'runId'}:
+                    raise StoreError('invalid-handoff-request')
+                result = manager.status(body['runId'], checkpoint=True)
+            else:
+                result = manager.decide(body)
+            json_response(self, 200, result, no_store=True)
+        except StoreError as exc:
+            status = 409 if exc.code in {'handoff-decision-conflict', 'handoff-no-longer-pending'} else 400
+            json_response(self, status, {'error': 'Handoff request failed', 'code': exc.code}, no_store=True)
+        except (ImportError, OSError, ValueError, TypeError, KeyError):
+            json_response(self, 503, {'error': 'Handoff service unavailable'}, no_store=True)
+
+    def _handle_pixel_advice(self, action):
+        """Explicit owner-reviewed inference job, not an agent/tool endpoint."""
+        if not check_auth(self):
+            return
+        from pixel_provider.store import MAX_BYTES, StoreError, decode_document
+        try:
+            from pixel_provider.advice_jobs import get_manager
+            lengths = self.headers.get_all('Content-Length', [])
+            if (len(lengths) != 1 or not re.fullmatch(r'[0-9]{1,9}', lengths[0])
+                    or self.headers.get('Transfer-Encoding') is not None):
+                raise StoreError('invalid-advice-request')
+            length = int(lengths[0])
+            if not 0 < length <= MAX_BYTES:
+                raise StoreError('invalid-advice-request')
+            previous = self.connection.gettimeout()
+            try:
+                self.connection.settimeout(10)
+                raw = self.rfile.read(length)
+            finally:
+                self.connection.settimeout(previous)
+            if len(raw) != length:
+                raise StoreError('invalid-advice-request')
+            body = decode_document(raw)
+            manager = get_manager(DATA_DIR)
+            if action == 'start':
+                result = manager.start(body)
+            else:
+                if not isinstance(body, dict) or set(body) != {'jobId'}:
+                    raise StoreError('invalid-advice-request')
+                result = getattr(manager, action)(body['jobId'])
+            json_response(self, 202 if action == 'start' else 200, result, no_store=True)
+        except StoreError as exc:
+            status = 409 if exc.code in {'stale-revision', 'advice-request-conflict', 'advice-busy', 'advisor-not-selected'} else 400
+            json_response(self, status, {'error': 'Advisory request failed', 'code': exc.code}, no_store=True)
+        except (ImportError, OSError, ValueError, TypeError, KeyError):
+            json_response(self, 503, {'error': 'Advisory service unavailable'}, no_store=True)
+
+    def _handle_pixel_providers_runtime(self, *, change):
+        """Fixed owner-confirmed provider control; root alone selects targets."""
+        if not check_auth(self): return
+        try:
+            from pixel_provider.host_api import runtime_status, runtime_change
+            from pixel_provider.public import normalize_change
+            from pixel_provider.store import StoreError, decode_document
+        except ImportError:
+            json_response(self, 503, {"error": "Provider runtime is unavailable"}, no_store=True)
+            return
+        acquired = False
+        try:
+            if change:
+                lengths = self.headers.get_all("Content-Length", [])
+                if (len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,9}", lengths[0])
+                        or self.headers.get("Transfer-Encoding") is not None):
+                    raise StoreError("invalid-request")
+                length = int(lengths[0])
+                if length > 2048:
+                    json_response(self, 413, {"error": "Provider runtime request exceeds size limit"}, no_store=True)
+                    return
+                if length == 0: raise StoreError("invalid-request")
+                before = self.connection.gettimeout()
+                try:
+                    self.connection.settimeout(10)
+                    raw = self.rfile.read(length)
+                finally: self.connection.settimeout(before)
+                if len(raw) != length: raise StoreError("malformed-json")
+                try: body = normalize_change(decode_document(raw))
+                except ValueError: raise StoreError("invalid-request") from None
+                acquired, _active = _begin_model_lifecycle("pixel_providers")
+                if not acquired: raise StoreError("model-lifecycle-busy")
+                result = runtime_change(DATA_DIR, body)
+            else:
+                result = runtime_status(DATA_DIR)
+        except StoreError as error:
+            status = 400 if error.code in ("invalid-request", "malformed-json") else 409
+            if error.code in ("provider-transition-unavailable", "provider-transition-uncertain"):
+                status = 503
+            json_response(self, status, {"error": "Provider runtime request failed; inspect before retrying",
+                                        "code": error.code}, no_store=True)
+            return
+        except (OSError, ValueError, TypeError, KeyError):
+            json_response(self, 503, {"error": "Provider runtime result is unavailable; inspect before retrying"}, no_store=True)
+            return
+        finally:
+            if acquired: _end_model_lifecycle("pixel_providers")
+        json_response(self, 200, result, no_store=True)
+
+    def _handle_pixel_settings_runtime(self, *, change):
+        """Owner-only runtime inspection or fixed Apply/recovery; no paths in HTTP."""
+        if not check_auth(self): return
+        try:
+            from pixel_settings.host_api import runtime_status, runtime_change
+            from pixel_settings.public import normalize_change
+            from pixel_provider.store import StoreError, decode_document
+        except ImportError:
+            json_response(self, 503, {"error": "Pixel settings runtime is unavailable"}, no_store=True)
+            return
+        acquired = False
+        try:
+            if change:
+                lengths = self.headers.get_all("Content-Length", [])
+                if (len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,9}", lengths[0])
+                        or self.headers.get("Transfer-Encoding") is not None):
+                    raise StoreError("invalid-request")
+                length = int(lengths[0])
+                if length > 2048:
+                    json_response(self, 413, {"error": "Settings runtime request exceeds size limit"}, no_store=True)
+                    return
+                if length == 0: raise StoreError("invalid-request")
+                before = self.connection.gettimeout()
+                try:
+                    self.connection.settimeout(10)
+                    raw = self.rfile.read(length)
+                finally: self.connection.settimeout(before)
+                if len(raw) != length: raise StoreError("malformed-json")
+                try: body = normalize_change(decode_document(raw))
+                except ValueError: raise StoreError("invalid-request") from None
+                acquired, _active = _begin_model_lifecycle("pixel_settings")
+                if not acquired: raise StoreError("model-lifecycle-busy")
+                result = runtime_change(DATA_DIR, body)
+            else:
+                result = runtime_status(DATA_DIR)
+        except StoreError as error:
+            status = 400 if error.code in ("invalid-request", "malformed-json") else 409
+            json_response(self, status, {"error": "Pixel settings runtime request failed", "code": error.code}, no_store=True)
+            return
+        except (OSError, ValueError, TypeError, KeyError):
+            json_response(self, 503, {"error": "Pixel settings runtime result is unavailable; inspect before retrying"}, no_store=True)
+            return
+        finally:
+            if acquired: _end_model_lifecycle("pixel_settings")
+        json_response(self, 200, result, no_store=True)
+
+    def _handle_pixel_settings(self, *, save):
+        """Owner preferences persistence, not runtime activation or privilege change."""
+        if not check_auth(self):
+            return
+        try:
+            from pixel_settings.host_api import get_settings, save_settings
+            from pixel_provider.store import MAX_BYTES, StoreError, decode_document
+        except ImportError:
+            json_response(self, 503, {"error": "Pixel settings are unavailable"}, no_store=True)
+            return
+        try:
+            if save:
+                lengths = self.headers.get_all("Content-Length", [])
+                if (len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,9}", lengths[0])
+                        or self.headers.get("Transfer-Encoding") is not None):
+                    json_response(self, 400, {"error": "Invalid settings request framing"}, no_store=True)
+                    return
+                length = int(lengths[0])
+                if length > MAX_BYTES:
+                    json_response(self, 413, {"error": "Settings request exceeds size limit"}, no_store=True)
+                    return
+                if length == 0:
+                    json_response(self, 400, {"error": "Settings request is required"}, no_store=True)
+                    return
+                old_timeout = self.connection.gettimeout()
+                try:
+                    self.connection.settimeout(10)
+                    raw = self.rfile.read(length)
+                finally:
+                    self.connection.settimeout(old_timeout)
+                if len(raw) != length:
+                    raise StoreError("malformed-json")
+                result = save_settings(DATA_DIR, decode_document(raw))
+            else:
+                result = get_settings(DATA_DIR)
+        except StoreError as exc:
+            status = 409 if exc.code == "stale-revision" else 503
+            if save and exc.code in {"invalid-request", "invalid-config", "malformed-json"}:
+                status = 400
+            json_response(self, status, {"error": "Pixel settings request failed", "code": exc.code}, no_store=True)
+            return
+        except (OSError, ValueError, TypeError, RecursionError):
+            json_response(self, 503, {"error": "Pixel settings are unavailable"}, no_store=True)
+            return
+        json_response(self, 200, result, no_store=True)
+
+    def _handle_portal_identity(self, *, save):
+        """Owner display name only; never changes model or system identity."""
+        if not check_auth(self):
+            return
+        try:
+            from portal_identity import get_identity, save_identity
+            from pixel_provider.store import StoreError, decode_document
+        except ImportError:
+            json_response(self, 503, {"error": "Assistant identity is unavailable"}, no_store=True)
+            return
+        try:
+            if save:
+                lengths = self.headers.get_all("Content-Length", [])
+                if (len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,9}", lengths[0])
+                        or self.headers.get("Transfer-Encoding") is not None):
+                    raise StoreError("invalid-request")
+                length = int(lengths[0])
+                if length > 2048:
+                    json_response(self, 413, {"error": "Assistant identity request is too large"}, no_store=True)
+                    return
+                if length == 0:
+                    raise StoreError("invalid-request")
+                old_timeout = self.connection.gettimeout()
+                try:
+                    self.connection.settimeout(10)
+                    raw = self.rfile.read(length)
+                finally:
+                    self.connection.settimeout(old_timeout)
+                if len(raw) != length:
+                    raise StoreError("invalid-request")
+                try:
+                    body = decode_document(raw)
+                except StoreError:
+                    raise StoreError("invalid-request") from None
+                result = save_identity(DATA_DIR, body)
+            else:
+                result = get_identity(DATA_DIR)
+        except StoreError as error:
+            status = 409 if error.code == "stale-revision" else 503
+            if save and error.code == "invalid-request":
+                status = 400
+            json_response(self, status, {"error": "Assistant identity request failed"}, no_store=True)
+            return
+        except (OSError, ValueError, TypeError, RecursionError):
+            json_response(self, 503, {"error": "Assistant identity is unavailable"}, no_store=True)
+            return
+        json_response(self, 200, result, no_store=True)
+
+    def _handle_pixel_connection_probe(self):
+        """Owner-confirmed metadata GET only; credentials never enter logs/state."""
+        if not check_auth(self):
+            return
+        try:
+            from pixel_provider.connection_import import MAX_REQUEST, ERRORS, inspect_connection
+            from pixel_provider.store import StoreError, decode_document
+        except ImportError:
+            json_response(self, 503, {"error": "Connection inspection unavailable"}, no_store=True)
+            return
+        try:
+            lengths = self.headers.get_all("Content-Length", [])
+            if (len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,9}", lengths[0])
+                    or self.headers.get("Transfer-Encoding") is not None):
+                json_response(self, 400, {"error": "Invalid request framing"}, no_store=True)
+                return
+            length = int(lengths[0])
+            if not 0 < length <= MAX_REQUEST:
+                json_response(self, 413 if length > MAX_REQUEST else 400,
+                              {"error": "Invalid request size"}, no_store=True)
+                return
+            old_timeout = self.connection.gettimeout()
+            try:
+                self.connection.settimeout(10)
+                raw = self.rfile.read(length)
+            finally:
+                self.connection.settimeout(old_timeout)
+            if len(raw) != length:
+                raise StoreError('invalid-request')
+            result = inspect_connection(decode_document(raw))
+        except StoreError as error:
+            reason = error.code if error.code in ERRORS else 'invalid-request'
+            code = 409 if reason == 'connection-probe-busy' else 400 if reason in {
+                'invalid-request', 'invalid-connection', 'connection-endpoint-not-confirmed',
+                'unsafe-connection-address'} else 503
+            json_response(self, code, {"error": "Connection inspection failed", "code": reason}, no_store=True)
+            return
+        except (OSError, ValueError, TypeError, RecursionError):
+            json_response(self, 503, {"error": "Connection inspection unavailable"}, no_store=True)
+            return
+        json_response(self, 200, result, no_store=True)
+
+    def _handle_pixel_providers(self, *, save):
+        """Provider Settings only; does not activate routes or change privileges."""
+        if not check_auth(self):
+            return
+        try:
+            from pixel_provider.host_api import get_configuration, save_configuration
+            from pixel_provider.store import MAX_BYTES, StoreError, decode_document
+        except ImportError:
+            json_response(self, 503, {"error": "Provider Settings are unavailable"})
+            return
+        try:
+            if save:
+                lengths = self.headers.get_all("Content-Length", [])
+                if (len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,9}", lengths[0])
+                        or self.headers.get("Transfer-Encoding") is not None):
+                    json_response(self, 400, {"error": "Invalid provider request framing"})
+                    return
+                length = int(lengths[0])
+                if length > MAX_BYTES:
+                    json_response(self, 413, {"error": "Provider configuration exceeds size limit"})
+                    return
+                if length == 0:
+                    json_response(self, 400, {"error": "Provider configuration is required"})
+                    return
+                old_timeout = self.connection.gettimeout()
+                try:
+                    self.connection.settimeout(10)
+                    raw = self.rfile.read(length)
+                finally:
+                    self.connection.settimeout(old_timeout)
+                if len(raw) != length:
+                    raise StoreError("malformed-json")
+                result = save_configuration(DATA_DIR, decode_document(raw))
+            else:
+                result = get_configuration(DATA_DIR)
+        except StoreError as exc:
+            code = 409 if exc.code == "stale-revision" else 503
+            if save and exc.code in {"invalid-request", "invalid-config", "malformed-json", "credential-target-changed"}:
+                code = 400
+            json_response(self, code, {"error": "Provider Settings request failed", "code": exc.code})
+            return
+        except (OSError, ValueError, TypeError, RecursionError):
+            json_response(self, 503, {"error": "Provider Settings are unavailable"})
+            return
+        json_response(self, 200, result)
 
     def _handle_setup_persona(self):
         if not check_auth(self):

@@ -8,6 +8,7 @@ import { useFirstRun } from './hooks/useFirstRun'
 import { useSessionBootstrap } from './hooks/useSessionBootstrap'
 import { getInternalRoutes } from './plugins/registry'
 import SplashScreen from './components/SplashScreen'
+import { PortalIdentityProvider } from './contexts/PortalIdentityContext'
 
 // Phone-first first-boot wizard. Mounted instead of the normal app shell
 // when useFirstRun() reports firstRun=true. Lazy-loaded so the wizard
@@ -108,6 +109,7 @@ function App() {
   }
 
   return (
+    <PortalIdentityProvider>
     <div className="flex min-h-screen bg-theme-bg text-theme-text relative">
       {!splashDone && <SplashScreen onComplete={() => {
         setStorageValue(globalThis.sessionStorage, 'ods-splash-shown', '1')
@@ -154,6 +156,7 @@ function App() {
           can't install (e.g. Firefox desktop). See usePwaInstallPrompt. */}
       <InstallPromptBanner />
     </div>
+    </PortalIdentityProvider>
   )
 }
 

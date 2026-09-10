@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { getSidebarExternalLinks, getSidebarNavItems } from '../plugins/registry'
 import { useTheme } from '../contexts/ThemeContext'
+import { usePortalIdentity } from '../contexts/PortalIdentityContext'
 import { fallbackServiceUrl } from '../lib/serviceUrls'
 
 // Derive external service URLs from current host
@@ -26,6 +27,7 @@ function OsmanticLogo({ compact = false }) {
 }
 
 export default function Sidebar({ status, collapsed, onToggle }) {
+  const { displayName } = usePortalIdentity()
   const { theme, cycleTheme, labels } = useTheme() // eslint-disable-line no-unused-vars -- theme switcher temporarily hidden
   const [serviceTokens, setServiceTokens] = useState({})
   const [apiLinks, setApiLinks] = useState([])
@@ -44,8 +46,8 @@ export default function Sidebar({ status, collapsed, onToggle }) {
   }, [])
 
   const navItems = useMemo(
-    () => getSidebarNavItems({ status }),
-    [status]
+    () => getSidebarNavItems({ status }).map(item => item.id === 'pixel' ? { ...item, label: displayName } : item),
+    [status, displayName]
   )
 
   // Compute external links with auto-auth tokens (e.g. OpenClaw ?token=xxx)
