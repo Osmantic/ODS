@@ -1198,7 +1198,7 @@ export default function Pixel({ systemStatus = null }) {
       <header className="pixel-chat-header">
         <div className="pixel-chat-identity">
         <div className="flex h-9 w-9 items-center justify-center text-theme-accent-light">
-          <PixelMascot interactive name={displayName} state={pixelHeaderPose({sending, stopping, restoredActive, restoredChecking, interrupted, restoredActivity, status, task:messages.at(-1)?.task})} />
+          <PixelMascot interactive activityKey={input} name={displayName} state={pixelHeaderPose({sending, stopping, restoredActive, restoredChecking, interrupted, restoredActivity, status, task:messages.at(-1)?.task})} />
         </div>
         <div className="min-w-0">
           <h1 className="text-base font-semibold leading-tight truncate max-w-[40vw]" title={displayName}>{displayName}</h1>
@@ -1331,7 +1331,7 @@ export default function Pixel({ systemStatus = null }) {
         {status === 'available' && messages.length === 0 && (
           <div className="pixel-welcome mx-auto text-theme-text-muted">
             <div>
-              <PixelMascot interactive name={displayName} className="pixel-welcome-character" />
+              <PixelMascot interactive activityKey={input} name={displayName} className="pixel-welcome-character" />
               <h2>What do you want to work on?</h2>
               <p className="pixel-welcome-description">Start a private task, explore an idea, or create something new.</p>
             </div>

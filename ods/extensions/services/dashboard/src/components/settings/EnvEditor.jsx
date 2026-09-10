@@ -1,3 +1,4 @@
+import PanelSelect from '../PanelSelect'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -243,10 +244,8 @@ function EnvironmentCategorySidebar({ search, onSearchChange, sections, activeSe
         />
       </label>
 
-      <label className="environment-category-picker"><span className="sr-only">Configuration category</span><select aria-label="Configuration category" value={activeSection?.id || ''} onChange={event=>onSectionChange(event.target.value)}>
-        {!activeSection && <option value="">No matching categories</option>}
-        {grouped.map(group=><optgroup key={group.id} label={group.title}>{group.sections.map(section=><option key={section.id} value={section.id}>{section.title} · {section.keys.length}</option>)}</optgroup>)}
-      </select></label>
+      <div className="environment-category-picker"><PanelSelect label="Configuration category" value={activeSection?.id || ''} onChange={onSectionChange}
+        options={grouped.flatMap(group => group.sections.map(section => ({ value: section.id, label: `${section.title} · ${section.keys.length}`, group: group.title })))} /></div>
     </div>
   )
 }

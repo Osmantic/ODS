@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ExternalLink, GitBranch, RefreshCw, X } from 'lucide-react'
 import { serviceUrl } from '../lib/serviceUrls'
+import PanelSelect from '../components/PanelSelect'
 
 const POLL_INTERVAL = 10000
 const NODE_W = 170
@@ -290,7 +291,7 @@ function CompactIntegrations({ nodes, edges, refresh, error }) {
     <header className="integrations-header"><div><h2>Integrations</h2><p>{nodes.length} services · {nodes.filter(node => node.status === 'healthy').length} healthy</p></div><button type="button" aria-label="Refresh integrations" onClick={refresh}><RefreshCw size={15} /></button></header>
     <nav className="settings-view-tabs" aria-label="Integration views"><button type="button" aria-pressed={view === 'list'} onClick={() => setView('list')}>Service list</button><button type="button" aria-pressed={view === 'map'} onClick={() => setView('map')}>View map</button></nav>
     {error && <p role="alert" className="text-red-400">Status could not be refreshed. {error}</p>}
-    <div className="integrations-filters"><input type="search" aria-label="Search integrations" placeholder="Search services…" value={search} onChange={event => setSearch(event.target.value)} /><select aria-label="Service status" value={filter} onChange={event => setFilter(event.target.value)}><option value="all">All statuses</option><option value="healthy">Healthy</option><option value="attention">Not healthy</option></select></div>
+    <div className="integrations-filters"><input type="search" aria-label="Search integrations" placeholder="Search services…" value={search} onChange={event => setSearch(event.target.value)} /><PanelSelect label="Service status" value={filter} onChange={setFilter} options={[{value:'all',label:'All statuses'},{value:'healthy',label:'Healthy'},{value:'attention',label:'Not healthy'}]} /></div>
     <div ref={detailRef}><DetailPanel inline node={selected} edges={edges} onClose={() => setSelectedId(null)} /></div>
     {!visible.length ? <p className="integrations-empty">{nodes.length ? 'No matching services.' : 'No services reported.'}</p> : view === 'list' ? <div className="integrations-list">
       {LAYERS.map(layer => {

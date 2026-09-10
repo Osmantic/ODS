@@ -59,7 +59,8 @@ describe('EnvEditor', () => {
   test('offers compact category navigation and search without behavior cards', () => {
     const onSearchChange = vi.fn(), onSectionChange = vi.fn()
     renderEditor({ onSearchChange, onSectionChange, sections: [...baseSections, { id: 'ports', title: 'Ports', keys: [] }] })
-    fireEvent.change(screen.getByRole('combobox', { name: 'Configuration category' }), { target: { value: 'ports' } })
+    fireEvent.click(screen.getByRole('combobox', { name: 'Configuration category' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Ports · 0' }))
     expect(onSectionChange).toHaveBeenCalledWith('ports')
     fireEvent.change(screen.getByRole('textbox', { name: 'Filter configuration fields' }), { target: { value: 'model' } })
     expect(onSearchChange).toHaveBeenCalledWith('model')

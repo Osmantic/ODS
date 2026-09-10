@@ -116,7 +116,7 @@ export const coreRoutes = [
   {
     id: 'invites',
     path: '/invites',
-    label: 'Setup / Owner',
+    label: 'Owner access',
     icon: UserPlus,
     component: Invites,
     getProps: () => ({}),

@@ -67,7 +67,8 @@ it('filters the compact list and renders a panel-sized map with inline details',
   expect(screen.getByRole('button', { name: 'Close service details' }).closest('.integration-detail')).not.toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'View map' }))
   expect(screen.getByRole('region', { name: 'Service topology' }).querySelector('svg').getAttribute('viewBox').split(' ')[2]).toBe('418')
-  fireEvent.change(screen.getByRole('combobox', { name: 'Service status' }), { target: { value: 'attention' } })
+  fireEvent.click(screen.getByRole('combobox', { name: 'Service status' }))
+  fireEvent.click(screen.getByRole('option', { name: 'Not healthy' }))
   expect(screen.getByText('No matching services.')).toBeVisible()
 })
 

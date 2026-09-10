@@ -23,6 +23,9 @@
   --sidebar-accent:#c7c9ce; --sidebar-accent-soft:#a6a8ad; --sidebar-active-shadow:none;
 }
 body { font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
+/* Native menus need opaque option colors; translucent select fills do not carry over on Windows. */
+select, select option, select optgroup { color-scheme:dark; }
+select option, select optgroup { background-color:rgb(var(--theme-card)); color:rgb(var(--theme-text)); }
 .ods-opening { position:fixed; inset:0; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; background:#111212; color:#969aa2; font-family:Inter,system-ui,sans-serif; font-size:13px; }
 .ods-opening-emblem { animation:ods-opening-in .5s ease-out both; }
 .ods-opening-wordmark { font-family:Inter,system-ui,sans-serif; font-size:48px; font-weight:600; letter-spacing:.16em; padding-left:.16em; color:#e2e4e7; background:linear-gradient(110deg,#7e858c 10%,#f7f8f9 35%,#a2a8b0 48%,#fff 58%,#727a84 85%); background-size:220% 100%; background-clip:text; -webkit-background-clip:text; -webkit-text-fill-color:transparent; animation:ods-metal-sweep 2.2s ease-in-out infinite; }
@@ -34,9 +37,9 @@ body { font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFon
 .ods-opening button { padding:7px 16px; border:1px solid #36383c; border-radius:7px; color:#c6c9ce; }
 @keyframes ods-opening-in { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
 @media(prefers-reduced-motion:reduce) { .ods-opening-logo { animation:none; } }
-.pixel-app { background:#101112; --navigation-width:248px; }
+.pixel-app { background:radial-gradient(ellipse 270px 220px at left top,#ffffff06,transparent 90%),#101112; --navigation-width:248px; }
 .pixel-app.sidebar-collapsed { --navigation-width:64px; }
-.pixel-sidebar { position:fixed; inset:0 auto 0 0; width:var(--navigation-width); display:flex; flex-direction:column; padding:16px 10px; background:radial-gradient(ellipse 270px 220px at left top,#ffffff06,transparent 90%),#101112; }
+.pixel-sidebar { position:fixed; inset:0 auto 0 0; width:var(--navigation-width); display:flex; flex-direction:column; padding:16px 10px; background:transparent; }
 .pixel-brand { display:flex; align-items:center; justify-content:space-between; padding:4px 8px 24px; }
 .pixel-brand a { display:flex; align-items:center; gap:10px; font-size:14px; font-weight:600; }
 .pixel-brand button { color:#858991; padding:5px; border-radius:6px; }
