@@ -44,13 +44,13 @@ in-memory footprint stays bounded.
 
 The /verify response schema is unchanged for existing clients: ``allowed``,
 ``reason``, ``intent`` and ``decision_id`` are always present and keep their
-old meaning. Two OPTIONAL fields are added — ``decision`` (one of
-``allow`` / ``deny`` / ``require_approval``) and ``approval_token`` (only set
-when ``decision == require_approval``). Clients that ignore unknown fields are
-unaffected. STRICT_MODE still raises 403 for policy denials and 429 for hard
-rate-limit/circuit-breaker denials; ``require_approval`` is an advisory
-escalation and deliberately does NOT raise so the agent framework can route
-the call to a human and retry via /approve.
+    old meaning. One OPTIONAL field is added — ``decision`` (one of
+    ``allow`` / ``deny`` / ``require_approval``). Clients that ignore
+    unknown fields are unaffected. STRICT_MODE still raises 403 for
+    policy denials and 429 for hard rate-limit/circuit-breaker
+    denials; ``require_approval`` is an advisory escalation and
+    deliberately does NOT raise so the agent framework can route the
+    call to a human and retry via /approve.
 """
 
 import hashlib
@@ -823,9 +823,8 @@ class VerifyResponse(BaseModel):
     intent: str
     decision_id: str
     # Additive, OPTIONAL fields (issue #1269). decision == "require_approval"
-    # is the third decision tier; approval_token is only set in that case.
+    # is the third decision tier.
     decision: str = "allow"
-    approval_token: Optional[str] = None
 
 
 class ApproveRequest(BaseModel):
@@ -959,6 +958,8 @@ async def verify(
 
     approval_token: Optional[str] = None
     if decision == "require_approval":
+        # approval_token is used by the client to call /approve
+        # but we MUST NOT write it to the audit log or return it in /audit
         approval_token = f"appr_{secrets.token_urlsafe(24)}"
         with _STATE_LOCK:
             _state["approvals"][approval_token] = {
@@ -984,6 +985,9 @@ async def verify(
     if decision != "require_approval" and not warming:
         record_breaker_decision(policy, allowed, now)
 
+    # The audit log records the outcome and metadata.
+    # Crucially, we do NOT include the approval_token here to prevent
+    # API key holders from reading pending tokens via /audit.
     entry = {
         "id": decision_id,
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -997,8 +1001,7 @@ async def verify(
         "agent": req.agent_id,
         "client": client_host,
     }
-    if approval_token:
-        entry["approval_token"] = approval_token
+
     if grant_used is not None:
         # Mark the approved allow so the audit trail shows it bypassed an
         # exhausted window via a consumed one-shot grant.
@@ -1029,7 +1032,6 @@ async def verify(
         intent=intent,
         decision_id=decision_id,
         decision=decision,
-        approval_token=approval_token,
     )
 
 
