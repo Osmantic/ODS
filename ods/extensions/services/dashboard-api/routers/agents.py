@@ -1,9 +1,10 @@
 """Agent monitoring endpoints."""
 
 import html as html_mod
+from datetime import datetime
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from agent_monitor import get_full_agent_metrics, cluster_status, throughput
 from security import verify_api_key
@@ -75,3 +76,31 @@ async def get_cluster_status(api_key: str = Depends(verify_api_key)):
 async def get_throughput(api_key: str = Depends(verify_api_key)):
     """Get throughput metrics (tokens/sec)."""
     return throughput.get_stats()
+
+
+@router.get("/api/agents/metrics.prom", response_class=Response)
+async def get_agent_prometheus_metrics(api_key: str = Depends(verify_api_key)):
+    """Expose the cached agent snapshot in Prometheus text format 0.0.4."""
+    metrics = get_full_agent_metrics()
+    cluster, agent, tp = metrics["cluster"], metrics["agent"], metrics["throughput"]
+    gauges = [
+        ("ods_agent_summary_entries", "Entries in the last Token Spy summary.", agent["session_count"]),
+        ("ods_cluster_gpus", "Nodes in the last cluster status snapshot.", cluster["total_gpus"]),
+        ("ods_cluster_healthy_gpus", "Healthy nodes in the last cluster snapshot.", cluster["active_gpus"]),
+        ("ods_cluster_failover_ready", "Whether the last cluster snapshot has multiple healthy nodes.", int(cluster["failover_ready"])),
+    ]
+    if tp["history"]:
+        gauges.extend([
+            ("ods_agent_output_tokens_per_second_24h", "Output tokens per second averaged over the Token Spy 24 hour summary window.", tp["current"]),
+            ("ods_agent_throughput_sample_timestamp_seconds", "Unix time of the last retained Token Spy throughput observation.", datetime.fromisoformat(tp["history"][-1]["timestamp"]).timestamp()),
+        ])
+    # All names and HELP strings are constants; no user-controlled labels.
+    text = "".join(
+        f"# HELP {name} {help_text}\n# TYPE {name} gauge\n{name} {value}\n"
+        for name, help_text, value in gauges
+    )
+    return Response(
+        text,
+        media_type="text/plain; version=0.0.4",
+        headers={"Cache-Control": "no-store"},
+    )
