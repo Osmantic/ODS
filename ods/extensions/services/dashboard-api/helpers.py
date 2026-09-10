@@ -1146,3 +1146,15 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def numeric_percentage_clamp_safe(val: int | float | None, default: float = 0.0) -> float:
+    """Safely clamp a numeric percentage value between 0.0 and 100.0.
+    Returns default (or 0.0) on NaN, Inf, None, or invalid type.
+    """
+    if not isinstance(val, (int, float)) or isinstance(val, bool):
+        return float(default) if isinstance(default, (int, float)) and not math.isnan(default) and not math.isinf(default) else 0.0
+    if math.isnan(val) or math.isinf(val):
+        return float(default) if isinstance(default, (int, float)) and not math.isnan(default) and not math.isinf(default) else 0.0
+    return max(0.0, min(100.0, float(val)))
+

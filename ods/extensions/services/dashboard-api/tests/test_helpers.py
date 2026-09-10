@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestNumericPercentageClampSafe:
+    def test_valid_percentage(self):
+        from helpers import numeric_percentage_clamp_safe
+        assert numeric_percentage_clamp_safe(45.5) == 45.5
+        assert numeric_percentage_clamp_safe(150) == 100.0
+        assert numeric_percentage_clamp_safe(-20) == 0.0
+
+    def test_invalid_inputs(self):
+        from helpers import numeric_percentage_clamp_safe
+        assert numeric_percentage_clamp_safe(None) == 0.0
+        assert numeric_percentage_clamp_safe(float("nan")) == 0.0
+
