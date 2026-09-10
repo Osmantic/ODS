@@ -1146,3 +1146,19 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def dict_pick_keys_safe(data: dict | None, keys: list | tuple | set | None) -> dict:
+    """Safely pick only the specified keys from a dictionary.
+    Returns empty dict on invalid input or error.
+    """
+    if not isinstance(data, dict):
+        return {}
+    if not isinstance(keys, (list, tuple, set)):
+        return {}
+    try:
+        key_set = set(keys)
+        return {k: v for k, v in data.items() if k in key_set}
+    except Exception:
+        return {}
+
