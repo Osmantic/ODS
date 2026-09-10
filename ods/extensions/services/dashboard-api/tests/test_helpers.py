@@ -1607,3 +1607,15 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestStringSlugifyCleanSafe:
+    def test_valid_slug(self):
+        from helpers import string_slugify_clean_safe
+        assert string_slugify_clean_safe(" Hello World! ") == "hello-world"
+
+    def test_invalid_inputs(self):
+        from helpers import string_slugify_clean_safe
+        assert string_slugify_clean_safe(None) == ""
+        assert string_slugify_clean_safe(123) == ""
+
