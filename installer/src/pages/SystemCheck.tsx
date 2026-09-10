@@ -25,7 +25,7 @@ export default function SystemCheck({ onNext, onError }: Props) {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center h-full">
+      <div className="flex flex-col items-center justify-center min-h-full py-8">
         <StatusIcon status="loading" />
         <p className="mt-4 text-gray-400">Checking your system...</p>
       </div>
@@ -37,7 +37,7 @@ export default function SystemCheck({ onNext, onError }: Props) {
   const allMet = result.requirements.every((r: RequirementCheck) => r.met);
 
   return (
-    <div className="flex flex-col items-center justify-center h-full px-8">
+    <div className="flex flex-col items-center justify-center min-h-full py-8 px-8">
       <h2 className="text-2xl font-bold mb-2">System Check</h2>
       <p className="text-gray-400 mb-8">
         {result.system.os_version} &middot; {result.system.arch}

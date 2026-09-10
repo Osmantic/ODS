@@ -7,3 +7,5 @@ src-tauri/gen/
 *.dmg
 *.AppImage
 *.deb
+playwright-report/
+test-results/

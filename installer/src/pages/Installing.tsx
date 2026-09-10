@@ -69,7 +69,7 @@ export default function Installing({
     PHASE_LABELS[progress.phase] || progress.message || "Working...";
 
   return (
-    <div className="flex flex-col items-center justify-center h-full px-8">
+    <div className="flex flex-col items-center justify-center min-h-full py-8 px-8">
       <h2 className="text-2xl font-bold mb-2">Installing ODS</h2>
       <p className="text-gray-400 mb-10 text-center max-w-md">
         This will take a few minutes. Container images and AI models are being
