@@ -1146,3 +1146,19 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_difference_order_safe(a: list | tuple | None, b: list | tuple | set | None) -> list:
+    """Safely return elements of 'a' that are not in 'b', preserving relative order.
+    Returns empty list on invalid input or error.
+    """
+    if not isinstance(a, (list, tuple)):
+        return []
+    if not isinstance(b, (list, tuple, set)):
+        return list(a) if isinstance(a, (list, tuple)) else []
+    try:
+        exclude_set = set(b)
+        return [item for item in a if item not in exclude_set]
+    except Exception:
+        return []
+
