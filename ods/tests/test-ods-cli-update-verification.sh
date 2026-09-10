@@ -224,3 +224,36 @@ token_after="$(awk -F= '/^HERMES_DASHBOARD_SESSION_TOKEN=/{print $2}' "$install_
 }
 
 printf '[PASS] ods update verifies active compose services under set -e\n'
+
+# Test that _check_version_compat exit code is propagated from cmd_update.
+# When _check_version_compat returns non-zero (e.g., user cancels or hard block),
+# cmd_update must exit with that code, not exit 0.
+printf '[TEST] ods update propagates _check_version_compat exit code\n'
+cat > "$install_dir/.env" <<'ENV'
+ODS_VERSION=1.0.0
+ODS_MODE=local
+GPU_BACKEND=cpu
+GPU_COUNT=1
+TIER=1
+SHIELD_API_KEY=test-shield-key
+LLAMA_CPU_LIMIT=8.0
+LLAMA_CPU_RESERVATION=2.0
+ENV
+
+cat > "$install_dir/manifest.json" <<'MANIFEST'
+{"ods_version":"2.0.0","min_compatible_ods_version":"2.0.0"}
+MANIFEST
+
+# ods-cli returns non-zero when installed version is below minimum.
+# Previously it would exit 0 (bug). Now it must exit non-zero.
+"$BASH" "$ods_cli" update > "$tmp_dir/compat.out" 2>&1 && {
+    cat "$tmp_dir/compat.out" >&2
+    printf '[FAIL] ods update should have exited non-zero when compat check fails\n' >&2
+    exit 1
+}
+grep -q 'Upgrade blocked\|compat\|minimum' "$tmp_dir/compat.out" || {
+    cat "$tmp_dir/compat.out" >&2
+    printf '[FAIL] compat check did not produce expected error output\n' >&2
+    exit 1
+}
+printf '[PASS] ods update propagates _check_version_compat exit code\n'

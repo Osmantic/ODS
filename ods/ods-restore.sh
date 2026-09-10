@@ -573,7 +573,7 @@ main() {
     local backup_id=""
     local force="false"
     local dry_run="false"
-    local stop_first="false"
+    local stop_first="true"
     local restore_data="true"
     local restore_config="true"
     local list_mode="false"
