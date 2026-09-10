@@ -401,13 +401,23 @@ def _request_token_spy_report(start: str, end: str, headers: dict[str, str]) -> 
 
 
 async def _fetch_local_runtime_counters() -> list[dict[str, Any]]:
+    urls = _configured_local_runtime_metrics_urls()
+    semaphore = asyncio.Semaphore(4)
+
+    async def fetch(url: str) -> str:
+        async with semaphore:
+            return await asyncio.to_thread(_request_text, url)
+
+    results = await asyncio.gather(*(fetch(url) for url in urls), return_exceptions=True)
     counters = []
-    for url in _configured_local_runtime_metrics_urls():
-        try:
-            metrics_text = await asyncio.to_thread(_request_text, url)
-        except (urllib.error.URLError, TimeoutError, OSError):
+    # Parse on the event loop in configured order: observation baselines are
+    # shared mutable state and must not be updated by worker threads.
+    for url, result in zip(urls, results):
+        if isinstance(result, (urllib.error.URLError, TimeoutError, OSError)):
             continue
-        parsed = _extract_llama_cpp_prometheus_counters(metrics_text, url)
+        if isinstance(result, BaseException):
+            raise result
+        parsed = _extract_llama_cpp_prometheus_counters(result, url)
         if parsed:
             counters.append(parsed)
     return counters
