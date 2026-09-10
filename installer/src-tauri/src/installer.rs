@@ -46,23 +46,7 @@ pub fn run_install(
 
     // Phase 2: Build installer arguments
     let ods_dir = install_dir.join("ods");
-    let mut args = vec!["--tier".to_string(), tier.to_string()];
-
-    if features.contains(&"voice".to_string()) {
-        args.push("--voice".into());
-    }
-    if features.contains(&"workflows".to_string()) {
-        args.push("--workflows".into());
-    }
-    if features.contains(&"rag".to_string()) {
-        args.push("--rag".into());
-    }
-    if features.contains(&"image_gen".to_string()) {
-        args.push("--image-gen".into());
-    }
-    if features.contains(&"all".to_string()) {
-        args.push("--all".into());
-    }
+    let args = build_install_args(tier, &features);
 
     // Phase 3: Run the installer with progress parsing
     update_progress(&state, "Running installer", 20);
@@ -79,27 +63,7 @@ pub fn run_install(
     }
 
     let mut child = if cfg!(target_os = "windows") {
-        let mut ps_args = vec![
-            "-NoProfile".to_string(),
-            "-ExecutionPolicy".to_string(),
-            "Bypass".to_string(),
-            "-File".to_string(),
-            install_ps1.to_string_lossy().to_string(),
-            "-NonInteractive".to_string(),
-            "-Tier".to_string(),
-            tier.to_string(),
-        ];
-
-        for feature in &features {
-            match feature.as_str() {
-                "voice" => ps_args.push("-Voice".into()),
-                "workflows" => ps_args.push("-Workflows".into()),
-                "rag" => ps_args.push("-Rag".into()),
-                "image_gen" => ps_args.push("-Comfyui".into()),
-                "all" => ps_args.push("-All".into()),
-                _ => {}
-            }
-        }
+        let ps_args = build_windows_args(&install_ps1, tier, &features);
 
         Command::new("powershell.exe")
             .args(&ps_args)
@@ -172,6 +136,74 @@ pub fn run_install(
             Err(format!("Installation failed:\n{}", detail))
         }
     }
+}
+
+/// GUI feature id -> the install-core.sh flags that enable and disable it.
+///
+/// Every one of these defaults to enabled in install-core.sh, so an unselected
+/// feature has to be turned off explicitly. Emitting only the on-flags installs
+/// everything regardless of what the user picked.
+const FEATURE_FLAGS: [(&str, &str, &str); 4] = [
+    ("voice", "--voice", "--no-voice"),
+    ("workflows", "--workflows", "--no-workflows"),
+    ("rag", "--rag", "--no-rag"),
+    ("image_gen", "--comfyui", "--no-comfyui"),
+];
+
+fn build_install_args(tier: u8, features: &[String]) -> Vec<String> {
+    let mut args = vec!["--tier".to_string(), tier.to_string()];
+
+    // --all already turns everything on; adding per-feature flags after it would
+    // switch most of it straight back off, since anything unlisted reads as
+    // deselected here.
+    if features.iter().any(|f| f == "all") {
+        args.push("--all".into());
+        return args;
+    }
+
+    for (id, on, off) in FEATURE_FLAGS {
+        let flag = if features.iter().any(|f| f == id) { on } else { off };
+        args.push(flag.into());
+    }
+
+    args
+}
+
+/// Build the argument list for the Windows PowerShell entrypoint.
+///
+/// Kept separate from the spawn so it can be tested on any host.
+fn build_windows_args(install_ps1: &Path, tier: u8, features: &[String]) -> Vec<String> {
+    let mut args = vec![
+        "-NoProfile".to_string(),
+        "-ExecutionPolicy".to_string(),
+        "Bypass".to_string(),
+        "-File".to_string(),
+        install_ps1.to_string_lossy().to_string(),
+        "-NonInteractive".to_string(),
+        "-Tier".to_string(),
+        tier.to_string(),
+    ];
+
+    for feature in features {
+        match feature.as_str() {
+            "voice" => args.push("-Voice".into()),
+            "workflows" => args.push("-Workflows".into()),
+            "rag" => args.push("-Rag".into()),
+            "image_gen" => args.push("-Comfyui".into()),
+            "all" => args.push("-All".into()),
+            _ => {}
+        }
+    }
+
+    // ComfyUI is on by default in the installer, so an unselected box has to say
+    // so explicitly. install.ps1 exposes -NoComfyui but has no
+    // -NoVoice/-NoWorkflows/-NoRag, so those three cannot be switched off here.
+    let selected_all = features.iter().any(|f| f == "all");
+    if !selected_all && !features.iter().any(|f| f == "image_gen") {
+        args.push("-NoComfyui".into());
+    }
+
+    args
 }
 
 fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
@@ -374,6 +406,69 @@ mod tests {
         bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
             (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
         })
+    }
+
+    #[test]
+    fn image_gen_maps_to_the_comfyui_flag() {
+        let args = build_install_args(2, &["image_gen".to_string()]);
+        assert!(args.contains(&"--comfyui".to_string()));
+        // --image-gen is not a real flag; install-core.sh aborts on it.
+        assert!(!args.iter().any(|a| a == "--image-gen"));
+    }
+
+    #[test]
+    fn unselected_features_are_disabled_explicitly() {
+        let args = build_install_args(1, &["voice".to_string()]);
+        assert_eq!(
+            args,
+            vec![
+                "--tier",
+                "1",
+                "--voice",
+                "--no-workflows",
+                "--no-rag",
+                "--no-comfyui",
+            ]
+        );
+    }
+
+    #[test]
+    fn all_does_not_emit_contradicting_per_feature_flags() {
+        let args = build_install_args(3, &["all".to_string()]);
+        assert_eq!(args, vec!["--tier", "3", "--all"]);
+        assert!(!args.iter().any(|a| a.starts_with("--no-")));
+    }
+
+    fn win_args(features: &[&str]) -> Vec<String> {
+        let owned: Vec<String> = features.iter().map(|f| f.to_string()).collect();
+        build_windows_args(Path::new("C:\\ODS\\install.ps1"), 1, &owned)
+    }
+
+    #[test]
+    fn windows_args_negate_comfyui_when_unselected() {
+        let args = win_args(&["voice"]);
+        assert!(args.contains(&"-Voice".to_string()));
+        assert!(args.contains(&"-NoComfyui".to_string()));
+        assert!(!args.iter().any(|a| a == "-Comfyui"));
+    }
+
+    #[test]
+    fn windows_args_keep_comfyui_when_selected() {
+        let args = win_args(&["image_gen"]);
+        assert!(args.contains(&"-Comfyui".to_string()));
+        assert!(!args.iter().any(|a| a == "-NoComfyui"));
+    }
+
+    #[test]
+    fn windows_args_do_not_negate_comfyui_under_all() {
+        let args = win_args(&["all"]);
+        assert!(args.contains(&"-All".to_string()));
+        assert!(!args.iter().any(|a| a == "-NoComfyui"));
+    }
+
+    #[test]
+    fn windows_args_always_run_non_interactive() {
+        assert!(win_args(&[]).contains(&"-NonInteractive".to_string()));
     }
 
     #[test]
