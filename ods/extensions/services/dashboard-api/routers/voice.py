@@ -1,5 +1,6 @@
 """Voice services status endpoint (stub)."""
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends
@@ -28,30 +29,22 @@ async def voice_status(api_key: str = Depends(verify_api_key)):
     from helpers import check_service_health
     from config import SERVICES
 
-    services_status = {}
-    for svc_key, display_name in [("whisper", "stt"), ("tts", "tts")]:
-        cfg = SERVICES.get(svc_key)
-        if cfg:
-            try:
-                result = await check_service_health(svc_key, cfg)
-                services_status[display_name] = {"status": result.status}
-            except Exception:
-                logger.warning("Health check failed for %s", svc_key, exc_info=True)
-                services_status[display_name] = {"status": "unavailable"}
+    voice_services = [("whisper", "stt"), ("tts", "tts"), ("livekit", "livekit")]
+    services_status = {name: {"status": NOT_CONFIGURED} for _, name in voice_services}
+    configured = [(key, name, SERVICES[key]) for key, name in voice_services if SERVICES.get(key)]
+    results = await asyncio.gather(
+        *(check_service_health(key, cfg) for key, _, cfg in configured),
+        return_exceptions=True,
+    )
+    for (key, name, _), result in zip(configured, results):
+        if isinstance(result, Exception):
+            # Preserve the existing per-service error verdict and diagnostic.
+            logger.warning("Health check failed for %s", key, exc_info=(type(result), result, result.__traceback__))
+            services_status[name] = {"status": "unavailable"}
+        elif isinstance(result, BaseException):
+            raise result
         else:
-            services_status[display_name] = {"status": NOT_CONFIGURED}
-
-    # LiveKit is optional and not in SERVICES by default
-    livekit_cfg = SERVICES.get("livekit")
-    if livekit_cfg:
-        try:
-            result = await check_service_health("livekit", livekit_cfg)
-            services_status["livekit"] = {"status": result.status}
-        except Exception:
-            logger.warning("Health check failed for livekit", exc_info=True)
-            services_status["livekit"] = {"status": "unavailable"}
-    else:
-        services_status["livekit"] = {"status": NOT_CONFIGURED}
+            services_status[name] = {"status": result.status}
 
     # An uninstalled optional service is not a failure, so it sits out the
     # verdict. Everything that IS installed still has to be healthy.
