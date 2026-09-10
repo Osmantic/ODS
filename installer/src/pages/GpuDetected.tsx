@@ -5,6 +5,7 @@ import { detectGpu, type GpuResult } from "../hooks/useTauri";
 
 interface Props {
   onNext: (tier: number) => void;
+  onError: (msg: string) => void;
 }
 
 const VENDOR_LABELS: Record<string, string> = {
@@ -15,18 +16,26 @@ const VENDOR_LABELS: Record<string, string> = {
   none: "No dedicated GPU",
 };
 
-export default function GpuDetected({ onNext }: Props) {
+export default function GpuDetected({ onNext, onError }: Props) {
   const [loading, setLoading] = useState(true);
   const [result, setResult] = useState<GpuResult | null>(null);
   const [selectedTier, setSelectedTier] = useState<number>(1);
 
   useEffect(() => {
-    detectGpu().then((r) => {
-      setResult(r);
-      setSelectedTier(r.recommended_tier);
-      setLoading(false);
-    });
-  }, []);
+    detectGpu()
+      .then((r) => {
+        setResult(r);
+        setSelectedTier(r.recommended_tier);
+        setLoading(false);
+      })
+      .catch((e) => {
+        // Nothing cleared loading on the rejected path, so the page spun
+        // forever: no error, no Continue, and the wizard could not be left
+        // except by closing the window.
+        setLoading(false);
+        onError(String(e));
+      });
+  }, [onError]);
 
   if (loading) {
     return (

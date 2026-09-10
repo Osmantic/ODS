@@ -102,8 +102,14 @@ export default function Prerequisites({ onNext, onError }: Props) {
   };
 
   const handleRecheck = async () => {
-    const updated = await checkPrerequisites();
-    setPrereqs(updated);
+    try {
+      const updated = await checkPrerequisites();
+      setPrereqs(updated);
+    } catch (e) {
+      // Re-check is a button the user can press again, so this reports in
+      // place instead of tearing the wizard down to the error page.
+      setMessage(`Could not re-check prerequisites: ${String(e)}`);
+    }
   };
 
   return (

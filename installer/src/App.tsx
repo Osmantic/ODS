@@ -89,6 +89,10 @@ export default function App() {
               update({ tier });
               goTo("features");
             }}
+            onError={(msg) => {
+              update({ error: msg });
+              goTo("error");
+            }}
           />
         )}
         {step === "features" && (

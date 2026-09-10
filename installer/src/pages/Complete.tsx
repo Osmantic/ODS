@@ -1,7 +1,17 @@
+import { useState } from "react";
 import Button from "../components/Button";
 import { openODSserver } from "../hooks/useTauri";
 
 export default function Complete() {
+  const [openError, setOpenError] = useState<string | null>(null);
+
+  // The click handler dropped this promise, so a failure to open the browser
+  // was silent — the button did nothing and said nothing.
+  const handleOpen = () => {
+    setOpenError(null);
+    openODSserver().catch((e) => setOpenError(String(e)));
+  };
+
   return (
     <div className="flex flex-col items-center justify-center h-full px-8 text-center">
       <div className="text-6xl mb-6">&#10024;</div>
@@ -36,8 +46,15 @@ export default function Complete() {
         <Button variant="secondary" onClick={() => window.close()}>
           Close Installer
         </Button>
-        <Button onClick={() => openODSserver()}>Open ODS</Button>
+        <Button onClick={handleOpen}>Open ODS</Button>
       </div>
+
+      {openError && (
+        <p className="mt-4 text-sm text-yellow-500 text-center max-w-md">
+          Could not open the browser ({openError}). ODS is still running — go to
+          localhost:3000.
+        </p>
+      )}
 
       <p className="mt-8 text-xs text-gray-600 max-w-sm">
         To manage ODS later, use the Dashboard at localhost:3001 or run
