@@ -46,23 +46,7 @@ pub fn run_install(
 
     // Phase 2: Build installer arguments
     let ods_dir = install_dir.join("ods");
-    let mut args = vec!["--tier".to_string(), tier.to_string()];
-
-    if features.contains(&"voice".to_string()) {
-        args.push("--voice".into());
-    }
-    if features.contains(&"workflows".to_string()) {
-        args.push("--workflows".into());
-    }
-    if features.contains(&"rag".to_string()) {
-        args.push("--rag".into());
-    }
-    if features.contains(&"image_gen".to_string()) {
-        args.push("--image-gen".into());
-    }
-    if features.contains(&"all".to_string()) {
-        args.push("--all".into());
-    }
+    let args = build_install_args(tier, &features);
 
     // Phase 3: Run the installer with progress parsing
     update_progress(&state, "Running installer", 20);
@@ -338,6 +322,44 @@ fn parse_progress_line(line: &str) -> Option<ProgressEvent> {
     })
 }
 
+/// GUI feature id -> the flag that enables it in ods/install.sh.
+///
+/// These are the ids Features.tsx sends. Anything not listed here has no flag
+/// of its own: "chat" is the always-on baseline, and "search" is not an
+/// install-core option at all.
+const FEATURE_FLAGS: [(&str, &str); 4] = [
+    ("voice", "--voice"),
+    ("workflows", "--workflows"),
+    ("rag", "--rag"),
+    // The flag is --comfyui. There is no --image-gen: install-core.sh ends its
+    // parse loop with `error "Unknown option: $1"`, which exits 1, and the
+    // macOS entrypoint does the same — so sending it aborted the install
+    // before it started, for the one feature whose page copy names ComfyUI.
+    ("image_gen", "--comfyui"),
+];
+
+/// Build the argument list for the Unix ods/install.sh entrypoint.
+///
+/// Separate from the spawn so the flags can be asserted on any host.
+fn build_install_args(tier: u8, features: &[String]) -> Vec<String> {
+    let mut args = vec!["--tier".to_string(), tier.to_string()];
+
+    // --all turns everything on by itself, and the per-feature flags below are
+    // enable-only, so there is nothing to add after it.
+    if features.iter().any(|f| f == "all") {
+        args.push("--all".into());
+        return args;
+    }
+
+    for (id, flag) in FEATURE_FLAGS {
+        if features.iter().any(|f| f == id) {
+            args.push(flag.into());
+        }
+    }
+
+    args
+}
+
 fn update_progress(state: &Arc<Mutex<InstallState>>, message: &str, percent: u8) {
     if let Ok(mut s) = state.lock() {
         s.progress_pct = percent;
@@ -369,6 +391,72 @@ pub fn default_install_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn install_args(features: &[&str]) -> Vec<String> {
+        let owned: Vec<String> = features.iter().map(|f| f.to_string()).collect();
+        build_install_args(2, &owned)
+    }
+
+    #[test]
+    fn image_gen_maps_to_the_comfyui_flag() {
+        let args = install_args(&["image_gen"]);
+        assert!(args.contains(&"--comfyui".to_string()));
+        // --image-gen is not an option any entrypoint knows; install-core.sh
+        // and install-macos.sh both exit 1 on an unrecognised flag.
+        assert!(!args.iter().any(|a| a == "--image-gen"));
+    }
+
+    #[test]
+    fn every_flag_is_one_the_installer_parses() {
+        // The flags ods/install-core.sh accepts in its argument loop. A flag
+        // outside this set aborts the install instead of configuring it.
+        const ACCEPTED: &[&str] = &[
+            "--tier",
+            "--voice",
+            "--workflows",
+            "--rag",
+            "--comfyui",
+            "--all",
+            "--non-interactive",
+        ];
+
+        let args = install_args(&["voice", "workflows", "rag", "image_gen"]);
+        for arg in &args {
+            // Skip the tier value, which follows --tier.
+            if arg.parse::<u8>().is_ok() {
+                continue;
+            }
+            assert!(
+                ACCEPTED.contains(&arg.as_str()),
+                "{arg} is not an option the installer parses"
+            );
+        }
+    }
+
+    #[test]
+    fn the_tier_is_always_passed() {
+        let args = install_args(&[]);
+        assert_eq!(args, vec!["--tier".to_string(), "2".to_string()]);
+    }
+
+    #[test]
+    fn all_stands_alone() {
+        // Appending per-feature flags after --all is redundant at best; the
+        // shell parses the loop in order and the last write wins.
+        let args = install_args(&["all", "voice"]);
+        assert_eq!(
+            args,
+            vec!["--tier".to_string(), "2".to_string(), "--all".to_string()]
+        );
+    }
+
+    #[test]
+    fn unknown_feature_ids_produce_no_flags() {
+        // "chat" is always on and "search" has no install-core flag; neither
+        // should reach the command line.
+        let args = install_args(&["chat", "search"]);
+        assert_eq!(args, vec!["--tier".to_string(), "2".to_string()]);
+    }
 
     fn fnv1a64(bytes: &[u8]) -> u64 {
         bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
