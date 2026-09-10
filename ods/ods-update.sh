@@ -698,10 +698,12 @@ cmd_update() {
             docker-compose ${compose_flags} down --remove-orphans
         fi
         if ! docker compose ${compose_flags} up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose ${compose_flags} up -d
+            log_error "docker compose up failed. Update cannot proceed safely."
+            _update_rollback "Docker compose up failed." "$snap_dir" "$compose_flags"
+            return 1
         fi
     elif [[ -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
+
         if ! docker compose down --remove-orphans; then
             log_warn "docker compose v2 down failed, trying v1..."
             docker-compose down --remove-orphans
