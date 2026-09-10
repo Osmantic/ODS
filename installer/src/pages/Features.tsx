@@ -2,6 +2,7 @@ import { useState } from "react";
 import Button from "../components/Button";
 
 interface Props {
+  initialFeatures?: string[];
   onNext: (features: string[]) => void;
 }
 
@@ -58,9 +59,9 @@ const FEATURES: FeatureOption[] = [
   },
 ];
 
-export default function Features({ onNext }: Props) {
+export default function Features({ onNext, initialFeatures }: Props) {
   const [selected, setSelected] = useState<Set<string>>(
-    new Set(FEATURES.filter((f) => f.default).map((f) => f.id)),
+    new Set(["chat", ...(initialFeatures ?? FEATURES.filter((f) => f.default).map((f) => f.id))]),
   );
 
   const toggle = (id: string) => {

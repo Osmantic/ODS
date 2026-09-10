@@ -19,8 +19,8 @@ export type WizardStep =
   | "error";
 
 export interface WizardState {
-  tier: number;
-  features: string[];
+  tier?: number;
+  features?: string[];
   installDir?: string;
   error?: string;
 }
@@ -37,10 +37,7 @@ const STEPS: WizardStep[] = [
 
 export default function App() {
   const [step, setStep] = useState<WizardStep>("welcome");
-  const [state, setState] = useState<WizardState>({
-    tier: 1,
-    features: [],
-  });
+  const [state, setState] = useState<WizardState>({});
 
   const stepIndex = STEPS.indexOf(step);
   const progress =
@@ -85,6 +82,7 @@ export default function App() {
         )}
         {step === "gpu" && (
           <GpuDetected
+            initialTier={state.tier}
             onNext={(tier: number) => {
               update({ tier });
               goTo("features");
@@ -93,6 +91,7 @@ export default function App() {
         )}
         {step === "features" && (
           <Features
+            initialFeatures={state.features}
             onNext={(features: string[]) => {
               update({ features });
               goTo("installing");
@@ -101,8 +100,8 @@ export default function App() {
         )}
         {step === "installing" && (
           <Installing
-            tier={state.tier}
-            features={state.features}
+            tier={state.tier ?? 1}
+            features={state.features ?? []}
             installDir={state.installDir}
             onComplete={() => goTo("complete")}
             onError={(msg) => {
