@@ -141,13 +141,16 @@ pub fn detect_gpu() -> GpuResult {
     }
 }
 
+/// The VRAM figures here have to be the ones gpu::recommend_tier actually
+/// switches on, or the page tells the user a card is too small for the tier it
+/// just recommended to them.
 fn tier_description(tier: u8) -> String {
     match tier {
-        0 => "Cloud Mode — No local GPU detected. Uses cloud AI providers.".into(),
-        1 => "Tier 1 — Qwen3-8B (8GB VRAM). Great for chat, code help, and general tasks.".into(),
+        0 => "Cloud Mode — No usable local GPU detected. Uses cloud AI providers.".into(),
+        1 => "Tier 1 — Qwen3-8B (4GB+ VRAM). Great for chat, code help, and general tasks.".into(),
         2 => "Tier 2 — Qwen3-14B (12GB+ VRAM). Stronger reasoning and longer context.".into(),
-        3 => "Tier 3 — Qwen3-32B (24GB+ VRAM). Professional-grade for complex tasks.".into(),
-        4 => "Tier 4 — Qwen3-72B (48GB+ VRAM). Enterprise-level, best quality.".into(),
+        3 => "Tier 3 — Qwen3-32B (20GB+ VRAM). Professional-grade for complex tasks.".into(),
+        4 => "Tier 4 — Qwen3-72B (40GB+ VRAM). Enterprise-level, best quality.".into(),
         _ => "Unknown tier".into(),
     }
 }

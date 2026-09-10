@@ -17,15 +17,26 @@ pub fn detect() -> GpuInfo {
     }
 }
 
-/// Recommend a ODS tier based on detected GPU VRAM.
+/// Recommend an ODS tier based on detected GPU VRAM.
+///
+/// The thresholds mirror the auto-detection ladder in
+/// ods/installers/phases/02-detection.sh (the `GPU_VRAM -ge` chain), because the
+/// GUI passes the number picked here to install-core.sh as `--tier`, which sets
+/// TIER_FORCED and stops the installer detecting for itself. Whatever this
+/// function answers is what gets installed, so it has to answer what the
+/// installer would have.
+///
+/// Below 4 GB this reports Cloud Mode. The installer only drops that low when
+/// RAM is also under 12 GB, which GpuInfo cannot see, but it separately forces a
+/// Tier 0 fallback for any NVIDIA card under 4096 MB to avoid CUDA OOM loops,
+/// and nothing that small holds Tier 1's 8B model regardless.
 pub fn recommend_tier(gpu: &GpuInfo) -> u8 {
     match gpu.vram_mb {
-        0 => 0,                    // CPU-only / cloud
-        v if v < 8192 => 1,       // < 8GB
-        v if v < 12288 => 1,      // 8GB — Tier 1
-        v if v < 24576 => 2,      // 12-24GB — Tier 2
-        v if v < 49152 => 3,      // 24-48GB — Tier 3
-        _ => 4,                    // 48GB+ — Tier 4
+        v if v >= 40_000 => 4, // 40GB+   — Tier 4
+        v if v >= 20_000 => 3, // 20-40GB — Tier 3
+        v if v >= 12_000 => 2, // 12-20GB — Tier 2
+        v if v >= 4_000 => 1,  // 4-12GB  — Tier 1
+        _ => 0,                // CPU-only or too small — Cloud Mode
     }
 }
 
@@ -251,5 +262,63 @@ fn parse_vram_string(s: &str) -> u64 {
         }
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod tier_tests {
+    use super::*;
+
+    fn tier(vram_mb: u64) -> u8 {
+        recommend_tier(&GpuInfo {
+            vendor: GpuVendor::Nvidia,
+            name: "test".into(),
+            vram_mb,
+            driver_version: None,
+        })
+    }
+
+    #[test]
+    fn no_gpu_is_cloud_mode() {
+        assert_eq!(tier(0), 0);
+    }
+
+    #[test]
+    fn a_gpu_too_small_for_tier_1_is_not_offered_tier_1() {
+        // The old ladder's first arm was `v if v < 8192 => 1`, so a 2GB card was
+        // told to run Tier 1, which wants 8GB.
+        assert_eq!(tier(2048), 0);
+        assert_eq!(tier(3_999), 0);
+    }
+
+    #[test]
+    fn thresholds_match_the_installer_ladder() {
+        // ods/installers/phases/02-detection.sh: 12000 / 20000 / 40000.
+        assert_eq!(tier(4_000), 1);
+        assert_eq!(tier(11_999), 1);
+        assert_eq!(tier(12_000), 2);
+        assert_eq!(tier(19_999), 2);
+        assert_eq!(tier(20_000), 3);
+        assert_eq!(tier(39_999), 3);
+        assert_eq!(tier(40_000), 4);
+    }
+
+    #[test]
+    fn common_cards_land_where_the_installer_puts_them() {
+        assert_eq!(tier(8 * 1024), 1); // RTX 3070
+        assert_eq!(tier(12 * 1024), 2); // RTX 3060 12GB
+        assert_eq!(tier(20 * 1024), 3); // RTX 4000 Ada — was Tier 2
+        assert_eq!(tier(24 * 1024), 3); // RTX 3090 / 4090
+        assert_eq!(tier(40 * 1024), 4); // A100 40GB — was Tier 3
+        assert_eq!(tier(48 * 1024), 4); // L40S
+    }
+
+    #[test]
+    fn every_arm_is_reachable() {
+        let reached: Vec<u8> = [0, 4_000, 12_000, 20_000, 40_000]
+            .into_iter()
+            .map(tier)
+            .collect();
+        assert_eq!(reached, vec![0, 1, 2, 3, 4]);
     }
 }
