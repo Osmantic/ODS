@@ -37,6 +37,39 @@ pub fn run_install(
     tier: u8,
     features: Vec<String>,
 ) -> Result<(), String> {
+    let result = run_install_inner(state.clone(), install_dir, tier, features);
+    if let Err(message) = &result {
+        record_failure(&state, message);
+    }
+    result
+}
+
+/// Persist a failed install so the front end stops reporting it as running.
+///
+/// The success path writes phase Complete, but every failure used to return its
+/// Err without touching the state file, leaving phase Installing and error None
+/// on disk. get_install_progress serves the front end from that file, so a
+/// failed install polled as one that had simply stopped making progress — and
+/// the state outlives the process, so a relaunch resumed into it too.
+fn record_failure(state: &Arc<Mutex<InstallState>>, message: &str) {
+    // No unwrap: this runs on the error path, where a poisoned lock would turn
+    // a reportable failure into a panic inside a panic.
+    let Ok(mut s) = state.lock() else { return };
+    mark_failed(&mut s, message);
+    let _ = s.save();
+}
+
+fn mark_failed(state: &mut InstallState, message: &str) {
+    state.phase = InstallPhase::Error;
+    state.error = Some(message.to_string());
+}
+
+fn run_install_inner(
+    state: Arc<Mutex<InstallState>>,
+    install_dir: PathBuf,
+    tier: u8,
+    features: Vec<String>,
+) -> Result<(), String> {
     // Phase 1: Clone the repo
     update_progress(&state, "Downloading ODS", 5);
 
@@ -369,6 +402,39 @@ pub fn default_install_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_install_is_recorded_on_the_state() {
+        let mut state = InstallState {
+            phase: InstallPhase::Installing,
+            ..Default::default()
+        };
+        mark_failed(&mut state, "Installation failed:\nno space left on device");
+        assert_eq!(state.phase, InstallPhase::Error);
+        assert_eq!(
+            state.error.as_deref(),
+            Some("Installation failed:\nno space left on device")
+        );
+    }
+
+    #[test]
+    fn recording_a_failure_keeps_what_the_user_chose() {
+        // ErrorPage offers a retry, which walks back through the wizard, so the
+        // selections and the progress reached have to survive the failure.
+        let mut state = InstallState {
+            phase: InstallPhase::Installing,
+            selected_tier: Some(3),
+            selected_features: vec!["voice".to_string()],
+            install_dir: Some("/tmp/ODS".to_string()),
+            progress_pct: 62,
+            ..Default::default()
+        };
+        mark_failed(&mut state, "boom");
+        assert_eq!(state.selected_tier, Some(3));
+        assert_eq!(state.selected_features, vec!["voice".to_string()]);
+        assert_eq!(state.install_dir.as_deref(), Some("/tmp/ODS"));
+        assert_eq!(state.progress_pct, 62);
+    }
 
     fn fnv1a64(bytes: &[u8]) -> u64 {
         bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
