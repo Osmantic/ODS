@@ -19,7 +19,7 @@ export function ConversationTitle({title}) {
   return <strong ref={viewport} className="conversation-title" data-overflow={overflow>0} style={{'--title-travel':`${-overflow}px`,'--title-duration':`${Math.max(4,overflow/28+2)}s`}}><span ref={text}>{title}</span></strong>
 }
 
-export default function PixelConversationRow({chat,title,onDelete,onExport,onSaved,children}) {
+export default function PixelConversationRow({chat,title,onDelete,onExport,onExportMarkdown,onSaved,children}) {
   const row=useRef(null), menu=useRef(null), returnFocus=useRef(null)
   const [position,setPosition]=useState(null)
   const [error,setError]=useState('')
@@ -73,6 +73,7 @@ export default function PixelConversationRow({chat,title,onDelete,onExport,onSav
       <button role="menuitem" onClick={()=>toggle('archived')}><Archive size={15}/>{labels.archived?'Unarchive':'Archive'}</button>
       <div role="separator"/>
       <button role="menuitem" onClick={()=>{close();onExport()}}><Download size={15}/>Export conversation</button>
+      <button role="menuitem" onClick={()=>{close();if(onExportMarkdown)onExportMarkdown()}}><Download size={15}/>Export Markdown</button>
       <button role="menuitem" onClick={()=>{close(false);row.current.querySelector('.conversation-delete')?.click()}}><X size={15}/>Delete chat</button>
       {error && <p role="alert">{error}</p>}
     </div>,document.body)}

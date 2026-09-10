@@ -5,6 +5,7 @@ import { conversationLabels } from '../lib/pixelConversationLabels'
 import PixelConversationRow, {ConversationTitle} from './PixelConversationRow'
 
 import { exportConversation } from '../lib/pixelConversationExport'
+import { exportConversationMarkdown } from '../lib/pixelConversationExportMarkdown'
 
 export default function PixelConversationNavigation({ collapsed }) {
   const [chats, setChats] = useState(readConversations)
@@ -42,7 +43,7 @@ export default function PixelConversationNavigation({ collapsed }) {
   const regular = visible.filter(item => !item.labels.pinned).map(item => item.chat)
   const chevron = <svg className="rail-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg>
   function rows(items, empty) {
-    return <div className="rail-conversations">{items.length ? items.map(chat => <PixelConversationRow key={chat.chatId} chat={chat} title={conversationTitle(chat)} onSaved={() => archiveToggle.current?.focus()} onDelete={event => {trigger.current=event.currentTarget;setDeleteError('');setPending(chat)}} onExport={() => {
+    return <div className="rail-conversations">{items.length ? items.map(chat => <PixelConversationRow key={chat.chatId} chat={chat} title={conversationTitle(chat)} onSaved={() => archiveToggle.current?.focus()} onDelete={event => {trigger.current=event.currentTarget;setDeleteError('');setPending(chat)}} onExportMarkdown={() => { try { exportConversationMarkdown(chat.chatId); setExportError('') } catch { setExportError('This conversation could not be exported as Markdown.') } }} onExport={() => {
       try { exportConversation(chat.chatId); setExportError('') }
       catch { setExportError('This conversation could not be exported. Your saved history is unchanged.') }
     }}><button className={`conversation-link ${chat.chatId === active ? 'active' : ''}`} title={conversationTitle(chat)} aria-current={chat.chatId === active ? 'page' : undefined} onClick={() => window.dispatchEvent(new CustomEvent(SELECT_EVENT, { detail: chat.chatId }))}><ConversationTitle title={conversationTitle(chat)}/>{chat.inFlight && <span className="rail-task-running" role="status" aria-label="Working"/>}</button></PixelConversationRow>) : <span className="rail-empty">{empty}</span>}</div>
