@@ -107,7 +107,10 @@ export default function Features({ onNext }: Props) {
                       : "border-gray-600"
                   } ${isRequired ? "opacity-50" : ""}`}
                 >
-                  {isSelected && "&#10003;"}
+                  {/* An entity is only decoded as JSX text, so it needs the
+                      fragment — as a plain string React escapes the ampersand
+                      and the checkbox reads "&#10003;" literally. */}
+                  {isSelected && <>&#10003;</>}
                 </div>
                 <div className="flex-1">
                   <p className="text-sm font-medium text-white">
