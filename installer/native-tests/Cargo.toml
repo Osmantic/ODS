@@ -1,0 +1,10 @@
+[package]
+name = "ods-installer-contracts"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Match src-tauri's requirements; check_lock.py enforces locked-version parity.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
