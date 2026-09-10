@@ -560,6 +560,78 @@ class TestInstallExtension:
         assert (user_dir / "my-ext" / "compose.yaml").exists()
         assert resp.json()["action"] == "installed"
 
+    def test_install_preserves_tree_when_staging_fails(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """Reinstall must not delete dest until the staged copy commits."""
+        from routers import extensions as ext_mod
+
+        lib_dir = _setup_library_ext(tmp_path, "my-ext")
+        user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=True)
+        progress_dir = tmp_path / "extension-progress"
+        progress_dir.mkdir()
+        (progress_dir / "my-ext.json").write_text(json.dumps({
+            "service_id": "my-ext",
+            "status": "error",
+            "error": "previous compose resolve failed",
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+        }))
+        original_compose = (user_dir / "my-ext" / "compose.yaml").read_text()
+        (user_dir / "my-ext" / "stale.txt").write_text("keep me")
+        source_manifest = lib_dir / "my-ext" / "manifest.yaml"
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=lib_dir,
+                               user_dir=user_dir)
+        real_copy = ext_mod._copytree_safe
+
+        def copy_then_change(source, staged):
+            real_copy(source, staged)
+            source_manifest.write_text("release: changed-during-copy\n")
+
+        monkeypatch.setattr(ext_mod, "_copytree_safe", copy_then_change)
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/install",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 409
+        assert "changed while" in resp.json()["detail"]
+        assert (user_dir / "my-ext" / "compose.yaml").read_text() == original_compose
+        assert (user_dir / "my-ext" / "stale.txt").read_text() == "keep me"
+
+    def test_install_preserves_broken_tree_when_staging_fails(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """Broken partial installs must survive a failed staging attempt."""
+        from routers import extensions as ext_mod
+
+        lib_dir = _setup_library_ext(tmp_path, "my-ext")
+        user_dir = tmp_path / "user"
+        user_dir.mkdir(exist_ok=True)
+        broken_dir = user_dir / "my-ext"
+        broken_dir.mkdir(exist_ok=True)
+        (broken_dir / "manifest.yaml").write_text("leftover: true\n")
+        source_manifest = lib_dir / "my-ext" / "manifest.yaml"
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=lib_dir,
+                               user_dir=user_dir)
+        real_copy = ext_mod._copytree_safe
+
+        def copy_then_change(source, staged):
+            real_copy(source, staged)
+            source_manifest.write_text("release: changed-during-copy\n")
+
+        monkeypatch.setattr(ext_mod, "_copytree_safe", copy_then_change)
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/install",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 409
+        assert "changed while" in resp.json()["detail"]
+        assert (broken_dir / "manifest.yaml").read_text() == "leftover: true\n"
+
     def test_install_unknown_extension_404(self, test_client, monkeypatch, tmp_path):
         """404 when extension is not in the library."""
         _patch_mutation_config(monkeypatch, tmp_path)
