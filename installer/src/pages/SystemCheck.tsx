@@ -12,18 +12,29 @@ export default function SystemCheck({ onNext, onError }: Props) {
   const [loading, setLoading] = useState(true);
   const [result, setResult] = useState<SystemCheckResult | null>(null);
 
+  const [attempt, setAttempt] = useState(0);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+
   useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setRefreshError(null);
     checkSystem()
       .then((r) => {
+        if (!active) return;
         setResult(r);
         setLoading(false);
       })
       .catch((e) => {
-        onError(String(e));
+        if (!active) return;
+        setLoading(false);
+        if (attempt === 0) onError(String(e));
+        else setRefreshError(String(e));
       });
-  }, [onError]);
+    return () => { active = false; };
+  }, [attempt, onError]);
 
-  if (loading) {
+  if (loading && !result) {
     return (
       <div className="flex flex-col items-center justify-center h-full">
         <StatusIcon status="loading" />
@@ -87,8 +98,16 @@ export default function SystemCheck({ onNext, onError }: Props) {
         </div>
       </div>
 
+      {refreshError && (
+        <p role="alert" className="mb-4 max-w-md text-sm text-yellow-400">
+          Previous results are shown. System check failed: {refreshError}
+        </p>
+      )}
       <div className="flex gap-3">
-        <Button onClick={onNext}>
+        <Button variant="secondary" disabled={loading} onClick={() => setAttempt((value) => value + 1)}>
+          {loading ? "Checking..." : "Check Again"}
+        </Button>
+        <Button onClick={onNext} disabled={loading}>
           {allMet && result.docker.installed
             ? "Continue"
             : "Continue Anyway"}
