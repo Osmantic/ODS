@@ -1501,9 +1501,10 @@ def _install_from_library(service_id: str) -> None:
                 status_code=409,
                 detail=f"Extension already installed: {service_id}",
             )
-        logger.warning("Cleaning up extension directory under lock before retry: %s", dest)
-        shutil.rmtree(dest)
-        _clear_progress(service_id)
+        logger.warning(
+            "Replacing extension directory under lock after failed/partial install: %s",
+            dest,
+        )
 
     with _staged_library_extension(service_id, dest) as (staged, source_digest):
         installed_digest = _extension_tree_digest(staged)
@@ -1512,8 +1513,26 @@ def _install_from_library(service_id: str) -> None:
             source_digest=source_digest,
             installed_digest=installed_digest,
         )
-        os.rename(str(staged), str(dest))
+        prior: Path | None = None
+        if dest.exists():
+            swap_parent = USER_EXTENSIONS_DIR / ".tmp"
+            if swap_parent.is_symlink():
+                raise HTTPException(status_code=409, detail="Extension tmp path is a symlink")
+            swap_parent.mkdir(parents=True, exist_ok=True)
+            prior = Path(tempfile.mkdtemp(
+                prefix=f".{service_id}-prior-", dir=swap_parent,
+            )) / service_id
+            os.replace(dest, prior)
+        try:
+            os.replace(staged, dest)
+        except OSError:
+            if prior is not None:
+                os.replace(prior, dest)
+            raise
         _invalidate_extension_digest_cache(dest)
+        if prior is not None:
+            _clear_progress(service_id)
+            shutil.rmtree(prior.parent, ignore_errors=True)
 
 
 def _rewrite_build_context(compose_path: Path, final_dir: Path) -> None:
@@ -1619,10 +1638,6 @@ def install_extension(service_id: str, api_key: str = Depends(verify_api_key)):
             raise HTTPException(
                 status_code=409, detail=f"Extension already installed: {service_id}",
             )
-        # Broken or failed directory — clean up before reinstall.
-        logger.warning("Cleaning up extension directory before retry: %s", dest)
-        shutil.rmtree(dest)
-        _clear_progress(service_id)
 
     # NOTE: pre_install hook is deferred to a future version. On fresh library
     # installs, the extension directory doesn't exist yet, so the host agent
