@@ -2006,9 +2006,7 @@ cmd_update() {
     read -ra flags <<< "$flags_str"
 
     # Version compatibility check — warn on major version jumps before touching anything
-    if ! _check_version_compat "$force_flag"; then
-        exit 0
-    fi
+    _check_version_compat "$force_flag" || exit $?
 
     # Show what we're updating from/to (if versions were resolved)
     if [[ -n "${_COMPAT_INSTALLED_VER:-}" && -n "${_COMPAT_TARGET_VER:-}" \
