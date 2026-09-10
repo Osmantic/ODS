@@ -479,9 +479,15 @@ async def proxy_websocket(client_ws: WebSocket, path: str):
     import anyio
 
     try:
-        async with websockets.connect(
-            upstream_url, additional_headers=extra_headers, open_timeout=5
-        ) as upstream_ws:
+        try:
+            connect_ctx = websockets.connect(
+                upstream_url, extra_headers=extra_headers, open_timeout=5
+            )
+        except TypeError:
+            connect_ctx = websockets.connect(
+                upstream_url, additional_headers=extra_headers, open_timeout=5
+            )
+        async with connect_ctx as upstream_ws:
 
             async def client_to_upstream():
                 try:
